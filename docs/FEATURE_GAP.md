@@ -111,6 +111,61 @@
 | **硬件监控（温度/SMART/风扇）** | [N] | [N] | [N] | [N] | [N] | [N] | [N] | [N] | [N] | [Y] | [N] | **[阻塞] P3 不做** |
 | **加速器/内存释放伪功能** | [Y] | — | — | — | — | — | — | — | — | — | [Y] | **[阻塞] 永不做（PITFALLS §0 红线）** |
 
+### 1.9 TCC 隐私雷区处理（v1.1 补全）
+
+> 背景：macOS 15 (Sequoia) 把 Music Library / Photos / Mail / Messages / Calendars / Contacts / Safari 列为高敏区，扫描器只要 `open(2)` 命中就触发原生权限弹窗。多 worker 并行扫描会一次性弹好几个，体验灾难。
+> v1.0 用户实测就被 Apple Music 媒体库 prompt 顶脸，所以这是 v1.1 必须补的一栏。
+
+| 功能 | CMM | DD | PC | ODS | AC | GP | DIX | ONX | **我们** |
+|---|---|---|---|---|---|---|---|---|---|
+| **硬编码 TCC 雷区 skip 列表** | [Y] 内置完整 | [Y] 跳过 ~/Library | [Y] 开源能看到 skip table | [警告] 靠 sudo 绕 | [Y] 不进 ~/Library | [Y] 用户手选 | [Y] 用户手选 | — | **[优化] [TCCSkipList](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift)** v1.1 新增 |
+| **按需申请权限（用户主动选 Mail 才弹）** | [Y] 业界最佳实践 | — | [警告] | — | — | — | — | — | **[阻塞] P3 不做**（我们定位是清缓存，没有读邮件正文的合理理由） |
+| **统一权限 banner 替代多次弹窗** | [Y] 顶部条幅 | — | [Y] | — | — | — | — | — | **[优化] [PermissionStatusBanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) FDA + TCC 合并** |
+| **跳过 .musiclibrary / .photoslibrary 包目录** | [Y] | [Y] | [Y] | [警告] | — | — | — | — | **[优化]** v1.1 后缀匹配 |
+| **跳过 ~/Library/Mail Messages Calendars Contacts Safari Reminders** | [Y] | [Y] | [Y] | [警告] | [Y] | — | — | — | **[优化]** v1.1 完整 home 相对路径表 |
+| **跳过 CallHistoryDB / HomeKit / TCC.db** | [Y] | [警告] | [Y] | — | — | — | — | — | **[优化]** v1.1 |
+| **统计被 skip 的雷区目录数 + UI 提示** | [警告] | — | — | — | — | — | — | — | **[优化]** v1.1 `tccProtectedSkippedCount` 进 ScanSummary |
+| **绝不在 plist 注册 NSPhotoLibraryUsageDescription / NSMailLibraryUsageDescription** | [警告] 部分注册 | — | [警告] 部分注册 | — | — | — | — | — | **[优化]** v1.1 决策"零隐私权限"，避免 App Sandbox 误判 |
+
+**踩坑要点**：
+1. macOS 15 起 .musiclibrary 这种"包目录"的 readdir 也会触发 prompt，仅靠 path-prefix 黑名单不够，**必须用后缀匹配**（GSYCleanMac v1.1 实现）
+2. CleanMyMac / Pearcleaner 都是按需申请权限的路线，但他们都注册了对应 UsageDescription；我们走"完全不申请"路线，TCC.db 状态永远是 not determined，扫描结果会少一些但不会有任何弹窗
+3. Pearcleaner 早期版本（v4.x）漏掉 ~/Library/Containers/com.apple.mail，照样会弹——必须把 Containers 同名条目一起加进 skip 表
+
+### 1.10 自动更新（v1.1 补全）
+
+> 用户拍板：默认 ON，启动时静默检查，README 说明"仅检查更新一次会出站，可关"。
+
+| 功能 | CMM | DD | PC | AC | Sen | MFP | ONX | **我们** |
+|---|---|---|---|---|---|---|---|---|
+| **更新框架** | 自研 + 公证 | Sparkle 1 | 手写 GitHub Releases | Sparkle 2 | Sparkle 2 | 自研 | Sparkle 2 | **[优化] [UpdateChecker 手写 GH API](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Updater/UpdateChecker.swift)** v1.1 新增 |
+| **启动时自动检查** | [Y] 默认 | [Y] 默认 | [Y] 默认 | [Y] 默认 | [Y] | [Y] | [Y] | **[优化]** v1.1 默认 ON，可在设置关 |
+| **可手动检查（菜单 / 设置）** | [Y] Help → Check | [Y] | [Y] | [Y] | [Y] | [Y] | [Y] | **[优化]** v1.1 Help 菜单 + 设置面板"立即检查"按钮 |
+| **自动下载新版包** | [Y] | [Y] Sparkle | [警告] | [Y] | [Y] | [Y] | [Y] | **[阻塞] P3 不做**（无 Developer Program / 不公证 / Sparkle 2 EdDSA 也走不通） |
+| **自动安装** | [Y] | [Y] | [警告] | [Y] | [Y] | [Y] | [Y] | **[阻塞] P3 不做**（同上，安全风险高） |
+| **跳转浏览器到 Release 下载页** | [警告] | — | [Y] | — | — | — | — | **[优化]** v1.1 `NSWorkspace.open(html_url)` |
+| **"跳过此版本"** | [Y] | [Y] | [Y] | [Y] | [Y] | [Y] | [Y] | **[优化]** v1.1 `UserDefaults.skippedUpdateTag` |
+| **"稍后提醒"** | [Y] | [Y] | [Y] | [Y] | [Y] | [Y] | [Y] | **[优化]** v1.1 sheet dismiss 即可，下次启动重判 |
+| **新版本说明（changelog）展示** | [Y] HTML | [Y] HTML | [Y] markdown body | [Y] | — | [Y] | [Y] | **[优化]** v1.1 直接把 release.body markdown 展示在 sheet |
+| **Beta 通道 / Pre-release 切换** | [Y] | — | — | — | [Y] | [Y] | — | **[阻塞] P3 不做** |
+| **不发任何 telemetry** | [N] 有埋点 | [N] 有埋点 | [Y] 不发 | [Y] 不发 | [N] | [N] | [Y] | **[优化]** v1.1 仅 GET /releases/latest 一次，不带身份 |
+| **可关掉自动检查** | [Y] 偏好 | [Y] 偏好 | [Y] 偏好 | [Y] | [Y] | [Y] | [Y] | **[优化]** v1.1 设置面板 toggle，关掉后启动一字节都不出站 |
+
+**决策：为什么选手写 GitHub Releases API 而不是 Sparkle 2？**
+
+| 方案 | 优点 | 缺点 | 我们的判断 |
+|---|---|---|---|
+| **Sparkle 2** | 业界标准 / 自动下载安装 / 增量更新 / EdDSA 签名校验 | 需要 appcast.xml 服务器；**强烈建议公证更新包**（无 Apple Developer Program 不行）；EdDSA 私钥要存 CI secret | **不用**：自动安装链路需要严格的代码签名 + 公证才安全，ad-hoc 签名走不通 |
+| **手写 Releases API** | 零依赖 / 不需服务器 / 用 GitHub tag_name 当事实 SemVer 源 / 行为完全可审计 | 不能自动安装；必须用户手动点跳转下载 | **采用**：跟"自用 + 开源 + 不公证"定位完美吻合，最小风险面 |
+| **不做更新检查** | 零网络 | 用户长期跑老版本，安全性差 | **不采用**：vendor 规则会过时 |
+
+**踩坑要点**：
+1. Pearcleaner 早期版本用 `/releases` 拉全量列表，会被 GitHub 限流（无 token 60 req/h）；改成 `/releases/latest` 单条接口后稳定
+2. tag_name 可能带 `v` 前缀（如 `v1.0.0`）也可能不带，**SemVer 解析必须双向兼容**（[SemVer.parse](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Updater/UpdateChecker.swift) 已处理）
+3. 解析失败时绝不能弹"有新版"——保守策略 `isOlder` 返回 false
+4. 用户点"跳过此版本"必须按 tag 记录，且要给"清除跳过记录"入口（设置面板里有）
+5. CFBundleShortVersionString 一定要跟 git tag 对齐（v1.0 时 Info.plist 还是 0.1.0 是 BUG，v1.1 已修）
+
 ---
 
 ## 2. 我们 v0.9 真正的覆盖度

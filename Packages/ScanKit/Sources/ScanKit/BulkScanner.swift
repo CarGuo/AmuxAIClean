@@ -42,6 +42,22 @@ public actor BulkScanner {
                 let start = Date()
                 let stats = ScanStats()
                 let queue = DirQueue()
+                // v1.1：根目录本身就是 TCC 雷区时直接退出（防御性，正常 UI 不会传入）
+                if TCCSkipList.shouldSkip(root.path) {
+                    continuation.yield(.tccProtectedSkipped(path: root.path))
+                    let summary = ScanSummary(
+                        root: root,
+                        totalAllocatedBytes: 0, totalLogicalBytes: 0,
+                        fileCount: 0, directoryCount: 0,
+                        dedupedHardlinkBytes: 0,
+                        elapsed: Date().timeIntervalSince(start),
+                        permissionDeniedCount: 0,
+                        tccProtectedSkippedCount: 1
+                    )
+                    continuation.yield(.finished(summary))
+                    continuation.finish()
+                    return
+                }
                 await queue.push(root.path)
 
                 // 把根目录的 dev_t 取出来（lstat 一次），用于跨卷停下钻判断。
@@ -80,7 +96,8 @@ public actor BulkScanner {
                     directoryCount: s.dirCount,
                     dedupedHardlinkBytes: s.dedupedBytes,
                     elapsed: Date().timeIntervalSince(start),
-                    permissionDeniedCount: s.permissionDenied
+                    permissionDeniedCount: s.permissionDenied,
+                    tccProtectedSkippedCount: s.tccProtectedSkipped
                 )
                 continuation.yield(.finished(summary))
                 continuation.finish()
@@ -147,6 +164,7 @@ public actor BulkScanner {
         var localAllocated: Int64 = 0
         var localLogical: Int64 = 0
         var localDeduped: Int64 = 0
+        var localTCCSkipped = 0
         var newDirs: [String] = []
 
         BulkEnumerate.enumerate(fd: fd, dirPath: dirPath) { entry in
@@ -166,8 +184,12 @@ public actor BulkScanner {
             if entry.isDirectory {
                 localDirCount += 1
                 if entry.name != "." && entry.name != ".." {
-                    // 跨卷停下钻：dev 不一致就不入队
-                    if !options.staySingleVolume || rootDev == 0 || entry.device == rootDev {
+                    // v1.1：TCC 雷区硬 skip，源头杜绝 Apple Music/Photos/Mail 弹窗
+                    if TCCSkipList.shouldSkip(absPath) {
+                        localTCCSkipped += 1
+                        continuation.yield(.tccProtectedSkipped(path: absPath))
+                    } else if !options.staySingleVolume || rootDev == 0 || entry.device == rootDev {
+                        // 跨卷停下钻：dev 不一致就不入队
                         newDirs.append(absPath)
                     }
                 }
@@ -204,7 +226,8 @@ public actor BulkScanner {
             dirs: localDirCount,
             allocated: localAllocated,
             logical: localLogical,
-            deduped: localDeduped
+            deduped: localDeduped,
+            tccSkipped: localTCCSkipped
         )
         if let prog = await stats.progressIfDue() {
             continuation.yield(.progress(scannedBytes: prog.bytes, fileCount: prog.files))
@@ -268,6 +291,7 @@ actor ScanStats {
     private var totalLogical: Int64 = 0
     private var dedupedBytes: Int64 = 0
     private var permissionDenied: Int = 0
+    private var tccProtectedSkipped: Int = 0
     private var lastProgressEmit: Date = .distantPast
 
     struct Snapshot {
@@ -277,14 +301,16 @@ actor ScanStats {
         let totalLogical: Int64
         let dedupedBytes: Int64
         let permissionDenied: Int
+        let tccProtectedSkipped: Int
     }
 
-    func merge(files: Int, dirs: Int, allocated: Int64, logical: Int64, deduped: Int64) {
+    func merge(files: Int, dirs: Int, allocated: Int64, logical: Int64, deduped: Int64, tccSkipped: Int = 0) {
         fileCount += files
         dirCount += dirs
         totalAllocated += allocated
         totalLogical += logical
         dedupedBytes += deduped
+        tccProtectedSkipped += tccSkipped
     }
 
     func incPermissionDenied() {
@@ -298,7 +324,8 @@ actor ScanStats {
             totalAllocated: totalAllocated,
             totalLogical: totalLogical,
             dedupedBytes: dedupedBytes,
-            permissionDenied: permissionDenied
+            permissionDenied: permissionDenied,
+            tccProtectedSkipped: tccProtectedSkipped
         )
     }
 

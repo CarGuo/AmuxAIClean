@@ -83,6 +83,8 @@ struct ScanKitBench {
                 exit(1)
             case .permissionDenied(let path):
                 fputs("⚠ permission denied: \(path)\n", stderr)
+            case .tccProtectedSkipped(let path):
+                fputs("⊘ TCC protected (skipped): \(path)\n", stderr)
             }
         }
     }

@@ -12,13 +12,15 @@ import AppKit
 public struct SettingsScene: View {
     @Bindable private var settings: AppSettings
     private let pathStore: UserPathStore
+    @Bindable private var updateChecker: UpdateChecker
 
     /// 路径列表的 UI 镜像。actor 数据要在 SwiftUI 里显示必须先快照。
     @State private var pathsMirror: [URL] = []
 
-    public init(settings: AppSettings, pathStore: UserPathStore) {
+    public init(settings: AppSettings, pathStore: UserPathStore, updateChecker: UpdateChecker) {
         self.settings = settings
         self.pathStore = pathStore
+        self.updateChecker = updateChecker
     }
 
     public var body: some View {
@@ -29,8 +31,10 @@ public struct SettingsScene: View {
                 .tabItem { Label("大文件", systemImage: "doc.richtext") }
             pathsTab
                 .tabItem { Label("自定义路径", systemImage: "folder.badge.plus") }
+            updateTab
+                .tabItem { Label("更新", systemImage: "arrow.down.circle") }
         }
-        .frame(width: 520, height: 360)
+        .frame(width: 520, height: 380)
         .task {
             await refreshPaths()
         }
@@ -139,6 +143,83 @@ public struct SettingsScene: View {
             }
         }
         .padding(.bottom)
+    }
+
+    private var updateTab: some View {
+        Form {
+            Section {
+                Toggle(isOn: $settings.updateCheckEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("启动时检查更新")
+                        Text("打开后 App 启动会向 GitHub Releases 发一次 GET 请求（约 2 KB，不携带任何身份信息）。关掉后仅『立即检查』按钮可联网。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("自动更新")
+            }
+            Section {
+                HStack {
+                    Text("当前版本")
+                    Spacer()
+                    Text(UpdateChecker.currentVersion)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button {
+                        updateChecker.checkNow()
+                    } label: {
+                        if updateChecker.isChecking {
+                            ProgressView().controlSize(.small)
+                            Text("检查中…")
+                        } else {
+                            Text("立即检查")
+                        }
+                    }
+                    .disabled(updateChecker.isChecking)
+                    Spacer()
+                    statusLabel
+                }
+                if let skipped = settings.skippedUpdateTag {
+                    HStack {
+                        Text("已跳过版本：\(skipped)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("清除跳过记录") {
+                            settings.skippedUpdateTag = nil
+                        }
+                        .controlSize(.small)
+                    }
+                }
+            } header: {
+                Text("版本")
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    @ViewBuilder
+    private var statusLabel: some View {
+        switch updateChecker.lastResult {
+        case .upToDate:
+            Label("已是最新", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green).font(.caption)
+        case .newer(let r):
+            Label("新版本：\(r.tagName)", systemImage: "arrow.down.circle.fill")
+                .foregroundStyle(.tint).font(.caption)
+        case .skippedByUser(let r):
+            Label("已跳过 \(r.tagName)", systemImage: "minus.circle")
+                .foregroundStyle(.secondary).font(.caption)
+        case .failed(let msg):
+            Label("检查失败：\(msg)", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.orange).font(.caption).lineLimit(1)
+        case .none:
+            EmptyView()
+        }
     }
 
     // MARK: - 行为

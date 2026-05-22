@@ -16,6 +16,33 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertFalse(s.showHidden, "隐藏文件 toggle 默认必须 OFF（v1.0 拍板）")
         XCTAssertEqual(s.minFileSizeMB, 100, "大文件默认阈值 100MB")
         XCTAssertEqual(s.sortKey, .sizeDesc, "默认按大小降序")
+        XCTAssertTrue(s.updateCheckEnabled, "v1.1：启动检查更新默认 ON")
+        XCTAssertNil(s.skippedUpdateTag, "默认无跳过版本")
+    }
+
+    @MainActor
+    func test_v11更新偏好_持久化() throws {
+        let suite = freshSuite()
+        do {
+            let s = AppSettings(testSuite: suite)
+            s.updateCheckEnabled = false
+            s.skippedUpdateTag = "v1.2.3"
+        }
+        let s2 = AppSettings(testSuite: suite)
+        XCTAssertFalse(s2.updateCheckEnabled)
+        XCTAssertEqual(s2.skippedUpdateTag, "v1.2.3")
+    }
+
+    @MainActor
+    func test_v11_skipped设置nil应清除() throws {
+        let suite = freshSuite()
+        do {
+            let s = AppSettings(testSuite: suite)
+            s.skippedUpdateTag = "v1.2.3"
+            s.skippedUpdateTag = nil
+        }
+        let s2 = AppSettings(testSuite: suite)
+        XCTAssertNil(s2.skippedUpdateTag)
     }
 
     @MainActor

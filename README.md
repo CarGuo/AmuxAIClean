@@ -4,7 +4,7 @@
 
 # GSYCleanMac
 
-**给 Mac 用一年就胀的硬盘减负 —— 开源、零网络、零订阅。**
+**给 Mac 用一年就胀的硬盘减负 —— 开源、零遥测、零订阅。**
 
 [![CI](https://github.com/CarGuo/GSYCleanMac/actions/workflows/ci.yml/badge.svg)](https://github.com/CarGuo/GSYCleanMac/actions/workflows/ci.yml)
 [![Release](https://github.com/CarGuo/GSYCleanMac/actions/workflows/release.yml/badge.svg)](https://github.com/CarGuo/GSYCleanMac/actions/workflows/release.yml)
@@ -24,7 +24,7 @@
 
 ## 这是什么
 
-GSYCleanMac 是一款 **macOS 本地清理与卸载残留管家**：扫一次就知道硬盘里到底是什么在占空间、哪些 App 卸了之后还有几百兆配置赖在 `~/Library` 里没走。**所有删除都走废纸篓**，给反悔留窗口。代码完全开源，不联网、不上传任何路径，**也不会让你掏 99 美元/年**。
+GSYCleanMac 是一款 **macOS 本地清理与卸载残留管家**：扫一次就知道硬盘里到底是什么在占空间、哪些 App 卸了之后还有几百兆配置赖在 `~/Library` 里没走。**所有删除都走废纸篓**，给反悔留窗口。代码完全开源，扫描结果不出本机、零遥测，**也不会让你掏 99 美元/年**。仅启动时会向 GitHub Releases 发一次约 2 KB 的 GET 请求检查新版（可在设置里关闭）。
 
 不是为了取代 CleanMyMac，是给那种"不想交订阅、不想被国外 App 把日志和遥测往云端怼一份"的人一个本地、可审计、敢上的备选。
 
@@ -37,7 +37,7 @@ GSYCleanMac 是一款 **macOS 本地清理与卸载残留管家**：扫一次就
 - **卸载残留三连扫** —— 不光按 App 名匹配（短名容易误伤），还按 BundleID 严格前缀 + 厂商规则字典 + Orphan 反扫三路同时找
 - **目录树下钻** —— 像 GrandPerspective / DaisyDisk 那样多层下钻，但用键盘 j/k/h/l/Enter/Space/⌘R 全程不碰鼠标
 - **永远默认 dry-run** —— 三道闸门挡误删；删除链路从设计上就拒绝 unlink，所有"删"都是 NSWorkspace.recycle 移到废纸篓
-- **真隐私** —— 0 网络出站、0 遥测、0 订阅、0 后台守护进程；首次会引导你授权"完全磁盘访问"，授权位完全在系统设置里你可以随时撤
+- **真隐私** —— 扫描结果不出本机、0 遥测、0 订阅、0 后台守护进程；**唯一**的网络请求是启动时一次 GitHub Releases 检查更新（约 2 KB，可在设置里关闭）；首次会引导你授权"完全磁盘访问"，授权位完全在系统设置里你可以随时撤
 
 ---
 
@@ -130,7 +130,7 @@ shasum -a 256 GSYCleanMac-1.0.0.dmg
 2. **默认 dry-run**，必须显式开关才会真动文件
 3. **三道闸门**（连接级 mach service 白名单 + 消息级 HMAC + 语义级 SafetyEngine 三色判定）任何一道拒就直接拒
 4. **hardForbid 黑名单写死在二进制里**，规则文件改不了它
-5. **零网络**，扫描结果不出本机
+5. **扫描结果不出本机**，唯一网络请求是启动时一次 GitHub Releases 检查更新（设置里可关）
 6. **绝不抄竞品商业代码**，规则文件全部独立清洗
 
 ---

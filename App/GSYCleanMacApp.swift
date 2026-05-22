@@ -13,10 +13,16 @@ struct GSYCleanMacApp: App {
 
     @State private var showTCCGuide: Bool = false
 
+    /// v1.1 更新检查器，启动时静默 GET 一次 GitHub Releases。
+    @State private var updateChecker: UpdateChecker
+
     private let tccDismissedKey = "tcc.onboarding.dismissed"
 
     init() {
         self.vendors = Self.loadBundledVendors()
+        let s = AppSettings()
+        self._settings = State(initialValue: s)
+        self._updateChecker = State(initialValue: UpdateChecker(settings: s))
     }
 
     var body: some Scene {
@@ -30,6 +36,8 @@ struct GSYCleanMacApp: App {
             .frame(minWidth: 1080, minHeight: 640)
             .task {
                 await evaluateTCCOnboarding()
+                // v1.1：尊重 settings.updateCheckEnabled 决定是否联网；用户可在设置里关
+                updateChecker.checkOnLaunch()
             }
             .sheet(isPresented: $showTCCGuide) {
                 TCCGuideView { openedSettings in
@@ -39,11 +47,25 @@ struct GSYCleanMacApp: App {
                     showTCCGuide = false
                 }
             }
+            .sheet(item: Binding(
+                get: { updateChecker.availableUpdate.map { IdentifiedRelease(release: $0) } },
+                set: { _ in updateChecker.dismissUntilNextLaunch() }
+            )) { wrapped in
+                UpdatePromptView(checker: updateChecker, release: wrapped.release)
+            }
+        }
+        .commands {
+            // v1.1：Help 菜单加"检查更新"入口
+            CommandGroup(after: .appInfo) {
+                Button("检查更新…") {
+                    updateChecker.checkNow()
+                }
+            }
         }
 
         // v1.0：标准 ⌘, 设置窗口（隐藏文件 toggle / 大文件阈值 / 自定义路径）。
         Settings {
-            SettingsScene(settings: settings, pathStore: pathStore)
+            SettingsScene(settings: settings, pathStore: pathStore, updateChecker: updateChecker)
         }
     }
 

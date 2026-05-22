@@ -313,9 +313,10 @@ public struct MainView: View {
 
     private var statusBar: some View {
         VStack(spacing: 0) {
-            if !coordinator.permissionDeniedPaths.isEmpty {
-                PermissionDeniedBanner(
-                    paths: coordinator.permissionDeniedPaths,
+            if !coordinator.permissionDeniedPaths.isEmpty || !coordinator.tccProtectedSkippedPaths.isEmpty {
+                PermissionStatusBanner(
+                    fdaDeniedPaths: coordinator.permissionDeniedPaths,
+                    tccSkippedPaths: coordinator.tccProtectedSkippedPaths,
                     onOpenSettings: {
                         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
                             NSWorkspace.shared.open(url)
@@ -740,43 +741,87 @@ public struct MainView: View {
     }
 }
 
-private struct PermissionDeniedBanner: View {
-    let paths: [String]
+private struct PermissionStatusBanner: View {
+    /// FDA（完全磁盘访问）受阻的路径——open(2) 失败。
+    let fdaDeniedPaths: [String]
+    /// TCC 雷区被主动 skip 的路径——根本没尝试 open，避免弹窗。
+    let tccSkippedPaths: [String]
     let onOpenSettings: () -> Void
     @State private var expanded = false
+
+    private var fdaCount: Int { fdaDeniedPaths.count }
+    private var tccCount: Int { tccSkippedPaths.count }
+
+    private var headlineText: String {
+        switch (fdaCount, tccCount) {
+        case (0, 0): return ""
+        case (let f, 0): return "\(f) 个目录因权限受阻未扫描，结果可能偏小"
+        case (0, let t): return "\(t) 个隐私目录已自动跳过（避免系统弹窗）"
+        case (let f, let t): return "权限受阻 \(f) 项 · 隐私跳过 \(t) 项"
+        }
+    }
+
+    private var iconName: String {
+        fdaCount > 0 ? "lock.shield" : "hand.raised.circle"
+    }
+
+    private var tintColor: Color {
+        fdaCount > 0 ? .orange : .blue
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Image(systemName: "lock.shield")
-                    .foregroundStyle(.orange)
-                Text("有 \(paths.count) 个目录因权限受阻未扫描，扫描结果可能偏小")
+                Image(systemName: iconName)
+                    .foregroundStyle(tintColor)
+                Text(headlineText)
                     .font(.callout)
                     .fontWeight(.medium)
                 Spacer()
                 Button(expanded ? "收起" : "查看路径") { expanded.toggle() }
                     .buttonStyle(.plain)
                     .font(.caption)
-                Button("打开完全磁盘访问权限") { onOpenSettings() }
-                    .controlSize(.small)
+                if fdaCount > 0 {
+                    Button("打开完全磁盘访问权限") { onOpenSettings() }
+                        .controlSize(.small)
+                }
             }
             if expanded {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(paths.prefix(50), id: \.self) { p in
-                            Text(p).font(.caption2).foregroundStyle(.secondary)
-                                .lineLimit(1).truncationMode(.middle)
+                    VStack(alignment: .leading, spacing: 4) {
+                        if fdaCount > 0 {
+                            Text("权限受阻 (\(fdaCount))").font(.caption).foregroundStyle(.orange)
+                            ForEach(fdaDeniedPaths.prefix(50), id: \.self) { p in
+                                Text(p).font(.caption2).foregroundStyle(.secondary)
+                                    .lineLimit(1).truncationMode(.middle)
+                            }
+                            if fdaCount > 50 {
+                                Text("…还有 \(fdaCount - 50) 条未显示").font(.caption2).foregroundStyle(.tertiary)
+                            }
                         }
-                        if paths.count > 50 {
-                            Text("…还有 \(paths.count - 50) 条未显示").font(.caption2).foregroundStyle(.tertiary)
+                        if tccCount > 0 {
+                            if fdaCount > 0 { Divider().padding(.vertical, 2) }
+                            Text("隐私目录跳过 (\(tccCount))").font(.caption).foregroundStyle(.blue)
+                            ForEach(tccSkippedPaths.prefix(50), id: \.self) { p in
+                                Text(p).font(.caption2).foregroundStyle(.secondary)
+                                    .lineLimit(1).truncationMode(.middle)
+                            }
+                            if tccCount > 50 {
+                                Text("…还有 \(tccCount - 50) 条未显示").font(.caption2).foregroundStyle(.tertiary)
+                            }
+                            Text("说明：Apple Music / Photos / Mail 等敏感库已主动跳过，避免系统反复弹权限框；这些目录与本 App 的清理目标（缓存/重复文件/卸载残留）无关。")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .padding(.top, 2)
                         }
                     }
                 }
-                .frame(maxHeight: 120)
+                .frame(maxHeight: 160)
             }
         }
         .padding(10)
-        .background(Color.orange.opacity(0.08))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.3)))
+        .background(tintColor.opacity(0.08))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(tintColor.opacity(0.3)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

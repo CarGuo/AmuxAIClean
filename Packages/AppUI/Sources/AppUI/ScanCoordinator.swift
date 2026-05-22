@@ -16,6 +16,9 @@ public final class ScanCoordinator: ObservableObject {
     @Published public private(set) var isScanning: Bool = false
     @Published public private(set) var lastError: String?
     @Published public private(set) var permissionDeniedPaths: [String] = []
+    /// v1.1：因 TCC 雷区（Music / Photos / Mail 等）被主动 skip 的路径列表。
+    /// 与 permissionDeniedPaths 合并展示在统一 banner，**不会触发系统弹窗**。
+    @Published public private(set) var tccProtectedSkippedPaths: [String] = []
 
     /// 当前/最近一次扫描的根路径；`nil` 表示尚未发起任何扫描（notStarted 态）。
     /// UI 用它在 `finishedEmpty(rootPath:)` 三态里显示具体目录，避免硬编码 `~/Library/Caches`。
@@ -100,6 +103,7 @@ public final class ScanCoordinator: ObservableObject {
         isScanning = true
         lastError = nil
         permissionDeniedPaths = []
+        tccProtectedSkippedPaths = []
 
         let rootURL = category.rootURL
         let categoryID = category.id
@@ -145,6 +149,11 @@ public final class ScanCoordinator: ObservableObject {
                 if !permissionDeniedPaths.contains(path) {
                     permissionDeniedPaths.append(path)
                 }
+            case .tccProtectedSkipped(let path):
+                // v1.1：TCC 雷区目录被主动跳过，去重累加到 banner 列表
+                if !tccProtectedSkippedPaths.contains(path) {
+                    tccProtectedSkippedPaths.append(path)
+                }
             }
 
             // 节流：≥150ms 推一次（PITFALLS §5.4）
@@ -165,6 +174,13 @@ public final class ScanCoordinator: ObservableObject {
     internal func _testInjectPermissionDenied(path: String) {
         if !permissionDeniedPaths.contains(path) {
             permissionDeniedPaths.append(path)
+        }
+    }
+
+    /// 测试专用注入：模拟 BulkScanner yield 的 .tccProtectedSkipped 路径。
+    internal func _testInjectTCCSkipped(path: String) {
+        if !tccProtectedSkippedPaths.contains(path) {
+            tccProtectedSkippedPaths.append(path)
         }
     }
     #endif

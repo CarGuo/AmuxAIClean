@@ -18,6 +18,10 @@ public final class AppSettings {
         public static let showHidden = "v1.show_hidden"
         public static let minFileSizeMB = "v1.min_file_size_mb"
         public static let sortKey = "v1.sort_key"
+        /// 启动时是否检查更新（v1.1）。默认 ON，可在设置里关闭。
+        public static let updateCheckEnabled = "v1.update_check_enabled"
+        /// 用户主动"跳过此版本"后记录的 tag_name（v1.1）。
+        public static let skippedUpdateTag = "v1.skipped_update_tag"
     }
 
     /// v1.0 排序枚举（T4 大文件模块 + T5 列表通用）。
@@ -47,6 +51,23 @@ public final class AppSettings {
     /// 当前列表排序方式。默认 `.sizeDesc`（按大小降序）。
     public var sortKey: SortKey {
         didSet { defaults.set(sortKey.rawValue, forKey: Keys.sortKey) }
+    }
+
+    /// 启动时检查更新（v1.1）。默认 ON。
+    /// 关掉后 App 启动 / Help 菜单的"立即检查更新"仍可用，但不会自动联网。
+    public var updateCheckEnabled: Bool {
+        didSet { defaults.set(updateCheckEnabled, forKey: Keys.updateCheckEnabled) }
+    }
+
+    /// 用户对某个版本点了"跳过此版本"，记录 tag_name；下次启动若拉到的还是这个 tag 则不再提示。
+    public var skippedUpdateTag: String? {
+        didSet {
+            if let tag = skippedUpdateTag {
+                defaults.set(tag, forKey: Keys.skippedUpdateTag)
+            } else {
+                defaults.removeObject(forKey: Keys.skippedUpdateTag)
+            }
+        }
     }
 
     // MARK: - 构造
@@ -82,6 +103,12 @@ public final class AppSettings {
         } else {
             self.sortKey = .sizeDesc
         }
+        if let raw = defaults.object(forKey: Keys.updateCheckEnabled) as? Bool {
+            self.updateCheckEnabled = raw
+        } else {
+            self.updateCheckEnabled = true
+        }
+        self.skippedUpdateTag = defaults.string(forKey: Keys.skippedUpdateTag)
     }
 
     /// 单测专用：把当前实例所有键从 defaults 清掉。
@@ -89,5 +116,7 @@ public final class AppSettings {
         defaults.removeObject(forKey: Keys.showHidden)
         defaults.removeObject(forKey: Keys.minFileSizeMB)
         defaults.removeObject(forKey: Keys.sortKey)
+        defaults.removeObject(forKey: Keys.updateCheckEnabled)
+        defaults.removeObject(forKey: Keys.skippedUpdateTag)
     }
 }
