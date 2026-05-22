@@ -107,7 +107,16 @@ public struct TreeBrowserView: View {
             toggleExpansion(); return .handled
         }
         .onKeyPress(.space) {
-            toggleExpansion(); return .handled
+            // v1.2 P2-4：当前选中是叶子文件 → Quick Look 预览；
+            // 是目录 → 维持原行为（切展开/折叠）。
+            if let cur = selectedPath,
+               let row = visibleRows.first(where: { $0.path == cur }),
+               !row.isDirectory {
+                QuickLookController.shared.preview(urls: [URL(fileURLWithPath: cur)])
+                return .handled
+            }
+            toggleExpansion()
+            return .handled
         }
         .onKeyPress(keys: [KeyEquivalent("r")]) { press in
             // Cmd+R：在 Finder 中显示当前选中
@@ -280,6 +289,13 @@ struct TreeNodeView: View {
             }
             .id(row.path)
             .contextMenu {
+                if !row.isDirectory {
+                    Button {
+                        QuickLookController.shared.preview(urls: [URL(fileURLWithPath: row.path)])
+                    } label: {
+                        Label("快速预览（空格）", systemImage: "eye")
+                    }
+                }
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: row.path)])
                 } label: {

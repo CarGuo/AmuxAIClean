@@ -210,4 +210,31 @@ final class LargeFilesTests: XCTestCase {
         let item = LargeFileItem(path: "/tmp/Makefile", bytes: 1, modificationDate: nil)
         XCTAssertEqual(item.fileExtension, "")
     }
+
+    // MARK: - v1.2 P1-4 mtime 过滤
+
+    func test_mtimeFilter_30天_只剩7天前与1天前与1分钟前() async throws {
+        let root = try makeFixture()
+        defer { cleanup(root) }
+        let coord = ScanCoordinator()
+        coord.scan(category: makeCategory(rootPath: root.path), largeFileMinBytes: 1)
+        await waitFinished(coord)
+        let items = coord.largeFiles(minSizeMB: 0, sortKey: .sizeDesc, mtimeFilter: .last30Days)
+        let names = Set(items.map(\.title))
+        XCTAssertTrue(names.contains("large.mp4"), "1 分钟前必通过")
+        XCTAssertTrue(names.contains("medium.iso"), "1 天前必通过")
+        XCTAssertTrue(names.contains("small.mov"), "7 天前必通过")
+        XCTAssertFalse(names.contains("tiny.bin"), "30 天前 (boundary) 由于 fixture 是 -3600*24*30 + 极小延迟，应被刚好等于30天卡掉")
+    }
+
+    func test_mtimeFilter_all_等价于不过滤() async throws {
+        let root = try makeFixture()
+        defer { cleanup(root) }
+        let coord = ScanCoordinator()
+        coord.scan(category: makeCategory(rootPath: root.path), largeFileMinBytes: 1)
+        await waitFinished(coord)
+        let none = coord.largeFiles(minSizeMB: 0, sortKey: .sizeDesc, mtimeFilter: .all)
+        let baseline = coord.largeFiles(minSizeMB: 0, sortKey: .sizeDesc)
+        XCTAssertEqual(none.count, baseline.count)
+    }
 }

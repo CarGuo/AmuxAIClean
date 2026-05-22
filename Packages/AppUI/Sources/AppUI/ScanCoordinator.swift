@@ -338,13 +338,19 @@ public final class ScanCoordinator: ObservableObject {
     ///     当前已采集到的子集——这种情况下 UI 应当提示用户重新扫描（见 LargeFilesView）。
     ///   - sortKey: 排序键。
     ///   - limit: Top N 截断；ROADMAP T4 默认 200，避免一次性渲染数千行卡 UI。
-    public func largeFiles(minSizeMB: Int, sortKey: LargeFileSortKey, limit: Int = 200)
+    ///   - mtimeFilter: v1.2 P1-4 修改日期过滤。`.all` 时不做时间过滤。
+    public func largeFiles(minSizeMB: Int,
+                           sortKey: LargeFileSortKey,
+                           limit: Int = 200,
+                           mtimeFilter: AppSettings.MtimeFilter = .all)
         -> [LargeFileItem]
     {
         guard limit > 0 else { return [] }
         let minBytes = Int64(max(0, minSizeMB)) * 1024 * 1024
+        let now = Date()
         let filtered = largeFileLeaves
             .filter { $0.bytes >= minBytes }
+            .filter { mtimeFilter.passes($0.modificationDate, now: now) }
             .map { LargeFileItem(path: $0.path, bytes: $0.bytes, modificationDate: $0.modificationDate) }
         let sorted = filtered.sorted { (a, b) in
             switch sortKey {

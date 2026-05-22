@@ -18,6 +18,7 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(s.sortKey, .sizeDesc, "默认按大小降序")
         XCTAssertTrue(s.updateCheckEnabled, "v1.1：启动检查更新默认 ON")
         XCTAssertNil(s.skippedUpdateTag, "默认无跳过版本")
+        XCTAssertEqual(s.mtimeFilter, .all, "v1.2：mtime 过滤默认 .all（先看到全貌）")
     }
 
     @MainActor
