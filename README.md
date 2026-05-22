@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="Resources/Assets.xcassets/AppIcon.appiconset/icon_256x256.png" width="128" alt="GSYCleanMac" />
+<img src="docs/assets/logo.png" width="128" alt="GSYCleanMac" />
 
 # GSYCleanMac
 
@@ -43,14 +43,28 @@ GSYCleanMac 是一款 **macOS 本地清理与卸载残留管家**：扫一次就
 
 ## 截图
 
-> 截图位（v1.1 补）。先看 [Releases v1.0.0](https://github.com/CarGuo/GSYCleanMac/releases/tag/v1.0.0) 里的 DMG 装上跑一次效果最直接。
-
-```
-[ 主界面：扫描进度条 + 三色徽章分类 ]
-[ 大文件视图：按 size 降序，行内 Finder/复制/废纸篓 ]
-[ 卸载残留：BundleID + Vendor + Orphan 三路命中 ]
-[ 目录树下钻：j/k/h/l 键盘导航 ]
-```
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/screenshots/02-scan-result.png" alt="清理 - 用户缓存扫描结果" /><br/>
+      <sub><b>清理</b>：选中"用户缓存"实时扫描，三色徽章标注安全度，单文件按物理占用降序，顶部明示因权限受阻未扫到的目录</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/screenshots/03-large-files.png" alt="大文件 - Top 200" /><br/>
+      <sub><b>大文件</b>：≥100 MB Top 200 一屏看完，名称 / 路径 / 大小 / 修改日期四列排序，gradle / pack / Framework 一眼定位</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/screenshots/04-uninstall.png" alt="卸载残留 - 已安装应用" /><br/>
+      <sub><b>卸载残留</b>：BundleID + 厂商规则字典联合命中已安装 App 的配置 / 缓存 / Preferences 残留，逐项预览再删</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/screenshots/01-overview.png" alt="主界面 - 推荐清理类目" /><br/>
+      <sub><b>主界面</b>：推荐清理 / 自定义路径 / 大文件 / 整盘扫描 四类入口；删除一律走废纸篓，给反悔留窗口</sub>
+    </td>
+  </tr>
+</table>
 
 ---
 
