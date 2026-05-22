@@ -34,6 +34,10 @@ public struct LargeFilesView: View {
     /// 与 mtimeFilter 不同的是，类型筛选**不持久化**——它是查看行为而非偏好。
     @State private var kindFilter: FileKind? = nil
 
+    /// v1.2 P1-5：批量选择状态。@State 而非 @StateObject——@Observable 时代的写法。
+    /// 跨视图刷新（如 mtime/kind 切换）不会被重建，保留用户的勾选意图。
+    @State private var batch = BatchSelection()
+
     public init(coordinator: ScanCoordinator,
                 settings: AppSettings,
                 selection: Binding<LargeFileItem?>,
@@ -116,6 +120,26 @@ public struct LargeFilesView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
+            // v1.2 P1-5：三态全选 checkbox。
+            // 设计点：visible 列表受 mtime + kind 双重过滤，
+            // 全选只动"看得见"的，不会偷偷把隐藏项扫进选区。
+            Button {
+                let paths = items.map { $0.path }
+                switch batch.headerState(visible: paths) {
+                case .all:
+                    batch.deselectAll(visible: paths)
+                case .none, .partial:
+                    batch.selectAll(visible: paths)
+                }
+            } label: {
+                Image(systemName: headerCheckboxImage)
+                    .foregroundStyle(.tint)
+                    .imageScale(.large)
+            }
+            .buttonStyle(.plain)
+            .disabled(items.isEmpty)
+            .help("全选 / 取消全选当前可见的大文件")
+
             Image(systemName: "doc.richtext")
                 .foregroundStyle(.tint)
             Text("≥ \(settings.minFileSizeMB) MB · Top \(limit)")
@@ -126,6 +150,23 @@ public struct LargeFilesView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
+
+            // v1.2 P1-5：批量删除按钮。仅"可见且勾选"的项参与，避免误删隐藏选区。
+            let visiblePaths = items.map { $0.path }
+            let pickedCount = batch.selectedCount(in: visiblePaths)
+            if pickedCount > 0 {
+                Button(role: .destructive) {
+                    let urls = batch.selectedItemsIntersecting(visible: visiblePaths)
+                        .map { URL(fileURLWithPath: $0) }
+                    onTrash(urls)
+                    batch.clear()
+                } label: {
+                    Label("移到废纸篓（\(pickedCount)）", systemImage: "trash")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+
             Text("共 \(items.count) 项")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -150,6 +191,15 @@ public struct LargeFilesView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+    }
+
+    /// 三态 checkbox 图标。
+    private var headerCheckboxImage: String {
+        switch batch.headerState(visible: items.map { $0.path }) {
+        case .all:     return "checkmark.square.fill"
+        case .partial: return "minus.square.fill"
+        case .none:    return "square"
+        }
     }
 
     // MARK: - Filter bar (v1.2 P1-4 修改日期过滤)
@@ -384,7 +434,20 @@ public struct LargeFilesView: View {
     private func row(for item: LargeFileItem) -> some View {
         let isSelected = (selection?.path == item.path)
         let kind = item.kind
+        let isPicked = batch.isSelected(item.path)
         HStack(spacing: 10) {
+            // v1.2 P1-5：行级勾选 checkbox。点击只 toggle 不影响 row 选中（selection），
+            // 这样用户能一边选中看详情，一边批量勾选要删的。
+            Button {
+                batch.toggle(item.path)
+            } label: {
+                Image(systemName: isPicked ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(isPicked ? Color.accentColor : Color.secondary)
+                    .imageScale(.large)
+            }
+            .buttonStyle(.plain)
+            .frame(width: 22)
+
             Image(systemName: kind.systemImageName)
                 .foregroundStyle(kind.tint)
                 .frame(width: 20)
@@ -415,6 +478,15 @@ public struct LargeFilesView: View {
         .onTapGesture { selection = item }
         .help(item.path)
         .contextMenu {
+            Button {
+                batch.toggle(item.path)
+            } label: {
+                Label(
+                    isPicked ? "取消勾选" : "勾选用于批量删除",
+                    systemImage: isPicked ? "square" : "checkmark.square"
+                )
+            }
+            Divider()
             Button {
                 QuickLookController.shared.preview(urls: [item.url])
             } label: { Label("快速预览（空格）", systemImage: "eye") }
