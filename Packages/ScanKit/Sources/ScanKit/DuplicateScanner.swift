@@ -28,10 +28,20 @@ public struct DuplicateGroup: Sendable, Hashable, Identifiable {
     public var id: String { hashKey }
 
     /// 该组占用空间总和（bytes × paths.count）。
-    public var totalBytes: Int64 { bytes &* Int64(paths.count) }
+    /// 用 `multipliedReportingOverflow` 显式饱和到 `Int64.max`，
+    /// 避免 `&*` 静默裹回得到负数（实际场景几乎不可达，但 UI 不应展示 -XXX MB）。
+    public var totalBytes: Int64 { DuplicateGroup.saturatingMultiply(bytes, Int64(paths.count)) }
 
     /// 「可释放」字节数：保留 1 份、删除其余 N-1 份。
-    public var reclaimableBytes: Int64 { bytes &* Int64(max(0, paths.count - 1)) }
+    public var reclaimableBytes: Int64 {
+        DuplicateGroup.saturatingMultiply(bytes, Int64(max(0, paths.count - 1)))
+    }
+
+    /// Int64 饱和乘法：溢出时返回 `Int64.max` 而不是裹回。
+    private static func saturatingMultiply(_ a: Int64, _ b: Int64) -> Int64 {
+        let r = a.multipliedReportingOverflow(by: b)
+        return r.overflow ? .max : r.partialValue
+    }
 
     public init(hashKey: String, bytes: Int64, paths: [String], reliability: DuplicateReliability) {
         self.hashKey = hashKey
@@ -51,6 +61,9 @@ public enum DuplicateScanEvent: Sendable {
     case fullHashingProgress(bucketsDone: Int, bucketsTotal: Int)
     /// 全部完成，返回结果（按 totalBytes 倒序）。
     case finished(groups: [DuplicateGroup])
+    /// 用户/上游 cancel：UI 应保留已展示的 groups（不要清空），仅退出 isScanning 状态。
+    /// 设计原则：cancel 不破坏已经看到的内容，与「停止仅终止扫描、保留已有结果」UX 一致。
+    case cancelled
     /// 扫描根因 TCC 雷区被整体跳过。
     case tccProtectedSkipped(path: String)
 }
@@ -184,7 +197,9 @@ public actor DuplicateScanner {
             .map { (size: $0.key, paths: $0.value) }
 
         if Task.isCancelled {
-            continuation.yield(.finished(groups: []))
+            // 不发 .finished(groups: [])——那会让 UI 把已展示的旧结果清空。
+            // 改发 .cancelled，UI 端 case 中只复位 isScanning，保留 groups。
+            continuation.yield(.cancelled)
             continuation.finish()
             return
         }
@@ -215,7 +230,8 @@ public actor DuplicateScanner {
         }
 
         if Task.isCancelled {
-            continuation.yield(.finished(groups: []))
+            // 同上：cancel 不清空 UI 已展示的内容
+            continuation.yield(.cancelled)
             continuation.finish()
             return
         }
@@ -268,6 +284,15 @@ public actor DuplicateScanner {
             continuation.yield(.fullHashingProgress(bucketsDone: fullDone, bucketsTotal: totalFullBuckets))
         }
 
+        if Task.isCancelled {
+            // 阶段 3 中途被 cancel：finalGroups 里可能已有「大文件 prefixOnly」组以及部分全文件 hash 组，
+            // 但顺序未稳定（还没排序）。简单起见：发 .cancelled，UI 保留前次已展示的内容；
+            // 不发 .finished(finalGroups) 以免给用户「这就是全部」的错觉。
+            continuation.yield(.cancelled)
+            continuation.finish()
+            return
+        }
+
         // 按总占用倒序
         finalGroups.sort { $0.totalBytes > $1.totalBytes }
         continuation.yield(.finished(groups: finalGroups))
@@ -279,6 +304,9 @@ public actor DuplicateScanner {
     /// 桶内并发 hash：用 TaskGroup + 滑动窗口控制 in-flight 数量。
     /// 返回 `(path, hexOrNil)` 数组——hex 为 nil 表示该文件读失败（权限 / 已删除），
     /// 调用方应直接忽略该文件，**不要**让它误入任何 hash 桶。
+    ///
+    /// 注意：调用方按 hex 重新分桶（见 runScan），**不依赖 paths 输入顺序**，
+    /// 因此这里直接收集任务完成顺序即可，无需按 index 还原。
     private static func hashPathsConcurrently(
         paths: [String],
         fullFile: Bool
@@ -286,46 +314,44 @@ public actor DuplicateScanner {
         if paths.isEmpty { return [] }
         let limit = DuplicateScanner.inBucketConcurrency
 
-        return await withTaskGroup(of: (Int, String, String?).self) { group in
+        return await withTaskGroup(of: (String, String?).self) { group in
             var nextIndex = 0
 
             // 启动初始窗口
             while nextIndex < paths.count && nextIndex < limit {
-                let i = nextIndex
-                let p = paths[i]
+                let p = paths[nextIndex]
                 group.addTask {
                     let hex = fullFile
                         ? DuplicateScanner.fullSHA256Hex(path: p)
                         : DuplicateScanner.prefixSHA256Hex(path: p, maxBytes: DuplicateScanner.prefixHashBytes)
-                    return (i, p, hex)
+                    return (p, hex)
                 }
                 nextIndex += 1
             }
 
             // 收一个 → 发一个，保持窗口
-            var collected: [(Int, String, String?)] = []
+            var collected: [(String, String?)] = []
             collected.reserveCapacity(paths.count)
             while let r = await group.next() {
                 collected.append(r)
                 if nextIndex < paths.count {
-                    let i = nextIndex
-                    let p = paths[i]
+                    let p = paths[nextIndex]
                     group.addTask {
                         let hex = fullFile
                             ? DuplicateScanner.fullSHA256Hex(path: p)
                             : DuplicateScanner.prefixSHA256Hex(path: p, maxBytes: DuplicateScanner.prefixHashBytes)
-                        return (i, p, hex)
+                        return (p, hex)
                     }
                     nextIndex += 1
                 }
             }
-            collected.sort { $0.0 < $1.0 }
-            return collected.map { ($0.1, $0.2) }
+            return collected
         }
     }
 
     /// 读文件前 N 字节做 SHA256，返回 hex。读失败返回 nil。
     /// 用 POSIX read 而非 Data(contentsOf:)，避免对 1MB 文件也整文件读入内存。
+    /// EINTR（被信号打断）会自动重试，避免可恢复中断被当成读失败丢弃文件。
     nonisolated static func prefixSHA256Hex(path: String, maxBytes: Int) -> String? {
         let fd = open(path, O_RDONLY)
         guard fd >= 0 else { return nil }
@@ -338,7 +364,10 @@ public actor DuplicateScanner {
         while remaining > 0 {
             let want = min(remaining, bufSize)
             let n = read(fd, buffer, want)
-            if n < 0 { return nil }
+            if n < 0 {
+                if errno == EINTR { continue }   // 信号打断，重试
+                return nil
+            }
             if n == 0 { break }
             let chunk = UnsafeRawBufferPointer(start: buffer, count: n)
             hasher.update(bufferPointer: chunk)
@@ -349,6 +378,7 @@ public actor DuplicateScanner {
     }
 
     /// 全文件 SHA256，返回 hex。读失败返回 nil。
+    /// EINTR（被信号打断）会自动重试。
     nonisolated static func fullSHA256Hex(path: String) -> String? {
         let fd = open(path, O_RDONLY)
         guard fd >= 0 else { return nil }
@@ -359,7 +389,10 @@ public actor DuplicateScanner {
         defer { buffer.deallocate() }
         while true {
             let n = read(fd, buffer, bufSize)
-            if n < 0 { return nil }
+            if n < 0 {
+                if errno == EINTR { continue }   // 信号打断，重试
+                return nil
+            }
             if n == 0 { break }
             let chunk = UnsafeRawBufferPointer(start: buffer, count: n)
             hasher.update(bufferPointer: chunk)

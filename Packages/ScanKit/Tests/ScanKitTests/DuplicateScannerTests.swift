@@ -93,13 +93,18 @@ final class DuplicateScannerTests: XCTestCase {
     // MARK: - 4. 大文件（> 256MB） → 仅 prefixOnly
 
     /// 注意：本测试创建 ~257MB × 2 = 514MB 临时文件；CI 上空间充裕。
-    /// 用稀疏文件（truncate）避免实际占用 SSD：`Data` 写入会强制分配，所以改用 ftruncate 风格。
+    /// 用稀疏文件（truncate）避免实际占用 SSD。
+    ///
+    /// **关键测试设计**（v1.2 review fix #8）：除了写一致的头部 128KB（让 prefix hash 命中），
+    /// 还要在文件**尾部**写不同的 8 字节，让两文件的全文件 hash 必然不一致。
+    /// 这样能真正验证「>阈值就该跳过 full hash」——若未来有人移除大文件分流逻辑，
+    /// full hash 会把这两份判为不同从而**让本测试失败**，暴露行为变更。
+    /// 否则两份都是稀疏全 0，无论是否做 full hash 都一致，测试无法分辨。
     func testLargeFileBeyondThresholdMarkedPrefixOnly() async throws {
         let root = try makeTempRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
         let size = Int(DuplicateScanner.largeFileFullHashThreshold) + 1024 * 1024 // +1MB
-        // 用 truncate 让磁盘只分配稀疏空间，写头部 64KB+1 byte 让 prefix hash 一致
         let a = root.appendingPathComponent("a.bin")
         let b = root.appendingPathComponent("b.bin")
         FileManager.default.createFile(atPath: a.path, contents: nil)
@@ -118,12 +123,20 @@ final class DuplicateScannerTests: XCTestCase {
         // 文件 size 撑到 size（稀疏）
         XCTAssertEqual(ftruncate(fdA, off_t(size)), 0)
         XCTAssertEqual(ftruncate(fdB, off_t(size)), 0)
+        // 在文件**尾部**写不同的 8 字节，让全文件 hash 必然不一致；
+        // 配合 size > 阈值的断言，可真正验证大文件确实没被做 full hash。
+        XCTAssertEqual(lseek(fdA, off_t(size - 8), SEEK_SET), off_t(size - 8))
+        XCTAssertEqual(lseek(fdB, off_t(size - 8), SEEK_SET), off_t(size - 8))
+        let tailA: [UInt8] = [0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA]
+        let tailB: [UInt8] = [0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB]
+        tailA.withUnsafeBufferPointer { _ = write(fdA, $0.baseAddress, $0.count) }
+        tailB.withUnsafeBufferPointer { _ = write(fdB, $0.baseAddress, $0.count) }
 
         let scanner = DuplicateScanner(roots: [root], minBytes: 1024 * 1024)
         let groups = await scanner.scanToCompletion()
         XCTAssertEqual(groups.count, 1, "大文件 prefix 一致应作为一组返回")
         XCTAssertEqual(groups.first?.reliability, .prefixOnly,
-                       "大文件不应做全文件 hash，必须以 prefixOnly 标记")
+                       "大文件不应做全文件 hash，必须以 prefixOnly 标记；尾部 8 字节不同时若做了 full hash 会把它们判为不同组，本断言会失败")
         XCTAssertEqual(groups.first?.paths.count, 2)
     }
 

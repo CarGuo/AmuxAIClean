@@ -327,9 +327,9 @@ public struct DuplicateScreen: View {
     private static func defaultRoots() -> [URL] {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return [
-            home.appendingPathComponent("Documents", isDirectory: true),
-            home.appendingPathComponent("Downloads", isDirectory: true),
-            home.appendingPathComponent("Desktop", isDirectory: true)
+            home.appendingPathComponent("Documents", isDirectory: true).standardizedFileURL,
+            home.appendingPathComponent("Downloads", isDirectory: true).standardizedFileURL,
+            home.appendingPathComponent("Desktop", isDirectory: true).standardizedFileURL
         ]
     }
 
@@ -367,9 +367,18 @@ public struct DuplicateScreen: View {
         panel.title = "选择要扫描的目录"
         panel.prompt = "添加"
         panel.begin { response in
-            guard response == .OK else { return }
-            for url in panel.urls where !roots.contains(url) {
-                roots.append(url)
+            // panel.begin 回调线程契约未保证；显式跳回 MainActor 修改 @State，
+            // 避免 Swift 6 严格并发告警 + SwiftUI 跨线程更新警告。
+            // 同时把每个 url 归一化（standardizedFileURL）后再判重，
+            // 避免 trailing slash / file:// scheme 差异导致同一目录被加两次。
+            Task { @MainActor in
+                guard response == .OK else { return }
+                for raw in panel.urls {
+                    let url = raw.standardizedFileURL
+                    if !roots.contains(url) {
+                        roots.append(url)
+                    }
+                }
             }
         }
     }
@@ -415,11 +424,21 @@ public struct DuplicateScreen: View {
                     bucketsTotal = total
                 case .finished(let g):
                     groups = g
+                case .cancelled:
+                    // 用户/上游 cancel：保留 groups 不动，仅退出 isScanning 状态。
+                    // 与「停止仅终止扫描、保留已有结果」UX 一致。
+                    break
                 case .tccProtectedSkipped(let path):
                     tccSkippedRoots.append(path)
                 }
             }
+            // 无论正常 finished 还是 cancel，退出循环时一并复位进度计数与标签，
+            // 避免下次启动前 footer 闪显旧进度数字。
             isScanning = false
+            phaseLabel = ""
+            bucketsDone = 0
+            bucketsTotal = 0
+            sizingFiles = 0
         }
     }
 }
