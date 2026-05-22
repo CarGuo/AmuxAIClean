@@ -4,40 +4,29 @@
 
 # GSYCleanMac
 
-**给 Mac 用一年就胀的硬盘减负 —— 开源、零遥测、零订阅。**
+**macOS 清理管家 —— 开源、可审、安全。**
 
-[![CI](https://github.com/CarGuo/GSYCleanMac/actions/workflows/ci.yml/badge.svg)](https://github.com/CarGuo/GSYCleanMac/actions/workflows/ci.yml)
-[![Release](https://github.com/CarGuo/GSYCleanMac/actions/workflows/release.yml/badge.svg)](https://github.com/CarGuo/GSYCleanMac/actions/workflows/release.yml)
-[![Latest](https://img.shields.io/github/v/release/CarGuo/GSYCleanMac?display_name=tag)](https://github.com/CarGuo/GSYCleanMac/releases/latest)
-[![License](https://img.shields.io/github/license/CarGuo/GSYCleanMac)](LICENSE)
-[![Platform](https://img.shields.io/badge/macOS-15%2B-blue)](#系统要求)
+[![License MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![macOS 15+](https://img.shields.io/badge/macOS-15%2B-success)](#5-分钟跑起来)
+[![Swift 6](https://img.shields.io/badge/Swift-6-orange)](https://swift.org)
+[![Tests 285+ Pass](https://img.shields.io/badge/tests-285%2B%20pass-brightgreen)](#四-运维类)
 
 [下载最新版](https://github.com/CarGuo/GSYCleanMac/releases/latest) ·
 [安装指南](docs/INSTALL.md) ·
-[功能一览](#你能用它干什么) ·
+[功能矩阵](#功能矩阵v12) ·
 [安全模型](SECURITY.md) ·
-[开发文档](docs/DEVELOPMENT.md)
+[路线图](#路线图)
 
 </div>
 
 ---
 
-## 这是什么
+## TL;DR
 
-GSYCleanMac 是一款 **macOS 本地清理与卸载残留管家**：扫一次就知道硬盘里到底是什么在占空间、哪些 App 卸了之后还有几百兆配置赖在 `~/Library` 里没走。**所有删除都走废纸篓**，给反悔留窗口。代码完全开源，扫描结果不出本机、零遥测，**也不会让你掏 99 美元/年**。仅启动时会向 GitHub Releases 发一次约 2 KB 的 GET 请求检查新版（可在设置里关闭）。
-
-不是为了取代 CleanMyMac，是给那种"不想交订阅、不想被国外 App 把日志和遥测往云端怼一份"的人一个本地、可审计、敢上的备选。
-
----
-
-## 你能用它干什么
-
-- **看清磁盘** —— firmlink / iCloud 占位 / 硬链接 / APFS clone 全部按物理占用统计，结果跟 `du -h` 对得上，不再被 Finder "已使用 286 GB" 糊弄
-- **大文件捕手** —— 一键列出按"几 GB 起、按修改时间倒序"过滤的大文件，行内 Finder 显示 / 复制路径 / 移废纸篓三连
-- **卸载残留三连扫** —— 不光按 App 名匹配（短名容易误伤），还按 BundleID 严格前缀 + 厂商规则字典 + Orphan 反扫三路同时找
-- **目录树下钻** —— 像 GrandPerspective / DaisyDisk 那样多层下钻，但用键盘 j/k/h/l/Enter/Space/⌘R 全程不碰鼠标
-- **永远默认 dry-run** —— 三道闸门挡误删；删除链路从设计上就拒绝 unlink，所有"删"都是 NSWorkspace.recycle 移到废纸篓
-- **真隐私** —— 扫描结果不出本机、0 遥测、0 订阅、0 后台守护进程；**唯一**的网络请求是启动时一次 GitHub Releases 检查更新（约 2 KB，可在设置里关闭）；首次会引导你授权"完全磁盘访问"，授权位完全在系统设置里你可以随时撤
+- **我们做的**：本地扫描磁盘占用、定位大文件、清卸载残留、识别启动项、检测重复文件；所有删除都是 `NSWorkspace.recycle` 移废纸篓。
+- **我们不做的**：网络流量监控、伪「内存释放」、浏览器历史清理、订阅、遥测、广告。
+- **安全保证**：[SafetyEngine](Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 三档判定（safe / confirm / forbid）+ [TCCSkipList](Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift) 硬 skip + 端到端集成测试钉契约 + `unlink(2)` 链路从设计上拒绝。
+- **可跑性保证**：开源、ad-hoc 签名、Free Apple ID 即可本地 build 运行；不需要 99 美元/年的 Apple Developer Program。
 
 ---
 
@@ -47,111 +36,157 @@ GSYCleanMac 是一款 **macOS 本地清理与卸载残留管家**：扫一次就
   <tr>
     <td align="center" width="50%">
       <img src="docs/screenshots/02-scan-result.png" alt="清理 - 用户缓存扫描结果" /><br/>
-      <sub><b>清理</b>：选中"用户缓存"实时扫描，三色徽章标注安全度，单文件按物理占用降序，顶部明示因权限受阻未扫到的目录</sub>
+      <sub><b>清理</b>：选中"用户缓存"实时扫描，三色徽章标注安全度，单文件按物理占用降序</sub>
     </td>
     <td align="center" width="50%">
       <img src="docs/screenshots/03-large-files.png" alt="大文件 - Top 200" /><br/>
-      <sub><b>大文件</b>：≥100 MB Top 200 一屏看完，名称 / 路径 / 大小 / 修改日期四列排序，gradle / pack / Framework 一眼定位</sub>
+      <sub><b>大文件</b>：≥100 MB Top 200 一屏看完，名称 / 路径 / 大小 / 修改日期四列排序</sub>
     </td>
   </tr>
   <tr>
     <td align="center" width="50%">
       <img src="docs/screenshots/04-uninstall.png" alt="卸载残留 - 已安装应用" /><br/>
-      <sub><b>卸载残留</b>：BundleID + 厂商规则字典联合命中已安装 App 的配置 / 缓存 / Preferences 残留，逐项预览再删</sub>
+      <sub><b>卸载残留</b>：BundleID + 厂商规则字典联合命中已安装 App 的配置 / 缓存 / Preferences 残留</sub>
     </td>
     <td align="center" width="50%">
       <img src="docs/screenshots/01-overview.png" alt="主界面 - 推荐清理类目" /><br/>
-      <sub><b>主界面</b>：推荐清理 / 自定义路径 / 大文件 / 整盘扫描 四类入口；删除一律走废纸篓，给反悔留窗口</sub>
+      <sub><b>主界面</b>：推荐清理 / 自定义路径 / 大文件 / 整盘扫描 四类入口；删除一律走废纸篓</sub>
     </td>
   </tr>
 </table>
 
 ---
 
-## 安装
+## 功能矩阵（v1.2）
 
-### 方法 A：下载 DMG（推荐）
+> 状态图例：✅ = 完整支持 / ⚠️ = 部分支持或受限 / ❌ = 未支持
+> 完整 23 维 × 8 家竞品对比见 [docs/FEATURE_GAP.md](docs/FEATURE_GAP.md)
 
-1. 到 [Releases 页](https://github.com/CarGuo/GSYCleanMac/releases/latest) 下载 `GSYCleanMac-x.y.z.dmg`
-2. 双击挂载，把 `GSYCleanMac.app` 拖进 `/Applications`
-3. **首次双击会被 Gatekeeper 拦下**（这是 ad-hoc 签名的预期）：
-   - macOS 15+：系统设置 → 隐私与安全 → 滚到底点"仍要打开"
-   - macOS 13–14：Finder 里右键 `GSYCleanMac.app` → "打开" → 弹窗再点 "打开"
-4. 信任一次后双击直接开。完整截图步骤见 [docs/INSTALL.md](docs/INSTALL.md)
-5. 想扫到完整结果，需要在 系统设置 → 隐私与安全 → 完全磁盘访问 中勾上 GSYCleanMac
+### 一、扫描类
 
-### 方法 B：自己编译
+| # | 能力 | 状态 | 说明 |
+|---|---|:---:|---|
+| 1 | 整盘扫描 | ✅ | 入口 [ScanCategory.fullDisk](Packages/AppUI/Sources/AppUI/ScanCategory.swift)；inode 去重 + getattrlistbulk |
+| 2 | 推荐清理（一键安全项） | ✅ | 5 大类目默认勾选只勾 SafetyEngine 标 safe 的 |
+| 3 | 大文件 Top N | ✅ | [LargeFilesView](Packages/AppUI/Sources/AppUI/LargeFilesView.swift) 阈值 / 时间双过滤 |
+| 4 | 应用占用排行榜 | ✅ | [AppFootprintScreen](Packages/AppUI/Sources/AppUI/AppFootprintScreen.swift) 按 BundleID 聚合 |
+| 5 | 卸载残留扫描 | ✅ | [AppUninstaller](Packages/AppUI/Sources/AppUI/AppUninstaller.swift) BundleID 严格前缀 + 厂商规则 + Orphan 反扫 |
+| 6 | 启动项管理 | ✅ | [LaunchAgentScreen](Packages/AppUI/Sources/AppUI/LaunchAgentScreen.swift) 覆盖 LaunchAgents / LaunchDaemons |
+| 7 | 重复文件检测 | ⚠️ | [DuplicateScreen](Packages/AppUI/Sources/AppUI/DuplicateScreen.swift) 只读视图，size + 前缀/全文 SHA256；不带删除按钮 |
+
+### 二、安全类
+
+| # | 能力 | 状态 | 说明 |
+|---|---|:---:|---|
+| 8 | SafetyEngine 三档判定 | ✅ | [SafetyEngine](Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) safe / confirm / forbid，每条带 reason |
+| 9 | vendors.yaml 厂商规则 | ✅ | [vendors.yaml](Resources/Rules/vendors.yaml) 159+ 条，YAML 可读可 PR |
+| 10 | TCCSkipList 硬 skip | ✅ | [TCCSkipList](Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift) 覆盖 Mail / Messages / Calendars / .photoslibrary 等 |
+| 11 | NSWorkspace.recycle 主链路 | ✅ | [TrashPipeline](Packages/AppUI/Sources/AppUI/TrashPipeline.swift) 永不 `unlink(2)`，自动注册 NSUndoManager |
+
+### 三、体验类
+
+| # | 能力 | 状态 | 说明 |
+|---|---|:---:|---|
+| 12 | 多线程并发扫描 | ✅ | [ScanCoordinator](Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) actor 化限流 |
+| 13 | 类型分桶（媒体/文档/归档） | ✅ | [FileKind](Packages/AppUI/Sources/AppUI/FileKind.swift) 8 类 |
+| 14 | 修改日期过滤 | ✅ | mtime 区间筛选，配合大文件 / 整盘 |
+| 15 | 快速预览（Quick Look） | ✅ | [QuickLookController](Packages/AppUI/Sources/AppUI/QuickLookController.swift) 空格键预览 |
+| 16 | 批量勾选 | ✅ | [BatchSelection](Packages/AppUI/Sources/AppUI/BatchSelection.swift) 全选 / 反选 / 按安全度选 |
+| 17 | 导出 JSON / TSV | ✅ | [Exporter](Packages/AppUI/Sources/AppUI/Exporter.swift) 扫描结果可外发审计 |
+| 18 | 隐藏文件可见 | ✅ | UI toggle，dotfile / `.app` 包内透视 |
+| 19 | 树形浏览（多层下钻） | ✅ | [TreeBrowserView](Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 键盘 j/k/h/l 全程不碰鼠标 |
+
+### 四、运维类
+
+| # | 能力 | 状态 | 说明 |
+|---|---|:---:|---|
+| 20 | 自动检查更新 | ✅ | [UpdateChecker](Packages/AppUI/Sources/AppUI/Updater/UpdateChecker.swift) 启动时一次 ~2 KB GET，可关 |
+| 21 | 命令行入口 | ✅ | `gsy-cleanmac` CLI binary，支持 `--dry-run` / `--export-json` |
+| 22 | 端到端集成测试 | ✅ | [V12SafetyIntegrationTests](Packages/AppUI/Tests/AppUITests/V12SafetyIntegrationTests.swift) 钉死契约 |
+
+**统计**：22 项 ✅ + 1 项 ⚠️（重复文件检测仅只读，不带删除）。
+
+---
+
+## 5 分钟跑起来
+
+### 1. Clone 并生成项目
 
 ```bash
 git clone git@github.com:CarGuo/GSYCleanMac.git
 cd GSYCleanMac
-./Scripts/setup_dev.sh        # 装 xcodegen + 生成 .xcodeproj
-open GSYCleanMac.xcodeproj    # Xcode 里 Free Apple ID 直接 Run
+./Scripts/setup_dev.sh         # 装 xcodegen + 生成 .xcodeproj
+xcodebuild -scheme GSYCleanMac -configuration Debug build
 ```
 
-详细命令行/CI 构建步骤见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
-
----
-
-## 校验下载
+### 2. 用 Free Apple ID 信任运行
 
 ```bash
-shasum -a 256 GSYCleanMac-1.0.0.dmg
-# 应与同 release 里附带的 GSYCleanMac-1.0.0.dmg.sha256 内容一致
+open GSYCleanMac.xcodeproj
+# Xcode → Signing & Capabilities → Team 选你的 Apple ID（Personal Team）
+# Signing Certificate 选 "Sign to Run Locally"
+# Cmd+R 直接跑；首次会被 Gatekeeper 拦，按 系统设置 → 隐私与安全 → 仍要打开
 ```
 
+### 3. 卸载
+
+```bash
+osascript -e 'tell application "GSYCleanMac" to quit'
+rm -rf /Applications/GSYCleanMac.app
+defaults delete com.guoshuyu.GSYCleanMac 2>/dev/null || true
+# 想彻底清自己留下的 prefs / Application Support：
+rm -rf "$HOME/Library/Preferences/com.guoshuyu.GSYCleanMac.plist"
+rm -rf "$HOME/Library/Application Support/GSYCleanMac"
+```
+
+完整安装与 TCC 授权步骤见 [docs/INSTALL.md](docs/INSTALL.md)；构建/打包/CI 细节见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
 ---
 
-## 系统要求
+## 差异化定位
 
-| 项 | 要求 |
+1. **开源代码可审** —— 全套 [Packages](Packages) / [Resources](Resources) 公开，任何"会不会偷偷删数据"的疑虑 grep 即可验证。
+2. **Free Apple ID 可跑** —— 不依赖 Apple Developer Program（99 美元/年），ad-hoc 签名 + 本地信任就能 build 出可运行 .app。
+3. **三档 SafetyEngine + vendors.yaml + VendorTrie** —— 删除候选必过 [SafetyEngine](Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 三色判定；规则外置 YAML 可读可 PR；[VendorTrie](Packages/SafetyKit/Sources/SafetyKit/VendorTrie.swift) 把 BundleID 前缀匹配做到 O(len)。
+4. **TCCSkipList 硬 skip + 端到端集成测试钉契约** —— [TCCSkipList](Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift) 把 Sequoia 全部 TCC 高敏目录写成静态表；plist 里完全不注册 `NSMailLibraryUsageDescription` / `NSPhotoLibraryUsageDescription`，TCC.db 永远 not determined，零原生权限弹窗；契约由 [V12SafetyIntegrationTests](Packages/AppUI/Tests/AppUITests/V12SafetyIntegrationTests.swift) 钉死。
+
+---
+
+## 路线图
+
+### v1.0（已发布）
+
+- 整盘扫描 / 推荐清理 / 大文件 Top N / 卸载残留 / 树形下钻 / 隐藏文件可见 / SafetyEngine 三档 / NSWorkspace.recycle 主链路
+
+### v1.1（已发布）
+
+- 应用占用排行榜 / 启动项管理 / TCCSkipList / 修改日期过滤 / 批量勾选 / 自动检查更新
+
+### v1.2（已发布，当前）
+
+- 类型分桶 / 快速预览（Quick Look）/ JSON-TSV 导出 / **重复文件检测（只读视图）** / 端到端集成测试 / vendors.yaml 扩展至 159+ 条
+
+### 暂未规划
+
+- ❌ 重复文件**自动去重**（v1.2 仅只读，删除留给用户在 Finder 自行处理）
+- ❌ 网络流量监控（与"清理"无关，且需 Network Extension entitlement）
+- ❌ 启动加速 / 内存释放（多数是伪功能，违反 [PITFALLS.md](PITFALLS.md) §0 红线）
+- ❌ 浏览器历史 / Cookies 清理（浏览器原生入口已足够，且 SQLite 直读 profile TCC 风险高）
+
+---
+
+## 致谢与文档
+
+| 文档 | 内容 |
 |---|---|
-| 系统 | macOS 15 Sequoia 或更高 |
-| 架构 | Apple Silicon + Intel（universal） |
-| 权限 | 首次扫全盘需"完全磁盘访问"，可随时回收 |
-| 网络 | **不需要**（App 不主动联网） |
-| Apple ID | 用户安装：不需要 / 自己编译跑 Debug：Free Apple ID 即可 |
-
----
-
-## 为什么不收费 / 为什么不公证
-
-- 主要是作者自用 + 顺手开源。一年 99 美元的 Apple Developer Program 对个人开发者没必要为"省一次 Gatekeeper 弹窗"买单
-- ad-hoc 签名 + 用户首次手动信任，是 Pearcleaner / Stats / Rectangle / KeyCastr 等一众明星开源项目的通用做法
-- 如果你愿意自己掏 Developer ID 公证，把 `IDENTITY="Developer ID Application: ..."` 传给 [Scripts/build_release.sh](Scripts/build_release.sh) 即可
-
----
-
-## 安全红线（节选）
-
-> 完整版见 [SECURITY.md](SECURITY.md)，下面 6 条是底线。
-
-1. **删除一律走废纸篓**，永不调 `unlink(2)`
-2. **默认 dry-run**，必须显式开关才会真动文件
-3. **三道闸门**（连接级 mach service 白名单 + 消息级 HMAC + 语义级 SafetyEngine 三色判定）任何一道拒就直接拒
-4. **hardForbid 黑名单写死在二进制里**，规则文件改不了它
-5. **扫描结果不出本机**，唯一网络请求是启动时一次 GitHub Releases 检查更新（设置里可关）
-6. **绝不抄竞品商业代码**，规则文件全部独立清洗
-
----
-
-## 文档导航
-
-| 文档 | 说明 |
-|---|---|
+| [docs/FEATURE_GAP.md](docs/FEATURE_GAP.md) | v1.2 完整 23 维 × 8 家竞品对比 + 11 个真实踩坑场景 |
+| [SECURITY.md](SECURITY.md) | 威胁模型、三道闸门、Hard Rules、漏洞上报 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | PR 红线、commit 规范、构建 / 测试 / 打包细节 |
+| [PITFALLS.md](PITFALLS.md) | 同类项目踩过的坑总览，开工必读 |
 | [docs/INSTALL.md](docs/INSTALL.md) | 用户安装、Gatekeeper 信任、TCC 完全磁盘访问授权 |
-| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 开发者构建、跑测试、目录结构、CI / Release 工作流 |
-| [SECURITY.md](SECURITY.md) | 威胁模型、三道闸门细节、Hard Rules、漏洞上报方式 |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | PR 红线、commit 规范、bug 报告模板 |
-| [PITFALLS.md](PITFALLS.md) | 同类项目踩过的坑总览（开工必读） |
-| [docs/ROADMAP_V1.md](docs/ROADMAP_V1.md) | v1.0 范围 + v1.1 / v2 路线 |
-| [docs/FEATURE_GAP.md](docs/FEATURE_GAP.md) | 与 CleanMyMac / AppCleaner / Pearcleaner / DaisyDisk 的差距分析 |
+| [docs/ROADMAP_V1.md](docs/ROADMAP_V1.md) | v1.0 / v1.1 / v1.2 详细范围与下一版候选 |
 
----
-
-## 贡献
-
-欢迎 issue 与 PR。**先读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [PITFALLS.md](PITFALLS.md)**：新增删除路径必须先实现 dryRun，绝不削弱已有测试，绝不抄竞品源码。
+致谢同类开源项目 [Pearcleaner](https://github.com/alienator88/Pearcleaner) 在 TCC skip / vendor 规则维护上的实践参考；规则文件全部独立清洗，未引用任何竞品源码。
 
 ---
 

@@ -9,9 +9,9 @@
 
 ## 0. TL;DR
 
-v1.2 已经覆盖了 macOS 清理类工具的**主干 90%**：整盘 / 推荐清理 / 大文件 / 应用占用 / 卸载残留 / 启动项 / 树形下钻 / 批量勾选 / TCC skip / 实时撤销 / 多线程 / 修改日期过滤 / 类型分桶 / Quick Look / JSON-TSV 导出 / 命令行入口 / 自动检查更新——23 项核心维度里我们是 22 ✅ + 0 ⚠️ + 1 ❌。
+v1.2 已经覆盖了 macOS 清理类工具的**主干 90%**：整盘 / 推荐清理 / 大文件 / 应用占用 / 卸载残留 / 启动项 / 树形下钻 / 批量勾选 / TCC skip / 实时撤销 / 多线程 / 修改日期过滤 / 类型分桶 / Quick Look / JSON-TSV 导出 / 命令行入口 / 自动检查更新——23 项核心维度里我们是 22 ✅ + 1 ⚠️ + 0 ❌。
 
-**还没做的硬功能只有一个：重复文件去重（dedupe）**。其它"没做"项基本都是策略性放弃（网络流量监控 / 启动加速伪功能 / 隐私清理浏览器历史等），不是技术债。
+**唯一的 ⚠️ 是重复文件去重**：检测已实现（DuplicateScanner / DuplicateScreen / 12 个测试 / sidebar 接入），但只读视图无删除按钮，需要用户用 Finder 自行处理；自动去重未做。其它"没做"项基本都是策略性放弃（网络流量监控 / 启动加速伪功能 / 隐私清理浏览器历史等），不是技术债。
 
 差异化定位坚定四条：**开源代码可审 / Free Apple ID 即可签名运行 / 三档 SafetyEngine + vendors.yaml 厂商规则 / TCCSkipList 硬 skip + 端到端集成测试钉契约**。
 
@@ -36,7 +36,7 @@ v1.2 已经覆盖了 macOS 清理类工具的**主干 90%**：整盘 / 推荐清
 | 整盘扫描 | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ |
 | 推荐清理（一键安全项） | ✅ | ✅ | ⚠️ | ✅ | ❌ | ❌ | ⚠️ | ⚠️ |
 | 大文件 Top N | ✅ | ✅ | ❌ | ✅ | ⚠️ | ❌ | ✅ | ✅ |
-| 重复文件去重 | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 重复文件去重 | ⚠️ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | 应用占用排行榜 | ✅ | ✅ | ❌ | ⚠️ | ⚠️ | ❌ | ✅ | ✅ |
 | 卸载残留扫描 | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ❌ |
 | 启动项管理 | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ⚠️ |
@@ -57,7 +57,7 @@ v1.2 已经覆盖了 macOS 清理类工具的**主干 90%**：整盘 / 推荐清
 | 命令行入口 | ✅ | ❌ | ⚠️ | ❌ | ❌ | ❌ | ⚠️ | ❌ |
 | 开源 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 
-**统计**：GSY v1.2 = 22 ✅ + 0 ⚠️ + 1 ❌（仅缺重复文件去重）。
+**统计**：GSY v1.2 = 22 ✅ + 1 ⚠️ + 0 ❌（重复文件检测已实现，但只读视图无删除按钮，标 ⚠️；自动去重未做）。
 
 ---
 
@@ -247,7 +247,7 @@ v1.2 已经覆盖了 macOS 清理类工具的**主干 90%**：整盘 / 推荐清
 
 | 功能 | 竞品代表 | 我们的状态 | 备注 |
 |---|---|---|---|
-| 重复文件去重 | CleanMyMac / Sensei | ❌ 完全没做 | 需要内容级 hash（SHA-256 或 xxhash），IO 成本高且要谨慎处理 hardlink / clone；v1.3 候选 |
+| 重复文件**自动去重** | CleanMyMac / Sensei | ⚠️ 仅检测，未做自动去重 | 检测已实现（DuplicateScanner / DuplicateScreen 只读视图，见 §1 矩阵 ⚠️）；但无删除按钮，需用户用 Finder 自行处理。自动去重要谨慎处理 hardlink / clone，v1.3 候选 |
 | 网络流量监控 | Sensei / 部分付费工具 | ❌ 不做 | 跟"清理"无关，且需要 Network Extension entitlement |
 | 启动加速 | CleanMyMac "Speed" 模块 | ❌ 不做 | 多数是伪功能（清 RAM / sudo purge），违反 PITFALLS §0 红线 |
 | 隐私清理（Cookies / Cache） | CleanMyMac Privacy | ❌ 不做 | 浏览器自己提供原生清理入口，重复造轮子价值低 |
@@ -299,7 +299,7 @@ v1.2 已经覆盖了 macOS 清理类工具的**主干 90%**：整盘 / 推荐清
 - ✅ 整盘扫描：v1.0 起已支持，[ScanCategory.fullDisk](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCategory.swift)
 - ✅ 推荐清理：v1.0 默认 5 大类目即"推荐清理"
 - ✅ 大文件 Top N：v1.0 P0-4 已交付独立模块
-- ❌ 重复文件去重：**坦白没做**，第 4 节明确列出
+- ⚠️ 重复文件去重：**检测已实现**（[DuplicateScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DuplicateScanner.swift) + [DuplicateScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DuplicateScreen.swift) 只读视图 + 12 个测试 + sidebar 接入），但无删除按钮，自动去重未做，第 4 节坦白
 - ✅ 应用占用排行榜：v1.1 P1-6 已交付
 - ✅ 卸载残留：v0.9 起 [AppUninstaller](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppUninstaller.swift) 11+1 目录
 - ✅ 启动项管理：v1.1 P1-7 已交付
@@ -320,4 +320,4 @@ v1.2 已经覆盖了 macOS 清理类工具的**主干 90%**：整盘 / 推荐清
 - ✅ 命令行入口：仓库内含 CLI 子模块（gsy-cleanmac CLI binary）
 - ✅ 开源：仓库公开
 
-**结论**：23 维里仅"重复文件去重"为 ❌，已在第 1 节矩阵和第 4 节坦白章节双重披露，未夸大任何已声称的功能。
+**结论**：23 维里"重复文件去重"为 ⚠️（检测已实现、自动去重未做），其余 22 维全部 ✅；已在第 1 节矩阵和第 4 节坦白章节双重披露，未夸大任何已声称的功能。
