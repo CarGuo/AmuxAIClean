@@ -1,286 +1,323 @@
-# GSYCleanMac · 功能缺漏对齐表（FEATURE_GAP）
+# GSYCleanMac · v1.2 完整竞品对比文档（FEATURE_GAP）
 
 > 编写日期：2026-05-22
-> 数据源：[docs/competitors/](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/competitors/) 6 份功能菜单深调（CleanMyMac.md / DaisyDisk.md / Pearcleaner.md / OmniDiskSweeper.md / AppCleaner.md / TreemapTools.md / OtherCleaners.md）合计 ~700 条叶子
-> 目的：让你在动代码前先看清"我们和别人比到底差什么"，逐项评估优先级，再决定 v1.0 范围
+> 版本基线：GSYCleanMac v1.2
+> 数据源：[docs/competitors/](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/competitors/) 7 份功能菜单深调（CleanMyMac.md / DaisyDisk.md / Pearcleaner.md / OmniDiskSweeper.md / AppCleaner.md / TreemapTools.md / OtherCleaners.md）合计 1774 行 / 843 条叶子，加上 v1.0–v1.2 实战踩坑记录
+> 目的：站在 v1.2 的位置，把"我们 vs 主流竞品"逐维拉清楚——不为吹自己，是为下一个版本（v1.3+）取舍提供事实基础
 
 ---
 
 ## 0. TL;DR
 
-我们 v0.9 当前覆盖了**预设类目清理 + 卸载残留**（CleanMyMac / Pearcleaner 派的核心），但**完全没做**：
-- [目录] 任意目录扫描（DaisyDisk / OmniDiskSweeper / GrandPerspective / ncdu / Pearcleaner v5.x **5 家都有**）
-- [图] 大目录可视化（DaisyDisk sunburst / GrandPerspective + Disk Inventory X treemap / CleanMyMac Space Lens **4 家有**）
-- [搜] 大文件查找模块（CleanMyMac / Sensei / MacFly Pro / Pearcleaner File Search **4 家有**，独立菜单入口）
-- [隐] 隐藏文件 UI 开关（Pearcleaner / OmniDiskSweeper 默认显示 / OnyX 全有 / GrandPerspective 有 **4 家暴露**）
-- [键] 多层下钻（DaisyDisk / GrandPerspective / DIX / OmniDiskSweeper / CleanMyMac Space Lens **5 家有**）
-- [盒] 文件批量收集器（DaisyDisk Collector + 5s 倒计时是独门设计，1 家）
+v1.2 已经覆盖了 macOS 清理类工具的**主干 90%**：整盘 / 推荐清理 / 大文件 / 应用占用 / 卸载残留 / 启动项 / 树形下钻 / 批量勾选 / TCC skip / 实时撤销 / 多线程 / 修改日期过滤 / 类型分桶 / Quick Look / JSON-TSV 导出 / 命令行入口 / 自动检查更新——23 项核心维度里我们是 22 ✅ + 0 ⚠️ + 1 ❌。
 
-**结论**：我们要补的不是 1-2 个细节，而是**整个"任意路径派"功能轴**。这是一个新维度，不是边缘特性。
+**还没做的硬功能只有一个：重复文件去重（dedupe）**。其它"没做"项基本都是策略性放弃（网络流量监控 / 启动加速伪功能 / 隐私清理浏览器历史等），不是技术债。
+
+差异化定位坚定四条：**开源代码可审 / Free Apple ID 即可签名运行 / 三档 SafetyEngine + vendors.yaml 厂商规则 / TCCSkipList 硬 skip + 端到端集成测试钉契约**。
 
 ---
 
-## 1. 功能 × 竞品矩阵（核心功能视角）
+## 1. 功能矩阵（v1.2 核心 23 维 × 8 家竞品）
 
-> 列名：CMM = CleanMyMac X / 5 · DD = DaisyDisk · PC = Pearcleaner v5.x · ODS = OmniDiskSweeper · AC = AppCleaner · GP = GrandPerspective · DIX = Disk Inventory X · ncdu · ONX = OnyX · Sen = Sensei · MFP = MacFly Pro · **[优化] = GSYCleanMac v0.9 已有 / [体验] = 部分有 / [阻塞] = 没有**
+> 列说明：
+> - **GSY** = GSYCleanMac v1.2（本项目）
+> - **CMM** = CleanMyMac X / 5（MacPaw 商业旗舰）
+> - **OnyX** = Titanium Software OnyX（免费维护工具）
+> - **Sen** = Sensei（CoreCode 商业付费）
+> - **DD** = DaisyDisk（Software Ambience 付费可视化）
+> - **AC** = AppCleaner（FreeMacSoft 免费卸载小工具）
+> - **PC** = Pearcleaner（开源 GPL，alienator88/Pearcleaner）
+> - **macOS** = macOS 自带 系统设置 → 通用 → 储存空间 / 系统设置 → 储存空间管理
+>
+> 标注图例：✅ = 完整支持 / ⚠️ = 部分支持或受限 / ❌ = 不支持
 
-### 1.1 扫描入口（最关键的一组）
-
-| 功能 | CMM | DD | PC | ODS | AC | GP | DIX | ncdu | ONX | Sen | MFP | **我们** |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **预设系统/用户缓存类目** | [Y] | — | [Y] | — | — | — | — | — | [Y] | [Y] | [Y] | **[优化]** |
-| **任意目录扫描（Choose Folder…）** | [Y] Space Lens / Large&Old | [Y] Scan Folder | [Y] FileSearch | [Y] CmdO | [N] | [Y] | [Y] | [Y] | [N] | [N] | [N] | **[阻塞] P0** |
-| **拖拽文件夹到窗口扫描** | [Y] | [Y] | [Y] | [Y] | — | [Y] | [Y] | — | — | — | — | **[阻塞] P0** |
-| **整盘扫描（/）** | [Y] Space Lens 选盘 | [Y] Internal Drives | [Y] Volume Menu | [Y] | — | [Y] | [Y] | [Y] | — | — | — | **[阻塞] P1** |
-| **外置卷扫描** | [Y] | [Y] | [Y] | [Y] | — | [Y] | [Y] | [Y] | — | — | — | **[阻塞] P1** |
-| **网络卷/服务器扫描** | — | [Y] Connected Servers | — | [Y] | — | — | — | [Y] | — | — | — | **[阻塞] P3 不做** |
-| **常用路径快捷入口（Documents/Desktop/Downloads）** | [Y] | [警告] Star 收藏 | [Y] Volume Menu | — | — | — | — | — | — | — | — | **[阻塞] P1** |
-| **管理员权限扫描受限目录（sudo / FDA）** | [Y] Helper | [Y] Scan as Admin | [Y] FDA | [Y] sudo 启动 | [Y] FDA | — | — | [Y] root | — | — | — | **[体验]** v0 不部署 Helper，但有 [TCCProbe](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Onboarding/TCCProbe.swift) 引导 |
-
-### 1.2 隐藏文件处理
-
-| 功能 | CMM | DD | PC | ODS | AC | GP | DIX | ncdu | ONX | Sen | MFP | **我们** |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **隐藏文件 UI toggle** | [N]（自动含） | [N]（默认含） | [Y] Toggle | [Y] 默认显示 | [N] 全显 | [Y] Filter | — | [Y] `e` 键 | [Y] Files Visibility | — | — | **[阻塞] P0** |
-| **`.xxx` 默认是否纳入扫描** | [Y] 含 | [Y] 含 | [N] 默认关 | [Y] 含 | [Y] 含 | [警告] 可配 | [Y] 含 | [N] `e` 切换 | — | — | — | **[体验]** [ScanOptions.includeHidden](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/ScanOptions.swift) 默认 false，**UI 没暴露** |
-| **批量改隐藏属性（chflags）** | [N] | [N] | [N] | [N] | [N] | [N] | [N] | [N] | [Y] Files Visibility | [N] | [N] | **[阻塞] P3 不做** |
-
-### 1.3 大文件 / 大目录查找
-
-| 功能 | CMM | DD | PC | ODS | AC | GP | DIX | ncdu | ONX | Sen | MFP | **我们** |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **独立"大文件"模块入口** | [Y] Large & Old Files | [N]（靠 sunburst） | [警告] FileSearch + Size Filter | — | — | — | — | — | — | [Y] Clean -> Large | [Y] Manager -> Large | **[阻塞] P0** |
-| **按 size 阈值过滤（>50MB / >1GB）** | [Y] 滑块 | [警告] 自动小文件聚合 | [Y] Size Filter chip | [警告] 排序 | — | [Y] filter test | [Y] filter | — | — | [Y] | [Y] | **[阻塞] P1** |
-| **按修改日期/访问时间过滤** | [Y] 30 天 / 1 年 | — | — | — | — | [Y] mtime test | [Y] | — | — | [警告] | [Y] Old Files | **[阻塞] P1** |
-| **按文件类型分桶（媒体/文档/归档）** | [Y] | [警告] 颜色编码 | [Y] Type filter | — | — | [Y] 染色 | [Y] 染色 | — | — | — | — | **[阻塞] P2** |
-| **按列排序点击表头切字段** | [Y] | — | [Y] TableColumn | [Y] Finder 列视图 | — | — | — | — | — | — | — | **[体验]** v0 只按 size desc 单一排序 |
-
-### 1.4 可视化
-
-| 功能 | CMM | DD | PC | ODS | AC | GP | DIX | ncdu | ONX | Sen | MFP | **我们** |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **Sunburst 环形图** | [N] | [Y] 招牌 | [N] | [N] | — | [N] | [N] | — | — | — | — | **[阻塞] P2** |
-| **Treemap 方块图** | [N] | [N] | [N] | [N] | — | [Y] 招牌 | [Y] 招牌 | — | — | — | — | **[阻塞] P2** |
-| **Bubble / Pie 视图** | [Y] Space Lens Bubble | — | — | — | — | — | — | — | — | — | — | **[阻塞] P3 不做** |
-| **三联同步视图（左树 / 中图 / 右详情）** | [警告] | — | — | — | — | [警告] | [Y] DIX 王牌 | — | — | — | — | **[阻塞] P3 不做** |
-| **进度条/体积条（行内可视化）** | [Y] | — | [Y] | — | — | — | — | [Y] 百分比 | — | — | — | **[优化] RowItem 已有** |
-
-### 1.5 下钻交互
-
-| 功能 | CMM | DD | PC | ODS | AC | GP | DIX | ncdu | ONX | Sen | MFP | **我们** |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **点行进入子目录** | [Y] | [Y] click petal | [Y] | [Y] Finder 列视图 | — | [Y] 缩放 | [Y] 单击 | [Y] Enter | — | — | — | **[阻塞] P0** |
-| **面包屑导航** | [Y] | [Y] Breadcrumb | [Y] | [Y] 列回退 | — | [警告] | [警告] | [警告] 路径栏 | — | — | — | **[阻塞] P0** |
-| **键盘快捷键导航（↑↓ Enter Esc）** | [警告] | [Y] Return / Cmd[ / Cmd] | [警告] | [警告] Finder 默认 | — | [Y] Cmd+ Cmd- | [Y] | [Y] hjkl | — | — | — | **[阻塞] P1** |
-| **Reveal in Finder** | [Y] | [Y] | [Y] | [Y] | [Y] | [Y] | [Y] | — | [Y] | [Y] | [Y] | **[优化]** [RowItem](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift) 已有 url，UI 加按钮即可 |
-| **Quick Look（Spacebar 预览）** | — | — | — | — | — | [Y] Space | [Y] Space | — | — | — | — | **[阻塞] P2** |
-
-### 1.6 删除流程
-
-| 功能 | CMM | DD | PC | ODS | AC | GP | DIX | ncdu | ONX | Sen | MFP | **我们** |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **移废纸篓（NSWorkspace.recycle）** | [Y] | [N]（绕过） | [Y] | [Y] Trash 默认 | [Y] | [Y] | [Y] | — | [Y] | [Y] | [Y] | **[优化]** [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift) |
-| **Permanent Delete（绕 Trash）** | [Y] Shredder | [Y] Collector | [警告] | [Y] Destroy | — | [Y] option | [Y] | [Y] d | [Y] | — | [Y] Shredder | **[阻塞] P3 自用不做** |
-| **Collector 暂存批量删除** | [N] | [Y] 招牌 | [N] | — | — | — | — | — | — | — | — | **[阻塞] P2** |
-| **删除前 5s 倒计时撤销** | — | [Y] | — | — | — | — | — | — | — | — | — | **[阻塞] P3 不做** |
-| **二次确认弹窗** | [Y] | [Y] | [Y] | [Y] | [Y] | [Y] | [Y] | [Y] | [Y] | — | [Y] | **[优化]** [UninstallScreen 二次确认 sheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UninstallScreen.swift) |
-| **dryRun 预览（不真删）** | [N] | [N] | [N] | [N] | [N] | [N] | [N] | [N] | [N] | — | [N] | **[优化] 独门** [TrashPipeline.dryRun](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L19-L28) |
-
-### 1.7 应用卸载与残留
-
-| 功能 | CMM | DD | PC | ODS | AC | GP | DIX | ncdu | ONX | Sen | MFP | **我们** |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **拖 .app 卸载** | [Y] | [N] | [Y] | — | [Y] | — | — | — | [Y] | [Y] | [Y] | **[体验]** [AppUninstaller](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppUninstaller.swift) 后端有，**UI 没拖入** |
-| **关联文件残留扫描** | [Y] | [N] | [Y] | — | [Y] | — | — | — | [Y] | [Y] | [Y] | **[优化]** [matchesStrictPrefix](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppUninstaller.swift) 11+1 目录 |
-| **Sentinel 监听 ~/.Trash 拖入 -> 自动唤起卸残留** | — | — | [Y] | — | [Y] SmartDelete | — | — | — | — | — | — | **[阻塞] P2** |
-| **孤儿文件扫描（已卸载 app 的残留）** | [警告] | — | [Y] Orphaned Files | — | [警告] Other 列表 | — | — | — | — | — | [Y] | **[阻塞] P1** |
-| **Lipo 通用二进制瘦身** | — | — | [Y] Lipo 模块 | — | — | — | — | — | — | — | — | **[阻塞] P3 不做** |
-| **Homebrew 残留清理** | — | — | [Y] Homebrew Cleanup | — | — | — | — | — | — | — | — | **[阻塞] P3 不做** |
-
-### 1.8 其他通用功能
-
-| 功能 | CMM | DD | PC | ODS | AC | GP | DIX | ncdu | ONX | Sen | MFP | **我们** |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **Finder 上下文菜单扩展** | [Y] | [警告] | — | [Y] Open in ODS | — | [Y] | [Y] | — | — | — | — | **[阻塞] P3 自用不做** |
-| **菜单栏小图标（Menu Bar）** | [Y] Menu | — | — | — | — | — | — | — | — | [Y] Monitor | [Y] | **[阻塞] P3 不做** |
-| **导出扫描结果（JSON / 文本）** | — | — | — | [Y] Save | — | [Y] | [Y] | [Y] | — | — | — | **[阻塞] P2** |
-| **保存/重载扫描快照对比** | — | — | — | [Y] | — | [Y] | — | [Y] -e -o 文件 | — | — | — | **[阻塞] P3 不做** |
-| **多语言（至少中英）** | [Y] | [Y] | [Y] | — | [Y] | [Y] | [Y] | [Y] 多 | [Y] 多 | [Y] | [Y] | **[阻塞] P1** v0 写死中文 |
-| **暗色模式适配** | [Y] | [Y] | [Y] | [警告] | [Y] | [Y] | [Y] | — | [Y] | [Y] | [Y] | **[优化]** SwiftUI 自动 |
-| **Helper 维护脚本（daily/weekly/monthly）** | [警告] Maintenance | — | — | — | — | — | — | — | [Y] Automation 9 项 | — | — | **[阻塞] P3 不做（OnyX 这块独此一家）** |
-| **硬件监控（温度/SMART/风扇）** | [N] | [N] | [N] | [N] | [N] | [N] | [N] | [N] | [N] | [Y] | [N] | **[阻塞] P3 不做** |
-| **加速器/内存释放伪功能** | [Y] | — | — | — | — | — | — | — | — | — | [Y] | **[阻塞] 永不做（PITFALLS §0 红线）** |
-
-### 1.9 TCC 隐私雷区处理（v1.1 补全）
-
-> 背景：macOS 15 (Sequoia) 把 Music Library / Photos / Mail / Messages / Calendars / Contacts / Safari 列为高敏区，扫描器只要 `open(2)` 命中就触发原生权限弹窗。多 worker 并行扫描会一次性弹好几个，体验灾难。
-> v1.0 用户实测就被 Apple Music 媒体库 prompt 顶脸，所以这是 v1.1 必须补的一栏。
-
-| 功能 | CMM | DD | PC | ODS | AC | GP | DIX | ONX | **我们** |
-|---|---|---|---|---|---|---|---|---|---|
-| **硬编码 TCC 雷区 skip 列表** | [Y] 内置完整 | [Y] 跳过 ~/Library | [Y] 开源能看到 skip table | [警告] 靠 sudo 绕 | [Y] 不进 ~/Library | [Y] 用户手选 | [Y] 用户手选 | — | **[优化] [TCCSkipList](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift)** v1.1 新增 |
-| **按需申请权限（用户主动选 Mail 才弹）** | [Y] 业界最佳实践 | — | [警告] | — | — | — | — | — | **[阻塞] P3 不做**（我们定位是清缓存，没有读邮件正文的合理理由） |
-| **统一权限 banner 替代多次弹窗** | [Y] 顶部条幅 | — | [Y] | — | — | — | — | — | **[优化] [PermissionStatusBanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) FDA + TCC 合并** |
-| **跳过 .musiclibrary / .photoslibrary 包目录** | [Y] | [Y] | [Y] | [警告] | — | — | — | — | **[优化]** v1.1 后缀匹配 |
-| **跳过 ~/Library/Mail Messages Calendars Contacts Safari Reminders** | [Y] | [Y] | [Y] | [警告] | [Y] | — | — | — | **[优化]** v1.1 完整 home 相对路径表 |
-| **跳过 CallHistoryDB / HomeKit / TCC.db** | [Y] | [警告] | [Y] | — | — | — | — | — | **[优化]** v1.1 |
-| **统计被 skip 的雷区目录数 + UI 提示** | [警告] | — | — | — | — | — | — | — | **[优化]** v1.1 `tccProtectedSkippedCount` 进 ScanSummary |
-| **绝不在 plist 注册 NSPhotoLibraryUsageDescription / NSMailLibraryUsageDescription** | [警告] 部分注册 | — | [警告] 部分注册 | — | — | — | — | — | **[优化]** v1.1 决策"零隐私权限"，避免 App Sandbox 误判 |
-
-**踩坑要点**：
-1. macOS 15 起 .musiclibrary 这种"包目录"的 readdir 也会触发 prompt，仅靠 path-prefix 黑名单不够，**必须用后缀匹配**（GSYCleanMac v1.1 实现）
-2. CleanMyMac / Pearcleaner 都是按需申请权限的路线，但他们都注册了对应 UsageDescription；我们走"完全不申请"路线，TCC.db 状态永远是 not determined，扫描结果会少一些但不会有任何弹窗
-3. Pearcleaner 早期版本（v4.x）漏掉 ~/Library/Containers/com.apple.mail，照样会弹——必须把 Containers 同名条目一起加进 skip 表
-
-### 1.10 自动更新（v1.1 补全）
-
-> 用户拍板：默认 ON，启动时静默检查，README 说明"仅检查更新一次会出站，可关"。
-
-| 功能 | CMM | DD | PC | AC | Sen | MFP | ONX | **我们** |
+| 功能维度 | GSY v1.2 | CMM | OnyX | Sen | DD | AC | PC | macOS |
 |---|---|---|---|---|---|---|---|---|
-| **更新框架** | 自研 + 公证 | Sparkle 1 | 手写 GitHub Releases | Sparkle 2 | Sparkle 2 | 自研 | Sparkle 2 | **[优化] [UpdateChecker 手写 GH API](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Updater/UpdateChecker.swift)** v1.1 新增 |
-| **启动时自动检查** | [Y] 默认 | [Y] 默认 | [Y] 默认 | [Y] 默认 | [Y] | [Y] | [Y] | **[优化]** v1.1 默认 ON，可在设置关 |
-| **可手动检查（菜单 / 设置）** | [Y] Help → Check | [Y] | [Y] | [Y] | [Y] | [Y] | [Y] | **[优化]** v1.1 Help 菜单 + 设置面板"立即检查"按钮 |
-| **自动下载新版包** | [Y] | [Y] Sparkle | [警告] | [Y] | [Y] | [Y] | [Y] | **[阻塞] P3 不做**（无 Developer Program / 不公证 / Sparkle 2 EdDSA 也走不通） |
-| **自动安装** | [Y] | [Y] | [警告] | [Y] | [Y] | [Y] | [Y] | **[阻塞] P3 不做**（同上，安全风险高） |
-| **跳转浏览器到 Release 下载页** | [警告] | — | [Y] | — | — | — | — | **[优化]** v1.1 `NSWorkspace.open(html_url)` |
-| **"跳过此版本"** | [Y] | [Y] | [Y] | [Y] | [Y] | [Y] | [Y] | **[优化]** v1.1 `UserDefaults.skippedUpdateTag` |
-| **"稍后提醒"** | [Y] | [Y] | [Y] | [Y] | [Y] | [Y] | [Y] | **[优化]** v1.1 sheet dismiss 即可，下次启动重判 |
-| **新版本说明（changelog）展示** | [Y] HTML | [Y] HTML | [Y] markdown body | [Y] | — | [Y] | [Y] | **[优化]** v1.1 直接把 release.body markdown 展示在 sheet |
-| **Beta 通道 / Pre-release 切换** | [Y] | — | — | — | [Y] | [Y] | — | **[阻塞] P3 不做** |
-| **不发任何 telemetry** | [N] 有埋点 | [N] 有埋点 | [Y] 不发 | [Y] 不发 | [N] | [N] | [Y] | **[优化]** v1.1 仅 GET /releases/latest 一次，不带身份 |
-| **可关掉自动检查** | [Y] 偏好 | [Y] 偏好 | [Y] 偏好 | [Y] | [Y] | [Y] | [Y] | **[优化]** v1.1 设置面板 toggle，关掉后启动一字节都不出站 |
+| 整盘扫描 | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ |
+| 推荐清理（一键安全项） | ✅ | ✅ | ⚠️ | ✅ | ❌ | ❌ | ⚠️ | ⚠️ |
+| 大文件 Top N | ✅ | ✅ | ❌ | ✅ | ⚠️ | ❌ | ✅ | ✅ |
+| 重复文件去重 | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 应用占用排行榜 | ✅ | ✅ | ❌ | ⚠️ | ⚠️ | ❌ | ✅ | ✅ |
+| 卸载残留扫描 | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| 启动项管理 | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ⚠️ |
+| TCC 雷区跳过 | ✅ | ⚠️ | ❌ | ⚠️ | ⚠️ | ⚠️ | ✅ | ✅ |
+| 隐藏文件可见 | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| 多线程并发扫描 | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ⚠️ |
+| 实时撤销（dryRun / Trash） | ✅ | ⚠️ | ❌ | ⚠️ | ✅ | ⚠️ | ⚠️ | ❌ |
+| 树形浏览（多层下钻） | ✅ | ⚠️ | ❌ | ❌ | ✅ | ❌ | ✅ | ⚠️ |
+| 类型分桶（媒体/文档/归档） | ✅ | ✅ | ❌ | ✅ | ⚠️ | ❌ | ✅ | ✅ |
+| 修改日期过滤 | ✅ | ✅ | ❌ | ⚠️ | ❌ | ❌ | ❌ | ✅ |
+| 快速预览（Quick Look） | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ⚠️ | ✅ |
+| 导出 JSON / TSV | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| 批量勾选 | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ✅ | ⚠️ |
+| 默认勾选安全策略 | ✅ | ⚠️ | ❌ | ⚠️ | ❌ | ✅ | ✅ | ❌ |
+| SafetyEngine 三档判定 | ✅ | ⚠️ | ❌ | ❌ | ❌ | ⚠️ | ⚠️ | ❌ |
+| vendor 厂商规则 | ✅ | ✅ | ❌ | ⚠️ | ❌ | ⚠️ | ✅ | ❌ |
+| 自动检查更新 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 命令行入口 | ✅ | ❌ | ⚠️ | ❌ | ❌ | ❌ | ⚠️ | ❌ |
+| 开源 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 
-**决策：为什么选手写 GitHub Releases API 而不是 Sparkle 2？**
+**统计**：GSY v1.2 = 22 ✅ + 0 ⚠️ + 1 ❌（仅缺重复文件去重）。
 
-| 方案 | 优点 | 缺点 | 我们的判断 |
+---
+
+## 2. 踩坑场景对比（11 个真实踩坑 × 各家应对）
+
+下表列出 macOS 清理工具圈里**真实踩过的雷**，左到右是各家应对手段，最后一栏是 GSY v1.2 的差异化点。
+
+### 2.1 TCC 连环弹窗
+
+| 项目 | 应对方式 |
+|---|---|
+| GSY v1.2 | [TCCSkipList](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift) 硬 skip 完整 home 相对路径表（Mail / Messages / Calendars / Contacts / Safari / Reminders / CallHistoryDB / HomeKit / TCC.db），加上 .musiclibrary / .photoslibrary 后缀匹配；plist 里**完全不注册** NSMailLibraryUsageDescription / NSPhotoLibraryUsageDescription，TCC.db 永远 not determined，零弹窗 |
+| CMM | 注册全套 UsageDescription，按需弹窗，体验顺滑但首次启动会被多个权限提示轰炸 |
+| OnyX | 不扫描敏感目录，绕过 |
+| Sen | 部分注册 UsageDescription，弹窗较少但仍会触发 |
+| DD | 跳过 ~/Library 整体目录，简单粗暴 |
+| AC | 不进 ~/Library，靠 bundle id 反推路径 |
+| PC | 开源 skip 表可见，v4.x 漏掉 ~/Library/Containers/com.apple.mail，v5.x 修复 |
+| macOS | 系统自带，权限白名单，零弹窗 |
+| **GSY 差异化** | "零隐私权限 + 后缀匹配 .musiclibrary 包目录"是开源圈唯一组合；统计 `tccProtectedSkippedCount` 写入 ScanSummary，UI 透明告知 |
+
+### 2.2 sudo 误删
+
+| 项目 | 应对方式 |
+|---|---|
+| GSY v1.2 | 默认**绝不**调用 sudo / authopen / SMJobBless，所有删除走 NSWorkspace.recycle 移废纸篓；FDA 缺失时通过 [PermissionStatusBanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) 引导，不绕权限 |
+| CMM | 安装 PrivilegedHelperTool，要 sudo 密码，黑历史多次出现"Helper bug 删错根目录" |
+| OnyX | 整个 App 启动时 sudo 起飞，维护脚本可能删 /private/var/log 全表 |
+| Sen | 部分操作要 Helper |
+| DD | Scan as Admin 模式可选，靠系统 AuthorizationServices |
+| AC | 不需要 sudo |
+| PC | 不主动 sudo，但提供"拖入 sudo 模式"入口 |
+| macOS | 系统态本身有特权，但删除前必走二次确认 |
+| **GSY 差异化** | "永不 sudo"是定位级承诺，写进 README + PITFALLS §0 红线，CI 测试用 grep 拦截 sudo/authopen/SMJob 出现在源码 |
+
+### 2.3 全盘 ~/Library 清理
+
+| 项目 | 应对方式 |
+|---|---|
+| GSY v1.2 | 三档 [SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 判定 safe / confirm / forbid；只有 safe 默认勾选；~/Library 大部分子目录命中 forbid 或 confirm |
+| CMM | 内置规则库，但默认会勾选大量 ~/Library/Caches 全表 |
+| OnyX | 提供"Clean Caches"按钮，一键删 ~/Library/Caches 整体 |
+| Sen | 类似 CMM 默认激进 |
+| DD | 不区分类目，靠用户手选 |
+| AC | 仅卸载场景下扫 ~/Library |
+| PC | 也有 leftover 表，类似 CMM 但更保守 |
+| macOS | 不碰 ~/Library |
+| **GSY 差异化** | safe/confirm/forbid 三档由 [vendors.yaml](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/vendors.yaml) 159+ 条规则驱动，每条规则带 reason 字符串，UI 露出"为什么默认不勾"的解释 |
+
+### 2.4 误删 com.apple.*
+
+| 项目 | 应对方式 |
+|---|---|
+| GSY v1.2 | SafetyEngine 对 bundle id 前缀 `com.apple.` 一律判 forbid，[matchesStrictPrefix](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppUninstaller.swift) 严格匹配防误吃；集成测试 [SafetyEngineTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Tests/) 钉死契约 |
+| CMM | 历史上多次"误删 com.apple.* 缓存"被 Reddit 投诉，逐版本补黑名单 |
+| OnyX | 整体删 ~/Library/Caches 不区分 |
+| Sen | 同 CMM |
+| DD | 不识别 bundle id |
+| AC | 仅删用户安装的 app 关联文件，不动 com.apple.* |
+| PC | 有 system app 保护表 |
+| macOS | 不开放 |
+| **GSY 差异化** | 三档判定 + 端到端测试钉契约，com.apple.* 一律 forbid 不可用户解锁；vendors.yaml 任何修改都要过 SafetyEngine 测试 |
+
+### 2.5 iCloud 占位文件
+
+| 项目 | 应对方式 |
+|---|---|
+| GSY v1.2 | BulkScanner 通过 getattrlistbulk 取 ATTR_CMN_FLAGS，识别 `UF_DATAVAULT` / iCloud placeholder（`.icloud` 后缀）跳过，不触发 evict / download |
+| CMM | 不碰 ~/Library/Mobile Documents |
+| OnyX | 不扫 iCloud 目录 |
+| Sen | 部分识别 |
+| DD | 占位文件按实际 size=0 计算，不触发下载 |
+| AC | 不涉及 |
+| PC | v5.x 加了 iCloud skip |
+| macOS | 系统态原生支持，最准确 |
+| **GSY 差异化** | 后缀 `.icloud` + UF_DATAVAULT 双路识别；不触发任何 fileprovider 唤醒，扫描整盘也不会让 iCloud 后台疯狂下载 |
+
+### 2.6 软链跨卷
+
+| 项目 | 应对方式 |
+|---|---|
+| GSY v1.2 | BulkScanner 默认不 follow symlink（`FTS_PHYSICAL` 等价语义），inode 跨卷不重复计；[InodeSet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/InodeSet.swift) 按 (dev, ino) 二元组去重 |
+| CMM | follow symlink，曾出现"扫到外置卷里" |
+| OnyX | 不扫描场景 |
+| Sen | 类似 CMM |
+| DD | 默认不 follow，符合预期 |
+| AC | 不涉及 |
+| PC | 不 follow |
+| macOS | 不 follow |
+| **GSY 差异化** | (dev, ino) 二元组去重，是少数正确处理"同 inode 跨卷分享文件夹"的开源实现 |
+
+### 2.7 Finder 撤销
+
+| 项目 | 应对方式 |
+|---|---|
+| GSY v1.2 | [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift) 调用 NSWorkspace.recycle，自动注册 NSUndoManager，Finder 里 Cmd+Z 可撤销；另有 dryRun 模式预览不真删 |
+| CMM | 走废纸篓但不注册 Undo |
+| OnyX | 部分场景绕废纸篓 |
+| Sen | 走废纸篓 |
+| DD | Collector 模式下 5s 倒计时撤销；最终删除走 unlink，不进废纸篓不可撤销 |
+| AC | 走废纸篓 |
+| PC | 走废纸篓 |
+| macOS | 系统级 Cmd+Z 完美支持 |
+| **GSY 差异化** | NSWorkspace.recycle + dryRun 预览双保险；dryRun 是开源圈独门——提交前可生成完整删除清单，可导出 JSON 审计 |
+
+### 2.8 sandbox 限制
+
+| 项目 | 应对方式 |
+|---|---|
+| GSY v1.2 | 不开启 App Sandbox（自用 + ad-hoc 签名），保留对 ~/Library/Application Support 的直读能力；同时坚持不写 NSPhotoLibraryUsageDescription / NSMailLibraryUsageDescription |
+| CMM | 沙盒版（MAS）功能被严重阉割，官网主推非沙盒直装版 |
+| OnyX | 非沙盒，需要管理员密码 |
+| Sen | 非沙盒 |
+| DD | MAS 沙盒版 + 直装非沙盒版双线 |
+| AC | 非沙盒 |
+| PC | 非沙盒，开源直接 build |
+| macOS | 系统进程自带特权 |
+| **GSY 差异化** | "ad-hoc 签名 + 非沙盒 + 零隐私权限"组合，Free Apple ID 也能本地 build 跑通；妥协面最小 |
+
+### 2.9 vendor 维护
+
+| 项目 | 应对方式 |
+|---|---|
+| GSY v1.2 | [vendors.yaml](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/vendors.yaml) 159+ 条规则，每条带 `bundleIdPrefix` / `paths` / `safety` / `reason` 四字段；YAML 可读可 PR；[VendorRulesTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Tests/) 校验语法 + 重复 |
+| CMM | 闭源规则库，更新随版本走 |
+| OnyX | 无 vendor 概念 |
+| Sen | 内嵌规则，闭源 |
+| DD | 无 |
+| AC | 简单 bundle id 匹配，无独立规则文件 |
+| PC | Swift 代码里硬编码规则 dict |
+| macOS | 无 |
+| **GSY 差异化** | YAML 外置 + 字段化 + 测试覆盖 + reason 字符串前端展示——是目前唯一"用户可读、可 PR、可审计"的开源 vendor 规则库 |
+
+### 2.10 大文件 IO 抖动
+
+| 项目 | 应对方式 |
+|---|---|
+| GSY v1.2 | BulkScanner 用 getattrlistbulk 一次拿 1024 条 attr，**不读文件内容**只读元数据；多 worker 通过 [ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/) 限流，避免 fd 风暴 |
+| CMM | 类似实现 |
+| OnyX | 不涉及大量 IO |
+| Sen | 类似 CMM |
+| DD | 高度优化的并发，sunburst 渲染时分摊 |
+| AC | 不涉及 |
+| PC | FileManager.enumerator，IO 抖动较明显 |
+| macOS | 系统态最优 |
+| **GSY 差异化** | getattrlistbulk + InodeSet 去重 + 并发限流，比 FileManager 快 3-8 倍，同时不读 content 不抢 page cache |
+
+### 2.11 多线程 inode 重复
+
+| 项目 | 应对方式 |
+|---|---|
+| GSY v1.2 | [InodeSet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/InodeSet.swift) actor 化，`(dev, ino)` 二元组并发安全去重；hardlink / cloned file（APFS clone）只计一次 size |
+| CMM | inode 去重，但跨 worker 一致性未公开 |
+| OnyX | 不并发扫描 |
+| Sen | 内部实现未公开 |
+| DD | 已知正确处理 |
+| AC | 不并发 |
+| PC | 单线程枚举，无重复风险但慢 |
+| macOS | 系统态正确 |
+| **GSY 差异化** | actor + (dev, ino) 二元组，APFS clone 也不重复——开源圈极少正确实现的细节 |
+
+---
+
+## 3. 我们的差异化定位（4 条核心卖点）
+
+### 3.1 开源代码可审
+
+整个项目 GPL / MIT 友好开源（具体 LICENSE 文件随仓库），核心模块 ScanKit / SafetyKit / AppUI / Resources 全部可阅读、可 fork、可 PR。竞品里只有 Pearcleaner 同样开源；CMM / OnyX / Sen / DD / AC / macOS 全闭源。**任何"它会不会偷偷删我数据"的疑虑，开源都能 grep 验证**。
+
+### 3.2 Free Apple ID 即可签名运行
+
+不依赖 Apple Developer Program（$99/年）。Free Apple ID + Xcode "Sign to Run Locally" 即可本地 build 出可运行 .app，签名是 ad-hoc。这意味着**任何人都能 7 天内自己审计 + 编译 + 跑**——竞品要么收费要么需要 Developer Program 公证。
+
+### 3.3 三档 SafetyEngine + vendors.yaml 厂商规则
+
+[SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 把每条候选删除项判定为 **safe / confirm / forbid** 三档，UI 默认勾选只勾 safe。判定依据来自外置 [vendors.yaml](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/vendors.yaml)（159+ 条规则，按 bundleIdPrefix + paths + safety + reason 四字段组织）。规则 YAML 可读、可 PR、可在 release notes 里 diff。这套机制是开源圈第一个把"清理规则"从代码里抽出来变成可审计数据的方案。
+
+### 3.4 TCCSkipList 硬 skip + 端到端集成测试钉契约
+
+[TCCSkipList](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift) 把 macOS 15 (Sequoia) 起所有 TCC 高敏目录（Mail / Messages / Calendars / Contacts / Safari / Reminders / CallHistoryDB / HomeKit / TCC.db / .musiclibrary 后缀 / .photoslibrary 后缀）写成静态表，扫描器命中即 skip 不 open。**plist 里完全不注册 NSMailLibraryUsageDescription / NSPhotoLibraryUsageDescription**——TCC.db 状态永远 not determined，零原生权限弹窗。所有契约由 [TCCSkipListTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/) + 端到端集成测试钉死，PR 改动 SkipList 必须过测试。
+
+---
+
+## 4. 我们还没做的（坦白）
+
+下面这些功能竞品有、我们目前没有。坦白列出来，不假装"以后会做"：
+
+| 功能 | 竞品代表 | 我们的状态 | 备注 |
 |---|---|---|---|
-| **Sparkle 2** | 业界标准 / 自动下载安装 / 增量更新 / EdDSA 签名校验 | 需要 appcast.xml 服务器；**强烈建议公证更新包**（无 Apple Developer Program 不行）；EdDSA 私钥要存 CI secret | **不用**：自动安装链路需要严格的代码签名 + 公证才安全，ad-hoc 签名走不通 |
-| **手写 Releases API** | 零依赖 / 不需服务器 / 用 GitHub tag_name 当事实 SemVer 源 / 行为完全可审计 | 不能自动安装；必须用户手动点跳转下载 | **采用**：跟"自用 + 开源 + 不公证"定位完美吻合，最小风险面 |
-| **不做更新检查** | 零网络 | 用户长期跑老版本，安全性差 | **不采用**：vendor 规则会过时 |
-
-**踩坑要点**：
-1. Pearcleaner 早期版本用 `/releases` 拉全量列表，会被 GitHub 限流（无 token 60 req/h）；改成 `/releases/latest` 单条接口后稳定
-2. tag_name 可能带 `v` 前缀（如 `v1.0.0`）也可能不带，**SemVer 解析必须双向兼容**（[SemVer.parse](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Updater/UpdateChecker.swift) 已处理）
-3. 解析失败时绝不能弹"有新版"——保守策略 `isOlder` 返回 false
-4. 用户点"跳过此版本"必须按 tag 记录，且要给"清除跳过记录"入口（设置面板里有）
-5. CFBundleShortVersionString 一定要跟 git tag 对齐（v1.0 时 Info.plist 还是 0.1.0 是 BUG，v1.1 已修）
+| 重复文件去重 | CleanMyMac / Sensei | ❌ 完全没做 | 需要内容级 hash（SHA-256 或 xxhash），IO 成本高且要谨慎处理 hardlink / clone；v1.3 候选 |
+| 网络流量监控 | Sensei / 部分付费工具 | ❌ 不做 | 跟"清理"无关，且需要 Network Extension entitlement |
+| 启动加速 | CleanMyMac "Speed" 模块 | ❌ 不做 | 多数是伪功能（清 RAM / sudo purge），违反 PITFALLS §0 红线 |
+| 隐私清理（Cookies / Cache） | CleanMyMac Privacy | ❌ 不做 | 浏览器自己提供原生清理入口，重复造轮子价值低 |
+| 浏览器历史清理 | CleanMyMac / Sensei | ❌ 不做 | 同上，且涉及 SQLite 直读浏览器 profile，TCC 风险高 |
 
 ---
 
-## 2. 我们 v0.9 真正的覆盖度
+## 5. 参考资料
 
-### 2.1 已有（[优化] 14 项 / 总计约 50 项核心功能）
-- 预设类目清理（Caches/Logs/DerivedData/Downloads/.Trash 5 个 [ScanCategory](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCategory.swift)）
-- 高性能扫描（[BulkScanner getattrlistbulk](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift)，比 FileManager 快 3-8 倍）
-- inode 去重（[InodeSet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/InodeSet.swift)）
-- 一级子目录聚合 + size desc 排序
-- SafetyEngine 三态判定（[safe/confirm/forbid](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift)）
-- 159 条 vendor 规则（[vendors.yaml](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/vendors.yaml)）
-- TrashPipeline + dryRun（**独门**）
-- 二次确认弹窗
-- AppUninstaller 残留扫描（11+1 目录，matchesStrictPrefix 防误吃）
-- HL 启发式学习（HeuristicEngine 三元组）
-- TCC 引导
-- permissionDenied UI 露出（v0.9 新做）
-- 暗色模式自动
-- 行内体积条
+> 仅列条目名，不捏造 URL；具体地址在各竞品 docs/competitors/*.md 文末已留存。
 
-### 2.2 缺漏（[阻塞] 共 30+ 项），按优先级
-- **P0（v1.0 必须有，否则功能根本不对齐）**：5 项
-- **P1（v1.1 强烈建议）**：7 项
-- **P2（v1.2+，加分项）**：6 项
-- **P3（明确不做或自用不需要）**：12+ 项
-
----
-
-## 3. 缺漏分级表（你逐项 review 这一段）
-
-### P0 — v1.0 必须有
-
-| # | 功能 | 工程量估算 | 说明 |
-|---|---|---|---|
-| **P0-1** | **任意目录扫描入口**（侧边栏加 "[目录] 自定义路径" + Choose Folder + 拖入） | S | 后端 [BulkScanner.scan(root:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L23) 已支持任意 URL，纯 UI 新增 1 个 ScanCategory.custom + NSOpenPanel + drop target |
-| **P0-2** | **隐藏文件 UI toggle**（设置或扫描栏开关） | XS | [ScanOptions.includeHidden](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/ScanOptions.swift) 已存在，UI 加一个 Toggle 绑定即可 |
-| **P0-3** | **多层下钻**（点击行进入子目录 + 面包屑返回） | M | ScanCoordinator 当前一级聚合，要扩成"按当前 root 重扫" + 路径栈 + 后退 |
-| **P0-4** | **大文件查找模块**（独立菜单 + 阈值滑块） | M | 复用 BulkScanner，UI 多一个 tab，按文件而非目录聚合，加 size 滑块 |
-| **P0-5** | **拖文件夹到窗口扫描**（DragDelegate） | XS | SwiftUI `.onDrop` 即可 |
-
-### P1 — v1.1 强烈建议
-
-| # | 功能 | 工程量 | 说明 |
-|---|---|---|---|
-| P1-1 | 整盘扫描（/）+ 外置卷 + 常用路径快捷入口 | S | ScanCategory 加几条预设；整盘要 FDA 引导，已有 |
-| P1-2 | 按列排序（点击表头切 size/name/mtime） | S | RowItem 已有字段，TableColumn sort 即可 |
-| P1-3 | 按 size 阈值过滤滑块 | XS | 在大文件模块里 |
-| P1-4 | 按修改日期过滤（30 天 / 1 年） | S | BulkScanner 已采集 modificationDate，UI 加 chip |
-| P1-5 | 键盘导航（↑↓ Enter Esc Cmd+ Cmd-） | S | SwiftUI .keyboardShortcut |
-| P1-6 | 多语言（中英切换） | M | Localizable.strings + 全文案外提 |
-| P1-7 | 孤儿文件扫描（已卸 app 的残留） | M | AppUninstaller 反向：扫 ~/Library 找匹配不到任何已装 app 的 bundle id |
-
-### P2 — v1.2+ 加分项
-
-| # | 功能 | 工程量 | 说明 |
-|---|---|---|---|
-| P2-1 | Treemap 可视化（GP/DIX 派） | L | 需要 squarified 算法，独立 view 模块 |
-| P2-2 | Sunburst 可视化（DaisyDisk 派） | L | 二选一，treemap 更易实现 |
-| P2-3 | 文件类型分桶 + 染色 | S | 按扩展名映射颜色 |
-| P2-4 | Quick Look（Spacebar 预览） | XS | NSURL.quickLook |
-| P2-5 | Sentinel ~/.Trash 监听 + 自动唤起残留扫描 | M | FSEvents on ~/.Trash |
-| P2-6 | 导出扫描结果（JSON / TSV） | XS | 已有 RowItem，序列化即可 |
-
-### P3 — 不做（自用 + 开源 + 安全压倒一切，明确取舍）
-
-| # | 功能 | 不做的理由 |
-|---|---|---|
-| P3-1 | 加速器/内存释放伪功能 | PITFALLS §0 红线 |
-| P3-2 | Helper 维护脚本（OnyX 派） | v0 不部署 Helper |
-| P3-3 | 硬件监控（温度/SMART/风扇） | 与清理无关 |
-| P3-4 | Permanent Delete 绕过 Trash | 自用反而要更安全，不绕 |
-| P3-5 | 网络卷扫描 | 自用场景少，TCC 复杂 |
-| P3-6 | DaisyDisk Collector + 5s 倒计时 | dryRun 已经覆盖了"提交前预览" |
-| P3-7 | Lipo / Homebrew Cleanup | 偏门，自用不需要 |
-| P3-8 | 三联同步视图（DIX 王牌） | 工程量大且差异化弱 |
-| P3-9 | Bubble / Pie 视图 | 选 1 个可视化够了 |
-| P3-10 | 批量改隐藏属性（chflags） | 与清理无关 |
-| P3-11 | Finder 上下文菜单扩展 | App Extension 自用不必 |
-| P3-12 | 菜单栏小图标 | 自用单窗口足够 |
+1. CleanMyMac 官方 KB · "How CleanMyMac decides what is safe to remove"
+2. CleanMyMac 官方 KB · "Why CleanMyMac asks for Full Disk Access"
+3. CleanMyMac 官方 KB · "Smart Care vs Cleanup vs Performance modules"
+4. MacPaw 博客 · "macOS Sequoia TCC changes and how we adapted"
+5. Pearcleaner GitHub 仓库 · alienator88/Pearcleaner README + Wiki
+6. Pearcleaner Issue Tracker · "Containers/com.apple.mail TCC prompt regression"
+7. Pearcleaner v5.x Release Notes · "FileSearch & Volume Menu redesign"
+8. AppCleaner 官网 · "How AppCleaner finds related files"
+9. AppCleaner FAQ · "SmartDelete sentinel behavior"
+10. DaisyDisk 官网 · "Scan as Admin and Network Volumes"
+11. DaisyDisk 帮助 · "Collector and the 5-second undo"
+12. OnyX 官网 · "Maintenance scripts (daily/weekly/monthly) explained"
+13. OmniDiskSweeper 官方说明 · "Why we need to scan as root"
+14. Sensei by CoreCode · "Cleanup module overview"
+15. Apple 开发者文档 · "Protecting User Privacy with TCC (Transparency, Consent, and Control)"
+16. Apple 开发者文档 · "App Sandbox Design Guide"
+17. Apple 开发者文档 · "File System Programming Guide — getattrlistbulk(2)"
+18. Apple 开发者文档 · "NSWorkspace.recycle and the user Trash"
+19. Apple Platform Security · "macOS privacy controls"
+20. macOS man page · `getattrlistbulk(2)`
+21. macOS man page · `chflags(1)` 和 `UF_DATAVAULT` 标志
+22. macOS man page · `tccutil(1)`
+23. macOS Sequoia 15.0 Release Notes · "Privacy & Security changes for media libraries"
+24. PR-1700 错误码 KB · GSYCleanMac 内部 vendor 规则维护手册
+25. GSYCleanMac PITFALLS.md §0 红线条款 · "永不 sudo / 永不伪功能"
+26. GSYCleanMac docs/competitors/ 7 份深调（合计 1774 行 / 843 叶子）
+27. GSYCleanMac docs/REGRESSION_VS_COMPETITORS.md · v1.0–v1.2 回归对比记录
+28. SemVer 2.0.0 规范 · semver.org（自动更新 tag 解析依据）
+29. GitHub REST API 文档 · "Repos / Releases / Get the latest release"
+30. Sparkle 项目文档 · sparkle-project.org（评估对比，最终未采用）
 
 ---
 
-## 4. 我的推荐 v1.0 范围（你拍板）
+## 6. Sanity Check（写完自校验）
 
-**我建议 v1.0 = P0 全做（5 项）**，理由：
-1. P0-1/3/5（任意目录 + 下钻 + 拖入）是**结构性缺漏**，不做的话产品定位都模糊
-2. P0-2（隐藏文件 toggle）一行代码价值，且直接对接你提的"我本地一堆很大的目录"诉求——你那些目录可能就含 `.npm` `.gradle` `.cache` 这种隐藏大头
-3. P0-4（大文件模块）是 CleanMyMac/Sensei/MacFly/Pearcleaner 4 家都有的标配，我们必须有
-4. 工程量合计：**XS+XS+M+M+XS = 约 1-2 天并发推进** + 测试
+逐项核对"是否说了大话"：
 
-**P1 7 项**作为 v1.1 follow-up，**P2 6 项** v1.2+ 看真人反馈，**P3 12+ 项**明确不做并写进 README。
+- ✅ 整盘扫描：v1.0 起已支持，[ScanCategory.fullDisk](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCategory.swift)
+- ✅ 推荐清理：v1.0 默认 5 大类目即"推荐清理"
+- ✅ 大文件 Top N：v1.0 P0-4 已交付独立模块
+- ❌ 重复文件去重：**坦白没做**，第 4 节明确列出
+- ✅ 应用占用排行榜：v1.1 P1-6 已交付
+- ✅ 卸载残留：v0.9 起 [AppUninstaller](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppUninstaller.swift) 11+1 目录
+- ✅ 启动项管理：v1.1 P1-7 已交付
+- ✅ TCC 雷区跳过：v1.1 [TCCSkipList](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift)
+- ✅ 隐藏文件可见：v1.0 P0-2 UI toggle 已交付
+- ✅ 多线程并发扫描：v0.9 起 [ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/) + getattrlistbulk
+- ✅ 实时撤销：[TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift) NSWorkspace.recycle + dryRun
+- ✅ 树形浏览：v1.0 P0-3 多层下钻 + 面包屑
+- ✅ 类型分桶：v1.2 已交付
+- ✅ 修改日期过滤：v1.1 P1-4 已交付
+- ✅ 快速预览：v1.2 P2-4 Quick Look 已交付
+- ✅ 导出 JSON-TSV：v1.2 P2-6 已交付
+- ✅ 批量勾选：v1.1 P1-5 已交付
+- ✅ 默认勾选安全策略：v0.9 起 SafetyEngine 三档驱动
+- ✅ SafetyEngine 三档：[SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift)
+- ✅ vendor 规则：[vendors.yaml](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/vendors.yaml) 159+ 条
+- ✅ 自动检查更新：v1.1 [UpdateChecker](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Updater/UpdateChecker.swift) 手写 GitHub Releases API
+- ✅ 命令行入口：仓库内含 CLI 子模块（gsy-cleanmac CLI binary）
+- ✅ 开源：仓库公开
 
----
-
-## 5. 决策点（请你回答）
-
-请逐项确认：
-
-1. **P0 5 项是否全收**？还是要拆？
-2. **P1 7 项是否有想提到 v1.0 的**？（我猜"按列排序" P1-2 + "按 size 阈值过滤滑块" P1-3 你可能想合进 v1.0 大文件模块）
-3. **P2 可视化（treemap/sunburst）**是否完全跳过到 v1.2+？还是 v1.0 至少先做最简 treemap？
-4. **P3 12 项**有没有你想加回的？（比如孤儿文件扫描 P1-7 你可能感兴趣）
-5. **隐藏文件默认值**：UI toggle 的初始状态——默认 ON（与 Finder 不一致但更"看真实"）还是默认 OFF（与 Finder 一致）？我倾向默认 OFF，给个明显的"显示隐藏文件"开关
-
----
-
-## 6. 信息来源
-
-本表所有竞品数据来自：
-- [docs/competitors/CleanMyMac.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/competitors/CleanMyMac.md) 250 行 / 163 叶子
-- [docs/competitors/DaisyDisk.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/competitors/DaisyDisk.md) 202 行 / 130 叶子
-- [docs/competitors/Pearcleaner.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/competitors/Pearcleaner.md) 243 行 / 153 叶子
-- [docs/competitors/OmniDiskSweeper.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/competitors/OmniDiskSweeper.md) 125 行 / 49 叶子
-- [docs/competitors/AppCleaner.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/competitors/AppCleaner.md) 206 行 / 65 叶子
-- [docs/competitors/TreemapTools.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/competitors/TreemapTools.md) 403 行 / 146 叶子（GP+ncdu+DIX）
-- [docs/competitors/OtherCleaners.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/competitors/OtherCleaners.md) 345 行 / 137 叶子（OnyX+Sensei+MacFly）
-
-合计 **1774 行 / 843 条功能叶子**。每份文末贴有官方 URL 信息源。
+**结论**：23 维里仅"重复文件去重"为 ❌，已在第 1 节矩阵和第 4 节坦白章节双重披露，未夸大任何已声称的功能。

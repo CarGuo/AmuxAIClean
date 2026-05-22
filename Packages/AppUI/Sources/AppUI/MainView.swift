@@ -170,6 +170,10 @@ public struct MainView: View {
             Section("应用") {
                 appFootprintSidebarRow
                     .tag(MainView.appFootprintSentinelID)
+                launchAgentSidebarRow
+                    .tag(MainView.launchAgentSentinelID)
+                uninstallSidebarRow
+                    .tag(MainView.uninstallSentinelID)
             }
         }
         .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 280)
@@ -178,6 +182,14 @@ public struct MainView: View {
     /// v1.2 P1-6：「应用占用排行榜」侧边项。用 sentinel ID 走旁路，避免污染
     /// ScanCategory（它的语义是"扫描类目 + 默认 verdict"，不适合一个只读视图）。
     static let appFootprintSentinelID: String = "app.footprint"
+
+    /// v1.2 P1-7：「启动项」侧边项。同样走 sentinel ID 旁路 —— 它是只读视图，
+    /// 没有勾选/删除动作，不该污染 ScanCategory 体系。
+    static let launchAgentSentinelID: String = "launchagent.list"
+
+    /// v1.2 P1-8：「卸载残留」侧边项。UninstallScreen 自带 SafetyEngine + dryRun
+    /// + 二次确认 sheet，外层 MainView 不应再叠加扫描/删除 UI，故走 sentinel ID 旁路。
+    static let uninstallSentinelID: String = "uninstall.screen"
 
     private var appFootprintSidebarRow: some View {
         HStack(spacing: 8) {
@@ -188,6 +200,42 @@ public struct MainView: View {
                 Text("应用占用")
                     .font(.system(.body, design: .rounded))
                 Text("查看哪些 App 在吃磁盘")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var launchAgentSidebarRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "play.square.fill")
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("启动项")
+                    .font(.system(.body, design: .rounded))
+                Text("查看登录/开机自启的 plist")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var uninstallSidebarRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "trash.slash")
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("卸载残留")
+                    .font(.system(.body, design: .rounded))
+                Text("挑一个 App 清掉它的残留")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -256,11 +304,28 @@ public struct MainView: View {
         selectedCategory == MainView.appFootprintSentinelID
     }
 
+    /// v1.2 P1-7：当前是否在启动项查看模式。
+    private var isLaunchAgentMode: Bool {
+        selectedCategory == MainView.launchAgentSentinelID
+    }
+
+    /// v1.2 P1-8：当前是否在卸载残留模式。
+    private var isUninstallMode: Bool {
+        selectedCategory == MainView.uninstallSentinelID
+    }
+
     private var results: some View {
         VStack(spacing: 0) {
             if isAppFootprintMode {
                 // 「应用占用排行榜」整段独立：不渲染 statusBar / footerBar 等扫描相关 UI。
                 AppFootprintScreen()
+            } else if isLaunchAgentMode {
+                // 「启动项」同样整段独立 —— 只读视图，无扫描进度 / 勾选 / 删除按钮。
+                LaunchAgentScreen()
+            } else if isUninstallMode {
+                // 「卸载残留」整段独立：UninstallScreen 自带 SafetyEngine + dryRun + 二次确认，
+                // 外层不能再叠 statusBar / footerBar / 删除按钮，避免重复或绕过安全契约。
+                UninstallScreen(vendors: [])
             } else {
                 statusBar
                 Divider()
