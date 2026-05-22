@@ -166,8 +166,35 @@ public struct MainView: View {
                 sidebarRow(ScanCategory.fullDisk)
                     .tag(ScanCategory.fullDisk.id)
             }
+
+            Section("应用") {
+                appFootprintSidebarRow
+                    .tag(MainView.appFootprintSentinelID)
+            }
         }
         .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 280)
+    }
+
+    /// v1.2 P1-6：「应用占用排行榜」侧边项。用 sentinel ID 走旁路，避免污染
+    /// ScanCategory（它的语义是"扫描类目 + 默认 verdict"，不适合一个只读视图）。
+    static let appFootprintSentinelID: String = "app.footprint"
+
+    private var appFootprintSidebarRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "chart.bar.fill")
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("应用占用")
+                    .font(.system(.body, design: .rounded))
+                Text("查看哪些 App 在吃磁盘")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.vertical, 2)
     }
 
     @ViewBuilder
@@ -224,41 +251,51 @@ public struct MainView: View {
         selectedCategory == largeFilesCategory.id
     }
 
+    /// v1.2 P1-6：当前是否在应用占用排行榜模式。
+    private var isAppFootprintMode: Bool {
+        selectedCategory == MainView.appFootprintSentinelID
+    }
+
     private var results: some View {
         VStack(spacing: 0) {
-            statusBar
-            Divider()
-            if isLargeFilesMode {
-                // 大文件视图整段独立：不复用 viewModeBar / listResults / placeholder，
-                // 因为它的列模型、空态文案、选中模型都不一样。
-                LargeFilesView(
-                    coordinator: coordinator,
-                    settings: settings,
-                    selection: $largeFileSelection,
-                    onTrash: { urls in
-                        triggerLargeFileTrash(urls: urls)
-                    }
-                )
-            } else if coordinator.snapshot.rows.isEmpty {
-                placeholder(for: placeholderState)
+            if isAppFootprintMode {
+                // 「应用占用排行榜」整段独立：不渲染 statusBar / footerBar 等扫描相关 UI。
+                AppFootprintScreen()
             } else {
-                viewModeBar
+                statusBar
                 Divider()
-                switch viewMode {
-                case .list:
-                    listResults
-                case .tree:
-                    if let root = coordinator.currentRootPath {
-                        TreeBrowserView(coordinator: coordinator, rootPath: root)
-                    } else {
-                        Text("暂无可展开的扫描根")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if isLargeFilesMode {
+                    // 大文件视图整段独立：不复用 viewModeBar / listResults / placeholder，
+                    // 因为它的列模型、空态文案、选中模型都不一样。
+                    LargeFilesView(
+                        coordinator: coordinator,
+                        settings: settings,
+                        selection: $largeFileSelection,
+                        onTrash: { urls in
+                            triggerLargeFileTrash(urls: urls)
+                        }
+                    )
+                } else if coordinator.snapshot.rows.isEmpty {
+                    placeholder(for: placeholderState)
+                } else {
+                    viewModeBar
+                    Divider()
+                    switch viewMode {
+                    case .list:
+                        listResults
+                    case .tree:
+                        if let root = coordinator.currentRootPath {
+                            TreeBrowserView(coordinator: coordinator, rootPath: root)
+                        } else {
+                            Text("暂无可展开的扫描根")
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
                     }
                 }
+                Divider()
+                footerBar
             }
-            Divider()
-            footerBar
         }
         .navigationSplitViewColumnWidth(min: 420, ideal: 520)
         .onChange(of: coordinator.snapshot.rows.count) { _, _ in
