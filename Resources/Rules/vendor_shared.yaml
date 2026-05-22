@@ -1,0 +1,21 @@
+# 共享厂商目录白名单
+# 来源：PITFALLS §3.1 / Nektony Methodology Test 1.3
+#
+# 规则：命中以下父目录时，**禁止整体删除**，只允许删 app 专属子目录。
+# UI 默认 unchecked，并显示"该目录被多个应用共用"提示。
+
+shared_vendor_dirs:
+  - path: "~/Library/Application Support/Adobe"
+    note: "Photoshop / Illustrator / Premiere / After Effects 等共享"
+  - path: "~/Library/Application Support/Microsoft"
+    note: "Word / Excel / PowerPoint / Teams 共享"
+  - path: "~/Library/Application Support/JetBrains"
+    note: "IntelliJ / PyCharm / WebStorm / GoLand 共享"
+  - path: "~/Library/Application Support/Autodesk"
+    note: "AutoCAD / Maya / 3ds Max 共享"
+  - path: "~/Library/Application Support/Google"
+    note: "Chrome / Drive / Backup and Sync 共享"
+  - path: "~/Library/Group Containers/UBF8T346G9.Office"
+    note: "Microsoft Office 应用组"
+  - path: "~/Library/Group Containers/group.com.apple"
+    note: "Apple 系统组"

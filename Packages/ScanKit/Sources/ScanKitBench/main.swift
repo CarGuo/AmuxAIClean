@@ -1,0 +1,89 @@
+import Foundation
+import ScanKit
+
+@main
+struct ScanKitBench {
+    static func main() async {
+        let args = CommandLine.arguments
+        guard args.count >= 2 else {
+            print("""
+            ScanKit Benchmark
+            -----------------
+            用法:
+              scankit-bench <path> [--no-hidden] [--no-dedup] [--logical]
+
+            示例:
+              scankit-bench ~/Downloads
+              scankit-bench /System/Volumes/Data/Users/$(whoami)/Library/Caches
+
+            输出与 `du -sh -x` / `du -sh -A` 对比，验证：
+              1. 物理占用 vs 逻辑大小差异（iCloud / 稀疏文件）
+              2. 硬链接去重正确性（Time Machine / Xcode DerivedData）
+              3. 隐藏文件是否纳入（你说的"100G 找不到 80G"问题）
+            """)
+            exit(64)
+        }
+
+        let path = (args[1] as NSString).expandingTildeInPath
+        var options = ScanOptions()
+        var useLegacy = false
+        for arg in args.dropFirst(2) {
+            switch arg {
+            case "--no-hidden": options.includeHidden = false
+            case "--no-dedup": options.dedupByInode = false
+            case "--logical": options.useAllocatedSize = false
+            case "--legacy": useLegacy = true
+            default: break
+            }
+        }
+
+        let url = URL(fileURLWithPath: path)
+        let engine = useLegacy ? "Scanner (FileManager.enumerator)" : "BulkScanner (getattrlistbulk)"
+        print("→ scanning \(url.path) ...")
+        print("  engine:  \(engine)")
+        print("  options: hidden=\(options.includeHidden) dedup=\(options.dedupByInode) allocated=\(options.useAllocatedSize)")
+
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+
+        let stream: AsyncStream<ScanEvent>
+        if useLegacy {
+            stream = ScanKit.Scanner(options: options).scan(root: url)
+        } else {
+            stream = BulkScanner(options: options).scan(root: url)
+        }
+
+        for await event in stream {
+            switch event {
+            case .progress(let bytes, let count):
+                let human = formatter.string(fromByteCount: bytes)
+                fputs("\r  scanned: \(count) files / \(human)         ", stderr)
+            case .node:
+                continue // bench 不输出每个节点
+            case .finished(let summary):
+                print("")
+                print("─────────────────────────────────────────────")
+                print("✓ done in \(String(format: "%.2f", summary.elapsed))s")
+                print("  files:        \(summary.fileCount)")
+                print("  directories:  \(summary.directoryCount)")
+                print("  on disk:      \(formatter.string(fromByteCount: summary.totalAllocatedBytes))")
+                print("  logical:      \(formatter.string(fromByteCount: summary.totalLogicalBytes))")
+                print("  hardlink dedup saved: \(formatter.string(fromByteCount: summary.dedupedHardlinkBytes))")
+                let diff = summary.totalLogicalBytes - summary.totalAllocatedBytes
+                if diff != 0 {
+                    let label = diff > 0 ? "iCloud/sparse phantom" : "compressed/cloned bonus"
+                    print("  Δ (logical-physical): \(formatter.string(fromByteCount: diff)) [\(label)]")
+                }
+                print("─────────────────────────────────────────────")
+                print("→ 用以下命令对比:")
+                print("    du -sh \"\(url.path)\"        # 默认逻辑大小（macOS du 计 1024 块）")
+                print("    du -sh -A \"\(url.path)\"     # apparent size")
+            case .failed(let err):
+                fputs("✗ failed: \(err)\n", stderr)
+                exit(1)
+            case .permissionDenied(let path):
+                fputs("⚠ permission denied: \(path)\n", stderr)
+            }
+        }
+    }
+}

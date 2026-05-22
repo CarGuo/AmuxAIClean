@@ -1,0 +1,22 @@
+# 安全可清理目录（绿色路径）
+# 来源：PITFALLS §3 / Pearcleaner FileSearchLogic / Onyx 维护脚本
+
+safe_paths:
+  - pattern: "~/Library/Caches/**"
+    category: cache
+  - pattern: "~/Library/Logs/**"
+    category: log
+  - pattern: "~/Library/Developer/Xcode/DerivedData/**"
+    category: xcode-derived
+  - pattern: "~/Library/Developer/Xcode/iOS DeviceSupport/**"
+    category: xcode-device-support
+  - pattern: "~/Library/Developer/Xcode/Archives/**"
+    category: xcode-archive
+    note: "用户可能需要保留，标记为 confirm 而非 safe"
+    verdict: confirm
+  - pattern: "~/Library/Developer/CoreSimulator/Caches/**"
+    category: simulator-cache
+  - pattern: "~/.Trash/**"
+    category: trash
+  - pattern: "/private/var/folders/*/*/T/**"
+    category: tmp

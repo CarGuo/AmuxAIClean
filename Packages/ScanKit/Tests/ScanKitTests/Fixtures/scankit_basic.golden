@@ -1,0 +1,4 @@
+path	bytes	verdict	vendor
+/Caches	0	dir	scankit
+/Caches/a.log	1024	file	scankit
+/Caches/b.log	2048	file	scankit

@@ -1,0 +1,33 @@
+# Xcode
+build/
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
+# 构建/打包产物（CI 与本地 Scripts/build_release.sh 输出位置）
+dist/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# macOS
+.DS_Store
+
+# 签名 / 公证产物
+*.dmg
+*.zip
+ExportOptions.plist
+*.cer
+*.p12
+*.provisionprofile
+
+# 本地 secrets
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/

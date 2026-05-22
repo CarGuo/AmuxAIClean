@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（不含 v 前缀，如 1.0.0）'
+        required: true
+        default: '1.0.0'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-dmg:
+    name: Build & Package DMG
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            v="${{ github.event.inputs.version }}"
+          else
+            v="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "解析版本号: $v"
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Build Release (.app, ad-hoc signed)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          chmod +x Scripts/build_release.sh
+          ./Scripts/build_release.sh
+
+      - name: Make DMG
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          chmod +x Scripts/make_dmg.sh
+          ./Scripts/make_dmg.sh \
+            dist/GSYCleanMac.app \
+            dist/GSYCleanMac-${VERSION}.dmg
+
+      - name: SHA256 checksum
+        run: |
+          cd dist
+          shasum -a 256 GSYCleanMac-${{ steps.ver.outputs.version }}.dmg \
+            > GSYCleanMac-${{ steps.ver.outputs.version }}.dmg.sha256
+          cat GSYCleanMac-${{ steps.ver.outputs.version }}.dmg.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GSYCleanMac-${{ steps.ver.outputs.version }}-dmg
+          path: |
+            dist/GSYCleanMac-${{ steps.ver.outputs.version }}.dmg
+            dist/GSYCleanMac-${{ steps.ver.outputs.version }}.dmg.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: GSYCleanMac ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            ## GSYCleanMac ${{ github.ref_name }}
+
+            macOS 清理管家 · Release 构建（ad-hoc 签名，无 Apple Developer Program）。
+
+            ### 安装
+            1. 下载 `GSYCleanMac-${{ steps.ver.outputs.version }}.dmg`
+            2. 双击挂载，把 GSYCleanMac.app 拖进 `/Applications`
+            3. 首次运行被 Gatekeeper 拦时：系统设置 -> 隐私与安全 -> 滚到底点"仍要打开"，详见 [INSTALL.md](https://github.com/${{ github.repository }}/blob/main/docs/INSTALL.md)
+
+            ### 完整性校验
+            ```
+            shasum -a 256 GSYCleanMac-${{ steps.ver.outputs.version }}.dmg
+            ```
+            应输出与 `.dmg.sha256` 文件一致的哈希值。
+
+            ### 系统要求
+            - macOS 15 Sequoia 或更高
+            - 首次启动需在系统设置授予"完全磁盘访问权限"才能扫描完整结果
+          files: |
+            dist/GSYCleanMac-${{ steps.ver.outputs.version }}.dmg
+            dist/GSYCleanMac-${{ steps.ver.outputs.version }}.dmg.sha256

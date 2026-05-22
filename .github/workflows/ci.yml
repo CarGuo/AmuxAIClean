@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swift-test:
+    name: Swift Package Tests
+    runs-on: macos-15
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: |
+            Packages/*/.build
+          key: spm-${{ runner.os }}-${{ hashFiles('Packages/*/Package.swift', 'Packages/*/Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      - name: Run all package tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          fails=0
+          for pkg in ScanKit SafetyKit XPCBridge AppUI HeuristicKit TestHarness; do
+            echo "::group::swift test - $pkg"
+            if ! (cd "Packages/$pkg" && swift test --parallel); then
+              fails=$((fails + 1))
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$fails" -gt 0 ]; then
+            echo "::error::$fails package(s) had failing tests"
+            exit 1
+          fi
+
+  xcode-build:
+    name: Xcode Debug Build
+    runs-on: macos-15
+    timeout-minutes: 25
+    needs: swift-test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate xcodeproj
+        run: xcodegen generate
+
+      - name: xcodebuild Debug
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -scheme GSYCleanMac \
+            -configuration Debug \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            -derivedDataPath build/dd \
+            build 2>&1 | tail -200
+
+      - name: Verify .app exists
+        run: |
+          test -d build/dd/Build/Products/Debug/GSYCleanMac.app || {
+            echo "::error::.app 未生成"
+            exit 1
+          }
+          ls -la build/dd/Build/Products/Debug/GSYCleanMac.app/Contents/MacOS/

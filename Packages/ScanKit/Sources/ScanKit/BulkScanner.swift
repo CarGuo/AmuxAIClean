@@ -1,0 +1,456 @@
+import Foundation
+import Darwin
+
+/// 基于 `getattrlistbulk(2)` 的高性能扫描器（v1.0：多 worker 并行下钻）。
+///
+/// 比 `FileManager.enumerator` 快 3–8 倍的核心原因：
+/// 1. **批量** —— 一次系统调用返回多个 entry 的全部 metadata，省掉 N 次 `lstat`
+/// 2. **零拷贝** —— attribute buffer 直接由内核填充，Swift 这边按偏移解析
+/// 3. **无 URL 创建** —— 拿到 C 字符串后才在需要时构造 URL
+///
+/// v1.0 起再叠一层 **多 worker 并行**（参考 Pearcleaner v5 / DaisyDisk）：
+/// - 一个 actor `DirQueue` 充当 work-stealing 队列
+/// - N 个 `Task.detached` worker 各自从 queue 取目录、`getattrlistbulk` 后把发现的
+///   子目录回推到 queue
+/// - `inFlight` 计数保证"队列空 + 没人在跑"才退出（经典 multi-consumer 饥饿问题解法）
+/// - SSD 上 N=4~6 是甜点，N>6 IO 负收益（OmniDS 实测同款），cap 在 `maxConcurrency`
+///
+/// 并发安全清单（业界踩过的坑都列在这）：
+/// 1. **InodeSet** 已经是 actor —— 多 worker 并发 insertIfFirstSeen 安全
+/// 2. **counters**（fileCount/totalAllocated 等）放进 actor `Stats` 集中累计
+/// 3. **AsyncStream.continuation.yield** Apple 文档保证 thread-safe，多 worker 直 yield
+/// 4. **跨卷停下钻**：`staySingleVolume=true` 时新目录的 dev_t != root.dev 就不入队
+/// 5. **取消传播**：每个 worker 自检 `Task.isCancelled`
+/// 6. **死锁 / 饥饿**：DirQueue.popOrFinish() 在 inFlight==0 && stack.isEmpty 时返回
+///    `.done`，所有 worker 同时收到才退出
+///
+/// 失败回退：如果根目录无法 `open(O_RDONLY)`（典型于 TCC / Full Disk Access），
+/// 调用方应回退到 `Scanner` 的 FileManager 路径。
+public actor BulkScanner {
+    private let options: ScanOptions
+    private let inodeSet = InodeSet()
+
+    public init(options: ScanOptions = .default) {
+        self.options = options
+    }
+
+    public nonisolated func scan(root: URL) -> AsyncStream<ScanEvent> {
+        AsyncStream(bufferingPolicy: .bufferingNewest(8192)) { continuation in
+            let opts = options
+            let inodes = inodeSet
+            let task = Task.detached(priority: .userInitiated) {
+                let start = Date()
+                let stats = ScanStats()
+                let queue = DirQueue()
+                await queue.push(root.path)
+
+                // 把根目录的 dev_t 取出来（lstat 一次），用于跨卷停下钻判断。
+                // 用 let + 立即求值；Swift 6 严格并发不允许闭包捕获可变 var。
+                let rootDev: UInt64 = {
+                    guard opts.staySingleVolume else { return 0 }
+                    var sb = stat()
+                    if lstat(root.path, &sb) == 0 {
+                        return UInt64(bitPattern: Int64(sb.st_dev))
+                    }
+                    return 0
+                }()
+
+                let workerCount = opts.actualConcurrency
+                await withTaskGroup(of: Void.self) { group in
+                    for _ in 0..<workerCount {
+                        group.addTask {
+                            await BulkScanner.workerLoop(
+                                queue: queue,
+                                stats: stats,
+                                inodes: inodes,
+                                options: opts,
+                                rootDev: rootDev,
+                                continuation: continuation
+                            )
+                        }
+                    }
+                }
+
+                let s = await stats.snapshot()
+                let summary = ScanSummary(
+                    root: root,
+                    totalAllocatedBytes: s.totalAllocated,
+                    totalLogicalBytes: s.totalLogical,
+                    fileCount: s.fileCount,
+                    directoryCount: s.dirCount,
+                    dedupedHardlinkBytes: s.dedupedBytes,
+                    elapsed: Date().timeIntervalSince(start),
+                    permissionDeniedCount: s.permissionDenied
+                )
+                continuation.yield(.finished(summary))
+                continuation.finish()
+            }
+
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// 单个 worker 的循环：popOrFinish → enumerate → 把子目录推回 queue → 直到 .done。
+    /// `nonisolated static` 是为了 worker 内部不需要 actor self（避免 self 重入）。
+    private static func workerLoop(
+        queue: DirQueue,
+        stats: ScanStats,
+        inodes: InodeSet,
+        options: ScanOptions,
+        rootDev: UInt64,
+        continuation: AsyncStream<ScanEvent>.Continuation
+    ) async {
+        while !Task.isCancelled {
+            let nextOp = await queue.popOrFinish()
+            switch nextOp {
+            case .done:
+                return
+            case .work(let dirPath):
+                await processDirectory(
+                    dirPath: dirPath,
+                    queue: queue,
+                    stats: stats,
+                    inodes: inodes,
+                    options: options,
+                    rootDev: rootDev,
+                    continuation: continuation
+                )
+                // 注意顺序：必须先把发现的子目录全部 push 完才 markCompleted，
+                // 否则可能出现"queue 空 + inFlight==0"假象 → 其他 worker 提前退出 → 漏扫。
+                await queue.markCompleted()
+            }
+        }
+    }
+
+    /// 处理一个目录：getattrlistbulk → 累计本地 → push 子目录 → merge stats。
+    /// 改成 async：让"push 子目录"在 markCompleted **之前**真正完成（关键并发正确性）。
+    private static func processDirectory(
+        dirPath: String,
+        queue: DirQueue,
+        stats: ScanStats,
+        inodes: InodeSet,
+        options: ScanOptions,
+        rootDev: UInt64,
+        continuation: AsyncStream<ScanEvent>.Continuation
+    ) async {
+        let fd = open(dirPath, O_RDONLY, 0)
+        guard fd >= 0 else {
+            await stats.incPermissionDenied()
+            continuation.yield(.permissionDenied(path: dirPath))
+            return
+        }
+        defer { close(fd) }
+
+        // 本地累计，最后一次性合并到 actor stats，减少跨 actor 次数（性能优化）。
+        var localFileCount = 0
+        var localDirCount = 0
+        var localAllocated: Int64 = 0
+        var localLogical: Int64 = 0
+        var localDeduped: Int64 = 0
+        var newDirs: [String] = []
+
+        BulkEnumerate.enumerate(fd: fd, dirPath: dirPath) { entry in
+            if Task.isCancelled { return false }
+
+            let absPath = "\(dirPath)/\(entry.name)"
+
+            // 隐藏文件
+            if !options.includeHidden && entry.name.hasPrefix(".") {
+                return true
+            }
+
+            // inode 去重（actor 内部 unfair-lock 同步，可在 sync 上下文调）
+            let isFirst = !options.dedupByInode
+                || inodes.insertIfFirstSeen(device: entry.device, inode: entry.inode)
+
+            if entry.isDirectory {
+                localDirCount += 1
+                if entry.name != "." && entry.name != ".." {
+                    // 跨卷停下钻：dev 不一致就不入队
+                    if !options.staySingleVolume || rootDev == 0 || entry.device == rootDev {
+                        newDirs.append(absPath)
+                    }
+                }
+            } else {
+                localFileCount += 1
+                if isFirst {
+                    localAllocated += entry.allocatedSize
+                    localLogical += entry.logicalSize
+                } else {
+                    localDeduped += entry.allocatedSize
+                }
+            }
+
+            let url = URL(fileURLWithPath: absPath, isDirectory: entry.isDirectory)
+            let node = FSNode(
+                url: url,
+                isDirectory: entry.isDirectory,
+                isSymlink: entry.isSymlink,
+                allocatedSize: entry.allocatedSize,
+                logicalSize: entry.logicalSize,
+                inode: entry.inode,
+                device: entry.device,
+                modificationDate: entry.modificationDate
+            )
+            // AsyncStream.continuation.yield 是 thread-safe（Apple 文档保证）
+            continuation.yield(.node(node))
+            return true
+        }
+
+        // 关键：先 push 新目录、再 merge stats，最后才 markCompleted（在 workerLoop 里）
+        await queue.pushMany(newDirs)
+        await stats.merge(
+            files: localFileCount,
+            dirs: localDirCount,
+            allocated: localAllocated,
+            logical: localLogical,
+            deduped: localDeduped
+        )
+        if let prog = await stats.progressIfDue() {
+            continuation.yield(.progress(scannedBytes: prog.bytes, fileCount: prog.files))
+        }
+    }
+}
+
+// MARK: - 并发支持类型
+
+/// 多 worker 共享的目录队列。
+/// 关键设计：用 `inFlight` 计数 + `stack` 一起判定终止 —— 当 stack 空 **且** inFlight==0
+/// 时才让所有 worker 一起退出，避免"一个 worker 看到 stack 空就退、另一个 worker 又
+/// 推进新目录但没人来取"的饥饿。
+actor DirQueue {
+    enum PopResult {
+        case work(String)
+        case done
+    }
+
+    private var stack: [String] = []
+    private var inFlight: Int = 0
+
+    func push(_ path: String) {
+        stack.append(path)
+    }
+
+    /// 一次推多个，省 N 次跨 actor hop（worker 完成一目录后会一次推所有子目录）。
+    func pushMany(_ paths: [String]) {
+        if paths.isEmpty { return }
+        stack.append(contentsOf: paths)
+    }
+
+    /// 取一个工作单元；若没有但还有 worker 在处理则继续等（让出 actor）；
+    /// 若 stack 空 + inFlight==0，告诉调用方"全干完了"。
+    func popOrFinish() async -> PopResult {
+        while true {
+            if let p = stack.popLast() {
+                inFlight += 1
+                return .work(p)
+            }
+            if inFlight == 0 {
+                return .done
+            }
+            // 让出 actor 一会儿，等其他 worker 推进
+            await Task.yield()
+            // 防止 100% spin
+            try? await Task.sleep(nanoseconds: 500_000) // 0.5ms
+        }
+    }
+
+    func markCompleted() {
+        inFlight = max(0, inFlight - 1)
+    }
+}
+
+/// 累计扫描统计的 actor。worker 把本地累计后一次性 merge 进来，省跨 actor 次数。
+actor ScanStats {
+    private var fileCount: Int = 0
+    private var dirCount: Int = 0
+    private var totalAllocated: Int64 = 0
+    private var totalLogical: Int64 = 0
+    private var dedupedBytes: Int64 = 0
+    private var permissionDenied: Int = 0
+    private var lastProgressEmit: Date = .distantPast
+
+    struct Snapshot {
+        let fileCount: Int
+        let dirCount: Int
+        let totalAllocated: Int64
+        let totalLogical: Int64
+        let dedupedBytes: Int64
+        let permissionDenied: Int
+    }
+
+    func merge(files: Int, dirs: Int, allocated: Int64, logical: Int64, deduped: Int64) {
+        fileCount += files
+        dirCount += dirs
+        totalAllocated += allocated
+        totalLogical += logical
+        dedupedBytes += deduped
+    }
+
+    func incPermissionDenied() {
+        permissionDenied += 1
+    }
+
+    func snapshot() -> Snapshot {
+        Snapshot(
+            fileCount: fileCount,
+            dirCount: dirCount,
+            totalAllocated: totalAllocated,
+            totalLogical: totalLogical,
+            dedupedBytes: dedupedBytes,
+            permissionDenied: permissionDenied
+        )
+    }
+
+    /// 距上次 progress 事件超 0.1s 才返回值（节流），否则 nil。
+    func progressIfDue() -> (bytes: Int64, files: Int)? {
+        let now = Date()
+        if now.timeIntervalSince(lastProgressEmit) > 0.1 {
+            lastProgressEmit = now
+            return (totalAllocated, fileCount)
+        }
+        return nil
+    }
+}
+
+// MARK: - getattrlistbulk 解析
+
+/// 单个目录项的 metadata。
+struct BulkEntry {
+    let name: String
+    let isDirectory: Bool
+    let isSymlink: Bool
+    let allocatedSize: Int64
+    let logicalSize: Int64
+    let inode: UInt64
+    let device: UInt64
+    let modificationDate: Date?
+}
+
+/// 调用 `getattrlistbulk` 并按偏移解析返回缓冲区。
+///
+/// 关键参考：Apple `man getattrlistbulk(2)` + `<sys/attr.h>`。
+/// 注意 attribute 的"返回顺序"必须严格按 `attrgroup_t` bit 升序排列，
+/// 这一点没有任何 Swift wrapper 能帮你校验，错一位就全乱。
+enum BulkEnumerate {
+    /// 调用 callback 直到 `false` 或目录读完。
+    static func enumerate(fd: Int32, dirPath: String, _ body: (BulkEntry) -> Bool) {
+        var attrList = attrlist()
+        attrList.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
+        attrList.commonattr = attrgroup_t(
+            UInt32(ATTR_CMN_RETURNED_ATTRS)
+            | UInt32(ATTR_CMN_NAME)
+            | UInt32(ATTR_CMN_OBJTYPE)
+            | UInt32(ATTR_CMN_MODTIME)
+            | UInt32(ATTR_CMN_FILEID)
+            | UInt32(ATTR_CMN_DEVID)
+        )
+        attrList.fileattr = attrgroup_t(
+            UInt32(ATTR_FILE_TOTALSIZE)
+            | UInt32(ATTR_FILE_ALLOCSIZE)
+        )
+
+        // 64KB 缓冲区：典型一次能拿 ~200 个 entry
+        let bufSize = 64 * 1024
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: bufSize, alignment: 8)
+        defer { buffer.deallocate() }
+
+        while true {
+            let retcount = getattrlistbulk(fd, &attrList, buffer, bufSize, 0)
+            if retcount <= 0 { break } // 0 = 没了；<0 = 错
+
+            var cursor = buffer
+            for _ in 0..<retcount {
+                let entryStart = cursor
+                let entryLen = entryStart.loadUnaligned(as: UInt32.self)
+                guard entryLen > 0 else { break }
+                let nextCursor = entryStart.advanced(by: Int(entryLen))
+                cursor = entryStart.advanced(by: MemoryLayout<UInt32>.size)
+
+                // 第一个字段必须是 returned_attrs（说明哪些字段真的填了）
+                let returned = cursor.loadUnaligned(as: attribute_set_t.self)
+                cursor = cursor.advanced(by: MemoryLayout<attribute_set_t>.size)
+
+                // —— 关键：之后的字段严格按 attrgroup_t 的 **bit 升序** 排列 ——
+                // commonattr：NAME(bit0) → DEVID(bit1) → OBJTYPE(bit3) → MODTIME(bit10) → FILEID(bit25)
+                // fileattr  ：TOTALSIZE(bit1) → ALLOCSIZE(bit2)
+
+                // ATTR_CMN_NAME：attrreference_t（offset + length），name 字符串放在 buffer 末尾
+                var name = ""
+                if returned.commonattr & attrgroup_t(UInt32(ATTR_CMN_NAME)) != 0 {
+                    let nameRef = cursor.loadUnaligned(as: attrreference_t.self)
+                    let nameStart = cursor.advanced(by: Int(nameRef.attr_dataoffset))
+                    name = String(cString: nameStart.assumingMemoryBound(to: CChar.self))
+                    cursor = cursor.advanced(by: MemoryLayout<attrreference_t>.size)
+                }
+
+                // ATTR_CMN_DEVID：dev_t (Int32)
+                var device: UInt64 = 0
+                if returned.commonattr & attrgroup_t(UInt32(ATTR_CMN_DEVID)) != 0 {
+                    let dev = cursor.loadUnaligned(as: dev_t.self)
+                    device = UInt64(bitPattern: Int64(dev))
+                    cursor = cursor.advanced(by: MemoryLayout<dev_t>.size)
+                }
+
+                // ATTR_CMN_OBJTYPE：fsobj_type_t (UInt32)；VDIR/VLNK 是 vtype enum
+                var isDir = false
+                var isSymlink = false
+                if returned.commonattr & attrgroup_t(UInt32(ATTR_CMN_OBJTYPE)) != 0 {
+                    let objType = cursor.loadUnaligned(as: fsobj_type_t.self)
+                    isDir = (objType == fsobj_type_t(VDIR.rawValue))
+                    isSymlink = (objType == fsobj_type_t(VLNK.rawValue))
+                    cursor = cursor.advanced(by: MemoryLayout<fsobj_type_t>.size)
+                }
+
+                // ATTR_CMN_MODTIME：timespec
+                var modDate: Date?
+                if returned.commonattr & attrgroup_t(UInt32(ATTR_CMN_MODTIME)) != 0 {
+                    let ts = cursor.loadUnaligned(as: timespec.self)
+                    modDate = Date(timeIntervalSince1970: TimeInterval(ts.tv_sec) + TimeInterval(ts.tv_nsec) / 1e9)
+                    cursor = cursor.advanced(by: MemoryLayout<timespec>.size)
+                }
+
+                // ATTR_CMN_FILEID：UInt64
+                var inode: UInt64 = 0
+                if returned.commonattr & attrgroup_t(UInt32(ATTR_CMN_FILEID)) != 0 {
+                    inode = cursor.loadUnaligned(as: UInt64.self)
+                    cursor = cursor.advanced(by: MemoryLayout<UInt64>.size)
+                }
+
+                // ATTR_FILE_TOTALSIZE：off_t (Int64)
+                var logical: Int64 = 0
+                if returned.fileattr & attrgroup_t(UInt32(ATTR_FILE_TOTALSIZE)) != 0 {
+                    logical = cursor.loadUnaligned(as: off_t.self)
+                    cursor = cursor.advanced(by: MemoryLayout<off_t>.size)
+                }
+
+                // ATTR_FILE_ALLOCSIZE：off_t
+                var allocated: Int64 = 0
+                if returned.fileattr & attrgroup_t(UInt32(ATTR_FILE_ALLOCSIZE)) != 0 {
+                    allocated = cursor.loadUnaligned(as: off_t.self)
+                    cursor = cursor.advanced(by: MemoryLayout<off_t>.size)
+                }
+
+                // 跳过 . 与 ..（getattrlistbulk 实测不返回，但保险）
+                if name == "." || name == ".." {
+                    cursor = nextCursor
+                    continue
+                }
+
+                let entry = BulkEntry(
+                    name: name,
+                    isDirectory: isDir,
+                    isSymlink: isSymlink,
+                    allocatedSize: allocated,
+                    logicalSize: logical,
+                    inode: inode,
+                    device: device,
+                    modificationDate: modDate
+                )
+                if !body(entry) { return }
+
+                cursor = nextCursor
+            }
+        }
+    }
+}
