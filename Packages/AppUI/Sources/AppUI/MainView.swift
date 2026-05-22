@@ -175,6 +175,11 @@ public struct MainView: View {
                 uninstallSidebarRow
                     .tag(MainView.uninstallSentinelID)
             }
+
+            Section("去重") {
+                duplicateSidebarRow
+                    .tag(MainView.duplicateSentinelID)
+            }
         }
         .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 280)
     }
@@ -190,6 +195,10 @@ public struct MainView: View {
     /// v1.2 P1-8：「卸载残留」侧边项。UninstallScreen 自带 SafetyEngine + dryRun
     /// + 二次确认 sheet，外层 MainView 不应再叠加扫描/删除 UI，故走 sentinel ID 旁路。
     static let uninstallSentinelID: String = "uninstall.screen"
+
+    /// v1.2 P2-1：「重复文件」侧边项。DuplicateScreen 是只读视图（无勾选 / 无删除按钮），
+    /// 与 ScanCategory（默认勾选 + verdict）的语义不兼容，走 sentinel ID 旁路。
+    static let duplicateSentinelID: String = "duplicate.scan"
 
     private var appFootprintSidebarRow: some View {
         HStack(spacing: 8) {
@@ -236,6 +245,24 @@ public struct MainView: View {
                 Text("卸载残留")
                     .font(.system(.body, design: .rounded))
                 Text("挑一个 App 清掉它的残留")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var duplicateSidebarRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "doc.on.doc")
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("重复文件")
+                    .font(.system(.body, design: .rounded))
+                Text("只读视图，请用 Finder 自行处理")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -314,6 +341,11 @@ public struct MainView: View {
         selectedCategory == MainView.uninstallSentinelID
     }
 
+    /// v1.2 P2-1：当前是否在重复文件模式。
+    private var isDuplicateMode: Bool {
+        selectedCategory == MainView.duplicateSentinelID
+    }
+
     private var results: some View {
         VStack(spacing: 0) {
             if isAppFootprintMode {
@@ -326,6 +358,10 @@ public struct MainView: View {
                 // 「卸载残留」整段独立：UninstallScreen 自带 SafetyEngine + dryRun + 二次确认，
                 // 外层不能再叠 statusBar / footerBar / 删除按钮，避免重复或绕过安全契约。
                 UninstallScreen(vendors: [])
+            } else if isDuplicateMode {
+                // 「重复文件」整段独立：只读视图，没有勾选 / 删除按钮，
+                // 也不复用 statusBar / footerBar（它有自己的 banner + 进度 + footer）。
+                DuplicateScreen()
             } else {
                 statusBar
                 Divider()
