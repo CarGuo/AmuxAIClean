@@ -2,14 +2,19 @@
 # build_release.sh —— GSYCleanMac Release 打包（自用 / 开源信任安装路径）
 #
 # 用法:
-#   ./Scripts/build_release.sh                 # 默认：Release 配置 + ad-hoc 签名 + 复制到 dist/
+#   ./Scripts/build_release.sh                 # 默认：Release 配置 + 自动选签名 + 复制到 dist/
 #   VERSION=1.0.0 ./Scripts/build_release.sh   # 指定版本号写进 Info.plist 与 dmg 文件名
-#   IDENTITY="Developer ID..." ./Scripts/build_release.sh   # 用真证书替代 ad-hoc
+#   IDENTITY="Developer ID..." ./Scripts/build_release.sh   # 显式覆盖签名身份
+#
+# 签名身份选择优先级（从高到低）：
+#   1. 命令行 IDENTITY=...                    显式覆盖
+#   2. 环境变量 GSYCLEAN_CODESIGN_IDENTITY    setup_codesign.sh 产出的本地稳定身份（推荐）
+#   3. ad-hoc "-"                             零依赖兜底，但 TCC 授权会随每次重签失效
 #
 # 行为:
 #   1. 若环境无 xcodeproj，自动 xcodegen generate
 #   2. xcodebuild -configuration Release，可选注入 MARKETING_VERSION
-#   3. ad-hoc 签名（CODE_SIGN_IDENTITY="-"）—— 不依赖 Apple Developer Program
+#   3. 按上述优先级挑签名身份；非 ad-hoc 时 CODE_SIGNING_REQUIRED/ALLOWED 都打开
 #   4. 输出产物到 dist/GSYCleanMac.app（保留原始 build 路径不动）
 #
 # 设计原则:
@@ -23,7 +28,8 @@ PROJECT_NAME="GSYCleanMac"
 SCHEME="GSYCleanMac"
 CONFIG="${CONFIG:-Release}"
 VERSION="${VERSION:-}"
-IDENTITY="${IDENTITY:--}"
+# 签名身份优先级：命令行 IDENTITY > 环境变量 GSYCLEAN_CODESIGN_IDENTITY > ad-hoc "-"
+IDENTITY="${IDENTITY:-${GSYCLEAN_CODESIGN_IDENTITY:--}}"
 BUILD_DIR="${BUILD_DIR:-build/release}"
 DIST_DIR="${DIST_DIR:-dist}"
 
@@ -55,17 +61,31 @@ mkdir -p "$DIST_DIR"
 rm -rf "$DIST_DIR/${PROJECT_NAME}.app"
 
 # ----- 4. 构建 -----
-step "xcodebuild -scheme ${SCHEME} -configuration ${CONFIG} （ad-hoc 签名）"
-
-XCB_ARGS=(
-  -scheme "$SCHEME"
-  -configuration "$CONFIG"
-  -derivedDataPath "$BUILD_DIR"
-  CODE_SIGN_IDENTITY="$IDENTITY"
-  CODE_SIGNING_REQUIRED=NO
-  CODE_SIGNING_ALLOWED=NO
-  build
-)
+if [ "$IDENTITY" = "-" ]; then
+  step "xcodebuild -scheme ${SCHEME} -configuration ${CONFIG}（ad-hoc 签名）"
+  XCB_ARGS=(
+    -scheme "$SCHEME"
+    -configuration "$CONFIG"
+    -derivedDataPath "$BUILD_DIR"
+    CODE_SIGN_IDENTITY="$IDENTITY"
+    CODE_SIGN_STYLE=Manual
+    CODE_SIGNING_REQUIRED=NO
+    CODE_SIGNING_ALLOWED=NO
+    build
+  )
+else
+  step "xcodebuild -scheme ${SCHEME} -configuration ${CONFIG}（身份：${IDENTITY}）"
+  XCB_ARGS=(
+    -scheme "$SCHEME"
+    -configuration "$CONFIG"
+    -derivedDataPath "$BUILD_DIR"
+    CODE_SIGN_IDENTITY="$IDENTITY"
+    CODE_SIGN_STYLE=Manual
+    CODE_SIGNING_REQUIRED=YES
+    CODE_SIGNING_ALLOWED=YES
+    build
+  )
+fi
 
 if [ -n "$VERSION" ]; then
   XCB_ARGS=(MARKETING_VERSION="$VERSION" "${XCB_ARGS[@]}")
@@ -90,7 +110,7 @@ cat <<EOF
 ${GREEN}${BOLD}Release 构建完成${NC}
   配置:   ${CONFIG}
   版本:   ${VERSION:-（默认沿用 project.yml 的 CFBundleShortVersionString）}
-  签名:   ${IDENTITY}（- = ad-hoc，无 Apple Developer Program 也可分发）
+  签名:   ${IDENTITY}（- = ad-hoc 兜底；本地稳定身份请先跑 ./Scripts/setup_codesign.sh）
   产物:   ${DIST_DIR}/${PROJECT_NAME}.app
 
 下一步：

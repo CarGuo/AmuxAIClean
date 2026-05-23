@@ -13,7 +13,7 @@ final class AppSettingsTests: XCTestCase {
     @MainActor
     func test_默认值_首次启动时应符合v1拍板默认() throws {
         let s = AppSettings(testSuite: freshSuite())
-        XCTAssertFalse(s.showHidden, "隐藏文件 toggle 默认必须 OFF（v1.0 拍板）")
+        XCTAssertTrue(s.showHidden, "隐藏文件 toggle 默认必须 ON（v1.3 修订；为对齐 Finder/du 体积统计）")
         XCTAssertEqual(s.minFileSizeMB, 100, "大文件默认阈值 100MB")
         XCTAssertEqual(s.sortKey, .sizeDesc, "默认按大小降序")
         XCTAssertTrue(s.updateCheckEnabled, "v1.1：启动检查更新默认 ON")
@@ -76,13 +76,13 @@ final class AppSettingsTests: XCTestCase {
     func test_testReset_应把所有键清空() throws {
         let suite = freshSuite()
         let s = AppSettings(testSuite: suite)
-        s.showHidden = true
+        s.showHidden = false
         s.minFileSizeMB = 999
         s.sortKey = .nameAsc
         s._testReset()
-        // fresh 一份验证
+        // fresh 一份验证（应回到 v1.3 默认值：showHidden ON）
         let s2 = AppSettings(testSuite: suite)
-        XCTAssertFalse(s2.showHidden)
+        XCTAssertTrue(s2.showHidden)
         XCTAssertEqual(s2.minFileSizeMB, 100)
         XCTAssertEqual(s2.sortKey, .sizeDesc)
     }

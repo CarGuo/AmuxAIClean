@@ -35,6 +35,21 @@ public struct ScanOptions: Sendable {
     /// 关掉它会让外接 USB / 网络挂载点也被吃进去，导致扫描时间不可控。
     public var staySingleVolume: Bool
 
+    /// v1.3 性能优化：是否按介质类型自适应 worker 数。
+    /// - SSD (APFS / NVMe)：把 worker 提到 8（IO 并行甜点更高）
+    /// - HDD (旋转盘)：压到 2（多 worker 反而触发 seek 风暴负收益）
+    /// - 网络盘 (smbfs / nfs / webdav)：压到 1（避免被 server 限速 + 单连接更稳）
+    /// 默认 true。关闭后回退到固定 `actualConcurrency`。
+    public var mediaAware: Bool
+
+    /// v1.3 修 banner 误报：是否硬 skip [TCCSkipList](TCCSkipList.swift) 列出的雷区。
+    /// - **未授予 FDA**（`FDAProbe.probe() != .granted`）：必须保持 true，
+    ///   否则一次扫描会触发 Mail/Messages/Photos 多个系统弹窗。
+    /// - **已授予 FDA**：建议设 false。绕过硬 skip 后这些目录会被正常下钻、
+    ///   .tccProtectedSkipped 事件不再 yield，banner 自然消失。
+    /// 默认 true（保守）。UI 层在 `ScanCoordinator` 里读 FDAProbe 后自动透传。
+    public var respectTCCSkipList: Bool
+
     /// 实际生效的 worker 数量（cap 在 maxConcurrency）。
     public var actualConcurrency: Int { max(1, min(concurrency, maxConcurrency)) }
 
@@ -46,8 +61,10 @@ public struct ScanOptions: Sendable {
         dedupByInode: Bool = true,
         useAllocatedSize: Bool = true,
         concurrency: Int = ProcessInfo.processInfo.activeProcessorCount,
-        maxConcurrency: Int = 6,
-        staySingleVolume: Bool = true
+        maxConcurrency: Int = 8,
+        staySingleVolume: Bool = true,
+        mediaAware: Bool = true,
+        respectTCCSkipList: Bool = true
     ) {
         self.includeHidden = includeHidden
         self.includePackageContents = includePackageContents
@@ -58,6 +75,8 @@ public struct ScanOptions: Sendable {
         self.concurrency = concurrency
         self.maxConcurrency = maxConcurrency
         self.staySingleVolume = staySingleVolume
+        self.mediaAware = mediaAware
+        self.respectTCCSkipList = respectTCCSkipList
     }
 
     public static let `default` = ScanOptions()

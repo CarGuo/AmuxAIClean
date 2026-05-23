@@ -15,10 +15,18 @@ public struct RowItem: Identifiable, Hashable, Sendable {
     public let rejection: SafetyRejection
     public let vendorName: String?
     public let vendorNote: String?
+    /// v1.3：该聚合行是否"正在被扫描"。
+    ///
+    /// 判定来自 [ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 维护的 `lastIngestAt[bucketPath]`：该 bucket 最近一次 ingest 距 publishSnapshot 时间 < 800ms 即视为 active。
+    /// UI 给 active 行的 bytes 数字上色 + 轻微脉动，让用户一眼看出多 worker 同时在扫不同子树。
+    /// 扫描结束后所有行的 isActive 一律 false。
+    public let isActive: Bool
 
     public init(id: String, url: URL, title: String, isDirectory: Bool, bytes: Int64,
                 logicalBytes: Int64, fileCount: Int, verdict: SafetyVerdict, rejection: SafetyRejection,
-                vendorName: String? = nil, vendorNote: String? = nil) {
+                vendorName: String? = nil, vendorNote: String? = nil,
+                isActive: Bool = false) {
         self.id = id
         self.url = url
         self.title = title
@@ -30,6 +38,7 @@ public struct RowItem: Identifiable, Hashable, Sendable {
         self.rejection = rejection
         self.vendorName = vendorName
         self.vendorNote = vendorNote
+        self.isActive = isActive
     }
 
     /// `forbid` 项不允许勾选；其余可勾。
@@ -37,6 +46,59 @@ public struct RowItem: Identifiable, Hashable, Sendable {
 
     /// UI 默认是否勾上：仅 `.safe`。
     public var defaultSelected: Bool { verdict == .safe }
+}
+
+/// v1.3：主列表（推荐清理 / 自定义路径）排序键。
+///
+/// 设计要点：
+/// - 默认值 `.sizeDesc`（按字节大小降序）—— 大的清理项先出现，符合"挑大的删"的直觉
+/// - 与 [TreeSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L72)
+///   不复用：树视图含 count 列；主列表行的 fileCount 也展示，但维度更少（无独立列头）
+/// - **扫描进行中不参与排序选择**——publishSnapshot 在 finished=false 阶段强制按 path 字典序，
+///   保证多 worker 同时刷新时行位置稳定，避免"只一行在动"错觉（v1.3 修订背景见 ScanCoordinator）；
+///   `finished=true` 那一帧才按用户选定的 sortKey 排
+public enum MainListSortKey: String, CaseIterable, Sendable, Hashable, Identifiable {
+    case sizeDesc
+    case sizeAsc
+    case nameAsc
+    case nameDesc
+    case fileCountDesc
+    case fileCountAsc
+
+    public var id: String { rawValue }
+
+    /// UI 菜单文案。
+    public var label: String {
+        switch self {
+        case .sizeDesc:      return "大小（从大到小）"
+        case .sizeAsc:       return "大小（从小到大）"
+        case .nameAsc:       return "名称（A→Z）"
+        case .nameDesc:      return "名称（Z→A）"
+        case .fileCountDesc: return "文件数（多→少）"
+        case .fileCountAsc:  return "文件数（少→多）"
+        }
+    }
+
+    /// 比较函数。主键相等时一律按 path 升序兜底，保证 ForEach 不抖。
+    public func lessThan(_ a: RowItem, _ b: RowItem) -> Bool {
+        switch self {
+        case .sizeDesc:
+            if a.bytes != b.bytes { return a.bytes > b.bytes }
+        case .sizeAsc:
+            if a.bytes != b.bytes { return a.bytes < b.bytes }
+        case .nameAsc:
+            let cmp = a.title.localizedCaseInsensitiveCompare(b.title)
+            if cmp != .orderedSame { return cmp == .orderedAscending }
+        case .nameDesc:
+            let cmp = a.title.localizedCaseInsensitiveCompare(b.title)
+            if cmp != .orderedSame { return cmp == .orderedDescending }
+        case .fileCountDesc:
+            if a.fileCount != b.fileCount { return a.fileCount > b.fileCount }
+        case .fileCountAsc:
+            if a.fileCount != b.fileCount { return a.fileCount < b.fileCount }
+        }
+        return a.id < b.id
+    }
 }
 
 /// v1.0 T3：树视图行模型 —— 给 OutlineGroup / TreeBrowserView 用。
@@ -194,16 +256,37 @@ public struct ScanSnapshot: Sendable {
     public let scannedFileCount: Int
     public let isFinished: Bool
     public let elapsed: TimeInterval
+    /// v1.3：实时扫描吞吐（bytes/s），EWMA 平滑后的速率。0 表示尚未估出。
+    /// 用法：HUD 显示 "MB/s"；估算 ETA 时 / bytesPerSecond。
+    public let bytesPerSecond: Double
+    /// v1.3：预计剩余耗时（秒）。仅在以下条件全部成立时给出：
+    ///   1) 当前在扫整盘且 [VolumeCapacity.Snapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/VolumeCapacity.swift) 已知（有"已用容量"作上限）；
+    ///   2) bytesPerSecond > 0 且 elapsed > 0.5s（采样不足时不报，避免开始 100ms 就显示"还需 6 小时"）；
+    /// 否则为 nil —— UI 显示"估算中…"。
+    public let estimatedRemaining: TimeInterval?
 
-    public static let empty = ScanSnapshot(categoryID: "", rows: [], totalBytes: 0, scannedFileCount: 0, isFinished: false, elapsed: 0)
+    public static let empty = ScanSnapshot(categoryID: "", rows: [], totalBytes: 0,
+                                           scannedFileCount: 0, isFinished: false, elapsed: 0,
+                                           bytesPerSecond: 0, estimatedRemaining: nil)
 
     public init(categoryID: String, rows: [RowItem], totalBytes: Int64,
-                scannedFileCount: Int, isFinished: Bool, elapsed: TimeInterval) {
+                scannedFileCount: Int, isFinished: Bool, elapsed: TimeInterval,
+                bytesPerSecond: Double = 0, estimatedRemaining: TimeInterval? = nil) {
         self.categoryID = categoryID
         self.rows = rows
         self.totalBytes = totalBytes
         self.scannedFileCount = scannedFileCount
         self.isFinished = isFinished
         self.elapsed = elapsed
+        self.bytesPerSecond = bytesPerSecond
+        self.estimatedRemaining = estimatedRemaining
+    }
+
+    /// v1.3：用户语义"还未扫描过"的判定。
+    /// 三态划分：isPristine（未开始）/ !isFinished && !isPristine（扫描中）/ isFinished（完成）。
+    /// UI 用它区分"刚启动还没扫"和"扫完真的是 0 KB"，避免空状态显示 "0 KB · 0 个文件"。
+    /// 判定条件：还没标 finished，且没扫过任何文件，且 rows 也是空。
+    public var isPristine: Bool {
+        !isFinished && scannedFileCount == 0 && rows.isEmpty
     }
 }

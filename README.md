@@ -193,3 +193,18 @@ rm -rf "$HOME/Library/Application Support/GSYCleanMac"
 ## License
 
 [MIT](LICENSE) · Copyright (c) 2026 CarGuo
+
+---
+
+## 开发环境一次性配置
+
+ad-hoc 签名（`CODE_SIGN_IDENTITY="-"`）每次重 build 都会生成一个新的 cdhash，macOS 把"全磁盘访问 / 通讯录"等 TCC 授权挂在 cdhash 上，所以每次都会被系统当成新 App，需要反复在"系统设置 → 隐私与安全"里重新勾一遍，开发体验极差。
+
+解决办法是用一个稳定的本地自签 codesign 身份。在新机器上首次拉代码后，跑一次：
+
+```bash
+./Scripts/setup_codesign.sh
+eval "$(./Scripts/setup_codesign.sh --export)"   # 导出 GSYCLEAN_CODESIGN_IDENTITY
+```
+
+之后 `./Scripts/build_release.sh` 与 Xcode Debug 构建都会自动用这个稳定 SHA-1，TCC 授权一次到位、长期有效；该脚本幂等，重复运行会跳过已有证书。

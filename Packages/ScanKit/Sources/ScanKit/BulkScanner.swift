@@ -35,7 +35,13 @@ public actor BulkScanner {
     }
 
     public nonisolated func scan(root: URL) -> AsyncStream<ScanEvent> {
-        AsyncStream(bufferingPolicy: .bufferingNewest(8192)) { continuation in
+        // v1.3 P0 修复：原 `.bufferingNewest(8192)` 在 195k+ 文件场景会静默丢事件
+        //（消费者主线程慢于 worker yield 速度时，最旧的 .node 事件被 AsyncStream 主动丢弃，
+        // 直接导致 Finder 18.86 GB / 195,979 items → 应用 552.6 MB / 1,209 items 的灾难性少算）。
+        // 改为 .unbounded：worker 永远可以 yield，消费方背压由 actor await 自然形成；不会丢事件。
+        // 同时显式 reset inodeSet，防止 BulkScanner 实例被复用时跨次污染（dedupe 把字节归零）。
+        inodeSet.reset()
+        return AsyncStream(bufferingPolicy: .unbounded) { continuation in
             let opts = options
             let inodes = inodeSet
             let task = Task.detached(priority: .userInitiated) {
@@ -71,7 +77,20 @@ public actor BulkScanner {
                     return 0
                 }()
 
-                let workerCount = opts.actualConcurrency
+                // v1.3：mediaAware → 按介质类型自适应 worker 数。
+                // SSD 提到 8、HDD 压到 2、网络盘压到 1；探测失败回退 actualConcurrency。
+                // 关掉 mediaAware（如单测里）则保持 actualConcurrency 不变。
+                let workerCount: Int
+                if opts.mediaAware {
+                    let media = MediaProbe.probe(path: root.path)
+                    workerCount = MediaProbe.recommendedWorkerCount(
+                        for: media,
+                        fallback: opts.actualConcurrency,
+                        maxCap: opts.maxConcurrency
+                    )
+                } else {
+                    workerCount = opts.actualConcurrency
+                }
                 await withTaskGroup(of: Void.self) { group in
                     for _ in 0..<workerCount {
                         group.addTask {
@@ -185,7 +204,10 @@ public actor BulkScanner {
                 localDirCount += 1
                 if entry.name != "." && entry.name != ".." {
                     // v1.1：TCC 雷区硬 skip，源头杜绝 Apple Music/Photos/Mail 弹窗
-                    if TCCSkipList.shouldSkip(absPath) {
+                    // v1.3：仅当 respectTCCSkipList=true 时才硬 skip。
+                    // 已授予 FDA 时 ScanCoordinator 会把这个开关置 false，让用户原本就有权限的目录被正常下钻，
+                    // 同时不再 yield .tccProtectedSkipped → 修 banner 误报。
+                    if options.respectTCCSkipList && TCCSkipList.shouldSkip(absPath) {
                         localTCCSkipped += 1
                         continuation.yield(.tccProtectedSkipped(path: absPath))
                     } else if !options.staySingleVolume || rootDev == 0 || entry.device == rootDev {
@@ -384,7 +406,16 @@ enum BulkEnumerate {
 
         while true {
             let retcount = getattrlistbulk(fd, &attrList, buffer, bufSize, 0)
-            if retcount <= 0 { break } // 0 = 没了；<0 = 错
+            if retcount == 0 { break } // 0 = 真读完了
+            if retcount < 0 {
+                // v1.3 P0 修复：原本 retcount<0 与 retcount==0 一起静默 break，
+                // 一个 195k entry 的目录中途任意一次 getattrlistbulk 出错（EIO/ENOTSUP/EINTR/权限）
+                // 都会让剩余成千上万条 entry 全部丢失（这正是 ijkplayer 漏算的主因之一）。
+                // 现在：把 errno 抓出来记录到 stderr，便于诊断；继续保持向上 break，避免无限循环。
+                let err = errno
+                FileHandle.standardError.write(Data("[ScanKit] getattrlistbulk EIO: errno=\(err) at \(dirPath)\n".utf8))
+                break
+            }
 
             var cursor = buffer
             for _ in 0..<retcount {

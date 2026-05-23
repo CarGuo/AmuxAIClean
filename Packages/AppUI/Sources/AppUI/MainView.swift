@@ -22,10 +22,20 @@ public struct MainView: View {
     /// v1.0 T4：大文件视图选中项。与 detail（RowItem）解耦，
     /// 因为大文件是叶子，没有聚合 RowItem 模型。
     @State private var largeFileSelection: LargeFileItem?
+    /// 树形视图选中行。bug A：之前 TreeBrowserView 的 selectedPath 锁在自身内部，
+    /// 外层 detailPane 永远拿不到，详情面板因此长期空白。现在通过 onSelect 回调
+    /// 同步到这里，detailPane 优先用 treeSelection 渲染（语义上"看哪个就显哪个"）。
+    @State private var treeSelection: TreeRow?
     /// v1.0 T4：大文件入口类目。固定一项，放在侧边"大文件"独立 section。
     private let largeFilesCategory: ScanCategory = .largeFiles()
     /// v1.0 T5：路径栏临时输入（"/" + Enter 扫整盘；任意已存在目录路径也可直扫）。
     @State private var pathBarInput: String = ""
+    /// v1.3：toolbar 路径输入框聚焦态。
+    /// 目的：在 `ToolbarItem(.principal)` 里 SwiftUI/AppKit 默认 focus ring 会被 toolbar 容器
+    /// 上下裁掉一截（截图反复出现的灰边）；改为 `.textFieldStyle(.plain)` + 自绘 Capsule 背景，
+    /// 聚焦时把 Capsule 描边加重 + 用 accentColor 强化，视觉上替代原生 focus ring 且不会被裁。
+    /// 参考：tmp/competitors/Pearcleaner FileListView.swift L108-L131 同款做法。
+    @FocusState private var pathBarFocused: Bool
 
     /// 结果区两种视图模式。
     public enum ResultsViewMode: String, CaseIterable, Identifiable {
@@ -44,19 +54,42 @@ public struct MainView: View {
                 vendors: [VendorRule] = [],
                 recorder: HeuristicRecorder = HeuristicRecorder(),
                 settings: AppSettings? = nil,
-                pathStore: UserPathStore? = nil) {
+                pathStore: UserPathStore? = nil,
+                coordinator: ScanCoordinator? = nil) {
         // v0 默认走 NSWorkspace.recycle（PITFALLS §5.9）：不需要 root，不需要 99 美元 Apple Developer Program
         // 用户撤销可以走 Finder → 显示废纸篓 → 放回原位
         self.pipeline = pipeline ?? TrashPipeline()
         self.recorder = recorder
         self.settings = settings ?? AppSettings()
         self.pathStore = pathStore ?? UserPathStore()
-        _coordinator = StateObject(wrappedValue: ScanCoordinator(vendors: vendors))
+        // v1.3：coordinator 允许从 App 层注入，让 [FloatingScanHUD](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
+        // 与主窗口共享同一个 ScanCoordinator 实例（订阅同一份 snapshot/isScanning），避免双扫。
+        _coordinator = StateObject(wrappedValue: coordinator ?? ScanCoordinator(vendors: vendors))
     }
 
-    /// 全部类目（preset + custom + largeFiles + fullDisk）—— 用于 toolbar / scan 查找。
+    /// 全部类目（preset + custom + libraryBrowse + largeFiles + fullDisk）—— 用于 toolbar / scan 查找。
+    /// 资源库浏览入口必须包含进来，否则 onChange selectedCategory 找不到对应 ScanCategory，
+    /// 会直接 return 不触发扫描。
     private var allCategories: [ScanCategory] {
-        presetCategories + customCategories + [largeFilesCategory, ScanCategory.fullDisk]
+        presetCategories + customCategories + libraryBrowseCategories + [largeFilesCategory, ScanCategory.fullDisk]
+    }
+
+    /// 资源库浏览：5 个固定的 ~/Library 子目录入口。
+    /// 走 ScanCategory.makeCustom(url:) 流程以复用扫描/UI 路径，但**不写入 pathStore**——
+    /// 这是预置只读入口，不能污染用户「自定义路径」列表（也不应在退出后保留）。
+    /// 故这里只在视图层即席构造，不调用 pathStore.add。
+    private var libraryBrowseCategories: [ScanCategory] {
+        let paths = [
+            "~/Library",
+            "~/Library/Application Support",
+            "~/Library/Containers",
+            "~/Library/Group Containers",
+            "~/Library/Preferences",
+        ]
+        return paths.map { raw in
+            let expanded = (raw as NSString).expandingTildeInPath
+            return ScanCategory.makeCustom(url: URL(fileURLWithPath: expanded))
+        }
     }
 
     public var body: some View {
@@ -86,9 +119,14 @@ public struct MainView: View {
         }
         .onChange(of: selectedCategory) { _, new in
             guard let id = new, let cat = allCategories.first(where: { $0.id == id }) else { return }
-            selection.removeAll()
-            largeFileSelection = nil
+            // v1.3：统一走 resetSelectionState() —— 切类目必须清四种选中态
+            resetSelectionState()
             startScan(category: cat)
+        }
+        .onChange(of: viewMode) { _, _ in
+            // bug A：清单 ↔ 树形 切换时各清各的选中态，避免两条选中互相覆盖。
+            detail = nil
+            treeSelection = nil
         }
         .onChange(of: settings.minFileSizeMB) { _, _ in
             // v1.0 T4：阈值改变时，若当前正看大文件视图，自动重扫，
@@ -103,8 +141,26 @@ public struct MainView: View {
                 startScan(category: largeFilesCategory)
             }
         }
+        .onChange(of: settings.sizeAccountingMode) { _, newMode in
+            // v1.3：用户在设置里切换字节口径（logical 系统设置口径 ↔ physical du 口径）。
+            // 同步到 coordinator；如果当前有扫描结果，提示需要重扫才能让数字按新口径累计。
+            // 不强制自动重扫——避免用户切错口径还要等 5 分钟，自己点"重新扫描"更可控。
+            coordinator.accountingMode = newMode
+        }
+        .onChange(of: settings.mainListSortKey) { _, newKey in
+            // v1.3：主列表排序键切换 → 同步到 coordinator。
+            // coordinator 内部 didSet 会判断仅 finished 态 republish snapshot，
+            // 扫描中切换不会扰乱视觉位置（扫描中强制 path 字典序保持稳定）。
+            coordinator.mainListSortKey = newKey
+        }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             handleDrop(providers: providers)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            // v1.3：从系统设置勾完 FDA 切回本 App，立即重探权限状态 + 容量。
+            // 修「我已经有了权限，为什么顶部还提示需要授权」的核心闭环——
+            // 用户回来那一刻 banner 自动消失，不需要重新扫描或重启 App。
+            coordinator.refreshFDAStatus()
         }
         .overlay {
             if isDropTargeted {
@@ -112,6 +168,11 @@ public struct MainView: View {
             }
         }
         .task {
+            // v1.3：启动时把 settings 的字节口径同步到 coordinator，
+            // 避免 ScanCoordinator 默认值与用户上次保存的偏好不一致。
+            coordinator.accountingMode = settings.sizeAccountingMode
+            // v1.3：主列表排序键同样在启动时同步，避免持久化值与 coordinator 默认值不一致。
+            coordinator.mainListSortKey = settings.mainListSortKey
             await refreshCustomPaths()
         }
     }
@@ -157,6 +218,13 @@ public struct MainView: View {
                 }
             }
 
+            Section("资源库浏览") {
+                ForEach(libraryBrowseCategories) { cat in
+                    sidebarRow(cat, iconOverride: "folder.badge.gearshape")
+                        .tag(cat.id)
+                }
+            }
+
             Section("大文件") {
                 sidebarRow(largeFilesCategory)
                     .tag(largeFilesCategory.id)
@@ -182,6 +250,19 @@ public struct MainView: View {
             }
         }
         .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 280)
+        // bug1：sidebar List 默认会在获得 keyboard focus 时画一圈蓝色焦点环
+        // （包住整个 list 容器，看起来像"鼠标进入 sidebar 才出现的蓝框"）。
+        // 我们已经有 row selection 的蓝色背景做选中反馈，再叠焦点环纯属冗余且割裂。
+        // 关掉容器级焦点环，单行 selection 不受影响。
+        .focusEffectDisabled()
+        // v1.3：sidebar 底部固定一张容量条（类似系统设置 → 储存空间），
+        // 删除/扫描完成后联动刷新，让用户视觉感知"清完后空闲变多"。
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VolumeCapacityCard(
+                snapshot: coordinator.volumeSnapshot,
+                cleanableBytes: coordinator.snapshot.totalBytes
+            )
+        }
     }
 
     /// v1.2 P1-6：「应用占用排行榜」侧边项。用 sentinel ID 走旁路，避免污染
@@ -273,9 +354,9 @@ public struct MainView: View {
     }
 
     @ViewBuilder
-    private func sidebarRow(_ cat: ScanCategory) -> some View {
+    private func sidebarRow(_ cat: ScanCategory, iconOverride: String? = nil) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: iconName(for: cat.kind))
+            Image(systemName: iconOverride ?? iconName(for: cat.kind))
                 .foregroundStyle(.tint)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
@@ -386,7 +467,22 @@ public struct MainView: View {
                         listResults
                     case .tree:
                         if let root = coordinator.currentRootPath {
-                            TreeBrowserView(coordinator: coordinator, rootPath: root)
+                            TreeBrowserView(
+                                coordinator: coordinator,
+                                rootPath: root,
+                                onSelect: { row in
+                                    // bug A：树形选中 → 详情面板。同时清掉清单视图的 detail，
+                                    // 避免两条选中态打架（detailPane 先看 treeSelection）。
+                                    treeSelection = row
+                                    detail = nil
+                                },
+                                onTrash: { url in
+                                    // v1.3：树形右键 / Delete 走废纸篓。
+                                    // 复用大文件视图的 NSWorkspace.recycle 通道；
+                                    // SafetyEngine 闸门已在 TreeNodeView 弹菜单时拦了 forbid。
+                                    triggerLargeFileTrash(urls: [url])
+                                }
+                            )
                         } else {
                             Text("暂无可展开的扫描根")
                                 .foregroundStyle(.secondary)
@@ -422,7 +518,7 @@ public struct MainView: View {
             .frame(maxWidth: 220)
             Spacer()
             if viewMode == .tree {
-                Text("树视图只用于浏览；勾选清理仍请切回清单")
+                Text("树视图：右键或 Delete 键单条移到废纸篓；批量勾选请切回清单")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
@@ -447,17 +543,52 @@ public struct MainView: View {
             }
         }
         .listStyle(.inset)
+        // bug B：清单视图的 List(selection:) 同样会画容器级焦点环，关掉。
+        // 单行选中蓝条不受影响。
+        .focusEffectDisabled()
+    }
+
+    /// v1.3：是否应显示顶部权限 banner。
+    ///
+    /// 旧逻辑只看"是否有任意 skipped 或 denied 路径"——但 [TCCSkipList](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift)
+    /// 是硬编码列表，**用户已授予 FDA 后这些路径本来就该被正常下钻**，banner 此时是误报。
+    ///
+    /// 现在分两档：
+    /// - **FDA 已授权**：ScanCoordinator 把 `respectTCCSkipList` 关掉，BulkScanner 不再 yield
+    ///   `.tccProtectedSkipped`，所以 `tccProtectedSkippedPaths` 应当为空；只在
+    ///   `permissionDeniedPaths` 真的非空时显示（root 自身 EACCES 等罕见情况）
+    /// - **FDA 未授权 / 未知**：保持原行为，任一非空都显示
+    private var shouldShowPermissionBanner: Bool {
+        if coordinator.fdaStatus == .granted {
+            return !coordinator.permissionDeniedPaths.isEmpty
+        }
+        return !coordinator.permissionDeniedPaths.isEmpty
+            || !coordinator.tccProtectedSkippedPaths.isEmpty
     }
 
     private var statusBar: some View {
         VStack(spacing: 0) {
-            if !coordinator.permissionDeniedPaths.isEmpty || !coordinator.tccProtectedSkippedPaths.isEmpty {
+            // v1.3 修 banner 误报：FDA 已授权时，硬 skip 已被 ScanCoordinator 关闭，
+            if shouldShowPermissionBanner {
                 PermissionStatusBanner(
                     fdaDeniedPaths: coordinator.permissionDeniedPaths,
                     tccSkippedPaths: coordinator.tccProtectedSkippedPaths,
                     onOpenSettings: {
                         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
                             NSWorkspace.shared.open(url)
+                        }
+                    },
+                    onRescan: {
+                        // v1.3：跳系统设置 + 立即重扫当前 category。
+                        // 用户回到 App 时本就能看到"扫描中"，
+                        // 等他在系统设置勾完 GSYCleanMac 那一刻起，
+                        // 后续 BulkScanner 拿到的就是含原 TCC 跳过路径的完整树。
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                            NSWorkspace.shared.open(url)
+                        }
+                        if let id = selectedCategory,
+                           let cat = allCategories.first(where: { $0.id == id }) {
+                            startScan(category: cat)
                         }
                     }
                 )
@@ -467,15 +598,48 @@ public struct MainView: View {
             HStack {
                 if coordinator.isScanning {
                     ProgressView().controlSize(.small)
-                    Text("扫描中… \(coordinator.snapshot.scannedFileCount) 个文件 · \(formattedBytes(coordinator.snapshot.totalBytes))")
-                        .font(.callout)
+                    if coordinator.perRootProgress.isEmpty {
+                        // 单根扫描：保留原有"扫描中… N 个文件 · X MB"单行行为。
+                        Text("扫描中… \(coordinator.snapshot.scannedFileCount) 个文件 · \(formattedBytes(coordinator.snapshot.totalBytes))")
+                            .font(.callout)
+                    } else {
+                        // v1.3：多根并行扫描——按 rootPath 字典序输出多行（每根一条），
+                        // 已 finished 的根用 ✓ 替代 ●，文案"{title} · {bytes} · {fileCount} 文件"。
+                        // 字典序稳定排序：避免 dict 遍历顺序导致行序抖动。
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(coordinator.perRootProgress.values.sorted(by: { $0.rootPath < $1.rootPath }), id: \.rootPath) { p in
+                                HStack(spacing: 4) {
+                                    Text(p.isFinished ? "✓" : "●")
+                                        .font(.caption.bold())
+                                        .foregroundStyle(p.isFinished ? Color.green : Color.accentColor)
+                                    Text("\(p.title) · \(formattedBytes(p.bytes)) · \(p.fileCount) 文件")
+                                        .font(.callout)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                            }
+                        }
+                    }
                 } else if coordinator.snapshot.isFinished {
                     Text("完成 · \(coordinator.snapshot.scannedFileCount) 文件 · \(formattedBytes(coordinator.snapshot.totalBytes)) · \(String(format: "%.2fs", coordinator.snapshot.elapsed))")
                         .font(.callout)
-                } else {
-                    Text("选择左侧类目开始扫描")
+                } else if coordinator.wasCancelled {
+                    // v1.3：cancel 后区分"已停止"与"还未扫描"两态，避免用户以为停止键失灵
+                    Text("已停止 · 按右上「重新扫描」继续")
                         .foregroundStyle(.secondary)
                         .font(.callout)
+                } else {
+                    // v1.3：未扫描态显式文案，避免空 snapshot 渲染成 "0 KB · 0 个文件" 误导用户。
+                    // 区分两种 pristine：已选类目但未点扫 / 完全没选类目。
+                    if selectedCategory != nil {
+                        Text("还未扫描 · 按右上「重新扫描」或「整盘扫描」开始")
+                            .foregroundStyle(.secondary)
+                            .font(.callout)
+                    } else {
+                        Text("还未扫描 · 选择左侧类目开始")
+                            .foregroundStyle(.secondary)
+                            .font(.callout)
+                    }
                 }
                 Spacer()
                 if let err = coordinator.lastError {
@@ -551,6 +715,10 @@ public struct MainView: View {
                     .truncationMode(.middle)
                     .padding(.horizontal, 24)
                 Button {
+                    // v1.3 review-fix：仅清 selectedCategory 并不会清 placeholder（coordinator
+                    // 仍保留 isFinished=true + currentRootPath），用户视觉上"无反馈"。
+                    // 主动 cancel() 把 snapshot/currentRootPath 清回 .notStarted 态。
+                    coordinator.cancel()
                     selectedCategory = nil
                 } label: {
                     Label("换个目录", systemImage: "arrow.left.arrow.right")
@@ -630,6 +798,37 @@ public struct MainView: View {
                 Spacer()
             }
             .padding(20)
+        } else if let row = treeSelection {
+            // bug A：树形视图选中行 → 显示轻量详情。
+            // 树视图没有 SafetyVerdict（那是清单视图独有的安全判定），
+            // 这里只展示路径 / 大小 / 文件数 / 是否目录，足够辅助浏览决策；
+            // 删除：在树形 row 上**右键 → 移到废纸篓…** 或选中后按 **Delete** 键
+            // （SafetyEngine 已拦住家目录 / `/` / SIP 这种 forbid 路径）。
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Image(systemName: row.isDirectory ? "folder.fill" : "doc")
+                        .foregroundStyle(.tint)
+                    Text(row.title)
+                        .font(.title2.bold())
+                }
+                Text(row.path)
+                    .font(.system(.callout, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Divider()
+                LabeledContent("大小", value: formattedBytes(row.bytes))
+                LabeledContent("文件数", value: "\(row.fileCount)")
+                LabeledContent("是目录", value: row.isDirectory ? "是" : "否")
+                if row.isDirectory && row.hasChildren {
+                    LabeledContent("可展开", value: "是")
+                }
+                Divider()
+                Text("提示：树视图只读浏览。要清理请切回「清单」视图勾选。")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+            }
+            .padding(20)
         } else {
             VStack(spacing: 8) {
                 Image(systemName: "doc.text.magnifyingglass")
@@ -650,6 +849,12 @@ public struct MainView: View {
             pathBar
         }
         ToolbarItem(placement: .primaryAction) {
+            sortMenu
+        }
+        ToolbarItem(placement: .primaryAction) {
+            recommendedAllButton
+        }
+        ToolbarItem(placement: .primaryAction) {
             fullDiskButton
         }
         ToolbarItem(placement: .primaryAction) {
@@ -657,18 +862,78 @@ public struct MainView: View {
         }
     }
 
+    /// v1.3：主列表排序选择器。
+    /// - 默认 `.sizeDesc`（按字节大小从大到小），最常用，所以放默认。
+    /// - 扫描中切换不会打乱视觉位置：[ScanCoordinator.publishSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    ///   在 finished=false 时强制 path 字典序，仅 finished=true 才用此键排序。
+    /// - 用 Menu 而不是 segmented Picker：6 个 case 横排太挤；Menu 更紧凑且 macOS 原生。
+    /// - `@Bindable` 局部 wrap：MainView 把 settings 持成 `private let`，本地需要 binding 时
+    ///   按 Apple 推荐用 `@Bindable var x = settings` 即席包一层，不需要把整个视图改成 @Bindable。
+    private var sortMenu: some View {
+        @Bindable var settings = settings
+        return Menu {
+            Picker("排序", selection: $settings.mainListSortKey) {
+                ForEach(MainListSortKey.allCases) { key in
+                    Text(key.label).tag(key)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Label(settings.mainListSortKey.label, systemImage: "arrow.up.arrow.down")
+        }
+        .help("主列表排序方式（扫描中保持固定顺序，扫描完成后按所选键排序）")
+    }
+
+    /// v1.3：「全部推荐扫描」—— 一键并行扫描 ScanCategories.recommended() 5 个根。
+    /// 解决用户反馈"看起来还是只有一个目录在动"——多根并行 + statusBar 多行进度让"打满核"可见。
+    private var recommendedAllButton: some View {
+        Button {
+            resetSelectionState()
+            // 并行扫描会清掉 selectedCategory 的隐含语义（5 根没有"当前选中类目"），
+            // 显式置 nil 让"重新扫描"按钮在多根模式下不渲染（其逻辑依赖单 selectedCategory）。
+            selectedCategory = nil
+            coordinator.scanRecommended(includeHidden: settings.showHidden)
+        } label: {
+            Label("全部推荐扫描", systemImage: "rectangle.3.group")
+        }
+        .help("并行扫描 5 个推荐目录（缓存 / 日志 / DerivedData / 下载 / 废纸篓）")
+        .disabled(coordinator.isScanning)
+    }
+
     /// v1.0 T5：路径栏 —— 输 `/` 回车扫整盘；输任意已存在目录回车直接扫。
+    ///
+    /// v1.3 修复：原 `.textFieldStyle(.roundedBorder)` 在 `ToolbarItem(.principal)` 里聚焦时
+    /// 蓝色 focus ring 会被 toolbar 容器裁切（截图证据）。改为 `.plain` + 自绘 Capsule 胶囊：
+    /// - 平时：`Color.secondary.opacity(0.10)` 底 + 0.5pt 灰描边；
+    /// - 聚焦：底色不变，描边换 `accentColor` 1.5pt，效果接近 Spotlight/Finder 搜索栏。
+    /// Capsule 完全在 SwiftUI 视图层内，永远不会越过 toolbar 边界 → 不会被裁。
     private var pathBar: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
                 .font(.caption)
             TextField("输入路径或 / 回车扫整盘", text: $pathBarInput)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
+                .focused($pathBarFocused)
                 .frame(minWidth: 220, idealWidth: 320)
                 .onSubmit { submitPathBar() }
                 .help("输 / 回车扫整盘；输已存在目录回车开始扫该目录")
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.secondary.opacity(0.10))
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .strokeBorder(
+                    pathBarFocused ? Color.accentColor : Color.secondary.opacity(0.35),
+                    lineWidth: pathBarFocused ? 1.5 : 0.5
+                )
+        )
+        .contentShape(Capsule(style: .continuous))
+        .animation(.easeInOut(duration: 0.12), value: pathBarFocused)
     }
 
     /// v1.0 T5：整盘扫描快捷按钮。
@@ -691,8 +956,8 @@ public struct MainView: View {
             } label: { Label("停止", systemImage: "stop.circle") }
         } else if let id = selectedCategory, let cat = allCategories.first(where: { $0.id == id }) {
             Button {
-                selection.removeAll()
-                largeFileSelection = nil
+                // v1.3：统一走 resetSelectionState()，避免重新扫描后 detail/treeSelection 残留
+                resetSelectionState()
                 startScan(category: cat)
             } label: { Label("重新扫描", systemImage: "arrow.clockwise") }
         }
@@ -733,7 +998,8 @@ public struct MainView: View {
     /// 走 `selectedCategory` 赋值 → 命中已有 onChange 流程，避免双扫；
     /// 单测路径请直接调 `coordinator.scanFullDisk(...)`。
     private func triggerFullDiskScan() {
-        selection.removeAll()
+        // v1.3：统一走 resetSelectionState()，避免整盘扫描后旧详情/树选中残留
+        resetSelectionState()
         if selectedCategory == ScanCategory.fullDisk.id {
             // 已经选中整盘 → onChange 不会再触发，主动重扫
             coordinator.scanFullDisk(includeHidden: settings.showHidden)
@@ -743,6 +1009,16 @@ public struct MainView: View {
     }
 
     // MARK: - Helpers
+
+    /// v1.3：统一清空所有选中态（勾选 / 大文件 / 详情 / 树选中）。
+    /// 三处入口（切类目 / 重新扫描 / triggerFullDiskScan）共享，
+    /// 防止旧详情面板残留显示到新扫描结果上。
+    private func resetSelectionState() {
+        selection.removeAll()
+        largeFileSelection = nil
+        detail = nil
+        treeSelection = nil
+    }
 
     private var selectedRows: [RowItem] {
         coordinator.snapshot.rows.filter { selection.contains($0.id) && $0.isSelectable }
@@ -779,6 +1055,8 @@ public struct MainView: View {
                 // HL 行为采集：真删之后才上报，dryRun 不污染统计
                 await recorder.recordTrashed(paths: paths)
                 selection.removeAll()
+                // v1.3：删除完成后立即重探卷容量，sidebar 容量条会跟随变化（"清理后空闲变多"反馈）。
+                coordinator.refreshVolumeCapacity()
             }
         }
     }
@@ -885,6 +1163,10 @@ private struct PermissionStatusBanner: View {
     /// TCC 雷区被主动 skip 的路径——根本没尝试 open，避免弹窗。
     let tccSkippedPaths: [String]
     let onOpenSettings: () -> Void
+    /// v1.3：用户在 banner 上点「授权后扫描这些目录」——
+    /// 跳系统设置 + 触发当前 category 重扫。MainView 在 onRescan 里串起来。
+    /// 给 nil 视为兼容路径（按钮不显示），但本仓库目前 MainView 一定传非 nil。
+    var onRescan: (() -> Void)? = nil
     @State private var expanded = false
 
     private var fdaCount: Int { fdaDeniedPaths.count }
@@ -907,6 +1189,11 @@ private struct PermissionStatusBanner: View {
         fdaCount > 0 ? .orange : .blue
     }
 
+    /// 主行动按钮文案：FDA 受阻强调"打开权限"；纯 TCC 跳过强调"授权后重扫"。
+    private var actionLabel: String {
+        fdaCount > 0 ? "打开完全磁盘访问权限" : "授权后扫描这些目录"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -919,9 +1206,17 @@ private struct PermissionStatusBanner: View {
                 Button(expanded ? "收起" : "查看路径") { expanded.toggle() }
                     .buttonStyle(.plain)
                     .font(.caption)
-                if fdaCount > 0 {
-                    Button("打开完全磁盘访问权限") { onOpenSettings() }
-                        .controlSize(.small)
+                // v1.3：tcc-only 场景之前没有任何"主动授权"入口，
+                // 现在两种场景都露出主行动按钮，文案因情境而异。
+                if fdaCount > 0 || tccCount > 0 {
+                    Button(actionLabel) {
+                        if let onRescan {
+                            onRescan()
+                        } else {
+                            onOpenSettings()
+                        }
+                    }
+                    .controlSize(.small)
                 }
             }
             if expanded {

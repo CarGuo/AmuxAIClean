@@ -8,6 +8,10 @@ struct RowView: View {
     @Binding var selected: Bool
     let maxBytes: Int64
 
+    /// v1.3：active 行的字节数字脉动动画相位（0→1→0），由 .onAppear 触发。
+    /// 仅在 row.isActive 时驱动，让"正在被扫描"的行字节数字明显闪动。
+    @State private var pulse: Bool = false
+
     private var ratio: CGFloat {
         guard maxBytes > 0 else { return 0 }
         return CGFloat(Double(row.bytes) / Double(maxBytes))
@@ -55,9 +59,7 @@ struct RowView: View {
                             .help(row.vendorNote ?? vendor)
                     }
                     Spacer()
-                    Text(ByteCountFormatter.string(fromByteCount: row.bytes, countStyle: .file))
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                    bytesLabel
                 }
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
@@ -80,6 +82,39 @@ struct RowView: View {
         }
         .padding(.vertical, 4)
         .help(row.url.path)
+    }
+
+    /// v1.3：bytes 文本——active 行用 accent 色加粗 + 缓慢脉动透明度，
+    /// 让多 worker 并发扫不同子树时"哪几行正在扫"一眼可见；非 active 行保持原样（secondary 灰）。
+    @ViewBuilder
+    private var bytesLabel: some View {
+        let text = ByteCountFormatter.string(fromByteCount: row.bytes, countStyle: .file)
+        if row.isActive {
+            HStack(spacing: 6) {
+                // 小圆点指示"正在扫描"
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 6, height: 6)
+                    .opacity(pulse ? 0.35 : 1.0)
+                Text(text)
+                    .font(.system(.body, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .opacity(pulse ? 0.65 : 1.0)
+            }
+            .help("正在扫描中…")
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
+                    pulse = true
+                }
+            }
+            .onDisappear { pulse = false }
+            // 用 row.id+isActive 强制 onAppear 在状态切换时被触发
+            .id("\(row.id)-active")
+        } else {
+            Text(text)
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var barColor: Color {

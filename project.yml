@@ -7,15 +7,37 @@ options:
   createIntermediateGroups: true
   groupSortPosition: top
 
+# Debug / Release 双配置；Debug 默认 ad-hoc，命令行可用环境变量覆盖：
+#   xcodebuild -configuration Debug \
+#     CODE_SIGN_IDENTITY="${GSYCLEAN_CODESIGN_IDENTITY:--}" \
+#     CODE_SIGN_STYLE=Manual build
+# 见 Scripts/setup_codesign.sh 与 README "开发环境一次性配置"
+configs:
+  Debug: debug
+  Release: release
+
 settings:
   base:
     SWIFT_VERSION: "6.0"
     MACOSX_DEPLOYMENT_TARGET: "15.0"
     ENABLE_HARDENED_RUNTIME: YES
-    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
     SWIFT_STRICT_CONCURRENCY: complete
     DEAD_CODE_STRIPPING: YES
     OTHER_SWIFT_FLAGS: "-warnings-as-errors"
+  configs:
+    Debug:
+      # 本地开发：优先用 setup_codesign.sh 产出的稳定身份（解决 TCC 反复授权）
+      # 命令行注入：CODE_SIGN_IDENTITY="$GSYCLEAN_CODESIGN_IDENTITY"
+      # 未注入时退回 ad-hoc "-"
+      CODE_SIGN_IDENTITY: "-"
+      CODE_SIGNING_REQUIRED: NO
+      CODE_SIGNING_ALLOWED: YES
+    Release:
+      CODE_SIGN_IDENTITY: "-"
+      CODE_SIGNING_REQUIRED: NO
+      CODE_SIGNING_ALLOWED: YES
 
 packages:
   ScanKit:

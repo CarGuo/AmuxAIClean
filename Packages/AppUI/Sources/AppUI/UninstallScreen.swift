@@ -110,11 +110,18 @@ public struct UninstallScreen: View {
     }
 
     public var body: some View {
-        HSplitView {
+        // bug2：之前用 HSplitView 是 NSSplitView 桥接，会向外抢宽度预算，导致
+        // 嵌在 MainView 的 NavigationSplitView content 栏时，外层 sidebar 被
+        // 强制压到几十像素宽，文字截断到只剩首字母。
+        // 改成 HStack + Divider + maxWidth=.infinity，让两栏在 content 栏内部
+        // 弹性平分，外层 sidebar 不再受到挤压。代价：失去拖拽分栏宽度的能力，
+        // 但卸载残留是只读 + 二次确认流程，列宽固定 1:2 已足够。
+        HStack(spacing: 0) {
             appsPane
-                .frame(minWidth: 240, idealWidth: 300, maxWidth: 380)
+                .frame(minWidth: 240, maxWidth: 360)
+            Divider()
             candidatesPane
-                .frame(minWidth: 420)
+                .frame(maxWidth: .infinity)
         }
         .navigationTitle("卸载残留")
         .task { await reloadApps() }

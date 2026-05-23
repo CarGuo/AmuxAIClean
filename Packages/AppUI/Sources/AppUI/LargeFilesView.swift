@@ -107,6 +107,8 @@ public struct LargeFilesView: View {
         // v1.2 P2-4：Spacebar 触发 Quick Look 预览当前选中。
         // 注意 onKeyPress 必须挂在最外层 VStack，否则 LazyVStack 内部的 row 拿不到焦点。
         .focusable()
+        // bug B：.focusable() 会让 macOS 画蓝色焦点环包整张大文件视图，关掉。
+        .focusEffectDisabled()
         .onKeyPress(.space) {
             if let item = selection {
                 QuickLookController.shared.preview(urls: [item.url])

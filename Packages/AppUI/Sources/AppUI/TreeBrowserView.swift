@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import SafetyKit
 
 /// v1.0 T3 / T5：多层下钻浏览器 + 列排序 + 键盘导航。
 ///
@@ -18,6 +19,19 @@ import AppKit
 public struct TreeBrowserView: View {
     @ObservedObject var coordinator: ScanCoordinator
     let rootPath: String
+    /// 选中行变化时的回调；MainView 用它把 TreeRow 喂给右侧详情面板。
+    /// 设计 bug A：之前 selectedPath 只活在 TreeBrowserView 内部，
+    /// 外层 detailPane 永远拿不到，导致"选中一行没有详情"。
+    let onSelect: ((TreeRow) -> Void)?
+    /// 右键 / Delete 触发"移到废纸篓"时的回调（v1.3 bug "树形怎么扔废纸篓"）。
+    /// 走 NSWorkspace.recycle 通道（与大文件视图右键删共用 triggerLargeFileTrash）。
+    /// 给 nil 时 TreeNodeView 不会展示该菜单项，便于在 readonly 场景复用。
+    let onTrash: ((URL) -> Void)?
+
+    /// SafetyEngine 静态共享：拦截 forbid 路径（家目录、`/`、SIP、`..` 等），
+    /// 在弹菜单时就 disabled 那条「移到废纸篓…」并附 tooltip 解释为什么不能删，
+    /// 避免用户点了之后 NSWorkspace.recycle 才报错那种"晚反馈"。
+    static let safety = SafetyEngine()
 
     @State private var sortKey: TreeSortKey = .sizeDesc
     @State private var selectedPath: String?
@@ -26,9 +40,14 @@ public struct TreeBrowserView: View {
     @State private var expanded: [String: Bool] = [:]
     @FocusState private var focused: Bool
 
-    public init(coordinator: ScanCoordinator, rootPath: String) {
+    public init(coordinator: ScanCoordinator,
+                rootPath: String,
+                onSelect: ((TreeRow) -> Void)? = nil,
+                onTrash: ((URL) -> Void)? = nil) {
         self.coordinator = coordinator
         self.rootPath = rootPath
+        self.onSelect = onSelect
+        self.onTrash = onTrash
     }
 
     public var body: some View {
@@ -58,7 +77,8 @@ public struct TreeBrowserView: View {
                                     coordinator: coordinator,
                                     sortKey: sortKey,
                                     selectedPath: $selectedPath,
-                                    expanded: $expanded
+                                    expanded: $expanded,
+                                    onTrash: onTrash
                                 )
                             }
                         }
@@ -76,6 +96,11 @@ public struct TreeBrowserView: View {
         }
         .focusable()
         .focused($focused)
+        // bug B：.focusable() 让本视图能接收键盘事件（j/k/h/l/Space 必备），
+        // 但 macOS SwiftUI 默认会给可获焦容器画一圈蓝色 focus ring，
+        // 在我们这种"整段表格被框住"的场景里非常显眼且割裂。
+        // 选中态我们已经用 row 自身 background 实现，不需要外层焦点环。
+        .focusEffectDisabled()
         .onAppear {
             // 扫描完成后自动聚焦第一行（ROADMAP T5 验收点）
             if selectedPath == nil, let first = topLevel.first {
@@ -90,6 +115,16 @@ public struct TreeBrowserView: View {
             } else if selectedPath == nil {
                 selectedPath = new.first
             }
+        }
+        .onChange(of: selectedPath) { _, new in
+            // bug A：把选中行回调给 MainView，让右侧详情面板能跟上。
+            // 单击 row、键盘 j/k 移动、自动聚焦首行 三种来源都会经过这里。
+            //
+            // bug 1 性能修复：之前用 visibleRows.first(where:) 等于把整棵展开树
+            // 重新拍平递归一遍（O(N)，4w 节点级几百毫秒卡顿），改为 coordinator
+            // 字典 O(1) 反查。
+            guard let new, let row = coordinator.row(for: new) else { return }
+            onSelect?(row)
         }
         .onKeyPress(keys: [KeyEquivalent("j"), .downArrow]) { _ in
             moveSelection(by: 1); return .handled
@@ -124,6 +159,18 @@ public struct TreeBrowserView: View {
                 revealInFinder(); return .handled
             }
             return .ignored
+        }
+        .onKeyPress(.delete) {
+            // Finder 风格：选中行按 Delete = 移到废纸篓。
+            // 必须先过 SafetyEngine forbid 闸门，避免误把家目录 / `/` 这种扔进废纸篓。
+            guard let cur = selectedPath, let onTrash else { return .ignored }
+            let (verdict, _) = Self.safety.evaluate(path: cur)
+            guard verdict != .forbid else {
+                NSSound.beep()
+                return .handled
+            }
+            onTrash(URL(fileURLWithPath: cur))
+            return .handled
         }
     }
 
@@ -203,8 +250,8 @@ struct TreeColumnHeader: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            // 与 TreeBrowserRow 的 icon + 三角占位对齐：12（三角）+ 6（间距）+ 16（icon）= 34
-            Spacer().frame(width: 34)
+            // 与 TreeBrowserRow 的 icon + 三角占位对齐：22（三角 hit area）+ 6（间距）+ 16（icon）= 44
+            Spacer().frame(width: 44)
             headerButton(label: "名称", column: .name)
                 .frame(maxWidth: .infinity, alignment: .leading)
             headerButton(label: "大小", column: .size)
@@ -247,6 +294,8 @@ struct TreeNodeView: View {
     let sortKey: TreeSortKey
     @Binding var selectedPath: String?
     @Binding var expanded: [String: Bool]
+    /// 上层透传的"移到废纸篓"通道。nil 时菜单项不展示。
+    let onTrash: ((URL) -> Void)?
 
     private var indent: CGFloat { CGFloat(depth) * 16 }
     private var canExpand: Bool { row.isDirectory && row.hasChildren }
@@ -255,7 +304,11 @@ struct TreeNodeView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // v1.3 bug fix：把选中高亮拉到整行宽度（不被 indent 切片）；
+            // 单击 = 选中、双击 = 展开/折叠（与 Finder/DaisyDisk 一致）。
             HStack(spacing: 6) {
+                // 缩进占位放进 HStack 内部，让外层 background 占满整行
+                Spacer().frame(width: indent, height: 1)
                 // 披露三角（叶子用空白占位保持对齐）
                 Group {
                     if canExpand {
@@ -264,42 +317,93 @@ struct TreeNodeView: View {
                                 expanded[row.path] = !isExpanded
                             }
                         } label: {
+                            // bug 1：chevron 之前是 12x12 hit area 太小，鼠标得精准点中三角才生效；
+                            // Finder/DaisyDisk 的披露三角约 20x20。这里画 10pt 字号但用
+                            // 22x22 .contentShape 把可点区域扩到整个 chevron 槽位。
                             Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundStyle(.secondary)
-                                .frame(width: 12, height: 12)
+                                .frame(width: 22, height: 22)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .help(isExpanded ? "折叠" : "展开")
                     } else {
-                        Spacer().frame(width: 12, height: 12)
+                        Spacer().frame(width: 22, height: 22)
                     }
                 }
                 TreeBrowserRow(row: row, maxBytes: maxBytes)
             }
-            .padding(.leading, indent)
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+                // bug 2：选中态之前 0.18 透明度太弱看不清；改 0.30 + 加 1pt 描边，
+                // 保证浅色 / 深色模式下都能一眼看到当前选中行。
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(isSelected ? Color.accentColor.opacity(0.30) : Color.clear)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .strokeBorder(isSelected ? Color.accentColor.opacity(0.65) : Color.clear,
+                                          lineWidth: 1)
+                    )
             )
             .contentShape(Rectangle())
-            .onTapGesture {
+            .onTapGesture(count: 2) {
+                // 双击：仅对可展开的目录有效，触发展开/折叠
+                guard canExpand else { return }
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    expanded[row.path] = !isExpanded
+                }
+            }
+            .onTapGesture(count: 1) {
                 selectedPath = row.path
             }
             .id(row.path)
             .contextMenu {
-                if !row.isDirectory {
-                    Button {
-                        QuickLookController.shared.preview(urls: [URL(fileURLWithPath: row.path)])
+                // bug 2：右键菜单（之前其实已存在，但选中框太弱让用户以为没右键）。
+                // 这一轮补齐：
+                //   - 任意类型节点都能"快速预览"（Finder 风格 Quick Look）
+                //   - 加"复制名称"
+                //   - 目录单独有"展开/折叠"快捷
+                //   - 顶部加「移到废纸篓…」（v1.3，受 onTrash 控制；
+                //     SafetyEngine 拦截家目录 / `/` / SIP / `..`）
+                if let onTrash {
+                    let (verdict, _) = TreeBrowserView.safety.evaluate(path: row.path)
+                    let isForbidden = (verdict == .forbid)
+                    Button(role: .destructive) {
+                        guard !isForbidden else { return }
+                        selectedPath = row.path
+                        onTrash(URL(fileURLWithPath: row.path))
                     } label: {
-                        Label("快速预览（空格）", systemImage: "eye")
+                        Label(isForbidden ? "无法移除（系统保护路径）" : "移到废纸篓…",
+                              systemImage: "trash")
                     }
+                    .disabled(isForbidden)
+                    .keyboardShortcut(.delete, modifiers: [])
+                    Divider()
+                }
+                Button {
+                    selectedPath = row.path
+                    QuickLookController.shared.preview(urls: [URL(fileURLWithPath: row.path)])
+                } label: {
+                    Label("快速预览（空格）", systemImage: "eye")
                 }
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: row.path)])
                 } label: {
                     Label("在 Finder 中显示", systemImage: "folder")
+                }
+                Divider()
+                if canExpand {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            expanded[row.path] = !isExpanded
+                        }
+                    } label: {
+                        Label(isExpanded ? "折叠" : "展开", systemImage: isExpanded ? "chevron.down" : "chevron.right")
+                    }
+                    Divider()
                 }
                 Button {
                     let pb = NSPasteboard.general
@@ -307,6 +411,13 @@ struct TreeNodeView: View {
                     pb.setString(row.path, forType: .string)
                 } label: {
                     Label("复制路径", systemImage: "doc.on.doc")
+                }
+                Button {
+                    let pb = NSPasteboard.general
+                    pb.clearContents()
+                    pb.setString((row.path as NSString).lastPathComponent, forType: .string)
+                } label: {
+                    Label("复制名称", systemImage: "textformat")
                 }
             }
 
@@ -320,7 +431,8 @@ struct TreeNodeView: View {
                         coordinator: coordinator,
                         sortKey: sortKey,
                         selectedPath: $selectedPath,
-                        expanded: $expanded
+                        expanded: $expanded,
+                        onTrash: onTrash
                     )
                 }
             }

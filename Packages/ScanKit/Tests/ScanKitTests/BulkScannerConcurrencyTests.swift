@@ -65,9 +65,12 @@ final class BulkScannerConcurrencyTests: XCTestCase {
         let root = try makeFixture()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let optsN1 = ScanOptions(includeHidden: true, concurrency: 1, maxConcurrency: 1)
-        let optsN4 = ScanOptions(includeHidden: true, concurrency: 4, maxConcurrency: 4)
-        let optsN8 = ScanOptions(includeHidden: true, concurrency: 8, maxConcurrency: 8)
+        // v1.3 review-fix：显式关 mediaAware，否则 SSD 上 SSD 档会把 N=1 升成
+        // min(8, maxConcurrency) → 测试名义上的"单 worker"实际跑成 maxConcurrency 个。
+        // 关闭后 actualConcurrency 严格等于 concurrency，单/多 worker 一致性才有意义。
+        let optsN1 = ScanOptions(includeHidden: true, concurrency: 1, maxConcurrency: 1, mediaAware: false)
+        let optsN4 = ScanOptions(includeHidden: true, concurrency: 4, maxConcurrency: 4, mediaAware: false)
+        let optsN8 = ScanOptions(includeHidden: true, concurrency: 8, maxConcurrency: 8, mediaAware: false)
 
         let s1 = await consume(BulkScanner(options: optsN1), root: root)
         let s4 = await consume(BulkScanner(options: optsN4), root: root)
