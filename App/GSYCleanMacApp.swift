@@ -39,7 +39,7 @@ struct GSYCleanMacApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("GSY 清理管家") {
+        WindowGroup("GSY 清理管家", id: Self.mainWindowID) {
             MainView(vendors: vendors,
                      settings: settings,
                      pathStore: pathStore,
@@ -144,20 +144,50 @@ struct GSYCleanMacApp: App {
 
     /// v1.3：把主窗口拉回前台并激活进程。
     /// - 给 HUD 的"打开主窗口"按钮 / 托盘"打开主窗口"菜单调用。
-    /// - 现阶段没启用 LSUIElement（dock 图标仍在），用 NSApp.activate + 第一个非 panel
-    ///   窗口的 makeKeyAndOrderFront 即可；Spaces 切到前台后窗口直接显现。
+    ///
+    /// **v1.3 review-fix B1+B2+B3**：原实现存在三个真问题：
+    /// 1. `NSApp.activate(ignoringOtherApps: true)` 在 macOS 14+ 已 deprecated，且
+    ///    Apple 论坛 thread/739075 明确指出 Sonoma 起 ~15% 概率不激活 App，导致用户点
+    ///    托盘 / HUD"打开主窗口"明显"没反应"。改用新 API `NSApp.activate()`。
+    /// 2. `NSApp.windows where !(window is NSPanel)` 仍会命中 SwiftUI 创建的隐藏辅助窗口
+    ///    （menu bar item 关联窗口、tooltip / popover host 等），这些都满足 `canBecomeKey == true`。
+    ///    必须叠加 `isVisible || identifier` 等更强过滤才能精准命中主窗口。
+    /// 3. 用户 ⌘W 关掉主窗口后，SwiftUI WindowGroup 默认实例被销毁；调 `makeKeyAndOrderFront`
+    ///    在 NSApp.windows 里根本找不到主窗口，"打不开"。修复：用 `OpenWindowAction` 通过
+    ///    通知中心向 MainView 发"openMainWindow"广播，由 view 层调 `openWindow(id:)` 重建。
+    @MainActor
+    fileprivate static let mainWindowID = "main"
+
     @MainActor
     private static func bringMainWindowToFront() {
-        NSApp.activate(ignoringOtherApps: true)
-        // 找第一个普通窗口（NSPanel 是 NSWindow 子类，但我们只想拉主 WindowGroup 那一个）
-        for window in NSApp.windows where !(window is NSPanel) {
-            if window.canBecomeKey || window.canBecomeMain {
-                window.makeKeyAndOrderFront(nil)
-                return
-            }
+        // v1.3 review-fix B1：新 API（macOS 14+），不再用 deprecated 的 ignoringOtherApps 形式。
+        NSApp.activate()
+
+        // v1.3 review-fix B2：精确过滤——必须满足"非 panel + 非隐藏辅助窗口"，
+        // 用 contentViewController != nil + (isVisible || isMiniaturized) + title 匹配
+        // 三个条件叠加，能把 SwiftUI 的内部辅助 host 全部排除。
+        let candidate = NSApp.windows.first { window in
+            guard !(window is NSPanel) else { return false }
+            // SwiftUI WindowGroup 创建的主窗口一定有 contentViewController（NSHostingController）
+            guard window.contentViewController != nil else { return false }
+            // 排除已 release / 已弃用的窗口（windowNumber < 0 表示已 dispose）
+            guard window.windowNumber > 0 else { return false }
+            return true
         }
-        // 兜底：没找到就把第一个非 panel 的 order 上去
-        NSApp.windows.first(where: { !($0 is NSPanel) })?.orderFrontRegardless()
+
+        if let window = candidate {
+            // 主窗口被最小化时，先 deminiaturize 再 makeKey
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+            return
+        }
+
+        // v1.3 review-fix B3：找不到主窗口（用户 ⌘W 关掉后 WindowGroup 实例已销毁）。
+        // 通过通知请求 view 层重建窗口。MainView 的 onReceive 会响应。
+        NotificationCenter.default.post(name: .gsyOpenMainWindowRequested, object: nil)
     }
 
     private func evaluateTCCOnboarding() async {

@@ -5,6 +5,12 @@ import ScanKit
 import SafetyKit
 import XPCBridge
 
+/// v1.3 review-fix B3：跨 target 的通知名常量。
+/// App 层在主窗口已被销毁的情况下 post 这个通知，MainView 监听并调 `openWindow(id:)` 重建。
+public extension Notification.Name {
+    static let gsyOpenMainWindowRequested = Notification.Name("GSYCleanMac.openMainWindowRequested")
+}
+
 /// 三栏主界面 —— 侧边类目 / 中间结果 / 右侧详情 + 删除按钮。
 /// 见 PITFALLS §5.5/§5.6/§5.7：默认勾选只勾 .safe；先聚合不展平；删除走 preview sheet。
 public struct MainView: View {
@@ -92,6 +98,10 @@ public struct MainView: View {
         }
     }
 
+    /// v1.3 review-fix B3：拿到 SwiftUI 的"打开/重建窗口" action，让 App 层在主窗口被
+    /// 用户 ⌘W 关闭并销毁后，仍能通过通知中心请求重建。配合 `WindowGroup(id: "main")` 使用。
+    @Environment(\.openWindow) private var openWindow
+
     public var body: some View {
         NavigationSplitView {
             sidebar
@@ -161,6 +171,13 @@ public struct MainView: View {
             // 修「我已经有了权限，为什么顶部还提示需要授权」的核心闭环——
             // 用户回来那一刻 banner 自动消失，不需要重新扫描或重启 App。
             coordinator.refreshFDAStatus()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .gsyOpenMainWindowRequested)) { _ in
+            // v1.3 review-fix B3：托盘 / HUD 触发"打开主窗口"，但主窗口已被 ⌘W 销毁。
+            // 走 SwiftUI 的 OpenWindow action 重建——这是 macOS 14+ 唯一可靠的方式，
+            // 比直接 NSApp.windows 遍历 makeKeyAndOrderFront 更稳。
+            // 注意：window id 必须与 GSYCleanMacApp 中 WindowGroup(id:) 一致（"main"）。
+            openWindow(id: "main")
         }
         .overlay {
             if isDropTargeted {
