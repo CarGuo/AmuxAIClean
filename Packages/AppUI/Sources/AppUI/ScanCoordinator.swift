@@ -344,7 +344,11 @@ public final class ScanCoordinator: ObservableObject {
         perRootProgress = initial
 
         let roots = cats.map { $0.rootURL }
-        let respectTCC = (fdaStatus != .granted)
+        // v1.3 review-fix Must4：原写法 `(fdaStatus != .granted)` 把 `.unknown` 也当成"未授权"处理，
+        // 导致 FDAProbe 三探针目录全不存在时（沙盒 / 容器异常）会**误报**一个 TCC banner，
+        // 而真实状态可能是已授权。改成只在 `.denied` 时才 respectTCCSkipList，`.unknown` 走默认（信任系统层 errno=EPERM 自然 skip），
+        // 既保守又不会出现"什么都还没扫就闪 banner"。
+        let respectTCC = (fdaStatus == .denied)
         let options = ScanOptions(includeHidden: includeHidden,
                                   staySingleVolume: false,
                                   respectTCCSkipList: respectTCC)
@@ -360,7 +364,8 @@ public final class ScanCoordinator: ObservableObject {
         // v1.0 T5：整盘扫描时叠加 staySingleVolume=true（详见 ScanOptions 文档）
         // v1.3：FDA 已授予时关掉 TCC 硬 skip，让用户原本就有权限读的目录被正常下钻；
         //       同时不再 yield .tccProtectedSkipped，banner 不再误报。
-        let respectTCC = (fdaStatus != .granted)
+        // v1.3 review-fix Must4：见上方多根入口同名注释。`.unknown` 不应触发 TCC banner，仅 `.denied` 触发。
+        let respectTCC = (fdaStatus == .denied)
         let options = ScanOptions(
             includeHidden: includeHidden,
             staySingleVolume: staySingleVolume,

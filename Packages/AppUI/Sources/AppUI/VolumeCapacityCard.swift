@@ -24,10 +24,16 @@ public struct VolumeCapacityCard: View {
     /// 当前会话本 App 识别到的"可清理"字节数。来自 `coordinator.snapshot.totalBytes`。
     /// 0 时不渲染绿色段。
     let cleanableBytes: Int64
+    /// v1.3 review-fix Must1：snapshot == nil 时（卷容量探测失败 / 卷被 unmount 重挂瞬间）
+    /// 触发 UI 重试入口；nil 表示不显示重试按钮（仅显示"未知"占位）。
+    let onRetry: (() -> Void)?
 
-    public init(snapshot: VolumeCapacity.Snapshot?, cleanableBytes: Int64) {
+    public init(snapshot: VolumeCapacity.Snapshot?,
+                cleanableBytes: Int64,
+                onRetry: (() -> Void)? = nil) {
         self.snapshot = snapshot
         self.cleanableBytes = cleanableBytes
+        self.onRetry = onRetry
     }
 
     public var body: some View {
@@ -50,6 +56,59 @@ public struct VolumeCapacityCard: View {
             .padding(10)
             .background(.thinMaterial)
             .overlay(Divider(), alignment: .top)
+        } else {
+            // v1.3 review-fix Must1：探测失败/未就绪时的占位卡片。
+            // 防御理由：之前 nil 直接整张卡片不渲染，sidebar 底部出现一块莫名的空白且无重试入口。
+            // 现在保持卡片高度稳定，让用户明确知道"卷容量未知"，并提供"重试"按钮回到 ScanCoordinator.refreshVolumeCapacity()。
+            unknownPlaceholder
+                .padding(10)
+                .background(.thinMaterial)
+                .overlay(Divider(), alignment: .top)
+        }
+    }
+
+    /// snapshot 缺失时的占位。布局结构与正常态对齐（避免 sidebar 抖动）。
+    @ViewBuilder
+    private var unknownPlaceholder: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: "internaldrive")
+                    .foregroundStyle(.secondary)
+                Text("卷容量未知")
+                    .font(.system(.callout, design: .rounded).weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let onRetry {
+                    Button(action: onRetry) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("重试探测")
+                }
+            }
+            // 保持与正常态相同的占位高度（8pt 灰条 + legend 三行），sidebar 底部高度恒定。
+            Rectangle()
+                .fill(Color.gray.opacity(0.18))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .frame(height: 8)
+            VStack(alignment: .leading, spacing: 3) {
+                placeholderLegendRow(label: "可清理")
+                placeholderLegendRow(label: "其它已用")
+                placeholderLegendRow(label: "可用")
+            }
+            .font(.caption2)
+        }
+    }
+
+    @ViewBuilder
+    private func placeholderLegendRow(label: String) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(Color.gray.opacity(0.3)).frame(width: 7, height: 7)
+            Text(label).foregroundStyle(.secondary)
+            Spacer()
+            Text("—").foregroundStyle(.secondary).monospacedDigit()
         }
     }
 

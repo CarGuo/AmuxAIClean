@@ -25,7 +25,34 @@ public enum MediaProbe {
     }
 
     /// 探测路径所在卷的介质类型。失败返回 `.unknown`，调用方应当回退到默认 worker 数。
-    public static func probe(path: String) -> Kind {
+    ///
+    /// **v1.3 review-fix H4**：`statfs(2)` 在 stale NFS / 不可达 SMB 挂载点上是**阻塞 syscall**，
+    /// 内核重试可能让单次调用同步等待数十秒，且不响应 `Task.isCancelled`。
+    /// `BulkScanner.scan` 在 worker 启动**之前**调本函数，一旦根落在不可达卷上，整个扫描就会僵死。
+    /// 因此本函数包了一层 300ms 的硬超时：超时即按 `.unknown` 返回，调用方回退到 fallback worker 数。
+    /// 正常本地卷开销 <1ms，超时分支几乎不触发。
+    public static func probe(path: String, timeout: TimeInterval = 0.3) -> Kind {
+        // statfs 的实际执行 + 解码全部放到后台串行队列，主调用线程用 semaphore 等结果或超时。
+        let sem = DispatchSemaphore(value: 0)
+        let resultBox = ResultBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let kind = probeBlocking(path: path)
+            resultBox.set(kind)
+            sem.signal()
+        }
+        let waitResult = sem.wait(timeout: .now() + timeout)
+        switch waitResult {
+        case .success:
+            return resultBox.get() ?? .unknown
+        case .timedOut:
+            // 超时不取消后台 task（statfs 是阻塞 syscall，无法软取消）；
+            // 让它自己慢慢跑完，结果丢弃。本函数立即返回 .unknown，扫描器走 fallback worker 数。
+            return .unknown
+        }
+    }
+
+    /// 同步阻塞实现。仅在受超时保护的后台队列里调用。
+    private static func probeBlocking(path: String) -> Kind {
         var sb = statfs()
         guard statfs(path, &sb) == 0 else { return .unknown }
 
@@ -83,5 +110,19 @@ public enum MediaProbe {
         case .unknown: raw = fallback
         }
         return max(1, min(raw, maxCap))
+    }
+}
+
+/// 跨线程安全装结果用的小锁箱。`Kind` 是 trivial enum，set/get 通过 NSLock 守护即可。
+/// 用类而不用 actor：probe() 当前不是 async，调用现场是同步语义，引入 actor 会反而扩散 await。
+private final class ResultBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: MediaProbe.Kind?
+    func set(_ v: MediaProbe.Kind) {
+        lock.lock(); value = v; lock.unlock()
+    }
+    func get() -> MediaProbe.Kind? {
+        lock.lock(); defer { lock.unlock() }
+        return value
     }
 }

@@ -260,7 +260,9 @@ public struct MainView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VolumeCapacityCard(
                 snapshot: coordinator.volumeSnapshot,
-                cleanableBytes: coordinator.snapshot.totalBytes
+                cleanableBytes: coordinator.snapshot.totalBytes,
+                // v1.3 review-fix Must1：snapshot 探测失败时让卡片提供"重试"按钮，回调到 coordinator.refreshVolumeCapacity()。
+                onRetry: { coordinator.refreshVolumeCapacity() }
             )
         }
     }
