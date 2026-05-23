@@ -461,6 +461,10 @@ final class IslandHoverState: ObservableObject {
     @Published var rightPillSize: CGSize = .zero
     /// SwiftUI 测量出的展开态卡片实际 size（内容驱动高度）
     @Published var expandedSize: CGSize = .zero
+    /// v1.3 review-fix（对称化）：左/右两个 hero 簇的"较长一侧"自然宽度。
+    /// `closedStripLayout` 把短簇 frame 到这个宽度，让左右严格对称且整体宽度随长簇 ×2 动态变化。
+    /// 0 时表示尚未测量到，layout 退回 `.fixedSize` 自然布局，避免首帧塌缩。
+    @Published var clusterMaxWidth: CGFloat = 0
 }
 
 /// SwiftUI PreferenceKey：把子视图实际渲染出的 size 报到父级。
@@ -469,6 +473,15 @@ struct IslandSizePreferenceKey: PreferenceKey {
     static let defaultValue: [String: CGSize] = [:]
     static func reduce(value: inout [String: CGSize], nextValue: () -> [String: CGSize]) {
         value.merge(nextValue()) { $1 }
+    }
+}
+
+/// v1.3 review-fix（对称化）：上报左/右 hero 簇的自然宽度。
+/// reduce 取 max——左右一起喂同一个 key，最终 value 就是两簇较长那个的宽度。
+struct IslandClusterWidthPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
@@ -891,6 +904,14 @@ struct FloatingScanHUDView: View {
             if let s = sizes["strip"] { islandState.leftPillSize = s }
             if let e = sizes["expanded"] { islandState.expandedSize = e }
         }
+        .onPreferenceChange(IslandClusterWidthPreferenceKey.self) { width in
+            // v1.3 review-fix（对称化）：左右两簇较长那侧的自然宽度。
+            // 写回 islandState 后，下一帧 closedStripLayout 把短簇也填齐到这个宽度，左右对称。
+            // 仅在变化超过 0.5pt 时写入，避免微小浮动触发 spring 抖动。
+            if abs(islandState.clusterMaxWidth - width) > 0.5 {
+                islandState.clusterMaxWidth = width
+            }
+        }
         .onChange(of: phase) { _, _ in
             triggerPop()
         }
@@ -932,26 +953,63 @@ struct FloatingScanHUDView: View {
     /// `isSource` 控制 matchedGeometryEffect 是否以本布局的 frame 为锚点：
     /// - 当本布局可见时（收起态），isSource=true，提供真实的胶囊位置 frame
     /// - 当不可见时（展开态），isSource=false，元素的视觉 frame 跟随展开布局
+    ///
+    /// **v1.3 review-fix（对称化 + 安全距离）**：
+    /// 1. 左右内侧 padding 从 10 → 16pt：用户实测右侧"已 5..."字符贴脸物理刘海被截断；
+    ///    16pt 与外侧 padding 对齐，左右内外四角余量一致，视觉对称。
+    /// 2. 左右簇上报自然宽度到 IslandClusterWidthPreferenceKey；外层取 max 写回 islandState；
+    ///    本函数把两簇都 frame 到 max 宽度（短侧 alignment 朝向胶囊外缘 leading/trailing），
+    ///    让"扫描中" vs "已 5,432 项" 这种长度差被填齐为对称形态——左右一起变大变小。
+    /// 3. 整体宽度 = clusterMaxWidth × 2 + bridgeWidth + outerPadding × 2，由内容长侧驱动。
     @ViewBuilder
     private func closedStripLayout(pillH: CGFloat, notchWidth: CGFloat, isSource: Bool, namespace: Namespace.ID) -> some View {
         let screen = islandScreen
         let hasNotch = (screen?.safeAreaInsets.top ?? 0) > 0
         let bridgeWidth: CGFloat = hasNotch ? notchWidth : 4
 
+        // v1.3 review-fix：刘海两侧的安全距离常量。值 = 16 与外侧 padding 对齐。
+        // 想日后微调可以改这一处；之前 10pt 实测会让右簇"已 5"贴脸刘海被截断/重影。
+        let notchSafePadding: CGFloat = 16
+
+        // 对称宽度——尚未测到时为 0，触发 cluster 内部 .fixedSize 自然布局；
+        // 一旦 probe 测出真值，左右两簇都 frame 到此宽度（alignment 锚向胶囊外缘）。
+        let clusterW = islandState.clusterMaxWidth
+
         HStack(spacing: 0) {
             heroLeftCluster(isExpanded: false, isSource: isSource, namespace: namespace)
-                .padding(.leading, 16)
-                .padding(.trailing, 10)
+                .fixedSize(horizontal: true, vertical: false)
+                .background(clusterWidthReporter)
+                .frame(
+                    width: clusterW > 0 ? clusterW : nil,
+                    alignment: .leading // 左簇填齐时内容贴左（远离刘海）
+                )
+                .padding(.leading, notchSafePadding)
+                .padding(.trailing, notchSafePadding)
 
             // 中央刘海占位
             Color.clear
                 .frame(width: bridgeWidth, height: pillH)
 
             heroRightCluster(isExpanded: false, isSource: isSource, namespace: namespace)
-                .padding(.leading, 10)
-                .padding(.trailing, 16)
+                .fixedSize(horizontal: true, vertical: false)
+                .background(clusterWidthReporter)
+                .frame(
+                    width: clusterW > 0 ? clusterW : nil,
+                    alignment: .trailing // 右簇填齐时内容贴右（远离刘海）
+                )
+                .padding(.leading, notchSafePadding)
+                .padding(.trailing, notchSafePadding)
         }
         .frame(height: pillH)
+    }
+
+    /// 把 cluster 自然宽度报到 IslandClusterWidthPreferenceKey。
+    /// 配合外层 `.onPreferenceChange` 收集 max → 写回 islandState.clusterMaxWidth。
+    /// 用 background + GeometryReader 是 SwiftUI 推荐写法（不撑大父视图、不抢 hit-test）。
+    private var clusterWidthReporter: some View {
+        GeometryReader { geo in
+            Color.clear.preference(key: IslandClusterWidthPreferenceKey.self, value: geo.size.width)
+        }
     }
 
     /// **展开态布局**——大卡片：hero 行（图标+主标题在左 / 数字在右）在顶部，下方堆叠附加内容。
