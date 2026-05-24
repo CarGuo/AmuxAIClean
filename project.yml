@@ -85,6 +85,7 @@ targets:
       - package: XPCBridge
       - package: AppUI
       - package: HeuristicKit
+      - package: TestHarness
       - target: GSYCleanMacHelper
         embed: true
         copy:

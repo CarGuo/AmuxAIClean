@@ -45,6 +45,14 @@ public final class AppSettings {
         /// 启动时若该 key 未设置则把 hudPlacement **强制覆盖**为 `.dynamicIsland`
         /// 并把这个 key 落 true，今后用户怎么改都不再覆盖。
         public static let hudPlacementForcedIsland = "v1.hud_placement_forced_island_v1"
+        /// v1.3.x：关掉主窗口后是否把 App 从 Dock / 顶部主菜单隐藏（切到 .accessory）。默认 OFF。
+        /// 开启后 App 会更接近"菜单栏小工具"形态：关窗 = 入后台，要靠菜单栏托盘把它拉回来。
+        public static let hideFromDockWhenClosed = "v1.hide_from_dock_when_closed"
+        /// v1.3.x（M1 内存优化）：扫描结果是否落 SQLite store 并在扫完后允许内存 compact。
+        /// 默认 OFF（feature flag），稳定后默认 ON。开启后扫描期会异步把 node 批量写入
+        /// `~/Library/Application Support/GSYCleanMac/scan.sqlite`，UI 在大文件视图等场景
+        /// 可以在退出页面时主动 compact 内存中的大文件叶子缓存，下次进入再从 store 取。
+        public static let useScanStore = "v1.use_scan_store"
     }
 
     /// v1.3：HUD 屏幕位置预设。
@@ -241,8 +249,17 @@ public final class AppSettings {
     /// v1.3：状态栏托盘开关，默认 `true`。
     /// 关掉后 [StatusItemController](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StatusItemController.swift)
     /// 不会注册 NSStatusItem，菜单栏右侧不会有图标。
+    ///
+    /// **v1.3.x 互斥兜底（与 hideFromDockWhenClosed 对偶）**：
+    /// 关托盘的时候如果"关窗藏 Dock"还开着，关窗后 App 就彻底失踪了，
+    /// 所以这里强制把 hideFromDockWhenClosed 也关掉，回到能看到 Dock 的安全态。
     public var trayEnabled: Bool {
-        didSet { defaults.set(trayEnabled, forKey: Keys.trayEnabled) }
+        didSet {
+            defaults.set(trayEnabled, forKey: Keys.trayEnabled)
+            if !trayEnabled, hideFromDockWhenClosed {
+                hideFromDockWhenClosed = false
+            }
+        }
     }
 
     /// v1.3：HUD 常驻模式开关，默认 `false`。
@@ -260,6 +277,41 @@ public final class AppSettings {
     /// App 窗口会盖在它上面，但桌面图标在它下面，类似 GeekTool / iStat Menus 桌面挂件。
     public var hudPlacement: HUDPlacement {
         didSet { defaults.set(hudPlacement.rawValue, forKey: Keys.hudPlacement) }
+    }
+
+    /// v1.3.x：关闭主窗口后把 App 从 Dock / 顶部主菜单隐藏，切到 `NSApp.accessory` 模式。默认 `false`。
+    ///
+    /// 设计来源：用户原话「我们都有顶部托盘托管了，关闭后是不是可以不显示在底部托管」。
+    /// 既然菜单栏托盘已经能完成"打开主窗口 / 立即扫描 / toggle HUD"三件事，
+    /// 关窗后再保留 Dock 图标就重复了——参考 Bartender / iStat Menus / Rectangle 等
+    /// 菜单栏 App 的标准玩法，关窗 → accessory（隐 Dock + 隐主菜单），开窗 → regular。
+    ///
+    /// **互斥兜底**：
+    /// 用户不能同时关掉 trayEnabled 又开 hideFromDockWhenClosed——那会让 App 完全没入口
+    /// （关窗后 Dock 没图标 + 菜单栏没托盘 = 只能 Activity Monitor / kill 重开）。
+    /// didSet 里在打开本开关时**强制把 trayEnabled 拉回 true**，
+    /// 同时 trayEnabled 的 didSet 也做对偶约束（关托盘时强制关本开关），形成双向锁。
+    public var hideFromDockWhenClosed: Bool {
+        didSet {
+            defaults.set(hideFromDockWhenClosed, forKey: Keys.hideFromDockWhenClosed)
+            // 互斥兜底：开启本开关时托盘必须留着，否则 App 就完全失踪了。
+            if hideFromDockWhenClosed, !trayEnabled {
+                trayEnabled = true
+            }
+        }
+    }
+
+    /// v1.3.x（M1 内存优化）：扫描结果是否落 SQLite store。默认 `false`（feature flag）。
+    ///
+    /// 开启后：
+    /// - [ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    ///   扫描期把 node 批量写入 `~/Library/Application Support/GSYCleanMac/scan.sqlite`
+    /// - 大文件视图等可在退出时调 `compactAfterScan()` 释放内存中 LargeFileLeaf 数组（百 MB 级）
+    /// - 后续重新进入大文件视图时从 store 流式分页查询
+    ///
+    /// 关闭则保持原"全量内存驻留"行为，确保功能不退化。
+    public var useScanStore: Bool {
+        didSet { defaults.set(useScanStore, forKey: Keys.useScanStore) }
     }
 
     // MARK: - 构造
@@ -349,6 +401,29 @@ public final class AppSettings {
             self.hudPlacement = .dynamicIsland
             defaults.set(true, forKey: Keys.hudPlacementForcedIsland)
         }
+        // v1.3.x：「关窗藏 Dock」默认 ON——产品语义：本 App 已配套菜单栏托盘 +
+        // 灵动岛 HUD，关闭主窗口后保留这两个轻量入口已足够，不再需要 Dock
+        // 图标占位。关 Dock 后 ⌘Tab 也排除本 App，给用户更"驻留态后台清理工具"
+        // 的体感（行业标准玩法：Bartender / iStat Menus / Rectangle）。
+        // 用户可在设置里关回 OFF 恢复传统行为。
+        // 互斥兜底：必须同时保证 trayEnabled=true，否则关窗后没有任何入口；
+        // 下方 trayEnabled=false 的修正一旦命中会反向把这个 flag 拉回 false。
+        if let raw = defaults.object(forKey: Keys.hideFromDockWhenClosed) as? Bool {
+            self.hideFromDockWhenClosed = raw
+        } else {
+            self.hideFromDockWhenClosed = true
+        }
+        // M1 内存优化：useScanStore feature flag 默认 OFF，灰度后再翻 ON。
+        if let raw = defaults.object(forKey: Keys.useScanStore) as? Bool {
+            self.useScanStore = raw
+        } else {
+            self.useScanStore = false
+        }
+        // 初始化期一致性纠偏：万一上一次进程崩溃前留下了"trayEnabled=false 且 hideFromDockWhenClosed=true"
+        // 的非法组合（didSet 没来得及触发），启动时强制以 trayEnabled 为准。
+        if hideFromDockWhenClosed, !trayEnabled {
+            self.hideFromDockWhenClosed = false
+        }
     }
 
     /// 单测专用：把当前实例所有键从 defaults 清掉。
@@ -366,5 +441,7 @@ public final class AppSettings {
         defaults.removeObject(forKey: Keys.hudPersistent)
         defaults.removeObject(forKey: Keys.hudPlacement)
         defaults.removeObject(forKey: Keys.hudPlacementForcedIsland)
+        defaults.removeObject(forKey: Keys.hideFromDockWhenClosed)
+        defaults.removeObject(forKey: Keys.useScanStore)
     }
 }

@@ -118,6 +118,16 @@ public struct SettingsScene: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                Toggle(isOn: $settings.hideFromDockWhenClosed) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("关闭主窗口后从 Dock 隐藏")
+                        Text("默认 OFF。开启后，关掉主窗口 = App 隐入菜单栏托盘（Dock 图标 + 顶部主菜单一起消失）；点托盘 \"打开主窗口\" 即可拉回。需要保留菜单栏托盘开启，否则 App 关窗后将完全没有入口。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .disabled(!settings.trayEnabled)
             } header: {
                 Text("界面")
             }

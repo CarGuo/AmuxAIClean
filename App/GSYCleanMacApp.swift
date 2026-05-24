@@ -1,6 +1,8 @@
 import SwiftUI
 import AppUI
+import AppKit
 import SafetyKit
+import ScanKit
 
 @main
 struct GSYCleanMacApp: App {
@@ -27,6 +29,11 @@ struct GSYCleanMacApp: App {
     /// 关掉主窗口（或将来支持 LSUIElement 模式）后仍能从托盘菜单触发扫描 / 拉回主窗口。
     @State private var statusItem = StatusItemController()
 
+    /// v1.3.x：App 激活策略控制器。控制"关窗后是否隐 Dock + 隐顶部主菜单"的切换。
+    /// 仅当 settings.hideFromDockWhenClosed 开启时才会真正切到 .accessory；
+    /// 关闭时永远保持 .regular，与现行行为完全一致。
+    @State private var activationPolicy = ActivationPolicyController()
+
     private let tccDismissedKey = "tcc.onboarding.dismissed"
 
     init() {
@@ -35,7 +42,35 @@ struct GSYCleanMacApp: App {
         let s = AppSettings()
         self._settings = State(initialValue: s)
         self._updateChecker = State(initialValue: UpdateChecker(settings: s))
-        self._coordinator = StateObject(wrappedValue: ScanCoordinator(vendors: loadedVendors))
+        // M1 内存优化：仅当用户开启 useScanStore feature flag 时构造 GRDB store。
+        // v1.3.z 起：deepIndex 已正式翻成 off，TreeBrowserView 必须走 GRDB store
+        // 才能下钻；所以 store 不再受 useScanStore 守卫，**强制开启**。
+        // useScanStore 仅用作"如果用户在设置里关，则不去主动跨进程持久化大文件 cache"
+        // 的次要 hint；store 本身始终在线。构造失败仍优雅降级到 nil（罕见，
+        // 仅磁盘满 / Application Support 不可写等极端情况）。
+        let store: ScanResultStore? = {
+            do {
+                let url = try GRDBScanResultStore.defaultDatabaseURL()
+                return try GRDBScanResultStore(databaseURL: url)
+            } catch {
+                NSLog("[GSYCleanMac] GRDBScanResultStore 初始化失败，退回内存模式：\(error)")
+                return nil
+            }
+        }()
+        // v1.3.z：性能开关——ingest 维护 dirIndex/childEdges/fileLeaves
+        // 的祖先上溯字典写入是主线程瓶颈，70 GB workspace A/B 实测：
+        //   deepIndex=on  → 326s（首次默认，被用户怒斥 19 分钟卡死）
+        //   deepIndex=off → 36.6s（throttle 0.40s 后逼近 IO 上限）
+        // **正式默认翻成 off**：所有用户开箱即用快路径，TreeBrowserView 通过
+        // ScanCoordinator.directChildrenAsync 走 GRDB store 仍能正常下钻。
+        // （仅当用户显式设 GSY_DEEP_INDEX=1 才回退到内存索引——主要给开发者做 A/B
+        //  对比用，正式用户不再触碰这条慢路径。）
+        let deepIndex = (ProcessInfo.processInfo.environment["GSY_DEEP_INDEX"] ?? "0") != "0"
+        self._coordinator = StateObject(
+            wrappedValue: ScanCoordinator(vendors: loadedVendors,
+                                          resultStore: store,
+                                          enableTreeDeepIndex: deepIndex)
+        )
     }
 
     var body: some Scene {
@@ -65,8 +100,65 @@ struct GSYCleanMacApp: App {
                 statusItem.onToggleHUD = { [hud] in
                     hud.toggleForceVisible()
                 }
+                // M5（交互更便捷）：弹菜单时同步查询扫描状态，
+                // 让"开始推荐扫描"在已经在扫时自动 disable + 标题转"扫描中…"。
+                statusItem.onQueryScanState = { [coordinator] in
+                    coordinator.isScanning
+                }
                 // v1.3：根据 settings.trayEnabled 注册 / 移除菜单栏图标
                 reconcileTray()
+                // v1.3.x：首启即按用户偏好把激活策略就位（默认 false → regular，行为不变）。
+                reconcileActivationPolicy()
+
+                // v1.3.zz 真实回归套件总入口。
+                // 环境变量 GSY_REGRESSION_CASE=<case-id> 启动后跑指定 case，结果以
+                // [REGR k=v ...] 行打到 stderr，最终行 [REGR_PASS case=...] / [REGR_FAIL case=...]
+                // 让 Scripts/regression.sh 直接 grep 判定。每条 case 跑完后退出 App。
+                // 与 GSY_AUTOSCAN 互斥（GSY_REGRESSION_CASE 优先），避免双钩子打架。
+                if let caseID = ProcessInfo.processInfo.environment["GSY_REGRESSION_CASE"], !caseID.isEmpty {
+                    let runner = RegressionRunner(
+                        caseID: caseID,
+                        coordinator: coordinator,
+                        settings: settings,
+                        hud: hud,
+                        statusItem: statusItem,
+                        activationPolicy: activationPolicy,
+                        vendors: vendors,
+                        env: ProcessInfo.processInfo.environment
+                    )
+                    Task { @MainActor in
+                        await runner.run()
+                    }
+                } else if let target = ProcessInfo.processInfo.environment["GSY_AUTOSCAN"], !target.isEmpty {
+                    // v1.3.z 老开发钩子：环境变量 GSY_AUTOSCAN=<path> 启动后立刻扫描指定根，
+                    // 扫完打印一行 `[GSY_AUTOSCAN_RESULT] elapsed_ms=... files=... bytes=...`
+                    // 到 stderr。回归套件已经覆盖该场景，但保留向后兼容。
+                    let url = URL(fileURLWithPath: target)
+                    let started = Date()
+                    let cat = ScanCategory.makeCustom(url: url)
+                    coordinator.scan(category: cat,
+                                     includeHidden: settings.showHidden)
+                    Task { @MainActor [coordinator] in
+                        var lastBeat = Date()
+                        while !coordinator.snapshot.isFinished {
+                            try? await Task.sleep(nanoseconds: 500_000_000)
+                            let now = Date()
+                            if now.timeIntervalSince(lastBeat) >= 5.0 {
+                                let snap = coordinator.snapshot
+                                let elapsed = Int(now.timeIntervalSince(started))
+                                FileHandle.standardError.write(Data(
+                                    "[GSY_AUTOSCAN_TICK] t=\(elapsed)s files=\(snap.scannedFileCount) bytes=\(snap.totalBytes / 1_048_576)MB\n".utf8
+                                ))
+                                lastBeat = now
+                            }
+                        }
+                        let snap = coordinator.snapshot
+                        let elapsedMs = Int(Date().timeIntervalSince(started) * 1000)
+                        FileHandle.standardError.write(Data(
+                            "[GSY_AUTOSCAN_RESULT] elapsed_ms=\(elapsedMs) files=\(snap.scannedFileCount) bytes=\(snap.totalBytes) finished=true\n".utf8
+                        ))
+                    }
+                }
             }
             .onChange(of: coordinator.isScanning) { _, _ in
                 // v1.3：扫描开始 → HUD 弹出；扫描结束 → 非常驻模式下 0.8s 后渐隐
@@ -87,6 +179,24 @@ struct GSYCleanMacApp: App {
             .onChange(of: settings.trayEnabled) { _, _ in
                 // 用户 toggle 设置里的托盘开关，立即生效
                 reconcileTray()
+                // 关托盘可能联动关掉 hideFromDockWhenClosed（互斥兜底），重新核对一次激活策略。
+                reconcileActivationPolicy()
+            }
+            .onChange(of: settings.hideFromDockWhenClosed) { _, _ in
+                // 用户 toggle"关窗藏 Dock"开关 → 立即 reconcile：
+                // 开 + 当前没有可见主窗口 → 直接进 accessory；
+                // 开 + 有可见主窗口 → 保持 regular（关窗时再切）；
+                // 关 → 立刻回 regular，不会让用户因为 Dock 没了而困惑。
+                reconcileActivationPolicy()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
+                // v1.3.x：监听任意 NSWindow 关闭。延后到下一 runloop 再判断"是否还有可见主窗口"——
+                // willClose 触发时窗口尚未 isVisible=false，立即判断会误以为还在。
+                handleWindowVisibilityChange(note: note, isClosing: true)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+                // 主窗口被打开 / 拉回前台 → 立刻同步策略（accessory→regular）。
+                reconcileActivationPolicy()
             }
             .sheet(isPresented: $showTCCGuide) {
                 TCCGuideView { openedSettings in
@@ -142,6 +252,50 @@ struct GSYCleanMacApp: App {
         }
     }
 
+    /// v1.3.x：根据当前主窗口可见性 + settings.hideFromDockWhenClosed 决定 NSApp 激活策略。
+    ///
+    /// 调用时机：
+    /// - App 启动 task 内 → 让首启即按用户偏好就位
+    /// - settings.hideFromDockWhenClosed onChange
+    /// - settings.trayEnabled onChange（互斥兜底可能反向关掉 hideFromDockWhenClosed）
+    /// - NSWindow.willCloseNotification（窗口被关）
+    /// - NSWindow.didBecomeKeyNotification（窗口被打开/激活）
+    @MainActor
+    private func reconcileActivationPolicy() {
+        let hasVisible = Self.hasVisibleMainWindow()
+        activationPolicy.reconcile(
+            hideEnabled: settings.hideFromDockWhenClosed,
+            hasVisibleMainWindow: hasVisible
+        )
+    }
+
+    /// v1.3.x：响应 NSWindow.willCloseNotification —— willClose 时窗口本身仍 isVisible=true，
+    /// 必须把判断 push 到下一 runloop 再做，否则永远以为"还有可见主窗口"，accessory 切换不发生。
+    @MainActor
+    private func handleWindowVisibilityChange(note: Notification, isClosing: Bool) {
+        guard isClosing else { return }
+        // 仅在主窗口（非 NSPanel、非 settings 窗、非辅助 host）关闭时才需要重核策略。
+        // 这里直接放行所有 NSWindow 通知，让 hasVisibleMainWindow 用统一过滤兜底——
+        // 误触发的代价是多调一次 setActivationPolicy（applyIfChanged 会幂等吞掉）。
+        DispatchQueue.main.async {
+            self.reconcileActivationPolicy()
+        }
+    }
+
+    /// v1.3.x：判断当前是否至少有一个"可见主窗口"——即用户视觉上能看到 / 点亮的主窗口。
+    /// 与 [bringMainWindowToFront](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift#L186-L218) 用的过滤条件保持一致：
+    /// 非 NSPanel + 有 contentViewController + windowNumber > 0 + (isVisible || isMiniaturized)。
+    /// 最小化窗口算"可见"，因为 Dock 还有缩略图，用户预期 Dock 图标在场。
+    @MainActor
+    private static func hasVisibleMainWindow() -> Bool {
+        NSApp.windows.contains { window in
+            guard !(window is NSPanel) else { return false }
+            guard window.contentViewController != nil else { return false }
+            guard window.windowNumber > 0 else { return false }
+            return window.isVisible || window.isMiniaturized
+        }
+    }
+
     /// v1.3：把主窗口拉回前台并激活进程。
     /// - 给 HUD 的"打开主窗口"按钮 / 托盘"打开主窗口"菜单调用。
     ///
@@ -161,6 +315,10 @@ struct GSYCleanMacApp: App {
     @MainActor
     private static func bringMainWindowToFront() {
         // v1.3 review-fix B1：新 API（macOS 14+），不再用 deprecated 的 ignoringOtherApps 形式。
+        // **v1.3.zz 关窗后修复**：当前 App 可能已经处于 .accessory（藏 Dock）模式——
+        // 直接 activate() 在 accessory 下不会让窗口拉回前台 / 抢焦点，必须先把策略切回
+        // .regular 才能正常显示主窗口与抢键盘焦点。这一步幂等：已是 regular 不会反复调。
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate()
 
         // v1.3 review-fix B2：精确过滤——必须满足"非 panel + 非隐藏辅助窗口"，
@@ -185,9 +343,31 @@ struct GSYCleanMacApp: App {
             return
         }
 
-        // v1.3 review-fix B3：找不到主窗口（用户 ⌘W 关掉后 WindowGroup 实例已销毁）。
-        // 通过通知请求 view 层重建窗口。MainView 的 onReceive 会响应。
+        // v1.3 review-fix B3 + v1.3.zz 强化：找不到主窗口（用户 ⌘W 关掉后 WindowGroup 实例已销毁）。
+        //
+        // 老路径：post Notification → MainView.onReceive → openWindow(id:)。
+        // 但 MainView 已随 WindowGroup 销毁一同消失，监听器**已失效**——通知发出后无人接收，
+        // 主窗口永远开不回来（即图 2 的"托盘 / HUD 打开主窗口按钮无效"）。
+        //
+        // 新路径：用 NSWorkspace.open(Bundle.main.bundleURL) 让 LaunchServices 把"已运行的 App"
+        // 重新激活；这等价于用户从 Dock / Launchpad 再次点 App 图标，会触发 SwiftUI WindowGroup
+        // 的默认 reopen 行为（automatically reopen the main window）。这是 macOS 上"已运行 App
+        // 重开主窗口"业内通用做法，Mail / 微信 / Bartender 都用这套。
+        //
+        // 通知仍然 post——万一 MainView 还活着（罕见的 phantom 状态），它接到能立刻 openWindow，
+        // 比等 LaunchServices reopen 快几十 ms。
         NotificationCenter.default.post(name: .gsyOpenMainWindowRequested, object: nil)
+
+        let bundleURL = Bundle.main.bundleURL
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        // createsNewApplicationInstance 默认 false，会触发已运行实例的 reopen 而不是双开。
+        NSWorkspace.shared.open(bundleURL, configuration: config) { _, error in
+            if let error {
+                // 兜底诊断日志（极罕见：只有 Bundle 被 ad-hoc 签或权限被剥夺时才会失败）。
+                NSLog("[GSYCleanMac] bringMainWindowToFront fallback open failed: \(error)")
+            }
+        }
     }
 
     private func evaluateTCCOnboarding() async {

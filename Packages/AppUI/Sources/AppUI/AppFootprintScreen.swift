@@ -34,14 +34,24 @@ public struct AppFootprintScreen: View {
     }
 
     public var body: some View {
-        HSplitView {
+        // v1.3.zz UI 修复：原本用 HSplitView + leftPane/rightPane 各 minWidth=360/320，
+        // 嵌进 MainView NavigationSplitView 的 content 列（min:420 ideal:520）后，
+        // 内层 minWidth 之和 680 > 外层 ideal 520，把外层 sidebar 都挤掉了一半。
+        // 改成普通 HStack：左列表自适应、右详情固定占比。窄屏下整个 NavigationSplitView
+        // 仍能正常约束，不会再撑破 sidebar。也去掉 navigationTitle，避免覆盖主窗"GSY 清理管家"。
+        HStack(spacing: 0) {
             leftPane
-                .frame(minWidth: 360, idealWidth: 460)
+                .frame(minWidth: 240, idealWidth: 320)
+                .layoutPriority(1)
+            Divider()
             rightPane
-                .frame(minWidth: 320)
+                .frame(minWidth: 220)
+                .layoutPriority(1)
         }
-        .navigationTitle("应用占用排行榜")
         .task { await reload() }
+        // v2：套布局沙箱——「应用占用排行榜」内 leftPane 表格 + rightPane 分项
+        // 都有大量长 bundleID / 应用路径，禁止 ideal width 反推外层。
+        .layoutSandbox()
     }
 
     // MARK: - 左栏：排行榜

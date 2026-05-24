@@ -18,7 +18,7 @@ import SwiftUI
 ///
 /// 3. **菜单**：左 / 右键统一弹同一份 NSMenu，包含：
 ///    - 打开主窗口（onOpenMainWindow）
-///    - 开始推荐扫描（onStartRecommendedScan）
+///    - 开始推荐扫描（onStartRecommendedScan）—— **M5：扫描中自动 disable**
 ///    - 显示 / 隐藏悬浮窗（onToggleHUD）
 ///    - 退出（onQuit）
 ///    NSStatusItem 的 button.action 会被 menu 接管，无需自己处理点击事件。
@@ -28,10 +28,23 @@ import SwiftUI
 ///
 /// 5. **MainActor 隔离**：NSStatusItem 必须在主线程操作（AppKit 约束），
 ///    类标注 @MainActor 由编译器强制。
+///
+/// 6. **M5（交互更便捷）**：每个菜单项都带 keyEquivalent，键盘一开菜单即可
+///    秒选；同时通过 `onQueryScanState` 闭包让"开始推荐扫描"在扫描进行中
+///    自动变 disabled，防止并发点击导致 ScanCoordinator 会话覆盖。
 @MainActor
-public final class StatusItemController {
+public final class StatusItemController: NSObject, NSMenuDelegate {
 
     private var item: NSStatusItem?
+    /// 缓存最近一次构建的 menu，便于 install() 之外的二次刷新。
+    private var menu: NSMenu?
+
+    #if DEBUG
+    /// 仅 DEBUG 暴露：托盘是否当前已挂在 NSStatusBar 上。
+    /// 供 [App/RegressionRunner.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/App/RegressionRunner.swift)
+    /// 等真实回归测试断言用，不影响生产路径。
+    public var isInstalledForTesting: Bool { item != nil }
+    #endif
 
     /// 点击"打开主窗口"，由 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
     /// 注入：调 NSApp.activate + 主窗口 makeKeyAndOrderFront。
@@ -43,7 +56,11 @@ public final class StatusItemController {
     /// 点击"显示 / 隐藏悬浮窗"。注入方调 [FloatingScanHUDController.toggleForceVisible](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)。
     public var onToggleHUD: (() -> Void)?
 
-    public init() {}
+    /// **M5 注入点**：每次菜单将要打开（menuWillOpen）时同步调用，返回当前是否在扫描中。
+    /// 用于动态 disable "开始推荐扫描"——nil 时按 false 处理（兼容老调用者）。
+    public var onQueryScanState: (() -> Bool)?
+
+    public override init() { super.init() }
 
     /// 把图标挂到 NSStatusBar。重复调用安全 —— 已挂载则直接返回。
     public func install() {
@@ -60,7 +77,10 @@ public final class StatusItemController {
             button.image = image
             button.toolTip = "GSY 清理管家"
         }
-        statusItem.menu = makeMenu()
+        let m = makeMenu()
+        m.delegate = self
+        statusItem.menu = m
+        self.menu = m
         self.item = statusItem
     }
 
@@ -71,17 +91,55 @@ public final class StatusItemController {
             NSStatusBar.system.removeStatusItem(item)
         }
         self.item = nil
+        self.menu = nil
+    }
+
+    // MARK: - 内部菜单构建（同时供 _testMenuSnapshot 使用）
+
+    /// 单测专用：构建一份"未挂载"的菜单快照（不依赖 NSStatusBar），
+    /// 调用方可断言 keyEquivalent / enabled 状态而无需启 UI 测试。
+    /// `scanning` 模拟 onQueryScanState 的返回值。
+    func _testMenuSnapshot(scanning: Bool) -> NSMenu {
+        let m = makeMenu()
+        applyDynamicState(to: m, scanning: scanning)
+        return m
+    }
+
+    /// **M5 核心**：menu 即将弹出时刷新 disabled 状态。
+    public func menuWillOpen(_ menu: NSMenu) {
+        let scanning = onQueryScanState?() ?? false
+        applyDynamicState(to: menu, scanning: scanning)
+    }
+
+    private func applyDynamicState(to menu: NSMenu, scanning: Bool) {
+        // 用 tag 锚定"开始推荐扫描"那项；不依赖位置（防未来插入新项）
+        if let scanItem = menu.item(withTag: MenuTag.startScan.rawValue) {
+            scanItem.isEnabled = !scanning
+            scanItem.title = scanning ? "扫描中…" : "开始推荐扫描"
+        }
+    }
+
+    private enum MenuTag: Int {
+        case openMainWindow = 1001
+        case startScan      = 1002
+        case toggleHUD      = 1003
+        case quit           = 1004
     }
 
     private func makeMenu() -> NSMenu {
         let menu = NSMenu()
+        // M5：autoenablesItems = false 避免 AppKit 自动校验 target/action 把
+        // 我们手动设置的 isEnabled 覆盖回去（AppKit 会顺着 first responder
+        // 链找 validateMenuItem，菜单弹出时 first responder 不一定是 self）。
+        menu.autoenablesItems = false
 
         let openItem = NSMenuItem(
             title: "打开主窗口",
             action: #selector(handleOpenMainWindow),
-            keyEquivalent: ""
+            keyEquivalent: "o" // ⌘O：与 Finder 系列一致的"打开"语义
         )
         openItem.target = self
+        openItem.tag = MenuTag.openMainWindow.rawValue
         menu.addItem(openItem)
 
         menu.addItem(.separator())
@@ -89,17 +147,19 @@ public final class StatusItemController {
         let scanItem = NSMenuItem(
             title: "开始推荐扫描",
             action: #selector(handleStartRecommendedScan),
-            keyEquivalent: ""
+            keyEquivalent: "r" // ⌘R：与浏览器/Xcode 的"刷新/构建"语义对齐
         )
         scanItem.target = self
+        scanItem.tag = MenuTag.startScan.rawValue
         menu.addItem(scanItem)
 
         let hudItem = NSMenuItem(
             title: "显示 / 隐藏悬浮窗",
             action: #selector(handleToggleHUD),
-            keyEquivalent: ""
+            keyEquivalent: "h" // ⌘H：与系统 hide 习惯保持类似的字母
         )
         hudItem.target = self
+        hudItem.tag = MenuTag.toggleHUD.rawValue
         menu.addItem(hudItem)
 
         menu.addItem(.separator())
@@ -107,9 +167,10 @@ public final class StatusItemController {
         let quitItem = NSMenuItem(
             title: "退出 GSY 清理管家",
             action: #selector(handleQuit),
-            keyEquivalent: "q"
+            keyEquivalent: "q" // ⌘Q：标准退出
         )
         quitItem.target = self
+        quitItem.tag = MenuTag.quit.rawValue
         menu.addItem(quitItem)
 
         return menu
@@ -120,6 +181,8 @@ public final class StatusItemController {
     }
 
     @objc private func handleStartRecommendedScan() {
+        // M5：再做一次防御 —— 如果 reopen 之间已经开扫，直接忽略点击
+        if onQueryScanState?() == true { return }
         // 顺手把主窗口拉到前台，让用户能看到扫描进度
         onOpenMainWindow?()
         onStartRecommendedScan?()

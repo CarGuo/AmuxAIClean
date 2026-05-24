@@ -1,0 +1,15 @@
+2026-05-24 19:24:33.542 GSYCleanMac[91981:3122936] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR_BEGIN] case=scan-perf-diagnose
+2026-05-24 19:24:35.236 GSYCleanMac[91981:3122936] WARNING: Application performed a reentrant operation in its NSTableView delegate. This warning will become an assert in the future.
+[REGR] case=scan-perf-diagnose HB elapsed=5.1s bytes=4839862503 files=18079 MBps=904.19
+[REGR] case=scan-perf-diagnose HB elapsed=10.1s bytes=10644827256 files=91979 MBps=1001.56
+[REGR] case=scan-perf-diagnose HB elapsed=15.2s bytes=17055251505 files=199907 MBps=1071.85
+[REGR] case=scan-perf-diagnose HB elapsed=20.2s bytes=20624940593 files=322207 MBps=974.53
+[REGR] case=scan-perf-diagnose elapsed_sec=20.6 total_bytes=20812983838 total_files=333135 throughput_MBps=963.90
+[REGR] case=scan-perf-diagnose root[0] path=/Users/guoshuyu/Library/Caches bytes=16661679153 files=318952 finished=true
+[REGR] case=scan-perf-diagnose root[1] path=/Users/guoshuyu/Downloads bytes=2592318272 files=1729 finished=true
+[REGR] case=scan-perf-diagnose root[2] path=/Users/guoshuyu/Library/Developer/Xcode/DerivedData bytes=1027037910 files=9327 finished=true
+[REGR] case=scan-perf-diagnose root[3] path=/Users/guoshuyu/Library/Logs bytes=531948503 files=3127 finished=true
+[REGR] case=scan-perf-diagnose root[4] path=/Users/guoshuyu/.Trash bytes=0 files=0 finished=true
+[REGR_OK] case=scan-perf-diagnose scan finished=true
+[REGR_PASS] case=scan-perf-diagnose elapsed_ms=20619

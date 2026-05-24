@@ -27,12 +27,18 @@ public struct VolumeCapacityCard: View {
     /// v1.3 review-fix Must1：snapshot == nil 时（卷容量探测失败 / 卷被 unmount 重挂瞬间）
     /// 触发 UI 重试入口；nil 表示不显示重试按钮（仅显示"未知"占位）。
     let onRetry: (() -> Void)?
+    /// v1.3.x：macOS 拿去当虚拟内存的硬盘空间（swap + sleepimage）。
+    /// 仅做**只读展示**，不参与"可清理"段（swap 由内核管理，App 不应清理）。
+    /// nil 表示尚未探测或环境不支持。
+    let swap: SwapProbe.Snapshot?
 
     public init(snapshot: VolumeCapacity.Snapshot?,
                 cleanableBytes: Int64,
+                swap: SwapProbe.Snapshot? = nil,
                 onRetry: (() -> Void)? = nil) {
         self.snapshot = snapshot
         self.cleanableBytes = cleanableBytes
+        self.swap = swap
         self.onRetry = onRetry
     }
 
@@ -52,6 +58,9 @@ public struct VolumeCapacityCard: View {
                 }
                 stackedBar(snapshot: s)
                 legend(snapshot: s)
+                if let swap, swap.totalDiskFootprintBytes > 0 || swap.swapTotalBytes > 0 {
+                    swapInfoRow(swap: swap)
+                }
             }
             .padding(10)
             .background(.thinMaterial)
@@ -199,5 +208,87 @@ public struct VolumeCapacityCard: View {
         f.allowedUnits = [.useGB, .useMB, .useKB, .useBytes]
         f.countStyle = .file  // 对齐 Finder 的 1 KB = 1000 B 口径
         return f.string(fromByteCount: max(0, n))
+    }
+
+    /// v1.3.x：swap / sleepimage 占盘信息行。
+    ///
+    /// 设计原则（用户原话："只提示，不执行"）：
+    /// - 仅展示数字 + 一行人话说明，**不**给清理按钮——swap/sleepimage 由内核管理，
+    ///   删了立即被 `dynamic_pager` / hibernate 重建，且可能引发 paging 错误或破坏休眠。
+    /// - 优先展示**物理占盘**（用户能直接换算成"我硬盘上少了多少"），
+    ///   sysctl 内核口径放进 tooltip 给好奇用户看，避免主信息行字数爆炸。
+    /// - sleepimage 存在时给一句"如不使用休眠，可手动…"的善意提醒（仅文案，不替用户执行命令）。
+    /// - **v1.3.x review-fix**：主数字与 macOS 活动监视器 "Swap Used" 对齐，
+    ///   即 `swap used + sleepimage`。原来用 `swap total + sleepimage`（已分配但内核可能没全用）
+    ///   会让用户对照活动监视器时疑惑"我看到 34 G，你显示 36 G"。
+    @ViewBuilder
+    private func swapInfoRow(swap: SwapProbe.Snapshot) -> some View {
+        // 主数字与活动监视器对齐：实际"在用"的 swap + sleepimage。
+        // sysctl 读不到时（极少见）退化到 totalDiskFootprintBytes。
+        let primaryBytes: Int64 = {
+            if swap.swapUsedBytes > 0 { return swap.swapUsedBytes + swap.sleepImageBytes }
+            return swap.totalDiskFootprintBytes
+        }()
+        VStack(alignment: .leading, spacing: 4) {
+            Divider()
+                .padding(.vertical, 2)
+            HStack(spacing: 6) {
+                Image(systemName: "memorychip")
+                    .foregroundStyle(.secondary)
+                    .font(.caption2)
+                Text("虚拟内存占盘")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(formatBytes(primaryBytes))
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
+            }
+            // 详细分项：swap 已用 + swap 已分配 + sleepimage。
+            // 已用与已分配可能不同：内核会预留 swap 文件位（"分配"），但只有真正写入 page 时才"使用"。
+            if swap.swapUsedBytes > 0 {
+                swapDetailRow(
+                    label: "swap 已用",
+                    bytes: swap.swapUsedBytes,
+                    hint: "活动监视器 Swap Used 同口径（用单位 GB=10⁹ 与 GiB=2³⁰ 之间会有 ~7% 显示差异）"
+                )
+            }
+            if swap.swapDiskBytes > 0,
+               swap.swapDiskBytes != swap.swapUsedBytes {
+                swapDetailRow(
+                    label: "swap 已分配",
+                    bytes: swap.swapDiskBytes,
+                    hint: swap.swapFileSizeMeasured
+                        ? "\(swap.swapFileCount) 个 swapfile 的真实文件大小"
+                        : "来自 sysctl vm.swapusage total（系统保护下无法直接列 /private/var/vm 内的 swapfile）"
+                )
+            }
+            if swap.sleepImageBytes > 0 {
+                swapDetailRow(
+                    label: "休眠镜像",
+                    bytes: swap.sleepImageBytes,
+                    hint: "终端运行 `sudo pmset -a hibernatemode 0; sudo rm /private/var/vm/sleepimage` 可释放（如不使用休眠）"
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func swapDetailRow(label: String, bytes: Int64, hint: String) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .strokeBorder(Color.secondary.opacity(0.5), lineWidth: 1)
+                .frame(width: 7, height: 7)
+            Text(label)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(formatBytes(bytes))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        }
+        .font(.caption2)
+        .help(hint)
     }
 }

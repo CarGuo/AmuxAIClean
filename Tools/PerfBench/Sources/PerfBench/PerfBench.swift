@@ -53,7 +53,7 @@ struct PerfBench {
             case .failed(let err):
                 FileHandle.standardError.write(Data("PerfBench failed: \(err)\n".utf8))
                 exit(1)
-            case .node, .progress:
+            case .node, .progress, .permissionDenied, .tccProtectedSkipped:
                 continue
             }
         }

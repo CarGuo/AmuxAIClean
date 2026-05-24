@@ -1,0 +1,10 @@
+{
+  "ranAt": "2026-05-24T11:37:19Z",
+  "total": 1,
+  "pass": 1,
+  "fail": 0,
+  "timeout": 0,
+  "cases": [
+    { "id": "hud-toggle", "status": "PASS", "elapsedMs": 2533, "reason": "" }
+  ]
+}

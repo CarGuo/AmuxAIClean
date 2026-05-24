@@ -1,0 +1,8 @@
+2026-05-24 19:23:46.431 GSYCleanMac[91133:3120373] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR_BEGIN] case=exporter-csv
+[REGR] case=exporter-csv tsv_lines=6 header=path	bytes	modificationDate	kind
+[REGR_OK] case=exporter-csv tsv lines (1 header + 5 rows)=6
+[REGR_OK] case=exporter-csv tsv header columns=true
+[REGR_OK] case=exporter-csv json non-empty=717 > 0
+[REGR_OK] case=exporter-csv json round-trip count=5
+[REGR_PASS] case=exporter-csv elapsed_ms=46

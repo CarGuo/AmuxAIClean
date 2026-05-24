@@ -16,6 +16,8 @@ public enum SafetyRejection: String, Sendable, Equatable {
     case userDocumentsRoot      // 用户文档/桌面/下载的根
     case systemVolume           // 系统卷
     case insideAppBundle        // 在 .app 内但不是 Caches
+    case sensitiveCredential    // 敏感凭证（SSH / GPG / Cloud / 签名密钥 / 项目级 .git）
+    case vendorPathRule         // 命中 vendors.yaml 中显式声明 verdict=forbid 的 path 规则
     case ok
 }
 
@@ -42,6 +44,122 @@ public struct SafetyEngine: Sendable {
         "/private/etc", "/etc",
         "/Volumes/Macintosh HD",
         "/Applications" // 不允许通过本工具删 App，让用户走 Finder
+    ]
+
+    /// 用户家目录下的"敏感凭证 / 配置"硬禁区（DEV_ARTIFACTS_RULES §2.7 黄金禁区）。
+    /// 命中即 forbid + `.sensitiveCredential`，比 `userRootForbidden` 更细粒度
+    /// （后者只拦根本身，前者连子节点也禁）。
+    ///
+    /// 这些路径删除后会导致：
+    /// - 凭证丢失（SSH / GPG / AWS / GitHub CLI / npm token）
+    /// - 签名失效（debug.keystore / adbkey / Provisioning Profiles）
+    /// - 包管理器认证断裂（`.cargo/config`、`.gradle/init.d`、`.m2/settings*.xml`、
+    ///   `.gradle/gradle.properties`、`.kube/config`、`.netrc`、`.npmrc`、`.yarnrc`、`.pypirc`）
+    /// - 项目级 git 元数据丢失（`.gitconfig` / `.git-credentials`）
+    ///
+    /// 注意：`evaluateStandardized` 内部走 `homeRelativeCredentialSuffixes`
+    /// 性能优化路径，此函数仅作公开 API 供测试 / 文档使用。
+    public static func sensitiveCredentialPrefixes(home: String) -> [String] {
+        homeRelativeCredentialSuffixes.map { "\(home)\($0)" }
+    }
+
+    /// 凭证禁区的"home 后缀"列表（不含 home 前缀本身）。
+    /// 抽出来作为常量数组：避免每次 evaluate 都重建带 home 拼接的数组（GC 热点）。
+    /// 与 `sensitiveCredentialPrefixes(home:)` 一一对应。
+    static let homeRelativeCredentialSuffixes: [String] =
+        dotfileCredentialSuffixes + libraryCredentialSuffixes
+
+    /// `~/.xxx` 类（dotfile）凭证桶，evaluateStandardized 走分桶快速路径时只跑这一桶。
+    static let dotfileCredentialSuffixes: [String] = [
+        // SSH / GPG / Cloud CLI 凭证
+        "/.ssh",
+        "/.gnupg",
+        "/.aws",
+        "/.config/gh",
+        "/.netrc",
+        "/.npmrc",
+        "/.yarnrc",
+        "/.yarnrc.yml",
+        "/.pypirc",
+        "/.gitconfig",
+        "/.git-credentials",
+        // Android 签名 / adb 授权
+        "/.android/debug.keystore",
+        "/.android/adbkey",
+        "/.android/adbkey.pub",
+        // 包管理器全局配置
+        "/.gradle/init.d",
+        "/.gradle/gradle.properties",
+        "/.cargo/config",
+        "/.cargo/config.toml",
+        "/.cargo/credentials",
+        "/.cargo/credentials.toml",
+        "/.m2/settings.xml",
+        "/.m2/settings-security.xml",
+        "/.kube/config"
+    ]
+
+    /// `~/Library/...` 类凭证桶。
+    static let libraryCredentialSuffixes: [String] = [
+        "/Library/Keychains",
+        "/Library/Application Support/com.apple.TCC",
+        "/Library/MobileDevice/Provisioning Profiles",
+        "/Library/org.swift.swiftpm/security",
+        // review 中危 #4：Docker Desktop 共享数据卷
+        // `~/Library/Group Containers/group.com.docker` 内含：
+        //   - desktop-linux/credentials（Docker Hub / Registry credstore）
+        //   - desktop.json / docker.sock
+        //   - 已运行容器的临时持久化数据（删了等同于 Docker Desktop "Reset to factory defaults"）
+        // userRootForbidden 已经拦了 `~/Library/Group Containers` 根本身（exact-match），
+        // 但子节点 group.com.docker 是 confirm 级别 —— 不够。这里升级为整个子树 forbid，
+        // 让用户走 Docker Desktop 自带的 "clean / purge data" 工具清理（recipe 已在 §2.6 给出）。
+        "/Library/Group Containers/group.com.docker"
+    ]
+
+    /// 文件名后缀级硬禁区。任意路径以此结尾即 forbid。
+    /// 覆盖：Java / Android / iOS 签名容器、移动端 provisioning。
+    public static let hardForbidSuffixes: [String] = [
+        ".jks",
+        ".keystore",
+        ".p12",
+        ".pfx",
+        ".mobileprovision",
+        ".provisionprofile"
+    ]
+
+    /// 路径段级硬禁区。任意路径包含 `/<segment>/` 或以 `/<segment>` 结尾即 forbid。
+    /// 主要为 `.git`：项目级 git 元数据丢了等同于源码丢失（SafetyEngine 不会去探测
+    /// bundle 内是否有 .git，直接拦截 `.git` 段最稳）。
+    public static let hardForbidPathSegments: [String] = [
+        ".git"
+    ]
+
+    /// 路径**子串**级硬禁区（跨段命中，区别于 `hardForbidPathSegments` 的单段命中）。
+    /// 任意路径以 `/<fragment>/` 出现该子串即 forbid + `.sensitiveCredential`。
+    ///
+    /// 设计动机（review 中危 #4）：
+    /// VS Code / Cursor / Trae / Windsurf / Cody 等基于 Code-OSS 的编辑器都把
+    /// 用户登录 token、Copilot 会话、远程会话密钥写在
+    /// `~/Library/Application Support/<vendor>/User/globalStorage` 下。
+    /// vendor 名千变万化（每出一个新分叉就要在 yaml 里加一行），用 vendor-rule 维护
+    /// 不可持续；而 globalStorage 这个段名是 Code-OSS 上游硬编码的，跨 vendor 稳定。
+    /// 所以做成路径子串级硬安全网：路径里出现 `/User/globalStorage/` 一律拦。
+    ///
+    /// 进一步扩展（review 中危 #6）：
+    /// 全局工具二进制目录被错删 = 命令行环境瞬间崩坏（yaml 也已显式 forbid，这里是
+    /// runtime 兜底，防 yaml 改坏 / 未来动态 root 探测漏判）：
+    /// - `/.pub-cache/bin/` —— Flutter / Dart `pub global activate` 安装的工具（删了
+    ///   `dart pub global list` 里所有用户级工具失效）
+    /// - `/dart-sdk/bin/` —— 手动解压的 Dart SDK 编译器/分析器二进制
+    /// 用子串而非单段是因为段名 `dart-sdk` 在文档/项目里也可能复用（不够强语义），
+    /// 必须配上 `/bin/` 后缀才足够特征化为"全局工具二进制目录"。
+    ///
+    /// 与 `hardForbidPathSegments` 的差别：后者匹配单个 `/<seg>/`，这里匹配跨段子串
+    /// `/User/globalStorage/`，无法用单段实现。
+    public static let hardForbidPathContains: [String] = [
+        "/User/globalStorage/",
+        "/.pub-cache/bin/",
+        "/dart-sdk/bin/"
     ]
 
     /// 用户家目录下"根级别"禁删（防止用户拖进整个文件夹被一键带走）。
@@ -104,14 +222,25 @@ public struct SafetyEngine: Sendable {
             return (.forbid, .rootOrAboveHome)
         }
         // 5. 硬编码黑名单
-        //    例外：/System/Volumes/Data/... 是数据卷穿透，需要单独放过
-        let isDataVolumePassthrough = standardized.hasPrefix("/System/Volumes/Data/")
-            && standardized != "/System/Volumes/Data"
-        if !isDataVolumePassthrough {
-            for prefix in Self.hardForbidPrefixes {
-                if standardized == prefix || standardized.hasPrefix(prefix + "/") {
-                    return (.forbid, .hardForbidPrefix)
-                }
+        //    M4-P0 修复：旧实现对 `/System/Volumes/Data/` 整体放过 hardForbid，导致 firmlink
+        //    等价路径（`/System/Volumes/Data/etc`、`/usr`、`/Applications`、`/Library/Apple`、
+        //    `/private/var/db` 等）完全绕过硬禁区。
+        //
+        //    修复方案：当路径位于 `/System/Volumes/Data/` 下时，**只**用"剥掉数据卷前缀"的
+        //    等价路径 (`stripped`) 跑 hardForbid——这样 `/System/Volumes/Data/usr/bin` 会被
+        //    `/usr` 前缀命中 forbid，而 `/System/Volumes/Data/private/var/folders/...`（safeCache
+        //    镜像项）的 stripped `/private/var/folders/...` 不匹配任何 hardForbid 前缀，
+        //    可以继续走到第 8 步升级为 safe。
+        //
+        //    非 Data 卷路径（普通 standardized）按原逻辑跑 hardForbid。
+        let dataVolumePrefix = "/System/Volumes/Data"
+        let isDataVolumeChild = standardized.hasPrefix(dataVolumePrefix + "/")
+        let pathForHardForbid: String = isDataVolumeChild
+            ? String(standardized.dropFirst(dataVolumePrefix.count))
+            : standardized
+        for prefix in Self.hardForbidPrefixes {
+            if pathForHardForbid == prefix || pathForHardForbid.hasPrefix(prefix + "/") {
+                return (.forbid, .hardForbidPrefix)
             }
         }
         // 6. 用户根级目录不允许整删
@@ -124,6 +253,71 @@ public struct SafetyEngine: Sendable {
         if standardized.hasPrefix("/System/Volumes/")
             && !standardized.hasPrefix("/System/Volumes/Data/") {
             return (.forbid, .systemVolume)
+        }
+        // 7.1 敏感凭证 / 配置（DEV_ARTIFACTS_RULES §2.7）。
+        //     必须放在 safeCache 之前，否则 `~/Library/org.swift.swiftpm/security`
+        //     这种"在 ~/Library 下但属于凭证"的路径会被错误升级为 safe。
+        //
+        //     性能优化：
+        //     1) home 前缀短路：非家目录路径直接跳过
+        //     2) 第二字符分桶：home 后的第一段要么是 `/.<dotfile>` 要么是 `/Library/...`，
+        //        用 standardized[homeLen+1] 单字节判断只跑对应桶（27 → 平均 13 项）
+        //     3) 用 hasPrefix(home + suffix) 直接走 String 内核 SIMD 比较，避免 UTF8 索引开销
+        if standardized.hasPrefix(home + "/") {
+            let homeEndIdx = standardized.index(standardized.startIndex,
+                                                offsetBy: home.count + 1)
+            // homeEndIdx 指向 home 后第一个字符（已知是 '/' 之后那位）
+            let firstChar = standardized[homeEndIdx]
+            let bucket: [String]
+            if firstChar == "." {
+                bucket = Self.dotfileCredentialSuffixes
+            } else if firstChar == "L" {
+                bucket = Self.libraryCredentialSuffixes
+            } else {
+                bucket = []
+            }
+            for suffix in bucket {
+                let full = home + suffix
+                if standardized == full || standardized.hasPrefix(full + "/") {
+                    return (.forbid, .sensitiveCredential)
+                }
+            }
+        }
+        // 7.2 文件名后缀禁区（签名容器 / Provisioning）。
+        for suffix in Self.hardForbidSuffixes {
+            if standardized.hasSuffix(suffix) {
+                return (.forbid, .sensitiveCredential)
+            }
+        }
+        // 7.3 路径段禁区（任何 .git 元数据目录都视为源码安全网）。
+        for segment in Self.hardForbidPathSegments {
+            let middle = "/\(segment)/"
+            let tail = "/\(segment)"
+            if standardized.contains(middle) || standardized.hasSuffix(tail) {
+                return (.forbid, .sensitiveCredential)
+            }
+        }
+        // 7.4 路径子串禁区（review 中危 #4 / #6）。
+        // 跨段命中：路径含 `/User/globalStorage/` 或全局工具二进制目录子串即 forbid。
+        // 覆盖：
+        // - VS Code / Cursor / Trae / Windsurf / Cody 等所有 Code-OSS 衍生编辑器
+        //   的 `~/Library/Application Support/<vendor>/User/globalStorage`，
+        //   不依赖 vendors.yaml 列举（每加一个新 vendor 都要改 yaml 不可持续）。
+        // - Flutter/Dart 全局工具二进制目录（`/.pub-cache/bin/`、`/dart-sdk/bin/`）。
+        //   作为 vendors.yaml forbid 规则的 runtime 兜底。
+        //
+        // 兼容"叶节点自身（无尾斜杠）"：fragment 末尾若为 `/`，同时也允许路径以 `<fragment 去掉尾斜杠>` 结尾命中
+        // （否则 `/Users/foo/.pub-cache/bin` 这种刚好是 vendor 根的路径会漏拦，要降级到 vendors.yaml 兜底）。
+        for fragment in Self.hardForbidPathContains {
+            if standardized.contains(fragment) {
+                return (.forbid, .sensitiveCredential)
+            }
+            if fragment.hasSuffix("/") {
+                let trimmed = String(fragment.dropLast())
+                if standardized.hasSuffix(trimmed) {
+                    return (.forbid, .sensitiveCredential)
+                }
+            }
         }
         // 8. 已知缓存路径升级为 safe（UI 可默认勾选）
         for safePrefix in Self.safeCachePrefixes(home: home) {
@@ -172,6 +366,24 @@ public struct SafetyEngine: Sendable {
 
         guard let hit = VendorTrie.match(standardizedPath: standardized, in: trie) else {
             return (baseVerdict, rejection, nil)
+        }
+        // path 级 verdict 覆盖（DEV_ARTIFACTS_RULES.md §2.x）：
+        // 当 vendor 在 yaml 里显式声明了 `paths: [{path, verdict}]`，那条 path-rule 比
+        // vendor 根的默认 `.confirm` 更"具体"，应优先生效。
+        // - override.forbid：升级到 forbid（注意 base 的 forbid 已经在上面短路了，
+        //   所以这里不会绕过硬安全网；override 仅能在 base==safe/confirm 时生效）
+        // - override.safe：即便 base 是 confirm，也按规则作者意图降级到 safe
+        // - override.confirm：与默认行为相同，仍走 confirm
+        // path-override 沿子树继承，所以 `Pods/Release/**` 这类规则不需要列举每个子文件。
+        if let ovr = hit.pathOverride {
+            switch ovr.verdict {
+            case .forbid:
+                return (.forbid, .vendorPathRule, hit.rule)
+            case .safe:
+                return (.safe, .ok, hit.rule)
+            case .confirm:
+                return (.confirm, .ok, hit.rule)
+            }
         }
         if hit.isExactRoot {
             // 命中 vendor 根 —— 强制 confirm

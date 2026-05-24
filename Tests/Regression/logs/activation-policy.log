@@ -1,0 +1,7 @@
+2026-05-24 19:23:55.585 GSYCleanMac[91321:3120946] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR_BEGIN] case=activation-policy
+[REGR] case=activation-policy policy_after_hide_off=0
+[REGR_OK] case=activation-policy regular when hide=off=0
+[REGR] case=activation-policy policy_after_hide_on=1
+[REGR_OK] case=activation-policy accessory when hide=on & no window=1
+[REGR_PASS] case=activation-policy elapsed_ms=298

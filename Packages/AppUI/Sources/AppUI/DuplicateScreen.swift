@@ -53,17 +53,33 @@ public struct DuplicateScreen: View {
             Divider()
             topBar
             Divider()
-            HSplitView {
+            // v1.3.aa：原本 HSplitView { left minWidth:320 + right minWidth:320 }，
+            // 总和 640 远超外层 NavigationSplitView 的 detail 列容纳，会反向把
+            // 外层 sidebar 挤掉一半（图 2 的"sidebar 推到右、内容溢出"）。
+            // 改成 HStack + Divider 后约束传播正常，不再挤外层。
+            // v1.3.ab：进一步——给左右栏都加 maxWidth: .infinity，强制平分剩余宽度，
+            // 不让某栏内的长路径 ideal width 反向把整个 HStack 撑出窗口外（图2 第二轮根因）。
+            HStack(spacing: 0) {
                 leftList
-                    .frame(minWidth: 320, idealWidth: 420)
+                    .frame(minWidth: 240, idealWidth: 360, maxWidth: .infinity)
+                    .layoutPriority(1)
+                Divider()
                 rightDetail
-                    .frame(minWidth: 320)
+                    .frame(minWidth: 220, maxWidth: .infinity)
+                    .layoutPriority(1)
             }
+            // v1.3.ab：HStack 本身也兜底 maxWidth，让 SwiftUI 把外层窗口宽度作为权威 proposed。
+            .frame(maxWidth: .infinity)
             Divider()
             footer
         }
-        .navigationTitle("重复文件")
+        // v1.3.ab：整个 VStack 也强制 maxWidth: .infinity，
+        // 让 banner / topBar 内的 chip / 滑杆 即使 ideal width 较大也不会反推外层。
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onDisappear { scanTask?.cancel() }
+        // v2：套布局沙箱——切断左右两栏（leftList / rightDetail）任何一行 path
+        // 反向把 detail 列宽推大、再反挤外层 NavigationSplitView sidebar 的链条。
+        .layoutSandbox()
     }
 
     // MARK: - Banner
@@ -83,6 +99,8 @@ public struct DuplicateScreen: View {
             Spacer(minLength: 0)
         }
         .padding(10)
+        // v1.3.ab：banner 强制 maxWidth: .infinity，避免标题文本 ideal width 反推。
+        .frame(maxWidth: .infinity)
         .background(Color.orange.opacity(0.10))
         .overlay(Rectangle().frame(height: 0.5).foregroundStyle(Color.orange.opacity(0.4)),
                  alignment: .bottom)
@@ -95,19 +113,28 @@ public struct DuplicateScreen: View {
             // 扫描根（固定默认 + 可加）
             VStack(alignment: .leading, spacing: 2) {
                 Text("扫描根 · \(roots.count)").font(.caption).foregroundStyle(.secondary)
-                HStack(spacing: 6) {
-                    ForEach(roots, id: \.self) { url in
-                        rootChip(url)
+                // v1.3.ab：扫描根 chip 横排——根多了之后 ideal width 会爆窗口，
+                // 包一层 ScrollView(.horizontal) 让它在窗口窄时滚动，不再反推父容器。
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(roots, id: \.self) { url in
+                            rootChip(url)
+                                // 单个 chip 内长路径已有 truncation，再硬限上限避免 chip 自己撑爆
+                                .frame(maxWidth: 220)
+                        }
+                        Button {
+                            addRootViaPanel()
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(isScanning)
                     }
-                    Button {
-                        addRootViaPanel()
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(isScanning)
                 }
             }
+            // v1.3.ab：左侧 chip 区允许伸缩，但优先级低于右侧控件——
+            // 让滑杆/按钮始终可见，多余宽度被 ScrollView 滚动吸收。
+            .layoutPriority(0)
             Spacer(minLength: 12)
             // 最小尺寸滑杆
             VStack(alignment: .leading, spacing: 2) {
@@ -118,9 +145,12 @@ public struct DuplicateScreen: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 280)
+                // v1.3.ab：原本 `.frame(width: 280)` 死宽度，窗口窄时会反推父级。
+                // 改成 minWidth/idealWidth/maxWidth，给 SwiftUI 空间在窄窗口下压缩。
+                .frame(minWidth: 200, idealWidth: 280, maxWidth: 320)
                 .disabled(isScanning)
             }
+            .layoutPriority(1)
             // 开始 / 停止
             if isScanning {
                 Button(role: .cancel) {
@@ -140,6 +170,9 @@ public struct DuplicateScreen: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+        // v1.3.ab：topBar 整段强制 maxWidth: .infinity，与外层 VStack 一致，
+        // 防止内部子视图本征宽度反推。
+        .frame(maxWidth: .infinity)
     }
 
     private func rootChip(_ url: URL) -> some View {

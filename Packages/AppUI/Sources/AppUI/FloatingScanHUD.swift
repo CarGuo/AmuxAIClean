@@ -27,6 +27,13 @@ public final class FloatingScanHUDController {
     private weak var coordinator: ScanCoordinator?
     private weak var settings: AppSettings?
 
+    #if DEBUG
+    /// 仅 DEBUG 暴露：HUD panel 是否当前可见（panel 存在且 isVisible=true）。
+    /// 供 [App/RegressionRunner.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/App/RegressionRunner.swift)
+    /// 等真实回归测试断言用，不影响生产路径。
+    public var isPanelVisibleForTesting: Bool { panel?.isVisible == true }
+    #endif
+
     /// 当前 panel 创建时使用的 placement。变化时需要 rebuild panel（level 不能动态切，
     /// `kCGDesktopIconWindowLevel` 这种 raw level 在已有 panel 上 setLevel 偶发卡死）。
     private var lastPlacement: AppSettings.HUDPlacement?
@@ -755,7 +762,16 @@ struct FloatingScanHUDView: View {
     }
     private var phase: HUDPhase {
         if coordinator.isScanning { return .scanning }
-        if coordinator.snapshot.isFinished { return .finished }
+        // v1.3.aa：扫描完成后如果"可清理"已经低到 .idle 档（< 50 MB），
+        // 用户原话：「没任务和不用操作，应该回归常态默认那个显示」——
+        // 不再显示"无需清理"这种 finished 文案，整体退化成 idle，
+        // 与 App 启动未扫描时的初始磁盘状态显示一致（左：磁盘紧张/空闲；右：可用空间）。
+        if coordinator.snapshot.isFinished {
+            if CleanableSeverity.forCleanableBytes(cleanableBytes) == .idle {
+                return .idle
+            }
+            return .finished
+        }
         return .idle
     }
 
@@ -1218,6 +1234,9 @@ struct FloatingScanHUDView: View {
             // 三行图例
             islandLegendRows
 
+            // v1.3.x：虚拟内存占盘信息（用户原话"在 HUD 的大窗口上加上这个显示"）
+            islandSwapRow
+
             // 操作按钮行
             HStack(spacing: 8) {
                 Button {
@@ -1370,6 +1389,7 @@ struct FloatingScanHUDView: View {
             }
             cardStackedBar
             cardLegend
+            cardSwapInfoRow
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -1574,5 +1594,79 @@ struct FloatingScanHUDView: View {
     private func percentString(_ r: Double) -> String {
         let pct = (r * 100).rounded()
         return "\(Int(pct))%"
+    }
+
+    // MARK: - v1.3.x：虚拟内存占盘（swap + sleepimage）行
+
+    /// 主展示口径——swap **已用** + sleepimage，与 macOS 活动监视器 "Swap Used" 对齐。
+    /// v1.3.x review-fix：原来用 `totalDiskFootprintBytes`（swap total + sleepimage），
+    /// 但 swap total 是"已分配的 swap 文件容量"（含未写入的预留位），
+    /// 会让用户对照活动监视器时疑惑"我看到 34 G，你显示 36 G"。
+    private var swapPrimaryBytes: Int64 {
+        guard let s = coordinator.swapSnapshot else { return 0 }
+        if s.swapUsedBytes > 0 { return s.swapUsedBytes + s.sleepImageBytes }
+        return s.totalDiskFootprintBytes
+    }
+
+    /// 鼠标悬停 tooltip——把 swapfile 个数 / sysctl 内核口径 / sleepimage 提示一次性给到。
+    private var swapHintText: String {
+        guard let s = coordinator.swapSnapshot else { return "" }
+        var parts: [String] = []
+        if s.swapFileSizeMeasured {
+            parts.append("\(s.swapFileCount) 个 swapfile = \(bytesString(s.swapFileBytesOnDisk))")
+        } else if s.swapTotalBytes > 0 {
+            parts.append("swap 文件估算 \(bytesString(s.swapTotalBytes))（系统保护下无法直接列文件，回退用 sysctl total）")
+        }
+        if s.sleepImageBytes > 0 {
+            parts.append("休眠镜像 = \(bytesString(s.sleepImageBytes))")
+        }
+        if s.swapTotalBytes > 0 {
+            parts.append("内核已用 \(bytesString(s.swapUsedBytes)) / \(bytesString(s.swapTotalBytes))")
+        }
+        if s.sleepImageBytes > 0 {
+            parts.append("如不使用休眠：终端 `sudo pmset -a hibernatemode 0` 后可手动删 sleepimage")
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    /// 普通卡片形态（cardBody）末尾的紧凑 swap 行。
+    @ViewBuilder
+    private var cardSwapInfoRow: some View {
+        if let s = coordinator.swapSnapshot, s.totalDiskFootprintBytes > 0 || s.swapTotalBytes > 0 {
+            HStack(spacing: 6) {
+                Image(systemName: "memorychip")
+                    .font(.system(.caption2, design: .rounded))
+                    .foregroundStyle(.secondary)
+                Text("虚拟内存占盘")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Text(bytesString(swapPrimaryBytes))
+                    .font(.system(.caption2, design: .rounded).weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
+            }
+            .help(swapHintText)
+        }
+    }
+
+    /// 灵动岛展开态（大窗）里的 swap 行——配色对齐 white-on-black 主题。
+    @ViewBuilder
+    private var islandSwapRow: some View {
+        if let s = coordinator.swapSnapshot, s.totalDiskFootprintBytes > 0 || s.swapTotalBytes > 0 {
+            HStack(spacing: 8) {
+                Image(systemName: "memorychip")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.65))
+                Text("虚拟内存占盘")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.65))
+                Spacer(minLength: 0)
+                Text(bytesString(swapPrimaryBytes))
+                    .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.92))
+            }
+            .help(swapHintText)
+        }
     }
 }

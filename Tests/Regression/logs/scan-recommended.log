@@ -1,0 +1,8 @@
+2026-05-24 19:23:00.717 GSYCleanMac[88689:3116423] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR_BEGIN] case=scan-recommended
+[REGR] case=scan-recommended files=333135 bytes=20812959118 roots=5
+[REGR_OK] case=scan-recommended isFinished=true
+[REGR_OK] case=scan-recommended perRootProgress count=5 > 0
+[REGR_OK] case=scan-recommended scannedFileCount nonneg=333136 > 0
+[REGR_OK] case=scan-recommended lastError=nil
+[REGR_PASS] case=scan-recommended elapsed_ms=24128

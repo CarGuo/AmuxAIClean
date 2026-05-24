@@ -1,0 +1,6 @@
+2026-05-24 19:23:58.636 GSYCleanMac[91381:3121171] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR_BEGIN] case=quicklook-controller
+[REGR] case=quicklook-controller qlURLs=1 initial=0
+[REGR_OK] case=quicklook-controller QuickLook urls accepted=1
+[REGR_OK] case=quicklook-controller QuickLook initialIndex=0
+[REGR_PASS] case=quicklook-controller elapsed_ms=287

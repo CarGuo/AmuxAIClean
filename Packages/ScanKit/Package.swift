@@ -9,11 +9,15 @@ let package = Package(
         .executable(name: "scankit-bench", targets: ["ScanKitBench"])
     ],
     dependencies: [
-        .package(path: "../TestHarness")
+        .package(path: "../TestHarness"),
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.29.0")
     ],
     targets: [
         .target(
             name: "ScanKit",
+            dependencies: [
+                .product(name: "GRDB", package: "GRDB.swift")
+            ],
             path: "Sources/ScanKit"
         ),
         .executableTarget(

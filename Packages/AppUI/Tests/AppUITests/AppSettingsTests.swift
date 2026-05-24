@@ -86,4 +86,67 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(s2.minFileSizeMB, 100)
         XCTAssertEqual(s2.sortKey, .sizeDesc)
     }
+
+    // MARK: - v1.3.x：hideFromDockWhenClosed（关窗藏 Dock）
+
+    @MainActor
+    func test_hideFromDockWhenClosed_默认应为false_保持现行Dock行为() throws {
+        let s = AppSettings(testSuite: freshSuite())
+        XCTAssertFalse(s.hideFromDockWhenClosed, "默认必须关，避免存量用户突然 Dock 不见")
+    }
+
+    @MainActor
+    func test_hideFromDockWhenClosed_持久化() throws {
+        let suite = freshSuite()
+        do {
+            let s = AppSettings(testSuite: suite)
+            s.hideFromDockWhenClosed = true
+        }
+        let s2 = AppSettings(testSuite: suite)
+        XCTAssertTrue(s2.hideFromDockWhenClosed, "重新构造后应能读到上次写入的 true")
+    }
+
+    @MainActor
+    func test_互斥兜底_打开hideFromDock时若托盘是关的应自动开回托盘() throws {
+        let s = AppSettings(testSuite: freshSuite())
+        s.trayEnabled = false
+        XCTAssertFalse(s.trayEnabled)
+        s.hideFromDockWhenClosed = true
+        XCTAssertTrue(s.hideFromDockWhenClosed)
+        XCTAssertTrue(s.trayEnabled, "打开关窗藏Dock时托盘必须强制开回，避免App无入口")
+    }
+
+    @MainActor
+    func test_互斥兜底_关托盘时若hideFromDock开着应自动关掉hideFromDock() throws {
+        let s = AppSettings(testSuite: freshSuite())
+        s.hideFromDockWhenClosed = true
+        XCTAssertTrue(s.trayEnabled)  // 上一条互斥已保证
+        s.trayEnabled = false
+        XCTAssertFalse(s.trayEnabled)
+        XCTAssertFalse(s.hideFromDockWhenClosed, "关托盘时关窗藏Dock也必须关，回到能看到Dock的安全态")
+    }
+
+    @MainActor
+    func test_构造期一致性纠偏_脏数据trayFalse加hideTrue应回到一致状态() throws {
+        let suite = freshSuite()
+        // 模拟"上次进程崩溃前留下的非法组合"——直接写脏 UserDefaults。
+        let d = UserDefaults(suiteName: suite)!
+        d.set(false, forKey: AppSettings.Keys.trayEnabled)
+        d.set(true, forKey: AppSettings.Keys.hideFromDockWhenClosed)
+        let s = AppSettings(testSuite: suite)
+        // 构造期应以 trayEnabled 为准，把 hideFromDockWhenClosed 拉回 false。
+        XCTAssertFalse(s.trayEnabled)
+        XCTAssertFalse(s.hideFromDockWhenClosed,
+                       "脏数据下构造时 hideFromDockWhenClosed 应被纠偏为 false")
+    }
+
+    @MainActor
+    func test_testReset_应清掉hideFromDockWhenClosed键() throws {
+        let suite = freshSuite()
+        let s = AppSettings(testSuite: suite)
+        s.hideFromDockWhenClosed = true
+        s._testReset()
+        let s2 = AppSettings(testSuite: suite)
+        XCTAssertFalse(s2.hideFromDockWhenClosed, "_testReset 后应回到默认 false")
+    }
 }

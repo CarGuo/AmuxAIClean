@@ -648,6 +648,96 @@
 
 ---
 
+## 6.5 v1.3.zzzz：清单 vs 树形 Tab 双视图一致性血泪实录
+
+**背景**：[MainView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) 的右侧详情面板有两个 Tab：**清单**（[RowView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowView.swift)，按一级桶聚合）与**树形**（[TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)，按 GRDB 路径前缀懒加载下钻）。本轮一周内连续修了 4 个让两者数字对不上 / 树形空白 / 树形闪烁的根因，全部沉淀如下。
+
+### 6.5.1 两个 Tab 的语义差异（必须先理清）
+
+| 维度 | 清单 Tab（RowView） | 树形 Tab（TreeBrowserView） |
+|---|---|---|
+| 数据源 | [ScanCoordinator.buckets](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)（**主线程内存字典**，每 `.node` 同步累加 bytes/count） | GRDB store [scan_result](file:///Users/guoshuyu/Library/Application%20Support/GSYCleanMac/scan.sqlite) 表，按 `path LIKE prefix||'%'` 异步查 → Swift 侧 GROUP BY 第一段路径分桶 |
+| 聚合粒度 | 仅一级（rootPath 下的"第一级子目录"），不支持下钻 | 任意层级，DisclosureGroup 展开时再发一次 query |
+| 流式可见性 | `publishSnapshot` 节流 ≥150ms / 多根 ≥400ms 推送，扫描中数字持续上涨 | DisclosureGroup 展开时单次 fetch 写 cache；body 重算 cache-hit 直接返 |
+| 写入时序 | 同步：ingest → buckets → @Published（下一轮 publishSnapshot 即可见） | **异步两段提交**：ingest → storeBatch → 满 1000 才 [flushStoreBatch](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) → detached Task → GRDB write。中间有"在内存但 GRDB 还没看到"的窗口 |
+| 终态权威性 | `snapshotFiles` 是 truth-of-record | 必须等 `flushAndFinalizeStoreAsync()` await 完才是 truth-of-record |
+| 失败兜底 | `storeHealthy=false` 时仍可见（不依赖 store） | 同样依赖 GRDB；不健康时返空（用户体感"树形没数据"） |
+
+**核心结论**：清单是"实时主线程内存视图"，树形是"GRDB 异步读快照"，两者**只在扫描完成 + flushAndFinalize 完成的瞬间才数字一致**。任何让树形 fetch 拿到中间快照并写进 cache 的行为都会导致"扫完后清单 1752 / 树形 1000"这种永久错位。
+
+### 6.5.2 本轮 4 个 Bug 复盘
+
+#### Bug A：NSLog 在沙盒应用里被吞，`log stream | grep` 抓不到
+- **症状**：插了几十条 NSLog 排查"为什么树形不出来"，`log stream --predicate ...` 整页空白
+- **根因**：`com.apple.security.app-sandbox` + bookmark-only 子系统下，NSLog 的 stderr 被重定向到 /dev/null
+- **修法（仅诊断期）**：写 [/tmp/gsy-tree.log](file:///tmp/gsy-tree.log) 文件 + `Logger(subsystem:)` 双保险。诊断完成后**必须把诊断 logger 全删**避免污染生产日志
+- **教训**：sandboxed app 调试一律走 `Logger` + 文件，不要靠 NSLog
+
+#### Bug B：树形扫完闪烁 / 多刷新闪几下
+- **症状**：扫完后树形顶层先出现一瞬间，然后变空白 ~600ms，再回来
+- **根因**：[invalidateTreeCacheAfterScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 把 cache 整张 `removeAll` → directChildren cache-miss 派 fetch task → ~600ms 后写回
+- **修法（错误中间方案）**：改成"只删空 cache，保留非空"——表面修好闪烁，但埋下了 Bug D
+- **正确修法**：先解决 Bug C（GRDB race）让 fetch 几十毫秒就回来，然后**全清 cache** 是安全的
+- **教训**：界面闪烁的根因经常不在"清 cache"那一步，而在"重 fetch 太慢"那一步。优化错对象就会引入更深的一致性 bug
+
+#### Bug C：扫完瞬间 GRDB query 返回 0 条，但 SQL 直查同 sid 立刻有几千条
+- **症状**：用户点完扫描，树形空白；几秒后再点折叠重展开能看到数据
+- **关键证据**（已删的 `[grdb]` 诊断行）：
+  ```
+  [grdb] query sid=CAEC8C3F sidTotal=0  likeCount=0
+  sqlite3 ... WHERE session_id='CAEC...'  → 3631 条（同一秒）
+  ```
+- **根因**：`runScan` / `runMultiRootScan` 收尾两步顺序错了：
+  ```
+  publishSnapshot(finished: true)        // 1. UI 立即收到"扫完了"，开始向 GRDB query
+  flushAndFinalizeStore()                // 2. fire-and-forget Task.detached → 还没 commit
+  ```
+  view 在 1 和 2 之间就发起了 query，dbPool.read 拿到的是 finalize 之前的 snapshot
+- **修法**（[ScanCoordinator.swift L668-L686](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) + [L761-L775](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)）：
+  1. 新增 [flushAndFinalizeStoreAsync()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)，detached task 派出后 `await task.value` 真正等到 GRDB commit
+  2. **倒序**：先 `await flushAndFinalizeStoreAsync()` 再 `publishSnapshot(finished: true)`
+  3. 单根 / 多根两条路径**都要改**——一开始只改了 [runScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)，多根并行（推荐清理 5 根）走 [runMultiRootScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 仍然中招，用户连续 3 轮反馈"还是一样"
+- **教训**：
+  1. SwiftUI publish event 和 GRDB write commit 是两条独立时间线，**不能假定 publish 之前 commit 已经完成**——必须 `await` 跨过 actor 边界
+  2. **任何"收尾顺序"的修复都要 grep 找所有同名收尾路径**，不能只改一处
+
+#### Bug D（关键）：树形 cache 钉死中间快照 → 总和与清单永久对不上
+- **症状**：清单显示 1752 文件，树形顶层 sum 只有 1000 条对应的字节数。**扫完了，刷新页面也对不上**
+- **关键数字**：`storeFlushBatchSize = 1000`，巧合就是它
+- **根因链**（4 步）：
+  1. 扫描中 storeBatch 累到 1000 → flushStoreBatch 写 GRDB → 此刻 GRDB 里恰好 1000 条
+  2. view 第一次展开 / refresh 触发 [directChildren](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) cache-miss → 派 task 拉这 1000 条
+  3. 该 task 写回时判 `rows.isEmpty && isScanning` → 不空，写进 [treeChildrenCache](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+  4. 扫完后 [invalidateTreeCacheAfterScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)（**Bug B 的中间方案**）只删空 cache → **这条非空但残缺的 1000 行被永久保留**
+  5. 之后所有 view body 重算 cache-hit 永远命中残缺数据
+- **修法**（[ScanCoordinator.swift L957-L960](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)）：[invalidateTreeCacheAfterScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 改回 `removeAll`。Bug C 修完后 finalize 之后 GRDB ready，重 fetch 几十毫秒，体感不会再闪
+- **教训**：
+  1. 任何"扫描中拿到的 GRDB 快照"在语义上都是**部分快照**，不能信任。最稳的策略：扫描结束 + finalize done 之后**全部 invalidate**，让 view 重新从权威终态拉一次
+  2. "保留非空 cache"这种 partial-invalidate 策略**只有在扫描中不会写部分数据**的前提下才安全；只要存在 batch flush 这种"中间提交"，partial-invalidate 必然引入 stale cache
+  3. 不要被表面症状（闪烁）牵着走改一个本不该动的开关——根因是 fetch 太慢（Bug C），治标不治本反而埋雷
+
+### 6.5.3 排查方法学（值得记一辈子）
+
+| 第几招 | 工具 | 抓什么 |
+|---|---|---|
+| 1 | `Logger(subsystem:)` + `/tmp/gsy-tree.log` 文件双保险 | 沙盒应用里 NSLog 不可信，必须文件 logger 兜底 |
+| 2 | GRDB 内部 `[grdb] query sid=X sidTotal=N likeCount=N` | 把"应用层 query 看到几条"和"sid 下表里实际几条"放一行打印，瞬间定位 race |
+| 3 | `sqlite3 scan.sqlite "SELECT COUNT(*) WHERE session_id='X' AND path LIKE 'Y/%'"` | 与 logger 输出做交叉验证，最权威 |
+| 4 | 让用户**反复点同一个分类**重复扫描，复现"出来一次后续不出来" | 单次扫描看不出 stale cache；只有跨会话才暴露 cache-key 不带 sid 的 bug |
+
+**核心原则**：当用户说"清单和树形对不上"，第一反应不是看 UI 代码，而是看 **GRDB 里实际有多少条 vs 内存 buckets 实际多少条**。两个数对得上，UI 一般不会出这种花。
+
+### 6.5.4 这一节涉及代码索引
+
+- [ScanCoordinator.runScan 收尾](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) — Bug C fix
+- [ScanCoordinator.runMultiRootScan 收尾](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) — Bug C fix（漏改的多根路径）
+- [ScanCoordinator.flushAndFinalizeStoreAsync](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) — 新增 await 版 finalize
+- [ScanCoordinator.invalidateTreeCacheAfterScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) — Bug D fix，改回全清
+- [ScanCoordinator.directChildren](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) — cache-miss / in-flight / stale-discard 三态机
+- [ScanCoordinator.directChildrenAsync](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) — pathPrefix + Swift 侧 GROUP BY first-segment
+
+---
+
 ## 7. 一句话开发箴言
 
 1. **Bundle ID 开发/发布分离**，否则 LaunchServices 会让你掉头发。

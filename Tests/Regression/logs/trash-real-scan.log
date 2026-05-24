@@ -1,0 +1,14 @@
+2026-05-24 19:24:08.997 GSYCleanMac[91604:3121808] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR_BEGIN] case=trash-real-scan
+[REGR] case=trash-real-scan trash_path=/Users/guoshuyu/.Trash
+[REGR] case=trash-real-scan fda_status=denied
+[REGR] case=trash-real-scan open_fd=-1 open_ok=false errno=1 strerror=Operation not permitted
+[REGR] case=trash-real-scan stat_ok=true mode=40700 size=5152 nlink=161
+[REGR] case=trash-real-scan fm_ok=false error=Error Domain=NSCocoaErrorDomain Code=257 "未能打开文件“废纸篓”，因为你没有查看它的权限。" UserInfo={NSUserStringVariant=(
+    Folder
+), NSURL=file:///Users/guoshuyu/.Trash, NSFilePath=/Users/guoshuyu/.Trash, NSUnderlyingError=0x7b4ab5b90 {Error Domain=NSPOSIXErrorDomain Code=1 "Operation not permitted"}}
+[REGR] case=trash-real-scan trash_root=/Users/guoshuyu/.Trash
+[REGR] case=trash-real-scan coord_files=0 coord_bytes=0 denied=1 tccSkip=0
+[REGR] case=trash-real-scan denied_sample=/Users/guoshuyu/.Trash
+[REGR_OK] case=trash-real-scan 至少 1 条诊断路径产出证据 (fm/coord/denied)=true
+[REGR_PASS] case=trash-real-scan elapsed_ms=427

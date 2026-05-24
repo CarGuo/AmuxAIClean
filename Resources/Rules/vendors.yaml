@@ -9,6 +9,370 @@
 # （com.apple.* 系统组件、Caches、AddressBook 等），v1.0 清洗后保留 36 条有效厂商。
 
 vendors:
+  # ========== 开发者产物（DEV_ARTIFACTS_RULES.md §2.1） ==========
+  # Apple Developer Tools / Xcode / iOS 模拟器
+  # 没有单一 bundle_id_prefix（覆盖 com.apple.dt.Xcode、CoreSimulator、SwiftPM 等多个根），
+  # 使用 paths 列表精确控制 21 条产物路径。
+  - name: "Apple Developer Tools"
+    note: "Xcode + CoreSimulator + SwiftPM + MobileDevice (DEV_ARTIFACTS_RULES §2.1)"
+    paths:
+      # —— Xcode 派生数据与设备符号缓存（safe） ——
+      - path: "~/Library/Developer/Xcode/DerivedData"
+        verdict: "safe"
+        reason: "构建中间产物，下次 build 自动重建"
+      - path: "~/Library/Developer/Xcode/iOS DeviceSupport"
+        verdict: "safe"
+        reason: "真机调试符号缓存，连接设备时 Xcode 自动重下"
+      - path: "~/Library/Developer/Xcode/watchOS DeviceSupport"
+        verdict: "safe"
+        reason: "watchOS 真机调试符号缓存，连接设备时自动重下"
+      - path: "~/Library/Developer/Xcode/macOS DeviceSupport"
+        verdict: "safe"
+        reason: "macOS 真机调试符号缓存，连接设备时自动重下"
+      - path: "~/Library/Developer/Xcode/UserData/IDEEditorInteractivityHistory"
+        verdict: "safe"
+        reason: "编辑器交互历史，删除无影响"
+      - path: "~/Library/Developer/Xcode/UserData/IB Support"
+        verdict: "safe"
+        reason: "Interface Builder 临时缓存"
+      - path: "~/Library/Developer/Xcode/UserData/Previews"
+        verdict: "safe"
+        reason: "SwiftUI Previews 派生数据"
+      - path: "~/Library/Developer/Xcode/DocumentationCache"
+        verdict: "safe"
+        reason: "离线文档缓存，按需重新下载"
+      # —— Xcode 主进程缓存与 SwiftPM 缓存（safe） ——
+      - path: "~/Library/Caches/com.apple.dt.Xcode"
+        verdict: "safe"
+        reason: "Xcode 主进程缓存"
+      - path: "~/Library/Caches/org.swift.swiftpm"
+        verdict: "safe"
+        reason: "SwiftPM 全局缓存（不含安全数据，security 子目录被硬安全网兜底）"
+      # —— CoreSimulator（safe + confirm） ——
+      - path: "~/Library/Developer/CoreSimulator/Caches"
+        verdict: "safe"
+        reason: "模拟器运行时缓存"
+      # —— Archives / DeviceLogs / Toolchains / Devices（confirm） ——
+      - path: "~/Library/Developer/Xcode/Archives"
+        verdict: "confirm"
+        reason: "TestFlight / App Store 上传记录，包含 dSYM；删后无法符号化历史 crash"
+      - path: "~/Library/Developer/Xcode/iOS DeviceLogs"
+        verdict: "confirm"
+        reason: "真机 crash log，调试期间可能要复盘"
+      - path: "~/Library/Developer/Xcode/Toolchains"
+        verdict: "confirm"
+        reason: "第三方 toolchain（如 swift.org nightly），删了 build 会失败"
+      - path: "~/Library/Developer/CoreSimulator/Devices"
+        verdict: "confirm"
+        recipe: "请改用 `xcrun simctl delete <UDID>` 单实例清理；直接 rm 会污染 device_set.plist"
+        reason: "iOS 模拟器实例。直接 rm 会污染 device_set.plist，删后会丢 App 沙盒数据"
+      # —— 多重防御（forbid，与 SafetyEngine.swift 硬安全网重叠） ——
+      - path: "~/Library/Developer/CoreSimulator/Volumes"
+        verdict: "forbid"
+        reason: "已挂载的卷，删了会让 simctl 永久卡住"
+      - path: "~/Library/Developer/Xcode/UserData/KeyBindings"
+        verdict: "forbid"
+        reason: "用户自定义快捷键，丢了不可恢复"
+      - path: "~/Library/Developer/Xcode/UserData/FontAndColorThemes"
+        verdict: "forbid"
+        reason: "用户主题"
+      - path: "~/Library/Developer/Xcode/UserData/CodeSnippets"
+        verdict: "forbid"
+        reason: "用户 snippet"
+      - path: "~/Library/MobileDevice/Provisioning Profiles"
+        verdict: "forbid"
+        reason: "描述文件，删了真机 / 上架直接断"
+      - path: "~/Library/org.swift.swiftpm/security"
+        verdict: "forbid"
+        reason: "SwiftPM 私有 keychain 数据"
+
+  # ========== Android / Gradle / AVD（DEV_ARTIFACTS_RULES.md §2.3） ==========
+  # 这些 vendor 都没有 bundle_id_prefix，纯 path-rule 驱动（与 Apple Developer Tools 相同模式）。
+  - name: "Gradle"
+    note: "Gradle 用户级缓存 (DEV_ARTIFACTS_RULES §2.3)"
+    paths:
+      # —— 缓存（safe，需先 ./gradlew --stop） ——
+      - path: "~/.gradle/caches"
+        verdict: "safe"
+        reason: "Gradle 依赖与 transforms，下次 build 重新下载（Gradle 8+ 自带 30 天 GC）"
+        recipe: "建议先执行 ./gradlew --stop 让 daemon 退出再删"
+      - path: "~/.gradle/daemon"
+        verdict: "safe"
+        reason: "Daemon 日志 / registry，进程关闭后无引用"
+        recipe: "先 ./gradlew --stop"
+      - path: "~/.gradle/build-scan-data"
+        verdict: "safe"
+        reason: "构建扫描数据"
+      - path: "~/.gradle/configuration-cache"
+        verdict: "safe"
+        reason: "配置缓存，下次 build 重建"
+      - path: "~/.gradle/wrapper/dists"
+        verdict: "confirm"
+        reason: "Gradle wrapper 发行版镜像；可保留最新 2 个，旧版本 130–285 MB/个"
+      # —— 凭证（forbid，多重防御，与 SafetyEngine.dotfileCredentialSuffixes 重叠） ——
+      - path: "~/.gradle/init.d"
+        verdict: "forbid"
+        reason: "用户初始化脚本（凭证 / repo 配置）"
+      - path: "~/.gradle/gradle.properties"
+        verdict: "forbid"
+        reason: "用户全局 properties，常含 sonatypeUser / token"
+
+  - name: "Android"
+    note: "Android SDK 用户级目录 (DEV_ARTIFACTS_RULES §2.3)"
+    paths:
+      # —— 构建缓存（safe） ——
+      - path: "~/.android/cache"
+        verdict: "safe"
+        reason: "Android build cache（transforms）"
+      - path: "~/.android/build-cache"
+        verdict: "safe"
+        reason: "旧版命名的 Android build cache"
+      # —— AVD（confirm，推荐走 avdmanager） ——
+      - path: "~/.android/avd"
+        verdict: "confirm"
+        reason: "AVD 实例目录，直接 rm 会让 AVD Manager 状态错乱"
+        recipe: "改用 Android Studio Device Manager → Wipe Data 或 avdmanager delete avd"
+      # —— SDK 本体（forbid，删了项目全断） ——
+      - path: "~/.android/sdk"
+        verdict: "forbid"
+        reason: "Android SDK 本体，删了所有项目 build 失败；管理走 SDK Manager"
+      - path: "~/Library/Android/sdk"
+        verdict: "forbid"
+        reason: "Android SDK 默认安装位置（同上）"
+      # —— 签名 / adb 凭证（forbid，多重防御与硬安全网重叠） ——
+      - path: "~/.android/debug.keystore"
+        verdict: "forbid"
+        reason: "调试签名 keystore，删了旧 debug 包认证失败"
+      - path: "~/.android/adbkey"
+        verdict: "forbid"
+        reason: "adb 设备授权密钥"
+      - path: "~/.android/adbkey.pub"
+        verdict: "forbid"
+        reason: "adb 设备授权公钥"
+
+  - name: "AndroidStudio"
+    note: "Android Studio 同 JetBrains 系，用 glob 匹配版本号 (DEV_ARTIFACTS_RULES §2.3)"
+    paths:
+      # —— 索引 / 编译缓存（safe，glob：跨版本号） ——
+      - path: "~/Library/Caches/Google/AndroidStudio*"
+        verdict: "safe"
+        reason: "AS 索引 / 编译缓存（同 JetBrains 系），重启 IDE 自动重建"
+      # —— 日志（safe，glob：跨版本号） ——
+      - path: "~/Library/Logs/Google/AndroidStudio*"
+        verdict: "safe"
+        reason: "AS 日志，删后 IDE 自建"
+      # —— 配置（forbid，glob：跨版本号 + 多重防御） ——
+      - path: "~/Library/Application Support/Google/AndroidStudio*"
+        verdict: "forbid"
+        reason: "AS 配置 + 插件，含 SDK Path 等关键设置"
+      # —— SDK Manager 自身缓存（safe） ——
+      - path: "~/Library/Caches/com.google.android.studio.SDKManager"
+        verdict: "safe"
+        reason: "SDK Manager 自身缓存"
+
+  # ========== RN / Flutter / 前端工具链（DEV_ARTIFACTS_RULES.md §2.5） ==========
+  # 这些 vendor 都没有 bundle_id_prefix，纯 path-rule。`<project>/...` 项目级路径
+  # 不在此处落地（依赖动态扫描根，由 UI 层在选择项目目录时增量解析）。
+  - name: "CocoaPods"
+    note: "CocoaPods 主仓库 + 编译缓存 (DEV_ARTIFACTS_RULES §2.5)"
+    paths:
+      # —— trunk 主 spec 仓库（safe，pod install 自动重建） ——
+      - path: "~/.cocoapods/repos/trunk"
+        verdict: "safe"
+        reason: "CocoaPods 主 spec 仓库，下次 pod install 自动 pod repo update 重建"
+      # —— 私有 spec 仓库根（confirm，删了需手动 pod repo add） ——
+      - path: "~/.cocoapods/repos"
+        verdict: "confirm"
+        reason: "私有 spec 仓库可能位于此目录（trunk 之外的子目录），整体删除需手动重新 pod repo add"
+      # —— Pod 二进制 / external 解压缓存（safe） ——
+      - path: "~/Library/Caches/CocoaPods/Pods/Release"
+        verdict: "safe"
+        reason: "解压后的 pod 二进制缓存（Release 配置）"
+      - path: "~/Library/Caches/CocoaPods/Pods/External"
+        verdict: "safe"
+        reason: "external 来源 pod 解压缓存"
+
+  - name: "NodePackagers"
+    note: "npm / yarn / pnpm / bun 全局缓存 (DEV_ARTIFACTS_RULES §2.5)"
+    paths:
+      # —— Yarn v1 / v6 全局缓存（safe，等价 yarn cache clean） ——
+      - path: "~/Library/Caches/Yarn"
+        verdict: "safe"
+        reason: "Yarn v1/v6 全局缓存，等价 yarn cache clean"
+        recipe: "可执行 yarn cache clean 由 yarn 自管"
+      # —— Yarn Berry 缓存（safe） ——
+      - path: "~/.yarn/berry/cache"
+        verdict: "safe"
+        reason: "Yarn Berry 全局缓存"
+      # —— npm 内容寻址缓存 / 日志 / npx 临时 ——
+      - path: "~/.npm/_cacache"
+        verdict: "safe"
+        reason: "npm v7+ 内容寻址缓存（等价 npm cache clean --force）"
+      - path: "~/.npm/_logs"
+        verdict: "safe"
+        reason: "npm 日志"
+      - path: "~/.npm/_npx"
+        verdict: "safe"
+        reason: "npx 临时安装包缓存"
+      # —— pnpm store（confirm，硬链引用风险） ——
+      - path: "~/Library/pnpm/store"
+        verdict: "confirm"
+        reason: "pnpm 内容寻址 store 被多个项目硬链引用，直接删会让 node_modules 链接断裂"
+        recipe: "推荐 pnpm store prune 让 pnpm 自管"
+      - path: "~/.local/share/pnpm/store"
+        verdict: "confirm"
+        reason: "pnpm store XDG 路径（同上硬链风险）"
+        recipe: "推荐 pnpm store prune"
+      - path: "~/Library/Caches/pnpm"
+        verdict: "safe"
+        reason: "pnpm metadata 缓存（不含硬链 store）"
+      # —— Bun 安装缓存 ——
+      - path: "~/.bun/install/cache"
+        verdict: "safe"
+        reason: "Bun 安装缓存"
+      - path: "~/.local/share/bun/install/cache"
+        verdict: "safe"
+        reason: "Bun 安装缓存（XDG 路径）"
+
+  - name: "Flutter"
+    note: "Flutter / Dart pub-cache (DEV_ARTIFACTS_RULES §2.5)"
+    paths:
+      # —— pub-cache hosted / git（confirm，多项目共享） ——
+      - path: "~/.pub-cache/hosted"
+        verdict: "confirm"
+        reason: "Flutter / Dart 全局 pub 缓存，删了 flutter pub get 重新下；多项目共享"
+      - path: "~/.pub-cache/git"
+        verdict: "confirm"
+        reason: "git 依赖缓存"
+      # —— pub-cache bin（forbid，全局工具二进制） ——
+      - path: "~/.pub-cache/bin"
+        verdict: "forbid"
+        reason: "全局 dart 工具二进制（dart pub global activate 装的），删了 PATH 工具失效"
+
+  - name: "ReactNative"
+    note: "RN 工具链缓存 (DEV_ARTIFACTS_RULES §2.5)"
+    paths:
+      # —— Metro / Watchman ——
+      - path: "~/Library/Caches/com.facebook.metro-bundler"
+        verdict: "safe"
+        reason: "Metro bundler haste-map 缓存"
+      - path: "~/Library/Caches/Watchman"
+        verdict: "safe"
+        reason: "Watchman watch 数据"
+        recipe: "建议先 watchman shutdown-server 让守护进程退出"
+      # —— Expo / EAS（confirm，含登录 token） ——
+      - path: "~/.expo"
+        verdict: "confirm"
+        reason: "Expo CLI 状态 + 登录 token，删后需重新 expo login"
+      - path: "~/.eas"
+        verdict: "confirm"
+        reason: "EAS 构建凭证缓存"
+
+  # ========== 后端 / 通用工具链（DEV_ARTIFACTS_RULES.md §2.6） ==========
+  - name: "Cargo"
+    note: "Rust cargo 缓存与凭证 (DEV_ARTIFACTS_RULES §2.6)"
+    paths:
+      # —— registry 缓存与解压源码 ——
+      - path: "~/.cargo/registry/cache"
+        verdict: "safe"
+        reason: "Rust crate 下载包缓存"
+      - path: "~/.cargo/registry/src"
+        verdict: "safe"
+        reason: "解压后的 crate 源码"
+      - path: "~/.cargo/git/db"
+        verdict: "safe"
+        reason: "git 依赖 bare 仓库"
+      # —— bin 与 config（forbid，凭证 / 二进制） ——
+      - path: "~/.cargo/bin"
+        verdict: "forbid"
+        reason: "cargo install 装的二进制，删了 PATH 失效"
+      - path: "~/.cargo/config.toml"
+        verdict: "forbid"
+        reason: "用户级 cargo 配置（registry / token）"
+
+  - name: "Rustup"
+    note: "Rust 工具链管理器 (DEV_ARTIFACTS_RULES §2.6)"
+    paths:
+      - path: "~/.rustup/downloads"
+        verdict: "safe"
+        reason: "工具链下载临时文件"
+      # toolchains/<OLD> 需要版本探测，留给 E 阶段；这里整目录不动
+
+  - name: "Python"
+    note: "pip / Poetry 缓存 (DEV_ARTIFACTS_RULES §2.6)"
+    paths:
+      - path: "~/Library/Caches/pip"
+        verdict: "safe"
+        reason: "pip wheel / http 缓存（等价 pip cache purge）"
+      - path: "~/Library/Caches/pypoetry"
+        verdict: "safe"
+        reason: "Poetry 缓存"
+      - path: "~/.cache/pypoetry"
+        verdict: "safe"
+        reason: "Poetry 缓存（XDG 路径）"
+
+  - name: "Homebrew"
+    note: "Homebrew 下载缓存与日志 (DEV_ARTIFACTS_RULES §2.6)"
+    paths:
+      - path: "~/Library/Caches/Homebrew"
+        verdict: "safe"
+        reason: "bottle 下载缓存（等价 brew cleanup -s）；Homebrew 4.x 默认每 30 天 autoremove"
+      - path: "~/Library/Logs/Homebrew"
+        verdict: "safe"
+        reason: "brew 安装日志"
+
+  - name: "Go"
+    note: "Go module / build 缓存 (DEV_ARTIFACTS_RULES §2.6)"
+    paths:
+      # —— module 下载缓存（safe，等价 go clean -modcache） ——
+      - path: "~/go/pkg/mod/cache/download"
+        verdict: "safe"
+        reason: "Go module 下载缓存（等价 go clean -modcache 的下载部分）"
+      # —— build cache ——
+      - path: "~/Library/Caches/go-build"
+        verdict: "safe"
+        reason: "Go build cache（等价 go clean -cache）"
+
+  - name: "Ruby"
+    note: "RubyGems / Bundler 缓存 (DEV_ARTIFACTS_RULES §2.6)"
+    paths:
+      - path: "~/.gem"
+        verdict: "confirm"
+        reason: "RubyGems 用户级 gem 安装目录，删了用户级 gem 命令失效"
+      - path: "~/.bundle/cache"
+        verdict: "safe"
+        reason: "Bundler HTTP 缓存"
+
+  - name: "Containers"
+    note: "Docker / Colima / Kube / minikube / Vagrant (DEV_ARTIFACTS_RULES §2.6)"
+    paths:
+      # —— Docker Desktop 虚拟磁盘（confirm，整库 reset 风险） ——
+      - path: "~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw"
+        verdict: "confirm"
+        reason: "Docker Desktop 虚拟磁盘镜像，直接删等同于全清"
+        recipe: "走 docker system prune -a --volumes 或 Docker Desktop → Troubleshoot → Clean / Purge data"
+      # —— Docker Group Container（forbid，凭证 / Kube 配置；与 userRootForbidden 重叠） ——
+      - path: "~/Library/Group Containers/group.com.docker"
+        verdict: "forbid"
+        reason: "Docker 凭证 / Kube 配置"
+      # —— Colima 磁盘（confirm） ——
+      - path: "~/.colima/_lima"
+        verdict: "confirm"
+        reason: "Colima 虚拟机磁盘，直接 rm 会让 limactl 状态错乱"
+        recipe: "走 colima delete <profile>"
+      # —— Kube discovery 缓存（safe）+ kubeconfig（forbid 多重防御） ——
+      - path: "~/.kube/cache"
+        verdict: "safe"
+        reason: "kubectl discovery 缓存"
+      - path: "~/.kube/config"
+        verdict: "forbid"
+        reason: "集群凭证（多重防御，与 dotfileCredentialSuffixes 重叠）"
+      # —— minikube ISO/images 缓存 ——
+      - path: "~/.minikube/cache"
+        verdict: "safe"
+        reason: "minikube ISO / images 缓存"
+
+  # ========== 应用厂商规则（v1.0 已清洗版） ==========
   - name: "Adobe"
     bundle_id_prefix: "com.adobe"
     app_support_subdir: "Adobe"
@@ -25,13 +389,104 @@ vendors:
   - name: "JetBrains"
     bundle_id_prefix: "com.jetbrains"
     app_support_subdir: "JetBrains"
-    note: "IntelliJ / PyCharm / WebStorm / GoLand / Rider / CLion / DataGrip"
+    note: "IntelliJ / PyCharm / WebStorm / GoLand / Rider / CLion / DataGrip (DEV_ARTIFACTS_RULES §2.2)"
+    paths:
+      # —— 索引 / 编译缓存（safe，跨所有产品 + 版本号 glob） ——
+      # idea.system.path：删后重启 IDE 自动重建，业界共识 safe
+      - path: "~/Library/Caches/JetBrains/IntelliJIdea*"
+        verdict: "safe"
+        reason: "IntelliJ 索引 / 编译缓存，重启 IDE 自动重建"
+      - path: "~/Library/Caches/JetBrains/PyCharm*"
+        verdict: "safe"
+        reason: "PyCharm 索引 / 编译缓存，重启 IDE 自动重建"
+      - path: "~/Library/Caches/JetBrains/WebStorm*"
+        verdict: "safe"
+        reason: "WebStorm 索引 / 编译缓存"
+      - path: "~/Library/Caches/JetBrains/GoLand*"
+        verdict: "safe"
+        reason: "GoLand 索引 / 编译缓存"
+      - path: "~/Library/Caches/JetBrains/CLion*"
+        verdict: "safe"
+        reason: "CLion 索引 / 编译缓存"
+      - path: "~/Library/Caches/JetBrains/Rider*"
+        verdict: "safe"
+        reason: "Rider 索引 / 编译缓存"
+      - path: "~/Library/Caches/JetBrains/DataGrip*"
+        verdict: "safe"
+        reason: "DataGrip 索引 / 编译缓存"
+      - path: "~/Library/Caches/JetBrains/RubyMine*"
+        verdict: "safe"
+        reason: "RubyMine 索引 / 编译缓存"
+      - path: "~/Library/Caches/JetBrains/PhpStorm*"
+        verdict: "safe"
+        reason: "PhpStorm 索引 / 编译缓存"
+      - path: "~/Library/Caches/JetBrains/AppCode*"
+        verdict: "safe"
+        reason: "AppCode 索引 / 编译缓存"
+      # —— IDE 日志（safe，跨所有产品 + 版本号 glob） ——
+      - path: "~/Library/Logs/JetBrains"
+        verdict: "safe"
+        reason: "JetBrains 全家桶日志根；删后 IDE 自建"
+      # —— Toolbox 状态（confirm，删了重新登录） ——
+      - path: "~/Library/Application Support/JetBrains/Toolbox"
+        verdict: "confirm"
+        reason: "Toolbox 状态目录，删了重新登录账号"
+      # —— consentOptions（confirm，会再次弹同意框） ——
+      - path: "~/Library/Application Support/JetBrains/consentOptions"
+        verdict: "confirm"
+        reason: "用户隐私同意状态，删了再次弹同意框"
   - name: "Code"
     bundle_id_prefix: "com.microsoft.VSCode"
     app_support_subdir: "Code"
+    note: "VS Code (DEV_ARTIFACTS_RULES §2.2 #VS Code)"
+    paths:
+      # —— HTTP / 资源 / 扩展缓存（safe，重启 VS Code 自动重建） ——
+      - path: "~/Library/Application Support/Code/Cache"
+        verdict: "safe"
+        reason: "HTTP / 资源缓存"
+      - path: "~/Library/Application Support/Code/CachedData"
+        verdict: "safe"
+        reason: "主进程预编译"
+      - path: "~/Library/Application Support/Code/CachedExtensionVSIXs"
+        verdict: "safe"
+        reason: "已下载的 .vsix 临时文件"
+      - path: "~/Library/Application Support/Code/logs"
+        verdict: "safe"
+        reason: "VS Code 日志"
+      # —— Workspace 状态（confirm，删后丢面板布局 / 工作区 IndexedDB） ——
+      - path: "~/Library/Application Support/Code/User/workspaceStorage"
+        verdict: "confirm"
+        reason: "每个 workspace 的 IndexedDB / 状态，删了打开旧项目会丢面板布局"
+      # —— 全局凭证（forbid，多重防御，与硬安全网 hardForbidPathContains 重叠） ——
+      - path: "~/Library/Application Support/Code/User/globalStorage"
+        verdict: "forbid"
+        reason: "已登录账号 token / 设置同步密钥（多重防御）"
   - name: "Cursor"
     bundle_id_prefix: "com.todesktop.230313mzl4w4u92"
     app_support_subdir: "Cursor"
+    note: "Cursor 是 Code fork，目录结构一致 (DEV_ARTIFACTS_RULES §2.2)"
+    paths:
+      # —— HTTP / 资源 / 扩展缓存（safe，Code fork 结构一致） ——
+      - path: "~/Library/Application Support/Cursor/Cache"
+        verdict: "safe"
+        reason: "HTTP / 资源缓存（Code fork，结构一致）"
+      - path: "~/Library/Application Support/Cursor/CachedData"
+        verdict: "safe"
+        reason: "主进程预编译"
+      - path: "~/Library/Application Support/Cursor/CachedExtensionVSIXs"
+        verdict: "safe"
+        reason: "已下载的 .vsix 临时文件"
+      - path: "~/Library/Application Support/Cursor/logs"
+        verdict: "safe"
+        reason: "Cursor 日志"
+      # —— Workspace 状态（confirm，删后丢面板布局） ——
+      - path: "~/Library/Application Support/Cursor/User/workspaceStorage"
+        verdict: "confirm"
+        reason: "每个 workspace 的状态，删了丢面板布局"
+      # —— 全局凭证（forbid，多重防御，与硬安全网 hardForbidPathContains 重叠） ——
+      - path: "~/Library/Application Support/Cursor/User/globalStorage"
+        verdict: "forbid"
+        reason: "已登录账号 token / 设置同步密钥（多重防御）"
   - name: "Zed"
     bundle_id_prefix: "dev.zed.Zed"
     app_support_subdir: "Zed"
@@ -119,7 +574,29 @@ vendors:
   - name: "Trae"
     bundle_id_prefix: "cn.trae"
     app_support_subdir: "Trae"
-    note: "auto-detected from Trae"
+    note: "Trae 同 Electron 系（Code fork 结构）(DEV_ARTIFACTS_RULES §2.2)"
+    paths:
+      # —— HTTP / 资源 / 扩展缓存（safe，Electron 系，重启自建） ——
+      - path: "~/Library/Application Support/Trae/Cache"
+        verdict: "safe"
+        reason: "HTTP / 资源缓存（Electron 系）"
+      - path: "~/Library/Application Support/Trae/CachedData"
+        verdict: "safe"
+        reason: "主进程预编译"
+      - path: "~/Library/Application Support/Trae/CachedExtensionVSIXs"
+        verdict: "safe"
+        reason: "已下载的 .vsix 临时文件"
+      - path: "~/Library/Application Support/Trae/logs"
+        verdict: "safe"
+        reason: "Trae 日志"
+      # —— Workspace 状态（confirm，删后丢面板布局） ——
+      - path: "~/Library/Application Support/Trae/User/workspaceStorage"
+        verdict: "confirm"
+        reason: "每个 workspace 的状态，删了丢面板布局"
+      # —— 全局凭证（forbid，多重防御，与硬安全网 hardForbidPathContains 重叠） ——
+      - path: "~/Library/Application Support/Trae/User/globalStorage"
+        verdict: "forbid"
+        reason: "已登录账号 token / 设置同步密钥（多重防御）"
   - name: "abnerworks.Typora"
     bundle_id_prefix: "abnerworks.Typora"
     app_support_subdir: "abnerworks.Typora"

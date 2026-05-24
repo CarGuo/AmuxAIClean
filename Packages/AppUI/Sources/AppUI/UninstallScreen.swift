@@ -106,7 +106,7 @@ public struct UninstallScreen: View {
             let unins = AppUninstaller(vendorRules: vendors)
             self.store = UninstallStore(uninstaller: unins)
         }
-        self.pipeline = pipeline ?? TrashPipeline()
+        self.pipeline = pipeline ?? TrashPipeline(vendors: vendors)
     }
 
     public var body: some View {
@@ -123,7 +123,6 @@ public struct UninstallScreen: View {
             candidatesPane
                 .frame(maxWidth: .infinity)
         }
-        .navigationTitle("卸载残留")
         .task { await reloadApps() }
         .alert("删除结果",
                isPresented: Binding<Bool>(
@@ -137,6 +136,9 @@ public struct UninstallScreen: View {
         .sheet(isPresented: $showRealDeleteConfirm) {
             confirmRealDeleteSheet
         }
+        // v2：套布局沙箱——把 candidatesPane（卸载残留候选列表）内的长路径
+        // ideal width 隔离在沙箱内，禁止反推外层 NavigationSplitView 的列宽。
+        .layoutSandbox()
     }
 
     // MARK: - 左栏

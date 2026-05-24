@@ -1,0 +1,7 @@
+2026-05-24 19:23:42.320 GSYCleanMac[91044:3120154] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR_BEGIN] case=uninstaller-dryrun
+[REGR] case=uninstaller-dryrun candidates=2
+[REGR_OK] case=uninstaller-dryrun candidate count > 0=2 > 0
+[REGR_OK] case=uninstaller-dryrun candidate still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrFakeApp-C7CDBA6F-6D44-453C-8E9A-3C64D487170B/Library/Application Support/com.gsyclean.regression.fake=true
+[REGR_OK] case=uninstaller-dryrun candidate still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrFakeApp-C7CDBA6F-6D44-453C-8E9A-3C64D487170B/Library/Caches/com.gsyclean.regression.fake=true
+[REGR_PASS] case=uninstaller-dryrun elapsed_ms=62

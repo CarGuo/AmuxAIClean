@@ -1,0 +1,10 @@
+2026-05-24 19:24:00.710 GSYCleanMac[91428:3121295] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR_BEGIN] case=trash-pipeline-dryrun
+[REGR] case=trash-pipeline-dryrun present=3 skipped=2 err=dryRun: 1 路径被安全策略拦截，1 路径不存在或无权限；首条原因=userDocumentsRoot
+[REGR_OK] case=trash-pipeline-dryrun present count=3
+[REGR_OK] case=trash-pipeline-dryrun skipped count=2
+[REGR_OK] case=trash-pipeline-dryrun err message contains reason=true
+[REGR_OK] case=trash-pipeline-dryrun real file still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrTrash-2EC8CEFA-B3C6-48B3-B85F-B43FC59FAB14/a.txt=true
+[REGR_OK] case=trash-pipeline-dryrun real file still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrTrash-2EC8CEFA-B3C6-48B3-B85F-B43FC59FAB14/b.txt=true
+[REGR_OK] case=trash-pipeline-dryrun real file still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrTrash-2EC8CEFA-B3C6-48B3-B85F-B43FC59FAB14/c.txt=true
+[REGR_PASS] case=trash-pipeline-dryrun elapsed_ms=242

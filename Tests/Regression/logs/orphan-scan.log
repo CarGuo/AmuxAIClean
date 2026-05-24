@@ -1,0 +1,6 @@
+2026-05-24 19:23:38.213 GSYCleanMac[90955:3119932] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR_BEGIN] case=orphan-scan
+[REGR] case=orphan-scan candidates=1 names=[com.gsy.regr.orphan-target]
+[REGR_OK] case=orphan-scan orphan candidates > 0=1 > 0
+[REGR_OK] case=orphan-scan expected orphan name present=true
+[REGR_PASS] case=orphan-scan elapsed_ms=45

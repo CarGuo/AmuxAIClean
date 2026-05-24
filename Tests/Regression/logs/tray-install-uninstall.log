@@ -1,0 +1,7 @@
+2026-05-24 19:23:52.533 GSYCleanMac[91253:3120698] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR_BEGIN] case=tray-install-uninstall
+[REGR] case=tray-install-uninstall tray_installed=true
+[REGR_OK] case=tray-install-uninstall status item installed=true
+[REGR] case=tray-install-uninstall tray_uninstalled=false
+[REGR_OK] case=tray-install-uninstall status item uninstalled=false
+[REGR_PASS] case=tray-install-uninstall elapsed_ms=474

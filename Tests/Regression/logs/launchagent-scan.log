@@ -1,0 +1,6 @@
+2026-05-24 19:23:44.375 GSYCleanMac[91089:3120264] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR_BEGIN] case=launchagent-scan
+[REGR] case=launchagent-scan items=17 labels=com.example.empty,com.google.security.zynamics.bindiff,com.gsyclean.regression.agent,com.microsoft.autoupdate.helper,com.microsoft.update.agent,com.oray.sunlogin.client.startup,com.oray.sunlogin.desktopagent,com.oray.sunlogin.helper,com.oray.sunlogin.service,com.west2online.ClashXPro.ProxyConfigHelper,com.xk72.charles.ProxyHelper,com.youqu.todesk.UninstallerHelper,com.youqu.todesk.UninstallerWatcher,com.youqu.todesk.client.startup,com.youqu.todesk.desktop,com.youqu.todesk.service,io.github.clash-verge-rev.clash-verge-rev.service
+[REGR_OK] case=launchagent-scan user-scope launch agents=2
+[REGR_OK] case=launchagent-scan expected agent label=true
+[REGR_PASS] case=launchagent-scan elapsed_ms=75

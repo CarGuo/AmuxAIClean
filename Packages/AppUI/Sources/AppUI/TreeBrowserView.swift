@@ -51,18 +51,48 @@ public struct TreeBrowserView: View {
     }
 
     public var body: some View {
+        // v1.3.zz 流式修复：显式订阅 coordinator.snapshot 的 scannedFileCount + isFinished
+        // ——这两个字段在扫描中由 publishSnapshot 节流推（0.4s 一次），扫描结束 isFinished
+        // 翻 true。SwiftUI 看到本 view 在 body 里读了它们，就会在它们变化时让本 view 重算
+        // body → 重新调 directChildren → 再次走 cache miss 流程 → 拉到当下最新 store 数据。
+        // 这是把"流式列表"行为带给树形的关键：之前树形仅订阅 treeChildrenCache，
+        // 但 cache 在扫描中 isScanning=true 期间空结果不被钉住（见 ScanCoordinator
+        // directChildren 写回逻辑），无人触发 body 就不会再拉，所以"出来一次后续不出来"。
+        // **注意**：ViewBuilder 不允许裸 `_ = ...`（() 不是 View），必须 `let _ = ...`。
+        let _ = coordinator.snapshot.scannedFileCount
+        let _ = coordinator.snapshot.isFinished
         let topLevel = coordinator.directChildren(of: rootPath, sortedBy: sortKey)
+        // v1.3.zz：区分"还在 fetch" vs "真的 0 条"。
+        // store-fallback 路径下 directChildren 第一帧必返 []，view 又最容易给用户"空白"误解，
+        // 这里显式问 coordinator 拿 fetching 状态，把空态分成两种文案 + 一个 spinner。
+        let isFetching = coordinator.isFetchingChildren(of: rootPath, sortedBy: sortKey)
         let maxBytes = topLevel.map(\.bytes).max() ?? 0
         VStack(spacing: 0) {
             TreeColumnHeader(sortKey: $sortKey)
             Divider()
             if topLevel.isEmpty {
                 VStack(spacing: 8) {
-                    Image(systemName: "tree")
-                        .font(.system(size: 36))
-                        .foregroundStyle(.tertiary)
-                    Text("还没有可展开的子节点")
-                        .foregroundStyle(.secondary)
+                    if isFetching {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("正在加载子节点…")
+                            .foregroundStyle(.secondary)
+                            .font(.callout)
+                    } else if coordinator.isScanning {
+                        // 扫描中、当前 store 还查不到子项（如刚切到新根、batch 还没 flush）。
+                        // 用更柔和的"等待"文案，避免误导用户以为没数据；snapshot 推进就会重算。
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("扫描中，正在采集子节点…")
+                            .foregroundStyle(.secondary)
+                            .font(.callout)
+                    } else {
+                        Image(systemName: "tree")
+                            .font(.system(size: 36))
+                            .foregroundStyle(.tertiary)
+                        Text("还没有可展开的子节点")
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -313,9 +343,9 @@ struct TreeNodeView: View {
                 Group {
                     if canExpand {
                         Button {
-                            withAnimation(.easeInOut(duration: 0.15)) {
-                                expanded[row.path] = !isExpanded
-                            }
+                            // v1.3.zz：去掉 0.15s 动画（fallback 异步下钻期间动画会"卡空"），
+                            // 与下方整行单击 toggle 行为对齐。
+                            expanded[row.path] = !isExpanded
                         } label: {
                             // bug 1：chevron 之前是 12x12 hit area 太小，鼠标得精准点中三角才生效；
                             // Finder/DaisyDisk 的披露三角约 20x20。这里画 10pt 字号但用
@@ -350,14 +380,25 @@ struct TreeNodeView: View {
             )
             .contentShape(Rectangle())
             .onTapGesture(count: 2) {
-                // 双击：仅对可展开的目录有效，触发展开/折叠
+                // 双击保留：不改变选中态、仅 toggle（用户连点两次会先选中再 toggle，
+                // 与下面的单击行为合在一起就是 Finder/Pearcleaner 风格）
                 guard canExpand else { return }
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    expanded[row.path] = !isExpanded
-                }
+                expanded[row.path] = !isExpanded
             }
             .onTapGesture(count: 1) {
+                // v1.3.zz UI 修复：用户反馈"整行应该都能点开"——
+                // 之前单击只更新 selectedPath，必须再点 22pt 的 chevron 才能展开，
+                // 实际上 Pearcleaner / DaisyDisk / Windows 资源管理器都是单击整行直接 toggle。
+                // 文件叶子（!canExpand）只更新选中态。
+                //
+                // 同时**去掉 withAnimation 0.15s easeInOut**：上轮关掉 deepIndex 后
+                // 首次展开会触发 GRDB store-fallback 异步下钻（~50-100ms），
+                // 在动画期间 SwiftUI 已 layout 但子节点还没回来，会出现"先空一段再蹦出"的卡顿感；
+                // 直接瞬时切换 expanded 字典，等子节点真到位时一次性 render。
                 selectedPath = row.path
+                if canExpand {
+                    expanded[row.path] = !isExpanded
+                }
             }
             .id(row.path)
             .contextMenu {
@@ -397,9 +438,7 @@ struct TreeNodeView: View {
                 Divider()
                 if canExpand {
                     Button {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            expanded[row.path] = !isExpanded
-                        }
+                        expanded[row.path] = !isExpanded
                     } label: {
                         Label(isExpanded ? "折叠" : "展开", systemImage: isExpanded ? "chevron.down" : "chevron.right")
                     }

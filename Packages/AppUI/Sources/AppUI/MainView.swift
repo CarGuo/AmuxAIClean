@@ -19,7 +19,10 @@ public struct MainView: View {
     @State private var customCategories: [ScanCategory] = []
     @State private var selectedCategory: ScanCategory.ID?
     @State private var selection: Set<String> = []   // 勾选的 row.id
-    @State private var detail: RowItem?
+    /// v1.3.ab：原本是 `RowItem?`，但 `List(selection:)` 用整结构体当 key 会让 SwiftUI 在
+    /// snapshot 高频 publish 时（点 Preferences 这种条目几千的目录）对每行做 `==` 比较 + diff，
+    /// 主线程被刷爆 → 鼠标彩虹球。改为只押 row.id（String），detail 渲染时再反查。
+    @State private var detail: String?
     @State private var showSheet: Bool = false
     @State private var deleteResult: String?
     @State private var isDropTargeted: Bool = false
@@ -64,7 +67,8 @@ public struct MainView: View {
                 coordinator: ScanCoordinator? = nil) {
         // v0 默认走 NSWorkspace.recycle（PITFALLS §5.9）：不需要 root，不需要 99 美元 Apple Developer Program
         // 用户撤销可以走 Finder → 显示废纸篓 → 放回原位
-        self.pipeline = pipeline ?? TrashPipeline()
+        // M4-P0 修复：把 vendors 透传到 TrashPipeline，让最后闸门启用 vendor 路径树判定
+        self.pipeline = pipeline ?? TrashPipeline(vendors: vendors)
         self.recorder = recorder
         self.settings = settings ?? AppSettings()
         self.pathStore = pathStore ?? UserPathStore()
@@ -103,12 +107,15 @@ public struct MainView: View {
     @Environment(\.openWindow) private var openWindow
 
     public var body: some View {
+        // v1.3.aa：三列 → 两列。原本 NavigationSplitView { sidebar / content / detail }
+        // 在嵌套子屏（AppFootprintScreen / UninstallScreen / DuplicateScreen / LaunchAgentScreen）
+        // 的内部分栏里出现「外层 detail 列被挤剩极窄一条 + 旋转 90° 占位文字」的视觉灾难
+        // （问题 4 的截图）；同时切 tab 时外层 detail 也容易残留上一屏的内容（问题 2）。
+        // 现在外层只有 sidebar + content，细节区由各底层屏自己负责（清单/树形复用 results 内的 inline 详情区）。
         NavigationSplitView {
             sidebar
-        } content: {
-            results
         } detail: {
-            detailPane
+            results
         }
         .navigationTitle("GSY 清理管家")
         .toolbar { toolbar }
@@ -128,10 +135,20 @@ public struct MainView: View {
             Text(deleteResult ?? "")
         }
         .onChange(of: selectedCategory) { _, new in
-            guard let id = new, let cat = allCategories.first(where: { $0.id == id }) else { return }
-            // v1.3：统一走 resetSelectionState() —— 切类目必须清四种选中态
+            // v1.3.aa：原版 `guard let cat = allCategories.first(where: ...) else { return }`
+            // 在切到 sentinel（appFootprint/launchAgent/uninstall/duplicate）时直接 return，
+            // 既不会 resetSelectionState 也不会清 detail/treeSelection——表现就是问题 2：
+            // 上一屏的"启动项详情"残留在右侧栏没清掉。
+            // 现在拆成两步：①只要 selection 变了就先清状态；②若是 ScanCategory 才起扫。
             resetSelectionState()
-            startScan(category: cat)
+            guard let id = new, let cat = allCategories.first(where: { $0.id == id }) else { return }
+            // v2：统一走 [runHeavyAfterCommit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HeavyTask.swift)
+            // 模板（detached + sleep 16ms + MainActor.run），让 SwiftUI 先把
+            // 「sidebar 高亮 / 旧 detail 清空 / loading 状态」这一帧 commit 出去再开始扫。
+            // 这样 Preferences 这种条目巨多的目录入扫时不再卡彩虹球。
+            runHeavyAfterCommit {
+                startScan(category: cat)
+            }
         }
         .onChange(of: viewMode) { _, _ in
             // bug A：清单 ↔ 树形 切换时各清各的选中态，避免两条选中互相覆盖。
@@ -196,7 +213,31 @@ public struct MainView: View {
 
     // MARK: - Sidebar
 
+    /// v1.3.zz UI 修复：原本结构是 `List { ... }.safeAreaInset(.bottom) { VolumeCapacityCard }`，
+    /// 但扫描期间 [coordinator.snapshot.totalBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 高频变化会让 capacity card 反复重渲染，进而扰动 List 的 safeAreaInset 计算与滚动位置——
+    /// 表现就是"点了用户缓存 → sidebar 整段莫名滚到中间，底部容量条仿佛消失"。
+    /// 改成显式 VStack（List + 固定底部 capacity card）后，两者是兄弟视图，
+    /// card 高度变化不会再传染到 List 的滚动位置。
     private var sidebar: some View {
+        VStack(spacing: 0) {
+            sidebarList
+            Divider()
+            VolumeCapacityCard(
+                snapshot: coordinator.volumeSnapshot,
+                cleanableBytes: coordinator.snapshot.totalBytes,
+                swap: coordinator.swapSnapshot,
+                // v1.3 review-fix Must1：snapshot 探测失败时让卡片提供"重试"按钮，回调到 coordinator.refreshVolumeCapacity()。
+                onRetry: { coordinator.refreshVolumeCapacity() }
+            )
+        }
+        .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 320)
+        // v2：sidebar 整体套布局沙箱——切断 sidebarList 内部任何一行长 title 反推
+        // 外层 NavigationSplitView，避免「sidebar 被压成 1px 竖线」复发。
+        .layoutSandbox()
+    }
+
+    private var sidebarList: some View {
         List(selection: $selectedCategory) {
             Section("推荐清理") {
                 ForEach(presetCategories) { cat in
@@ -266,22 +307,11 @@ public struct MainView: View {
                     .tag(MainView.duplicateSentinelID)
             }
         }
-        .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 280)
         // bug1：sidebar List 默认会在获得 keyboard focus 时画一圈蓝色焦点环
         // （包住整个 list 容器，看起来像"鼠标进入 sidebar 才出现的蓝框"）。
         // 我们已经有 row selection 的蓝色背景做选中反馈，再叠焦点环纯属冗余且割裂。
         // 关掉容器级焦点环，单行 selection 不受影响。
         .focusEffectDisabled()
-        // v1.3：sidebar 底部固定一张容量条（类似系统设置 → 储存空间），
-        // 删除/扫描完成后联动刷新，让用户视觉感知"清完后空闲变多"。
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VolumeCapacityCard(
-                snapshot: coordinator.volumeSnapshot,
-                cleanableBytes: coordinator.snapshot.totalBytes,
-                // v1.3 review-fix Must1：snapshot 探测失败时让卡片提供"重试"按钮，回调到 coordinator.refreshVolumeCapacity()。
-                onRetry: { coordinator.refreshVolumeCapacity() }
-            )
-        }
     }
 
     /// v1.2 P1-6：「应用占用排行榜」侧边项。用 sentinel ID 走旁路，避免污染
@@ -481,31 +511,55 @@ public struct MainView: View {
                 } else {
                     viewModeBar
                     Divider()
-                    switch viewMode {
-                    case .list:
-                        listResults
-                    case .tree:
-                        if let root = coordinator.currentRootPath {
-                            TreeBrowserView(
-                                coordinator: coordinator,
-                                rootPath: root,
-                                onSelect: { row in
-                                    // bug A：树形选中 → 详情面板。同时清掉清单视图的 detail，
-                                    // 避免两条选中态打架（detailPane 先看 treeSelection）。
-                                    treeSelection = row
-                                    detail = nil
-                                },
-                                onTrash: { url in
-                                    // v1.3：树形右键 / Delete 走废纸篓。
-                                    // 复用大文件视图的 NSWorkspace.recycle 通道；
-                                    // SafetyEngine 闸门已在 TreeNodeView 弹菜单时拦了 forbid。
-                                    triggerLargeFileTrash(urls: [url])
+                    // v1.3.aa：原本 detail 是外层 NavigationSplitView 的第三列；现在两列后
+                    // 改成清单/树视图与 inline 详情区横排。详情区在没选中时折叠为 0 宽。
+                    // v1.3.ab：清单/树视图区强制 maxWidth: .infinity + minWidth: 320 + layoutPriority(1)，
+                    // 防止某行内容（如 10 GB+ 长路径）反向把 List ideal width 抬高 →
+                    // 挤压外层 NavigationSplitView 的 sidebar，从根本上消除"动不动 UI 错乱"。
+                    HStack(spacing: 0) {
+                        Group {
+                            switch viewMode {
+                            case .list:
+                                listResults
+                            case .tree:
+                                if let root = coordinator.currentRootPath {
+                                    TreeBrowserView(
+                                        coordinator: coordinator,
+                                        rootPath: root,
+                                        onSelect: { row in
+                                            // bug A：树形选中 → 详情面板。同时清掉清单视图的 detail，
+                                            // 避免两条选中态打架（detailPane 先看 treeSelection）。
+                                            treeSelection = row
+                                            detail = nil
+                                        },
+                                        onTrash: { url in
+                                            // v1.3：树形右键 / Delete 走废纸篓。
+                                            triggerLargeFileTrash(urls: [url])
+                                        }
+                                    )
+                                    // v2 修：TreeBrowserView 内部用 @State 缓存了
+                                    // selectedPath / expanded / sortKey；如果换了扫描根
+                                    // 但 SwiftUI 把同一个 view instance 复用，旧 root 下的
+                                    // 子路径 key 会残留在 expanded 字典里，新 root 自己的
+                                    // 节点反而展不开 / 选不中——表现就是用户截图里
+                                    // 「切到别的目录后树形一直不出来」。
+                                    // 用 .id(root) 把 view identity 绑到 rootPath 上，
+                                    // root 一变 SwiftUI 强制销毁旧 view + 重建新 view，
+                                    // 所有 @State 自然清零。
+                                    .id(root)
+                                } else {
+                                    Text("暂无可展开的扫描根")
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 }
-                            )
-                        } else {
-                            Text("暂无可展开的扫描根")
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            }
+                        }
+                        .frame(minWidth: 320, maxWidth: .infinity)
+                        .layoutPriority(1)
+                        if detail != nil || treeSelection != nil {
+                            Divider()
+                            inlineDetailPane
+                                .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
                         }
                     }
                 }
@@ -513,7 +567,15 @@ public struct MainView: View {
                 footerBar
             }
         }
-        .navigationSplitViewColumnWidth(min: 420, ideal: 520)
+        .navigationSplitViewColumnWidth(min: 560, ideal: 760)
+        // v2：detail 列整体套布局沙箱——这是修「Library 一来数据 sidebar 变成竖线」、
+        // 「重复文件左右栏掉到窗外」、「卸载残留把外层 sidebar 挤掉」一系列灾难的根因。
+        //
+        // GeometryReader 把外层 NavigationSplitView detail 列分给 results 的
+        // proposed width 物理钉死成 results 内容的 frame width，
+        // 内部 List/HStack/HSplitView 任何子视图的 ideal width 都不再向外反推，
+        // 反挤 sidebar 的链条被切断。
+        .layoutSandbox()
         .onChange(of: coordinator.snapshot.rows.count) { _, _ in
             // 默认勾选：仅勾 .safe（PITFALLS §5.5）
             // 用 union：用户已经手动改过的不要被覆盖
@@ -558,13 +620,17 @@ public struct MainView: View {
                 )
                 RowView(row: row, selected: isOn,
                         maxBytes: coordinator.snapshot.rows.first?.bytes ?? 0)
-                    .tag(row)
+                    .tag(row.id)
             }
         }
         .listStyle(.inset)
         // bug B：清单视图的 List(selection:) 同样会画容器级焦点环，关掉。
         // 单行选中蓝条不受影响。
         .focusEffectDisabled()
+        // v1.3.ab：把 List 的本征宽度上限钉死在父容器宽度，禁止某条特别宽的 RowView
+        // （比如 10 GB+ 路径很长的行）反向把 ideal width 抬高 → 把整个外层 sidebar 挤掉。
+        .frame(minWidth: 320, maxWidth: .infinity)
+        .layoutPriority(1)
     }
 
     /// v1.3：是否应显示顶部权限 banner。
@@ -592,6 +658,7 @@ public struct MainView: View {
                 PermissionStatusBanner(
                     fdaDeniedPaths: coordinator.permissionDeniedPaths,
                     tccSkippedPaths: coordinator.tccProtectedSkippedPaths,
+                    fdaStatus: coordinator.fdaStatus,
                     onOpenSettings: {
                         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
                             NSWorkspace.shared.open(url)
@@ -787,22 +854,30 @@ public struct MainView: View {
         .padding(16)
     }
 
-    // MARK: - Detail
+    // MARK: - Detail (inline)
 
+    /// v1.3.aa：从外层 NavigationSplitView 的 detail 列拿下来后，
+    /// 详情区只在「清单选中行」或「树形选中行」时才挂载（条件渲染在 results 里）。
+    /// 不再有"未选中显示占位"的态——空态本来就该是 0 宽，让清单/树视图占满。
+    /// v1.3.ab：detail 现在是 row.id（String），渲染时即席从 snapshot.rows 里反查。
     @ViewBuilder
-    private var detailPane: some View {
-        if let item = detail {
+    private var inlineDetailPane: some View {
+        if let id = detail,
+           let item = coordinator.snapshot.rows.first(where: { $0.id == id }) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     VerdictBadge(verdict: item.verdict)
                         .frame(width: 14, height: 14)
                     Text(item.title)
                         .font(.title2.bold())
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
                 Text(item.url.path)
                     .font(.system(.callout, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+                    .longPathStyle()
                 Divider()
                 LabeledContent("大小（占用）", value: formattedBytes(item.bytes))
                 LabeledContent("大小（逻辑）", value: formattedBytes(item.logicalBytes))
@@ -816,24 +891,23 @@ public struct MainView: View {
                 }
                 Spacer()
             }
-            .padding(20)
+            // v2：统一详情面板样式（padding + maxWidth.infinity + leading 对齐）。
+            .detailPaneStyle()
         } else if let row = treeSelection {
-            // bug A：树形视图选中行 → 显示轻量详情。
-            // 树视图没有 SafetyVerdict（那是清单视图独有的安全判定），
-            // 这里只展示路径 / 大小 / 文件数 / 是否目录，足够辅助浏览决策；
-            // 删除：在树形 row 上**右键 → 移到废纸篓…** 或选中后按 **Delete** 键
-            // （SafetyEngine 已拦住家目录 / `/` / SIP 这种 forbid 路径）。
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Image(systemName: row.isDirectory ? "folder.fill" : "doc")
                         .foregroundStyle(.tint)
                     Text(row.title)
                         .font(.title2.bold())
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
                 Text(row.path)
                     .font(.system(.callout, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+                    .longPathStyle()
                 Divider()
                 LabeledContent("大小", value: formattedBytes(row.bytes))
                 LabeledContent("文件数", value: "\(row.fileCount)")
@@ -847,16 +921,7 @@ public struct MainView: View {
                     .foregroundStyle(.tertiary)
                 Spacer()
             }
-            .padding(20)
-        } else {
-            VStack(spacing: 8) {
-                Image(systemName: "doc.text.magnifyingglass")
-                    .font(.system(size: 36))
-                    .foregroundStyle(.tertiary)
-                Text("选中一行查看详情")
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .detailPaneStyle()
         }
     }
 
@@ -1181,6 +1246,9 @@ private struct PermissionStatusBanner: View {
     let fdaDeniedPaths: [String]
     /// TCC 雷区被主动 skip 的路径——根本没尝试 open，避免弹窗。
     let tccSkippedPaths: [String]
+    /// 当前进程的 FDA 探测状态。`.granted` 仍出现 denied 路径 = 多半是
+    /// `~/.Trash` 之类**独立 TCC**项（不属于 FDA），需要单独引导用户。
+    let fdaStatus: FDAProbe.Status
     let onOpenSettings: () -> Void
     /// v1.3：用户在 banner 上点「授权后扫描这些目录」——
     /// 跳系统设置 + 触发当前 category 重扫。MainView 在 onRescan 里串起来。
@@ -1213,6 +1281,23 @@ private struct PermissionStatusBanner: View {
         fdaCount > 0 ? "打开完全磁盘访问权限" : "授权后扫描这些目录"
     }
 
+    /// v1.3.zz：检测"明明 FDA 已开却仍 denied"——多半 = 用户授权的是 .app，
+    /// 但当前进程是 Debug build 或路径不一样的产物，TCC 按 codesign hash 索引匹不上。
+    /// 或者 = denied 路径里全是 ~/.Trash 之类**独立 TCC**项（不属于 FDA 范畴）。
+    private var diagnosticHint: String? {
+        let trashDenied = fdaDeniedPaths.contains { $0.hasSuffix("/.Trash") }
+        if fdaStatus == .granted && trashDenied {
+            return "提示：~/.Trash 不属于「完全磁盘访问」范畴——它是 macOS 14+ 单独的隐私项，需要在 系统设置 → 隐私与安全 → 自动化 / 文件与文件夹 里单独允许；或者改用 Finder 自带的「清空废纸篓」。"
+        }
+        if fdaStatus == .denied && fdaCount > 0 {
+            return "提示：当前进程探测到 FDA = 未授权。如果你刚刚在系统设置里给 GSYCleanMac 打了勾，请尝试：① 退出本 App 完全重启；② 确认你打勾的 .app 路径就是当前正在运行的这一个（开发版 Debug build 与正式 .app 的 TCC 授权是分开的）。"
+        }
+        if fdaStatus == .unknown && fdaCount > 0 {
+            return "提示：未能探测到 FDA 状态（用户从未用过 Mail/Safari/Messages，没有探针文件）。请直接到 系统设置 → 隐私与安全 → 完全磁盘访问 中确认授权。"
+        }
+        return nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -1237,6 +1322,16 @@ private struct PermissionStatusBanner: View {
                     }
                     .controlSize(.small)
                 }
+            }
+            // v1.3.zz：诊断提示——比纯 banner 多一行解释，让用户在不展开"查看路径"
+            // 的前提下也能直接看到"为什么明明授权了还提示"。
+            if let hint = diagnosticHint {
+                Text(hint)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 2)
             }
             if expanded {
                 ScrollView {
