@@ -103,6 +103,14 @@ public actor GRDBScanResultStore: ScanResultStore {
         }
     }
 
+    /// 批量写入。
+    ///
+    /// **事务边界（v1.3.zzzz Phase 3-B 文档化）**：GRDB 的 `dbPool.write { ... }`
+    /// 闭包**整体**包在一个 SQLite 事务里——一次 `insert(records)` 调用 = 一次
+    /// `BEGIN ... COMMIT` + 一次 WAL flush。所以"分批 N 次小 insert"=N 次事务，
+    /// 调用方（如 [PerfBench.runDirectChildrenBench](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/PerfBench/Sources/PerfBench/PerfBench.swift#L124)）
+    /// 想要单事务大批量灌就一次性传完整数组，想要分摊内存峰值就自行切片调用。
+    /// 不要把"事务"误以为只是 stmt 复用——prepared stmt 是独立优化，事务由 closure 边界决定。
     public func insert(_ records: [ScanResultRecord]) async throws {
         guard !records.isEmpty else { return }
         try await dbPool.write { db in

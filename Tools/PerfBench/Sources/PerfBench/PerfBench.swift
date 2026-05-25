@@ -11,6 +11,10 @@ struct PerfBench {
         var dedup = true
         var benchDirectChildren = false
         var nodeCount = 50_000
+        // v1.3.zzzz Phase 3-B：默认 50_000，让 50k 节点跑单事务（一次 store.insert 一次
+        // dbPool.write = 一次 SQLite 事务），消除"分批 5000 = 多事务"带来的 begin/commit
+        // + WAL flush 噪声。30 万节点时仍可走 5_000 / 50_000 / 300_000 的横评。
+        var insertBatchSize = 50_000
 
         let rest = Array(args.dropFirst())
         var i = 0
@@ -38,12 +42,17 @@ struct PerfBench {
             } else if arg == "--nodes", i + 1 < rest.count {
                 nodeCount = Int(rest[i + 1]) ?? nodeCount
                 i += 1
+            } else if let value = parseValue(arg, key: "--insert-batch-size") {
+                insertBatchSize = Int(value) ?? insertBatchSize
+            } else if arg == "--insert-batch-size", i + 1 < rest.count {
+                insertBatchSize = Int(rest[i + 1]) ?? insertBatchSize
+                i += 1
             }
             i += 1
         }
 
         if benchDirectChildren {
-            await runDirectChildrenBench(nodeCount: nodeCount)
+            await runDirectChildrenBench(nodeCount: nodeCount, insertBatchSize: insertBatchSize)
             return
         }
 
@@ -100,10 +109,19 @@ struct PerfBench {
     /// 节点结构：root（1）→ L1（22 dir）→ L2（每个 L1 下 22 dir）→ L3（每个 L2 下 N 个 file），
     /// 默认 50k 节点；用 --nodes 调到 30 万对齐 v1.3.z 大基准。
     ///
+    /// `insertBatchSize` 控制单次 `store.insert(...)` 的批量大小。
+    /// **GRDB 一次 `dbPool.write { ... }` 调用 = 一次 SQLite 事务**
+    /// （见 [GRDBScanResultStore.insert](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift#L106-L131)），
+    /// 所以 batch 大小直接影响事务次数：
+    /// - batch=5_000 → 50k 节点要切 10 个事务，10 次 begin/commit + WAL flush
+    /// - batch=50_000 → 50k 节点单事务，begin/commit/WAL 各只 1 次
+    /// 默认 50_000 让"50k 节点 baseline"是真正的"单事务"基线，避免事务次数掩盖真实 SQL 开销。
+    /// 30 万节点时调小到 50_000 仍是 6 次事务，对内存峰值（~150MB prepared stmt 占用）友好。
+    ///
     /// **目的**：把 v1.3.zzzz [directChildrenAggregated SQL GROUP BY 下推](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift#L289)
     /// 的延迟和"老路径单 record query + Swift 聚合"对比，留下可重复跑的硬数据基准，
     /// 防止后续重构把 SQL 下推路径回退到慢路径。
-    static func runDirectChildrenBench(nodeCount: Int) async {
+    static func runDirectChildrenBench(nodeCount: Int, insertBatchSize: Int = 50_000) async {
         let dir = NSTemporaryDirectory() + "PerfBench-direct-\(UUID().uuidString)"
         let dbURL = URL(fileURLWithPath: dir).appendingPathComponent("scan.sqlite")
         defer { try? FileManager.default.removeItem(atPath: dir) }
@@ -159,8 +177,9 @@ struct PerfBench {
         }
 
         let insertStart = DispatchTime.now().uptimeNanoseconds
-        // 分批 insert，每批 5000 条避免单事务内存峰值
-        let batchSize = 5_000
+        // 用调用方传入的 batch 控制事务边界。默认 50_000：50k 节点 = 单事务。
+        // 见函数 doc 注释中关于"一次 dbPool.write = 一次事务"的说明。
+        let batchSize = max(1, insertBatchSize)
         var idx = 0
         while idx < records.count {
             let end = min(idx + batchSize, records.count)
@@ -220,8 +239,10 @@ struct PerfBench {
         let midMs = Double(midEnd - midStart) / 1_000_000.0
 
         let line = String(
-            format: "(records=%d, insert_ms=%.2f, cold_root_ms=%.2f, warm_root_ms=%.2f, mid_l1_ms=%.2f, root_children=%d, l1_children=%d)",
+            format: "(records=%d, batch=%d, txn=%d, insert_ms=%.2f, cold_root_ms=%.2f, warm_root_ms=%.2f, mid_l1_ms=%.2f, root_children=%d, l1_children=%d)",
             records.count,
+            batchSize,
+            (records.count + batchSize - 1) / batchSize,
             insertMs,
             coldMs,
             warmMs,
