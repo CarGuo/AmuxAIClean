@@ -11,9 +11,9 @@ import AppKit
 ///
 /// | 策略         | Dock 图标 | 顶部主菜单 (File/Edit/...) | ⌘Tab | 能激活窗口 |
 /// |--------------|----------|---------------------------|------|-----------|
-/// | `.regular`   | ✅       | ✅                        | ✅   | ✅        |
-/// | `.accessory` | ❌       | ❌                        | ❌   | ✅（窗口仍可显示）|
-/// | `.prohibited`| ❌       | ❌                        | ❌   | ❌（纯后台进程）|
+/// | `.regular`   | YES      | YES                       | YES  | YES       |
+/// | `.accessory` | NO       | NO                        | NO   | YES（窗口仍可显示）|
+/// | `.prohibited`| NO       | NO                        | NO   | NO（纯后台进程）|
 ///
 /// 我们用 `.regular ⇄ .accessory` 切换：
 /// - 主窗口可见（哪怕被遮挡）→ `.regular`：用户处在"工作态"，Dock 图标提供归属感与 ⌘Tab 切换

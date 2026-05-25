@@ -1,4 +1,4 @@
-# OmniDiskSweeper 深调研（The Omni Group · 免费）
+# OmniDiskSweeper 深调研（The Omni Group - 免费）
 
 > 调研日期：2026-05-22
 > 调研对象版本：OmniDiskSweeper 1.13（macOS Mojave+，含 Apple Silicon / macOS 26 Tahoe 兼容版）
@@ -15,8 +15,8 @@ OmniDiskSweeper
 ├── 启动与扫描入口
 │ ├── 启动后默认弹出"Drive List"窗口（列出所有本地卷 / 外置卷 / 网络卷） [图]
 │ ├── 选中目标卷 -> 点击底部 "Sweep "<Volume>" Drive" 开始全盘扫描 [图]
-│ ├── File ▸ Sweep Drive…（菜单等价入口） [目录]
-│ ├── File ▸ Size Folder…（CmdO）—— 任选任意目录扫描 [目录][Y]【任意路径入口】
+│ ├── File > Sweep Drive…（菜单等价入口） [目录]
+│ ├── File > Size Folder…（CmdO）—— 任选任意目录扫描 [目录][Y]【任意路径入口】
 │ ├── 把 Finder 中的文件夹拖到 Dock/App 图标 -> 计算该文件夹大小 [目录]
 │ └── 终端以 root 启动：sudo /Applications/OmniDiskSweeper.app/Contents/MacOS/OmniDiskSweeper
 │ └── 解锁系统受保护文件 / 其他用户文件的尺寸读取 [设][目录]
@@ -37,7 +37,7 @@ OmniDiskSweeper
 ├── 操作与删除
 │ ├── 默认按钮："Trash"（移入废纸篓，可恢复） [Y]【Trash 流程】
 │ │ ├── 快捷键 Cmd 或左下角 Trash 按钮
-│ │ └── 多选删除：Cmd 点选 / ⇧ 连选后批量 Trash [Y]
+│ │ └── 多选删除：Cmd 点选 /  连选后批量 Trash [Y]
 │ ├── 按住 Option 键 -> Trash 按钮变为 "Destroy"（绕过废纸篓直接销毁） [Y]【二次确认/警示】
 │ │ └── 选中项已在 Trash 内 -> 自动变为 Destroy，并显示大号[警告]警告标志 [Y]
 │ ├── 已知不可删除项（权限/系统保护）-> Trash 按钮自动禁用并预先提示 [Y]
@@ -45,7 +45,7 @@ OmniDiskSweeper
 │ └── 错误报告：删除失败时弹出错误清单（1.10 起强化） [设]
 │
 ├── 视图与导航
-│ ├── View ▸ Show/Hide hidden columns（部分版本提供包归属列） [设]
+│ ├── View > Show/Hide hidden columns（部分版本提供包归属列） [设]
 │ ├── 键盘箭头 <- -> ↑ ↓ 在列与项之间穿梭 [图]
 │ ├── CmdR 重新扫描当前卷 [图]
 │ └── 多窗口：可同时打开多个卷或多个 "Size Folder" 任务 [图][目录]
@@ -79,7 +79,7 @@ OmniDiskSweeper
 ## 2. 重点 4 问
 
 ### (a) 任意目录扫描入口在哪？[目录]
-- **菜单**：`File ▸ Size Folder…`，快捷键 **CmdO**，弹出标准目录选择面板，可选任意路径（包括外置卷、~/Library、/private/var 等）。
+- **菜单**：`File > Size Folder…`，快捷键 **CmdO**，弹出标准目录选择面板，可选任意路径（包括外置卷、~/Library、/private/var 等）。
 - **拖放**：把 Finder 中任意文件夹拖到 OmniDiskSweeper 的 Dock 图标 / 应用图标上，触发同等"指定目录扫描"。
 - **效果**：以选中目录为根，独立打开一个"列视图"窗口，与全盘扫描互不干扰，可同时存在多个窗口。
 - **来源**：`maczd.com` 中文教程明确写出"在顶部选择 File - Size Folder 或快捷键 Cmd+O，进行手工选择需要扫描分析的文件夹"；官方 1.10 Release Notes 同时确认 "Folder Drop — Dragging a folder from Finder and dropping it onto the OmniDiskSweeper app icon will now calculate that folder's size"。
@@ -108,7 +108,7 @@ OmniDiskSweeper
 3. **隐式二次确认**：
  - 当所选文件已经在 Trash 中，按钮自动变为 Destroy + [警告]，相当于强提醒"再删一次就真没了"。
  - 若选中项含不可删除文件，Trash 按钮直接置灰，并提前列出错误，避免点了才报错。
-4. **批量**：Cmd/⇧ 多选后一次性 Trash / Destroy。
+4. **批量**：Cmd/ 多选后一次性 Trash / Destroy。
 5. **不会自动删除任何东西**——OmniDiskSweeper 始终是"诊断工具"，所有删除都需用户明确点击。
 - **来源**：官方 Release Notes 1.10：`Replaced ... Delete button with a Trash button … If the selected files are already in your trash, it becomes a Destroy button … You can also get to the Destroy button … by holding the Option key`；softwarevs.com 评测："it won't automatically delete anything … you still have to click … before you delete it"。
 
@@ -118,8 +118,8 @@ OmniDiskSweeper
 
 1. OmniDiskSweeper 官方下载与简介页：https://www.omnigroup.com/more
 2. OmniDiskSweeper 1.10 官方 Release Notes（Trash/Destroy 行为权威定义）：https://www.omnigroup.com/releasenotes/omnidisksweeper/1.10
-3. Bionic Cat 知识库 · sudo 启动以查看全盘所有用户文件：https://bioniccat.freshdesk.com/support/solutions/articles/3000061295-running-omnidisk-sweeper-as-root-to-discover-space-eating-files-and-folders
-4. maczd.com · 中文使用教程（含 CmdO Size Folder 入口、隐藏文件支持）：https://www.maczd.com/post/omnidisksweeper.html
-5. macdownload.informer.com · 1.9 评测（隐藏文件 / 直删特性确认）：https://macdownload.informer.com/omnidisksweeper/1.9/
-6. softwarevs.com · 2025/2026 实测评测（性能、列视图、诊断哲学）：https://softwarevs.com/omnidisksweeper-review/
-7. ezone.co.uk · OmniDiskSweeper + AppCleaner 联合清理实战：https://www.ezone.co.uk/blog/optimise-mac-cleanup-using-omnidisksweeper-and-appcleaner.html
+3. Bionic Cat 知识库 - sudo 启动以查看全盘所有用户文件：https://bioniccat.freshdesk.com/support/solutions/articles/3000061295-running-omnidisk-sweeper-as-root-to-discover-space-eating-files-and-folders
+4. maczd.com - 中文使用教程（含 CmdO Size Folder 入口、隐藏文件支持）：https://www.maczd.com/post/omnidisksweeper.html
+5. macdownload.informer.com - 1.9 评测（隐藏文件 / 直删特性确认）：https://macdownload.informer.com/omnidisksweeper/1.9/
+6. softwarevs.com - 2025/2026 实测评测（性能、列视图、诊断哲学）：https://softwarevs.com/omnidisksweeper-review/
+7. ezone.co.uk - OmniDiskSweeper + AppCleaner 联合清理实战：https://www.ezone.co.uk/blog/optimise-mac-cleanup-using-omnidisksweeper-and-appcleaner.html

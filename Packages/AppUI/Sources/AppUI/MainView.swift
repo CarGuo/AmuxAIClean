@@ -130,7 +130,7 @@ public struct MainView: View {
         } detail: {
             results
         }
-        .navigationTitle("GSY 清理管家")
+        .navigationTitle(Text("main.nav.title", bundle: .module))
         .toolbar { toolbar }
         .sheet(isPresented: $showSheet) {
             DeleteSheet(
@@ -252,11 +252,13 @@ public struct MainView: View {
 
     private var sidebarList: some View {
         List(selection: $selectedCategory) {
-            Section("推荐清理") {
+            Section {
                 ForEach(presetCategories) { cat in
                     sidebarRow(cat)
                         .tag(cat.id)
                 }
+            } header: {
+                Text("sidebar.section.recommended", bundle: .module)
             }
 
             Section {
@@ -267,21 +269,29 @@ public struct MainView: View {
                             Button(role: .destructive) {
                                 Task { await removeCustomPath(cat) }
                             } label: {
-                                Label("移除该路径", systemImage: "trash")
+                                Label {
+                                    Text("menu.path.remove", bundle: .module)
+                                } icon: {
+                                    Image(systemName: "trash")
+                                }
                             }
                         }
                 }
                 Button {
                     addCustomPathViaPanel()
                 } label: {
-                    Label("添加路径…", systemImage: "plus")
+                    Label {
+                        Text("menu.path.add", bundle: .module)
+                    } icon: {
+                        Image(systemName: "plus")
+                    }
                         .foregroundStyle(.tint)
                 }
                 .buttonStyle(.plain)
                 .padding(.vertical, 2)
             } header: {
                 HStack {
-                    Text("自定义路径")
+                    Text("sidebar.section.custom", bundle: .module)
                     if !customCategories.isEmpty {
                         Text("· \(customCategories.count)")
                             .foregroundStyle(.secondary)
@@ -289,35 +299,45 @@ public struct MainView: View {
                 }
             }
 
-            Section("资源库浏览") {
+            Section {
                 ForEach(libraryBrowseCategories) { cat in
                     sidebarRow(cat, iconOverride: "folder.badge.gearshape")
                         .tag(cat.id)
                 }
+            } header: {
+                Text("sidebar.section.library", bundle: .module)
             }
 
-            Section("大文件") {
+            Section {
                 sidebarRow(largeFilesCategory)
                     .tag(largeFilesCategory.id)
+            } header: {
+                Text("sidebar.section.large_files", bundle: .module)
             }
 
-            Section("整盘") {
+            Section {
                 sidebarRow(ScanCategory.fullDisk)
                     .tag(ScanCategory.fullDisk.id)
+            } header: {
+                Text("sidebar.section.full_disk", bundle: .module)
             }
 
-            Section("应用") {
+            Section {
                 appFootprintSidebarRow
                     .tag(MainView.appFootprintSentinelID)
                 launchAgentSidebarRow
                     .tag(MainView.launchAgentSentinelID)
                 uninstallSidebarRow
                     .tag(MainView.uninstallSentinelID)
+            } header: {
+                Text("sidebar.section.apps", bundle: .module)
             }
 
-            Section("去重") {
+            Section {
                 duplicateSidebarRow
                     .tag(MainView.duplicateSentinelID)
+            } header: {
+                Text("sidebar.section.duplicates", bundle: .module)
             }
         }
         // bug1：sidebar List 默认会在获得 keyboard focus 时画一圈蓝色焦点环
@@ -349,7 +369,7 @@ public struct MainView: View {
                 .foregroundStyle(.tint)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
-                Text("应用占用")
+                Text("sidebar.row.app_footprint", bundle: .module)
                     .font(.system(.body, design: .rounded))
                 Text("查看哪些 App 在吃磁盘")
                     .font(.caption)
@@ -367,7 +387,7 @@ public struct MainView: View {
                 .foregroundStyle(.tint)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
-                Text("启动项")
+                Text("sidebar.row.launch_agents", bundle: .module)
                     .font(.system(.body, design: .rounded))
                 Text("查看登录/开机自启的 plist")
                     .font(.caption)
@@ -385,7 +405,7 @@ public struct MainView: View {
                 .foregroundStyle(.tint)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
-                Text("卸载残留")
+                Text("sidebar.row.uninstall", bundle: .module)
                     .font(.system(.body, design: .rounded))
                 Text("挑一个 App 清掉它的残留")
                     .font(.caption)
@@ -403,7 +423,7 @@ public struct MainView: View {
                 .foregroundStyle(.tint)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
-                Text("重复文件")
+                Text("sidebar.row.duplicate", bundle: .module)
                     .font(.system(.body, design: .rounded))
                 Text("只读视图，请用 Finder 自行处理")
                     .font(.caption)
@@ -422,9 +442,9 @@ public struct MainView: View {
                 .foregroundStyle(.tint)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
-                Text(cat.title)
+                Text(cat.displayTitle)
                     .font(.system(.body, design: .rounded))
-                Text(cat.subtitle)
+                Text(cat.displaySubtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -452,7 +472,7 @@ public struct MainView: View {
                 Image(systemName: "tray.and.arrow.down.fill")
                     .font(.system(size: 48))
                     .foregroundStyle(.tint)
-                Text("松开以加入扫描")
+                                    Text("drop.hint.release_to_add", bundle: .module)
                     .font(.title3.bold())
                     .foregroundStyle(.tint)
             }
@@ -567,7 +587,7 @@ public struct MainView: View {
                                     // 所有 @State 自然清零。
                                     .id(root)
                                 } else {
-                                    Text("暂无可展开的扫描根")
+                                    Text("tree.empty.no_roots", bundle: .module)
                                         .foregroundStyle(.secondary)
                                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 }
@@ -814,7 +834,7 @@ public struct MainView: View {
                 Image(systemName: "folder.badge.questionmark")
                     .font(.system(size: 40))
                     .foregroundStyle(.tertiary)
-                Text("还没有结果")
+                Text("results.empty.title", bundle: .module)
                     .foregroundStyle(.secondary)
                 Text("从左侧选择一个类目即可开始扫描")
                     .font(.caption)
@@ -826,7 +846,7 @@ public struct MainView: View {
             VStack(spacing: 8) {
                 ProgressView()
                     .controlSize(.large)
-                Text("正在扫描…")
+                Text("results.scanning", bundle: .module)
                     .foregroundStyle(.secondary)
                 Text("首次扫描可能较慢，可在右上角随时停止")
                     .font(.caption)
@@ -839,7 +859,7 @@ public struct MainView: View {
                 Image(systemName: "sparkles")
                     .font(.system(size: 40))
                     .foregroundStyle(.tint)
-                Text("没有可清理的内容")
+                Text("results.empty.nothing_to_clean", bundle: .module)
                     .foregroundStyle(.secondary)
                 Text(rootPath)
                     .font(.system(.caption, design: .monospaced))
@@ -855,7 +875,11 @@ public struct MainView: View {
                     coordinator.cancel()
                     selectedCategory = nil
                 } label: {
-                    Label("换个目录", systemImage: "arrow.left.arrow.right")
+                    Label {
+                        Text("results.empty.try_other_dir", bundle: .module)
+                    } icon: {
+                        Image(systemName: "arrow.left.arrow.right")
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
@@ -881,7 +905,11 @@ public struct MainView: View {
                         triggerLargeFileTrash(urls: [item.url])
                     }
                 } label: {
-                    Label("移到废纸篓…", systemImage: "trash")
+                    Label {
+                        Text("toolbar.delete.move_to_trash", bundle: .module)
+                    } icon: {
+                        Image(systemName: "trash")
+                    }
                 }
                 .disabled(largeFileSelection == nil)
                 .keyboardShortcut(.delete, modifiers: .command)
@@ -893,7 +921,11 @@ public struct MainView: View {
                 Button {
                     showSheet = !selectedRows.isEmpty
                 } label: {
-                    Label("移到废纸篓…", systemImage: "trash")
+                    Label {
+                        Text("toolbar.delete.move_to_trash", bundle: .module)
+                    } icon: {
+                        Image(systemName: "trash")
+                    }
                 }
                 .disabled(selectedRows.isEmpty)
                 .keyboardShortcut(.delete, modifiers: .command)
@@ -1029,9 +1061,13 @@ public struct MainView: View {
             selectedCategory = nil
             coordinator.scanRecommended(includeHidden: settings.showHidden)
         } label: {
-            Label("全部推荐扫描", systemImage: "rectangle.3.group")
+            Label {
+                Text("toolbar.scan.recommended", bundle: .module)
+            } icon: {
+                Image(systemName: "rectangle.3.group")
+            }
         }
-        .help("并行扫描 5 个推荐目录（缓存 / 日志 / DerivedData / 下载 / 废纸篓）")
+        .help(Text("toolbar.help.recommended", bundle: .module))
         .disabled(coordinator.isScanning)
     }
 
@@ -1046,9 +1082,13 @@ public struct MainView: View {
             coordinator.scanDeveloper(includeHidden: settings.showHidden,
                                       enabledRuleIDs: settings.enabledDevArtifactRuleIDs)
         } label: {
-            Label("开发者扫描", systemImage: "hammer")
+            Label {
+                Text("toolbar.scan.dev", bundle: .module)
+            } icon: {
+                Image(systemName: "hammer")
+            }
         }
-        .help("扫描开发者构建产物：node_modules / build / Pods / target / __pycache__ 等可放心删的产物")
+        .help(Text("toolbar.help.dev", bundle: .module))
         .disabled(coordinator.isScanning)
     }
 
@@ -1093,9 +1133,13 @@ public struct MainView: View {
         Button {
             triggerFullDiskScan()
         } label: {
-            Label("整盘扫描", systemImage: "internaldrive")
+            Label {
+                Text("toolbar.scan.full_disk", bundle: .module)
+            } icon: {
+                Image(systemName: "internaldrive")
+            }
         }
-        .help("扫描根目录 /（首次需开启系统设置 → 隐私 → 完全磁盘访问权限）")
+        .help(Text("toolbar.help.full_disk", bundle: .module))
         .disabled(coordinator.isScanning)
     }
 
@@ -1105,15 +1149,27 @@ public struct MainView: View {
         if coordinator.isScanning {
             Button(role: .cancel) {
                 coordinator.cancel()
-            } label: { Label("停止", systemImage: "stop.circle") }
-                .help("停止当前扫描（已扫描到的结果保留）")
+            } label: {
+                Label {
+                    Text("toolbar.scan.stop", bundle: .module)
+                } icon: {
+                    Image(systemName: "stop.circle")
+                }
+            }
+                .help(Text("toolbar.help.stop", bundle: .module))
         } else if let id = selectedCategory, let cat = allCategories.first(where: { $0.id == id }) {
             Button {
                 // v1.3：统一走 resetSelectionState()，避免重新扫描后 detail/treeSelection 残留
                 resetSelectionState()
                 startScan(category: cat)
-            } label: { Label("重新扫描", systemImage: "arrow.clockwise") }
-                .help("重新扫描当前选中类目（清空既有结果）")
+            } label: {
+                Label {
+                    Text("toolbar.scan.rescan", bundle: .module)
+                } icon: {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+                .help(Text("toolbar.help.rescan", bundle: .module))
         }
     }
 
@@ -1200,11 +1256,12 @@ public struct MainView: View {
         ByteCountFormatter.string(fromByteCount: b, countStyle: .file)
     }
 
+    // FIXME: emoji removed 2026-05-25
     private func verdictLabel(_ v: SafetyVerdict) -> String {
         switch v {
-        case .safe: return "🟢 安全"
-        case .confirm: return "🟡 需确认"
-        case .forbid: return "🔴 受保护"
+        case .safe: return "[GREEN] 安全"
+        case .confirm: return "[YELLOW] 需确认"
+        case .forbid: return "[RED] 受保护"
         }
     }
 
@@ -1291,8 +1348,8 @@ public struct MainView: View {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.title = "选择要加入扫描的目录"
-        panel.prompt = "添加"
+        panel.title = String(localized: "panel.choose_dir.title", bundle: .module)
+        panel.prompt = String(localized: "panel.add", bundle: .module)
         panel.begin { response in
             guard response == .OK else { return }
             let urls = panel.urls

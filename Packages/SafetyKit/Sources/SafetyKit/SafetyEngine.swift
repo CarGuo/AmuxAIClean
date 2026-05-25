@@ -3,9 +3,9 @@ import LogKit
 
 /// 安全评分结果。
 public enum SafetyVerdict: String, Sendable {
-    case safe       // 🟢 缓存、日志、DerivedData
-    case confirm    // 🟡 需用户确认
-    case forbid     // 🔴 SIP / 用户文档 / 共享厂商 / 硬编码黑名单
+    case safe       // 缓存、日志、DerivedData
+    case confirm    // 需用户确认
+    case forbid     // SIP / 用户文档 / 共享厂商 / 硬编码黑名单
 }
 
 /// 拒绝原因（机器可读，便于审计 / 单测断言）。

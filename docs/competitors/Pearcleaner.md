@@ -2,7 +2,7 @@
 
 > 版本：v5.4.3（README 显示 Status: On Hold）
 > 调研基于：上游仓库 README、最近 10+ 次 Releases notes、Wiki（Deep Link Guide）以及源码 `Pearcleaner/Views/*` + `PearcleanerSentinel/*`
-> 图例：[卸载] 卸载 · [清理] 清理 · [设] 设置 · [搜] 扫描 · [工具] 工具 · [特权] 表示需要 Privileged Helper Tool 提权
+> 图例：[卸载] 卸载 - [清理] 清理 - [设] 设置 - [搜] 扫描 - [工具] 工具 - [特权] 表示需要 Privileged Helper Tool 提权
 
 ---
 
@@ -209,8 +209,8 @@ Pearcleaner 在 macOS 26 风格的工具栏左上方使用一个 **Page Selector
 
 | 功能区 | 是否需要 Helper Tool [特权] | 备注 |
 |---|---|---|
-| Applications · 用户级 .app 卸载 | 否 | 仅 `~/Library` 写入 |
-| Applications · 系统级路径残留删除 | **是** | `/Library`、`/private/var` 等 |
+| Applications - 用户级 .app 卸载 | 否 | 仅 `~/Library` 写入 |
+| Applications - 系统级路径残留删除 | **是** | `/Library`、`/private/var` 等 |
 | Orphans 删除 | 视路径而定 | 含系统路径时需要 |
 | Development 缓存清理 | 否 | 全在用户域 |
 | Lipo 写回 .app 二进制 | **是** | 写 `/Applications` 系统签名应用 |
@@ -231,7 +231,7 @@ Pearcleaner 在 macOS 26 风格的工具栏左上方使用一个 **Page Selector
  - https://github.com/alienator88/Pearcleaner
 2. Releases（最近 10+ 版本逐项 changelog，覆盖 v5.4.3 … v5.3.3）
  - https://github.com/alienator88/Pearcleaner/releases
-3. Wiki · Home + Deep Link Guide（深链命名直接揭示功能页 URL Schema）
+3. Wiki - Home + Deep Link Guide（深链命名直接揭示功能页 URL Schema）
  - https://github.com/alienator88/Pearcleaner/wiki
  - https://github.com/alienator88/Pearcleaner/wiki/Deep-Link-Guide
 4. 关键源码（一手凭据，胜于截图）

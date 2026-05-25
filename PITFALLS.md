@@ -1,4 +1,4 @@
-# GSYCleanMac · 前人踩坑实录与避坑清单
+# GSYCleanMac - 前人踩坑实录与避坑清单
 
 > 本文是开工前必读。每一条都来自真实社区（Apple DTS 论坛 / Sparkle issues / Pearcleaner 源码 / Nektony 卸载方法论 / ncdu macOS 适配 / AppCleaner 用户事故）。
 > 目标：让我们一次性把这些坑都"知道"，而不是一个一个去"踩"。
@@ -6,7 +6,7 @@
 
 ---
 
-## ⚠️ v1.3.zzzz 路线 B：删除链路简化（2026-05-25 更新）
+## 重要：v1.3.zzzz 路线 B 删除链路简化（2026-05-25 更新）
 
 [Helper/](file:///Users/guoshuyu/workspace/GSYCleanMac/Helper) / [Packages/XPCBridge/](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/XPCBridge) / [HelperClient.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift) / [HelperDecision.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/HelperDecision.swift) **整段下线**。
 
@@ -382,7 +382,7 @@
 #### v0.5 落地实测（2026-05-21）：F/G/I/J 四路并行，81/81 全绿
 **核心成果**：4 subagent 并发推进 F/G/I/J，工程从单线程串行改为多包多 subagent 流水线，**6 个包 81 个测试**全部就绪。
 
-**F 路 · 应用卸载残留扫描** —— [AppUninstaller.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppUninstaller.swift)
+**F 路 - 应用卸载残留扫描** —— [AppUninstaller.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppUninstaller.swift)
 - AppMetadata 解析 Info.plist 拿 CFBundleIdentifier / CFBundleName，缺 name 回退 .app 文件名
 - 扫 11 个用户残留目录 + LaunchAgents/LaunchDaemons 共 12 个 scope
 - **核心安全函数** [matchesStrictPrefix](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppUninstaller.swift) 只接受 `name == prefix` 或 `name.hasPrefix(prefix + ".")` —— 拒绝单纯字符串前缀，硬保证 `com.foo.bar` 不会吃掉 `com.foo.barbarian`
@@ -390,23 +390,23 @@
 - 仅在 LaunchAgents/LaunchDaemons 放宽到 vendor (`com.foo`) 匹配 —— 用户级目录之外的特例
 - 测试：10 个新增（[AppUninstallerTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/AppUninstallerTests.swift)）端到端用临时目录构造 fixture .app
 
-**G 路 · vendor 在 ScanCoordinator/MainView 落地** —— [RowItem.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift)
+**G 路 - vendor 在 ScanCoordinator/MainView 落地** —— [RowItem.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift)
 - RowItem 新增 `vendorName: String?` / `vendorNote: String?`，向后兼容默认 nil
 - ScanCoordinator init 加 `vendors: [VendorRule] = []` 与 `home: String = NSHomeDirectory()`，publishSnapshot 改用 [SafetyEngine.evaluate(path:vendors:home:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L141-L161) 三参版
 - RowView 在 title 旁加橙色 Capsule 显示 vendorName（仅命中时），双层描边，与 verdict 圆点不冲突
 - [警告] **fixture 目录与 safeCachePrefixes 前缀比较**：home 必须用 `URL(fileURLWithPath:).standardizedFileURL.path` 标准化，否则 `/var/folders` ↔ `/private/var/folders` firmlink 第四次咬人
 - 测试：3 个新增（[ScanCoordinatorVendorTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/ScanCoordinatorVendorTests.swift)）
 
-**I 路 · TestHarness 测试基础设施** —— [Packages/TestHarness](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/TestHarness)
+**I 路 - TestHarness 测试基础设施** —— [Packages/TestHarness](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/TestHarness)
 - [FixtureFS.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/TestHarness/Sources/TestHarness/FixtureFS.swift)：actor 化的临时目录构建器
 - [ScenarioBuilder.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/TestHarness/Sources/TestHarness/ScenarioBuilder.swift)：DSL `builder.dir("Caches") { $0.file("a.log", size: 1024) }`，用 final class + deinit 自动清理（struct 释放时机不确定，不能保证清理）
 - [GoldenSnapshot.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/TestHarness/Sources/TestHarness/GoldenSnapshot.swift)：稳定 TSV 序列化（path/bytes/verdict/vendor 多键排序），缺失则写入、存在则严格 diff，用 TSV 不用 JSON 是因为 JSON 字段顺序不稳定
 - [警告] **SwiftPM 资源目录不能为空**：`resources: [.copy("Fixtures")]` 必须至少有一个文件，否则 swift build 不过；放一个 `Fixtures/example.golden` 占位
 - 测试：8 个新增
 
-**J 路 · HeuristicKit 启发式学习** —— [Packages/HeuristicKit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/HeuristicKit)
+**J 路 - HeuristicKit 启发式学习** —— [Packages/HeuristicKit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/HeuristicKit)
 - [HeuristicEngine.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/HeuristicKit/Sources/HeuristicKit/HeuristicEngine.swift) actor，记录 (deletedCount, restoredCount, keptCount)
-- 评分公式 `raw = (deleted - α·restored - β·kept) / (deleted + α·restored + β·kept + γ)`，α=3.0 β=1.0 γ=2.0（restore 比 delete 加权 3 倍，宁可保守）
+- 评分公式 `raw = (deleted - α-restored - β-kept) / (deleted + α-restored + β-kept + γ)`，α=3.0 β=1.0 γ=2.0（restore 比 delete 加权 3 倍，宁可保守）
 - [警告] **第一版 sanityCheck 漏洞**：当 deleted=3, restored=1 时 raw 恰好为 0.0，"hasRestoreInLineage 翻负" 规则只判 `s > 0`，导致 score==0 的边界 case 不会变负 -> 修法：引入 `restorePenalty = 0.1` 下界，无论 s > 0 还是 s ≤ 0 都至少拉到 -0.1
 - **硬红线**：score 永远不能凌驾 SafetyEngine.forbid —— forbid 路径无论有多少 delete 信号，sanityCheck 直接归零
 - JSON round-trip 持久化 + 11 个测试
@@ -464,27 +464,27 @@
 #### v0.6 落地实测（2026-05-21）：L 路 4 并发补 ScanKit 测试短板，93/93 全绿
 **目标**：ScanKit 是 v0 起点诉求（"100G 看不到 20G"）的核心引擎，但 v0.5 测试只 5 条，**核心场景一条都没盖**。L 路用 4 个并发 subagent 把这块短板补到 14 条。
 
-**L-A · 隐藏文件覆盖** —— [HiddenFileTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/HiddenFileTests.swift) 新建
+**L-A - 隐藏文件覆盖** —— [HiddenFileTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/HiddenFileTests.swift) 新建
 - fixture：`a.txt(1024) + .secret(2048) + .hidden_dir/inner.bin(512)`
 - 同时验 BulkScanner 与 Scanner 两路引擎在 `includeHidden=true/false` 下的统计一致性
 - [警告] **隐藏目录整体跳过**：[BulkScanner.swift#L49](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L49) `entry.name.hasPrefix(".")` 过滤后**整个目录都不进 DFS 栈**，所以 `.hidden_dir/inner.bin` 也跳过 —— 这是用户起点诉求"100G 看不到 20G"的反向场景验证
 - [警告] **断言放宽到 `≥ 3584` 而不是 `==`**：APFS 按块对齐分配，物理占用恒 ≥ 逻辑大小，等号断言会在不同硬件上抖
 - 测试：3 个新增
 
-**L-B · inode 去重硬链接** —— [InodeDedupTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/InodeDedupTests.swift) 新建
+**L-B - inode 去重硬链接** —— [InodeDedupTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/InodeDedupTests.swift) 新建
 - `import Darwin` 调 `link(2)` 真造硬链接：`a.bin(4096) + link("a.bin","b.bin")`
 - 用 `lstat` 读 `st_ino`/`st_nlink≥2` 校验前置条件成立后再断言去重逻辑（避免黑盒）
 - [警告] **区间断言**：`totalAllocatedBytes ∈ [4096, 8192)`（去重时）/ `>= 8192`（不去重时）—— 块对齐误差不可避
 - 关键代码点 [Scanner.swift#L139-L149](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/Scanner.swift#L139-L149) 的 POSIX `lstat` 取 `(st_dev, st_ino)`，与 BulkScanner 的 `getattrlistbulk` 路径殊途同归
 - 测试：3 个新增
 
-**L-C · BulkScanner ↔ Scanner 一致性** —— [EngineConsistencyTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/EngineConsistencyTests.swift) 新建
+**L-C - BulkScanner ↔ Scanner 一致性** —— [EngineConsistencyTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/EngineConsistencyTests.swift) 新建
 - 同 fixture 跑两路引擎，断言 fileCount 相等 / totalAllocatedBytes 差额 ≤ 4096（一个 APFS block）/ directoryCount 相等
 - [警告] **目录字节策略不同**：FileManager.enumerator 会把目录的 `totalFileAllocatedSize` 汇入，BulkScanner 走 `getattrlistbulk` 的 `ATTR_FILE_*` 只对常规文件返回有效值 -> 一个 block 的容差既能容纳合法差异，又能精准捕获"误算整文件"的真 bug
 - symlink 场景断言 `followSymlinks=false` 时**字节增量 < 1024**（symlink 节点本身的元数据可以非零，但绝不能把目标 a.bin 重复计 1024B）
 - 测试：2 个新增
 
-**L-D · TestHarness Golden 真接 ScanKit** —— [ScanGoldenTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/ScanGoldenTests.swift) 新建
+**L-D - TestHarness Golden 真接 ScanKit** —— [ScanGoldenTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/ScanGoldenTests.swift) 新建
 - [Packages/ScanKit/Package.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Package.swift) testTarget 加 TestHarness 依赖 + `resources: [.copy("Fixtures")]`
 - 用 [ScenarioBuilder](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/TestHarness/Sources/TestHarness/ScenarioBuilder.swift) DSL 搭 `Caches/{a.log,b.log}`，跑 BulkScanner，路径裁成相对 root，比对 [Fixtures/scankit_basic.golden](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/Fixtures/scankit_basic.golden)
 - [警告] **goldenURL 必须用 `#filePath` 而非 `Bundle.module`**：Bundle.module 指向构建产物里**只读**的 resource 副本，写不进去；golden 是要 commit 进仓库的文件，必须落到源码目录 Fixtures/，首跑生成后开发者直接 `git diff` / `git add`
@@ -532,26 +532,26 @@
 #### v0.7 alpha-ready 实测（2026-05-21）：M 路 4 并发 + Xcode 真首跑通过
 **目标**：把 v0.6 收尾时列的 5 件 alpha 缺口（xcodegen + TCC + 空状态 + 性能底底 + 应用卸载入口）一次性干掉，让真人能在 Xcode 里点 Run。
 
-**M-1 · xcodegen + Xcode 首跑** —— [project.yml](file:///Users/guoshuyu/workspace/GSYCleanMac/project.yml) + [HelperMain.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Helper/HelperMain.swift)
+**M-1 - xcodegen + Xcode 首跑** —— [project.yml](file:///Users/guoshuyu/workspace/GSYCleanMac/project.yml) + [HelperMain.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Helper/HelperMain.swift)
 - [警告] 坑 1：[project.yml#L12](file:///Users/guoshuyu/workspace/GSYCleanMac/project.yml#L12) `SWIFT_VERSION: "5.10"` 与各 Package.swift 的 `swift-tools-version: 6.0` 不匹配 -> 主 App target 编 actor/Sendable 会爆。改 6.0 即治
 - [警告] 坑 2：Helper target 缺 SafetyKit 依赖。xcodebuild 直接告诉我们：`'GSYCleanMacHelper' is missing a dependency on 'SafetyKit'`。补 [project.yml#L94](file:///Users/guoshuyu/workspace/GSYCleanMac/project.yml#L94)
 - [警告] 坑 3：[HelperMain.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Helper/HelperMain.swift) 用了 6 行真顶层代码 + 全局 `let listener` —— Swift 6 严格并发下报 `expressions are not allowed at the top level` + `not concurrency-safe because non-'Sendable' type 'NSXPCListener'`。修法：包成 `@main struct HelperMain { static func main() }`（v0 不部署 Helper，但要让它能被 build 出来）
 - [Y] `xcodebuild -scheme GSYCleanMac` 最终 `BUILD SUCCEEDED`
 - 关键证据：用户现在可以在 Xcode 里点 Run（CODE_SIGN_IDENTITY="-" + CODE_SIGNING_REQUIRED=NO 即 Free Apple ID 路径）
 
-**M-2 · TCC 授权引导页** —— [Onboarding/](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Onboarding) + [GSYCleanMacApp.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
+**M-2 - TCC 授权引导页** —— [Onboarding/](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Onboarding) + [GSYCleanMacApp.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
 - 新建 [TCCProbe.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Onboarding/TCCProbe.swift) actor + [TCCGuideView.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Onboarding/TCCGuideView.swift)
 - [警告] TCC 探测看 errno=1（Operation not permitted）次数，**不能** catch 全部 NSError —— `NSCocoaError.fileNoSuchFile` 不算 TCC 拒，否则会冤枉用户
 - [警告] 跳系统设置 URL：`x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles`（macOS 13+ 新 URL，旧的 `com.apple.preferences.security?Privacy_AllFiles` 在 15 上无效）
 - 测试 +4：[TCCProbeTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/TCCProbeTests.swift)（granted / 全拒 / 部分拒 / 非 errno1 不冤枉）
 
-**M-3 · 空状态 + PerfBench** —— [MainView.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) + [Tools/PerfBench/](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/PerfBench)
+**M-3 - 空状态 + PerfBench** —— [MainView.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) + [Tools/PerfBench/](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/PerfBench)
 - placeholder 三态：[notStarted / scanning / finishedEmpty(rootPath:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L144-L146)，UI 不再让用户对着"还没结果"发呆
 - 新建 [Tools/PerfBench/Sources/PerfBench/PerfBench.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/PerfBench/Sources/PerfBench/PerfBench.swift)：CLI 入口（**不能叫 main.swift**，v0.4 已记录的 @main + main.swift 冲突坑），用 `DispatchTime.now().uptimeNanoseconds` 单调时钟测耗时
 - [Y] **真机实测 ~/Library/Caches**：**32.8 万文件 / 9.5 秒 / 18.1 GB / 137 MB hardlink 去重**
 - 这是用户起点诉求"100G 看不到 20G"的反向硬证据：**~/Library/Caches 这个目录 Finder 只显示 ~12 GB（隐藏文件被吃了），我们扫到 18.1 GB**
 
-**M-4 · 应用卸载侧边栏** —— [UninstallScreen.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UninstallScreen.swift) + [GSYCleanMacApp.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
+**M-4 - 应用卸载侧边栏** —— [UninstallScreen.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UninstallScreen.swift) + [GSYCleanMacApp.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
 - [UninstallStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UninstallScreen.swift) actor，参数注入 `applicationsPath`/`uninstaller`/`fileManager` 让测试能绕开真实 /Applications
 - [警告] 真删按钮**强制二次确认 sheet** —— `dryRun` 默认 true，必须点完二次确认才会调 `performDelete(dryRun: false)`
 - TabView 包装而**不是**改 MainView 内部，避免 4 路 subagent 都改 MainView 撞车
@@ -768,7 +768,7 @@
 - **修法**：把"被拒"和"真 0KB"在 UI 层显式区分：
   - [TreeRow.AccessState](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L116) 三态枚举：`normal / permissionDenied / tccProtected`
   - [ScanCoordinator.directChildrenAsync](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1037) 把 `permissionDeniedPaths / tccProtectedSkippedPaths` 转 Set 给每个 segPath 打 accessState（优先级 `tccProtected > permissionDenied > normal`）
-  - [TreeBrowserRow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L483) 渲染区分：accessDenied 行整行变灰 + 右下角 🔒 徽章 + size/count 改成 "—"（不再显示误导的 0 KB）+ tooltip 提示"无访问权限，请开 Full Disk Access"
+  - [TreeBrowserRow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L483) 渲染区分：accessDenied 行整行变灰 + 右下角  徽章 + size/count 改成 "—"（不再显示误导的 0 KB）+ tooltip 提示"无访问权限，请开 Full Disk Access"
   - [TreeNodeView.canExpand](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L335) 加 accessState 拦截，accessDenied 目录不显示披露三角（避免"假按钮"）
 - **教训**：
   1. macOS 沙盒下"扫不到"和"扫到了 0 字节"是两码事——UI 不区分会让用户误以为是 bug 反复重扫
@@ -808,7 +808,7 @@ PR 实施过程中本来计划在树形 Tab 顶部加 banner，[grep 后发现](
 - [GRDBScanResultStore.directChildrenAggregated](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift#L289) — 单 SQL CTE+GROUP BY 高性能覆盖
 - [TreeRow.AccessState](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L116) — normal/permissionDenied/tccProtected 三态
 - [ScanCoordinator.directChildrenAsync](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1037) — 重写：单 SQL 调用 + accessState 注入
-- [TreeBrowserRow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L483) — 🔒 徽章 / 灰阶 / "—" 占位 / tooltip
+- [TreeBrowserRow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L483) —  徽章 / 灰阶 / "—" 占位 / tooltip
 - [TreeNodeView.canExpand](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L335) — accessDenied 不渲染披露三角
 
 ---
@@ -830,8 +830,8 @@ v1.3.zzzz 早期会话拍板"方案 C：树形主视图，清单降级为筛选�
 
 ### Phase 4-A：默认视图切换 + 视觉降级（commit `0e48e78`）
 - [MainView.viewMode](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L29-L44) 默认 `.list` → `.tree`，提一个 `public static let phase4ADefaultViewMode` 单一信源给单测 lock
-- [viewModeBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L597-L646) Picker 宽度 220→180、tree 时角标"主视图 · 层次化容量分布"、list 时角标"二级视图 · 兼容旧版扁平清单"，文案中性化
-- detailPane 提示从"树视图只读浏览。要清理请切回「清单」"改为"右键或 Delete 单条移废纸篓 · 双击展开下一层 · 批量勾选请切到「清单」"
+- [viewModeBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L597-L646) Picker 宽度 220→180、tree 时角标"主视图 - 层次化容量分布"、list 时角标"二级视图 - 兼容旧版扁平清单"，文案中性化
+- detailPane 提示从"树视图只读浏览。要清理请切回「清单」"改为"右键或 Delete 单条移废纸篓 - 双击展开下一层 - 批量勾选请切到「清单」"
 
 ### Phase 4-B：树形批量删除（本次）
 - [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 加可选 `onTrashBatch: (([URL]) -> Void)?`，nil 时整段 toolbar 隐藏（向后兼容）

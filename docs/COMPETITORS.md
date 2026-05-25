@@ -1,7 +1,7 @@
-# GSYCleanMac · 竞品深评报告
+# GSYCleanMac - 竞品深评报告
 
 > 编写日期：2026-05-21
-> 对照版本：GSYCleanMac v0.7（alpha-ready，101 测试 + xcodebuild 绿）
+> 对照版本：GSYCleanMac v1.1.0（370+ 测试 + xcodebuild 绿）
 > 范围：CleanMyMac X、Pearcleaner、AppCleaner、OnyX、DaisyDisk、Sensei、MacFly Pro
 
 ---
@@ -265,7 +265,7 @@
 | v0.6 | L | ScanKit 测试补到 14 条（hidden / inode / 引擎一致性 / golden） |
 | v0.7 | M | xcodegen + Xcode 真首跑通过 + TCC 引导 + 空状态 + PerfBench（~/Library/Caches 32.8w 文件 9.5s / 18.1 GB） + 应用卸载侧边栏 |
 
-总测试数 **101 / 101 全绿**，xcodebuild Debug **BUILD SUCCEEDED**。
+总测试数 **370+ 全绿**（ScanKit 117 / AppUI 252 / SafetyKit 30 / HeuristicKit 11 / TestHarness 8），xcodebuild Release **BUILD SUCCEEDED**。
 
 ---
 

@@ -14,24 +14,47 @@ public struct ScanCategory: Identifiable, Hashable, Sendable {
     }
 
     public let id: String
+    /// 标题：可能是 i18n key（preset/fullDisk/largeFiles 用），也可能是直接显示的字符串（custom 用 path 名）。
+    /// 优先用 `displayTitle` 拿本地化文案。
     public let title: String
+    /// 副标题：同上。
     public let subtitle: String
     public let rootPath: String
     /// 默认 verdict —— 决定子项默认是否被勾选。
     public let defaultVerdict: SafetyVerdict
     /// v1.0 类目种类。默认 `.preset` 保持向后兼容。
     public let kind: Kind
+    /// `title`/`subtitle` 是否为 i18n key（true→用 catalog 翻译；false→直接显示原文，常见于 custom）。
+    public let titleIsLocalizationKey: Bool
 
     public var rootURL: URL { URL(fileURLWithPath: rootPath) }
 
+    /// 本地化后的标题。`titleIsLocalizationKey == false` 时直接返回原值。
+    public var displayTitle: String {
+        if titleIsLocalizationKey {
+            return String(localized: String.LocalizationValue(title), bundle: .module)
+        }
+        return title
+    }
+
+    /// 本地化后的副标题。同上策略。
+    public var displaySubtitle: String {
+        if titleIsLocalizationKey {
+            return String(localized: String.LocalizationValue(subtitle), bundle: .module)
+        }
+        return subtitle
+    }
+
     public init(id: String, title: String, subtitle: String, rootPath: String,
-                defaultVerdict: SafetyVerdict, kind: Kind = .preset) {
+                defaultVerdict: SafetyVerdict, kind: Kind = .preset,
+                titleIsLocalizationKey: Bool = false) {
         self.id = id
         self.title = title
         self.subtitle = subtitle
         self.rootPath = rootPath
         self.defaultVerdict = defaultVerdict
         self.kind = kind
+        self.titleIsLocalizationKey = titleIsLocalizationKey
     }
 
     /// v1.0 工厂：从用户自定义 URL 构造一个 `.custom` 类目。
@@ -45,18 +68,20 @@ public struct ScanCategory: Identifiable, Hashable, Sendable {
             subtitle: p,
             rootPath: p,
             defaultVerdict: .confirm,
-            kind: .custom
+            kind: .custom,
+            titleIsLocalizationKey: false
         )
     }
 
     /// v1.0 工厂：整盘扫描（`/`）。
     public static let fullDisk = ScanCategory(
         id: "fulldisk.root",
-        title: "整盘扫描",
+        title: "category.full_disk.title",
         subtitle: "/",
         rootPath: "/",
         defaultVerdict: .confirm,
-        kind: .fullDisk
+        kind: .fullDisk,
+        titleIsLocalizationKey: true
     )
 
     /// v1.0 T4：大文件入口。默认走 `~`（用户主目录），由 `LargeFilesView` 配合
@@ -65,11 +90,12 @@ public struct ScanCategory: Identifiable, Hashable, Sendable {
     public static func largeFiles(home: String = NSHomeDirectory()) -> ScanCategory {
         ScanCategory(
             id: "largefiles.home",
-            title: "🐘 大文件",
-            subtitle: "~（按阈值过滤 Top 200）",
+            title: "category.large_files.title",
+            subtitle: "category.large_files.subtitle",
             rootPath: home,
             defaultVerdict: .confirm,
-            kind: .largeFiles
+            kind: .largeFiles,
+            titleIsLocalizationKey: true
         )
     }
 }
@@ -80,38 +106,43 @@ public enum ScanCategories {
         [
             .init(
                 id: "user.caches",
-                title: "用户缓存",
-                subtitle: "~/Library/Caches",
+                title: "category.user_caches.title",
+                subtitle: "category.user_caches.subtitle",
                 rootPath: "\(home)/Library/Caches",
-                defaultVerdict: .safe
+                defaultVerdict: .safe,
+                titleIsLocalizationKey: true
             ),
             .init(
                 id: "user.logs",
-                title: "应用日志",
-                subtitle: "~/Library/Logs",
+                title: "category.app_logs.title",
+                subtitle: "category.app_logs.subtitle",
                 rootPath: "\(home)/Library/Logs",
-                defaultVerdict: .safe
+                defaultVerdict: .safe,
+                titleIsLocalizationKey: true
             ),
             .init(
                 id: "xcode.derived",
-                title: "Xcode 构建产物",
-                subtitle: "DerivedData / Archives",
+                title: "category.xcode.title",
+                subtitle: "category.xcode.subtitle",
                 rootPath: "\(home)/Library/Developer/Xcode/DerivedData",
-                defaultVerdict: .safe
+                defaultVerdict: .safe,
+                titleIsLocalizationKey: true
             ),
             .init(
                 id: "user.downloads",
-                title: "下载",
-                subtitle: "~/Downloads（confirm，需手动确认）",
+                title: "category.downloads.title",
+                subtitle: "category.downloads.subtitle",
                 rootPath: "\(home)/Downloads",
-                defaultVerdict: .confirm
+                defaultVerdict: .confirm,
+                titleIsLocalizationKey: true
             ),
             .init(
                 id: "trash",
-                title: "废纸篓",
-                subtitle: "~/.Trash",
+                title: "category.trash.title",
+                subtitle: "category.trash.subtitle",
                 rootPath: "\(home)/.Trash",
-                defaultVerdict: .confirm
+                defaultVerdict: .confirm,
+                titleIsLocalizationKey: true
             )
         ]
     }

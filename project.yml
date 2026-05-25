@@ -68,6 +68,10 @@ targets:
         CFBundleDisplayName: GSY 清理管家
         CFBundleShortVersionString: "1.1.0"
         CFBundleVersion: "2"
+        CFBundleAllowMixedLocalizations: true
+        CFBundleLocalizations:
+          - zh-Hans
+          - en
         LSMinimumSystemVersion: "15.0"
         NSHumanReadableCopyright: "Copyright © 2026 GuoShuYu. All rights reserved."
         NSAppTransportSecurity:

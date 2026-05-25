@@ -78,7 +78,7 @@ OnyX
 ├── Parameters（参数） [周边]
 │ ├── General（系统通用参数） [周边] 周边
 │ ├── Login（登录窗口外观、用户列表显隐） [周边] 周边
-│ ├── Finder（显示扩展名、桌面文件、隐藏文件 toggle） [周边] 周边 / 隐藏文件 toggle 
+│ ├── Finder（显示扩展名、桌面文件、隐藏文件 toggle） [周边] 周边 / 隐藏文件 toggle
 │ ├── Dock（位置 / 缩放 / 隐藏延迟 / 最小化效果） [周边] 周边
 │ ├── Menus（菜单栏透明度、时间显示） [周边] 周边
 │ ├── Safari（默认搜索、阅读列表行为） [周边] 周边
@@ -87,7 +87,7 @@ OnyX
 │ └── Misc.（菜单栏电池百分比、Time Machine 本地快照开关） [周边] 周边
 │
 ├── Files（文件） [目录]
-│ ├── Visibility（隐藏 / 显示 任意文件、文件夹、卷） [目录] 任意路径 / 隐藏文件 toggle 
+│ ├── Visibility（隐藏 / 显示 任意文件、文件夹、卷） [目录] 任意路径 / 隐藏文件 toggle
 │ ├── Erasing（多遍覆盖安全擦除指定路径） [目录] 任意路径 [Y] 核心清理
 │ ├── AppleDouble（递归删除 ._* 元数据残留） [目录] 任意路径 [Y] 核心清理
 │ ├── .DS_Store（递归删除 .DS_Store） [目录] 任意路径 [Y] 核心清理
@@ -155,7 +155,7 @@ Sensei
 │ │ ├── 反查 Support Files / Preferences / Containers [Y] 核心清理
 │ │ └── 单个文件粒度勾选删除（可只删 cache 留 prefs） [Y] 核心清理
 │ ├── Clean（垃圾分类清理） [Y] 核心清理
-│ │ ├── Large Files（≥ 用户阈值的大文件列表，按大小排序） [Y] 核心清理 / 大文件 
+│ │ ├── Large Files（≥ 用户阈值的大文件列表，按大小排序） [Y] 核心清理 / 大文件
 │ │ ├── Downloads（下载文件夹遗留） [Y] 核心清理
 │ │ ├── User Caches [Y] 核心清理
 │ │ ├── User Logs [Y] 核心清理
@@ -163,13 +163,13 @@ Sensei
 │ │ ├── Disk Images（.dmg 残留） [Y] 核心清理
 │ │ ├── Installer Packages（.pkg 残留） [Y] 核心清理
 │ │ └── Developer Files（Xcode DerivedData / Archives） [Y] 核心清理
-│ └── Trim（SSD Trim Enabler，Apple-certified 驱动） [工具] 维护脚本 
+│ └── Trim（SSD Trim Enabler，Apple-certified 驱动） [工具] 维护脚本
 │
 ├── Hardware（硬件监控 本工具特色，纯监控不清理） [图]
 │ ├── Storage（存储）
 │ │ ├── 内置 / 外置驱动器列表 [图] 可视化
-│ │ ├── Disk Benchmark（顺序读 / 写速率测试） [图] 可视化 
-│ │ ├── S.M.A.R.T. 健康报告（HDD/SSD 故障预警） [工具] 维护脚本 
+│ │ ├── Disk Benchmark（顺序读 / 写速率测试） [图] 可视化
+│ │ ├── S.M.A.R.T. 健康报告（HDD/SSD 故障预警） [工具] 维护脚本
 │ │ ├── Drive Statistics（实时 IOPS / 带宽图） [图] 可视化
 │ │ └── Partition Map Explorer（分区表可视化） [图] 可视化
 │ ├── Graphics（显卡）
@@ -178,22 +178,22 @@ Sensei
 │ │ ├── eGPU 详细报告 [图] 可视化
 │ │ └── Display 模式 / 刷新率 [图] 可视化
 │ ├── Power（电源）
-│ │ ├── Battery Health Analyzer（设计容量 vs 当前容量） [图] 可视化 
+│ │ ├── Battery Health Analyzer（设计容量 vs 当前容量） [图] 可视化
 │ │ ├── Cycle Count（充电循环数） [图] 可视化
 │ │ └── 电池状态实时图 [图] 可视化
 │ ├── Memory（内存）
 │ │ └── RAM Monitor（压力 / 已用 / 缓存 / 已压缩） [图] 可视化
 │ ├── Processor（CPU）
 │ │ ├── 每核心负载图 [图] 可视化
-│ │ └── CPU 温度图 [图] 可视化 
-│ └── Cooling / Thermal Dashboard（散热大屏 ） [图] 可视化 
+│ │ └── CPU 温度图 [图] 可视化
+│ └── Cooling / Thermal Dashboard（散热大屏 ） [图] 可视化
 │ ├── CPU 温度 [图] 可视化
 │ ├── GPU 温度 [图] 可视化
 │ ├── Logic Board 温度 [图] 可视化
 │ ├── Memory 温度 [图] 可视化
 │ ├── Enclosure（外壳）温度 [图] 可视化
 │ ├── AirPort 无线芯片温度 [图] 可视化
-│ ├── 风扇 RPM 实时图（多风扇分别绘制） [图] 可视化 
+│ ├── 风扇 RPM 实时图（多风扇分别绘制） [图] 可视化
 │ └── Fan Control（指定 RPM，部分机型，roadmap 上） [工具] 维护脚本
 │
 └── Sensei Monitor（v2 新增的菜单栏小部件） [图] 可视化
@@ -253,17 +253,17 @@ MacFly Pro
 │ └── Broken Login Items（失效登录项）≈ 同质 [周边] 周边
 │
 ├── Manager（管理器） [Y]
-│ ├── Old Files（按"上次访问时间"挑出旧文件） 独有维度 [Y] 核心清理 
+│ ├── Old Files（按"上次访问时间"挑出旧文件） 独有维度 [Y] 核心清理
 │ │ └── 与 CleanMyMac 的 "Large & Old Files" 不同：
 │ │ MacFly 把"旧"独立成一个维度，可单看 6 月 / 1 年 / 2 年未碰
-│ ├── Large Files（大文件）≈ 同质，按大小阈值过滤 [Y] 核心清理 / 大文件 
+│ ├── Large Files（大文件）≈ 同质，按大小阈值过滤 [Y] 核心清理 / 大文件
 │ ├── Duplicates（重复文件 / 重复照片，hash 比对）≈ 同质 [Y] 核心清理
 │ ├── Apps（卸载器，含 leftovers 反查）≈ 同质 [Y] 核心清理
 │ ├── Extensions（浏览器扩展、Safari/Chrome/Firefox）≈ 同质 [周边] 周边
 │ └── Login Items（登录项）≈ 同质 [周边] 周边
 │
 ├── Tools（工具集） [周边]
-│ ├── Memory Cleaner（一键释放 RAM，purge） [工具] 维护脚本 
+│ ├── Memory Cleaner（一键释放 RAM，purge） [工具] 维护脚本
 │ ├── Shredder（多遍覆盖永久删除任意文件） 独有按钮 [目录] 任意路径 [Y] 核心清理
 │ │ └── 拖入任意文件 / 文件夹即可，类似 CleanMyMac
 │ │ 的 Shredder 但是默认入口更显眼

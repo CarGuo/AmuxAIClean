@@ -128,7 +128,7 @@ open "$XCODEPROJ"
 # ----- 收尾提示 -----
 cat <<EOF
 
-${GREEN}${BOLD}环境就绪 ✅${NC}
+${GREEN}${BOLD}环境就绪 OK${NC}
 
 下一步建议：
 

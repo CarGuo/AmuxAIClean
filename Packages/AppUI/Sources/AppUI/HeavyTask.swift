@@ -8,7 +8,7 @@ import Foundation
 /// 重操作（如 [startScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)）：
 ///
 ///   .onChange(of: selection) { _, new in
-///       startScan(...)        // ❌ 主线程同步占用，UI 来不及 commit
+///       startScan(...)        // NO 主线程同步占用，UI 来不及 commit
 ///   }
 ///
 /// 用户体感：点完 sidebar 选项后，**当前一帧 UI 不会更新**（高亮没换，旧详情

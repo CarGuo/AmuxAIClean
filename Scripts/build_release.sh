@@ -63,6 +63,15 @@ rm -rf "$DIST_DIR/${PROJECT_NAME}.app"
 # ----- 4. 构建 -----
 if [ "$IDENTITY" = "-" ]; then
   step "xcodebuild -scheme ${SCHEME} -configuration ${CONFIG}（ad-hoc 签名）"
+  # ad-hoc 签名说明：
+  #   - 这里走的是 codesign --sign -，与 Rectangle / AltTab / Stats 等开源项目一致；
+  #     不需要 Apple Developer Program（99 USD/年），不公证（notarize），
+  #     CI 上不依赖任何 GitHub Secrets。
+  #   - project.yml 的 base 设了 ENABLE_HARDENED_RUNTIME=YES。
+  #     Apple 实际允许 ad-hoc + hardened runtime 同时存在（只是这种组合不能 notarize），
+  #     所以这里**不需要**显式覆盖为 NO，避免破坏沙盒/相机麦克风等 entitlement 行为。
+  #   - 若你 fork 后切到 Developer ID 签名（IDENTITY="Developer ID Application: ..."）
+  #     再开 hardened runtime 会更标准，因为 Apple 公证服务强制要求 hardened runtime。
   XCB_ARGS=(
     -scheme "$SCHEME"
     -configuration "$CONFIG"

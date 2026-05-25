@@ -1,4 +1,4 @@
-# AppCleaner 深调研（FreeMacSoft · 免费）
+# AppCleaner 深调研（FreeMacSoft - 免费）
 
 > 调研日期：2026-05-22
 > 调研对象版本：AppCleaner **3.6.8**（macOS Mojave ~ macOS 26 Tahoe，~4 MB）
@@ -28,7 +28,7 @@ AppCleaner 3.6.8
 │ │ │ └── Other：Widgets / Plugins / Screen Savers / 其他可清理项 [卸载]
 │ │ └── 多选勾选 -> 点 "Remove" 批量进入扫描列表 [卸载]
 │ └── 路径 3) SmartDelete（被动监听，最强卖点） [卸载][设]
-│ ├── 在 Preferences ▸ SmartDelete 打开开关 [设]
+│ ├── 在 Preferences > SmartDelete 打开开关 [设]
 │ ├── 后台常驻一个轻量 daemon 监听 ~/.Trash 与 .app 拖移事件 [设]
 │ ├── 一旦检测到 .app 被拖入废纸篓 -> 弹窗"Found related files" [Y]
 │ ├── 弹窗内勾选 -> Remove，整段流程不需主动打开 AppCleaner [Y]
@@ -118,7 +118,7 @@ AppCleaner 3.6.8
 
 ### (b) 多层下钻交互如何？[图]
 - **AppCleaner 的列表是"扁平 + 分组"**，**不提供逐级下钻**。一次 .app 扫描的结果就是一个**单层**勾选列表（每行一个完整路径）。
-- 想看一个具体路径的内容，需要"右键 ▸ Show in Finder"跳到 Finder 里继续浏览，AppCleaner 内部不嵌套展开。
+- 想看一个具体路径的内容，需要"右键 > Show in Finder"跳到 Finder 里继续浏览，AppCleaner 内部不嵌套展开。
 - List Mode 也是单层：左侧"Default / All / Other"页签 -> 中部应用列表 -> 选中后切到结果列表，最深 2 层。
 - **结论**：[图] 交互极简，零下钻；这是它"轻量、免学习成本"的代价之一。
 - **来源**：drbuho.com 实测："Within a second, it showed me 8 related files that would be deleted"；macwin.io 评测："you can decide which data to retain and remove from your system" —— 均描述为单层勾选列表，未提及树状下钻。
@@ -142,20 +142,20 @@ AppCleaner 3.6.8
 
 ---
 
-## 3. SmartDelete 监听机制 · 深度解析 [设][卸载]
+## 3. SmartDelete 监听机制 - 深度解析 [设][卸载]
 
 > SmartDelete 是 AppCleaner 区别于"纯拖拽卸载器"的关键卖点，常被推荐为"装机必开"的功能。
 
 | 维度 | 行为 |
 |---|---|
-| 触发开关 | `AppCleaner ▸ Preferences ▸ SmartDelete ▸ ON` |
+| 触发开关 | `AppCleaner > Preferences > SmartDelete > ON` |
 | 实现形态 | 后台轻量 daemon / agent，开关 ON 时常驻；OFF 后立即退出（无残留） |
 | 监听对象 | **`~/.Trash` 目录的写入事件 + .app 拖移到 Trash 的系统通知**（综合 itea30.jp、fileminutes.com、drbuho.com 描述，等价于 FSEvents/NSWorkspace 监听） |
 | 触发条件 | 任何 `.app` Bundle 被移入 `~/.Trash`（拖拽 / Cmd / 右键"移到废纸篓"均生效） |
 | 响应动作 | 弹出 AppCleaner 的"Found related files"对话框，自动以该 .app 的 bundleID 反扫所有关联路径，并展示勾选清单 |
 | 用户决策 | 点 Remove -> 关联文件随之移入 Trash；点 Cancel -> 仅 .app 主体留在 Trash，关联文件保留 |
 | 与主窗口关系 | **无需事先打开 AppCleaner 主窗口**，弹窗由 daemon 直接拉起 |
-| 权限要求 | 首次开启需授予 **Full Disk Access**（系统设置 ▸ 隐私与安全性 ▸ 完全磁盘访问），否则无法读取 `/Library/*` 与其他用户域 |
+| 权限要求 | 首次开启需授予 **Full Disk Access**（系统设置 > 隐私与安全性 > 完全磁盘访问），否则无法读取 `/Library/*` 与其他用户域 |
 | 性能开销 | 体积仅几 MB，社区普遍反馈 CPU/内存占用可忽略；不主动扫描磁盘，仅事件驱动 |
 | 关闭后 | daemon 退出；已经在 Trash 中的 App 不再追问；倒回手动模式 |
 | 局限 | 只对"用户主动把 App 拖到 Trash"生效；命令行 `rm -rf /Applications/Foo.app` 不会触发；macOS 系统更新的内置 App 替换也不会触发 |
@@ -168,7 +168,7 @@ AppCleaner 3.6.8
 
 ---
 
-## 4. LeftOver Finder（残留扫描）· 深度解析 [卸载][图]
+## 4. LeftOver Finder（残留扫描）- 深度解析 [卸载][图]
 
 > AppCleaner 没有一个独立菜单叫 "Leftover Finder"，但官方与第三方测评一致使用此称谓描述其"对历史卸载残留的处置能力"。它由两条机制叠加实现：
 
@@ -197,10 +197,10 @@ AppCleaner 3.6.8
 ## 5. 信息来源
 
 1. AppCleaner 官方主页（功能与下载权威说明）：https://freemacsoft.net/appcleaner/
-2. FileHorse · AppCleaner 3.6.8 完整功能 + 三种卸载方法（Drag / List / SmartDelete）：https://mac.filehorse.com/download-appcleaner/change-log/
-3. macwin.io · AppCleaner 评测（SmartDelete + Widgets/Plugins Removal + 限制）：https://macwin.io/appcleaner/
-4. drbuho.com · 2026 实测评测（SmartDelete 工作流、缺点列表）：https://www.drbuho.com/review/appcleaner-review
-5. itea30.jp · 日文教程（SmartDelete 设置截图 + 鉴权对话框）：https://itea30.jp/appcleaner/
-6. fileminutes.com · macOS 卸载方法大全（Library 全路径清单 + SmartDelete 后台行为）：https://www.fileminutes.com/blog/how-to-uninstall-apps-on-macos/
-7. ezone.co.uk · OmniDiskSweeper + AppCleaner 联合实战（残留覆盖边界）：https://www.ezone.co.uk/blog/optimise-mac-cleanup-using-omnidisksweeper-and-appcleaner.html
-8. descargatic.com · AppCleaner 全功能清单（LaunchAgents/Daemons/Widgets/Plist 处置）：https://descargatic.com/appcleaner/
+2. FileHorse - AppCleaner 3.6.8 完整功能 + 三种卸载方法（Drag / List / SmartDelete）：https://mac.filehorse.com/download-appcleaner/change-log/
+3. macwin.io - AppCleaner 评测（SmartDelete + Widgets/Plugins Removal + 限制）：https://macwin.io/appcleaner/
+4. drbuho.com - 2026 实测评测（SmartDelete 工作流、缺点列表）：https://www.drbuho.com/review/appcleaner-review
+5. itea30.jp - 日文教程（SmartDelete 设置截图 + 鉴权对话框）：https://itea30.jp/appcleaner/
+6. fileminutes.com - macOS 卸载方法大全（Library 全路径清单 + SmartDelete 后台行为）：https://www.fileminutes.com/blog/how-to-uninstall-apps-on-macos/
+7. ezone.co.uk - OmniDiskSweeper + AppCleaner 联合实战（残留覆盖边界）：https://www.ezone.co.uk/blog/optimise-mac-cleanup-using-omnidisksweeper-and-appcleaner.html
+8. descargatic.com - AppCleaner 全功能清单（LaunchAgents/Daemons/Widgets/Plist 处置）：https://descargatic.com/appcleaner/

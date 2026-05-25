@@ -23,7 +23,7 @@
 
 ---
 
-## 二、GrandPerspective（macOS · Treemap · GPL）
+## 二、GrandPerspective（macOS - Treemap - GPL）
 
 ### 2.1 功能树
 
@@ -111,7 +111,7 @@ GrandPerspective 3.6.4
 
 ---
 
-## 三、ncdu（跨平台 · 文本树 · MIT）
+## 三、ncdu（跨平台 - 文本树 - MIT）
 
 ### 3.1 功能树
 
@@ -226,7 +226,7 @@ ncdu 2.9 / 1.22
 
 ---
 
-## 四、Disk Inventory X（macOS · Treemap · GPL · 已停更）
+## 四、Disk Inventory X（macOS - Treemap - GPL - 已停更）
 
 ### 4.1 功能树
 

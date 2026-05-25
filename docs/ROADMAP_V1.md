@@ -25,7 +25,7 @@
 
 ## 1. 任务分解（按依赖顺序）
 
-### T0 · LOGO 替换（前置，1 小时）
+### T0 - LOGO 替换（前置，1 小时）
 
 **改动文件**：
 - 新建 `Resources/Assets.xcassets/AppIcon.appiconset/Contents.json`
@@ -40,7 +40,7 @@
 
 ---
 
-### T1 · 数据层（P0-1 / P0-2 / P1 size+排序，2 小时）
+### T1 - 数据层（P0-1 / P0-2 / P1 size+排序，2 小时）
 
 **改动文件**：
 - 新建 [Packages/AppUI/Sources/AppUI/UserPathStore.swift](../Packages/AppUI/Sources/AppUI/UserPathStore.swift)
@@ -60,7 +60,7 @@
 
 ---
 
-### T2 · UI 入口（P0-1 任意目录 + P0-5 拖文件夹，3 小时）
+### T2 - UI 入口（P0-1 任意目录 + P0-5 拖文件夹，3 小时）
 
 **改动文件**：
 - 改 [Packages/AppUI/Sources/AppUI/MainView.swift](../Packages/AppUI/Sources/AppUI/MainView.swift)
@@ -82,7 +82,7 @@
 
 ---
 
-### T3 · 多层下钻 Tree 视图（P0-3，3 小时）
+### T3 - 多层下钻 Tree 视图（P0-3，3 小时）
 
 **改动文件**：
 - 新建 [Packages/AppUI/Sources/AppUI/TreeBrowserView.swift](../Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
@@ -101,7 +101,7 @@
 
 ---
 
-### T4 · 大文件模块（P0-4，2 小时）
+### T4 - 大文件模块（P0-4，2 小时）
 
 **改动文件**：
 - 新建 [Packages/AppUI/Sources/AppUI/LargeFilesView.swift](../Packages/AppUI/Sources/AppUI/LargeFilesView.swift)
@@ -119,7 +119,7 @@
 
 ---
 
-### T5 · 整盘扫描 + 键盘导航完善（P1，1.5 小时）
+### T5 - 整盘扫描 + 键盘导航完善（P1，1.5 小时）
 
 **改动文件**：
 - 改 [Packages/AppUI/Sources/AppUI/MainView.swift](../Packages/AppUI/Sources/AppUI/MainView.swift)
@@ -135,7 +135,7 @@
 
 ---
 
-### T6 · v1.0 总验收
+### T6 - v1.0 总验收
 
 **步骤**：
 1. `swift test` × 6 包全过（≥113 + 新增测试）
@@ -151,7 +151,7 @@
  - [Y] 大文件模块能用
  - [Y] 整盘 / 入口能扫
  - [Y] 键盘 j/k/Enter/Delete 能用
-5. `bash scripts/make_dmg.sh 1.0.0-beta` -> 产 DMG
+5. `bash scripts/make_dmg.sh 1.1.0` -> 产 DMG
 
 ---
 
@@ -185,3 +185,31 @@
 - [Y] Helper XPC 不动
 - [Y] 测试金字塔：每个新文件配单测，HL 启发式不动
 - [Y] 一切新代码必须过 `OTHER_SWIFT_FLAGS: -warnings-as-errors` 严格并发
+
+---
+
+## 5. v1.4 已发布：开发者构建产物扫描（DevArtifacts）
+
+发布日期：随 v1.1.0 上线（项目当前版本 1.1.0，已合入 main）。
+
+### 5.1 范围与产物
+
+- **30 条规则**：覆盖前端、Native、JVM、移动、Python、Swift/Xcode、Rust、Go、Docker/容器、IDE 缓存等开发者机器上常见的"反复升级、版本切换沉淀下来"的冗余产物。
+- **8 个生态分组**：Node / iOS-Xcode / Android-Gradle / JVM-Maven / Python / Rust-Cargo / Go-Modules / IDE-Caches，UI 侧按生态分组渲染，便于开发者按手感选择。
+- 规则定义沉淀在 [Resources/Rules/dev_artifacts.yaml](../Resources/Rules/dev_artifacts.yaml) 与 [docs/DEV_ARTIFACTS_RULES.md](DEV_ARTIFACTS_RULES.md)（手册），与 [SafetyEngine](../Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 三色判定一致。
+
+### 5.2 扫描策略：命中 + 兄弟脚手架兜底 + 整棵剪枝
+
+为了贴合"开发者真实意图"——**只删冗余产物，不删源码与 lockfile**——v1.4 采用三步法：
+
+1. **命中（hit）**：按 30 条规则的目录名 / glob / 文件 marker 命中候选产物路径（例如 `node_modules`、`DerivedData`、`.gradle`、`build/`、`target/`、`__pycache__`、`.next`、`Pods/`）。
+2. **兄弟脚手架兜底（sibling-scaffold fallback）**：命中后向上看父目录是否存在该生态的"脚手架文件"（如 `package.json` / `Package.swift` / `Cargo.toml` / `pom.xml` / `build.gradle(.kts)` / `pyproject.toml` / `Podfile` / `go.mod`）。只有在脚手架兄弟存在时才确认归属，避免误删跟生态不相干的同名目录。
+3. **整棵剪枝（subtree pruning）**：候选确认后，在结果树里把该目录连同子树一次性剪掉，不再向下递归扫描——这既消除了"`node_modules` 内部嵌套 `node_modules` 又被重复算大小"的双计，也大幅缩短大型 monorepo 的扫描时长。
+
+三步法都跑在 `ScanKit` 上，保留 inode 去重 / firmlink 镜像识别 / APFS clone 修正等既有正确性保障；UI 侧由 [AppUI](../Packages/AppUI) 的 DevArtifacts 屏渲染分组结果，可一键移废纸篓（仍走 NSWorkspace.recycle，永不 unlink）。
+
+### 5.3 测试与验证
+
+- 30 条规则在 ScanKit / AppUI 双层有覆盖：ScanKit 117 条单测涵盖规则匹配、兄弟脚手架命中、整棵剪枝行为；AppUI 252 条单测涵盖 DevArtifacts 屏的分组渲染与批量勾选。
+- 总测试 **370+ 全绿**，xcodebuild Release **BUILD SUCCEEDED**。
+

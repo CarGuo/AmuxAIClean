@@ -533,7 +533,7 @@ public final class ScanCoordinator: ObservableObject {
         // 后续 .node / .finished 事件再原地累加 / 翻 isFinished。
         var initial: [String: PerRootProgress] = [:]
         for c in cats {
-            initial[c.rootPath] = PerRootProgress(rootPath: c.rootPath, title: c.title)
+            initial[c.rootPath] = PerRootProgress(rootPath: c.rootPath, title: c.displayTitle)
         }
         perRootProgress = initial
         // v1.3.zz 性能修复：staging 同步初始化，让 .node 事件累计的目标存在
@@ -1171,7 +1171,7 @@ public final class ScanCoordinator: ObservableObject {
     /// 同时把 [permissionDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L19)
     /// / [tccProtectedSkippedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L21)
     /// 合入结果的 [TreeRow.accessState](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L116)。
-    /// UI 据此渲染 🔒 徽章而不是误导性的 0KB。
+    /// UI 据此渲染锁定徽章而不是误导性的 0KB。
     ///
     /// 注意：本方法只读取 GRDB，不改任何 @Published / 内存索引；调用方负责把结果丢给 SwiftUI。
     public func directChildrenAsync(of path: String, sortedBy key: TreeSortKey) async -> [TreeRow] {

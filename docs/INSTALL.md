@@ -15,12 +15,12 @@ GSYCleanMac 采用 ad-hoc 签名（不依赖 Apple Developer Program 99 美元/�
 
 ## 2. 下载
 
-打开 [Releases 页面](https://github.com/guoshuyu225/GSYCleanMac/releases)，下载最新的 `GSYCleanMac-x.y.z.dmg`，例如 `GSYCleanMac-1.0.0.dmg`。
+打开 [Releases 页面](https://github.com/CarGuo/GSYCleanMac/releases)，下载最新的 `GSYCleanMac-x.y.z.dmg`，例如 `GSYCleanMac-1.1.0.dmg`。
 
 可选：同时下载 `GSYCleanMac-x.y.z.dmg.sha256`，校验完整性：
 
 ```bash
-shasum -a 256 GSYCleanMac-1.0.0.dmg
+shasum -a 256 GSYCleanMac-1.1.0.dmg
 # 输出应与 .sha256 文件一致
 ```
 
@@ -28,7 +28,7 @@ shasum -a 256 GSYCleanMac-1.0.0.dmg
 
 ## 3. 安装
 
-1. 双击 `GSYCleanMac-1.0.0.dmg` 挂载磁盘镜像
+1. 双击 `GSYCleanMac-1.1.0.dmg` 挂载磁盘镜像
 2. 把窗口里的 `GSYCleanMac.app` 拖进 `/Applications` 文件夹
 3. Finder 弹出"替换/保留两者"时，选"替换"（升级安装）
 

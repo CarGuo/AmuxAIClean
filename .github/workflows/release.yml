@@ -63,20 +63,36 @@ jobs:
             dist/GSYCleanMac.app \
             dist/GSYCleanMac-${VERSION}.dmg
 
+      - name: Make .app.zip
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          ditto -c -k --keepParent \
+            dist/GSYCleanMac.app \
+            dist/GSYCleanMac-${VERSION}.app.zip
+          ls -lh dist/GSYCleanMac-${VERSION}.app.zip
+
       - name: SHA256 checksum
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           cd dist
-          shasum -a 256 GSYCleanMac-${{ steps.ver.outputs.version }}.dmg \
-            > GSYCleanMac-${{ steps.ver.outputs.version }}.dmg.sha256
-          cat GSYCleanMac-${{ steps.ver.outputs.version }}.dmg.sha256
+          shasum -a 256 GSYCleanMac-${VERSION}.dmg \
+            > GSYCleanMac-${VERSION}.dmg.sha256
+          shasum -a 256 GSYCleanMac-${VERSION}.app.zip \
+            > GSYCleanMac-${VERSION}.app.zip.sha256
+          cat GSYCleanMac-${VERSION}.dmg.sha256
+          cat GSYCleanMac-${VERSION}.app.zip.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GSYCleanMac-${{ steps.ver.outputs.version }}-dmg
+          name: GSYCleanMac-${{ steps.ver.outputs.version }}-dist
           path: |
             dist/GSYCleanMac-${{ steps.ver.outputs.version }}.dmg
             dist/GSYCleanMac-${{ steps.ver.outputs.version }}.dmg.sha256
+            dist/GSYCleanMac-${{ steps.ver.outputs.version }}.app.zip
+            dist/GSYCleanMac-${{ steps.ver.outputs.version }}.app.zip.sha256
           if-no-files-found: error
           retention-days: 90
 
@@ -96,15 +112,19 @@ jobs:
             macOS 清理管家 · Release 构建（ad-hoc 签名，无 Apple Developer Program）。
 
             ### 安装
-            1. 下载 `GSYCleanMac-${{ steps.ver.outputs.version }}.dmg`
-            2. 双击挂载，把 GSYCleanMac.app 拖进 `/Applications`
+            1. 下载 `GSYCleanMac-${{ steps.ver.outputs.version }}.dmg`（或 `.app.zip`，体积更小，便于自动化更新）
+            2. 双击挂载 dmg，把 GSYCleanMac.app 拖进 `/Applications`；若使用 zip，解压后将 `.app` 拖进 `/Applications`
             3. 首次运行被 Gatekeeper 拦时：系统设置 -> 隐私与安全 -> 滚到底点"仍要打开"，详见 [INSTALL.md](https://github.com/${{ github.repository }}/blob/main/docs/INSTALL.md)
 
             ### 完整性校验
             ```
             shasum -a 256 GSYCleanMac-${{ steps.ver.outputs.version }}.dmg
+            shasum -a 256 GSYCleanMac-${{ steps.ver.outputs.version }}.app.zip
             ```
-            应输出与 `.dmg.sha256` 文件一致的哈希值。
+            应分别输出与 `.dmg.sha256` / `.app.zip.sha256` 一致的哈希值。
+
+            ### 为什么这个 release 不需要任何 GitHub Secrets
+            本项目使用 ad-hoc 签名（`codesign --sign -`），与 Rectangle / AltTab / Stats 等开源项目一致；签名身份是 GitHub runner 上即时生成的临时身份，不依赖任何上传到 Secrets 的证书或密钥。如果你想自己用 Developer ID 公证签名，请 fork 后在 `Scripts/build_release.sh` 里设 `IDENTITY` 环境变量并配置自己的 keychain。完整说明见 [docs/RELEASE.md](https://github.com/${{ github.repository }}/blob/main/docs/RELEASE.md)。
 
             ### 系统要求
             - macOS 15 Sequoia 或更高
@@ -112,3 +132,5 @@ jobs:
           files: |
             dist/GSYCleanMac-${{ steps.ver.outputs.version }}.dmg
             dist/GSYCleanMac-${{ steps.ver.outputs.version }}.dmg.sha256
+            dist/GSYCleanMac-${{ steps.ver.outputs.version }}.app.zip
+            dist/GSYCleanMac-${{ steps.ver.outputs.version }}.app.zip.sha256

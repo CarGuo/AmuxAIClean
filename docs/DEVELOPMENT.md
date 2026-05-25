@@ -62,8 +62,8 @@ xcodebuild -scheme GSYCleanMac -configuration Debug \
 ## Release 打包 + DMG
 
 ```bash
-VERSION=1.0.0 ./Scripts/build_release.sh
-./Scripts/make_dmg.sh dist/GSYCleanMac.app dist/GSYCleanMac-1.0.0.dmg
+VERSION=1.1.0 ./Scripts/build_release.sh
+./Scripts/make_dmg.sh dist/GSYCleanMac.app dist/GSYCleanMac-1.1.0.dmg
 ```
 
 [Scripts/build_release.sh](../Scripts/build_release.sh) 默认 ad-hoc 签名（`CODE_SIGN_IDENTITY="-"`）；如有 Developer ID，传 `IDENTITY="Developer ID Application: ..."` 覆盖。
@@ -84,13 +84,13 @@ done
 
 | 包 | 测试数 | 关键覆盖 |
 |---|---|---|
-| AppUI | 97 | UninstallStore / AppUninstaller / OrphanScanner / TreeBrowserSort / LargeFiles / ScanCoordinatorFullDisk / TCCProbe / HeuristicRecorder |
+| AppUI | 252 | UninstallStore / AppUninstaller / OrphanScanner / TreeBrowserSort / LargeFiles / ScanCoordinatorFullDisk / TCCProbe / HeuristicRecorder / DevArtifacts UI |
 | SafetyKit | 30 | 三色判定 / hardForbid / firmlink 镜像 / VendorTrie / RuleLoader / vendor 自检 |
-| XPCBridge | 8 | DeletionToken HMAC / TamperedDryRun |
-| ScanKit | 22 | 隐藏文件 / inode 去重 / 引擎一致性 / golden 快照 / 5 条多 worker 并发 |
+| ScanKit | 117 | 隐藏文件 / inode 去重 / 引擎一致性 / golden 快照 / DevArtifacts 30 规则 / 多 worker 并发 |
 | HeuristicKit | 11 | 评分公式 / forbid 红线 / JSON round-trip |
 | TestHarness | 8 | FixtureFS / ScenarioBuilder / GoldenSnapshot |
-| **总计** | **176** | xcodebuild Release BUILD SUCCEEDED |
+| LogKit | 数项 | 结构化日志 round-trip |
+| **总计** | **370+** | xcodebuild Release BUILD SUCCEEDED |
 
 ### CI 与本地的性能 budget 差异
 
@@ -162,8 +162,8 @@ GSYCleanMac/
 
 - 触发：push 到 main / PR 到 main
 - runner：macos-15
-- 步骤：actions/cache@v4 缓存 SwiftPM build → 跑 6 个包 `swift test --parallel` → 跑 `xcodebuild Debug`
-- 全部 176 测试通过才算绿
+- 步骤：actions/cache@v4 缓存 SwiftPM build → 跑 5 个包 `swift test --parallel` → 跑 `xcodebuild Debug`
+- 全部 370+ 测试通过才算绿
 
 ### Release（[.github/workflows/release.yml](../.github/workflows/release.yml)）
 
@@ -179,11 +179,11 @@ GSYCleanMac/
 git push origin main
 
 # 3. 打 tag 触发
-git tag -a v1.0.1 -m "v1.0.1 - <change summary>"
-git push origin v1.0.1
+git tag -a v1.1.1 -m "v1.1.1 - <change summary>"
+git push origin v1.1.1
 
-# 4. 几分钟后 Releases 页会自动出现 GSYCleanMac-1.0.1.dmg + .sha256
-gh release view v1.0.1 --repo CarGuo/GSYCleanMac
+# 4. 几分钟后 Releases 页会自动出现 GSYCleanMac-1.1.1.dmg + .sha256
+gh release view v1.1.1 --repo CarGuo/GSYCleanMac
 ```
 
 ---

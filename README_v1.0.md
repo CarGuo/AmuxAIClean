@@ -12,10 +12,10 @@
 [![License](https://img.shields.io/github/license/CarGuo/GSYCleanMac)](LICENSE)
 [![Platform](https://img.shields.io/badge/macOS-15%2B-blue)](#系统要求)
 
-[下载最新版](https://github.com/CarGuo/GSYCleanMac/releases/latest) ·
-[安装指南](docs/INSTALL.md) ·
-[功能一览](#你能用它干什么) ·
-[安全模型](SECURITY.md) ·
+[下载最新版](https://github.com/CarGuo/GSYCleanMac/releases/latest) -
+[安装指南](docs/INSTALL.md) -
+[功能一览](#你能用它干什么) -
+[安全模型](SECURITY.md) -
 [开发文档](docs/DEVELOPMENT.md)
 
 </div>
@@ -35,7 +35,7 @@ GSYCleanMac 是一款 **macOS 本地清理与卸载残留管家**：扫一次就
 - **看清磁盘** —— firmlink / iCloud 占位 / 硬链接 / APFS clone 全部按物理占用统计，结果跟 `du -h` 对得上，不再被 Finder "已使用 286 GB" 糊弄
 - **大文件捕手** —— 一键列出按"几 GB 起、按修改时间倒序"过滤的大文件，行内 Finder 显示 / 复制路径 / 移废纸篓三连
 - **卸载残留三连扫** —— 不光按 App 名匹配（短名容易误伤），还按 BundleID 严格前缀 + 厂商规则字典 + Orphan 反扫三路同时找
-- **目录树下钻** —— 像 GrandPerspective / DaisyDisk 那样多层下钻，但用键盘 j/k/h/l/Enter/Space/⌘R 全程不碰鼠标
+- **目录树下钻** —— 像 GrandPerspective / DaisyDisk 那样多层下钻，但用键盘 j/k/h/l/Enter/Space/R 全程不碰鼠标
 - **永远默认 dry-run** —— 三道闸门挡误删；删除链路从设计上就拒绝 unlink，所有"删"都是 NSWorkspace.recycle 移到废纸篓
 - **真隐私** —— 扫描结果不出本机、0 遥测、0 订阅、0 后台守护进程；**唯一**的网络请求是启动时一次 GitHub Releases 检查更新（约 2 KB，可在设置里关闭）；首次会引导你授权"完全磁盘访问"，授权位完全在系统设置里你可以随时撤
 
@@ -157,4 +157,4 @@ shasum -a 256 GSYCleanMac-1.0.0.dmg
 
 ## License
 
-[MIT](LICENSE) · Copyright (c) 2026 CarGuo
+[MIT](LICENSE) - Copyright (c) 2026 CarGuo

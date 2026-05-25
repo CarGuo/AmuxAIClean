@@ -43,6 +43,13 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
     /// 仅 DEBUG 暴露：托盘是否当前已挂在 NSStatusBar 上。
     /// 供 [App/RegressionRunner.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/App/RegressionRunner.swift)
     /// 等真实回归测试断言用，不影响生产路径。
+    ///
+    /// 注：与 [FloatingScanHUDController.isPanelVisibleForTesting](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
+    /// 同处境——RegressionRunner 在 Release 构建里也会参与编译，因此该属性需要在两种
+    /// 构建里都存在。属性只读、零副作用，撤掉 `#if DEBUG` 安全。
+    public var isInstalledForTesting: Bool { item != nil }
+    #else
+    /// Release 构建同样需要的 stub（理由见 DEBUG 分支）。只读、零副作用。
     public var isInstalledForTesting: Bool { item != nil }
     #endif
 
@@ -71,11 +78,11 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
             // accessibilityDescription 给 VoiceOver / 系统辅助技术读屏用。
             let image = NSImage(
                 systemSymbolName: "trash.fill",
-                accessibilityDescription: "GSY 清理管家"
+                accessibilityDescription: String(localized: "app.name", bundle: .module)
             )
             image?.isTemplate = true
             button.image = image
-            button.toolTip = "GSY 清理管家"
+            button.toolTip = String(localized: "app.name", bundle: .module)
         }
         let m = makeMenu()
         m.delegate = self
@@ -115,7 +122,9 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
         // 用 tag 锚定"开始推荐扫描"那项；不依赖位置（防未来插入新项）
         if let scanItem = menu.item(withTag: MenuTag.startScan.rawValue) {
             scanItem.isEnabled = !scanning
-            scanItem.title = scanning ? "扫描中…" : "开始推荐扫描"
+            scanItem.title = scanning
+                ? String(localized: "tray.scanning", bundle: .module)
+                : String(localized: "tray.start_recommended", bundle: .module)
         }
     }
 
@@ -134,7 +143,7 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
         menu.autoenablesItems = false
 
         let openItem = NSMenuItem(
-            title: "打开主窗口",
+            title: String(localized: "tray.menu.open_main", bundle: .module),
             action: #selector(handleOpenMainWindow),
             keyEquivalent: "o" // ⌘O：与 Finder 系列一致的"打开"语义
         )
@@ -145,7 +154,7 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
 
         let scanItem = NSMenuItem(
-            title: "开始推荐扫描",
+            title: String(localized: "tray.menu.start_recommended", bundle: .module),
             action: #selector(handleStartRecommendedScan),
             keyEquivalent: "r" // ⌘R：与浏览器/Xcode 的"刷新/构建"语义对齐
         )
@@ -154,7 +163,7 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(scanItem)
 
         let hudItem = NSMenuItem(
-            title: "显示 / 隐藏悬浮窗",
+            title: String(localized: "tray.menu.toggle_hud", bundle: .module),
             action: #selector(handleToggleHUD),
             keyEquivalent: "h" // ⌘H：与系统 hide 习惯保持类似的字母
         )
@@ -165,7 +174,7 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(
-            title: "退出 GSY 清理管家",
+            title: String(localized: "tray.menu.quit", bundle: .module),
             action: #selector(handleQuit),
             keyEquivalent: "q" // ⌘Q：标准退出
         )

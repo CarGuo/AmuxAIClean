@@ -15,7 +15,8 @@ let package = Package(
         .target(
             name: "AppUI",
             dependencies: ["ScanKit", "SafetyKit", "HeuristicKit", "LogKit"],
-            path: "Sources/AppUI"
+            path: "Sources/AppUI",
+            resources: [.process("Resources")]
         ),
         .testTarget(
             name: "AppUITests",

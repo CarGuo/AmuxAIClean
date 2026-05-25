@@ -112,7 +112,7 @@ public struct TreeRow: Identifiable, Hashable, Sendable {
     /// 是否还有 direct children 可展开 —— 用于 OutlineGroup 决定要不要画披露三角。
     public let hasChildren: Bool
     /// v1.3.zzzz：访问状态——区分"真的 0KB"和"被 sandbox/TCC/permission denied 拦掉看不到"。
-    /// UI 据此渲染 🔒 徽章 + tooltip + 不可勾选；不打 banner 误导用户以为是 bug。
+    /// UI 据此渲染锁定徽章 + tooltip + 不可勾选；不打 banner 误导用户以为是 bug。
     public let accessState: AccessState
 
     public enum AccessState: String, Sendable, Hashable, Codable {

@@ -37,6 +37,10 @@ public struct DevArtifactRule: Identifiable, Hashable, Sendable {
 
         public var id: String { rawValue }
 
+        /// i18n key —— UI 层用 `String(localized:)` 拿翻译；ScanKit 不做翻译。
+        /// 形如 `ecosystem.web` / `ecosystem.appleMobile` 等。
+        public var localizationKey: String { "ecosystem.\(rawValue)" }
+
         public var displayName: String {
             switch self {
             case .web:            return "Web / Node 生态"

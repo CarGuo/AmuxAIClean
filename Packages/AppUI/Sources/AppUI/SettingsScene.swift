@@ -65,17 +65,53 @@ public struct SettingsScene: View {
     public var body: some View {
         TabView {
             scanTab
-                .tabItem { Label("扫描", systemImage: "magnifyingglass") }
+                .tabItem {
+                    Label {
+                        Text("settings.tab.scan", bundle: .module)
+                    } icon: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                }
             largeFilesTab
-                .tabItem { Label("大文件", systemImage: "doc.richtext") }
+                .tabItem {
+                    Label {
+                        Text("settings.tab.large_files", bundle: .module)
+                    } icon: {
+                        Image(systemName: "doc.richtext")
+                    }
+                }
             pathsTab
-                .tabItem { Label("自定义路径", systemImage: "folder.badge.plus") }
+                .tabItem {
+                    Label {
+                        Text("settings.tab.custom_paths", bundle: .module)
+                    } icon: {
+                        Image(systemName: "folder.badge.plus")
+                    }
+                }
             updateTab
-                .tabItem { Label("更新", systemImage: "arrow.down.circle") }
+                .tabItem {
+                    Label {
+                        Text("settings.tab.update", bundle: .module)
+                    } icon: {
+                        Image(systemName: "arrow.down.circle")
+                    }
+                }
             developerArtifactsTab
-                .tabItem { Label("开发者扫描", systemImage: "hammer") }
+                .tabItem {
+                    Label {
+                        Text("settings.tab.dev_scan", bundle: .module)
+                    } icon: {
+                        Image(systemName: "hammer")
+                    }
+                }
             storageTab
-                .tabItem { Label("存储与日志", systemImage: "internaldrive") }
+                .tabItem {
+                    Label {
+                        Text("settings.tab.storage", bundle: .module)
+                    } icon: {
+                        Image(systemName: "internaldrive")
+                    }
+                }
         }
         .frame(width: 520, height: 420)
         .task {
@@ -392,26 +428,36 @@ extension SettingsScene {
         Form {
             Section {
                 HStack(spacing: 8) {
-                    Button("全部启用") {
+                    Button {
                         settings.enabledDevArtifactRuleIDs = DevArtifactRules.allIDs
+                    } label: {
+                        Text("settings.dev.enable_all", bundle: .module)
                     }
-                    Button("全部关闭") {
+                    Button {
                         settings.enabledDevArtifactRuleIDs = []
+                    } label: {
+                        Text("settings.dev.disable_all", bundle: .module)
                     }
-                    Button("仅启用安全项") {
+                    Button {
                         settings.enabledDevArtifactRuleIDs = Set(
                             DevArtifactRules.all
                                 .filter { $0.verdict == .safe }
                                 .map(\.id)
                         )
+                    } label: {
+                        Text("settings.dev.safe_only", bundle: .module)
                     }
                     Spacer()
-                    Text("已启用 \(settings.enabledDevArtifactRuleIDs.count) / \(DevArtifactRules.all.count)")
+                    Text(String(
+                        format: String(localized: "settings.dev.enabled_count.format", bundle: .module),
+                        settings.enabledDevArtifactRuleIDs.count,
+                        DevArtifactRules.all.count
+                    ))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             } header: {
-                Text("批量操作")
+                Text("settings.dev.batch_actions", bundle: .module)
             } footer: {
                 Text("开发者扫描会从 ~ 整个家目录 BFS 查找命中目录（如 node_modules / build / Pods / target / __pycache__ 等），并要求兄弟里有对应脚手架文件（如 package.json / pubspec.yaml / Cargo.toml）以避免误命中。命中后整棵剪枝不再下钻。")
                     .font(.caption)
@@ -452,7 +498,7 @@ extension SettingsScene {
                             }
                         }
                     } header: {
-                        Text(ecosystem.displayName)
+                        Text(String(localized: String.LocalizationValue(ecosystem.localizationKey), bundle: .module))
                     }
                 }
             }

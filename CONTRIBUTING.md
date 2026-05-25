@@ -1,4 +1,4 @@
-# 贡献指南 · GSYCleanMac
+# 贡献指南 - GSYCleanMac
 
 感谢愿意贡献。这份文档说明开 PR 前必须做的事、commit 规范、PR 红线。在写代码前请先读：
 
@@ -15,7 +15,7 @@
 - Homebrew + xcodegen（`brew install xcodegen`）
 
 ```bash
-git clone https://github.com/guoshuyu225/GSYCleanMac.git
+git clone https://github.com/CarGuo/GSYCleanMac.git
 cd GSYCleanMac
 ./Scripts/setup_dev.sh
 ```
@@ -111,7 +111,7 @@ feat(scankit): BulkScanner 多 worker 并行（4~6 worker work-stealing）
 ## 环境
 - macOS 版本：例如 15.2
 - Mac 型号：例如 M2 Pro
-- GSYCleanMac 版本：例如 v1.0.0
+- GSYCleanMac 版本：例如 v1.1.0
 - 是否授予完全磁盘访问：是 / 否
 
 ## 复现步骤

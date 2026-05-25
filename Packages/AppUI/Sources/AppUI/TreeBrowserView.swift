@@ -618,7 +618,7 @@ struct TreeNodeView: View {
 ///
 /// v1.3.zzzz：当 [row.accessState](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L116)
 /// 不是 .normal 时，整行降级渲染：
-/// - 文件夹图标后挂一个 🔒 lock.fill 小徽章
+/// - 文件夹图标后挂一个 lock.fill 小徽章
 /// - 文字 / 体积 / 体积条全部走 .tertiary 灰阶
 /// - .help() 改成"无访问权限"文案，鼠标 hover 提示用户去开 Full Disk Access
 ///
@@ -651,7 +651,7 @@ struct TreeBrowserRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            // 图标 + 🔒 叠加徽章（仅 accessDenied 时显示）
+            // 图标 + 锁定叠加徽章（仅 accessDenied 时显示）
             ZStack(alignment: .bottomTrailing) {
                 Image(systemName: row.isDirectory ? "folder.fill" : "doc")
                     .foregroundStyle(

@@ -31,6 +31,14 @@ public final class FloatingScanHUDController {
     /// 仅 DEBUG 暴露：HUD panel 是否当前可见（panel 存在且 isVisible=true）。
     /// 供 [App/RegressionRunner.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/App/RegressionRunner.swift)
     /// 等真实回归测试断言用，不影响生产路径。
+    ///
+    /// 注：原本只在 DEBUG 暴露，但 [RegressionRunner](file:///Users/guoshuyu/workspace/GSYCleanMac/App/RegressionRunner.swift)
+    /// 在 Release 构建里也参与编译（它由 main App target 引入），导致 release.yml 的
+    /// `xcodebuild -configuration Release` 会因找不到该成员而 BUILD FAILED。属性本身只读、
+    /// 零副作用，所以撤掉 `#if DEBUG`，保留注释提醒生产代码勿依赖。
+    public var isPanelVisibleForTesting: Bool { panel?.isVisible == true }
+    #else
+    /// Release 构建同样需要这个 stub（理由见 DEBUG 分支）；只读、零副作用，安全。
     public var isPanelVisibleForTesting: Bool { panel?.isVisible == true }
     #endif
 
@@ -1153,7 +1161,7 @@ struct FloatingScanHUDView: View {
 
     private var heroMainTitle: String {
         switch phase {
-        case .scanning: return "扫描中"
+        case .scanning: return String(localized: "hud.scanning", bundle: .module)
         case .finished: return cleanableSeverity.label
         case .idle: return idleLeadingText
         }
@@ -1260,7 +1268,7 @@ struct FloatingScanHUDView: View {
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "play.fill")
-                            Text("立即扫描")
+                            Text("hud.button.scan_now", bundle: .module)
                         }
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.white)
@@ -1303,11 +1311,11 @@ struct FloatingScanHUDView: View {
     @ViewBuilder
     private var islandLegendRows: some View {
         VStack(alignment: .leading, spacing: 4) {
-            islandLegendRow(color: .white.opacity(0.45), label: "已用",
+            islandLegendRow(color: .white.opacity(0.45), label: String(localized: "hud.legend.used", bundle: .module),
                             value: bytesString(coordinator.volumeSnapshot?.usedBytes ?? 0))
-            islandLegendRow(color: cleanableSeverity.color, label: "可清理",
+            islandLegendRow(color: cleanableSeverity.color, label: String(localized: "hud.legend.cleanable", bundle: .module),
                             value: bytesString(cleanableBytes))
-            islandLegendRow(color: availableSeverity.color, label: "可用",
+            islandLegendRow(color: availableSeverity.color, label: String(localized: "hud.legend.free", bundle: .module),
                             value: bytesString(availableBytes))
         }
     }
@@ -1353,10 +1361,10 @@ struct FloatingScanHUDView: View {
     }
     private var idleLeadingText: String {
         switch diskSeverity {
-        case .critical: return "磁盘紧张"
-        case .warning:  return "磁盘较满"
-        case .caution:  return "可关注"
-        default:        return "空闲"
+        case .critical: return String(localized: "hud.idle.disk_tight", bundle: .module)
+        case .warning:  return String(localized: "hud.idle.disk_full", bundle: .module)
+        case .caution:  return String(localized: "hud.idle.attention", bundle: .module)
+        default:        return String(localized: "hud.idle.idle", bundle: .module)
         }
     }
 
@@ -1510,21 +1518,21 @@ struct FloatingScanHUDView: View {
         VStack(spacing: 3) {
             cardLegendRow(
                 color: cleanableSeverity.color,
-                label: "可清理",
+                label: String(localized: "hud.legend.cleanable", bundle: .module),
                 bytes: cleanableBytes,
                 valueColor: cleanableSeverity.color,
                 bold: cleanableBytes > 0
             )
             cardLegendRow(
                 color: Color.gray.opacity(0.55),
-                label: "其它已用",
+                label: String(localized: "hud.legend.other_used", bundle: .module),
                 bytes: otherUsedBytes,
                 valueColor: nil,
                 bold: false
             )
             cardLegendRow(
                 color: availableSeverity.color,
-                label: "可用",
+                label: String(localized: "hud.legend.free", bundle: .module),
                 bytes: availableBytes,
                 valueColor: availableSeverity.color,
                 bold: availableSeverity == .critical || availableSeverity == .warning

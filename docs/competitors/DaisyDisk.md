@@ -139,7 +139,7 @@
  - **Cmd** —— 加入 / 移出 Collector
  - **Cmd+点击** —— Show in Finder
  - **CmdR** —— 重扫当前目录
- - **⇧CmdR** —— 重扫整盘 / 顶层
+ - **CmdR** —— 重扫整盘 / 顶层
  - ** 按住** —— 切换 disk gauge 中 purgeable 的归属
 
 - **Multi-Touch Gestures（触控板手势）**
