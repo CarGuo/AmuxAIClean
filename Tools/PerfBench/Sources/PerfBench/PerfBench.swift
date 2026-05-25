@@ -9,6 +9,8 @@ struct PerfBench {
         var rootArg: String = "~/Library/Caches"
         var includeHidden = true
         var dedup = true
+        var benchDirectChildren = false
+        var nodeCount = 50_000
 
         let rest = Array(args.dropFirst())
         var i = 0
@@ -29,8 +31,20 @@ struct PerfBench {
             } else if arg == "--dedup", i + 1 < rest.count {
                 dedup = parseBool(rest[i + 1])
                 i += 1
+            } else if arg == "--bench-direct-children" {
+                benchDirectChildren = true
+            } else if let value = parseValue(arg, key: "--nodes") {
+                nodeCount = Int(value) ?? nodeCount
+            } else if arg == "--nodes", i + 1 < rest.count {
+                nodeCount = Int(rest[i + 1]) ?? nodeCount
+                i += 1
             }
             i += 1
+        }
+
+        if benchDirectChildren {
+            await runDirectChildrenBench(nodeCount: nodeCount)
+            return
         }
 
         let expanded = (rootArg as NSString).expandingTildeInPath
@@ -77,6 +91,179 @@ struct PerfBench {
             dedupedHardlinkMB
         )
         print(line)
+    }
+
+    // MARK: - v1.3.zzzz Phase 2-C：directChildrenAggregated 基准
+
+    /// 合成节点灌进 GRDBScanResultStore 后跑 directChildrenAggregated 的 cold/warm 延迟。
+    ///
+    /// 节点结构：root（1）→ L1（22 dir）→ L2（每个 L1 下 22 dir）→ L3（每个 L2 下 N 个 file），
+    /// 默认 50k 节点；用 --nodes 调到 30 万对齐 v1.3.z 大基准。
+    ///
+    /// **目的**：把 v1.3.zzzz [directChildrenAggregated SQL GROUP BY 下推](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift#L289)
+    /// 的延迟和"老路径单 record query + Swift 聚合"对比，留下可重复跑的硬数据基准，
+    /// 防止后续重构把 SQL 下推路径回退到慢路径。
+    static func runDirectChildrenBench(nodeCount: Int) async {
+        let dir = NSTemporaryDirectory() + "PerfBench-direct-\(UUID().uuidString)"
+        let dbURL = URL(fileURLWithPath: dir).appendingPathComponent("scan.sqlite")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+
+        let store: GRDBScanResultStore
+        do {
+            store = try GRDBScanResultStore(databaseURL: dbURL)
+        } catch {
+            FileHandle.standardError.write(Data("PerfBench: store init failed: \(error)\n".utf8))
+            exit(1)
+        }
+
+        let session = ScanSessionID()
+        do {
+            try await store.beginSession(session)
+        } catch {
+            FileHandle.standardError.write(Data("PerfBench: beginSession failed: \(error)\n".utf8))
+            exit(1)
+        }
+
+        // 合成节点：root + L1*22 + L2*22*22 + L3 file*K，每层 parentPath 链接齐
+        let root = "/perfbench-root"
+        var records: [ScanResultRecord] = []
+        records.reserveCapacity(nodeCount + 512)
+
+        let l1Count = 22
+        let l2PerL1 = 22
+        // 算 L3 每 L2 下文件数：剩余预算 / (l1*l2)
+        let dirOverhead = 1 + l1Count + l1Count * l2PerL1
+        let l3Total = max(0, nodeCount - dirOverhead)
+        let l3PerL2 = max(1, l3Total / (l1Count * l2PerL1))
+
+        records.append(makeDir(session: session, path: root, parent: nil, inode: 1))
+        var inode: UInt64 = 2
+        for a in 0..<l1Count {
+            let l1 = "\(root)/dir_\(a)"
+            records.append(makeDir(session: session, path: l1, parent: root, inode: inode))
+            inode += 1
+            for b in 0..<l2PerL1 {
+                let l2 = "\(l1)/sub_\(b)"
+                records.append(makeDir(session: session, path: l2, parent: l1, inode: inode))
+                inode += 1
+                for c in 0..<l3PerL2 {
+                    let f = "\(l2)/file_\(c).bin"
+                    records.append(makeFile(
+                        session: session, path: f, parent: l2,
+                        inode: inode,
+                        bytes: Int64(1024 + (c % 8) * 512)
+                    ))
+                    inode += 1
+                }
+            }
+        }
+
+        let insertStart = DispatchTime.now().uptimeNanoseconds
+        // 分批 insert，每批 5000 条避免单事务内存峰值
+        let batchSize = 5_000
+        var idx = 0
+        while idx < records.count {
+            let end = min(idx + batchSize, records.count)
+            do {
+                try await store.insert(Array(records[idx..<end]))
+            } catch {
+                FileHandle.standardError.write(Data("PerfBench: insert failed at \(idx): \(error)\n".utf8))
+                exit(1)
+            }
+            idx = end
+        }
+        do {
+            try await store.finalizeSession(session)
+        } catch {
+            FileHandle.standardError.write(Data("PerfBench: finalize failed: \(error)\n".utf8))
+            exit(1)
+        }
+        let insertEnd = DispatchTime.now().uptimeNanoseconds
+
+        // cold（actor 内部 cache miss）
+        let coldStart = DispatchTime.now().uptimeNanoseconds
+        var coldChildren: [DirectChildAggregate] = []
+        do {
+            coldChildren = try await store.directChildrenAggregated(sessionID: session, parentPath: root)
+        } catch {
+            FileHandle.standardError.write(Data("PerfBench: directChildren cold failed: \(error)\n".utf8))
+            exit(1)
+        }
+        let coldEnd = DispatchTime.now().uptimeNanoseconds
+
+        // warm（同一 query 立即重跑）
+        let warmStart = DispatchTime.now().uptimeNanoseconds
+        do {
+            _ = try await store.directChildrenAggregated(sessionID: session, parentPath: root)
+        } catch {
+            FileHandle.standardError.write(Data("PerfBench: directChildren warm failed: \(error)\n".utf8))
+            exit(1)
+        }
+        let warmEnd = DispatchTime.now().uptimeNanoseconds
+
+        // 深一层（L1[0]）作为 mid-depth baseline
+        let midStart = DispatchTime.now().uptimeNanoseconds
+        var midChildren: [DirectChildAggregate] = []
+        do {
+            midChildren = try await store.directChildrenAggregated(
+                sessionID: session, parentPath: "\(root)/dir_0"
+            )
+        } catch {
+            FileHandle.standardError.write(Data("PerfBench: directChildren mid failed: \(error)\n".utf8))
+            exit(1)
+        }
+        let midEnd = DispatchTime.now().uptimeNanoseconds
+
+        let insertMs = Double(insertEnd - insertStart) / 1_000_000.0
+        let coldMs = Double(coldEnd - coldStart) / 1_000_000.0
+        let warmMs = Double(warmEnd - warmStart) / 1_000_000.0
+        let midMs = Double(midEnd - midStart) / 1_000_000.0
+
+        let line = String(
+            format: "(records=%d, insert_ms=%.2f, cold_root_ms=%.2f, warm_root_ms=%.2f, mid_l1_ms=%.2f, root_children=%d, l1_children=%d)",
+            records.count,
+            insertMs,
+            coldMs,
+            warmMs,
+            midMs,
+            coldChildren.count,
+            midChildren.count
+        )
+        print(line)
+    }
+
+    private static func makeDir(
+        session: ScanSessionID, path: String, parent: String?, inode: UInt64
+    ) -> ScanResultRecord {
+        ScanResultRecord(
+            sessionID: session,
+            path: path,
+            isDirectory: true,
+            isSymlink: false,
+            allocatedSize: 0,
+            logicalSize: 0,
+            inode: inode,
+            device: 1,
+            modificationDate: nil,
+            parentPath: parent
+        )
+    }
+
+    private static func makeFile(
+        session: ScanSessionID, path: String, parent: String?, inode: UInt64, bytes: Int64
+    ) -> ScanResultRecord {
+        ScanResultRecord(
+            sessionID: session,
+            path: path,
+            isDirectory: false,
+            isSymlink: false,
+            allocatedSize: bytes,
+            logicalSize: bytes,
+            inode: inode,
+            device: 1,
+            modificationDate: nil,
+            parentPath: parent
+        )
     }
 
     private static func parseValue(_ arg: String, key: String) -> String? {
