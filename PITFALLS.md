@@ -808,3 +808,31 @@ PR 实施过程中本来计划在树形 Tab 顶部加 banner，[grep 后发现](
 3. **能 recycle 就别 unlink**，废纸篓是用户最后的安全网。
 4. **共享厂商目录碰都不碰**，Adobe 用户血书在前。
 5. **公证前跑 `spctl --assess`**，别等 Apple 邮件回 4 小时告诉你失败。
+
+---
+
+## 8. v1.3.zzzz Phase 4 — 树形主视图收敛（决策记录）
+
+### 背景
+v1.3.zzzz 早期会话拍板"方案 C：树形主视图，清单降级为筛选层"，但前 4 个 commit (Phase 3-B/C/D/E) 全是后端 Helper / IPC 改动，UI 一行没动；用户跑了一版"为什么和之前一样"——欠账暴露。Phase 4 系列就是把欠账还掉。
+
+### Phase 4-A：默认视图切换 + 视觉降级（commit `0e48e78`）
+- [MainView.viewMode](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L29-L44) 默认 `.list` → `.tree`，提一个 `public static let phase4ADefaultViewMode` 单一信源给单测 lock
+- [viewModeBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L597-L646) Picker 宽度 220→180、tree 时角标"主视图 · 层次化容量分布"、list 时角标"二级视图 · 兼容旧版扁平清单"，文案中性化
+- detailPane 提示从"树视图只读浏览。要清理请切回「清单」"改为"右键或 Delete 单条移废纸篓 · 双击展开下一层 · 批量勾选请切到「清单」"
+
+### Phase 4-B：树形批量删除（本次）
+- [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 加可选 `onTrashBatch: (([URL]) -> Void)?`，nil 时整段 toolbar 隐藏（向后兼容）
+- 多选 selection set 与单选 keyboard focus 解耦：`selectedPath` 看哪条详情；`checkedPaths: Set<String>` 是批量工作集（参考 Finder/Pearcleaner 双轨）
+- forbid 路径在 toggle 入口拦截 + [TreeBrowserView.sanitize(paths:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 兜底二次过滤——SafetyEngine forbid 永远不会进 `triggerLargeFileTrash(urls:)` 的 urls
+- [batchActionBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 主操作"批量移废纸篓" Cmd+Shift+D，空选 disabled
+- 路由复用：MainView.onTrashBatch 直接喂 `triggerLargeFileTrash(urls:)`，跟单条删 / 大文件视图删走完全相同的 SafetyEngine + TrashPipeline 通道，零分叉
+
+### 教训踩坑
+- **SwiftUI struct view 不能用 mutating func 改 @State**：测试入口必须是 `public static func sanitize(paths:)` pure helper，让单测不需要构造 View 实例
+- **方案被拍板≠落地**：用户截图证明早会话拍板"按 C 推进"被回了"可以"——这只代表共识，不代表代码；我用 git log 实证 4 commit 全后端，承认欠账 → 落地 Phase 4-A
+- **占比条惯性误判**：以为 TreeBrowserView 没视觉占比 → 实际 [TreeBrowserRow L551-L565](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 早就有 3pt accent 色占比条；调研先于动手能省一个 Phase
+
+### 单测合同
+- AppUI 包总数 248 → 255（+5 ResultsViewMode 形态稳定 + +7 sanitize 行为）
+- ResultsViewMode CaseIterable 顺序、label、SF Symbol、rawValue 全 lock，避免 Phase 5 视图回归

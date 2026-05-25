@@ -27,6 +27,11 @@ public struct TreeBrowserView: View {
     /// 走 NSWorkspace.recycle 通道（与大文件视图右键删共用 triggerLargeFileTrash）。
     /// 给 nil 时 TreeNodeView 不会展示该菜单项，便于在 readonly 场景复用。
     let onTrash: ((URL) -> Void)?
+    /// **v1.3.zzzz Phase 4-B**：批量"移到废纸篓"通道。
+    /// 走与 [LargeFilesView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/LargeFilesView.swift)
+    /// 同款的 [triggerLargeFileTrash(urls:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1235)。
+    /// 给 nil 时 toolbar 上的"批量移废纸篓"按钮整段隐藏（保持向后兼容、tests 不受影响）。
+    let onTrashBatch: (([URL]) -> Void)?
 
     /// SafetyEngine 静态共享：拦截 forbid 路径（家目录、`/`、SIP、`..` 等），
     /// 在弹菜单时就 disabled 那条「移到废纸篓…」并附 tooltip 解释为什么不能删，
@@ -35,6 +40,12 @@ public struct TreeBrowserView: View {
 
     @State private var sortKey: TreeSortKey = .sizeDesc
     @State private var selectedPath: String?
+    /// **v1.3.zzzz Phase 4-B**：多选集合，记录所有被勾上 checkbox 的路径。
+    /// 与 [selectedPath](#) 解耦——后者是键盘焦点 / 详情面板的"看哪条"，
+    /// 前者是"批量操作的工作集"。Finder / Pearcleaner 同款双轨。
+    /// 注意：SafetyEngine forbid 路径**不允许进入此集合**（在 toggle 入口拦截，
+    /// 即便用户改了 UI 也走 [removeForbidden(_:)](#) 二次过滤兜底）。
+    @State private var checkedPaths: Set<String> = []
     /// 各节点是否展开（path -> Bool）；放在父视图集中管理，
     /// 才能让 h/l 键盘事件去操控"当前选中节点"的展开状态。
     @State private var expanded: [String: Bool] = [:]
@@ -43,11 +54,13 @@ public struct TreeBrowserView: View {
     public init(coordinator: ScanCoordinator,
                 rootPath: String,
                 onSelect: ((TreeRow) -> Void)? = nil,
-                onTrash: ((URL) -> Void)? = nil) {
+                onTrash: ((URL) -> Void)? = nil,
+                onTrashBatch: (([URL]) -> Void)? = nil) {
         self.coordinator = coordinator
         self.rootPath = rootPath
         self.onSelect = onSelect
         self.onTrash = onTrash
+        self.onTrashBatch = onTrashBatch
     }
 
     public var body: some View {
@@ -68,7 +81,13 @@ public struct TreeBrowserView: View {
         let isFetching = coordinator.isFetchingChildren(of: rootPath, sortedBy: sortKey)
         let maxBytes = topLevel.map(\.bytes).max() ?? 0
         VStack(spacing: 0) {
-            TreeColumnHeader(sortKey: $sortKey)
+            // **v1.3.zzzz Phase 4-B**：批量操作 toolbar——只在外层提供 onTrashBatch
+            // 时显示。空选时按钮 disabled，文案提示用户先勾选。
+            if onTrashBatch != nil {
+                batchActionBar
+                Divider()
+            }
+            TreeColumnHeader(sortKey: $sortKey, hasCheckbox: onTrashBatch != nil)
             Divider()
             if topLevel.isEmpty {
                 VStack(spacing: 8) {
@@ -108,6 +127,8 @@ public struct TreeBrowserView: View {
                                     sortKey: sortKey,
                                     selectedPath: $selectedPath,
                                     expanded: $expanded,
+                                    checkedPaths: $checkedPaths,
+                                    hasCheckbox: onTrashBatch != nil,
                                     onTrash: onTrash
                                 )
                             }
@@ -272,14 +293,84 @@ public struct TreeBrowserView: View {
         guard let cur = selectedPath else { return }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: cur)])
     }
+
+    // MARK: - v1.3.zzzz Phase 4-B：多选与批量操作
+
+    /// 批量操作 toolbar：左侧"已选 N 项 · X 大小" + 右侧"清空选择" + 主操作"批量移废纸篓"。
+    /// 主按钮 disabled 条件：checkedPaths 为空 或 onTrashBatch 为 nil。
+    @ViewBuilder
+    private var batchActionBar: some View {
+        let safeChecked = sanitizedCheckedPaths()
+        let totalBytes = totalBytesOfChecked(safeChecked)
+        HStack(spacing: 12) {
+            if safeChecked.isEmpty {
+                Text("勾选树形里若干条目后可批量移到废纸篓")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                Label {
+                    Text("已选 \(safeChecked.count) 项 · \(ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file))")
+                        .font(.caption.weight(.medium))
+                } icon: {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(Color.accentColor)
+                }
+                Button("清空选择") {
+                    checkedPaths.removeAll()
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+            }
+            Spacer()
+            Button {
+                guard let onTrashBatch else { return }
+                let urls = safeChecked.sorted().map { URL(fileURLWithPath: $0) }
+                onTrashBatch(urls)
+                checkedPaths.removeAll()
+            } label: {
+                Label("批量移废纸篓", systemImage: "trash")
+            }
+            .controlSize(.small)
+            .disabled(safeChecked.isEmpty)
+            .keyboardShortcut("d", modifiers: [.command, .shift])
+            .help("把所有勾选的条目一起移到废纸篓（Cmd+Shift+D）")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+
+    /// 批量删时再过一遍 SafetyEngine forbid 兜底。
+    /// 即便 toggle 入口已经拦截过，UI 层再做一次防御——避免有人未来加了别的入口绕过。
+    /// 同时也是 [test_批量删时forbid路径不进入urls](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/TreeBrowserMultiSelectTests.swift) 的测试锚。
+    func sanitizedCheckedPaths() -> Set<String> {
+        Self.sanitize(paths: checkedPaths)
+    }
+
+    /// **可测的 pure helper**：从任意路径集合里剔除 SafetyEngine forbid 路径。
+    /// 抽 static 是因为 @State 在 SwiftUI struct view 上没法用 mutating 入口测，
+    /// 但这个 sanitize 算法与视图无关、是纯逻辑——单独 expose 让测试 100% 覆盖。
+    public static func sanitize(paths: Set<String>) -> Set<String> {
+        paths.filter { safety.evaluate(path: $0).0 != .forbid }
+    }
+
+    private func totalBytesOfChecked(_ paths: Set<String>) -> Int64 {
+        paths.compactMap { coordinator.row(for: $0)?.bytes }.reduce(0, +)
+    }
 }
 
 /// 列表头：三列可点击切排序。
 struct TreeColumnHeader: View {
     @Binding var sortKey: TreeSortKey
+    /// **v1.3.zzzz Phase 4-B**：是否给最左侧留 checkbox 列宽（与 TreeNodeView 对齐）。
+    var hasCheckbox: Bool = false
 
     var body: some View {
         HStack(spacing: 10) {
+            // checkbox 列（22pt）—— 只在 hasCheckbox 时占位；无勾选模式下完全不显示
+            if hasCheckbox {
+                Spacer().frame(width: 22)
+            }
             // 与 TreeBrowserRow 的 icon + 三角占位对齐：22（三角 hit area）+ 6（间距）+ 16（icon）= 44
             Spacer().frame(width: 44)
             headerButton(label: "名称", column: .name)
@@ -324,6 +415,10 @@ struct TreeNodeView: View {
     let sortKey: TreeSortKey
     @Binding var selectedPath: String?
     @Binding var expanded: [String: Bool]
+    /// **v1.3.zzzz Phase 4-B**：父级透传的多选集合。`hasCheckbox == false` 时不渲染 checkbox 也不读这个 Binding。
+    @Binding var checkedPaths: Set<String>
+    /// **v1.3.zzzz Phase 4-B**：是否启用左侧 checkbox 列（由父级根据 onTrashBatch 是否 nil 决定）。
+    let hasCheckbox: Bool
     /// 上层透传的"移到废纸篓"通道。nil 时菜单项不展示。
     let onTrash: ((URL) -> Void)?
 
@@ -337,6 +432,15 @@ struct TreeNodeView: View {
     }
     private var isExpanded: Bool { expanded[row.path] ?? false }
     private var isSelected: Bool { selectedPath == row.path }
+    /// 该行能否进入勾选集合：accessDenied 不让勾（数据不可信、删了也没意义），
+    /// SafetyEngine forbid 也不让勾（家目录 / `/` / SIP）。
+    private var isCheckable: Bool {
+        guard hasCheckbox else { return false }
+        if row.accessState != .normal { return false }
+        let (verdict, _) = TreeBrowserView.safety.evaluate(path: row.path)
+        return verdict != .forbid
+    }
+    private var isChecked: Bool { checkedPaths.contains(row.path) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -345,6 +449,29 @@ struct TreeNodeView: View {
             HStack(spacing: 6) {
                 // 缩进占位放进 HStack 内部，让外层 background 占满整行
                 Spacer().frame(width: indent, height: 1)
+                // **v1.3.zzzz Phase 4-B**：勾选 checkbox。占用 22pt 宽列。
+                // 不可勾选行（forbid / accessDenied）显示禁用样式但保留位宽，避免对齐错位。
+                if hasCheckbox {
+                    Button {
+                        guard isCheckable else { NSSound.beep(); return }
+                        if isChecked { checkedPaths.remove(row.path) }
+                        else { checkedPaths.insert(row.path) }
+                    } label: {
+                        Image(systemName: isChecked ? "checkmark.square.fill" : (isCheckable ? "square" : "square.dashed"))
+                            .font(.system(size: 14))
+                            .foregroundStyle(
+                                isChecked ? Color.accentColor :
+                                    (isCheckable ? Color.secondary : Color.secondary.opacity(0.35))
+                            )
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!isCheckable)
+                    .help(isCheckable
+                          ? (isChecked ? "取消勾选" : "勾选以加入批量删除")
+                          : "此路径受保护或权限不足，不可加入批量删除")
+                }
                 // 披露三角（叶子用空白占位保持对齐）
                 Group {
                     if canExpand {
@@ -477,6 +604,8 @@ struct TreeNodeView: View {
                         sortKey: sortKey,
                         selectedPath: $selectedPath,
                         expanded: $expanded,
+                        checkedPaths: $checkedPaths,
+                        hasCheckbox: hasCheckbox,
                         onTrash: onTrash
                     )
                 }

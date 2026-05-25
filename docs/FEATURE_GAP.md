@@ -321,3 +321,29 @@ v1.2 已经覆盖了 macOS 清理类工具的**主干 90%**：整盘 / 推荐清
 - ✅ 开源：仓库公开
 
 **结论**：23 维里"重复文件去重"为 ⚠️（检测已实现、自动去重未做），其余 22 维全部 ✅；已在第 1 节矩阵和第 4 节坦白章节双重披露，未夸大任何已声称的功能。
+
+---
+
+## 5. v1.3.zzzz Phase 4 — 树形主视图正式上线（2026-05）
+
+### 信息架构
+| 维度 | 之前 | Phase 4 之后 |
+|---|---|---|
+| 默认视图 | 扁平清单 | **层次化树形**（用户进 App 直接看到容量大头从哪冒出来） |
+| 清单视图 | 主视图 | 二级视图，给老用户兼容 / 给"按文件名/类型筛"用 |
+| 树形单条删 | 右键 / Delete 已支持 | 同 |
+| 树形批量删 | ❌ 无（必须切回清单） | ✅ Cmd+Shift+D 批量移废纸篓 |
+| 树形容量占比 | ✅ 已有 3pt accent 条 | 同 |
+
+### 与同类产品定位对照
+- **DaisyDisk / OmniDiskSweeper** 是纯可视化磁盘地图，没有勾选清理；CleanMac 树形 + 批量勾选 = 把 DaisyDisk 的"看清楚"和 CleanMyMac 的"勾起来一起删"合在一个面板
+- **Pearcleaner** 树形支持单条 trash、不支持框选批量；CleanMac 现在追平
+- **CleanMyMac X** 没有用户可见的层次化容量树（"Space Lens" 是单独入口、要付费）
+
+### 安全合同
+- 树形 batchActionBar 主按钮调用 `triggerLargeFileTrash(urls:)`，**与所有删除入口共享同一条** SafetyEngine forbid → warn → safe 三档闸 + TrashPipeline → NSWorkspace.recycle，零旁路
+- toggle 入口 + [TreeBrowserView.sanitize(paths:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 双层过滤，forbid 永不入 urls；7 个 sanitize 单测 lock 这条合同
+
+### 测试覆盖
+- AppUI 248 → 255（+7：5 个 ResultsViewMode 形态 lock + 7 个 sanitize 行为；其中 ResultsViewMode 5 来自 Phase 4-A）
+- 全包 SafetyKit 104 / XPCBridge 12 / ScanKit 101 全绿，回归 0

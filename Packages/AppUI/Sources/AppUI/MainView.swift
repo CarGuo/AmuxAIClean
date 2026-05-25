@@ -549,6 +549,12 @@ public struct MainView: View {
                                         onTrash: { url in
                                             // v1.3：树形右键 / Delete 走废纸篓。
                                             triggerLargeFileTrash(urls: [url])
+                                        },
+                                        onTrashBatch: { urls in
+                                            // v1.3.zzzz Phase 4-B：树形 toolbar"批量移废纸篓"。
+                                            // 路由复用大文件视图同款 [triggerLargeFileTrash(urls:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1235)，
+                                            // 共享同一条 SafetyEngine + TrashPipeline 通道。
+                                            triggerLargeFileTrash(urls: urls)
                                         }
                                     )
                                     // v2 修：TreeBrowserView 内部用 @State 缓存了
