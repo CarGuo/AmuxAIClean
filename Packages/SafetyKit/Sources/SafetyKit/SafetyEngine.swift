@@ -18,6 +18,8 @@ public enum SafetyRejection: String, Sendable, Equatable {
     case insideAppBundle        // 在 .app 内但不是 Caches
     case sensitiveCredential    // 敏感凭证（SSH / GPG / Cloud / 签名密钥 / 项目级 .git）
     case vendorPathRule         // 命中 vendors.yaml 中显式声明 verdict=forbid 的 path 规则
+    case accessDenied           // v1.3.zzzz：扫描期 BulkScanner 标记 permissionDenied / tccProtected，
+                                // 上层在 pre-flight 一票否决——这类路径里实质没有数据，"删它"是个伪操作
     case ok
 }
 

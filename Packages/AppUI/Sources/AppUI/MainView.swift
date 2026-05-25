@@ -1115,6 +1115,17 @@ public struct MainView: View {
         return "已选 \(rows.count) 项 · \(formattedBytes(total))"
     }
 
+    /// v1.3.zzzz：从 ScanCoordinator 拉一份"上层一票否决"路径快照。
+    /// 合并 [permissionDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L18)
+    /// 与 [tccProtectedSkippedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L21)
+    /// —— 这两类路径里实质没有数据，扔给 NSWorkspace.recycle 也无意义。
+    private func accessDeniedPathsSnapshot() -> Set<String> {
+        var s = Set<String>()
+        s.formUnion(coordinator.permissionDeniedPaths)
+        s.formUnion(coordinator.tccProtectedSkippedPaths)
+        return s
+    }
+
     private func formattedBytes(_ b: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: b, countStyle: .file)
     }
@@ -1129,6 +1140,12 @@ public struct MainView: View {
 
     private func performDelete(dryRun: Bool) async {
         let paths = selectedRows.map(\.url.path)
+        // v1.3.zzzz：在调 pipeline 前把上层一票否决集合（accessDenied）推给 TrashPipeline，
+        // 让 partitionByForbid 把这类路径以 SafetyRejection.accessDenied 拒掉，不进 dryRun present
+        // 计数、也不真 recycle。HelperClient/mock 不实现 setAccessDeniedPaths，跳过即可。
+        if let trash = pipeline as? TrashPipeline {
+            trash.setAccessDeniedPaths(accessDeniedPathsSnapshot())
+        }
         let (moved, skipped, err) = await pipeline.moveToTrash(paths: paths, dryRun: dryRun)
         let mode = dryRun ? "（预览）" : ""
         if let err {
@@ -1167,6 +1184,10 @@ public struct MainView: View {
         guard !urls.isEmpty else { return }
         Task {
             let paths = urls.map(\.path)
+            // 与 performDelete 保持一致的 accessDenied pre-flight。
+            if let trash = pipeline as? TrashPipeline {
+                trash.setAccessDeniedPaths(accessDeniedPathsSnapshot())
+            }
             let (moved, skipped, err) = await pipeline.moveToTrash(paths: paths, dryRun: false)
             await MainActor.run {
                 if let err {

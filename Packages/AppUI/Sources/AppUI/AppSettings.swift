@@ -401,17 +401,18 @@ public final class AppSettings {
             self.hudPlacement = .dynamicIsland
             defaults.set(true, forKey: Keys.hudPlacementForcedIsland)
         }
-        // v1.3.x：「关窗藏 Dock」默认 ON——产品语义：本 App 已配套菜单栏托盘 +
-        // 灵动岛 HUD，关闭主窗口后保留这两个轻量入口已足够，不再需要 Dock
-        // 图标占位。关 Dock 后 ⌘Tab 也排除本 App，给用户更"驻留态后台清理工具"
-        // 的体感（行业标准玩法：Bartender / iStat Menus / Rectangle）。
-        // 用户可在设置里关回 OFF 恢复传统行为。
-        // 互斥兜底：必须同时保证 trayEnabled=true，否则关窗后没有任何入口；
+        // v1.3.x：「关窗藏 Dock」默认 OFF——保守策略：本 App 虽配套菜单栏托盘 +
+        // 灵动岛 HUD 等多入口，但默认翻 ON 会让存量用户升级后突然 Dock 找不到 App、
+        // ⌘Tab 也找不到，第一观感就是"App 弄丢了"。所以新装/未配置的用户保持
+        // OFF，关窗仍按 macOS 标准行为：Dock 留图标、⌘Tab 可切回。
+        // 用户可在设置里手动开 ON 切到"驻留态后台清理工具"形态
+        // （行业标准玩法：Bartender / iStat Menus / Rectangle）。
+        // 互斥兜底：开 ON 时必须 trayEnabled=true，否则关窗后没有任何入口；
         // 下方 trayEnabled=false 的修正一旦命中会反向把这个 flag 拉回 false。
         if let raw = defaults.object(forKey: Keys.hideFromDockWhenClosed) as? Bool {
             self.hideFromDockWhenClosed = raw
         } else {
-            self.hideFromDockWhenClosed = true
+            self.hideFromDockWhenClosed = false
         }
         // M1 内存优化：useScanStore feature flag 默认 OFF，灰度后再翻 ON。
         if let raw = defaults.object(forKey: Keys.useScanStore) as? Bool {

@@ -30,11 +30,32 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     /// nil 时退回 base evaluate，与历史行为一致（仅供未注入 vendors 的测试 / 旧入口使用）。
     private let trie: VendorTrieNode?
 
+    /// v1.3.zzzz：上层一票否决集合（`permissionDenied` / `tccProtected` 路径），
+    /// `moveToTrash` 内部用 NSLock 保护读写，调用方通过 [setAccessDeniedPaths](#) 注入最新快照。
+    /// 协议 [DeletionPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift#L10) 签名不变，避免影响 HelperClient / mock。
+    private let accessDeniedLock = NSLock()
+    private var _accessDeniedPaths: Set<String> = []
+
     public init(safety: SafetyEngine = SafetyEngine(),
                 vendors: [VendorRule] = [],
                 home: String = NSHomeDirectory()) {
         self.safety = safety
         self.trie = vendors.isEmpty ? nil : VendorTrie.build(vendors: vendors, home: home)
+    }
+
+    /// 替换上层注入的 accessDenied 集合。每次扫描完成后由 UI 层调一次。
+    /// 线程安全：所有读写都在 [accessDeniedLock](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift) 下进行。
+    public func setAccessDeniedPaths(_ paths: Set<String>) {
+        accessDeniedLock.lock()
+        _accessDeniedPaths = paths
+        accessDeniedLock.unlock()
+    }
+
+    /// 当前 accessDenied 快照（仅供单测断言使用）。
+    func snapshotAccessDeniedPaths() -> Set<String> {
+        accessDeniedLock.lock()
+        defer { accessDeniedLock.unlock() }
+        return _accessDeniedPaths
     }
 
     /// 把传入的路径按 SafetyEngine 判定切成两堆：可继续 trash 的 + 被禁的（连同 rejection）。
@@ -45,16 +66,28 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     ///
     /// `trie` 非 nil 时启用 vendor 路径覆盖判定（vendors.yaml `paths: [{verdict: forbid}]`），
     /// 命中即拒、reason=`.vendorPathRule`。这是修复"vendor-only forbid 路径在最后闸门漏拦"的硬伤。
+    ///
+    /// `accessDeniedPaths`（v1.3.zzzz）是上层一票否决集合：BulkScanner 期间被标记
+    /// `permissionDenied` / `tccProtected` 的路径里实质没有数据，"对它 trash"是个伪操作；
+    /// 命中即直接拒、reason=`.accessDenied`，**不再走 SafetyEngine**——优先级最高，
+    /// 避免在审计/日志里把这类路径误归到 SafetyEngine 的 hardForbid 等原因。
     static func partitionByForbid(
         paths: [String],
         safety: SafetyEngine,
         trie: VendorTrieNode? = nil,
+        accessDeniedPaths: Set<String> = [],
         home: String = NSHomeDirectory()
     ) -> (allowed: [String], rejected: [(path: String, reason: SafetyRejection)]) {
         var allowed: [String] = []
         var rejected: [(String, SafetyRejection)] = []
         allowed.reserveCapacity(paths.count)
         for p in paths {
+            // 优先级 1：accessDenied 一票否决（最高优先，不走 SafetyEngine）
+            if accessDeniedPaths.contains(p) {
+                rejected.append((p, .accessDenied))
+                continue
+            }
+            // 优先级 2：原有 SafetyEngine.evaluate
             let verdict: SafetyVerdict
             let reason: SafetyRejection
             if let trie {
@@ -78,7 +111,15 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
         // M4 闸门：先按 SafetyEngine 切批。被 forbid 的不进入后续逻辑（既不 dryRun present
         // 计数、也不真 recycle），统一计入 skipped。
-        let (allowed, rejected) = Self.partitionByForbid(paths: paths, safety: safety, trie: trie)
+        // v1.3.zzzz：把上层注入的 accessDeniedPaths 一并带上，让 partitionByForbid 一次切净
+        // accessDenied + forbid 两类。
+        let accessDenied = snapshotAccessDeniedPaths()
+        let (allowed, rejected) = Self.partitionByForbid(
+            paths: paths,
+            safety: safety,
+            trie: trie,
+            accessDeniedPaths: accessDenied
+        )
 
         if dryRun {
             var present = 0

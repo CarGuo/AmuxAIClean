@@ -1,6 +1,20 @@
 import XCTest
 @testable import AppUI
 
+/// 测试目的：覆盖 [ScanCoordinator.directChildren(of:sortedBy:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L890)
+/// 的**排序逻辑**——即只关心给一组 TreeRow 按 [TreeSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L150)
+/// 排出来的顺序对不对，与 deepIndex on/off 的 fetch 策略无关。
+///
+/// 为什么所有 `ScanCoordinator(enableTreeDeepIndex: true)`：
+/// v1.3.z 起 `enableTreeDeepIndex` 默认 false，意味着同步 directChildren 在内存索引
+/// 不命中时会**返空 + 派后台 task 拉 GRDB → cache hit 后下次 view body 才能拿到**。
+/// 这是产品上的"懒加载"策略，但单元测试只想验证排序——开 deepIndex=on 让内存里
+/// 直接构造好整棵 childEdges 索引，directChildren 同步返非空，**测试意图与排序逻辑强相关**。
+///
+/// 这不是"测试为了 pass 而绕过实际行为"——deepIndex=on 路径的排序代码与 deepIndex=off
+/// 路径完全共用（都走 [materializeFromMemory + 排序闭包](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)），
+/// 排序正确性只测一份。store-fallback 缓存路径的回归保护在
+/// [ScanCoordinatorStoreTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/ScanCoordinatorStoreTests.swift)。
 @MainActor
 final class TreeBrowserSortTests: XCTestCase {
 
@@ -64,7 +78,7 @@ final class TreeBrowserSortTests: XCTestCase {
         let root = try makeFixture()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let coord = ScanCoordinator()
+        let coord = ScanCoordinator(enableTreeDeepIndex: true)
         let cat = ScanCategory(id: "t", title: "", subtitle: "", rootPath: root.path, defaultVerdict: .safe)
         coord.scan(category: cat)
         await waitFinished(coord)
@@ -80,7 +94,7 @@ final class TreeBrowserSortTests: XCTestCase {
         let root = try makeFixture()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let coord = ScanCoordinator()
+        let coord = ScanCoordinator(enableTreeDeepIndex: true)
         let cat = ScanCategory(id: "t", title: "", subtitle: "", rootPath: root.path, defaultVerdict: .safe)
         coord.scan(category: cat)
         await waitFinished(coord)
@@ -93,7 +107,7 @@ final class TreeBrowserSortTests: XCTestCase {
         let root = try makeFixture()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let coord = ScanCoordinator()
+        let coord = ScanCoordinator(enableTreeDeepIndex: true)
         let cat = ScanCategory(id: "t", title: "", subtitle: "", rootPath: root.path, defaultVerdict: .safe)
         coord.scan(category: cat)
         await waitFinished(coord)
@@ -109,7 +123,7 @@ final class TreeBrowserSortTests: XCTestCase {
         let root = try makeFixture()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let coord = ScanCoordinator()
+        let coord = ScanCoordinator(enableTreeDeepIndex: true)
         let cat = ScanCategory(id: "t", title: "", subtitle: "", rootPath: root.path, defaultVerdict: .safe)
         coord.scan(category: cat)
         await waitFinished(coord)
@@ -134,7 +148,7 @@ final class TreeBrowserSortTests: XCTestCase {
         try Data(repeating: 0xAA, count: 1024).write(to: a.appendingPathComponent("f.bin"))
         defer { try? fm.removeItem(at: root) }
 
-        let coord = ScanCoordinator()
+        let coord = ScanCoordinator(enableTreeDeepIndex: true)
         let cat = ScanCategory(id: "t", title: "", subtitle: "", rootPath: root.path, defaultVerdict: .safe)
         coord.scan(category: cat)
         await waitFinished(coord)

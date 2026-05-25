@@ -1,6 +1,16 @@
 import XCTest
 @testable import AppUI
 
+/// 测试目的：覆盖 [ScanCoordinator.directChildren](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L880)
+/// 多层下钻能力——顶层 → 一级目录 → 文件叶子，每一层 hasChildren / isDirectory / bytes
+/// 都要正确。
+///
+/// 为什么所有 `ScanCoordinator(enableTreeDeepIndex: true)`：
+/// v1.3.z 起 `enableTreeDeepIndex` 默认 false，同步 directChildren 内存索引未命中时
+/// **返空 + 派后台 task 拉 GRDB**。本测试只关心"按内存索引下钻形态"是否正确，
+/// 与 store-fallback 缓存路径无关——后者由
+/// [ScanCoordinatorStoreTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/ScanCoordinatorStoreTests.swift)
+/// 单独保护。
 @MainActor
 final class TreeDownDrillTests: XCTestCase {
 
@@ -31,7 +41,7 @@ final class TreeDownDrillTests: XCTestCase {
         let root = try makeFixture()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let coord = ScanCoordinator()
+        let coord = ScanCoordinator(enableTreeDeepIndex: true)
         let cat = ScanCategory(id: "t", title: "", subtitle: "", rootPath: root.path, defaultVerdict: .safe)
         coord.scan(category: cat)
         await waitFinished(coord)
@@ -49,7 +59,7 @@ final class TreeDownDrillTests: XCTestCase {
         let root = try makeFixture()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let coord = ScanCoordinator()
+        let coord = ScanCoordinator(enableTreeDeepIndex: true)
         let cat = ScanCategory(id: "t", title: "", subtitle: "", rootPath: root.path, defaultVerdict: .safe)
         coord.scan(category: cat)
         await waitFinished(coord)
@@ -64,6 +74,7 @@ final class TreeDownDrillTests: XCTestCase {
     }
 
     func test_未扫描目录directChildren返回空() async throws {
+        // 这一条不开 deepIndex 也对——内存索引和 store-fallback 都没数据，必返空。
         let coord = ScanCoordinator()
         XCTAssertTrue(coord.directChildren(of: "/nonexistent/never/scanned").isEmpty)
     }

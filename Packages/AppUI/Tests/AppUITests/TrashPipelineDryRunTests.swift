@@ -164,5 +164,93 @@ final class TrashPipelineDryRunTests: XCTestCase {
         XCTAssertEqual(skipped, 0)
         XCTAssertNil(err)
     }
+
+    // MARK: - v1.3.zzzz Phase 2-B：accessDenied 一票否决
+
+    /// 上层注入的 accessDeniedPaths 命中即拒、reason=`.accessDenied`，且**不再走 SafetyEngine**。
+    /// 即使是个看起来 safe 的临时目录路径，只要被列入 accessDeniedPaths 也会被以 .accessDenied 拒绝。
+    func test_partitionByForbid_accessDeniedPaths硬否决_不走SafetyEngine() {
+        let safety = SafetyEngine()
+        let denied = "/Users/foo/Library/Caches/MyApp/locked-subdir"
+        let allowed = "/Users/foo/Library/Caches/MyApp/normal-subdir"
+        let r = TrashPipeline.partitionByForbid(
+            paths: [denied, allowed],
+            safety: safety,
+            accessDeniedPaths: [denied],
+            home: "/Users/foo"
+        )
+        XCTAssertEqual(r.allowed, [allowed])
+        XCTAssertEqual(r.rejected.count, 1)
+        XCTAssertEqual(r.rejected.first?.path, denied)
+        XCTAssertEqual(r.rejected.first?.reason, .accessDenied,
+                       "accessDenied 应以新增的 .accessDenied 原因区分，便于审计/日志")
+    }
+
+    /// 同一路径既在 accessDeniedPaths 也命中 SafetyEngine forbid（hardForbidPrefix）时，
+    /// **优先级**：accessDenied 高于 forbid，reason 必须是 .accessDenied 而非 .hardForbidPrefix。
+    /// 这是为了避免日志里把"上层一票否决"误归为 SafetyEngine 拦截。
+    func test_partitionByForbid_accessDenied优先级高于forbid() {
+        let safety = SafetyEngine()
+        let p = "/System/Library/Frameworks"
+        let r = TrashPipeline.partitionByForbid(
+            paths: [p],
+            safety: safety,
+            accessDeniedPaths: [p]
+        )
+        XCTAssertTrue(r.allowed.isEmpty)
+        XCTAssertEqual(r.rejected.count, 1)
+        XCTAssertEqual(r.rejected.first?.reason, .accessDenied,
+                       "accessDenied 优先；不应被覆盖为 .hardForbidPrefix")
+    }
+
+    /// dryRun：accessDenied 路径不会进 present 计数，只进 skipped；error 文案附带 accessDenied 首因。
+    func test_dryRun_accessDenied路径不计入present() async throws {
+        let dir = NSTemporaryDirectory() + "GSYCleanTrashAcc-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let safe1 = dir + "/safe1.txt"
+        let denied1 = dir + "/locked.txt"
+        try "a".write(toFile: safe1, atomically: true, encoding: .utf8)
+        try "b".write(toFile: denied1, atomically: true, encoding: .utf8)
+
+        let pipe = TrashPipeline()
+        pipe.setAccessDeniedPaths([denied1])
+        let (present, skipped, err) = await pipe.moveToTrash(
+            paths: [safe1, denied1],
+            dryRun: true
+        )
+        XCTAssertEqual(present, 1, "只 safe1 应进 present；denied1 即使存在也算 skipped")
+        XCTAssertEqual(skipped, 1)
+        XCTAssertNotNil(err)
+        XCTAssertTrue(err?.contains("accessDenied") == true,
+                      "error 应附带首条原因 accessDenied，实际=\(err ?? "nil")")
+    }
+
+    /// 正式模式：全部 accessDenied 时短路，不调 NSWorkspace.recycle；
+    /// movedCount=0、skipped=N、error 以 safety-blocked 起头并附 accessDenied。
+    func test_正式模式全accessDenied时短路不调recycle() async throws {
+        let pipe = TrashPipeline()
+        let denied = ["/Users/foo/Library/Application Support/SystemMigration/.locked",
+                      "/Users/foo/Library/CloudStorage/iCloud Drive (Archive)"]
+        pipe.setAccessDeniedPaths(Set(denied))
+        let (moved, skipped, err) = await pipe.moveToTrash(paths: denied, dryRun: false)
+        XCTAssertEqual(moved, 0)
+        XCTAssertEqual(skipped, denied.count)
+        XCTAssertNotNil(err)
+        XCTAssertTrue(err?.contains("safety-blocked") == true,
+                      "error 应以 safety-blocked 起头，实际=\(err ?? "nil")")
+        XCTAssertTrue(err?.contains("accessDenied") == true,
+                      "应附带机器可读首条原因 accessDenied")
+    }
+
+    /// 默认情况下（未注入 accessDeniedPaths），新参数不应改变历史行为。
+    func test_partitionByForbid_默认空accessDenied不影响历史行为() {
+        let safety = SafetyEngine()
+        let p = "/var/folders/zz/abc/T/normal-tempfile.bin"
+        let r1 = TrashPipeline.partitionByForbid(paths: [p], safety: safety)
+        let r2 = TrashPipeline.partitionByForbid(paths: [p], safety: safety, accessDeniedPaths: [])
+        XCTAssertEqual(r1.allowed, r2.allowed)
+        XCTAssertEqual(r1.rejected.count, r2.rejected.count)
+    }
 }
 
