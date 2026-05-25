@@ -1,4 +1,5 @@
 import Foundation
+import LogKit
 
 /// 安全评分结果。
 public enum SafetyVerdict: String, Sendable {
@@ -202,7 +203,19 @@ public struct SafetyEngine: Sendable {
 
     /// 严格判定。返回 (verdict, rejection)。
     /// - 任何不确定都向 `forbid` 倾斜，宁可误拒不可误删。
+    ///
+    /// **GSYLog 埋点（v1.3.zzzz Phase 6）**：所有 forbid 出口在此 wrapper 集中打 debug 级日志，
+    /// 调用极频繁（每条候选路径都过一次），用 debug 级避免污染 Console；
+    /// Release 默认 .info 阈值不会写盘，开发期 .debug 时可定位"为什么这条被拒了"。
     public func evaluate(path: String, home: String = NSHomeDirectory()) -> (SafetyVerdict, SafetyRejection) {
+        let result = evaluateInternal(path: path, home: home)
+        if result.0 == .forbid {
+            GSYLog.debug(.safety, "forbid path=\(path) reason=\(result.1.rawValue)")
+        }
+        return result
+    }
+
+    private func evaluateInternal(path: String, home: String) -> (SafetyVerdict, SafetyRejection) {
         // 1. 必须绝对路径
         guard path.hasPrefix("/") else {
             return (.forbid, .relativePath)
@@ -354,6 +367,15 @@ public struct SafetyEngine: Sendable {
     /// O(vendors × prefixes) 降到 O(路径深度)。`trie` 由 `VendorTrie.build(...)` 预构建。
     public func evaluate(path: String, trie: VendorTrieNode,
                          home: String = NSHomeDirectory()) -> (SafetyVerdict, SafetyRejection, VendorRule?) {
+        let result = evaluateTrieInternal(path: path, trie: trie, home: home)
+        if result.0 == .forbid {
+            GSYLog.debug(.safety, "forbid(trie) path=\(path) reason=\(result.1.rawValue)")
+        }
+        return result
+    }
+
+    private func evaluateTrieInternal(path: String, trie: VendorTrieNode,
+                                      home: String) -> (SafetyVerdict, SafetyRejection, VendorRule?) {
         // 1. 基础前置校验（与 evaluate(path:home:) 前两步一致）
         guard path.hasPrefix("/") else {
             return (.forbid, .relativePath, nil)

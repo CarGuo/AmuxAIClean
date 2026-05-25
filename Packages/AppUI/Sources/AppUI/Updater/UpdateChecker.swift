@@ -1,4 +1,5 @@
 import Foundation
+import LogKit
 import SwiftUI
 
 /// v1.1 更新检查器：手写 GitHub Releases API 路线（不引入 Sparkle）。
@@ -129,7 +130,9 @@ public final class UpdateChecker {
         defer { isChecking = false }
 
         let urlStr = "https://api.github.com/repos/\(owner)/\(repo)/releases/latest"
+        GSYLog.info(.updater, "runCheck 开始 force=\(force) url=\(urlStr)")
         guard let url = URL(string: urlStr) else {
+            GSYLog.error(.updater, "URL 构造失败 url=\(urlStr)")
             lastResult = .failed("URL 构造失败：\(urlStr)")
             return
         }
@@ -142,6 +145,7 @@ public final class UpdateChecker {
             let (data, resp) = try await session.data(for: req)
             guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
+                GSYLog.warning(.updater, "HTTP 状态码非 200 code=\(code)")
                 lastResult = .failed("HTTP \(code)")
                 return
             }
@@ -150,15 +154,19 @@ public final class UpdateChecker {
             let local = Self.currentVersion
             if SemVer.isOlder(local, than: release.tagName) {
                 if !force, let skipped = settings?.skippedUpdateTag, skipped == release.tagName {
+                    GSYLog.info(.updater, "用户已跳过此版本 tag=\(release.tagName)")
                     lastResult = .skippedByUser(release)
                     return
                 }
+                GSYLog.notice(.updater, "发现新版本 local=\(local) remote=\(release.tagName)")
                 availableUpdate = release
                 lastResult = .newer(release)
             } else {
+                GSYLog.info(.updater, "已是最新版本 local=\(local) remote=\(release.tagName)")
                 lastResult = .upToDate
             }
         } catch {
+            GSYLog.error(.updater, "runCheck 网络/解析失败 err=\(error.localizedDescription)")
             lastResult = .failed("\(error.localizedDescription)")
         }
     }

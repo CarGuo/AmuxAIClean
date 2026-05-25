@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import LogKit
 
 /// 基于 `getattrlistbulk(2)` 的高性能扫描器（v1.0：多 worker 并行下钻）。
 ///
@@ -50,6 +51,7 @@ public actor BulkScanner {
                 let queue = DirQueue()
                 // v1.1：根目录本身就是 TCC 雷区时直接退出（防御性，正常 UI 不会传入）
                 if TCCSkipList.shouldSkip(root.path) {
+                    GSYLog.notice(.scan, "scan 根目录命中 TCC skip-list path=\(root.path)")
                     continuation.yield(.tccProtectedSkipped(path: root.path))
                     let summary = ScanSummary(
                         root: root,
@@ -91,6 +93,7 @@ public actor BulkScanner {
                 } else {
                     workerCount = opts.actualConcurrency
                 }
+                GSYLog.info(.scan, "scan 启动 root=\(root.path) workerCount=\(workerCount) staySingleVolume=\(opts.staySingleVolume)")
                 await withTaskGroup(of: Void.self) { group in
                     for _ in 0..<workerCount {
                         group.addTask {
@@ -118,6 +121,7 @@ public actor BulkScanner {
                     permissionDeniedCount: s.permissionDenied,
                     tccProtectedSkippedCount: s.tccProtectedSkipped
                 )
+                GSYLog.info(.scan, "scan 完成 root=\(root.path) files=\(summary.fileCount) dirs=\(summary.directoryCount) bytes=\(summary.totalAllocatedBytes) elapsed=\(String(format: "%.2f", summary.elapsed))s permissionDenied=\(summary.permissionDeniedCount) tccSkipped=\(summary.tccProtectedSkippedCount)")
                 continuation.yield(.finished(summary))
                 continuation.finish()
             }
@@ -414,6 +418,7 @@ enum BulkEnumerate {
                 // 现在：把 errno 抓出来记录到 stderr，便于诊断；继续保持向上 break，避免无限循环。
                 let err = errno
                 FileHandle.standardError.write(Data("[ScanKit] getattrlistbulk EIO: errno=\(err) at \(dirPath)\n".utf8))
+                GSYLog.warning(.scan, "getattrlistbulk EIO errno=\(err) dir=\(dirPath)")
                 break
             }
 

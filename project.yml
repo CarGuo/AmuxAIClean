@@ -48,6 +48,8 @@ packages:
     path: Packages/AppUI
   HeuristicKit:
     path: Packages/HeuristicKit
+  LogKit:
+    path: Packages/LogKit
   TestHarness:
     path: Packages/TestHarness
 
@@ -82,6 +84,7 @@ targets:
       - package: SafetyKit
       - package: AppUI
       - package: HeuristicKit
+      - package: LogKit
       - package: TestHarness
     settings:
       base:

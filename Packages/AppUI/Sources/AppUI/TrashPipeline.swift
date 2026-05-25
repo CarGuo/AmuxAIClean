@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import LogKit
 import SafetyKit
 
 /// v0 主链路：把文件移到废纸篓，不需要 root，不需要 Helper，不需要 Apple Developer Program。
@@ -182,6 +183,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
     public func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?) {
         guard !paths.isEmpty else { return (0, 0, nil) }
+        GSYLog.info(.trash, "moveToTrash 开始 dryRun=\(dryRun) paths=\(paths.count)")
 
         // M4 闸门：先按 SafetyEngine 切批。被 forbid 的不进入后续逻辑（既不 dryRun present
         // 计数、也不真 recycle），统一计入 skipped。
@@ -194,6 +196,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             trie: trie,
             accessDeniedPaths: accessDenied
         )
+        if !rejected.isEmpty {
+            GSYLog.warning(.trash, "moveToTrash 被 SafetyEngine 拦截 \(rejected.count)/\(paths.count) firstReason=\(rejected[0].reason.rawValue) firstPath=\(rejected[0].path)")
+        }
 
         if dryRun {
             var present = 0
@@ -213,11 +218,13 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             } else {
                 err = nil
             }
+            GSYLog.info(.trash, "moveToTrash dryRun 完成 present=\(present) skipped=\(skipped) missing=\(missing)")
             return (present, skipped, err)
         }
 
         // 全部都被 forbid：直接返回，不打扰 NSWorkspace
         if allowed.isEmpty {
+            GSYLog.warning(.trash, "moveToTrash 全量拦截 rejected=\(rejected.count) firstReason=\(rejected.first?.reason.rawValue ?? "unknown")")
             return (
                 0,
                 rejected.count,
@@ -238,6 +245,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 let totalSkipped = recycleSkipped + rejectedCount
                 let err: String?
                 if let error {
+                    GSYLog.error(.trash, "NSWorkspace.recycle 失败 moved=\(movedCount)/\(urls.count) err=\(error.localizedDescription)")
                     if rejectedCount > 0 {
                         err = "recycle-failed: \(error.localizedDescription)"
                             + "；另有 \(rejectedCount) 路径被安全策略拦截"
@@ -250,6 +258,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 } else {
                     err = nil
                 }
+                GSYLog.info(.trash, "moveToTrash 完成 moved=\(movedCount) skipped=\(totalSkipped)")
                 gate.fire((movedCount, totalSkipped, err))
             }
         }

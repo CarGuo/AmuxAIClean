@@ -10,12 +10,14 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../TestHarness"),
+        .package(path: "../LogKit"),
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.29.0")
     ],
     targets: [
         .target(
             name: "ScanKit",
             dependencies: [
+                "LogKit",
                 .product(name: "GRDB", package: "GRDB.swift")
             ],
             path: "Sources/ScanKit"

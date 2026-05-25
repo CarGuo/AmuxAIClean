@@ -1,10 +1,9 @@
-2026-05-24 19:37:14.637 GSYCleanMac[14439:3171876] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
-[REGR] stale_defaults_backup_consumed keys=2
-[REGR] case=hud-toggle defaults_snapshot_keys=2 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+2026-05-25 19:41:56.864 GSYCleanMac[8558:5153409] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR] case=hud-toggle defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=hud-toggle
 [REGR] case=hud-toggle hud_visible_on=true
 [REGR_OK] case=hud-toggle HUD panel visible when persistent+enabled=true
 [REGR] case=hud-toggle hud_visible_off=false
 [REGR_OK] case=hud-toggle HUD panel hidden after disable=false
-[REGR] case=hud-toggle defaults_restored_keys=2
-[REGR_PASS] case=hud-toggle elapsed_ms=2533
+[REGR] case=hud-toggle defaults_restored_keys=3
+[REGR_PASS] case=hud-toggle elapsed_ms=2400

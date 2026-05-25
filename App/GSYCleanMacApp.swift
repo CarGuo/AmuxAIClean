@@ -1,6 +1,7 @@
 import SwiftUI
 import AppUI
 import AppKit
+import LogKit
 import SafetyKit
 import ScanKit
 
@@ -37,6 +38,22 @@ struct GSYCleanMacApp: App {
     private let tccDismissedKey = "tcc.onboarding.dismissed"
 
     init() {
+        // v1.3.zzzz Phase 6：进程一启动就接通 GSYLog 文件 sink。
+        // 落盘位置 ~/Library/Logs/GSYCleanMac/，按天滚动保留 7 天；构造失败时降级到仅 OSLog。
+        // Debug 默认 .debug 阈值（最详细），Release 默认 .info；不再额外区分。
+        do {
+            let logDir = try LogFileSink.defaultDirectory()
+            let sink = try LogFileSink(directory: logDir)
+            #if DEBUG
+            GSYLog.configure(minimumLevel: .debug, fileSink: sink)
+            #else
+            GSYLog.configure(minimumLevel: .info, fileSink: sink)
+            #endif
+            GSYLog.notice(.app, "App 启动 logDir=\(sink.directory.path)")
+        } catch {
+            NSLog("[GSYCleanMac] LogFileSink 初始化失败：\(error)（仅 OSLog 可用）")
+        }
+
         let loadedVendors = Self.loadBundledVendors()
         self.vendors = loadedVendors
         let s = AppSettings()

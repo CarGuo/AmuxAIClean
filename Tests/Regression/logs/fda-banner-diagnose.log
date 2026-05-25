@@ -1,7 +1,7 @@
-2026-05-24 19:24:12.181 GSYCleanMac[91666:3121986] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-05-25 19:42:20.607 GSYCleanMac[9084:5155979] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR] case=fda-banner-diagnose defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=fda-banner-diagnose
 [REGR] case=fda-banner-diagnose fda_status=denied
-2026-05-24 19:24:13.804 GSYCleanMac[91666:3121986] WARNING: Application performed a reentrant operation in its NSTableView delegate. This warning will become an assert in the future.
 [REGR] case=fda-banner-diagnose denied_count=10 tcc_skip_count=0
 [REGR] case=fda-banner-diagnose denied[0]=/Users/guoshuyu/.Trash
 [REGR] case=fda-banner-diagnose denied[1]=/Users/guoshuyu/Library/Caches/com.apple.ap.adprivacyd
@@ -14,4 +14,5 @@
 [REGR] case=fda-banner-diagnose denied[8]=/Users/guoshuyu/Library/Caches/CloudKit
 [REGR] case=fda-banner-diagnose denied[9]=/Users/guoshuyu/Library/Caches/com.apple.HomeKit
 [REGR_OK] case=fda-banner-diagnose scan finished=true
-[REGR_PASS] case=fda-banner-diagnose elapsed_ms=19401
+[REGR] case=fda-banner-diagnose defaults_restored_keys=3
+[REGR_PASS] case=fda-banner-diagnose elapsed_ms=23050

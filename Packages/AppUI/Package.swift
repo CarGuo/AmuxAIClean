@@ -8,12 +8,13 @@ let package = Package(
     dependencies: [
         .package(path: "../ScanKit"),
         .package(path: "../SafetyKit"),
-        .package(path: "../HeuristicKit")
+        .package(path: "../HeuristicKit"),
+        .package(path: "../LogKit")
     ],
     targets: [
         .target(
             name: "AppUI",
-            dependencies: ["ScanKit", "SafetyKit", "HeuristicKit"],
+            dependencies: ["ScanKit", "SafetyKit", "HeuristicKit", "LogKit"],
             path: "Sources/AppUI"
         ),
         .testTarget(

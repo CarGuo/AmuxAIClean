@@ -1,4 +1,5 @@
 import Foundation
+import LogKit
 import ScanKit
 import SafetyKit
 
@@ -1056,6 +1057,7 @@ public final class ScanCoordinator: ObservableObject {
         }
         // Slow path：走 store。需要 store + 当前 sessionID 都在。
         guard let store = resultStore, let sid = currentSessionID else { return [] }
+        GSYLog.debug(.tree, "directChildrenAsync 走 store path=\(path)")
 
         // v1.3.zzzz：把"该 path 的子项 + 子树聚合"整段下推到单条 SQL GROUP BY。
         // 替代旧版 query→Swift Dictionary GROUP BY 的 ~100ms 慢路径，目标 ~10ms。
@@ -1066,6 +1068,7 @@ public final class ScanCoordinator: ObservableObject {
                 parentPath: path
             )
         } catch {
+            GSYLog.error(.tree, "directChildrenAggregated 失败 path=\(path) err=\(error)")
             return []
         }
 

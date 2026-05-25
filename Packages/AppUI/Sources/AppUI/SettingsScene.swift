@@ -1,5 +1,7 @@
 import SwiftUI
 import AppKit
+import LogKit
+import ScanKit
 
 /// v1.0 设置窗口（⌘, 自动可用）。
 ///
@@ -17,6 +19,43 @@ public struct SettingsScene: View {
     /// 路径列表的 UI 镜像。actor 数据要在 SwiftUI 里显示必须先快照。
     @State private var pathsMirror: [URL] = []
 
+    /// v1.3.zzzz Phase 6：「存储与日志」Tab 的 DB 体积/计数快照。
+    @State private var storageDescription: ScanStoreDescription?
+    @State private var storageBusy: Bool = false
+    @State private var storageMessage: String?
+    @State private var pendingStorageAction: StorageAction?
+
+    /// 三级清理动作 + 对应二次确认文案。
+    fileprivate enum StorageAction: Identifiable {
+        case vacuum
+        case clearAll
+        case deleteFiles
+        var id: String {
+            switch self {
+            case .vacuum: return "vacuum"
+            case .clearAll: return "clearAll"
+            case .deleteFiles: return "deleteFiles"
+            }
+        }
+        var title: String {
+            switch self {
+            case .vacuum: return "压缩数据库"
+            case .clearAll: return "清空扫描结果"
+            case .deleteFiles: return "删除数据库文件"
+            }
+        }
+        var message: String {
+            switch self {
+            case .vacuum:
+                return "对 SQLite 执行 VACUUM，仅紧凑空间不删除任何业务数据。下次扫描后体积可能再次回升。"
+            case .clearAll:
+                return "清空 scan_session / scan_result 全表后再 VACUUM。所有历史扫描记录将不可恢复。"
+            case .deleteFiles:
+                return "直接从磁盘删除 .sqlite + -wal + -shm 三个文件（破坏性最强）。下次启动会重新建库。"
+            }
+        }
+    }
+
     public init(settings: AppSettings, pathStore: UserPathStore, updateChecker: UpdateChecker) {
         self.settings = settings
         self.pathStore = pathStore
@@ -33,10 +72,13 @@ public struct SettingsScene: View {
                 .tabItem { Label("自定义路径", systemImage: "folder.badge.plus") }
             updateTab
                 .tabItem { Label("更新", systemImage: "arrow.down.circle") }
+            storageTab
+                .tabItem { Label("存储与日志", systemImage: "internaldrive") }
         }
-        .frame(width: 520, height: 380)
+        .frame(width: 520, height: 420)
         .task {
             await refreshPaths()
+            await refreshStorage()
         }
     }
 
@@ -328,5 +370,263 @@ public struct SettingsScene: View {
         await MainActor.run {
             pathsMirror = list
         }
+    }
+}
+
+// MARK: - 存储与日志 Tab（v1.3.zzzz Phase 6）
+
+extension SettingsScene {
+    /// 「存储与日志」Tab：DB 体积展示 + 三级清理 + 日志目录入口。
+    fileprivate var storageTab: some View {
+        Form {
+            Section {
+                if let desc = storageDescription {
+                    LabeledContent("数据库路径") {
+                        Text(desc.databaseURL.path)
+                            .font(.caption)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+                    LabeledContent("总体积") {
+                        Text(Self.formatBytes(desc.totalSizeBytes))
+                            .monospacedDigit()
+                    }
+                    LabeledContent("会话 / 结果") {
+                        Text("\(desc.sessionCount) 会话 · \(desc.resultRowCount) 行")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text("正在读取数据库信息…")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                HStack {
+                    Button {
+                        Task { await refreshStorage() }
+                    } label: {
+                        Label("刷新", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(storageBusy)
+                    Spacer()
+                    Button {
+                        revealDatabaseInFinder()
+                    } label: {
+                        Label("在 Finder 显示", systemImage: "folder")
+                    }
+                }
+            } header: {
+                Text("扫描数据库（SQLite）")
+            } footer: {
+                Text("总体积 = .sqlite + -wal + -shm 三个文件合计。WAL 模式下 -wal 可能临时较大，VACUUM 后会回收。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                HStack {
+                    Button {
+                        pendingStorageAction = .vacuum
+                    } label: {
+                        Label("压缩数据库（VACUUM）", systemImage: "rectangle.compress.vertical")
+                    }
+                    .disabled(storageBusy)
+                    Spacer()
+                }
+                HStack {
+                    Button {
+                        pendingStorageAction = .clearAll
+                    } label: {
+                        Label("清空扫描结果", systemImage: "trash")
+                    }
+                    .disabled(storageBusy)
+                    Spacer()
+                }
+                HStack {
+                    Button(role: .destructive) {
+                        pendingStorageAction = .deleteFiles
+                    } label: {
+                        Label("删除数据库文件", systemImage: "exclamationmark.triangle")
+                    }
+                    .disabled(storageBusy)
+                    Spacer()
+                }
+                if let msg = storageMessage {
+                    Text(msg)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                }
+                if storageBusy {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text("处理中…").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("清理操作")
+            } footer: {
+                Text("由轻到重：VACUUM 仅紧凑空间；清空表丢扫描历史保留 schema；删文件最彻底，下次启动重建。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                LabeledContent("日志目录") {
+                    Text(GSYLog.currentLogDirectory?.path ?? "（未启用文件落盘）")
+                        .font(.caption)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+                HStack {
+                    Button {
+                        openLogDirectory()
+                    } label: {
+                        Label("打开日志目录", systemImage: "folder")
+                    }
+                    .disabled(GSYLog.currentLogDirectory == nil)
+                    Spacer()
+                    Button {
+                        openTodayLogFile()
+                    } label: {
+                        Label("查看今日日志", systemImage: "doc.text")
+                    }
+                    .disabled(GSYLog.currentLogFileURL() == nil)
+                }
+            } header: {
+                Text("运行日志")
+            } footer: {
+                Text("按天滚动，保留最近 7 天。Debug 构建默认含 debug 级，Release 构建仅 info 及以上。遇到问题可把日志附给开发者。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .alert(item: $pendingStorageAction) { action in
+            Alert(
+                title: Text(action.title),
+                message: Text(action.message),
+                primaryButton: .destructive(Text("确认")) {
+                    Task { await performStorageAction(action) }
+                },
+                secondaryButton: .cancel(Text("取消"))
+            )
+        }
+    }
+
+    // MARK: 存储行为
+
+    /// 拉一次 DB 描述快照刷新 UI。
+    fileprivate func refreshStorage() async {
+        guard let url = try? GRDBScanResultStore.defaultDatabaseURL() else {
+            await MainActor.run {
+                storageDescription = nil
+                storageMessage = "无法解析 Application Support 目录"
+            }
+            return
+        }
+        // 文件不存在（首次启动 / 已删除）：直接给一个零计数的描述，避免阻塞 UI。
+        if !FileManager.default.fileExists(atPath: url.path) {
+            await MainActor.run {
+                storageDescription = ScanStoreDescription(
+                    databaseURL: url,
+                    totalSizeBytes: 0,
+                    sessionCount: 0,
+                    resultRowCount: 0
+                )
+            }
+            return
+        }
+        do {
+            let store = try GRDBScanResultStore(databaseURL: url)
+            let desc = try await store.describeStorage()
+            await MainActor.run {
+                storageDescription = desc
+            }
+        } catch {
+            GSYLog.error(.settings, "refreshStorage 失败 err=\(error)")
+            await MainActor.run {
+                storageMessage = "读取失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    fileprivate func performStorageAction(_ action: StorageAction) async {
+        await MainActor.run {
+            storageBusy = true
+            storageMessage = nil
+        }
+        defer {
+            Task { @MainActor in storageBusy = false }
+        }
+        guard let url = try? GRDBScanResultStore.defaultDatabaseURL() else {
+            await MainActor.run { storageMessage = "无法解析数据库路径" }
+            return
+        }
+        GSYLog.notice(.settings, "执行存储清理 action=\(action.id) path=\(url.path)")
+        do {
+            switch action {
+            case .vacuum:
+                let store = try GRDBScanResultStore(databaseURL: url)
+                try await store.vacuum()
+                await MainActor.run { storageMessage = "VACUUM 已完成。" }
+            case .clearAll:
+                let store = try GRDBScanResultStore(databaseURL: url)
+                try await store.clearAll()
+                await MainActor.run { storageMessage = "已清空全部扫描结果。" }
+            case .deleteFiles:
+                // 文件级删除前提：当前进程内没有 store 持有句柄。Settings 窗口里
+                // 即便用户正在主窗口扫描也很难命中（Settings 是独立 Scene），
+                // 这里用 nonisolated 静态删，下次构造 store 时 migration 会重建。
+                try GRDBScanResultStore.deleteDatabaseFiles(at: url)
+                await MainActor.run { storageMessage = "已删除 .sqlite / -wal / -shm 文件。" }
+            }
+        } catch {
+            GSYLog.error(.settings, "存储清理失败 action=\(action.id) err=\(error)")
+            await MainActor.run { storageMessage = "失败：\(error.localizedDescription)" }
+        }
+        await refreshStorage()
+    }
+
+    fileprivate func revealDatabaseInFinder() {
+        guard let url = try? GRDBScanResultStore.defaultDatabaseURL() else { return }
+        if FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            // 文件还没建：退一级展示父目录。
+            NSWorkspace.shared.open(url.deletingLastPathComponent())
+        }
+    }
+
+    // MARK: 日志行为
+
+    fileprivate func openLogDirectory() {
+        guard let dir = GSYLog.currentLogDirectory else { return }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(dir)
+    }
+
+    fileprivate func openTodayLogFile() {
+        guard let url = GSYLog.currentLogFileURL() else { return }
+        if FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.open(url)
+        } else {
+            // 没有今日日志（启动后从未写过）：退到目录。
+            openLogDirectory()
+        }
+    }
+
+    // MARK: 工具
+
+    fileprivate static func formatBytes(_ bytes: Int64) -> String {
+        let f = ByteCountFormatter()
+        f.allowedUnits = [.useKB, .useMB, .useGB]
+        f.countStyle = .file
+        return f.string(fromByteCount: bytes)
     }
 }

@@ -1,5 +1,25 @@
 import Foundation
 import GRDB
+import LogKit
+
+/// SQLite 存储描述快照（UI 设置面板用）。
+public struct ScanStoreDescription: Sendable, Equatable {
+    /// 主 db 文件 URL（.sqlite）。
+    public let databaseURL: URL
+    /// .sqlite + -wal + -shm 三个文件的总字节数。
+    public let totalSizeBytes: Int64
+    /// scan_session 表的 row 数。
+    public let sessionCount: Int
+    /// scan_result 表的 row 数。
+    public let resultRowCount: Int
+
+    public init(databaseURL: URL, totalSizeBytes: Int64, sessionCount: Int, resultRowCount: Int) {
+        self.databaseURL = databaseURL
+        self.totalSizeBytes = totalSizeBytes
+        self.sessionCount = sessionCount
+        self.resultRowCount = resultRowCount
+    }
+}
 
 public actor GRDBScanResultStore: ScanResultStore {
     public enum StoreError: Error, Sendable, Equatable {
@@ -26,9 +46,20 @@ public actor GRDBScanResultStore: ScanResultStore {
             try db.execute(sql: "PRAGMA synchronous = NORMAL")
             try db.execute(sql: "PRAGMA temp_store = MEMORY")
         }
-        self.dbPool = try DatabasePool(path: databaseURL.path, configuration: config)
+        do {
+            self.dbPool = try DatabasePool(path: databaseURL.path, configuration: config)
+        } catch {
+            GSYLog.error(.db, "DatabasePool 打开失败 path=\(databaseURL.path) err=\(error)")
+            throw error
+        }
         self.location = databaseURL
-        try Self.migrator.migrate(self.dbPool)
+        do {
+            try Self.migrator.migrate(self.dbPool)
+        } catch {
+            GSYLog.error(.db, "迁移失败 path=\(databaseURL.path) err=\(error)")
+            throw error
+        }
+        GSYLog.info(.db, "GRDBScanResultStore 已就绪 path=\(databaseURL.path)")
     }
 
     public static func defaultDatabaseURL(
@@ -324,6 +355,7 @@ public actor GRDBScanResultStore: ScanResultStore {
     }
 
     public func evictSession(_ id: ScanSessionID) async throws {
+        GSYLog.info(.db, "evictSession 开始 id=\(id.raw)")
         try await dbPool.write { db in
             try db.execute(
                 sql: "DELETE FROM scan_session WHERE id = ?",
@@ -333,9 +365,11 @@ public actor GRDBScanResultStore: ScanResultStore {
         try await dbPool.writeWithoutTransaction { db in
             try db.execute(sql: "PRAGMA wal_checkpoint(TRUNCATE)")
         }
+        GSYLog.info(.db, "evictSession 完成 id=\(id.raw)")
     }
 
     public func clearAll() async throws {
+        GSYLog.notice(.db, "clearAll 开始 path=\(location.path)")
         try await dbPool.write { db in
             try db.execute(sql: "DELETE FROM scan_session")
             try db.execute(sql: "DELETE FROM scan_result")
@@ -344,6 +378,52 @@ public actor GRDBScanResultStore: ScanResultStore {
             try db.execute(sql: "PRAGMA wal_checkpoint(TRUNCATE)")
             try db.execute(sql: "VACUUM")
         }
+        GSYLog.notice(.db, "clearAll 完成（已 vacuum）")
+    }
+
+    /// v1.3.zzzz Phase 6：仅 vacuum，不动业务数据。用户在「设置 → 存储与日志」点击。
+    /// 与 [clearAll](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift#L350) 的区别：clearAll 会先 truncate 再 vacuum，
+    /// 这里只 vacuum 紧凑空间——给"想释放但不想丢扫描历史"的用户用。
+    public func vacuum() async throws {
+        GSYLog.notice(.db, "vacuum 开始")
+        try await dbPool.writeWithoutTransaction { db in
+            try db.execute(sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+            try db.execute(sql: "VACUUM")
+        }
+        GSYLog.notice(.db, "vacuum 完成")
+    }
+
+    /// v1.3.zzzz Phase 6：返回 DB 的体积/计数快照，给「设置 → 存储与日志」UI 用。
+    /// 总字节数 = .sqlite + -wal + -shm 三个 sibling 文件之和。
+    public func describeStorage() async throws -> ScanStoreDescription {
+        let sessions = try await dbPool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM scan_session") ?? 0
+        }
+        let rows = try await dbPool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM scan_result") ?? 0
+        }
+        let total = Self.totalDatabaseFileBytes(at: location)
+        return ScanStoreDescription(
+            databaseURL: location,
+            totalSizeBytes: total,
+            sessionCount: sessions,
+            resultRowCount: rows
+        )
+    }
+
+    /// v1.3.zzzz Phase 6：返回 sqlite + -wal + -shm 三个文件的合计字节数。
+    /// 任何一个不存在按 0 处理。这是个 nonisolated 静态方法，避免 actor hop。
+    nonisolated public static func totalDatabaseFileBytes(at sqliteURL: URL) -> Int64 {
+        let suffixes = ["", "-wal", "-shm"]
+        var total: Int64 = 0
+        for s in suffixes {
+            let url = URL(fileURLWithPath: sqliteURL.path + s)
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+               let size = attrs[.size] as? NSNumber {
+                total += size.int64Value
+            }
+        }
+        return total
     }
 
     /// 测试专用：返回 scan_result 表当前总行数（不按 session 过滤）。
@@ -353,5 +433,37 @@ public actor GRDBScanResultStore: ScanResultStore {
         try await dbPool.read { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM scan_result") ?? 0
         }
+    }
+}
+
+// MARK: - 文件级删除（破坏性最强）
+
+extension GRDBScanResultStore {
+    /// v1.3.zzzz Phase 6：从磁盘上**直接删除** sqlite 文件 + -wal + -shm。
+    ///
+    /// **使用前提**：
+    /// 1. 调用方必须先释放对应的 [GRDBScanResultStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift) 实例（否则 actor 仍持有 dbPool 句柄）
+    /// 2. 调用后下次构造 store 会自动重建 schema（迁移机制兜底）
+    ///
+    /// 这是 nonisolated 静态方法：因为 actor 实例本身就要被销毁，没法在自己 await 期间删自己的 db。
+    nonisolated public static func deleteDatabaseFiles(at sqliteURL: URL) throws {
+        GSYLog.warning(.db, "deleteDatabaseFiles 开始 path=\(sqliteURL.path)")
+        let suffixes = ["", "-wal", "-shm"]
+        var lastError: Error?
+        var deletedCount = 0
+        for s in suffixes {
+            let url = URL(fileURLWithPath: sqliteURL.path + s)
+            if FileManager.default.fileExists(atPath: url.path) {
+                do {
+                    try FileManager.default.removeItem(at: url)
+                    deletedCount += 1
+                } catch {
+                    lastError = error
+                    GSYLog.error(.db, "删除 \(url.path) 失败：\(error)")
+                }
+            }
+        }
+        GSYLog.warning(.db, "deleteDatabaseFiles 完成 deleted=\(deletedCount)/3")
+        if let lastError { throw lastError }
     }
 }
