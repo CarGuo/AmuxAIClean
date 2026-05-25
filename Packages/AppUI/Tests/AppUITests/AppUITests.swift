@@ -119,3 +119,41 @@ final class TrashPipelineTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: f), "真删后原路径应不存在")
     }
 }
+
+// MARK: - v1.3.zzzz Phase 4-A：默认视图模式断言（方案 C 落地防回归）
+
+/// 这组测试 lock 死方案 C 的两条不变量：
+/// - 默认视图模式 == `.tree`（任何回滚到 `.list` 的改动都立刻红线）
+/// - `ResultsViewMode` 枚举形态稳定（case 顺序、label 文案、icon symbol 不许悄悄改），
+///   是 [viewModeBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) UI 的隐性合同
+final class MainViewDefaultViewModeTests: XCTestCase {
+
+    func testPhase4ADefaultIsTree() {
+        // 方案 C：默认走树形
+        XCTAssertEqual(MainView.phase4ADefaultViewMode, .tree,
+                       "方案 C 默认主视图必须是 .tree；任何回滚到 .list 的改动都不允许")
+    }
+
+    func testResultsViewModeCaseOrderIsListThenTree() {
+        // segmented Picker 显示顺序依赖 CaseIterable.allCases 顺序
+        // 调换会让用户老的肌肉记忆位置错位（清单原本在左、树形原本在右）
+        XCTAssertEqual(MainView.ResultsViewMode.allCases, [.list, .tree])
+    }
+
+    func testResultsViewModeLabelsAreStable() {
+        XCTAssertEqual(MainView.ResultsViewMode.list.label, "清单")
+        XCTAssertEqual(MainView.ResultsViewMode.tree.label, "树形")
+    }
+
+    func testResultsViewModeIconsAreStable() {
+        // SF Symbols 名是契约：换 icon 必须显式同步 viewModeBar 的角标 Label
+        XCTAssertEqual(MainView.ResultsViewMode.list.icon, "list.bullet")
+        XCTAssertEqual(MainView.ResultsViewMode.tree.icon, "rectangle.grid.1x2")
+    }
+
+    func testResultsViewModeRawValuesAreStable() {
+        // rawValue 用于 @AppStorage / 持久化（如果未来加），不许悄悄改
+        XCTAssertEqual(MainView.ResultsViewMode.list.rawValue, "list")
+        XCTAssertEqual(MainView.ResultsViewMode.tree.rawValue, "tree")
+    }
+}

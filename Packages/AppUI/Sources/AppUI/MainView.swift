@@ -27,7 +27,21 @@ public struct MainView: View {
     @State private var deleteResult: String?
     @State private var isDropTargeted: Bool = false
     /// v1.0 T3：结果区视图模式（清单 vs 多层树）。
-    @State private var viewMode: ResultsViewMode = .list
+    ///
+    /// **v1.3.zzzz Phase 4-A**：方案 C 落地——默认走树形（`.tree`），
+    /// 与 [CleanMyMac Smart Scan](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/competitors/CleanMyMac.md)、
+    /// [DaisyDisk sunburst](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/competitors/DaisyDisk.md) 同款"层次化主视图"对齐。
+    /// 清单**降级为可切换二级视图**（保留入口，不删 [listResults](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L611)）：
+    /// - 清单仍然挂载在 [viewModeBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L590) 的 segmented Picker 里随时切回
+    /// - 但视觉默认强调"树形"是主路径，让用户首屏看到的是层次化容量分布
+    /// - 批量勾选 / mtime 过滤等"清单专属能力"先不迁移到树（避免风险面爆炸）
+    @State private var viewMode: ResultsViewMode = MainView.phase4ADefaultViewMode
+
+    /// Phase 4-A 单一信源：方案 C 选定的默认视图模式。
+    /// 把默认值从 @State inline literal 提到 static 常量，**让测试能稳定断言**——
+    /// SwiftUI @State 的初始值不是 protocol 可见的，没法从外部反射；提一层就能 lock。
+    /// 任何回滚到 `.list` 的改动都会让 [`testPhase4ADefaultIsTree`](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/AppUITests.swift) 直接红。
+    public static let phase4ADefaultViewMode: ResultsViewMode = .tree
     /// v1.0 T4：大文件视图选中项。与 detail（RowItem）解耦，
     /// 因为大文件是叶子，没有聚合 RowItem 模型。
     @State private var largeFileSelection: LargeFileItem?
@@ -586,9 +600,16 @@ public struct MainView: View {
         }
     }
 
-    /// 视图模式切换条（清单 / 树形）。
+    /// 视图模式切换条（**v1.3.zzzz Phase 4-A 起：树形为主、清单降级**）。
+    ///
+    /// 设计与方案 C 对齐：
+    /// - 左侧仍保留 segmented Picker 让两种视图可一键切换（兼顾 v1.0 - v1.2 老用户的肌肉记忆）
+    /// - 但 segmented 宽度从 220 收到 180，并在右侧补一行"主视图"角标，让用户**首屏理解**"树是默认"
+    /// - 提示文案从原来的"批量勾选请切回清单"改成中性说明，
+    ///   避免暗示"清单才是干活视图"。批量删除能力沿用 [大文件批量页 (P1-5)](file:///Users/guoshuyu/workspace/GSYCleanMac) 与
+    ///   清单视图，不强迫所有人切回清单
     private var viewModeBar: some View {
-        HStack {
+        HStack(spacing: 12) {
             Picker("视图", selection: $viewMode) {
                 ForEach(ResultsViewMode.allCases) { mode in
                     Label(mode.label, systemImage: mode.icon).tag(mode)
@@ -596,10 +617,32 @@ public struct MainView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: 220)
+            .frame(maxWidth: 180)
+
+            // 当前视图角标——告诉用户"你在看树形（主视图）"或"清单是二级 fallback"
+            switch viewMode {
+            case .tree:
+                Label("主视图 · 层次化容量分布", systemImage: "rectangle.grid.1x2")
+                    .labelStyle(.titleAndIcon)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .list:
+                Label("二级视图 · 兼容旧版扁平清单", systemImage: "list.bullet")
+                    .labelStyle(.titleAndIcon)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
             Spacer()
-            if viewMode == .tree {
-                Text("树视图：右键或 Delete 键单条移到废纸篓；批量勾选请切回清单")
+
+            // 视图特定提示——中性说明操作方式，不再暗示"另一个视图才是正经的"
+            switch viewMode {
+            case .tree:
+                Text("右键或 Delete 单条移废纸篓 · 双击下钻")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            case .list:
+                Text("勾选多条后用底部按钮批量移废纸篓")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
@@ -916,7 +959,7 @@ public struct MainView: View {
                     LabeledContent("可展开", value: "是")
                 }
                 Divider()
-                Text("提示：树视图只读浏览。要清理请切回「清单」视图勾选。")
+                Text("提示：右键或 Delete 单条移废纸篓 · 双击展开下一层 · 批量勾选请切到「清单」")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                 Spacer()
