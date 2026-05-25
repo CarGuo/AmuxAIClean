@@ -252,5 +252,62 @@ final class TrashPipelineDryRunTests: XCTestCase {
         XCTAssertEqual(r1.allowed, r2.allowed)
         XCTAssertEqual(r1.rejected.count, r2.rejected.count)
     }
+
+    // MARK: - v1.3.zzzz Phase 2-F-A：firmlink 路径标准化
+
+    /// **场景**：BulkScanner 给的 deniedPaths 形态是 `/private/var/folders/...`（macOS firmlink 实际路径），
+    /// selectedRows 给的 url.path 形态是 `/var/folders/...`（Foundation 默认折叠形态）。
+    /// 标准化前 `Set.contains` 落空 → 漏拦。
+    /// 标准化后 partitionByForbid 应把两种形态视为等价，**任一侧标准化都能命中**。
+    func test_partitionByForbid_firmlink私有var形态命中折叠后的var形态() {
+        let safety = SafetyEngine()
+        // accessDeniedPaths 给 /private/var/... 形态（BulkScanner 期间拿到的真实路径）
+        let denied: Set<String> = ["/private/var/folders/zz/abc/T/locked-app-cache"]
+        // selectedRows 给的 url.path 形态是 /var/folders/...（Foundation 默认）
+        let selected = "/var/folders/zz/abc/T/locked-app-cache"
+        let r = TrashPipeline.partitionByForbid(
+            paths: [selected],
+            safety: safety,
+            accessDeniedPaths: denied
+        )
+        XCTAssertEqual(r.allowed.count, 0, "/var/.. 形态的 selected 应被 /private/var/.. 形态的 denied 命中")
+        XCTAssertEqual(r.rejected.count, 1)
+        XCTAssertEqual(r.rejected.first?.reason, .accessDenied)
+        XCTAssertEqual(r.rejected.first?.path, selected,
+                       "rejected 应保留原始路径形态便于 UI/日志展示，而非替换为标准化形态")
+    }
+
+    /// 反向同理：denied 给 /var/... 折叠形态，selected 给 /private/var/... 真实形态，也要命中。
+    func test_partitionByForbid_firmlink折叠var形态命中私有var形态() {
+        let safety = SafetyEngine()
+        let denied: Set<String> = ["/var/folders/zz/abc/T/another-locked"]
+        let selected = "/private/var/folders/zz/abc/T/another-locked"
+        let r = TrashPipeline.partitionByForbid(
+            paths: [selected],
+            safety: safety,
+            accessDeniedPaths: denied
+        )
+        XCTAssertEqual(r.allowed.count, 0)
+        XCTAssertEqual(r.rejected.count, 1)
+        XCTAssertEqual(r.rejected.first?.reason, .accessDenied)
+    }
+
+    /// setAccessDeniedPaths 入集时已经标准化：snapshotAccessDeniedPaths 出来的应该是折叠后的形态。
+    /// 验证 normalize-on-write 已生效；这是为了让 lookups 走的循环里 normalize 是幂等空操作。
+    func test_setAccessDeniedPaths_注入时即标准化为var折叠形态() {
+        let pipe = TrashPipeline()
+        pipe.setAccessDeniedPaths([
+            "/private/var/folders/zz/abc/T/x",
+            "/var/folders/zz/abc/T/y",
+            "/Users/foo/Library/Caches/MyApp"
+        ])
+        let snap = pipe.snapshotAccessDeniedPaths()
+        XCTAssertTrue(snap.contains("/var/folders/zz/abc/T/x"),
+                      "/private/var/.. 入集后应折叠为 /var/..；snap=\(snap)")
+        XCTAssertTrue(snap.contains("/var/folders/zz/abc/T/y"),
+                      "/var/.. 入集后应保持 /var/..")
+        XCTAssertTrue(snap.contains("/Users/foo/Library/Caches/MyApp"),
+                      "非 firmlink 路径应原样保留")
+    }
 }
 

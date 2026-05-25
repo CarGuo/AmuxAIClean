@@ -1167,6 +1167,15 @@ public struct MainView: View {
     /// 统一扫描入口：根据类目 kind 决定是否传 largeFileMinBytes。
     /// 这一层抽象避免在 onChange / toolbar / settings.onChange 三处重复"判 kind 决定参数"。
     private func startScan(category: ScanCategory) {
+        // v1.3.zzzz Phase 2-F-B：开新一轮扫描前先清掉 pipeline 上的 accessDenied 旧快照。
+        // ScanCoordinator 在 scan(...) 入口会重置 permissionDeniedPaths / tccProtectedSkippedPaths
+        // （见 [ScanCoordinator.swift L356-L361 / L410-L412 / L509-L511]
+        // (file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L356)），
+        // 但 pipeline 是 MainView 实例字段，跨扫描复用——若不主动清空，旧 deniedPaths 会一直
+        // 残留到下次 performDelete 重新注入前的窗口期，造成"本来已可写的路径被误以 accessDenied 拒"。
+        if let trash = pipeline as? TrashPipeline {
+            trash.setAccessDeniedPaths([])
+        }
         if category.kind == .largeFiles {
             let minBytes = Int64(max(0, settings.minFileSizeMB)) * 1024 * 1024
             coordinator.scan(category: category,

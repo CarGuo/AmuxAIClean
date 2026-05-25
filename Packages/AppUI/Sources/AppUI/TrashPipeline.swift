@@ -33,6 +33,13 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     /// v1.3.zzzz：上层一票否决集合（`permissionDenied` / `tccProtected` 路径），
     /// `moveToTrash` 内部用 NSLock 保护读写，调用方通过 [setAccessDeniedPaths](#) 注入最新快照。
     /// 协议 [DeletionPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift#L10) 签名不变，避免影响 HelperClient / mock。
+    ///
+    /// **锁的作用范围（必读）**：`accessDeniedLock` 只盖 Set 的"写入"和"快照交接"
+    /// （[setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L52) /
+    /// [snapshotAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L62)）
+    /// 这两个 O(1) 临界区。`partitionByForbid` 内部的 `for p in paths` 循环里走的是
+    /// **值拷贝（CoW）后的本地 Set.contains O(1)**，**不持锁**——这是设计而非疏漏，避免锁
+    /// 在大批量删除时成为热点。改动该锁范围前请确保理解此约束。
     private let accessDeniedLock = NSLock()
     private var _accessDeniedPaths: Set<String> = []
 
@@ -44,18 +51,68 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     }
 
     /// 替换上层注入的 accessDenied 集合。每次扫描完成后由 UI 层调一次。
-    /// 线程安全：所有读写都在 [accessDeniedLock](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift) 下进行。
+    /// 线程安全：所有读写都在 [accessDeniedLock](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L43) 下进行。
+    ///
+    /// **路径标准化（v1.3.zzzz Phase 2-F-A）**：入集前对每条路径做
+    /// `URL(fileURLWithPath:).standardizedFileURL.path`，把 `/private/var/folders/...`
+    /// 这类 firmlink 折叠成 `/var/folders/...`，与 [SafetyEngine.evaluate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L215)
+    /// 的口径一致；`partitionByForbid` 比较时对入参 `p` 也做同样处理（见 [normalize](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)）。
+    /// 防御场景：BulkScanner 给的 deniedPaths 与 selectedRows 里的 url.path 来源不同，
+    /// firmlink 形态可能不一致——任一侧未标准化都会造成"明明在 deniedSet 却 contains 落空"
+    /// 漏拦。
     public func setAccessDeniedPaths(_ paths: Set<String>) {
+        let normalized = Set(paths.map(Self.normalizePath))
         accessDeniedLock.lock()
-        _accessDeniedPaths = paths
+        _accessDeniedPaths = normalized
         accessDeniedLock.unlock()
     }
 
-    /// 当前 accessDenied 快照（仅供单测断言使用）。
+    /// 当前 accessDenied 快照（仅供单测断言使用）。已经是标准化后的形式。
     func snapshotAccessDeniedPaths() -> Set<String> {
         accessDeniedLock.lock()
         defer { accessDeniedLock.unlock() }
         return _accessDeniedPaths
+    }
+
+    /// 路径标准化（v1.3.zzzz Phase 2-F-A）：折叠 firmlink，与 SafetyEngine 口径对齐。
+    ///
+    /// **为什么不用 `URL(fileURLWithPath:).standardizedFileURL.path`**：
+    /// macOS 的 `standardizedFileURL` 对**不存在**的路径不会折叠 firmlink（实测：
+    /// `/private/var/folders/zz/abc/T/x` 不存在时会原样返回 `/private/var/folders/...`，
+    /// 不会变成 `/var/folders/...`）。这导致 BulkScanner 给的 `/private/var/...` 形态
+    /// 和 selectedRows 拿到的 `/var/...` 形态在 `Set.contains` 上对不上。
+    /// SafetyEngine 之所以能正常工作，是因为它的 hardForbid 列表里同时膨胀了
+    /// `/private/var` 和 `/var` 两套前缀（见 [hardForbidPrefixes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L185)），
+    /// 不依赖路径标准化吃 firmlink。
+    ///
+    /// **本函数实现**：用纯字符串规则折叠已知 firmlink 前缀，与磁盘是否存在解耦：
+    /// - `/private/var/...` → `/var/...`
+    /// - `/private/tmp/...` → `/tmp/...`
+    /// - `/private/etc/...` → `/etc/...`
+    ///
+    /// 这三条覆盖 macOS 当前所有标准 firmlink，且与 `getattrlist(ATTR_CMNEXT_NOFIRMLINKPATH)`
+    /// 折叠出的形态等价。再叠一层 `URL.standardizedFileURL` 处理 `..` / 重复 `/`。
+    /// 复杂度：单次 O(path 长度)。调用规模是 paths.count（几十~几千）级别，
+    /// 不是 BulkScanner 节点数（30w）级别，可放心走。
+    static func normalizePath(_ raw: String) -> String {
+        let trimmed = URL(fileURLWithPath: raw).standardizedFileURL.path
+        // 已知 firmlink 前缀：长前缀优先，避免 `/private/var/...` 被 `/private/...` 截短。
+        let firmlinks: [(String, String)] = [
+            ("/private/var/", "/var/"),
+            ("/private/tmp/", "/tmp/"),
+            ("/private/etc/", "/etc/"),
+        ]
+        for (priv, pub) in firmlinks {
+            if trimmed.hasPrefix(priv) {
+                return pub + String(trimmed.dropFirst(priv.count))
+            }
+            // 整体等于 `/private/var` 这种边界（无尾斜杠）也归一化
+            let privNoSlash = String(priv.dropLast())
+            if trimmed == privNoSlash {
+                return String(pub.dropLast())
+            }
+        }
+        return trimmed
     }
 
     /// 把传入的路径按 SafetyEngine 判定切成两堆：可继续 trash 的 + 被禁的（连同 rejection）。
@@ -71,6 +128,14 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     /// `permissionDenied` / `tccProtected` 的路径里实质没有数据，"对它 trash"是个伪操作；
     /// 命中即直接拒、reason=`.accessDenied`，**不再走 SafetyEngine**——优先级最高，
     /// 避免在审计/日志里把这类路径误归到 SafetyEngine 的 hardForbid 等原因。
+    ///
+    /// **路径口径（v1.3.zzzz Phase 2-F-A）**：循环内对每个待判路径 p 做
+    /// [normalizePath](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L80)
+    /// 后再 `Set.contains`，确保两侧 firmlink 形态一致；`accessDeniedPaths` 入参允许
+    /// 调用方传入未标准化的 Set（外部测试 / 旧 callsite），Set 元素也被假定将经过
+    /// [setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L63)
+    /// 注入路径标准化——若直接以 static 方式调用，调用方需自行确保两侧口径一致。
+    /// `rejected` 仍返回原始 p（不替换为标准化后的字符串），便于 UI / 日志展示用户能识别的路径。
     static func partitionByForbid(
         paths: [String],
         safety: SafetyEngine,
@@ -81,13 +146,21 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         var allowed: [String] = []
         var rejected: [(String, SafetyRejection)] = []
         allowed.reserveCapacity(paths.count)
+        // accessDeniedPaths 容量小（几十~几千），对它做一次性 normalize 比每个 p 都拿临时 Set 划算。
+        // 当 set 已经经 setAccessDeniedPaths 注入时，normalize 是幂等空操作。
+        let normalizedDenied: Set<String> = accessDeniedPaths.isEmpty
+            ? []
+            : Set(accessDeniedPaths.map(normalizePath))
         for p in paths {
             // 优先级 1：accessDenied 一票否决（最高优先，不走 SafetyEngine）
-            if accessDeniedPaths.contains(p) {
+            // 用 normalize(p) 与 normalizedDenied 比，确保 /private/var ↔ /var firmlink 互通。
+            if !normalizedDenied.isEmpty,
+               normalizedDenied.contains(normalizePath(p))
+            {
                 rejected.append((p, .accessDenied))
                 continue
             }
-            // 优先级 2：原有 SafetyEngine.evaluate
+            // 优先级 2：原有 SafetyEngine.evaluate（内部已自带 standardizedFileURL）
             let verdict: SafetyVerdict
             let reason: SafetyRejection
             if let trie {
