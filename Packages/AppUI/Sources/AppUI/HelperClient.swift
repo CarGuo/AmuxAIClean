@@ -11,26 +11,30 @@ public protocol DeletionPipeline: Sendable {
     /// - Returns: (movedCount, skippedCount, error?)
     func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?)
 
-    /// 注入"上层一票否决路径集合"（v1.3.zzzz Phase 3-A 协议化）。
+    /// 注入"上层一票否决路径集合"（v1.3.zzzz Phase 3-A 协议化 → Phase 3-E 全链路接通）。
     ///
     /// 协议层接受这个钩子是为了**让"漏调=误拒"风险被强类型保护**：
     /// 历史上 [MainView.performDelete](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1141)
     /// 只对 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)
     /// 走 `if let trash = pipeline as? TrashPipeline` cast 注入，
-    /// 一旦 v2.0 切到 [HelperClient](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift#L19)
+    /// 一旦 v2.0 切到 [HelperClient](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift#L43)
     /// 这条 cast 默默落空 → BulkScanner 期间被 `permissionDenied` / `tccProtected` 标记的
     /// 路径会被悄悄"放行"到 Helper 端真删。
     ///
-    /// 协议层提供**默认 no-op**：HelperClient / MockHelperClient 当前 stub。
-    /// v2.0 启用 Helper 真删时**必须**显式 override 把 set 序列化进 SignedDeletionRequest，
-    /// 让 Helper 进程自己再做一遍 forbidPath 闸门——空实现等于显式声明"我不验"。
-    /// 这样 cast 失踪带来的"沉默漏拦"被升级成了"显式 stub 留痕"。
+    /// **现状（v1.3.zzzz Phase 3-E）**：
+    /// - [TrashPipeline.setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L63) 在主 App 进程内 stash + partitionByForbid 拦
+    /// - [HelperClient.setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift) 把集合**随 envelope 序列化**跨进程发给 Helper，
+    ///   Helper 端 [HelperDecision.decide](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/HelperDecision.swift) 第四道闸门拒批
+    /// - [MockHelperClient.setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift) 同等接通，便于单测
+    ///
+    /// 协议层仍保留 protocol extension 默认 no-op——给未来新加的 `DeletionPipeline` 实现
+    /// （如 dry-run-only 调试管道、远程 audit 管道）一个安全默认值，不强迫每个实现都接 accessDenied。
     func setAccessDeniedPaths(_ paths: Set<String>)
 }
 
 extension DeletionPipeline {
-    /// 默认 no-op：让 HelperClient / Mock / 其他实现免实现也能编通过；
-    /// TrashPipeline 自己给出真实现。
+    /// 默认 no-op：给"不需要 accessDenied 投影"的 DeletionPipeline 实现一个安全默认值。
+    /// TrashPipeline / HelperClient / MockHelperClient 都各自 override 真实现。
     public func setAccessDeniedPaths(_ paths: Set<String>) {
         // intentional no-op
     }
@@ -44,9 +48,33 @@ public final class HelperClient: DeletionPipeline, @unchecked Sendable {
     private let key: Data
     private let machName: String
 
+    /// v1.3.zzzz Phase 3-E：上层一票否决路径快照。
+    /// 写入路径在 [setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift) 里加锁；
+    /// 读取在 [moveToTrash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift) 入口处一次性 snapshot 然后随 envelope 序列化跨进程发给 Helper——
+    /// Helper 进程独立内存，必须随 IPC 一并送达。
+    private let accessDeniedLock = NSLock()
+    private var _accessDeniedPaths: Set<String> = []
+
     public init(signingKey: Data, machName: String = XPCNames.helperMachService) {
         self.key = signingKey
         self.machName = machName
+    }
+
+    /// 替换 accessDenied 集合（原始字符串入集，不在 client 端归一化——
+    /// 路径标准化由 Helper 端 [HelperDecision.decide](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/HelperDecision.swift) 与 SafetyEngine 自己负责）。
+    public func setAccessDeniedPaths(_ paths: Set<String>) {
+        accessDeniedLock.lock()
+        _accessDeniedPaths = paths
+        accessDeniedLock.unlock()
+    }
+
+    /// 取当前快照，用 sorted 数组返回——保证 [DeletionRequest.canonicalize](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/XPCBridge/Sources/XPCBridge/HelperProtocol.swift) 的 HMAC
+    /// 在主 App 与 Helper 两端字节对齐。
+    private func snapshotAccessDeniedPathsSorted() -> [String] {
+        accessDeniedLock.lock()
+        let arr = Array(_accessDeniedPaths)
+        accessDeniedLock.unlock()
+        return arr.sorted()
     }
 
     public func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?) {
@@ -55,7 +83,8 @@ public final class HelperClient: DeletionPipeline, @unchecked Sendable {
             dryRun: dryRun,
             nonce: UUID().uuidString,
             expiresAt: Date().addingTimeInterval(30).timeIntervalSince1970,
-            requestID: UUID().uuidString
+            requestID: UUID().uuidString,
+            accessDeniedPaths: snapshotAccessDeniedPathsSorted()
         )
         let signature: String
         do {
@@ -149,8 +178,27 @@ public actor MockHelperClient: DeletionPipeline {
     public private(set) var lastSignedPayload: Data?
     public private(set) var lastResult: (Int, Int, String?)?
 
+    /// v1.3.zzzz Phase 3-E：与 [HelperClient._accessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift) 一致的语义。
+    /// 因为协议方法 `setAccessDeniedPaths` 是 sync 而 actor 默认 isolated，必须用 NSLock + nonisolated 存储——
+    /// 不能直接 stash 在 actor 状态里（会要求 protocol 改成 async）。
+    private nonisolated(unsafe) let accessDeniedLock = NSLock()
+    private nonisolated(unsafe) var _accessDeniedPaths: Set<String> = []
+
     public init(signingKey: Data) {
         self.key = signingKey
+    }
+
+    public nonisolated func setAccessDeniedPaths(_ paths: Set<String>) {
+        accessDeniedLock.lock()
+        _accessDeniedPaths = paths
+        accessDeniedLock.unlock()
+    }
+
+    private nonisolated func snapshotAccessDeniedPathsSorted() -> [String] {
+        accessDeniedLock.lock()
+        let arr = Array(_accessDeniedPaths)
+        accessDeniedLock.unlock()
+        return arr.sorted()
     }
 
     public func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?) {
@@ -159,7 +207,8 @@ public actor MockHelperClient: DeletionPipeline {
             dryRun: dryRun,
             nonce: UUID().uuidString,
             expiresAt: Date().addingTimeInterval(30).timeIntervalSince1970,
-            requestID: UUID().uuidString
+            requestID: UUID().uuidString,
+            accessDeniedPaths: snapshotAccessDeniedPathsSorted()
         )
         do {
             let signature = try DeletionTokenSigner.sign(request, key: key)

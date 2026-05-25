@@ -82,10 +82,11 @@ final class HelperListener: NSObject, NSXPCListenerDelegate, GSYCleanHelperXPC {
             return
         }
 
-        // —— 闸门 3：SafetyEngine + HelperDecision ——
+        // —— 闸门 3：SafetyEngine + HelperDecision（含 v1.3.zzzz Phase 3-E 第四道闸门：accessDeniedPaths）——
         let outcome = decision.decide(
             paths: envelope.request.paths,
-            dryRun: envelope.request.dryRun
+            dryRun: envelope.request.dryRun,
+            accessDeniedPaths: envelope.request.accessDeniedPaths
         )
         switch outcome {
         case .rejectBatch(let reason, let bad):

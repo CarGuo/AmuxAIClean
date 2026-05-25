@@ -46,13 +46,58 @@ public struct DeletionRequest: Codable, Sendable, Equatable {
     public let expiresAt: TimeInterval
     /// 请求 ID（审计用）。
     public let requestID: String
+    /// BulkScanner 期间被 [`permissionDenied`/`tccProtected`](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift#L14-L28) 标记的"上层一票否决"路径集合。
+    ///
+    /// **设计意图**（v1.3.zzzz Phase 3-E）：把"扫描没扫成功"这条软证据作为 Helper 端的**第四道闸门**输入——
+    /// `paths` 里**不能**与 `accessDeniedPaths` 有交集（典型场景：BulkScanner 标了 `~/Library` 拿不到 inode，
+    /// 但主 App 误把 `~/Library/Caches/foo` 派下来真删）。
+    /// - 必须**有序**：参与 HMAC canonical JSON 计算，乱序会导致主 App 与 Helper 算出不同签名
+    /// - 默认空数组：保持与 v0.2 envelope 二进制兼容（Codable decode 老主 App 请求时缺字段不会抛）
+    public let accessDeniedPaths: [String]
 
-    public init(paths: [String], dryRun: Bool, nonce: String, expiresAt: TimeInterval, requestID: String) {
+    public init(paths: [String],
+                dryRun: Bool,
+                nonce: String,
+                expiresAt: TimeInterval,
+                requestID: String,
+                accessDeniedPaths: [String] = []) {
         self.paths = paths
         self.dryRun = dryRun
         self.nonce = nonce
         self.expiresAt = expiresAt
         self.requestID = requestID
+        self.accessDeniedPaths = accessDeniedPaths
+    }
+
+    // MARK: - Codable（自定义实现保证 decode 老 envelope 时 accessDeniedPaths 缺失 fallback 空数组）
+
+    private enum CodingKeys: String, CodingKey {
+        case paths, dryRun, nonce, expiresAt, requestID, accessDeniedPaths
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.paths = try c.decode([String].self, forKey: .paths)
+        self.dryRun = try c.decode(Bool.self, forKey: .dryRun)
+        self.nonce = try c.decode(String.self, forKey: .nonce)
+        self.expiresAt = try c.decode(TimeInterval.self, forKey: .expiresAt)
+        self.requestID = try c.decode(String.self, forKey: .requestID)
+        self.accessDeniedPaths = try c.decodeIfPresent([String].self, forKey: .accessDeniedPaths) ?? []
+    }
+
+    /// 自定义 encode：accessDeniedPaths 为空时**完全省略字段**——保证 v0.2 老主 App 签的
+    /// 不含该字段的 envelope，与 v1.3.zzzz 新 Helper 重新 canonicalize 后**字节相等**，签名互通。
+    /// 非空时正常 encode（已经在 init 时由调用方保证 sorted）。
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(paths, forKey: .paths)
+        try c.encode(dryRun, forKey: .dryRun)
+        try c.encode(nonce, forKey: .nonce)
+        try c.encode(expiresAt, forKey: .expiresAt)
+        try c.encode(requestID, forKey: .requestID)
+        if !accessDeniedPaths.isEmpty {
+            try c.encode(accessDeniedPaths, forKey: .accessDeniedPaths)
+        }
     }
 }
 

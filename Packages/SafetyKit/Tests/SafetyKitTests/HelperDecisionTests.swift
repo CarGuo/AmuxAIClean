@@ -79,4 +79,91 @@ final class HelperDecisionTests: XCTestCase {
         let outcome = d.decide(paths: [], dryRun: false, home: safeHome)
         XCTAssertEqual(outcome, .allowReal)
     }
+
+    // MARK: - 第四道闸门（v1.3.zzzz Phase 3-E）
+
+    /// paths 里某条与 accessDeniedPaths 完全字面命中 → rejectBatch。
+    func testAccessDeniedExactMatchRejectsBatch() {
+        let d = HelperDecision(allowRealDeletes: true)
+        let denied = "/Users/test/Library/Caches/com.foo.bar"
+        let outcome = d.decide(
+            paths: [safePath],   // safePath == denied
+            dryRun: false,
+            accessDeniedPaths: [denied],
+            home: safeHome
+        )
+        if case .rejectBatch(let reason, let bad) = outcome {
+            XCTAssertEqual(bad, safePath)
+            XCTAssertTrue(reason.contains("accessDenied"), "reason 必须包含 accessDenied 字样：\(reason)")
+        } else {
+            XCTFail("accessDenied 命中必须 rejectBatch，实际 \(outcome)")
+        }
+    }
+
+    /// firmlink 折叠：accessDenied 给的是 `/private/var/...` 但 paths 给的是 `/var/...`，仍要命中拒批。
+    func testAccessDeniedFirmlinkFoldingRejectsBatch() {
+        let d = HelperDecision(allowRealDeletes: true)
+        let outcome = d.decide(
+            paths: ["/var/folders/zz/abc/T/cache.bin"],
+            dryRun: false,
+            accessDeniedPaths: ["/private/var/folders/zz/abc/T/cache.bin"],
+            home: safeHome
+        )
+        if case .rejectBatch = outcome {} else {
+            XCTFail("firmlink 折叠后应命中 accessDenied，实际 \(outcome)")
+        }
+    }
+
+    /// 反向 firmlink：accessDenied 是 `/var/...`，paths 是 `/private/var/...`，也要命中。
+    func testAccessDeniedReverseFirmlinkRejectsBatch() {
+        let d = HelperDecision(allowRealDeletes: true)
+        let outcome = d.decide(
+            paths: ["/private/var/folders/zz/abc/T/cache.bin"],
+            dryRun: false,
+            accessDeniedPaths: ["/var/folders/zz/abc/T/cache.bin"],
+            home: safeHome
+        )
+        if case .rejectBatch = outcome {} else {
+            XCTFail("反向 firmlink 折叠应命中，实际 \(outcome)")
+        }
+    }
+
+    /// accessDeniedPaths 非空但与 paths 不交叉 → 闸门 4 通过，回退到原有 SafetyEngine 流程。
+    func testAccessDeniedDisjointFallsThrough() {
+        let d = HelperDecision(allowRealDeletes: true)
+        let outcome = d.decide(
+            paths: [safePath],
+            dryRun: false,
+            accessDeniedPaths: ["/Users/test/Library/SomeOther/path"],
+            home: safeHome
+        )
+        XCTAssertEqual(outcome, .allowReal, "无交集应放行到 allowReal")
+    }
+
+    /// 闸门 4 优先级高于闸门 3（SafetyEngine）：当一条路径同时被 SafetyEngine 判 forbid 又在
+    /// accessDenied 里时，应先报 accessDenied 原因——便于审计区分"用户没扫成功"与"系统硬黑名单"。
+    func testAccessDeniedPriorityOverSafetyEngine() {
+        let d = HelperDecision(allowRealDeletes: true)
+        let outcome = d.decide(
+            paths: [badPath],
+            dryRun: false,
+            accessDeniedPaths: [badPath],
+            home: safeHome
+        )
+        if case .rejectBatch(let reason, _) = outcome {
+            XCTAssertTrue(reason.contains("accessDenied"),
+                          "应先报 accessDenied，实际：\(reason)")
+        } else {
+            XCTFail("应 rejectBatch")
+        }
+    }
+
+    /// 空 accessDeniedPaths 行为完全等价于不传——保证向后兼容。
+    func testEmptyAccessDeniedEquivalentToOmitted() {
+        let d = HelperDecision(allowRealDeletes: true)
+        let withEmpty = d.decide(paths: [safePath], dryRun: false,
+                                 accessDeniedPaths: [], home: safeHome)
+        let withoutArg = d.decide(paths: [safePath], dryRun: false, home: safeHome)
+        XCTAssertEqual(withEmpty, withoutArg)
+    }
 }
