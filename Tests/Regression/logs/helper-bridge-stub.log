@@ -1,8 +1,0 @@
-2026-05-24 19:24:04.824 GSYCleanMac[91514:3121551] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
-[REGR_BEGIN] case=helper-bridge-stub
-[REGR] case=helper-bridge-stub moved=2 skipped=0 payloadBytes=259 err=-
-[REGR_OK] case=helper-bridge-stub moved count=2
-[REGR_OK] case=helper-bridge-stub skipped count=0
-[REGR_OK] case=helper-bridge-stub err is nil=nil
-[REGR_OK] case=helper-bridge-stub signed payload non-empty=259 > 0
-[REGR_PASS] case=helper-bridge-stub elapsed_ms=103

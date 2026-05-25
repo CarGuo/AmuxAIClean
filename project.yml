@@ -44,8 +44,6 @@ packages:
     path: Packages/ScanKit
   SafetyKit:
     path: Packages/SafetyKit
-  XPCBridge:
-    path: Packages/XPCBridge
   AppUI:
     path: Packages/AppUI
   HeuristicKit:
@@ -82,15 +80,9 @@ targets:
     dependencies:
       - package: ScanKit
       - package: SafetyKit
-      - package: XPCBridge
       - package: AppUI
       - package: HeuristicKit
       - package: TestHarness
-      - target: GSYCleanMacHelper
-        embed: true
-        copy:
-          destination: executables
-          subpath: ""
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.guoshuyu.cleanmac.GSYCleanMac
@@ -98,37 +90,11 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
-  GSYCleanMacHelper:
-    type: tool
-    platform: macOS
-    sources:
-      - path: Helper
-    info:
-      path: Helper/Info.plist
-      properties:
-        CFBundleIdentifier: com.guoshuyu.cleanmac.helper
-        CFBundleName: GSYCleanMacHelper
-        CFBundleVersion: "2"
-        CFBundleShortVersionString: "1.1.0"
-    entitlements:
-      path: Helper/Helper.entitlements
-      properties:
-        com.apple.security.app-sandbox: false
-    dependencies:
-      - package: XPCBridge
-      - package: SafetyKit
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.guoshuyu.cleanmac.helper
-        ENABLE_HARDENED_RUNTIME: YES
-        SKIP_INSTALL: NO
-
 schemes:
   GSYCleanMac:
     build:
       targets:
         GSYCleanMac: all
-        GSYCleanMacHelper: all
     run:
       config: Debug
     test:

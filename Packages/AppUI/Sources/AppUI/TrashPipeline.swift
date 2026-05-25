@@ -32,7 +32,8 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
     /// v1.3.zzzz：上层一票否决集合（`permissionDenied` / `tccProtected` 路径），
     /// `moveToTrash` 内部用 NSLock 保护读写，调用方通过 [setAccessDeniedPaths](#) 注入最新快照。
-    /// 协议 [DeletionPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift#L10) 签名不变，避免影响 HelperClient / mock。
+    /// 协议 [DeletionPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift) 签名不变，
+    /// 给未来其它 DeletionPipeline 实现一个安全默认值（v1.3.zzzz 路线 B 删 Helper 后实际只剩 TrashPipeline 一份）。
     ///
     /// **锁的作用范围（必读）**：`accessDeniedLock` 只盖 Set 的"写入"和"快照交接"
     /// （[setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L52) /

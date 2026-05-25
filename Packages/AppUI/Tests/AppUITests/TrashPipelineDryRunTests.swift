@@ -314,7 +314,9 @@ final class TrashPipelineDryRunTests: XCTestCase {
 
     /// **场景**：MainView 收敛掉 `if let trash = pipeline as? TrashPipeline` cast 后，
     /// 直接对 `pipeline: any DeletionPipeline` 调 setAccessDeniedPaths。
-    /// HelperClient / Mock 没显式实现该方法，应走协议默认 no-op，**不应崩、不应抛**。
+    /// 自定义没显式实现该方法的 DeletionPipeline 实现（如下面的 StubPipeline）应走协议默认 no-op，
+    /// **不应崩、不应抛**——这是协议层契约（v1.3.zzzz 路线 B 删 Helper 后真实运行时实际只剩 TrashPipeline 一份；
+    /// 此 case 仍保留，防止未来新加 DeletionPipeline 实现忘了走默认 no-op 的回归）。
     func test_DeletionPipeline协议默认setAccessDeniedPaths为无操作() async {
         // 用一个最小自定义实现：除 moveToTrash 外什么都不写，验证协议默认 no-op 生效。
         struct StubPipeline: DeletionPipeline {

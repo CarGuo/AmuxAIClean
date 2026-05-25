@@ -1,36 +1,9 @@
 import XCTest
 @testable import AppUI
 import SafetyKit
-import XPCBridge
 
-final class HelperClientPipelineTests: XCTestCase {
-    func testMockPipelineRoundTrip() async {
-        let key = Data(repeating: 0xCD, count: 32)
-        let mock = MockHelperClient(signingKey: key)
-        let (moved, skipped, err) = await mock.moveToTrash(
-            paths: ["/Users/test/Library/Caches/x"],
-            dryRun: true
-        )
-        XCTAssertNil(err)
-        XCTAssertEqual(moved, 1)
-        XCTAssertEqual(skipped, 0)
-    }
-
-    func testMockSelfVerifyAlwaysPasses() async {
-        let key = Data("any-32-byte-secret-for-testing!!".utf8)
-        let mock = MockHelperClient(signingKey: key)
-        let (_, _, err) = await mock.moveToTrash(paths: ["/tmp/x"], dryRun: true)
-        XCTAssertNil(err, "用同 key 自签自验必须通过")
-    }
-
-    func testMockBlocksRealDeleteWithoutDryRun() async {
-        let key = Data(repeating: 0x01, count: 32)
-        let mock = MockHelperClient(signingKey: key)
-        let (moved, _, err) = await mock.moveToTrash(paths: ["/tmp/y"], dryRun: false)
-        XCTAssertNotNil(err, "mock 不能真删")
-        XCTAssertEqual(moved, 1) // 报告"会动"的项数
-    }
-}
+// v1.3.zzzz 路线 B：HelperClient / MockHelperClient / XPCBridge 已整段下线，
+// 删除链路只剩 TrashPipeline 一份；原 HelperClientPipelineTests 三个 case 一并随之删除。
 
 final class ScanCategoryTests: XCTestCase {
     func testRecommendedCategoriesContainCachesAndDownloads() {

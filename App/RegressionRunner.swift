@@ -4,7 +4,6 @@ import Foundation
 import SafetyKit
 import ScanKit
 import TestHarness
-import XPCBridge
 
 /// v1.3.zz 真实回归套件——通过环境变量 `GSY_REGRESSION_CASE=<case-id>` 在 App 启动钩子里被
 /// [GSYCleanMacApp.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift#L113-L131)
@@ -86,11 +85,10 @@ final class RegressionRunner {
             case "tray-install-uninstall":  try await trayInstallUninstall()
             case "activation-policy":       try await activationPolicyCase()
             case "quicklook-controller":    try quicklookController()
-            // 安全 / 删除 / Helper
+            // 安全 / 删除（v1.3.zzzz 路线 B：Helper / HelperClient / XPCBridge 整段下线，
+            // 原 helper-bridge-stub / deletion-token-roundtrip 两条 case 一并删除）
             case "trash-pipeline-dryrun":   try await trashPipelineDryRun()
             case "safety-engine-veto":      try safetyEngineVeto()
-            case "helper-bridge-stub":      try await helperBridgeStub()
-            case "deletion-token-roundtrip": try deletionTokenRoundtrip()
             // 真实场景诊断（图 4/5、图 2/3 反推、扫描慢）
             case "trash-real-scan":         try await trashRealScan()
             case "fda-banner-diagnose":     try await fdaBannerDiagnose()
@@ -497,39 +495,10 @@ final class RegressionRunner {
         assertNotEqual(vSafe.rawValue, SafetyVerdict.forbid.rawValue, "fixture not forbid")
     }
 
-    /// MockHelperClient 走完整 sign → verify → reply round-trip（不真启 launchd helper）。
-    private func helperBridgeStub() async throws {
-        let key = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
-        let client = MockHelperClient(signingKey: key)
-        let (moved, skipped, err) = await client.moveToTrash(paths: ["/tmp/regr/a", "/tmp/regr/b"], dryRun: true)
-        let payload = await client.lastSignedPayload
-        let payloadBytes = payload?.count ?? 0
-        log("[REGR] case=\(caseID) moved=\(moved) skipped=\(skipped) payloadBytes=\(payloadBytes) err=\(err ?? "-")")
-        assertEqual(moved, 2, "moved count")
-        assertEqual(skipped, 0, "skipped count")
-        assertEqual(err, nil, "err is nil")
-        assertGreater(payloadBytes, 0, "signed payload non-empty")
-    }
-
-    /// DeletionRequest + DeletionTokenSigner：sign → verify round-trip + canonicalize 稳定。
-    private func deletionTokenRoundtrip() throws {
-        let key = Data((0..<32).map { UInt8($0) })
-        let req = DeletionRequest(paths: ["/tmp/a", "/tmp/b/c"],
-                                  dryRun: true,
-                                  nonce: "nonce-regr",
-                                  expiresAt: Date().addingTimeInterval(30).timeIntervalSince1970,
-                                  requestID: "req-regr")
-        let sig = try DeletionTokenSigner.sign(req, key: key)
-        let envelope = SignedDeletionRequest(request: req, signature: sig)
-        let verify = DeletionTokenSigner.verify(envelope, key: key)
-        log("[REGR] case=\(caseID) sigLen=\(sig.count) verify=\(verify ?? "OK")")
-        assertEqual(verify, nil, "verify ok")
-        // Canonicalize 应稳定（两次结果完全一致）
-        let a = try DeletionTokenSigner.canonicalize(req)
-        let b = try DeletionTokenSigner.canonicalize(req)
-        assertEqual(a, b, "canonicalize stable")
-        assertGreater(a.count, 0, "canonicalize non-empty")
-    }
+    // v1.3.zzzz 路线 B：MockHelperClient / DeletionTokenSigner / SignedDeletionRequest 已随
+    // [Packages/XPCBridge](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/XPCBridge) +
+    // [Helper/](file:///Users/guoshuyu/workspace/GSYCleanMac/Helper) 整段下线，原 helperBridgeStub /
+    // deletionTokenRoundtrip 两个 case 实现一并删除（switch 入口处也已剔除）。
 
     // MARK: - 真实场景诊断（图 4/5、图 2/3、扫描慢）
 

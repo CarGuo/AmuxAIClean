@@ -8,7 +8,7 @@
 
 - **Swift 6.0 + SwiftUI + macOS 15**（strict concurrency / warnings-as-errors）
 - 工程描述：[XcodeGen](https://github.com/yonaskolb/XcodeGen) 的 [project.yml](../project.yml)
-- 6 个独立 SwiftPM 包 + 主 App + 特权 Helper（v1 暂未部署）
+- 5 个独立 SwiftPM 包 + 主 App（v1.3.zzzz 路线 B 删 Helper / XPCBridge 后；删除走 [TrashPipeline](../Packages/AppUI/Sources/AppUI/TrashPipeline.swift) 直接调 `NSWorkspace.recycle`，无特权进程）
 - CI 用 GitHub Actions macos-15 runner
 
 ---

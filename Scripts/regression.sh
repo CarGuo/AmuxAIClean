@@ -51,11 +51,9 @@ ALL_CASES=(
     "tray-install-uninstall"
     "activation-policy"
     "quicklook-controller"
-    # 安全 / 删除 / Helper 4
+    # 安全 / 删除 2（v1.3.zzzz 路线 B：helper-bridge-stub / deletion-token-roundtrip 随 Helper 整段下线）
     "trash-pipeline-dryrun"
     "safety-engine-veto"
-    "helper-bridge-stub"
-    "deletion-token-roundtrip"
     # 真实场景诊断 3
     "trash-real-scan"
     "fda-banner-diagnose"

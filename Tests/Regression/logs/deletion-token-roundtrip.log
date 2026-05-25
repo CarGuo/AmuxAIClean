@@ -1,7 +1,0 @@
-2026-05-24 19:24:06.925 GSYCleanMac[91561:3121689] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
-[REGR_BEGIN] case=deletion-token-roundtrip
-[REGR] case=deletion-token-roundtrip sigLen=44 verify=OK
-[REGR_OK] case=deletion-token-roundtrip verify ok=nil
-[REGR_OK] case=deletion-token-roundtrip canonicalize stable=119 bytes
-[REGR_OK] case=deletion-token-roundtrip canonicalize non-empty=119 > 0
-[REGR_PASS] case=deletion-token-roundtrip elapsed_ms=222

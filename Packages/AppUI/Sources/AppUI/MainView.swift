@@ -3,7 +3,6 @@ import AppKit
 import UniformTypeIdentifiers
 import ScanKit
 import SafetyKit
-import XPCBridge
 
 /// v1.3 review-fix B3：跨 target 的通知名常量。
 /// App 层在主窗口已被销毁的情况下 post 这个通知，MainView 监听并调 `openWindow(id:)` 重建。
@@ -1192,8 +1191,9 @@ public struct MainView: View {
         // v1.3.zzzz：在调 pipeline 前把上层一票否决集合（accessDenied）推给 pipeline，
         // 让 partitionByForbid 把这类路径以 SafetyRejection.accessDenied 拒掉，不进 dryRun present
         // 计数、也不真 recycle。
-        // Phase 3-A 协议化后：所有 DeletionPipeline 实现都接这个钩子（HelperClient/Mock 默认 no-op，
-        // 见 [DeletionPipeline.setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift#L28)），
+        // Phase 3-A 协议化后：所有 DeletionPipeline 实现都接这个钩子（v1.3.zzzz 路线 B 之后只剩
+        // TrashPipeline 一份实现；协议默认 no-op 仍保留供未来如 dry-run-only 调试管道复用，
+        // 见 [DeletionPipeline.setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift)），
         // 不再需要 `as? TrashPipeline` cast——cast 容易在重构里被悄悄改丢、重新引入"漏调=误拒"。
         pipeline.setAccessDeniedPaths(accessDeniedPathsSnapshot())
         let (moved, skipped, err) = await pipeline.moveToTrash(paths: paths, dryRun: dryRun)
@@ -1223,7 +1223,7 @@ public struct MainView: View {
         // (file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L356)），
         // 但 pipeline 是 MainView 实例字段，跨扫描复用——若不主动清空，旧 deniedPaths 会一直
         // 残留到下次 performDelete 重新注入前的窗口期，造成"本来已可写的路径被误以 accessDenied 拒"。
-        // Phase 3-A 协议化后：HelperClient/Mock 走默认 no-op；TrashPipeline 走真清空。
+        // Phase 3-A 协议化后：v1.3.zzzz 路线 B 之后 pipeline 只有 TrashPipeline 一份实现，走真清空。
         pipeline.setAccessDeniedPaths([])
         if category.kind == .largeFiles {
             let minBytes = Int64(max(0, settings.minFileSizeMB)) * 1024 * 1024

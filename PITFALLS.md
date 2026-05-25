@@ -6,6 +6,18 @@
 
 ---
 
+## ⚠️ v1.3.zzzz 路线 B：删除链路简化（2026-05-25 更新）
+
+[Helper/](file:///Users/guoshuyu/workspace/GSYCleanMac/Helper) / [Packages/XPCBridge/](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/XPCBridge) / [HelperClient.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift) / [HelperDecision.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/HelperDecision.swift) **整段下线**。
+
+**理由**：本产品仅删除 `$HOME` 下用户态文件（Caches / Application Support / .Trash 等），完全不需要 root 权限。Helper / SMAppService / LaunchDaemon / HMAC 三道闸门链路在此场景属于纯负担——增加进程数、首跑授权对话框、Free Apple ID 自签下根本跑不通的 Team ID 校验旁路、双端密钥共享心智负担。删除链路收敛为唯一一份 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)（直接走 `NSWorkspace.recycle`）。
+
+**保留**：[DeletionPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift) 协议本身，给未来如 dry-run-only 调试管道、远程 audit 管道留扩展点。
+
+下文若提到 "Helper" / "XPC" / "SMAppService" / "Mach service"  / "HelperClient" / "MockHelperClient" / "DeletionTokenSigner" / "HelperDecision" 均为**历史档案**，不再适用。
+
+---
+
 ## 0. 总览（按风险等级）
 
 | 等级 | 描述 | 我们的处理 |

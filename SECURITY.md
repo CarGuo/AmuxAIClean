@@ -5,6 +5,16 @@
 
 ---
 
+## ⚠️ v1.3.zzzz 路线 B：删除链路简化（2026-05-25 更新）
+
+原"App ↔ 特权 Helper" XPC 三道闸门设计已整段下线（[Helper/](file:///Users/guoshuyu/workspace/GSYCleanMac/Helper) / [Packages/XPCBridge/](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/XPCBridge) / [HelperClient.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift) / [HelperDecision.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/HelperDecision.swift)）。本产品只删 `$HOME` 下用户态文件，不需要 root；删除链路收敛为唯一一份 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)。
+
+**安全合同保留**：所有"永远不 unlink / dryRun 一等公民 / SafetyEngine 三色判定 / 批级原子拒绝"红线**完全不变**，全部由主 App 进程内 SafetyEngine + TrashPipeline 双层闸门保证。
+
+下文若提到 Helper / XPC / HMAC 签名等内容均为**历史档案**。
+
+---
+
 ## 1. 设计原则（Hard Rules）
 
 按重要性递减：
