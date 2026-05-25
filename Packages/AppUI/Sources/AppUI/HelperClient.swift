@@ -10,6 +10,30 @@ import XPCBridge
 public protocol DeletionPipeline: Sendable {
     /// - Returns: (movedCount, skippedCount, error?)
     func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?)
+
+    /// 注入"上层一票否决路径集合"（v1.3.zzzz Phase 3-A 协议化）。
+    ///
+    /// 协议层接受这个钩子是为了**让"漏调=误拒"风险被强类型保护**：
+    /// 历史上 [MainView.performDelete](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1141)
+    /// 只对 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)
+    /// 走 `if let trash = pipeline as? TrashPipeline` cast 注入，
+    /// 一旦 v2.0 切到 [HelperClient](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift#L19)
+    /// 这条 cast 默默落空 → BulkScanner 期间被 `permissionDenied` / `tccProtected` 标记的
+    /// 路径会被悄悄"放行"到 Helper 端真删。
+    ///
+    /// 协议层提供**默认 no-op**：HelperClient / MockHelperClient 当前 stub。
+    /// v2.0 启用 Helper 真删时**必须**显式 override 把 set 序列化进 SignedDeletionRequest，
+    /// 让 Helper 进程自己再做一遍 forbidPath 闸门——空实现等于显式声明"我不验"。
+    /// 这样 cast 失踪带来的"沉默漏拦"被升级成了"显式 stub 留痕"。
+    func setAccessDeniedPaths(_ paths: Set<String>)
+}
+
+extension DeletionPipeline {
+    /// 默认 no-op：让 HelperClient / Mock / 其他实现免实现也能编通过；
+    /// TrashPipeline 自己给出真实现。
+    public func setAccessDeniedPaths(_ paths: Set<String>) {
+        // intentional no-op
+    }
 }
 
 /// 真 XPC 客户端 —— 通过 mach service 连 Helper。

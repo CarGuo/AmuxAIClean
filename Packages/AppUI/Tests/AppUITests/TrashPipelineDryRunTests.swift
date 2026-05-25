@@ -309,5 +309,43 @@ final class TrashPipelineDryRunTests: XCTestCase {
         XCTAssertTrue(snap.contains("/Users/foo/Library/Caches/MyApp"),
                       "非 firmlink 路径应原样保留")
     }
+
+    // MARK: - v1.3.zzzz Phase 3-A：DeletionPipeline 协议层 setAccessDeniedPaths
+
+    /// **场景**：MainView 收敛掉 `if let trash = pipeline as? TrashPipeline` cast 后，
+    /// 直接对 `pipeline: any DeletionPipeline` 调 setAccessDeniedPaths。
+    /// HelperClient / Mock 没显式实现该方法，应走协议默认 no-op，**不应崩、不应抛**。
+    func test_DeletionPipeline协议默认setAccessDeniedPaths为无操作() async {
+        // 用一个最小自定义实现：除 moveToTrash 外什么都不写，验证协议默认 no-op 生效。
+        struct StubPipeline: DeletionPipeline {
+            func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?) {
+                return (paths.count, 0, nil)
+            }
+        }
+        let stub: any DeletionPipeline = StubPipeline()
+        // 默认 no-op：不抛、不崩
+        stub.setAccessDeniedPaths([
+            "/private/var/folders/zz/abc/T/x",
+            "/var/folders/zz/abc/T/y",
+        ])
+        // moveToTrash 行为不受影响
+        let (present, skipped, err) = await stub.moveToTrash(paths: ["/a", "/b"], dryRun: true)
+        XCTAssertEqual(present, 2)
+        XCTAssertEqual(skipped, 0)
+        XCTAssertNil(err)
+    }
+
+    /// TrashPipeline 自己 override 了协议默认实现，setAccessDeniedPaths 必须**真**入集。
+    /// 这条与 [test_setAccessDeniedPaths_注入时即标准化为var折叠形态] 互补：
+    /// 这里走 `any DeletionPipeline` 静态分派，验证 dynamic dispatch 仍命中 TrashPipeline 实现。
+    func test_TrashPipeline作为DeletionPipeline时setAccessDeniedPaths真入集() {
+        let pipe: any DeletionPipeline = TrashPipeline()
+        pipe.setAccessDeniedPaths(["/private/var/folders/test/A"])
+        // 通过 cast 回 TrashPipeline 才能读 snapshot（snapshot 是包内可见，不是协议方法）
+        let trash = pipe as! TrashPipeline
+        let snap = trash.snapshotAccessDeniedPaths()
+        XCTAssertEqual(snap, ["/var/folders/test/A"],
+                       "走 protocol 类型调用时仍应命中 TrashPipeline 真实现 + firmlink 折叠；snap=\(snap)")
+    }
 }
 

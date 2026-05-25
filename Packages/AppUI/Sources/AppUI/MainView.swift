@@ -1140,12 +1140,13 @@ public struct MainView: View {
 
     private func performDelete(dryRun: Bool) async {
         let paths = selectedRows.map(\.url.path)
-        // v1.3.zzzz：在调 pipeline 前把上层一票否决集合（accessDenied）推给 TrashPipeline，
+        // v1.3.zzzz：在调 pipeline 前把上层一票否决集合（accessDenied）推给 pipeline，
         // 让 partitionByForbid 把这类路径以 SafetyRejection.accessDenied 拒掉，不进 dryRun present
-        // 计数、也不真 recycle。HelperClient/mock 不实现 setAccessDeniedPaths，跳过即可。
-        if let trash = pipeline as? TrashPipeline {
-            trash.setAccessDeniedPaths(accessDeniedPathsSnapshot())
-        }
+        // 计数、也不真 recycle。
+        // Phase 3-A 协议化后：所有 DeletionPipeline 实现都接这个钩子（HelperClient/Mock 默认 no-op，
+        // 见 [DeletionPipeline.setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift#L28)），
+        // 不再需要 `as? TrashPipeline` cast——cast 容易在重构里被悄悄改丢、重新引入"漏调=误拒"。
+        pipeline.setAccessDeniedPaths(accessDeniedPathsSnapshot())
         let (moved, skipped, err) = await pipeline.moveToTrash(paths: paths, dryRun: dryRun)
         let mode = dryRun ? "（预览）" : ""
         if let err {
@@ -1173,9 +1174,8 @@ public struct MainView: View {
         // (file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L356)），
         // 但 pipeline 是 MainView 实例字段，跨扫描复用——若不主动清空，旧 deniedPaths 会一直
         // 残留到下次 performDelete 重新注入前的窗口期，造成"本来已可写的路径被误以 accessDenied 拒"。
-        if let trash = pipeline as? TrashPipeline {
-            trash.setAccessDeniedPaths([])
-        }
+        // Phase 3-A 协议化后：HelperClient/Mock 走默认 no-op；TrashPipeline 走真清空。
+        pipeline.setAccessDeniedPaths([])
         if category.kind == .largeFiles {
             let minBytes = Int64(max(0, settings.minFileSizeMB)) * 1024 * 1024
             coordinator.scan(category: category,
@@ -1194,9 +1194,8 @@ public struct MainView: View {
         Task {
             let paths = urls.map(\.path)
             // 与 performDelete 保持一致的 accessDenied pre-flight。
-            if let trash = pipeline as? TrashPipeline {
-                trash.setAccessDeniedPaths(accessDeniedPathsSnapshot())
-            }
+            // Phase 3-A 协议化：直接走 protocol 钩子，省 cast。
+            pipeline.setAccessDeniedPaths(accessDeniedPathsSnapshot())
             let (moved, skipped, err) = await pipeline.moveToTrash(paths: paths, dryRun: false)
             await MainActor.run {
                 if let err {

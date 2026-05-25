@@ -389,6 +389,14 @@ public struct UninstallScreen: View {
     private func performDelete(dryRun: Bool) async {
         let paths = checkedPaths
         guard !paths.isEmpty else { return }
+        // v1.3.zzzz Phase 3-A 对称防御：UninstallScreen 没接 BulkScanner 的
+        // permissionDenied 数据源（候选来自 [UninstallStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UninstallStore.swift)
+        // 的 NSMetadataQuery + AppCandidate），但 pipeline 是注入进来的、
+        // 可能跨视图复用 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)
+        // 实例。若 MainView 上一轮扫描遗留了 accessDeniedPaths 没清，
+        // 切到 UninstallScreen 走 trash 时就会"莫名 accessDenied 拒了某个 ~/Library/.. 路径"。
+        // 主动清空一次是 O(1) 锁开销，零误伤。
+        pipeline.setAccessDeniedPaths([])
         let (moved, skipped, err) = await pipeline.moveToTrash(paths: paths, dryRun: dryRun)
         let mode = dryRun ? "（预览）" : ""
         await MainActor.run {
