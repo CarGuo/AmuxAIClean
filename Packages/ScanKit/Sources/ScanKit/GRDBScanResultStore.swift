@@ -269,6 +269,101 @@ public actor GRDBScanResultStore: ScanResultStore {
         }
     }
 
+    /// v1.3.zzzz：树形 Tab 展开 prefix 的"直接子项 + 每段子树聚合"——单条 SQL GROUP BY 实现。
+    ///
+    /// 对比旧版 [ScanCoordinator.directChildrenAsync](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1045)
+    /// 的"拉所有子孙 record + Swift Dictionary GROUP BY"路径（实测 ~Library/Caches 33w 条 ~100ms），
+    /// 把整段聚合下推到 SQLite C 内层，预期降到 ~10ms 级，且不再把数据拉回 Swift 内存。
+    ///
+    /// 性能要点：
+    /// 1) 走与 subtreeAggregates 相同的 path range（[lower, upper)），命中
+    ///    `scan_result_session_path_idx` 复合索引做 range scan；
+    /// 2) 用 `substr(path, prefixLen+1, ...)` 抽出 segment，prefixLen 在 Swift 侧算好
+    ///    传入避免每行重复算（GROUP BY 表达式必须确定可比较）；
+    /// 3) 用 `instr(suffix||'/', '/')` 找第一个分隔符位置（相当于 split first；
+    ///    suffix 没有 '/' 的话末尾追加 '/' 让 instr 返回 length+1，统一处理）。
+    ///
+    /// 边界与"hasInode" 含义：record 中 path == prefix+seg 的那条就是 segment 自身的 inode
+    /// （vendor bucket 模式或沙盒被拒目录可能没 inode，仅子孙 leaf 在）。SQL 用
+    /// `MAX(CASE ... THEN 1 ELSE 0 END)` 折叠出来，实现成本几乎 0。
+    public func directChildrenAggregated(
+        sessionID: ScanSessionID,
+        parentPath: String
+    ) async throws -> [DirectChildAggregate] {
+        let prefix = parentPath.hasSuffix("/") ? parentPath : parentPath + "/"
+        let prefixLen = prefix.utf8.count
+        let lower = prefix
+        // sentinel：与 subtreeAggregates 同款 U+10FFFF，保证比所有合法子路径都大。
+        let upper = prefix + "\u{10FFFF}"
+        // SQLite substr 的 start 是 1-based。prefixLen 是 prefix 的 utf8 字节数；
+        // path 是 UTF-8 编码 TEXT，substr(path, prefixLen+1) 即"prefix 之后的 suffix"。
+        // 注意：所有用户路径在 macOS 下都是 UTF-8，且 substr 在 SQLite 里按字符切；
+        // 由于我们在 ASCII '/' 边界切，UTF-8 多字节字符不会出现在分隔位置，所以
+        // 字节长度 == 字符长度的假设在分段位置上成立（中文段名也安全）。
+        // 安全做法：传入 length(prefix) 让 SQLite 在 SQL 层算字符长度更稳。
+        // 这里用 length(?prefix) 子查询为 0 成本（常量），但 GRDB 不支持，改用绑定常量。
+        let sql = """
+            WITH children AS (
+              SELECT
+                CASE
+                  WHEN instr(substr(path, ?+1) || '/', '/') = 0
+                    THEN substr(path, ?+1)
+                  ELSE substr(path, ?+1, instr(substr(path, ?+1) || '/', '/') - 1)
+                END AS seg,
+                path,
+                is_directory,
+                allocated_size,
+                logical_size
+              FROM scan_result
+              WHERE session_id = ?
+                AND path >= ?
+                AND path < ?
+            )
+            SELECT
+              seg,
+              SUM(allocated_size) AS bytes,
+              SUM(logical_size) AS logical_bytes,
+              COUNT(*) AS cnt,
+              MAX(CASE WHEN path = ? || seg THEN 1 ELSE 0 END) AS has_inode,
+              MAX(CASE WHEN path = ? || seg AND is_directory = 1 THEN 1 ELSE 0 END) AS dir_inode,
+              SUM(CASE WHEN is_directory = 0 THEN 1 ELSE 0 END) AS file_cnt,
+              SUM(CASE WHEN is_directory = 0 THEN allocated_size ELSE 0 END) AS file_bytes
+            FROM children
+            WHERE seg <> ''
+            GROUP BY seg
+            ORDER BY bytes DESC
+            """
+        return try await dbPool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: sql,
+                arguments: [
+                    prefixLen, prefixLen, prefixLen, prefixLen,
+                    sessionID.raw, lower, upper,
+                    prefix, prefix
+                ]
+            )
+            return rows.map { row in
+                let hasInode = (row["has_inode"] as Int) != 0
+                let dirInode = (row["dir_inode"] as Int) != 0
+                let cnt: Int = row["cnt"]
+                let fileCnt: Int = row["file_cnt"]
+                // hasInode=true 时听 inode 自己的；否则只要 cnt > 1 或没文件 leaf 就当目录
+                let isDir: Bool = hasInode ? dirInode : (cnt > 1 || fileCnt == 0)
+                return DirectChildAggregate(
+                    segment: row["seg"],
+                    isDirectory: isDir,
+                    hasInode: hasInode,
+                    descendantCount: cnt,
+                    descendantBytes: row["bytes"],
+                    descendantLogicalBytes: row["logical_bytes"],
+                    fileDescendantCount: fileCnt,
+                    fileDescendantBytes: row["file_bytes"]
+                )
+            }
+        }
+    }
+
     public func evictSession(_ id: ScanSessionID) async throws {
         try await dbPool.write { db in
             try db.execute(

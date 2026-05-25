@@ -111,17 +111,33 @@ public struct TreeRow: Identifiable, Hashable, Sendable {
     public let isDirectory: Bool
     /// 是否还有 direct children 可展开 —— 用于 OutlineGroup 决定要不要画披露三角。
     public let hasChildren: Bool
+    /// v1.3.zzzz：访问状态——区分"真的 0KB"和"被 sandbox/TCC/permission denied 拦掉看不到"。
+    /// UI 据此渲染 🔒 徽章 + tooltip + 不可勾选；不打 banner 误导用户以为是 bug。
+    public let accessState: AccessState
+
+    public enum AccessState: String, Sendable, Hashable, Codable {
+        /// 正常扫描得到的数据
+        case normal
+        /// 被 BulkScanner 的 [permissionDenied](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L175) 拦掉
+        /// （open(O_RDONLY) 失败，子目录里所有文件都没 emit）
+        case permissionDenied
+        /// 被 TCC 雷区硬 skip（[respectTCCSkipList](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L210)），
+        /// 通常是用户没给 Full Disk Access
+        case tccProtected
+    }
 
     public var id: String { path }
 
     public init(path: String, title: String, bytes: Int64, fileCount: Int,
-                isDirectory: Bool, hasChildren: Bool) {
+                isDirectory: Bool, hasChildren: Bool,
+                accessState: AccessState = .normal) {
         self.path = path
         self.title = title
         self.bytes = bytes
         self.fileCount = fileCount
         self.isDirectory = isDirectory
         self.hasChildren = hasChildren
+        self.accessState = accessState
     }
 }
 

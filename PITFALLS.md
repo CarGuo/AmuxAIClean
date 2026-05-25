@@ -738,6 +738,69 @@
 
 ---
 
+## 6.6 v1.3.zzzz：方向 C — 树形为主、清单为 Filter；快/准/稳三件事一起干
+
+**背景**：v1.3 之前清单（[RowView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowView.swift)）和树形（[TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)）是平行 Tab。用户的真实使用路径是"一级一级看和选"——也就是树形是主路径，清单只是"开发者重度用户嫌弃的多余视图"。但**清单不能砍**：[RowItem.defaultSelected](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L48) 揭示清单本质是 [SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 的"信任投票输出"——给小白用户一个"扫完点一下完事"的零认知开销路径。
+
+**方向 C 决议**：树形为主，清单**降级为左侧 Filter 面板**（语义保留、UI 让位）。本轮 Phase 1 同步治三件事——0KB 误导（准）、树形展开慢（快）、accessState 数据通路（稳）。
+
+### 6.6.1 0KB 误导：[Library/Safari](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L172) 显示 0 KB 是不是 bug？
+
+- **症状**：扫完 ~/Library 后顶层一堆系统目录（Safari / Reminders / Photos）显示 0 KB，文件数也 0
+- **错误诊断（被自我推翻）**：以为是"BulkScanner vendor bucket 不 emit 中间 inode"——读 [BulkScanner L203 `if entry.isDirectory`](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L203) 后自我纠正，目录 entry 的 .node 也会 emit
+- **真根因**（TCC silent-deny 链）：
+  1. [BulkScanner L172 open(O_RDONLY)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L172) 失败（FDA 未授权）
+  2. [L175 emit `.permissionDenied`](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L175) → return
+  3. **该子目录里所有文件 0 emit**，GRDB 仅落这一条目录 inode record
+  4. 上层聚合时 [directChildrenAsync L1112](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1112)（旧版）显式 `if !rec.isDirectory` 跳过目录的 bytes → bytes=0 / count=0
+- **修法**：把"被拒"和"真 0KB"在 UI 层显式区分：
+  - [TreeRow.AccessState](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L116) 三态枚举：`normal / permissionDenied / tccProtected`
+  - [ScanCoordinator.directChildrenAsync](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1037) 把 `permissionDeniedPaths / tccProtectedSkippedPaths` 转 Set 给每个 segPath 打 accessState（优先级 `tccProtected > permissionDenied > normal`）
+  - [TreeBrowserRow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L483) 渲染区分：accessDenied 行整行变灰 + 右下角 🔒 徽章 + size/count 改成 "—"（不再显示误导的 0 KB）+ tooltip 提示"无访问权限，请开 Full Disk Access"
+  - [TreeNodeView.canExpand](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L335) 加 accessState 拦截，accessDenied 目录不显示披露三角（避免"假按钮"）
+- **教训**：
+  1. macOS 沙盒下"扫不到"和"扫到了 0 字节"是两码事——UI 不区分会让用户误以为是 bug 反复重扫
+  2. accessState 必须从 BulkScanner 一直串到 TreeRow，不能在中间丢——任何一段 short-circuit 上来都会露出 0KB
+
+### 6.6.2 树形展开慢：100ms → 10ms 的 GROUP BY 下推
+
+- **症状**：deepIndex=off 时，点开任何目录有 ~100ms 卡顿
+- **根因**：[directChildrenAsync](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1037)（旧版）走 [store.query(pathPrefix:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/ScanResultStore.swift) 把整棵子树（最大 30w 条）拉回 Swift，再用 Dictionary GROUP BY first-segment——SQLite range scan 几毫秒，反而是序列化 + 字典哈希吃掉 ~100ms
+- **修法**（GROUP BY 下推到 SQL）：
+  - 新增 [DirectChildAggregate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/ScanResultStore.swift#L129) struct + protocol method [directChildrenAggregated](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/ScanResultStore.swift#L177)
+  - protocol extension 提供"拉子树+Swift Dict GROUP BY"的默认实现做兜底（fileprivate `_DirectChildrenAcc` 提到顶层——Swift **不允许在泛型 protocol-extension 函数里嵌套类型**，编译期 hard error）
+  - [GRDBScanResultStore.directChildrenAggregated](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift#L289) 单条 SQL 覆盖：CTE + `substr(path, ?+1)` + `instr(suffix||'/', '/')` 切第一段 + `MAX(CASE)` 折叠 hasInode/dirInode + `SUM(CASE WHEN is_directory=0)` 拆 file/dir 累加
+  - 复用现有 [v2_scan_result_path_index](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift#L83) 复合索引做 range scan
+- **关键设计点**：
+  - **range scan 而非 LIKE**：`path >= prefix/ AND path < prefix/\u{10FFFF}` —— 强保证走 `(session_id, path)` 索引而非 LIKE 优化器的脆弱性
+  - **substr 字节 vs 字符**：SQLite substr 按字符切，但只要切点是 ASCII '/' 就字节长度==字符长度（中文段名安全）
+  - **prefixLen 在 Swift 侧算好传 4 次绑定参数**：避免 SQL 内 `length(?)` 子查询，省一次解析
+- **教训**：
+  1. 看到"GROUP BY 100ms" 几乎一定是数据被拉到了应用层——SQLite C 层 GROUP BY 30w 条远不到 10ms
+  2. 字段命名上保留双口径（`descendantCount` / `fileDescendantCount`、`descendantBytes` / `fileDescendantBytes`）让上层既能算 vendor 总和也能拿"叶子直接孩子"判定，不用回头加字段
+
+### 6.6.3 hasChildren 误判：accessDenied 也"看起来能展开"
+
+- **症状（潜在）**：accessDenied 目录因为 GRDB 里仍有 1 条 inode record，`descendantCount >= 1` 判定 hasChildren=true，UI 渲染披露三角，用户点开是空——**假按钮 + 空内容**双重错误信号
+- **修法**：[TreeNodeView.canExpand](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L335) 加 `row.accessState == .normal` 拦截。即便聚合算出 hasChildren=true，accessState != .normal 也直接 disable 披露三角——把"这里被锁了"的语义拉满
+- **教训**：UI 状态机要把 access 维度作为"上层一票否决"，不要依赖下层数据形态去推
+
+### 6.6.4 banner 已存在，无需重做
+
+PR 实施过程中本来计划在树形 Tab 顶部加 banner，[grep 后发现](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L646) [PermissionStatusBanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L658) 已在 [statusBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L654) 全局存在。**没有重复加 banner**——开始动手前要先 grep 现状，避免重复造轮子。
+
+### 6.6.5 这一节涉及代码索引
+
+- [ScanResultStore.DirectChildAggregate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/ScanResultStore.swift#L129) — 直接子项聚合 DTO
+- [ScanResultStore.directChildrenAggregated](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/ScanResultStore.swift#L177) — protocol 接口 + 默认兜底实现
+- [GRDBScanResultStore.directChildrenAggregated](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift#L289) — 单 SQL CTE+GROUP BY 高性能覆盖
+- [TreeRow.AccessState](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L116) — normal/permissionDenied/tccProtected 三态
+- [ScanCoordinator.directChildrenAsync](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1037) — 重写：单 SQL 调用 + accessState 注入
+- [TreeBrowserRow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L483) — 🔒 徽章 / 灰阶 / "—" 占位 / tooltip
+- [TreeNodeView.canExpand](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L335) — accessDenied 不渲染披露三角
+
+---
+
 ## 7. 一句话开发箴言
 
 1. **Bundle ID 开发/发布分离**，否则 LaunchServices 会让你掉头发。

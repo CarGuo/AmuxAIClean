@@ -328,7 +328,13 @@ struct TreeNodeView: View {
     let onTrash: ((URL) -> Void)?
 
     private var indent: CGFloat { CGFloat(depth) * 16 }
-    private var canExpand: Bool { row.isDirectory && row.hasChildren }
+    /// v1.3.zzzz：accessDenied（permissionDenied / tccProtected）目录不允许展开。
+    /// 即便 row.hasChildren 为 true（理论上 SQL 聚合可能因为别的 record 漏出现 1 条），
+    /// 子树里也是没有真数据的——展开只会出现"假按钮 + 空 children"，对用户是错误信号。
+    /// 直接 disable 掉披露三角，把"这里被锁了"的语义拉满。
+    private var canExpand: Bool {
+        row.isDirectory && row.hasChildren && row.accessState == .normal
+    }
     private var isExpanded: Bool { expanded[row.path] ?? false }
     private var isSelected: Bool { selectedPath == row.path }
 
@@ -480,6 +486,16 @@ struct TreeNodeView: View {
 }
 
 /// 树行视图：图标 + 名称 + size + 体积条。复用 RowView 的视觉语言。
+///
+/// v1.3.zzzz：当 [row.accessState](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L116)
+/// 不是 .normal 时，整行降级渲染：
+/// - 文件夹图标后挂一个 🔒 lock.fill 小徽章
+/// - 文字 / 体积 / 体积条全部走 .tertiary 灰阶
+/// - .help() 改成"无访问权限"文案，鼠标 hover 提示用户去开 Full Disk Access
+///
+/// 这是为了治"我的 [Library/Safari](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L172)
+/// 显示 0 KB 是不是 bug？"这一类用户疑惑——根因是
+/// open(O_RDONLY) silent-deny，UI 必须把"被拒"和"真 0KB"区分开。
 struct TreeBrowserRow: View {
     let row: TreeRow
     let maxBytes: Int64
@@ -489,14 +505,46 @@ struct TreeBrowserRow: View {
         return CGFloat(Double(row.bytes) / Double(maxBytes))
     }
 
+    /// 是否被权限拦掉（permissionDenied / tccProtected 都算）
+    private var isAccessDenied: Bool { row.accessState != .normal }
+
+    /// 文案分两档：tccProtected 是用户层"sandbox 整段拒"，
+    /// permissionDenied 是运行时 open 失败；都建议用户去开 FDA 但措辞不同。
+    private var deniedHelp: String {
+        switch row.accessState {
+        case .normal: return row.path
+        case .permissionDenied:
+            return "\(row.path)\n\n无访问权限：扫描器无法读取此目录里的文件。请在「系统设置 → 隐私与安全性 → 完整磁盘访问」中授权后重新扫描。"
+        case .tccProtected:
+            return "\(row.path)\n\n受系统保护：此目录受 TCC 保护，需要在「系统设置 → 隐私与安全性 → 完整磁盘访问」中授权后才能查看。"
+        }
+    }
+
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: row.isDirectory ? "folder.fill" : "doc")
-                .foregroundStyle(row.isDirectory ? Color.accentColor : Color.secondary)
-                .frame(width: 16)
+            // 图标 + 🔒 叠加徽章（仅 accessDenied 时显示）
+            ZStack(alignment: .bottomTrailing) {
+                Image(systemName: row.isDirectory ? "folder.fill" : "doc")
+                    .foregroundStyle(
+                        isAccessDenied
+                            ? Color.secondary.opacity(0.5)
+                            : (row.isDirectory ? Color.accentColor : Color.secondary)
+                    )
+                    .frame(width: 16)
+                if isAccessDenied {
+                    // 右下角 8pt 锁徽章；用 capsule 衬底防止跟文件夹尖角混在一起
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(2)
+                        .background(Circle().fill(Color.orange))
+                        .offset(x: 4, y: 3)
+                }
+            }
             VStack(alignment: .leading, spacing: 4) {
                 Text(row.title.isEmpty ? row.path : row.title)
                     .font(.system(.body, design: .rounded))
+                    .foregroundStyle(isAccessDenied ? .tertiary : .primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -506,22 +554,30 @@ struct TreeBrowserRow: View {
                             .fill(.quaternary)
                             .frame(height: 3)
                         RoundedRectangle(cornerRadius: 2)
-                            .fill(Color.accentColor.opacity(row.isDirectory ? 0.7 : 0.4))
+                            .fill(
+                                isAccessDenied
+                                    ? Color.secondary.opacity(0.25)
+                                    : Color.accentColor.opacity(row.isDirectory ? 0.7 : 0.4)
+                            )
                             .frame(width: geo.size.width * ratio, height: 3)
                     }
                 }
                 .frame(height: 3)
             }
-            Text(ByteCountFormatter.string(fromByteCount: row.bytes, countStyle: .file))
+            // accessDenied 时把 size 改成"—"，避免"0 KB"的误导性显示
+            Text(isAccessDenied
+                 ? "—"
+                 : ByteCountFormatter.string(fromByteCount: row.bytes, countStyle: .file))
                 .font(.system(.body, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(isAccessDenied ? .tertiary : .secondary)
                 .frame(width: 90, alignment: .trailing)
-            Text("\(row.fileCount)")
+            Text(isAccessDenied ? "—" : "\(row.fileCount)")
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.tertiary)
                 .frame(width: 56, alignment: .trailing)
         }
         .padding(.vertical, 2)
-        .help(row.path)
+        .opacity(isAccessDenied ? 0.7 : 1.0)
+        .help(deniedHelp)
     }
 }

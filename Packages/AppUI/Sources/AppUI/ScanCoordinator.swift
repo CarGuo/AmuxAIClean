@@ -1038,8 +1038,15 @@ public final class ScanCoordinator: ObservableObject {
     ///
     /// 路径选择：
     /// - 内存命中（deepIndex=on 或 path 已经在 childEdges 里）：直接走同步 `directChildren(of:sortedBy:)`，0 IO；
-    /// - 否则若 store 已注入 + 当前会话 finalize 完毕：通过 `ScanResultQuery(parentPath:)` 查 GRDB；
+    /// - 否则若 store 已注入 + 当前会话 finalize 完毕：通过 `store.directChildrenAggregated(...)` 一条 SQL GROUP BY 拿结果；
     /// - 都没有：返回空数组（与同步版本同语义）。
+    ///
+    /// v1.3.zzzz 重写：把 Swift 侧的 Dictionary GROUP BY 整段下推到 SQL（参见
+    /// [GRDBScanResultStore.directChildrenAggregated](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift)），
+    /// 同时把 [permissionDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L19)
+    /// / [tccProtectedSkippedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L21)
+    /// 合入结果的 [TreeRow.accessState](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L116)。
+    /// UI 据此渲染 🔒 徽章而不是误导性的 0KB。
     ///
     /// 注意：本方法只读取 GRDB，不改任何 @Published / 内存索引；调用方负责把结果丢给 SwiftUI。
     public func directChildrenAsync(of path: String, sortedBy key: TreeSortKey) async -> [TreeRow] {
@@ -1050,109 +1057,65 @@ public final class ScanCoordinator: ObservableObject {
         // Slow path：走 store。需要 store + 当前 sessionID 都在。
         guard let store = resultStore, let sid = currentSessionID else { return [] }
 
-        // v1.3.zzz 重写：之前用 `parentPath = path` 直查只能拿到 BulkScanner 真正
-        // ingest 过的"父子关系正确的中间目录 inode"。但 BulkScanner 在 vendor bucket
-        // 模式下（如 ~/Library/Caches/Google 6.5GB 整目录归并、~/Library/Logs 整目录归并）
-        // **不会** emit 中间目录 inode，只会 emit 最深层的文件 leaf：
-        //   path=Caches/Google/AndroidStudio.../plugins/x.zip
-        //   parent_path=Caches/Google/AndroidStudio.../plugins
-        // → query(parentPath=Caches) 拿不到 Google，树形里就完全消失。
-        // → query(parentPath=Logs)  拿到 0 条（所有 leaf 的 parent 在更深层），
-        //   树形显示「还没有可展开的子节点」（用户截图实测）。
-        //
-        // 修复：用 `pathPrefix = path + "/"` 拉所有子孙记录，然后按"path 在 prefix
-        // 之后第一段"分组聚合，派生虚拟直接子目录。这等价于 SQL 里的
-        // `GROUP BY first_segment(path, prefix)`，但因为 GRDB store API 没有暴露 SQL，
-        // 我们在 Swift 侧做聚合。
-        //
-        // 复杂度：O(N) N=子树记录数。Caches 下 ~33w 条，单次完整聚合大约 100ms，
-        // 比之前的 query+subtreeAggregates 二次往返实际更快。
-        let prefix = path.hasSuffix("/") ? path : path + "/"
-        let q = ScanResultQuery(
-            sessionID: sid,
-            parentPath: nil,
-            pathPrefix: prefix,
-            onlyFiles: false,
-            limit: nil,
-            offset: 0,
-            sort: .allocatedSizeDescending
-        )
-        let descendants: [ScanResultRecord]
+        // v1.3.zzzz：把"该 path 的子项 + 子树聚合"整段下推到单条 SQL GROUP BY。
+        // 替代旧版 query→Swift Dictionary GROUP BY 的 ~100ms 慢路径，目标 ~10ms。
+        let aggregates: [DirectChildAggregate]
         do {
-            descendants = try await store.query(q)
+            aggregates = try await store.directChildrenAggregated(
+                sessionID: sid,
+                parentPath: path
+            )
         } catch {
             return []
         }
 
-        // 按"prefix 之后的第一段路径"分组。
-        // 例如 prefix="/A/Caches/", path="/A/Caches/Google/Android.../x.zip"
-        //      → seg="Google", segPath="/A/Caches/Google"
-        // 同段下所有 leaf 累加 bytes/count；记录每段是否本身是文件 leaf（直接孩子是文件）。
-        struct Bucket {
-            var bytes: Int64 = 0
-            var count: Int = 0
-            var directLeafBytes: Int64 = 0   // 仅 segPath == record.path（直接孩子是文件本身）
-            var directLeafIsFile: Bool = false
-            var directInodeIsDir: Bool? = nil  // 直接孩子 inode 存在时记录类型
-        }
-        var buckets: [String: Bucket] = [:]
-        let prefixLen = prefix.count
-        for rec in descendants {
-            let recPath = rec.path
-            // recPath 一定以 prefix 开头（query 保证）。取剩下的部分。
-            guard recPath.count > prefixLen else { continue }
-            let suffix = recPath.dropFirst(prefixLen)
-            // 取第一个 "/" 之前的段，没有 "/" 就是直接孩子本身。
-            let firstSlash = suffix.firstIndex(of: "/")
-            let seg = firstSlash.map { String(suffix[..<$0]) } ?? String(suffix)
-            let segPath = prefix + seg
-            var b = buckets[seg] ?? Bucket()
-            // 子树累加：所有"是文件"的 record 累加 bytes/count（目录 record 自身 inode
-            // size ~0，不重复累加避免双计；vendor bucket 没有目录 inode，等价跳过）。
-            if !rec.isDirectory {
-                b.bytes &+= rec.allocatedSize
-                b.count &+= 1
-            }
-            // 直接孩子 inode 命中：记录类型 + 文件大小（如果是文件）。
-            if recPath == segPath {
-                b.directInodeIsDir = rec.isDirectory
-                if !rec.isDirectory {
-                    b.directLeafBytes = rec.allocatedSize
-                    b.directLeafIsFile = true
-                }
-            }
-            buckets[seg] = b
-        }
+        // 从主线程读 access-denied 索引——这两个 @Published 数组在 ScanCoordinator
+        // actor 上下文里访问是同步安全的。建 Set 之后查询是 O(1)。
+        let deniedSet = Set(permissionDeniedPaths)
+        let tccSet = Set(tccProtectedSkippedPaths)
 
-        let rows: [TreeRow] = buckets.map { (seg, b) in
-            let segPath = prefix + seg
-            // 决定这一行是文件还是目录：
-            //   - directInodeIsDir == false 且没有更深的子孙（count<=1 且 bytes==directLeafBytes）→ 文件
-            //   - 其它情况都按目录处理（vendor bucket 也按目录显示，可继续递归展开）
-            let isFile = (b.directInodeIsDir == false)
-                && b.count <= 1
-                && b.bytes == b.directLeafBytes
-            if isFile {
+        let prefix = path.hasSuffix("/") ? path : path + "/"
+        let rows: [TreeRow] = aggregates.map { agg in
+            let segPath = prefix + agg.segment
+            // 决定这一行是文件还是目录：用 SQL 端聚合时算好的 isDirectory；
+            // 兜底：hasInode=false 但只有 1 条文件 record 时 → 文件叶子。
+            let isFileLeaf = !agg.isDirectory
+                && agg.descendantCount == 1
+                && agg.fileDescendantCount == 1
+                && agg.descendantBytes == agg.fileDescendantBytes
+            // accessState 优先级：tccProtected > permissionDenied > normal
+            // tccProtected 是用户层"sandbox 整段拒"，permissionDenied 是"运行时拒"，
+            // 都意味着子目录里没数据，但成因不同，UI 文案不一样。
+            let accessState: TreeRow.AccessState
+            if tccSet.contains(segPath) {
+                accessState = .tccProtected
+            } else if deniedSet.contains(segPath) {
+                accessState = .permissionDenied
+            } else {
+                accessState = .normal
+            }
+            if isFileLeaf {
                 return TreeRow(
                     path: segPath,
-                    title: seg,
-                    bytes: b.directLeafBytes,
+                    title: agg.segment,
+                    bytes: agg.fileDescendantBytes,
                     fileCount: 1,
                     isDirectory: false,
-                    hasChildren: false
+                    hasChildren: false,
+                    accessState: accessState
                 )
             } else {
-                // 目录：bytes/count 用子树累加值；如果直接孩子是文件 leaf 也包含进去。
-                let totalBytes = b.bytes
-                let totalCount = max(b.count, 1)
+                // 目录：bytes/count 用子树累加值。hasChildren 判定与旧版一致：
+                // 至少 1 条记录，且不是"唯一一条直接孩子叶子"。
                 return TreeRow(
                     path: segPath,
-                    title: seg,
-                    bytes: totalBytes,
-                    fileCount: totalCount,
+                    title: agg.segment,
+                    bytes: agg.descendantBytes,
+                    fileCount: max(agg.descendantCount, 1),
                     isDirectory: true,
-                    // 只要这个 bucket 下有 ≥ 2 条记录，或唯一一条不是直接孩子本身，就允许展开。
-                    hasChildren: b.count >= 1 && !(b.count == 1 && b.directLeafIsFile)
+                    hasChildren: agg.descendantCount >= 1
+                        && !(agg.descendantCount == 1 && agg.hasInode == false),
+                    accessState: accessState
                 )
             }
         }
