@@ -17,6 +17,10 @@ struct PerfBench {
         var insertBatchSize = 50_000
 
         let rest = Array(args.dropFirst())
+        if rest.contains("--help") || rest.contains("-h") {
+            printUsage()
+            return
+        }
         var i = 0
         while i < rest.count {
             let arg = rest[i]
@@ -301,5 +305,34 @@ struct PerfBench {
         case "false", "0", "no", "n": return false
         default: return true
         }
+    }
+
+    /// v1.3.zzzz Phase 3-D：`--help` / `-h` 走这里直接 stdout 列出所有 flag 和默认值。
+    /// 之前不识别 `--help` 直接掉进 BulkScanner 跑全 ~/Library/Caches 扫描——
+    /// 在 release 机器上一跑就是 5 秒，新人极易误以为程序卡死。
+    private static func printUsage() {
+        print("""
+        PerfBench — GSYCleanMac scan/store 性能基线工具
+
+        用法：
+          PerfBench [flags]
+
+        flags：
+          --root <path>             默认扫描根（默认 ~/Library/Caches）；走 BulkScanner 路径，输出
+                                    elapsed_ms / fileCount / totalAllocatedMB / dedupedHardlinkMB
+          --hidden <bool>           是否包含隐藏文件（默认 true，接受 true/1/yes/y / false/0/no/n）
+          --dedup <bool>            是否按 inode 去重 hardlink（默认 true）
+
+          --bench-direct-children   走 directChildrenAggregated GRDB 单 SQL 路径基准
+                                    （而不是默认的 BulkScanner 全盘扫描）。输出
+                                    records / batch / txn / insert_ms / cold_root_ms /
+                                    warm_root_ms / mid_l1_ms / root_children / l1_children
+          --nodes <N>               --bench-direct-children 模式下合成节点数（默认 50000）
+          --insert-batch-size <N>   --bench-direct-children 模式下 store.insert 切片大小
+                                    （默认 50000；一次 store.insert = 一次 SQLite 事务，
+                                    详见 GRDBScanResultStore.insert 注释）
+
+          --help, -h                显示本帮助
+        """)
     }
 }
