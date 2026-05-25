@@ -1,10 +1,10 @@
-2026-05-25 19:41:08.930 GSYCleanMac[7529:5150076] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-05-25 20:26:31.137 GSYCleanMac[51393:5281231] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=scan-recommended defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=scan-recommended
-[REGR] case=scan-recommended files=338923 bytes=21706936820 roots=5
+[REGR] case=scan-recommended files=338958 bytes=21710744919 roots=5
 [REGR_OK] case=scan-recommended isFinished=true
 [REGR_OK] case=scan-recommended perRootProgress count=5 > 0
-[REGR_OK] case=scan-recommended scannedFileCount nonneg=338924 > 0
+[REGR_OK] case=scan-recommended scannedFileCount nonneg=338959 > 0
 [REGR_OK] case=scan-recommended lastError=nil
 [REGR] case=scan-recommended defaults_restored_keys=3
-[REGR_PASS] case=scan-recommended elapsed_ms=18452
+[REGR_PASS] case=scan-recommended elapsed_ms=23912

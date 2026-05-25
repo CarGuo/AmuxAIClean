@@ -987,6 +987,9 @@ public struct MainView: View {
             recommendedAllButton
         }
         ToolbarItem(placement: .primaryAction) {
+            developerScanButton
+        }
+        ToolbarItem(placement: .primaryAction) {
             fullDiskButton
         }
         ToolbarItem(placement: .primaryAction) {
@@ -1029,6 +1032,23 @@ public struct MainView: View {
             Label("全部推荐扫描", systemImage: "rectangle.3.group")
         }
         .help("并行扫描 5 个推荐目录（缓存 / 日志 / DerivedData / 下载 / 废纸篓）")
+        .disabled(coordinator.isScanning)
+    }
+
+    /// v1.4：「开发者构建产物」—— 在 `~` 下勘察主流框架的 build / 依赖目录并并行扫描。
+    /// 覆盖 Node / RN / Electron / Flutter / Android / iOS / Rust / Go / Python / JVM 等生态，
+    /// 命中规则 + 兄弟脚手架兜底（如 node_modules 必须兄弟有 package.json），杜绝误命中。
+    /// 启用规则集由 [AppSettings.enabledDevArtifactRuleIDs] 控制（默认全开）。
+    private var developerScanButton: some View {
+        Button {
+            resetSelectionState()
+            selectedCategory = nil
+            coordinator.scanDeveloper(includeHidden: settings.showHidden,
+                                      enabledRuleIDs: settings.enabledDevArtifactRuleIDs)
+        } label: {
+            Label("开发者扫描", systemImage: "hammer")
+        }
+        .help("扫描开发者构建产物：node_modules / build / Pods / target / __pycache__ 等可放心删的产物")
         .disabled(coordinator.isScanning)
     }
 
@@ -1086,12 +1106,14 @@ public struct MainView: View {
             Button(role: .cancel) {
                 coordinator.cancel()
             } label: { Label("停止", systemImage: "stop.circle") }
+                .help("停止当前扫描（已扫描到的结果保留）")
         } else if let id = selectedCategory, let cat = allCategories.first(where: { $0.id == id }) {
             Button {
                 // v1.3：统一走 resetSelectionState()，避免重新扫描后 detail/treeSelection 残留
                 resetSelectionState()
                 startScan(category: cat)
             } label: { Label("重新扫描", systemImage: "arrow.clockwise") }
+                .help("重新扫描当前选中类目（清空既有结果）")
         }
     }
 

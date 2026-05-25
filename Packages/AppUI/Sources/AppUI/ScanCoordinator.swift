@@ -105,6 +105,10 @@ public final class ScanCoordinator: ObservableObject {
     /// runScan 的 activeCategoryID 校验沿用此值；UI 不应依赖它做业务判断（用 perRootProgress 判更可靠）。
     public static let multiRootCategoryID: String = "recommended.multi"
 
+    /// v1.4：开发者构建产物多根并行扫描的 categoryID 哨兵。与 multiRootCategoryID 区分，
+    /// 让 UI 可以渲染不同标题（"开发者构建产物" vs "全部推荐扫描"），但底层 runMultiRootScan 共用。
+    public static let developerCategoryID: String = "developer.multi"
+
     /// 便利属性 —— 转发自 `snapshot.isFinished`，
     /// 让 UI 可以直接 `coordinator.isFinished` 判断三态，不必每处都写 `coordinator.snapshot.isFinished`。
     public var isFinished: Bool { snapshot.isFinished }
@@ -560,6 +564,126 @@ public final class ScanCoordinator: ObservableObject {
             await self?.runMultiRootScan(roots: roots, options: options,
                                          categoryID: ScanCoordinator.multiRootCategoryID)
         }
+    }
+
+    /// v1.4：开发者构建产物多根并行扫描入口。
+    ///
+    /// 流程：
+    /// 1. [DevArtifactScanner] 在 `~` 下勘察命中规则的目录（不计字节，只列 URL + 规则元数据）；
+    /// 2. 用 [DevArtifactRule.Verdict] 过滤——本入口只接收 `.safe` + `.confirm` 两类，
+    ///    勾选默认值由 verdict 决定（safe 默认勾选、confirm 默认不勾，与 ScanCategory 体系一致）；
+    /// 3. 把命中目录转成多根，复用 [runMultiRootScan]——这样 UI 全套（perRootProgress / footerBar /
+    ///    treeBrowser / safety / TrashPipeline）零改动；
+    /// 4. 命中数为 0 时直接 publish 一个 finished=true 的空 snapshot，避免 UI 无限"扫描中…"。
+    ///
+    /// - Parameters:
+    ///   - includeHidden: 透传 ScanOptions.includeHidden（开发者产物里很多隐藏目录如 `.next`，应保持 true）
+    ///   - enabledRuleIDs: 启用的规则 ID 集合，缺省 = 全部启用；调用方传入用户设置中关掉的差集
+    public func scanDeveloper(includeHidden: Bool = true,
+                              enabledRuleIDs: Set<String> = DevArtifactRules.allIDs) {
+        cancel()
+        wasCancelled = false
+        buckets.removeAll(keepingCapacity: true)
+        dirIndex.removeAll(keepingCapacity: true)
+        childEdges.removeAll(keepingCapacity: true)
+        fileLeaves.removeAll(keepingCapacity: true)
+        treeChildrenCache.removeAll(keepingCapacity: true)
+        treeChildrenInFlight.removeAll(keepingCapacity: true)
+        largeFileLeaves.removeAll(keepingCapacity: true)
+        compactedLargeFileTopN = nil
+        lastIngestAt.removeAll(keepingCapacity: true)
+        self.largeFileMinBytes = 0
+        totalBytes = 0
+        scannedFiles = 0
+        startedAt = Date()
+        bytesPerSecondEMA = 0
+        lastSampleAt = nil
+        lastSampleBytes = 0
+        etaEligible = true
+        expectedTotalBytes = nil
+        currentRootPath = "(开发者构建产物)"
+        snapshot = ScanSnapshot(categoryID: ScanCoordinator.developerCategoryID, rows: [],
+                                totalBytes: 0, scannedFileCount: 0, isFinished: false, elapsed: 0)
+        isScanning = true
+        lastError = nil
+        permissionDeniedPaths = []
+        tccProtectedSkippedPaths = []
+        activeCategoryID = ScanCoordinator.developerCategoryID
+
+        let session = ScanSessionID()
+        currentSessionID = session
+        storeBatch.removeAll(keepingCapacity: true)
+        storeHealthy = true
+        if let store = resultStore {
+            Task.detached { [storeRef = store] in
+                do { try await storeRef.beginSession(session) }
+                catch { /* 静默降级 */ }
+            }
+        }
+
+        let homeURL = URL(fileURLWithPath: home)
+        let respectTCC = (fdaStatus == .denied)
+        let options = ScanOptions(includeHidden: includeHidden,
+                                  staySingleVolume: false,
+                                  respectTCCSkipList: respectTCC)
+        let activeID = ScanCoordinator.developerCategoryID
+
+        // 异步勘察 + 启动扫描；勘察自身有 60s 超时和 GSYLog 埋点
+        scanTask = Task { [weak self] in
+            let opts = DevArtifactScanner.Options(enabledRuleIDs: enabledRuleIDs)
+            let hits = await DevArtifactScanner(options: opts).discover(home: homeURL)
+            // 防过期：勘察期间用户可能切走或重新点击其他扫描入口
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                guard self.activeCategoryID == activeID else { return }
+                if hits.isEmpty {
+                    // 0 命中：直接 publish 一个 finished snapshot，让 UI 不再卡在"扫描中…"
+                    self.perRootProgress = [:]
+                    self.perRootStaging = [:]
+                    self.snapshot = ScanSnapshot(categoryID: activeID, rows: [],
+                                                 totalBytes: 0, scannedFileCount: 0,
+                                                 isFinished: true,
+                                                 elapsed: Date().timeIntervalSince(self.startedAt))
+                    self.isScanning = false
+                    GSYLog.info(.scan, "DevArtifact 勘察 0 命中 直接结束扫描")
+                    return
+                }
+                // 预填 perRootProgress：每个 hit 一行，title 用规则 displayName + 路径短形式
+                var initial: [String: PerRootProgress] = [:]
+                for hit in hits {
+                    let shortPath = self.shortenPath(hit.url.path, home: self.home)
+                    let title = "\(hit.displayName) · \(shortPath)"
+                    initial[hit.url.path] = PerRootProgress(rootPath: hit.url.path, title: title)
+                }
+                self.perRootProgress = initial
+                self.perRootStaging = initial
+
+                let roots = hits.map { $0.url }
+                // 估算总字节，给 ETA 用
+                Task { [weak self] in
+                    let estimated = await TreeSizeEstimator.estimate(roots: roots, timeout: 4.0)
+                    await MainActor.run { [weak self] in
+                        guard let self else { return }
+                        guard self.activeCategoryID == activeID else { return }
+                        self.expectedTotalBytes = estimated
+                    }
+                }
+
+                // 起真正的多根扫描——复用 runMultiRootScan 全套
+                self.scanTask = Task { [weak self] in
+                    await self?.runMultiRootScan(roots: roots, options: options, categoryID: activeID)
+                }
+            }
+        }
+    }
+
+    /// v1.4：把 `~/Foo/Bar/node_modules` 缩成 `~/Foo/Bar` 形式以便 UI 展示。
+    private nonisolated func shortenPath(_ path: String, home: String) -> String {
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") {
+            return "~" + path.dropFirst(home.count)
+        }
+        return path
     }
 
     private func runScan(rootURL: URL, categoryID: String, includeHidden: Bool, staySingleVolume: Bool = false) async {

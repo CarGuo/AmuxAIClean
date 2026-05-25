@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import ScanKit
 
 /// v1.0 用户偏好（隐藏文件 toggle / 大文件阈值 / 排序方式）。
 ///
@@ -53,6 +54,9 @@ public final class AppSettings {
         /// `~/Library/Application Support/GSYCleanMac/scan.sqlite`，UI 在大文件视图等场景
         /// 可以在退出页面时主动 compact 内存中的大文件叶子缓存，下次进入再从 store 取。
         public static let useScanStore = "v1.use_scan_store"
+        /// v1.4：开发者构建产物扫描的规则启用集合，存为 `[String]`（DevArtifactRule.id 数组）。
+        /// 默认 = `DevArtifactRules.allIDs`（全开），用户可在设置面板逐项关。
+        public static let enabledDevArtifactRuleIDs = "v1.4.enabled_dev_artifact_rules"
     }
 
     /// v1.3：HUD 屏幕位置预设。
@@ -314,6 +318,22 @@ public final class AppSettings {
         didSet { defaults.set(useScanStore, forKey: Keys.useScanStore) }
     }
 
+    /// v1.4：开发者构建产物扫描启用的规则 ID 集合。
+    ///
+    /// 设计：
+    /// - **内置全开**：默认 = [DevArtifactRules.allIDs](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DevArtifactRules.swift)，
+    ///   覆盖 30 条规则（node_modules / .next / Pods / .gradle / build / target / __pycache__ ...）。
+    /// - **逐项可关**：用户可在 [SettingsScene](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SettingsScene.swift)
+    ///   的"开发者扫描规则"分组按生态逐条关（比如不写 Rust 的关 `target/`，避免误伤别的 target）。
+    /// - **持久化**：UserDefaults 存 `[String]` 数组（rawValue），读时反序列化为 `Set<String>`，
+    ///   保持 O(1) 查询（`DevArtifactScanner` 在每个 entry 上要查一次）。
+    /// - **空集兜底**：若用户把所有规则都关掉，[DevArtifactScanner.discover](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DevArtifactScanner.swift)
+    ///   会直接 warning 并返回空命中，[scanDeveloper](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    ///   走 0 命中分支直接结束，不会卡 UI。
+    public var enabledDevArtifactRuleIDs: Set<String> {
+        didSet { defaults.set(Array(enabledDevArtifactRuleIDs), forKey: Keys.enabledDevArtifactRuleIDs) }
+    }
+
     // MARK: - 构造
 
     /// 标准构造（生产代码用）：直接使用 `UserDefaults.standard`。
@@ -420,6 +440,15 @@ public final class AppSettings {
         } else {
             self.useScanStore = false
         }
+        // v1.4：开发者构建产物扫描规则——首启 / 未配置时全开，并把
+        // 后续新增的内置规则**自动并入**当前用户启用集合。
+        // 设计要点：用户先前关掉的规则（即已写入 defaults 但 raw 中不含的）保持关闭尊重用户选择；
+        // 但 App 升级后新增的规则（rawSet 不包含、allIDs 包含）默认随版本启用，避免新生态被默默漏扫。
+        if let raw = defaults.array(forKey: Keys.enabledDevArtifactRuleIDs) as? [String] {
+            self.enabledDevArtifactRuleIDs = Set(raw)
+        } else {
+            self.enabledDevArtifactRuleIDs = DevArtifactRules.allIDs
+        }
         // 初始化期一致性纠偏：万一上一次进程崩溃前留下了"trayEnabled=false 且 hideFromDockWhenClosed=true"
         // 的非法组合（didSet 没来得及触发），启动时强制以 trayEnabled 为准。
         if hideFromDockWhenClosed, !trayEnabled {
@@ -444,5 +473,6 @@ public final class AppSettings {
         defaults.removeObject(forKey: Keys.hudPlacementForcedIsland)
         defaults.removeObject(forKey: Keys.hideFromDockWhenClosed)
         defaults.removeObject(forKey: Keys.useScanStore)
+        defaults.removeObject(forKey: Keys.enabledDevArtifactRuleIDs)
     }
 }

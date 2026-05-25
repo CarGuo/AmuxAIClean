@@ -72,6 +72,8 @@ public struct SettingsScene: View {
                 .tabItem { Label("自定义路径", systemImage: "folder.badge.plus") }
             updateTab
                 .tabItem { Label("更新", systemImage: "arrow.down.circle") }
+            developerArtifactsTab
+                .tabItem { Label("开发者扫描", systemImage: "hammer") }
             storageTab
                 .tabItem { Label("存储与日志", systemImage: "internaldrive") }
         }
@@ -370,6 +372,108 @@ public struct SettingsScene: View {
         await MainActor.run {
             pathsMirror = list
         }
+    }
+}
+
+// MARK: - 开发者扫描 Tab（v1.4）
+
+extension SettingsScene {
+    /// 「开发者扫描」Tab：列出 30 条开发者构建产物规则，按生态分组逐项 Toggle。
+    ///
+    /// 设计要点：
+    /// 1. **Source of truth = settings.enabledDevArtifactRuleIDs**：每个 Toggle 绑定到
+    ///    `Set<String>.contains(rule.id)`，flip 后立刻写入 UserDefaults。下次扫描自动生效。
+    /// 2. **按 [DevArtifactRules.grouped](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DevArtifactRules.swift) 渲染**：
+    ///    `Ecosystem.allCases` 顺序，每个生态一个 `Section`，Section header 用 `displayName`。
+    /// 3. **副标题展示规则元信息**：`directoryName` + `subtitle` + 兄弟兜底标记 + `Verdict`，
+    ///    用户能看清「关掉这条规则会少扫什么」。
+    /// 4. **顶部全选 / 全关 / 仅安全**三个快捷操作：高频运维场景下批量切换比逐条点效率高。
+    fileprivate var developerArtifactsTab: some View {
+        Form {
+            Section {
+                HStack(spacing: 8) {
+                    Button("全部启用") {
+                        settings.enabledDevArtifactRuleIDs = DevArtifactRules.allIDs
+                    }
+                    Button("全部关闭") {
+                        settings.enabledDevArtifactRuleIDs = []
+                    }
+                    Button("仅启用安全项") {
+                        settings.enabledDevArtifactRuleIDs = Set(
+                            DevArtifactRules.all
+                                .filter { $0.verdict == .safe }
+                                .map(\.id)
+                        )
+                    }
+                    Spacer()
+                    Text("已启用 \(settings.enabledDevArtifactRuleIDs.count) / \(DevArtifactRules.all.count)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("批量操作")
+            } footer: {
+                Text("开发者扫描会从 ~ 整个家目录 BFS 查找命中目录（如 node_modules / build / Pods / target / __pycache__ 等），并要求兄弟里有对应脚手架文件（如 package.json / pubspec.yaml / Cargo.toml）以避免误命中。命中后整棵剪枝不再下钻。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            ForEach(DevArtifactRules.grouped(), id: \.0) { (ecosystem, rules) in
+                if !rules.isEmpty {
+                    Section {
+                        ForEach(rules) { rule in
+                            Toggle(isOn: bindingForRule(rule.id)) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 6) {
+                                        Text(rule.displayName)
+                                        Text(rule.directoryName)
+                                            .font(.caption.monospaced())
+                                            .padding(.horizontal, 4)
+                                            .padding(.vertical, 1)
+                                            .background(Color.secondary.opacity(0.12),
+                                                        in: RoundedRectangle(cornerRadius: 4))
+                                        if rule.verdict == .confirm {
+                                            Text("需确认")
+                                                .font(.caption2)
+                                                .foregroundStyle(.orange)
+                                        }
+                                    }
+                                    Text(rule.subtitle)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    if !rule.siblingMarkers.isEmpty {
+                                        Text("兄弟兜底：\(rule.siblingMarkers.joined(separator: " / "))")
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                }
+                            }
+                        }
+                    } header: {
+                        Text(ecosystem.displayName)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    /// 把 `Set<String>.contains(id)` 桥成 SwiftUI `Toggle` 用的 `Binding<Bool>`。
+    /// 写入 true → 插入 id；写入 false → 移除 id；didSet 自然触发 UserDefaults 持久化。
+    private func bindingForRule(_ ruleID: String) -> Binding<Bool> {
+        Binding(
+            get: { settings.enabledDevArtifactRuleIDs.contains(ruleID) },
+            set: { isOn in
+                if isOn {
+                    settings.enabledDevArtifactRuleIDs.insert(ruleID)
+                } else {
+                    settings.enabledDevArtifactRuleIDs.remove(ruleID)
+                }
+            }
+        )
     }
 }
 
