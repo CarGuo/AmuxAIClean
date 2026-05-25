@@ -227,56 +227,6 @@ public actor GRDBScanResultStore: ScanResultStore {
         }
     }
 
-    /// v1.3.z：批量子树聚合。一次事务内 prefixes.count 次 range scan
-    /// （依赖 `scan_result_session_path_idx` 复合索引）。
-    ///
-    /// 性能要点：用 `path >= 'X/' AND path < <X/'s_next_char>` 的 range 比较而**不是** LIKE。
-    /// SQLite 的 LIKE 优化器只在 **没有 ESCAPE 子句 + BINARY collation + 默认 case_sensitive_like = 0**
-    /// 时才会自动转 range scan，受全局 PRAGMA 影响很脆弱。
-    /// 用纯 `>=` / `<` 比较，索引前缀走 range 是 SQLite **强保证**（不依赖 LIKE 优化器）。
-    /// upper bound 取 `prefix + "/" + Character(UnicodeScalar(0x10FFFF))` 兜底所有 UTF-8 字符。
-    /// 实际我们直接把 "/" 换成下一个 ASCII '0' 不行（path 里可能有更高字符），
-    /// 用一个保证比任何合法子路径都大的 sentinel：附加一个 "\u{10FFFF}"。
-    public func subtreeAggregates(
-        sessionID: ScanSessionID,
-        pathPrefixes: [String]
-    ) async throws -> [String: ScanResultAggregate] {
-        guard !pathPrefixes.isEmpty else { return [:] }
-        return try await dbPool.read { db in
-            var out: [String: ScanResultAggregate] = [:]
-            let sql = """
-                SELECT COUNT(*) AS cnt,
-                       COALESCE(SUM(allocated_size), 0) AS alloc,
-                       COALESCE(SUM(logical_size), 0) AS logi
-                FROM scan_result
-                WHERE session_id = ?
-                  AND path >= ?
-                  AND path < ?
-                """
-            // sentinel：比所有合法 UTF-8 子路径都大。U+10FFFF 是 Unicode 最大值，
-            // SQLite TEXT 列按 BINARY collation 排序时，任何后续字符串都不会大于它。
-            let sentinel = "\u{10FFFF}"
-            for prefix in pathPrefixes {
-                let lower = prefix + "/"
-                let upper = prefix + "/" + sentinel
-                if let row = try Row.fetchOne(
-                    db,
-                    sql: sql,
-                    arguments: [sessionID.raw, lower, upper]
-                ) {
-                    out[prefix] = ScanResultAggregate(
-                        totalCount: row["cnt"],
-                        totalAllocatedBytes: row["alloc"],
-                        totalLogicalBytes: row["logi"]
-                    )
-                } else {
-                    out[prefix] = .empty
-                }
-            }
-            return out
-        }
-    }
-
     /// v1.3.zzzz：树形 Tab 展开 prefix 的"直接子项 + 每段子树聚合"——单条 SQL GROUP BY 实现。
     ///
     /// 对比旧版 [ScanCoordinator.directChildrenAsync](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1045)
@@ -284,8 +234,9 @@ public actor GRDBScanResultStore: ScanResultStore {
     /// 把整段聚合下推到 SQLite C 内层，预期降到 ~10ms 级，且不再把数据拉回 Swift 内存。
     ///
     /// 性能要点：
-    /// 1) 走与 subtreeAggregates 相同的 path range（[lower, upper)），命中
-    ///    `scan_result_session_path_idx` 复合索引做 range scan；
+    /// 1) 用 `path >= lower AND path < upper` 的 range scan（不依赖 LIKE 优化器）：
+    ///    lower = parentPath + "/"，upper = lower + "\u{10FFFF}" sentinel；
+    ///    命中 `scan_result_session_path_idx` 复合索引做 range scan；
     /// 2) 用 `substr(path, prefixLen+1, ...)` 抽出 segment，prefixLen 在 Swift 侧算好
     ///    传入避免每行重复算（GROUP BY 表达式必须确定可比较）；
     /// 3) 用 `instr(suffix||'/', '/')` 找第一个分隔符位置（相当于 split first；
@@ -301,7 +252,7 @@ public actor GRDBScanResultStore: ScanResultStore {
         let prefix = parentPath.hasSuffix("/") ? parentPath : parentPath + "/"
         let prefixLen = prefix.utf8.count
         let lower = prefix
-        // sentinel：与 subtreeAggregates 同款 U+10FFFF，保证比所有合法子路径都大。
+        // sentinel：U+10FFFF 是 Unicode 最大码点，BINARY collation 下保证比所有合法子路径都大。
         let upper = prefix + "\u{10FFFF}"
         // SQLite substr 的 start 是 1-based。prefixLen 是 prefix 的 utf8 字节数；
         // path 是 UTF-8 编码 TEXT，substr(path, prefixLen+1) 即"prefix 之后的 suffix"。
