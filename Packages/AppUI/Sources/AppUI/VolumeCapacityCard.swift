@@ -83,7 +83,7 @@ public struct VolumeCapacityCard: View {
             HStack {
                 Image(systemName: "internaldrive")
                     .foregroundStyle(.secondary)
-                Text("卷容量未知")
+                Text("capacity.unknown", bundle: .module)
                     .font(.system(.callout, design: .rounded).weight(.medium))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -94,7 +94,7 @@ public struct VolumeCapacityCard: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
-                    .help("重试探测")
+                    .help(String(localized: "capacity.retry", bundle: .module))
                 }
             }
             // 保持与正常态相同的占位高度（8pt 灰条 + legend 三行），sidebar 底部高度恒定。
@@ -103,9 +103,9 @@ public struct VolumeCapacityCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4))
                 .frame(height: 8)
             VStack(alignment: .leading, spacing: 3) {
-                placeholderLegendRow(label: "可清理")
-                placeholderLegendRow(label: "其它已用")
-                placeholderLegendRow(label: "可用")
+                placeholderLegendRow(label: String(localized: "capacity.legend.cleanable", bundle: .module))
+                placeholderLegendRow(label: String(localized: "capacity.legend.other_used", bundle: .module))
+                placeholderLegendRow(label: String(localized: "capacity.legend.available", bundle: .module))
             }
             .font(.caption2)
         }
@@ -164,17 +164,17 @@ public struct VolumeCapacityCard: View {
             if cleanable > 0 {
                 legendRow(
                     color: cleanableSeverity.color,
-                    label: "可清理",
+                    label: String(localized: "capacity.legend.cleanable", bundle: .module),
                     bytes: cleanable,
                     valueColor: cleanableSeverity.color,
                     bold: true
                 )
             }
-            legendRow(color: .gray.opacity(0.6), label: "其它已用", bytes: otherUsed)
+            legendRow(color: .gray.opacity(0.6), label: String(localized: "capacity.legend.other_used", bundle: .module), bytes: otherUsed)
             // 可用段也按"可用空间 severity"上色（绿/黄/橙/红）：剩越少越红
             legendRow(
                 color: availableSeverity.color,
-                label: "可用",
+                label: String(localized: "capacity.legend.available", bundle: .module),
                 bytes: s.availableBytes,
                 valueColor: availableSeverity.color,
                 bold: availableSeverity == .critical || availableSeverity == .warning
@@ -236,7 +236,7 @@ public struct VolumeCapacityCard: View {
                 Image(systemName: "memorychip")
                     .foregroundStyle(.secondary)
                     .font(.caption2)
-                Text("虚拟内存占盘")
+                Text("capacity.virtual_memory.title", bundle: .module)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -250,26 +250,26 @@ public struct VolumeCapacityCard: View {
             // 已用与已分配可能不同：内核会预留 swap 文件位（"分配"），但只有真正写入 page 时才"使用"。
             if swap.swapUsedBytes > 0 {
                 swapDetailRow(
-                    label: "swap 已用",
+                    label: String(localized: "capacity.swap.used", bundle: .module),
                     bytes: swap.swapUsedBytes,
-                    hint: "活动监视器 Swap Used 同口径（用单位 GB=10⁹ 与 GiB=2³⁰ 之间会有 ~7% 显示差异）"
+                    hint: String(localized: "capacity.swap.used.hint", bundle: .module)
                 )
             }
             if swap.swapDiskBytes > 0,
                swap.swapDiskBytes != swap.swapUsedBytes {
                 swapDetailRow(
-                    label: "swap 已分配",
+                    label: String(localized: "capacity.swap.allocated", bundle: .module),
                     bytes: swap.swapDiskBytes,
                     hint: swap.swapFileSizeMeasured
-                        ? "\(swap.swapFileCount) 个 swapfile 的真实文件大小"
-                        : "来自 sysctl vm.swapusage total（系统保护下无法直接列 /private/var/vm 内的 swapfile）"
+                        ? String(format: String(localized: "capacity.swap.allocated.hint.real", bundle: .module), swap.swapFileCount)
+                        : String(localized: "capacity.swap.allocated.hint.fallback", bundle: .module)
                 )
             }
             if swap.sleepImageBytes > 0 {
                 swapDetailRow(
-                    label: "休眠镜像",
+                    label: String(localized: "capacity.sleepimage", bundle: .module),
                     bytes: swap.sleepImageBytes,
-                    hint: "终端运行 `sudo pmset -a hibernatemode 0; sudo rm /private/var/vm/sleepimage` 可释放（如不使用休眠）"
+                    hint: String(localized: "capacity.sleepimage.hint", bundle: .module)
                 )
             }
         }

@@ -371,7 +371,7 @@ public struct MainView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("sidebar.row.app_footprint", bundle: .module)
                     .font(.system(.body, design: .rounded))
-                Text("查看哪些 App 在吃磁盘")
+                Text("sidebar.subtitle.app_footprint", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -389,7 +389,7 @@ public struct MainView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("sidebar.row.launch_agents", bundle: .module)
                     .font(.system(.body, design: .rounded))
-                Text("查看登录/开机自启的 plist")
+                Text("sidebar.subtitle.launch_agents", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -407,7 +407,7 @@ public struct MainView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("sidebar.row.uninstall", bundle: .module)
                     .font(.system(.body, design: .rounded))
-                Text("挑一个 App 清掉它的残留")
+                Text("sidebar.subtitle.uninstall", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -425,7 +425,7 @@ public struct MainView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("sidebar.row.duplicate", bundle: .module)
                     .font(.system(.body, design: .rounded))
-                Text("只读视图，请用 Finder 自行处理")
+                Text("sidebar.subtitle.duplicate", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -635,10 +635,12 @@ public struct MainView: View {
     ///   清单视图，不强迫所有人切回清单
     private var viewModeBar: some View {
         HStack(spacing: 12) {
-            Picker("视图", selection: $viewMode) {
+            Picker(selection: $viewMode) {
                 ForEach(ResultsViewMode.allCases) { mode in
                     Label(mode.label, systemImage: mode.icon).tag(mode)
                 }
+            } label: {
+                Text("view_mode.picker.label", bundle: .module)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -647,12 +649,20 @@ public struct MainView: View {
             // 当前视图角标——告诉用户"你在看树形（主视图）"或"清单是二级 fallback"
             switch viewMode {
             case .tree:
-                Label("主视图 · 层次化容量分布", systemImage: "rectangle.grid.1x2")
+                Label {
+                    Text("view_mode.tree.tag", bundle: .module)
+                } icon: {
+                    Image(systemName: "rectangle.grid.1x2")
+                }
                     .labelStyle(.titleAndIcon)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case .list:
-                Label("二级视图 · 兼容旧版扁平清单", systemImage: "list.bullet")
+                Label {
+                    Text("view_mode.list.tag", bundle: .module)
+                } icon: {
+                    Image(systemName: "list.bullet")
+                }
                     .labelStyle(.titleAndIcon)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
@@ -663,11 +673,11 @@ public struct MainView: View {
             // 视图特定提示——中性说明操作方式，不再暗示"另一个视图才是正经的"
             switch viewMode {
             case .tree:
-                Text("右键或 Delete 单条移废纸篓 · 双击下钻")
+                Text("view_mode.tree.hint", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             case .list:
-                Text("勾选多条后用底部按钮批量移废纸篓")
+                Text("view_mode.list.hint", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
@@ -786,11 +796,11 @@ public struct MainView: View {
                     // v1.3：未扫描态显式文案，避免空 snapshot 渲染成 "0 KB · 0 个文件" 误导用户。
                     // 区分两种 pristine：已选类目但未点扫 / 完全没选类目。
                     if selectedCategory != nil {
-                        Text("还未扫描 · 按右上「重新扫描」或「整盘扫描」开始")
+                        Text("results.empty.idle.with_top_buttons", bundle: .module)
                             .foregroundStyle(.secondary)
                             .font(.callout)
                     } else {
-                        Text("还未扫描 · 选择左侧类目开始")
+                        Text("results.empty.idle.with_left_picker", bundle: .module)
                             .foregroundStyle(.secondary)
                             .font(.callout)
                     }
@@ -836,7 +846,7 @@ public struct MainView: View {
                     .foregroundStyle(.tertiary)
                 Text("results.empty.title", bundle: .module)
                     .foregroundStyle(.secondary)
-                Text("从左侧选择一个类目即可开始扫描")
+                Text("results.empty.no_results.hint", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
@@ -1039,16 +1049,18 @@ public struct MainView: View {
     private var sortMenu: some View {
         @Bindable var settings = settings
         return Menu {
-            Picker("排序", selection: $settings.mainListSortKey) {
+            Picker(selection: $settings.mainListSortKey) {
                 ForEach(MainListSortKey.allCases) { key in
                     Text(key.label).tag(key)
                 }
+            } label: {
+                Text("sort.menu.label", bundle: .module)
             }
             .pickerStyle(.inline)
         } label: {
             Label(settings.mainListSortKey.label, systemImage: "arrow.up.arrow.down")
         }
-        .help("主列表排序方式（扫描中保持固定顺序，扫描完成后按所选键排序）")
+        .help(String(localized: "sort.menu.help", bundle: .module))
     }
 
     /// v1.3：「全部推荐扫描」—— 一键并行扫描 ScanCategories.recommended() 5 个根。
@@ -1067,7 +1079,7 @@ public struct MainView: View {
                 Image(systemName: "rectangle.3.group")
             }
         }
-        .help(Text("toolbar.help.recommended", bundle: .module))
+        .help(String(localized: "toolbar.help.recommended", bundle: .module))
         .disabled(coordinator.isScanning)
     }
 
@@ -1088,7 +1100,7 @@ public struct MainView: View {
                 Image(systemName: "hammer")
             }
         }
-        .help(Text("toolbar.help.dev", bundle: .module))
+        .help(String(localized: "toolbar.help.dev", bundle: .module))
         .disabled(coordinator.isScanning)
     }
 
@@ -1104,12 +1116,12 @@ public struct MainView: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
                 .font(.caption)
-            TextField("输入路径或 / 回车扫整盘", text: $pathBarInput)
+            TextField(String(localized: "pathbar.placeholder", bundle: .module), text: $pathBarInput)
                 .textFieldStyle(.plain)
                 .focused($pathBarFocused)
                 .frame(minWidth: 220, idealWidth: 320)
                 .onSubmit { submitPathBar() }
-                .help("输 / 回车扫整盘；输已存在目录回车开始扫该目录")
+                .help(String(localized: "pathbar.help", bundle: .module))
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
@@ -1139,7 +1151,7 @@ public struct MainView: View {
                 Image(systemName: "internaldrive")
             }
         }
-        .help(Text("toolbar.help.full_disk", bundle: .module))
+        .help(String(localized: "toolbar.help.full_disk", bundle: .module))
         .disabled(coordinator.isScanning)
     }
 
@@ -1156,7 +1168,7 @@ public struct MainView: View {
                     Image(systemName: "stop.circle")
                 }
             }
-                .help(Text("toolbar.help.stop", bundle: .module))
+                .help(String(localized: "toolbar.help.stop", bundle: .module))
         } else if let id = selectedCategory, let cat = allCategories.first(where: { $0.id == id }) {
             Button {
                 // v1.3：统一走 resetSelectionState()，避免重新扫描后 detail/treeSelection 残留
@@ -1169,7 +1181,7 @@ public struct MainView: View {
                     Image(systemName: "arrow.clockwise")
                 }
             }
-                .help(Text("toolbar.help.rescan", bundle: .module))
+                .help(String(localized: "toolbar.help.rescan", bundle: .module))
         }
     }
 

@@ -775,6 +775,357 @@
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Start Recommended Scan" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "开始推荐扫描" } }
       }
+    },
+
+    "sidebar.subtitle.app_footprint" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "See which apps are eating disk" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "查看哪些 App 在吃磁盘" } }
+      }
+    },
+    "sidebar.subtitle.launch_agents" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Login & startup plists" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "查看登录/开机自启的 plist" } }
+      }
+    },
+    "sidebar.subtitle.uninstall" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Pick an app and clean its leftovers" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "挑一个 App 清掉它的残留" } }
+      }
+    },
+    "sidebar.subtitle.duplicate" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Read-only view; clean up in Finder" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "只读视图，请用 Finder 自行处理" } }
+      }
+    },
+
+    "results.empty.idle.with_left_picker" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Not scanned yet · pick a category on the left" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "还未扫描 · 选择左侧类目开始" } }
+      }
+    },
+    "results.empty.idle.with_top_buttons" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Not scanned yet · use \"Rescan\" or \"Full Disk Scan\" above" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "还未扫描 · 按右上「重新扫描」或「整盘扫描」开始" } }
+      }
+    },
+    "results.empty.no_results.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No results yet" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂无结果" } }
+      }
+    },
+    "results.empty.no_results.hint" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Pick a category on the left to start scanning" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "从左侧选择一个类目即可开始扫描" } }
+      }
+    },
+    "results.detail.no_selection" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Nothing selected" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未选中任何项" } }
+      }
+    },
+
+    "pathbar.placeholder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Type a path or / and press return to scan whole disk" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "输入路径或 / 回车扫整盘" } }
+      }
+    },
+    "pathbar.help" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Press / + return to scan whole disk; type any existing directory + return to scan it" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "输 / 回车扫整盘；输已存在目录回车开始扫该目录" } }
+      }
+    },
+
+    "sort.menu.label" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sort" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "排序" } }
+      }
+    },
+    "sort.menu.help" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Main list sort key (order is fixed during scan, applied when scan finishes)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "主列表排序方式（扫描中保持固定顺序，扫描完成后按所选键排序）" } }
+      }
+    },
+
+    "view_mode.picker.label" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "View" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "视图" } }
+      }
+    },
+    "view_mode.tree.tag" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Main view · hierarchical capacity" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "主视图 · 层次化容量分布" } }
+      }
+    },
+    "view_mode.list.tag" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Secondary view · legacy flat list" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "二级视图 · 兼容旧版扁平清单" } }
+      }
+    },
+    "view_mode.tree.hint" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Right-click or Delete to trash a single row · double-click to drill in" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "右键或 Delete 单条移废纸篓 · 双击下钻" } }
+      }
+    },
+    "view_mode.list.hint" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Tick rows then use the bottom button to trash multiple at once" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "勾选多条后用底部按钮批量移废纸篓" } }
+      }
+    },
+
+    "common.read_only_no_delete" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Read-only view; nothing will be deleted" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "只读视图，不会删除任何文件" } }
+      }
+    },
+
+    "capacity.legend.cleanable" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cleanable" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可清理" } }
+      }
+    },
+    "capacity.unknown" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Volume capacity unknown" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "卷容量未知" } }
+      }
+    },
+    "capacity.retry" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Retry probe" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "重试探测" } }
+      }
+    },
+    "capacity.virtual_memory.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Virtual memory disk usage" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "虚拟内存占盘" } }
+      }
+    },
+    "capacity.swap.used.hint" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Same key as Activity Monitor's Swap Used (~7%% display difference between GB=10⁹ and GiB=2³⁰)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "活动监视器 Swap Used 同口径（用单位 GB=10⁹ 与 GiB=2³⁰ 之间会有 ~7%% 显示差异）" } }
+      }
+    },
+    "capacity.swap.allocated.hint.real" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Real file size of %lld swapfile(s)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 个 swapfile 的真实文件大小" } }
+      }
+    },
+    "capacity.swap.allocated.hint.fallback" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "From sysctl vm.swapusage total (cannot list swapfiles in /private/var/vm under SIP)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "来自 sysctl vm.swapusage total（系统保护下无法直接列 /private/var/vm 内的 swapfile）" } }
+      }
+    },
+    "capacity.sleepimage.hint" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Run `sudo pmset -a hibernatemode 0; sudo rm /private/var/vm/sleepimage` in Terminal to free it (if you do not use hibernation)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "终端运行 `sudo pmset -a hibernatemode 0; sudo rm /private/var/vm/sleepimage` 可释放（如不使用休眠）" } }
+      }
+    },
+    "capacity.legend.other_used" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Other used" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "其它已用" } }
+      }
+    },
+    "capacity.legend.available" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Available" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可用" } }
+      }
+    },
+    "capacity.swap.used" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Swap used" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "swap 已用" } }
+      }
+    },
+    "capacity.swap.allocated" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Swap allocated" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "swap 已分配" } }
+      }
+    },
+    "capacity.sleepimage" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sleep image" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "休眠镜像" } }
+      }
+    },
+    "capacity.virtual_memory" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Virtual memory usage" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "虚拟内存占用" } }
+      }
+    },
+
+    "tree.batch.move_to_trash" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Move checked to Trash" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "批量移废纸篓" } }
+      }
+    },
+    "tree.batch.help" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Move every checked entry to Trash (Cmd+Shift+D)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "把所有勾选的条目一起移到废纸篓（Cmd+Shift+D）" } }
+      }
+    },
+    "tree.checkbox.uncheck" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Uncheck" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消勾选" } }
+      }
+    },
+    "tree.checkbox.check" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Check to add to batch delete" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "勾选以加入批量删除" } }
+      }
+    },
+    "tree.checkbox.locked" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Path is protected or permission denied; cannot batch delete" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "此路径受保护或权限不足，不可加入批量删除" } }
+      }
+    },
+    "tree.disclose.collapse" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Collapse" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "折叠" } }
+      }
+    },
+    "tree.disclose.expand" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Expand" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "展开" } }
+      }
+    },
+    "tree.menu.trash" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Move to Trash…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "移到废纸篓…" } }
+      }
+    },
+    "tree.menu.trash_forbidden" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cannot remove (system-protected path)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "无法移除（系统保护路径）" } }
+      }
+    },
+    "tree.menu.quick_look" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Quick Look (Space)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "快速预览（空格）" } }
+      }
+    },
+    "tree.menu.reveal_in_finder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Reveal in Finder" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "在 Finder 中显示" } }
+      }
+    },
+    "tree.menu.copy_path" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Copy path" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "复制路径" } }
+      }
+    },
+    "tree.menu.copy_name" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Copy name" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "复制名称" } }
+      }
+    },
+    "tree.access.permission_denied" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%@\n\nNo access: the scanner cannot read this directory. Please grant Full Disk Access in System Settings → Privacy & Security, then rescan." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@\n\n无访问权限：扫描器无法读取此目录里的文件。请在「系统设置 → 隐私与安全性 → 完整磁盘访问」中授权后重新扫描。" } }
+      }
+    },
+    "tree.access.tcc_protected" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%@\n\nSystem-protected: this directory is protected by TCC. Grant Full Disk Access in System Settings → Privacy & Security to inspect it." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@\n\n受系统保护：此目录受 TCC 保护，需要在「系统设置 → 隐私与安全性 → 完整磁盘访问」中授权后才能查看。" } }
+      }
+    },
+    "tree.column.sort_help" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sort by %@ (click again to flip direction)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "按 %@ 排序（再次点击切换升降序）" } }
+      }
     }
   }
 }

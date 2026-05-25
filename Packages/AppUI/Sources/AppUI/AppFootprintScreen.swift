@@ -167,7 +167,7 @@ public struct AppFootprintScreen: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Text("只读视图，不会删除任何文件")
+            Text("common.read_only_no_delete", bundle: .module)
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
