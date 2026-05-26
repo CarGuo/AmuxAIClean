@@ -59,6 +59,11 @@ public struct MainView: View {
     /// 参考：tmp/competitors/Pearcleaner FileListView.swift L108-L131 同款做法。
     @FocusState private var pathBarFocused: Bool
 
+    /// v1.5 review-fix #9：状态条多根 progress 列表的滚动区高度。
+    /// caption 字号 ≈ 11pt × ~6 行 ≈ 120pt 是默认；用 @ScaledMetric 跟随
+    /// Dynamic Type 缩放，避免大字号下能看到的行数减半。
+    @ScaledMetric(relativeTo: .caption) private var multiRootProgressScrollMaxHeight: CGFloat = 120
+
     /// 结果区两种视图模式。
     public enum ResultsViewMode: String, CaseIterable, Identifiable {
         case list, tree
@@ -156,11 +161,15 @@ public struct MainView: View {
             //
             // v1.5：再加一支 batch.* sentinel 分发——sidebar 顶部 Batch Scans 三行。
             // 用户从 sidebar 选中其中一条 = 等价点 toolbar 对应按钮。
-            // 注意防递归：trigger* helper 自己会再写 selectedCategory = batchXxxID，
-            // 这里用 `new == old` 早退（new 此刻已被新值覆盖，但 trigger 写回的是相同值）；
-            // 更稳的做法是只在 new ≠ old 且 new ∈ batchScanIDs 时分发。
+            //
+            // v1.5 review-fix #2：batch.* 分支的 reset 由 trigger* helper 自己负责，
+            // 这里不再重复 reset——因为 toolbar 直接调 helper 时（如重复点同一按钮）
+            // selectedCategory 没变化 onChange 不触发，reset 必须由 helper 兜底。
+            // 非 batch 分支（普通 ScanCategory / appFootprint 等 sentinel）仍由 onChange 顶部 reset。
+            //
+            // v1.5 review-fix #3：batchFullDisk 也走 triggerFullDiskScan()，与另两个
+            // batch sentinel 分支风格统一——helper 是后续维护扩展点。
             guard old != new else { return }
-            resetSelectionState()
             if let id = new, ScanCategory.batchScanIDs.contains(id) {
                 switch id {
                 case ScanCategory.batchRecommendedID:
@@ -168,16 +177,16 @@ public struct MainView: View {
                 case ScanCategory.batchDeveloperID:
                     triggerDeveloperScan()
                 case ScanCategory.batchFullDiskID:
-                    // fullDisk 走 ScanCategory.fullDisk.id 路径既有逻辑：把 selection
-                    // 切到 fullDisk.id 由下面 startScan 接管。但既然我们引入了 sentinel
-                    // 让 sidebar 高亮在"batch.fulldisk"上而不是"fulldisk.root"，需要
-                    // 直接调 coordinator API，避免被 onChange 再绕一圈把 selection 改走。
-                    coordinator.scanFullDisk(includeHidden: settings.showHidden)
+                    triggerFullDiskScan()
                 default:
-                    break
+                    // v1.5 review-fix #1：batchScanIDs 已穷尽 3 个 case；future 加 sentinel
+                    // 必须同步加 case，否则 selection 切到新 sentinel 会被静默吞掉。
+                    // 用 assertionFailure 把疏漏暴露在 debug 期。
+                    assertionFailure("Unhandled batch scan sentinel id: \(id) — add case to MainView.onChange switch.")
                 }
                 return
             }
+            resetSelectionState()
             guard let id = new, let cat = allCategories.first(where: { $0.id == id }) else { return }
             // v2：统一走 [runHeavyAfterCommit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HeavyTask.swift)
             // 模板（detached + sleep 16ms + MainActor.run），让 SwiftUI 先把
@@ -283,20 +292,17 @@ public struct MainView: View {
             // onChange(selectedCategory) 看见这三 id 时不走 startScan(category:)
             // 而是分发到对应 trigger* helper（toolbar 同款）。
             Section {
-                batchScanRow(id: ScanCategory.batchRecommendedID,
-                             icon: "rectangle.3.group",
+                batchScanRow(icon: "rectangle.3.group",
                              titleKey: LocalizedStringKey("batch.recommended.title"),
                              subtitleKey: LocalizedStringKey("batch.recommended.subtitle"))
                     .tag(ScanCategory.batchRecommendedID)
 
-                batchScanRow(id: ScanCategory.batchDeveloperID,
-                             icon: "hammer",
+                batchScanRow(icon: "hammer",
                              titleKey: LocalizedStringKey("batch.developer.title"),
                              subtitleKey: LocalizedStringKey("batch.developer.subtitle"))
                     .tag(ScanCategory.batchDeveloperID)
 
-                batchScanRow(id: ScanCategory.batchFullDiskID,
-                             icon: "internaldrive",
+                batchScanRow(icon: "internaldrive",
                              titleKey: LocalizedStringKey("batch.fulldisk.title"),
                              subtitleKey: LocalizedStringKey("batch.fulldisk.subtitle"))
                     .tag(ScanCategory.batchFullDiskID)
@@ -418,8 +424,8 @@ public struct MainView: View {
     /// v1.5：sidebar Batch Scans section 的 row。结构与 sidebarRow / appFootprintSidebarRow
     /// 对齐：图标 + 标题 + 副标题。row 自身不带 tap handler，selection 切换由
     /// onChange(selectedCategory) 统一调度到对应 trigger* helper。
-    private func batchScanRow(id: String,
-                              icon: String,
+    /// v1.5 review-fix #13：去掉 dead `id` 参数（外部 .tag(...) 使用，本函数不需要）。
+    private func batchScanRow(icon: String,
                               titleKey: LocalizedStringKey,
                               subtitleKey: LocalizedStringKey) -> some View {
         HStack(spacing: 8) {
@@ -878,7 +884,7 @@ public struct MainView: View {
                                 }
                             }
                         }
-                        .frame(maxHeight: 120)
+                        .frame(maxHeight: multiRootProgressScrollMaxHeight)
                     }
                 } else if coordinator.snapshot.isFinished {
                     Text(String(format: String(localized: "main.scan.finished", bundle: .module), coordinator.snapshot.scannedFileCount, formattedBytes(coordinator.snapshot.totalBytes), String(format: "%.2fs", coordinator.snapshot.elapsed)))
@@ -1196,14 +1202,18 @@ public struct MainView: View {
     /// v1.5：把 toolbar「全部推荐扫描」按钮的逻辑抽成 helper，供 sidebar Batch Scans
     /// 入口复用。除了起扫还把 selectedCategory 同步到 batch sentinel，让 sidebar
     /// 蓝条高亮跟手——没有这一步用户感知不到自己当前在跑哪条。
-    fileprivate func triggerRecommendedScan() {
+    ///
+    /// v1.5 review-fix #2：reset 由 helper 唯一负责（onChange 在 batch.* 分支不再 reset）。
+    /// 这是因为 toolbar 重复点同一按钮时 selection 没变 onChange 不触发，必须 helper 兜底。
+    /// review-fix #12：可见性收紧到 private，与 triggerFullDiskScan 一致。
+    private func triggerRecommendedScan() {
         resetSelectionState()
         selectedCategory = ScanCategory.batchRecommendedID
         coordinator.scanRecommended(includeHidden: settings.showHidden)
     }
 
     /// v1.5：开发者扫描的统一入口，理由同上。
-    fileprivate func triggerDeveloperScan() {
+    private func triggerDeveloperScan() {
         resetSelectionState()
         selectedCategory = ScanCategory.batchDeveloperID
         coordinator.scanDeveloper(includeHidden: settings.showHidden,
@@ -1327,6 +1337,7 @@ public struct MainView: View {
     /// 落在 batch.fulldisk sentinel 上（而不是单根 fullDisk.id 类目），让"批量扫描"
     /// 三条入口在视觉上是平等的一组。直接调 coordinator API，不再走 selectedCategory →
     /// onChange → startScan(category:) 的旧链路（避免高亮被绕回 fullDisk.id）。
+    /// v1.5 review-fix #2：reset 由 helper 唯一负责（onChange 在 batch.* 分支不再 reset）。
     private func triggerFullDiskScan() {
         resetSelectionState()
         selectedCategory = ScanCategory.batchFullDiskID

@@ -838,6 +838,14 @@ public final class ScanCoordinator: ObservableObject {
                 // 现在 .finished 也并入下面的 throttle 统一节流（每 0.4s 同步一次），
                 // 单根/少量根的扫描场景下 throttle 间隔本来就足够小，肉眼无感差异；
                 // 而 dev scan 几百根场景下重画次数从 N 降到 ~elapsed/0.4，主线程立刻回归。
+                //
+                // v1.5 review-fix #8：小批量根（≤10）场景把 .finished 立刻 publish 出去——
+                // 推荐扫描固定 5 根、整盘扫描 1 根，throttle 0.4s 滞后看得见；
+                // 仅 dev scan / fullDisk discover 命中很多根时才走纯 throttle 路径。
+                if perRootStaging.count <= 10 {
+                    perRootProgress = perRootStaging
+                    lastEmit = Date()
+                }
             case .failed(let error):
                 // v1.3 review-fix P1-7：多根模式下错误必须带 rootPath 前缀，
                 // 否则 5 根并发时同时 .failed 互相覆盖，用户看不到是哪根失败。
@@ -1131,18 +1139,24 @@ public final class ScanCoordinator: ObservableObject {
     /// 升级成树形顶层节点。每行 path 是真实目录（如 ~/Library/Caches），
     /// 用户展开时 TreeBrowserView 会再次调 [directChildren(of:sortedBy:)](#) 拿真实的下一层
     /// （走原 childEdges / store-fallback 路径，无需改动）。
-    /// - bytes / fileCount 直接复用 perRootProgress 已统计好的值
-    /// - hasChildren=true：让披露三角直接显示，避免"看起来没东西可展开"
-    /// - title 沿用 perRootProgress.title（已带 displayName + 短路径）
+    /// - bytes / fileCount 直接复用 已统计好的值
+    /// - title 沿用 .title（已带 displayName + 短路径）
+    ///
+    /// v1.5 review-fix #5：优先读 perRootStaging（实时最新），fallback perRootProgress。
+    /// perRootProgress 经 throttle (0.4s) 才同步，扫描中切到树形顶层会有 ≤0.4s 滞后；
+    /// 读 staging 拿到的是事件刚更新完的最新值。
+    /// review-fix #6：hasChildren 不再硬编码 true—— fileCount==0 的 root（discover
+    /// 命中但还未 ingest，或扫完确实空）就不显示披露三角，避免"展开后空树"的误导。
     private func synthesizeMultiRootTopLevel(sortedBy key: TreeSortKey) -> [TreeRow] {
-        let rows: [TreeRow] = perRootProgress.values.map { p in
+        let source: [String: PerRootProgress] = perRootStaging.isEmpty ? perRootProgress : perRootStaging
+        let rows: [TreeRow] = source.values.map { p in
             TreeRow(
                 path: p.rootPath,
                 title: p.title,
                 bytes: p.bytes,
                 fileCount: p.fileCount,
                 isDirectory: true,
-                hasChildren: true,
+                hasChildren: p.fileCount > 0,
                 accessState: .normal
             )
         }
