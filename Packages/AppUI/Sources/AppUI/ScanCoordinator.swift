@@ -109,6 +109,14 @@ public final class ScanCoordinator: ObservableObject {
     /// 让 UI 可以渲染不同标题（"开发者构建产物" vs "全部推荐扫描"），但底层 runMultiRootScan 共用。
     public static let developerCategoryID: String = "developer.multi"
 
+    /// v1.5：多根扫描时 [currentRootPath](#) 设为这两个伪路径之一，给 UI 占位
+    /// （树形/finishedEmpty 等场景需要一个非 nil 值）。这两个值不是真实目录，
+    /// store 里也不会有"以它们为父"的子项；树形视图遇到它们时要走「合成多根顶层」分支
+    /// （见 [directChildren(of:sortedBy:)](#)），把 perRootProgress 的真实根升级成顶层 TreeRow。
+    public static let multiRootSentinelPath: String = "(多目录)"
+    public static let developerSentinelPath: String = "(开发者构建产物)"
+    public static let multiRootSentinelPaths: Set<String> = [multiRootSentinelPath, developerSentinelPath]
+
     /// 便利属性 —— 转发自 `snapshot.isFinished`，
     /// 让 UI 可以直接 `coordinator.isFinished` 判断三态，不必每处都写 `coordinator.snapshot.isFinished`。
     public var isFinished: Bool { snapshot.isFinished }
@@ -507,7 +515,7 @@ public final class ScanCoordinator: ObservableObject {
         // 真正用 expectedTotalBytes 判断会在 publishSnapshot 里做，这里只是开闸。
         etaEligible = true
         expectedTotalBytes = nil  // 还没估算出来
-        currentRootPath = "(多目录)"
+        currentRootPath = ScanCoordinator.multiRootSentinelPath
         snapshot = ScanSnapshot(categoryID: ScanCoordinator.multiRootCategoryID, rows: [],
                                 totalBytes: 0, scannedFileCount: 0, isFinished: false, elapsed: 0)
         isScanning = true
@@ -601,7 +609,7 @@ public final class ScanCoordinator: ObservableObject {
         lastSampleBytes = 0
         etaEligible = true
         expectedTotalBytes = nil
-        currentRootPath = "(开发者构建产物)"
+        currentRootPath = ScanCoordinator.developerSentinelPath
         snapshot = ScanSnapshot(categoryID: ScanCoordinator.developerCategoryID, rows: [],
                                 totalBytes: 0, scannedFileCount: 0, isFinished: false, elapsed: 0)
         isScanning = true
@@ -1013,6 +1021,14 @@ public final class ScanCoordinator: ObservableObject {
     /// 走 store-fallback 缓存：本次同步返 cache（首次为空），同时启动后台 Task 通过
     /// `directChildrenAsync` 查 GRDB 写回 cache，下一帧 SwiftUI 自动重算。
     public func directChildren(of path: String, sortedBy key: TreeSortKey) -> [TreeRow] {
+        // v1.5：多根扫描伪路径分支——把 perRootProgress 里的真实根升级成顶层 TreeRow。
+        // 没有这一支时 path == "(多目录)" / "(开发者构建产物)" 在 store / childEdges 里
+        // 都查不到任何子项 → directChildren 返 [] → TreeBrowserView 渲染
+        // "No expandable children yet"（用户截图反馈）。
+        // 真实根（如 ~/Library/Caches）展开后走的还是原 directChildren 逻辑。
+        if ScanCoordinator.multiRootSentinelPaths.contains(path) {
+            return synthesizeMultiRootTopLevel(sortedBy: key)
+        }
         if let kids = childEdges[path] {
             return materializeFromMemory(kids: kids, sortedBy: key)
         }
@@ -1091,6 +1107,8 @@ public final class ScanCoordinator: ObservableObject {
     /// 实现：cacheKey 在 `treeChildrenInFlight` 集合 / 或者 deepIndex=off + store/sid 在场
     /// 但 cache 还没写回（首帧尚未派发 Task），都算 fetching。
     public func isFetchingChildren(of path: String, sortedBy key: TreeSortKey) -> Bool {
+        // v1.5：多根伪路径下 directChildren 是同步合成（perRootProgress），不存在 fetching。
+        if ScanCoordinator.multiRootSentinelPaths.contains(path) { return false }
         // 内存命中或 deepIndex=on 时，directChildren 已是同步路径，不存在 fetching。
         if childEdges[path] != nil { return false }
         guard !enableTreeDeepIndex else { return false }
@@ -1102,6 +1120,65 @@ public final class ScanCoordinator: ObservableObject {
         // - in-flight 集合含 cacheKey：Task 正在跑
         // - cache 没写回 + 不在 in-flight：这是 directChildren 第一帧的情况，下一帧才会派 Task
         return true
+    }
+
+    /// v1.5：多根扫描伪路径下合成"顶层" TreeRow——把 perRootProgress 里的真实根
+    /// 升级成树形顶层节点。每行 path 是真实目录（如 ~/Library/Caches），
+    /// 用户展开时 TreeBrowserView 会再次调 [directChildren(of:sortedBy:)](#) 拿真实的下一层
+    /// （走原 childEdges / store-fallback 路径，无需改动）。
+    /// - bytes / fileCount 直接复用 perRootProgress 已统计好的值
+    /// - hasChildren=true：让披露三角直接显示，避免"看起来没东西可展开"
+    /// - title 沿用 perRootProgress.title（已带 displayName + 短路径）
+    private func synthesizeMultiRootTopLevel(sortedBy key: TreeSortKey) -> [TreeRow] {
+        let rows: [TreeRow] = perRootProgress.values.map { p in
+            TreeRow(
+                path: p.rootPath,
+                title: p.title,
+                bytes: p.bytes,
+                fileCount: p.fileCount,
+                isDirectory: true,
+                hasChildren: true,
+                accessState: .normal
+            )
+        }
+        return sortTreeRows(rows, by: key)
+    }
+
+    /// v1.5：抽出 TreeRow 排序，给 synthesizeMultiRootTopLevel / 其他场景复用。
+    /// 主键相等时统一按 path 升序兜底，保证 ForEach 不抖。
+    private func sortTreeRows(_ rows: [TreeRow], by key: TreeSortKey) -> [TreeRow] {
+        switch key {
+        case .sizeDesc:
+            return rows.sorted { lhs, rhs in
+                if lhs.bytes != rhs.bytes { return lhs.bytes > rhs.bytes }
+                return lhs.path < rhs.path
+            }
+        case .sizeAsc:
+            return rows.sorted { lhs, rhs in
+                if lhs.bytes != rhs.bytes { return lhs.bytes < rhs.bytes }
+                return lhs.path < rhs.path
+            }
+        case .nameAsc:
+            return rows.sorted { lhs, rhs in
+                if lhs.title != rhs.title { return lhs.title < rhs.title }
+                return lhs.path < rhs.path
+            }
+        case .nameDesc:
+            return rows.sorted { lhs, rhs in
+                if lhs.title != rhs.title { return lhs.title > rhs.title }
+                return lhs.path < rhs.path
+            }
+        case .countDesc:
+            return rows.sorted { lhs, rhs in
+                if lhs.fileCount != rhs.fileCount { return lhs.fileCount > rhs.fileCount }
+                return lhs.path < rhs.path
+            }
+        case .countAsc:
+            return rows.sorted { lhs, rhs in
+                if lhs.fileCount != rhs.fileCount { return lhs.fileCount < rhs.fileCount }
+                return lhs.path < rhs.path
+            }
+        }
     }
 
     /// 内存索引命中时的"老路径"渲染——抽出来给同步 directChildren 与 directChildrenAsync 复用。
