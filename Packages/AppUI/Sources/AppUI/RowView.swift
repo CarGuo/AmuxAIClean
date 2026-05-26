@@ -28,7 +28,7 @@ struct RowView: View {
                 } else {
                     Image(systemName: "lock.fill")
                         .foregroundStyle(.secondary)
-                        .help("受保护：\(row.rejection.rawValue)")
+                        .help(Text(String(format: String(localized: "row.help.protected %@", bundle: .module), row.rejection.rawValue)))
                 }
             }
             .frame(width: 24)
@@ -101,7 +101,7 @@ struct RowView: View {
                     .foregroundStyle(Color.accentColor)
                     .opacity(pulse ? 0.65 : 1.0)
             }
-            .help("正在扫描中…")
+            .help(Text("row.help.scanning", bundle: .module))
             .onAppear {
                 withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
                     pulse = true
@@ -142,9 +142,9 @@ struct VerdictBadge: View {
     }
     private var label: String {
         switch verdict {
-        case .safe: return "可放心清理"
-        case .confirm: return "需要你确认"
-        case .forbid: return "受保护，无法删除"
+        case .safe: return String(localized: "verdict.label.safe", bundle: .module)
+        case .confirm: return String(localized: "verdict.label.confirm", bundle: .module)
+        case .forbid: return String(localized: "verdict.label.forbid", bundle: .module)
         }
     }
 }

@@ -34,9 +34,9 @@ public enum LaunchAgentScope: String, Hashable, Sendable, CaseIterable {
     /// UI 展示用的中文名。
     public var displayName: String {
         switch self {
-        case .user:   return "用户级 (~/Library/LaunchAgents)"
-        case .system: return "系统级 (/Library/LaunchAgents)"
-        case .daemon: return "守护进程 (/Library/LaunchDaemons)"
+        case .user:   return String(localized: "launch_agent.scope.user", bundle: .module)
+        case .system: return String(localized: "launch_agent.scope.system", bundle: .module)
+        case .daemon: return String(localized: "launch_agent.scope.daemon", bundle: .module)
         }
     }
 }

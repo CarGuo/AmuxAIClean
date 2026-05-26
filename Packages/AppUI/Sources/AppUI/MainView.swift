@@ -68,7 +68,7 @@ public struct MainView: View {
     public enum ResultsViewMode: String, CaseIterable, Identifiable {
         case list, tree
         public var id: String { rawValue }
-        var label: String { self == .list ? "清单" : "树形" }
+        var label: String { self == .list ? String(localized: "main.results.mode.list", bundle: .module) : String(localized: "main.results.mode.tree", bundle: .module) }
         var icon: String { self == .list ? "list.bullet" : "rectangle.grid.1x2" }
     }
 
@@ -1005,8 +1005,8 @@ public struct MainView: View {
         HStack {
             if isLargeFilesMode {
                 Text(largeFileSelection.map {
-                    "已选 \($0.title) · \(formattedBytes($0.bytes))"
-                } ?? "未选中任何项")
+                    String(format: String(localized: "footer.selection.large_file %@ %@", bundle: .module), $0.title, formattedBytes($0.bytes))
+                } ?? String(localized: "selection.empty", bundle: .module))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -1318,7 +1318,7 @@ public struct MainView: View {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
             // 简单提示：路径不存在/不是目录
-            deleteResult = "路径不存在或不是目录：\(url.path)"
+            deleteResult = String(format: String(localized: "delete.result.path_invalid %@", bundle: .module), url.path)
             return
         }
         Task {
@@ -1362,9 +1362,9 @@ public struct MainView: View {
 
     private var selectionSummary: String {
         let rows = selectedRows
-        if rows.isEmpty { return "未选中任何项" }
+        if rows.isEmpty { return String(localized: "selection.empty", bundle: .module) }
         let total = rows.reduce(Int64(0)) { $0 + $1.bytes }
-        return "已选 \(rows.count) 项 · \(formattedBytes(total))"
+        return String(format: String(localized: "selection.summary %lld %@", bundle: .module), rows.count, formattedBytes(total))
     }
 
     /// v1.3.zzzz：从 ScanCoordinator 拉一份"上层一票否决"路径快照。
@@ -1385,9 +1385,9 @@ public struct MainView: View {
     // FIXME: emoji removed 2026-05-25
     private func verdictLabel(_ v: SafetyVerdict) -> String {
         switch v {
-        case .safe: return "[GREEN] 安全"
-        case .confirm: return "[YELLOW] 需确认"
-        case .forbid: return "[RED] 受保护"
+        case .safe: return String(localized: "main.delete.safety.safe", bundle: .module)
+        case .confirm: return String(localized: "main.delete.safety.confirm", bundle: .module)
+        case .forbid: return String(localized: "main.delete.safety.forbid", bundle: .module)
         }
     }
 
@@ -1402,11 +1402,16 @@ public struct MainView: View {
         // 不再需要 `as? TrashPipeline` cast——cast 容易在重构里被悄悄改丢、重新引入"漏调=误拒"。
         pipeline.setAccessDeniedPaths(accessDeniedPathsSnapshot())
         let (moved, skipped, err) = await pipeline.moveToTrash(paths: paths, dryRun: dryRun)
-        let mode = dryRun ? "（预览）" : ""
         if let err {
-            deleteResult = "失败\(mode)：\(err)\n已处理 \(moved) 项，跳过 \(skipped) 项"
+            let key: String.LocalizationValue = dryRun
+                ? "delete.result.failure.dryrun %@ %lld %lld"
+                : "delete.result.failure %@ %lld %lld"
+            deleteResult = String(format: String(localized: key, bundle: .module), err, moved, skipped)
         } else {
-            deleteResult = "已处理 \(moved) 项\(mode)，跳过 \(skipped) 项"
+            let key: String.LocalizationValue = dryRun
+                ? "delete.result.success.dryrun %lld %lld"
+                : "delete.result.success %lld %lld"
+            deleteResult = String(format: String(localized: key, bundle: .module), moved, skipped)
             if !dryRun {
                 // HL 行为采集：真删之后才上报，dryRun 不污染统计
                 await recorder.recordTrashed(paths: paths)
@@ -1453,9 +1458,9 @@ public struct MainView: View {
             let (moved, skipped, err) = await pipeline.moveToTrash(paths: paths, dryRun: false)
             await MainActor.run {
                 if let err {
-                    deleteResult = "失败：\(err)\n已处理 \(moved) 项，跳过 \(skipped) 项"
+                    deleteResult = String(format: String(localized: "delete.result.failure %@ %lld %lld", bundle: .module), err, moved, skipped)
                 } else {
-                    deleteResult = "已处理 \(moved) 项，跳过 \(skipped) 项"
+                    deleteResult = String(format: String(localized: "delete.result.success %lld %lld", bundle: .module), moved, skipped)
                     largeFileSelection = nil
                 }
             }
@@ -1545,9 +1550,9 @@ private struct PermissionStatusBanner: View {
     private var headlineText: String {
         switch (fdaCount, tccCount) {
         case (0, 0): return ""
-        case (let f, 0): return "\(f) 个目录因权限受阻未扫描，结果可能偏小"
-        case (0, let t): return "\(t) 个隐私目录已自动跳过（避免系统弹窗）"
-        case (let f, let t): return "权限受阻 \(f) 项 · 隐私跳过 \(t) 项"
+        case (let f, 0): return String(format: String(localized: "permission.banner.fda_only %lld", bundle: .module), f)
+        case (0, let t): return String(format: String(localized: "permission.banner.tcc_only %lld", bundle: .module), t)
+        case (let f, let t): return String(format: String(localized: "permission.banner.fda_and_tcc %lld %lld", bundle: .module), f, t)
         }
     }
 
@@ -1570,13 +1575,13 @@ private struct PermissionStatusBanner: View {
     private var diagnosticHint: String? {
         let trashDenied = fdaDeniedPaths.contains { $0.hasSuffix("/.Trash") }
         if fdaStatus == .granted && trashDenied {
-            return "提示：~/.Trash 不属于「完全磁盘访问」范畴——它是 macOS 14+ 单独的隐私项，需要在 系统设置 → 隐私与安全 → 自动化 / 文件与文件夹 里单独允许；或者改用 Finder 自带的「清空废纸篓」。"
+            return String(localized: "permission.hint.trash_not_fda", bundle: .module)
         }
         if fdaStatus == .denied && fdaCount > 0 {
-            return "提示：当前进程探测到 FDA = 未授权。如果你刚刚在系统设置里给 GSYCleanMac 打了勾，请尝试：① 退出本 App 完全重启；② 确认你打勾的 .app 路径就是当前正在运行的这一个（开发版 Debug build 与正式 .app 的 TCC 授权是分开的）。"
+            return String(localized: "permission.hint.fda_denied", bundle: .module)
         }
         if fdaStatus == .unknown && fdaCount > 0 {
-            return "提示：未能探测到 FDA 状态（用户从未用过 Mail/Safari/Messages，没有探针文件）。请直接到 系统设置 → 隐私与安全 → 完全磁盘访问 中确认授权。"
+            return String(localized: "permission.hint.fda_unknown", bundle: .module)
         }
         return nil
     }
@@ -1639,7 +1644,7 @@ private struct PermissionStatusBanner: View {
                             if tccCount > 50 {
                                 Text(String(format: String(localized: "banner.fda.tcc.more", bundle: .module), tccCount - 50)).font(.caption2).foregroundStyle(.tertiary)
                             }
-                            Text("说明：Apple Music / Photos / Mail 等敏感库已主动跳过，避免系统反复弹权限框；这些目录与本 App 的清理目标（缓存/重复文件/卸载残留）无关。")
+                            Text("banner.fda.tcc.privacy_note", bundle: .module)
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
                                 .padding(.top, 2)

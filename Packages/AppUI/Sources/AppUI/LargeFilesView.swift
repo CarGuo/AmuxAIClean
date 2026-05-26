@@ -150,7 +150,7 @@ public struct LargeFilesView: View {
             }
             .buttonStyle(.plain)
             .disabled(items.isEmpty)
-            .help("全选 / 取消全选当前可见的大文件")
+            .help(Text("largefiles.help.toggle_select_all", bundle: .module))
 
             Image(systemName: "doc.richtext")
                 .foregroundStyle(.tint)
@@ -158,7 +158,7 @@ public struct LargeFilesView: View {
                 .font(.callout)
             Spacer()
             if needsRescanForLowerThreshold {
-                Label("阈值已下调，需重扫才能看到完整列表", systemImage: "exclamationmark.triangle")
+                Label(String(localized: "largefiles.banner.threshold_lowered", bundle: .module), systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -173,13 +173,13 @@ public struct LargeFilesView: View {
                     onTrash(urls)
                     batch.clear()
                 } label: {
-                    Label("移到废纸篓（\(pickedCount)）", systemImage: "trash")
+                    Label(String(format: String(localized: "largefiles.action.trash %lld", bundle: .module), pickedCount), systemImage: "trash")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
             }
 
-            Text("共 \(items.count) 项")
+            Text(String(format: String(localized: "largefiles.toolbar.count %lld", bundle: .module), items.count))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
@@ -188,10 +188,10 @@ public struct LargeFilesView: View {
             Menu {
                 Button {
                     exportCurrent(format: .json)
-                } label: { Label("导出 JSON…", systemImage: "curlybraces") }
+                } label: { Label(String(localized: "largefiles.export.json", bundle: .module), systemImage: "curlybraces") }
                 Button {
                     exportCurrent(format: .tsv)
-                } label: { Label("导出 TSV…", systemImage: "tablecells") }
+                } label: { Label(String(localized: "largefiles.export.tsv", bundle: .module), systemImage: "tablecells") }
             } label: {
                 Image(systemName: "square.and.arrow.up")
             }
@@ -199,7 +199,7 @@ public struct LargeFilesView: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .disabled(items.isEmpty)
-            .help("导出当前筛选后的大文件清单")
+            .help(Text("largefiles.help.export", bundle: .module))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -226,7 +226,7 @@ public struct LargeFilesView: View {
             Image(systemName: "calendar")
                 .foregroundStyle(.secondary)
                 .font(.caption)
-            Text("修改日期")
+            Text("largefiles.filter.mtime", bundle: .module)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             ForEach(AppSettings.MtimeFilter.allCases, id: \.self) { filter in
@@ -259,7 +259,7 @@ public struct LargeFilesView: View {
                 .foregroundStyle(isOn ? Color.white : Color.primary)
         }
         .buttonStyle(.plain)
-        .help("仅显示\(filter.label)修改过的大文件")
+        .help(Text(String(format: String(localized: "largefiles.help.filter_by_age %@", bundle: .module), filter.label)))
     }
 
     // MARK: - Kind bar (v1.2 P2-3 类型分桶染色)
@@ -281,7 +281,7 @@ public struct LargeFilesView: View {
                     Image(systemName: "circle.grid.2x2")
                         .foregroundStyle(.secondary)
                         .font(.caption)
-                    Text("类型")
+                    Text("largefiles.filter.kind", bundle: .module)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     allKindChip
@@ -304,7 +304,7 @@ public struct LargeFilesView: View {
                 Circle()
                     .fill(Color.secondary.opacity(0.6))
                     .frame(width: 7, height: 7)
-                Text("全部")
+                Text("largefiles.filter.kind.all", bundle: .module)
                     .font(.caption)
             }
             .padding(.horizontal, 10)
@@ -318,7 +318,7 @@ public struct LargeFilesView: View {
             .foregroundStyle(.primary)
         }
         .buttonStyle(.plain)
-        .help("不按类型筛选")
+        .help(Text("largefiles.help.kind_all", bundle: .module))
     }
 
     private func kindChip(kind: FileKind, count: Int) -> some View {
@@ -348,7 +348,7 @@ public struct LargeFilesView: View {
             .foregroundStyle(.primary)
         }
         .buttonStyle(.plain)
-        .help("仅显示\(kind.label)（\(count) 项）")
+        .help(Text(String(format: String(localized: "largefiles.help.filter_by_kind %@ %lld", bundle: .module), kind.label, count)))
     }
 
     // MARK: - Content
@@ -379,16 +379,16 @@ public struct LargeFilesView: View {
                 .font(.system(size: 36))
                 .foregroundStyle(.tertiary)
             if coordinator.isScanning {
-                Text("正在扫描大文件…")
+                Text("largefiles.empty.scanning", bundle: .module)
                     .foregroundStyle(.secondary)
             } else if coordinator.isFinished {
-                Text("没有 ≥ \(settings.minFileSizeMB) MB 的文件")
+                Text(String(format: String(localized: "largefiles.empty.no_results %lld", bundle: .module), settings.minFileSizeMB))
                     .foregroundStyle(.secondary)
-                Text("可以在 ⌘, 设置里把阈值调低再重扫")
+                Text("largefiles.empty.tip_lower_threshold", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             } else {
-                Text("点左侧 \"🐘 大文件\" 开始扫描")
+                Text("largefiles.empty.click_sidebar", bundle: .module)
                     .foregroundStyle(.secondary)
             }
         }
@@ -401,13 +401,13 @@ public struct LargeFilesView: View {
         HStack(spacing: 10) {
             // 图标占位（与行内对齐）
             Spacer().frame(width: 20)
-            Text("名称 / 路径")
+            Text("largefiles.column.name_path", bundle: .module)
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            columnButton(title: "大小", column: .size)
+            columnButton(title: String(localized: "largefiles.column.size", bundle: .module), column: .size)
                 .frame(width: 110, alignment: .trailing)
-            columnButton(title: "修改日期", column: .mtime)
+            columnButton(title: String(localized: "largefiles.column.mtime", bundle: .module), column: .mtime)
                 .frame(width: 130, alignment: .trailing)
         }
         .padding(.horizontal, 16)
@@ -430,7 +430,7 @@ public struct LargeFilesView: View {
             .foregroundStyle(sortKey.column == column ? Color.primary : Color.secondary)
         }
         .buttonStyle(.plain)
-        .help("点击切换 \(title) 升 / 降序")
+        .help(Text(String(format: String(localized: "largefiles.help.sort_toggle %@", bundle: .module), title)))
     }
 
     // MARK: - Row
@@ -501,19 +501,19 @@ public struct LargeFilesView: View {
             Divider()
             Button {
                 QuickLookController.shared.preview(urls: [item.url])
-            } label: { Label("快速预览（空格）", systemImage: "eye") }
+            } label: { Label(String(localized: "largefiles.context.quicklook", bundle: .module), systemImage: "eye") }
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([item.url])
-            } label: { Label("在 Finder 中显示", systemImage: "folder") }
+            } label: { Label(String(localized: "largefiles.context.reveal_finder", bundle: .module), systemImage: "folder") }
             Button {
                 let pb = NSPasteboard.general
                 pb.clearContents()
                 pb.setString(item.path, forType: .string)
-            } label: { Label("复制路径", systemImage: "doc.on.doc") }
+            } label: { Label(String(localized: "largefiles.context.copy_path", bundle: .module), systemImage: "doc.on.doc") }
             Divider()
             Button(role: .destructive) {
                 onTrash([item.url])
-            } label: { Label("移到废纸篓…", systemImage: "trash") }
+            } label: { Label(String(localized: "largefiles.context.move_to_trash", bundle: .module), systemImage: "trash") }
         }
     }
 
@@ -537,7 +537,7 @@ public struct LargeFilesView: View {
         }
 
         let panel = NSSavePanel()
-        panel.title = "导出大文件清单"
+        panel.title = String(localized: "largefiles.export.panel_title", bundle: .module)
         panel.nameFieldStringValue = suggested
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false

@@ -89,11 +89,11 @@ public enum CleanableSeverity: Sendable, Hashable {
     /// 简短状态文案
     public var label: String {
         switch self {
-        case .critical: return "需要清理"
-        case .warning:  return "建议清理"
-        case .caution:  return "可以关注"
-        case .healthy:  return "状态良好"
-        case .idle:     return "无需清理"
+        case .critical: return String(localized: "severity.critical", bundle: .module)
+        case .warning:  return String(localized: "severity.warning", bundle: .module)
+        case .caution:  return String(localized: "severity.caution", bundle: .module)
+        case .healthy:  return String(localized: "severity.healthy", bundle: .module)
+        case .idle:     return String(localized: "severity.idle", bundle: .module)
         }
     }
 

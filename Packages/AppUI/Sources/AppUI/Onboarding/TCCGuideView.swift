@@ -11,9 +11,9 @@ public struct TCCGuideView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("授予完全磁盘访问")
+                Text("tcc.guide.title", bundle: .module)
                     .font(.title2.bold())
-                Text("为了准确清理 Mail / Safari / 日历等隐私目录的残留缓存，GSY 清理管家需要「完全磁盘访问」权限。")
+                Text("tcc.guide.subtitle", bundle: .module)
                     .foregroundStyle(.secondary)
                     .font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
@@ -41,14 +41,14 @@ public struct TCCGuideView: View {
             Divider()
 
             HStack {
-                Button("稍后再说") {
+                Button(String(localized: "tcc.guide.button.later", bundle: .module)) {
                     onDismiss(false)
                 }
                 .keyboardShortcut(.cancelAction)
 
                 Spacer()
 
-                Button("打开系统设置") {
+                Button(String(localized: "tcc.guide.button.open_settings", bundle: .module)) {
                     if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
                         NSWorkspace.shared.open(url)
                     }

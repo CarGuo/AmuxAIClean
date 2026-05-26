@@ -70,12 +70,12 @@ public enum MainListSortKey: String, CaseIterable, Sendable, Hashable, Identifia
     /// UI 菜单文案。
     public var label: String {
         switch self {
-        case .sizeDesc:      return "大小（从大到小）"
-        case .sizeAsc:       return "大小（从小到大）"
-        case .nameAsc:       return "名称（A→Z）"
-        case .nameDesc:      return "名称（Z→A）"
-        case .fileCountDesc: return "文件数（多→少）"
-        case .fileCountAsc:  return "文件数（少→多）"
+        case .sizeDesc:      return String(localized: "sort.size.desc", bundle: .module)
+        case .sizeAsc:       return String(localized: "sort.size.asc", bundle: .module)
+        case .nameAsc:       return String(localized: "sort.name.asc", bundle: .module)
+        case .nameDesc:      return String(localized: "sort.name.desc", bundle: .module)
+        case .fileCountDesc: return String(localized: "sort.filecount.desc", bundle: .module)
+        case .fileCountAsc:  return String(localized: "sort.filecount.asc", bundle: .module)
         }
     }
 

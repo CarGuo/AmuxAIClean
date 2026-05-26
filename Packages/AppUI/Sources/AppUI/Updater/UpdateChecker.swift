@@ -219,9 +219,9 @@ public struct UpdatePromptView: View {
                     .resizable().frame(width: 32, height: 32)
                     .foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("发现新版本：\(release.tagName)")
+                    Text(String(format: String(localized: "updater.prompt.new_version %@", bundle: .module), release.tagName))
                         .font(.title3).fontWeight(.semibold)
-                    Text("当前版本：\(UpdateChecker.currentVersion)")
+                    Text(String(format: String(localized: "updater.prompt.current_version %@", bundle: .module), UpdateChecker.currentVersion))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -236,21 +236,21 @@ public struct UpdatePromptView: View {
                 }
                 .frame(minHeight: 120, maxHeight: 240)
             } else {
-                Text("没有提供更新说明，请前往 Release 页查看变更。")
+                Text("updater.prompt.no_notes", bundle: .module)
                     .font(.callout).foregroundStyle(.secondary)
             }
             Divider()
             HStack {
-                Button("跳过此版本") {
+                Button(String(localized: "updater.prompt.button.skip", bundle: .module)) {
                     checker.skip(release)
                 }
                 .controlSize(.regular)
                 Spacer()
-                Button("稍后提醒") {
+                Button(String(localized: "updater.prompt.button.later", bundle: .module)) {
                     checker.dismissUntilNextLaunch()
                 }
                 .controlSize(.regular)
-                Button("前往下载") {
+                Button(String(localized: "updater.prompt.button.download", bundle: .module)) {
                     NSWorkspace.shared.open(release.htmlURL)
                     checker.dismissUntilNextLaunch()
                 }

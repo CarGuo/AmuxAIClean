@@ -28,16 +28,16 @@ public enum FileKind: String, CaseIterable, Sendable, Hashable, Identifiable {
     /// 用户可见名称。
     public var label: String {
         switch self {
-        case .video:     return "视频"
-        case .image:     return "图片"
-        case .audio:     return "音频"
-        case .archive:   return "归档"
-        case .disk:      return "镜像"
-        case .installer: return "安装包"
-        case .design:    return "设计稿"
-        case .document:  return "文档"
-        case .code:      return "代码"
-        case .other:     return "其他"
+        case .video:     return String(localized: "filekind.video", bundle: .module)
+        case .image:     return String(localized: "filekind.image", bundle: .module)
+        case .audio:     return String(localized: "filekind.audio", bundle: .module)
+        case .archive:   return String(localized: "filekind.archive", bundle: .module)
+        case .disk:      return String(localized: "filekind.disk", bundle: .module)
+        case .installer: return String(localized: "filekind.installer", bundle: .module)
+        case .design:    return String(localized: "filekind.design", bundle: .module)
+        case .document:  return String(localized: "filekind.document", bundle: .module)
+        case .code:      return String(localized: "filekind.code", bundle: .module)
+        case .other:     return String(localized: "filekind.other", bundle: .module)
         }
     }
 

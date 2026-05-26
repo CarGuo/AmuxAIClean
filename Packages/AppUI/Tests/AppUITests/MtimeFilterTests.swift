@@ -43,10 +43,21 @@ final class MtimeFilterTests: XCTestCase {
         XCTAssertTrue(f.passes(future, now: now), "用户改了系统时间，未来时间不能被误判为'30 天前'")
     }
 
-    func test_label_显示中文() {
-        XCTAssertEqual(AppSettings.MtimeFilter.all.label, "全部")
-        XCTAssertEqual(AppSettings.MtimeFilter.last30Days.label, "≤ 30 天")
-        XCTAssertEqual(AppSettings.MtimeFilter.last1Year.label, "≤ 1 年")
+    func test_label_本地化() {
+        // i18n 化后 label 来自 String(localized: "mtime.filter.*", bundle: .module)；
+        // 在 SPM xctest 下 Bundle.module 通常 fallback 到 key 字符串，
+        // 但生产 App 内会渲染为中文/英文。测试只断言：
+        // 1) label 非空（确保 enum 真的产出了字符串）
+        // 2) 三种 case 互不相同（确保不是同一个 fallback 错位到所有 case）
+        let all = AppSettings.MtimeFilter.all.label
+        let m30 = AppSettings.MtimeFilter.last30Days.label
+        let y1 = AppSettings.MtimeFilter.last1Year.label
+        XCTAssertFalse(all.isEmpty)
+        XCTAssertFalse(m30.isEmpty)
+        XCTAssertFalse(y1.isEmpty)
+        XCTAssertNotEqual(all, m30)
+        XCTAssertNotEqual(m30, y1)
+        XCTAssertNotEqual(all, y1)
     }
 
     @MainActor

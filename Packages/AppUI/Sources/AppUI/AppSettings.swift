@@ -82,11 +82,11 @@ public final class AppSettings {
 
         public var label: String {
             switch self {
-            case .dynamicIsland:      return "灵动岛模式（贴刘海，hover 展开）"
-            case .notchUnder:         return "顶部居中（刘海下方）"
-            case .desktopTopRight:    return "桌面右上角"
-            case .desktopBottomRight: return "桌面右下角"
-            case .desktopBottomLeft:  return "桌面左下角"
+            case .dynamicIsland:      return String(localized: "hud.placement.dynamic_island", bundle: .module)
+            case .notchUnder:         return String(localized: "hud.placement.notch_under", bundle: .module)
+            case .desktopTopRight:    return String(localized: "hud.placement.desktop_top_right", bundle: .module)
+            case .desktopBottomRight: return String(localized: "hud.placement.desktop_bottom_right", bundle: .module)
+            case .desktopBottomLeft:  return String(localized: "hud.placement.desktop_bottom_left", bundle: .module)
             }
         }
 
@@ -130,9 +130,9 @@ public final class AppSettings {
 
         public var label: String {
             switch self {
-            case .all:        return "全部"
-            case .last30Days: return "≤ 30 天"
-            case .last1Year:  return "≤ 1 年"
+            case .all:        return String(localized: "mtime.filter.all", bundle: .module)
+            case .last30Days: return String(localized: "mtime.filter.last30days", bundle: .module)
+            case .last1Year:  return String(localized: "mtime.filter.last1year", bundle: .module)
             }
         }
 
@@ -182,8 +182,8 @@ public final class AppSettings {
 
         public var label: String {
             switch self {
-            case .logical:  return "逻辑大小（系统设置口径）"
-            case .physical: return "物理占用（du 口径）"
+            case .logical:  return String(localized: "size.accounting.logical", bundle: .module)
+            case .physical: return String(localized: "size.accounting.physical", bundle: .module)
             }
         }
     }

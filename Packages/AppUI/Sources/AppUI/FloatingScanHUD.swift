@@ -816,7 +816,7 @@ struct FloatingScanHUDView: View {
     }
     /// 卷名（"Macintosh HD" 等），缺失时显示"本机磁盘"。
     private var volumeName: String {
-        coordinator.volumeSnapshot?.volumeName ?? "本机磁盘"
+        coordinator.volumeSnapshot?.volumeName ?? String(localized: "hud.volume.default", bundle: .module)
     }
     /// 速度文案——"2.4 MB/s"，速率不足时显示"估算中…"。
     private var speedText: String {
@@ -828,22 +828,22 @@ struct FloatingScanHUDView: View {
             }
             return String(format: "%.1f MB/s", mbps)
         }
-        return "估算中…"
+        return String(localized: "hud.speed.estimating", bundle: .module)
     }
     /// 扫描态时间标签——ETA 优先（"~ 1m 23s"），无 ETA 退化为已用时长（"已 0:14"）。
     /// 保证"扫描中"区域永远有时间数字可看，不再因 ETA=nil 完全消失。
     private var scanTimerText: String {
         if let eta = coordinator.snapshot.estimatedRemaining {
-            return "剩 " + durationString(eta)
+            return String(format: String(localized: "hud.time.remaining %@", bundle: .module), durationString(eta))
         }
-        return "已 " + durationString(coordinator.snapshot.elapsed)
+        return String(format: String(localized: "hud.time.elapsed %@", bundle: .module), durationString(coordinator.snapshot.elapsed))
     }
     /// 同上，紧凑版（给灵动岛展开态用，节省横向空间）。
     private var scanTimerShortText: String {
         if let eta = coordinator.snapshot.estimatedRemaining {
-            return "剩 " + durationShort(eta)
+            return String(format: String(localized: "hud.time.remaining %@", bundle: .module), durationShort(eta))
         }
-        return "已 " + durationShort(coordinator.snapshot.elapsed)
+        return String(format: String(localized: "hud.time.elapsed %@", bundle: .module), durationShort(coordinator.snapshot.elapsed))
     }
 
     var body: some View {
@@ -1348,7 +1348,7 @@ struct FloatingScanHUDView: View {
             return "~ " + durationShort(eta)
         }
         let elapsed = coordinator.snapshot.elapsed
-        return "已 " + durationShort(elapsed)
+        return String(format: String(localized: "hud.time.elapsed %@", bundle: .module), durationShort(elapsed))
     }
 
     private var islandClosedMainFontSize: CGFloat {
@@ -1439,7 +1439,7 @@ struct FloatingScanHUDView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("立即开始推荐扫描")
+                .help(Text("hud.help.start_scan", bundle: .module))
             }
             Button(action: onOpen) {
                 Image(systemName: "macwindow.on.rectangle")
@@ -1449,7 +1449,7 @@ struct FloatingScanHUDView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("打开主窗口")
+            .help(Text("hud.help.open_main", bundle: .module))
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .bold))
@@ -1565,9 +1565,9 @@ struct FloatingScanHUDView: View {
 
     private var closeButtonHelp: String {
         if settings.hudPersistent {
-            return "关闭常驻挂件（可在设置 / ⌘⇧H 重新打开）"
+            return String(localized: "hud.help.close.persistent", bundle: .module)
         }
-        return "关闭悬浮窗（可在主窗口顶栏重新打开）"
+        return String(localized: "hud.help.close.floating", bundle: .module)
     }
 
     private func durationString(_ s: TimeInterval) -> String {

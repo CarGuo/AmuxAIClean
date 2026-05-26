@@ -22,9 +22,9 @@ public struct DeleteSheet: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("将移到废纸篓")
+                Text("delete.summary.title", bundle: .module)
                     .font(.title2.bold())
-                Text("\(items.count) 项 · \(totalFiles) 个文件 · \(ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file))")
+                Text(String(format: String(localized: "delete.summary.detail %lld %lld %@", bundle: .module), items.count, totalFiles, ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)))
                     .foregroundStyle(.secondary)
                     .font(.callout)
             }
@@ -57,7 +57,7 @@ public struct DeleteSheet: View {
                     .padding(.vertical, 2)
                 }
                 if items.count > 200 {
-                    Text("…还有 \(items.count - 200) 项未显示")
+                    Text(String(format: String(localized: "delete.summary.more %lld", bundle: .module), items.count - 200))
                         .foregroundStyle(.tertiary)
                         .font(.caption)
                         .padding(.vertical, 2)
@@ -71,16 +71,16 @@ public struct DeleteSheet: View {
             HStack {
                 Toggle(isOn: $dryRun) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("仅预览（dry-run）")
+                        Text("delete.summary.preview_only", bundle: .module)
                             .font(.callout)
-                        Text("勾上：Helper 不动手，只在日志里记录会删什么。")
+                        Text("delete.summary.preview_only.desc", bundle: .module)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
                 .toggleStyle(.switch)
                 Spacer()
-                Button("取消", role: .cancel) { onCancel() }
+                Button(String(localized: "delete.action.cancel", bundle: .module), role: .cancel) { onCancel() }
                     .keyboardShortcut(.cancelAction)
                 Button(dryRun ? "运行预览" : "确认移到废纸篓", role: dryRun ? nil : .destructive) {
                     onConfirm(dryRun)

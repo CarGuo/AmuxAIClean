@@ -114,8 +114,14 @@ final class MainViewDefaultViewModeTests: XCTestCase {
     }
 
     func testResultsViewModeLabelsAreStable() {
-        XCTAssertEqual(MainView.ResultsViewMode.list.label, "清单")
-        XCTAssertEqual(MainView.ResultsViewMode.tree.label, "树形")
+        // i18n 化后 label 来自 String(localized: "main.results.mode.*", bundle: .module)；
+        // 在 SPM xctest 下 Bundle.module 通常 fallback 到 key 字符串，
+        // 生产 App 内会渲染为中文/英文。测试只断言 label 非空且两 case 不同。
+        let listLabel = MainView.ResultsViewMode.list.label
+        let treeLabel = MainView.ResultsViewMode.tree.label
+        XCTAssertFalse(listLabel.isEmpty)
+        XCTAssertFalse(treeLabel.isEmpty)
+        XCTAssertNotEqual(listLabel, treeLabel)
     }
 
     func testResultsViewModeIconsAreStable() {
