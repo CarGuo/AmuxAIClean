@@ -7,6 +7,7 @@ import XCTest
 /// SwiftUI @State 没法从外部反射构造，但 sanitize 是 static + 纯逻辑，
 /// 单独 lock 它就足以保证"批量删时 forbid 路径绝不会进 urls"——
 /// 这是 [batchActionBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 主按钮调用的最后一道闸门。
+@MainActor
 final class TreeBrowserMultiSelectTests: XCTestCase {
 
     // MARK: - sanitize: SafetyEngine forbid 路径必须被剔除

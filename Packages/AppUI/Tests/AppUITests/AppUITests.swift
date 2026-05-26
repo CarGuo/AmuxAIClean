@@ -99,6 +99,7 @@ final class TrashPipelineTests: XCTestCase {
 /// - 默认视图模式 == `.tree`（任何回滚到 `.list` 的改动都立刻红线）
 /// - `ResultsViewMode` 枚举形态稳定（case 顺序、label 文案、icon symbol 不许悄悄改），
 ///   是 [viewModeBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) UI 的隐性合同
+@MainActor
 final class MainViewDefaultViewModeTests: XCTestCase {
 
     func testPhase4ADefaultIsTree() {
