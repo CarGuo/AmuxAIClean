@@ -110,25 +110,83 @@ jobs:
             ## GSYCleanMac ${{ github.ref_name }}
 
             macOS 清理管家 · Release 构建（ad-hoc 签名，无 Apple Developer Program）。
+            产物：`.dmg`（推荐桌面用户）/ `.app.zip`（更小，便于自动化更新）/ 配套 `.sha256`。
 
-            ### 安装
-            1. 下载 `GSYCleanMac-${{ steps.ver.outputs.version }}.dmg`（或 `.app.zip`，体积更小，便于自动化更新）
-            2. 双击挂载 dmg，把 GSYCleanMac.app 拖进 `/Applications`；若使用 zip，解压后将 `.app` 拖进 `/Applications`
-            3. 首次运行被 Gatekeeper 拦时：系统设置 -> 隐私与安全 -> 滚到底点"仍要打开"，详见 [INSTALL.md](https://github.com/${{ github.repository }}/blob/main/docs/INSTALL.md)
+            ---
 
-            ### 完整性校验
+            ### 📦 安装步骤
+
+            **1. 下载并放进 Applications**
+
+            - 选 `GSYCleanMac-${{ steps.ver.outputs.version }}.dmg`：双击挂载 → 把 `GSYCleanMac.app` 拖进 `/Applications`
+            - 或选 `GSYCleanMac-${{ steps.ver.outputs.version }}.app.zip`：解压 → 把得到的 `GSYCleanMac.app` 拖进 `/Applications`
+
+            **2. 首次启动 · trust 一次（重要）**
+
+            因为是 ad-hoc 签名（与 Rectangle / AltTab / Stats 等开源项目一致），首次启动 Gatekeeper 会拦下并提示"无法打开，因为 Apple 无法检查它是否包含恶意软件"。**这是预期行为**，按以下流程一次性 trust：
+
+            1. 在 `/Applications` 里双击 `GSYCleanMac.app`，看到拦截弹窗后点"完成"或"取消"
+            2. 打开「系统设置」 → 「隐私与安全」
+            3. 滚动到底部「安全性」区域，能看到一行："已阻止 GSYCleanMac 的使用，因为它不是来自被认证的开发者"
+            4. 点击该行右侧的「仍要打开」，输入登录密码确认
+            5. 之后双击 `.app` 即可正常启动（macOS 13–14 用户也可右键 .app → 选「打开」走旧版 trust 流程）
+
+            **3. 授予「完全磁盘访问」（强烈建议）**
+
+            扫描 `~/Library/Mail`、其他用户 Home、iCloud 占位文件等需要 TCC 权限：
+
+            1. 「系统设置」 → 「隐私与安全」 → 「完全磁盘访问权限」
+            2. 点 `+`，定位 `/Applications/GSYCleanMac.app`，添加并打开开关
+            3. 重启 GSYCleanMac
+
+            > 没授权也能用，但扫描结果会缺一截 —— App 内首次扫描检测到大量 `errno=1` 时会自动弹引导横幅。
+
+            ---
+
+            ### 🛟 安装故障兜底
+
+            如果首次启动提示 **"应用已损坏，无法打开"** 或在新 macOS 找不到「仍要打开」按钮，先在终端执行：
+
+            ```bash
+            xattr -cr /Applications/GSYCleanMac.app
             ```
+
+            清除隔离属性后再重新双击启动即可。这个命令只是去掉浏览器/AirDrop 给 .app 打的 quarantine 标，不会改 .app 内容本身。
+
+            ---
+
+            ### ✅ 完整性校验
+
+            ```bash
             shasum -a 256 GSYCleanMac-${{ steps.ver.outputs.version }}.dmg
             shasum -a 256 GSYCleanMac-${{ steps.ver.outputs.version }}.app.zip
             ```
-            应分别输出与 `.dmg.sha256` / `.app.zip.sha256` 一致的哈希值。
 
-            ### 为什么这个 release 不需要任何 GitHub Secrets
-            本项目使用 ad-hoc 签名（`codesign --sign -`），与 Rectangle / AltTab / Stats 等开源项目一致；签名身份是 GitHub runner 上即时生成的临时身份，不依赖任何上传到 Secrets 的证书或密钥。如果你想自己用 Developer ID 公证签名，请 fork 后在 `Scripts/build_release.sh` 里设 `IDENTITY` 环境变量并配置自己的 keychain。完整说明见 [docs/RELEASE.md](https://github.com/${{ github.repository }}/blob/main/docs/RELEASE.md)。
+            应分别输出与 `.dmg.sha256` / `.app.zip.sha256` 一致的哈希。
 
-            ### 系统要求
+            ---
+
+            ### 🧹 卸载
+
+            1. 把 `/Applications/GSYCleanMac.app` 拖进废纸篓
+            2. 删除 `~/Library/Application Support/GSYCleanMac/`（启发式数据）
+            3. 删除 `~/Library/Preferences/com.guoshuyu.cleanmac.plist`
+            4. （可选）「系统设置」 → 「隐私与安全」 → 「完全磁盘访问」中移除 GSYCleanMac
+
+            ---
+
+            ### 💡 为什么不需要 GitHub Secrets
+
+            本项目使用 ad-hoc 签名（`codesign --sign -`），与 Rectangle / AltTab / Stats 等开源项目一致；签名身份是 GitHub runner 上即时生成的临时身份，不依赖任何 Apple Developer 证书或上传到 Secrets 的密钥。如需 Developer ID 公证签名版本，请 fork 后在 [Scripts/build_release.sh](https://github.com/${{ github.repository }}/blob/main/Scripts/build_release.sh) 设 `IDENTITY` 并配置自己的 keychain；完整说明见 [docs/RELEASE.md](https://github.com/${{ github.repository }}/blob/main/docs/RELEASE.md)。
+
+            ---
+
+            ### 📋 系统要求
+
             - macOS 15 Sequoia 或更高
-            - 首次启动需在系统设置授予"完全磁盘访问权限"才能扫描完整结果
+            - Apple Silicon 或 Intel x86_64（universal binary）
+            - 约 30 MB 磁盘
+            - 完整安装文档：[docs/INSTALL.md](https://github.com/${{ github.repository }}/blob/main/docs/INSTALL.md)
           files: |
             dist/GSYCleanMac-${{ steps.ver.outputs.version }}.dmg
             dist/GSYCleanMac-${{ steps.ver.outputs.version }}.dmg.sha256
