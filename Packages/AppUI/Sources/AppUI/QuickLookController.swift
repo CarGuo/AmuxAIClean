@@ -12,7 +12,7 @@ import Quartz
 /// 4. **目录与不存在路径直接拒绝**——QLPreviewPanel 对不存在 url 会闪退到错误占位，
 ///    这里先做一道前置过滤，体验更稳。
 @MainActor
-public final class QuickLookController: NSObject, @MainActor QLPreviewPanelDataSource, @MainActor QLPreviewPanelDelegate {
+public final class QuickLookController: NSObject, QLPreviewPanelDataSource, QLPreviewPanelDelegate {
     public static let shared = QuickLookController()
 
     private var urls: [URL] = []
@@ -64,20 +64,29 @@ public final class QuickLookController: NSObject, @MainActor QLPreviewPanelDataS
     }
 
     // MARK: - QLPreviewPanelDataSource
+    //
+    // QLPreviewPanel 协议方法在 Xcode 16.4 (Swift 6.0) 下要求 `nonisolated` 才能
+    // 满足 `QLPreviewPanelDataSource` / `QLPreviewPanelDelegate` 这两个 NSObject
+    // 协议（它们不是 @MainActor）。AppKit 的实际调用都发生在主线程，所以方法体内
+    // 用 `MainActor.assumeIsolated` 安全访问 self.urls；这是 Apple 推荐的桥接模式。
 
-    public func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
-        urls.count
+    public nonisolated func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        MainActor.assumeIsolated { urls.count }
     }
 
-    public func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
-        guard index >= 0 && index < urls.count else { return nil }
-        return urls[index] as NSURL
+    public nonisolated func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
+        let url: URL? = MainActor.assumeIsolated {
+            guard index >= 0 && index < urls.count else { return nil }
+            return urls[index]
+        }
+        guard let u = url else { return nil }
+        return u as NSURL
     }
 
     // MARK: - QLPreviewPanelDelegate
 
     /// 把 ←/→ 与 Esc 留给 panel 自己处理；其他按键不拦截。
-    public func previewPanel(_ panel: QLPreviewPanel!, handle event: NSEvent!) -> Bool {
+    public nonisolated func previewPanel(_ panel: QLPreviewPanel!, handle event: NSEvent!) -> Bool {
         false
     }
 }
