@@ -147,13 +147,37 @@ public struct MainView: View {
         } message: {
             Text(deleteResult ?? "")
         }
-        .onChange(of: selectedCategory) { _, new in
+        .onChange(of: selectedCategory) { old, new in
             // v1.3.aa：原版 `guard let cat = allCategories.first(where: ...) else { return }`
             // 在切到 sentinel（appFootprint/launchAgent/uninstall/duplicate）时直接 return，
             // 既不会 resetSelectionState 也不会清 detail/treeSelection——表现就是问题 2：
             // 上一屏的"启动项详情"残留在右侧栏没清掉。
             // 现在拆成两步：①只要 selection 变了就先清状态；②若是 ScanCategory 才起扫。
+            //
+            // v1.5：再加一支 batch.* sentinel 分发——sidebar 顶部 Batch Scans 三行。
+            // 用户从 sidebar 选中其中一条 = 等价点 toolbar 对应按钮。
+            // 注意防递归：trigger* helper 自己会再写 selectedCategory = batchXxxID，
+            // 这里用 `new == old` 早退（new 此刻已被新值覆盖，但 trigger 写回的是相同值）；
+            // 更稳的做法是只在 new ≠ old 且 new ∈ batchScanIDs 时分发。
+            guard old != new else { return }
             resetSelectionState()
+            if let id = new, ScanCategory.batchScanIDs.contains(id) {
+                switch id {
+                case ScanCategory.batchRecommendedID:
+                    triggerRecommendedScan()
+                case ScanCategory.batchDeveloperID:
+                    triggerDeveloperScan()
+                case ScanCategory.batchFullDiskID:
+                    // fullDisk 走 ScanCategory.fullDisk.id 路径既有逻辑：把 selection
+                    // 切到 fullDisk.id 由下面 startScan 接管。但既然我们引入了 sentinel
+                    // 让 sidebar 高亮在"batch.fulldisk"上而不是"fulldisk.root"，需要
+                    // 直接调 coordinator API，避免被 onChange 再绕一圈把 selection 改走。
+                    coordinator.scanFullDisk(includeHidden: settings.showHidden)
+                default:
+                    break
+                }
+                return
+            }
             guard let id = new, let cat = allCategories.first(where: { $0.id == id }) else { return }
             // v2：统一走 [runHeavyAfterCommit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HeavyTask.swift)
             // 模板（detached + sleep 16ms + MainActor.run），让 SwiftUI 先把
@@ -252,6 +276,34 @@ public struct MainView: View {
 
     private var sidebarList: some View {
         List(selection: $selectedCategory) {
+            // v1.5: Batch Scans —— sidebar 与 toolbar 三大扫描入口的镜像。
+            // 解决用户截图反馈：点 toolbar 锤子 / 推荐 / 全盘后，左侧 sidebar
+            // 没有任何选中态，感知不到"我现在在跑哪条"。
+            // 这里 3 行的 .tag 用 ScanCategory.batchXxxID 三个 sentinel；
+            // onChange(selectedCategory) 看见这三 id 时不走 startScan(category:)
+            // 而是分发到对应 trigger* helper（toolbar 同款）。
+            Section {
+                batchScanRow(id: ScanCategory.batchRecommendedID,
+                             icon: "rectangle.3.group",
+                             titleKey: LocalizedStringKey("batch.recommended.title"),
+                             subtitleKey: LocalizedStringKey("batch.recommended.subtitle"))
+                    .tag(ScanCategory.batchRecommendedID)
+
+                batchScanRow(id: ScanCategory.batchDeveloperID,
+                             icon: "hammer",
+                             titleKey: LocalizedStringKey("batch.developer.title"),
+                             subtitleKey: LocalizedStringKey("batch.developer.subtitle"))
+                    .tag(ScanCategory.batchDeveloperID)
+
+                batchScanRow(id: ScanCategory.batchFullDiskID,
+                             icon: "internaldrive",
+                             titleKey: LocalizedStringKey("batch.fulldisk.title"),
+                             subtitleKey: LocalizedStringKey("batch.fulldisk.subtitle"))
+                    .tag(ScanCategory.batchFullDiskID)
+            } header: {
+                Text("sidebar.section.batch", bundle: .module)
+            }
+
             Section {
                 ForEach(presetCategories) { cat in
                     sidebarRow(cat)
@@ -362,6 +414,30 @@ public struct MainView: View {
     /// v1.2 P2-1：「重复文件」侧边项。DuplicateScreen 是只读视图（无勾选 / 无删除按钮），
     /// 与 ScanCategory（默认勾选 + verdict）的语义不兼容，走 sentinel ID 旁路。
     static let duplicateSentinelID: String = "duplicate.scan"
+
+    /// v1.5：sidebar Batch Scans section 的 row。结构与 sidebarRow / appFootprintSidebarRow
+    /// 对齐：图标 + 标题 + 副标题。row 自身不带 tap handler，selection 切换由
+    /// onChange(selectedCategory) 统一调度到对应 trigger* helper。
+    private func batchScanRow(id: String,
+                              icon: String,
+                              titleKey: LocalizedStringKey,
+                              subtitleKey: LocalizedStringKey) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(titleKey, bundle: .module)
+                    .font(.system(.body, design: .rounded))
+                Text(subtitleKey, bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.vertical, 2)
+    }
 
     private var appFootprintSidebarRow: some View {
         HStack(spacing: 8) {
@@ -770,19 +846,32 @@ public struct MainView: View {
                         // v1.3：多根并行扫描——按 rootPath 字典序输出多行（每根一条），
                         // 已 finished 的根用 ✓ 替代 ●，文案"{title} · {bytes} · {fileCount} 文件"。
                         // 字典序稳定排序：避免 dict 遍历顺序导致行序抖动。
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(coordinator.perRootProgress.values.sorted(by: { $0.rootPath < $1.rootPath }), id: \.rootPath) { p in
-                                HStack(spacing: 4) {
-                                    Text(p.isFinished ? "✓" : "●")
-                                        .font(.caption.bold())
-                                        .foregroundStyle(p.isFinished ? Color.green : Color.accentColor)
-                                    Text(String(format: String(localized: "main.scan.progress.multi.row", bundle: .module), p.title, formattedBytes(p.bytes), p.fileCount))
-                                        .font(.callout)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
+                        //
+                        // v1.5：dev scan discover 阶段命中几十/几百根时这里直接平铺会把
+                        // toolbar 下窄区撑爆（用户截图 2/3 反馈"很丑很奇怪 / 不能滑动"）。
+                        // 用 ScrollView + frame(maxHeight:) 限到 ~120pt（约 6 行），让
+                        // 多余的根在内部滚动而非把整个 statusBar 顶高。
+                        // 同时 0 字节期间用 `--` 占位避免"Zero KB · 0 文件"持续闪烁。
+                        let rows = coordinator.perRootProgress.values.sorted(by: { $0.rootPath < $1.rootPath })
+                        ScrollView(.vertical, showsIndicators: true) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(rows, id: \.rootPath) { p in
+                                    HStack(spacing: 4) {
+                                        Text(p.isFinished ? "✓" : "●")
+                                            .font(.caption.bold())
+                                            .foregroundStyle(p.isFinished ? Color.green : Color.accentColor)
+                                        let bytesText: String = (p.bytes <= 0 && p.fileCount <= 0)
+                                            ? String(localized: "progress.size.placeholder", bundle: .module)
+                                            : formattedBytes(p.bytes)
+                                        Text(String(format: String(localized: "main.scan.progress.multi.row", bundle: .module), p.title, bytesText, p.fileCount))
+                                            .font(.callout)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
                                 }
                             }
                         }
+                        .frame(maxHeight: 120)
                     }
                 } else if coordinator.snapshot.isFinished {
                     Text(String(format: String(localized: "main.scan.finished", bundle: .module), coordinator.snapshot.scannedFileCount, formattedBytes(coordinator.snapshot.totalBytes), String(format: "%.2fs", coordinator.snapshot.elapsed)))
@@ -1067,11 +1156,7 @@ public struct MainView: View {
     /// 解决用户反馈"看起来还是只有一个目录在动"——多根并行 + statusBar 多行进度让"打满核"可见。
     private var recommendedAllButton: some View {
         Button {
-            resetSelectionState()
-            // 并行扫描会清掉 selectedCategory 的隐含语义（5 根没有"当前选中类目"），
-            // 显式置 nil 让"重新扫描"按钮在多根模式下不渲染（其逻辑依赖单 selectedCategory）。
-            selectedCategory = nil
-            coordinator.scanRecommended(includeHidden: settings.showHidden)
+            triggerRecommendedScan()
         } label: {
             Label {
                 Text("toolbar.scan.recommended", bundle: .module)
@@ -1089,10 +1174,7 @@ public struct MainView: View {
     /// 启用规则集由 [AppSettings.enabledDevArtifactRuleIDs] 控制（默认全开）。
     private var developerScanButton: some View {
         Button {
-            resetSelectionState()
-            selectedCategory = nil
-            coordinator.scanDeveloper(includeHidden: settings.showHidden,
-                                      enabledRuleIDs: settings.enabledDevArtifactRuleIDs)
+            triggerDeveloperScan()
         } label: {
             Label {
                 Text("toolbar.scan.dev", bundle: .module)
@@ -1102,6 +1184,23 @@ public struct MainView: View {
         }
         .help(String(localized: "toolbar.help.dev", bundle: .module))
         .disabled(coordinator.isScanning)
+    }
+
+    /// v1.5：把 toolbar「全部推荐扫描」按钮的逻辑抽成 helper，供 sidebar Batch Scans
+    /// 入口复用。除了起扫还把 selectedCategory 同步到 batch sentinel，让 sidebar
+    /// 蓝条高亮跟手——没有这一步用户感知不到自己当前在跑哪条。
+    fileprivate func triggerRecommendedScan() {
+        resetSelectionState()
+        selectedCategory = ScanCategory.batchRecommendedID
+        coordinator.scanRecommended(includeHidden: settings.showHidden)
+    }
+
+    /// v1.5：开发者扫描的统一入口，理由同上。
+    fileprivate func triggerDeveloperScan() {
+        resetSelectionState()
+        selectedCategory = ScanCategory.batchDeveloperID
+        coordinator.scanDeveloper(includeHidden: settings.showHidden,
+                                  enabledRuleIDs: settings.enabledDevArtifactRuleIDs)
     }
 
     /// v1.0 T5：路径栏 —— 输 `/` 回车扫整盘；输任意已存在目录回车直接扫。
@@ -1217,17 +1316,14 @@ public struct MainView: View {
     }
 
     /// 整盘扫描入口：统一从这里发起，方便后续接 TCC 引导。
-    /// 走 `selectedCategory` 赋值 → 命中已有 onChange 流程，避免双扫；
-    /// 单测路径请直接调 `coordinator.scanFullDisk(...)`。
+    /// v1.5：与 triggerRecommendedScan / triggerDeveloperScan 对齐——sidebar 高亮
+    /// 落在 batch.fulldisk sentinel 上（而不是单根 fullDisk.id 类目），让"批量扫描"
+    /// 三条入口在视觉上是平等的一组。直接调 coordinator API，不再走 selectedCategory →
+    /// onChange → startScan(category:) 的旧链路（避免高亮被绕回 fullDisk.id）。
     private func triggerFullDiskScan() {
-        // v1.3：统一走 resetSelectionState()，避免整盘扫描后旧详情/树选中残留
         resetSelectionState()
-        if selectedCategory == ScanCategory.fullDisk.id {
-            // 已经选中整盘 → onChange 不会再触发，主动重扫
-            coordinator.scanFullDisk(includeHidden: settings.showHidden)
-        } else {
-            selectedCategory = ScanCategory.fullDisk.id
-        }
+        selectedCategory = ScanCategory.batchFullDiskID
+        coordinator.scanFullDisk(includeHidden: settings.showHidden)
     }
 
     // MARK: - Helpers
