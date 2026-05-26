@@ -148,14 +148,20 @@ make_dmg_with_hdiutil() {
     return $?
   fi
 
-  # 1) 先创建可读写 DMG（UDRW），稍后挂载美化再压缩成 UDZO
+  # 1) 先创建可读写 DMG（UDRW，空白卷），稍后挂载后再 ditto 进内容并美化，最终压缩成 UDZO
+  #    注意：用 -srcfolder 创建的 UDRW 实际上挂载后是只读的（HFS+ 卷被冻结），
+  #    所以这里走"空白可写镜像 → 挂载 → ditto 内容 → 美化 → 压缩"的稳健路径。
   local rw_dmg="$WORK_DIR/rw.dmg"
-  echo "    [1/5] 创建可读写镜像（UDRW）"
+  echo "    [1/5] 创建可读写镜像（UDRW，空白）"
+  # 估算需要的容量：暂存目录大小 * 1.4 + 64MB 余量
+  local stage_kb pad_mb
+  stage_kb="$(du -sk "$STAGE_DIR" | awk '{print $1}')"
+  pad_mb="$(( stage_kb / 1024 * 14 / 10 + 64 ))"
   hdiutil create \
     -volname "$VOLUME_NAME" \
-    -srcfolder "$STAGE_DIR" \
+    -size "${pad_mb}m" \
     -ov \
-    -format UDRW \
+    -layout SPUD \
     -fs HFS+ \
     "$rw_dmg" >/dev/null
 
@@ -170,6 +176,9 @@ make_dmg_with_hdiutil() {
     echo "    错误：挂载点未找到: $MOUNT_POINT"
     return 1
   fi
+
+  # 2.5) 把暂存目录里的 .app + Applications 软链接 ditto 进卷
+  ditto "$STAGE_DIR/" "$MOUNT_POINT/"
 
   # 3) 写入卷图标 + 背景图（可选）
   echo "    [3/5] 写入卷图标与背景图"
