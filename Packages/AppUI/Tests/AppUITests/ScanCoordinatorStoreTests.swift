@@ -21,7 +21,9 @@ final class ScanCoordinatorStoreTests: XCTestCase {
     private var tempDir: URL!
 
     override func setUp() async throws {
-        try await super.setUp()
+        // 不调 super.setUp()：XCTestCase async 版默认是 noop，且在 Xcode 16.4 / Swift 6.0
+        // strict concurrency 下 `try await super.setUp()` 会报 "sending non-Sendable
+        // XCTestCase risks causing data races"
         tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("ScanCoordStore-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -31,7 +33,7 @@ final class ScanCoordinatorStoreTests: XCTestCase {
         if let tempDir, FileManager.default.fileExists(atPath: tempDir.path) {
             try? FileManager.default.removeItem(at: tempDir)
         }
-        try await super.tearDown()
+        // 不调 super.tearDown()：同上
     }
 
     // MARK: - Fixture & helpers
