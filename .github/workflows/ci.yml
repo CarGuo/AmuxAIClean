@@ -40,7 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           fails=0
-          for pkg in ScanKit SafetyKit XPCBridge AppUI HeuristicKit TestHarness; do
+          for pkg in ScanKit SafetyKit LogKit AppUI HeuristicKit TestHarness; do
             echo "::group::swift test - $pkg"
             if ! (cd "Packages/$pkg" && swift test --parallel); then
               fails=$((fails + 1))
