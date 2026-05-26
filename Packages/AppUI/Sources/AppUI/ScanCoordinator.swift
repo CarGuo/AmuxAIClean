@@ -831,8 +831,13 @@ public final class ScanCoordinator: ObservableObject {
                     p.isFinished = true
                     perRootStaging[rootPath] = p
                 }
-                // .finished 是低频事件，立刻同步到 @Published 让 UI 看到"该根已完成"
-                perRootProgress[rootPath] = perRootStaging[rootPath]
+                // v1.3：原本 .finished 是低频事件，立刻同步到 @Published 让 UI 看到"该根已完成"。
+                // v1.5 性能修复：dev scan discover 命中几十/几百根时，.finished 风暴密集
+                // 触发，每个 finished 都立即整体替换 perRootProgress dict → SwiftUI 把整个
+                // sidebar / statusBar / list 重 diff 一次，列表滑动直接卡死。
+                // 现在 .finished 也并入下面的 throttle 统一节流（每 0.4s 同步一次），
+                // 单根/少量根的扫描场景下 throttle 间隔本来就足够小，肉眼无感差异；
+                // 而 dev scan 几百根场景下重画次数从 N 降到 ~elapsed/0.4，主线程立刻回归。
             case .failed(let error):
                 // v1.3 review-fix P1-7：多根模式下错误必须带 rootPath 前缀，
                 // 否则 5 根并发时同时 .failed 互相覆盖，用户看不到是哪根失败。

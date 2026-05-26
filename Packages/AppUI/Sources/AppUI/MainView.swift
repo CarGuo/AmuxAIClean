@@ -852,9 +852,16 @@ public struct MainView: View {
                         // 用 ScrollView + frame(maxHeight:) 限到 ~120pt（约 6 行），让
                         // 多余的根在内部滚动而非把整个 statusBar 顶高。
                         // 同时 0 字节期间用 `--` 占位避免"Zero KB · 0 文件"持续闪烁。
+                        //
+                        // v1.5 性能修复：之前用裸 `VStack { ForEach }` 平铺 → 几百行时
+                        // 即便外层 ScrollView 限高，SwiftUI 仍然会一次性 measure/layout 所有
+                        // 子 view，再加上每 0.4s publishSnapshot + 多次 .finished 立即 publish
+                        // 触发的整体重 diff，整个列表/sidebar 滑动都会卡。
+                        // 改 `LazyVStack` 让只有窗口内的 ~6 行真正参与 measure/layout，
+                        // 几百行时主线程 frame budget 立刻回归 60fps。
                         let rows = coordinator.perRootProgress.values.sorted(by: { $0.rootPath < $1.rootPath })
                         ScrollView(.vertical, showsIndicators: true) {
-                            VStack(alignment: .leading, spacing: 2) {
+                            LazyVStack(alignment: .leading, spacing: 2) {
                                 ForEach(rows, id: \.rootPath) { p in
                                     HStack(spacing: 4) {
                                         Text(p.isFinished ? "✓" : "●")
