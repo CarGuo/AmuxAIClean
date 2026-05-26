@@ -89,9 +89,9 @@ public struct DuplicateScreen: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 2) {
-                Text("重复文件检测可能漏报或误报")
+                Text("duplicate.banner.title", bundle: .module)
                     .font(.callout.bold())
-                Text("hardlink / clonefile / 仅前缀一致 都可能影响判定，删除前请人工核对。本视图为只读模式，不会删除任何文件，请用 Finder 自行处理。")
+                Text("duplicate.banner.detail", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -112,7 +112,7 @@ public struct DuplicateScreen: View {
         HStack(spacing: 12) {
             // 扫描根（固定默认 + 可加）
             VStack(alignment: .leading, spacing: 2) {
-                Text("扫描根 · \(roots.count)").font(.caption).foregroundStyle(.secondary)
+                Text(String(format: String(localized: "duplicate.topbar.roots", bundle: .module), roots.count)).font(.caption).foregroundStyle(.secondary)
                 // v1.3.ab：扫描根 chip 横排——根多了之后 ideal width 会爆窗口，
                 // 包一层 ScrollView(.horizontal) 让它在窗口窄时滚动，不再反推父容器。
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -138,7 +138,7 @@ public struct DuplicateScreen: View {
             Spacer(minLength: 12)
             // 最小尺寸滑杆
             VStack(alignment: .leading, spacing: 2) {
-                Text("最小尺寸 · \(minStep.label)").font(.caption).foregroundStyle(.secondary)
+                Text(String(format: String(localized: "duplicate.topbar.min_size", bundle: .module), minStep.label)).font(.caption).foregroundStyle(.secondary)
                 Picker("", selection: $minStep) {
                     ForEach(SizeStep.allCases) { step in
                         Text(step.label).tag(step)
@@ -156,13 +156,21 @@ public struct DuplicateScreen: View {
                 Button(role: .cancel) {
                     scanTask?.cancel()
                 } label: {
-                    Label("停止", systemImage: "stop.circle")
+                    Label {
+                        Text("duplicate.topbar.stop", bundle: .module)
+                    } icon: {
+                        Image(systemName: "stop.circle")
+                    }
                 }
             } else {
                 Button {
                     startScan()
                 } label: {
-                    Label("开始扫描", systemImage: "play.fill")
+                    Label {
+                        Text("duplicate.topbar.start", bundle: .module)
+                    } icon: {
+                        Image(systemName: "play.fill")
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(roots.isEmpty)
@@ -203,7 +211,7 @@ public struct DuplicateScreen: View {
     private var leftList: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("重复组").font(.headline)
+                Text("duplicate.left.title", bundle: .module).font(.headline)
                 if !groups.isEmpty {
                     Text("· \(groups.count)")
                         .font(.callout)
@@ -218,9 +226,9 @@ public struct DuplicateScreen: View {
             .padding(.vertical, 8)
             Divider()
             if isScanning && groups.isEmpty {
-                placeholder("正在扫描…", systemImage: "hourglass")
+                placeholder(String(localized: "duplicate.placeholder.scanning", bundle: .module), systemImage: "hourglass")
             } else if groups.isEmpty {
-                placeholder("还没有结果，点上方「开始扫描」", systemImage: "doc.on.doc")
+                placeholder(String(localized: "duplicate.placeholder.no_results", bundle: .module), systemImage: "doc.on.doc")
             } else {
                 List(selection: $selectedGroupID) {
                     ForEach(groups) { g in
@@ -238,13 +246,13 @@ public struct DuplicateScreen: View {
                 Image(systemName: g.reliability == .full ? "checkmark.seal.fill" : "questionmark.circle.fill")
                     .foregroundStyle(g.reliability == .full ? .green : .orange)
                     .font(.caption)
-                Text("\(g.paths.count) 份")
+                Text(String(format: String(localized: "duplicate.group.copies", bundle: .module), g.paths.count))
                     .font(.callout.bold())
                 Spacer()
                 Text(byteString(g.totalBytes))
                     .font(.callout.monospacedDigit())
             }
-            Text("可释放 \(byteString(g.reclaimableBytes)) · 单份 \(byteString(g.bytes))")
+            Text(String(format: String(localized: "duplicate.group.reclaim_per", bundle: .module), byteString(g.reclaimableBytes), byteString(g.bytes)))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(g.paths.first.map { (URL(fileURLWithPath: $0)).lastPathComponent } ?? "")
@@ -267,14 +275,22 @@ public struct DuplicateScreen: View {
                     ForEach(g.paths, id: \.self) { p in
                         pathRow(p)
                             .contextMenu {
-                                Button("在 Finder 中显示") { revealInFinder(path: p) }
-                                Button("拷贝路径") { copyToPasteboard(p) }
+                                Button {
+                                    revealInFinder(path: p)
+                                } label: {
+                                    Text("duplicate.menu.reveal_in_finder", bundle: .module)
+                                }
+                                Button {
+                                    copyToPasteboard(p)
+                                } label: {
+                                    Text("duplicate.menu.copy_path", bundle: .module)
+                                }
                             }
                     }
                 }
                 .listStyle(.inset)
             } else {
-                placeholder("从左侧选择一组查看详情", systemImage: "sidebar.right")
+                placeholder(String(localized: "duplicate.placeholder.select_group", bundle: .module), systemImage: "sidebar.right")
             }
         }
     }
@@ -282,17 +298,19 @@ public struct DuplicateScreen: View {
     private func detailHeader(_ g: DuplicateGroup) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(g.reliability == .full ? "全文件 hash 一致" : "仅前缀 hash 一致（建议人工核对）")
+                Text(g.reliability == .full
+                     ? String(localized: "duplicate.detail.full_hash", bundle: .module)
+                     : String(localized: "duplicate.detail.prefix_hash", bundle: .module))
                     .font(.callout.bold())
                     .foregroundStyle(g.reliability == .full ? .green : .orange)
                 Spacer()
-                Text("\(g.paths.count) 份 · \(byteString(g.bytes))")
+                Text(String(format: String(localized: "duplicate.detail.copies_size", bundle: .module), g.paths.count, byteString(g.bytes)))
                     .font(.callout.monospacedDigit())
             }
-            Text("可释放空间 \(byteString(g.reclaimableBytes))")
+            Text(String(format: String(localized: "duplicate.detail.reclaimable", bundle: .module), byteString(g.reclaimableBytes)))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("提示：本视图不会删除任何文件，请在 Finder 中确认后自行处理。")
+            Text("duplicate.detail.tip", bundle: .module)
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
@@ -322,22 +340,22 @@ public struct DuplicateScreen: View {
             if isScanning {
                 ProgressView().controlSize(.small)
                 if bucketsTotal > 0 {
-                    Text("\(phaseLabel) \(bucketsDone) / \(bucketsTotal)")
+                    Text(String(format: String(localized: "duplicate.footer.phase_progress", bundle: .module), phaseLabel, bucketsDone, bucketsTotal))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 } else {
-                    Text("\(phaseLabel) · \(sizingFiles) 个候选文件")
+                    Text(String(format: String(localized: "duplicate.footer.phase_candidates", bundle: .module), phaseLabel, sizingFiles))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
             } else if !groups.isEmpty {
                 let totalReclaim = groups.map(\.reclaimableBytes).reduce(0, +)
-                Text("共 \(groups.count) 组 · 总可释放 \(byteString(totalReclaim))")
+                Text(String(format: String(localized: "duplicate.footer.summary", bundle: .module), groups.count, byteString(totalReclaim)))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
             if !tccSkippedRoots.isEmpty {
-                Text("· \(tccSkippedRoots.count) 个隐私目录已跳过")
+                Text(String(format: String(localized: "duplicate.footer.tcc_skipped", bundle: .module), tccSkippedRoots.count))
                     .font(.caption)
                     .foregroundStyle(.blue)
             }
@@ -397,8 +415,8 @@ public struct DuplicateScreen: View {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.title = "选择要扫描的目录"
-        panel.prompt = "添加"
+        panel.title = String(localized: "duplicate.panel.title", bundle: .module)
+        panel.prompt = String(localized: "duplicate.panel.prompt", bundle: .module)
         panel.begin { response in
             // panel.begin 回调线程契约未保证；显式跳回 MainActor 修改 @State，
             // 避免 Swift 6 严格并发告警 + SwiftUI 跨线程更新警告。
@@ -436,7 +454,7 @@ public struct DuplicateScreen: View {
         bucketsDone = 0
         bucketsTotal = 0
         sizingFiles = 0
-        phaseLabel = "枚举文件"
+        phaseLabel = String(localized: "duplicate.phase.enumerate", bundle: .module)
         isScanning = true
 
         let scanner = DuplicateScanner(roots: roots, minBytes: minStep.bytes)
@@ -445,14 +463,14 @@ public struct DuplicateScreen: View {
                 if Task.isCancelled { break }
                 switch event {
                 case .sizingProgress(let n):
-                    phaseLabel = "枚举文件"
+                    phaseLabel = String(localized: "duplicate.phase.enumerate", bundle: .module)
                     sizingFiles = n
                 case .hashingProgress(let done, let total):
-                    phaseLabel = "前缀 hash"
+                    phaseLabel = String(localized: "duplicate.phase.prefix_hash", bundle: .module)
                     bucketsDone = done
                     bucketsTotal = total
                 case .fullHashingProgress(let done, let total):
-                    phaseLabel = "全文件 hash"
+                    phaseLabel = String(localized: "duplicate.phase.full_hash", bundle: .module)
                     bucketsDone = done
                     bucketsTotal = total
                 case .finished(let g):

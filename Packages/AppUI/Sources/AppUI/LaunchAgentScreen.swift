@@ -24,7 +24,7 @@ public struct LaunchAgentScreen: View {
             header
             Divider()
             if isLoading && items.isEmpty {
-                placeholder("正在扫描启动项…", systemImage: "hourglass")
+                placeholder(String(localized: "launchagent.placeholder.scanning", bundle: .module), systemImage: "hourglass")
             } else if filtered.isEmpty {
                 placeholder(emptyText, systemImage: "tray")
             } else {
@@ -43,14 +43,14 @@ public struct LaunchAgentScreen: View {
 
     private var header: some View {
         HStack {
-            Text("启动项").font(.headline)
+            Text("launchagent.header.title", bundle: .module).font(.headline)
             if !items.isEmpty {
                 Text("· \(items.count)")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            TextField("搜索 Label / 路径", text: $search)
+            TextField(String(localized: "launchagent.header.search_placeholder", bundle: .module), text: $search)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 220)
             if isLoading {
@@ -72,7 +72,7 @@ public struct LaunchAgentScreen: View {
         HStack {
             if !items.isEmpty {
                 let total = items.map(\.fileSize).reduce(Int64(0), +)
-                Text("总计 \(items.count) 项 · \(byteString(total))")
+                Text(String(format: String(localized: "launchagent.footer.total", bundle: .module), items.count, byteString(total)))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -158,13 +158,17 @@ public struct LaunchAgentScreen: View {
 
     @ViewBuilder
     private func contextMenu(for item: LaunchAgentItem) -> some View {
-        Button("在 Finder 中显示") {
+        Button {
             let url = URL(fileURLWithPath: item.path)
             NSWorkspace.shared.activateFileViewerSelecting([url])
+        } label: {
+            Text("launchagent.menu.reveal_in_finder", bundle: .module)
         }
-        Button("拷贝 Label") {
+        Button {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(item.label, forType: .string)
+        } label: {
+            Text("launchagent.menu.copy_label", bundle: .module)
         }
     }
 
@@ -179,8 +183,10 @@ public struct LaunchAgentScreen: View {
     }
 
     private var emptyText: String {
-        if !search.trimmingCharacters(in: .whitespaces).isEmpty { return "没有匹配的启动项" }
-        return "没有发现任何启动项"
+        if !search.trimmingCharacters(in: .whitespaces).isEmpty {
+            return String(localized: "launchagent.empty.no_match", bundle: .module)
+        }
+        return String(localized: "launchagent.empty.no_items", bundle: .module)
     }
 
     private func reload() async {

@@ -94,7 +94,7 @@ public struct TreeBrowserView: View {
                     if isFetching {
                         ProgressView()
                             .controlSize(.small)
-                        Text("正在加载子节点…")
+                        Text("tree.loading.children", bundle: .module)
                             .foregroundStyle(.secondary)
                             .font(.callout)
                     } else if coordinator.isScanning {
@@ -102,14 +102,14 @@ public struct TreeBrowserView: View {
                         // 用更柔和的"等待"文案，避免误导用户以为没数据；snapshot 推进就会重算。
                         ProgressView()
                             .controlSize(.small)
-                        Text("扫描中，正在采集子节点…")
+                        Text("tree.loading.scanning", bundle: .module)
                             .foregroundStyle(.secondary)
                             .font(.callout)
                     } else {
                         Image(systemName: "tree")
                             .font(.system(size: 36))
                             .foregroundStyle(.tertiary)
-                        Text("还没有可展开的子节点")
+                        Text("tree.empty.no_expandable", bundle: .module)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -304,19 +304,21 @@ public struct TreeBrowserView: View {
         let totalBytes = totalBytesOfChecked(safeChecked)
         HStack(spacing: 12) {
             if safeChecked.isEmpty {
-                Text("勾选树形里若干条目后可批量移到废纸篓")
+                Text("tree.batch.empty_hint", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             } else {
                 Label {
-                    Text("已选 \(safeChecked.count) 项 · \(ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file))")
+                    Text(String(format: String(localized: "tree.batch.selected_summary", bundle: .module), safeChecked.count, ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)))
                         .font(.caption.weight(.medium))
                 } icon: {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(Color.accentColor)
                 }
-                Button("清空选择") {
+                Button {
                     checkedPaths.removeAll()
+                } label: {
+                    Text("tree.batch.clear_selection", bundle: .module)
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
@@ -328,12 +330,16 @@ public struct TreeBrowserView: View {
                 onTrashBatch(urls)
                 checkedPaths.removeAll()
             } label: {
-                Label("批量移废纸篓", systemImage: "trash")
+                Label {
+                    Text("tree.batch.move_to_trash", bundle: .module)
+                } icon: {
+                    Image(systemName: "trash")
+                }
             }
             .controlSize(.small)
             .disabled(safeChecked.isEmpty)
             .keyboardShortcut("d", modifiers: [.command, .shift])
-            .help("把所有勾选的条目一起移到废纸篓（Cmd+Shift+D）")
+            .help(Text("tree.batch.help", bundle: .module))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
@@ -373,11 +379,11 @@ struct TreeColumnHeader: View {
             }
             // 与 TreeBrowserRow 的 icon + 三角占位对齐：22（三角 hit area）+ 6（间距）+ 16（icon）= 44
             Spacer().frame(width: 44)
-            headerButton(label: "名称", column: .name)
+            headerButton(label: String(localized: "tree.column.name", bundle: .module), column: .name)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            headerButton(label: "大小", column: .size)
+            headerButton(label: String(localized: "tree.column.size", bundle: .module), column: .size)
                 .frame(width: 90, alignment: .trailing)
-            headerButton(label: "数量", column: .count)
+            headerButton(label: String(localized: "tree.column.count", bundle: .module), column: .count)
                 .frame(width: 56, alignment: .trailing)
         }
         .padding(.horizontal, 16)
@@ -402,7 +408,7 @@ struct TreeColumnHeader: View {
             }
         }
         .buttonStyle(.plain)
-        .help("按\(label)排序（再次点击切换升降序）")
+        .help(String(format: String(localized: "tree.column.sort_help", bundle: .module), label))
     }
 }
 
@@ -469,8 +475,10 @@ struct TreeNodeView: View {
                     .buttonStyle(.plain)
                     .disabled(!isCheckable)
                     .help(isCheckable
-                          ? (isChecked ? "取消勾选" : "勾选以加入批量删除")
-                          : "此路径受保护或权限不足，不可加入批量删除")
+                          ? (isChecked
+                             ? String(localized: "tree.checkbox.uncheck", bundle: .module)
+                             : String(localized: "tree.checkbox.check", bundle: .module))
+                          : String(localized: "tree.checkbox.locked", bundle: .module))
                 }
                 // 披露三角（叶子用空白占位保持对齐）
                 Group {
@@ -490,7 +498,9 @@ struct TreeNodeView: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .help(isExpanded ? "折叠" : "展开")
+                        .help(isExpanded
+                              ? String(localized: "tree.disclose.collapse", bundle: .module)
+                              : String(localized: "tree.disclose.expand", bundle: .module))
                     } else {
                         Spacer().frame(width: 22, height: 22)
                     }
@@ -550,8 +560,14 @@ struct TreeNodeView: View {
                         selectedPath = row.path
                         onTrash(URL(fileURLWithPath: row.path))
                     } label: {
-                        Label(isForbidden ? "无法移除（系统保护路径）" : "移到废纸篓…",
-                              systemImage: "trash")
+                        Label {
+                            Text(isForbidden
+                                 ? "tree.menu.trash_forbidden"
+                                 : "tree.menu.trash",
+                                 bundle: .module)
+                        } icon: {
+                            Image(systemName: "trash")
+                        }
                     }
                     .disabled(isForbidden)
                     .keyboardShortcut(.delete, modifiers: [])
@@ -561,19 +577,34 @@ struct TreeNodeView: View {
                     selectedPath = row.path
                     QuickLookController.shared.preview(urls: [URL(fileURLWithPath: row.path)])
                 } label: {
-                    Label("快速预览（空格）", systemImage: "eye")
+                    Label {
+                        Text("tree.menu.quick_look", bundle: .module)
+                    } icon: {
+                        Image(systemName: "eye")
+                    }
                 }
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: row.path)])
                 } label: {
-                    Label("在 Finder 中显示", systemImage: "folder")
+                    Label {
+                        Text("tree.menu.reveal_in_finder", bundle: .module)
+                    } icon: {
+                        Image(systemName: "folder")
+                    }
                 }
                 Divider()
                 if canExpand {
                     Button {
                         expanded[row.path] = !isExpanded
                     } label: {
-                        Label(isExpanded ? "折叠" : "展开", systemImage: isExpanded ? "chevron.down" : "chevron.right")
+                        Label {
+                            Text(isExpanded
+                                 ? "tree.disclose.collapse"
+                                 : "tree.disclose.expand",
+                                 bundle: .module)
+                        } icon: {
+                            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        }
                     }
                     Divider()
                 }
@@ -582,14 +613,22 @@ struct TreeNodeView: View {
                     pb.clearContents()
                     pb.setString(row.path, forType: .string)
                 } label: {
-                    Label("复制路径", systemImage: "doc.on.doc")
+                    Label {
+                        Text("tree.menu.copy_path", bundle: .module)
+                    } icon: {
+                        Image(systemName: "doc.on.doc")
+                    }
                 }
                 Button {
                     let pb = NSPasteboard.general
                     pb.clearContents()
                     pb.setString((row.path as NSString).lastPathComponent, forType: .string)
                 } label: {
-                    Label("复制名称", systemImage: "textformat")
+                    Label {
+                        Text("tree.menu.copy_name", bundle: .module)
+                    } icon: {
+                        Image(systemName: "textformat")
+                    }
                 }
             }
 
@@ -643,9 +682,9 @@ struct TreeBrowserRow: View {
         switch row.accessState {
         case .normal: return row.path
         case .permissionDenied:
-            return "\(row.path)\n\n无访问权限：扫描器无法读取此目录里的文件。请在「系统设置 → 隐私与安全性 → 完整磁盘访问」中授权后重新扫描。"
+            return String(format: String(localized: "tree.access.permission_denied", bundle: .module), row.path)
         case .tccProtected:
-            return "\(row.path)\n\n受系统保护：此目录受 TCC 保护，需要在「系统设置 → 隐私与安全性 → 完整磁盘访问」中授权后才能查看。"
+            return String(format: String(localized: "tree.access.tcc_protected", bundle: .module), row.path)
         }
     }
 

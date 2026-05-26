@@ -37,21 +37,18 @@ public struct SettingsScene: View {
             case .deleteFiles: return "deleteFiles"
             }
         }
-        var title: String {
+        var titleKey: String {
             switch self {
-            case .vacuum: return "压缩数据库"
-            case .clearAll: return "清空扫描结果"
-            case .deleteFiles: return "删除数据库文件"
+            case .vacuum: return "settings.storage.alert.vacuum.title"
+            case .clearAll: return "settings.storage.alert.clear_all.title"
+            case .deleteFiles: return "settings.storage.alert.delete_files.title"
             }
         }
-        var message: String {
+        var messageKey: String {
             switch self {
-            case .vacuum:
-                return "对 SQLite 执行 VACUUM，仅紧凑空间不删除任何业务数据。下次扫描后体积可能再次回升。"
-            case .clearAll:
-                return "清空 scan_session / scan_result 全表后再 VACUUM。所有历史扫描记录将不可恢复。"
-            case .deleteFiles:
-                return "直接从磁盘删除 .sqlite + -wal + -shm 三个文件（破坏性最强）。下次启动会重新建库。"
+            case .vacuum: return "settings.storage.alert.vacuum.message"
+            case .clearAll: return "settings.storage.alert.clear_all.message"
+            case .deleteFiles: return "settings.storage.alert.delete_files.message"
             }
         }
     }
@@ -127,14 +124,14 @@ public struct SettingsScene: View {
             Section {
                 Toggle(isOn: $settings.showHidden) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("显示隐藏文件 / 文件夹")
-                        Text("默认 ON：扫描会包含 .cursor / .npm / .cache 等以 . 开头的目录，体积才能与 Finder/du 对齐。关掉后只看可见文件，结果会显著小于 Finder。")
+                        Text("settings.scan.show_hidden.title", bundle: .module)
+                        Text("settings.scan.show_hidden.detail", bundle: .module)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
             } header: {
-                Text("扫描行为")
+                Text("settings.scan.section.behavior", bundle: .module)
             }
             Section {
                 Picker(selection: $settings.sizeAccountingMode) {
@@ -143,8 +140,8 @@ public struct SettingsScene: View {
                     }
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("字节口径")
-                        Text("logical（默认）：与系统设置 / Finder / 「显示简介」完全一致；APFS clone / hardlink 不去重，每个文件按完整 size 算。\nphysical：与 du / df 一致；按实际占用磁盘 block 算，sparse / hardlink 文件更小，反映「删了真能释放多少」。\n切换后需要重新扫描才能让总数按新口径累计。")
+                        Text("settings.scan.size_mode.title", bundle: .module)
+                        Text("settings.scan.size_mode.detail", bundle: .module)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -152,13 +149,13 @@ public struct SettingsScene: View {
                 }
                 .pickerStyle(.menu)
             } header: {
-                Text("体积统计口径")
+                Text("settings.scan.section.size_mode", bundle: .module)
             }
             Section {
                 Toggle(isOn: $settings.hudEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("扫描悬浮窗（HUD）")
-                        Text("默认 ON。扫描时在屏幕顶部刘海下方居中显示一个胶囊：可清理 / 可用 / 比例条 / 预计剩余时间。可随时通过 ⌘⇧H 或工具栏按钮切换。")
+                        Text("settings.scan.hud.title", bundle: .module)
+                        Text("settings.scan.hud.detail", bundle: .module)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -166,8 +163,8 @@ public struct SettingsScene: View {
                 }
                 Toggle(isOn: $settings.hudPersistent) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("HUD 常驻挂件模式")
-                        Text("打开后即使未在扫描，HUD 也持续显示，作为桌面 / 顶部小挂件。闲置态显示磁盘已用比例 + 一键开始扫描。")
+                        Text("settings.scan.hud_persistent.title", bundle: .module)
+                        Text("settings.scan.hud_persistent.detail", bundle: .module)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -180,8 +177,8 @@ public struct SettingsScene: View {
                     }
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("HUD 位置")
-                        Text("顶部居中（刘海下方）= floating 级，永远在所有 App 窗口之上；桌面三档 = 桌面图标之上、App 窗口之下，模拟桌面小控件，不抢前台焦点。")
+                        Text("settings.scan.hud_placement.title", bundle: .module)
+                        Text("settings.scan.hud_placement.detail", bundle: .module)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -191,8 +188,8 @@ public struct SettingsScene: View {
                 .disabled(!settings.hudEnabled)
                 Toggle(isOn: $settings.trayEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("菜单栏托盘图标")
-                        Text("默认 ON。在系统菜单栏右侧显示一个图标，点击可快速打开主窗口、开始推荐扫描、显示/隐藏悬浮窗。关掉后图标立即移除。")
+                        Text("settings.scan.tray.title", bundle: .module)
+                        Text("settings.scan.tray.detail", bundle: .module)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -200,8 +197,8 @@ public struct SettingsScene: View {
                 }
                 Toggle(isOn: $settings.hideFromDockWhenClosed) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("关闭主窗口后从 Dock 隐藏")
-                        Text("默认 OFF。开启后，关掉主窗口 = App 隐入菜单栏托盘（Dock 图标 + 顶部主菜单一起消失）；点托盘 \"打开主窗口\" 即可拉回。需要保留菜单栏托盘开启，否则 App 关窗后将完全没有入口。")
+                        Text("settings.scan.hide_dock.title", bundle: .module)
+                        Text("settings.scan.hide_dock.detail", bundle: .module)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -209,7 +206,7 @@ public struct SettingsScene: View {
                 }
                 .disabled(!settings.trayEnabled)
             } header: {
-                Text("界面")
+                Text("settings.scan.section.interface", bundle: .module)
             }
         }
         .formStyle(.grouped)
@@ -220,22 +217,22 @@ public struct SettingsScene: View {
         Form {
             Section {
                 HStack {
-                    Text("最小阈值")
+                    Text("settings.large.min_threshold", bundle: .module)
                     Spacer()
-                    Stepper("\(settings.minFileSizeMB) MB",
+                    Stepper(String(format: String(localized: "settings.large.value.format", bundle: .module), settings.minFileSizeMB),
                             value: $settings.minFileSizeMB,
                             in: 10...10240,
                             step: 10)
                         .labelsHidden()
-                    Text("\(settings.minFileSizeMB) MB")
+                    Text(String(format: String(localized: "settings.large.value.format", bundle: .module), settings.minFileSizeMB))
                         .monospacedDigit()
                         .frame(minWidth: 70, alignment: .trailing)
                 }
-                Text("仅显示文件大小 ≥ 该阈值的项。建议 100MB ~ 500MB。")
+                Text("settings.large.detail", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {
-                Text("大文件模块")
+                Text("settings.large.section.title", bundle: .module)
             }
         }
         .formStyle(.grouped)
@@ -245,13 +242,17 @@ public struct SettingsScene: View {
     private var pathsTab: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("自定义扫描路径")
+                Text("settings.paths.title", bundle: .module)
                     .font(.headline)
                 Spacer()
                 Button {
                     addPathViaPanel()
                 } label: {
-                    Label("添加路径…", systemImage: "plus")
+                    Label {
+                        Text("settings.paths.add", bundle: .module)
+                    } icon: {
+                        Image(systemName: "plus")
+                    }
                 }
             }
             .padding(.horizontal)
@@ -262,9 +263,9 @@ public struct SettingsScene: View {
                     Image(systemName: "folder.badge.questionmark")
                         .font(.system(size: 32))
                         .foregroundStyle(.tertiary)
-                    Text("还没有自定义路径")
+                    Text("settings.paths.empty.title", bundle: .module)
                         .foregroundStyle(.secondary)
-                    Text("点击右上 + 添加任意目录，或把文件夹拖进主窗口")
+                    Text("settings.paths.empty.hint", bundle: .module)
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
@@ -305,18 +306,18 @@ public struct SettingsScene: View {
             Section {
                 Toggle(isOn: $settings.updateCheckEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("启动时检查更新")
-                        Text("打开后 App 启动会向 GitHub Releases 发一次 GET 请求（约 2 KB，不携带任何身份信息）。关掉后仅『立即检查』按钮可联网。")
+                        Text("settings.update.auto.title", bundle: .module)
+                        Text("settings.update.auto.detail", bundle: .module)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
             } header: {
-                Text("自动更新")
+                Text("settings.update.section.auto", bundle: .module)
             }
             Section {
                 HStack {
-                    Text("当前版本")
+                    Text("settings.update.current_version", bundle: .module)
                     Spacer()
                     Text(UpdateChecker.currentVersion)
                         .monospacedDigit()
@@ -328,9 +329,9 @@ public struct SettingsScene: View {
                     } label: {
                         if updateChecker.isChecking {
                             ProgressView().controlSize(.small)
-                            Text("检查中…")
+                            Text("settings.update.checking", bundle: .module)
                         } else {
-                            Text("立即检查")
+                            Text("settings.update.check_now", bundle: .module)
                         }
                     }
                     .disabled(updateChecker.isChecking)
@@ -339,18 +340,20 @@ public struct SettingsScene: View {
                 }
                 if let skipped = settings.skippedUpdateTag {
                     HStack {
-                        Text("已跳过版本：\(skipped)")
+                        Text(String(format: String(localized: "settings.update.skipped.format", bundle: .module), skipped))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Button("清除跳过记录") {
+                        Button {
                             settings.skippedUpdateTag = nil
+                        } label: {
+                            Text("settings.update.clear_skip", bundle: .module)
                         }
                         .controlSize(.small)
                     }
                 }
             } header: {
-                Text("版本")
+                Text("settings.update.section.version", bundle: .module)
             }
         }
         .formStyle(.grouped)
@@ -361,17 +364,33 @@ public struct SettingsScene: View {
     private var statusLabel: some View {
         switch updateChecker.lastResult {
         case .upToDate:
-            Label("已是最新", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green).font(.caption)
+            Label {
+                Text("settings.update.status.up_to_date", bundle: .module)
+            } icon: {
+                Image(systemName: "checkmark.circle.fill")
+            }
+            .foregroundStyle(.green).font(.caption)
         case .newer(let r):
-            Label("新版本：\(r.tagName)", systemImage: "arrow.down.circle.fill")
-                .foregroundStyle(.tint).font(.caption)
+            Label {
+                Text(String(format: String(localized: "settings.update.status.newer.format", bundle: .module), r.tagName))
+            } icon: {
+                Image(systemName: "arrow.down.circle.fill")
+            }
+            .foregroundStyle(.tint).font(.caption)
         case .skippedByUser(let r):
-            Label("已跳过 \(r.tagName)", systemImage: "minus.circle")
-                .foregroundStyle(.secondary).font(.caption)
+            Label {
+                Text(String(format: String(localized: "settings.update.status.skipped.format", bundle: .module), r.tagName))
+            } icon: {
+                Image(systemName: "minus.circle")
+            }
+            .foregroundStyle(.secondary).font(.caption)
         case .failed(let msg):
-            Label("检查失败：\(msg)", systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.orange).font(.caption).lineLimit(1)
+            Label {
+                Text(String(format: String(localized: "settings.update.status.failed.format", bundle: .module), msg))
+            } icon: {
+                Image(systemName: "exclamationmark.triangle")
+            }
+            .foregroundStyle(.orange).font(.caption).lineLimit(1)
         case .none:
             EmptyView()
         }
@@ -384,8 +403,8 @@ public struct SettingsScene: View {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.title = "选择要加入扫描的目录"
-        panel.prompt = "添加"
+        panel.title = String(localized: "settings.paths.panel.title", bundle: .module)
+        panel.prompt = String(localized: "settings.paths.panel.prompt", bundle: .module)
         panel.begin { response in
             guard response == .OK else { return }
             let urls = panel.urls
@@ -459,7 +478,7 @@ extension SettingsScene {
             } header: {
                 Text("settings.dev.batch_actions", bundle: .module)
             } footer: {
-                Text("开发者扫描会从 ~ 整个家目录 BFS 查找命中目录（如 node_modules / build / Pods / target / __pycache__ 等），并要求兄弟里有对应脚手架文件（如 package.json / pubspec.yaml / Cargo.toml）以避免误命中。命中后整棵剪枝不再下钻。")
+                Text("settings.dev.footer", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -480,7 +499,7 @@ extension SettingsScene {
                                             .background(Color.secondary.opacity(0.12),
                                                         in: RoundedRectangle(cornerRadius: 4))
                                         if rule.verdict == .confirm {
-                                            Text("需确认")
+                                            Text("settings.dev.verdict.confirm", bundle: .module)
                                                 .font(.caption2)
                                                 .foregroundStyle(.orange)
                                         }
@@ -490,7 +509,7 @@ extension SettingsScene {
                                         .foregroundStyle(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)
                                     if !rule.siblingMarkers.isEmpty {
-                                        Text("兄弟兜底：\(rule.siblingMarkers.joined(separator: " / "))")
+                                        Text(String(format: String(localized: "settings.dev.sibling_markers.format", bundle: .module), rule.siblingMarkers.joined(separator: " / ")))
                                             .font(.caption2)
                                             .foregroundStyle(.tertiary)
                                     }
@@ -531,26 +550,32 @@ extension SettingsScene {
         Form {
             Section {
                 if let desc = storageDescription {
-                    LabeledContent("数据库路径") {
+                    LabeledContent {
                         Text(desc.databaseURL.path)
                             .font(.caption)
                             .lineLimit(2)
                             .truncationMode(.middle)
                             .textSelection(.enabled)
+                    } label: {
+                        Text("settings.storage.db_path", bundle: .module)
                     }
-                    LabeledContent("总体积") {
+                    LabeledContent {
                         Text(Self.formatBytes(desc.totalSizeBytes))
                             .monospacedDigit()
+                    } label: {
+                        Text("settings.storage.total_size", bundle: .module)
                     }
-                    LabeledContent("会话 / 结果") {
-                        Text("\(desc.sessionCount) 会话 · \(desc.resultRowCount) 行")
+                    LabeledContent {
+                        Text(String(format: String(localized: "settings.storage.session_rows.format", bundle: .module), desc.sessionCount, desc.resultRowCount))
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
+                    } label: {
+                        Text("settings.storage.session_results", bundle: .module)
                     }
                 } else {
                     HStack {
                         ProgressView().controlSize(.small)
-                        Text("正在读取数据库信息…")
+                        Text("settings.storage.loading", bundle: .module)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -558,20 +583,28 @@ extension SettingsScene {
                     Button {
                         Task { await refreshStorage() }
                     } label: {
-                        Label("刷新", systemImage: "arrow.clockwise")
+                        Label {
+                            Text("settings.storage.refresh", bundle: .module)
+                        } icon: {
+                            Image(systemName: "arrow.clockwise")
+                        }
                     }
                     .disabled(storageBusy)
                     Spacer()
                     Button {
                         revealDatabaseInFinder()
                     } label: {
-                        Label("在 Finder 显示", systemImage: "folder")
+                        Label {
+                            Text("settings.storage.reveal_finder", bundle: .module)
+                        } icon: {
+                            Image(systemName: "folder")
+                        }
                     }
                 }
             } header: {
-                Text("扫描数据库（SQLite）")
+                Text("settings.storage.section.db", bundle: .module)
             } footer: {
-                Text("总体积 = .sqlite + -wal + -shm 三个文件合计。WAL 模式下 -wal 可能临时较大，VACUUM 后会回收。")
+                Text("settings.storage.section.db.footer", bundle: .module)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -581,7 +614,11 @@ extension SettingsScene {
                     Button {
                         pendingStorageAction = .vacuum
                     } label: {
-                        Label("压缩数据库（VACUUM）", systemImage: "rectangle.compress.vertical")
+                        Label {
+                            Text("settings.storage.action.vacuum", bundle: .module)
+                        } icon: {
+                            Image(systemName: "rectangle.compress.vertical")
+                        }
                     }
                     .disabled(storageBusy)
                     Spacer()
@@ -590,7 +627,11 @@ extension SettingsScene {
                     Button {
                         pendingStorageAction = .clearAll
                     } label: {
-                        Label("清空扫描结果", systemImage: "trash")
+                        Label {
+                            Text("settings.storage.action.clear_all", bundle: .module)
+                        } icon: {
+                            Image(systemName: "trash")
+                        }
                     }
                     .disabled(storageBusy)
                     Spacer()
@@ -599,7 +640,11 @@ extension SettingsScene {
                     Button(role: .destructive) {
                         pendingStorageAction = .deleteFiles
                     } label: {
-                        Label("删除数据库文件", systemImage: "exclamationmark.triangle")
+                        Label {
+                            Text("settings.storage.action.delete_files", bundle: .module)
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle")
+                        }
                     }
                     .disabled(storageBusy)
                     Spacer()
@@ -613,44 +658,55 @@ extension SettingsScene {
                 if storageBusy {
                     HStack {
                         ProgressView().controlSize(.small)
-                        Text("处理中…").font(.caption).foregroundStyle(.secondary)
+                        Text("settings.storage.processing", bundle: .module)
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
             } header: {
-                Text("清理操作")
+                Text("settings.storage.section.cleanup", bundle: .module)
             } footer: {
-                Text("由轻到重：VACUUM 仅紧凑空间；清空表丢扫描历史保留 schema；删文件最彻底，下次启动重建。")
+                Text("settings.storage.section.cleanup.footer", bundle: .module)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
             Section {
-                LabeledContent("日志目录") {
-                    Text(GSYLog.currentLogDirectory?.path ?? "（未启用文件落盘）")
+                LabeledContent {
+                    Text(GSYLog.currentLogDirectory?.path ?? String(localized: "settings.storage.log.no_file_sink", bundle: .module))
                         .font(.caption)
                         .lineLimit(2)
                         .truncationMode(.middle)
                         .textSelection(.enabled)
+                } label: {
+                    Text("settings.storage.log.dir", bundle: .module)
                 }
                 HStack {
                     Button {
                         openLogDirectory()
                     } label: {
-                        Label("打开日志目录", systemImage: "folder")
+                        Label {
+                            Text("settings.storage.log.open_dir", bundle: .module)
+                        } icon: {
+                            Image(systemName: "folder")
+                        }
                     }
                     .disabled(GSYLog.currentLogDirectory == nil)
                     Spacer()
                     Button {
                         openTodayLogFile()
                     } label: {
-                        Label("查看今日日志", systemImage: "doc.text")
+                        Label {
+                            Text("settings.storage.log.open_today", bundle: .module)
+                        } icon: {
+                            Image(systemName: "doc.text")
+                        }
                     }
                     .disabled(GSYLog.currentLogFileURL() == nil)
                 }
             } header: {
-                Text("运行日志")
+                Text("settings.storage.section.log", bundle: .module)
             } footer: {
-                Text("按天滚动，保留最近 7 天。Debug 构建默认含 debug 级，Release 构建仅 info 及以上。遇到问题可把日志附给开发者。")
+                Text("settings.storage.section.log.footer", bundle: .module)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -659,12 +715,12 @@ extension SettingsScene {
         .padding()
         .alert(item: $pendingStorageAction) { action in
             Alert(
-                title: Text(action.title),
-                message: Text(action.message),
-                primaryButton: .destructive(Text("确认")) {
+                title: Text(String(localized: String.LocalizationValue(action.titleKey), bundle: .module)),
+                message: Text(String(localized: String.LocalizationValue(action.messageKey), bundle: .module)),
+                primaryButton: .destructive(Text("settings.storage.alert.confirm", bundle: .module)) {
                     Task { await performStorageAction(action) }
                 },
-                secondaryButton: .cancel(Text("取消"))
+                secondaryButton: .cancel(Text("settings.storage.alert.cancel", bundle: .module))
             )
         }
     }
@@ -676,7 +732,7 @@ extension SettingsScene {
         guard let url = try? GRDBScanResultStore.defaultDatabaseURL() else {
             await MainActor.run {
                 storageDescription = nil
-                storageMessage = "无法解析 Application Support 目录"
+                storageMessage = String(localized: "settings.storage.error.app_support", bundle: .module)
             }
             return
         }
@@ -701,7 +757,7 @@ extension SettingsScene {
         } catch {
             GSYLog.error(.settings, "refreshStorage 失败 err=\(error)")
             await MainActor.run {
-                storageMessage = "读取失败：\(error.localizedDescription)"
+                storageMessage = String(format: String(localized: "settings.storage.error.read.format", bundle: .module), error.localizedDescription)
             }
         }
     }
@@ -715,7 +771,7 @@ extension SettingsScene {
             Task { @MainActor in storageBusy = false }
         }
         guard let url = try? GRDBScanResultStore.defaultDatabaseURL() else {
-            await MainActor.run { storageMessage = "无法解析数据库路径" }
+            await MainActor.run { storageMessage = String(localized: "settings.storage.error.db_path", bundle: .module) }
             return
         }
         GSYLog.notice(.settings, "执行存储清理 action=\(action.id) path=\(url.path)")
@@ -724,21 +780,21 @@ extension SettingsScene {
             case .vacuum:
                 let store = try GRDBScanResultStore(databaseURL: url)
                 try await store.vacuum()
-                await MainActor.run { storageMessage = "VACUUM 已完成。" }
+                await MainActor.run { storageMessage = String(localized: "settings.storage.result.vacuum_done", bundle: .module) }
             case .clearAll:
                 let store = try GRDBScanResultStore(databaseURL: url)
                 try await store.clearAll()
-                await MainActor.run { storageMessage = "已清空全部扫描结果。" }
+                await MainActor.run { storageMessage = String(localized: "settings.storage.result.clear_all_done", bundle: .module) }
             case .deleteFiles:
                 // 文件级删除前提：当前进程内没有 store 持有句柄。Settings 窗口里
                 // 即便用户正在主窗口扫描也很难命中（Settings 是独立 Scene），
                 // 这里用 nonisolated 静态删，下次构造 store 时 migration 会重建。
                 try GRDBScanResultStore.deleteDatabaseFiles(at: url)
-                await MainActor.run { storageMessage = "已删除 .sqlite / -wal / -shm 文件。" }
+                await MainActor.run { storageMessage = String(localized: "settings.storage.result.delete_files_done", bundle: .module) }
             }
         } catch {
             GSYLog.error(.settings, "存储清理失败 action=\(action.id) err=\(error)")
-            await MainActor.run { storageMessage = "失败：\(error.localizedDescription)" }
+            await MainActor.run { storageMessage = String(format: String(localized: "settings.storage.result.failed.format", bundle: .module), error.localizedDescription) }
         }
         await refreshStorage()
     }

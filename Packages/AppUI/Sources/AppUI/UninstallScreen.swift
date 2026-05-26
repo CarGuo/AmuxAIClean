@@ -124,12 +124,12 @@ public struct UninstallScreen: View {
                 .frame(maxWidth: .infinity)
         }
         .task { await reloadApps() }
-        .alert("删除结果",
+        .alert(String(localized: "uninstall.delete.result.title", bundle: .module),
                isPresented: Binding<Bool>(
                 get: { lastResult != nil },
                 set: { if !$0 { lastResult = nil } }
                )) {
-            Button("好") { lastResult = nil }
+            Button(String(localized: "uninstall.delete.result.ok", bundle: .module)) { lastResult = nil }
         } message: {
             Text(lastResult ?? "")
         }
@@ -146,7 +146,7 @@ public struct UninstallScreen: View {
     private var appsPane: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("已安装应用").font(.headline)
+                Text("uninstall.apps.title", bundle: .module).font(.headline)
                 Spacer()
                 if isLoadingApps { ProgressView().controlSize(.small) }
                 Button {
@@ -192,11 +192,11 @@ public struct UninstallScreen: View {
             candidatesHeader
             Divider()
             if selectedApp == nil {
-                placeholder("从左侧选择一个 App", icon: "app.dashed")
+                placeholder(String(localized: "uninstall.placeholder.select.app", bundle: .module), icon: "app.dashed")
             } else if isLoadingCandidates {
-                placeholder("正在扫描残留…", icon: "hourglass")
+                placeholder(String(localized: "uninstall.placeholder.scanning", bundle: .module), icon: "hourglass")
             } else if candidates.isEmpty {
-                placeholder("未发现残留候选项", icon: "sparkles")
+                placeholder(String(localized: "uninstall.placeholder.empty", bundle: .module), icon: "sparkles")
             } else {
                 List {
                     ForEach(candidates, id: \.path) { cand in
@@ -218,10 +218,10 @@ public struct UninstallScreen: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Text("候选项").font(.headline)
+                Text("uninstall.candidates.title", bundle: .module).font(.headline)
             }
             Spacer()
-            Text("共 \(candidates.count) 项 · \(formattedBytes(totalCheckedBytes))")
+            Text(String(format: String(localized: "uninstall.candidates.summary", bundle: .module), candidates.count, formattedBytes(totalCheckedBytes)))
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -253,7 +253,7 @@ public struct UninstallScreen: View {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(formattedBytes(cand.bytes))
                     .font(.callout.monospacedDigit())
-                Text("\(cand.fileCount) 文件")
+                Text(String(format: String(localized: "uninstall.row.file.count", bundle: .module), cand.fileCount))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -263,28 +263,28 @@ public struct UninstallScreen: View {
 
     private var footerBar: some View {
         HStack {
-            Button(allChecked ? "全不选" : "全选") {
+            Button(allChecked ? String(localized: "uninstall.toggle.deselect.all", bundle: .module) : String(localized: "uninstall.toggle.select.all", bundle: .module)) {
                 toggleAll()
             }
             .disabled(candidates.isEmpty)
 
             Spacer()
 
-            Text("已选 \(checked.count) 项 · \(formattedBytes(totalCheckedBytes))")
+            Text(String(format: String(localized: "uninstall.footer.selected", bundle: .module), checked.count, formattedBytes(totalCheckedBytes)))
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
             Button {
                 Task { await performDelete(dryRun: true) }
             } label: {
-                Label("预览删除", systemImage: "eye")
+                Label(String(localized: "uninstall.button.preview", bundle: .module), systemImage: "eye")
             }
             .disabled(checked.isEmpty)
 
             Button(role: .destructive) {
                 showRealDeleteConfirm = true
             } label: {
-                Label("删除到废纸篓", systemImage: "trash")
+                Label(String(localized: "uninstall.button.trash", bundle: .module), systemImage: "trash")
             }
             .disabled(checked.isEmpty)
         }
@@ -299,10 +299,10 @@ public struct UninstallScreen: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .font(.title2)
-                Text("确认删除到废纸篓？")
+                Text("uninstall.confirm.title", bundle: .module)
                     .font(.title3.bold())
             }
-            Text("将把 \(checked.count) 项（合计 \(formattedBytes(totalCheckedBytes))）移动到废纸篓。\n你仍然可以在 Finder 的废纸篓中撤销。")
+            Text(String(format: String(localized: "uninstall.confirm.body", bundle: .module), checked.count, formattedBytes(totalCheckedBytes)))
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -323,14 +323,14 @@ public struct UninstallScreen: View {
 
             HStack {
                 Spacer()
-                Button("取消") {
+                Button(String(localized: "uninstall.confirm.cancel", bundle: .module)) {
                     showRealDeleteConfirm = false
                 }
                 Button(role: .destructive) {
                     showRealDeleteConfirm = false
                     Task { await performDelete(dryRun: false) }
                 } label: {
-                    Text("确认删除")
+                    Text("uninstall.confirm.delete", bundle: .module)
                 }
                 .keyboardShortcut(.defaultAction)
             }
@@ -398,12 +398,12 @@ public struct UninstallScreen: View {
         // 主动清空一次是 O(1) 锁开销，零误伤。
         pipeline.setAccessDeniedPaths([])
         let (moved, skipped, err) = await pipeline.moveToTrash(paths: paths, dryRun: dryRun)
-        let mode = dryRun ? "（预览）" : ""
+        let mode = dryRun ? String(localized: "uninstall.result.mode.dryrun", bundle: .module) : ""
         await MainActor.run {
             if let err {
-                self.lastResult = "失败\(mode)：\(err)\n已处理 \(moved) 项，跳过 \(skipped) 项"
+                self.lastResult = String(format: String(localized: "uninstall.result.failure", bundle: .module), mode, err, moved, skipped)
             } else {
-                self.lastResult = "已处理 \(moved) 项\(mode)，跳过 \(skipped) 项"
+                self.lastResult = String(format: String(localized: "uninstall.result.success", bundle: .module), moved, mode, skipped)
                 if !dryRun {
                     self.checked.removeAll()
                     if let app = self.selectedApp {
@@ -423,7 +423,7 @@ public struct UninstallScreen: View {
         case .bundleID(let s): return "bundleID · \(s)"
         case .bundleVendor(let s): return "vendor · \(s)"
         case .appName(let s): return "appName · \(s)"
-        case .vendorRule(let s): return "厂商规则 · \(s)"
+        case .vendorRule(let s): return String(format: String(localized: "uninstall.reason.vendor.rule", bundle: .module), s)
         }
     }
 

@@ -1252,7 +1252,7 @@ struct FloatingScanHUDView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "rectangle.expand.vertical")
-                        Text("打开主窗口")
+                        Text("hud.button.open_main", bundle: .module)
                     }
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white)
@@ -1468,7 +1468,7 @@ struct FloatingScanHUDView: View {
             Circle()
                 .fill(Color.green)
                 .frame(width: 6, height: 6)
-            Text("正在扫描…")
+            Text("hud.scanning_dot", bundle: .module)
                 .font(.system(.caption, design: .rounded).weight(.medium))
                 .foregroundStyle(.primary)
             Text(speedText)
@@ -1645,7 +1645,7 @@ struct FloatingScanHUDView: View {
                 Image(systemName: "memorychip")
                     .font(.system(.caption2, design: .rounded))
                     .foregroundStyle(.secondary)
-                Text("虚拟内存占盘")
+                Text("capacity.virtual_memory.title", bundle: .module)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
@@ -1666,7 +1666,7 @@ struct FloatingScanHUDView: View {
                 Image(systemName: "memorychip")
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.white.opacity(0.65))
-                Text("虚拟内存占盘")
+                Text("capacity.virtual_memory.title", bundle: .module)
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.white.opacity(0.65))
                 Spacer(minLength: 0)

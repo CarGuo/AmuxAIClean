@@ -61,7 +61,7 @@ public struct AppFootprintScreen: View {
             header
             Divider()
             if isLoading && items.isEmpty {
-                placeholder("正在统计…", systemImage: "hourglass")
+                placeholder(String(localized: "appfootprint.placeholder.loading", bundle: .module), systemImage: "hourglass")
             } else if filtered.isEmpty {
                 placeholder(emptyText, systemImage: "tray")
             } else {
@@ -74,14 +74,14 @@ public struct AppFootprintScreen: View {
 
     private var header: some View {
         HStack {
-            Text("已安装应用").font(.headline)
+            Text("appfootprint.header.title", bundle: .module).font(.headline)
             if !items.isEmpty {
                 Text("· \(items.count)")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            TextField("搜索 App / bundle id", text: $search)
+            TextField(String(localized: "appfootprint.header.search_placeholder", bundle: .module), text: $search)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 220)
             if isLoading {
@@ -132,7 +132,7 @@ public struct AppFootprintScreen: View {
                 VStack(alignment: .trailing, spacing: 1) {
                     Text(byteString(item.totalBytes))
                         .font(.callout.monospacedDigit())
-                    Text("Bundle \(byteString(item.appBundleBytes)) · 数据 \(byteString(item.relatedBytes))")
+                    Text(String(format: String(localized: "appfootprint.row.bundle_data", bundle: .module), byteString(item.appBundleBytes), byteString(item.relatedBytes)))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -158,11 +158,11 @@ public struct AppFootprintScreen: View {
     private var footer: some View {
         HStack {
             if isLoading && progressTotal > 0 {
-                Text("正在统计 \(progressDone) / \(progressTotal)")
+                Text(String(format: String(localized: "appfootprint.footer.progress", bundle: .module), progressDone, progressTotal))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if !items.isEmpty {
-                Text("总计 \(byteString(items.map(\.totalBytes).reduce(0, +)))")
+                Text(String(format: String(localized: "appfootprint.footer.total", bundle: .module), byteString(items.map(\.totalBytes).reduce(0, +))))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -184,7 +184,7 @@ public struct AppFootprintScreen: View {
                 Divider()
                 detailList(item)
             } else {
-                placeholder("从左侧选择一个应用查看占用细节", systemImage: "sidebar.right")
+                placeholder(String(localized: "appfootprint.placeholder.select_app", bundle: .module), systemImage: "sidebar.right")
             }
         }
     }
@@ -200,7 +200,7 @@ public struct AppFootprintScreen: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text("总占用 \(byteString(item.totalBytes)) · \(item.buckets.count) 项")
+                Text(String(format: String(localized: "appfootprint.detail.total_buckets", bundle: .module), byteString(item.totalBytes), item.buckets.count))
                     .font(.callout.monospacedDigit())
             }
             Spacer()
@@ -214,7 +214,11 @@ public struct AppFootprintScreen: View {
             ForEach(item.buckets) { b in
                 bucketRow(b, total: max(1, item.totalBytes))
                     .contextMenu {
-                        Button("在 Finder 中显示") { revealInFinder(path: b.path) }
+                        Button {
+                            revealInFinder(path: b.path)
+                        } label: {
+                            Text("appfootprint.menu.reveal_in_finder", bundle: .module)
+                        }
                     }
             }
         }
@@ -237,7 +241,7 @@ public struct AppFootprintScreen: View {
                     .font(.callout.monospacedDigit())
             }
             ratioBar(ratio: ratio)
-            Text("\(bucketLabel(b.kind)) · \(b.fileCount) 文件")
+            Text(String(format: String(localized: "appfootprint.bucket.kind_count", bundle: .module), bucketLabel(b.kind), b.fileCount))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -255,8 +259,10 @@ public struct AppFootprintScreen: View {
     }
 
     private var emptyText: String {
-        if !search.trimmingCharacters(in: .whitespaces).isEmpty { return "没有匹配的应用" }
-        return "没有发现任何应用"
+        if !search.trimmingCharacters(in: .whitespaces).isEmpty {
+            return String(localized: "appfootprint.empty.no_match", bundle: .module)
+        }
+        return String(localized: "appfootprint.empty.no_apps", bundle: .module)
     }
 
     private func reload() async {
@@ -322,21 +328,25 @@ public struct AppFootprintScreen: View {
 
     private func bucketLabel(_ k: AppFootprintBucket.Kind) -> String {
         switch k {
-        case .bundle:      return "App Bundle"
-        case .userData:    return "用户数据"
-        case .launchAgent: return "启动项 / 厂商共享"
-        case .vendorRule:  return "厂商规则"
+        case .bundle:      return String(localized: "appfootprint.bucket.bundle", bundle: .module)
+        case .userData:    return String(localized: "appfootprint.bucket.user_data", bundle: .module)
+        case .launchAgent: return String(localized: "appfootprint.bucket.launch_agent", bundle: .module)
+        case .vendorRule:  return String(localized: "appfootprint.bucket.vendor_rule", bundle: .module)
         }
     }
 
     @ViewBuilder
     private func contextMenu(for item: AppFootprintItem) -> some View {
-        Button("在 Finder 中显示") {
+        Button {
             NSWorkspace.shared.activateFileViewerSelecting([item.appURL])
+        } label: {
+            Text("appfootprint.menu.reveal_in_finder", bundle: .module)
         }
-        Button("拷贝 Bundle ID") {
+        Button {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(item.bundleID, forType: .string)
+        } label: {
+            Text("appfootprint.menu.copy_bundle_id", bundle: .module)
         }
     }
 

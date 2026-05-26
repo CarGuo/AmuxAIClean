@@ -545,8 +545,9 @@ public struct LargeFilesView: View {
             do {
                 try data.write(to: url, options: .atomic)
             } catch {
-                let alert = NSAlert(error: error)
-                alert.messageText = "导出失败"
+                let alert = NSAlert()
+                alert.messageText = String(localized: "largefiles.export.failed.title", bundle: .module)
+                alert.informativeText = String(format: String(localized: "largefiles.export.failed.body", bundle: .module), error.localizedDescription)
                 alert.runModal()
             }
         }

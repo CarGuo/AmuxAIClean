@@ -142,8 +142,8 @@ public struct MainView: View {
                 }
             )
         }
-        .alert("删除结果", isPresented: .constant(deleteResult != nil)) {
-            Button("好") { deleteResult = nil }
+        .alert(String(localized: "main.delete.result.title", bundle: .module), isPresented: .constant(deleteResult != nil)) {
+            Button(String(localized: "main.delete.result.ok", bundle: .module)) { deleteResult = nil }
         } message: {
             Text(deleteResult ?? "")
         }
@@ -764,7 +764,7 @@ public struct MainView: View {
                     ProgressView().controlSize(.small)
                     if coordinator.perRootProgress.isEmpty {
                         // 单根扫描：保留原有"扫描中… N 个文件 · X MB"单行行为。
-                        Text("扫描中… \(coordinator.snapshot.scannedFileCount) 个文件 · \(formattedBytes(coordinator.snapshot.totalBytes))")
+                        Text(String(format: String(localized: "main.scan.progress.single", bundle: .module), coordinator.snapshot.scannedFileCount, formattedBytes(coordinator.snapshot.totalBytes)))
                             .font(.callout)
                     } else {
                         // v1.3：多根并行扫描——按 rootPath 字典序输出多行（每根一条），
@@ -776,7 +776,7 @@ public struct MainView: View {
                                     Text(p.isFinished ? "✓" : "●")
                                         .font(.caption.bold())
                                         .foregroundStyle(p.isFinished ? Color.green : Color.accentColor)
-                                    Text("\(p.title) · \(formattedBytes(p.bytes)) · \(p.fileCount) 文件")
+                                    Text(String(format: String(localized: "main.scan.progress.multi.row", bundle: .module), p.title, formattedBytes(p.bytes), p.fileCount))
                                         .font(.callout)
                                         .lineLimit(1)
                                         .truncationMode(.middle)
@@ -785,11 +785,11 @@ public struct MainView: View {
                         }
                     }
                 } else if coordinator.snapshot.isFinished {
-                    Text("完成 · \(coordinator.snapshot.scannedFileCount) 文件 · \(formattedBytes(coordinator.snapshot.totalBytes)) · \(String(format: "%.2fs", coordinator.snapshot.elapsed))")
+                    Text(String(format: String(localized: "main.scan.finished", bundle: .module), coordinator.snapshot.scannedFileCount, formattedBytes(coordinator.snapshot.totalBytes), String(format: "%.2fs", coordinator.snapshot.elapsed)))
                         .font(.callout)
                 } else if coordinator.wasCancelled {
                     // v1.3：cancel 后区分"已停止"与"还未扫描"两态，避免用户以为停止键失灵
-                    Text("已停止 · 按右上「重新扫描」继续")
+                    Text("main.scan.cancelled", bundle: .module)
                         .foregroundStyle(.secondary)
                         .font(.callout)
                 } else {
@@ -858,7 +858,7 @@ public struct MainView: View {
                     .controlSize(.large)
                 Text("results.scanning", bundle: .module)
                     .foregroundStyle(.secondary)
-                Text("首次扫描可能较慢，可在右上角随时停止")
+                Text("main.scan.first.hint", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
@@ -969,13 +969,13 @@ public struct MainView: View {
                     .textSelection(.enabled)
                     .longPathStyle()
                 Divider()
-                LabeledContent("大小（占用）", value: formattedBytes(item.bytes))
-                LabeledContent("大小（逻辑）", value: formattedBytes(item.logicalBytes))
-                LabeledContent("文件数", value: "\(item.fileCount)")
-                LabeledContent("是目录", value: item.isDirectory ? "是" : "否")
-                LabeledContent("安全等级", value: verdictLabel(item.verdict))
+                LabeledContent(String(localized: "detail.size.physical", bundle: .module), value: formattedBytes(item.bytes))
+                LabeledContent(String(localized: "detail.size.logical", bundle: .module), value: formattedBytes(item.logicalBytes))
+                LabeledContent(String(localized: "detail.file.count", bundle: .module), value: "\(item.fileCount)")
+                LabeledContent(String(localized: "detail.is.directory", bundle: .module), value: item.isDirectory ? String(localized: "detail.bool.yes", bundle: .module) : String(localized: "detail.bool.no", bundle: .module))
+                LabeledContent(String(localized: "detail.safety.level", bundle: .module), value: verdictLabel(item.verdict))
                 if item.verdict == .forbid {
-                    Text("拒绝原因：\(item.rejection.rawValue)")
+                    Text(String(format: String(localized: "detail.rejection.reason", bundle: .module), item.rejection.rawValue))
                         .font(.callout)
                         .foregroundStyle(.red)
                 }
@@ -999,14 +999,14 @@ public struct MainView: View {
                     .textSelection(.enabled)
                     .longPathStyle()
                 Divider()
-                LabeledContent("大小", value: formattedBytes(row.bytes))
-                LabeledContent("文件数", value: "\(row.fileCount)")
-                LabeledContent("是目录", value: row.isDirectory ? "是" : "否")
+                LabeledContent(String(localized: "detail.size", bundle: .module), value: formattedBytes(row.bytes))
+                LabeledContent(String(localized: "detail.file.count", bundle: .module), value: "\(row.fileCount)")
+                LabeledContent(String(localized: "detail.is.directory", bundle: .module), value: row.isDirectory ? String(localized: "detail.bool.yes", bundle: .module) : String(localized: "detail.bool.no", bundle: .module))
                 if row.isDirectory && row.hasChildren {
-                    LabeledContent("可展开", value: "是")
+                    LabeledContent(String(localized: "detail.expandable", bundle: .module), value: String(localized: "detail.bool.yes", bundle: .module))
                 }
                 Divider()
-                Text("提示：右键或 Delete 单条移废纸篓 · 双击展开下一层 · 批量勾选请切到「清单」")
+                Text("detail.tree.hint", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                 Spacer()
@@ -1506,24 +1506,24 @@ private struct PermissionStatusBanner: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
                         if fdaCount > 0 {
-                            Text("权限受阻 (\(fdaCount))").font(.caption).foregroundStyle(.orange)
+                            Text(String(format: String(localized: "banner.fda.denied.title", bundle: .module), fdaCount)).font(.caption).foregroundStyle(.orange)
                             ForEach(fdaDeniedPaths.prefix(50), id: \.self) { p in
                                 Text(p).font(.caption2).foregroundStyle(.secondary)
                                     .lineLimit(1).truncationMode(.middle)
                             }
                             if fdaCount > 50 {
-                                Text("…还有 \(fdaCount - 50) 条未显示").font(.caption2).foregroundStyle(.tertiary)
+                                Text(String(format: String(localized: "banner.fda.denied.more", bundle: .module), fdaCount - 50)).font(.caption2).foregroundStyle(.tertiary)
                             }
                         }
                         if tccCount > 0 {
                             if fdaCount > 0 { Divider().padding(.vertical, 2) }
-                            Text("隐私目录跳过 (\(tccCount))").font(.caption).foregroundStyle(.blue)
+                            Text(String(format: String(localized: "banner.fda.tcc.title", bundle: .module), tccCount)).font(.caption).foregroundStyle(.blue)
                             ForEach(tccSkippedPaths.prefix(50), id: \.self) { p in
                                 Text(p).font(.caption2).foregroundStyle(.secondary)
                                     .lineLimit(1).truncationMode(.middle)
                             }
                             if tccCount > 50 {
-                                Text("…还有 \(tccCount - 50) 条未显示").font(.caption2).foregroundStyle(.tertiary)
+                                Text(String(format: String(localized: "banner.fda.tcc.more", bundle: .module), tccCount - 50)).font(.caption2).foregroundStyle(.tertiary)
                             }
                             Text("说明：Apple Music / Photos / Mail 等敏感库已主动跳过，避免系统反复弹权限框；这些目录与本 App 的清理目标（缓存/重复文件/卸载残留）无关。")
                                 .font(.caption2)
