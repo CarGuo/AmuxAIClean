@@ -66,8 +66,8 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: GSY 清理管家
-        CFBundleShortVersionString: "1.5.1"
-        CFBundleVersion: "7"
+        CFBundleShortVersionString: "1.5.2"
+        CFBundleVersion: "8"
         CFBundleAllowMixedLocalizations: true
         CFBundleLocalizations:
           - zh-Hans
