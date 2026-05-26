@@ -569,8 +569,12 @@ public final class ScanCoordinator: ObservableObject {
                                   staySingleVolume: false,
                                   respectTCCSkipList: respectTCC)
         scanTask = Task { [weak self] in
+            // v1.5 性能修复：推荐扫描 5 根固定，但常见命中 ~/Library/Caches、
+            // ~/Library/Logs、~/Library/Application Support 等大根；并发上限 3 足够
+            // 让吞吐拉满又不会让整机 IO 子系统拥塞（详见 MultiRootScanner.scan 注释）。
             await self?.runMultiRootScan(roots: roots, options: options,
-                                         categoryID: ScanCoordinator.multiRootCategoryID)
+                                         categoryID: ScanCoordinator.multiRootCategoryID,
+                                         maxConcurrentRoots: 3)
         }
     }
 
@@ -678,8 +682,16 @@ public final class ScanCoordinator: ObservableObject {
                 }
 
                 // 起真正的多根扫描——复用 runMultiRootScan 全套
+                // v1.5 性能修复：dev scan discover 可能命中几十甚至上百个 root
+                // （每个 ~/projects/foo/{node_modules, build, Pods, .gradle...} 都算一根），
+                // 直接 fan out 给 MultiRootScanner 会瞬间拉起 root_count × 6 = 几百个并发
+                // 文件枚举 worker，整机 APFS metadata layer 进入排队，App / Finder / 浏览器
+                // 一起卡。maxConcurrentRoots=4 在 24 核 IO 并发上限下仍能跑满吞吐，
+                // 但不会让其他进程饿死。
                 self.scanTask = Task { [weak self] in
-                    await self?.runMultiRootScan(roots: roots, options: options, categoryID: activeID)
+                    await self?.runMultiRootScan(roots: roots, options: options,
+                                                 categoryID: activeID,
+                                                 maxConcurrentRoots: 4)
                 }
             }
         }
@@ -802,7 +814,7 @@ public final class ScanCoordinator: ObservableObject {
     ///   带 `rootPath` 信封，`ingest(node:rootPath:)` 直接拿到正确根；
     /// - 每个 .node 同时累加全局 totalBytes / scannedFiles **和** 该根的 perRootProgress；
     /// - 每个 .finished 翻该根的 isFinished=true；所有根 finish 后 stream 自然关闭。
-    private func runMultiRootScan(roots: [URL], options: ScanOptions, categoryID: String) async {
+    private func runMultiRootScan(roots: [URL], options: ScanOptions, categoryID: String, maxConcurrentRoots: Int = 4) async {
         let scanner = MultiRootScanner(options: options)
         var lastEmit = Date(timeIntervalSince1970: 0)
         // v1.3.z 性能修复：见 runScan 同名注释。多根模式 throttle 同步抬到 0.40。
@@ -811,7 +823,7 @@ public final class ScanCoordinator: ObservableObject {
         let yieldEvery = 256
         var consumedSinceYield = 0
 
-        for await wrapped in await scanner.scan(roots: roots) {
+        for await wrapped in await scanner.scan(roots: roots, maxConcurrentRoots: maxConcurrentRoots) {
             if Task.isCancelled { break }
             // 与 runScan 同款过期事件保护：activeCategoryID 被覆盖即旧 stream 残留事件，丢弃。
             guard activeCategoryID == categoryID else { break }
