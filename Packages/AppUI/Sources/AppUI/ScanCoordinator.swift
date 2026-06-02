@@ -182,6 +182,23 @@ public final class ScanCoordinator: ObservableObject {
         /// Finder 风格目录 mtime = 目录 inode 自身 mtime（在该目录里增删文件即由内核更新）。
         var modificationDate: Date? = nil
 
+        /// Step 3 P0-3 / 2026-06：bucket 节点的 SafetyEngine.evaluate 结果缓存。
+        ///
+        /// 为什么这里能 cache：bucket 的 key 是 `path: String`，永久不变；`engine` 自身、
+        /// vendor `trie` 与 `home` 在 ScanCoordinator 的生命周期里都是 `let` immutable —— 
+        /// 所以同一 path 的 evaluate 结果**永远相同**。
+        ///
+        /// 旧 publishSnapshot 每帧（流式扫描 0.4s/帧）都对全部 N 个 bucket 调一次
+        /// evaluate(trie:)。一次扫描扫到 K=数百~数千 bucket，× 数十帧，多出几千~几十万次
+        /// 主线程纯函数调用 —— 对 Tree View 就是直接的卡顿源。
+        ///
+        /// 缓存策略：首次 publishSnapshot 看到该 bucket 时算一次写回；之后命中直接读。
+        /// `nil` = 还没算过；非 nil = 已经算过且永远有效（因 cache 失效条件不存在 ——
+        /// startScan/rescan/cancel 会整个 buckets.removeAll()，cache 字段自然消失）。
+        var cachedVerdict: SafetyVerdict? = nil
+        var cachedRejection: SafetyRejection? = nil
+        var cachedVendor: VendorRule? = nil
+
         /// v1.3.z 性能优化：把 ingest hot path 的 read-modify-write 收敛进 Bucket 自身。
         /// 配合 `buckets[k, default: ...].applyIngest(...)` 让 hit 路径只走一次哈希查找，
         /// 且 hit 时不构造 default 值（autoclosure 不求值）。
@@ -320,6 +337,27 @@ public final class ScanCoordinator: ObservableObject {
     private func bumpTickRevision() {
         tickRevision &+= 1
         treeRevision &+= 1
+    }
+
+    /// Step 3 P0-3 / 2026-06：bucket cachedVerdict 命中率计数器。
+    /// publishSnapshot 走 cache 路径时，`miss = 首次计算并写回`，`hit = 直接读现有值`。
+    /// 仅作运行期遥测与测试观察用，**不参与 @Published**（不触发 view 更新）。
+    private var verdictCacheHits: Int = 0
+    private var verdictCacheMisses: Int = 0
+
+    /// 测试观察口：暴露 verdict cache 命中统计。
+    /// 仅 internal —— 同 module 的测试代码可读；外部 framework 不可见。
+    /// 用于 [BucketVerdictCacheTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/BucketVerdictCacheTests.swift) 验证 P0-3 缓存生效。
+    func verdictCacheStatsForTesting() -> (hits: Int, misses: Int) {
+        (verdictCacheHits, verdictCacheMisses)
+    }
+
+    /// 测试触发口：在已扫完的状态下手动再触发一次 publishSnapshot。
+    /// 用途：fake home fixture 太小时，扫描可能只跑一帧 publishSnapshot（150ms 节流没触发流式帧），
+    /// 测试看不到 cache hit。该方法让 [BucketVerdictCacheTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/BucketVerdictCacheTests.swift) 能在确定的 buckets 状态下
+    /// 再调一次 publishSnapshot 验证"第二次访问 = cache hit"。生产路径不调它。
+    func forcePublishSnapshotForTesting(categoryID: String = "_test_") {
+        publishSnapshot(categoryID: categoryID, finished: false)
     }
 
     /// v1.0 T4：大文件叶子集合。
@@ -464,6 +502,10 @@ public final class ScanCoordinator: ObservableObject {
         // v1.3：cancel() 在上面把 wasCancelled 置 true，但本次是新扫描入口而非"停止"，立刻清回 false
         wasCancelled = false
         buckets.removeAll(keepingCapacity: true)
+        // Step 3 P0-3：buckets 整轮清空 → bucket 上的 cachedVerdict 也跟着消失。
+        // 但独立维护的命中率计数器需要显式归零，否则跨会话累计无意义。
+        verdictCacheHits = 0
+        verdictCacheMisses = 0
         dirIndex.removeAll(keepingCapacity: true)
         childEdges.removeAll(keepingCapacity: true)
         fileLeaves.removeAll(keepingCapacity: true)
@@ -562,6 +604,10 @@ public final class ScanCoordinator: ObservableObject {
         cancel()
         wasCancelled = false
         buckets.removeAll(keepingCapacity: true)
+        // Step 3 P0-3：buckets 整轮清空 → bucket 上的 cachedVerdict 也跟着消失。
+        // 但独立维护的命中率计数器需要显式归零，否则跨会话累计无意义。
+        verdictCacheHits = 0
+        verdictCacheMisses = 0
         dirIndex.removeAll(keepingCapacity: true)
         childEdges.removeAll(keepingCapacity: true)
         fileLeaves.removeAll(keepingCapacity: true)
@@ -670,6 +716,10 @@ public final class ScanCoordinator: ObservableObject {
         cancel()
         wasCancelled = false
         buckets.removeAll(keepingCapacity: true)
+        // Step 3 P0-3：buckets 整轮清空 → bucket 上的 cachedVerdict 也跟着消失。
+        // 但独立维护的命中率计数器需要显式归零，否则跨会话累计无意义。
+        verdictCacheHits = 0
+        verdictCacheMisses = 0
         dirIndex.removeAll(keepingCapacity: true)
         childEdges.removeAll(keepingCapacity: true)
         fileLeaves.removeAll(keepingCapacity: true)
@@ -1958,8 +2008,40 @@ public final class ScanCoordinator: ObservableObject {
         // 先 map 出无序 rows，再统一排序——避免在 sort 闭包里反复算 evaluate
         // 性能：走 trie 版 evaluate（init 期一次性 build，扫描期复用），
         // 比 evaluate(path:vendors:home:) 每次重建 trie 快一个量级。
-        let unsorted: [RowItem] = buckets.map { (path, bucket) in
-            let (verdict, rejection, vendor) = engine.evaluate(path: path, trie: trie, home: home)
+        //
+        // Step 3 P0-3 / 2026-06：bucket cachedVerdict 缓存。
+        // path/engine/trie/home 在扫描期间均不变 —— 同 path 的 evaluate 结果永远相同。
+        // 第一帧把每个 bucket 的 verdict/rejection/vendor 算一次写回 bucket struct，
+        // 后续帧（流式 0.4s 一次）直接读字段。一次扫描 N=数百~数千 bucket × 数十帧
+        // 的重复 evaluate 收敛到"每 bucket 只算一次"。
+        var unsorted: [RowItem] = []
+        unsorted.reserveCapacity(buckets.count)
+        for path in buckets.keys {
+            // 通过 buckets[path] 路径 read-modify-write —— Bucket 是 value type，
+            // 必须从 dict 重新写回才能保留 cache 字段。
+            guard var bucket = buckets[path] else { continue }
+            let verdict: SafetyVerdict
+            let rejection: SafetyRejection
+            let vendor: VendorRule?
+            if let v = bucket.cachedVerdict, let r = bucket.cachedRejection {
+                // hit：path/engine/trie/home 都没变，verdict 永远相同 —— 直接读
+                verdict = v
+                rejection = r
+                vendor = bucket.cachedVendor
+                verdictCacheHits &+= 1
+            } else {
+                // miss：算一次并写回 bucket
+                let result = engine.evaluate(path: path, trie: trie, home: home)
+                verdict = result.0
+                rejection = result.1
+                vendor = result.2
+                bucket.cachedVerdict = verdict
+                bucket.cachedRejection = rejection
+                bucket.cachedVendor = vendor
+                buckets[path] = bucket
+                verdictCacheMisses &+= 1
+            }
+
             let active: Bool
             if finished {
                 active = false
@@ -1968,7 +2050,7 @@ public final class ScanCoordinator: ObservableObject {
             } else {
                 active = false
             }
-            return RowItem(
+            unsorted.append(RowItem(
                 id: path,
                 url: bucket.url,
                 title: bucket.url.lastPathComponent,
@@ -1982,7 +2064,7 @@ public final class ScanCoordinator: ObservableObject {
                 vendorNote: vendor?.note,
                 isActive: active,
                 modificationDate: bucket.modificationDate
-            )
+            ))
         }
         let rows: [RowItem]
         if finished {
