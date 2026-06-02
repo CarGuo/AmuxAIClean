@@ -174,6 +174,13 @@ public final class ScanCoordinator: ObservableObject {
         var logicalBytes: Int64 = 0
         var fileCount: Int = 0
         var isDirectory: Bool
+        /// v1.5.4：bucket（一级聚合行 = 一级子目录或单个顶层文件）自身 inode 的 mtime。
+        ///
+        /// 仅在 isTopLevelBucket=true 时写入——即 BulkScanner 真的 yield 出该 bucket 自己的
+        /// node entry（首次 ingest 一定会触发），所以扫完一定有值，无需额外探测。
+        /// 为什么不维护"max(子孙 mtime)"：见 [RowItem.modificationDate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L33) 文档——
+        /// Finder 风格目录 mtime = 目录 inode 自身 mtime（在该目录里增删文件即由内核更新）。
+        var modificationDate: Date? = nil
 
         /// v1.3.z 性能优化：把 ingest hot path 的 read-modify-write 收敛进 Bucket 自身。
         /// 配合 `buckets[k, default: ...].applyIngest(...)` 让 hit 路径只走一次哈希查找，
@@ -183,7 +190,8 @@ public final class ScanCoordinator: ObservableObject {
             isTopLevelBucket: Bool,
             isDirEffective: Bool,
             bytes nodeBytes: Int64,
-            logicalBytes nodeLogical: Int64
+            logicalBytes nodeLogical: Int64,
+            nodeMTime: Date? = nil
         ) {
             if isFileNode {
                 bytes += nodeBytes
@@ -197,6 +205,10 @@ public final class ScanCoordinator: ObservableObject {
                     bytes += nodeBytes
                     logicalBytes += nodeLogical
                     fileCount = 1
+                }
+                // 仅在确实拿到 mtime 时覆盖；保留已有值避免被空帧清零
+                if let m = nodeMTime {
+                    modificationDate = m
                 }
             }
         }
@@ -223,16 +235,22 @@ public final class ScanCoordinator: ObservableObject {
     /// v1.0 T3：任意目录子树聚合索引，支撑 TreeBrowserView 多层下钻。
     /// key = 任意目录全路径，value = 该目录"整个子树"累计的 bytes / fileCount。
     /// 还额外维护 parent->Set<directChildPath> 边，让 OutlineGroup 能 O(1) 取子。
+    ///
+    /// v1.5.4：新增 `modificationDate` —— 仅在该目录"作为节点本身被 ingest"时写入，
+    /// 即来自 [BulkScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift) 的目录条目自身的 inode mtime（Finder 风格）。
+    /// 不做 max(子孙) 聚合，避免每个文件叶子都要回写所有祖先字段；nil 表示尚未拿到（极早期 publish 帧）。
     private struct DirAgg {
         var bytes: Int64 = 0
         var logicalBytes: Int64 = 0
         var fileCount: Int = 0
+        var modificationDate: Date? = nil
     }
     private var dirIndex: [String: DirAgg] = [:]
     /// 父目录 -> 直接子项集合（含目录与文件路径）。文件叶子也存进来方便单层展示。
     private var childEdges: [String: Set<String>] = [:]
-    /// 叶子文件 path -> (size, mtime?)；展示时区分文件与目录。
-    private var fileLeaves: [String: (bytes: Int64, isDir: Bool)] = [:]
+    /// 叶子文件 path -> (size, isDir, mtime?)；展示时区分文件与目录。
+    /// v1.5.4 加 modificationDate：来源同 dirIndex —— 直接拿 [FSNode.modificationDate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/FSNode.swift#L14)。
+    private var fileLeaves: [String: (bytes: Int64, isDir: Bool, modificationDate: Date?)] = [:]
 
     /// v1.3.z：TreeBrowserView 的 store-fallback 缓存。
     ///
@@ -249,6 +267,60 @@ public final class ScanCoordinator: ObservableObject {
     /// in-flight 路径集合：避免同 path 在 cache miss 时被 view body 多次重算疯狂启 Task。
     /// **不**参与 @Published（不需要触发 view 更新）。
     private var treeChildrenInFlight: Set<String> = []
+
+    /// v1.5.4：树形视图扁平化重算的"统一脏标"。
+    /// [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+    /// 把 visibleRows 从 computed 改为 `@State flatRows: [FlatTreeRow]`（性能修复，
+    /// 避免一次操作里 4 次重复递归整棵展开树），重建时机靠 `onChange(of: treeRevision)` 串。
+    ///
+    /// 所有可能改变"directChildren(of:_) 输出"的入口必须 `treeRevision &+= 1`：
+    /// 1. [publishSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1873)（流式 ingest tick / finished 收尾）
+    /// 2. `treeChildrenCache` 主线程写回（store-fallback 异步 fetch 完成）
+    /// 3. [pruneDeleted](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1174)（删除乐观更新）
+    /// 4. 启动新扫描 / cancel 后的 cache 清空
+    /// 5. [invalidateTreeCacheAfterScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1147)（扫描结束清 cache）
+    ///
+    /// 用 `&+=` 让计数器溢出时自然回卷而非 trap；view 端只关心"变没变"，绝对值无意义。
+    @Published public private(set) var treeRevision: UInt64 = 0
+
+    /// Step 2 P0-2 / 2026-06：treeRevision 拆分 —— 结构性脏标。
+    /// 含义：节点新增 / 节点删除 / 排序键变化 / cache 整轮失效。订阅这条信号的 view
+    /// **必须**重建 flatRows（一次 O(N) 拍平 + verdict 计算）。
+    ///
+    /// 与 `tickRevision` 的边界由 [bumpStructuralRevision()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) /
+    /// [bumpTickRevision()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 两个 helper 单点收敛 —— 任何代码不再直接写
+    /// `treeRevision &+= 1`，避免漏判类别。
+    @Published public private(set) var structuralRevision: UInt64 = 0
+
+    /// Step 2 P0-2 / 2026-06：treeRevision 拆分 —— 数值脏标（非结构性）。
+    /// 含义：已有节点的 bytes / fileCount / isActive 变了，**节点拓扑没变**。订阅这条
+    /// 信号的 view **不需要**重建 flatRows，只需让 RowView 内部读最新 bucket（通过其它
+    /// @Published 入口，这里仅作"我又跳了一次"的通知）。
+    ///
+    /// publishSnapshot 流式 tick（0.4s/帧）只推这条；当帧检测到 `(buckets.count,
+    /// dirIndex.count, fileLeaves.count)` 三元组变化时，由 helper 兜底升格为 structural。
+    @Published public private(set) var tickRevision: UInt64 = 0
+
+    /// 上一帧 publishSnapshot 时三个核心索引的 (count, count, count) 快照，用于 O(1)
+    /// 判定"本帧是否新增节点"——任一计数变化即视为结构变化。
+    private var lastIndexSnapshot: (buckets: Int, dirIndex: Int, fileLeaves: Int) = (0, 0, 0)
+
+    /// 单点收敛：推进结构脏标。
+    /// 同时推 `treeRevision`（兼容外部已订阅 treeRevision 的代码）和 `structuralRevision`。
+    /// `tickRevision` 也顺带 +1 —— 任何 structural 都隐含一次 tick（一致性保证）。
+    private func bumpStructuralRevision() {
+        structuralRevision &+= 1
+        tickRevision &+= 1
+        treeRevision &+= 1
+    }
+
+    /// 单点收敛：推进数值脏标。
+    /// 仅在确认"节点拓扑没变（仅 buckets[k].bytes 累加之类）"时调用。
+    /// `treeRevision` 也跟着走，让兼容订阅者不死寂；但 `structuralRevision` 不动。
+    private func bumpTickRevision() {
+        tickRevision &+= 1
+        treeRevision &+= 1
+    }
 
     /// v1.0 T4：大文件叶子集合。
     /// 仅当 `largeFileMinBytes > 0` 时才会被填充（避免普通扫描浪费内存）。
@@ -399,6 +471,7 @@ public final class ScanCoordinator: ObservableObject {
         // 避免新 sessionID 期间 view 看到旧 sessionID 的 store query 结果。
         treeChildrenCache.removeAll(keepingCapacity: true)
         treeChildrenInFlight.removeAll(keepingCapacity: true)
+        bumpStructuralRevision()
         largeFileLeaves.removeAll(keepingCapacity: true)
         // M3：新 scan 启动必须清掉上一轮 compact 缓存的 Top N，避免新会话期间
         // largeFiles(...) 错误命中旧 cache（largeFileLeaves 当前空 + cache 非空）。
@@ -496,6 +569,7 @@ public final class ScanCoordinator: ObservableObject {
         // 避免新 sessionID 期间 view 看到旧 sessionID 的 store query 结果。
         treeChildrenCache.removeAll(keepingCapacity: true)
         treeChildrenInFlight.removeAll(keepingCapacity: true)
+        bumpStructuralRevision()
         largeFileLeaves.removeAll(keepingCapacity: true)
         // M3：新 scan 启动必须清掉上一轮 compact 缓存的 Top N，避免新会话期间
         // largeFiles(...) 错误命中旧 cache（largeFileLeaves 当前空 + cache 非空）。
@@ -602,6 +676,7 @@ public final class ScanCoordinator: ObservableObject {
         treeChildrenCache.removeAll(keepingCapacity: true)
         treeChildrenInFlight.removeAll(keepingCapacity: true)
         largeFileLeaves.removeAll(keepingCapacity: true)
+        bumpStructuralRevision()
         compactedLargeFileTopN = nil
         lastIngestAt.removeAll(keepingCapacity: true)
         self.largeFileMinBytes = 0
@@ -981,7 +1056,8 @@ public final class ScanCoordinator: ObservableObject {
             isTopLevelBucket: nodePath == bucketPath,
             isDirEffective: isDir,
             bytes: bytes,
-            logicalBytes: node.logicalSize
+            logicalBytes: node.logicalSize,
+            nodeMTime: node.modificationDate
         )
 
         // v1.0 T3：构建多层下钻索引。
@@ -999,7 +1075,7 @@ public final class ScanCoordinator: ObservableObject {
                 ))
             }
             if enableTreeDeepIndex {
-                fileLeaves[nodePath] = (bytes: bytes, isDir: false)
+                fileLeaves[nodePath] = (bytes: bytes, isDir: false, modificationDate: node.modificationDate)
                 // 沿路径回溯到 rootPath，把 size 加到所有祖先
                 var cursor = (nodePath as NSString).deletingLastPathComponent
                 while !cursor.isEmpty, cursor.hasPrefix(rootPath) {
@@ -1019,9 +1095,14 @@ public final class ScanCoordinator: ObservableObject {
             }
         } else if enableTreeDeepIndex {
             // 目录节点（即使没有累计字节，也把它登记到边集，避免空目录在树里漏掉）
-            if dirIndex[nodePath] == nil {
-                dirIndex[nodePath] = DirAgg()
+            // v1.5.4：把目录自身的 inode mtime 写入 DirAgg（保留已有 bytes/fileCount/logicalBytes）
+            var agg = dirIndex[nodePath] ?? DirAgg()
+            // 仅在目录节点 ingest 时覆盖 modificationDate；后续叶子累加路径不再回写它，
+            // 保持"目录 mtime = 目录自身 inode mtime"的 Finder 语义。
+            if let m = node.modificationDate {
+                agg.modificationDate = m
             }
+            dirIndex[nodePath] = agg
             if nodePath != rootPath {
                 let parent = (nodePath as NSString).deletingLastPathComponent
                 if parent.hasPrefix(rootPath) || parent == rootPath {
@@ -1098,6 +1179,10 @@ public final class ScanCoordinator: ObservableObject {
                     }
                     self.treeChildrenCache[cacheKey] = rows
                     self.treeChildrenInFlight.remove(cacheKey)
+                    // v1.5.4：cache 写回 → 通知 [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+                    // 重建 flatRows，否则展开瞬间空白后无 publisher 唤醒（`treeChildrenCache` 是
+                    // private @Published，外部 view 无法直接订阅）。
+                    self.bumpStructuralRevision()
                 }
             }
         }
@@ -1123,6 +1208,135 @@ public final class ScanCoordinator: ObservableObject {
     @MainActor
     fileprivate func invalidateTreeCacheAfterScan() {
         treeChildrenCache.removeAll(keepingCapacity: true)
+        bumpStructuralRevision()
+    }
+
+    /// **v1.5.3**：把"已删除路径"从所有 UI 数据源里剔除——这是修复用户反馈
+    /// "删除后没对应更新 item"的核心入口。
+    ///
+    /// 老实现的 [performDelete](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
+    /// 真删成功后只 `selection.removeAll()` + `refreshVolumeCapacity()`，
+    /// **从未告知 ScanCoordinator** 把已删 path 从 [snapshot.rows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L268)
+    /// 与 [treeChildrenCache](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L248)
+    /// 移除——所以列表与树形继续显示已删行。
+    ///
+    /// 本方法处理三件事（按 UI 数据源分）：
+    /// 1. **snapshot.rows**：基于 path 前缀过滤——删了 `/A/B` 时 `/A/B/C` 也算被删；
+    ///    重新构造 [ScanSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L268)
+    ///    时只动 rows / totalBytes / scannedFileCount，其他字段保持。
+    /// 2. **buckets / dirIndex / childEdges / fileLeaves**：内存索引同步剔除，保证
+    ///    [directChildren(of:sortedBy:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1048)
+    ///    下次走 memory 分支也拿不到已删项；childEdges 受影响的"父"边集要去掉孩子。
+    /// 3. **treeChildrenCache**：受影响的父目录条目失效。cacheKey 是 `"\(path)|\(sortKey)"`，
+    ///    必须按 path 前缀匹配清掉所有该父目录的排序变体。
+    ///
+    /// 注：**store 层（GRDB）不动**——store 是"扫描结果归档"，删除是用户行为，
+    /// 不应回写 store。下次扫描会重新建库覆盖旧 session。
+    @MainActor
+    public func pruneDeleted(paths: [String]) {
+        guard !paths.isEmpty else { return }
+
+        // 用前缀匹配 helper：直接相等或者 path 是 prefix + "/"。
+        // 不能用纯 hasPrefix("/A/B")——会误中 "/A/Bbb"。
+        let normalized: [String] = paths.map { p in
+            // 去掉末尾的 `/` 让 prefix 比较稳定（"/A/B/" 与 "/A/B" 应等价）
+            if p.count > 1, p.hasSuffix("/") { return String(p.dropLast()) }
+            return p
+        }
+        func isUnderDeleted(_ candidate: String) -> Bool {
+            for p in normalized {
+                if candidate == p { return true }
+                if candidate.hasPrefix(p + "/") { return true }
+            }
+            return false
+        }
+
+        // ① snapshot.rows：保持 categoryID / isFinished / elapsed 等。
+        let oldSnap = self.snapshot
+        let newRows = oldSnap.rows.filter { !isUnderDeleted($0.id) }
+        if newRows.count != oldSnap.rows.count {
+            let removedBytes = oldSnap.rows
+                .filter { isUnderDeleted($0.id) }
+                .reduce(Int64(0)) { $0 + $1.bytes }
+            self.snapshot = ScanSnapshot(
+                categoryID: oldSnap.categoryID,
+                rows: newRows,
+                totalBytes: max(0, oldSnap.totalBytes - removedBytes),
+                scannedFileCount: oldSnap.scannedFileCount, // 不动：scannedFile 是历史扫描指标
+                isFinished: oldSnap.isFinished,
+                elapsed: oldSnap.elapsed,
+                bytesPerSecond: oldSnap.bytesPerSecond,
+                estimatedRemaining: oldSnap.estimatedRemaining
+            )
+        }
+
+        // ② 内存索引：buckets/dirIndex/childEdges/fileLeaves
+        let bucketKeys = buckets.keys.filter { isUnderDeleted($0) }
+        for k in bucketKeys { buckets.removeValue(forKey: k) }
+        let dirKeys = dirIndex.keys.filter { isUnderDeleted($0) }
+        for k in dirKeys { dirIndex.removeValue(forKey: k) }
+        let leafKeys = fileLeaves.keys.filter { isUnderDeleted($0) }
+        for k in leafKeys { fileLeaves.removeValue(forKey: k) }
+
+        // childEdges 双向：把 key 命中的整段去掉；同时把别的父节点 children set 里的命中项剔除。
+        let edgeKeysToDrop = childEdges.keys.filter { isUnderDeleted($0) }
+        for k in edgeKeysToDrop { childEdges.removeValue(forKey: k) }
+        for (parent, kids) in childEdges {
+            let pruned = kids.filter { !isUnderDeleted($0) }
+            if pruned.count != kids.count {
+                childEdges[parent] = pruned
+            }
+        }
+
+        // ③ **v1.5.3 修订**：原先这里粗暴 `treeChildrenCache.removeAll()`，
+        // 后果是连"根目录"那条 cache 也被一起干掉，view 重渲拉根目录 → cache miss
+        // → store-fallback 异步 fetch → 整页 "Loading children…"（用户截图：空白页）。
+        //
+        // 正确做法是**静默 patch**：
+        //   a) cacheKey 的 path 部分本身是被删项或其子孙 → removeValue（这条 cache 已经无意义）
+        //   b) cacheKey 的 path 不在被删范围内 → 行内 `rows.filter` 剔掉已删孩子
+        //      （即便它不是真正的"父"，filter 也是 O(n) 安全 no-op）
+        // 这样根目录 cache 与所有未受影响的祖先 cache 都保留同步路径，
+        // view 重渲走 directChildren 时直接命中 cache，根本不触发 fetch。
+        var newCache: [String: [TreeRow]] = [:]
+        newCache.reserveCapacity(treeChildrenCache.count)
+        for (cacheKey, rows) in treeChildrenCache {
+            // cacheKey 形如 "path|sortKey.rawValue"，按最后一个 `|` 分割。
+            // 任何 sortKey 都用 alphanumeric raw，不会出现在 path 里，简单 split 即可。
+            let parentPath: String = {
+                if let pipeIdx = cacheKey.lastIndex(of: "|") {
+                    return String(cacheKey[..<pipeIdx])
+                }
+                return cacheKey
+            }()
+            // a) 这条 cache 自己就在被删范围内 → 整段丢
+            if isUnderDeleted(parentPath) { continue }
+            // b) 行内剔除已删孩子；filter 不命中时直接复用旧数组
+            let pruned = rows.filter { !isUnderDeleted($0.path) }
+            newCache[cacheKey] = (pruned.count == rows.count) ? rows : pruned
+        }
+        treeChildrenCache = newCache
+
+        // v1.5.4：删除完毕 → 让 TreeBrowserView 立刻重建扁平 flatRows（移除已删行）。
+        bumpStructuralRevision()
+
+        // 卷容量重新探测：清完反馈"空闲变多"。
+        refreshVolumeCapacity()
+
+        // ④ **v1.5.3 新增**：把删除落到 store 层。不这样做的话 [directChildren](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1048)
+        // 在内存索引 miss 时会走 store-fallback 异步读 GRDB，已删项原样写回 cache，
+        // 用户视觉上"删了又冒出来"。后台 fire-and-forget：UI 已经走过乐观更新（步骤 ①-③），
+        // store 写慢一点也不会影响视觉表现。
+        if let store = resultStore, let sid = currentSessionID {
+            let paths = normalized
+            Task.detached {
+                do {
+                    try await store.deletePaths(sessionID: sid, paths: paths)
+                } catch {
+                    GSYLog.error(.scan, "deletePaths failed: \(error)")
+                }
+            }
+        }
     }
 
     /// v1.3.zz：暴露给 [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
@@ -1209,6 +1423,23 @@ public final class ScanCoordinator: ObservableObject {
                 if lhs.fileCount != rhs.fileCount { return lhs.fileCount < rhs.fileCount }
                 return lhs.path < rhs.path
             }
+        case .mtimeDesc:
+            return rows.sorted { lhs, rhs in
+                // nil 一律压最后，避免占位"最近"头部；与 LargeFile 排序一致
+                let l = lhs.modificationDate, r = rhs.modificationDate
+                if l == nil && r != nil { return false }
+                if l != nil && r == nil { return true }
+                if let l = l, let r = r, l != r { return l > r }
+                return lhs.path < rhs.path
+            }
+        case .mtimeAsc:
+            return rows.sorted { lhs, rhs in
+                let l = lhs.modificationDate, r = rhs.modificationDate
+                if l == nil && r != nil { return false }
+                if l != nil && r == nil { return true }
+                if let l = l, let r = r, l != r { return l < r }
+                return lhs.path < rhs.path
+            }
         }
     }
 
@@ -1223,7 +1454,8 @@ public final class ScanCoordinator: ObservableObject {
                     bytes: agg.bytes,
                     fileCount: agg.fileCount,
                     isDirectory: true,
-                    hasChildren: !(childEdges[childPath]?.isEmpty ?? true)
+                    hasChildren: !(childEdges[childPath]?.isEmpty ?? true),
+                    modificationDate: agg.modificationDate
                 )
             } else if let leaf = fileLeaves[childPath] {
                 // 文件
@@ -1233,7 +1465,8 @@ public final class ScanCoordinator: ObservableObject {
                     bytes: leaf.bytes,
                     fileCount: 1,
                     isDirectory: leaf.isDir,
-                    hasChildren: false
+                    hasChildren: false,
+                    modificationDate: leaf.modificationDate
                 )
             } else {
                 return TreeRow(
@@ -1262,6 +1495,16 @@ public final class ScanCoordinator: ObservableObject {
                 if a.fileCount != b.fileCount { return a.fileCount > b.fileCount }
             case .countAsc:
                 if a.fileCount != b.fileCount { return a.fileCount < b.fileCount }
+            case .mtimeDesc:
+                let av = a.modificationDate, bv = b.modificationDate
+                if av == nil && bv != nil { return false }
+                if av != nil && bv == nil { return true }
+                if let l = av, let r = bv, l != r { return l > r }
+            case .mtimeAsc:
+                let av = a.modificationDate, bv = b.modificationDate
+                if av == nil && bv != nil { return false }
+                if av != nil && bv == nil { return true }
+                if let l = av, let r = bv, l != r { return l < r }
             }
             return a.path < b.path
         }
@@ -1337,7 +1580,8 @@ public final class ScanCoordinator: ObservableObject {
                     fileCount: 1,
                     isDirectory: false,
                     hasChildren: false,
-                    accessState: accessState
+                    accessState: accessState,
+                    modificationDate: agg.inodeModificationDate
                 )
             } else {
                 // 目录：bytes/count 用子树累加值。hasChildren 判定与旧版一致：
@@ -1350,7 +1594,8 @@ public final class ScanCoordinator: ObservableObject {
                     isDirectory: true,
                     hasChildren: agg.descendantCount >= 1
                         && !(agg.descendantCount == 1 && agg.hasInode == false),
-                    accessState: accessState
+                    accessState: accessState,
+                    modificationDate: agg.inodeModificationDate
                 )
             }
         }
@@ -1371,6 +1616,17 @@ public final class ScanCoordinator: ObservableObject {
                 if a.fileCount != b.fileCount { return a.fileCount > b.fileCount }
             case .countAsc:
                 if a.fileCount != b.fileCount { return a.fileCount < b.fileCount }
+            case .mtimeDesc:
+                // nil 一律最后；保证"最近修改"头部不被空 mtime 占位
+                let av = a.modificationDate, bv = b.modificationDate
+                if av == nil && bv != nil { return false }
+                if av != nil && bv == nil { return true }
+                if let l = av, let r = bv, l != r { return l > r }
+            case .mtimeAsc:
+                let av = a.modificationDate, bv = b.modificationDate
+                if av == nil && bv != nil { return false }
+                if av != nil && bv == nil { return true }
+                if let l = av, let r = bv, l != r { return l < r }
             }
             return a.path < b.path
         }
@@ -1388,7 +1644,8 @@ public final class ScanCoordinator: ObservableObject {
                 bytes: agg.bytes,
                 fileCount: agg.fileCount,
                 isDirectory: true,
-                hasChildren: !(childEdges[path]?.isEmpty ?? true)
+                hasChildren: !(childEdges[path]?.isEmpty ?? true),
+                modificationDate: agg.modificationDate
             )
         }
         if let leaf = fileLeaves[path] {
@@ -1398,7 +1655,8 @@ public final class ScanCoordinator: ObservableObject {
                 bytes: leaf.bytes,
                 fileCount: 1,
                 isDirectory: leaf.isDir,
-                hasChildren: false
+                hasChildren: false,
+                modificationDate: leaf.modificationDate
             )
         }
         return nil
@@ -1722,7 +1980,8 @@ public final class ScanCoordinator: ObservableObject {
                 rejection: rejection,
                 vendorName: vendor?.name,
                 vendorNote: vendor?.note,
-                isActive: active
+                isActive: active,
+                modificationDate: bucket.modificationDate
             )
         }
         let rows: [RowItem]
@@ -1782,6 +2041,29 @@ public final class ScanCoordinator: ObservableObject {
             lastFinishedCategoryID = categoryID
             // 扫完清空 lastIngestAt，避免下一次切排序键 / 重扫前的 stale 数据让旧 row 误亮
             lastIngestAt.removeAll(keepingCapacity: true)
+        }
+        // Step 2 P0-2 / 2026-06：treeRevision 拆分。
+        // 流式扫描 publishSnapshot 帧（0.4s/帧）以前一律 `treeRevision &+= 1` —— 这会让
+        // TreeBrowserView 把上万节点的 flatRows 整树重建一遍。但 95% 的帧只是已有节点
+        // 的 bytes/fileCount 累加（节点拓扑没变），整树重建纯属浪费。
+        //
+        // 这里用三元组 `(buckets.count, dirIndex.count, fileLeaves.count)` 做 O(1) 判定：
+        //   - 任一计数变化 → 必然有新节点首次出现 → 升格为 structural
+        //   - 三元组全等 → 仅数值变化 → 只推 tickRevision，flatRows 不重建
+        //
+        // 漏判风险：dirIndex 内 children 集合微调（同一 parent 下子项排序变）不会让 count 变。
+        // 但这种排序级变化在我们的 ingest 路径里**不会发生**（每次 insert 只 add/不 remove），
+        // 所以三元组对索引集合的"严格单调增"语义足够安全。
+        let snapshot = (
+            buckets: buckets.count,
+            dirIndex: dirIndex.count,
+            fileLeaves: fileLeaves.count
+        )
+        if snapshot != lastIndexSnapshot {
+            lastIndexSnapshot = snapshot
+            bumpStructuralRevision()
+        } else {
+            bumpTickRevision()
         }
     }
 }

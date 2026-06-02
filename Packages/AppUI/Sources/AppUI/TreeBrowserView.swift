@@ -166,9 +166,12 @@ public struct TreeBrowserView: View {
             expanded.removeAll(keepingCapacity: true)
             rebuildFlatRows()
         }
-        // coordinator.treeRevision：聚合了 publishSnapshot / cache 写回 / pruneDeleted / cancel
-        // / invalidate 等所有上游变更（详见 ScanCoordinator.treeRevision 注释）。
-        .onChange(of: coordinator.treeRevision) { _, _ in rebuildFlatRows() }
+        // Step 2 P0-2 / 2026-06：从 `coordinator.treeRevision` 切到
+        // `coordinator.structuralRevision` —— 只在节点新增/删除/排序键变化时重建 flatRows，
+        // 不再被流式 publishSnapshot 的 0.4s tick（仅 bytes 变化）拖着整树重算。
+        // tickRevision 通过其它 @Published 入口（如 RowItem 自身）驱动 RowView 内部刷新数值，
+        // 这里 view 不订阅。
+        .onChange(of: coordinator.structuralRevision) { _, _ in rebuildFlatRows() }
         .onChange(of: flatRows.first?.row.path) { _, _ in
             // 切排序 / 切扫描根 → 顶层第一行变化时把选中态拉回首行，避免选中飞走
             let visiblePathSet = Set(flatRows.map(\.row.path))
