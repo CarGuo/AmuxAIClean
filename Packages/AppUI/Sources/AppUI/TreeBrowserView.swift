@@ -217,7 +217,15 @@ public struct TreeBrowserView: View {
         }
         .onKeyPress(.delete) {
             guard let cur = selectedPath, onTrash != nil else { return .ignored }
-            let (verdict, _) = Self.safety.evaluate(path: cur)
+            // v2026.06 Step 1：键盘 Delete 也走 verdict 缓存。如果当前选中行
+            // 在 flatRows 里能找到（应当总是能），直接读 verdict；找不到才 fallback
+            // 调一次 evaluate 兜底（极少数 race：选中态滞后于 flatRows 重建）。
+            let verdict: SafetyVerdict
+            if let flat = flatRows.first(where: { $0.row.path == cur }) {
+                verdict = flat.verdict
+            } else {
+                verdict = Self.safety.evaluate(path: cur).0
+            }
             guard verdict != .forbid else {
                 NSSound.beep()
                 return .handled
@@ -261,29 +269,55 @@ public struct TreeBrowserView: View {
     /// 但每个 path 只调 1 次而不是 N 次）。
     private func rebuildFlatRows() {
         let topLevel = coordinator.directChildren(of: rootPath, sortedBy: sortKey)
-        var out: [FlatTreeRow] = []
-        out.reserveCapacity(topLevel.count * 2)
+        // v2026.06 Step 1：先把 (row, depth) 拍扁，再走 computeVerdicts
+        // 一次性把 verdict 算好——SafetyEngine.evaluate 只在这里调，每行 1 次。
+        var pairs: [(TreeRow, Int)] = []
+        pairs.reserveCapacity(topLevel.count * 2)
         for kid in topLevel {
-            out.append(FlatTreeRow(row: kid, depth: 0))
+            pairs.append((kid, 0))
             if kid.isDirectory && (expanded[kid.path] ?? false) {
-                appendDescendants(parent: kid.path, depth: 1, into: &out)
+                appendDescendantPairs(parent: kid.path, depth: 1, into: &pairs)
             }
         }
-        flatRows = out
+        flatRows = Self.computeVerdicts(for: pairs) { Self.safety.evaluate(path: $0).0 }
         maxBytes = topLevel.map(\.bytes).max() ?? 0
         // 顶层空 + isFetchingChildren 才算"拉取中"；否则维持 false 让 view 走 isScanning / 真空两态。
         isFetchingRoot = topLevel.isEmpty
             && coordinator.isFetchingChildren(of: rootPath, sortedBy: sortKey)
     }
 
-    private func appendDescendants(parent: String, depth: Int, into out: inout [FlatTreeRow]) {
+    private func appendDescendantPairs(parent: String, depth: Int,
+                                       into out: inout [(TreeRow, Int)]) {
         let kids = coordinator.directChildren(of: parent, sortedBy: sortKey)
         for k in kids {
-            out.append(FlatTreeRow(row: k, depth: depth))
+            out.append((k, depth))
             if k.isDirectory && (expanded[k.path] ?? false) {
-                appendDescendants(parent: k.path, depth: depth + 1, into: &out)
+                appendDescendantPairs(parent: k.path, depth: depth + 1, into: &out)
             }
         }
+    }
+
+    /// **v2026.06 Step 1【P0-1 verdict 缓存】**：把 (row, depth) 序列一次性映射成
+    /// 带 verdict 的 [FlatTreeRow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
+    ///
+    /// 关键点 1：evaluator 是注入的——生产代码传 `Self.safety.evaluate(path:).0`，
+    /// 测试 [FlatTreeRowVerdictCacheTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/FlatTreeRowVerdictCacheTests.swift)
+    /// 传 [CountingEvaluator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/FlatTreeRowVerdictCacheTests.swift)
+    /// 计调用次数。这是把 SafetyEngine 从 SwiftUI hot path 拆下来的契约接缝。
+    ///
+    /// 关键点 2：每行 evaluator 只调一次。后续 SwiftUI 重绘读 `flat.verdict` 不再回 SafetyEngine。
+    /// 4w 行从"重绘×4w 次 trie 查找"降到"rebuild×4w 次"，rebuild 仅在
+    /// expanded/sortKey/rootPath/treeRevision 变更时发生（4 个事件总和）。
+    static func computeVerdicts(
+        for pairs: [(TreeRow, Int)],
+        using evaluator: (String) -> SafetyVerdict
+    ) -> [FlatTreeRow] {
+        var out: [FlatTreeRow] = []
+        out.reserveCapacity(pairs.count)
+        for (row, depth) in pairs {
+            out.append(FlatTreeRow(row: row, depth: depth, verdict: evaluator(row.path)))
+        }
+        return out
     }
 
     /// 行内三角 / 单击整行 / 右键菜单 / 双击 → 共用的展开切换入口。
@@ -405,9 +439,18 @@ struct TreeColumnHeader: View {
 /// `row` 走 [TreeRow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L139)
 /// 自身的 path 当 SwiftUI 的 `id`，`depth` 决定 indent 缩进。
 /// `Hashable` 由 TreeRow / Int 自动合成，让 onChange/diff 能用值比较。
+///
+/// **v2026.06 Step 1【P0-1 verdict 缓存】**：新增 stored `verdict`。
+/// 旧版 [TreeNodeRow.isTrashable](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+/// 在 SwiftUI 重绘 hot path 上每帧调 `safety.evaluate(path:)` →
+/// 4w 节点 60fps 主线程压垮。
+/// 改为 [rebuildFlatRows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+/// 一次性算好塞到这里，body 只读字段，evaluator 调用次数 == 行数（不再随重绘倍增）。
+/// 回归契约见 [FlatTreeRowVerdictCacheTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/FlatTreeRowVerdictCacheTests.swift)。
 struct FlatTreeRow: Identifiable, Hashable {
     let row: TreeRow
     let depth: Int
+    let verdict: SafetyVerdict
     var id: String { row.path }
 }
 
@@ -433,11 +476,15 @@ struct TreeNodeRow: View {
         row.isDirectory && row.hasChildren && row.accessState == .normal
     }
     /// **v1.5.3**：本行能否被行内 trash 按钮删除。
+    ///
+    /// **v2026.06 Step 1**：不再每帧调 `safety.evaluate(path:)`——
+    /// verdict 已由 [TreeBrowserView.computeVerdicts](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+    /// 在 rebuildFlatRows 阶段一次性算好塞进 [FlatTreeRow.verdict](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
+    /// 这里仅做 O(1) 字段读取，让 SwiftUI 重绘 hot path 完全不碰 SafetyEngine。
     private var isTrashable: Bool {
         guard onTrash != nil else { return false }
         if row.accessState != .normal { return false }
-        let (verdict, _) = TreeBrowserView.safety.evaluate(path: row.path)
-        return verdict != .forbid
+        return flat.verdict != .forbid
     }
 
     var body: some View {
@@ -511,8 +558,10 @@ struct TreeNodeRow: View {
         }
         .contextMenu {
             if let onTrash {
-                let (verdict, _) = TreeBrowserView.safety.evaluate(path: row.path)
-                let isForbidden = (verdict == .forbid)
+                // v2026.06 Step 1：contextMenu 也走 verdict 缓存。
+                // contextMenu 在右键弹出时才求值（不算最 hot path），但既然已经算好就一起复用，
+                // 一致性比微优化重要：后续维护者看到一处就知道全局都不再调 evaluate。
+                let isForbidden = (flat.verdict == .forbid)
                 Button(role: .destructive) {
                     guard !isForbidden else { return }
                     onSelect()
