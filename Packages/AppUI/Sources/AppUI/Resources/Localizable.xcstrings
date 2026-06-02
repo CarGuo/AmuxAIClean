@@ -2552,6 +2552,108 @@
         }
       }
     },
+    "tree.row.trash": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move to Trash"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移到废纸篓"
+          }
+        }
+      }
+    },
+    "tree.row.trash.locked": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cannot remove (system-protected or no access)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法移除（系统保护或无访问权限）"
+          }
+        }
+      }
+    },
+    "tree.confirm.trash.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move to Trash?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移到废纸篓？"
+          }
+        }
+      }
+    },
+    "tree.confirm.trash.message %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@” will be moved to the Trash. You can restore it from there if needed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@” 将被移到废纸篓，需要时可从废纸篓恢复。"
+          }
+        }
+      }
+    },
+    "tree.confirm.trash.confirm": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move to Trash"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移到废纸篓"
+          }
+        }
+      }
+    },
+    "tree.confirm.trash.cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消"
+          }
+        }
+      }
+    },
     "tree.menu.quick_look": {
       "extractionState": "manual",
       "localizations": {
@@ -6275,30 +6377,6 @@
         }
       }
     },
-    "trash.err.dryrun.blocked_and_missing %lld %lld %@" : {
-      "extractionState" : "stale",
-      "localizations" : { }
-    },
-    "trash.err.dryrun.blocked %lld %@" : {
-      "extractionState" : "stale",
-      "localizations" : { }
-    },
-    "trash.err.dryrun.missing %lld" : {
-      "extractionState" : "stale",
-      "localizations" : { }
-    },
-    "trash.err.safety_blocked %lld %@" : {
-      "extractionState" : "stale",
-      "localizations" : { }
-    },
-    "trash.err.recycle_failed %@" : {
-      "extractionState" : "stale",
-      "localizations" : { }
-    },
-    "trash.err.recycle_failed.with_blocked %@ %lld %@" : {
-      "extractionState" : "stale",
-      "localizations" : { }
-    },
     "sort.size.desc" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -6397,6 +6475,57 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "文件数（少→多）"
+          }
+        }
+      }
+    },
+    "sort.mtime.desc" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Modified (Newest first)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "修改时间（最近→最久）"
+          }
+        }
+      }
+    },
+    "sort.mtime.asc" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Modified (Oldest first)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "修改时间（最久→最近）"
+          }
+        }
+      }
+    },
+    "tree.column.mtime" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Modified"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "修改时间"
           }
         }
       }
@@ -7196,11 +7325,39 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "勾上：Helper 不动手，只在日志里记录会删什么。" } }
       }
     },
+    "delete.progress.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Moving to Trash…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在移到废纸篓…" } }
+      }
+    },
+    "delete.progress.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Hang tight, large folders may take a few seconds." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请稍候，目录较大时可能需要几秒。" } }
+      }
+    },
     "delete.action.cancel" : {
       "extractionState" : "manual",
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Cancel" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消" } }
+      }
+    },
+    "delete.action.preview" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Run Preview" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "运行预览" } }
+      }
+    },
+    "delete.action.confirm" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Move to Trash" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "确认移到废纸篓" } }
       }
     },
     "tcc.guide.title" : {

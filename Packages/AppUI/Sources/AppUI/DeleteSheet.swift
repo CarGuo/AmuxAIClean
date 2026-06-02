@@ -82,7 +82,12 @@ public struct DeleteSheet: View {
                 Spacer()
                 Button(String(localized: "delete.action.cancel", bundle: .module), role: .cancel) { onCancel() }
                     .keyboardShortcut(.cancelAction)
-                Button(dryRun ? "运行预览" : "确认移到废纸篓", role: dryRun ? nil : .destructive) {
+                Button(
+                    dryRun
+                        ? String(localized: "delete.action.preview", bundle: .module)
+                        : String(localized: "delete.action.confirm", bundle: .module),
+                    role: dryRun ? nil : .destructive
+                ) {
                     onConfirm(dryRun)
                 }
                 .keyboardShortcut(.defaultAction)

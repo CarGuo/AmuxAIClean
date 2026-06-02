@@ -1,10 +1,10 @@
 {
-  "ranAt": "2026-06-02T13:53:03Z",
+  "ranAt": "2026-06-02T14:13:56Z",
   "total": 1,
   "pass": 1,
   "fail": 0,
   "timeout": 0,
   "cases": [
-    { "id": "scan-perf-diagnose", "status": "PASS", "elapsedMs": 23276, "reason": "" }
+    { "id": "tree-drilldown", "status": "PASS", "elapsedMs": 695, "reason": "" }
   ]
 }
