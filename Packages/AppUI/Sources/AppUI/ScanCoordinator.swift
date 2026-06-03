@@ -280,10 +280,37 @@ public final class ScanCoordinator: ObservableObject {
     ///
     /// key = `"\(path)|\(sortKey.rawValue)"`，让不同排序各自缓存（用户切排序不丢上次结果）。
     /// 扫描结束 / 切类目 / 切根 时由 cancel/reset 主动清空，避免跨会话脏数据。
-    @Published private var treeChildrenCache: [String: [TreeRow]] = [:]
+    ///
+    /// **Step 9a / 2026-06**：从 `@Published` 解耦为普通字典。
+    /// 历史问题：`@Published` 字典每次写入都会让整个 ScanCoordinator
+    /// `objectWillChange` fire，所有 view（含 MainView 主列表 / SystemProbe banner）
+    /// 都被波及一次重算；而真正需要被通知的只有 TreeBrowserView，
+    /// 已经通过 [bumpStructuralRevision()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L328-L332)
+    /// 显式触发。新做法：cache 自己是普通字典，配套一条
+    /// [childrenCacheVersion](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 计数器 @Published（仅给可能要按 cache 失效细粒度刷新的 view 订阅）。
+    /// 主流程依赖 structuralRevision 即可。
+    private var treeChildrenCache: [String: [TreeRow]] = [:]
+    /// **Step 9a / 2026-06**：cache 写入计数器，monotonic UInt64。
+    /// 任何 `treeChildrenCache` 写入（写新键 / 移除旧键 / 整轮 removeAll）后
+    /// 都必须经过 [bumpChildrenCacheVersion()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 把它 &+= 1。view 端**通常不需要**直接订阅这条信号（structuralRevision 已经
+    /// 覆盖），保留它是为：
+    ///   - 单元测试断言"cache 写入 N 次 → version 自增 N 次"
+    ///   - 未来 view 想做"按 cache 命中率细粒度刷新"留 hook
+    @Published public private(set) var childrenCacheVersion: UInt64 = 0
     /// in-flight 路径集合：避免同 path 在 cache miss 时被 view body 多次重算疯狂启 Task。
     /// **不**参与 @Published（不需要触发 view 更新）。
     private var treeChildrenInFlight: Set<String> = []
+
+    /// **Step 9a / 2026-06**：cache 写入版本号统一推进入口。
+    /// 所有改 [treeChildrenCache](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 的位置（写新键 / 删旧键 / removeAll / patch-by-prune）必须串到这里。
+    /// 用 `&+=` 让计数器溢出时回卷而非 trap；订阅者只关心"变没变"，绝对值无意义。
+    @inline(__always)
+    private func bumpChildrenCacheVersion() {
+        childrenCacheVersion &+= 1
+    }
 
     /// v1.5.4：树形视图扁平化重算的"统一脏标"。
     /// [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
@@ -369,7 +396,13 @@ public final class ScanCoordinator: ObservableObject {
         public let bytes: Int64
         public let modificationDate: Date?
     }
-    private var largeFileLeaves: [LargeFileLeaf] = []
+    private var largeFileLeaves: LargeFileLeafTopNHeap = LargeFileLeafTopNHeap(capacity: ScanCoordinator.largeFileTopNCapacity)
+    /// **Step 9c / 2026-06**：Top-N 容量上限（绝对硬顶）。
+    /// 选 1000：
+    ///   - LargeFilesView 本就只渲染 limit=200，N=1000 留 5×缓冲量给排序切换。
+    ///   - 内存：1000 × ~64B（path/bytes/mtime）= ~64KB，常驻可忽略。
+    ///   - 插入复杂度：O(log 1000) ≈ 10 次比较，远小于原"无脑 append + 末尾 N log N 排序"。
+    public static let largeFileTopNCapacity: Int = 1000
     /// M3：compactAfterScanPreservingCache 之后的"二级缓存"。
     /// 把 store 里的 Top N 大文件预读到这，UI 重进大文件页时仍可同步渲染——
     /// 既享受了主索引被释放的内存收益，又不让 UI 出现空白回退。
@@ -512,6 +545,7 @@ public final class ScanCoordinator: ObservableObject {
         // v1.3.z：清掉上一轮的 TreeBrowserView store-fallback 缓存，
         // 避免新 sessionID 期间 view 看到旧 sessionID 的 store query 结果。
         treeChildrenCache.removeAll(keepingCapacity: true)
+        bumpChildrenCacheVersion()
         treeChildrenInFlight.removeAll(keepingCapacity: true)
         bumpStructuralRevision()
         largeFileLeaves.removeAll(keepingCapacity: true)
@@ -614,6 +648,7 @@ public final class ScanCoordinator: ObservableObject {
         // v1.3.z：清掉上一轮的 TreeBrowserView store-fallback 缓存，
         // 避免新 sessionID 期间 view 看到旧 sessionID 的 store query 结果。
         treeChildrenCache.removeAll(keepingCapacity: true)
+        bumpChildrenCacheVersion()
         treeChildrenInFlight.removeAll(keepingCapacity: true)
         bumpStructuralRevision()
         largeFileLeaves.removeAll(keepingCapacity: true)
@@ -724,6 +759,7 @@ public final class ScanCoordinator: ObservableObject {
         childEdges.removeAll(keepingCapacity: true)
         fileLeaves.removeAll(keepingCapacity: true)
         treeChildrenCache.removeAll(keepingCapacity: true)
+        bumpChildrenCacheVersion()
         treeChildrenInFlight.removeAll(keepingCapacity: true)
         largeFileLeaves.removeAll(keepingCapacity: true)
         bumpStructuralRevision()
@@ -1125,7 +1161,7 @@ public final class ScanCoordinator: ObservableObject {
             // v1.0 T4：达到大文件阈值的叶子单独留底，供 LargeFilesView 用。
             // 注：与深索引开关解耦，largeFileLeaves 即便 deepIndex=off 也照常采集。
             if largeFileMinBytes > 0 && bytes >= largeFileMinBytes {
-                largeFileLeaves.append(LargeFileLeaf(
+                largeFileLeaves.consider(LargeFileLeaf(
                     path: nodePath,
                     bytes: bytes,
                     modificationDate: node.modificationDate
@@ -1235,10 +1271,12 @@ public final class ScanCoordinator: ObservableObject {
                         return
                     }
                     self.treeChildrenCache[cacheKey] = rows
+                    self.bumpChildrenCacheVersion()
                     self.treeChildrenInFlight.remove(cacheKey)
                     // v1.5.4：cache 写回 → 通知 [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
-                    // 重建 flatRows，否则展开瞬间空白后无 publisher 唤醒（`treeChildrenCache` 是
-                    // private @Published，外部 view 无法直接订阅）。
+                    // 重建 flatRows，否则展开瞬间空白后无 publisher 唤醒（`treeChildrenCache` 已
+                    // 解耦 @Published，靠 [structuralRevision](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L322)
+                    // 触发；Step 9a 之后绑定关系仍然成立）。
                     self.bumpStructuralRevision()
                 }
             }
@@ -1265,6 +1303,7 @@ public final class ScanCoordinator: ObservableObject {
     @MainActor
     fileprivate func invalidateTreeCacheAfterScan() {
         treeChildrenCache.removeAll(keepingCapacity: true)
+        bumpChildrenCacheVersion()
         bumpStructuralRevision()
     }
 
@@ -1373,6 +1412,7 @@ public final class ScanCoordinator: ObservableObject {
             newCache[cacheKey] = (pruned.count == rows.count) ? rows : pruned
         }
         treeChildrenCache = newCache
+        bumpChildrenCacheVersion()
 
         // v1.5.4：删除完毕 → 让 TreeBrowserView 立刻重建扁平 flatRows（移除已删行）。
         bumpStructuralRevision()
@@ -1744,7 +1784,7 @@ public final class ScanCoordinator: ObservableObject {
         if largeFileLeaves.isEmpty, let cache = compactedLargeFileTopN {
             source = cache
         } else {
-            source = largeFileLeaves
+            source = largeFileLeaves.snapshot()
         }
         let filtered = source
             .filter { $0.bytes >= minBytes }
