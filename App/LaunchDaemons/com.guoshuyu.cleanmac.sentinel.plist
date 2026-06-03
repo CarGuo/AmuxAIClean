@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.guoshuyu.cleanmac.sentinel</string>
+    <key>BundleProgram</key>
+    <string>Contents/MacOS/gsycleanmac-sentinel</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>LowPriorityIO</key>
+    <true/>
+    <key>Nice</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>/tmp/com.guoshuyu.cleanmac.sentinel.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/com.guoshuyu.cleanmac.sentinel.err.log</string>
+</dict>
+</plist>

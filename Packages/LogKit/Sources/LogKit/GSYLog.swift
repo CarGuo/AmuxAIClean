@@ -53,6 +53,7 @@ public enum GSYLog {
         case updater    = "Updater"
         case settings   = "Settings"
         case regression = "Regression"
+        case sentinel   = "Sentinel"
     }
 
     // MARK: - 配置

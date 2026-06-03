@@ -58,6 +58,13 @@ public final class AppSettings {
         /// v1.4：开发者构建产物扫描的规则启用集合，存为 `[String]`（DevArtifactRule.id 数组）。
         /// 默认 = `DevArtifactRules.allIDs`（全开），用户可在设置面板逐项关。
         public static let enabledDevArtifactRuleIDs = "v1.4.enabled_dev_artifact_rules"
+        /// v1.6：Sentinel 后台守护开关（SMAppService.daemon）。默认 OFF —— 用户必须在
+        /// 「设置 → 高级 → 后台守护」显式打开才会注册 helper。详见 [docs/SENTINEL_DESIGN.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/SENTINEL_DESIGN.md) §4。
+        public static let sentinelEnabled = "v1.6.sentinel_enabled"
+        /// v1.6：Sentinel 最近一次成功 register 的时间戳（双向写入；register 时刷，
+        /// unregister 时清）。给设置面板「最近被 Sentinel 发现的候选」面板做"自从启用以来"
+        /// 的时间窗起点；同时用于诊断"用户开了但从来没成功过"的边界情况。
+        public static let sentinelLastEnabled = "v1.6.sentinel_last_enabled"
     }
 
     /// v1.3：HUD 屏幕位置预设。
@@ -336,6 +343,31 @@ public final class AppSettings {
         didSet { defaults.set(Array(enabledDevArtifactRuleIDs), forKey: Keys.enabledDevArtifactRuleIDs) }
     }
 
+    /// v1.6：Sentinel 后台守护开关。默认 `false` —— 用户必须显式在
+    /// 「设置 → 高级 → 后台守护」勾选启用，避免存量用户升级后多了个守护进程。
+    ///
+    /// `didSet` 仅持久化到 UserDefaults；register / unregister 由
+    /// [SentinelManager](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SentinelManager.swift)
+    /// 在 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
+    /// `onChange(of: settings.sentinelEnabled)` 钩子里完成（避免 AppSettings 直接依赖
+    /// ServiceManagement，保持配置层纯）。
+    public var sentinelEnabled: Bool {
+        didSet { defaults.set(sentinelEnabled, forKey: Keys.sentinelEnabled) }
+    }
+
+    /// v1.6：Sentinel 最近一次成功 register 的时间戳。
+    /// register 成功后 [SentinelManager](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SentinelManager.swift)
+    /// 调本属性 setter 写入 `Date()`；unregister 后写 nil。
+    public var sentinelLastEnabled: Date? {
+        didSet {
+            if let date = sentinelLastEnabled {
+                defaults.set(date, forKey: Keys.sentinelLastEnabled)
+            } else {
+                defaults.removeObject(forKey: Keys.sentinelLastEnabled)
+            }
+        }
+    }
+
     // MARK: - 构造
 
     /// 标准构造（生产代码用）：直接使用 `UserDefaults.standard`。
@@ -453,6 +485,13 @@ public final class AppSettings {
         } else {
             self.enabledDevArtifactRuleIDs = DevArtifactRules.allIDs
         }
+        // v1.6：Sentinel 默认 OFF（用户必须显式启用，避免存量用户升级后多了个守护进程）。
+        if let raw = defaults.object(forKey: Keys.sentinelEnabled) as? Bool {
+            self.sentinelEnabled = raw
+        } else {
+            self.sentinelEnabled = false
+        }
+        self.sentinelLastEnabled = defaults.object(forKey: Keys.sentinelLastEnabled) as? Date
         // 初始化期一致性纠偏：万一上一次进程崩溃前留下了"trayEnabled=false 且 hideFromDockWhenClosed=true"
         // 的非法组合（didSet 没来得及触发），启动时强制以 trayEnabled 为准。
         if hideFromDockWhenClosed, !trayEnabled {
@@ -478,5 +517,7 @@ public final class AppSettings {
         defaults.removeObject(forKey: Keys.hideFromDockWhenClosed)
         defaults.removeObject(forKey: Keys.useScanStore)
         defaults.removeObject(forKey: Keys.enabledDevArtifactRuleIDs)
+        defaults.removeObject(forKey: Keys.sentinelEnabled)
+        defaults.removeObject(forKey: Keys.sentinelLastEnabled)
     }
 }

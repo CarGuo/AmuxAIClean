@@ -29,6 +29,8 @@
 	<string>11</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
@@ -36,5 +38,18 @@
 	</dict>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 GuoShuYu. All rights reserved.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.guoshuyu.cleanmac.scheme</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>gsycleanmac</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

@@ -7492,6 +7492,76 @@
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Note: sensitive libraries such as Apple Music / Photos / Mail are skipped to avoid repeated permission prompts; these folders are unrelated to this app's cleanup targets (caches / duplicates / uninstall leftovers)." } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "说明：Apple Music / Photos / Mail 等敏感库已主动跳过，避免系统反复弹权限框；这些目录与本 App 的清理目标（缓存/重复文件/卸载残留）无关。" } }
       }
+    },
+    "settings.tab.advanced" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Advanced" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "高级" } }
+      }
+    },
+    "settings.advanced.sentinel.section" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Background Sentinel" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "后台守护" } }
+      }
+    },
+    "settings.advanced.sentinel.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Enable background sentinel" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "启用后台守护进程" } }
+      }
+    },
+    "settings.advanced.sentinel.detail" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Passively watches Trash and a few hot caches when the system is idle. When 5GB+ of cumulative noise is detected over 30s, the main app is pinged via gsycleanmac:// to surface candidates. Off by default; toggle off any time." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "仅在系统空闲时被动监听废纸篓与少量缓存目录。30 秒内累计噪音超过 5GB 时通过 gsycleanmac:// 唤起主 App 提示候选项。默认关闭，随时可关。" } }
+      }
+    },
+    "settings.advanced.sentinel.last_enabled" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Last enabled" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "上次启用" } }
+      }
+    },
+    "settings.advanced.sentinel.footer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "First enable may require approval in System Settings → General → Login Items & Extensions. The helper consumes < 10MB RAM and exits cleanly when disabled." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "首次启用可能需要在「系统设置 → 通用 → 登录项与扩展」中授权。守护进程内存占用 < 10MB，关闭后立即干净退出。" } }
+      }
+    },
+    "sentinel.alert.scan_invitation.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Background sentinel suggests a scan" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "后台守护建议立即扫描" } }
+      }
+    },
+    "sentinel.alert.scan_invitation.message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The sentinel detected significant cleanup candidates accumulated over the last few minutes. Run a recommended scan now?" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "守护进程在最近几分钟内监测到较多可清理候选。是否立即执行推荐扫描？" } }
+      }
+    },
+    "sentinel.alert.scan_invitation.action_scan" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Scan now" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "立即扫描" } }
+      }
+    },
+    "sentinel.alert.scan_invitation.action_dismiss" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Later" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "稍后" } }
+      }
     }
   }
 }

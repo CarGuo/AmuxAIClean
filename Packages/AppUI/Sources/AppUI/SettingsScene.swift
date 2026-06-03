@@ -109,8 +109,16 @@ public struct SettingsScene: View {
                         Image(systemName: "internaldrive")
                     }
                 }
+            advancedTab
+                .tabItem {
+                    Label {
+                        Text("settings.tab.advanced", bundle: .module)
+                    } icon: {
+                        Image(systemName: "shield")
+                    }
+                }
         }
-        .frame(width: 520, height: 420)
+        .frame(width: 520, height: 460)
         .task {
             await refreshPaths()
             await refreshStorage()
@@ -834,5 +842,43 @@ extension SettingsScene {
         f.allowedUnits = [.useKB, .useMB, .useGB]
         f.countStyle = .file
         return f.string(fromByteCount: bytes)
+    }
+}
+
+// MARK: - 高级 / 后台守护 Tab（v1.6 Sentinel）
+
+extension SettingsScene {
+    /// v1.6「高级」Tab：仅一项—— Sentinel 后台守护开关 + 状态展示 + 文档链接。
+    /// 详细行为见 [docs/SENTINEL_DESIGN.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/SENTINEL_DESIGN.md)。
+    fileprivate var advancedTab: some View {
+        Form {
+            Section {
+                Toggle(isOn: $settings.sentinelEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("settings.advanced.sentinel.title", bundle: .module)
+                        Text("settings.advanced.sentinel.detail", bundle: .module)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let last = settings.sentinelLastEnabled {
+                    LabeledContent {
+                        Text(last.formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } label: {
+                        Text("settings.advanced.sentinel.last_enabled", bundle: .module)
+                    }
+                }
+            } header: {
+                Text("settings.advanced.sentinel.section", bundle: .module)
+            } footer: {
+                Text("settings.advanced.sentinel.footer", bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.top, 4)
     }
 }

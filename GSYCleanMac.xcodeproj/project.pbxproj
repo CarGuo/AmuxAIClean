@@ -19,6 +19,7 @@
 		E0963A3E20D365A7E7DA8DE5 /* LogKit in Frameworks */ = {isa = PBXBuildFile; productRef = 869DB7788784E9203F564909 /* LogKit */; };
 		AA01E001000000000000S001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA01F001000000000000S001 /* main.swift */; };
 		AA01E002000000000000S002 /* gsycleanmac-sentinel in Embed Helper Tools */ = {isa = PBXBuildFile; fileRef = AA01F002000000000000S002 /* gsycleanmac-sentinel */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		AA01J001000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist in Embed LaunchDaemons */ = {isa = PBXBuildFile; fileRef = AA01J002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -39,6 +40,7 @@
 		AA01F001000000000000S001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		AA01F002000000000000S002 /* gsycleanmac-sentinel */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "gsycleanmac-sentinel"; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA01F003000000000000S003 /* Sentinel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Sentinel.entitlements; sourceTree = "<group>"; };
+		AA01J002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.guoshuyu.cleanmac.sentinel.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -95,6 +97,7 @@
 				F4112C6CEEEE50474D0CB590 /* GSYCleanMac.entitlements */,
 				A1AC343FA0785D39B6C91BD3 /* GSYCleanMacApp.swift */,
 				7E48C094BFCC4AB8A1DD91EF /* Info.plist */,
+				AA01J003000000000000S001 /* LaunchDaemons */,
 				C4FBB712C198D188AD075C66 /* RegressionRunner.swift */,
 			);
 			path = App;
@@ -144,6 +147,14 @@
 			path = Sentinel;
 			sourceTree = "<group>";
 		};
+		AA01J003000000000000S001 /* LaunchDaemons */ = {
+			isa = PBXGroup;
+			children = (
+				AA01J002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */,
+			);
+			path = LaunchDaemons;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -155,6 +166,7 @@
 				88E7C9A4619484B52FA021B7 /* Resources */,
 				73F5C9E92640168B6A99A2CE /* Frameworks */,
 				AA01H001000000000000S001 /* Embed Helper Tools */,
+				AA01J004000000000000S001 /* Embed LaunchDaemons */,
 			);
 			buildRules = (
 			);
@@ -277,6 +289,17 @@
 				AA01E002000000000000S002 /* gsycleanmac-sentinel in Embed Helper Tools */,
 			);
 			name = "Embed Helper Tools";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA01J004000000000000S001 /* Embed LaunchDaemons */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "Contents/Library/LaunchDaemons";
+			dstSubfolderSpec = 1;
+			files = (
+				AA01J001000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist in Embed LaunchDaemons */,
+			);
+			name = "Embed LaunchDaemons";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */

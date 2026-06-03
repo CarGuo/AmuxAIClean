@@ -69,6 +69,11 @@ public struct MainView: View {
     /// Dynamic Type 缩放，避免大字号下能看到的行数减半。
     @ScaledMetric(relativeTo: .caption) private var multiRootProgressScrollMaxHeight: CGFloat = 120
 
+    /// v1.6 Sentinel：daemon 通过 `gsycleanmac://action/scan/full` 唤起主 App 时，
+    /// 不自动开扫（用户在 Step 6.4 决策中选了 C：避免突袭式 IO 抢占），而是弹一个引导 alert，
+    /// 用户点「立即扫描」才走 ScanCoordinator.scanRecommended。
+    @State private var sentinelScanInvitationVisible: Bool = false
+
     /// 结果区两种视图模式。
     public enum ResultsViewMode: String, CaseIterable, Identifiable {
         case list, tree
@@ -253,6 +258,33 @@ public struct MainView: View {
             // 比直接 NSApp.windows 遍历 makeKeyAndOrderFront 更稳。
             // 注意：window id 必须与 GSYCleanMacApp 中 WindowGroup(id:) 一致（"main"）。
             openWindow(id: "main")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .gsySentinelStartFullScan)) { _ in
+            // v1.6 Sentinel 场景 2：daemon 通过 `gsycleanmac://action/scan/full` 唤起。
+            // 用户决策 C：不自动开扫，弹引导 alert，让用户主动确认。
+            openWindow(id: "main")
+            sentinelScanInvitationVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .gsySentinelOpenUninstall)) { note in
+            // v1.6 Sentinel 场景 1：daemon 通过 `gsycleanmac://uninstall?path=...` 唤起卸载页。
+            // path 已由 [SentinelURLRouter](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SentinelURLRouter.swift) 校验过；
+            // 这里把侧栏定位到 uninstall sentinel row，让 UninstallScreen 显示。
+            // 注：path 当前不直接 deep-link 到具体卸载条目（候选展示在 UninstallScreen 列表里），
+            // 后续可通过 NotificationCenter 二次广播由 UninstallScreen 自己消费 path 实现高亮。
+            openWindow(id: "main")
+            selectedCategory = MainView.uninstallSentinelID
+            _ = note
+        }
+        .alert(
+            String(localized: "sentinel.alert.scan_invitation.title", bundle: .module),
+            isPresented: $sentinelScanInvitationVisible
+        ) {
+            Button(String(localized: "sentinel.alert.scan_invitation.action_scan", bundle: .module)) {
+                coordinator.scanRecommended(includeHidden: settings.showHidden)
+            }
+            Button(String(localized: "sentinel.alert.scan_invitation.action_dismiss", bundle: .module), role: .cancel) {}
+        } message: {
+            Text("sentinel.alert.scan_invitation.message", bundle: .module)
         }
         .overlay {
             if isDropTargeted {

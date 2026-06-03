@@ -35,6 +35,12 @@ struct GSYCleanMacApp: App {
     /// 关闭时永远保持 .regular，与现行行为完全一致。
     @State private var activationPolicy = ActivationPolicyController()
 
+    /// v1.6：Sentinel 守护管理器（SMAppService.daemon 包装）。
+    /// 在 init 阶段构造，启动钩子里按 [settings.sentinelEnabled](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
+    /// 做幂等 register；用户在「设置 → 高级 → 后台守护」toggle 时通过
+    /// `.onChange(of: settings.sentinelEnabled)` 钩子驱动 enable / disable。
+    @State private var sentinelManager: SentinelManager
+
     private let tccDismissedKey = "tcc.onboarding.dismissed"
 
     init() {
@@ -59,6 +65,9 @@ struct GSYCleanMacApp: App {
         let s = AppSettings()
         self._settings = State(initialValue: s)
         self._updateChecker = State(initialValue: UpdateChecker(settings: s))
+        // v1.6：Sentinel 管理器与 AppSettings 同生命周期；register / unregister
+        // 由启动钩子 + onChange 驱动，AppSettings 里 didSet 不直接调 SMAppService。
+        self._sentinelManager = State(initialValue: SentinelManager(settings: s))
         // M1 内存优化：仅当用户开启 useScanStore feature flag 时构造 GRDB store。
         // v1.3.z 起：deepIndex 已正式翻成 off，TreeBrowserView 必须走 GRDB store
         // 才能下钻；所以 store 不再受 useScanStore 守卫，**强制开启**。
@@ -126,6 +135,9 @@ struct GSYCleanMacApp: App {
                 reconcileTray()
                 // v1.3.x：首启即按用户偏好把激活策略就位（默认 false → regular，行为不变）。
                 reconcileActivationPolicy()
+                // v1.6：Sentinel 启动钩子——若用户已 ON，进程拉起时立刻幂等 register，
+                // 兜住升级 / 重装 / SMAppService bundle 路径变化等场景。默认 OFF 时跳过。
+                reconcileSentinel(initial: true)
 
                 // v1.3.zz 真实回归套件总入口。
                 // 环境变量 GSY_REGRESSION_CASE=<case-id> 启动后跑指定 case，结果以
@@ -206,6 +218,17 @@ struct GSYCleanMacApp: App {
                 // 关 → 立刻回 regular，不会让用户因为 Dock 没了而困惑。
                 reconcileActivationPolicy()
             }
+            .onChange(of: settings.sentinelEnabled) { _, _ in
+                // v1.6：用户在「设置 → 高级 → 后台守护」拨动开关 → 立刻 enable / disable。
+                // reconcileSentinel 内部识别 settings 当前值，幂等并能在失败时回滚 toggle。
+                reconcileSentinel(initial: false)
+            }
+            .onOpenURL { url in
+                // v1.6：daemon 通过 `gsycleanmac://` 把候选传回主 App。
+                // 拉主窗口 + 路由分发由 SentinelURLRouter 完成（NotificationCenter 广播）。
+                Self.bringMainWindowToFront()
+                _ = SentinelURLRouter.handle(url)
+            }
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
                 // v1.3.x：监听任意 NSWindow 关闭。延后到下一 runloop 再判断"是否还有可见主窗口"——
                 // willClose 触发时窗口尚未 isVisible=false，立即判断会误以为还在。
@@ -284,6 +307,26 @@ struct GSYCleanMacApp: App {
             hideEnabled: settings.hideFromDockWhenClosed,
             hasVisibleMainWindow: hasVisible
         )
+    }
+
+    /// v1.6：把 [settings.sentinelEnabled](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
+    /// 与 SMAppService 的实际 register 状态对齐。
+    ///
+    /// - `initial=true`：进程拉起钩子，幂等 register（用户已 ON 时）。
+    /// - `initial=false`：用户 toggle，按新值调 enable / disable；register 失败会回滚 toggle 到 false，
+    ///   保证 settings 不会出现"开关 ON 但守护没起来"的不一致。
+    @MainActor
+    private func reconcileSentinel(initial: Bool) {
+        if settings.sentinelEnabled {
+            let ok = sentinelManager.enable()
+            if !ok && !initial {
+                // 用户 toggle 后失败 → 把开关弹回 false，避免"开关 ON 但实际未注册"
+                settings.sentinelEnabled = false
+            }
+        } else {
+            // 关：调 unregister；返回值不影响 settings（已经是 false）。
+            _ = sentinelManager.disable()
+        }
     }
 
     /// v1.3.x：响应 NSWindow.willCloseNotification —— willClose 时窗口本身仍 isVisible=true，
