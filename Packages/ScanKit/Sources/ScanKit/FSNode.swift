@@ -79,4 +79,7 @@ public enum ScanEvent: Sendable {
     case permissionDenied(path: String)
     /// TCC 雷区（Apple Music/Photos/Mail 等）被主动跳过；UI 用此事件统一展示而非弹窗。
     case tccProtectedSkipped(path: String)
+    /// 命中 CACHEDIR.TAG 标记，整棵子目录被视为「纯缓存」跳过下钻；
+    /// UI 可把命中目录作为 safe 候选高亮。
+    case cacheDirTagged(path: String)
 }

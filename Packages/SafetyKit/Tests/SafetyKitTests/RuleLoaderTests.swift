@@ -877,6 +877,129 @@ final class RuleLoaderTests: XCTestCase {
         XCTAssertEqual(rules[1].paths.first?.verdict, .confirm)
     }
 
+    // MARK: - Step 8 §2.7 AI Agent CLI + Maven 真实 yaml 契约
+
+    /// Step 8-2：Maven 4 条 path-rule（repository/wrapper safe + settings*.xml forbid 多重防御）
+    func testRealVendorsYamlLoadsMavenPathRules() throws {
+        let rules = try Self.loadRealRules()
+        guard let mvn = rules.first(where: { $0.name == "Maven" }) else {
+            return XCTFail("vendors.yaml 应含 Maven vendor")
+        }
+        XCTAssertEqual(mvn.paths.count, 4,
+                       "§2.6 Maven：repository + wrapper safe + settings.xml + settings-security.xml forbid = 4 条")
+        // repository：safe + recipe（保留 settings.xml）
+        let repo = mvn.paths.first { $0.path == "~/.m2/repository" }
+        XCTAssertEqual(repo?.verdict, .safe)
+        XCTAssertNotNil(repo?.recipe, "Maven repository 应附 recipe")
+        // settings*.xml：forbid（凭证多重防御）
+        XCTAssertEqual(mvn.paths.first { $0.path == "~/.m2/settings.xml" }?.verdict, .forbid)
+        XCTAssertEqual(mvn.paths.first { $0.path == "~/.m2/settings-security.xml" }?.verdict, .forbid)
+    }
+
+    /// Step 8-2：ClaudeCode 6 条 path-rule（sessions/cache/logs/Caches safe + credentials/config forbid）
+    func testRealVendorsYamlLoadsClaudeCodePathRules() throws {
+        let rules = try Self.loadRealRules()
+        guard let cc = rules.first(where: { $0.name == "ClaudeCode" }) else {
+            return XCTFail("vendors.yaml 应含 ClaudeCode vendor")
+        }
+        XCTAssertEqual(cc.paths.count, 6,
+                       "§2.7 ClaudeCode：sessions/cache/logs/Caches safe + credentials/config forbid = 6 条")
+        XCTAssertEqual(cc.paths.first { $0.path == "~/.claude/sessions" }?.verdict, .safe)
+        XCTAssertEqual(cc.paths.first { $0.path == "~/.claude/credentials.json" }?.verdict, .forbid,
+                       "credentials.json 必须 forbid（含 Anthropic API key / OAuth token）")
+        XCTAssertEqual(cc.paths.first { $0.path == "~/.claude/config.json" }?.verdict, .forbid)
+    }
+
+    /// Step 8-2：CursorAgent 4 条 path-rule
+    func testRealVendorsYamlLoadsCursorAgentPathRules() throws {
+        let rules = try Self.loadRealRules()
+        guard let ca = rules.first(where: { $0.name == "CursorAgent" }) else {
+            return XCTFail("vendors.yaml 应含 CursorAgent vendor")
+        }
+        XCTAssertEqual(ca.paths.count, 4,
+                       "§2.7 CursorAgent：sessions/cache/Caches safe + credentials forbid = 4 条")
+        XCTAssertEqual(ca.paths.first { $0.path == "~/.cursor/agent/credentials.json" }?.verdict, .forbid)
+    }
+
+    /// Step 8-2：CopilotCli 6 条 path-rule（sessions/cache/logs/CopilotForXcode safe + hosts/apps yml forbid）
+    func testRealVendorsYamlLoadsCopilotCliPathRules() throws {
+        let rules = try Self.loadRealRules()
+        guard let cp = rules.first(where: { $0.name == "CopilotCli" }) else {
+            return XCTFail("vendors.yaml 应含 CopilotCli vendor")
+        }
+        XCTAssertEqual(cp.paths.count, 6,
+                       "§2.7 CopilotCli：sessions/cache/logs/Caches safe + hosts.yml/apps.yml forbid = 6 条")
+        XCTAssertEqual(cp.paths.first { $0.path == "~/.copilot/hosts.yml" }?.verdict, .forbid,
+                       "hosts.yml 必须 forbid（GitHub OAuth token）")
+        XCTAssertEqual(cp.paths.first { $0.path == "~/.copilot/apps.yml" }?.verdict, .forbid)
+    }
+
+    /// Step 8-2：Codex 5 条 path-rule
+    func testRealVendorsYamlLoadsCodexPathRules() throws {
+        let rules = try Self.loadRealRules()
+        guard let cx = rules.first(where: { $0.name == "Codex" }) else {
+            return XCTFail("vendors.yaml 应含 Codex vendor")
+        }
+        XCTAssertEqual(cx.paths.count, 5,
+                       "§2.7 Codex：sessions/cache/logs safe + auth.json/config.toml forbid = 5 条")
+        XCTAssertEqual(cx.paths.first { $0.path == "~/.codex/auth.json" }?.verdict, .forbid,
+                       "auth.json 必须 forbid（OpenAI API key）")
+        XCTAssertEqual(cx.paths.first { $0.path == "~/.codex/config.toml" }?.verdict, .forbid)
+    }
+
+    /// Step 8-2：Antigravity 6 条 path-rule（Electron 系，与 Code/Cursor/Trae 同结构）
+    func testRealVendorsYamlLoadsAntigravityPathRules() throws {
+        let rules = try Self.loadRealRules()
+        guard let ag = rules.first(where: { $0.name == "Antigravity" }) else {
+            return XCTFail("vendors.yaml 应含 Antigravity vendor")
+        }
+        XCTAssertEqual(ag.paths.count, 6,
+                       "§2.7 Antigravity：Cache/CachedData/CachedExtensionVSIXs/logs safe + workspaceStorage confirm + globalStorage forbid = 6 条")
+        // 与 Code/Cursor/Trae 同 Electron 结构：globalStorage forbid、workspaceStorage confirm
+        let global = ag.paths.first { $0.path.hasSuffix("/User/globalStorage") }
+        XCTAssertEqual(global?.verdict, .forbid)
+        let ws = ag.paths.first { $0.path.hasSuffix("/User/workspaceStorage") }
+        XCTAssertEqual(ws?.verdict, .confirm)
+    }
+
+    /// Step 8-2 端到端：6 个 vendor 全部命中真实 trie，关键路径 verdict 行为正确
+    func testRealVendorsYamlStep8EndToEnd() throws {
+        let home = "/Users/foo"
+        let rules = try Self.loadRealRules(home: home)
+        let trie = VendorTrie.build(vendors: rules, home: home)
+        let engine = SafetyEngine()
+
+        // Maven repository：safe（哪怕路径深 100 层）
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/.m2/repository/com/google/guava/guava/32.0.1/guava-32.0.1.jar",
+                            trie: trie, home: home).0,
+            .safe)
+        // Maven settings.xml：forbid
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/.m2/settings.xml", trie: trie, home: home).0,
+            .forbid)
+        // ClaudeCode session 子目录：safe
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/.claude/sessions/2026-06-03-abc",
+                            trie: trie, home: home).0,
+            .safe)
+        // ClaudeCode credentials：forbid
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/.claude/credentials.json", trie: trie, home: home).0,
+            .forbid)
+        // Codex auth：forbid
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/.codex/auth.json", trie: trie, home: home).0,
+            .forbid)
+        // Antigravity globalStorage：forbid
+        XCTAssertEqual(
+            engine.evaluate(
+                path: "/Users/foo/Library/Application Support/Antigravity/User/globalStorage",
+                trie: trie, home: home
+            ).0,
+            .forbid)
+    }
+
     /// 提取仓库根的 vendors.yaml URL（与上面三处 #filePath 拷贝重复，集中到一处）
     private static func vendorsYamlURL() -> URL {
         let here = URL(fileURLWithPath: #filePath)

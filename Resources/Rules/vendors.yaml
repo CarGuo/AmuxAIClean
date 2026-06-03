@@ -372,6 +372,141 @@ vendors:
         verdict: "safe"
         reason: "minikube ISO / images 缓存"
 
+  - name: "Maven"
+    note: "Apache Maven 本地仓库 (DEV_ARTIFACTS_RULES §2.6)"
+    paths:
+      # —— 本地仓库（safe，mvn install 自愈；可数十 GB） ——
+      - path: "~/.m2/repository"
+        verdict: "safe"
+        recipe: "可保留 settings.xml；mvn dependency:resolve 会重下"
+        reason: "本地 jar 仓库，重下即可恢复（可达数十 GB）"
+      - path: "~/.m2/wrapper"
+        verdict: "safe"
+        reason: "mvnw 下载的 Maven 发行版缓存，按 wrapper 描述自愈"
+      # —— 凭证（forbid，多重防御，与 dotfileCredentialSuffixes 重叠） ——
+      - path: "~/.m2/settings.xml"
+        verdict: "forbid"
+        reason: "用户级 Maven 配置（含私服凭证），删了 CI 与企业仓库直接断"
+      - path: "~/.m2/settings-security.xml"
+        verdict: "forbid"
+        reason: "Maven master password（mvn --encrypt-master-password 产物）"
+
+  # ========== AI Agent CLI（DEV_ARTIFACTS_RULES.md §2.7） ==========
+  # AI 编程助手 / 智能体 CLI 工具，统一具备 sessions/cache + token 凭证模式：
+  # - sessions / cache / logs：safe，下次会话自建
+  # - config / auth / credentials：forbid 多重防御
+  - name: "ClaudeCode"
+    note: "Anthropic Claude Code CLI (DEV_ARTIFACTS_RULES §2.7)"
+    paths:
+      # —— 会话历史与 MCP 缓存（safe） ——
+      - path: "~/.claude/sessions"
+        verdict: "safe"
+        reason: "对话历史快照，可重建（下次 claude resume 重开会话即可）"
+      - path: "~/.claude/cache"
+        verdict: "safe"
+        reason: "MCP server / tool 调用缓存"
+      - path: "~/.claude/logs"
+        verdict: "safe"
+        reason: "运行日志"
+      - path: "~/Library/Caches/com.anthropic.claudecode"
+        verdict: "safe"
+        reason: "Claude Code 客户端缓存（npm 全局安装版本同时落 ~/.claude）"
+      # —— 凭证 / 配置（forbid，多重防御） ——
+      - path: "~/.claude/credentials.json"
+        verdict: "forbid"
+        reason: "Anthropic API key / OAuth refresh token"
+      - path: "~/.claude/config.json"
+        verdict: "forbid"
+        reason: "用户配置（含 model / API base / 默认权限）"
+
+  - name: "CursorAgent"
+    note: "Cursor Agent CLI (DEV_ARTIFACTS_RULES §2.7)"
+    paths:
+      # —— Agent 会话与缓存（safe） ——
+      - path: "~/.cursor/agent/sessions"
+        verdict: "safe"
+        reason: "Cursor agent CLI 会话历史"
+      - path: "~/.cursor/agent/cache"
+        verdict: "safe"
+        reason: "Agent 工具调用缓存"
+      - path: "~/Library/Caches/com.cursor.agent"
+        verdict: "safe"
+        reason: "Cursor agent 客户端缓存"
+      # —— 凭证（forbid） ——
+      - path: "~/.cursor/agent/credentials.json"
+        verdict: "forbid"
+        reason: "Cursor 登录 token"
+
+  - name: "CopilotCli"
+    note: "GitHub Copilot CLI (DEV_ARTIFACTS_RULES §2.7)"
+    paths:
+      # —— Copilot CLI 会话与缓存（safe） ——
+      - path: "~/.copilot/sessions"
+        verdict: "safe"
+        reason: "GitHub Copilot CLI 会话历史"
+      - path: "~/.copilot/cache"
+        verdict: "safe"
+        reason: "Copilot CLI 提示与补全缓存"
+      - path: "~/.copilot/logs"
+        verdict: "safe"
+        reason: "Copilot CLI 运行日志"
+      - path: "~/Library/Caches/com.github.CopilotForXcode"
+        verdict: "safe"
+        reason: "Copilot for Xcode 客户端缓存（与 CLI 共用 ~/.copilot 凭证）"
+      # —— 凭证（forbid，OAuth token 与 hosts.yml 同级） ——
+      - path: "~/.copilot/hosts.yml"
+        verdict: "forbid"
+        reason: "GitHub OAuth token（gh auth login 产物，多重防御）"
+      - path: "~/.copilot/apps.yml"
+        verdict: "forbid"
+        reason: "Copilot CLI 已授权应用清单（含 client_id / device flow secret）"
+
+  - name: "Codex"
+    note: "OpenAI Codex CLI (DEV_ARTIFACTS_RULES §2.7)"
+    paths:
+      # —— Codex 会话与缓存（safe） ——
+      - path: "~/.codex/sessions"
+        verdict: "safe"
+        reason: "Codex CLI 会话历史"
+      - path: "~/.codex/cache"
+        verdict: "safe"
+        reason: "Codex CLI 提示词与补全缓存"
+      - path: "~/.codex/logs"
+        verdict: "safe"
+        reason: "Codex CLI 运行日志"
+      # —— 凭证 / 配置（forbid） ——
+      - path: "~/.codex/auth.json"
+        verdict: "forbid"
+        reason: "OpenAI API key / OAuth token"
+      - path: "~/.codex/config.toml"
+        verdict: "forbid"
+        reason: "用户配置（含 organization / project / model 默认）"
+
+  - name: "Antigravity"
+    note: "Google Antigravity Agent IDE (DEV_ARTIFACTS_RULES §2.7)"
+    paths:
+      # —— Antigravity Electron 系（与 VS Code 同结构） ——
+      - path: "~/Library/Application Support/Antigravity/Cache"
+        verdict: "safe"
+        reason: "Electron HTTP 缓存"
+      - path: "~/Library/Application Support/Antigravity/CachedData"
+        verdict: "safe"
+        reason: "主进程预编译缓存"
+      - path: "~/Library/Application Support/Antigravity/CachedExtensionVSIXs"
+        verdict: "safe"
+        reason: "已下载的扩展 VSIX 临时文件"
+      - path: "~/Library/Application Support/Antigravity/logs"
+        verdict: "safe"
+        reason: "Antigravity 运行日志"
+      # —— Workspace 状态（confirm） ——
+      - path: "~/Library/Application Support/Antigravity/User/workspaceStorage"
+        verdict: "confirm"
+        reason: "每个 workspace 状态，删了丢面板布局"
+      # —— 凭证（forbid，多重防御） ——
+      - path: "~/Library/Application Support/Antigravity/User/globalStorage"
+        verdict: "forbid"
+        reason: "已登录 Google 账号 token / 同步密钥（多重防御）"
+
   # ========== 应用厂商规则（v1.0 已清洗版） ==========
   - name: "Adobe"
     bundle_id_prefix: "com.adobe"

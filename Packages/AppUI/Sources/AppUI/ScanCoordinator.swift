@@ -891,6 +891,10 @@ public final class ScanCoordinator: ObservableObject {
                 if !tccProtectedSkippedPaths.contains(path) {
                     tccProtectedSkippedPaths.append(path)
                 }
+            case .cacheDirTagged:
+                // v1.5 Step 8：CACHEDIR.TAG 命中——单根扫描忽略；
+                // safe 候选由后续 SafetyEngine 路径级 verdict 兜底，这里不重复 banner。
+                break
             }
 
             // 节流：≥150ms 推一次（PITFALLS §5.4）
@@ -996,6 +1000,9 @@ public final class ScanCoordinator: ObservableObject {
                 if !tccProtectedSkippedPaths.contains(path) {
                     tccProtectedSkippedPaths.append(path)
                 }
+            case .cacheDirTagged:
+                // v1.5 Step 8：多根模式下命中 CACHEDIR.TAG 同样静默——SafetyEngine 兜底。
+                break
             }
 
             let now = Date()

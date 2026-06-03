@@ -185,7 +185,7 @@ public actor DuplicateScanner {
                     }
                 case .tccProtectedSkipped(let path):
                     continuation.yield(.tccProtectedSkipped(path: path))
-                case .progress, .permissionDenied, .finished, .failed:
+                case .progress, .permissionDenied, .finished, .failed, .cacheDirTagged:
                     continue
                 }
             }

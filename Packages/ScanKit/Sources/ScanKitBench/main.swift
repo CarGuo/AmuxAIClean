@@ -85,6 +85,8 @@ struct ScanKitBench {
                 fputs("WARN permission denied: \(path)\n", stderr)
             case .tccProtectedSkipped(let path):
                 fputs("⊘ TCC protected (skipped): \(path)\n", stderr)
+            case .cacheDirTagged(let path):
+                fputs("⊘ CACHEDIR.TAG (subtree skipped): \(path)\n", stderr)
             }
         }
     }

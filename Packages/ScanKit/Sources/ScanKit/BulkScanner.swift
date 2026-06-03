@@ -181,6 +181,20 @@ public actor BulkScanner {
         }
         defer { close(fd) }
 
+        // CACHEDIR.TAG（cache-directory-tagging.com 标准）：进入目录的实际枚举前先做一次
+        // 极轻 stat+read 探测，命中即不下钻。理由：
+        // 1. 标准明确允许「整棵子树视为纯缓存」，省下 cargo target / build 这种典型几万到
+        //    几十万 entry 的子树；
+        // 2. 检测代价仅 1 次 open + 43 字节 read，相对一次目录 enumerate 是几十倍便宜；
+        // 3. 业界备份工具（restic / Time Machine / borg）都默认尊重此 tag，对齐用户预期；
+        // 4. 命中点本身**不**作为 .node yield —— 我们只 yield 一条 .cacheDirTagged 让 UI
+        //    按 safe 候选展示；具体大小由 TreeSizeEstimator 异步算（如有需要）。
+        if CacheDirTag.isCacheDirectory(at: dirPath) {
+            continuation.yield(.cacheDirTagged(path: dirPath))
+            GSYLog.info(.scan, "BulkScanner 命中 CACHEDIR.TAG，整棵子目录跳过下钻 dir=\(dirPath)")
+            return
+        }
+
         // 本地累计，最后一次性合并到 actor stats，减少跨 actor 次数（性能优化）。
         var localFileCount = 0
         var localDirCount = 0
