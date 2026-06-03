@@ -7,9 +7,10 @@
 ## 工程概览
 
 - **Swift 6.0 + SwiftUI + macOS 15**（strict concurrency / warnings-as-errors）
-- 工程描述：[XcodeGen](https://github.com/yonaskolb/XcodeGen) 的 [project.yml](../project.yml)
-- 5 个独立 SwiftPM 包 + 主 App（v1.3.zzzz 路线 B 删 Helper / XPCBridge 后；删除走 [TrashPipeline](../Packages/AppUI/Sources/AppUI/TrashPipeline.swift) 直接调 `NSWorkspace.recycle`，无特权进程）
-- CI 用 GitHub Actions macos-15 runner
+- 工程描述：原生 Xcode 工程 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj)（直接入仓，无 xcodegen / project.yml）
+- 6 个独立 SwiftPM 包（AppUI / HeuristicKit / LogKit / SafetyKit / ScanKit / TestHarness）+ 主 App，作为 Local SPM 在 Xcode UI 的 Package Dependencies 区域引用
+- 删除走 [TrashPipeline](../Packages/AppUI/Sources/AppUI/TrashPipeline.swift) 直接调 `NSWorkspace.recycle`，无特权进程
+- CI 用 GitHub Actions macos-15 runner（v1.5.x 起 `xcode-build` job 暂时屏蔽以省 Actions 额度，保留 6 包 `swift test`）
 
 ---
 
@@ -19,9 +20,10 @@
 |---|---|---|
 | macOS | 15 Sequoia 或更高 | |
 | Xcode | 16+ | 自带 Swift 6 toolchain |
-| Homebrew | latest | |
-| xcodegen | latest | `brew install xcodegen`（[Scripts/setup_dev.sh](../Scripts/setup_dev.sh) 自动装） |
-| create-dmg | optional | 仅打 DMG 用，[Scripts/make_dmg.sh](../Scripts/make_dmg.sh) 会 fallback 到 hdiutil |
+| Apple ID | 任意（免费） | Xcode → Settings → Accounts 登录后自动生成 Personal Team |
+| Homebrew | optional | 仅 `xcbeautify` 装饰输出 / `create-dmg` 打 DMG 时需要 |
+
+> 不再需要 `xcodegen` —— v1.5.x 起项目回归原生 Xcode 工程，[GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 直接入仓。
 
 ---
 
@@ -33,40 +35,55 @@ cd GSYCleanMac
 ./Scripts/setup_dev.sh
 ```
 
-这一步会：检查 macOS / Xcode / Homebrew，安装 xcodegen，跑 `xcodegen generate`，最后 `open` xcodeproj。
+[Scripts/setup_dev.sh](../Scripts/setup_dev.sh) 会：检查 macOS / Xcode / Homebrew，确认 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 已就绪，引导你在 Xcode 里登 Apple ID + 选 Personal Team。
 
 ---
 
 ## Free Apple ID Run（Debug 跑）
 
-1. 打开 `GSYCleanMac.xcodeproj`
-2. `Settings -> Accounts` 用 Apple ID 登录（不用 Developer Program）
-3. 选中 `GSYCleanMac` target -> `Signing & Capabilities` -> `Team` 选 `Personal Team`
-4. 点 `Run`
+> **fork 用户必读**：仓库里 [GSYCleanMac.xcodeproj/project.pbxproj](../GSYCleanMac.xcodeproj/project.pbxproj) 写死了 `DEVELOPMENT_TEAM = 39PK4PKRP3`（项目作者 [@CarGuo](https://github.com/CarGuo) 自己的 Personal Team ID），直接 build 会报 `No Account for Team "39PK4PKRP3"` 或 `No matching profile`。**第一次跑必须改成你自己的 Team ID**，方法二选一：
+
+**方式 A（图形化，推荐新手）**：
+
+1. 双击打开 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj)
+2. Xcode → Settings → Accounts → 用 Apple ID 登录（不用付费 Developer Program）
+3. 选中 `GSYCleanMac` target → `Signing & Capabilities`
+   - 勾 `Automatically manage signing`
+   - `Team` 下拉选你自己的 `<你的名字> (Personal Team)`
+   - `Bundle Identifier` 必要时改成你自己的（如 `com.<你的id>.cleanmac.GSYCleanMac`）
+4. ⌘S 保存（会写进 [project.pbxproj](../GSYCleanMac.xcodeproj/project.pbxproj) 的 `DEVELOPMENT_TEAM` 字段）
+5. 点 `Run` 跑起来
+
+**方式 B（命令行，老司机）**：
+
+```bash
+# 在 https://developer.apple.com/account 右上角找到自己的 Team ID（10 位）
+sed -i '' 's/39PK4PKRP3/<你的Team ID>/g' GSYCleanMac.xcodeproj/project.pbxproj
+xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build
+```
+
+**为什么要 Personal Team 而不是 ad-hoc**：免费 Personal Team 颁发的 Apple Development 证书 SHA-1 稳定 → 跨 build cdhash 稳定 → TCC（含完全磁盘访问）一次授权终身有效；而 ad-hoc (`-`) 每次 cdhash 都变，TCC 每次都要重新授权（v1.5.x 之前的痛点）。
 
 ---
 
 ## 命令行 Debug 构建
 
 ```bash
-xcodebuild -scheme GSYCleanMac -configuration Debug \
-  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO \
-  -derivedDataPath build/dd \
-  build
+xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build
 ```
 
-产物在 `build/dd/Build/Products/Debug/GSYCleanMac.app`。
+签名完全由 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 里的 `CODE_SIGN_STYLE = Automatic` + `DEVELOPMENT_TEAM = <你的 Team>` 决定，命令行不用再传 `CODE_SIGN_IDENTITY` / `CODE_SIGNING_REQUIRED` 等 override。产物路径用 `xcodebuild -showBuildSettings` 动态查（脚本已封装，见 [Scripts/run_debug.sh](../Scripts/run_debug.sh)）。
 
 ---
 
 ## Release 打包 + DMG
 
 ```bash
-VERSION=1.1.0 ./Scripts/build_release.sh
-./Scripts/make_dmg.sh dist/GSYCleanMac.app dist/GSYCleanMac-1.1.0.dmg
+VERSION=1.5.6 ./Scripts/build_release.sh
+./Scripts/make_dmg.sh dist/GSYCleanMac.app dist/GSYCleanMac-1.5.6.dmg
 ```
 
-[Scripts/build_release.sh](../Scripts/build_release.sh) 默认 ad-hoc 签名（`CODE_SIGN_IDENTITY="-"`）；如有 Developer ID，传 `IDENTITY="Developer ID Application: ..."` 覆盖。
+[Scripts/build_release.sh](../Scripts/build_release.sh) 走 `xcodebuild -configuration Release` —— 签名由 [project.pbxproj](../GSYCleanMac.xcodeproj/project.pbxproj) 里的 `DEVELOPMENT_TEAM` 决定。如有 Developer ID（99/年），改成 `CODE_SIGN_STYLE = Manual` + `CODE_SIGN_IDENTITY = "Developer ID Application: ..."` 即可（这条路径暂未启用，留给将来）。
 
 ---
 
@@ -75,7 +92,7 @@ VERSION=1.1.0 ./Scripts/build_release.sh
 ### 全部 6 个包
 
 ```bash
-for pkg in ScanKit SafetyKit XPCBridge AppUI HeuristicKit TestHarness; do
+for pkg in ScanKit SafetyKit AppUI HeuristicKit LogKit TestHarness; do
   (cd "Packages/$pkg" && swift test) || exit 1
 done
 ```
@@ -126,10 +143,12 @@ GSYCleanMac/
 │     ├─ vendor_shared.yaml      # 共享厂商目录白名单
 │     └─ safe_paths.yaml         # 已知安全前缀
 ├─ Scripts/
-│  ├─ setup_dev.sh               # 新机器开发环境初始化
-│  ├─ build_release.sh           # Release 构建 + ad-hoc 签名（CI 也走这条）
+│  ├─ setup_dev.sh               # 新机器开发环境初始化（v1.5.x 后不再装 xcodegen）
+│  ├─ run_debug.sh               # ⌘R 同款（命令行版，APP_PATH 用 -showBuildSettings 动态查）
+│  ├─ build_release.sh           # Release 构建（签名由 project.pbxproj 决定）
+│  ├─ regression.sh              # 19 case 真实场景回归
 │  ├─ make_dmg.sh                # hdiutil 打 DMG，create-dmg fallback
-│  ├─ codesign.sh                # 显式 Developer ID 签名（可选）
+│  ├─ codesign.sh                # 显式 Developer ID 签名（可选 / 99/年才用）
 │  ├─ make_app_icon.swift        # 22.37% squircle + 12% 留白生成 AppIcon 套装
 │  ├─ make_icns.sh               # 生成 .icns
 │  └─ bench.sh                   # ScanKit vs du 对比
@@ -144,9 +163,9 @@ GSYCleanMac/
 │  ├─ COMPETITORS.md             # 竞品总览
 │  └─ competitors/               # 单家竞品分析
 ├─ .github/workflows/
-│  ├─ ci.yml                     # push/PR -> 6 包 swift test + xcodebuild Debug
-│  └─ release.yml                # tag v*.*.*  -> Release 构建 + DMG + sha256 + GitHub Release
-├─ project.yml                   # XcodeGen 工程描述
+│  ├─ ci.yml                     # push/PR -> 6 包 swift test（xcode-build job 暂屏蔽）
+│  └─ release.yml                # workflow_dispatch 手动触发 -> Release + DMG + sha256（push tag 自动触发暂关）
+├─ GSYCleanMac.xcodeproj/        # 原生 Xcode 工程（v1.5.x 后入仓，xcuserdata 仍 ignore）
 ├─ PITFALLS.md                   # 避坑手册（开工必读）
 ├─ SECURITY.md                   # 安全模型与威胁模型说明
 ├─ CONTRIBUTING.md               # 贡献指南
@@ -162,28 +181,29 @@ GSYCleanMac/
 
 - 触发：push 到 main / PR 到 main
 - runner：macos-15
-- 步骤：actions/cache@v4 缓存 SwiftPM build → 跑 5 个包 `swift test --parallel` → 跑 `xcodebuild Debug`
+- 步骤：actions/cache@v4 缓存 SwiftPM build → 跑 6 个包 `swift test --parallel` → `xcodebuild Debug` job 暂用 `if: false` 屏蔽（省 GitHub Actions 额度，将来可一键打开）
 - 全部 370+ 测试通过才算绿
 
 ### Release（[.github/workflows/release.yml](../.github/workflows/release.yml)）
 
-- 触发：push 形如 `v*.*.*` 的 tag（也支持 workflow_dispatch 手动）
+- 触发：**仅 `workflow_dispatch` 手动触发**（push tag 自动触发已暂时关掉省额度）
 - runner：macos-15
-- 步骤：`brew install xcodegen` → [Scripts/build_release.sh](../Scripts/build_release.sh) → [Scripts/make_dmg.sh](../Scripts/make_dmg.sh) → `shasum -a 256` → upload-artifact + softprops/action-gh-release@v2 自动建 Release
+- 步骤：inline `xcodebuild` + ad-hoc override（CI 没 Personal Team keychain）→ [Scripts/make_dmg.sh](../Scripts/make_dmg.sh) → `shasum -a 256` → upload-artifact + softprops/action-gh-release@v2 自动建 Release
 
 ### 发版步骤
 
 ```bash
-# 1. 改 project.yml 里 CFBundleShortVersionString，跟 git tag 对齐
+# 1. 改 App/Info.plist 里 CFBundleShortVersionString，跟 git tag 对齐
 # 2. 提交、合并到 main
 git push origin main
 
-# 3. 打 tag 触发
-git tag -a v1.1.1 -m "v1.1.1 - <change summary>"
-git push origin v1.1.1
+# 3. 打 tag（仅做版本标记，不触发 CI 自动打包）
+git tag -a v1.5.6 -m "v1.5.6 - <change summary>"
+git push origin v1.5.6
 
-# 4. 几分钟后 Releases 页会自动出现 GSYCleanMac-1.1.1.dmg + .sha256
-gh release view v1.1.1 --repo CarGuo/GSYCleanMac
+# 4. 去 GitHub Actions UI 里 release.yml 点 "Run workflow" 手动触发
+# 5. 几分钟后 Releases 页会自动出现 GSYCleanMac-1.5.6.dmg + .sha256
+gh release view v1.5.6 --repo CarGuo/GSYCleanMac
 ```
 
 ---

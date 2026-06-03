@@ -117,7 +117,12 @@ Full threat model in [SECURITY.md](SECURITY.md).
 git clone git@github.com:CarGuo/GSYCleanMac.git
 cd GSYCleanMac
 ./Scripts/setup_dev.sh
-xcodebuild -scheme GSYCleanMac -configuration Debug build
+```
+
+> **Forks must read this**: [GSYCleanMac.xcodeproj/project.pbxproj](GSYCleanMac.xcodeproj/project.pbxproj) hard-codes the project author's `DEVELOPMENT_TEAM = 39PK4PKRP3`. Before the first build, you MUST change it to your own Team ID (double-click `GSYCleanMac.xcodeproj` → `Signing & Capabilities` → pick your Personal Team; or use `sed` to replace). See the "Free Apple ID Run" section in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
+```bash
+xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build
 ```
 
 Full dev environment, signing, debugging tips in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and [CONTRIBUTING.md](CONTRIBUTING.md).

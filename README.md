@@ -117,7 +117,12 @@
 git clone git@github.com:CarGuo/GSYCleanMac.git
 cd GSYCleanMac
 ./Scripts/setup_dev.sh
-xcodebuild -scheme GSYCleanMac -configuration Debug build
+```
+
+> **fork 用户必读**：[GSYCleanMac.xcodeproj/project.pbxproj](GSYCleanMac.xcodeproj/project.pbxproj) 里写死了项目作者的 `DEVELOPMENT_TEAM = 39PK4PKRP3`，第一次 build 必须改成你自己的 Team ID（双击 `GSYCleanMac.xcodeproj` → `Signing & Capabilities` → 选 你的 Personal Team；或 `sed` 替换）。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) "Free Apple ID Run" 段。
+
+```bash
+xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build
 ```
 
 完整开发环境、签名、调试技巧见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 与 [CONTRIBUTING.md](CONTRIBUTING.md)。
