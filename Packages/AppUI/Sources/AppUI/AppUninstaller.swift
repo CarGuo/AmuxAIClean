@@ -31,6 +31,11 @@ public enum MatchReason: Hashable, Sendable {
     /// 且该 vendor 已知会在 `~/Library/Application Support/<subdir>` / `<cachesPath>` 留数据。
     /// 关联值为 vendor 名（用于 UI 提示；用户能直接看到“因为 Adobe 厂商规则”这种证据链）。
     case vendorRule(String)
+    /// Step 11A / 2026-06：Spotlight 兜底命中。
+    /// 主 12 root 路径覆盖不了的非典型残留位置（用户文档下、iCloud 同步目录等），
+    /// 通过 [SpotlightProbing](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SpotlightFallback.swift)
+    /// 严格谓词查到。关联值是命中谓词类别（`"bundleID"` / `"appName"`），方便 UI 提示证据链。
+    case spotlight(String)
 }
 
 /// 解析后的 .app 元数据。
@@ -100,17 +105,36 @@ public struct AppUninstaller: Sendable {
     /// 该 vendor 提供的 `appSupportSubdir` / `cachesPath` 也会加入候选（标记为 `.vendorRule`）。
     /// **不会**让所有 vendor 路径裸奔参与匹配 —— 仅在 bundleID 命中后才放出该 vendor 的路径。
     public let vendorRules: [VendorRule]
+    /// Step 11A / 2026-06：Spotlight 兜底查询器。
+    /// 主路径扫完后调用，补主 12 root 之外的残留位置。生产用 [DefaultSpotlightProbe](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SpotlightFallback.swift)，
+    /// 测试可注入 fake 返回固定路径。
+    public let spotlight: SpotlightProbing
+    /// Spotlight 单次查询超时（秒）。NSMetadataQuery 偶尔会卡数十秒，必须有上限。
+    public let spotlightTimeout: TimeInterval
 
     public init(
         homeDirectory: String = NSHomeDirectory(),
         systemLibrary: String = "/Library",
         fileManager: FileManagerSnapshotting = DefaultFileManagerSnapshot(),
-        vendorRules: [VendorRule] = []
+        vendorRules: [VendorRule] = [],
+        spotlight: SpotlightProbing? = nil,
+        spotlightTimeout: TimeInterval = 1.5
     ) {
         self.homeDirectory = homeDirectory
         self.systemLibrary = systemLibrary
         self.fileManager = fileManager
         self.vendorRules = vendorRules
+        // 默认决策：homeDirectory 是真实 NSHomeDirectory() 时启用 DefaultSpotlightProbe；
+        // 否则（in-memory 测试构造的伪造 home，如 "/H" / "/tmp/fakehome"）走 Noop，
+        // 不让 NSMetadataQuery 拖慢/污染单测。显式传参可强制覆盖。
+        if let s = spotlight {
+            self.spotlight = s
+        } else if homeDirectory == NSHomeDirectory() {
+            self.spotlight = DefaultSpotlightProbe()
+        } else {
+            self.spotlight = NoopSpotlightProbe()
+        }
+        self.spotlightTimeout = spotlightTimeout
     }
 
     /// 11 个用户级残留目录 + 1 个系统级 LaunchDaemons。
@@ -331,8 +355,70 @@ extension AppUninstaller {
                     group.addTask(priority: .utility, operation: makeTask(p))
                 }
             }
+
+            // Step 11A / 2026-06：Spotlight 兜底补刀。
+            // 主 12 root 漏掉的非典型路径（用户文档下、iCloud 同步盘等）由 Spotlight 索引补上。
+            // 严格谓词（bundleID 完全相等 / appName 严格相等忽略大小写）+ 与主路径 dedup +
+            // 二次校验 matchesStrictPrefix 防止 com.foo.bar 误命中 com.foo.barbarian。
+            let spotlightCandidates = await spotlightFallback(meta: meta, seenPaths: Set(collected.map(\.path)))
+            collected.append(contentsOf: spotlightCandidates)
             return collected
         }
+    }
+
+    /// Step 11A / 2026-06：Spotlight 兜底补刀实现。
+    ///
+    /// 调用时机：[candidatesAsync](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppUninstaller.swift)
+    /// 主路径并发扫完后。
+    ///
+    /// 流程：
+    /// 1. 用 [SpotlightProbing.probeByBundleID](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SpotlightFallback.swift)
+    ///    严格相等谓词查 `kMDItemCFBundleIdentifier == bundleID` 命中的路径。
+    /// 2. 若 appName 长度 >= 4 且非常见词，再查 `kMDItemDisplayName ==[c] appName`。
+    /// 3. 与 `seenPaths` 去重。
+    /// 4. 二次校验：bundleID 命中的路径必须在某个 search root 之外但仍属于 home / system library 子树
+    ///    （避免索引到 /System 等无关位置）。
+    /// 5. 用 `fileManager.snapshot(at:)` 取 size，0B / 不存在 / 0 文件 一律跳过。
+    /// 6. matchReason = `.spotlight("bundleID")` / `.spotlight("appName")`。
+    private func spotlightFallback(meta: AppMetadata, seenPaths: Set<String>) async -> [UninstallCandidate] {
+        var seen = seenPaths
+        var out: [UninstallCandidate] = []
+
+        // 1. bundleID 严格相等查询
+        let bidPaths = await spotlight.probeByBundleID(meta.bundleID, timeout: spotlightTimeout)
+        for path in bidPaths where !seen.contains(path) {
+            // 仅接受 home / systemLibrary 子树下的路径，避免 spotlight 索引带出 /System 之类
+            guard path.hasPrefix(homeDirectory) || path.hasPrefix(systemLibrary) else { continue }
+            let snap = fileManager.snapshot(at: path)
+            guard snap.bytes > 0 || snap.fileCount > 0 else { continue }
+            seen.insert(path)
+            out.append(.init(
+                path: path,
+                bytes: snap.bytes,
+                fileCount: snap.fileCount,
+                matchReason: .spotlight("bundleID")
+            ))
+        }
+
+        // 2. appName 严格相等忽略大小写查询（仅当长度 >= 4 且非常见词，避免 "App"/"Data" 引爆）
+        let trimmed = meta.appName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isCommonNoise = ["app", "data", "test", "demo", "temp", "main", "user"].contains(trimmed.lowercased())
+        if trimmed.count >= 4, !isCommonNoise {
+            let namePaths = await spotlight.probeByAppName(trimmed, timeout: spotlightTimeout)
+            for path in namePaths where !seen.contains(path) {
+                guard path.hasPrefix(homeDirectory) || path.hasPrefix(systemLibrary) else { continue }
+                let snap = fileManager.snapshot(at: path)
+                guard snap.bytes > 0 || snap.fileCount > 0 else { continue }
+                seen.insert(path)
+                out.append(.init(
+                    path: path,
+                    bytes: snap.bytes,
+                    fileCount: snap.fileCount,
+                    matchReason: .spotlight("appName")
+                ))
+            }
+        }
+        return out
     }
 }
 

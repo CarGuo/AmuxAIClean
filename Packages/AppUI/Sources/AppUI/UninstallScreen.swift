@@ -433,6 +433,7 @@ public struct UninstallScreen: View {
         case .bundleVendor(let s): return "vendor · \(s)"
         case .appName(let s): return "appName · \(s)"
         case .vendorRule(let s): return String(format: String(localized: "uninstall.reason.vendor.rule", bundle: .module), s)
+        case .spotlight(let kind): return "spotlight · \(kind)"
         }
     }
 

@@ -156,7 +156,7 @@ public actor AppFootprintScanner {
     /// MatchReason → 桶的展示分类。
     static func bucketKind(for reason: MatchReason) -> AppFootprintBucket.Kind {
         switch reason {
-        case .bundleID, .appName: return .userData
+        case .bundleID, .appName, .spotlight: return .userData
         case .bundleVendor: return .launchAgent
         case .vendorRule: return .vendorRule
         }
