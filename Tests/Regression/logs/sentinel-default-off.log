@@ -1,0 +1,20 @@
+2026-06-03 16:17:23.459 GSYCleanMac[29793:833316] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR] case=sentinel-default-off defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+[REGR_BEGIN] case=sentinel-default-off
+[REGR] case=sentinel-default-off default_sentinelEnabled=false default_lastEnabled=nil
+[REGR_OK] case=sentinel-default-off Sentinel 默认必须 OFF=false
+[REGR_OK] case=sentinel-default-off 未启用时 sentinelLastEnabled 必须 nil=true
+[REGR] case=sentinel-default-off plistName=com.guoshuyu.cleanmac.sentinel.plist
+[REGR_OK] case=sentinel-default-off plistName=com.guoshuyu.cleanmac.sentinel.plist
+[REGR] case=sentinel-default-off route_scanFull=startFullScan
+[REGR_OK] case=sentinel-default-off route gsycleanmac://action/scan/full=startFullScan
+[REGR] case=sentinel-default-off route_uninstall_apps=openUninstall(path: Optional("/Applications")) expectedPath=/Applications
+[REGR_OK] case=sentinel-default-off uninstall /Applications=openUninstall(path: Optional("/Applications"))
+[REGR] case=sentinel-default-off route_uninstall_traversal=openUninstall(path: nil)
+[REGR_OK] case=sentinel-default-off uninstall path=../ 必须被防注入拒绝=openUninstall(path: nil)
+[REGR] case=sentinel-default-off route_bad_scheme=ignored(reason: "bad-scheme")
+[REGR_OK] case=sentinel-default-off bad scheme 应被忽略=ignored(reason: "bad-scheme")
+[REGR] case=sentinel-default-off currentStatus=notFound label=未找到
+[REGR_OK] case=sentinel-default-off status.displayLabel 必须非空=true
+[REGR] case=sentinel-default-off defaults_restored_keys=3
+[REGR_PASS] case=sentinel-default-off elapsed_ms=26777

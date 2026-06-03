@@ -1,10 +1,63 @@
-2026-06-03 14:15:21.613 GSYCleanMac[64194:570901] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-03 16:13:50.441 GSYCleanMac[23506:818653] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR] case=scan-cancel-restart defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+[REGR_BEGIN] case=scan-cancel-restart
+[REGR] case=scan-cancel-restart defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+[REGR_BEGIN] case=scan-cancel-restart
+[REGR] case=scan-cancel-restart defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+[REGR_BEGIN] case=scan-cancel-restart
+[REGR] case=scan-cancel-restart defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+[REGR_BEGIN] case=scan-cancel-restart
+[REGR] case=scan-cancel-restart defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+[REGR_BEGIN] case=scan-cancel-restart
+[REGR] case=scan-cancel-restart defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+[REGR_BEGIN] case=scan-cancel-restart
+[REGR] case=scan-cancel-restart defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+[REGR_BEGIN] case=scan-cancel-restart
+[REGR] case=scan-cancel-restart defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+[REGR_BEGIN] case=scan-cancel-restart
+[REGR] case=scan-cancel-restart defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+[REGR_BEGIN] case=scan-cancel-restart
+[REGR] case=scan-cancel-restart defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+[REGR_BEGIN] case=scan-cancel-restart
+[REGR] case=scan-cancel-restart defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+[REGR_BEGIN] case=scan-cancel-restart
+[REGR] case=scan-cancel-restart defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+[REGR_BEGIN] case=scan-cancel-restart
+[REGR] case=scan-cancel-restart defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+[REGR_BEGIN] case=scan-cancel-restart
 [REGR] case=scan-cancel-restart defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=scan-cancel-restart
 [REGR] case=scan-cancel-restart afterCancel isScanning=false wasCancelled=true
 [REGR_OK] case=scan-cancel-restart isScanning after cancel=false
+[REGR] case=scan-cancel-restart afterCancel isScanning=true wasCancelled=false
+[REGR_ERR] case=scan-cancel-restart reason=assertFalse isScanning after cancel: got=true
+[REGR] case=scan-cancel-restart afterCancel isScanning=true wasCancelled=false
+[REGR_ERR] case=scan-cancel-restart reason=assertFalse isScanning after cancel: got=true
+[REGR] case=scan-cancel-restart afterCancel isScanning=true wasCancelled=false
+[REGR_ERR] case=scan-cancel-restart reason=assertFalse isScanning after cancel: got=true
+[REGR] case=scan-cancel-restart afterCancel isScanning=true wasCancelled=false
+[REGR_ERR] case=scan-cancel-restart reason=assertFalse isScanning after cancel: got=true
+[REGR] case=scan-cancel-restart afterCancel isScanning=true wasCancelled=false
+[REGR_ERR] case=scan-cancel-restart reason=assertFalse isScanning after cancel: got=true
+[REGR] case=scan-cancel-restart afterCancel isScanning=true wasCancelled=false
+[REGR_ERR] case=scan-cancel-restart reason=assertFalse isScanning after cancel: got=true
+[REGR] case=scan-cancel-restart afterCancel isScanning=true wasCancelled=false
+[REGR_ERR] case=scan-cancel-restart reason=assertFalse isScanning after cancel: got=true
+[REGR] case=scan-cancel-restart afterCancel isScanning=true wasCancelled=false
+[REGR_ERR] case=scan-cancel-restart reason=assertFalse isScanning after cancel: got=true
+[REGR] case=scan-cancel-restart afterCancel isScanning=true wasCancelled=false
+[REGR_ERR] case=scan-cancel-restart reason=assertFalse isScanning after cancel: got=true
+[REGR] case=scan-cancel-restart afterCancel isScanning=true wasCancelled=false
+[REGR_ERR] case=scan-cancel-restart reason=assertFalse isScanning after cancel: got=true
+[REGR] case=scan-cancel-restart afterCancel isScanning=true wasCancelled=false
+[REGR_ERR] case=scan-cancel-restart reason=assertFalse isScanning after cancel: got=true
+[REGR] case=scan-cancel-restart afterCancel isScanning=true wasCancelled=false
+[REGR_ERR] case=scan-cancel-restart reason=assertFalse isScanning after cancel: got=true
+[REGR] case=scan-cancel-restart afterCancel isScanning=true wasCancelled=false
+[REGR_ERR] case=scan-cancel-restart reason=assertFalse isScanning after cancel: got=true
+[REGR_ERR] case=scan-cancel-restart reason=waitFinished timeout after 30.0s, isScanning=true files=15
 [REGR] case=scan-cancel-restart second files=15 bytes=1049600 wasCancelled=false
 [REGR_OK] case=scan-cancel-restart wasCancelled after second scan=false
-[REGR_OK] case=scan-cancel-restart second scan finished=true
+[REGR_ERR] case=scan-cancel-restart reason=assertTrue second scan finished: got=false
 [REGR] case=scan-cancel-restart defaults_restored_keys=3
-[REGR_PASS] case=scan-cancel-restart elapsed_ms=882
+[REGR_FAIL] case=scan-cancel-restart elapsed_ms=33595 reason=assertFalse isScanning after cancel: got=true
