@@ -1,4 +1,4 @@
-2026-06-03 18:47:06.504 GSYCleanMac[5334:1145225] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-03 20:11:39.548 GSYCleanMac[51134:1346349] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=duplicate-scan defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=duplicate-scan
 [REGR] case=duplicate-scan groups=3 redundancy_bytes=2000000
@@ -8,4 +8,4 @@
 [REGR_OK] case=duplicate-scan group paths >= 2=2 > 1
 [REGR_OK] case=duplicate-scan redundancy_bytes > 0=2000000 > 0
 [REGR] case=duplicate-scan defaults_restored_keys=3
-[REGR_PASS] case=duplicate-scan elapsed_ms=223
+[REGR_PASS] case=duplicate-scan elapsed_ms=276
