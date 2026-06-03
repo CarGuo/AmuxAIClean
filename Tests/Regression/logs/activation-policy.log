@@ -1,4 +1,4 @@
-2026-06-03 16:45:29.315 GSYCleanMac[51415:912686] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-03 17:07:45.584 GSYCleanMac[62040:959295] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=activation-policy defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=activation-policy
 [REGR] case=activation-policy policy_after_hide_off=0
@@ -6,4 +6,4 @@
 [REGR] case=activation-policy policy_after_hide_on=1
 [REGR_OK] case=activation-policy accessory when hide=on & no window=1
 [REGR] case=activation-policy defaults_restored_keys=3
-[REGR_PASS] case=activation-policy elapsed_ms=499
+[REGR_PASS] case=activation-policy elapsed_ms=452
