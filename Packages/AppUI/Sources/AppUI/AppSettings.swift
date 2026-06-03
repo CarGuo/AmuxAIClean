@@ -46,8 +46,9 @@ public final class AppSettings {
         /// 启动时若该 key 未设置则把 hudPlacement **强制覆盖**为 `.dynamicIsland`
         /// 并把这个 key 落 true，今后用户怎么改都不再覆盖。
         public static let hudPlacementForcedIsland = "v1.hud_placement_forced_island_v1"
-        /// v1.3.x：关掉主窗口后是否把 App 从 Dock / 顶部主菜单隐藏（切到 .accessory）。默认 OFF。
-        /// 开启后 App 会更接近"菜单栏小工具"形态：关窗 = 入后台，要靠菜单栏托盘把它拉回来。
+        /// v1.3.x：关掉主窗口后是否把 App 从 Dock / 顶部主菜单隐藏（切到 .accessory）。
+        /// **v1.5.5 起默认 ON**（用户反馈：菜单栏托盘已是完整入口，Dock 图标重复）。
+        /// 开启后 App 更接近"菜单栏小工具"形态：关窗 = 入后台，要靠菜单栏托盘把它拉回来。
         public static let hideFromDockWhenClosed = "v1.hide_from_dock_when_closed"
         /// v1.3.x（M1 内存优化）：扫描结果是否落 SQLite store 并在扫完后允许内存 compact。
         /// 默认 OFF（feature flag），稳定后默认 ON。开启后扫描期会异步把 node 批量写入
@@ -283,7 +284,8 @@ public final class AppSettings {
         didSet { defaults.set(hudPlacement.rawValue, forKey: Keys.hudPlacement) }
     }
 
-    /// v1.3.x：关闭主窗口后把 App 从 Dock / 顶部主菜单隐藏，切到 `NSApp.accessory` 模式。默认 `false`。
+    /// v1.3.x：关闭主窗口后把 App 从 Dock / 顶部主菜单隐藏，切到 `NSApp.accessory` 模式。
+    /// **v1.5.5 起默认 `true`**（用户原话："只要顶部状态栏还在不就好了"）。
     ///
     /// 设计来源：用户原话「我们都有顶部托盘托管了，关闭后是不是可以不显示在底部托管」。
     /// 既然菜单栏托盘已经能完成"打开主窗口 / 立即扫描 / toggle HUD"三件事，
@@ -421,18 +423,20 @@ public final class AppSettings {
             self.hudPlacement = .dynamicIsland
             defaults.set(true, forKey: Keys.hudPlacementForcedIsland)
         }
-        // v1.3.x：「关窗藏 Dock」默认 OFF——保守策略：本 App 虽配套菜单栏托盘 +
-        // 灵动岛 HUD 等多入口，但默认翻 ON 会让存量用户升级后突然 Dock 找不到 App、
-        // ⌘Tab 也找不到，第一观感就是"App 弄丢了"。所以新装/未配置的用户保持
-        // OFF，关窗仍按 macOS 标准行为：Dock 留图标、⌘Tab 可切回。
-        // 用户可在设置里手动开 ON 切到"驻留态后台清理工具"形态
-        // （行业标准玩法：Bartender / iStat Menus / Rectangle）。
-        // 互斥兜底：开 ON 时必须 trayEnabled=true，否则关窗后没有任何入口；
-        // 下方 trayEnabled=false 的修正一旦命中会反向把这个 flag 拉回 false。
+        // **v1.5.5（用户反馈）**：原话「现在点击关闭按键，macos 的 dock 托盘为什么还在？
+        // 我们只要顶部状态栏还在不就好了」——既然 trayEnabled 默认 ON，菜单栏托盘已经
+        // 提供「打开主窗口 / 立即扫描 / toggle HUD」三件套完整入口，关窗后还留 Dock 图标
+        // 就是重复的"半驻留"形态。改默认 ON，与 trayEnabled 默认 ON 配合形成
+        // 「关窗 → .accessory（隐 Dock + 隐主菜单），开窗 → .regular」的标准菜单栏 App
+        // 玩法（参考 Bartender / iStat Menus / Rectangle）。
+        //
+        // 行为兜底（已写在 didSet 与下方初始化纠偏）：
+        // - 用户若手动关 trayEnabled，会反向把本开关拉回 false，避免关窗后 App 完全失踪
+        // - 已落盘的 user defaults（老用户 / 用户手动改过）走 `if let raw` 分支，原值不动
         if let raw = defaults.object(forKey: Keys.hideFromDockWhenClosed) as? Bool {
             self.hideFromDockWhenClosed = raw
         } else {
-            self.hideFromDockWhenClosed = false
+            self.hideFromDockWhenClosed = true
         }
         // M1 内存优化：useScanStore feature flag 默认 OFF，灰度后再翻 ON。
         if let raw = defaults.object(forKey: Keys.useScanStore) as? Bool {

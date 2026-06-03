@@ -90,9 +90,12 @@ final class AppSettingsTests: XCTestCase {
     // MARK: - v1.3.x：hideFromDockWhenClosed（关窗藏 Dock）
 
     @MainActor
-    func test_hideFromDockWhenClosed_默认应为false_保持现行Dock行为() throws {
+    func test_hideFromDockWhenClosed_默认应为true_关窗即藏Dock() throws {
+        // v1.5.5：用户反馈"关闭按键后 Dock 还在，只要顶部状态栏就够"——
+        // trayEnabled 默认 ON 已提供完整入口，关窗藏 Dock 改默认 ON 形成
+        // 标准菜单栏 App 形态。
         let s = AppSettings(testSuite: freshSuite())
-        XCTAssertFalse(s.hideFromDockWhenClosed, "默认必须关，避免存量用户突然 Dock 不见")
+        XCTAssertTrue(s.hideFromDockWhenClosed, "v1.5.5 起默认 true：关窗即进 .accessory")
     }
 
     @MainActor
@@ -142,11 +145,12 @@ final class AppSettingsTests: XCTestCase {
 
     @MainActor
     func test_testReset_应清掉hideFromDockWhenClosed键() throws {
+        // v1.5.5：默认翻 true 后，_testReset 把用户写入清掉 → 重新构造应回到默认 true。
         let suite = freshSuite()
         let s = AppSettings(testSuite: suite)
-        s.hideFromDockWhenClosed = true
+        s.hideFromDockWhenClosed = false
         s._testReset()
         let s2 = AppSettings(testSuite: suite)
-        XCTAssertFalse(s2.hideFromDockWhenClosed, "_testReset 后应回到默认 false")
+        XCTAssertTrue(s2.hideFromDockWhenClosed, "_testReset 后应回到默认 true（v1.5.5）")
     }
 }
