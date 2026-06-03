@@ -1,4 +1,4 @@
-2026-06-03 13:33:59.490 GSYCleanMac[38243:470564] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-03 14:16:13.049 GSYCleanMac[64745:573242] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=fda-banner-diagnose defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=fda-banner-diagnose
 [REGR] case=fda-banner-diagnose fda_status=denied
@@ -6,8 +6,8 @@
 [REGR] case=fda-banner-diagnose denied[0]=/Users/guoshuyu/Library/Caches/com.apple.ap.adprivacyd
 [REGR] case=fda-banner-diagnose denied[1]=/Users/guoshuyu/Library/Caches/com.apple.findmy.fmipcore
 [REGR] case=fda-banner-diagnose denied[2]=/Users/guoshuyu/Library/Caches/com.apple.homed
-[REGR] case=fda-banner-diagnose denied[3]=/Users/guoshuyu/.Trash
-[REGR] case=fda-banner-diagnose denied[4]=/Users/guoshuyu/Library/Caches/FamilyCircle
+[REGR] case=fda-banner-diagnose denied[3]=/Users/guoshuyu/Library/Caches/FamilyCircle
+[REGR] case=fda-banner-diagnose denied[4]=/Users/guoshuyu/.Trash
 [REGR] case=fda-banner-diagnose denied[5]=/Users/guoshuyu/Library/Caches/com.apple.containermanagerd
 [REGR] case=fda-banner-diagnose denied[6]=/Users/guoshuyu/Library/Caches/com.apple.findmy.fmfcore
 [REGR] case=fda-banner-diagnose denied[7]=/Users/guoshuyu/Library/Caches/com.apple.Safari
@@ -15,4 +15,4 @@
 [REGR] case=fda-banner-diagnose denied[9]=/Users/guoshuyu/Library/Caches/com.apple.HomeKit
 [REGR_OK] case=fda-banner-diagnose scan finished=true
 [REGR] case=fda-banner-diagnose defaults_restored_keys=3
-[REGR_PASS] case=fda-banner-diagnose elapsed_ms=32899
+[REGR_PASS] case=fda-banner-diagnose elapsed_ms=31289
