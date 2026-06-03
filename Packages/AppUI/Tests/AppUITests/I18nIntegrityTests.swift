@@ -112,7 +112,7 @@ final class I18nIntegrityTests: XCTestCase {
             "ecosystem.",        // ecosystem ID：ecosystem.python / rust / go / web ...
             "status.",           // 扫描状态：status.scanning / done / idle_not_scanned ...
             "hud.",              // HUD 文案集合（多处运行期 format 拼装）
-            "tree.batch.",       // BatchSelection（Step 5 决断后再处理）
+            "tree.batch.",       // BatchSelection 活代码运行期拼接（LargeFilesView 多选 header）
             "tree.checkbox.",    // 树形勾选状态
             "delete.progress.",  // 删除进度条文案（运行期 format）
             "delete.alert.",     // 删除告警弹窗（运行期 format）
