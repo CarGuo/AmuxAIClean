@@ -7562,6 +7562,97 @@
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Later" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "稍后" } }
       }
+    },
+    "sidebar.section.undo_history" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Recent Cleanup" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最近清理" } }
+      }
+    },
+    "sidebar.row.undo_history" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "History" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "历史记录" } }
+      }
+    },
+    "sidebar.subtitle.undo_history" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Recent trash batches" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最近移到废纸篓的批次" } }
+      }
+    },
+    "undo_history.empty.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No history yet" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂无清理记录" } }
+      }
+    },
+    "undo_history.empty.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "After you move files to Trash, the most recent 10 batches will appear here." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "把文件移到废纸篓后，最近 10 次批次会显示在这里。" } }
+      }
+    },
+    "undo_history.row.count %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%lld items" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 项" } }
+      }
+    },
+    "undo_history.detail.summary %@ %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Source: %1$@ · %2$lld items" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "来源：%1$@ · 共 %2$lld 项" } }
+      }
+    },
+    "undo_history.detail.placeholder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Select a batch on the left to view files." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "在左侧选择一个批次查看文件。" } }
+      }
+    },
+    "undo_history.button.restore" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Restore" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "恢复" } }
+      }
+    },
+    "undo_history.alert.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Restore Result" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "恢复结果" } }
+      }
+    },
+    "undo_history.alert.ok" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "OK" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "好的" } }
+      }
+    },
+    "undo_history.alert.success %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Restored %lld items successfully." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "成功恢复 %lld 项。" } }
+      }
+    },
+    "undo_history.alert.partial %lld %lld %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Restored %1$lld items, skipped %2$lld. First error: %3$@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已恢复 %1$lld 项，跳过 %2$lld 项。首条错误：%3$@" } }
+      }
     }
   }
 }

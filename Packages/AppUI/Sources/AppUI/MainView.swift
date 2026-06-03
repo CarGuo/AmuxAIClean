@@ -441,6 +441,15 @@ public struct MainView: View {
             } header: {
                 Text("sidebar.section.duplicates", bundle: .module)
             }
+
+            // Step 7：UndoHistory section —— 给"最近清理 / 恢复"一个独立入口。
+            // 单 row 设计避免污染 ScanCategory 体系（与 uninstall / duplicate 同款 sentinel ID 模式）。
+            Section {
+                undoHistorySidebarRow
+                    .tag(MainView.undoHistorySentinelID)
+            } header: {
+                Text("sidebar.section.undo_history", bundle: .module)
+            }
         }
         // bug1：sidebar List 默认会在获得 keyboard focus 时画一圈蓝色焦点环
         // （包住整个 list 容器，看起来像"鼠标进入 sidebar 才出现的蓝框"）。
@@ -464,6 +473,10 @@ public struct MainView: View {
     /// v1.2 P2-1：「重复文件」侧边项。DuplicateScreen 是只读视图（无勾选 / 无删除按钮），
     /// 与 ScanCategory（默认勾选 + verdict）的语义不兼容，走 sentinel ID 旁路。
     static let duplicateSentinelID: String = "duplicate.scan"
+
+    /// Step 7：「最近清理」侧边项。UndoHistoryScreen 渲染最近 N 次 trash 批次 + 恢复按钮，
+    /// 完全是一个事后管理面板，与扫描语义无关，故走 sentinel ID 旁路。
+    static let undoHistorySentinelID: String = "undo.history"
 
     /// v1.5：sidebar Batch Scans section 的 row。结构与 sidebarRow / appFootprintSidebarRow
     /// 对齐：图标 + 标题 + 副标题。row 自身不带 tap handler，selection 切换由
@@ -561,6 +574,25 @@ public struct MainView: View {
         .padding(.vertical, 2)
     }
 
+    /// Step 7：「最近清理」侧边 row —— 与 uninstall / duplicate 同结构，图标用 arrow.uturn.backward。
+    private var undoHistorySidebarRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.uturn.backward.circle")
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("sidebar.row.undo_history", bundle: .module)
+                    .font(.system(.body, design: .rounded))
+                Text("sidebar.subtitle.undo_history", bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
     @ViewBuilder
     private func sidebarRow(_ cat: ScanCategory, iconOverride: String? = nil) -> some View {
         HStack(spacing: 8) {
@@ -635,6 +667,11 @@ public struct MainView: View {
         selectedCategory == MainView.duplicateSentinelID
     }
 
+    /// Step 7：当前是否在「最近清理」模式。
+    private var isUndoHistoryMode: Bool {
+        selectedCategory == MainView.undoHistorySentinelID
+    }
+
     private var results: some View {
         VStack(spacing: 0) {
             if isAppFootprintMode {
@@ -651,6 +688,9 @@ public struct MainView: View {
                 // 「重复文件」整段独立：只读视图，没有勾选 / 删除按钮，
                 // 也不复用 statusBar / footerBar（它有自己的 banner + 进度 + footer）。
                 DuplicateScreen()
+            } else if isUndoHistoryMode {
+                // Step 7：「最近清理」整段独立 —— 只读+恢复按钮，不复用扫描状态栏。
+                UndoHistoryScreen()
             } else {
                 statusBar
                 Divider()
@@ -1450,7 +1490,14 @@ public struct MainView: View {
                 isDeleting = false
             }
         }
-        let (moved, skipped, err) = await pipeline.moveToTrash(paths: paths, dryRun: dryRun)
+        let (moved, skipped, err, pairs) = await pipeline.moveToTrash(paths: paths, dryRun: dryRun)
+        // Step 7：真删成功后写 UndoHistory（dryRun / 全 forbid / recycle err 时 pairs 都是空数组，addRecord 会 no-op 跳过）。
+        if !dryRun, err == nil, !pairs.isEmpty {
+            UndoHistoryStore.shared.addRecord(
+                source: "clean",
+                filePairs: pairs.map { UndoHistoryStore.Record.FilePair(original: $0.0, trashed: $0.1) }
+            )
+        }
         if let err {
             let key: String.LocalizationValue = dryRun
                 ? "delete.result.failure.dryrun %@ %lld %lld"
@@ -1521,7 +1568,16 @@ public struct MainView: View {
             // 与 performDelete 保持一致的 accessDenied pre-flight。
             // Phase 3-A 协议化：直接走 protocol 钩子，省 cast。
             pipeline.setAccessDeniedPaths(accessDeniedPathsSnapshot())
-            let (moved, skipped, err) = await pipeline.moveToTrash(paths: paths, dryRun: false)
+            let (moved, skipped, err, pairs) = await pipeline.moveToTrash(paths: paths, dryRun: false)
+            // Step 7：大文件单点 trash 也写入 UndoHistory（source 区分以便侧栏未来分类）。
+            if err == nil, !pairs.isEmpty {
+                await MainActor.run {
+                    UndoHistoryStore.shared.addRecord(
+                        source: "large-file",
+                        filePairs: pairs.map { UndoHistoryStore.Record.FilePair(original: $0.0, trashed: $0.1) }
+                    )
+                }
+            }
             await MainActor.run {
                 isDeleting = false
                 if let err {

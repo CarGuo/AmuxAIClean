@@ -54,7 +54,7 @@ final class RowItemSelectionTests: XCTestCase {
 final class TrashPipelineTests: XCTestCase {
     func testEmptyPathsReturnsZero() async {
         let pipe = TrashPipeline()
-        let (moved, skipped, err) = await pipe.moveToTrash(paths: [], dryRun: true)
+        let (moved, skipped, err, _) = await pipe.moveToTrash(paths: [], dryRun: true)
         XCTAssertEqual(moved, 0)
         XCTAssertEqual(skipped, 0)
         XCTAssertNil(err)
@@ -69,7 +69,7 @@ final class TrashPipelineTests: XCTestCase {
         try "hello".write(toFile: f, atomically: true, encoding: .utf8)
 
         let pipe = TrashPipeline()
-        let (moved, _, err) = await pipe.moveToTrash(paths: [f], dryRun: true)
+        let (moved, _, err, _) = await pipe.moveToTrash(paths: [f], dryRun: true)
         XCTAssertEqual(moved, 1)
         XCTAssertNil(err)
         XCTAssertTrue(FileManager.default.fileExists(atPath: f), "dryRun 必须不动磁盘")
@@ -85,7 +85,7 @@ final class TrashPipelineTests: XCTestCase {
         try "bye".write(toFile: f, atomically: true, encoding: .utf8)
 
         let pipe = TrashPipeline()
-        let (moved, skipped, err) = await pipe.moveToTrash(paths: [f], dryRun: false)
+        let (moved, skipped, err, _) = await pipe.moveToTrash(paths: [f], dryRun: false)
         XCTAssertNil(err)
         XCTAssertEqual(moved, 1)
         XCTAssertEqual(skipped, 0)

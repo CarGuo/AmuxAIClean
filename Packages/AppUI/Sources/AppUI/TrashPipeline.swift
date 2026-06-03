@@ -181,8 +181,8 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         return (allowed, rejected)
     }
 
-    public func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?) {
-        guard !paths.isEmpty else { return (0, 0, nil) }
+    public func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)]) {
+        guard !paths.isEmpty else { return (0, 0, nil, []) }
         GSYLog.info(.trash, "moveToTrash 开始 dryRun=\(dryRun) paths=\(paths.count)")
 
         // M4 闸门：先按 SafetyEngine 切批。被 forbid 的不进入后续逻辑（既不 dryRun present
@@ -219,7 +219,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 err = nil
             }
             GSYLog.info(.trash, "moveToTrash dryRun 完成 present=\(present) skipped=\(skipped) missing=\(missing)")
-            return (present, skipped, err)
+            return (present, skipped, err, [])
         }
 
         // 全部都被 forbid：直接返回，不打扰 NSWorkspace
@@ -228,7 +228,8 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             return (
                 0,
                 rejected.count,
-                "safety-blocked: \(rejected.count) 路径被安全策略拦截；首条原因=\(rejected.first?.reason.rawValue ?? "unknown")"
+                "safety-blocked: \(rejected.count) 路径被安全策略拦截；首条原因=\(rejected.first?.reason.rawValue ?? "unknown")",
+                []
             )
         }
 
@@ -236,13 +237,25 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         let rejectedCount = rejected.count
         let firstReason = rejected.first?.reason.rawValue
 
-        return await withCheckedContinuation { (cc: CheckedContinuation<(Int, Int, String?), Never>) in
+        return await withCheckedContinuation { (cc: CheckedContinuation<(Int, Int, String?, [(String, String)]), Never>) in
             let gate = TrashGate(cc: cc)
             // recycle 是 async 回调，且最后只回调一次（成功 trashedURLs 列出，失败给 error）
             NSWorkspace.shared.recycle(urls) { trashed, error in
                 let movedCount = trashed.count
                 let recycleSkipped = urls.count - movedCount
                 let totalSkipped = recycleSkipped + rejectedCount
+                // Step 7：把 NSWorkspace 回填的 [URL: URL] 转成 (originalPath, trashedPath) pair。
+                // 仅在 error == nil 时落盘——recycle 的语义是"成功项放进 trashed 字典；失败项不在
+                // 字典里，但 error 描述聚合错误"。partial success 的情况字典只有部分 entry，
+                // 此时我们倾向于不写 history（保守：宁缺勿乱），等下次干净的成功再写。
+                let pairs: [(String, String)]
+                if error == nil {
+                    pairs = trashed.map { (orig, trashedURL) in
+                        (orig.path, trashedURL.path)
+                    }
+                } else {
+                    pairs = []
+                }
                 let err: String?
                 if let error {
                     GSYLog.error(.trash, "NSWorkspace.recycle 失败 moved=\(movedCount)/\(urls.count) err=\(error.localizedDescription)")
@@ -258,8 +271,8 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 } else {
                     err = nil
                 }
-                GSYLog.info(.trash, "moveToTrash 完成 moved=\(movedCount) skipped=\(totalSkipped)")
-                gate.fire((movedCount, totalSkipped, err))
+                GSYLog.info(.trash, "moveToTrash 完成 moved=\(movedCount) skipped=\(totalSkipped) pairs=\(pairs.count)")
+                gate.fire((movedCount, totalSkipped, err, pairs))
             }
         }
     }
@@ -269,14 +282,14 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 private final class TrashGate: @unchecked Sendable {
     private let lock = NSLock()
     private var fired = false
-    private let cc: CheckedContinuation<(Int, Int, String?), Never>
+    private let cc: CheckedContinuation<(Int, Int, String?, [(String, String)]), Never>
 
-    init(cc: CheckedContinuation<(Int, Int, String?), Never>) {
+    init(cc: CheckedContinuation<(Int, Int, String?, [(String, String)]), Never>) {
         self.cc = cc
     }
 
     @discardableResult
-    func fire(_ value: (Int, Int, String?)) -> Bool {
+    func fire(_ value: (Int, Int, String?, [(String, String)])) -> Bool {
         lock.lock()
         if fired {
             lock.unlock()

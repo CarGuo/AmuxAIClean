@@ -12,8 +12,14 @@ import Foundation
 /// - 默认 dryRun=true（PITFALLS §5.7：trash preview 模式）
 /// - 5s 超时（PITFALLS §1.7：禁止同步阻塞）
 public protocol DeletionPipeline: Sendable {
-    /// - Returns: (movedCount, skippedCount, error?)
-    func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?)
+    /// - Returns: (movedCount, skippedCount, error?, trashedPairs)
+    ///
+    /// `trashedPairs` 是 `[(originalPath, trashedPath)]`，仅在 `dryRun=false` 且
+    /// NSWorkspace.recycle 真正把文件移入用户废纸篓后才有非空内容；其余路径
+    /// （dryRun / 全 forbid 拦截 / recycle 失败）一律返回空数组。Step 7
+    /// UndoHistory 用这份 pair 写入 `~/Library/Application Support/GSYCleanMac/UndoHistory.json`
+    /// 以支持"最近清理 → 恢复"。
+    func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)])
 
     /// 注入"上层一票否决路径集合"（v1.3.zzzz Phase 3-A 协议化 → Phase 3-E 全链路接通）。
     ///

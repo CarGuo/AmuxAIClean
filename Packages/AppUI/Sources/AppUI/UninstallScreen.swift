@@ -397,7 +397,16 @@ public struct UninstallScreen: View {
         // 切到 UninstallScreen 走 trash 时就会"莫名 accessDenied 拒了某个 ~/Library/.. 路径"。
         // 主动清空一次是 O(1) 锁开销，零误伤。
         pipeline.setAccessDeniedPaths([])
-        let (moved, skipped, err) = await pipeline.moveToTrash(paths: paths, dryRun: dryRun)
+        let (moved, skipped, err, pairs) = await pipeline.moveToTrash(paths: paths, dryRun: dryRun)
+        // Step 7：UninstallScreen 真删成功后写 UndoHistory（dryRun / 失败 pair 为空 → no-op）。
+        if !dryRun, err == nil, !pairs.isEmpty {
+            await MainActor.run {
+                UndoHistoryStore.shared.addRecord(
+                    source: "uninstall",
+                    filePairs: pairs.map { UndoHistoryStore.Record.FilePair(original: $0.0, trashed: $0.1) }
+                )
+            }
+        }
         let mode = dryRun ? String(localized: "uninstall.result.mode.dryrun", bundle: .module) : ""
         await MainActor.run {
             if let err {

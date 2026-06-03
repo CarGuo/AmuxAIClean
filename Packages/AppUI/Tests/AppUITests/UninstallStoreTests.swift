@@ -171,7 +171,7 @@ final class UninstallStoreTests: XCTestCase {
         // 走 TrashPipeline 的 dryRun 路径 —— 这是 UninstallScreen 默认按钮链路
         let pipeline = TrashPipeline()
         let paths = cands.map(\.path)
-        let (moved, skipped, err) = await pipeline.moveToTrash(paths: paths, dryRun: true)
+        let (moved, skipped, err, _) = await pipeline.moveToTrash(paths: paths, dryRun: true)
 
         XCTAssertNil(err, "dryRun 不应产生错误")
         XCTAssertEqual(moved, paths.count, "dryRun 应报告 \(paths.count) 项 moved（仅是预览计数）")

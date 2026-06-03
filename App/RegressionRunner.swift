@@ -89,6 +89,7 @@ final class RegressionRunner {
             // 原 helper-bridge-stub / deletion-token-roundtrip 两条 case 一并删除）
             case "trash-pipeline-dryrun":   try await trashPipelineDryRun()
             case "safety-engine-veto":      try safetyEngineVeto()
+            case "undo-history-restore":    try await undoHistoryRestore()
             // 真实场景诊断（图 4/5、图 2/3 反推、扫描慢）
             case "trash-real-scan":         try await trashRealScan()
             case "fda-banner-diagnose":     try await fdaBannerDiagnose()
@@ -483,7 +484,7 @@ final class RegressionRunner {
         let missing = scen.root.appendingPathComponent("nonexist.txt").path
         let homeForbid = NSHomeDirectory() // SafetyEngine 把 $HOME 判 forbid
         let pipeline = TrashPipeline(safety: SafetyEngine(), vendors: vendors, home: NSHomeDirectory())
-        let (present, skipped, err) = await pipeline.moveToTrash(
+        let (present, skipped, err, _) = await pipeline.moveToTrash(
             paths: real + [missing, homeForbid],
             dryRun: true
         )
@@ -519,6 +520,60 @@ final class RegressionRunner {
     // [Packages/XPCBridge](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/XPCBridge) +
     // [Helper/](file:///Users/guoshuyu/workspace/GSYCleanMac/Helper) 整段下线，原 helperBridgeStub /
     // deletionTokenRoundtrip 两个 case 实现一并删除（switch 入口处也已剔除）。
+
+    /// **Step 7 真实回归**：UndoHistory 端到端：addRecord 落盘 → 跨实例 reload → restore mv 文件回原位。
+    ///
+    /// 走真实磁盘 + 真实文件，但隔离到 `/tmp/RegrUndoHistory-<uuid>/UndoHistory.json`，不污染用户
+    /// `~/Library/Application Support/GSYCleanMac/UndoHistory.json`。
+    /// **不调 NSWorkspace.recycle**——本 case 跑在 background 进程里，系统 Trash 在沙箱里不可靠；
+    /// 我们只验 happy path（无冲突），冲突分支留给手工 / UI 验证。
+    private func undoHistoryRestore() async throws {
+        let dir = NSTemporaryDirectory() + "RegrUndoHistory-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+
+        let storeURL = URL(fileURLWithPath: dir).appendingPathComponent("UndoHistory.json")
+        let trashDir = URL(fileURLWithPath: dir).appendingPathComponent("trash", isDirectory: true)
+        let origDir = URL(fileURLWithPath: dir).appendingPathComponent("orig", isDirectory: true)
+        try FileManager.default.createDirectory(at: trashDir, withIntermediateDirectories: true)
+        // origDir 故意不创建：验 restore 会自动 createDirectory parent
+
+        let trashedFile = trashDir.appendingPathComponent("hello.log")
+        let originalFile = origDir.appendingPathComponent("hello.log")
+        try "regr-payload".write(to: trashedFile, atomically: true, encoding: .utf8)
+
+        // 1) 第一个 store 实例：addRecord 落盘
+        do {
+            let s1 = UndoHistoryStore(storeURL: storeURL, maxHistoryCount: 10)
+            s1.addRecord(source: "regr", filePairs: [
+                .init(original: originalFile.path, trashed: trashedFile.path)
+            ])
+            log("[REGR] case=\(caseID) addRecord_count=\(s1.history.count)")
+            assertEqual(s1.history.count, 1, "addRecord 后 history 数量")
+        }
+        let exists = FileManager.default.fileExists(atPath: storeURL.path)
+        assertTrue(exists, "UndoHistory.json 已落盘")
+
+        // 2) 第二个实例：从盘上读出来，验 Codable + atomic write
+        let s2 = UndoHistoryStore(storeURL: storeURL, maxHistoryCount: 10)
+        log("[REGR] case=\(caseID) reload_count=\(s2.history.count)")
+        assertEqual(s2.history.count, 1, "跨实例 reload 数量")
+        let record = s2.history[0]
+        assertEqual(record.source, "regr", "source 字段")
+        assertEqual(record.fileCount, 1, "fileCount 字段")
+
+        // 3) restoreRecord：把 trashed mv 回 original，record 自动从 history 移除
+        let (restored, skipped, err) = await s2.restoreRecord(record)
+        log("[REGR] case=\(caseID) restored=\(restored) skipped=\(skipped) err=\(err ?? "-")")
+        assertEqual(restored, 1, "restored count")
+        assertEqual(skipped, 0, "skipped count")
+        assertTrue(err == nil, "no error")
+        assertTrue(FileManager.default.fileExists(atPath: originalFile.path),
+                   "文件已 mv 回原路径")
+        assertTrue(!FileManager.default.fileExists(atPath: trashedFile.path),
+                   "trashed 路径已被掏空")
+        assertEqual(s2.history.count, 0, "restore 后 history 被清空")
+    }
 
     // MARK: - 真实场景诊断（图 4/5、图 2/3、扫描慢）
 

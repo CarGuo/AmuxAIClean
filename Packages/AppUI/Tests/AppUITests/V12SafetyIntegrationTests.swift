@@ -34,7 +34,7 @@ final class V12SafetyIntegrationTests: XCTestCase {
 
         let pipeline = TrashPipeline()
         let allPaths = (alive + dead).map(\.path)
-        let (present, missing, err) = await pipeline.moveToTrash(paths: allPaths, dryRun: true)
+        let (present, missing, err, _) = await pipeline.moveToTrash(paths: allPaths, dryRun: true)
 
         XCTAssertEqual(present, 3, "3 个真实文件应被识别")
         XCTAssertEqual(missing, 2, "2 个不存在路径应被列入 missing")
@@ -48,7 +48,7 @@ final class V12SafetyIntegrationTests: XCTestCase {
 
     func test_集成_TrashPipeline_空清单不抛错() async {
         let pipeline = TrashPipeline()
-        let (m, s, e) = await pipeline.moveToTrash(paths: [], dryRun: false)
+        let (m, s, e, _) = await pipeline.moveToTrash(paths: [], dryRun: false)
         XCTAssertEqual(m, 0)
         XCTAssertEqual(s, 0)
         XCTAssertNil(e, "空清单不应被视为错误")
@@ -195,7 +195,7 @@ final class V12SafetyIntegrationTests: XCTestCase {
 
         // 走 dryRun → 不应真删
         let pipeline = TrashPipeline()
-        let (present, missing, _) = await pipeline.moveToTrash(paths: trashTargets, dryRun: true)
+        let (present, missing, _, _) = await pipeline.moveToTrash(paths: trashTargets, dryRun: true)
         XCTAssertEqual(present, 2)
         XCTAssertEqual(missing, 0)
 

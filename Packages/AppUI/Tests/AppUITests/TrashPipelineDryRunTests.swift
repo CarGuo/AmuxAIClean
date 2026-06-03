@@ -16,7 +16,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
         let missing2 = dir + "/no-such-file-2.bin"
 
         let pipe = TrashPipeline()
-        let (present, missing, err) = await pipe.moveToTrash(
+        let (present, missing, err, _) = await pipe.moveToTrash(
             paths: [real, missing1, missing2],
             dryRun: true
         )
@@ -39,7 +39,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
         try "c".write(toFile: f3, atomically: true, encoding: .utf8)
 
         let pipe = TrashPipeline()
-        let (present, missing, err) = await pipe.moveToTrash(
+        let (present, missing, err, _) = await pipe.moveToTrash(
             paths: [f1, f2, f3],
             dryRun: true
         )
@@ -128,7 +128,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
         try "b".write(toFile: safe2, atomically: true, encoding: .utf8)
 
         let pipe = TrashPipeline()
-        let (present, skipped, err) = await pipe.moveToTrash(
+        let (present, skipped, err, _) = await pipe.moveToTrash(
             paths: [safe1, "/System/Library/Frameworks", safe2, "/etc/hosts"],
             dryRun: true
         )
@@ -143,7 +143,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
     /// 也不会改变 movedCount=0、skipped=N 的语义。
     func test_正式模式全forbid时短路不调recycle() async throws {
         let pipe = TrashPipeline()
-        let (moved, skipped, err) = await pipe.moveToTrash(
+        let (moved, skipped, err, _) = await pipe.moveToTrash(
             paths: ["/System", "/usr", "/etc"],
             dryRun: false
         )
@@ -159,7 +159,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
     /// M4 闸门：传空数组——保持原有 (0, 0, nil) 语义不变。
     func test_空数组保持0_0_nil() async throws {
         let pipe = TrashPipeline()
-        let (moved, skipped, err) = await pipe.moveToTrash(paths: [], dryRun: false)
+        let (moved, skipped, err, _) = await pipe.moveToTrash(paths: [], dryRun: false)
         XCTAssertEqual(moved, 0)
         XCTAssertEqual(skipped, 0)
         XCTAssertNil(err)
@@ -215,7 +215,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
 
         let pipe = TrashPipeline()
         pipe.setAccessDeniedPaths([denied1])
-        let (present, skipped, err) = await pipe.moveToTrash(
+        let (present, skipped, err, _) = await pipe.moveToTrash(
             paths: [safe1, denied1],
             dryRun: true
         )
@@ -233,7 +233,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
         let denied = ["/Users/foo/Library/Application Support/SystemMigration/.locked",
                       "/Users/foo/Library/CloudStorage/iCloud Drive (Archive)"]
         pipe.setAccessDeniedPaths(Set(denied))
-        let (moved, skipped, err) = await pipe.moveToTrash(paths: denied, dryRun: false)
+        let (moved, skipped, err, _) = await pipe.moveToTrash(paths: denied, dryRun: false)
         XCTAssertEqual(moved, 0)
         XCTAssertEqual(skipped, denied.count)
         XCTAssertNotNil(err)
@@ -320,8 +320,8 @@ final class TrashPipelineDryRunTests: XCTestCase {
     func test_DeletionPipeline协议默认setAccessDeniedPaths为无操作() async {
         // 用一个最小自定义实现：除 moveToTrash 外什么都不写，验证协议默认 no-op 生效。
         struct StubPipeline: DeletionPipeline {
-            func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?) {
-                return (paths.count, 0, nil)
+            func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)]) {
+                return (paths.count, 0, nil, [])
             }
         }
         let stub: any DeletionPipeline = StubPipeline()
@@ -331,7 +331,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
             "/var/folders/zz/abc/T/y",
         ])
         // moveToTrash 行为不受影响
-        let (present, skipped, err) = await stub.moveToTrash(paths: ["/a", "/b"], dryRun: true)
+        let (present, skipped, err, _) = await stub.moveToTrash(paths: ["/a", "/b"], dryRun: true)
         XCTAssertEqual(present, 2)
         XCTAssertEqual(skipped, 0)
         XCTAssertNil(err)
