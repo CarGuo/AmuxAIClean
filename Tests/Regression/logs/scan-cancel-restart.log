@@ -1,4 +1,4 @@
-2026-06-03 21:24:47.364 GSYCleanMac[47480:1588360] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-03 22:00:06.957 GSYCleanMac[63512:1647186] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=scan-cancel-restart defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=scan-cancel-restart
 [REGR] case=scan-cancel-restart afterCancel isScanning=false wasCancelled=true
@@ -7,4 +7,4 @@
 [REGR_OK] case=scan-cancel-restart wasCancelled after second scan=false
 [REGR_OK] case=scan-cancel-restart second scan finished=true
 [REGR] case=scan-cancel-restart defaults_restored_keys=3
-[REGR_PASS] case=scan-cancel-restart elapsed_ms=563
+[REGR_PASS] case=scan-cancel-restart elapsed_ms=616
