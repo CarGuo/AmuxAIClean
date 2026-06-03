@@ -2,7 +2,7 @@
 
 > Step 6 子专题。父文档：[docs/AUDIT_2026_06.md#L302-L319](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/AUDIT_2026_06.md#L302-L319)。
 > 决策日期：2026-06-03。
-> 状态：v1 spec，未实施。
+> 状态：v1 spec，已实施 step6_design_spec / step6_daemon_core / step6_target，待做 step6_main_app + step6_verify。
 
 ---
 
@@ -36,18 +36,18 @@ GSYCleanMac 当前是纯前台 App：用户主动 `⌘O` 才会扫描。两个�
 │  GSYCleanMac.app                                                      │
 │                                                                       │
 │  Contents/MacOS/GSYCleanMac          ← 主 App 二进制 (SwiftUI)        │
-│  Contents/MacOS/GSYCleanMacSentinel  ← Sentinel helper 二进制          │
+│  Contents/MacOS/gsycleanmac-sentinel ← Sentinel helper 二进制          │
 │  Contents/Library/LaunchDaemons/                                      │
 │    com.guoshuyu.cleanmac.sentinel.plist  ← SMAppService 注册的 plist  │
 │  Contents/Info.plist                                                  │
 │    + CFBundleURLTypes: gsycleanmac://                                 │
 └──────────────────────────────────────────────────────────────────────┘
                             ↑                              ↓
-                            │ launchctl bootstrap          │ open URL
-                            │ (SMAppService.daemon)        │ NSWorkspace
+                            │ launchctl bootstrap          │ /usr/bin/open -g
+                            │ (SMAppService.daemon)        │ (avoid linking AppKit)
                             │                              │
 ┌──────────────────────────────────────────────────────────────────────┐
-│  GSYCleanMacSentinel daemon (常驻后台)                                │
+│  gsycleanmac-sentinel daemon (常驻后台)                               │
 │                                                                       │
 │  - FSEventStream 监听 ~/.Trash       (场景 1: 卸载发现)               │
 │  - FSEventStream 监听热点目录        (场景 2: 推荐清理)               │
@@ -57,7 +57,7 @@ GSYCleanMac 当前是纯前台 App：用户主动 `⌘O` 才会扫描。两个�
 │      [glob 命中的 node_modules]                                       │
 │  - rolling top-100 ringbuffer 写到                                    │
 │      ~/Library/Application Support/GSYCleanMac/sentinel-pending.json  │
-│  - 检测到事件后 NSWorkspace.open 主 App URL                            │
+│  - 检测到事件后 /usr/bin/open -g 唤起主 App URL                        │
 │      gsycleanmac://uninstall?path=...    (场景 1)                     │
 │      gsycleanmac://action/scan/full       (场景 2)                    │
 └──────────────────────────────────────────────────────────────────────┘
@@ -71,7 +71,7 @@ GSYCleanMac 当前是纯前台 App：用户主动 `⌘O` 才会扫描。两个�
 |---|---|---|
 | **运行仓运** | SMAppService.daemon (macOS 13+) | LaunchAgent plist 是上一代 API，SMAppService 是 Apple 官方推荐的现代替代，卸载 App 时自动清理 helper |
 | **场景** | 卸载 + 推荐双场景 (v1) | 不分两版本是因为 daemon 进程已经起来了，加一组 FSEventStream stream 几乎零成本 |
-| **Helper target 形式** | 主 App target 里插 Build Phase 生成 helper | SwiftPM CLI target + embed 与 5.6 番外刚推动的"原生 Xcode 路径"反；独立 Xcode target 也可，Build Phase 是 Apple SMAppService 示例项目同款最佳实践 |
+| **Helper target 形式** | 独立 PBXNativeTarget Command Line Tool + 主 App 加 Embed Helper Tools build phase（Apple 官方 [Embedding a command-line tool in a sandboxed app](https://developer.apple.com/documentation/Xcode/embedding-a-helper-tool-in-a-sandboxed-app) 路径） | SwiftPM executable + Copy Phase 路径在 Apple Developer Forum 2026-02 thread 814686 archive 阶段会撞 "Multiple commands produce .o" 冲突；scheme pre-action 子项目独立 xcodebuild 路径与现有项目风格反 |
 | **URL Scheme** | 路由型 `gsycleanmac://uninstall + gsycleanmac://action/scan/full` | scheme 前缀 `gsycleanmac` 与 bundle id `com.guoshuyu.cleanmac` 后缀对齐；`gsyclean` 是原 spec 草案弃用 |
 | **发现策略** | 轻手版 FSEvents + rolling top-100 | 重量版定时全屏扫描太贵（30s CPU + IO）；混合版 v1 不上 |
 | **默认开关** | 默认 OFF | 避免存量用户升级后 "多了个守护进程" 反感；新用户首启不弹 onboarding 弹窗，把 Sentinel 藏在「设置 → 高级」里 |
@@ -83,14 +83,28 @@ GSYCleanMac 当前是纯前台 App：用户主动 `⌘O` 才会扫描。两个�
 
 ### 5.1 Helper target: `GSYCleanMacSentinel`
 
-- 独立 Xcode target，类型 = Command Line Tool（macOS）
-- Bundle ID: `com.guoshuyu.cleanmac.sentinel`
-- 二进制路径：`Contents/MacOS/GSYCleanMacSentinel`（embed via Build Phase Copy Files Phase, dst = Executables）
-- 入口：`Sources/Sentinel/main.swift` —— 单文件 daemon，依赖 Foundation + CoreServices
-- Info.plist：`LSUIElement = true` + `LSBackgroundOnly = true`
-- Entitlements：极简（只需要 `com.apple.security.app-sandbox = false` 因为要监听 `~/.Trash` 跨 sandbox 边界）
-- Code sign：与主 App 同 Team ID `39PK4PKRP3`，Automatic signing
-- 目标体积：< 200 KB（无 SwiftUI / 无 GRDB / 无 AppUI 依赖）
+落地路径（按 Apple 官方文档 [Embedding a command-line tool in a sandboxed app](https://developer.apple.com/documentation/Xcode/embedding-a-helper-tool-in-a-sandboxed-app) 实施）：
+
+- **独立 PBXNativeTarget**，类型 = `com.apple.product-type.tool`（Command Line Tool / macOS）
+- 二进制名：`gsycleanmac-sentinel`（`PRODUCT_NAME`，小写连字符与 LaunchDaemon plist label 对齐）
+- Bundle ID: `com.guoshuyu.cleanmac.sentinel`（`PRODUCT_BUNDLE_IDENTIFIER`，与 `OTHER_CODE_SIGN_FLAGS = $(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)` 联动确保 codesign identifier 一致）
+- 入口：[Tools/Sentinel/Sources/Sentinel/main.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/Sentinel/Sources/Sentinel/main.swift) —— top-level code（`main.swift` 文件名 Swift 默认走 top-level，不能再用 `@main`）
+- 仅依赖 Foundation + CoreServices（FSEvents 来自 CoreServices）
+- Entitlements：[Tools/Sentinel/Sentinel.entitlements](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/Sentinel/Sentinel.entitlements) —— 极简空 plist + Hardened Runtime ON。**不上 sandbox**（`com.apple.security.app-sandbox = false`）以跨 sandbox 边界监听 `~/.Trash`
+- 关键 build settings（按 Apple 文档强制）：
+  - `SKIP_INSTALL = YES`（避免 archive 时产生独立 helper 副本）
+  - `CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO`（避免与 `com.apple.security.inherit` 冲突）
+  - `OTHER_CODE_SIGN_FLAGS = $(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)`
+  - `ENABLE_HARDENED_RUNTIME = YES`
+  - `DEVELOPMENT_TEAM = 39PK4PKRP3` / `CODE_SIGN_STYLE = Automatic`
+- 主 App target 接入：
+  - 加 `PBXTargetDependency` → `GSYCleanMacSentinel`，确保 helper build 在前
+  - 加 `PBXCopyFilesBuildPhase` 名为 `Embed Helper Tools`，`dstSubfolderSpec = 6`（Executables → `Contents/MacOS/`），引用 helper product 的 PBXBuildFile（`ATTRIBUTES = (CodeSignOnCopy, )` 在 copy 阶段重签）
+- 二进制路径（落地）：`GSYCleanMac.app/Contents/MacOS/gsycleanmac-sentinel`
+- 实测体积：~248 KB（无 SwiftUI / 无 GRDB / 无 AppUI 依赖，arm64 单架构 Debug build）
+- LaunchDaemon plist embed `Contents/Library/LaunchDaemons/com.guoshuyu.cleanmac.sentinel.plist`：留待 step6_main_app 阶段，在主 App target 加第二个 `Copy Files Build Phase`（`dstSubfolderSpec = 1` Wrapper + `dstPath = Contents/Library/LaunchDaemons`）
+
+> **历史失真说明**：原 spec v1 草案曾设想"主 App target 里插 Build Phase 生成 helper"或"SwiftPM executableTarget + .pbxproj copy phase embed binary"，落地时发现：（1）Build Phase 生成 helper 路径需要 Run Script 调用 swiftc 自治编译，与"原生 Xcode 路径"原则相违；（2）SwiftPM executable embed 路径在 [Apple Developer Forum thread 814686](https://developer.apple.com/forums/thread/814686)（2026-02）archive 阶段会撞 "Multiple commands produce .o" 冲突。最终回归 Apple 官方 PBXNativeTarget Command Line Tool 路径。
 
 ### 5.2 SMAppService 注册流程
 
@@ -120,7 +134,7 @@ func registerSentinelIfEnabled() {
     <key>Label</key>
     <string>com.guoshuyu.cleanmac.sentinel</string>
     <key>BundleProgram</key>
-    <string>Contents/MacOS/GSYCleanMacSentinel</string>
+    <string>Contents/MacOS/gsycleanmac-sentinel</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -240,9 +254,7 @@ CFRunLoopRun()
   - `test_只识别app后缀`：`~/.Trash/foo.txt` 应被忽略
   - `test_去抖30秒内重复事件聚合为一次`
 
-- [Tools/SentinelTests/HotspotRingBufferTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/SentinelTests/HotspotRingBufferTests.swift)
-  - `test_top100溢出后淘汰最早`
-  - `test_重启进程后从sentinel-pending.json恢复`
+- step6_verify 阶段会在 [Packages/AppUI/Tests/AppUITests/](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests) 下重写 step6_daemon_core 阶段已写过的 14 个 SPM 单测（`TrashListenerTests` / `HotspotBlacklistTests` / `HotspotRingBufferTests` / `URLSchemeDispatcherTests`）。理由：step6_target 落地时为遵循 Apple 官方 PBXNativeTarget Command Line Tool 路径，删掉了 [Tools/Sentinel/Package.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/Sentinel/Package.swift) SPM 子包（避免"同源 main.swift 被两处引用"风险）。这 14 个单测验证的纯逻辑（`isAppBundle` / `isBlacklisted` / RingBuffer 容量 / URL percent-encode）在 step6_verify 重写到 AppUI 测试包并通过 `@testable import` 访问 helper 内部符号 —— 实际执行因 helper 是独立 target，要么把这些纯函数提取到 [Packages/SafetyKit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit) 共享，要么直接复制到 AppUITests 文件里（无外部依赖、纯 Foundation 函数）。
 
 ### 6.2 Regression case（新增）
 
@@ -264,13 +276,13 @@ CFRunLoopRun()
 
 对应 Todo:
 
-| Todo | 内容 | 输出 |
-|---|---|---|
-| step6_design_spec | 写本文档 | docs/SENTINEL_DESIGN.md |
-| step6_target | Xcode 加 GSYCleanMacSentinel target + Build Phase + plist embed | .pbxproj diff + plist |
-| step6_daemon_core | main.swift FSEvents listener + ringbuffer | Tools/Sentinel/main.swift |
-| step6_main_app | SMAppService register + URL routing + AppSettings + 设置面板 | App/ + Packages/AppUI/ diff |
-| step6_verify | 单测 + regression case + 手动 24h 烧测 | logs/ + last-run.json |
+| Todo | 内容 | 输出 | 状态 |
+|---|---|---|---|
+| step6_design_spec | 写本文档 | [docs/SENTINEL_DESIGN.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/SENTINEL_DESIGN.md) | ✅ commit `9dae711` |
+| step6_daemon_core | main.swift FSEvents listener + ringbuffer | [Tools/Sentinel/Sources/Sentinel/main.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/Sentinel/Sources/Sentinel/main.swift) | ✅ commit `2376078`（SPM 子包形态，14 单测全绿；step6_target 阶段 SPM 子包被删，仅留 main.swift） |
+| step6_target | Xcode 加 GSYCleanMacSentinel PBXNativeTarget Command Line Tool + Embed Helper Tools build phase + Sentinel.entitlements | .pbxproj diff (~140 行) + [Tools/Sentinel/Sentinel.entitlements](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/Sentinel/Sentinel.entitlements) | ✅ Step 6.2（本 commit） |
+| step6_main_app | SMAppService register + URL routing + AppSettings + 设置面板 + LaunchDaemon plist embed | App/ + Packages/AppUI/ diff | ⏳ 待做 |
+| step6_verify | 单测重写到 AppUITests + regression case + 手动 24h 烧测 | logs/ + last-run.json | ⏳ 待做 |
 
 ---
 

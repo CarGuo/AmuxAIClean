@@ -17,6 +17,8 @@
 		922FBAF195DAE3DEAE29336B /* GSYCleanMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1AC343FA0785D39B6C91BD3 /* GSYCleanMacApp.swift */; };
 		C055F53EA2B18E72F41BAFE0 /* TestHarness in Frameworks */ = {isa = PBXBuildFile; productRef = 1B5433B113D90D03B92A6B22 /* TestHarness */; };
 		E0963A3E20D365A7E7DA8DE5 /* LogKit in Frameworks */ = {isa = PBXBuildFile; productRef = 869DB7788784E9203F564909 /* LogKit */; };
+		AA01E001000000000000S001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA01F001000000000000S001 /* main.swift */; };
+		AA01E002000000000000S002 /* gsycleanmac-sentinel in Embed Helper Tools */ = {isa = PBXBuildFile; fileRef = AA01F002000000000000S002 /* gsycleanmac-sentinel */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -34,6 +36,9 @@
 		DF808A7550415E3DB686B545 /* HeuristicKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = HeuristicKit; path = Packages/HeuristicKit; sourceTree = SOURCE_ROOT; };
 		F4112C6CEEEE50474D0CB590 /* GSYCleanMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GSYCleanMac.entitlements; sourceTree = "<group>"; };
 		FEC26917DEEB32AB69EAA073 /* TestHarness */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TestHarness; path = Packages/TestHarness; sourceTree = SOURCE_ROOT; };
+		AA01F001000000000000S001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		AA01F002000000000000S002 /* gsycleanmac-sentinel */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "gsycleanmac-sentinel"; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA01F003000000000000S003 /* Sentinel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Sentinel.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -57,6 +62,7 @@
 			isa = PBXGroup;
 			children = (
 				7B61AB43A10B9C1BE7176E12 /* GSYCleanMac.app */,
+				AA01F002000000000000S002 /* gsycleanmac-sentinel */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -100,8 +106,42 @@
 				F4D53F41DAE8C57F9FB84DD2 /* App */,
 				61C285C78FB6B3B4B4ED4D9E /* Packages */,
 				D033CDCECB74C859C35EF626 /* Resources */,
+				AA01G001000000000000S001 /* Tools */,
 				087289FA5F5E417DFDAAFF48 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		AA01G001000000000000S001 /* Tools */ = {
+			isa = PBXGroup;
+			children = (
+				AA01G002000000000000S002 /* Sentinel */,
+			);
+			path = Tools;
+			sourceTree = "<group>";
+		};
+		AA01G002000000000000S002 /* Sentinel */ = {
+			isa = PBXGroup;
+			children = (
+				AA01G003000000000000S003 /* Sources */,
+				AA01F003000000000000S003 /* Sentinel.entitlements */,
+			);
+			path = Sentinel;
+			sourceTree = "<group>";
+		};
+		AA01G003000000000000S003 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				AA01G004000000000000S004 /* Sentinel */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		AA01G004000000000000S004 /* Sentinel */ = {
+			isa = PBXGroup;
+			children = (
+				AA01F001000000000000S001 /* main.swift */,
+			);
+			path = Sentinel;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -114,10 +154,12 @@
 				95F2BF3977D2FE7E7AB61846 /* Sources */,
 				88E7C9A4619484B52FA021B7 /* Resources */,
 				73F5C9E92640168B6A99A2CE /* Frameworks */,
+				AA01H001000000000000S001 /* Embed Helper Tools */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				AA01D001000000000000S001 /* PBXTargetDependency */,
 			);
 			name = GSYCleanMac;
 			packageProductDependencies = (
@@ -132,6 +174,21 @@
 			productReference = 7B61AB43A10B9C1BE7176E12 /* GSYCleanMac.app */;
 			productType = "com.apple.product-type.application";
 		};
+		AA01N001000000000000S001 /* GSYCleanMacSentinel */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA01L001000000000000S001 /* Build configuration list for PBXNativeTarget "GSYCleanMacSentinel" */;
+			buildPhases = (
+				AA01S001000000000000S001 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = GSYCleanMacSentinel;
+			productName = "gsycleanmac-sentinel";
+			productReference = AA01F002000000000000S002 /* gsycleanmac-sentinel */;
+			productType = "com.apple.product-type.tool";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -142,6 +199,9 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					C8595EE1DD697C434C527FFD = {
+						ProvisioningStyle = Automatic;
+					};
+					AA01N001000000000000S001 = {
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -170,6 +230,7 @@
 			projectRoot = "";
 			targets = (
 				C8595EE1DD697C434C527FFD /* GSYCleanMac */,
+				AA01N001000000000000S001 /* GSYCleanMacSentinel */,
 			);
 		};
 /* End PBXProject section */
@@ -196,7 +257,47 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA01S001000000000000S001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA01E001000000000000S001 /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AA01H001000000000000S001 /* Embed Helper Tools */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				AA01E002000000000000S002 /* gsycleanmac-sentinel in Embed Helper Tools */,
+			);
+			name = "Embed Helper Tools";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		AA01D001000000000000S001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA01N001000000000000S001 /* GSYCleanMacSentinel */;
+			targetProxy = AA01P001000000000000S001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXContainerItemProxy section */
+		AA01P001000000000000S001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 6B296BF115E133E6D6E8FAD0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA01N001000000000000S001;
+			remoteInfo = GSYCleanMacSentinel;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXVariantGroup section */
 		F74FB5762A1E3FC026FA94BC /* InfoPlist.strings */ = {
@@ -376,6 +477,38 @@
 			};
 			name = Release;
 		};
+		AA01C001000000000000S001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Tools/Sentinel/Sentinel.entitlements;
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 39PK4PKRP3;
+				ENABLE_HARDENED_RUNTIME = YES;
+				OTHER_CODE_SIGN_FLAGS = "$(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.guoshuyu.cleanmac.sentinel;
+				PRODUCT_NAME = "gsycleanmac-sentinel";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+		AA01C002000000000000S002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Tools/Sentinel/Sentinel.entitlements;
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 39PK4PKRP3;
+				ENABLE_HARDENED_RUNTIME = YES;
+				OTHER_CODE_SIGN_FLAGS = "$(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.guoshuyu.cleanmac.sentinel;
+				PRODUCT_NAME = "gsycleanmac-sentinel";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -393,6 +526,15 @@
 			buildConfigurations = (
 				A2999C26A9D4D1874A7E9E01 /* Debug */,
 				FF4D4ACE764132A9C1B5DA8E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		AA01L001000000000000S001 /* Build configuration list for PBXNativeTarget "GSYCleanMacSentinel" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA01C001000000000000S001 /* Debug */,
+				AA01C002000000000000S002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

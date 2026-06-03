@@ -25,30 +25,26 @@ import CoreServices
 /// - 仅依赖 Foundation + CoreServices（不引 SwiftUI / GRDB / AppUI / SafetyKit）
 /// - 目标 RSS < 5 MB / CPU < 1%（静默期）
 /// - 单文件 main.swift 可独立 `swift run gsycleanmac-sentinel` 验证逻辑
-@main
-struct SentinelMain {
-    static func main() {
-        let log = SentinelLog.shared
-        log.info("Sentinel daemon starting (pid=\(getpid()))")
 
-        let supportDir = SentinelPaths.supportDirectory
-        try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+let log = SentinelLog.shared
+log.info("Sentinel daemon starting (pid=\(getpid()))")
 
-        let pendingPath = supportDir.appendingPathComponent("sentinel-pending.json").path
-        let ringBuffer = HotspotRingBuffer(capacity: 100, persistPath: pendingPath)
-        ringBuffer.loadFromDisk()
+let supportDir = SentinelPaths.supportDirectory
+try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
 
-        let dispatcher = URLSchemeDispatcher()
-        let trashListener = TrashListener(dispatcher: dispatcher)
-        let hotspotListener = HotspotListener(ringBuffer: ringBuffer, dispatcher: dispatcher)
+let pendingPath = supportDir.appendingPathComponent("sentinel-pending.json").path
+let ringBuffer = HotspotRingBuffer(capacity: 100, persistPath: pendingPath)
+ringBuffer.loadFromDisk()
 
-        trashListener.start()
-        hotspotListener.start()
+let dispatcher = URLSchemeDispatcher()
+let trashListener = TrashListener(dispatcher: dispatcher)
+let hotspotListener = HotspotListener(ringBuffer: ringBuffer, dispatcher: dispatcher)
 
-        log.info("Sentinel daemon ready, entering run loop")
-        CFRunLoopRun()
-    }
-}
+trashListener.start()
+hotspotListener.start()
+
+log.info("Sentinel daemon ready, entering run loop")
+CFRunLoopRun()
 
 // MARK: - 路径常量
 
