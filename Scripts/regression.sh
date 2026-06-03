@@ -67,6 +67,8 @@ ALL_CASES=(
     "trash-real-scan"
     "fda-banner-diagnose"
     "scan-perf-diagnose"
+    # v1.6 Sentinel
+    "sentinel-default-off"
 )
 
 # 部分 case 由于跑全盘真实扫描，需要更长超时（bash 3 兼容：用 case 函数）

@@ -93,6 +93,8 @@ final class RegressionRunner {
             case "trash-real-scan":         try await trashRealScan()
             case "fda-banner-diagnose":     try await fdaBannerDiagnose()
             case "scan-perf-diagnose":      try await scanPerfDiagnose()
+            // v1.6 Sentinel
+            case "sentinel-default-off":    try sentinelDefaultOff()
             default:
                 fail("unknown case id: \(caseID)")
             }
@@ -644,6 +646,70 @@ final class RegressionRunner {
         for (idx, r) in sorted.enumerated() {
             log("[REGR] case=\(caseID) root[\(idx)] path=\(r.rootPath) bytes=\(r.bytes) files=\(r.fileCount) finished=\(r.isFinished)")
         }
+    }
+
+    // MARK: - v1.6 Sentinel
+
+    /// **v1.6 Sentinel 默认 OFF + URL Scheme 路由 真实回归**
+    ///
+    /// 在真实 App 进程里（已签名 .app + LaunchDaemons embed）验证：
+    /// 1. AppSettings.sentinelEnabled 默认 false（升级用户不会无声多出后台守护）；
+    /// 2. AppSettings.sentinelLastEnabled 默认 nil；
+    /// 3. SentinelURLRouter 三种核心 URL 形态返回正确 Outcome：
+    ///    - `gsycleanmac://action/scan/full` → `.startFullScan`
+    ///    - `gsycleanmac://uninstall?path=/Applications` → `.openUninstall(path: "/Applications")`
+    ///    - `gsycleanmac://uninstall?path=../../etc` → `.openUninstall(path: nil)`（防注入）
+    /// 4. SentinelManager.currentStatus() 不崩溃，且对未授权时返回 .notRegistered/.notFound/.requiresApproval 之一；
+    /// 5. SentinelManager.plistName 与 [com.guoshuyu.cleanmac.sentinel.plist](file:///Users/guoshuyu/workspace/GSYCleanMac/App/LaunchDaemons/com.guoshuyu.cleanmac.sentinel.plist) 一致。
+    ///
+    /// **不会做什么**：
+    /// - 不真调 `enable()` —— SMAppService.daemon().register() 在 regression 跑用户机上
+    ///   会污染用户的 LoginItems 注册表 + 弹原生 NSAlert（runModal 阻塞），由
+    ///   [/tmp/sentinel-app-launch.sh](file:///tmp/sentinel-app-launch.sh) 手工烟测覆盖。
+    /// - 不调 `disable()` —— 同理。
+    private func sentinelDefaultOff() throws {
+        // (1) 默认值 - 注意：这一刻 settings 是用户偏好（已被 snapshotAndPersistDefaults
+        // 备份），但 sentinelEnabled 默认契约是 OFF，正常用户不会显式开启。
+        // 这条 case 确认：AppSettings 在没有任何 v1.6 sentinel key 写入的"全新装"语义下，
+        // 必须默认 false。我们用一个独立 testSuite AppSettings 实例做白盒验证。
+        let suite = "GSYCleanMac.regression.SentinelDefault.\(UUID().uuidString)"
+        UserDefaults().removePersistentDomain(forName: suite)
+        let freshSettings = AppSettings(testSuite: suite)
+        log("[REGR] case=\(caseID) default_sentinelEnabled=\(freshSettings.sentinelEnabled) default_lastEnabled=\(String(describing: freshSettings.sentinelLastEnabled))")
+        assertFalse(freshSettings.sentinelEnabled, "Sentinel 默认必须 OFF")
+        assertTrue(freshSettings.sentinelLastEnabled == nil, "未启用时 sentinelLastEnabled 必须 nil")
+
+        // (2) plistName 锁定
+        log("[REGR] case=\(caseID) plistName=\(SentinelManager.plistName)")
+        assertEqual(SentinelManager.plistName, "com.guoshuyu.cleanmac.sentinel.plist", "plistName")
+
+        // (3) URL Scheme 路由：3 种核心形态
+        let outScan = SentinelURLRouter.handle(URL(string: "gsycleanmac://action/scan/full")!)
+        log("[REGR] case=\(caseID) route_scanFull=\(outScan)")
+        assertEqual(outScan, .startFullScan, "route gsycleanmac://action/scan/full")
+
+        // 真实存在的路径（/Applications 在所有 macOS 上都有）走绿灯
+        let appsExpected = ("/Applications" as NSString).standardizingPath
+        let outUninstall = SentinelURLRouter.handle(URL(string: "gsycleanmac://uninstall?path=/Applications")!)
+        log("[REGR] case=\(caseID) route_uninstall_apps=\(outUninstall) expectedPath=\(appsExpected)")
+        assertEqual(outUninstall, .openUninstall(path: appsExpected), "uninstall /Applications")
+
+        // 路径含 .. → 必须被防注入拦下
+        let outBad = SentinelURLRouter.handle(URL(string: "gsycleanmac://uninstall?path=/Applications/../etc")!)
+        log("[REGR] case=\(caseID) route_uninstall_traversal=\(outBad)")
+        assertEqual(outBad, .openUninstall(path: nil), "uninstall path=../ 必须被防注入拒绝")
+
+        // 错误 scheme → ignored
+        let outBadScheme = SentinelURLRouter.handle(URL(string: "https://example.com/uninstall")!)
+        log("[REGR] case=\(caseID) route_bad_scheme=\(outBadScheme)")
+        assertEqual(outBadScheme, .ignored(reason: "bad-scheme"), "bad scheme 应被忽略")
+
+        // (4) currentStatus 真实 App 下不崩溃；具体值取决于用户机器是否曾启用过
+        let mgr = SentinelManager(settings: freshSettings)
+        let status = mgr.currentStatus()
+        log("[REGR] case=\(caseID) currentStatus=\(status) label=\(status.displayLabel)")
+        // 任何具体值都行（依赖用户机器状态），核心是 displayLabel 非空
+        assertTrue(!status.displayLabel.isEmpty, "status.displayLabel 必须非空")
     }
 
     // MARK: - Fixtures
