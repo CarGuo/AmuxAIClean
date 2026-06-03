@@ -136,10 +136,14 @@ public struct DirectChildAggregate: Sendable, Equatable {
     /// 仅是文件 record 的累加（用于"叶子直接孩子"判定）。
     public let fileDescendantCount: Int
     public let fileDescendantBytes: Int64
+    /// v1.5.4：该 segment 自身 inode 行的 mtime（Finder 风格，**不**做 max(子孙) 聚合）。
+    /// hasInode=false 时为 nil；UI 显示时降级为空白即可。
+    public let inodeModificationDate: Date?
 
     public init(segment: String, isDirectory: Bool, hasInode: Bool,
                 descendantCount: Int, descendantBytes: Int64, descendantLogicalBytes: Int64,
-                fileDescendantCount: Int, fileDescendantBytes: Int64) {
+                fileDescendantCount: Int, fileDescendantBytes: Int64,
+                inodeModificationDate: Date? = nil) {
         self.segment = segment
         self.isDirectory = isDirectory
         self.hasInode = hasInode
@@ -148,6 +152,7 @@ public struct DirectChildAggregate: Sendable, Equatable {
         self.descendantLogicalBytes = descendantLogicalBytes
         self.fileDescendantCount = fileDescendantCount
         self.fileDescendantBytes = fileDescendantBytes
+        self.inodeModificationDate = inodeModificationDate
     }
 }
 
@@ -184,6 +189,8 @@ fileprivate struct _DirectChildrenAcc {
     var fileCount: Int = 0
     var hasInode: Bool = false
     var inodeIsDir: Bool = false
+    /// v1.5.4：segment 自身 inode 行的 mtime（仅 hasInode 命中时被赋值）。
+    var inodeMtime: Date? = nil
 }
 
 public extension ScanResultStore {
@@ -228,6 +235,7 @@ public extension ScanResultStore {
             if rec.path == prefix + seg {
                 a.hasInode = true
                 a.inodeIsDir = rec.isDirectory
+                a.inodeMtime = rec.modificationDate
             }
             accs[seg] = a
         }
@@ -240,7 +248,8 @@ public extension ScanResultStore {
                 descendantBytes: a.bytes,
                 descendantLogicalBytes: a.logical,
                 fileDescendantCount: a.fileCount,
-                fileDescendantBytes: a.fileBytes
+                fileDescendantBytes: a.fileBytes,
+                inodeModificationDate: a.inodeMtime
             )
         }
     }

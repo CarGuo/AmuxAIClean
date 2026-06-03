@@ -79,10 +79,44 @@ struct RowView: View {
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.tertiary)
                 .frame(width: 56, alignment: .trailing)
+
+            // v1.5.4：mtime 列——与 [TreeBrowserRow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L622) 行内格式一致；
+            // 缺失时占位"—"防止列错位，hover help 给完整时间。
+            Text(RowView.mtimeShort(row.modificationDate))
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .frame(width: 86, alignment: .trailing)
+                .help(RowView.mtimeFull(row.modificationDate))
         }
         .padding(.vertical, 4)
         .help(row.url.path)
     }
+
+    /// 列内 mtime 短文案：当年 MM-dd / 跨年 yyyy-MM-dd / nil → "—"。
+    static func mtimeShort(_ date: Date?) -> String {
+        guard let date = date else { return "—" }
+        let cal = Calendar.current
+        if cal.isDate(date, equalTo: Date(), toGranularity: .year) {
+            return Self.shortFmt.string(from: date)
+        }
+        return Self.fullFmt.string(from: date)
+    }
+
+    /// help/tooltip：完整本地化 datetime；nil 给空串避免没必要 tooltip。
+    static func mtimeFull(_ date: Date?) -> String {
+        guard let date = date else { return "" }
+        return Self.fullDateTimeFmt.string(from: date)
+    }
+
+    private static let shortFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MM-dd"; f.locale = .current; return f
+    }()
+    private static let fullFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = .current; return f
+    }()
+    private static let fullDateTimeFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short; f.locale = .current; return f
+    }()
 
     /// v1.3：bytes 文本——active 行用 accent 色加粗 + 缓慢脉动透明度，
     /// 让多 worker 并发扫不同子树时"哪几行正在扫"一眼可见；非 active 行保持原样（secondary 灰）。

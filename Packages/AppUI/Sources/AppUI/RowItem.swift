@@ -22,11 +22,21 @@ public struct RowItem: Identifiable, Hashable, Sendable {
     /// UI 给 active 行的 bytes 数字上色 + 轻微脉动，让用户一眼看出多 worker 同时在扫不同子树。
     /// 扫描结束后所有行的 isActive 一律 false。
     public let isActive: Bool
+    /// v1.5.4：该行（聚合后第一级子目录或单个文件）对应 inode 的最近修改时间。
+    ///
+    /// 设计选择（A 方案，与 Finder 一致）：聚合行采用**目录自身 inode** 的 mtime，
+    /// 即 ScanCoordinator 在 ingest 阶段从 [FSNode.modificationDate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/FSNode.swift#L14)
+    /// 取来直接挂上；不走"max(子孙 mtime)"聚合，避免 dirIndex 多维护一字段以及 publish 抖动。
+    /// 数据来源已经在扫描层免费——[BulkScanner.enumerate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L390-L412)
+    /// 的 attrlist 位图已请求 ATTR_CMN_MODTIME，本字段从源头透传过来不增加 syscall。
+    /// 可选是因为：极早期 publish 帧 / store-fallback 拉到的旧记录可能缺失。
+    public let modificationDate: Date?
 
     public init(id: String, url: URL, title: String, isDirectory: Bool, bytes: Int64,
                 logicalBytes: Int64, fileCount: Int, verdict: SafetyVerdict, rejection: SafetyRejection,
                 vendorName: String? = nil, vendorNote: String? = nil,
-                isActive: Bool = false) {
+                isActive: Bool = false,
+                modificationDate: Date? = nil) {
         self.id = id
         self.url = url
         self.title = title
@@ -39,6 +49,7 @@ public struct RowItem: Identifiable, Hashable, Sendable {
         self.vendorName = vendorName
         self.vendorNote = vendorNote
         self.isActive = isActive
+        self.modificationDate = modificationDate
     }
 
     /// `forbid` 项不允许勾选；其余可勾。
@@ -64,6 +75,10 @@ public enum MainListSortKey: String, CaseIterable, Sendable, Hashable, Identifia
     case nameDesc
     case fileCountDesc
     case fileCountAsc
+    /// v1.5.4：按修改时间排序——最近改的在前 / 最久没动的在前。
+    /// 与 sizeDesc 并列常用："找最大的删 / 找最久没动的删"。
+    case mtimeDesc
+    case mtimeAsc
 
     public var id: String { rawValue }
 
@@ -76,6 +91,8 @@ public enum MainListSortKey: String, CaseIterable, Sendable, Hashable, Identifia
         case .nameDesc:      return String(localized: "sort.name.desc", bundle: .module)
         case .fileCountDesc: return String(localized: "sort.filecount.desc", bundle: .module)
         case .fileCountAsc:  return String(localized: "sort.filecount.asc", bundle: .module)
+        case .mtimeDesc:     return String(localized: "sort.mtime.desc", bundle: .module)
+        case .mtimeAsc:      return String(localized: "sort.mtime.asc", bundle: .module)
         }
     }
 
@@ -96,6 +113,22 @@ public enum MainListSortKey: String, CaseIterable, Sendable, Hashable, Identifia
             if a.fileCount != b.fileCount { return a.fileCount > b.fileCount }
         case .fileCountAsc:
             if a.fileCount != b.fileCount { return a.fileCount < b.fileCount }
+        case .mtimeDesc:
+            // nil mtime（缺失）一律排最后，避免它们抢占"最近改"头部。
+            switch (a.modificationDate, b.modificationDate) {
+            case let (l?, r?): if l != r { return l > r }
+            case (nil, _?):    return false
+            case (_?, nil):    return true
+            case (nil, nil):   break
+            }
+        case .mtimeAsc:
+            // nil mtime 同样压最后——避免污染"最久没动"头部。
+            switch (a.modificationDate, b.modificationDate) {
+            case let (l?, r?): if l != r { return l < r }
+            case (nil, _?):    return false
+            case (_?, nil):    return true
+            case (nil, nil):   break
+            }
         }
         return a.id < b.id
     }
@@ -114,6 +147,12 @@ public struct TreeRow: Identifiable, Hashable, Sendable {
     /// v1.3.zzzz：访问状态——区分"真的 0KB"和"被 sandbox/TCC/permission denied 拦掉看不到"。
     /// UI 据此渲染锁定徽章 + tooltip + 不可勾选；不打 banner 误导用户以为是 bug。
     public let accessState: AccessState
+    /// v1.5.4：节点 inode 自身的最近修改时间。
+    ///
+    /// 与 [RowItem.modificationDate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L33)
+    /// 一致采用 Finder 风格——目录就是它自己 inode 的 mtime（修改子项时由内核自动更新），
+    /// 不再额外聚合 max(子孙)。store-fallback 路径会从 GRDB.modification_date 列拉。
+    public let modificationDate: Date?
 
     public enum AccessState: String, Sendable, Hashable, Codable {
         /// 正常扫描得到的数据
@@ -130,7 +169,8 @@ public struct TreeRow: Identifiable, Hashable, Sendable {
 
     public init(path: String, title: String, bytes: Int64, fileCount: Int,
                 isDirectory: Bool, hasChildren: Bool,
-                accessState: AccessState = .normal) {
+                accessState: AccessState = .normal,
+                modificationDate: Date? = nil) {
         self.path = path
         self.title = title
         self.bytes = bytes
@@ -138,6 +178,7 @@ public struct TreeRow: Identifiable, Hashable, Sendable {
         self.isDirectory = isDirectory
         self.hasChildren = hasChildren
         self.accessState = accessState
+        self.modificationDate = modificationDate
     }
 }
 
@@ -151,10 +192,12 @@ public enum TreeSortKey: String, CaseIterable, Sendable, Hashable {
     case sizeDesc, sizeAsc
     case nameAsc, nameDesc
     case countDesc, countAsc
+    /// v1.5.4：按修改时间排序——和 LargeFileSortKey.mtime 对齐。
+    case mtimeDesc, mtimeAsc
 
     /// 抽象出"主列"：UI 用它判断点的是哪一列、画哪一个箭头。
     public enum Column: String, CaseIterable, Sendable {
-        case size, name, count
+        case size, name, count, mtime
     }
 
     public var column: Column {
@@ -162,19 +205,20 @@ public enum TreeSortKey: String, CaseIterable, Sendable, Hashable {
         case .sizeDesc, .sizeAsc:   return .size
         case .nameAsc, .nameDesc:   return .name
         case .countDesc, .countAsc: return .count
+        case .mtimeDesc, .mtimeAsc: return .mtime
         }
     }
 
     public var isDescending: Bool {
         switch self {
-        case .sizeDesc, .nameDesc, .countDesc: return true
-        case .sizeAsc, .nameAsc, .countAsc:    return false
+        case .sizeDesc, .nameDesc, .countDesc, .mtimeDesc: return true
+        case .sizeAsc, .nameAsc, .countAsc, .mtimeAsc:    return false
         }
     }
 
     /// 给 UI 用：当前点击 column 应该切到的下一个排序键。
     /// - 已是该列 → 反转方向
-    /// - 不是该列 → size/count 默认 desc，name 默认 asc（符合 Finder 习惯）
+    /// - 不是该列 → size/count/mtime 默认 desc，name 默认 asc（符合 Finder 习惯）
     public func toggled(to column: Column) -> TreeSortKey {
         if column == self.column {
             switch self {
@@ -184,12 +228,15 @@ public enum TreeSortKey: String, CaseIterable, Sendable, Hashable {
             case .nameDesc:  return .nameAsc
             case .countDesc: return .countAsc
             case .countAsc:  return .countDesc
+            case .mtimeDesc: return .mtimeAsc
+            case .mtimeAsc:  return .mtimeDesc
             }
         }
         switch column {
         case .size:  return .sizeDesc
         case .name:  return .nameAsc
         case .count: return .countDesc
+        case .mtime: return .mtimeDesc
         }
     }
 }

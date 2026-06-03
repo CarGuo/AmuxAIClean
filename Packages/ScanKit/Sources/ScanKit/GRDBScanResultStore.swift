@@ -303,7 +303,8 @@ public actor GRDBScanResultStore: ScanResultStore {
                 path,
                 is_directory,
                 allocated_size,
-                logical_size
+                logical_size,
+                modification_date
               FROM scan_result
               WHERE session_id = ?
                 AND path >= ?
@@ -317,7 +318,10 @@ public actor GRDBScanResultStore: ScanResultStore {
               MAX(CASE WHEN path = ? || seg THEN 1 ELSE 0 END) AS has_inode,
               MAX(CASE WHEN path = ? || seg AND is_directory = 1 THEN 1 ELSE 0 END) AS dir_inode,
               SUM(CASE WHEN is_directory = 0 THEN 1 ELSE 0 END) AS file_cnt,
-              SUM(CASE WHEN is_directory = 0 THEN allocated_size ELSE 0 END) AS file_bytes
+              SUM(CASE WHEN is_directory = 0 THEN allocated_size ELSE 0 END) AS file_bytes,
+              -- v1.5.4：取该 segment 自身 inode 行的 mtime（**非** max 子孙），与 Finder 语义一致。
+              -- hasInode=false（vendor bucket / 沙盒被拒）则该聚合值为 NULL。
+              MAX(CASE WHEN path = ? || seg THEN modification_date ELSE NULL END) AS inode_mtime
             FROM children
             WHERE seg <> ''
             GROUP BY seg
@@ -330,7 +334,7 @@ public actor GRDBScanResultStore: ScanResultStore {
                 arguments: [
                     prefixLen, prefixLen, prefixLen, prefixLen,
                     sessionID.raw, lower, upper,
-                    prefix, prefix
+                    prefix, prefix, prefix
                 ]
             )
             return rows.map { row in
@@ -340,6 +344,8 @@ public actor GRDBScanResultStore: ScanResultStore {
                 let fileCnt: Int = row["file_cnt"]
                 // hasInode=true 时听 inode 自己的；否则只要 cnt > 1 或没文件 leaf 就当目录
                 let isDir: Bool = hasInode ? dirInode : (cnt > 1 || fileCnt == 0)
+                let inodeMtimeTs: Double? = row["inode_mtime"]
+                let inodeMtime: Date? = inodeMtimeTs.map { Date(timeIntervalSince1970: $0) }
                 return DirectChildAggregate(
                     segment: row["seg"],
                     isDirectory: isDir,
@@ -348,7 +354,8 @@ public actor GRDBScanResultStore: ScanResultStore {
                     descendantBytes: row["bytes"],
                     descendantLogicalBytes: row["logical_bytes"],
                     fileDescendantCount: fileCnt,
-                    fileDescendantBytes: row["file_bytes"]
+                    fileDescendantBytes: row["file_bytes"],
+                    inodeModificationDate: inodeMtime
                 )
             }
         }
