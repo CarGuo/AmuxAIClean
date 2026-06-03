@@ -1,17 +1,19 @@
-2026-06-03 17:08:30.172 GSYCleanMac[62357:960716] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-03 18:52:45.017 GSYCleanMac[9597:1166202] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=scan-perf-diagnose defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=scan-perf-diagnose
-[REGR] case=scan-perf-diagnose HB elapsed=5.1s bytes=8312387904 files=46114 MBps=1545.29
-[REGR] case=scan-perf-diagnose HB elapsed=10.3s bytes=16192156431 files=170601 MBps=1503.77
-[REGR] case=scan-perf-diagnose HB elapsed=15.3s bytes=24505448757 files=317914 MBps=1529.74
-[REGR] case=scan-perf-diagnose HB elapsed=20.4s bytes=26086311576 files=385866 MBps=1221.83
-[REGR] case=scan-perf-diagnose HB elapsed=25.5s bytes=26086311576 files=385866 MBps=976.98
-[REGR] case=scan-perf-diagnose elapsed_sec=27.8 total_bytes=26246566598 total_files=393659 throughput_MBps=899.88
-[REGR] case=scan-perf-diagnose root[0] path=/Users/guoshuyu/Library/Caches bytes=16971849429 files=355489 finished=true
-[REGR] case=scan-perf-diagnose root[1] path=/Users/guoshuyu/Library/Developer/Xcode/DerivedData bytes=6565468796 files=33051 finished=true
+[REGR] case=scan-perf-diagnose HB elapsed=5.0s bytes=5482594797 files=21132 MBps=1041.53
+[REGR] case=scan-perf-diagnose HB elapsed=10.1s bytes=15377897901 files=91254 MBps=1459.08
+[REGR] case=scan-perf-diagnose HB elapsed=15.1s bytes=16143742593 files=171936 MBps=1021.59
+[REGR] case=scan-perf-diagnose HB elapsed=20.2s bytes=23497655277 files=292308 MBps=1110.90
+[REGR] case=scan-perf-diagnose HB elapsed=25.2s bytes=25862644558 files=392089 MBps=977.53
+[REGR] case=scan-perf-diagnose HB elapsed=30.3s bytes=25862644558 files=392089 MBps=815.27
+[REGR] case=scan-perf-diagnose HB elapsed=35.3s bytes=25862644558 files=392089 MBps=698.97
+[REGR] case=scan-perf-diagnose elapsed_sec=36.6 total_bytes=25893509722 total_files=393518 throughput_MBps=674.14
+[REGR] case=scan-perf-diagnose root[0] path=/Users/guoshuyu/Library/Caches bytes=16608923029 files=355224 finished=true
+[REGR] case=scan-perf-diagnose root[1] path=/Users/guoshuyu/Library/Developer/Xcode/DerivedData bytes=6576265715 files=33195 finished=true
 [REGR] case=scan-perf-diagnose root[2] path=/Users/guoshuyu/Downloads bytes=2153356290 files=1775 finished=true
-[REGR] case=scan-perf-diagnose root[3] path=/Users/guoshuyu/Library/Logs bytes=555892083 files=3344 finished=true
+[REGR] case=scan-perf-diagnose root[3] path=/Users/guoshuyu/Library/Logs bytes=554964688 files=3324 finished=true
 [REGR] case=scan-perf-diagnose root[4] path=/Users/guoshuyu/.Trash bytes=0 files=0 finished=true
 [REGR_OK] case=scan-perf-diagnose scan finished=true
 [REGR] case=scan-perf-diagnose defaults_restored_keys=3
-[REGR_PASS] case=scan-perf-diagnose elapsed_ms=28056
+[REGR_PASS] case=scan-perf-diagnose elapsed_ms=36936
