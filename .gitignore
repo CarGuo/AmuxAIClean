@@ -1,9 +1,12 @@
 # Xcode
 build/
 DerivedData/
-*.xcodeproj/
-*.xcworkspace/xcuserdata/
+# .xcodeproj 主体（project.pbxproj）入仓，仅忽略每用户私有数据
 *.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
+# fork 的人本地覆盖 DEVELOPMENT_TEAM 用（Step 5.6 README 有说明）
+Configs/Local.xcconfig
 
 # 构建/打包产物（CI 与本地 Scripts/build_release.sh 输出位置）
 dist/

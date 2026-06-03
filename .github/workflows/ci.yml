@@ -57,21 +57,20 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 25
     needs: swift-test
+    # Step 5.6 番外：CI 暂时屏蔽 xcodebuild job（Personal Team 签名只能本机用，
+    # GitHub runner 上没 keychain，要么走 ad-hoc 要么上传 Developer ID p12，
+    # 用户决定先省 Actions 额度，等需要发 Release 时再单独跑 release.yml）
+    if: false
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install xcodegen
-        run: brew install xcodegen
-
-      - name: Generate xcodeproj
-        run: xcodegen generate
-
-      - name: xcodebuild Debug
+      - name: xcodebuild Debug (ad-hoc)
         run: |
           set -o pipefail
           xcodebuild \
+            -project GSYCleanMac.xcodeproj \
             -scheme GSYCleanMac \
             -configuration Debug \
             CODE_SIGN_IDENTITY="-" \

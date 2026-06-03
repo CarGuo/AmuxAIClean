@@ -2,28 +2,23 @@
 # setup_dev.sh —— GSYCleanMac 新机器开发环境初始化
 #
 # 用法：
-#   ./scripts/setup_dev.sh
+#   ./Scripts/setup_dev.sh
 #
-# 行为：
+# Step 5.6 番外回归 Xcode 原生路径后，本脚本仅做环境检查 + 引导：
 #   1. 检查 macOS 版本（PITFALLS §1.2 锁 15+）
 #   2. 检查 Xcode CLT / Xcode 是否已装
-#   3. 安装 / 升级 Homebrew
-#   4. 安装 xcodegen（项目 SOT 工程描述工具）
-#   5. 提示 git clone（若当前不在仓库内）
-#   6. 跑 xcodegen generate
-#   7. open GSYCleanMac.xcodeproj
+#   3. 安装 / 升级 Homebrew（可选；用于 brew install xcbeautify 等）
+#   4. 检查 .xcodeproj 是否已入仓
+#   5. 引导用户在 Xcode UI 完成 Apple ID 登录 + Personal Team 选择
 #
 # 设计原则：每一步幂等，可重复执行不破坏环境
 
 set -euo pipefail
 
-REPO_URL="git@github.com:guoshuyu/GSYCleanMac.git"  # 占位，正式仓库地址 TBD
 PROJECT_NAME="GSYCleanMac"
 XCODEPROJ="GSYCleanMac.xcodeproj"
-PROJECT_YML="project.yml"
 MIN_MACOS_MAJOR=15
 
-# ----- 颜色辅助 -----
 if [ -t 1 ]; then
   GREEN='\033[0;32m'
   YELLOW='\033[1;33m'
@@ -71,79 +66,44 @@ else
   fi
 fi
 
-# ----- 4. Homebrew -----
-step "检查 / 安装 Homebrew"
+# ----- 4. Homebrew（可选） -----
+step "检查 Homebrew（可选，用于装 xcbeautify 美化 build 输出）"
 if ! command -v brew >/dev/null 2>&1; then
-  warn "Homebrew 未安装；启动官方安装脚本"
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-  # Apple Silicon 用户需手动加 PATH（一般在 /opt/homebrew/bin）
-  if [ -x "/opt/homebrew/bin/brew" ]; then
-    eval "$(/opt/homebrew/bin/brew shellenv)"
-  fi
+  warn "Homebrew 未安装；如需 xcbeautify 可执行：/bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
 else
   echo "    已安装：$(brew --version | head -n1)"
 fi
 
-# ----- 5. xcodegen -----
-step "安装 / 升级 xcodegen"
-if ! command -v xcodegen >/dev/null 2>&1; then
-  brew install xcodegen
-else
-  echo "    已安装：$(xcodegen --version 2>&1 | head -n1)"
-  echo "    可选升级：brew upgrade xcodegen"
-fi
-
-# ----- 6. git clone 提示 -----
-step "检查当前是否在 ${PROJECT_NAME} 仓库中"
-if [ ! -f "$PROJECT_YML" ]; then
-  warn "当前目录未发现 ${PROJECT_YML}"
-  cat <<EOF
-
-如果你尚未克隆仓库，请执行：
-
-    git clone ${REPO_URL}
-    cd ${PROJECT_NAME}
-    ./scripts/setup_dev.sh
-
-如果你已经克隆但 cwd 不在仓库根目录，请先 cd 进去再跑本脚本。
-
-EOF
-  exit 0
-else
-  echo "    OK：找到 ${PROJECT_YML}"
-fi
-
-# ----- 7. xcodegen generate -----
-step "生成 Xcode 工程（xcodegen generate）"
-xcodegen generate
-
+# ----- 5. .xcodeproj 入仓检查 -----
+step "检查 ${XCODEPROJ} 是否在仓库里"
 if [ ! -d "$XCODEPROJ" ]; then
-  fail "xcodegen 未产出 ${XCODEPROJ}，请检查 ${PROJECT_YML} 是否合法"
+  fail "未找到 ${XCODEPROJ} —— Step 5.6 番外后该文件应已入仓，请检查 git 状态"
+else
+  echo "    OK：${XCODEPROJ} 已就绪"
 fi
-
-# ----- 8. 打开工程 -----
-step "打开 ${XCODEPROJ}"
-open "$XCODEPROJ"
 
 # ----- 收尾提示 -----
 cat <<EOF
 
 ${GREEN}${BOLD}环境就绪 OK${NC}
 
-下一步建议：
+下一步（fork 用户必看）：
 
-  1. Xcode 顶部菜单 → Settings → Accounts → 用 Apple ID 登录（Free Apple ID 即可）
-  2. 选中 ${PROJECT_NAME} target → Signing & Capabilities → Team 选 Personal Team
-  3. 点 Run 跑起来；首次运行会触发 TCC（Full Disk Access）授权引导
+  1. 双击打开 ${XCODEPROJ}
+  2. Xcode 顶部菜单 → Settings → Accounts → 用 Apple ID 登录（免费 Personal Team 即可）
+  3. 选中 ${PROJECT_NAME} target → Signing & Capabilities
+       - 勾 "Automatically manage signing"
+       - Team 下拉选 你的 Personal Team
+       - Bundle Identifier 必要时改成你自己的（比如 com.<你的id>.cleanmac.GSYCleanMac）
+  4. ⌘R 跑起来；首次运行会触发 TCC（Full Disk Access）授权引导
+       —— 此后只要 Personal Team 不变，cdhash 就稳定，TCC 一次授权终身有效
 
 跑测试（任选其一）：
+  • 单包：       cd Packages/ScanKit && swift test
+  • 全部 6 包：   见 README.md "跑测试" 章节
+  • Xcode：      ⌘U
 
-  • Swift Package：cd Packages/ScanKit && swift test
-  • 全部 6 包：    见 README.md "跑测试" 章节
-  • Xcode scheme： xcodebuild -scheme ${PROJECT_NAME} -configuration Debug test
-
-打包 alpha DMG：
-
-  ./scripts/make_dmg.sh build/Build/Products/Debug/${PROJECT_NAME}.app
+打包（自用 / 本机）：
+  ./Scripts/build_release.sh
 
 EOF

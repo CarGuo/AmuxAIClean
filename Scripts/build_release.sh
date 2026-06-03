@@ -1,39 +1,27 @@
 #!/usr/bin/env bash
-# build_release.sh —— GSYCleanMac Release 打包（自用 / 开源信任安装路径）
+# build_release.sh —— GSYCleanMac Release 打包
 #
 # 用法:
-#   ./Scripts/build_release.sh                 # 默认：Release 配置 + 自动选签名 + 复制到 dist/
+#   ./Scripts/build_release.sh                 # 默认：Release 配置 + .xcodeproj 里的签名设置
 #   VERSION=1.0.0 ./Scripts/build_release.sh   # 指定版本号写进 Info.plist 与 dmg 文件名
-#   IDENTITY="Developer ID..." ./Scripts/build_release.sh   # 显式覆盖签名身份
 #
-# 签名身份选择优先级（从高到低）：
-#   1. 命令行 IDENTITY=...                    显式覆盖
-#   2. 环境变量 GSYCLEAN_CODESIGN_IDENTITY    setup_codesign.sh 产出的本地稳定身份（推荐）
-#   3. ad-hoc "-"                             零依赖兜底，但 TCC 授权会随每次重签失效
-#
-# 行为:
-#   1. 若环境无 xcodeproj，自动 xcodegen generate
-#   2. xcodebuild -configuration Release，可选注入 MARKETING_VERSION
-#   3. 按上述优先级挑签名身份；非 ad-hoc 时 CODE_SIGNING_REQUIRED/ALLOWED 都打开
-#   4. 输出产物到 dist/GSYCleanMac.app（保留原始 build 路径不动）
-#
-# 设计原则:
-#   - 默认零依赖（仅需 xcodegen + xcodebuild）
-#   - 幂等：重复运行覆盖产物不留垃圾
-#   - 失败立即退出，便于 CI 抓取错误码
+# 设计原则（Step 5.6 番外回归 Xcode 原生路径）：
+#   - 不再做签名身份决议；签名完全由 .xcodeproj 里的 Automatic + Personal Team 决定
+#   - 不再调用 xcodegen；.xcodeproj 已入仓
+#   - Personal Team 签出来的 Apple Development 证书签 .app 仅本机能跑；
+#     如要分发到其它机器需切 Developer ID 公证（见 Scripts/codesign.sh + docs/RELEASE.md）
 
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT_NAME="GSYCleanMac"
 SCHEME="GSYCleanMac"
+PROJECT="${ROOT}/${PROJECT_NAME}.xcodeproj"
 CONFIG="${CONFIG:-Release}"
 VERSION="${VERSION:-}"
-# 签名身份优先级：命令行 IDENTITY > 环境变量 GSYCLEAN_CODESIGN_IDENTITY > ad-hoc "-"
-IDENTITY="${IDENTITY:-${GSYCLEAN_CODESIGN_IDENTITY:--}}"
-BUILD_DIR="${BUILD_DIR:-build/release}"
-DIST_DIR="${DIST_DIR:-dist}"
+BUILD_DIR="${BUILD_DIR:-${ROOT}/build/release}"
+DIST_DIR="${DIST_DIR:-${ROOT}/dist}"
 
-# ----- 颜色辅助 -----
 if [ -t 1 ]; then
   GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; BOLD='\033[1m'; NC='\033[0m'
 else
@@ -43,61 +31,27 @@ step() { printf "${BOLD}${GREEN}==>${NC} %s\n" "$*"; }
 warn() { printf "${YELLOW}!! %s${NC}\n" "$*" >&2; }
 fail() { printf "${RED}xx %s${NC}\n" "$*" >&2; exit 1; }
 
-# ----- 1. 依赖检查 -----
-step "检查 xcodebuild / xcodegen"
+cd "$ROOT"
+
+step "检查 xcodebuild 与 .xcodeproj"
 command -v xcodebuild >/dev/null 2>&1 || fail "xcodebuild 未找到，请安装 Xcode 16+"
-command -v xcodegen   >/dev/null 2>&1 || fail "xcodegen 未找到：brew install xcodegen"
+[ -d "$PROJECT" ] || fail ".xcodeproj 不在：$PROJECT"
 
-# ----- 2. xcodeproj 不在则生成 -----
-if [ ! -d "${PROJECT_NAME}.xcodeproj" ]; then
-  step "未发现 ${PROJECT_NAME}.xcodeproj，调用 xcodegen 生成"
-  xcodegen generate
-fi
-
-# ----- 3. 清理旧 Release 产物 -----
-step "清理旧 build/release 与 dist/${PROJECT_NAME}.app"
+step "清理旧 ${BUILD_DIR}/Build/Products/${CONFIG}/${PROJECT_NAME}.app 与 ${DIST_DIR}/${PROJECT_NAME}.app"
 rm -rf "$BUILD_DIR/Build/Products/${CONFIG}/${PROJECT_NAME}.app"
 mkdir -p "$DIST_DIR"
 rm -rf "$DIST_DIR/${PROJECT_NAME}.app"
 
-# ----- 4. 构建 -----
-if [ "$IDENTITY" = "-" ]; then
-  step "xcodebuild -scheme ${SCHEME} -configuration ${CONFIG}（ad-hoc 签名）"
-  # ad-hoc 签名说明：
-  #   - 这里走的是 codesign --sign -，与 Rectangle / AltTab / Stats 等开源项目一致；
-  #     不需要 Apple Developer Program（99 USD/年），不公证（notarize），
-  #     CI 上不依赖任何 GitHub Secrets。
-  #   - project.yml 的 base 设了 ENABLE_HARDENED_RUNTIME=YES。
-  #     Apple 实际允许 ad-hoc + hardened runtime 同时存在（只是这种组合不能 notarize），
-  #     所以这里**不需要**显式覆盖为 NO，避免破坏沙盒/相机麦克风等 entitlement 行为。
-  #   - 若你 fork 后切到 Developer ID 签名（IDENTITY="Developer ID Application: ..."）
-  #     再开 hardened runtime 会更标准，因为 Apple 公证服务强制要求 hardened runtime。
-  XCB_ARGS=(
+step "xcodebuild -scheme ${SCHEME} -configuration ${CONFIG}"
+XCB_ARGS=(
+    -project "$PROJECT"
     -scheme "$SCHEME"
     -configuration "$CONFIG"
     -derivedDataPath "$BUILD_DIR"
-    CODE_SIGN_IDENTITY="$IDENTITY"
-    CODE_SIGN_STYLE=Manual
-    CODE_SIGNING_REQUIRED=NO
-    CODE_SIGNING_ALLOWED=NO
     build
-  )
-else
-  step "xcodebuild -scheme ${SCHEME} -configuration ${CONFIG}（身份：${IDENTITY}）"
-  XCB_ARGS=(
-    -scheme "$SCHEME"
-    -configuration "$CONFIG"
-    -derivedDataPath "$BUILD_DIR"
-    CODE_SIGN_IDENTITY="$IDENTITY"
-    CODE_SIGN_STYLE=Manual
-    CODE_SIGNING_REQUIRED=YES
-    CODE_SIGNING_ALLOWED=YES
-    build
-  )
-fi
-
+)
 if [ -n "$VERSION" ]; then
-  XCB_ARGS=(MARKETING_VERSION="$VERSION" "${XCB_ARGS[@]}")
+    XCB_ARGS=(MARKETING_VERSION="$VERSION" "${XCB_ARGS[@]}")
 fi
 
 xcodebuild "${XCB_ARGS[@]}" | xcbeautify 2>/dev/null || \
@@ -106,11 +60,9 @@ xcodebuild "${XCB_ARGS[@]}" | xcbeautify 2>/dev/null || \
 APP_PATH="$BUILD_DIR/Build/Products/${CONFIG}/${PROJECT_NAME}.app"
 [ -d "$APP_PATH" ] || fail "构建产物未生成：$APP_PATH"
 
-# ----- 5. 复制到 dist -----
 step "复制产物到 ${DIST_DIR}/${PROJECT_NAME}.app"
 ditto "$APP_PATH" "$DIST_DIR/${PROJECT_NAME}.app"
 
-# ----- 6. 校验签名 -----
 step "校验 codesign"
 codesign -dv --verbose=2 "$DIST_DIR/${PROJECT_NAME}.app" 2>&1 | head -8 || true
 
@@ -118,9 +70,10 @@ cat <<EOF
 
 ${GREEN}${BOLD}Release 构建完成${NC}
   配置:   ${CONFIG}
-  版本:   ${VERSION:-（默认沿用 project.yml 的 CFBundleShortVersionString）}
-  签名:   ${IDENTITY}（- = ad-hoc 兜底；本地稳定身份请先跑 ./Scripts/setup_codesign.sh）
+  版本:   ${VERSION:-（默认沿用 Info.plist 的 CFBundleShortVersionString）}
   产物:   ${DIST_DIR}/${PROJECT_NAME}.app
+  签名:   走 .xcodeproj 里 Xcode UI 配的 Personal Team Automatic
+          （要分发到其它机器需 Developer ID 公证，见 Scripts/codesign.sh）
 
 下一步：
   ./Scripts/make_dmg.sh ${DIST_DIR}/${PROJECT_NAME}.app ${DIST_DIR}/${PROJECT_NAME}-${VERSION:-1.0.0}.dmg

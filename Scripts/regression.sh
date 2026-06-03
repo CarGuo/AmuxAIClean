@@ -26,7 +26,16 @@ strict()     { set -e; }
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCHEME="GSYCleanMac"
-APP_PATH="${HOME}/Library/Developer/Xcode/DerivedData/GSYCleanMac-dsitrkqztcjxjkawutocbbdsrckt/Build/Products/Debug/${SCHEME}.app"
+PROJECT="${ROOT}/${SCHEME}.xcodeproj"
+
+# Step 5.6 番外：用 xcodebuild -showBuildSettings 动态查 BUILT_PRODUCTS_DIR，
+# 取代旧 ~/Library/Developer/Xcode/DerivedData/GSYCleanMac-<hash>/... 硬编码
+# （hash 由项目绝对路径派生，跨机器/移动目录后会变，硬编码不可移植）
+APP_PATH="$(
+    xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Debug \
+        -showBuildSettings 2>/dev/null \
+        | awk -F' = ' '/^[[:space:]]*BUILT_PRODUCTS_DIR =/{print $2; exit}'
+)/${SCHEME}.app"
 APP_BIN="${APP_PATH}/Contents/MacOS/${SCHEME}"
 LOG_DIR="${ROOT}/Tests/Regression/logs"
 RESULT_JSON="${ROOT}/Tests/Regression/last-run.json"
@@ -123,13 +132,9 @@ sleep 1
 
 # 2) Build（除非 --no-build）
 if [ "$DO_BUILD" -eq 1 ]; then
-    step "xcodebuild Debug 增量构建"
-    if ! xcodebuild -scheme "$SCHEME" -configuration Debug \
+    step "xcodebuild Debug 增量构建（签名走 .xcodeproj 里 Automatic + Personal Team）"
+    if ! xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Debug \
             -destination 'platform=macOS' \
-            CODE_SIGN_IDENTITY="-" \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
             -quiet build 2>&1 | tail -20; then
         bad "build 失败，终止"
         exit 4

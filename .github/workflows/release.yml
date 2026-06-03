@@ -1,15 +1,25 @@
 name: Release
 
+# Step 5.6 番外：暂时屏蔽自动触发，省 GitHub Actions 额度。
+# 需要发 Release 时改回 push tags 触发或手动 dispatch。
 on:
-  push:
-    tags:
-      - 'v*.*.*'
   workflow_dispatch:
     inputs:
       version:
         description: '版本号（不含 v 前缀，如 1.0.0）'
         required: true
         default: '1.0.0'
+# 旧自动触发器（暂禁用）：
+# on:
+#   push:
+#     tags:
+#       - 'v*.*.*'
+#   workflow_dispatch:
+#     inputs:
+#       version:
+#         description: '版本号（不含 v 前缀，如 1.0.0）'
+#         required: true
+#         default: '1.0.0'
 
 concurrency:
   group: release-${{ github.ref }}
@@ -44,15 +54,26 @@ jobs:
           sw_vers
           xcodebuild -version
 
-      - name: Install xcodegen
-        run: brew install xcodegen
-
       - name: Build Release (.app, ad-hoc signed)
         env:
           VERSION: ${{ steps.ver.outputs.version }}
+        # Step 5.6 番外：CI 上跑 ad-hoc 签名直接用 xcodebuild override，
+        # 不走 Scripts/build_release.sh（本地脚本走 .xcodeproj 里的 Personal Team）
         run: |
-          chmod +x Scripts/build_release.sh
-          ./Scripts/build_release.sh
+          set -o pipefail
+          mkdir -p dist
+          xcodebuild \
+            -project GSYCleanMac.xcodeproj \
+            -scheme GSYCleanMac \
+            -configuration Release \
+            -derivedDataPath build/release \
+            MARKETING_VERSION="$VERSION" \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tail -200
+          ditto build/release/Build/Products/Release/GSYCleanMac.app dist/GSYCleanMac.app
 
       - name: Make DMG
         env:
