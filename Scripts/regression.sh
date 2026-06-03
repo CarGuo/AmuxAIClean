@@ -11,7 +11,7 @@
 #   - 所有 case log 写到 Tests/Regression/logs/<case>.log，结果汇总写 Tests/Regression/last-run.json
 #
 # 用法：
-#   ./Scripts/regression.sh                      # 跑所有 19 个 case
+#   ./Scripts/regression.sh                      # 跑所有 case（当前 21 条）
 #   ./Scripts/regression.sh --no-build           # 不重新 build，直接跑（适合反复调试单 case）
 #   ./Scripts/regression.sh --only scan-custom-fixture,hud-toggle   # 只跑指定 case
 #   ./Scripts/regression.sh --timeout 180        # 自定义单 case 超时秒数（默认 90）
@@ -40,7 +40,7 @@ APP_BIN="${APP_PATH}/Contents/MacOS/${SCHEME}"
 LOG_DIR="${ROOT}/Tests/Regression/logs"
 RESULT_JSON="${ROOT}/Tests/Regression/last-run.json"
 
-# 全部 19 条 case（顺序与 RegressionRunner.swift switch 保持一致）
+# 全部 case（顺序与 RegressionRunner.swift switch 保持一致）
 ALL_CASES=(
     # 扫描核心 5
     "scan-custom-fixture"
@@ -128,7 +128,14 @@ else
 fi
 
 # 1) 杀掉所有残留进程
+# v1.6 Step 6.7：先用 pgrep 探测残留并提示，避免用户疑惑"为啥之前 log 出现 [REGR_BEGIN] 重复 N 次"。
+# 残留进程的常见来源：上一次脚本被 Ctrl-C / kill 时子进程没被回收（v1.6 之前 trap 没 cover INT/TERM）。
 step "杀掉所有残留 ${SCHEME} 进程"
+stale_pids="$(pgrep -f "${APP_BIN}" 2>/dev/null || true)"
+if [ -n "$stale_pids" ]; then
+    stale_count="$(printf '%s\n' "$stale_pids" | wc -l | tr -d ' ')"
+    warn "检测到 ${stale_count} 个残留 ${SCHEME} 进程（可能是上次 Ctrl-C 留下的僵尸），清理中…"
+fi
 pkill -9 -f "${APP_BIN}" 2>/dev/null || true
 sleep 1
 
@@ -157,7 +164,44 @@ FAIL_LIST=()
 TIMEOUT_LIST=()
 # bash 3 没有关联数组：用一个 tmp 目录存 elapsed/reason，键即文件名
 META_DIR="$(mktemp -d /tmp/gsyclean-regression.XXXXXX)"
-trap 'rm -rf "$META_DIR"' EXIT
+
+# v1.6 Step 6.7：异常退出兜底——脚本被 Ctrl-C / SIGTERM / SIGHUP 时，
+# 把当前 case 正在跑的 GSYCleanMac 子进程一并 kill，避免变僵尸污染下次运行。
+# CURRENT_PID 由 run_case 在启动后写入、wait 后清零；非空则 cleanup 时强杀。
+# 同时兜底再 pkill 一次，防止 RegressionRunner 内部 fork 的辅助进程 / 僵尸残留。
+CURRENT_PID=""
+CLEANUP_INVOKED=0
+cleanup() {
+    local sig="$1"
+    # 防止 trap 再入：第一次 cleanup 已经把活兜完，后续 INT/EXIT 重复触发就跳过。
+    if [ "$CLEANUP_INVOKED" -eq 1 ]; then
+        return
+    fi
+    CLEANUP_INVOKED=1
+    if [ "$sig" = "INT" ] || [ "$sig" = "TERM" ] || [ "$sig" = "HUP" ]; then
+        # 终端只在用户中断时打提示；EXIT 走静默路径不污染汇总输出。
+        printf "\n\033[1;33m[regression] 收到 SIG%s，正在清理子进程…\033[0m\n" "$sig" >&2
+    fi
+    if [ -n "$CURRENT_PID" ] && kill -0 "$CURRENT_PID" 2>/dev/null; then
+        kill -9 "$CURRENT_PID" 2>/dev/null || true
+    fi
+    # 再用 pkill 兜底——RegressionRunner 内部不 fork 子进程，但万一 LaunchServices
+    # 把 .app 弄出多个实例，pkill 一次性清干净。
+    pkill -9 -f "${APP_BIN}" 2>/dev/null || true
+    rm -rf "$META_DIR" 2>/dev/null || true
+    if [ "$sig" = "INT" ] || [ "$sig" = "TERM" ] || [ "$sig" = "HUP" ]; then
+        # INT/TERM/HUP：明确以 130（INT）/143（TERM）退；不让 set -e 上层把 exit_code 吞了。
+        case "$sig" in
+            INT)  exit 130 ;;
+            TERM) exit 143 ;;
+            HUP)  exit 129 ;;
+        esac
+    fi
+}
+trap 'cleanup INT'  INT
+trap 'cleanup TERM' TERM
+trap 'cleanup HUP'  HUP
+trap 'cleanup EXIT' EXIT
 
 put_elapsed() { printf '%s' "$2" > "$META_DIR/elapsed.$1"; }
 get_elapsed() { [ -f "$META_DIR/elapsed.$1" ] && cat "$META_DIR/elapsed.$1" || echo 0; }
@@ -184,6 +228,9 @@ run_case() {
     GSY_AUTOSCAN="" \
     "$APP_BIN" >"$log" 2>&1 &
     local pid=$!
+    # v1.6 Step 6.7：登记到全局 CURRENT_PID，让 trap cleanup 在 Ctrl-C 时
+    # 能精确 kill 当前正在跑的子进程，避免变僵尸。
+    CURRENT_PID="$pid"
 
     # 等待，超时则 kill
     local waited=0
@@ -202,6 +249,9 @@ run_case() {
         wait "$pid" 2>/dev/null
         exitcode=$?
     fi
+    # v1.6 Step 6.7：子进程已退（正常完成 / 超时 kill / 异常崩），清空登记
+    # 让后续 trap cleanup 不会误 kill 同 PID 复用进程。
+    CURRENT_PID=""
 
     # 解析尾行
     local pass_line
