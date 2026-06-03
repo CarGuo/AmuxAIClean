@@ -1,16 +1,18 @@
-2026-06-02 21:52:36.434 GSYCleanMac[79689:2499395] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-03 13:34:35.413 GSYCleanMac[38945:473084] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=scan-perf-diagnose defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=scan-perf-diagnose
-[REGR] case=scan-perf-diagnose HB elapsed=5.1s bytes=7998821845 files=37020 MBps=1504.21
-[REGR] case=scan-perf-diagnose HB elapsed=10.2s bytes=15719437610 files=134432 MBps=1475.88
-[REGR] case=scan-perf-diagnose HB elapsed=15.2s bytes=21296679524 files=265472 MBps=1335.89
-[REGR] case=scan-perf-diagnose HB elapsed=20.3s bytes=25738063335 files=380837 MBps=1211.16
-[REGR] case=scan-perf-diagnose elapsed_sec=23.1 total_bytes=25932116368 total_files=390309 throughput_MBps=1072.29
-[REGR] case=scan-perf-diagnose root[0] path=/Users/guoshuyu/Library/Caches bytes=16980744338 files=353677 finished=true
-[REGR] case=scan-perf-diagnose root[1] path=/Users/guoshuyu/Library/Developer/Xcode/DerivedData bytes=6242314993 files=31517 finished=true
+[REGR] case=scan-perf-diagnose HB elapsed=5.0s bytes=2379781199 files=11542 MBps=450.11
+[REGR] case=scan-perf-diagnose HB elapsed=10.2s bytes=11377474865 files=67283 MBps=1065.98
+[REGR] case=scan-perf-diagnose HB elapsed=15.2s bytes=15991060821 files=146912 MBps=1001.37
+[REGR] case=scan-perf-diagnose HB elapsed=20.4s bytes=19205389400 files=241666 MBps=898.47
+[REGR] case=scan-perf-diagnose HB elapsed=25.4s bytes=25375777078 files=346292 MBps=952.57
+[REGR] case=scan-perf-diagnose HB elapsed=30.5s bytes=26201989000 files=383004 MBps=819.05
+[REGR] case=scan-perf-diagnose elapsed_sec=32.8 total_bytes=26423226739 total_files=393259 throughput_MBps=768.26
+[REGR] case=scan-perf-diagnose root[0] path=/Users/guoshuyu/Library/Caches bytes=17003412071 files=354276 finished=true
+[REGR] case=scan-perf-diagnose root[1] path=/Users/guoshuyu/Library/Developer/Xcode/DerivedData bytes=6711319107 files=33867 finished=true
 [REGR] case=scan-perf-diagnose root[2] path=/Users/guoshuyu/Downloads bytes=2153346597 files=1774 finished=true
-[REGR] case=scan-perf-diagnose root[3] path=/Users/guoshuyu/Library/Logs bytes=555710440 files=3341 finished=true
+[REGR] case=scan-perf-diagnose root[3] path=/Users/guoshuyu/Library/Logs bytes=555148964 files=3342 finished=true
 [REGR] case=scan-perf-diagnose root[4] path=/Users/guoshuyu/.Trash bytes=0 files=0 finished=true
 [REGR_OK] case=scan-perf-diagnose scan finished=true
 [REGR] case=scan-perf-diagnose defaults_restored_keys=3
-[REGR_PASS] case=scan-perf-diagnose elapsed_ms=23276
+[REGR_PASS] case=scan-perf-diagnose elapsed_ms=33011

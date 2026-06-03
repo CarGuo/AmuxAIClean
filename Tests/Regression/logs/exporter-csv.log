@@ -1,4 +1,4 @@
-2026-05-25 20:27:16.885 GSYCleanMac[52106:5283236] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-03 13:33:32.609 GSYCleanMac[37520:468808] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=exporter-csv defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=exporter-csv
 [REGR] case=exporter-csv tsv_lines=6 header=path	bytes	modificationDate	kind
@@ -7,4 +7,4 @@
 [REGR_OK] case=exporter-csv json non-empty=717 > 0
 [REGR_OK] case=exporter-csv json round-trip count=5
 [REGR] case=exporter-csv defaults_restored_keys=3
-[REGR_PASS] case=exporter-csv elapsed_ms=210
+[REGR_PASS] case=exporter-csv elapsed_ms=264
