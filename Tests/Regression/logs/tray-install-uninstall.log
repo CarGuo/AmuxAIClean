@@ -1,61 +1,9 @@
-2026-06-03 16:16:06.338 GSYCleanMac[27255:828081] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
-[REGR] case=tray-install-uninstall defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=tray-install-uninstall
-[REGR] case=tray-install-uninstall defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=tray-install-uninstall
-[REGR] case=tray-install-uninstall defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=tray-install-uninstall
-[REGR] case=tray-install-uninstall defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=tray-install-uninstall
-[REGR] case=tray-install-uninstall defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=tray-install-uninstall
-[REGR] case=tray-install-uninstall defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=tray-install-uninstall
-[REGR] case=tray-install-uninstall defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=tray-install-uninstall
-[REGR] case=tray-install-uninstall defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=tray-install-uninstall
-[REGR] case=tray-install-uninstall defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=tray-install-uninstall
-[REGR] case=tray-install-uninstall defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=tray-install-uninstall
-[REGR] case=tray-install-uninstall defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=tray-install-uninstall
-[REGR] case=tray-install-uninstall defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=tray-install-uninstall
-[REGR] case=tray-install-uninstall defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=tray-install-uninstall
+2026-06-03 16:45:24.868 GSYCleanMac[51334:912452] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=tray-install-uninstall defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=tray-install-uninstall
 [REGR] case=tray-install-uninstall tray_installed=true
 [REGR_OK] case=tray-install-uninstall status item installed=true
-[REGR] case=tray-install-uninstall tray_installed=false
-[REGR_ERR] case=tray-install-uninstall reason=assertTrue status item installed: got=false
-[REGR] case=tray-install-uninstall tray_installed=false
-[REGR_ERR] case=tray-install-uninstall reason=assertTrue status item installed: got=false
-[REGR] case=tray-install-uninstall tray_installed=false
-[REGR_ERR] case=tray-install-uninstall reason=assertTrue status item installed: got=false
-[REGR] case=tray-install-uninstall tray_installed=false
-[REGR_ERR] case=tray-install-uninstall reason=assertTrue status item installed: got=false
-[REGR] case=tray-install-uninstall tray_installed=false
-[REGR_ERR] case=tray-install-uninstall reason=assertTrue status item installed: got=false
-[REGR] case=tray-install-uninstall tray_installed=false
-[REGR_ERR] case=tray-install-uninstall reason=assertTrue status item installed: got=false
-[REGR] case=tray-install-uninstall tray_installed=false
-[REGR_ERR] case=tray-install-uninstall reason=assertTrue status item installed: got=false
-[REGR] case=tray-install-uninstall tray_installed=false
-[REGR_ERR] case=tray-install-uninstall reason=assertTrue status item installed: got=false
-[REGR] case=tray-install-uninstall tray_installed=false
-[REGR_ERR] case=tray-install-uninstall reason=assertTrue status item installed: got=false
-[REGR] case=tray-install-uninstall tray_installed=false
-[REGR_ERR] case=tray-install-uninstall reason=assertTrue status item installed: got=false
-[REGR] case=tray-install-uninstall tray_installed=false
-[REGR_ERR] case=tray-install-uninstall reason=assertTrue status item installed: got=false
-[REGR] case=tray-install-uninstall tray_installed=false
-[REGR_ERR] case=tray-install-uninstall reason=assertTrue status item installed: got=false
-[REGR] case=tray-install-uninstall tray_installed=false
-[REGR_ERR] case=tray-install-uninstall reason=assertTrue status item installed: got=false
 [REGR] case=tray-install-uninstall tray_uninstalled=false
 [REGR_OK] case=tray-install-uninstall status item uninstalled=false
 [REGR] case=tray-install-uninstall defaults_restored_keys=3
-[REGR_PASS] case=tray-install-uninstall elapsed_ms=1133
+[REGR_PASS] case=tray-install-uninstall elapsed_ms=762

@@ -1,36 +1,10 @@
-2026-06-03 16:12:55.024 GSYCleanMac[21526:814769] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-03 16:44:13.653 GSYCleanMac[50002:908528] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=scan-recommended defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=scan-recommended
-[REGR] case=scan-recommended defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=scan-recommended
-[REGR] case=scan-recommended defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=scan-recommended
-[REGR] case=scan-recommended defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=scan-recommended
-[REGR] case=scan-recommended defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=scan-recommended
-[REGR] case=scan-recommended defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=scan-recommended
-[REGR] case=scan-recommended defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=scan-recommended
-[REGR] case=scan-recommended defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=scan-recommended
-[REGR] case=scan-recommended defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=scan-recommended
-[REGR] case=scan-recommended defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=scan-recommended
-[REGR] case=scan-recommended defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=scan-recommended
-[REGR] case=scan-recommended defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=scan-recommended
-[REGR] case=scan-recommended defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=scan-recommended
-[REGR] case=scan-recommended defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
-[REGR_BEGIN] case=scan-recommended
-[REGR] case=scan-recommended files=0 bytes=0 roots=5
+[REGR] case=scan-recommended files=393380 bytes=26292072415 roots=5
 [REGR_OK] case=scan-recommended isFinished=true
 [REGR_OK] case=scan-recommended perRootProgress count=5 > 0
-[REGR_OK] case=scan-recommended scannedFileCount nonneg=1 > 0
+[REGR_OK] case=scan-recommended scannedFileCount nonneg=393381 > 0
 [REGR_OK] case=scan-recommended lastError=nil
 [REGR] case=scan-recommended defaults_restored_keys=3
-[REGR_PASS] case=scan-recommended elapsed_ms=6955
+[REGR_PASS] case=scan-recommended elapsed_ms=34678
