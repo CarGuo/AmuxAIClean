@@ -23,6 +23,11 @@ public struct MainView: View {
     /// 主线程被刷爆 → 鼠标彩虹球。改为只押 row.id（String），detail 渲染时再反查。
     @State private var detail: String?
     @State private var showSheet: Bool = false
+    /// **v1.5.3 修订**：删除走乐观更新——前端 pruneDeleted 立即生效，
+    /// 后台 pipeline.moveToTrash 异步执行，仅在结束后用 deleteResult alert 报结果。
+    /// 这个 flag 仍保留（未来如有"批量删除大数据集"场景可重新挂 progress UI），
+    /// 当前版本仅用于内部 guard"删除中不要重复触发"。
+    @State private var isDeleting: Bool = false
     @State private var deleteResult: String?
     @State private var isDropTargeted: Bool = false
     /// v1.0 T3：结果区视图模式（清单 vs 多层树）。
@@ -147,6 +152,13 @@ public struct MainView: View {
                 }
             )
         }
+        // **v1.5.3 修订**：之前这里挂了一个 ProgressView sheet 拦在主页面前面，
+        // 视觉上变成"整页消失只剩 loading"，且 sheet dismiss 触发的重渲染 + store-fallback
+        // 还会把已删项再从 GRDB 拉回来。现在删除走"乐观更新"：
+        //   1. 点删 → 立即 pruneDeleted（snapshot.rows + childEdges + treeChildrenCache + store）
+        //   2. 用户视觉上节点立刻消失，无 modal sheet
+        //   3. 后台 pipeline.moveToTrash 异步执行，完成后只弹结果 alert（成功/失败）
+        // 真删失败时通过 deleteResult alert 提示，pruneDeleted 已扣除的 row 由下一次扫描重新补齐。
         .alert(String(localized: "main.delete.result.title", bundle: .module), isPresented: .constant(deleteResult != nil)) {
             Button(String(localized: "main.delete.result.ok", bundle: .module)) { deleteResult = nil }
         } message: {
@@ -648,14 +660,9 @@ public struct MainView: View {
                                             detail = nil
                                         },
                                         onTrash: { url in
-                                            // v1.3：树形右键 / Delete 走废纸篓。
+                                            // **v1.5.3**：行内 trash 按钮 / 右键菜单 / Delete 键
+                                            // 都走这一条单删通道（取代 v1.3.zzzz Phase 4-B 的批量入口）。
                                             triggerLargeFileTrash(urls: [url])
-                                        },
-                                        onTrashBatch: { urls in
-                                            // v1.3.zzzz Phase 4-B：树形 toolbar"批量移废纸篓"。
-                                            // 路由复用大文件视图同款 [triggerLargeFileTrash(urls:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1235)，
-                                            // 共享同一条 SafetyEngine + TrashPipeline 通道。
-                                            triggerLargeFileTrash(urls: urls)
                                         }
                                     )
                                     // v2 修：TreeBrowserView 内部用 @State 缓存了
@@ -1401,6 +1408,16 @@ public struct MainView: View {
         // 见 [DeletionPipeline.setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift)），
         // 不再需要 `as? TrashPipeline` cast——cast 容易在重构里被悄悄改丢、重新引入"漏调=误拒"。
         pipeline.setAccessDeniedPaths(accessDeniedPathsSnapshot())
+        // **v1.5.3**：真删（!dryRun）期间立刻拉起 ProgressView sheet。
+        // dryRun 不动 isDeleting——预览不需要"正在删除"动画。
+        if !dryRun {
+            isDeleting = true
+        }
+        defer {
+            if !dryRun {
+                isDeleting = false
+            }
+        }
         let (moved, skipped, err) = await pipeline.moveToTrash(paths: paths, dryRun: dryRun)
         if let err {
             let key: String.LocalizationValue = dryRun
@@ -1416,7 +1433,15 @@ public struct MainView: View {
                 // HL 行为采集：真删之后才上报，dryRun 不污染统计
                 await recorder.recordTrashed(paths: paths)
                 selection.removeAll()
+                // **v1.5.3**：把已删 path 从 ScanCoordinator 的 snapshot.rows / 内存索引 /
+                // treeChildrenCache 全部剔除——修复"删除后 item 仍在列表"的 bug 根因。
+                // 注意：pipeline 实际成功的项数是 moved，但它没把"哪些 url 真删了"返回给我们；
+                // skipped 通常是 forbid / 同名冲突 / 不存在等。保守做法：把所有候选 paths 都
+                // 喂给 pruneDeleted——pruneDeleted 是按 path 前缀匹配 snapshot.rows 来删的，
+                // 即便某条路径其实没删掉（如已被外部移走），从 UI 视角也已经"不在了"，行为正确。
+                coordinator.pruneDeleted(paths: paths)
                 // v1.3：删除完成后立即重探卷容量，sidebar 容量条会跟随变化（"清理后空闲变多"反馈）。
+                // pruneDeleted 内部已调 refreshVolumeCapacity，这里保留 explicit 调用作为兜底。
                 coordinator.refreshVolumeCapacity()
             }
         }
@@ -1450,18 +1475,27 @@ public struct MainView: View {
     /// 不复用主清单的 selection sheet——大文件场景没有 SafetyEngine 默认勾选语义）。
     private func triggerLargeFileTrash(urls: [URL]) {
         guard !urls.isEmpty else { return }
+        guard !isDeleting else { return } // 防重入：删除中不接受新点击
+        let paths = urls.map(\.path)
+        // **v1.5.3 修订**：改成"乐观更新"——pruneDeleted 立即生效，节点视觉立刻消失；
+        // 移废纸篓真删走后台 Task，结果用 alert 通知。这样：
+        //   1. 不弹 ProgressView sheet（避免整页白屏 dim cover）
+        //   2. 删完不会因为 store-fallback 把已删项又拉回来（pruneDeleted 现在会落 store）
+        //   3. 失败时 alert 提示，下次扫描会重新补齐 row
+        coordinator.pruneDeleted(paths: paths)
+        largeFileSelection = nil
+        isDeleting = true
         Task {
-            let paths = urls.map(\.path)
             // 与 performDelete 保持一致的 accessDenied pre-flight。
             // Phase 3-A 协议化：直接走 protocol 钩子，省 cast。
             pipeline.setAccessDeniedPaths(accessDeniedPathsSnapshot())
             let (moved, skipped, err) = await pipeline.moveToTrash(paths: paths, dryRun: false)
             await MainActor.run {
+                isDeleting = false
                 if let err {
                     deleteResult = String(format: String(localized: "delete.result.failure %@ %lld %lld", bundle: .module), err, moved, skipped)
                 } else {
                     deleteResult = String(format: String(localized: "delete.result.success %lld %lld", bundle: .module), moved, skipped)
-                    largeFileSelection = nil
                 }
             }
             if err == nil {

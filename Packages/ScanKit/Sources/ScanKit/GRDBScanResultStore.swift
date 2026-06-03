@@ -368,6 +368,40 @@ public actor GRDBScanResultStore: ScanResultStore {
         GSYLog.info(.db, "evictSession 完成 id=\(id.raw)")
     }
 
+    /// **v1.5.3**：按路径精确 + 前缀剧除该 session 中的 scan_result 行。
+    ///
+    /// 解决"删除完后页面 dim 重渲染又把已删项拉回来"的死循环：
+    /// [ScanCoordinator.directChildren](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1048)
+    /// 在内存索引 miss 时会走 store-fallback 异步读 GRDB；如果 store 还有那条记录，
+    /// 它会原样写回 treeChildrenCache，UI 看到的就是"刚删完又冒出来"。
+    ///
+    /// SQL 上利用 `(session_id, path)` 复合索引（见 [migrator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift#L112)）：
+    /// 单条 DELETE 既匹配 path = ? 自身行，也匹配 path LIKE ? || '/%' 整段子树，
+    /// 等价于"删 prefix 这一棵子树"。批处理多条 path 时整体放进同一个事务，
+    /// 避免每条触发一次 fsync。
+    public func deletePaths(sessionID: ScanSessionID, paths: [String]) async throws {
+        guard !paths.isEmpty else { return }
+        // 规范化：去掉末尾 `/`，让 LIKE 前缀比较稳定（"/A/B/" 与 "/A/B" 等价）
+        let normalized: [String] = paths.map { p in
+            (p.count > 1 && p.hasSuffix("/")) ? String(p.dropLast()) : p
+        }
+        GSYLog.info(.db, "deletePaths 开始 sid=\(sessionID.raw) count=\(normalized.count)")
+        try await dbPool.write { db in
+            for path in normalized {
+                // 精确匹配 + 子树 LIKE 前缀。两条独立 DELETE 比 OR 一条更利于走索引。
+                try db.execute(
+                    sql: "DELETE FROM scan_result WHERE session_id = ? AND path = ?",
+                    arguments: [sessionID.raw, path]
+                )
+                try db.execute(
+                    sql: "DELETE FROM scan_result WHERE session_id = ? AND path LIKE ?",
+                    arguments: [sessionID.raw, path + "/%"]
+                )
+            }
+        }
+        GSYLog.info(.db, "deletePaths 完成 sid=\(sessionID.raw)")
+    }
+
     public func clearAll() async throws {
         GSYLog.notice(.db, "clearAll 开始 path=\(location.path)")
         try await dbPool.write { db in

@@ -165,6 +165,12 @@ public protocol ScanResultStore: Sendable {
     ) async throws -> [DirectChildAggregate]
     func evictSession(_ id: ScanSessionID) async throws
     func clearAll() async throws
+    /// **v1.5.3**：在指定 session 中按路径前缀（精确匹配 + `prefix + "/"` 前缀）剧除记录。
+    ///
+    /// 用于 [ScanCoordinator.pruneDeleted(paths:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 把删除动作落到 GRDB 层；不这样做的话 store-fallback 会把已删项重新拉回 cache，
+    /// 用户视觉上"删了又冒出来"。默认实现 throws unsupported——具体 store 各自实现。
+    func deletePaths(sessionID: ScanSessionID, paths: [String]) async throws
 }
 
 /// [ScanResultStore.directChildrenAggregated](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/ScanResultStore.swift)
@@ -181,6 +187,13 @@ fileprivate struct _DirectChildrenAcc {
 }
 
 public extension ScanResultStore {
+    /// **v1.5.3** 默认实现：no-op。具体 store（GRDBScanResultStore）按需覆写。
+    /// 这样做是为了不强制要求每个 ScanResultStore 实现都立刻提供 deletePaths——
+    /// 内存 stub 等 test double 走默认空实现就够用。
+    func deletePaths(sessionID: ScanSessionID, paths: [String]) async throws {
+        // no-op
+    }
+
     /// 默认实现：拉所有子孙 record 回内存做 Swift Dictionary GROUP BY。
     /// 仅作向后兼容兜底；高性能实现请覆盖。
     func directChildrenAggregated(

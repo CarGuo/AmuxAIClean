@@ -10,9 +10,16 @@ import Foundation
 /// 业界做法：CleanMyMac / DaisyDisk 启动时 silently 试读一个**只有 FDA 才能开**的
 /// 探针文件，成功 = 已授权，失败 = 未授权。我们采用同样思路。
 ///
-/// **探针选择**：`~/Library/Mail` 的 mode 是 `0o700`，即便没有 FDA 也能 stat 元数据，
-/// 但 `open(path, O_RDONLY)` 在没有 FDA 时会返回 EPERM/EACCES（macOS Sequoia 起进一步
-/// 严格化）。我们试 open 它的目录 fd，成功立即 close 不读内容；失败按未授权处理。
+/// **探针选择**：`~/Library/Mail` 的 mode 是 `0o700`。仅 `open(path, O_RDONLY)`
+/// 拿一个目录 fd 在很多 macOS 版本下并不会真正触发 TCC 校验——这是 1.5.x 系列被
+/// 用户反馈"已授权 + 重启仍报 denied"的根因：进程拿到了 fd 但从未"实质性读取"，
+/// 系统也就没机会返回正确状态，老逻辑根据 fd 是否 >= 0 误判，反而在很多机器上稳定
+/// 返回 granted 或 denied 取决于内核版本。
+///
+/// **修复（v1.5.3）**：改用 `FileManager.contentsOfDirectory(atPath:)`——这是
+/// CleanMyMac / DaisyDisk / OmniDS 都在用的"真探针"，会真正进 readdir 系统调用，
+/// TCC 守护必须在此时给出一个明确答复（granted 时返回条目数组；denied 时抛
+/// `NSCocoaErrorDomain 257 / fileReadNoPermissionError`）。
 ///
 /// **不要**用 `/Library/Application Support/com.apple.TCC/TCC.db` 当探针——
 /// 那个文件**任何 App 都读不动**（只有特殊 entitlement，不是 FDA），永远返回 false。
@@ -26,38 +33,56 @@ public enum FDAProbe {
         case unknown
     }
 
-    /// 同步探测当前进程的 FDA 状态。可在任意线程调用，开销 ~微秒级（一次 open + close）。
+    /// 同步探测当前进程的 FDA 状态。可在任意线程调用，开销 ~毫秒级（一次 readdir）。
     public static func probe(home: String = NSHomeDirectory()) -> Status {
         // 探针 1：`~/Library/Mail`（绝大多数 Mac 用户都用过 Mail.app 至少一次，存在）
         let mailPath = "\(home)/Library/Mail"
         if FileManager.default.fileExists(atPath: mailPath) {
-            return tryOpen(mailPath)
+            return tryRead(mailPath)
         }
 
         // 探针 2：`~/Library/Safari`（fallback，几乎所有 Mac 都有）
         let safariPath = "\(home)/Library/Safari"
         if FileManager.default.fileExists(atPath: safariPath) {
-            return tryOpen(safariPath)
+            return tryRead(safariPath)
         }
 
         // 探针 3：`~/Library/Messages`（再 fallback）
         let messagesPath = "\(home)/Library/Messages"
         if FileManager.default.fileExists(atPath: messagesPath) {
-            return tryOpen(messagesPath)
+            return tryRead(messagesPath)
         }
 
         // 三个探针都不存在：用户从没用过 Mail/Safari/Messages，只能算未知。
         return .unknown
     }
 
-    private static func tryOpen(_ path: String) -> Status {
-        let fd = open(path, O_RDONLY)
-        if fd >= 0 {
-            close(fd)
+    /// **v1.5.3**：用 `contentsOfDirectory` 实际读一次目录。这是 TCC 真正会校验
+    /// 的系统调用——`open(O_RDONLY)` 拿 fd 在不少 macOS 版本下不触发 TCC，
+    /// 导致老逻辑稳定误判（用户表现：开关打开 + 重启依旧 denied）。
+    ///
+    /// 错误归类：
+    /// - `NSCocoaErrorDomain 257`（fileReadNoPermissionError） → 明确 denied（FDA 没开）
+    /// - 其他 IO error / POSIX EPERM(1) / EACCES(13) → denied（保守）
+    /// - 抛 ENOENT 等 → unknown（路径异常，按"不强行 skip"处理交给上层兜底）
+    /// - 成功返回任意数组（含空数组）→ granted（空目录也算可见）
+    private static func tryRead(_ path: String) -> Status {
+        do {
+            _ = try FileManager.default.contentsOfDirectory(atPath: path)
             return .granted
+        } catch let err as NSError {
+            // Cocoa 层 257 = fileReadNoPermissionError，FDA 缺失最典型的报错码。
+            if err.domain == NSCocoaErrorDomain && err.code == 257 {
+                return .denied
+            }
+            // POSIX 层 EPERM/EACCES 也按 denied
+            if err.domain == NSPOSIXErrorDomain {
+                if err.code == 1 /* EPERM */ || err.code == 13 /* EACCES */ {
+                    return .denied
+                }
+            }
+            // 其他 IO 错误（ENOENT/ENOTDIR 等）：路径异常，归 unknown。
+            return .unknown
         }
-        // EPERM = 1 / EACCES = 13 都是 FDA 缺失的典型 errno
-        // 其他 errno（ENOENT 等）也按未授权处理，反正进入硬 skip 是安全的
-        return .denied
     }
 }
