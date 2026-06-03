@@ -310,6 +310,7 @@ public final class ScanCoordinator: ObservableObject {
     @inline(__always)
     private func bumpChildrenCacheVersion() {
         childrenCacheVersion &+= 1
+        treeBrowser.bumpChildrenCacheVersion()
     }
 
     /// v1.5.4：树形视图扁平化重算的"统一脏标"。
@@ -356,6 +357,7 @@ public final class ScanCoordinator: ObservableObject {
         structuralRevision &+= 1
         tickRevision &+= 1
         treeRevision &+= 1
+        treeBrowser.bumpStructuralRevision()
     }
 
     /// 单点收敛：推进数值脏标。
@@ -364,6 +366,7 @@ public final class ScanCoordinator: ObservableObject {
     private func bumpTickRevision() {
         tickRevision &+= 1
         treeRevision &+= 1
+        treeBrowser.bumpTickRevision()
     }
 
     /// Step 3 P0-3 / 2026-06：bucket cachedVerdict 命中率计数器。
@@ -468,6 +471,19 @@ public final class ScanCoordinator: ObservableObject {
     /// 切换不影响：buckets（主列表）、totalBytes、scannedFiles、largeFileLeaves、resultStore 落库。
     public var enableTreeDeepIndex: Bool = false
 
+    /// Step 10a / 2026-06：系统探针 SSOT。
+    /// fdaStatus / volumeSnapshot / swapSnapshot 三个字段的写入路径全部经此 store；
+    /// ScanCoordinator 自身保留 @Published mirror（向后兼容）。
+    public let systemProbe: SystemProbeStore
+
+    /// Step 10b / 2026-06：树形浏览状态 SSOT 接口外壳。
+    /// 让新代码 / 单测可以单独订阅 `coordinator.treeBrowser.structuralRevision` 等，
+    /// 不再依赖整个 ScanCoordinator.objectWillChange。
+    /// ScanCoordinator 自身保留对应字段作 @Published mirror（向后兼容）；
+    /// bumpStructuralRevision / bumpTickRevision / bumpChildrenCacheVersion
+    /// 三个 helper 内部双写到 store 与 mirror 保证一致。
+    public let treeBrowser: TreeBrowserStore
+
     public init(vendors: [VendorRule] = [], home: String = NSHomeDirectory(),
                 resultStore: ScanResultStore? = nil,
                 enableTreeDeepIndex: Bool = false) {
@@ -478,26 +494,39 @@ public final class ScanCoordinator: ObservableObject {
         // 性能关键：vendors 在 init 时已确定，扫描期不会变。
         // 一次构建 trie 复用整个生命周期，避免 publishSnapshot 每帧 N 次重建。
         self.trie = VendorTrie.build(vendors: vendors, home: home)
-        // v1.3：启动即探一次 FDA 状态与卷容量，UI 立即拿到结果。
-        // FDAProbe 会试 open ~/Library/Mail（或 fallback），微秒级开销。
-        self.fdaStatus = FDAProbe.probe(home: home)
-        self.volumeSnapshot = VolumeCapacity.probe()
-        // v1.3.x：swap/sleepimage 占盘探测，无权限要求，开销 ~毫秒级
-        self.swapSnapshot = SwapProbe.probe()
+        // Step 10a / 2026-06：抽 SystemProbeStore 持有 fdaStatus/volumeSnapshot/swapSnapshot。
+        // store 的 init 内部就会探一次三个值。
+        let probe = SystemProbeStore(home: home)
+        self.systemProbe = probe
+        // Step 10b / 2026-06：抽 TreeBrowserStore 提供 cache / revision 的 SSOT 接口外壳。
+        // ScanCoordinator 上同名字段保留作 @Published mirror（向后兼容）；
+        // bump* helper 双写保证 store 与 mirror 一致。
+        self.treeBrowser = TreeBrowserStore()
+        // 向后兼容 mirror：保留 ScanCoordinator 上 @Published 字段供老 view / 老测试读取，
+        // 写入唯一来源是 systemProbe。
+        self.fdaStatus = probe.fdaStatus
+        self.volumeSnapshot = probe.volumeSnapshot
+        self.swapSnapshot = probe.swapSnapshot
     }
 
     /// v1.3：用户从系统设置回到 App 后调用，重探 FDA 状态与卷容量。
     /// 推荐绑定到 `.onAppear` 与"打开系统设置"按钮的 `NSApplication.didBecomeActive` 回调。
+    /// Step 10a / 2026-06：写入唯一来源 [systemProbe](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L474-L474)，
+    /// 之后同步回 mirror 字段。
     public func refreshFDAStatus() {
-        fdaStatus = FDAProbe.probe(home: home)
-        volumeSnapshot = VolumeCapacity.probe()
-        swapSnapshot = SwapProbe.probe()
+        systemProbe.refreshFDAStatus()
+        fdaStatus = systemProbe.fdaStatus
+        volumeSnapshot = systemProbe.volumeSnapshot
+        swapSnapshot = systemProbe.swapSnapshot
     }
 
     /// v1.3：每次扫描完成 / 删除完成后调用，重探卷容量（FDA 不变就不动）。
+    /// Step 10a / 2026-06：写入唯一来源 [systemProbe](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L474-L474)，
+    /// 之后同步回 mirror 字段。
     public func refreshVolumeCapacity() {
-        volumeSnapshot = VolumeCapacity.probe()
-        swapSnapshot = SwapProbe.probe()
+        systemProbe.refreshVolumeCapacity()
+        volumeSnapshot = systemProbe.volumeSnapshot
+        swapSnapshot = systemProbe.swapSnapshot
     }
 
     public func cancel() {
