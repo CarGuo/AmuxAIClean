@@ -2303,4 +2303,12 @@ public final class ScanCoordinator: ObservableObject {
     func _fileLeavesKeysForTesting() -> [String] { Array(fileLeaves.keys) }
     func _childEdgesForTesting() -> [String: Set<String>] { childEdges }
     func _treeChildrenCacheForTesting() -> [String: [TreeRow]] { treeChildrenCache }
+
+    // MARK: - Step 17-A: 内存占用护栏 readers（仅供 [DirIndexMemoryFootprintTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/DirIndexMemoryFootprintTests.swift)）
+
+    /// 暴露 DirAgg / Bucket 的 MemoryLayout.size，让护栏测能钉死结构体大小不变量。
+    /// DirAgg / Bucket 是 private struct，测试 target 看不到 type 本身——
+    /// 这里以静态值返回 size，外面只断言"不超过上限"，无字段 schema 暴露。
+    static var _dirAggSizeForTesting: Int { MemoryLayout<DirAgg>.size }
+    static var _bucketSizeForTesting: Int { MemoryLayout<Bucket>.size }
 }
