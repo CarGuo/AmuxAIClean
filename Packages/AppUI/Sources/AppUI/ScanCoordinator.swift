@@ -2311,4 +2311,30 @@ public final class ScanCoordinator: ObservableObject {
     /// 这里以静态值返回 size，外面只断言"不超过上限"，无字段 schema 暴露。
     static var _dirAggSizeForTesting: Int { MemoryLayout<DirAgg>.size }
     static var _bucketSizeForTesting: Int { MemoryLayout<Bucket>.size }
+
+    // MARK: - Step 17-B: store 写盘 daisychain 顺序契约 helpers
+    // 仅供 [StoreWriteOrderingTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/StoreWriteOrderingTests.swift)
+
+    /// 注入 sessionID + storeBatch，让顺序契约测能直接驱动 flushStoreBatch / flushAndFinalize。
+    /// 与 [_seedForTesting](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 同套路：`internal` 可见，optional 参数 nil-skip。
+    func _seedStoreForTesting(
+        sessionID: ScanSessionID? = nil,
+        storeBatch: [ScanResultRecord]? = nil,
+        storeHealthy: Bool? = nil
+    ) {
+        if let sessionID { self.currentSessionID = sessionID }
+        if let storeBatch { self.storeBatch = storeBatch }
+        if let storeHealthy { self.storeHealthy = storeHealthy }
+    }
+
+    /// 让顺序契约测从外部触发一次 storeBatch flush（产品代码 hot-path 走的也是这个入口）。
+    func _flushStoreBatchForTesting() { flushStoreBatch() }
+
+    /// 让顺序契约测从外部触发收尾 flush + finalize 并 await 落盘。
+    func _flushAndFinalizeStoreAsyncForTesting() async { await flushAndFinalizeStoreAsync() }
+
+    /// 等到当前 daisychain 链尾的 task 落盘——给 _flushStoreBatchForTesting 这种
+    /// fire-and-forget 入口的测试用，断言前先确保 in-flight 写入已经全部落地。
+    func _awaitStoreWriteChainForTesting() async { await storeWriteChain?.value }
 }
