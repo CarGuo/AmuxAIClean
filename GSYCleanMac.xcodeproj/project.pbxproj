@@ -17,6 +17,7 @@
 		922FBAF195DAE3DEAE29336B /* GSYCleanMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1AC343FA0785D39B6C91BD3 /* GSYCleanMacApp.swift */; };
 		C055F53EA2B18E72F41BAFE0 /* TestHarness in Frameworks */ = {isa = PBXBuildFile; productRef = 1B5433B113D90D03B92A6B22 /* TestHarness */; };
 		E0963A3E20D365A7E7DA8DE5 /* LogKit in Frameworks */ = {isa = PBXBuildFile; productRef = 869DB7788784E9203F564909 /* LogKit */; };
+		5A1B0001000000000000A001 /* LipoKit in Frameworks */ = {isa = PBXBuildFile; productRef = 5A1B0004000000000000A004 /* LipoKit */; };
 		AA01E001000000000000S001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA01F001000000000000S001 /* main.swift */; };
 		AA01E002000000000000S002 /* gsycleanmac-sentinel in Embed Helper Tools */ = {isa = PBXBuildFile; fileRef = AA01F002000000000000S002 /* gsycleanmac-sentinel */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		AA01J001000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist in Embed LaunchDaemons */ = {isa = PBXBuildFile; fileRef = AA01J002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */; };
@@ -35,6 +36,7 @@
 		A1AC343FA0785D39B6C91BD3 /* GSYCleanMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GSYCleanMacApp.swift; sourceTree = "<group>"; };
 		C4FBB712C198D188AD075C66 /* RegressionRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegressionRunner.swift; sourceTree = "<group>"; };
 		DF808A7550415E3DB686B545 /* HeuristicKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = HeuristicKit; path = Packages/HeuristicKit; sourceTree = SOURCE_ROOT; };
+		5A1B0002000000000000A002 /* LipoKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = LipoKit; path = Packages/LipoKit; sourceTree = SOURCE_ROOT; };
 		F4112C6CEEEE50474D0CB590 /* GSYCleanMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GSYCleanMac.entitlements; sourceTree = "<group>"; };
 		FEC26917DEEB32AB69EAA073 /* TestHarness */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TestHarness; path = Packages/TestHarness; sourceTree = SOURCE_ROOT; };
 		AA01F001000000000000S001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
@@ -54,6 +56,7 @@
 				346749C64AC143BD266F6924 /* HeuristicKit in Frameworks */,
 				E0963A3E20D365A7E7DA8DE5 /* LogKit in Frameworks */,
 				C055F53EA2B18E72F41BAFE0 /* TestHarness in Frameworks */,
+				5A1B0001000000000000A001 /* LipoKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -74,6 +77,7 @@
 			children = (
 				61A9164D7CAFFB5DE6E68891 /* AppUI */,
 				DF808A7550415E3DB686B545 /* HeuristicKit */,
+				5A1B0002000000000000A002 /* LipoKit */,
 				73050909E198F8F7E096DF5F /* LogKit */,
 				93739B16F64B55C9EA98583F /* SafetyKit */,
 				48E91589CD8CC1788869F92C /* ScanKit */,
@@ -181,6 +185,7 @@
 				9BE894FC8C653B23C23D09DF /* HeuristicKit */,
 				869DB7788784E9203F564909 /* LogKit */,
 				1B5433B113D90D03B92A6B22 /* TestHarness */,
+				5A1B0004000000000000A004 /* LipoKit */,
 			);
 			productName = GSYCleanMac;
 			productReference = 7B61AB43A10B9C1BE7176E12 /* GSYCleanMac.app */;
@@ -235,6 +240,7 @@
 				D5B251AE64756EB2D5385476 /* XCLocalSwiftPackageReference "Packages/SafetyKit" */,
 				57B86D3812435EBFA746BA95 /* XCLocalSwiftPackageReference "Packages/ScanKit" */,
 				5550FDAACEF586F16D32C0E1 /* XCLocalSwiftPackageReference "Packages/TestHarness" */,
+				5A1B0005000000000000A005 /* XCLocalSwiftPackageReference "Packages/LipoKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 087289FA5F5E417DFDAAFF48 /* Products */;
@@ -573,6 +579,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/HeuristicKit;
 		};
+		5A1B0005000000000000A005 /* XCLocalSwiftPackageReference "Packages/LipoKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/LipoKit;
+		};
 		5550FDAACEF586F16D32C0E1 /* XCLocalSwiftPackageReference "Packages/TestHarness" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/TestHarness;
@@ -611,6 +621,10 @@
 		9BE894FC8C653B23C23D09DF /* HeuristicKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = HeuristicKit;
+		};
+		5A1B0004000000000000A004 /* LipoKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LipoKit;
 		};
 		AC93BBF658D8303974FC7762 /* SafetyKit */ = {
 			isa = XCSwiftPackageProductDependency;
