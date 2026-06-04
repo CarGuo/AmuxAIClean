@@ -923,3 +923,25 @@ vendors:
       - path: "/private/var/db/receipts"
         verdict: "forbid"
         reason: "系统级 .bom/.plist；删后 pkg --forget 失败 + 后续 macOS 更新检测异常"
+
+  # ========== GPU / Metal shader 缓存（Step 17-E / docs/AUDIT_2026_06.md L123） ==========
+  # com.apple.{gpuarchiver,metal,metalfe} 三套是 GPU 命令归档 / Metal shader / Metal
+  # Frontend Compiler 缓存，按需重建，安全可清；macOS 重启或 GPU 程序首次启动会自动重建。
+  # 系统级 /Library/Caches/com.apple.metal 不在硬禁区但删后影响所有用户首启编译，置 confirm。
+  - name: "GPU/Metal Shader Cache"
+    note: "GPU 命令归档与 Metal shader 编译缓存（Step 17-E）"
+    paths:
+      # —— 用户级（safe，按需重建） ——
+      - path: "~/Library/Caches/com.apple.metal"
+        verdict: "safe"
+        reason: "用户级 Metal shader 缓存，下次启动 GPU 程序时按需重建"
+      - path: "~/Library/Caches/com.apple.metalfe"
+        verdict: "safe"
+        reason: "Metal Frontend Compiler 缓存，按需重建"
+      - path: "~/Library/Caches/com.apple.gpuarchiver"
+        verdict: "safe"
+        reason: "GPU 命令归档缓存，按需重建"
+      # —— 系统级（confirm，删除将影响所有用户的首启编译） ——
+      - path: "/Library/Caches/com.apple.metal"
+        verdict: "confirm"
+        reason: "系统级 Metal 缓存，删除安全但全用户首次启动 GPU 程序需重新编译"
