@@ -1,4 +1,4 @@
-2026-06-04 16:49:38.382 GSYCleanMac[46474:2941255] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-04 17:14:37.788 GSYCleanMac[58170:2972729] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=sentinel-default-off defaults_snapshot_keys=4 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=sentinel-default-off
 [REGR] case=sentinel-default-off default_sentinelEnabled=false default_lastEnabled=nil
@@ -17,4 +17,4 @@
 [REGR] case=sentinel-default-off currentStatus=notFound label=未找到
 [REGR_OK] case=sentinel-default-off status.displayLabel 必须非空=true
 [REGR] case=sentinel-default-off defaults_restored_keys=4
-[REGR_PASS] case=sentinel-default-off elapsed_ms=1479
+[REGR_PASS] case=sentinel-default-off elapsed_ms=1374
