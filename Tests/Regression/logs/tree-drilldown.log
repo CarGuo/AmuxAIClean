@@ -1,8 +1,8 @@
-2026-06-04 09:21:10.712 GSYCleanMac[10461:2077326] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-04 09:40:15.446 GSYCleanMac[27929:2126344] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=tree-drilldown defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=tree-drilldown
-[REGR] case=tree-drilldown parent=/var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrStd-8CD52BF1-9FD3-42ED-9AE3-5C1202779CDB/nest1 bytes=25600 kids=2 dirRows=1 dirBytesSum=32768
+[REGR] case=tree-drilldown parent=/var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrStd-EC12C042-B3A9-475C-88FC-026FA0315ADB/nest1 bytes=25600 kids=2 dirRows=1 dirBytesSum=32768
 [REGR_OK] case=tree-drilldown kids count=2 > 0
-[REGR_OK] case=tree-drilldown dir row bytes must be subtree aggregate, got 32768 for /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrStd-8CD52BF1-9FD3-42ED-9AE3-5C1202779CDB/nest1/nest2=32768 > 0
+[REGR_OK] case=tree-drilldown dir row bytes must be subtree aggregate, got 32768 for /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrStd-EC12C042-B3A9-475C-88FC-026FA0315ADB/nest1/nest2=32768 > 0
 [REGR] case=tree-drilldown defaults_restored_keys=3
-[REGR_PASS] case=tree-drilldown elapsed_ms=843
+[REGR_PASS] case=tree-drilldown elapsed_ms=701
