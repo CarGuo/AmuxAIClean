@@ -1,4 +1,4 @@
-2026-06-04 09:01:19.214 GSYCleanMac[95487:2011860] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-04 09:21:56.499 GSYCleanMac[12597:2081260] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=safety-engine-veto defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=safety-engine-veto
 [REGR] case=safety-engine-veto home=forbid lib=forbid safe=safe
@@ -6,4 +6,4 @@
 [REGR_OK] case=safety-engine-veto lib forbid=forbid
 [REGR_OK] case=safety-engine-veto fixture not forbid!=forbid actual=safe
 [REGR] case=safety-engine-veto defaults_restored_keys=3
-[REGR_PASS] case=safety-engine-veto elapsed_ms=332
+[REGR_PASS] case=safety-engine-veto elapsed_ms=218

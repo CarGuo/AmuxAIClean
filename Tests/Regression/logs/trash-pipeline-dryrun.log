@@ -1,12 +1,12 @@
-2026-06-04 09:01:17.114 GSYCleanMac[95460:2011773] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-04 09:21:53.434 GSYCleanMac[12561:2081127] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=trash-pipeline-dryrun defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=trash-pipeline-dryrun
 [REGR] case=trash-pipeline-dryrun present=3 skipped=2 err=dryRun: 1 路径被安全策略拦截，1 路径不存在或无权限；首条原因=userDocumentsRoot
 [REGR_OK] case=trash-pipeline-dryrun present count=3
 [REGR_OK] case=trash-pipeline-dryrun skipped count=2
 [REGR_OK] case=trash-pipeline-dryrun err message contains reason=true
-[REGR_OK] case=trash-pipeline-dryrun real file still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrTrash-54250FBC-5C40-4607-8C3F-8AC555BF84AC/a.txt=true
-[REGR_OK] case=trash-pipeline-dryrun real file still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrTrash-54250FBC-5C40-4607-8C3F-8AC555BF84AC/b.txt=true
-[REGR_OK] case=trash-pipeline-dryrun real file still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrTrash-54250FBC-5C40-4607-8C3F-8AC555BF84AC/c.txt=true
+[REGR_OK] case=trash-pipeline-dryrun real file still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrTrash-64FE2821-AB67-4BF1-ABF3-037B7355583B/a.txt=true
+[REGR_OK] case=trash-pipeline-dryrun real file still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrTrash-64FE2821-AB67-4BF1-ABF3-037B7355583B/b.txt=true
+[REGR_OK] case=trash-pipeline-dryrun real file still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrTrash-64FE2821-AB67-4BF1-ABF3-037B7355583B/c.txt=true
 [REGR] case=trash-pipeline-dryrun defaults_restored_keys=3
-[REGR_PASS] case=trash-pipeline-dryrun elapsed_ms=340
+[REGR_PASS] case=trash-pipeline-dryrun elapsed_ms=283
