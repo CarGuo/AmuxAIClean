@@ -187,4 +187,185 @@ final class I18nIntegrityTests: XCTestCase {
             "Step 4 必须把 delete.action.confirm 加入 Localizable.xcstrings"
         )
     }
+
+    // MARK: - Step 17-D: xcstrings plural variations 改造（零代码改动 → 仅 i18n 集成测）
+
+    /// 把 xcstrings 文件原始字节解析成 JSON，便于扫描每个 stringUnit 的 value。
+    /// 与 loadXcstringsKeys 的"只取 keys"不同，这里要看 localizations 的具体值。
+    private func loadXcstringsRaw() throws -> [String: Any] {
+        let root = try repoRoot()
+        let path = root.appendingPathComponent(Self.xcstringsPath).path
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw NSError(domain: "I18nIntegrityTests", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "xcstrings 顶层不是 JSON 对象"])
+        }
+        return json
+    }
+
+    /// 遍历 xcstrings strings 字典，为每条 key 抽出所有 (locale, value) pair。
+    /// 返回 [(key, locale, value)] 平铺数组。
+    /// 仅取 stringUnit.value（plural variations 暂未启用，先记 backlog）。
+    private func loadAllStringUnits() throws -> [(key: String, locale: String, value: String, hasVariations: Bool)] {
+        let json = try loadXcstringsRaw()
+        guard let strings = json["strings"] as? [String: Any] else { return [] }
+        var out: [(String, String, String, Bool)] = []
+        for (key, raw) in strings {
+            guard let entry = raw as? [String: Any] else { continue }
+            guard let locs = entry["localizations"] as? [String: Any] else { continue }
+            for (locale, locRaw) in locs {
+                guard let locDict = locRaw as? [String: Any] else { continue }
+                let hasVariations = (locDict["variations"] != nil)
+                if let unit = locDict["stringUnit"] as? [String: Any],
+                   let v = unit["value"] as? String {
+                    out.append((key, locale, v, hasVariations))
+                }
+            }
+        }
+        return out
+    }
+
+    /// 契约 4：plural-shape backlog 钉在 CI 输出
+    ///
+    /// xcstrings 里凡是 value 含英文字面 `(s)` 复数标记（如 `swapfile(s)` / `file(s)`），
+    /// 严格意义上都是"翻译质量降级"——英文 `1 swapfile` vs `2 swapfiles` 写错就尴尬。
+    /// Apple 推荐改造为 [String Catalog plural variations](https://developer.apple.com/documentation/xcode/localizing-and-varying-text-with-a-string-catalog)。
+    ///
+    /// **本契约 warn-only**：当前 xcstrings 共 0 条 variations，迁移成本零代码、纯翻译表
+    /// 改造，可以分阶段做。这条用例的目标是把 backlog 数量钉在 CI 输出，让维护者
+    /// 每次 PR 都能看到当前剩余条数，不让其无声膨胀。
+    func test_xcstrings_plural_shape_backlog_warn_only() throws {
+        let units = try loadAllStringUnits()
+        // 命中 (s) 复数标记的 (key, locale)
+        let pluralParenSuffix = units.filter { unit in
+            // 仅看英文 value（zh 不需要复数；其它语言走变体规则各自有 plural form）。
+            unit.locale == "en" && unit.value.range(of: #"\b\w+\(s\)"#, options: .regularExpression) != nil
+        }
+        if !pluralParenSuffix.isEmpty {
+            print("⚠️ [I18n plural backlog] \(pluralParenSuffix.count) 条 en 翻译用 `(s)` 兜底复数（待迁移到 String Catalog plural variations）：")
+            for u in pluralParenSuffix.sorted(by: { $0.key < $1.key }) {
+                print("    - [\(u.key)] \(u.value)")
+            }
+            print("    → Step 17-D 后续治理：逐条改成 \"localizations.<lang>.variations.plural.{one, other}\"。")
+        }
+        // 当前已知 backlog：1 条 capacity.swap.allocated.hint.real "Real file size of %lld swapfile(s)"
+        // 设上限护栏：超过 5 条立即 fail——防止后续 PR 引入新的 (s) 兜底翻译。
+        XCTAssertLessThanOrEqual(
+            pluralParenSuffix.count, 5,
+            "(s) 复数兜底翻译数量超过 5 条上限，已扫到 \(pluralParenSuffix.count) 条；新增 PR 必须改用 plural variations。"
+        )
+    }
+
+    /// 契约 5：number-format hygiene 钉在 CI 输出
+    ///
+    /// 凡是 value 同时包含 `%lld` / `%d` 与英文复数名词（files / items / sessions / rows /
+    /// directories / apps）的 key，都是潜在的 plural variations 候选。
+    /// 例如 `"%lld files"` 在英文里 `1 files` 反人类，但 zh-Hans `1 个文件` 就 OK。
+    ///
+    /// 本契约只**计数 + 列出 backlog**，不强制 fail，理由同契约 4——逐条迁移成本可控、
+    /// 但不能让基数无声膨胀。
+    func test_xcstrings_number_plural_backlog_warn_only() throws {
+        let units = try loadAllStringUnits()
+        // %lld 后跟单个英文名词 + 单复数歧义：files / items / sessions / rows / directories / apps / bytes / leaves
+        let englishPluralNouns = #"(files|items|sessions|rows|directories|apps|bytes|leaves|swapfiles)"#
+        let pattern = #"%(\d+\$)?(lld|d|ld)\s+"# + englishPluralNouns + #"\b"#
+        let regex = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        let candidates = units.filter { unit in
+            guard unit.locale == "en", !unit.hasVariations else { return false }
+            let nsv = unit.value as NSString
+            let m = regex.numberOfMatches(in: unit.value, range: NSRange(location: 0, length: nsv.length))
+            return m > 0
+        }
+        if !candidates.isEmpty {
+            print("ℹ️ [I18n format-hygiene] \(candidates.count) 条 en value 含 `%lld <english_plural_noun>` 形式（plural variations 候选）：")
+            for u in candidates.sorted(by: { $0.key < $1.key }) {
+                print("    - [\(u.key)] \(u.value)")
+            }
+            print("    → Step 17-D 后续治理：评估是否值得拆 plural variations（ScanKit 命中 1 件物时 UX 收益）。")
+        }
+        // 上限护栏：当前已知 ~15 条；放宽到 25 防止滚动期 PR 新增打破护栏。
+        XCTAssertLessThanOrEqual(
+            candidates.count, 25,
+            "%lld 复数英文名词候选数已达 \(candidates.count)，超过 25 上限；新增 PR 必须配套 plural variations 迁移。"
+        )
+    }
+
+    /// 契约 6：所有 key 的 extractionState 必须是 manual（无 stale 死翻译）
+    ///
+    /// xcstrings 的 [extractionState](https://developer.apple.com/documentation/xcode/localizing-and-varying-text-with-a-string-catalog)
+    /// 取值：`manual` / `extracted_with_value` / `migrated` / `stale` / `unknown`。
+    /// `stale` = "Xcode 的 string extractor 在源码里再也找不到这条 key 的引用"——
+    /// 是 stale key 的官方信号。本仓库目前 496 条全 manual，本契约确保不引入 stale。
+    func test_xcstrings_无stale或unknown的extractionState() throws {
+        let json = try loadXcstringsRaw()
+        guard let strings = json["strings"] as? [String: Any] else {
+            return XCTFail("xcstrings 缺 strings 字典")
+        }
+        var stale: [String] = []
+        var unknown: [String] = []
+        for (key, raw) in strings {
+            guard let entry = raw as? [String: Any] else { continue }
+            let state = entry["extractionState"] as? String
+            switch state {
+            case "stale": stale.append(key)
+            case "unknown": unknown.append(key)
+            default: break
+            }
+        }
+        XCTAssertTrue(
+            stale.isEmpty,
+            "发现 \(stale.count) 条 extractionState=stale 的死翻译：\(stale.sorted())。Xcode 已确认源码再无引用，应在 xcstrings 中删除。"
+        )
+        XCTAssertTrue(
+            unknown.isEmpty,
+            "发现 \(unknown.count) 条 extractionState=unknown：\(unknown.sorted())。手动核对后改为 manual 或删除。"
+        )
+    }
+
+    /// 契约 7：variations 双向校验——
+    /// 一旦某条 key 启用了 plural variations，必须 en + zh-Hans 两个 locale 同步启用，
+    /// 且必须同时含 `one` 与 `other` 两个 plural category。
+    ///
+    /// 这是为后续真正落地 plural variations 时的护栏：防止只改半边、防止漏 `one` 类。
+    /// 当前 xcstrings 0 条 variations，所以这条用例**当前必然 PASS**——它是为未来挡箭。
+    func test_xcstrings_variations双向完整性() throws {
+        let json = try loadXcstringsRaw()
+        guard let strings = json["strings"] as? [String: Any] else { return }
+        var defects: [String] = []
+        for (key, raw) in strings {
+            guard let entry = raw as? [String: Any] else { continue }
+            guard let locs = entry["localizations"] as? [String: Any] else { continue }
+            // 收集启用了 variations 的 locales
+            var localesWithVariations: [String: [String: Any]] = [:]  // locale -> plural dict
+            for (locale, locRaw) in locs {
+                guard let locDict = locRaw as? [String: Any] else { continue }
+                if let variations = locDict["variations"] as? [String: Any],
+                   let plural = variations["plural"] as? [String: Any] {
+                    localesWithVariations[locale] = plural
+                }
+            }
+            if localesWithVariations.isEmpty { continue }
+            // 一旦启用 variations：en + zh-Hans 都必须启用
+            let needLocales: Set<String> = ["en", "zh-Hans"]
+            let actualLocales = Set(localesWithVariations.keys)
+            if !needLocales.isSubset(of: actualLocales) {
+                let missing = needLocales.subtracting(actualLocales).sorted()
+                defects.append("[\(key)] 启用了 plural variations 但缺 locales: \(missing)")
+                continue
+            }
+            // 每个 locale 必须同时含 one + other
+            for (locale, plural) in localesWithVariations {
+                let cats = Set(plural.keys)
+                let needCats: Set<String> = ["one", "other"]
+                if !needCats.isSubset(of: cats) {
+                    let missing = needCats.subtracting(cats).sorted()
+                    defects.append("[\(key)][\(locale)] plural 缺 categories: \(missing)")
+                }
+            }
+        }
+        XCTAssertTrue(
+            defects.isEmpty,
+            "plural variations 双向完整性破损：\n  - " + defects.joined(separator: "\n  - ")
+        )
+    }
 }
