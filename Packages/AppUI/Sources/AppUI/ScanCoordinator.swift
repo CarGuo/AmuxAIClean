@@ -2242,4 +2242,65 @@ public final class ScanCoordinator: ObservableObject {
             bumpTickRevision()
         }
     }
+
+    // MARK: - Testing helpers (Step 15)
+
+    /// 仅供 [PruneDeletedTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/PruneDeletedTests.swift)
+    /// / [PerformDeleteIntegrationTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/PerformDeleteIntegrationTests.swift)
+    /// 注入内部状态。
+    ///
+    /// 同 [forcePublishSnapshotForTesting](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L389)
+    /// 风格：`internal` 可见性，配合 `@testable import AppUI` 在测试 target 内可用，
+    /// 生产路径不会调到。
+    ///
+    /// 全部参数都 optional，默认 nil = 不动该字段。Bucket/DirAgg 是 private struct，
+    /// 这里以"简化字典"接收（path -> bytes 即可）由方法内部包装成真实结构。
+    func _seedForTesting(
+        snapshot: ScanSnapshot? = nil,
+        buckets: [String: Int64]? = nil,
+        dirIndex: [String]? = nil,
+        fileLeaves: [String]? = nil,
+        childEdges: [String: Set<String>]? = nil,
+        treeChildrenCache: [String: [TreeRow]]? = nil
+    ) {
+        if let snap = snapshot {
+            self.snapshot = snap
+        }
+        if let buckets {
+            self.buckets.removeAll()
+            for (path, bytes) in buckets {
+                self.buckets[path] = Bucket(
+                    url: URL(fileURLWithPath: path, isDirectory: true),
+                    bytes: bytes,
+                    logicalBytes: bytes,
+                    fileCount: 1,
+                    isDirectory: true
+                )
+            }
+        }
+        if let dirIndex {
+            self.dirIndex.removeAll()
+            for path in dirIndex {
+                self.dirIndex[path] = DirAgg(bytes: 1, logicalBytes: 1, fileCount: 1)
+            }
+        }
+        if let fileLeaves {
+            self.fileLeaves.removeAll()
+            for path in fileLeaves {
+                self.fileLeaves[path] = (bytes: 1, isDir: false, modificationDate: nil)
+            }
+        }
+        if let childEdges {
+            self.childEdges = childEdges
+        }
+        if let treeChildrenCache {
+            self.treeChildrenCache = treeChildrenCache
+        }
+    }
+
+    func _bucketsKeysForTesting() -> [String] { Array(buckets.keys) }
+    func _dirIndexKeysForTesting() -> [String] { Array(dirIndex.keys) }
+    func _fileLeavesKeysForTesting() -> [String] { Array(fileLeaves.keys) }
+    func _childEdgesForTesting() -> [String: Set<String>] { childEdges }
+    func _treeChildrenCacheForTesting() -> [String: [TreeRow]] { treeChildrenCache }
 }
