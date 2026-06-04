@@ -1000,6 +1000,103 @@ final class RuleLoaderTests: XCTestCase {
             .forbid)
     }
 
+    // MARK: - Step 11C: 现代包管理器 / 编译缓存 vendor 矩阵
+
+    /// 11C 集成断言：vendors.yaml 必须收录 10 个现代包/语言/版本/缓存管理器，
+    /// 且每条至少含一条 path-rule（不能只有 vendor 根）。
+    func testRealVendorsYamlContainsModernToolchains_Step11C() throws {
+        let rules = try Self.loadRealRules()
+        let names = Set(rules.map(\.name))
+        let expected: [String] = [
+            "Volta", "fnm", "uv", "mise", "asdf",
+            "pixi", "Deno", "Turbo", "Nx", "sccache",
+        ]
+        for n in expected {
+            XCTAssertTrue(names.contains(n),
+                          "vendors.yaml 必须收录 Step 11C 现代包管理器：\(n)")
+            let rule = rules.first(where: { $0.name == n })
+            XCTAssertGreaterThan(rule?.paths.count ?? 0, 0,
+                                 "\(n) 必须声明至少一条 path-rule，得到 0 条")
+        }
+    }
+
+    /// 11C verdict 矩阵：抽样关键路径 verdict 必须与 yaml 设计一致。
+    func testRealVendorsYaml_Step11C_VerdictMatrix() throws {
+        let rules = try Self.loadRealRules()
+        let trie = VendorTrie.build(vendors: rules, home: "/Users/foo")
+        let engine = SafetyEngine()
+        let home = "/Users/foo"
+
+        // Volta cache：safe；Volta bin：forbid（toolchain shim）
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/.volta/cache", trie: trie, home: home).0,
+            .safe, "Volta cache 应为 safe（下次 use 重下）")
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/.volta/bin", trie: trie, home: home).0,
+            .forbid, "Volta bin 是 toolchain shim，删了 PATH 全断")
+
+        // fnm 多 shell 临时缓存：safe
+        XCTAssertEqual(
+            engine.evaluate(
+                path: "/Users/foo/Library/Caches/fnm_multishells", trie: trie, home: home
+            ).0,
+            .safe, "fnm 多 shell 临时目录可清")
+
+        // uv（Astral Python）缓存：safe
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/Library/Caches/uv", trie: trie, home: home).0,
+            .safe, "uv wheel 缓存可清")
+
+        // mise downloads safe；mise config forbid（含 ~/.config/mise/config.toml token）
+        XCTAssertEqual(
+            engine.evaluate(
+                path: "/Users/foo/.local/share/mise/downloads", trie: trie, home: home
+            ).0,
+            .safe)
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/.config/mise", trie: trie, home: home).0,
+            .forbid, "mise 用户配置含 plugin / 凭证")
+
+        // asdf shims：forbid（PATH 入口）
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/.asdf/shims", trie: trie, home: home).0,
+            .forbid, "asdf shims 删了所有版本管理 PATH 失效")
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/.asdf/downloads", trie: trie, home: home).0,
+            .safe)
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/.asdf/installs", trie: trie, home: home).0,
+            .confirm, "asdf installs 是已安装的工具链，删了得重装")
+
+        // pixi envs：confirm（已 solve 的 conda 环境）
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/.pixi/envs", trie: trie, home: home).0,
+            .confirm)
+
+        // Deno 模块缓存：safe
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/Library/Caches/deno", trie: trie, home: home).0,
+            .safe)
+
+        // Turbo / Nx 远程构建缓存：safe
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/.cache/turbo", trie: trie, home: home).0,
+            .safe)
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/.cache/nx", trie: trie, home: home).0,
+            .safe)
+
+        // sccache 编译器缓存：safe
+        XCTAssertEqual(
+            engine.evaluate(path: "/Users/foo/.cache/sccache", trie: trie, home: home).0,
+            .safe)
+        XCTAssertEqual(
+            engine.evaluate(
+                path: "/Users/foo/Library/Caches/Mozilla.sccache", trie: trie, home: home
+            ).0,
+            .safe)
+    }
+
     /// 提取仓库根的 vendors.yaml URL（与上面三处 #filePath 拷贝重复，集中到一处）
     private static func vendorsYamlURL() -> URL {
         let here = URL(fileURLWithPath: #filePath)

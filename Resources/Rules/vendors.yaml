@@ -507,6 +507,166 @@ vendors:
         verdict: "forbid"
         reason: "已登录 Google 账号 token / 同步密钥（多重防御）"
 
+  # ========== 现代包管理器 / 编译缓存（Step 11C） ==========
+  # 覆盖 Node 工具链 (Volta/fnm)、Python (uv)、多语言版本 (mise/asdf)、
+  # Conda 兼容 (pixi)、Deno、JS 远程构建缓存 (Turbo/Nx)、编译器缓存 (sccache)。
+  # 模式与 §2.6 Cargo/Rustup 一致：缓存/下载 safe；shim/bin/config forbid 多重防御。
+  - name: "Volta"
+    note: "Volta Node toolchain manager (Step 11C)"
+    paths:
+      # —— 缓存与日志（safe，volta install 会重新拉） ——
+      - path: "~/.volta/cache"
+        verdict: "safe"
+        reason: "Volta 下载缓存，volta install 会重新拉取"
+      - path: "~/.volta/tmp"
+        verdict: "safe"
+        reason: "Volta 临时解压目录"
+      - path: "~/.volta/log"
+        verdict: "safe"
+        reason: "Volta 日志"
+      # —— 工具链与 shim（forbid，PATH 入口） ——
+      - path: "~/.volta/bin"
+        verdict: "forbid"
+        reason: "Volta 全局 shim，删了所有 node/npm/pnpm/yarn 的 PATH 入口失效"
+      - path: "~/.volta/tools"
+        verdict: "forbid"
+        reason: "Volta 已安装的 Node toolchain，删了所有项目锁定版本失效"
+
+  - name: "fnm"
+    note: "Fast Node Manager (Step 11C)"
+    paths:
+      # —— 多 shell 临时缓存（safe） ——
+      - path: "~/Library/Caches/fnm_multishells"
+        verdict: "safe"
+        reason: "fnm 多 shell 临时目录，会话结束自清"
+      - path: "~/Library/Application Support/fnm/aliases"
+        verdict: "confirm"
+        reason: "fnm 别名（如 default → 18.x），删后 fnm use default 失效"
+      # —— Node 安装目录（confirm，重装恢复） ——
+      - path: "~/.fnm/node-versions"
+        verdict: "confirm"
+        reason: "fnm 已下载的 Node 版本目录，删了 fnm install 重新拉"
+
+  - name: "uv"
+    note: "Astral uv Python package manager (Step 11C)"
+    paths:
+      # —— wheel / index 缓存（safe，等价 uv cache clean） ——
+      - path: "~/Library/Caches/uv"
+        verdict: "safe"
+        reason: "uv wheel / index 缓存（等价 uv cache clean）"
+      - path: "~/.cache/uv"
+        verdict: "safe"
+        reason: "uv 缓存 XDG 路径"
+
+  - name: "mise"
+    note: "mise (rtx) polyglot version manager (Step 11C)"
+    paths:
+      # —— 缓存 / 下载（safe） ——
+      - path: "~/.local/share/mise/cache"
+        verdict: "safe"
+        reason: "mise 工具元数据缓存，重启 shell 自建"
+      - path: "~/.local/share/mise/downloads"
+        verdict: "safe"
+        reason: "mise 下载临时文件"
+      - path: "~/Library/Caches/mise"
+        verdict: "safe"
+        reason: "mise 缓存（macOS 路径）"
+      # —— installs（confirm，重装代价） ——
+      - path: "~/.local/share/mise/installs"
+        verdict: "confirm"
+        reason: "mise 已安装的 toolchain，删了得 mise install 重装"
+      # —— 配置（forbid，含 plugin / token） ——
+      - path: "~/.config/mise"
+        verdict: "forbid"
+        reason: "mise 用户配置（含 plugin 注册 / 私有 registry token）"
+
+  - name: "asdf"
+    note: "asdf-vm classic polyglot version manager (Step 11C)"
+    paths:
+      # —— 下载 / 临时（safe） ——
+      - path: "~/.asdf/downloads"
+        verdict: "safe"
+        reason: "asdf 下载临时文件"
+      - path: "~/.asdf/tmp"
+        verdict: "safe"
+        reason: "asdf 临时目录"
+      # —— installs（confirm） ——
+      - path: "~/.asdf/installs"
+        verdict: "confirm"
+        reason: "asdf 已安装的 toolchain，删了得 asdf install 重装"
+      # —— shims（forbid，PATH 入口） ——
+      - path: "~/.asdf/shims"
+        verdict: "forbid"
+        reason: "asdf shim 是所有版本管理 PATH 入口，删了 node/python/ruby 命令全失效"
+      - path: "~/.asdf/plugins"
+        verdict: "forbid"
+        reason: "asdf 插件源码，删了 asdf 子命令失效"
+
+  - name: "pixi"
+    note: "pixi (Prefix.dev) conda-compatible package manager (Step 11C)"
+    paths:
+      # —— rattler 全局缓存（safe） ——
+      - path: "~/.cache/rattler/cache"
+        verdict: "safe"
+        reason: "rattler conda 包下载缓存（pixi 用 rattler 解析）"
+      - path: "~/Library/Caches/rattler"
+        verdict: "safe"
+        reason: "rattler 缓存（macOS 路径）"
+      # —— pixi 全局环境（confirm） ——
+      - path: "~/.pixi/envs"
+        verdict: "confirm"
+        reason: "pixi 全局已 solve 的 conda 环境，删了 pixi global install 重新部署"
+
+  - name: "Deno"
+    note: "Deno runtime module / DENO_DIR cache (Step 11C)"
+    paths:
+      # —— Deno 模块缓存（safe，等价 deno cache --reload） ——
+      - path: "~/Library/Caches/deno"
+        verdict: "safe"
+        reason: "Deno 模块缓存（DENO_DIR 默认）"
+      - path: "~/.cache/deno"
+        verdict: "safe"
+        reason: "Deno 模块缓存 XDG 路径"
+      - path: "~/.deno/deps"
+        verdict: "safe"
+        reason: "Deno 远端依赖解压缓存"
+      - path: "~/.deno/gen"
+        verdict: "safe"
+        reason: "Deno V8 codegen 缓存"
+
+  - name: "Turbo"
+    note: "Turborepo build cache (Step 11C)"
+    paths:
+      # —— Turborepo 全局缓存（safe，等价 turbo prune） ——
+      - path: "~/.cache/turbo"
+        verdict: "safe"
+        reason: "Turborepo 任务输出缓存，下次 turbo run 重建"
+      - path: "~/Library/Caches/turbo"
+        verdict: "safe"
+        reason: "Turborepo 缓存（macOS 路径）"
+
+  - name: "Nx"
+    note: "Nx workspace cache (Step 11C)"
+    paths:
+      # —— Nx 全局缓存（safe，等价 nx reset） ——
+      - path: "~/.cache/nx"
+        verdict: "safe"
+        reason: "Nx 任务输出缓存，下次 nx 命令重建"
+      - path: "~/Library/Caches/nx"
+        verdict: "safe"
+        reason: "Nx 缓存（macOS 路径）"
+
+  - name: "sccache"
+    note: "Mozilla sccache compiler cache (Step 11C)"
+    paths:
+      # —— sccache 编译产物缓存（safe，等价 sccache --zero-stats） ——
+      - path: "~/Library/Caches/Mozilla.sccache"
+        verdict: "safe"
+        reason: "sccache 编译器缓存（macOS 路径），下次 cargo/cmake 重建"
+      - path: "~/.cache/sccache"
+        verdict: "safe"
+        reason: "sccache XDG 路径"
+
   # ========== 应用厂商规则（v1.0 已清洗版） ==========
   - name: "Adobe"
     bundle_id_prefix: "com.adobe"
