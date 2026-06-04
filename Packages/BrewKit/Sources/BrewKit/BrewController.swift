@@ -41,6 +41,17 @@ public struct BrewPackage: Sendable, Equatable {
     }
 }
 
+/// Step 16-B2 —— 一个本地包 + 它在 BrewRegistry 中的最新版本。
+public struct BrewOutdated: Sendable, Equatable {
+    public let package: BrewPackage
+    public let latestVersion: String
+
+    public init(package: BrewPackage, latestVersion: String) {
+        self.package = package
+        self.latestVersion = latestVersion
+    }
+}
+
 public struct BrewController: Sendable {
 
     /// brew 安装 prefix（一般 /opt/homebrew 或 /usr/local）。
@@ -78,6 +89,20 @@ public struct BrewController: Sendable {
     /// 一次性列出全部 formula + cask。
     public func listAll() -> [BrewPackage] {
         return listFormulae() + listCasks()
+    }
+
+    /// 用 [BrewRegistry](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/BrewKit/Sources/BrewKit/BrewRegistry.swift)
+    /// 标注每个已安装包的"最新版本"和"是否可升级"。
+    ///
+    /// 升级判定：installed != latest（字符串严格不等；不做 semver 解析以求稳）。
+    /// 同名多 version 时，每个 version 各自比对（与 brew 行为一致）。
+    public func outdated(using registry: BrewRegistry) -> [BrewOutdated] {
+        let all = listAll()
+        return all.compactMap { pkg in
+            guard let latest = registry.latestVersion(for: pkg.name, kind: pkg.kind),
+                  latest != pkg.version else { return nil }
+            return BrewOutdated(package: pkg, latestVersion: latest)
+        }
     }
 
     // MARK: - 内部
