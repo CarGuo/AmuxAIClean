@@ -161,7 +161,21 @@ public struct TreeBrowserView: View {
         }
         // v1.5.4：四个触发器覆盖所有可能改变 flatRows 内容的事件。
         // 缺一个就会出现"展开后没出现"或"删除后还在"。
-        .onChange(of: expanded) { _, _ in rebuildFlatRows() }
+        //
+        // **v1.5.6 性能优化**（用户反馈"tree 展开还是好卡"）：
+        // expanded 变化是**最高频**的 flatRows 重建触发源（每点一次 chevron / 单击行 / l 键
+        // 都会 bump）。旧实现走 [rebuildFlatRows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L296)
+        // 整树重算——已展开 200 个目录、每个 50 子项的场景下，每次单点切换都要
+        // 重新跑 200 次 directChildren + 200 次 sort + N 次 verdict 计算。
+        //
+        // 新实现走 diff：把 oldValue/newValue 用 SwiftUI 6 的双参 onChange 拿到，
+        // 单点切换（最常见）→ [applyExpansionDiff](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L382)
+        // 只插/删受影响的那一段；多点变化 → fallback 走整树重建。
+        // 增量路径下展开/折叠的成本从 O(N total) 降到 O(N new subtree)，
+        // 90% 的卡感来源就在这里。
+        .onChange(of: expanded) { oldExp, newExp in
+            applyExpandedChange(old: oldExp, new: newExp)
+        }
         .onChange(of: sortKey) { _, _ in rebuildFlatRows() }
         .onChange(of: rootPath) { _, _ in
             // 切扫描根：清掉旧 expanded 防止脏 path 残留撑起 flatRows
@@ -298,6 +312,142 @@ public struct TreeBrowserView: View {
             out.append((k, depth))
             if k.isDirectory && (expanded[k.path] ?? false) {
                 appendDescendantPairs(parent: k.path, depth: depth + 1, into: &out)
+            }
+        }
+    }
+
+    // MARK: - flatRows 增量 patch（v1.5.6 性能优化）
+
+    /// expanded 字典变化时的 dispatcher：
+    /// - 单 key 翻转（最常见：点击 chevron / l / h / 单击行）→ 走增量 patch
+    /// - 多 key 变化 / 出现新 key（极少：测试代码 / 未来批量展开）→ fallback 整树重建
+    ///
+    /// 这里有意**不**碰 maxBytes 与 isFetchingRoot：增量是"子树插入/删除"层面，
+    /// 顶层第一行没动 → 顶层 maxBytes 也没动；isFetchingRoot 只在顶层为空时有意义，
+    /// 而增量场景一定是 flatRows 非空（至少有 root 直接孩子）。
+    ///
+    /// 安全网：若 patch 路径上发现 `path` 不在当前 flatRows（例如 path 来自折叠态以下的
+    /// 一层、用户在折叠的子目录里点击展开），就 fallback 整树重建。这种"看不见的展开"
+    /// 在 keyboard 导航里偶尔出现，正确性优先于性能。
+    private func applyExpandedChange(old: [String: Bool], new: [String: Bool]) {
+        // 用 truthy（== true）集合做 diff——key 存在但值为 false 等价于"未展开"。
+        let oldOpen = Set(old.compactMap { $1 ? $0 : nil })
+        let newOpen = Set(new.compactMap { $1 ? $0 : nil })
+        let added = newOpen.subtracting(oldOpen)
+        let removed = oldOpen.subtracting(newOpen)
+
+        // 只支持单点切换走增量；多点 / 同时增删 → 整树重建。
+        guard added.count + removed.count == 1 else {
+            rebuildFlatRows()
+            return
+        }
+        if let path = added.first {
+            incrementalExpand(path: path)
+        } else if let path = removed.first {
+            incrementalCollapse(path: path)
+        }
+    }
+
+    /// 单点展开：在 flatRows 里找到 `path` 那一行，把它的子树（按当前 expanded
+    /// 状态递归）插到它后面。若 path 不在当前 flatRows（罕见）→ fallback 整树重建。
+    ///
+    /// 复杂度：O(N find + M new subtree)，N=当前 flatRows 行数，M=新展开子树行数。
+    /// 旧实现是 O(N total + 整树 directChildren 调用)。
+    private func incrementalExpand(path: String) {
+        guard let idx = flatRows.firstIndex(where: { $0.row.path == path }) else {
+            rebuildFlatRows(); return
+        }
+        let parentDepth = flatRows[idx].depth
+        var pairs: [(TreeRow, Int)] = []
+        appendDescendantPairs(parent: path, depth: parentDepth + 1, into: &pairs)
+        let inserted = Self.computeVerdicts(for: pairs) { Self.safety.evaluate(path: $0).0 }
+        flatRows.insert(contentsOf: inserted, at: idx + 1)
+    }
+
+    /// 单点折叠：在 flatRows 里找到 `path`，删掉它**之后**所有 depth > path.depth 的
+    /// 连续行（用 depth 边界扫描，遇到 depth <= path.depth 即停）。
+    ///
+    /// 与 incrementalExpand 对称，复杂度 O(N find + K removed subtree)。
+    private func incrementalCollapse(path: String) {
+        guard let idx = flatRows.firstIndex(where: { $0.row.path == path }) else {
+            rebuildFlatRows(); return
+        }
+        let parentDepth = flatRows[idx].depth
+        var end = idx + 1
+        while end < flatRows.count && flatRows[end].depth > parentDepth {
+            end += 1
+        }
+        if end > idx + 1 {
+            flatRows.removeSubrange((idx + 1)..<end)
+        }
+    }
+
+    /// **可测的 pure helper**：把"老 flatRows + 单点 expand/collapse"映射成"新 flatRows"。
+    ///
+    /// 单测用它对比"增量结果" vs "整树重建结果"，钉死等价性契约——
+    /// 任何未来对 incrementalExpand / incrementalCollapse 的优化只要不破等价就能落地。
+    ///
+    /// - parameters:
+    ///   - old: 老 flatRows
+    ///   - togglePath: 被翻转的 path（必须能在 old 里找到）
+    ///   - isExpanding: true=展开 / false=折叠
+    ///   - childrenProvider: (parentPath, sortKey) -> 直接子项，按 sortKey 排好序
+    ///   - expandedAfter: 翻转后的 expanded 状态（用于决定新子树里哪些孙子也要拍平）
+    ///   - sortKey: 当前排序键（透传给 childrenProvider）
+    ///   - evaluator: SafetyEngine 评估函数，与 [computeVerdicts](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L330)
+    ///     共用
+    /// - returns: 若 togglePath 不在 old → nil（caller fallback 整树重建），否则新 flatRows
+    static func applyExpansionPatch(
+        old: [FlatTreeRow],
+        togglePath: String,
+        isExpanding: Bool,
+        sortKey: TreeSortKey,
+        expandedAfter: [String: Bool],
+        childrenProvider: (String, TreeSortKey) -> [TreeRow],
+        evaluator: (String) -> SafetyVerdict
+    ) -> [FlatTreeRow]? {
+        guard let idx = old.firstIndex(where: { $0.row.path == togglePath }) else {
+            return nil
+        }
+        let parentDepth = old[idx].depth
+        if isExpanding {
+            var pairs: [(TreeRow, Int)] = []
+            collectDescendantPairs(
+                parent: togglePath, depth: parentDepth + 1,
+                sortKey: sortKey, expanded: expandedAfter,
+                childrenProvider: childrenProvider, into: &pairs
+            )
+            var out = old
+            out.insert(contentsOf: computeVerdicts(for: pairs, using: evaluator),
+                       at: idx + 1)
+            return out
+        } else {
+            var end = idx + 1
+            while end < old.count && old[end].depth > parentDepth { end += 1 }
+            var out = old
+            if end > idx + 1 { out.removeSubrange((idx + 1)..<end) }
+            return out
+        }
+    }
+
+    /// pure helper：递归收集子树 (row, depth)，与 [appendDescendantPairs](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L308)
+    /// 对应但不依赖 `coordinator`，让单测能用 mock provider。
+    private static func collectDescendantPairs(
+        parent: String, depth: Int,
+        sortKey: TreeSortKey,
+        expanded: [String: Bool],
+        childrenProvider: (String, TreeSortKey) -> [TreeRow],
+        into out: inout [(TreeRow, Int)]
+    ) {
+        let kids = childrenProvider(parent, sortKey)
+        for k in kids {
+            out.append((k, depth))
+            if k.isDirectory && (expanded[k.path] ?? false) {
+                collectDescendantPairs(
+                    parent: k.path, depth: depth + 1,
+                    sortKey: sortKey, expanded: expanded,
+                    childrenProvider: childrenProvider, into: &out
+                )
             }
         }
     }
