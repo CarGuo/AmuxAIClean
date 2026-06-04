@@ -1,141 +1,135 @@
-2026-06-04 12:04:18.567 GSYCleanMac[56897:2597371] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-04 13:44:01.904 GSYCleanMac[83154:2725953] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=scan-perf-diagnose defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=scan-perf-diagnose
-2026-06-04 12:04:19.459 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:19.460 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:19.465 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:19.571 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:19.594 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:19.600 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:19.831 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:19.849 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:19.855 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:19.874 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:19.879 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:20.120 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:20.133 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:20.141 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:20.523 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:20.537 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:20.544 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:20.752 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:20.766 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:20.773 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:20.820 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:20.834 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:20.841 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:20.990 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:21.005 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:21.013 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:21.030 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:21.183 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:21.198 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:21.205 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:21.337 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:21.352 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:21.359 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:21.524 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:21.540 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:21.547 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:21.937 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:21.952 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:21.960 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:22.318 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:22.333 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:22.340 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:22.399 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:22.414 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:22.422 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:22.473 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:22.488 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:22.495 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:22.824 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:22.838 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:22.850 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:22.915 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:22.931 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:22.938 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:22.992 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:23.007 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:23.014 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:23.317 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:23.334 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:23.342 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:23.424 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:23.439 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:23.445 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:23.715 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:23.730 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:23.737 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:24.116 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:24.141 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:24.148 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-[REGR] case=scan-perf-diagnose HB elapsed=5.1s bytes=14115641938 files=150101 MBps=2650.45
-2026-06-04 12:04:24.515 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:24.531 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:24.538 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:24.915 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:24.929 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:24.937 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:25.315 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:25.330 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:25.337 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:25.405 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:25.419 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:25.426 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:25.566 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:25.582 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:25.590 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:25.647 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:25.662 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:25.668 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:25.734 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:25.749 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:25.755 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:26.149 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:26.164 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:26.172 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:27.187 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:27.201 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:27.208 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:27.267 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:27.282 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:27.290 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:27.340 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:27.355 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:04:27.361 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-[REGR] case=scan-perf-diagnose HB elapsed=10.2s bytes=26111490854 files=395442 MBps=2451.10
-[REGR] case=scan-perf-diagnose HB elapsed=15.3s bytes=26111490854 files=395442 MBps=1632.06
-[REGR] case=scan-perf-diagnose HB elapsed=20.3s bytes=26111490854 files=395442 MBps=1228.74
-[REGR] case=scan-perf-diagnose HB elapsed=25.3s bytes=26111490854 files=395442 MBps=984.93
-[REGR] case=scan-perf-diagnose HB elapsed=30.4s bytes=26111490854 files=395442 MBps=820.21
-[REGR] case=scan-perf-diagnose HB elapsed=35.4s bytes=26111490854 files=395442 MBps=702.60
-[REGR] case=scan-perf-diagnose HB elapsed=40.5s bytes=26111490854 files=395442 MBps=615.62
-[REGR] case=scan-perf-diagnose HB elapsed=45.6s bytes=26111490854 files=395442 MBps=546.68
-[REGR] case=scan-perf-diagnose HB elapsed=50.6s bytes=26111490854 files=395442 MBps=491.82
-[REGR] case=scan-perf-diagnose HB elapsed=55.7s bytes=26111490854 files=395442 MBps=447.10
-[REGR] case=scan-perf-diagnose HB elapsed=61.4s bytes=26111490854 files=395442 MBps=405.32
-[REGR] case=scan-perf-diagnose HB elapsed=67.5s bytes=26111490854 files=395442 MBps=369.12
-[REGR] case=scan-perf-diagnose HB elapsed=72.6s bytes=26111490854 files=395442 MBps=343.16
-[REGR] case=scan-perf-diagnose HB elapsed=77.7s bytes=26111490854 files=395442 MBps=320.59
-[REGR] case=scan-perf-diagnose HB elapsed=82.7s bytes=26111490854 files=395442 MBps=301.04
-[REGR] case=scan-perf-diagnose HB elapsed=88.2s bytes=26111490854 files=395442 MBps=282.22
-[REGR] case=scan-perf-diagnose HB elapsed=93.5s bytes=26111490854 files=395442 MBps=266.34
-[REGR] case=scan-perf-diagnose HB elapsed=98.8s bytes=26111490854 files=395442 MBps=252.03
-[REGR] case=scan-perf-diagnose HB elapsed=104.5s bytes=26111490854 files=395442 MBps=238.32
-[REGR] case=scan-perf-diagnose HB elapsed=109.7s bytes=26111490854 files=395442 MBps=226.99
-[REGR] case=scan-perf-diagnose HB elapsed=114.7s bytes=26111490854 files=395442 MBps=217.04
-[REGR] case=scan-perf-diagnose HB elapsed=119.8s bytes=26111490854 files=395442 MBps=207.85
-2026-06-04 12:06:24.093 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:06:24.173 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:06:24.188 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 12:06:24.445 GSYCleanMac[56897:2597371] ERROR: Negative values for setRowHeight: not allowed (0.000)
-[REGR] case=scan-perf-diagnose elapsed_sec=126.0 total_bytes=26112900374 total_files=395443 throughput_MBps=197.70
-[REGR] case=scan-perf-diagnose root[0] path=/Users/guoshuyu/Library/Caches bytes=18501671286 files=356536 finished=true
-[REGR] case=scan-perf-diagnose root[1] path=/Users/guoshuyu/Library/Developer/Xcode/DerivedData bytes=4904023410 files=33800 finished=true
+2026-06-04 13:44:03.349 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:03.350 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:03.484 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:03.504 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:03.525 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:03.697 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:03.704 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:03.731 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:03.744 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:03.752 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:04.058 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:04.064 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:04.087 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:04.461 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:04.468 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:04.493 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:04.665 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:04.671 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:04.693 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:04.741 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:04.746 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:04.788 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:04.861 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:04.867 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:04.892 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:05.328 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:05.334 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:05.364 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:05.374 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:05.673 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:05.680 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:05.709 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:05.854 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:05.861 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:05.887 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:06.073 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:06.080 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:06.107 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:06.268 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:06.274 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:06.302 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:06.533 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:06.539 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:06.567 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:06.615 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:06.622 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:06.651 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:06.723 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:06.728 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:06.756 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.091 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.098 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.124 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.182 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.189 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.216 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.262 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.268 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.294 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.449 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.455 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.484 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.581 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.587 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.615 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.982 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:07.988 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:08.017 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+[REGR] case=scan-perf-diagnose HB elapsed=5.1s bytes=13644478323 files=118708 MBps=2572.60
+2026-06-04 13:44:08.383 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:08.391 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:08.419 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:08.781 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:08.787 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:08.816 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:09.182 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:09.188 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:09.217 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:09.583 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:09.590 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:09.618 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:09.823 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:09.829 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:09.857 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:09.982 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:09.988 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:10.016 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:10.107 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:10.113 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:10.140 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:10.196 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:10.203 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:10.230 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:10.479 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:10.485 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:10.515 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:12.157 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:12.164 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:12.193 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:12.240 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:12.246 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:12.274 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:12.320 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:12.327 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:12.355 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+[REGR] case=scan-perf-diagnose HB elapsed=10.1s bytes=26008441155 files=393792 MBps=2451.57
+[REGR] case=scan-perf-diagnose HB elapsed=15.1s bytes=26008441155 files=393792 MBps=1638.21
+[REGR] case=scan-perf-diagnose HB elapsed=20.1s bytes=26008441155 files=393792 MBps=1231.50
+[REGR] case=scan-perf-diagnose HB elapsed=25.2s bytes=26008441155 files=393792 MBps=982.52
+[REGR] case=scan-perf-diagnose HB elapsed=30.3s bytes=26008441155 files=393792 MBps=819.74
+[REGR] case=scan-perf-diagnose HB elapsed=35.3s bytes=26008441155 files=393792 MBps=703.28
+[REGR] case=scan-perf-diagnose HB elapsed=40.3s bytes=26008441155 files=393792 MBps=615.69
+[REGR] case=scan-perf-diagnose HB elapsed=45.3s bytes=26008441155 files=393792 MBps=547.68
+[REGR] case=scan-perf-diagnose HB elapsed=50.3s bytes=26008441155 files=393792 MBps=493.17
+[REGR] case=scan-perf-diagnose HB elapsed=55.4s bytes=26008441155 files=393792 MBps=447.91
+2026-06-04 13:44:58.657 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:58.685 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:44:58.739 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+[REGR] case=scan-perf-diagnose HB elapsed=60.4s bytes=26008441155 files=393792 MBps=410.79
+2026-06-04 13:45:03.938 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:45:03.945 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:45:04.004 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 13:45:04.012 GSYCleanMac[83154:2725953] ERROR: Negative values for setRowHeight: not allowed (0.000)
+[REGR] case=scan-perf-diagnose elapsed_sec=61.0 total_bytes=26009850675 total_files=393793 throughput_MBps=406.33
+[REGR] case=scan-perf-diagnose root[0] path=/Users/guoshuyu/Library/Caches bytes=18504293540 files=356559 finished=true
+[REGR] case=scan-perf-diagnose root[1] path=/Users/guoshuyu/Library/Developer/Xcode/DerivedData bytes=4798464433 files=32132 finished=true
 [REGR] case=scan-perf-diagnose root[2] path=/Users/guoshuyu/Downloads bytes=2153356290 files=1775 finished=true
-[REGR] case=scan-perf-diagnose root[3] path=/Users/guoshuyu/Library/Logs bytes=553849388 files=3332 finished=true
+[REGR] case=scan-perf-diagnose root[3] path=/Users/guoshuyu/Library/Logs bytes=553736412 files=3327 finished=true
 [REGR] case=scan-perf-diagnose root[4] path=/Users/guoshuyu/.Trash bytes=0 files=0 finished=true
 [REGR_OK] case=scan-perf-diagnose scan finished=true
 [REGR] case=scan-perf-diagnose defaults_restored_keys=3
-[REGR_PASS] case=scan-perf-diagnose elapsed_ms=126211
+[REGR_PASS] case=scan-perf-diagnose elapsed_ms=61256
