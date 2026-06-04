@@ -900,3 +900,26 @@ vendors:
     bundle_id_prefix: "com.xk72"
     app_support_subdir: "x"
     note: "auto-detected from x"
+
+  # ========== macOS 安装器残留（Step 17-C / docs/AUDIT_2026_06.md L491） ==========
+  # 用户级 installer cache 实测会累积数十 MB（如 com.apple.installer.osinstallersetupd），
+  # 系统级 /private/var/db/receipts 已在 SafetyEngine.hardForbidPrefixes 硬禁区，
+  # 这里加 verdict=forbid 多重防御让 UI 能展示 reason 并形成"早失败"双层保险。
+  - name: "macOS Installer Leftovers"
+    note: "macOS 系统安装器与 pkg 安装产物缓存（Step 17-C）"
+    paths:
+      # —— 用户级 installer cache（safe，可重建） ——
+      - path: "~/Library/Caches/com.apple.installer*"
+        verdict: "safe"
+        reason: "macOS 安装器缓存（如 osinstallersetupd），下次安装时重建"
+      - path: "~/Library/Caches/INSTALLATION"
+        verdict: "safe"
+        reason: "通用安装器中间产物"
+      # —— 用户级 installer log（confirm，调试期间可能要复盘） ——
+      - path: "~/Library/Logs/Install.log"
+        verdict: "confirm"
+        reason: "macOS 升级日志，删了无法复盘最近一次安装失败"
+      # —— 系统级 receipts（forbid，多重防御，与 SafetyEngine.hardForbidPrefixes 重叠） ——
+      - path: "/private/var/db/receipts"
+        verdict: "forbid"
+        reason: "系统级 .bom/.plist；删后 pkg --forget 失败 + 后续 macOS 更新检测异常"
