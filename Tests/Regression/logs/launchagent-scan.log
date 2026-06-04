@@ -1,8 +1,8 @@
-2026-06-04 11:32:04.919 GSYCleanMac[33667:2513384] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-04 12:02:24.987 GSYCleanMac[56120:2594338] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=launchagent-scan defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=launchagent-scan
 [REGR] case=launchagent-scan items=12 labels=com.example.empty,com.google.security.zynamics.bindiff,com.gsyclean.regression.agent,com.microsoft.autoupdate.helper,com.microsoft.update.agent,com.oray.sunlogin.client.startup,com.oray.sunlogin.desktopagent,com.oray.sunlogin.helper,com.oray.sunlogin.service,com.west2online.ClashXPro.ProxyConfigHelper,com.xk72.charles.ProxyHelper,io.github.clash-verge-rev.clash-verge-rev.service
 [REGR_OK] case=launchagent-scan user-scope launch agents=2
 [REGR_OK] case=launchagent-scan expected agent label=true
 [REGR] case=launchagent-scan defaults_restored_keys=3
-[REGR_PASS] case=launchagent-scan elapsed_ms=243
+[REGR_PASS] case=launchagent-scan elapsed_ms=231

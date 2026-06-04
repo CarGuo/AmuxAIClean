@@ -1,4 +1,4 @@
-2026-06-04 11:32:29.568 GSYCleanMac[33944:2514460] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-04 12:02:46.576 GSYCleanMac[56370:2595125] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=undo-history-restore defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=undo-history-restore
 [REGR] case=undo-history-restore addRecord_count=1
@@ -16,4 +16,4 @@
 [REGR_OK] case=undo-history-restore trashed 路径已被掏空=true
 [REGR_OK] case=undo-history-restore restore 后 history 被清空=0
 [REGR] case=undo-history-restore defaults_restored_keys=3
-[REGR_PASS] case=undo-history-restore elapsed_ms=258
+[REGR_PASS] case=undo-history-restore elapsed_ms=213
