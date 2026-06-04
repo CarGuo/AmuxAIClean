@@ -96,6 +96,11 @@ public actor AppFootprintScanner {
     /// 主入口：对每个 app 量 bundle + 关联目录字节数，按 totalBytes 倒序返回。
     ///
     /// 如果 `progress` 非 nil，每完成一个 app 都会回调一次（已完成数 / 总数）。
+    ///
+    /// **同步语义**：所有 app 扫完后才返回。如果 app 数量大（数百个），UI 会等到全扫
+    /// 完才能看到第一条；这种情况建议改用 [scanAllStream(apps:)](x-source-tag://scanAllStream)，
+    /// 它会在每个 app 扫完时立即 yield，让 UI 走"流式两阶段加载"——先填占位 + 已完成项，
+    /// 后续 item 边算边 append。
     public func scanAll(
         apps: [InstalledApp],
         progress: (@Sendable (Int, Int) -> Void)? = nil
@@ -111,6 +116,39 @@ public actor AppFootprintScanner {
 
         out.sort { $0.totalBytes > $1.totalBytes }
         return out
+    }
+
+    /// docs/AUDIT_2026_06.md §4.1 P3 —— 两阶段加载流式入口。
+    ///
+    /// 返回一个 `AsyncStream<AppFootprintItem>`：每完成一个 app 就 yield 一条，
+    /// 消费方（AppFootprintScreen）可以边收边 append + 重排，**不必等所有 app 扫完
+    /// 才看到第一行**。
+    ///
+    /// 复用同款 `scanOne(app:)`，所以单 app 聚合逻辑与 `scanAll` 完全一致。
+    /// 字节数 / 桶分类 / bundle vs related 全部走同一条路径。
+    ///
+    /// **取消语义**：与 [FileSearchEngine](../FileSearchKit/Sources/FileSearchKit/FileSearchEngine.swift)
+    /// 的流式 detached 模式一致——消费方 `break` 出 for-await 时，
+    /// `continuation.onTermination` 会触发，detached 内层 task 被 cancel，停止后续 scanOne。
+    ///
+    /// - Tag: scanAllStream
+    public nonisolated func scanAllStream(
+        apps: [InstalledApp]
+    ) -> AsyncStream<AppFootprintItem> {
+        AsyncStream { continuation in
+            let task = Task.detached(priority: .userInitiated) { [self] in
+                for app in apps {
+                    if Task.isCancelled { break }
+                    let item = await self.scanOne(app: app)
+                    if Task.isCancelled { break }
+                    continuation.yield(item)
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
     }
 
     /// 单个 app 的聚合 —— 包内可见以便测试。

@@ -22,6 +22,7 @@ public struct AppFootprintScreen: View {
     @State private var progressDone: Int = 0
     @State private var progressTotal: Int = 0
     @State private var search: String = ""
+    @State private var streamTask: Task<Void, Never>? = nil
 
     public init(
         store: UninstallStore? = nil,
@@ -266,6 +267,10 @@ public struct AppFootprintScreen: View {
     }
 
     private func reload() async {
+        // 取消上一次的流式扫描（如果还在跑），避免两批 item 互相覆盖。
+        streamTask?.cancel()
+        streamTask = nil
+
         isLoading = true
         progressDone = 0
         progressTotal = 0
@@ -274,14 +279,25 @@ public struct AppFootprintScreen: View {
         let installed = await store.listInstalledApps()
         apps = installed
         progressTotal = installed.count
-        let result = await scanner.scanAll(apps: installed) { done, total in
-            Task { @MainActor in
-                progressDone = done
-                progressTotal = total
+
+        // docs/AUDIT_2026_06.md §4.1 P3 两阶段加载：
+        // 第 1 阶段 = 上面已显示 isLoading + total（用户立刻看到"正在扫 N 个 app"）
+        // 第 2 阶段 = stream 边算边 yield，每个 item 落地就 append + 倒序重排，
+        // 用户不必等所有 app 扫完才看到第一行；最肥的 app 算完后自动跳到顶部。
+        let stream = scanner.scanAllStream(apps: installed)
+        streamTask = Task { @MainActor in
+            for await item in stream {
+                if Task.isCancelled { break }
+                items.append(item)
+                items.sort { $0.totalBytes > $1.totalBytes }
+                progressDone += 1
+            }
+            // 仅当未被取消时才置 isLoading=false——否则 reload() 二次触发会把
+            // 新一轮的 isLoading 立刻误清零。
+            if !Task.isCancelled {
+                isLoading = false
             }
         }
-        items = result
-        isLoading = false
     }
 
     @ViewBuilder
