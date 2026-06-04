@@ -262,4 +262,76 @@ final class OrphanScannerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(cand?.lastModifiedDays ?? 0, 30,
             "lastModifiedDays 至少要超过 minAgeDays，否则该项一开始就不该进候选")
     }
+
+    // MARK: - Step 14 静默失败修复：DefaultBundleResolver 错误分类
+
+    /// 线程安全的 String 收集器（@Sendable closure 内安全 mutate）
+    private final class PathCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var paths: [String] = []
+        func append(_ p: String) { lock.lock(); paths.append(p); lock.unlock() }
+        var snapshot: [String] { lock.lock(); defer { lock.unlock() }; return paths }
+    }
+
+    /// chmod 000 的 applicationDirectory 应触发 permissionDenied handler
+    func test_DefaultBundleResolver_无权限app目录应上报permissionDenied() throws {
+        if getuid() == 0 {
+            throw XCTSkip("以 root 身份运行时 chmod 0000 不会阻止 open，跳过此用例")
+        }
+
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("OS-Tests-EACCES-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: tmp.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tmp.path)
+            try? FileManager.default.removeItem(at: tmp)
+        }
+
+        let collector = PathCollector()
+        let resolver = DefaultBundleResolver(
+            applicationDirectories: [tmp.path],
+            permissionDeniedHandler: { collector.append($0) }
+        )
+
+        // 列举失败 → 应上报；返回的 set 应为空
+        let names = resolver.installedAppNames()
+        XCTAssertTrue(names.isEmpty, "无权限目录应不产出任何 app 名")
+        XCTAssertEqual(collector.snapshot, [tmp.path],
+            "permissionDeniedHandler 必须被调用一次，参数是无权限的 application 目录路径")
+    }
+
+    /// 不存在的 applicationDirectory 静默不上报，且不影响其他目录
+    func test_DefaultBundleResolver_不存在app目录静默不上报() {
+        let nonexistent = "/Users/__nope__/NoSuchAppDir-\(UUID().uuidString)"
+        let collector = PathCollector()
+        let resolver = DefaultBundleResolver(
+            applicationDirectories: [nonexistent],
+            permissionDeniedHandler: { collector.append($0) }
+        )
+
+        let names = resolver.installedAppNames()
+        XCTAssertTrue(names.isEmpty)
+        XCTAssertTrue(collector.snapshot.isEmpty,
+            "ENOENT 必须静默到 GSYLog.debug，不调用 permissionDeniedHandler")
+    }
+
+    /// 坏 plist 不应让 .app 名整个丢失，只在 GSYLog.debug 留痕
+    func test_DefaultBundleResolver_坏plist不影响app名收集() throws {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("OS-Tests-BadPlist-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        // 构造 Foo.app/Contents/Info.plist 内容是损坏的二进制
+        let appURL = tmp.appendingPathComponent("Foo.app/Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: appURL, withIntermediateDirectories: true)
+        try Data([0xFF, 0x00, 0x42]).write(to: appURL.appendingPathComponent("Info.plist"))
+
+        let resolver = DefaultBundleResolver(applicationDirectories: [tmp.path])
+        let names = resolver.installedAppNames()
+        // stem "Foo" 必须收到（即便 plist 损坏，目录名是可信信号）；不期望 CFBundleName
+        XCTAssertTrue(names.contains("Foo"),
+            "坏 plist 不应让目录名 stem 丢失：\(names)")
+    }
 }

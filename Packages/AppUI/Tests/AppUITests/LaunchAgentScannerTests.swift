@@ -299,4 +299,72 @@ final class LaunchAgentScannerTests: XCTestCase {
         let scanner = LaunchAgentScanner()
         XCTAssertNotNil(scanner)
     }
+
+    // MARK: - 11. Step 14 静默失败修复：DefaultLaunchAgentFS 错误分类
+
+    /// 线程安全的 String 收集器，用于在 @Sendable handler 内累计路径
+    private final class PathCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var paths: [String] = []
+        func append(_ p: String) { lock.lock(); paths.append(p); lock.unlock() }
+        var snapshot: [String] { lock.lock(); defer { lock.unlock() }; return paths }
+    }
+
+    /// chmod 000 子目录后 listDirectory 应触发 permissionDenied handler
+    func test_DefaultFS_无权限目录listDirectory应上报permissionDenied() throws {
+        if getuid() == 0 {
+            throw XCTSkip("以 root 身份运行时 chmod 0000 不会阻止 open，跳过此用例")
+        }
+
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("LA-Tests-EACCES-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: tmp.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tmp.path)
+            try? FileManager.default.removeItem(at: tmp)
+        }
+
+        let collector = PathCollector()
+        let fs = DefaultLaunchAgentFS(permissionDeniedHandler: { collector.append($0) })
+
+        // listDirectory 仍然返回 nil（兼容旧调用方），同时 handler 收到这个无权限路径
+        let result = fs.listDirectory(tmp.path)
+        XCTAssertNil(result, "无权限目录 listDirectory 必须返回 nil")
+        XCTAssertEqual(collector.snapshot, [tmp.path], "permissionDeniedHandler 必须被调用一次，参数是无权限目录路径")
+    }
+
+    /// 不存在的目录 listDirectory 应返回 nil 但 **不** 触发 permissionDenied
+    func test_DefaultFS_不存在目录listDirectory静默不上报() throws {
+        let nonexistent = "/Users/__nope__/__no_such_dir__/\(UUID().uuidString)"
+        let collector = PathCollector()
+        let fs = DefaultLaunchAgentFS(permissionDeniedHandler: { collector.append($0) })
+
+        let result = fs.listDirectory(nonexistent)
+        XCTAssertNil(result)
+        XCTAssertTrue(collector.snapshot.isEmpty, "ENOENT 必须静默到 GSYLog.debug，不调用 permissionDeniedHandler")
+    }
+
+    /// readFile：无权限读 → permissionDenied handler；不存在 → 静默
+    func test_DefaultFS_无权限文件readFile应上报permissionDenied() throws {
+        if getuid() == 0 {
+            throw XCTSkip("以 root 身份运行时 chmod 0000 不会阻止 open，跳过此用例")
+        }
+
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("LA-Tests-FileEACCES-\(UUID().uuidString)")
+        try Data("hello".utf8).write(to: tmp)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: tmp.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: tmp.path)
+            try? FileManager.default.removeItem(at: tmp)
+        }
+
+        let collector = PathCollector()
+        let fs = DefaultLaunchAgentFS(permissionDeniedHandler: { collector.append($0) })
+
+        let result = fs.readFile(tmp.path)
+        XCTAssertNil(result)
+        XCTAssertEqual(collector.snapshot, [tmp.path])
+    }
 }

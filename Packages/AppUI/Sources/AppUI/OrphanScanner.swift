@@ -1,4 +1,5 @@
 import Foundation
+import LogKit
 import SafetyKit
 #if canImport(AppKit)
 import AppKit
@@ -18,11 +19,22 @@ public protocol BundleResolving: Sendable {
 }
 
 /// 真实实现 —— 走 NSWorkspace。
+///
+/// **Step 14**：`installedAppNames()` 原 `try?` 全部改 do/catch + [IOErrorClassifier](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LogKit/Sources/LogKit/IOErrorClassifier.swift)：
+/// - 目录列举 EACCES → `permissionDeniedHandler` + GSYLog.debug
+/// - 目录列举 ENOENT → GSYLog.debug 静默（/Applications/Utilities 偶尔不存在）
+/// - Info.plist 解析失败 → GSYLog.debug（坏 plist 是常态，不当 orphan 但不打扰用户）
 public struct DefaultBundleResolver: BundleResolving {
     public let applicationDirectories: [String]
+    /// EACCES 时被调用一次的 handler（默认 nil = 不上报）。
+    public let permissionDeniedHandler: (@Sendable (String) -> Void)?
 
-    public init(applicationDirectories: [String] = ["/Applications", "/Applications/Utilities", "\(NSHomeDirectory())/Applications"]) {
+    public init(
+        applicationDirectories: [String] = ["/Applications", "/Applications/Utilities", "\(NSHomeDirectory())/Applications"],
+        permissionDeniedHandler: (@Sendable (String) -> Void)? = nil
+    ) {
         self.applicationDirectories = applicationDirectories
+        self.permissionDeniedHandler = permissionDeniedHandler
     }
 
     public func isBundleIDRegistered(_ bundleID: String) -> Bool {
@@ -42,17 +54,35 @@ public struct DefaultBundleResolver: BundleResolving {
         var out = Set<String>()
         let fm = FileManager.default
         for dir in applicationDirectories {
-            guard let names = try? fm.contentsOfDirectory(atPath: dir) else { continue }
+            let names: [String]
+            do {
+                names = try fm.contentsOfDirectory(atPath: dir)
+            } catch {
+                switch IOErrorClassifier.classify(error) {
+                case .permissionDenied:
+                    permissionDeniedHandler?(dir)
+                    GSYLog.debug(.scan, "BundleResolver list permission denied: \(dir)")
+                case .notFound:
+                    GSYLog.debug(.scan, "BundleResolver list not found: \(dir)")
+                case .other:
+                    GSYLog.warning(.scan, "BundleResolver list failed at \(dir): \(error.localizedDescription)")
+                }
+                continue
+            }
             for n in names where n.hasSuffix(".app") {
                 let stem = String(n.dropLast(".app".count))
                 out.insert(stem)
                 // 顺便读一下 Info.plist 拿 CFBundleName，stem 与 BundleName 二者命中即非 orphan
                 let plistPath = "\(dir)/\(n)/Contents/Info.plist"
-                if let data = try? Data(contentsOf: URL(fileURLWithPath: plistPath)),
-                   let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] {
-                    if let bn = plist["CFBundleName"] as? String, !bn.isEmpty {
+                do {
+                    let data = try Data(contentsOf: URL(fileURLWithPath: plistPath))
+                    if let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+                       let bn = plist["CFBundleName"] as? String, !bn.isEmpty {
                         out.insert(bn)
                     }
+                } catch {
+                    // plist 损坏 / 读不到 → debug 落盘，不影响其他 .app 处理
+                    GSYLog.debug(.scan, "BundleResolver Info.plist parse failed at \(plistPath): \(error.localizedDescription)")
                 }
             }
         }

@@ -1,4 +1,5 @@
 import Foundation
+import LogKit
 import SafetyKit
 
 /// 残留候选项 —— 是“可能”属于被卸载 App 的文件/目录。
@@ -444,15 +445,30 @@ public struct FSSnapshot: Hashable, Sendable {
 
 /// 真实磁盘实现。第一层用 `contentsOfDirectory`，size 用浅递归（深度无限，但目录数量
 /// 通常很小）。如果担心性能，可换成 `BulkScanner`。
+///
+/// **Step 14**：原 `try?` 全部改 do/catch + [IOErrorClassifier](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LogKit/Sources/LogKit/IOErrorClassifier.swift) 分类：
+/// - `.permissionDenied` → 调用 `permissionDeniedHandler`（默认 nil）+ GSYLog.debug
+/// - `.notFound` → GSYLog.debug 静默
+/// - `.other` → GSYLog.warning 落盘
 public struct DefaultFileManagerSnapshot: FileManagerSnapshotting {
-    public init() {}
+    /// EACCES 时被调用一次的 handler（默认 nil = 不上报，保留旧静默语义）。
+    public let permissionDeniedHandler: (@Sendable (String) -> Void)?
+
+    public init(permissionDeniedHandler: (@Sendable (String) -> Void)? = nil) {
+        self.permissionDeniedHandler = permissionDeniedHandler
+    }
 
     public func firstLevelEntries(at path: String) -> [FSEntry]? {
         let fm = FileManager.default
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else { return nil }
-        guard let names = try? fm.contentsOfDirectory(atPath: path) else { return nil }
-        return names.map { FSEntry(name: $0, path: "\(path)/\($0)") }
+        do {
+            let names = try fm.contentsOfDirectory(atPath: path)
+            return names.map { FSEntry(name: $0, path: "\(path)/\($0)") }
+        } catch {
+            handle(error: error, path: path, op: "firstLevelEntries")
+            return nil
+        }
     }
 
     public func snapshot(at path: String) -> FSSnapshot {
@@ -478,5 +494,18 @@ public struct DefaultFileManagerSnapshot: FileManagerSnapshotting {
             }
         }
         return .init(bytes: totalBytes, fileCount: totalFiles)
+    }
+
+    /// 错误分类落点：EACCES 上报 + debug；ENOENT 仅 debug；其他 warning。
+    private func handle(error: Error, path: String, op: String) {
+        switch IOErrorClassifier.classify(error) {
+        case .permissionDenied:
+            permissionDeniedHandler?(path)
+            GSYLog.debug(.scan, "FileManagerSnapshot \(op) permission denied: \(path)")
+        case .notFound:
+            GSYLog.debug(.scan, "FileManagerSnapshot \(op) not found: \(path)")
+        case .other:
+            GSYLog.warning(.scan, "FileManagerSnapshot \(op) failed at \(path): \(error.localizedDescription)")
+        }
     }
 }

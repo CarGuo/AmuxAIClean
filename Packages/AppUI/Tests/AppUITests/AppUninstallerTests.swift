@@ -618,4 +618,50 @@ final class AppUninstallerTests: XCTestCase {
             asyncCands.reduce(Int64(0)) { $0 + $1.bytes }
         )
     }
+
+    // MARK: - Step 14 静默失败修复：DefaultFileManagerSnapshot 错误分类
+
+    /// 线程安全的 String 收集器
+    private final class PathCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var paths: [String] = []
+        func append(_ p: String) { lock.lock(); paths.append(p); lock.unlock() }
+        var snapshot: [String] { lock.lock(); defer { lock.unlock() }; return paths }
+    }
+
+    /// chmod 000 的目录调 firstLevelEntries 应触发 permissionDenied handler
+    func test_DefaultSnapshot_无权限目录firstLevelEntries应上报permissionDenied() throws {
+        if getuid() == 0 {
+            throw XCTSkip("以 root 身份运行时 chmod 0000 不会阻止 open，跳过此用例")
+        }
+
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("AU-Tests-EACCES-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: tmp.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tmp.path)
+            try? FileManager.default.removeItem(at: tmp)
+        }
+
+        let collector = PathCollector()
+        let snap = DefaultFileManagerSnapshot(permissionDeniedHandler: { collector.append($0) })
+
+        let entries = snap.firstLevelEntries(at: tmp.path)
+        XCTAssertNil(entries, "无权限目录 firstLevelEntries 必须返回 nil")
+        XCTAssertEqual(collector.snapshot, [tmp.path],
+            "permissionDeniedHandler 必须被调用一次")
+    }
+
+    /// 不存在的目录静默不上报
+    func test_DefaultSnapshot_不存在目录firstLevelEntries静默不上报() {
+        let nonexistent = "/Users/__nope__/NoDir-\(UUID().uuidString)"
+        let collector = PathCollector()
+        let snap = DefaultFileManagerSnapshot(permissionDeniedHandler: { collector.append($0) })
+
+        let entries = snap.firstLevelEntries(at: nonexistent)
+        XCTAssertNil(entries)
+        XCTAssertTrue(collector.snapshot.isEmpty,
+            "ENOENT 必须静默，不调用 permissionDeniedHandler")
+    }
 }

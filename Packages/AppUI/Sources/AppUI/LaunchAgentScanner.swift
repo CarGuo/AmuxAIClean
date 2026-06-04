@@ -1,4 +1,5 @@
 import Foundation
+import LogKit
 
 /// v1.2 P1-7 启动项查看屏 —— 数据模型与扫描器。
 ///
@@ -10,6 +11,9 @@ import Foundation
 ///   不抛出错误中断整次扫描（用户磁盘上偶尔有半截 plist 是常态）。
 /// - **不写不删** —— scanner 只调 `Data(contentsOf:)` + `PropertyListSerialization` +
 ///   `attributesOfItem(atPath:)`，没有任何 `removeItem` / `recycle` / `unlink` 调用。
+/// - **Step 14 静默失败修复**：错误经 [IOErrorClassifier](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LogKit/Sources/LogKit/IOErrorClassifier.swift)
+///   分类，EACCES 通过 `permissionDeniedHandler` 上报，ENOENT 静默到 GSYLog.debug，
+///   其他错误 GSYLog.warning 落盘但不打扰用户。
 
 // MARK: - 数据模型
 
@@ -96,29 +100,71 @@ public protocol LaunchAgentFS: Sendable {
 }
 
 /// 生产实现 —— 直接打 `FileManager` 与 `Data(contentsOf:)`。
+///
+/// **Step 14**：原 `try?` 全部改 do/catch，按 [IOErrorClassifier](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LogKit/Sources/LogKit/IOErrorClassifier.swift) 分类：
+/// - `.permissionDenied` → 调用 `permissionDeniedHandler`（默认 nil 不打扰）+ GSYLog.debug
+/// - `.notFound` → GSYLog.debug 静默（路径不存在是常态）
+/// - `.other` → GSYLog.warning 落盘
+/// 三种情况下方法签名仍返回 nil，**不破坏旧调用方契约**。
 public struct DefaultLaunchAgentFS: LaunchAgentFS {
-    public init() {}
+    /// 当 listDirectory / readFile 因 EACCES 拿不到内容时被调用一次，参数是无权限路径。
+    /// 默认 nil 表示不上报（保留旧静默语义）；UI 层应注入 closure 把 path 累加到 banner 列表。
+    public let permissionDeniedHandler: (@Sendable (String) -> Void)?
+
+    public init(permissionDeniedHandler: (@Sendable (String) -> Void)? = nil) {
+        self.permissionDeniedHandler = permissionDeniedHandler
+    }
 
     public func listDirectory(_ path: String) -> [String]? {
         let fm = FileManager.default
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else {
+            // 目录不存在 → 静默（与 ENOENT 等价语义）
             return nil
         }
-        guard let names = try? fm.contentsOfDirectory(atPath: path) else { return nil }
-        return names.map { (path as NSString).appendingPathComponent($0) }
+        do {
+            let names = try fm.contentsOfDirectory(atPath: path)
+            return names.map { (path as NSString).appendingPathComponent($0) }
+        } catch {
+            handle(error: error, path: path, op: "listDirectory")
+            return nil
+        }
     }
 
     public func readFile(_ path: String) -> Data? {
-        try? Data(contentsOf: URL(fileURLWithPath: path))
+        do {
+            return try Data(contentsOf: URL(fileURLWithPath: path))
+        } catch {
+            handle(error: error, path: path, op: "readFile")
+            return nil
+        }
     }
 
     public func fileSize(_ path: String) -> Int64 {
-        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
-        if let n = attrs?[.size] as? NSNumber {
-            return n.int64Value
+        // size 取不到不应影响主流程：保留 try? 语义但额外按错误类别落 GSYLog 不静默。
+        do {
+            let attrs = try FileManager.default.attributesOfItem(atPath: path)
+            if let n = attrs[.size] as? NSNumber {
+                return n.int64Value
+            }
+            return 0
+        } catch {
+            handle(error: error, path: path, op: "fileSize")
+            return 0
         }
-        return 0
+    }
+
+    /// 错误分类共享路径：EACCES 上报 + debug 落盘；ENOENT 仅 debug；其他 warning。
+    private func handle(error: Error, path: String, op: String) {
+        switch IOErrorClassifier.classify(error) {
+        case .permissionDenied:
+            permissionDeniedHandler?(path)
+            GSYLog.debug(.scan, "LaunchAgentFS \(op) permission denied: \(path)")
+        case .notFound:
+            GSYLog.debug(.scan, "LaunchAgentFS \(op) not found: \(path)")
+        case .other:
+            GSYLog.warning(.scan, "LaunchAgentFS \(op) failed at \(path): \(error.localizedDescription)")
+        }
     }
 }
 
