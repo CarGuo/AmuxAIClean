@@ -1930,23 +1930,42 @@ public final class ScanCoordinator: ObservableObject {
     ///
     /// 修法：把 detached task 派出后**直接 await 它结束**。这样 publishSnapshot finished
     /// 之后所有写入都已 commit，view query 一定能命中。
-    /// daisychain 语义保留：storeWriteChain 仍然指向最后一个 task，并发 cancel 等场景行为不变。
+    ///
+    /// **v1.5.6 崩溃修复**（[Crash 2026-06-04 22:05:45](file:///Users/guoshuyu/Library/Logs/DiagnosticReports/GSYCleanMac-2026-06-04-220545.ips)
+    /// `Thread stack size exceeded due to excessive recursion` /
+    /// `swift_task_escalateImpl → withStatusRecordLock → callback_fn(escalateImpl::$_0)` 反复重入）：
+    ///
+    /// 旧实现把 insert+finalize 包在 `Task.detached`，detached 内 `await prev?.value`，
+    /// caller 又 `await task.value` —— **两层 await 嵌套在同一条 task dependency chain 上**。
+    /// macOS 26.2 / Swift 6.x runtime 在做 priority escalation 时遍历该 chain 出现递归不收敛，
+    /// 把 cooperative 线程栈写穿（thread 7 栈顶 0x000000016b7d7ff0 落在 guard page）。
+    ///
+    /// 新实现去掉中间那层 detached：caller **直接在 MainActor 上**先等链尾，再亲自
+    /// `await store.insert/finalize`。actor 本身的 mailbox 串行性 + 单一调用方 = 顺序保证。
+    /// chain 字段保持 nil → fire-and-forget [flushStoreBatch](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1879)
+    /// 的 daisychain 语义不受影响（它仍然继续 chain 自己的）。
+    ///
+    /// 测试覆盖：[StoreWriteOrderingTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/StoreWriteOrderingTests.swift)
+    /// 全 4 契约（含"finalize 严格在所有 insert 之后"、"async 返回时 leftover/finalize 全落盘"）
+    /// 必须仍然全绿。
     private func flushAndFinalizeStoreAsync() async {
         guard let store = resultStore, let sid = currentSessionID else { return }
         let pending = storeBatch
         storeBatch.removeAll(keepingCapacity: false)
         let healthy = storeHealthy
+        // 取走当前链尾；把字段先清 nil 防止后续 fire-and-forget 续到这条死 chain 上。
         let prev = storeWriteChain
-        let task = Task.detached { [storeRef = store] in
-            await prev?.value
-            if healthy, !pending.isEmpty {
-                try? await storeRef.insert(pending)
-            }
-            try? await storeRef.finalizeSession(sid)
+        storeWriteChain = nil
+        // 1) 先在 MainActor 上等链上残余（fire-and-forget 的 insert）落盘。
+        //    这一次 await 是"caller 上的纯等待"，不再嵌套到一个内部 await 同 chain 的 detached 里，
+        //    runtime escalation 不会再有递归边。
+        await prev?.value
+        // 2) caller 亲自 await actor —— store 是 actor，mailbox 天然 FIFO；
+        //    单调用方场景下，串行性由"先 insert 再 finalize"的代码顺序直接保证。
+        if healthy, !pending.isEmpty {
+            try? await store.insert(pending)
         }
-        storeWriteChain = task
-        // **关键差异**：等到 detached task 真的跑完再返回，view 看到 finished 时 GRDB ready。
-        await task.value
+        try? await store.finalizeSession(sid)
     }
 
     /// **M1 核心**：把"扫完后内存大头"的缓存释放掉，下次需要时从 store 流式查询。
