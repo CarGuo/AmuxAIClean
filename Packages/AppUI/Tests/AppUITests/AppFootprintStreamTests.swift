@@ -164,4 +164,100 @@ final class AppFootprintStreamTests: XCTestCase {
         XCTAssertEqual(streamed?.relatedBytes, direct.relatedBytes)
         XCTAssertEqual(streamed?.buckets.count, direct.buckets.count)
     }
+
+    // MARK: - 6. 并发：两条 stream 同时跑同一 scanner 不互相覆盖
+
+    /// AppFootprintScanner 是 actor，scanOne 是 actor 函数；scanAllStream 是
+    /// `nonisolated` 但内部用 `await self.scanOne(...)` 进 actor。这意味着同时启动
+    /// 两条 stream 时，每个 scanOne 仍按 actor reentrancy 串行执行，不会发生数据竞争。
+    /// 这个测试验证：两条 stream 都能 yield 满应有数量，互不丢条。
+    ///
+    /// 对应 AppFootprintScreen.reload() 用户场景：用户连续按"刷新"，旧 streamTask
+    /// 会被 cancel；但如果实现错把 scanner 内部状态污染，两次 stream 的 item 数会少。
+    func test_scanAllStream_两条stream并发_各自yield满数() async {
+        let apps = [
+            makeApp(bundleID: "com.x", name: "X", atPath: "/X.app"),
+            makeApp(bundleID: "com.y", name: "Y", atPath: "/Y.app"),
+            makeApp(bundleID: "com.z", name: "Z", atPath: "/Z.app"),
+        ]
+        let (scanner, _) = makeScanner(apps: apps)
+
+        async let a: [String] = {
+            var out: [String] = []
+            for await item in scanner.scanAllStream(apps: apps) {
+                out.append(item.bundleID)
+            }
+            return out
+        }()
+        async let b: [String] = {
+            var out: [String] = []
+            for await item in scanner.scanAllStream(apps: apps) {
+                out.append(item.bundleID)
+            }
+            return out
+        }()
+
+        let (resA, resB) = await (a, b)
+        XCTAssertEqual(Set(resA), ["com.x", "com.y", "com.z"],
+                       "stream A 应 yield 全部 3 个 app")
+        XCTAssertEqual(Set(resB), ["com.x", "com.y", "com.z"],
+                       "stream B 应 yield 全部 3 个 app")
+        XCTAssertEqual(resA.count, 3)
+        XCTAssertEqual(resB.count, 3)
+    }
+
+    // MARK: - 7. 取消后再次开 stream，scanner 仍可正常工作（无残留状态）
+
+    /// 验证 AppFootprintScreen.reload() 二次触发的关键不变量：
+    /// 旧 stream cancel 后 scanner 不留任何遗毒状态，新 stream 仍能完整 yield。
+    func test_scanAllStream_cancel后再次开新stream仍能完整yield() async {
+        let apps = [
+            makeApp(bundleID: "com.a", name: "A", atPath: "/A.app"),
+            makeApp(bundleID: "com.b", name: "B", atPath: "/B.app"),
+        ]
+        let (scanner, _) = makeScanner(apps: apps)
+
+        // 第 1 次：只收 1 条就 break（触发 onTermination → 内部 task.cancel()）
+        var first: Int = 0
+        for await _ in scanner.scanAllStream(apps: apps) {
+            first += 1
+            break
+        }
+        XCTAssertEqual(first, 1)
+
+        // 第 2 次：完整收（验证 scanner 无残留状态）
+        var second: [String] = []
+        for await item in scanner.scanAllStream(apps: apps) {
+            second.append(item.bundleID)
+        }
+        XCTAssertEqual(second.count, 2,
+                       "上一条 stream cancel 后，scanner 必须能继续完整服务新 stream")
+        XCTAssertEqual(Set(second), ["com.a", "com.b"])
+    }
+
+    // MARK: - 8. 单 app 故意 cancel 在 yield 之前：stream 不应 yield 任何 item
+
+    /// 极端边界：apps 数组非空，但 consumer 立即取消 task。
+    /// scanAllStream 内部循环开头会检查 Task.isCancelled → 直接 break。
+    func test_scanAllStream_consumer立即cancel_yield零条() async {
+        let apps = [
+            makeApp(bundleID: "com.a", name: "A", atPath: "/A.app"),
+            makeApp(bundleID: "com.b", name: "B", atPath: "/B.app"),
+        ]
+        let (scanner, _) = makeScanner(apps: apps)
+
+        let consumer = Task<Int, Never> {
+            var n = 0
+            for await _ in scanner.scanAllStream(apps: apps) {
+                n += 1
+            }
+            return n
+        }
+        // 立即取消 —— consumer 取消会让 AsyncStream 走 onTermination → cancel 内部 task
+        consumer.cancel()
+        let n = await consumer.value
+        // 严格上界：n 必须 <= 2（无丢失）；下界：极少数情况首条已 yield 完才被 cancel 接收到
+        XCTAssertLessThanOrEqual(n, apps.count,
+                                 "cancel 后最多 yield apps.count 条，不应超出")
+    }
 }

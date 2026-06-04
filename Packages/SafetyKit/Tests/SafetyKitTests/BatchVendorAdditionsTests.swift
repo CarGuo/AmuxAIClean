@@ -151,6 +151,62 @@ final class BatchVendorAdditionsTests: XCTestCase {
         XCTAssertEqual(v2, .forbid)
     }
 
+    // MARK: - 契约 6：每个 vendor 的 path **总数**精确钉死（防 silent drift）
+    //
+    // 任何人在 yaml 里加/减 path 都会立刻触发 RED——强迫先更新测试预期才能合入。
+    // 这是 "test-layer pin" 范式的核心：让 yaml 的事实数据无法被偷偷改动。
+
+    func test_批量vendor_每个vendor的paths总数精确钉死() throws {
+        let rules = try Self.loadRealRules()
+        let expected: [(String, Int)] = [
+            // —— 包管理器组（合计 20 path）——
+            ("NuGet", 4),       // .nuget/packages + 2 NuGet/v3-cache & plugins-cache + Caches/NuGet
+            ("Bazel", 2),       // .cache/bazel + .cache/bazelisk
+            ("Zig", 2),         // .cache/zig + .cache/zls
+            ("Corepack", 2),    // Library/Caches/node/corepack + .cache/node/corepack
+            ("PerlCPAN", 4),    // .cpan/build + .cpan/sources + .cpanm/work + .cpanm/latest-build
+            ("CondaNative", 6), // 5 pkgs cache safe + .condarc forbid
+            // —— 系统残留组（合计 10 path）——
+            ("MailDownloads", 2),       // sandboxed Containers + 旧版 ~/Library/Mail Downloads
+            ("FinalCutProRender", 3),   // Backups + AppSupport/Caches + Library/Caches/com.apple.FinalCut
+            ("JetBrainsToolbox", 4),    // .settings.json forbid + apps confirm + Caches/Toolbox + Logs/Toolbox
+            ("DarwinUserTemp", 1),      // /var/folders confirm
+        ]
+        for (name, count) in expected {
+            guard let v = rules.first(where: { $0.name == name }) else {
+                XCTFail("vendor '\(name)' 缺失"); continue
+            }
+            XCTAssertEqual(v.paths.count, count,
+                           "[\(name)] paths.count 应为 \(count)，实际 \(v.paths.count)")
+        }
+
+        // 还要钉死"10 个 vendor 加起来 30 path"，挡住"加一条减一条互相抵消"
+        let totalPaths = expected.reduce(0) { acc, pair in
+            acc + (rules.first(where: { $0.name == pair.0 })?.paths.count ?? 0)
+        }
+        XCTAssertEqual(totalPaths, 30,
+                       "10 个新 vendor 共 30 条 path（包管理器 20 + 系统残留 10）")
+    }
+
+    // MARK: - 契约 7：所有 path 都有可执行的 recipe 或显式 nil（不允许空字符串"")
+
+    func test_批量vendor_recipe字段不为空字符串() throws {
+        let rules = try Self.loadRealRules()
+        let target: Set<String> = [
+            "NuGet", "Bazel", "Zig", "Corepack", "PerlCPAN", "CondaNative",
+            "MailDownloads", "FinalCutProRender",
+            "JetBrainsToolbox", "DarwinUserTemp",
+        ]
+        for v in rules where target.contains(v.name) {
+            for p in v.paths {
+                if let r = p.recipe {
+                    XCTAssertFalse(r.isEmpty,
+                                   "[\(v.name)] \(p.path) recipe 字段不能是空字符串，应为 nil 或非空内容")
+                }
+            }
+        }
+    }
+
     // MARK: - helpers
 
     private static func vendorsYamlURL() -> URL {
