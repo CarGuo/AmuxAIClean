@@ -1,4 +1,4 @@
-2026-06-03 22:00:16.137 GSYCleanMac[63618:1647656] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-04 08:45:35.981 GSYCleanMac[83007:1974002] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=orphan-scan defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=orphan-scan
 [REGR] case=orphan-scan candidates=1 names=[com.gsy.regr.orphan-target]
