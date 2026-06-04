@@ -945,3 +945,146 @@ vendors:
       - path: "/Library/Caches/com.apple.metal"
         verdict: "confirm"
         reason: "系统级 Metal 缓存，删除安全但全用户首次启动 GPU 程序需重新编译"
+
+  # ========== 现代包管理器批量补（docs/AUDIT_2026_06.md L113 / Step 11C 第二批） ==========
+  # 真机部分有部分没有，但所有 path 都按"安全：缓存可重建"+"forbid：凭证/lock"两类切分。
+  # 不引入 SafetyEngine 改动，纯 yaml 数据扩展。
+
+  - name: "NuGet"
+    note: ".NET 包管理器（docs/AUDIT_2026_06.md L113）"
+    paths:
+      - path: "~/.nuget/packages"
+        verdict: "safe"
+        reason: ".NET 项目本地包仓库，dotnet restore 自愈"
+      - path: "~/.local/share/NuGet/v3-cache"
+        verdict: "safe"
+        reason: "NuGet HTTP 响应缓存（v3 协议元数据）"
+      - path: "~/.local/share/NuGet/plugins-cache"
+        verdict: "safe"
+        reason: "NuGet 跨平台插件缓存"
+      - path: "~/Library/Caches/NuGet"
+        verdict: "safe"
+        reason: "macOS NuGet 客户端缓存（VS for Mac / Rider 共用）"
+
+  - name: "Bazel"
+    note: "Bazel 构建系统缓存（docs/AUDIT_2026_06.md L113）"
+    paths:
+      - path: "~/.cache/bazel"
+        verdict: "safe"
+        reason: "Bazel 默认 output user root，bazel build 重建（可达数十 GB）"
+      - path: "~/.cache/bazelisk"
+        verdict: "safe"
+        reason: "bazelisk 下载的多版本 Bazel 发行包，按 .bazelversion 重下"
+
+  - name: "Zig"
+    note: "Zig 编译器与构建缓存（docs/AUDIT_2026_06.md L113）"
+    paths:
+      - path: "~/.cache/zig"
+        verdict: "safe"
+        reason: "Zig 全局 build 缓存（包含 stage1/stage2 中间产物）"
+      - path: "~/.cache/zls"
+        verdict: "safe"
+        reason: "Zig Language Server 索引缓存"
+
+  - name: "Corepack"
+    note: "Node Corepack 包管理器分发缓存（docs/AUDIT_2026_06.md L113）"
+    paths:
+      - path: "~/Library/Caches/node/corepack"
+        verdict: "safe"
+        reason: "Corepack 下载的 pnpm/yarn/npm 各版本分发包，按需重下"
+      - path: "~/.cache/node/corepack"
+        verdict: "safe"
+        reason: "Corepack XDG 缓存路径（非 macOS 默认但部分用户用 XDG_CACHE_HOME 重定向）"
+
+  - name: "PerlCPAN"
+    note: "Perl CPAN/cpanm 构建缓存（docs/AUDIT_2026_06.md L113）"
+    paths:
+      - path: "~/.cpan/build"
+        verdict: "safe"
+        reason: "CPAN 模块构建中间目录（解压后的源码 + Makefile），cpan 重装会重建"
+      - path: "~/.cpan/sources"
+        verdict: "safe"
+        reason: "CPAN 模块源码 tarball 缓存"
+      - path: "~/.cpanm/work"
+        verdict: "safe"
+        reason: "cpanm 构建工作区（每次 cpanm 启动会重建）"
+      - path: "~/.cpanm/latest-build"
+        verdict: "safe"
+        reason: "cpanm 最近一次构建的 symlink 目标"
+
+  - name: "CondaNative"
+    note: "原生 Conda / Anaconda / Miniconda 包缓存（docs/AUDIT_2026_06.md L113）"
+    paths:
+      - path: "~/miniconda3/pkgs"
+        verdict: "safe"
+        reason: "miniconda 包下载缓存（conda clean -a 重建）"
+      - path: "~/anaconda3/pkgs"
+        verdict: "safe"
+        reason: "anaconda 包下载缓存"
+      - path: "~/opt/miniconda3/pkgs"
+        verdict: "safe"
+        reason: "Anaconda 安装器默认的 ~/opt 安装位置"
+      - path: "~/opt/anaconda3/pkgs"
+        verdict: "safe"
+        reason: "Anaconda 安装器默认的 ~/opt 安装位置"
+      - path: "~/.conda/pkgs"
+        verdict: "safe"
+        reason: "用户级 conda 包缓存（与 envs 共享 .conda 根）"
+      # —— forbid：环境定义清单 ——
+      - path: "~/.condarc"
+        verdict: "forbid"
+        reason: "conda 全局配置（含私有 channel 凭证 / proxy），删了团队 channel 全断"
+
+  # ========== 系统级残留补全（docs/AUDIT_2026_06.md L115 / L121 / L122） ==========
+
+  - name: "MailDownloads"
+    note: "Mail.app 下载附件残留（docs/AUDIT_2026_06.md L116）"
+    paths:
+      - path: "~/Library/Containers/com.apple.mail/Data/Library/Mail Downloads"
+        verdict: "confirm"
+        reason: "Mail.app 通过 Containers 沙盒访问的附件下载目录（30 天龄过滤建议在扫描层做）"
+      - path: "~/Library/Mail Downloads"
+        verdict: "confirm"
+        reason: "旧版 Mail.app 非沙盒附件下载位置；删后无法重新打开历史附件"
+
+  - name: "FinalCutProRender"
+    note: "Final Cut Pro 渲染缓存（docs/AUDIT_2026_06.md L121）"
+    paths:
+      - path: "~/Movies/Final Cut Backups.localized"
+        verdict: "confirm"
+        reason: "FCP 项目自动备份；删后无法回滚 untracked 编辑（默认每 15 分钟）"
+      - path: "~/Library/Application Support/com.apple.ProApps.FinalCutPro/Caches"
+        verdict: "safe"
+        reason: "FCP 通用缓存，按需重建（不含原始素材）"
+      - path: "~/Library/Caches/com.apple.FinalCut"
+        verdict: "safe"
+        reason: "FCP UI / 编解码器缓存"
+
+  - name: "JetBrainsToolbox"
+    note: "JetBrains Toolbox 已安装 IDE 多版本（docs/AUDIT_2026_06.md L118）"
+    paths:
+      # —— Toolbox 自身配置（forbid） ——
+      - path: "~/Library/Application Support/JetBrains/Toolbox/.settings.json"
+        verdict: "forbid"
+        reason: "Toolbox 设置（含 IDE 安装目录 + JBA 登录态）"
+      # —— Toolbox 历史与缓存（safe） ——
+      - path: "~/Library/Application Support/JetBrains/Toolbox/apps"
+        verdict: "confirm"
+        reason: "Toolbox 安装的所有 IDE（IDEA/PyCharm/CLion 等）真实文件，确认 current 软链后才能清旧版"
+      - path: "~/Library/Caches/JetBrains/Toolbox"
+        verdict: "safe"
+        reason: "Toolbox 下载缓存（IDE installer dmg/tar.gz），按需重下"
+      - path: "~/Library/Logs/JetBrains/Toolbox"
+        verdict: "safe"
+        reason: "Toolbox 运行日志"
+
+  - name: "DarwinUserTemp"
+    note: "Darwin 用户级临时与缓存（docs/AUDIT_2026_06.md L122）"
+    paths:
+      # 真机路径形如 /var/folders/<a>/<b>/T 与 /var/folders/<a>/<b>/C，
+      # 由 `getconf DARWIN_USER_TEMP_DIR` / `DARWIN_USER_CACHE_DIR` 返回；
+      # 这里只用 confirm 提示用户重启即可重建，不做扫描层的 UID 校验（留给扫描层）。
+      - path: "/var/folders"
+        verdict: "confirm"
+        reason: "Darwin 用户运行时根（含其他用户子目录，扫描层须按 UID 过滤）"
+
