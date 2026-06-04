@@ -1,8 +1,11 @@
-2026-06-04 10:12:56.293 GSYCleanMac[50244:2194000] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-04 10:49:56.656 GSYCleanMac[94267:2385791] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=tree-drilldown defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=tree-drilldown
-[REGR] case=tree-drilldown parent=/var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrStd-AB2FDC2B-D47D-4299-AE40-2FCDF2DE2676/nest1 bytes=25600 kids=2 dirRows=1 dirBytesSum=32768
+2026-06-04 10:49:59.076 GSYCleanMac[94267:2385791] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 10:49:59.076 GSYCleanMac[94267:2385791] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 10:49:59.086 GSYCleanMac[94267:2385791] ERROR: Negative values for setRowHeight: not allowed (0.000)
+[REGR] case=tree-drilldown parent=/var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrStd-4C234831-909D-4D3E-A3E5-5EB846041965/nest1 bytes=25600 kids=2 dirRows=1 dirBytesSum=32768
 [REGR_OK] case=tree-drilldown kids count=2 > 0
-[REGR_OK] case=tree-drilldown dir row bytes must be subtree aggregate, got 32768 for /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrStd-AB2FDC2B-D47D-4299-AE40-2FCDF2DE2676/nest1/nest2=32768 > 0
+[REGR_OK] case=tree-drilldown dir row bytes must be subtree aggregate, got 32768 for /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrStd-4C234831-909D-4D3E-A3E5-5EB846041965/nest1/nest2=32768 > 0
 [REGR] case=tree-drilldown defaults_restored_keys=3
-[REGR_PASS] case=tree-drilldown elapsed_ms=629
+[REGR_PASS] case=tree-drilldown elapsed_ms=832

@@ -1,8 +1,8 @@
-2026-06-04 10:13:31.993 GSYCleanMac[50663:2195574] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-04 10:50:37.133 GSYCleanMac[94781:2387671] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=quicklook-controller defaults_snapshot_keys=3 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=quicklook-controller
 [REGR] case=quicklook-controller qlURLs=1 initial=0
 [REGR_OK] case=quicklook-controller QuickLook urls accepted=1
 [REGR_OK] case=quicklook-controller QuickLook initialIndex=0
 [REGR] case=quicklook-controller defaults_restored_keys=3
-[REGR_PASS] case=quicklook-controller elapsed_ms=758
+[REGR_PASS] case=quicklook-controller elapsed_ms=895
