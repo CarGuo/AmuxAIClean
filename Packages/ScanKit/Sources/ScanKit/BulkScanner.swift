@@ -203,6 +203,12 @@ public actor BulkScanner {
         var localDeduped: Int64 = 0
         var localTCCSkipped = 0
         var newDirs: [String] = []
+        // Step 13B micro-batch：把当前目录的 entry 全部攒到 localNodes，结尾一次性 yield。
+        // 这样把"逐 entry 跨 continuation hop"折成"每目录一次"，在 195k+ 文件场景下 yield
+        // 次数从 ~195k 直降到 ~目录数（典型 < 4000）。AUDIT line 449-451。
+        var localNodes: [FSNode] = []
+        // Reserve：典型目录 100~300 entry，先给 64 起步避免反复 realloc。
+        localNodes.reserveCapacity(64)
 
         BulkEnumerate.enumerate(fd: fd, dirPath: dirPath) { entry in
             if Task.isCancelled { return false }
@@ -254,9 +260,20 @@ public actor BulkScanner {
                 device: entry.device,
                 modificationDate: entry.modificationDate
             )
-            // AsyncStream.continuation.yield 是 thread-safe（Apple 文档保证）
-            continuation.yield(.node(node))
+            // 累积到 batch；不在 entry 回调里直接 yield。
+            localNodes.append(node)
             return true
+        }
+
+        // 一次性 yield 当前目录所有 entry：
+        // - 0 个：不发（极端情况：全是隐藏 + 取消等）
+        // - 1 个：发 .node 单 case 兼容旧路径，避免 array 包装的开销
+        // - ≥2 个：发 .nodes 批量 case，micro-batch 主张所在
+        // AsyncStream.continuation.yield 是 thread-safe（Apple 文档保证）
+        if localNodes.count == 1 {
+            continuation.yield(.node(localNodes[0]))
+        } else if localNodes.count >= 2 {
+            continuation.yield(.nodes(localNodes))
         }
 
         // 关键：先 push 新目录、再 merge stats，最后才 markCompleted（在 workerLoop 里）

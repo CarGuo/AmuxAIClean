@@ -60,6 +60,8 @@ struct ScanKitBench {
                 fputs("\r  scanned: \(count) files / \(human)         ", stderr)
             case .node:
                 continue // bench 不输出每个节点
+            case .nodes:
+                continue // Step 13B micro-batch：bench 不输出节点
             case .finished(let summary):
                 print("")
                 print("─────────────────────────────────────────────")

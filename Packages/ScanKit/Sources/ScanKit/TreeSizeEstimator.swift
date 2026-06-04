@@ -34,18 +34,32 @@ public enum TreeSizeEstimator {
         guard !roots.isEmpty else { return nil }
         let deadline = Date().addingTimeInterval(timeout)
 
-        // 用 detached task 在后台跑，避免占用调用方 actor 的执行时片
+        // Step 13A：5 根并发改造。每根独立 detached Task 跑 walkRoot，让总耗时趋近"最慢根"。
+        //
+        // 取舍：
+        // - 不限并发上限（roots 列表本身已上限 5 个，再加 detached Task 启动开销可忽略）
+        // - 共用同一个 deadline：超时由各 Task 自检；任何根超时只截断自己，不阻塞其他根
+        // - 用 withTaskGroup 而非 [Task]+await，自动尊重外层 Task 的 cancellation
+        // - 失败/0 字节根不计入 anyRootSucceeded；只要有一根估出非 nil 就视为成功
         return await Task.detached(priority: .utility) { () -> Int64? in
-            var total: Int64 = 0
-            var anyRootSucceeded = false
-            for root in roots {
-                if Date() >= deadline { break }
-                if let bytes = walkRoot(root, deadline: deadline) {
-                    total += bytes
-                    anyRootSucceeded = true
+            await withTaskGroup(of: Int64?.self) { group in
+                for root in roots {
+                    group.addTask {
+                        // 单根超时检查：早过期就直接返回 nil（不浪费一次 walk）
+                        if Date() >= deadline { return nil }
+                        return walkRoot(root, deadline: deadline)
+                    }
                 }
+                var total: Int64 = 0
+                var anyRootSucceeded = false
+                for await bytes in group {
+                    if let b = bytes {
+                        total += b
+                        anyRootSucceeded = true
+                    }
+                }
+                return anyRootSucceeded ? total : nil
             }
-            return anyRootSucceeded ? total : nil
         }.value
     }
 

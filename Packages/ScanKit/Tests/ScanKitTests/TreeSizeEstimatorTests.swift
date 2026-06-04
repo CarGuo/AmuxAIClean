@@ -69,6 +69,114 @@ final class TreeSizeEstimatorTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(total ?? 0, 500)
     }
 
+    // MARK: - Step 13A 并发改造：5 根并发不应远慢于 1 根串行
+
+    /// 5 根并发：`TreeSizeEstimator` 必须把多根分散到独立 detached Task 跑，
+    /// 让总耗时趋近"最慢那根"的耗时，而不是"5 根串行求和"。
+    /// 阈值取 ≤3.0x 最大单根耗时——给 Task 启动 / actor hop / IO 带宽争用留余量，
+    /// 但能兜住"完全串行化"的退化（串行会是 ~5x）。
+    /// AUDIT line 446 验收基线。
+    func test_5根并发_总耗时不超过最慢单根的3倍() async throws {
+        // 5 个根，每根铺 4000 个 4KB 文件，让 walk 耗时显著大于 Task 启动开销
+        let perRootFiles = 4000
+        let perFileBytes = 4096
+        var roots: [URL] = []
+        for _ in 0..<5 {
+            let r = try makeTempDir()
+            for i in 0..<perRootFiles {
+                try writeFile(in: r, name: "f\(i).bin", bytes: perFileBytes)
+            }
+            roots.append(r)
+        }
+        defer {
+            for r in roots { try? FileManager.default.removeItem(at: r) }
+        }
+
+        // 各跑三次取最优，规避首次 IO 缓存冷启动抖动
+        func bestSingleRootElapsed(_ root: URL) async -> TimeInterval {
+            var best: TimeInterval = .greatestFiniteMagnitude
+            for _ in 0..<3 {
+                let t0 = Date()
+                _ = await TreeSizeEstimator.estimate(roots: [root], timeout: 8.0)
+                best = min(best, Date().timeIntervalSince(t0))
+            }
+            return best
+        }
+
+        // 取 5 根中"最慢那根"的最优耗时作为分母（给 IO 缓存留同样优势）
+        var slowestSingle: TimeInterval = 0
+        for r in roots {
+            slowestSingle = max(slowestSingle, await bestSingleRootElapsed(r))
+        }
+
+        // 跑 5 根并发的最优耗时
+        var bestConcurrent: TimeInterval = .greatestFiniteMagnitude
+        for _ in 0..<3 {
+            let t0 = Date()
+            _ = await TreeSizeEstimator.estimate(roots: roots, timeout: 12.0)
+            bestConcurrent = min(bestConcurrent, Date().timeIntervalSince(t0))
+        }
+
+        let ratio = bestConcurrent / max(slowestSingle, 0.001)
+        print("[TreeSizeEstimator Perf] 5-roots concurrent / slowest-single ratio = \(String(format: "%.2f", ratio))x  (concurrent=\(String(format: "%.3f", bestConcurrent))s, slowest=\(String(format: "%.3f", slowestSingle))s)")
+
+        XCTAssertLessThan(
+            ratio, 3.0,
+            "5 根并发耗时超过最慢单根的 3.0x —— estimator 没真正并发，疑似仍是串行 walk（串行会 ~5x）"
+        )
+    }
+
+    /// 并发改造下的总数正确性：5 根并发结果必须等于"5 根串行单独估算之和"。
+    /// 防"并发改造改坏聚合"。
+    func test_5根并发_结果应等于各根之和() async throws {
+        let perRootFiles = 200
+        let perFileBytes = 1024
+        var roots: [URL] = []
+        for _ in 0..<5 {
+            let r = try makeTempDir()
+            for i in 0..<perRootFiles {
+                try writeFile(in: r, name: "f\(i).bin", bytes: perFileBytes)
+            }
+            roots.append(r)
+        }
+        defer {
+            for r in roots { try? FileManager.default.removeItem(at: r) }
+        }
+
+        var sumOfSingles: Int64 = 0
+        for r in roots {
+            let t = await TreeSizeEstimator.estimate(roots: [r], timeout: 4.0) ?? 0
+            sumOfSingles += t
+        }
+        let concurrent = await TreeSizeEstimator.estimate(roots: roots, timeout: 4.0) ?? -1
+        XCTAssertEqual(concurrent, sumOfSingles, "5 根并发聚合结果应等于各根串行之和")
+        XCTAssertEqual(concurrent, Int64(5 * perRootFiles * perFileBytes), "结果应等于精确字节数")
+    }
+
+    /// 并发改造下的取消传播：调用方 task 被取消时，所有根 walk 应及时结束（不等到全部跑完）。
+    /// 用一个超大根 + 短 timeout 验证：估算器不能一直 spin 直到 walk 完。
+    func test_5根并发_短timeout应及时返回() async throws {
+        // 每根 1500 文件 × 5 根 = 7500 个文件，单根 walk 耗时仍显著大于 0.05s timeout
+        let perRootFiles = 1500
+        var roots: [URL] = []
+        for _ in 0..<5 {
+            let r = try makeTempDir()
+            for i in 0..<perRootFiles {
+                try writeFile(in: r, name: "f\(i).bin", bytes: 64)
+            }
+            roots.append(r)
+        }
+        defer {
+            for r in roots { try? FileManager.default.removeItem(at: r) }
+        }
+
+        let t0 = Date()
+        _ = await TreeSizeEstimator.estimate(roots: roots, timeout: 0.05)
+        let elapsed = Date().timeIntervalSince(t0)
+        // 给 0.5s 的 wall-clock 上限——0.05s timeout + 检查 granularity + Task 收尾
+        XCTAssertLessThan(elapsed, 0.5, "短 timeout 下 5 根并发未能及时返回，疑似某根 walk 阻塞")
+    }
+
     // MARK: - helpers
 
     private func makeTempDir() throws -> URL {

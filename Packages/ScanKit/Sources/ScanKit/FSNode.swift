@@ -74,6 +74,10 @@ public struct ScanSummary: Sendable {
 public enum ScanEvent: Sendable {
     case progress(scannedBytes: Int64, fileCount: Int)
     case node(FSNode)
+    /// Step 13B micro-batch：把"逐 entry yield .node"折叠成"按目录批量 yield 数组"。
+    /// 一个 .nodes 批次的所有元素来自**同一父目录**（worker 在 processDirectory 末尾一次性 yield）。
+    /// 消费方处理：逐项 ingest（与 .node 等价），减少跨 actor / continuation hop 频次。
+    case nodes([FSNode])
     case finished(ScanSummary)
     case failed(Error)
     case permissionDenied(path: String)

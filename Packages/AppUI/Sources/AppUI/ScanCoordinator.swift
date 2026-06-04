@@ -937,6 +937,9 @@ public final class ScanCoordinator: ObservableObject {
             switch event {
             case .node(let node):
                 ingest(node: node, rootPath: rootPath)
+            case .nodes(let arr):
+                // Step 13B micro-batch：批量 ingest，减少跨 actor hop 开销
+                for node in arr { ingest(node: node, rootPath: rootPath) }
             case .progress(let bytes, let count):
                 // BulkScanner 自带的 progress 我们也用上，但首选 node 累计
                 _ = bytes
@@ -1028,6 +1031,21 @@ public final class ScanCoordinator: ObservableObject {
                 if !node.isDirectory, var p = perRootStaging[rootPath] {
                     p.bytes += displayBytes(of: node)
                     p.fileCount += 1
+                    perRootStaging[rootPath] = p
+                }
+            case .nodes(let arr):
+                // Step 13B micro-batch：批量 ingest，per-root staging 累计也批量更新
+                var stagingDelta: (bytes: Int64, files: Int) = (0, 0)
+                for node in arr {
+                    ingest(node: node, rootPath: rootPath)
+                    if !node.isDirectory {
+                        stagingDelta.bytes += displayBytes(of: node)
+                        stagingDelta.files += 1
+                    }
+                }
+                if stagingDelta.files > 0, var p = perRootStaging[rootPath] {
+                    p.bytes += stagingDelta.bytes
+                    p.fileCount += stagingDelta.files
                     perRootStaging[rootPath] = p
                 }
             case .progress:

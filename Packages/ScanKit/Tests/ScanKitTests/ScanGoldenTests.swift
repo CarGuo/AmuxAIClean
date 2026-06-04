@@ -28,6 +28,9 @@ final class ScanGoldenTests: XCTestCase {
             switch event {
             case .node(let n):
                 nodes.append(n)
+            case .nodes(let arr):
+                // Step 13B micro-batch：把批量 entry 展平
+                nodes.append(contentsOf: arr)
             case .finished:
                 break
             default:

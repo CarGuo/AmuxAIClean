@@ -93,6 +93,7 @@ final class BulkScannerConcurrencyTests: XCTestCase {
         for await ev in scanner.scan(root: root) {
             switch ev {
             case .node: nodeCount += 1
+            case .nodes(let arr): nodeCount += arr.count
             case .finished(let s): summary = s
             default: break
             }

@@ -163,21 +163,34 @@ public actor DuplicateScanner {
             let scanner = BulkScanner(options: scanOptions)
             for await event in scanner.scan(root: root) {
                 if Task.isCancelled { break }
-                switch event {
-                case .node(let node):
+                // 单 node / batch nodes 走同一处理逻辑；闭包内部所有变量都是 outer let/var，
+                // 在串行 for-await 上下文里直接 capture 安全。
+                let ingestNode: (FSNode) -> Void = { node in
                     // 只看普通文件；目录/符号链接跳过
-                    if node.isDirectory || node.isSymlink { continue }
+                    if node.isDirectory || node.isSymlink { return }
                     // 用逻辑大小（fileSize），与按内容 hash 的语义一致；
                     // 物理占用（allocatedSize）会受 APFS clone / 块对齐影响。
                     let size = node.logicalSize
-                    if size < minBytes { continue }
+                    if size < minBytes { return }
                     // hardlink / clone 同 inode 跳过——它们「内容相同」是文件系统层面
                     // 已经做了去重，再列出来反而误导用户「我有 2 份」。
                     if !inodes.insertIfFirstSeen(device: node.device, inode: node.inode) {
-                        continue
+                        return
                     }
                     sizeBuckets[size, default: []].append(node.url.path)
                     fileScannedCount += 1
+                }
+                switch event {
+                case .node(let node):
+                    ingestNode(node)
+                    let now = Date()
+                    if now.timeIntervalSince(lastEmit) > 0.1 {
+                        lastEmit = now
+                        continuation.yield(.sizingProgress(filesScanned: fileScannedCount))
+                    }
+                case .nodes(let arr):
+                    // Step 13B：批量 ingest，一个 progress 节流统一发一次
+                    for n in arr { ingestNode(n) }
                     let now = Date()
                     if now.timeIntervalSince(lastEmit) > 0.1 {
                         lastEmit = now

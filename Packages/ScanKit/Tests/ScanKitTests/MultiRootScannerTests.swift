@@ -68,13 +68,21 @@ final class MultiRootScannerTests: XCTestCase {
         let scanner = MultiRootScanner(options: .default)
         let events = await collect(await scanner.scan(roots: [r1, r2]))
 
-        // 任何 .node 事件，其 url.path 必须以信封里的 rootPath 为前缀。
+        // 任何 .node / .nodes 事件，其 url.path 必须以信封里的 rootPath 为前缀。
         for ev in events {
             if case .node(let node) = ev.event {
                 XCTAssertTrue(
                     node.url.path == ev.rootPath || node.url.path.hasPrefix(ev.rootPath + "/"),
                     "rootPath 信封串了根：node=\(node.url.path) 信封=\(ev.rootPath)"
                 )
+            } else if case .nodes(let arr) = ev.event {
+                // Step 13B micro-batch：批量 entry 同样要求每个都属于本根
+                for node in arr {
+                    XCTAssertTrue(
+                        node.url.path == ev.rootPath || node.url.path.hasPrefix(ev.rootPath + "/"),
+                        "rootPath 信封串了根（batch 内）：node=\(node.url.path) 信封=\(ev.rootPath)"
+                    )
+                }
             }
         }
     }
