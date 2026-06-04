@@ -1,11 +1,11 @@
-2026-06-04 14:19:58.269 GSYCleanMac[23960:2827275] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-04 14:57:39.742 GSYCleanMac[32737:2864638] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=tree-drilldown defaults_snapshot_keys=4 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=tree-drilldown
-2026-06-04 14:19:59.447 GSYCleanMac[23960:2827275] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 14:19:59.448 GSYCleanMac[23960:2827275] ERROR: Negative values for setRowHeight: not allowed (0.000)
-2026-06-04 14:19:59.450 GSYCleanMac[23960:2827275] ERROR: Negative values for setRowHeight: not allowed (0.000)
-[REGR] case=tree-drilldown parent=/var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrStd-58A386FC-7CA8-4A2B-BC61-5E2589F14DE6/nest1 bytes=25600 kids=2 dirRows=1 dirBytesSum=32768
+2026-06-04 14:57:40.925 GSYCleanMac[32737:2864638] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 14:57:40.925 GSYCleanMac[32737:2864638] ERROR: Negative values for setRowHeight: not allowed (0.000)
+2026-06-04 14:57:40.928 GSYCleanMac[32737:2864638] ERROR: Negative values for setRowHeight: not allowed (0.000)
+[REGR] case=tree-drilldown parent=/var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrStd-86BCA034-48C6-4B47-A4B6-D3B7A7F7B8B1/nest1 bytes=25600 kids=2 dirRows=1 dirBytesSum=32768
 [REGR_OK] case=tree-drilldown kids count=2 > 0
-[REGR_OK] case=tree-drilldown dir row bytes must be subtree aggregate, got 32768 for /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrStd-58A386FC-7CA8-4A2B-BC61-5E2589F14DE6/nest1/nest2=32768 > 0
+[REGR_OK] case=tree-drilldown dir row bytes must be subtree aggregate, got 32768 for /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrStd-86BCA034-48C6-4B47-A4B6-D3B7A7F7B8B1/nest1/nest2=32768 > 0
 [REGR] case=tree-drilldown defaults_restored_keys=4
-[REGR_PASS] case=tree-drilldown elapsed_ms=724
+[REGR_PASS] case=tree-drilldown elapsed_ms=721

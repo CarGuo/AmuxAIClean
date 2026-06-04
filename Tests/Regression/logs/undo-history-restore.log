@@ -1,4 +1,4 @@
-2026-06-04 14:20:39.177 GSYCleanMac[24345:2828627] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+2026-06-04 14:58:18.543 GSYCleanMac[33070:2865759] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
 [REGR] case=undo-history-restore defaults_snapshot_keys=4 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=undo-history-restore
 [REGR] case=undo-history-restore addRecord_count=1
