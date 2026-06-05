@@ -337,6 +337,23 @@ public final class ScanCoordinator: ObservableObject {
     /// `treeRevision &+= 1`，避免漏判类别。
     @Published public private(set) var structuralRevision: UInt64 = 0
 
+    /// v1.5.7：结构变化的 hint —— "本次 structuralRevision 升的根因是这些 path 被删了"。
+    /// 仅在 [pruneDeleted](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1422-L1542)
+    /// 路径上写一次，订阅方需在 onChange(structuralRevision) 同步段内调
+    /// [consumeLastPrunedPaths()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 一次性取走（取后立刻置 nil），避免下次 unrelated bump 误用。
+    /// TreeBrowserView 在 hint 非 nil 时走"只剔被删 path 子树"的增量 patch，
+    /// 避免对万级目录整树 rebuild。
+    private var lastPrunedPaths: [String]? = nil
+
+    /// 一次性消费 v1.5.7 prune hint：取走当前值并立刻清 nil。
+    /// 设计目的：避免 TreeBrowserView onChange 闭包跨 runloop tick 读到陈旧值。
+    public func consumeLastPrunedPaths() -> [String]? {
+        let v = lastPrunedPaths
+        lastPrunedPaths = nil
+        return v
+    }
+
     /// Step 2 P0-2 / 2026-06：treeRevision 拆分 —— 数值脏标（非结构性）。
     /// 含义：已有节点的 bytes / fileCount / isActive 变了，**节点拓扑没变**。订阅这条
     /// 信号的 view **不需要**重建 flatRows，只需让 RowView 内部读最新 bucket（通过其它
@@ -1535,6 +1552,11 @@ public final class ScanCoordinator: ObservableObject {
         bumpChildrenCacheVersion()
 
         // v1.5.4：删除完毕 → 让 TreeBrowserView 立刻重建扁平 flatRows（移除已删行）。
+        // v1.5.7：把"本次升 structuralRevision 的根因是这些 path 被删"以 hint 传出，
+        // [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L190)
+        // 在 onChange 闭包里通过 [consumeLastPrunedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L351)
+        // 一次性取走，走"只剔子树"的增量 patch，避免万级目录整树 rebuild。
+        lastPrunedPaths = Array(normalized)
         bumpStructuralRevision()
 
         // 卷容量重新探测：清完反馈"空闲变多"。

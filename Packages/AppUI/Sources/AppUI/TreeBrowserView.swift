@@ -187,7 +187,16 @@ public struct TreeBrowserView: View {
         // 不再被流式 publishSnapshot 的 0.4s tick（仅 bytes 变化）拖着整树重算。
         // tickRevision 通过其它 @Published 入口（如 RowItem 自身）驱动 RowView 内部刷新数值，
         // 这里 view 不订阅。
-        .onChange(of: coordinator.structuralRevision) { _, _ in rebuildFlatRows() }
+        .onChange(of: coordinator.structuralRevision) { _, _ in
+            // v1.5.7：若本次 bump 由 pruneDeleted 触发，则走"只剔被删 path 子树"的
+            // 增量 patch，避免 12 GB / 万级目录用户的整树 rebuild 卡顿。
+            // hint 不在 → 老路径 rebuildFlatRows 兜底。
+            if let pruned = coordinator.consumeLastPrunedPaths(), !pruned.isEmpty {
+                applyPrunePatch(deletedPaths: pruned)
+            } else {
+                rebuildFlatRows()
+            }
+        }
         .onChange(of: flatRows.first?.row.path) { _, _ in
             // 切排序 / 切扫描根 → 顶层第一行变化时把选中态拉回首行，避免选中飞走
             let visiblePathSet = Set(flatRows.map(\.row.path))
@@ -380,6 +389,43 @@ public struct TreeBrowserView: View {
         if end > idx + 1 {
             flatRows.removeSubrange((idx + 1)..<end)
         }
+    }
+
+    /// v1.5.7：prune 增量 patch —— 只从当前 flatRows 移除被删 path 自身及其子孙行，
+    /// 不重新调 [directChildren](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1054)
+    /// 也不重新跑 SafetyEngine.evaluate。复杂度 O(flatRows.count) 一遍扫，
+    /// 对万级目录场景下，从老路径 O(N total + safety) → O(N flat) 直降一档。
+    ///
+    /// 兜底：若移除后某个被删 path 的祖先目录（flatRows 里仍存在）原本是叶子
+    /// 节点已不再有可见孩子，view 行内 chevron 自然反映为 0；bytes/fileCount 由
+    /// ScanCoordinator [prune 祖先减法](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1422-L1497)
+    /// + RowView 重新读保证。
+    ///
+    /// 安全网：若 flatRows 为空（理论不会，prune 不会从 0 行走到这里），fallback 整树重建。
+    private func applyPrunePatch(deletedPaths: [String]) {
+        if flatRows.isEmpty { rebuildFlatRows(); return }
+        // 把 deletedPaths 拍成"前缀匹配集"：path 自身或子孙都算命中。
+        // 用 dropLast("/") 归一，与 ScanCoordinator.pruneDeleted 的 normalized 对齐。
+        let normalized: [String] = deletedPaths.map {
+            ($0.hasSuffix("/") && $0.count > 1) ? String($0.dropLast()) : $0
+        }
+        let prunedSet = Set(normalized)
+        func isUnderDeleted(_ p: String) -> Bool {
+            if prunedSet.contains(p) { return true }
+            for d in normalized {
+                if p.hasPrefix(d + "/") { return true }
+            }
+            return false
+        }
+        let before = flatRows.count
+        flatRows.removeAll { isUnderDeleted($0.row.path) }
+        // maxBytes 重算：删的可能是顶层最大行，重新取一遍 max 保进度条比例正确。
+        let topLevel = flatRows.filter { $0.depth == 0 }
+        if !topLevel.isEmpty {
+            maxBytes = topLevel.map(\.row.bytes).max() ?? 0
+        }
+        // 选中态若指向已删 path，由 onChange(flatRows.first) 兜底拉回首行；这里不动。
+        _ = before
     }
 
     /// **可测的 pure helper**：把"老 flatRows + 单点 expand/collapse"映射成"新 flatRows"。
