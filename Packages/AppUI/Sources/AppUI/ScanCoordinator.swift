@@ -551,8 +551,15 @@ public final class ScanCoordinator: ObservableObject {
         // v1.3：标记本次状态为"用户主动停止"，让 statusBar 显示"已停止"而非"还未扫描"。
         wasCancelled = true
         // M1 内存优化：本轮取消后 store 中残留的半截 session 直接 evict，避免占盘。
+        // v1.5.7：不再 try? 静默吞错，evict 失败要落日志，便于诊断半截 session 堆积。
         if let store = resultStore, let sid = currentSessionID {
-            Task.detached { try? await store.evictSession(sid) }
+            Task.detached {
+                do {
+                    try await store.evictSession(sid)
+                } catch {
+                    GSYLog.error(.scan, "cancelScan evictSession sid=\(sid) failed: \(error)")
+                }
+            }
         }
         currentSessionID = nil
         storeBatch.removeAll(keepingCapacity: false)
@@ -1973,10 +1980,19 @@ public final class ScanCoordinator: ObservableObject {
         storeWriteChain = Task.detached { [storeRef = store] in
             // 等之前所有 insert 落盘后再 finalize，避免 finalize 抢先到 actor。
             await prev?.value
+            // v1.5.7：不再 try?，insert/finalize 异常落日志（仍降级到 healthy 路径之外）。
             if healthy, !pending.isEmpty {
-                try? await storeRef.insert(pending)
+                do {
+                    try await storeRef.insert(pending)
+                } catch {
+                    GSYLog.error(.scan, "flushStoreBatch insert sid=\(sid) count=\(pending.count) failed: \(error)")
+                }
             }
-            try? await storeRef.finalizeSession(sid)
+            do {
+                try await storeRef.finalizeSession(sid)
+            } catch {
+                GSYLog.error(.scan, "flushStoreBatch finalize sid=\(sid) failed: \(error)")
+            }
         }
     }
 
@@ -2024,10 +2040,19 @@ public final class ScanCoordinator: ObservableObject {
         await prev?.value
         // 2) caller 亲自 await actor —— store 是 actor，mailbox 天然 FIFO；
         //    单调用方场景下，串行性由"先 insert 再 finalize"的代码顺序直接保证。
+        // v1.5.7：不再 try? 静默吞错，insert/finalize 异常都要进日志。
         if healthy, !pending.isEmpty {
-            try? await store.insert(pending)
+            do {
+                try await store.insert(pending)
+            } catch {
+                GSYLog.error(.scan, "flushAndFinalize insert sid=\(sid) count=\(pending.count) failed: \(error)")
+            }
         }
-        try? await store.finalizeSession(sid)
+        do {
+            try await store.finalizeSession(sid)
+        } catch {
+            GSYLog.error(.scan, "flushAndFinalize finalize sid=\(sid) failed: \(error)")
+        }
     }
 
     /// **M1 核心**：把"扫完后内存大头"的缓存释放掉，下次需要时从 store 流式查询。
