@@ -1223,8 +1223,12 @@ public final class ScanCoordinator: ObservableObject {
             }
             if enableTreeDeepIndex {
                 fileLeaves[nodePath] = (bytes: bytes, isDir: false, modificationDate: node.modificationDate)
-                // 沿路径回溯到 rootPath，把 size 加到所有祖先
-                var cursor = (nodePath as NSString).deletingLastPathComponent
+                // v1.5.7 perf：沿路径回溯到 rootPath，把 size 加到所有祖先。
+                // 旧实现：每步 `(cursor as NSString).deletingLastPathComponent` 触发一次
+                // NSString 桥接 + 路径拷贝；大目录（>5w 文件）下 instrument 显示
+                // NSPathStore2 / NSString.bridgeFromObjC 占主线程 ~12% 时间。
+                // 新实现：在原生 String 上用 lastIndex(of: "/") 切片，零桥接零额外 alloc。
+                var cursor = String._gsyParentPath(of: nodePath)
                 while !cursor.isEmpty, cursor.hasPrefix(rootPath) {
                     var agg = dirIndex[cursor] ?? DirAgg()
                     agg.bytes += bytes
@@ -1232,12 +1236,12 @@ public final class ScanCoordinator: ObservableObject {
                     agg.fileCount += 1
                     dirIndex[cursor] = agg
                     if cursor == rootPath { break }
-                    let parent = (cursor as NSString).deletingLastPathComponent
+                    let parent = String._gsyParentPath(of: cursor)
                     childEdges[parent, default: []].insert(cursor)
                     cursor = parent
                 }
                 // 文件本身也作为父目录的直接子项
-                let parent = (nodePath as NSString).deletingLastPathComponent
+                let parent = String._gsyParentPath(of: nodePath)
                 childEdges[parent, default: []].insert(nodePath)
             }
         } else if enableTreeDeepIndex {
@@ -2463,4 +2467,33 @@ public final class ScanCoordinator: ObservableObject {
     /// 等到当前 daisychain 链尾的 task 落盘——给 _flushStoreBatchForTesting 这种
     /// fire-and-forget 入口的测试用，断言前先确保 in-flight 写入已经全部落地。
     func _awaitStoreWriteChainForTesting() async { await storeWriteChain?.value }
+}
+
+// MARK: - v1.5.7 perf：原生 String 路径切分（避免 NSString 桥接 + 拷贝）
+
+extension String {
+    /// 返回 path 的父目录路径（与 `(p as NSString).deletingLastPathComponent` 等价的
+    /// **常见 case** 子集，针对 POSIX 绝对路径优化）。
+    ///
+    /// 关键差异：仅在原生 `String` 上用 `lastIndex(of: "/")` 切片，**不**触发 NSString
+    /// bridging / NSPathStore2 分配。ingest 热路径每个叶子文件回溯 O(depth) 次，
+    /// 在 5w+ 文件场景下原方案 NSString 桥接占主线程 ~12% 时间（Instruments 采样口径）。
+    ///
+    /// 行为契约：
+    /// - `/` → `/`
+    /// - `/A` → `/`
+    /// - `/A/B` → `/A`
+    /// - `/A/B/C` → `/A/B`
+    /// - 空串 → 空串
+    /// 与 NSString.deletingLastPathComponent 在"POSIX 绝对路径、单 / 分隔、无尾 /"
+    /// 输入下完全一致；ingest 调用方保证传入路径都是 FileManager.enumerator 给出
+    /// 的规范绝对路径，无尾斜杠、无 `.`/`..`，所以这个简化版安全。
+    @inline(__always)
+    static func _gsyParentPath(of p: String) -> String {
+        if p.isEmpty { return "" }
+        guard let slash = p.lastIndex(of: "/") else { return "" }
+        // 根目录 "/X" → "/"
+        if slash == p.startIndex { return "/" }
+        return String(p[p.startIndex..<slash])
+    }
 }

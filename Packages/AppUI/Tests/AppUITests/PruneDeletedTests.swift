@@ -298,4 +298,27 @@ final class PruneDeletedTests: XCTestCase {
         XCTAssertNil(coord._dirIndexAggForTesting("/R/sub"),
             "/R/sub 自己被删")
     }
+
+    // MARK: - v1.5.7 perf：原生 String 路径切分 vs NSString.deletingLastPathComponent
+
+    /// 钉死 [_gsyParentPath](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L2496-L2521)
+    /// 在 ingest 实际会传入的所有路径形态下，与 NSString.deletingLastPathComponent 完全等价。
+    /// 任何未来对该 helper 的进一步优化只要不破这条等价，就能安全落地。
+    func test_gsyParentPath_与NSString_deletingLastPathComponent等价() {
+        let cases: [String] = [
+            "/Users/zhangsan/work/repo/.git/objects/pack/pack-deadbeef.idx",
+            "/Users/zhangsan/Library/Developer/Xcode/DerivedData",
+            "/A/B/C",
+            "/A/B",
+            "/A",
+            "/",
+            "/tmp/with space/foo.txt",
+            "/中文/路径/文件.bin"
+        ]
+        for p in cases {
+            let nsExpected = (p as NSString).deletingLastPathComponent
+            let mine = String._gsyParentPath(of: p)
+            XCTAssertEqual(mine, nsExpected, "path=\(p)")
+        }
+    }
 }
