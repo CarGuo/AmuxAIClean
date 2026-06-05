@@ -208,4 +208,94 @@ final class PruneDeletedTests: XCTestCase {
         XCTAssertTrue(coord.snapshot.rows.isEmpty,
             "/A/x/ 与 /A/x 应等价处理（实现里 dropLast 末尾 /）")
     }
+
+    // MARK: - 不变量 7（v1.5.7）：祖先 dirIndex 必须做减法
+
+    /// v1.5.7：用户截图 bug——删除子目录后祖先 size 不更新。
+    /// 修复后 [pruneDeleted](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1416-L1484)
+    /// 在删 dirIndex 自身之前，先沿祖先链做反向减法（与
+    /// [ingest L1219-L1231](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1219-L1231)
+    /// 严格对称）。
+    func test_pruneDeleted_祖先dirIndex的bytes与fileCount被减回去_截图bug回归() {
+        // 拟态：祖先 /A 持有 5 个孩子总 1000 bytes；/A/build 自己是个 300 bytes/3 文件的目录。
+        // 删 /A/build 后，/A 必须变成 700 bytes / 2 文件。
+        let coord = ScanCoordinator()
+        coord._seedForTesting(
+            dirIndexFull: [
+                "/A": (bytes: 1000, fileCount: 5),
+                "/A/build": (bytes: 300, fileCount: 3),
+                "/A/keep1": (bytes: 400, fileCount: 1),
+                "/A/keep2": (bytes: 300, fileCount: 1)
+            ]
+        )
+
+        coord.pruneDeleted(paths: ["/A/build"])
+
+        guard let aggA = coord._dirIndexAggForTesting("/A") else {
+            return XCTFail("祖先 /A 不应被删，dirIndex 必须留着")
+        }
+        XCTAssertEqual(aggA.bytes, 700,
+            "/A.bytes 必须从 1000 减去被删 /A/build.bytes=300")
+        XCTAssertEqual(aggA.fileCount, 2,
+            "/A.fileCount 必须从 5 减去被删 /A/build.fileCount=3")
+        // /A/build 自己已被删
+        XCTAssertNil(coord._dirIndexAggForTesting("/A/build"),
+            "被删 path 自己必须从 dirIndex 移除")
+        // 兄弟分支不受影响
+        XCTAssertEqual(coord._dirIndexAggForTesting("/A/keep1")?.bytes, 400)
+        XCTAssertEqual(coord._dirIndexAggForTesting("/A/keep2")?.bytes, 300)
+    }
+
+    /// v1.5.7：删叶子文件时，所有祖先目录的聚合都应减去叶子贡献。
+    func test_pruneDeleted_叶子文件被删时所有祖先聚合都应同步减() {
+        // /A -> /A/sub -> /A/sub/file.bin (200 bytes)
+        // /A.bytes=200/files=1; /A/sub.bytes=200/files=1
+        let coord = ScanCoordinator()
+        coord._seedForTesting(
+            dirIndexFull: [
+                "/A": (bytes: 200, fileCount: 1),
+                "/A/sub": (bytes: 200, fileCount: 1)
+            ],
+            fileLeavesFull: [
+                "/A/sub/file.bin": 200
+            ]
+        )
+
+        coord.pruneDeleted(paths: ["/A/sub/file.bin"])
+
+        XCTAssertNil(coord._fileLeavesKeysForTesting().first { $0 == "/A/sub/file.bin" },
+            "叶子文件本身被删")
+        XCTAssertEqual(coord._dirIndexAggForTesting("/A/sub")?.bytes, 0,
+            "/A/sub 在叶子被删后聚合应 = 0")
+        XCTAssertEqual(coord._dirIndexAggForTesting("/A/sub")?.fileCount, 0)
+        XCTAssertEqual(coord._dirIndexAggForTesting("/A")?.bytes, 0,
+            "/A 作为远祖也必须减去叶子 200 bytes")
+        XCTAssertEqual(coord._dirIndexAggForTesting("/A")?.fileCount, 0)
+    }
+
+    /// v1.5.7：被删 path 自身的祖先链上若有其他被删 path，
+    /// 不应导致祖先 bytes 减负或重复减（max(0, -) 兜底）。
+    func test_pruneDeleted_同时删父子时祖先聚合不应被重复减() {
+        // /R: 500 bytes / 3 files；/R/sub: 300 bytes / 2 files；/R/sub/leaf: 100 bytes
+        // 一次性删 /R/sub 和 /R/sub/leaf（leaf 被父 prefix 命中，已等价被删）；
+        // /R 应当只减一次 /R/sub 的贡献：500 - 300 = 200，3 - 2 = 1
+        let coord = ScanCoordinator()
+        coord._seedForTesting(
+            dirIndexFull: [
+                "/R": (bytes: 500, fileCount: 3),
+                "/R/sub": (bytes: 300, fileCount: 2)
+            ],
+            fileLeavesFull: [
+                "/R/sub/leaf": 100
+            ]
+        )
+
+        coord.pruneDeleted(paths: ["/R/sub", "/R/sub/leaf"])
+
+        XCTAssertEqual(coord._dirIndexAggForTesting("/R")?.bytes, 200,
+            "重复路径（父+子）不应让 /R 减 300+100=400")
+        XCTAssertEqual(coord._dirIndexAggForTesting("/R")?.fileCount, 1)
+        XCTAssertNil(coord._dirIndexAggForTesting("/R/sub"),
+            "/R/sub 自己被删")
+    }
 }

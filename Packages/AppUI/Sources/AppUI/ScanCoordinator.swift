@@ -1416,6 +1416,68 @@ public final class ScanCoordinator: ObservableObject {
         // ② 内存索引：buckets/dirIndex/childEdges/fileLeaves
         let bucketKeys = buckets.keys.filter { isUnderDeleted($0) }
         for k in bucketKeys { buckets.removeValue(forKey: k) }
+
+        // **v1.5.7 修订**：删除前先把每个被删项的贡献量从所有**祖先目录**的
+        // [dirIndex](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L265-L265)
+        // 减出去（这是与 [ingest L1219-L1231](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1219-L1231)
+        // 严格对称的反操作）。否则祖先 `agg.bytes / agg.fileCount` 保留旧总和，
+        // [materializeFromMemory L1593-L1602](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1593-L1602)
+        // 取出来给 TreeBrowserView 的就是脏值——表现为"删完了子目录，祖先 size 没变"
+        // （用户截图 gsy_flutter_demo 1.12 GB 不动）。
+        //
+        // 减法策略：
+        // - **叶子文件**（fileLeaves 命中）：bytes、logicalBytes 用 leaf 自身值；fileCount 减 1
+        // - **目录**（dirIndex 命中）：bytes/logicalBytes/fileCount 全部用 dirIndex 自身的聚合值
+        //   （它已经包含子孙的累计 —— 因为 ingest 时祖先就把它整段累加上去）
+        // - 沿路径回溯到 `/`（不限 rootPath，因为 prune 可能跨根；越界父节点 dict miss 直接跳过）
+        //
+        // 注意：被删项若有 *未被删的兄弟祖先链分支*，那条分支不受影响（按 path 上溯，分支天然隔离）。
+        // 多次删同一棵子树的去重：被删项的祖先链如果本身也在 `paths` 里，对应父节点会在
+        // 下面整段 removeValue 时一并清掉，减出来的值会消失（无副作用）。
+        var pendingDecrements: [String: (bytes: Int64, logicalBytes: Int64, fileCount: Int)] = [:]
+        @inline(__always)
+        func accumulate(into ancestor: String, bytes: Int64, logicalBytes: Int64, fileCount: Int) {
+            var cur = pendingDecrements[ancestor] ?? (0, 0, 0)
+            cur.bytes &+= bytes
+            cur.logicalBytes &+= logicalBytes
+            cur.fileCount &+= fileCount
+            pendingDecrements[ancestor] = cur
+        }
+        for delPath in normalized {
+            // 取被删项的贡献量
+            let contribBytes: Int64
+            let contribLogical: Int64
+            let contribCount: Int
+            if let leaf = fileLeaves[delPath] {
+                contribBytes = leaf.bytes
+                contribLogical = leaf.bytes  // leaf 没单独存 logicalBytes，取近似
+                contribCount = 1
+            } else if let agg = dirIndex[delPath] {
+                contribBytes = agg.bytes
+                contribLogical = agg.logicalBytes
+                contribCount = agg.fileCount
+            } else {
+                continue
+            }
+            // 沿路径回溯到顶层 "/"
+            var cursor = (delPath as NSString).deletingLastPathComponent
+            while !cursor.isEmpty, cursor != "/" {
+                // 该祖先若本身在删除范围里，下面整段会 removeValue 掉，回溯无意义；早跳。
+                if isUnderDeleted(cursor) { break }
+                accumulate(into: cursor, bytes: contribBytes, logicalBytes: contribLogical, fileCount: contribCount)
+                let parent = (cursor as NSString).deletingLastPathComponent
+                if parent == cursor { break }
+                cursor = parent
+            }
+        }
+        for (ancestor, dec) in pendingDecrements {
+            guard var agg = dirIndex[ancestor] else { continue }
+            agg.bytes = max(0, agg.bytes - dec.bytes)
+            agg.logicalBytes = max(0, agg.logicalBytes - dec.logicalBytes)
+            agg.fileCount = max(0, agg.fileCount - dec.fileCount)
+            dirIndex[ancestor] = agg
+        }
+
         let dirKeys = dirIndex.keys.filter { isUnderDeleted($0) }
         for k in dirKeys { dirIndex.removeValue(forKey: k) }
         let leafKeys = fileLeaves.keys.filter { isUnderDeleted($0) }
@@ -2278,7 +2340,9 @@ public final class ScanCoordinator: ObservableObject {
         snapshot: ScanSnapshot? = nil,
         buckets: [String: Int64]? = nil,
         dirIndex: [String]? = nil,
+        dirIndexFull: [String: (bytes: Int64, fileCount: Int)]? = nil,
         fileLeaves: [String]? = nil,
+        fileLeavesFull: [String: Int64]? = nil,
         childEdges: [String: Set<String>]? = nil,
         treeChildrenCache: [String: [TreeRow]]? = nil
     ) {
@@ -2303,10 +2367,23 @@ public final class ScanCoordinator: ObservableObject {
                 self.dirIndex[path] = DirAgg(bytes: 1, logicalBytes: 1, fileCount: 1)
             }
         }
+        // v1.5.7：带 (bytes, fileCount) 的 seed，让 prune 减法契约能拿到可验证的祖先聚合。
+        if let dirIndexFull {
+            self.dirIndex.removeAll()
+            for (path, val) in dirIndexFull {
+                self.dirIndex[path] = DirAgg(bytes: val.bytes, logicalBytes: val.bytes, fileCount: val.fileCount)
+            }
+        }
         if let fileLeaves {
             self.fileLeaves.removeAll()
             for path in fileLeaves {
                 self.fileLeaves[path] = (bytes: 1, isDir: false, modificationDate: nil)
+            }
+        }
+        if let fileLeavesFull {
+            self.fileLeaves.removeAll()
+            for (path, b) in fileLeavesFull {
+                self.fileLeaves[path] = (bytes: b, isDir: false, modificationDate: nil)
             }
         }
         if let childEdges {
@@ -2319,6 +2396,11 @@ public final class ScanCoordinator: ObservableObject {
 
     func _bucketsKeysForTesting() -> [String] { Array(buckets.keys) }
     func _dirIndexKeysForTesting() -> [String] { Array(dirIndex.keys) }
+    /// v1.5.7：暴露 dirIndex 聚合值，让 pruneDeleted 祖先减法契约可验证。
+    func _dirIndexAggForTesting(_ path: String) -> (bytes: Int64, fileCount: Int)? {
+        guard let agg = dirIndex[path] else { return nil }
+        return (agg.bytes, agg.fileCount)
+    }
     func _fileLeavesKeysForTesting() -> [String] { Array(fileLeaves.keys) }
     func _childEdgesForTesting() -> [String: Set<String>] { childEdges }
     func _treeChildrenCacheForTesting() -> [String: [TreeRow]] { treeChildrenCache }
