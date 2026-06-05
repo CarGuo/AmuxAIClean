@@ -138,6 +138,7 @@ xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Deb
 | v1.2 | 类型分桶 / Quick Look / 导出 / 重复文件检测（只读） | 已发布 |
 | v1.3 | 灵动岛 HUD / 状态栏托盘 / 设置面板重构 | 已发布 |
 | v1.4 | 开发者构建产物扫描（Android / Flutter / iOS / RN / 等 12+ 生态）| 已发布 |
+| v1.5 | 树视图增量化（O(N flat) prune patch + 原生 String 路径切分 + DirIndex 祖先对称减法 + store 错误日志化）| 已发布 |
 
 详见 [docs/ROADMAP_V1.md](docs/ROADMAP_V1.md)。
 
