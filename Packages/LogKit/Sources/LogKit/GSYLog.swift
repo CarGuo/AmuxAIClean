@@ -59,9 +59,14 @@ public enum GSYLog {
     // MARK: - 配置
 
     /// 全局默认门槛。Debug build 默认 .debug，Release 默认 .info。
-    /// 用 nonisolated(unsafe) 是因为 GSYLog 设计成进程级单例配置，
-    /// 启动一次性 set 之后只读；并发读 enum 是 atomic-by-spec。
-    nonisolated(unsafe) private static var minimumLevel: Level = {
+    ///
+    /// v1.5.7：原先使用 `nonisolated(unsafe)` 假设"启动期一次性 set"，但生产代码同时存在
+    /// 测试中的 `configure(...) / disableFileSink()` 反复调用，理论上构成 data race
+    /// （TSAN 在并发跑日志 + 配置切换时会报）。改为以 `os_unfair_lock` 保护 `minimumLevel`
+    /// 与 `fileSink` 的读写，避免极端情况下读到撕裂值（fileSink 是引用类型，撕裂可能 ARC 计数错配 → 释放后访问）。
+    /// 锁是 < 50ns 量级，对热路径影响可忽略。
+    nonisolated(unsafe) private static var _configLock = os_unfair_lock()
+    nonisolated(unsafe) private static var _minimumLevel: Level = {
         #if DEBUG
         return .debug
         #else
@@ -70,17 +75,35 @@ public enum GSYLog {
     }()
 
     /// 文件 sink。可选——只配 OSLog 不落盘也合法。
-    nonisolated(unsafe) private static var fileSink: LogFileSink?
+    nonisolated(unsafe) private static var _fileSink: LogFileSink?
+
+    /// 读取当前 minimumLevel（持锁快照）。
+    private static var minimumLevel: Level {
+        os_unfair_lock_lock(&_configLock)
+        defer { os_unfair_lock_unlock(&_configLock) }
+        return _minimumLevel
+    }
+
+    /// 读取当前 fileSink（持锁快照，返回的引用本身随后被调用方持有，足够安全）。
+    private static var fileSink: LogFileSink? {
+        os_unfair_lock_lock(&_configLock)
+        defer { os_unfair_lock_unlock(&_configLock) }
+        return _fileSink
+    }
 
     /// 主 App 启动期一次性配置。再次调用会替换 fileSink，但旧 sink 会被释放（句柄关闭）。
     public static func configure(minimumLevel: Level = .debug, fileSink: LogFileSink? = nil) {
-        Self.minimumLevel = minimumLevel
-        Self.fileSink = fileSink
+        os_unfair_lock_lock(&_configLock)
+        Self._minimumLevel = minimumLevel
+        Self._fileSink = fileSink
+        os_unfair_lock_unlock(&_configLock)
     }
 
     /// 关掉文件落盘（测试场景或用户在 UI 关 debug 落盘）。
     public static func disableFileSink() {
-        Self.fileSink = nil
+        os_unfair_lock_lock(&_configLock)
+        Self._fileSink = nil
+        os_unfair_lock_unlock(&_configLock)
     }
 
     /// 当前文件 sink 的根目录，UI 「打开日志目录」按钮要用。
