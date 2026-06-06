@@ -17,14 +17,25 @@ import Foundation
 ///   命中后由 `pathOverride.verdict` 而非默认 confirm 决定 verdict，
 ///   且**继承到所有子目录**（如 `~/Library/Developer/Xcode/DerivedData` safe 后，
 ///   其下任何 `MyApp-abc123/Build/...` 都直接 safe）。
+///
+/// **生命周期契约（v1.5.7 显式化）**：
+/// 1. **Build 阶段**：仅 `VendorTrie.build(vendors:)`（或其测试副本）可写入 `children` /
+///    `rule` / `pathOverride` / `globRules`。建树是单线程串行的。
+/// 2. **Read 阶段**：build 返回后，整棵 trie 通过 `@unchecked Sendable` 暴露给多个并发
+///    评估线程（ScanCoordinator + SafetyEvaluator 等）。**Read 阶段任何写入都是
+///    未定义行为（data race）**。
+/// 3. 字段保持 `var` 是为了让建树代码可以增量挂接子节点；如果未来 Swift 引入 readonly
+///    或 frozen 关键字，应替换为更强的编译期约束。当前以 doc + 单元测试守护契约。
 public final class VendorTrieNode: @unchecked Sendable {
+    /// **build-only mutable**；read 阶段视为 immutable。
     public var children: [String: VendorTrieNode] = [:]
+    /// **build-only mutable**；read 阶段视为 immutable。
     public var rule: VendorRule? = nil
-    /// path 级 verdict 覆盖（DEV_ARTIFACTS_RULES §2.x 的 path 字段直接对应）。
+    /// **build-only mutable**；path 级 verdict 覆盖（DEV_ARTIFACTS_RULES §2.x 的 path 字段直接对应）。
     /// 命中此节点或其子节点时，verdict 由此覆盖决定，而非走默认 confirm。
     public var pathOverride: PathRule? = nil
 
-    /// 仅在**根节点**有效：含 glob 元字符（`*` / `?`）的 path 规则副本。
+    /// **build-only mutable**；仅在**根节点**有效：含 glob 元字符（`*` / `?`）的 path 规则副本。
     /// 这些规则不能插入 trie（trie 节点路径段是字面量），评估时退化为线性扫描。
     /// 数量级 < 50 条，性能可接受；详见 [PathGlob](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/PathGlob.swift)。
     public var globRules: [GlobEntry] = []
