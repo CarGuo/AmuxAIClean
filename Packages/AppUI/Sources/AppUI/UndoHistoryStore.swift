@@ -60,19 +60,33 @@ public final class UndoHistoryStore: ObservableObject {
     private let maxHistoryCount: Int
     private let storeURL: URL
     private let fm: FileManager
+    /// v1.5.7：落盘策略。生产单例用 `.background`（detached Task 卸主 actor），
+    /// 测试用 `.synchronous` 保证 `addRecord` 返回后 `XCTAssertTrue(fileExists)` 立刻成立。
+    private let saveStrategy: SaveStrategy
+
+    public enum SaveStrategy: Sendable {
+        case synchronous
+        case background
+    }
 
     /// 共享单例。生产代码所有调用方都走它。
     public static let shared = UndoHistoryStore()
 
     private convenience init() {
-        self.init(storeURL: UndoHistoryStore.defaultStoreURL(), maxHistoryCount: 10)
+        self.init(storeURL: UndoHistoryStore.defaultStoreURL(),
+                  maxHistoryCount: 10,
+                  saveStrategy: .background)
     }
 
-    /// 测试 / DI 用初始化器。
-    public init(storeURL: URL, maxHistoryCount: Int = 10, fm: FileManager = .default) {
+    /// 测试 / DI 用初始化器。**默认 synchronous**，保证测试断言可靠。
+    public init(storeURL: URL,
+                maxHistoryCount: Int = 10,
+                fm: FileManager = .default,
+                saveStrategy: SaveStrategy = .synchronous) {
         self.storeURL = storeURL
         self.maxHistoryCount = maxHistoryCount
         self.fm = fm
+        self.saveStrategy = saveStrategy
         loadHistory()
     }
 
@@ -212,21 +226,68 @@ public final class UndoHistoryStore: ObservableObject {
 
     // MARK: - Persistence
 
+    /// v1.5.7：编码 + 落盘从主 actor 卸到后台。
+    ///
+    /// 之前 `data.write(to:options:.atomic)` 同步在 MainActor 跑，删除大批量文件后历史可能 ≈ 几 MB，
+    /// FileManager 的 atomic write 会做"写临时文件 → fsync → rename"三段 IO，
+    /// 在机械硬盘 / 慢 SSD 上能让 UI 卡 100~300ms。这里：
+    /// 1. 在主 actor 立刻 encode 成 Data（snapshot 主 actor 状态 → 不可变 byte buffer）
+    /// 2. detached Task 只做 write，data 已是值语义可安全跨 actor
+    /// 3. 失败只打日志（写失败不应回滚 in-memory state）
+    ///
+    /// 测试场景如需"写完立刻断言落盘"，调用 `saveHistorySync()`。
     private func saveHistory() {
+        let url = storeURL
+        switch saveStrategy {
+        case .synchronous:
+            Self.writeHistory(history, to: url)
+        case .background:
+            // 在主 actor 完成 encode（无并发风险），把不可变 Data 交给后台 IO
+            guard let data = Self.encodeHistory(history) else { return }
+            Task.detached(priority: .utility) {
+                Self.writeData(data, to: url)
+            }
+        }
+    }
+
+    /// 测试用的同步落盘入口；生产代码不要直接调。
+    public func saveHistorySync() {
+        Self.writeHistory(history, to: storeURL)
+    }
+
+    nonisolated private static func writeHistory(_ records: [Record], to url: URL) {
+        guard let data = encodeHistory(records) else { return }
+        writeData(data, to: url)
+    }
+
+    nonisolated private static func encodeHistory(_ records: [Record]) -> Data? {
         do {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = .prettyPrinted
-            let data = try encoder.encode(history)
-            // 父目录可能尚未创建
-            let parent = storeURL.deletingLastPathComponent()
-            try? fm.createDirectory(at: parent, withIntermediateDirectories: true)
-            try data.write(to: storeURL, options: .atomic)
+            return try encoder.encode(records)
         } catch {
-            GSYLog.error(.trash, "UndoHistory saveHistory 失败 err=\(error.localizedDescription)")
+            GSYLog.error(.trash, "UndoHistory encode 失败 err=\(error.localizedDescription)")
+            return nil
         }
     }
 
+    nonisolated private static func writeData(_ data: Data, to url: URL) {
+        do {
+            let fm = FileManager.default
+            let parent = url.deletingLastPathComponent()
+            try? fm.createDirectory(at: parent, withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            GSYLog.error(.trash, "UndoHistory write 失败 err=\(error.localizedDescription)")
+        }
+    }
+
+    /// v1.5.7：init 阶段的轻量级同步加载。
+    ///
+    /// 现状下 UndoHistory 上限 10 条 record，每条最多几百个 pair，整个 JSON 通常 < 100 KB，
+    /// 同步 decode < 1ms，比 detached 切换还便宜，所以保持同步。如果未来 maxHistoryCount
+    /// 提升到 100+ 或 pair 数爆炸式增长，需重构成 async init + UI 先显示空列表。
     private func loadHistory() {
         guard fm.fileExists(atPath: storeURL.path) else { return }
         do {
