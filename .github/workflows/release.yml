@@ -106,7 +106,12 @@ jobs:
           codesign -d --entitlements - --xml dist/GSYCleanMac.app > /tmp/ents.xml || true
           codesign -d -vvv dist/GSYCleanMac.app 2>&1 | grep -E "Identifier|Authority|Sealed|TeamIdentifier|Runtime" || true
           # 验证 Hardened Runtime 真的开了
-          if ! codesign -d -vvv dist/GSYCleanMac.app 2>&1 | grep -q "flags=0x10000(runtime)"; then
+          # ad-hoc 签名后 flags 形如 0x10002(adhoc,runtime), 真正 Developer ID 签是 0x10000(runtime),
+          # 用 grep "(.*runtime" 匹配两种形态; 用括号锁定避免误命中文件名/路径里的 runtime 字串
+          # 注意: 必须先缓存到变量再 grep, 不能 codesign | grep -q —— -q 会提前 quit,
+          # 在 set -o pipefail 下让 codesign 收 SIGPIPE 退出非 0, 误触发 if 失败分支
+          CS_OUT=$(codesign -d -vvv dist/GSYCleanMac.app 2>&1 || true)
+          if ! echo "$CS_OUT" | grep -Eq "flags=0x[0-9a-fA-F]+\([^)]*runtime"; then
             echo "::warning::Hardened Runtime flag 未检出（可能 codesign 版本不显示，不致命）"
           fi
 
@@ -295,7 +300,8 @@ jobs:
 
             ```bash
             codesign -d -vvv /Applications/GSYCleanMac.app 2>&1 | grep -i runtime
-            # 期望看到 flags=0x10000(runtime)
+            # 期望看到形如 flags=0x10002(adhoc,runtime) 的输出（ad-hoc 签名 + Hardened Runtime）
+            # 或 flags=0x10000(runtime)（Developer ID 签名 + Hardened Runtime）
             ```
 
             ---

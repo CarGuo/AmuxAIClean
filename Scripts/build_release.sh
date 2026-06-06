@@ -76,7 +76,11 @@ codesign -dv --verbose=2 "$DIST_DIR/${PROJECT_NAME}.app" 2>&1 | head -8 || true
 
 # v1.5.7：核对 Hardened Runtime 是否开启
 # 本地 Personal Team 走 .xcodeproj 里的 ENABLE_HARDENED_RUNTIME = YES；如果设置被改回 NO 这里会 warn
-if codesign -d -vvv "$DIST_DIR/${PROJECT_NAME}.app" 2>&1 | grep -q "flags=0x10000(runtime)"; then
+# ad-hoc 签名: flags=0x10002(adhoc,runtime); Developer ID: flags=0x10000(runtime); Personal Team 又不同
+# 用正则匹配括号内出现 runtime, 兼容三种签名身份
+# 注意: 先缓存到变量再 grep, 不能 codesign | grep -q —— -q 提前 quit 在 pipefail 下让上游收 SIGPIPE 误报失败
+CS_OUT=$(codesign -d -vvv "$DIST_DIR/${PROJECT_NAME}.app" 2>&1 || true)
+if echo "$CS_OUT" | grep -Eq "flags=0x[0-9a-fA-F]+\([^)]*runtime"; then
     echo "  ✓ Hardened Runtime: enabled"
 else
     warn "Hardened Runtime 未启用（codesign flags 未含 runtime）；建议 .xcodeproj 设 ENABLE_HARDENED_RUNTIME=YES"
