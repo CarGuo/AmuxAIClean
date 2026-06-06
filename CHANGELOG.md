@@ -14,13 +14,31 @@
 - `CHANGELOG.md`：本文件
 - `.github/release-template.md`：Release Notes 标准模板
 - Help 菜单（`CommandGroup(replacing: .help)`）注册官方帮助、隐私协议、使用条款、提交 Issue、在 Finder 中显示日志五个入口
+- `UpdateChecker`：解析 GitHub Release `assets[]`，自动拉取同名 `*.sha256` 文件展示给用户做手动完整性校验
+- `release.yml`：可选 minisign（ed25519 离线签名）步骤——若仓库配置 `MINISIGN_PRIVATE_KEY` secret，则为 `.dmg` / `.app.zip` 生成 `.minisig` 同名上传，提供"无 Apple Developer Program 也能验签发布者身份"的离线信任链
+- `release.yml` + `build_release.sh`：构建后强制开启 macOS **Hardened Runtime**（即使是 ad-hoc 签名也启用），阻止任意 dyld 注入 / 未签名第三方代码加载 / 调试器附加，等同 Rectangle / AltTab 当前的安全等级
 
 ### Changed
 - `Scripts/build_release.sh` 与 `.github/workflows/release.yml`：每次构建自动注入 `CFBundleVersion = git rev-list --count HEAD`，避免不同 Release 共享同一 build 号导致 Sparkle 升级静默失败或 TCC 权限错复用
 - `release.yml` 安装故障兜底章节：删除以前直接教用户跑 `xattr -cr` 的写法，改为优先引导走「系统设置 → 隐私与安全 → 仍要打开」官方路径；保留 xattr 命令但明确标注为"最后手段"并附 SHA256 校验前置条件
+- `release.yml` 完整性校验章节：拆分成 SHA256（最低门槛）与 minisign（高级用户）双方案，并明确写出"客户端不自动下载升级包"的设计取舍，避免用户误以为还会接入 Sparkle EdDSA
+- `UpdateChecker`：默认使用 ephemeral `URLSession`（`timeoutForRequest=10s`、`timeoutForResource=30s`、`waitsForConnectivity=false`、禁用 cookie / cache），杜绝磁盘缓存与 cookie 持久化
+- `UndoHistoryStore.saveHistory`：编码后通过 `Task.detached(.utility)` 后台落盘，避免大批量删除后 MainActor 卡顿 100~300ms；保留 `.synchronous` 策略给测试用
+- `GSYLog`：静态可变 `_minimumLevel` / `_fileSink` 改为 `os_unfair_lock` 守护，消除并发 sink 写入时的 data race
+- `TrashPipeline` partial-success 修复：`NSWorkspace.recycle` 同时返回 `trashed` 非空 + `error` 非 nil 时（如 100 项中最后 1 项失败），不再丢弃已成功项的 undo pair；错误文案附"(已成功放入废纸篓 X 项，可在「最近删除」恢复)"
+
+### Documented
+- `VendorTrieNode`：写明"build-once / read-many"契约，禁止扫描期任何 mutator
+- `TrashPipeline`：写明 `setAccessDeniedPaths(_:)` 是唯一可变入口，必须在 MainActor 上 moveToTrash 之前调用
 
 ### Security
 - 限定 Help 菜单 `openExternal` 只允许 `https://` scheme，防止后续被改成 `file://` / 自定义 scheme 等危险跳转
+- Hardened Runtime + ad-hoc 签名：取得"Personal Team 免费账号能拿到的最高被动安全等级"，下一步要更高等级（公证 / Notarization）需购买 Apple Developer Program 个人证书
+
+### Known Limitations (deliberate, 免费 Personal Team 边界)
+- **未公证**：没有 Apple Developer ID（$99/yr），无法走 `notarytool submit`，首次启动会触发 Gatekeeper 警告；安装指引已写明走系统设置 → 隐私与安全 → 仍要打开
+- **未沙盒化**：扫描需要 `~/Library/Mail` 等用户私有数据，进 App Sandbox 会砍掉关键能力；本项目走"不进沙箱 + Hardened Runtime + 完全磁盘访问"路线
+- **客户端不自动下载升级**：`UpdateChecker` 仅做"提示 + 跳转 Release 页"，不引入 Sparkle 框架；signing model 是 minisign 离线验签，而非装在客户端的 EdDSA 公钥
 
 ---
 
