@@ -25,13 +25,29 @@ public struct ReleaseInfo: Sendable, Equatable {
     public let htmlURL: URL
     public let body: String
     public let publishedAt: Date?
+    /// v1.5.7：Release assets 列表，用于（1）展示给用户已发布的产物（2）拉 `*.sha256` 做完整性提示。
+    public let assets: [ReleaseAsset]
 
-    public init(tagName: String, name: String, htmlURL: URL, body: String, publishedAt: Date?) {
+    public init(tagName: String, name: String, htmlURL: URL, body: String, publishedAt: Date?, assets: [ReleaseAsset] = []) {
         self.tagName = tagName
         self.name = name
         self.htmlURL = htmlURL
         self.body = body
         self.publishedAt = publishedAt
+        self.assets = assets
+    }
+}
+
+/// v1.5.7：GitHub Release asset 简化模型。
+public struct ReleaseAsset: Sendable, Equatable {
+    public let name: String
+    public let downloadURL: URL
+    public let sizeBytes: Int
+
+    public init(name: String, downloadURL: URL, sizeBytes: Int) {
+        self.name = name
+        self.downloadURL = downloadURL
+        self.sizeBytes = sizeBytes
     }
 }
 
@@ -95,10 +111,27 @@ public final class UpdateChecker {
     private weak var settings: AppSettings?
 
     public init(owner: String = "CarGuo", repo: String = "GSYCleanMac",
-                session: URLSession = .shared, settings: AppSettings? = nil) {
+                session: URLSession? = nil, settings: AppSettings? = nil) {
         self.owner = owner
         self.repo = repo
-        self.session = session
+        // v1.5.7：默认自建 ephemeral session —— 不持久化 cookie / cache / credentials，
+        // 防止 GitHub 把同一 host 的其他登录态 cookie 串扰到 update 请求里。
+        // - timeoutIntervalForRequest=10s 单包请求超时（避免单个 socket hang 拖死）
+        // - timeoutIntervalForResource=30s 整个传输上限（默认 7 天，对 2KB JSON 太宽松）
+        // - waitsForConnectivity=false 离线时立即失败而不是排队等到联网（避免 App 退出时还在排队）
+        if let session {
+            self.session = session
+        } else {
+            let cfg = URLSessionConfiguration.ephemeral
+            cfg.timeoutIntervalForRequest = 10
+            cfg.timeoutIntervalForResource = 30
+            cfg.waitsForConnectivity = false
+            cfg.httpCookieAcceptPolicy = .never
+            cfg.httpShouldSetCookies = false
+            cfg.allowsCellularAccess = true
+            cfg.urlCache = nil
+            self.session = URLSession(configuration: cfg)
+        }
         self.settings = settings
     }
 
@@ -173,11 +206,17 @@ public final class UpdateChecker {
 
     private func parseRelease(_ data: Data) throws -> ReleaseInfo {
         struct RawRelease: Decodable {
+            struct RawAsset: Decodable {
+                let name: String
+                let browser_download_url: String
+                let size: Int
+            }
             let tag_name: String
             let name: String?
             let html_url: String
             let body: String?
             let published_at: String?
+            let assets: [RawAsset]?
         }
         let raw = try JSONDecoder().decode(RawRelease.self, from: data)
         guard let url = URL(string: raw.html_url) else {
@@ -187,13 +226,57 @@ public final class UpdateChecker {
         let date: Date? = raw.published_at.flatMap {
             ISO8601DateFormatter().date(from: $0)
         }
+        let assets: [ReleaseAsset] = (raw.assets ?? []).compactMap { a in
+            guard let u = URL(string: a.browser_download_url) else { return nil }
+            return ReleaseAsset(name: a.name, downloadURL: u, sizeBytes: a.size)
+        }
         return ReleaseInfo(
             tagName: raw.tag_name,
             name: raw.name ?? raw.tag_name,
             htmlURL: url,
             body: raw.body ?? "",
-            publishedAt: date
+            publishedAt: date,
+            assets: assets
         )
+    }
+
+    /// v1.5.7：从 release assets 里挑出 `*.dmg.sha256` 文件并把内容拉下来。
+    ///
+    /// 返回一个 `[filename: sha256-hex-lowercase]` 字典，UI 上展示给用户做手动比对。
+    /// 这里**不**自动下载主 dmg 然后跑哈希；理由：
+    /// - 自动下载需引入 NSSavePanel / 进度条 / 失败重试 / 续传 等大量 UI，超出本次 patch 范畴
+    /// - 跳浏览器下载是当前用户决策（避免任何"沉默升级"风险）
+    /// - 哪怕 UI 自动比对成功，仍需用户手动把校验后的 .dmg 拖到 Applications，不可省略 GUI 干预
+    /// 所以这里只做一件事：**把 GitHub 服务器上的预期 SHA256 拉下来，UI 显式展示给用户**。
+    public func fetchExpectedSHA256(for release: ReleaseInfo) async -> [String: String] {
+        let sha256Assets = release.assets.filter { $0.name.hasSuffix(".sha256") }
+        guard !sha256Assets.isEmpty else { return [:] }
+        var result: [String: String] = [:]
+        for asset in sha256Assets {
+            // 单个 .sha256 文件 < 200 字节，串行下载足够。
+            var req = URLRequest(url: asset.downloadURL)
+            req.setValue("text/plain", forHTTPHeaderField: "Accept")
+            req.setValue("GSYCleanMac/\(Self.currentVersion)", forHTTPHeaderField: "User-Agent")
+            req.timeoutInterval = 10
+            do {
+                let (data, resp) = try await session.data(for: req)
+                guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else { continue }
+                guard data.count <= 4096,
+                      let text = String(data: data, encoding: .utf8) else { continue }
+                // shasum 输出格式："<64 hex>  <filename>" —— 取头 64 位 hex
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let firstField = trimmed.split(separator: " ", maxSplits: 1).first.map(String.init) ?? trimmed
+                let hex = firstField.lowercased()
+                guard hex.count == 64,
+                      hex.allSatisfy({ "0123456789abcdef".contains($0) }) else { continue }
+                // 关联到对应的原文件名（剥掉 .sha256 后缀）
+                let originalName = String(asset.name.dropLast(".sha256".count))
+                result[originalName] = hex
+            } catch {
+                GSYLog.warning(.updater, "fetchExpectedSHA256 拉取失败 asset=\(asset.name) err=\(error.localizedDescription)")
+            }
+        }
+        return result
     }
 
     /// 当前 App 版本号（从 Info.plist 读 CFBundleShortVersionString）。
@@ -206,6 +289,10 @@ public final class UpdateChecker {
 public struct UpdatePromptView: View {
     @Bindable public var checker: UpdateChecker
     public let release: ReleaseInfo
+
+    /// v1.5.7：从 release assets 拉到的 [filename: sha256-hex] 字典。
+    @State private var expectedHashes: [String: String] = [:]
+    @State private var hashesLoaded: Bool = false
 
     public init(checker: UpdateChecker, release: ReleaseInfo) {
         self.checker = checker
@@ -239,6 +326,21 @@ public struct UpdatePromptView: View {
                 Text("updater.prompt.no_notes", bundle: .module)
                     .font(.callout).foregroundStyle(.secondary)
             }
+            if hashesLoaded && !expectedHashes.isEmpty {
+                Divider()
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("预期 SHA256（下载后用 `shasum -a 256 <文件>` 比对）", systemImage: "checkmark.seal")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(expectedHashes.sorted(by: { $0.key < $1.key }), id: \.key) { name, hex in
+                        HStack(alignment: .top, spacing: 6) {
+                            Text(name).font(.caption.monospaced()).foregroundStyle(.secondary)
+                            Text(hex).font(.caption.monospaced())
+                                .textSelection(.enabled)
+                                .lineLimit(1).truncationMode(.middle)
+                        }
+                    }
+                }
+            }
             Divider()
             HStack {
                 Button(String(localized: "updater.prompt.button.skip", bundle: .module)) {
@@ -259,6 +361,12 @@ public struct UpdatePromptView: View {
             }
         }
         .padding(20)
-        .frame(width: 500)
+        .frame(width: 520)
+        .task {
+            // 异步拉 SHA256；失败或没有 .sha256 asset 静默隐藏，不阻塞 UI。
+            let h = await checker.fetchExpectedSHA256(for: release)
+            expectedHashes = h
+            hashesLoaded = true
+        }
     }
 }
