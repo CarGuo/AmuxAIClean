@@ -36,6 +36,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # v1.5.7：CFBundleVersion 需要 git rev-list --count HEAD 拿到完整历史
 
       - name: Resolve version
         id: ver
@@ -46,8 +48,10 @@ jobs:
           else
             v="${GITHUB_REF_NAME#v}"
           fi
+          build_no="$(git rev-list --count HEAD)"
           echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "解析版本号: $v"
+          echo "build=$build_no" >> "$GITHUB_OUTPUT"
+          echo "解析版本号: $v (build $build_no)"
 
       - name: Show toolchain
         run: |
@@ -57,8 +61,10 @@ jobs:
       - name: Build Release (.app, ad-hoc signed)
         env:
           VERSION: ${{ steps.ver.outputs.version }}
+          BUILD_NUMBER: ${{ steps.ver.outputs.build }}
         # Step 5.6 番外：CI 上跑 ad-hoc 签名直接用 xcodebuild override，
         # 不走 Scripts/build_release.sh（本地脚本走 .xcodeproj 里的 Personal Team）
+        # v1.5.7：注入 CURRENT_PROJECT_VERSION 保证每次 release 的 CFBundleVersion 单调递增
         run: |
           set -o pipefail
           mkdir -p dist
@@ -68,12 +74,19 @@ jobs:
             -configuration Release \
             -derivedDataPath build/release \
             MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tail -200
           ditto build/release/Build/Products/Release/GSYCleanMac.app dist/GSYCleanMac.app
+          ACTUAL_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' dist/GSYCleanMac.app/Contents/Info.plist)
+          echo "Built CFBundleVersion = $ACTUAL_BUILD"
+          if [ "$ACTUAL_BUILD" != "$BUILD_NUMBER" ]; then
+            echo "::error::CFBundleVersion 注入失败：期望 $BUILD_NUMBER，实际 $ACTUAL_BUILD"
+            exit 1
+          fi
 
       - name: Make DMG
         env:
@@ -166,13 +179,17 @@ jobs:
 
             ### 🛟 安装故障兜底
 
-            如果首次启动提示 **"应用已损坏，无法打开"** 或在新 macOS 找不到「仍要打开」按钮，先在终端执行：
+            如果首次启动提示 **"应用已损坏，无法打开"** 或在新 macOS 找不到「仍要打开」按钮，**首选**按上面【步骤 2】走「系统设置 → 隐私与安全 → 仍要打开」，这是 Apple 官方推荐的、保留 Gatekeeper 防护的方式。
+
+            如果你确认 .dmg/.app.zip 的 SHA256 与本页面 `*.sha256` 完全一致（见下方「完整性校验」），且仍无法通过 GUI 放行，可以 **作为最后手段** 自行决定是否在终端执行：
 
             ```bash
+            # ⚠️ 这条命令会移除 Apple 的 quarantine 隔离标记，等同于绕过 Gatekeeper 二次校验。
+            # 仅在你已经手动比对过 SHA256、信任本仓库时执行，且只对你刚下载的 .app 操作。
             xattr -cr /Applications/GSYCleanMac.app
             ```
 
-            清除隔离属性后再重新双击启动即可。这个命令只是去掉浏览器/AirDrop 给 .app 打的 quarantine 标，不会改 .app 内容本身。
+            > 由于本项目当前使用 ad-hoc 临时签名（未购买 Apple Developer ID、未公证），Gatekeeper 提示是预期行为。如果你不接受任何形式的绕过，请等待后续 Developer ID + notarization 版本（参见 [docs/RELEASE.md](https://github.com/${{ github.repository }}/blob/main/docs/RELEASE.md) 路线图），或自行 fork 用你自己的 Developer ID 重新签名。
 
             ---
 

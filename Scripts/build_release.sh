@@ -43,11 +43,19 @@ mkdir -p "$DIST_DIR"
 rm -rf "$DIST_DIR/${PROJECT_NAME}.app"
 
 step "xcodebuild -scheme ${SCHEME} -configuration ${CONFIG}"
+# v1.5.7：CFBundleVersion 用 commit count 单调递增，保证每次构建唯一且可追溯。
+# Sparkle / Apple App Store / Gatekeeper TCC 缓存均依赖 CFBundleVersion 判定是否"新版本"，
+# 若多次 release 共用同一个 build 号会导致 update 静默失败、TCC 权限被错误复用。
+BUILD_NUMBER="${BUILD_NUMBER:-$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)}"
+GIT_SHA="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+step "Build number: ${BUILD_NUMBER} (git sha: ${GIT_SHA})"
+
 XCB_ARGS=(
     -project "$PROJECT"
     -scheme "$SCHEME"
     -configuration "$CONFIG"
     -derivedDataPath "$BUILD_DIR"
+    CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
     build
 )
 if [ -n "$VERSION" ]; then
@@ -66,14 +74,25 @@ ditto "$APP_PATH" "$DIST_DIR/${PROJECT_NAME}.app"
 step "校验 codesign"
 codesign -dv --verbose=2 "$DIST_DIR/${PROJECT_NAME}.app" 2>&1 | head -8 || true
 
+step "校验 Info.plist 版本一致性"
+PLIST="$DIST_DIR/${PROJECT_NAME}.app/Contents/Info.plist"
+ACTUAL_SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST" 2>/dev/null || echo "?")
+ACTUAL_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST" 2>/dev/null || echo "?")
+echo "  CFBundleShortVersionString = ${ACTUAL_SHORT}"
+echo "  CFBundleVersion            = ${ACTUAL_BUILD}"
+if [ "$ACTUAL_BUILD" != "$BUILD_NUMBER" ]; then
+    warn "CFBundleVersion 写入失败（期望 ${BUILD_NUMBER}，实际 ${ACTUAL_BUILD}），Sparkle 升级可能异常"
+fi
+
 cat <<EOF
 
 ${GREEN}${BOLD}Release 构建完成${NC}
-  配置:   ${CONFIG}
-  版本:   ${VERSION:-（默认沿用 Info.plist 的 CFBundleShortVersionString）}
-  产物:   ${DIST_DIR}/${PROJECT_NAME}.app
-  签名:   走 .xcodeproj 里 Xcode UI 配的 Personal Team Automatic
-          （要分发到其它机器需 Developer ID 公证，见 Scripts/codesign.sh）
+  配置:       ${CONFIG}
+  版本:       ${VERSION:-${ACTUAL_SHORT}}
+  Build:      ${BUILD_NUMBER} (git ${GIT_SHA})
+  产物:       ${DIST_DIR}/${PROJECT_NAME}.app
+  签名:       走 .xcodeproj 里 Xcode UI 配的 Personal Team Automatic
+              （要分发到其它机器需 Developer ID 公证，见 Scripts/codesign.sh）
 
 下一步：
   ./Scripts/make_dmg.sh ${DIST_DIR}/${PROJECT_NAME}.app ${DIST_DIR}/${PROJECT_NAME}-${VERSION:-1.0.0}.dmg
