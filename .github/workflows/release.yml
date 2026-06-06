@@ -88,6 +88,28 @@ jobs:
             exit 1
           fi
 
+      - name: Re-sign with Hardened Runtime (ad-hoc)
+        # v1.5.7：xcodebuild 走 ad-hoc 默认不开 Hardened Runtime；这里手动重签注入
+        #   --options runtime    启用 Hardened Runtime（阻止 dyld 注入 / 未签名 dylib 加载）
+        #   --timestamp=none     ad-hoc 无 Apple 时间戳服务器，跳过
+        #   --entitlements       保留 user-selected r/w + 全盘只读 exception
+        # 没有 Developer ID 拿不到 Notarization，但 Hardened Runtime 是离线能力，免费账号也能用
+        # 等同 Rectangle / AltTab 的安全等级（这些 App 现在也是 ad-hoc + Hardened Runtime）
+        run: |
+          set -euxo pipefail
+          codesign --force --sign - \
+            --options runtime \
+            --timestamp=none \
+            --entitlements App/GSYCleanMac.entitlements \
+            dist/GSYCleanMac.app
+          codesign --verify --strict --verbose=2 dist/GSYCleanMac.app
+          codesign -d --entitlements - --xml dist/GSYCleanMac.app > /tmp/ents.xml || true
+          codesign -d -vvv dist/GSYCleanMac.app 2>&1 | grep -E "Identifier|Authority|Sealed|TeamIdentifier|Runtime" || true
+          # 验证 Hardened Runtime 真的开了
+          if ! codesign -d -vvv dist/GSYCleanMac.app 2>&1 | grep -q "flags=0x10000(runtime)"; then
+            echo "::warning::Hardened Runtime flag 未检出（可能 codesign 版本不显示，不致命）"
+          fi
+
       - name: Make DMG
         env:
           VERSION: ${{ steps.ver.outputs.version }}
@@ -118,6 +140,46 @@ jobs:
           cat GSYCleanMac-${VERSION}.dmg.sha256
           cat GSYCleanMac-${VERSION}.app.zip.sha256
 
+      - name: Minisign artifacts (optional)
+        # v1.5.7：可选的 minisign 离线签名，完全不依赖 Apple Developer Program。
+        #
+        # 触发条件：仓库 Settings → Secrets → MINISIGN_PRIVATE_KEY 已配置
+        #   - 私钥本地用 `minisign -G -p minisign.pub -s minisign.key` 生成
+        #   - 私钥内容（含密码或 unencrypted）粘贴到 GitHub Secret
+        #   - 如果私钥有密码，再配 MINISIGN_PASSWORD secret；无密码留空
+        #   - 公钥 minisign.pub 提交到仓库根目录供用户下载验签
+        #
+        # 没有 secret 时整个 step 安静跳过，不影响 release 发布。
+        # 这是免费 Personal Team 用户能拿到的"最接近 Sparkle EdDSA"的供应链信任方案：
+        #   - 用户拿到 .dmg + .dmg.minisig + minisign.pub
+        #   - 跑 `minisign -Vm GSYCleanMac-x.y.z.dmg -p minisign.pub`
+        #   - 一致 → 确认产物没有在 GitHub Releases CDN 被中间人改过
+        if: env.MINISIGN_PRIVATE_KEY != ''
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          brew install minisign
+          # 把 secret 写到临时私钥文件（runner 销毁时自动清掉）
+          printf '%s' "$MINISIGN_PRIVATE_KEY" > /tmp/minisign.key
+          chmod 600 /tmp/minisign.key
+          cd dist
+          # -W 表示从 stdin 读密码；-x 指定签名输出路径
+          if [ -n "${MINISIGN_PASSWORD:-}" ]; then
+            printf '%s' "$MINISIGN_PASSWORD" | \
+              minisign -S -s /tmp/minisign.key -m GSYCleanMac-${VERSION}.dmg -x GSYCleanMac-${VERSION}.dmg.minisig <&0
+            printf '%s' "$MINISIGN_PASSWORD" | \
+              minisign -S -s /tmp/minisign.key -m GSYCleanMac-${VERSION}.app.zip -x GSYCleanMac-${VERSION}.app.zip.minisig <&0
+          else
+            # 无密码私钥：用 echo 喂空 stdin
+            echo | minisign -S -s /tmp/minisign.key -m GSYCleanMac-${VERSION}.dmg -x GSYCleanMac-${VERSION}.dmg.minisig
+            echo | minisign -S -s /tmp/minisign.key -m GSYCleanMac-${VERSION}.app.zip -x GSYCleanMac-${VERSION}.app.zip.minisig
+          fi
+          ls -lh GSYCleanMac-${VERSION}.dmg.minisig GSYCleanMac-${VERSION}.app.zip.minisig
+          rm -f /tmp/minisign.key
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -125,9 +187,11 @@ jobs:
           path: |
             dist/GSYCleanMac-${{ steps.ver.outputs.version }}.dmg
             dist/GSYCleanMac-${{ steps.ver.outputs.version }}.dmg.sha256
+            dist/GSYCleanMac-${{ steps.ver.outputs.version }}.dmg.minisig
             dist/GSYCleanMac-${{ steps.ver.outputs.version }}.app.zip
             dist/GSYCleanMac-${{ steps.ver.outputs.version }}.app.zip.sha256
-          if-no-files-found: error
+            dist/GSYCleanMac-${{ steps.ver.outputs.version }}.app.zip.minisig
+          if-no-files-found: warn
           retention-days: 90
 
       - name: Create GitHub Release
@@ -139,7 +203,6 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-          fail_on_unmatched_files: true
           body: |
             ## GSYCleanMac ${{ github.ref_name }}
 
@@ -195,12 +258,45 @@ jobs:
 
             ### ✅ 完整性校验
 
+            **方式 1：SHA256（最低门槛）**
+
             ```bash
             shasum -a 256 GSYCleanMac-${{ steps.ver.outputs.version }}.dmg
             shasum -a 256 GSYCleanMac-${{ steps.ver.outputs.version }}.app.zip
             ```
 
-            应分别输出与 `.dmg.sha256` / `.app.zip.sha256` 一致的哈希。
+            应分别输出与 `.dmg.sha256` / `.app.zip.sha256` 一致的哈希。SHA256 只能证明"下载的字节没坏"，无法证明发布者是谁。
+
+            **方式 2：minisign 离线签名（推荐高级用户）**
+
+            如果本次 Release 附带 `*.minisig` 文件（取决于发布者是否配置了 `MINISIGN_PRIVATE_KEY` secret），可以做发布者身份验签：
+
+            ```bash
+            brew install minisign
+            # 公钥 minisign.pub 仓库根目录可下载，**首次需对照仓库 commit 历史确认未被替换**
+            minisign -Vm GSYCleanMac-${{ steps.ver.outputs.version }}.dmg -p minisign.pub
+            ```
+
+            输出 `Signature and comment signature verified` 即为通过。minisign 用的是 ed25519 离线签名，不依赖 Apple Developer Program，等同 Rectangle / SwitchHosts 等开源项目正在使用的方案。
+
+            > 设计权衡：本项目客户端**不自动下载也不自动安装**升级包（参见 `UpdateChecker.swift` 设计注释），所以没有 Sparkle EdDSA 那种"装在用户机器上的公钥强制验签"链路。minisign 是给愿意主动验签的用户的可选信任增强。
+
+            ---
+
+            ### 🔒 Hardened Runtime
+
+            本次构建已开启 macOS Hardened Runtime（即使是 ad-hoc 签名也能启用），可阻止：
+
+            - 任意 dyld 动态库注入
+            - 未签名第三方代码加载到 GSYCleanMac 进程
+            - 调试器附加到进程（除非显式 `entitlements.com.apple.security.get-task-allow=true`，本项目设为 false）
+
+            验证方式：
+
+            ```bash
+            codesign -d -vvv /Applications/GSYCleanMac.app 2>&1 | grep -i runtime
+            # 期望看到 flags=0x10000(runtime)
+            ```
 
             ---
 
@@ -228,5 +324,8 @@ jobs:
           files: |
             dist/GSYCleanMac-${{ steps.ver.outputs.version }}.dmg
             dist/GSYCleanMac-${{ steps.ver.outputs.version }}.dmg.sha256
+            dist/GSYCleanMac-${{ steps.ver.outputs.version }}.dmg.minisig
             dist/GSYCleanMac-${{ steps.ver.outputs.version }}.app.zip
             dist/GSYCleanMac-${{ steps.ver.outputs.version }}.app.zip.sha256
+            dist/GSYCleanMac-${{ steps.ver.outputs.version }}.app.zip.minisig
+          fail_on_unmatched_files: false

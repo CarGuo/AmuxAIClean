@@ -74,6 +74,14 @@ ditto "$APP_PATH" "$DIST_DIR/${PROJECT_NAME}.app"
 step "校验 codesign"
 codesign -dv --verbose=2 "$DIST_DIR/${PROJECT_NAME}.app" 2>&1 | head -8 || true
 
+# v1.5.7：核对 Hardened Runtime 是否开启
+# 本地 Personal Team 走 .xcodeproj 里的 ENABLE_HARDENED_RUNTIME = YES；如果设置被改回 NO 这里会 warn
+if codesign -d -vvv "$DIST_DIR/${PROJECT_NAME}.app" 2>&1 | grep -q "flags=0x10000(runtime)"; then
+    echo "  ✓ Hardened Runtime: enabled"
+else
+    warn "Hardened Runtime 未启用（codesign flags 未含 runtime）；建议 .xcodeproj 设 ENABLE_HARDENED_RUNTIME=YES"
+fi
+
 step "校验 Info.plist 版本一致性"
 PLIST="$DIST_DIR/${PROJECT_NAME}.app/Contents/Info.plist"
 ACTUAL_SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST" 2>/dev/null || echo "?")
