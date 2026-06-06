@@ -20,10 +20,19 @@ import SafetyKit
 /// 1. 调用方传入未经过滤的路径（比如未来直接接命令行 / scripting）
 /// 2. UI 卡住老的 SafetyVerdict 缓存导致 forbid 漏检
 /// 3. 用户硬塞 `..` 或绝对路径以外的形式
+///
+/// **并发与可变性契约（v1.5.7 显式化）**：
+/// - `safety` / `trie` 一旦 init 完成即 immutable；`@unchecked Sendable` 是基于这一前提
+///   外加 `_accessDeniedPaths` 用 `accessDeniedLock` 保护的可变状态。
+/// - 调用 `setAccessDeniedPaths(_:)` 是更新可变状态的**唯一**入口，其它任何字段都不
+///   可在 init 后改写；如新增字段必须重审 Sendable 假设。
+/// - `moveToTrash` / `partitionByForbid` 可被多 actor / 多并发 await chain 调用，
+///   `trie` / `safety` 的并发读由 SafetyKit 保证（参见 [VendorTrieNode](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/VendorTrie.swift#L29) 的生命周期契约）。
 public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
     private let safety: SafetyEngine
     /// 预建的 vendor 路径树（M4-P0 修复）。
+    /// **生命周期**：init 注入，全程只读；read 阶段并发安全详见 [VendorTrieNode](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/VendorTrie.swift#L29) 契约。
     /// 非 nil 时 partitionByForbid 走 [SafetyEngine.evaluate(path:trie:home:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L342)，
     /// 让 vendors.yaml 中通过 `paths: [{verdict: forbid}]` 声明的硬禁区
     /// （`~/.cargo/bin`、`~/.android/sdk`、`~/Library/Developer/Xcode/UserData/KeyBindings/...` 等）
@@ -245,26 +254,24 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 let recycleSkipped = urls.count - movedCount
                 let totalSkipped = recycleSkipped + rejectedCount
                 // Step 7：把 NSWorkspace 回填的 [URL: URL] 转成 (originalPath, trashedPath) pair。
-                // 仅在 error == nil 时落盘——recycle 的语义是"成功项放进 trashed 字典；失败项不在
-                // 字典里，但 error 描述聚合错误"。partial success 的情况字典只有部分 entry，
-                // 此时我们倾向于不写 history（保守：宁缺勿乱），等下次干净的成功再写。
-                let pairs: [(String, String)]
-                if error == nil {
-                    pairs = trashed.map { (orig, trashedURL) in
-                        (orig.path, trashedURL.path)
-                    }
-                } else {
-                    pairs = []
+                // v1.5.7：partial success 也要把已成功的项写 undo history。
+                // 之前的实现 `if error == nil { pairs = ... } else { pairs = [] }` 会让用户在
+                // "删了 100 个文件，最后 1 个失败" 时永远无法 undo 已经成功放进废纸篓的 99 个，
+                // 严重违反"删除可回滚"的产品契约。NSWorkspace.recycle 的回调语义保证 trashed
+                // 字典里的项是**确实已经移入废纸篓**的，无论 error 是否为 nil，这些 pair 都是可信的。
+                let pairs: [(String, String)] = trashed.map { (orig, trashedURL) in
+                    (orig.path, trashedURL.path)
                 }
                 let err: String?
                 if let error {
                     GSYLog.error(.trash, "NSWorkspace.recycle 失败 moved=\(movedCount)/\(urls.count) err=\(error.localizedDescription)")
+                    let partialNote = movedCount > 0 ? "（已成功放入废纸篓 \(movedCount) 项，可在「最近删除」恢复）" : ""
                     if rejectedCount > 0 {
-                        err = "recycle-failed: \(error.localizedDescription)"
+                        err = "recycle-failed: \(error.localizedDescription)\(partialNote)"
                             + "；另有 \(rejectedCount) 路径被安全策略拦截"
                             + "（首条原因=\(firstReason ?? "unknown")）"
                     } else {
-                        err = "recycle-failed: \(error.localizedDescription)"
+                        err = "recycle-failed: \(error.localizedDescription)\(partialNote)"
                     }
                 } else if rejectedCount > 0 {
                     err = "safety-blocked: \(rejectedCount) 路径被安全策略拦截；首条原因=\(firstReason ?? "unknown")"
