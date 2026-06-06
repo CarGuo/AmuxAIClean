@@ -267,6 +267,27 @@ struct GSYCleanMacApp: App {
                 Toggle("显示扫描悬浮窗", isOn: hudBinding)
                     .keyboardShortcut("h", modifiers: [.command, .shift])
             }
+            // v1.5.7：替换 SwiftUI 默认的占位 Help 菜单，提供生产级帮助入口。
+            CommandGroup(replacing: .help) {
+                Button("GSYCleanMac 帮助") {
+                    Self.openExternal("https://github.com/CarGuo/GSYCleanMac#readme")
+                }
+                .keyboardShortcut("?", modifiers: [.command])
+                Divider()
+                Button("隐私协议…") {
+                    Self.openExternal("https://github.com/CarGuo/GSYCleanMac/blob/main/PRIVACY.md")
+                }
+                Button("使用条款…") {
+                    Self.openExternal("https://github.com/CarGuo/GSYCleanMac/blob/main/TERMS.md")
+                }
+                Divider()
+                Button("反馈问题 / 提交 Issue…") {
+                    Self.openExternal("https://github.com/CarGuo/GSYCleanMac/issues/new/choose")
+                }
+                Button("在 Finder 中显示日志") {
+                    Self.revealLogsInFinder()
+                }
+            }
         }
 
         // v1.0：标准 ⌘, 设置窗口（隐藏文件 toggle / 大文件阈值 / 自定义路径）。
@@ -460,5 +481,35 @@ struct GSYCleanMacApp: App {
             NSLog("[GSYCleanMac] vendor 规则加载失败：\(error)")
             return []
         }
+    }
+
+    /// v1.5.7：Help 菜单统一的外链跳转入口。
+    /// 只允许 https，避免后续被改成 file:// / shell: 等危险 scheme。
+    @MainActor
+    private static func openExternal(_ urlString: String) {
+        guard let url = URL(string: urlString),
+              url.scheme == "https" else {
+            NSLog("[GSYCleanMac] openExternal 拒绝非 https URL: \(urlString)")
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// v1.5.7：Help → 在 Finder 中显示日志。
+    /// 日志路径与 [GSYLog.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LogKit/Sources/LogKit/GSYLog.swift) 默认 sink 保持一致。
+    @MainActor
+    private static func revealLogsInFinder() {
+        let fm = FileManager.default
+        let logDir = fm.urls(for: .libraryDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent("Logs/GSYCleanMac", isDirectory: true)
+        guard let logDir else {
+            NSLog("[GSYCleanMac] revealLogsInFinder 找不到 ~/Library/Logs 目录")
+            return
+        }
+        if !fm.fileExists(atPath: logDir.path) {
+            try? fm.createDirectory(at: logDir, withIntermediateDirectories: true)
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([logDir])
     }
 }
