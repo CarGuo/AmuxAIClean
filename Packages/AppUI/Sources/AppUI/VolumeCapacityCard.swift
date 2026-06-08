@@ -8,22 +8,33 @@ import ScanKit
 /// 经由 [ScanCoordinator.refreshVolumeCapacity()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
 /// 在启动 / 扫描完成 / 删除完成 三个时机刷新。
 ///
-/// 显示三个段：
-/// 1. **可清理 (绿色)**：当前会话内 ScanCoordinator 累积识别到的可清理字节数；
-///    用户视觉感知"我们能帮你清这么多"——同时随着删除会缩小（snapshot.totalBytes 实时变化）
-/// 2. **其它已用 (灰色)**：usedBytes - cleanable，系统/应用/文档等不区分
-/// 3. **可用 (浅灰)**：availableBytes
+/// 显示四个段（v1.6 / 2026-06 由"三段"升级为"四段"，对齐业界 CleanMyMac / DaisyDisk）：
+/// 1. **安全可清 (绿/黄/橙/红 按 severity 变色)**：`SafetyVerdict.safe` 的行字节合计；
+///    用户视觉感知"我们能直接帮你清这么多"——同时随删除会缩小
+/// 2. **需要确认 (黄色 caution 固定)**：`SafetyVerdict.confirm` 的行字节合计；
+///    需要用户在主区域逐项 review/勾选后才能清的部分（应用残留、大文件、旧下载等）。
+///    **不计入"自动清"数字**，单独成段是因为：用户能看出"还有多少潜在空间没释放"，
+///    但不会被误导以为这部分是一键清的
+/// 3. **其它已用 (灰色)**：usedBytes - safe - confirm，系统/应用/文档/不可清理等
+/// 4. **可用 (按 available severity 变色)**：availableBytes
 ///
 /// 设计权衡：
-/// - 不做"系统/应用/文档/缓存"四段细分（如系统设置那种）：那种细分需要扫整盘且对齐
-///   APFS 子卷 + System Integrity Protection 边界，工程量过大且我们的清理目标不在那个粒度。
-/// - 改为**"可清理 vs 其它已用 vs 可用"** 三段，专注本 App 的核心价值。
+/// - **为什么不一锅炖把 safe + confirm 合并为"可清理"**：v1.6 之前就这么干过，
+///   结果是 sidebar 数字 = 所有"看似能清"的总和，包括用户根本不想清的文件，
+///   会让用户误以为点一下"清理"就能回收这么多 → 严重违背"白名单加法"原则
+/// - **为什么不做四段以上**（系统/应用/文档/缓存）：那种细分需要扫整盘且对齐
+///   APFS 子卷 + System Integrity Protection 边界，工程量过大且不在我们的清理目标粒度
+/// - confirm 段固定 caution 黄而不跟 severity 变色：避免与 safe 段颜色冲突，
+///   且语义上 confirm 段越大不是越"危险"，只是"等用户决定"
 public struct VolumeCapacityCard: View {
 
     let snapshot: VolumeCapacity.Snapshot?
-    /// 当前会话本 App 识别到的"可清理"字节数。来自 `coordinator.snapshot.totalBytes`。
+    /// 当前会话本 App 识别到的"可直接安全清理"字节数。来自 [ScanSnapshot.safeBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L375-L377)。
     /// 0 时不渲染绿色段。
-    let cleanableBytes: Int64
+    let safeBytes: Int64
+    /// 当前会话识别到的"需要用户确认才能清"字节数。来自 [ScanSnapshot.confirmBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L380-L382)。
+    /// 0 时不渲染黄色段；非 0 时单独成段提示"还有 X 待你确认"。
+    let confirmBytes: Int64
     /// v1.3 review-fix Must1：snapshot == nil 时（卷容量探测失败 / 卷被 unmount 重挂瞬间）
     /// 触发 UI 重试入口；nil 表示不显示重试按钮（仅显示"未知"占位）。
     let onRetry: (() -> Void)?
@@ -33,11 +44,13 @@ public struct VolumeCapacityCard: View {
     let swap: SwapProbe.Snapshot?
 
     public init(snapshot: VolumeCapacity.Snapshot?,
-                cleanableBytes: Int64,
+                safeBytes: Int64,
+                confirmBytes: Int64,
                 swap: SwapProbe.Snapshot? = nil,
                 onRetry: (() -> Void)? = nil) {
         self.snapshot = snapshot
-        self.cleanableBytes = cleanableBytes
+        self.safeBytes = safeBytes
+        self.confirmBytes = confirmBytes
         self.swap = swap
         self.onRetry = onRetry
     }
@@ -121,24 +134,27 @@ public struct VolumeCapacityCard: View {
         }
     }
 
-    /// 三段堆叠条：可清理 / 其它已用 / 可用
+    /// 四段堆叠条：安全可清 / 需要确认 / 其它已用 / 可用
     @ViewBuilder
     private func stackedBar(snapshot s: VolumeCapacity.Snapshot) -> some View {
-        // 防御：若 cleanable > used（极端情况：扫描结果含跨卷文件），按 used 兜底
-        let cleanable = max(0, min(cleanableBytes, s.usedBytes))
-        let otherUsed = max(0, s.usedBytes - cleanable)
+        let segs = clampedSegments(s: s)
         let total = max(1, s.totalBytes)
-        let cleanableColor = CleanableSeverity.forCleanableBytes(cleanable).color
+        let safeColor = CleanableSeverity.forCleanableBytes(segs.safe).color
+        let confirmColor = CleanableSeverity.caution.color
 
         GeometryReader { geo in
             let w = geo.size.width
-            // 浮点计算，把每段宽度算到至少 1pt（除非该段为 0）
-            let cleanW = cleanable > 0 ? max(2, CGFloat(Double(cleanable) / Double(total)) * w) : 0
-            let otherW = otherUsed > 0 ? max(2, CGFloat(Double(otherUsed) / Double(total)) * w) : 0
-            let availW = max(0, w - cleanW - otherW)
+            // 浮点计算，把每段宽度算到至少 2pt（除非该段为 0），保证非零段在 sidebar 窄宽下仍可见
+            let safeW    = segs.safe    > 0 ? max(2, CGFloat(Double(segs.safe)    / Double(total)) * w) : 0
+            let confirmW = segs.confirm > 0 ? max(2, CGFloat(Double(segs.confirm) / Double(total)) * w) : 0
+            let otherW   = segs.other   > 0 ? max(2, CGFloat(Double(segs.other)   / Double(total)) * w) : 0
+            let availW   = max(0, w - safeW - confirmW - otherW)
             HStack(spacing: 0) {
-                if cleanW > 0 {
-                    Rectangle().fill(cleanableColor).frame(width: cleanW)
+                if safeW > 0 {
+                    Rectangle().fill(safeColor).frame(width: safeW)
+                }
+                if confirmW > 0 {
+                    Rectangle().fill(confirmColor).frame(width: confirmW)
                 }
                 if otherW > 0 {
                     Rectangle().fill(Color.gray.opacity(0.6)).frame(width: otherW)
@@ -153,24 +169,35 @@ public struct VolumeCapacityCard: View {
         .frame(height: 8)
     }
 
-    /// 图例：每段一个色块 + 文案 + 字节数
+    /// 图例：每段一个色块 + 文案 + 字节数。confirm 段为 0 时整行省略。
     @ViewBuilder
     private func legend(snapshot s: VolumeCapacity.Snapshot) -> some View {
-        let cleanable = max(0, min(cleanableBytes, s.usedBytes))
-        let otherUsed = max(0, s.usedBytes - cleanable)
-        let cleanableSeverity = CleanableSeverity.forCleanableBytes(cleanable)
+        let segs = clampedSegments(s: s)
+        let safeSeverity = CleanableSeverity.forCleanableBytes(segs.safe)
         let availableSeverity = CleanableSeverity.forAvailableBytes(s.availableBytes)
         VStack(alignment: .leading, spacing: 3) {
-            if cleanable > 0 {
+            if segs.safe > 0 {
                 legendRow(
-                    color: cleanableSeverity.color,
+                    color: safeSeverity.color,
                     label: String(localized: "capacity.legend.cleanable", bundle: .module),
-                    bytes: cleanable,
-                    valueColor: cleanableSeverity.color,
+                    bytes: segs.safe,
+                    valueColor: safeSeverity.color,
                     bold: true
                 )
             }
-            legendRow(color: .gray.opacity(0.6), label: String(localized: "capacity.legend.other_used", bundle: .module), bytes: otherUsed)
+            // confirm 段非零才出现：避免在没扫到任何 .confirm 行时白白多一行视觉噪音
+            // 字节数颜色用 caution 黄，但不加粗 —— 视觉权重低于 safe，
+            // 告诉用户"还有这些待你确认，但不是一键清的范围"
+            if segs.confirm > 0 {
+                legendRow(
+                    color: CleanableSeverity.caution.color,
+                    label: String(localized: "capacity.legend.confirm", bundle: .module),
+                    bytes: segs.confirm,
+                    valueColor: CleanableSeverity.caution.color,
+                    bold: false
+                )
+            }
+            legendRow(color: .gray.opacity(0.6), label: String(localized: "capacity.legend.other_used", bundle: .module), bytes: segs.other)
             // 可用段也按"可用空间 severity"上色（绿/黄/橙/红）：剩越少越红
             legendRow(
                 color: availableSeverity.color,
@@ -181,6 +208,36 @@ public struct VolumeCapacityCard: View {
             )
         }
         .font(.caption2)
+    }
+
+    /// 把 (safeBytes, confirmBytes) 钳制到 usedBytes 范围内，算出四段最终展示字节。
+    ///
+    /// 防御场景：
+    /// - **跨卷文件**：扫描结果可能包含挂载到其他卷的 symlink target，导致 safe+confirm > used
+    /// - **快照漂移**：volume snapshot 和 scan snapshot 不是同一瞬间采的，
+    ///   极端情况下用户刚删了大文件 → usedBytes 已减小但 scan snapshot 还没刷
+    ///
+    /// 钳制策略（顺序很重要）：
+    /// 1. 先各自非负
+    /// 2. 若 safe > used，safe = used、confirm = 0（safe 优先级最高）
+    /// 3. 否则若 safe + confirm > used，confirm 让步到 used - safe
+    /// 4. other = used - safe - confirm（守恒不变量：safe + confirm + other == used）
+    ///
+    /// **不变量**：返回值满足 `safe + confirm + other == s.usedBytes`，且三者均 ≥ 0。
+    private func clampedSegments(
+        s: VolumeCapacity.Snapshot
+    ) -> (safe: Int64, confirm: Int64, other: Int64) {
+        let rawSafe = max(0, safeBytes)
+        let rawConfirm = max(0, confirmBytes)
+        let used = max(0, s.usedBytes)
+
+        if rawSafe >= used {
+            return (used, 0, 0)
+        }
+        let safe = rawSafe
+        let confirm = min(rawConfirm, used - safe)
+        let other = used - safe - confirm
+        return (safe, confirm, other)
     }
 
     @ViewBuilder

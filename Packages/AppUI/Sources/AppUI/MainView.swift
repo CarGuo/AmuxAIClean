@@ -318,9 +318,11 @@ public struct MainView: View {
                 // v1.6 / 2026-06：**口径修复**——以前这里灌的是 `coordinator.snapshot.totalBytes`，
                 // 即"已扫到的全部字节"，导致 sidebar 出现"扫多少就 Cleanable 多少"的离谱口径（
                 // 用户截图: Scanning 133.49 GB ↔ Cleanable 133.49 GB）。
-                // 现在统一走 [ScanSnapshot.cleanableBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L389-L394)
-                // ——仅 `SafetyVerdict.safe` 行求和，与 HUD 同源、与业界对齐。
-                cleanableBytes: coordinator.snapshot.cleanableBytes,
+                // 现在统一走 [ScanSnapshot.safeBytes / .confirmBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L375-L387)
+                // ——仅 `SafetyVerdict.safe` 行求和算入"可清"段、`SafetyVerdict.confirm`
+                // 行单独成"需要确认"段，与业界（CleanMyMac / DaisyDisk）四段分层对齐。
+                safeBytes: coordinator.snapshot.safeBytes,
+                confirmBytes: coordinator.snapshot.confirmBytes,
                 swap: coordinator.swapSnapshot,
                 // v1.3 review-fix Must1：snapshot 探测失败时让卡片提供"重试"按钮，回调到 coordinator.refreshVolumeCapacity()。
                 onRetry: { coordinator.refreshVolumeCapacity() }
