@@ -29,6 +29,11 @@ final class I18nIntegrityTests: XCTestCase {
     private static let appUISources =
         "Packages/AppUI/Sources/AppUI"
 
+    /// App target 目录（相对仓库根）—— GSYCleanMacApp.swift 等顶层 SwiftUI Scene/Commands
+    /// 也会通过 `String(localized: ..., bundle: AppUIResources.bundle)` 引用 xcstrings 里的 key，
+    /// 必须一并纳入引用扫描范围，否则会误报 stale。
+    private static let appTargetSources = "App"
+
     /// 找仓库根：从当前测试文件一路 ../ 找到 .git
     private func repoRoot() throws -> URL {
         var url = URL(fileURLWithPath: #filePath)
@@ -53,18 +58,20 @@ final class I18nIntegrityTests: XCTestCase {
         return Array(strings?.keys ?? Dictionary<String, Any>().keys)
     }
 
-    /// 读 AppUI 全部 .swift 源文件内容（拼成一大段，方便 grep）
+    /// 读 AppUI + App target 全部 .swift 源文件内容（拼成一大段，方便 grep）
     private func loadAllSwiftSources() throws -> String {
         let root = try repoRoot()
-        let dir = root.appendingPathComponent(Self.appUISources)
         let fm = FileManager.default
-        let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: nil)
         var combined = ""
-        while let url = enumerator?.nextObject() as? URL {
-            guard url.pathExtension == "swift" else { continue }
-            if let s = try? String(contentsOf: url, encoding: .utf8) {
-                combined += s
-                combined += "\n"
+        for relDir in [Self.appUISources, Self.appTargetSources] {
+            let dir = root.appendingPathComponent(relDir)
+            let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: nil)
+            while let url = enumerator?.nextObject() as? URL {
+                guard url.pathExtension == "swift" else { continue }
+                if let s = try? String(contentsOf: url, encoding: .utf8) {
+                    combined += s
+                    combined += "\n"
+                }
             }
         }
         return combined

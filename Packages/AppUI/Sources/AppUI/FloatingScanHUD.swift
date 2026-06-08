@@ -756,10 +756,12 @@ struct FloatingScanHUDView: View {
     }
 
     /// 可清理 = 当前 snapshot 中 verdict==.safe 的字节合计。
+    ///
+    /// v1.6 / 2026-06：本地 reduce 已下沉到 [ScanSnapshot.cleanableBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L389-L394)
+    /// 作为**全项目可清理口径单一源**，与 sidebar 的 [VolumeCapacityCard](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/VolumeCapacityCard.swift) 同源，
+    /// 杜绝主窗 / HUD 两条口径漂移。
     private var cleanableBytes: Int64 {
-        coordinator.snapshot.rows.reduce(0) { acc, row in
-            row.verdict == .safe ? acc + row.bytes : acc
-        }
+        coordinator.snapshot.cleanableBytes
     }
 
     /// v1.3：HUD 当前的语义状态。

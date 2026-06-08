@@ -7653,6 +7653,55 @@
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Restored %1$lld items, skipped %2$lld. First error: %3$@" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已恢复 %1$lld 项，跳过 %2$lld 项。首条错误：%3$@" } }
       }
+    },
+    "menu.app.checkUpdates" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Check for Updates…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "检查更新…" } }
+      }
+    },
+    "menu.view.showHUD" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Show Scan HUD" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "显示扫描悬浮窗" } }
+      }
+    },
+    "menu.help.help" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "GSY Clean Mac Help" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "GSY 清理管家帮助" } }
+      }
+    },
+    "menu.help.privacy" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Privacy Policy…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "隐私协议…" } }
+      }
+    },
+    "menu.help.terms" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Terms of Use…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "使用条款…" } }
+      }
+    },
+    "menu.help.feedback" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Feedback / File an Issue…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "反馈问题 / 提交 Issue…" } }
+      }
+    },
+    "menu.help.revealLogs" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Show Logs in Finder" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "在 Finder 中显示日志" } }
+      }
     }
   }
 }

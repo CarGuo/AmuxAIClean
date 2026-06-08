@@ -1,25 +1,20 @@
 name: Release
 
-# Step 5.6 番外：暂时屏蔽自动触发，省 GitHub Actions 额度。
-# 需要发 Release 时改回 push tags 触发或手动 dispatch。
+# v1.6 / 2026-06：Release 是本仓库**唯一**自动跑的 workflow。
+# 触发条件：
+#   1) push tag 形如 v1.2.3   —— 真发版自动走完整打包链路
+#   2) workflow_dispatch      —— 临时手动验 release pipeline，不打 tag 也能跑
+# 设计意图：日常 push / PR 全部静默（见 ci.yml 注释），把所有 Actions 额度全留给真正的发版。
 on:
+  push:
+    tags:
+      - 'v*.*.*'
   workflow_dispatch:
     inputs:
       version:
         description: '版本号（不含 v 前缀，如 1.0.0）'
         required: true
         default: '1.0.0'
-# 旧自动触发器（暂禁用）：
-# on:
-#   push:
-#     tags:
-#       - 'v*.*.*'
-#   workflow_dispatch:
-#     inputs:
-#       version:
-#         description: '版本号（不含 v 前缀，如 1.0.0）'
-#         required: true
-#         default: '1.0.0'
 
 concurrency:
   group: release-${{ github.ref }}

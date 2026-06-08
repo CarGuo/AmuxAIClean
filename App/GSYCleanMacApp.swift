@@ -100,7 +100,7 @@ struct GSYCleanMacApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("GSY 清理管家", id: Self.mainWindowID) {
+        WindowGroup(String(localized: "app.name", bundle: AppUIResources.bundle), id: Self.mainWindowID) {
             MainView(vendors: vendors,
                      settings: settings,
                      pathStore: pathStore,
@@ -256,7 +256,7 @@ struct GSYCleanMacApp: App {
         .commands {
             // v1.1：Help 菜单加"检查更新"入口
             CommandGroup(after: .appInfo) {
-                Button("检查更新…") {
+                Button(String(localized: "menu.app.checkUpdates", bundle: AppUIResources.bundle)) {
                     updateChecker.checkNow()
                 }
             }
@@ -264,27 +264,27 @@ struct GSYCleanMacApp: App {
             // 用 CommandGroup(after: .toolbar) 让它落在 macOS 标准"显示"区。
             CommandGroup(after: .toolbar) {
                 Divider()
-                Toggle("显示扫描悬浮窗", isOn: hudBinding)
+                Toggle(String(localized: "menu.view.showHUD", bundle: AppUIResources.bundle), isOn: hudBinding)
                     .keyboardShortcut("h", modifiers: [.command, .shift])
             }
             // v1.5.7：替换 SwiftUI 默认的占位 Help 菜单，提供生产级帮助入口。
             CommandGroup(replacing: .help) {
-                Button("GSYCleanMac 帮助") {
+                Button(String(localized: "menu.help.help", bundle: AppUIResources.bundle)) {
                     Self.openExternal("https://github.com/CarGuo/GSYCleanMac#readme")
                 }
                 .keyboardShortcut("?", modifiers: [.command])
                 Divider()
-                Button("隐私协议…") {
+                Button(String(localized: "menu.help.privacy", bundle: AppUIResources.bundle)) {
                     Self.openExternal("https://github.com/CarGuo/GSYCleanMac/blob/main/PRIVACY.md")
                 }
-                Button("使用条款…") {
+                Button(String(localized: "menu.help.terms", bundle: AppUIResources.bundle)) {
                     Self.openExternal("https://github.com/CarGuo/GSYCleanMac/blob/main/TERMS.md")
                 }
                 Divider()
-                Button("反馈问题 / 提交 Issue…") {
+                Button(String(localized: "menu.help.feedback", bundle: AppUIResources.bundle)) {
                     Self.openExternal("https://github.com/CarGuo/GSYCleanMac/issues/new/choose")
                 }
-                Button("在 Finder 中显示日志") {
+                Button(String(localized: "menu.help.revealLogs", bundle: AppUIResources.bundle)) {
                     Self.revealLogsInFinder()
                 }
             }

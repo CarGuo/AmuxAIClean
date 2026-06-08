@@ -352,4 +352,44 @@ public struct ScanSnapshot: Sendable {
     public var isPristine: Bool {
         !isFinished && scannedFileCount == 0 && rows.isEmpty
     }
+
+    // MARK: - 可清理口径（v1.6 / 2026-06）
+    //
+    // 设计背景：截图反馈"扫多少 = Cleanable 多少"被用户当面质疑后，把"可清理字节数"
+    // 收敛到 **ScanSnapshot 内** 作为单一权威口径，杜绝 totalBytes 被错灌进 sidebar 的
+    // VolumeCapacityCard 的历史 bug（MainView.swift L318 旧赋值）。
+    //
+    // 业界对齐（CleanMyMac / Onyx / macOS Storage）：
+    //   - "Cleanable" **只**计入安全可一键清理的桶（缓存 / 日志 / DerivedData / Trash 等），
+    //     对应本项目的 SafetyVerdict.safe；
+    //   - .confirm 项需用户审阅，独立桶单算（confirmBytes），UI 可拆为"需要确认"段；
+    //   - .forbid 项是绝对不动（SIP / 用户文档 / 凭证），列出来仅为审计。
+    //
+    // 实现取舍：
+    //   - O(N) reduce on rows —— rows 已是节流后聚合（一级子目录），数量级几十~几百行，
+    //     远低于 ScanSnapshot publish 频率（节流 ≥150ms），不需要缓存；
+    //   - 单元测试 [CleanableBytesContractTests] 守恒：safe + confirm + forbid == Σrows.bytes，
+    //     防止后续 SafetyVerdict 增枚举时漏改这里。
+
+    /// `.safe` 行字节合计 —— 即业界口径的"Cleanable / Auto-cleanable"。
+    public var safeBytes: Int64 {
+        rows.reduce(0) { $1.verdict == .safe ? $0 + $1.bytes : $0 }
+    }
+
+    /// `.confirm` 行字节合计 —— "需要用户确认"段，UI 应单列，**不要**并进 cleanable 数字。
+    public var confirmBytes: Int64 {
+        rows.reduce(0) { $1.verdict == .confirm ? $0 + $1.bytes : $0 }
+    }
+
+    /// `.forbid` 行字节合计 —— 仅供审计 / 调试输出，UI 一般不展示。
+    public var forbidBytes: Int64 {
+        rows.reduce(0) { $1.verdict == .forbid ? $0 + $1.bytes : $0 }
+    }
+
+    /// 业界口径的"可清理字节数"——**仅** `.safe` 行求和。
+    ///
+    /// **必须**用作 [VolumeCapacityCard.cleanableBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/VolumeCapacityCard.swift#L26) /
+    /// [FloatingScanHUD.cleanableBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift) 的唯一来源。
+    /// **禁止**再回退到 `totalBytes`——那是已扫总量，跟"能不能删"无关。
+    public var cleanableBytes: Int64 { safeBytes }
 }

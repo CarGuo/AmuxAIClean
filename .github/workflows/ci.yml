@@ -1,10 +1,19 @@
 name: CI
 
+# v1.6 / 2026-06：CI 默认不跑，省 Actions 额度。
+# 本仓库只在「发 release」时才跑工程化校验：
+#   - 平时 push / pull_request 都不触发，避免每次提交都吃免费分钟数
+#   - 需要主动验测试时，去 Actions 页面手动 Run workflow（workflow_dispatch）
+#   - 真正的发版校验链路落在 release.yml 的 build-dmg 里（强制 swift test 前置不在此处，
+#     是因为 release.yml 的 xcodebuild 已经会把所有 SPM target 编译一遍，编译期错误会兜底）
+# 旧自动触发器（已禁用，保留以便日后想恢复时无需翻历史）：
+# on:
+#   push:
+#     branches: [main, master]
+#   pull_request:
+#     branches: [main, master]
 on:
-  push:
-    branches: [main, master]
-  pull_request:
-    branches: [main, master]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
