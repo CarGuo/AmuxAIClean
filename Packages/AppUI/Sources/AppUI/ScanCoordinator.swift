@@ -21,6 +21,12 @@ public final class ScanCoordinator: ObservableObject {
     /// 与 permissionDeniedPaths 合并展示在统一 banner，**不会触发系统弹窗**。
     @Published public private(set) var tccProtectedSkippedPaths: [String] = []
 
+    /// M4-T1：本轮扫描启动时从 [WhitelistStore.shared](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/WhitelistStore.swift)
+    /// 拉一份的内存快照（normalized 后的 path Set）。publishSnapshot 是同步函数，
+    /// 不能在 hot path 里 `await` 一个 actor —— 因此扫描入口拉一次快照，全程同步命中。
+    /// 命中判定与 WhitelistStore.isWhitelisted 一致：完全相等 或 entry+"/" 作为 path prefix。
+    private var whitelistSnapshot: Set<String> = []
+
     /// v1.3：主列表（推荐清理 / 自定义路径）排序键。默认 `.sizeDesc`（按大小从大到小）。
     ///
     /// - 切换时立刻重发当前 snapshot，UI 列表实时按新排序刷新（不需要重扫）。
@@ -628,6 +634,19 @@ public final class ScanCoordinator: ObservableObject {
         // v1.3：cancel() 把 activeCategoryID 清空了，本次 scan 入口重新打上当前 token；
         // runScan 内每个事件先校验 `categoryID == activeCategoryID`，过期 stream 残留事件会被自动丢弃。
         activeCategoryID = category.id
+
+        // M4-T1：本轮扫描前异步预拉一份 whitelist 快照。
+        // 异步拉完才能命中过滤——首帧 publishSnapshot 时 snapshot 可能仍是空 Set，
+        // 这是可接受的：首帧用户也基本看不到几个 bucket，且后续帧都会命中。
+        whitelistSnapshot = []
+        Task { [weak self] in
+            let snap = await WhitelistStore.shared.snapshotPaths()
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                guard self.activeCategoryID == category.id else { return }
+                self.whitelistSnapshot = snap
+            }
+        }
 
         let rootURL = category.rootURL
         let categoryID = category.id
@@ -2293,10 +2312,24 @@ public final class ScanCoordinator: ObservableObject {
             ))
         }
         let rows: [RowItem]
-        if finished {
-            rows = unsorted.sorted(by: { mainListSortKey.lessThan($0, $1) })
+        // M4-T1：白名单过滤——命中规则与 WhitelistStore.isWhitelisted 等价（同步快照版）。
+        let filtered: [RowItem]
+        if whitelistSnapshot.isEmpty {
+            filtered = unsorted
         } else {
-            rows = unsorted.sorted { $0.id < $1.id }
+            filtered = unsorted.filter { row in
+                let p = row.url.path
+                if whitelistSnapshot.contains(p) { return false }
+                for entry in whitelistSnapshot where p.hasPrefix(entry + "/") {
+                    return false
+                }
+                return true
+            }
+        }
+        if finished {
+            rows = filtered.sorted(by: { mainListSortKey.lessThan($0, $1) })
+        } else {
+            rows = filtered.sorted { $0.id < $1.id }
         }
 
         // v1.3：ETA 采样 —— 在每帧 publishSnapshot 时基于自上次采样的字节增量算瞬时速率，

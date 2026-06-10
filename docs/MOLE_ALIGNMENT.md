@@ -264,6 +264,25 @@ JSON schema，避免 plist 编辑器锁定与 YAML 解析依赖：
 - 所有 7 项 ScanKit / SafetyKit 内核已落地（共 +63 测试 case 全绿）
 - UI 接线（RowView 右键加白、UninstallScreen 集成 pkgutil 候选、MaintenanceScreen、Charts 卡片）统一推至 **M4** 收口，避免 ScanCoordinator 单文件 900+ 行热路径在内核齐全前被反复改
 
+### 4.6.5 M4 UI 串联路线（2026-06-10 启动）
+
+把 M3 落地的 7 个内核全部接入 UI，让用户真正看得见、点得到、用得上。
+**原则**：每项独立 PR-级原子改动，最小化对 [ScanCoordinator.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 热路径的扰动。
+
+| ID | 任务 | 主要改动 | 状态判据 | 状态 |
+|---|---|---|---|---|
+| M4-T1 | RowView 右键「不再询问此路径」 | [RowView.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowView.swift) contextMenu + [ScanCoordinator.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 扫描时过滤 + 本地化 1 串 | 加白一条路径后下次扫描该路径不再出现；UI 解除白名单后恢复 | ✅ 2026-06-10 |
+| M4-T2 | KnownVersionedRoots 接入扫描调度 | [ScanCoordinator.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) scanDeveloper 注入 `KnownVersionedRoots.scanAll(home:)` 命中作为新 ScanCategory | DeviceSupport 老版本 / Toolbox 老版本作为独立分组出候选 | ⏳ 拆下一轮单独 PR |
+| M4-T3 | UninstallScreen 集成 pkg receipts | [AppUninstaller.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppUninstaller.swift) 注入 `PkgutilReceiptsScanner`，bundleVendor → receipts → absolutePaths 作为 `MatchReason.pkgReceipt` 候选 | 卸载 Adobe/Reader 这种 pkg 装的 app 时出现 pkg receipt 候选块 | ⏳ 拆下一轮单独 PR |
+| M4-T4 | 新建 MaintenanceScreen | 新建 `Packages/AppUI/Sources/AppUI/MaintenanceScreen.swift` 三按钮 + outcome list + i18n | 三任务可独立点击 / 批量执行 / 实时显示 outcome.log | ⏳ 拆下一轮单独 PR |
+| M4-T5 | TrashPipeline 删除成功后写 CleanStatsStore | [MainView.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) `performDelete` 成功分支：以 `pairs` 反查 `selectedRows.bytes` → `CleanStatsStore.shared.record(bytesReclaimed:category:)` | 真删一条后 store 累计 +bytes / 30 天事件出新点（卡片 UI 下一轮做） | ✅ 2026-06-10 |
+
+**M4 验收基线**（沿用 §5）：
+1. 全量 `swift test` 三 target 不破回归
+2. 每个新建 UI Swift 文件至少配一条 i18n 完整性契约
+3. 至少跑一次 `Scripts/run_debug.sh` 手动冒烟
+4. 单次提交合并推送
+
 ---
 
 ## 5. 测试与验收基线

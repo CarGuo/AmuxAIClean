@@ -93,6 +93,13 @@ public actor WhitelistStore {
         return inMemoryEntries.values.sorted { $0.addedAt > $1.addedAt }
     }
 
+    /// M4-T1：返回当前所有 normalized path 的 Set 快照。
+    /// 用于 ScanCoordinator 这类不便在 hot path 反复 await actor 的同步调用方。
+    public func snapshotPaths() async -> Set<String> {
+        await loadIfNeeded()
+        return Set(inMemoryEntries.keys)
+    }
+
     /// 判定某条扫描结果是否被加白。
     ///
     /// 命中规则：

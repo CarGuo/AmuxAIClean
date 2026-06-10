@@ -90,6 +90,21 @@ struct RowView: View {
         }
         .padding(.vertical, 4)
         .help(row.url.path)
+        // M4-T1：右键加入用户白名单。WhitelistStore 是 actor + JSON 持久化，
+        // 加白后立即生效（在 ScanCoordinator 的下一轮扫描里过滤）。
+        // 这里只调 store，不强制重扫——让用户决定何时刷新视图，避免把扫描动作藏在右键里。
+        .contextMenu {
+            Button {
+                let path = row.url.path
+                Task.detached {
+                    await WhitelistStore.shared.add(path: path,
+                                                    reason: "user contextMenu")
+                }
+            } label: {
+                Label(String(localized: "row.context.whitelist.add", bundle: .module),
+                      systemImage: "hand.raised")
+            }
+        }
     }
 
     /// 列内 mtime 短文案：当年 MM-dd / 跨年 yyyy-MM-dd / nil → "—"。

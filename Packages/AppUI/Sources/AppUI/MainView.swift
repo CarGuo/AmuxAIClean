@@ -1518,6 +1518,21 @@ public struct MainView: View {
             if !dryRun {
                 // HL 行为采集：真删之后才上报，dryRun 不污染统计
                 await recorder.recordTrashed(paths: paths)
+                // M4-T5：把这次成功移入废纸篓的字节数 / 类目记入 CleanStatsStore。
+                // bytes 取自 selectedRows 与 pairs 的交集（pairs 是 NSWorkspace.recycle 真正成功的项），
+                // 避免把"被 SafetyEngine 拦截"或"recycle 失败"的项也算进累计统计。
+                let succeededPaths = Set(pairs.map(\.0))
+                let movedBytes = selectedRows
+                    .filter { succeededPaths.contains($0.url.path) }
+                    .reduce(Int64(0)) { $0 + $1.bytes }
+                if movedBytes > 0 {
+                    let categoryID = coordinator.snapshot.categoryID
+                    Task.detached { [movedBytes, categoryID] in
+                        await CleanStatsStore.shared.record(
+                            bytesReclaimed: movedBytes,
+                            category: categoryID.isEmpty ? "unknown" : categoryID)
+                    }
+                }
                 selection.removeAll()
                 // **v1.5.3**：把已删 path 从 ScanCoordinator 的 snapshot.rows / 内存索引 /
                 // treeChildrenCache 全部剔除——修复"删除后 item 仍在列表"的 bug 根因。
