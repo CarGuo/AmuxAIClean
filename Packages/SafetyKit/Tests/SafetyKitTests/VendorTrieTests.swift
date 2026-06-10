@@ -133,9 +133,11 @@ final class VendorTrieTests: XCTestCase {
         }
         let elapsed = Date().timeIntervalSince(start) * 1000.0 // ms
 
-        // budget：本地裸金属 M 系列芯片实测 ~110-130ms，留 200ms 作为护栏；
-        // GitHub Actions 共享 macos-15 runner 同样工作量观测到 ~135ms（CPU 主频 + 共享 IO 损耗），
-        // 走宽松上限 350ms 既能继续守住"线性扫 trie 不爆性能"的回归底线，又不在 CI 上误杀。
+        // budget：
+        // - **release** 模式：M 系列裸金属 ~110-130ms / CI macos-15 共享 runner ~135ms。
+        //   200ms（本地）/ 350ms（CI）= 守住"线性扫 trie 不爆性能"的回归底线。
+        // - **debug** 模式：未 -O 编译时字符串比较成本翻 5-7×，本地实测 ~700-800ms，
+        //   再叠 CI 共享 runner 的抖动给到 1500ms 上限，避免日常 `swift test` 误杀。
         //
         // 历史：原本 60/100/250ms 是基于 SafetyEngine 仅做 12 条前缀扫描的版本设定。
         // DEV_ARTIFACTS_RULES §2.7 黄金禁区落地后，evaluateStandardized 内固定要扫
@@ -143,7 +145,11 @@ final class VendorTrieTests: XCTestCase {
         // 6 项 + 路径段 1 项 ≈ 多出 20 个字符串比较。线性扫 trie 主路径并未变化。
         let isCI = ProcessInfo.processInfo.environment["CI"] == "true"
             || ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true"
+        #if DEBUG
+        let budgetMs: Double = isCI ? 1500.0 : 1000.0
+        #else
         let budgetMs: Double = isCI ? 350.0 : 200.0
+        #endif
         XCTAssertLessThan(elapsed, budgetMs,
                           "5000 次 evaluate 耗时 \(elapsed)ms 应小于 \(budgetMs)ms (CI=\(isCI))")
     }

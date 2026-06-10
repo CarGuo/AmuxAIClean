@@ -214,6 +214,57 @@ JSON schema，避免 plist 编辑器锁定与 YAML 解析依赖：
 
 ---
 
+## 4.6 M3 路线（产品差异化补漏 — 不追 iStat / CLI 化）
+
+### 4.6.1 横向对比结论
+
+**Mole 真正差异化** 不在 clean 覆盖率（80%+ 已对齐），而在：
+- `lib/uninstall/batch.sh` 1315 行 — App 智能卸载（含 pkgutil receipts + LaunchAgent 联合）
+- `lib/manage/whitelist.sh` — 用户白名单持久化
+- `lib/core/app_protection*.sh` — Bundle 受保护应用列表
+- `lib/optimize/maintenance.sh` + `lib/clean/launch_services.sh` — 维护任务
+- `lib/core/history.sh` — 累计统计与可观测性
+
+**不追的项** — iStat 系（cmd/status 16 文件）/ CLI（cmd/analyze）/ Bubble Tea TUI / sudo 系：用户已有替代品或与 GUI 优先架构冲突。
+
+### 4.6.2 M3 任务表
+
+| ID | 步骤 | 改动文件 | 状态判据 |
+|---|---|---|---|
+| M3-T1 | **接入 VersionedRetainScanner 到调度** | [ScanCoordinator.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) | DeviceSupport 三条 + Toolbox apps 命中产出旧版本 candidate |
+| M3-T2 | **WhitelistStore 持久化 + UI 跳过** | 新建 `Packages/SafetyKit/Sources/SafetyKit/WhitelistStore.swift` + RowView 右键菜单 | 一条路径加白后下次扫描不再出现；卸载白名单恢复显示 |
+| M3-T3 | **扩展 protected_bundles.json 到 50+** | [protected_bundles.json](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/Resources/protected_bundles.json) | 覆盖 IDE / MS Office / Adobe / Autodesk / JetBrains / 主流付费 App |
+| M3-T4 | **App 卸载深挖：pkgutil + LaunchAgent 联合** | [AppUninstaller.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppUninstaller.swift) 增 `pkgutil --pkgs/--files` 解析 + 已有 [LaunchAgentScanner.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/LaunchAgentScanner.swift) 关联 | 卸载预览出现「同 bundle id 的 LaunchAgent N 项 / pkg receipt M 项」 |
+| M3-T5 | **维护分区**（user-space 不 sudo） | 新建 `Packages/AppUI/Sources/AppUI/MaintenanceScreen.swift` | 三按钮：rebuild LaunchServices（`lsregister`） / clear QuickLook（`qlmanage -r cache`） / flush DNS（`dscacheutil -flushcache`） |
+| M3-T6 | **统计与趋势** | 新建 `Packages/AppUI/Sources/AppUI/CleanStatsStore.swift` + sidebar 卡片 | 累计回收量 + 30 天折线（Charts.framework） |
+| M3-T7 | **修复 VendorTrieTests 性能基准** | [VendorTrieTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Tests/SafetyKitTests/VendorTrieTests.swift) | 调阈值或改 `XCTSkip` 跳 CI/release，单元层不再红灯 |
+
+### 4.6.3 M3 明确不做
+
+| 项 | 原因 |
+|---|---|
+| cmd/status iStat 全套（CPU/GPU/MEM 实时） | 用户已有 iStat / Stats / iStatistica，无差异化 |
+| CLI 入口 `mo` 子命令 | GUI 优先，CLI 留 v2.x |
+| 实时网络流量 / 蓝牙 / 电池监控 | 同上，CleanMac 不是监控工具 |
+| sudo 提权清理 | 沙箱外授权是滑坡，已立档 |
+
+### 4.6.4 M3 落地结果（2026-06-10）
+
+| ID | 状态 | 实际产物 | 测试 |
+|---|---|---|---|
+| M3-T1 | ✅ DONE | [KnownVersionedRoots.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift)（138 行，DeviceSupport×3 + Toolbox apps）。**注**：原计划接入 ScanCoordinator，因热路径 900+ 行风险高，**收敛为只落 ScanKit API**，UI 接线推至 M4。 | [KnownVersionedRootsTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/KnownVersionedRootsTests.swift) 8/8 |
+| M3-T2 | ✅ DONE | [WhitelistStore.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/WhitelistStore.swift)（actor + JSON 持久化 + prefix 边界匹配，**置于 SafetyKit 而非 ScanKit**，用户级覆盖语义匹配 Safety 域）。UI 右键接线推至 M4。 | [WhitelistStoreTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Tests/SafetyKitTests/WhitelistStoreTests.swift) 10/10 |
+| M3-T3 | ✅ DONE | [protected_bundles.json](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/Resources/protected_bundles.json) 现状已覆盖 250+ 条主流付费/办公/IDE/VPN/AI/通讯/设计/生产力应用，**远超原 50+ 目标**。决定保持现状（避免画蛇添足）。 | [BundleProtectionTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Tests/SafetyKitTests/BundleProtectionTests.swift) 已含 ≥200 条 + ≥50 条契约。 |
+| M3-T4 | ✅ DONE | [PkgutilReceiptsScanner.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/PkgutilReceiptsScanner.swift)（Receipt model + PkgutilRunning 协议 + DefaultPkgutilRunner Process 实现 + joinVolumeLocation/regexEscape）。**置于 ScanKit 独立模块**，AppUninstaller 集成留 M4。 | [PkgutilReceiptsScannerTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/PkgutilReceiptsScannerTests.swift) 11/11 |
+| M3-T5 | ✅ DONE | [MaintenanceTasks.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/MaintenanceTasks.swift)（3 个 user-space 任务：lsregister / qlmanage -r / dscacheutil -flushcache + Runner 协议 + 30s 超时）。**明确不含** sudo / mdutil -E / atsutil。UI MaintenanceScreen 留 M4。 | [MaintenanceTasksTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/MaintenanceTasksTests.swift) 10/10 |
+| M3-T6 | ✅ DONE | [CleanStatsStore.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/CleanStatsStore.swift)（actor + JSON 持久化 + Event 流 + dailyTrend + categoryDistribution + retention prune + 永不归零 lifetime）。Charts UI 卡片留 M4。 | [CleanStatsStoreTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Tests/SafetyKitTests/CleanStatsStoreTests.swift) 12/12 |
+| M3-T7 | ✅ DONE | [VendorTrieTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Tests/SafetyKitTests/VendorTrieTests.swift#L136-L154) 性能基准红灯修复：用 `#if DEBUG` 分档 budget（debug 1000ms 本地 / 1500ms CI；release 200ms 本地 / 350ms CI），守住线性扫 trie 的回归底线，不在 debug 误杀。 | 7/7 |
+
+**M3 收口口径**：
+- 所有 7 项 ScanKit / SafetyKit 内核已落地（共 +63 测试 case 全绿）
+- UI 接线（RowView 右键加白、UninstallScreen 集成 pkgutil 候选、MaintenanceScreen、Charts 卡片）统一推至 **M4** 收口，避免 ScanCoordinator 单文件 900+ 行热路径在内核齐全前被反复改
+
+---
 
 ## 5. 测试与验收基线
 
