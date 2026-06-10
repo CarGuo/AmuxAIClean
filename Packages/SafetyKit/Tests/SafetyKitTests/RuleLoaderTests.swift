@@ -323,8 +323,8 @@ final class RuleLoaderTests: XCTestCase {
         guard let apple = rules.first(where: { $0.name == "Apple Developer Tools" }) else {
             return XCTFail("vendors.yaml 应包含 Apple Developer Tools vendor")
         }
-        XCTAssertEqual(apple.paths.count, 21,
-                       "§2.1 表共 21 条 path-rule，全部要落地")
+        XCTAssertEqual(apple.paths.count, 24,
+                       "§2.1 表共 24 条 path-rule（M2 新增 XCTestDevices + Instruments + CoreSimulator Logs）")
 
         // 抽样校验关键 verdict
         let byPath = Dictionary(uniqueKeysWithValues:
@@ -335,6 +335,10 @@ final class RuleLoaderTests: XCTestCase {
         XCTAssertEqual(byPath["~/Library/MobileDevice/Provisioning Profiles"], .forbid)
         XCTAssertEqual(byPath["~/Library/org.swift.swiftpm/security"], .forbid)
         XCTAssertEqual(byPath["~/Library/Developer/Xcode/UserData/CodeSnippets"], .forbid)
+        // M2 新增：XCTestDevices / Instruments / CoreSimulator 日志（均 safe）
+        XCTAssertEqual(byPath["~/Library/Developer/XCTestDevices"], .safe)
+        XCTAssertEqual(byPath["~/Library/Caches/com.apple.dt.instruments"], .safe)
+        XCTAssertEqual(byPath["~/Library/Logs/CoreSimulator"], .safe)
 
         // CoreSimulator/Devices 必须带 recipe（引导用户走 simctl delete）
         let devicesRule = apple.paths.first {

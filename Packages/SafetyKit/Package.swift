@@ -9,7 +9,12 @@ let package = Package(
         .package(path: "../LogKit")
     ],
     targets: [
-        .target(name: "SafetyKit", dependencies: ["LogKit"], path: "Sources/SafetyKit"),
+        .target(
+            name: "SafetyKit",
+            dependencies: ["LogKit"],
+            path: "Sources/SafetyKit",
+            resources: [.process("Resources")]
+        ),
         .testTarget(name: "SafetyKitTests", dependencies: ["SafetyKit"], path: "Tests/SafetyKitTests")
     ]
 )

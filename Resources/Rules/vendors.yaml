@@ -23,12 +23,15 @@ vendors:
       - path: "~/Library/Developer/Xcode/iOS DeviceSupport"
         verdict: "safe"
         reason: "真机调试符号缓存，连接设备时 Xcode 自动重下"
+        # 适配 VersionedRetainScanner（keepLatest=2 + semverPreferred）回收旧 iOS 版本子目录
       - path: "~/Library/Developer/Xcode/watchOS DeviceSupport"
         verdict: "safe"
         reason: "watchOS 真机调试符号缓存，连接设备时自动重下"
+        # 适配 VersionedRetainScanner（keepLatest=2 + semverPreferred）
       - path: "~/Library/Developer/Xcode/macOS DeviceSupport"
         verdict: "safe"
         reason: "macOS 真机调试符号缓存，连接设备时自动重下"
+        # 适配 VersionedRetainScanner（keepLatest=2 + semverPreferred）
       - path: "~/Library/Developer/Xcode/UserData/IDEEditorInteractivityHistory"
         verdict: "safe"
         reason: "编辑器交互历史，删除无影响"
@@ -85,6 +88,18 @@ vendors:
       - path: "~/Library/org.swift.swiftpm/security"
         verdict: "forbid"
         reason: "SwiftPM 私有 keychain 数据"
+      # —— XCTestDevices（safe，等价 Mole clean_xcode_xctest_devices） ——
+      - path: "~/Library/Developer/XCTestDevices"
+        verdict: "safe"
+        reason: "XCTest 跑测临时设备数据，下次 xcodebuild test 自动重建"
+        recipe: "建议先确认 Xcode / xcodebuild 进程已退出"
+      # —— Instruments 与 Simulator 设备日志（safe，M2 补漏） ——
+      - path: "~/Library/Caches/com.apple.dt.instruments"
+        verdict: "safe"
+        reason: "Instruments 跑测中间产物，无业务影响"
+      - path: "~/Library/Logs/CoreSimulator"
+        verdict: "safe"
+        reason: "CoreSimulator 运行日志，可随时重建"
 
   # ========== Android / Gradle / AVD（DEV_ARTIFACTS_RULES.md §2.3） ==========
   # 这些 vendor 都没有 bundle_id_prefix，纯 path-rule 驱动（与 Apple Developer Tools 相同模式）。
@@ -1071,6 +1086,8 @@ vendors:
       - path: "~/Library/Application Support/JetBrains/Toolbox/apps"
         verdict: "confirm"
         reason: "Toolbox 安装的所有 IDE（IDEA/PyCharm/CLion 等）真实文件，确认 current 软链后才能清旧版"
+        # 适配 VersionedRetainScanner（keepLatest=1 + semverPreferred）：
+        # 每个 IDE 子目录（如 IDEA-U/ch-0/）下的版本号目录走 keep-latest-1
       - path: "~/Library/Caches/JetBrains/Toolbox"
         verdict: "safe"
         reason: "Toolbox 下载缓存（IDE installer dmg/tar.gz），按需重下"

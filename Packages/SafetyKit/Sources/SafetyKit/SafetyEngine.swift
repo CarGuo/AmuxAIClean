@@ -21,6 +21,8 @@ public enum SafetyRejection: String, Sendable, Equatable {
     case vendorPathRule         // 命中 vendors.yaml 中显式声明 verdict=forbid 的 path 规则
     case accessDenied           // v1.3.zzzz：扫描期 BulkScanner 标记 permissionDenied / tccProtected，
                                 // 上层在 pre-flight 一票否决——这类路径里实质没有数据，"删它"是个伪操作
+    case bundleSystemCritical   // 命中 protected_bundles.json system_critical（Finder/Dock/Settings 等）
+    case bundleDataProtected    // 命中 protected_bundles.json data_protected（1Password/JetBrains/WeChat 等）
     case ok
 }
 
@@ -337,11 +339,98 @@ public struct SafetyEngine: Sendable {
         // 8. 已知缓存路径升级为 safe（UI 可默认勾选）
         for safePrefix in Self.safeCachePrefixes(home: home) {
             if standardized.hasPrefix(safePrefix) {
+                // 8.1 bundle 保护叠加：safe 路径若属于 data_protected app
+                //     （例：~/Library/Caches/com.1password.7/Logs），升级为 confirm。
+                if let bm = Self.bundleMatch(standardized: standardized, home: home),
+                   bm.kind == .dataProtected {
+                    return (.confirm, .bundleDataProtected)
+                }
                 return (.safe, .ok)
             }
         }
 
+        // 9. bundle 保护兜底：confirm 默认出口前再扫一次。
+        //    设计取舍：两类命中都**只升级到 confirm**，不强 forbid。
+        //    原因：真正"绝对禁删"的系统区已由 hardForbidPrefixes（/System、/Library/Apple
+        //    等）完全拦截。用户家目录下的 `~/Library/Containers/com.apple.*` 是该 app 的
+        //    用户数据容器（如 Mail Downloads），强 forbid 会与 vendors.yaml 的 confirm 规则
+        //    冲突（RuleLoader 在 load-time 会把 vendor 整条丢弃）。
+        //    appleUninstallable 仅供 uninstall 流程使用，cleanup 评估忽略。
+        if let bm = Self.bundleMatch(standardized: standardized, home: home) {
+            switch bm.kind {
+            case .systemCritical:
+                return (.confirm, .bundleSystemCritical)
+            case .dataProtected:
+                return (.confirm, .bundleDataProtected)
+            case .appleUninstallable:
+                break
+            }
+        }
+
         return (.confirm, .ok)
+    }
+
+    // MARK: - Bundle Protection 接入（Mole `app_protection_data.sh` 对齐）
+
+    /// 从已 standardize 的路径中提取 bundle ID，并查询 [BundleProtection.shared](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/BundleProtection.swift)。
+    ///
+    /// **设计原则：保守解析，永不误升级**。仅识别下列**确定性**路径模式：
+    /// - `~/Library/Caches/<bundleID>[/...]`
+    /// - `~/Library/Preferences/<bundleID>.plist`
+    /// - `~/Library/Containers/<bundleID>[/...]`
+    /// - `~/Library/Group Containers/<bundleID>[/...]`
+    /// - `~/Library/HTTPStorages/<bundleID>[/...]`
+    /// - `~/Library/WebKit/<bundleID>[/...]`
+    /// - `~/Library/Saved Application State/<bundleID>.savedState[/...]`
+    ///
+    /// **不**尝试读 Info.plist / 反查 LaunchServices —— 那会引入 IO 与权限风险，
+    /// 且 evaluate 在 ScanCoordinator 热路径上调用极频繁（5000 path/批次量级）。
+    ///
+    /// **性能契约（VendorTrieTests 性能基准守护）**：
+    /// - 5000 次评估必须 < 200ms（本地）/ 350ms（CI）
+    /// - 因此本函数零分配：用 Substring 切片 + Index 步进，不用 split / String(...) 构造
+    /// - 非 `~/Library` 路径 1 步 hasPrefix 短路退出
+    static func bundleMatch(standardized: String, home: String) -> BundleProtection.Match? {
+        // 1. 必须是 home/Library/ 子路径 —— 一次 hasPrefix 短路
+        let libraryRoot = home + "/Library/"
+        guard standardized.hasPrefix(libraryRoot) else { return nil }
+
+        // 2. 找第一段（dir）：libraryRoot 后到下一个 '/'
+        let afterRoot = standardized.index(standardized.startIndex, offsetBy: libraryRoot.count)
+        guard let slashAfterDir = standardized[afterRoot...].firstIndex(of: "/") else {
+            return nil
+        }
+        let dir = standardized[afterRoot..<slashAfterDir]
+
+        // 3. 找第二段（candidate）：slashAfterDir+1 到下一个 '/' 或字符串尾
+        let candidateStart = standardized.index(after: slashAfterDir)
+        let candidateEnd = standardized[candidateStart...].firstIndex(of: "/") ?? standardized.endIndex
+        var candidate = standardized[candidateStart..<candidateEnd]
+        guard !candidate.isEmpty else { return nil }
+
+        // 4. 按 dir 形状剥后缀（.plist / .savedState），无配对的 dir 早退
+        let isContainerDir: Bool
+        switch dir {
+        case "Caches", "Containers", "Group Containers",
+             "HTTPStorages", "WebKit":
+            isContainerDir = true
+        case "Preferences":
+            guard candidate.hasSuffix(".plist") else { return nil }
+            candidate = candidate.dropLast(".plist".count)
+            isContainerDir = false
+        case "Saved Application State":
+            guard candidate.hasSuffix(".savedState") else { return nil }
+            candidate = candidate.dropLast(".savedState".count)
+            isContainerDir = false
+        default:
+            return nil
+        }
+
+        // 5. 不含 `.` 的候选段只在 Caches/Containers 下放行（覆盖 Cursor / Claude / Firefox
+        //    这类无点 ID），其他 dir 退出避免对随机目录名做 set 查询
+        if !candidate.contains(".") && !isContainerDir { return nil }
+
+        return BundleProtection.match(bundleID: String(candidate))
     }
 
     /// 简单语义包装：是否被禁。
