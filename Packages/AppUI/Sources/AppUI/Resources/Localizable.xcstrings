@@ -4881,6 +4881,23 @@
         }
       }
     },
+    "uninstall.reason.pkg_receipt": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "pkg receipt · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "pkg 安装清单 · %@"
+          }
+        }
+      }
+    },
     "largefiles.export.failed.title": {
       "extractionState": "manual",
       "localizations": {
@@ -7725,6 +7742,90 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Show Logs in Finder" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "在 Finder 中显示日志" } }
+      }
+    },
+    "maintenance.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Maintenance" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "系统维护" } }
+      }
+    },
+    "maintenance.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "User-space maintenance tasks. No sudo required." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "用户空间维护任务，无需管理员密码。" } }
+      }
+    },
+    "maintenance.button.run" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Run" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "执行" } }
+      }
+    },
+    "maintenance.button.run_all" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Run All" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全部执行" } }
+      }
+    },
+    "maintenance.outcome.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Recent Outcomes" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最近执行结果" } }
+      }
+    },
+    "maintenance.outcome.empty" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No tasks executed yet." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "尚未执行任何任务。" } }
+      }
+    },
+    "maintenance.task.launchservices.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Rebuild Launch Services" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "重建启动服务数据库" } }
+      }
+    },
+    "maintenance.task.launchservices.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Fix duplicated or wrong entries in \"Open With\" menu." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "右键「打开方式」列表错乱或重复时执行。" } }
+      }
+    },
+    "maintenance.task.quicklook.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Flush QuickLook Cache" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "清理 QuickLook 缓存" } }
+      }
+    },
+    "maintenance.task.quicklook.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Fix stale or white Finder preview thumbnails." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Finder 预览图发白或不更新时执行。" } }
+      }
+    },
+    "maintenance.task.dns.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Flush DNS Cache" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "刷新 DNS 缓存" } }
+      }
+    },
+    "maintenance.task.dns.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Use when sites resolve to outdated IPs (safe)." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "网站解析到旧 IP 时执行（无害）。" } }
       }
     }
   }

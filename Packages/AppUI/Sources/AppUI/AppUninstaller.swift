@@ -1,6 +1,7 @@
 import Foundation
 import LogKit
 import SafetyKit
+import ScanKit
 
 /// 残留候选项 —— 是“可能”属于被卸载 App 的文件/目录。
 ///
@@ -37,6 +38,14 @@ public enum MatchReason: Hashable, Sendable {
     /// 通过 [SpotlightProbing](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SpotlightFallback.swift)
     /// 严格谓词查到。关联值是命中谓词类别（`"bundleID"` / `"appName"`），方便 UI 提示证据链。
     case spotlight(String)
+    /// M4-T3 / 2026-06：pkgutil receipts 命中。
+    /// 通过 [PkgutilReceiptsScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/PkgutilReceiptsScanner.swift)
+    /// 以 bundleID / bundleVendor 作前缀拉 `pkgutil --pkgs=<vendor>.*`，命中的
+    /// pkg 安装清单展开成绝对路径后作为候选（典型场景：Adobe / Acrobat Reader 这类
+    /// 用 `.pkg` 安装的应用，残留分布在 `/Library/Application Support/Adobe`、
+    /// `/Library/PrivilegedHelperTools/com.adobe.*` 等系统级位置）。关联值是命中的
+    /// pkgID，方便 UI 提示证据链。
+    case pkgReceipt(String)
 }
 
 /// 解析后的 .app 元数据。
@@ -112,6 +121,11 @@ public struct AppUninstaller: Sendable {
     public let spotlight: SpotlightProbing
     /// Spotlight 单次查询超时（秒）。NSMetadataQuery 偶尔会卡数十秒，必须有上限。
     public let spotlightTimeout: TimeInterval
+    /// M4-T3 / 2026-06：pkgutil receipts 兜底扫描器。
+    /// 默认走 [DefaultPkgutilRunner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/PkgutilReceiptsScanner.swift)，
+    /// 测试可注入 fake runner 喂死数据。`nil` 表示完全关闭 pkgReceipt 候选发现
+    /// （单测里 in-memory home / 不真实 / 想 isolate 主路径时使用）。
+    public let pkgutilScanner: PkgutilReceiptsScanner?
 
     public init(
         homeDirectory: String = NSHomeDirectory(),
@@ -119,7 +133,8 @@ public struct AppUninstaller: Sendable {
         fileManager: FileManagerSnapshotting = DefaultFileManagerSnapshot(),
         vendorRules: [VendorRule] = [],
         spotlight: SpotlightProbing? = nil,
-        spotlightTimeout: TimeInterval = 1.5
+        spotlightTimeout: TimeInterval = 1.5,
+        pkgutilScanner: PkgutilReceiptsScanner? = nil
     ) {
         self.homeDirectory = homeDirectory
         self.systemLibrary = systemLibrary
@@ -136,6 +151,15 @@ public struct AppUninstaller: Sendable {
             self.spotlight = NoopSpotlightProbe()
         }
         self.spotlightTimeout = spotlightTimeout
+        // 默认决策：homeDirectory 是真实 home 时启用 DefaultPkgutilRunner（生产路径）；
+        // 否则禁用，避免子进程 /usr/sbin/pkgutil 拖慢 / 污染单测。
+        if let s = pkgutilScanner {
+            self.pkgutilScanner = s
+        } else if homeDirectory == NSHomeDirectory() {
+            self.pkgutilScanner = PkgutilReceiptsScanner()
+        } else {
+            self.pkgutilScanner = nil
+        }
     }
 
     /// 11 个用户级残留目录 + 1 个系统级 LaunchDaemons。
@@ -210,10 +234,52 @@ public struct AppUninstaller: Sendable {
             }
         }
 
+        // M4-T3：第 5 路 —— pkgutil receipts 兜底
+        // 以 vendor 前缀（如 com.adobe）拉 `pkgutil --pkgs=com.adobe.*`，把命中
+        // pkg 的安装清单展开成绝对路径作为候选。去重 + 文件存在性过滤后追加。
+        // 注：pkgutil 子进程在伪 home / nil scanner 场景已被关闭，单测不会被波及。
+        out.append(contentsOf: pkgReceiptCandidates(for: meta, seenPaths: &seenPaths))
+
         return out
     }
 
-    /// 找出和当前 app 元数据“同厂商”的所有 VendorRule。
+    /// M4-T3：基于 pkgutil receipts 的候选发现。
+    ///
+    /// 决策：先尝试 vendor 前缀（`com.adobe`）；若 vendor 拉不到，再退到 bundleID 严格相等。
+    /// 这与 [PkgutilReceiptsScanner.receipts(matchingBundleIDPrefix:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/PkgutilReceiptsScanner.swift#L56-L71)
+    /// 的"前缀匹配 + 末尾 `.*`"语义一致；vendor 优先是因为残留 pkg 通常和主 pkg 共享 vendor 前缀
+    /// （`com.adobe.acrobat.reader.app` 与 `com.adobe.acrobat.shared` 同时存在）。
+    ///
+    /// 过滤：路径已在前 4 路出现过的不重复添加；文件实际不存在的（`fileExists=false`）丢弃。
+    func pkgReceiptCandidates(for meta: AppMetadata, seenPaths: inout Set<String>) -> [UninstallCandidate] {
+        guard let scanner = pkgutilScanner else { return [] }
+        // 候选 prefix：vendor 优先，否则用 bundleID 自身。
+        let prefix = meta.bundleVendor ?? meta.bundleID
+        guard !prefix.isEmpty else { return [] }
+        let receipts = scanner.receipts(matchingBundleIDPrefix: prefix)
+        guard !receipts.isEmpty else { return [] }
+
+        var out: [UninstallCandidate] = []
+        let fm = FileManager.default
+        for receipt in receipts {
+            for absPath in receipt.absolutePaths {
+                if absPath.isEmpty { continue }
+                if !seenPaths.insert(absPath).inserted { continue }
+                // 文件存在性过滤：避免把 receipt 列表里 macOS 系统重装后已被清掉的死路径挂上去
+                guard fm.fileExists(atPath: absPath) else { continue }
+                let snap = fileManager.snapshot(at: absPath)
+                out.append(.init(
+                    path: absPath,
+                    bytes: snap.bytes,
+                    fileCount: snap.fileCount,
+                    matchReason: .pkgReceipt(receipt.pkgID)
+                ))
+            }
+        }
+        return out
+    }
+
+    /// 找出和当前 app 元数据"同厂商"的所有 VendorRule。
     /// 严格遵守 `matchesStrictPrefix`：`com.foo.bar` 命中 `com.foo` 但不会命中 `com.foobar`。
     func matchedVendors(for meta: AppMetadata) -> [VendorRule] {
         vendorRules.filter { rule in
@@ -363,6 +429,10 @@ extension AppUninstaller {
             // 二次校验 matchesStrictPrefix 防止 com.foo.bar 误命中 com.foo.barbarian。
             let spotlightCandidates = await spotlightFallback(meta: meta, seenPaths: Set(collected.map(\.path)))
             collected.append(contentsOf: spotlightCandidates)
+            // M4-T3：pkgutil receipts 兜底补刀（系统级 pkg 安装的 app 的清单展开）
+            var pkgSeen = Set(collected.map(\.path))
+            let pkgCandidates = pkgReceiptCandidates(for: meta, seenPaths: &pkgSeen)
+            collected.append(contentsOf: pkgCandidates)
             return collected
         }
     }

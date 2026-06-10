@@ -196,7 +196,7 @@ public actor AppFootprintScanner {
         switch reason {
         case .bundleID, .appName, .spotlight: return .userData
         case .bundleVendor: return .launchAgent
-        case .vendorRule: return .vendorRule
+        case .vendorRule, .pkgReceipt: return .vendorRule
         }
     }
 }

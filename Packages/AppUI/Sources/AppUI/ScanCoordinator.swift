@@ -692,6 +692,103 @@ public final class ScanCoordinator: ObservableObject {
         scan(category: .fullDisk, includeHidden: includeHidden)
     }
 
+    /// M4-T2：版本化收集根扫描入口。
+    ///
+    /// 直接调 [KnownVersionedRoots.scanAll(home:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift#L111-L139)
+    /// 拿到所有可回收的旧版本子目录（Xcode DeviceSupport / JetBrains Toolbox 等），
+    /// 直接构造 [RowItem](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift)
+    /// 发布一个 finished snapshot 给 UI——**不走** BulkScanner / 不走流式 ingest，
+    /// 因为命中数极少（DeviceSupport ≤ 10，Toolbox ≤ 30），同步遍历总耗时 < 100ms。
+    ///
+    /// categoryID 固定 `"developer.versioned"`，方便上层按 id 区分。
+    /// 每条 Hit 用 [FileManager.directorySizeBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppUninstaller.swift)
+    /// 取真实 size；失败回退到 0（UI 仍能渲染条目，让用户决定是否删除）。
+    ///
+    /// 与 [SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift)
+    /// 的关系：每条命中仍然走 `engine.evaluate(path:trie:home:)`，让 forbid 路径
+    /// 在 UI 上以 lock 形式显示而非被静默删除（与主扫描行为对齐）。
+    public func scanKnownVersionedRoots(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        cancel()
+        wasCancelled = false
+        buckets.removeAll(keepingCapacity: true)
+        dirIndex.removeAll(keepingCapacity: true)
+        childEdges.removeAll(keepingCapacity: true)
+        fileLeaves.removeAll(keepingCapacity: true)
+        largeFileLeaves.removeAll(keepingCapacity: true)
+        compactedLargeFileTopN = nil
+        lastIngestAt.removeAll(keepingCapacity: true)
+        totalBytes = 0
+        scannedFiles = 0
+        startedAt = Date()
+        bytesPerSecondEMA = 0
+        lastSampleAt = nil
+        lastSampleBytes = 0
+        etaEligible = false
+        expectedTotalBytes = nil
+        currentRootPath = home.path
+        isScanning = true
+        lastError = nil
+        permissionDeniedPaths = []
+        tccProtectedSkippedPaths = []
+        let categoryID = "developer.versioned"
+        activeCategoryID = categoryID
+
+        let hits = KnownVersionedRoots.scanAll(home: home)
+        var rows: [RowItem] = []
+        rows.reserveCapacity(hits.count)
+        var totalAccum: Int64 = 0
+        for hit in hits {
+            let (verdict, rejection, vendor) = engine.evaluate(path: hit.url.path,
+                                                               trie: trie, home: self.home)
+            let size = Self.directorySize(at: hit.url)
+            totalAccum &+= size
+            rows.append(RowItem(
+                id: hit.url.path,
+                url: hit.url,
+                title: "\(hit.displayName) · \(hit.versionName)",
+                isDirectory: true,
+                bytes: size,
+                logicalBytes: size,
+                fileCount: 0,
+                verdict: verdict,
+                rejection: rejection,
+                vendorName: vendor?.name,
+                vendorNote: "retain: \(hit.retainedLatest)",
+                isActive: false,
+                modificationDate: nil
+            ))
+        }
+        snapshot = ScanSnapshot(
+            categoryID: categoryID,
+            rows: rows.sorted { $0.bytes > $1.bytes },
+            totalBytes: totalAccum,
+            scannedFileCount: rows.count,
+            isFinished: true,
+            elapsed: Date().timeIntervalSince(startedAt)
+        )
+        lastFinishedCategoryID = categoryID
+        isScanning = false
+        GSYLog.info(.app,
+                    "scanKnownVersionedRoots: \(rows.count) versioned candidates, total=\(totalAccum)")
+    }
+
+    /// 单层递归 size 估算。仅用于 [scanKnownVersionedRoots](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 这种小目录场景；大目录会走 BulkScanner 的并发实现。
+    private static func directorySize(at url: URL) -> Int64 {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(at: url,
+                                             includingPropertiesForKeys: [.fileSizeKey],
+                                             options: [.skipsHiddenFiles],
+                                             errorHandler: nil) else { return 0 }
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            if let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                total &+= Int64(size)
+            }
+        }
+        return total
+    }
+
     /// v1.3：多根并行扫描入口（"全部推荐扫描"）。
     ///
     /// 解决用户反馈："扫描看起来还是只有一个目录在动" —— 走 [MultiRootScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/MultiRootScanner.swift)
