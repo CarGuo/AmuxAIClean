@@ -1,8 +1,8 @@
-2026-06-11 17:12:36.825 GSYCleanMac[52572:5456488] [GSYCleanMac] 已加载 79 条 vendor 规则
+2026-06-11 19:24:33.812 GSYCleanMac[2716:5735179] [GSYCleanMac] 已加载 79 条 vendor 规则
 [REGR] case=quicklook-controller defaults_snapshot_keys=10 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=quicklook-controller
 [REGR] case=quicklook-controller qlURLs=1 initial=0
 [REGR_OK] case=quicklook-controller QuickLook urls accepted=1
 [REGR_OK] case=quicklook-controller QuickLook initialIndex=0
 [REGR] case=quicklook-controller defaults_restored_keys=10
-[REGR_PASS] case=quicklook-controller elapsed_ms=754
+[REGR_PASS] case=quicklook-controller elapsed_ms=775

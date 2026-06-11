@@ -1,4 +1,4 @@
-2026-06-11 17:12:33.706 GSYCleanMac[52550:5456414] [GSYCleanMac] 已加载 79 条 vendor 规则
+2026-06-11 19:24:30.756 GSYCleanMac[2298:5734698] [GSYCleanMac] 已加载 79 条 vendor 规则
 [REGR] case=activation-policy defaults_snapshot_keys=10 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=activation-policy
 [REGR] case=activation-policy policy_after_hide_off=0
@@ -6,4 +6,4 @@
 [REGR] case=activation-policy policy_after_hide_on=1
 [REGR_OK] case=activation-policy accessory when hide=on & no window=1
 [REGR] case=activation-policy defaults_restored_keys=10
-[REGR_PASS] case=activation-policy elapsed_ms=437
+[REGR_PASS] case=activation-policy elapsed_ms=533

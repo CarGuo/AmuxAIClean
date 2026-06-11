@@ -383,4 +383,122 @@ final class GRDBScanResultStoreTests: XCTestCase {
         let agg1 = try await store.aggregate(sessionID: s1, parentPath: nil)
         XCTAssertEqual(agg1, .empty)
     }
+
+    // MARK: - DB 体积治理（2026-06-11 新增，对应 docs/regression/2026_06_11/db_size.md）
+
+    func test_pruneOldSessions_保留最新N个_其余清掉() async throws {
+        // 用 keepLatestSessions=0 关闭自动 prune，确保只有显式 prune 行为被测到。
+        let store = try GRDBScanResultStore(databaseURL: dbURL, keepLatestSessions: 0)
+        var sessions: [ScanSessionID] = []
+        for i in 0..<5 {
+            let sid = ScanSessionID()
+            sessions.append(sid)
+            try await store.beginSession(sid)
+            try await store.insert([
+                makeRecord(sessionID: sid, path: "/s\(i)", size: Int64((i + 1) * 100))
+            ])
+            // finalizeSession 内部不会自动 prune（keepLatestSessions=0），方便构造确定的 5 个 session。
+            try await store.finalizeSession(sid)
+        }
+        // 显式 prune 保留 2 个最新（按 finalize 时间）。
+        let deleted = try await store.pruneOldSessions(keepLatest: 2)
+        XCTAssertEqual(deleted, 3, "5 个 session 保留 2 应删 3")
+        // 最新两个还能查到
+        let lastAgg = try await store.aggregate(sessionID: sessions[4], parentPath: nil)
+        XCTAssertEqual(lastAgg.totalCount, 1)
+        XCTAssertEqual(lastAgg.totalAllocatedBytes, 500)
+        let prevAgg = try await store.aggregate(sessionID: sessions[3], parentPath: nil)
+        XCTAssertEqual(prevAgg.totalCount, 1)
+        // 最老的三个 scan_result 通过 ON DELETE CASCADE 应当被清掉
+        let earliestAgg = try await store.aggregate(sessionID: sessions[0], parentPath: nil)
+        XCTAssertEqual(earliestAgg, .empty)
+        // describeStorage 也应反映 prune 之后的 session 数
+        let desc = try await store.describeStorage()
+        XCTAssertEqual(desc.sessionCount, 2)
+        XCTAssertEqual(desc.resultRowCount, 2)
+    }
+
+    func test_finalizeSession_默认会自动prune保留3个最新() async throws {
+        // 默认 keepLatestSessions=3，连续 finalize 5 个 session 后 DB 只剩 3 个。
+        let store = try GRDBScanResultStore(databaseURL: dbURL)
+        for i in 0..<5 {
+            let sid = ScanSessionID()
+            try await store.beginSession(sid)
+            try await store.insert([
+                makeRecord(sessionID: sid, path: "/s\(i)", size: Int64((i + 1) * 100))
+            ])
+            try await store.finalizeSession(sid)
+        }
+        let desc = try await store.describeStorage()
+        XCTAssertEqual(desc.sessionCount, 3, "默认 keepLatest=3，finalize 后自动 prune")
+        XCTAssertEqual(desc.resultRowCount, 3)
+    }
+
+    func test_pruneOldSessions_keepLatest为0则清空所有session() async throws {
+        let store = try GRDBScanResultStore(databaseURL: dbURL, keepLatestSessions: 0)
+        for i in 0..<3 {
+            let sid = ScanSessionID()
+            try await store.beginSession(sid)
+            try await store.insert([
+                makeRecord(sessionID: sid, path: "/s\(i)", size: 100)
+            ])
+            try await store.finalizeSession(sid)
+        }
+        let deleted = try await store.pruneOldSessions(keepLatest: 0)
+        XCTAssertEqual(deleted, 3)
+        let desc = try await store.describeStorage()
+        XCTAssertEqual(desc.sessionCount, 0)
+        XCTAssertEqual(desc.resultRowCount, 0)
+    }
+
+    func test_pruneOldSessions_keepLatest远大于session数则不删任何东西() async throws {
+        let store = try GRDBScanResultStore(databaseURL: dbURL, keepLatestSessions: 0)
+        for i in 0..<3 {
+            let sid = ScanSessionID()
+            try await store.beginSession(sid)
+            try await store.insert([
+                makeRecord(sessionID: sid, path: "/s\(i)", size: 100)
+            ])
+            try await store.finalizeSession(sid)
+        }
+        let deleted = try await store.pruneOldSessions(keepLatest: 100)
+        XCTAssertEqual(deleted, 0)
+        let desc = try await store.describeStorage()
+        XCTAssertEqual(desc.sessionCount, 3)
+    }
+
+    func test_新建库_auto_vacuum模式应为INCREMENTAL_2() async throws {
+        // 新建 DB → prepareDatabase 会设 PRAGMA auto_vacuum=INCREMENTAL（值=2）。
+        // 通过 vacuum() 末尾 log 体感不直观，这里靠副作用反向验证：
+        // 1. 新库写若干数据后删光，2. 调 vacuum() 走 incremental 路径
+        // 3. DB 文件大小应明显下降（freelist 页归还 OS）。
+        // 注：这是最弱的"接缝测试"，但比直接读 PRAGMA 更稳定（actor 内部不暴露 raw db）。
+        let store = try GRDBScanResultStore(databaseURL: dbURL, keepLatestSessions: 0)
+        // 写一批数据撑出几页
+        let sid = ScanSessionID()
+        try await store.beginSession(sid)
+        var records: [ScanResultRecord] = []
+        for i in 0..<2000 {
+            records.append(makeRecord(
+                sessionID: sid,
+                path: "/Users/test/path/that/is/long/enough/to/take/multiple/sqlite/pages/index/\(i)",
+                size: Int64(i)
+            ))
+        }
+        try await store.insert(records)
+        try await store.finalizeSession(sid)
+        // 主动 checkpoint 把 WAL 刷进主库，让 file size 反映真实占用。
+        try await store.vacuum()
+        let sizeBeforePrune = GRDBScanResultStore.totalDatabaseFileBytes(at: dbURL)
+        // 删光所有数据
+        _ = try await store.pruneOldSessions(keepLatest: 0)
+        try await store.vacuum()
+        let sizeAfterPrune = GRDBScanResultStore.totalDatabaseFileBytes(at: dbURL)
+        // INCREMENTAL 模式下，prune + vacuum 后 size 应显著小（数据页释放给 OS）。
+        // 阈值给宽松：只要后于前小 50% 即视为生效。
+        XCTAssertLessThan(
+            sizeAfterPrune * 2, sizeBeforePrune,
+            "新建库 vacuum() 走 incremental_vacuum，应释放删除行对应的页给 OS（before=\(sizeBeforePrune) after=\(sizeAfterPrune)）"
+        )
+    }
 }

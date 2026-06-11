@@ -1,4 +1,4 @@
-2026-06-11 17:12:11.069 GSYCleanMac[52348:5455691] [GSYCleanMac] 已加载 79 条 vendor 规则
+2026-06-11 19:23:56.955 GSYCleanMac[1104:5732736] [GSYCleanMac] 已加载 79 条 vendor 规则
 [REGR] case=large-files-threshold defaults_snapshot_keys=10 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=large-files-threshold
 [REGR] case=large-files-threshold largeCount=3 firstName=big-0.bin
@@ -7,4 +7,4 @@
 [REGR_OK] case=large-files-threshold large item bytes >= 1MB=1500000 > 1000000
 [REGR_OK] case=large-files-threshold large item bytes >= 1MB=1500000 > 1000000
 [REGR] case=large-files-threshold defaults_restored_keys=10
-[REGR_PASS] case=large-files-threshold elapsed_ms=662
+[REGR_PASS] case=large-files-threshold elapsed_ms=4581

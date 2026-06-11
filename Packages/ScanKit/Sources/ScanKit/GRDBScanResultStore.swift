@@ -26,14 +26,31 @@ public actor GRDBScanResultStore: ScanResultStore {
         case cannotResolveStoreDirectory
     }
 
+    /// 默认保留最新 session 数。竞品多数是 in-memory（DaisyDisk / GP / ODS），
+    /// 我们持久化的本意是"上次扫完关掉，下次开应用秒开"，3 个 session 足够覆盖
+    /// 该体验，且单 session 平均 ~300k 行 × 285 B/行 ≈ 86 MB，3 个 = 258 MB，
+    /// 配合 incremental_vacuum 稳态可控。
+    public static let defaultKeepLatestSessions: Int = 3
+
     private let dbPool: DatabasePool
     private let location: URL
+    /// 单次 finalize 自动 prune 的保留 session 数。`<= 0` 表示禁用（仅测试用）。
+    private let keepLatestSessions: Int
 
-    public init(databaseURL: URL) throws {
+    public init(
+        databaseURL: URL,
+        keepLatestSessions: Int = GRDBScanResultStore.defaultKeepLatestSessions
+    ) throws {
         try FileManager.default.createDirectory(
             at: databaseURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        // **DB 体积治理**：auto_vacuum 必须在**首次建库**前设置才生效（SQLite 硬约束，
+        // 后期 PRAGMA 只对新库生效，对老库要 VACUUM 整库重写才能改 auto_vacuum 模式）。
+        // 这里在 DatabasePool 打开之前判断文件是否存在：不存在 → 新库 → 之后设
+        // auto_vacuum=INCREMENTAL；已存在 → 老库 → 跳过（避免无效 PRAGMA 制造误解），
+        // 用户可在「设置 → 存储与日志」走 clearAll / deleteDatabaseFiles 来 reset 拿到新模式。
+        let isFreshDatabase = !FileManager.default.fileExists(atPath: databaseURL.path)
         var config = Configuration()
         config.prepareDatabase { db in
             // P0-A 修复：SQLite 默认 foreign_keys = OFF，导致 scan_result 表
@@ -45,6 +62,10 @@ public actor GRDBScanResultStore: ScanResultStore {
             try db.execute(sql: "PRAGMA journal_mode = WAL")
             try db.execute(sql: "PRAGMA synchronous = NORMAL")
             try db.execute(sql: "PRAGMA temp_store = MEMORY")
+            // **注意**：auto_vacuum 不能放这里。prepareDatabase 对**所有**连接执行，
+            // 包括只读 reader 连接；只读连接跑 `PRAGMA auto_vacuum = INCREMENTAL`
+            // 会抛 SQLite error 8（attempt to write a readonly database）。
+            // 改在 init 末尾用 writer 显式设一次（仅新库）。
         }
         do {
             self.dbPool = try DatabasePool(path: databaseURL.path, configuration: config)
@@ -53,13 +74,32 @@ public actor GRDBScanResultStore: ScanResultStore {
             throw error
         }
         self.location = databaseURL
+        self.keepLatestSessions = keepLatestSessions
+        // 新库首次打开后立刻设 auto_vacuum=INCREMENTAL：必须在任何表创建前 + 必须
+        // 在 writer 连接上跑。设完会自动落盘到 sqlite header 的 auto_vacuum 字段，
+        // 之后所有连接（reader / writer）读到的都是该值，无需重复 PRAGMA。
+        // 删行后页面进 freelist，可以走 [vacuum()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift) 的 incremental_vacuum 路径
+        // 把页归还 OS，避免整库 VACUUM 需要 1× 库大小临时空间的灾难。
+        if isFreshDatabase {
+            do {
+                try self.dbPool.writeWithoutTransaction { db in
+                    try db.execute(sql: "PRAGMA auto_vacuum = INCREMENTAL")
+                    // SQLite 文档要求：设完 auto_vacuum 之后必须 VACUUM 一次才能让该
+                    // 模式真正生效（即便是空库也要这一步）。空库 VACUUM 几乎零成本。
+                    try db.execute(sql: "VACUUM")
+                }
+            } catch {
+                // 设失败不致命：库仍可用，只是 vacuum() 会退化到整库重写路径。
+                GSYLog.warning(.db, "设置 auto_vacuum=INCREMENTAL 失败（已退化为 NONE 模式）：\(error)")
+            }
+        }
         do {
             try Self.migrator.migrate(self.dbPool)
         } catch {
             GSYLog.error(.db, "迁移失败 path=\(databaseURL.path) err=\(error)")
             throw error
         }
-        GSYLog.info(.db, "GRDBScanResultStore 已就绪 path=\(databaseURL.path)")
+        GSYLog.info(.db, "GRDBScanResultStore 已就绪 path=\(databaseURL.path) keepLatest=\(keepLatestSessions)")
     }
 
     public static func defaultDatabaseURL(
@@ -117,6 +157,24 @@ public actor GRDBScanResultStore: ScanResultStore {
                 on: "scan_result",
                 columns: ["session_id", "path"]
             )
+        }
+        // v3：DROP `scan_result_on_parent_path` 单列索引。
+        //
+        // **背景**：v1 schema 在 `parent_path` 列声明 `.indexed()`，GRDB 自动建索引
+        // `scan_result_on_parent_path`。这条索引按 path 字符串排序（avg 113 B/key），
+        // 在 1490 万行规模下贡献 ~1.5 GB on-disk。
+        //
+        // **为什么可删**：
+        //   - "按 parent 列子项" 的查询只在 [query()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift) 的 `parent_path = ?`
+        //     分支，且 WHERE 总带 `session_id = ?`；
+        //   - v2 的 `scan_result_session_path_idx (session_id, path)` 已能服务该 query
+        //     （SQLite 优化器选这条复合索引做 range scan，本来就比单列索引更高效）；
+        //   - [directChildrenAggregated()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift#L279) 走的也是
+        //     `(session_id, path)` 范围扫，不依赖 parent_path 索引。
+        //
+        // 等价地，老库升级到 v3 不会丢失任何 query 能力，只释放磁盘 ~10%。
+        m.registerMigration("v3_drop_redundant_parent_path_index") { db in
+            try db.execute(sql: "DROP INDEX IF EXISTS scan_result_on_parent_path")
         }
         return m
     }
@@ -176,6 +234,72 @@ public actor GRDBScanResultStore: ScanResultStore {
                 arguments: [Date().timeIntervalSince1970, id.raw]
             )
         }
+        // **DB 体积治理**：finalize 完一个 session 之后立刻 prune 旧 session。
+        // 这是把"无界增长"扼杀在最早期的关键挂点——之前 89 个 session / 1490 万行
+        // / 11 GB 的灾难根因正是这里缺失。
+        //
+        // 容错：prune 失败不影响 finalize 语义（只是磁盘多占点空间），日志记录即可，
+        // 绝不向调用方抛——finalize 是用户感知的"扫描完成"语义，不能因为后台清理失败
+        // 让用户看到错误。
+        if keepLatestSessions > 0 {
+            do {
+                try await pruneOldSessions(keepLatest: keepLatestSessions)
+            } catch {
+                GSYLog.error(.db, "finalize 自动 prune 失败 id=\(id.raw) err=\(error)")
+            }
+        }
+    }
+
+    /// **DB 体积治理核心方法**：按 `COALESCE(finalized_at, created_at)` 降序保留最新 N 个 session，
+    /// 其余删除（ON DELETE CASCADE 自动级联清掉 scan_result 行）。
+    ///
+    /// 调用时机：
+    ///   1. 每次 [finalizeSession()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift) 完成后自动调（keepLatestSessions > 0 时）
+    ///   2. UI 在「设置 → 存储与日志」也可以显式触发（带回收空间提示）
+    ///
+    /// 配合 PRAGMA auto_vacuum=INCREMENTAL：删行后页面进 freelist，下次
+    /// [vacuum()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift) 走
+    /// `PRAGMA incremental_vacuum` 路径释放给 OS。**不**走整库 VACUUM，避免
+    /// 11G 库需要 11G 临时空间这种磁盘灾难（详见 [docs/regression/2026_06_11/db_size.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/db_size.md)）。
+    ///
+    /// - Parameter keepLatest: 保留最新 N 个 session。`<= 0` 视为"全清"（语义上等价于 `clearAll` 但保留 schema）。
+    /// - Returns: 实际删除的 session 行数。
+    @discardableResult
+    public func pruneOldSessions(keepLatest: Int) async throws -> Int {
+        let deleted = try await dbPool.write { db -> Int in
+            // 用子查询保留最新 keepLatest 个 session id，其余删。
+            // ORDER BY COALESCE(finalized_at, created_at) DESC：finalize 过的按
+            // finalize 时间排，未 finalize 的（异常残留）按 created_at 兜底。
+            // LIMIT/OFFSET 比 NOT IN 更利于 SQLite 走 scan_session 主键扫，
+            // 但 IN 表达式更直观；scan_session 行数永远 < 1000 级别，差异可忽略。
+            let keepN = max(0, keepLatest)
+            if keepN == 0 {
+                // 全清，但保留 schema。等价 clearAll 的 DELETE 部分，不做 vacuum。
+                try db.execute(sql: "DELETE FROM scan_session")
+            } else {
+                try db.execute(
+                    sql: """
+                        DELETE FROM scan_session
+                        WHERE id NOT IN (
+                            SELECT id FROM scan_session
+                            ORDER BY COALESCE(finalized_at, created_at) DESC
+                            LIMIT ?
+                        )
+                        """,
+                    arguments: [keepN]
+                )
+            }
+            return db.changesCount
+        }
+        if deleted > 0 {
+            GSYLog.info(.db, "pruneOldSessions keepLatest=\(keepLatest) 删除=\(deleted) session")
+            // 主动 wal_checkpoint(TRUNCATE) 把 WAL 清空，让 incremental_vacuum
+            // 立刻能把 freelist 页归还 OS（否则 freelist 页一直被 WAL 持有的快照引用）。
+            try await dbPool.writeWithoutTransaction { db in
+                try db.execute(sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+            }
+        }
+        return deleted
     }
 
     public func query(_ q: ScanResultQuery) async throws -> [ScanResultRecord] {
@@ -425,13 +549,38 @@ public actor GRDBScanResultStore: ScanResultStore {
     /// v1.3.zzzz Phase 6：仅 vacuum，不动业务数据。用户在「设置 → 存储与日志」点击。
     /// 与 [clearAll](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift#L350) 的区别：clearAll 会先 truncate 再 vacuum，
     /// 这里只 vacuum 紧凑空间——给"想释放但不想丢扫描历史"的用户用。
+    ///
+    /// **2026-06-11 改造**：优先用 `PRAGMA incremental_vacuum`（auto_vacuum=INCREMENTAL
+    /// 模式下零临时空间），只在老库（auto_vacuum=NONE）才退化到 `VACUUM` 整库重写。
+    /// 这样 11G 库不会因为"想 vacuum 一下"瞬间需要 11G 临时空间而把磁盘打爆。
     public func vacuum() async throws {
         GSYLog.notice(.db, "vacuum 开始")
         try await dbPool.writeWithoutTransaction { db in
             try db.execute(sql: "PRAGMA wal_checkpoint(TRUNCATE)")
-            try db.execute(sql: "VACUUM")
         }
-        GSYLog.notice(.db, "vacuum 完成")
+        // 读 auto_vacuum 模式（0=NONE / 1=FULL / 2=INCREMENTAL），决定走哪条路径。
+        let autoVacuumMode = try await dbPool.read { db -> Int in
+            try Int.fetchOne(db, sql: "PRAGMA auto_vacuum") ?? 0
+        }
+        if autoVacuumMode == 2 {
+            // INCREMENTAL：把 freelist 中所有空闲页归还 OS（参数 0 表示全部）。
+            // 不需要临时空间，O(freelist_pages) 时间。
+            try await dbPool.writeWithoutTransaction { db in
+                try db.execute(sql: "PRAGMA incremental_vacuum(0)")
+                // incremental_vacuum 本身是写操作，会再生成 WAL。再 checkpoint 一次
+                // 保证调用方测量 file size 时 WAL 已 truncate 到 0，避免 size
+                // 数据失真（实测不补这一步，删空 + vacuum 后主库收缩 1 MB+ 但 WAL
+                // 又涨回去 800 KB，呈现"vacuum 没生效"的假象）。
+                try db.execute(sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+            }
+            GSYLog.notice(.db, "vacuum 完成（incremental，零临时空间）")
+        } else {
+            // NONE / FULL 老库回退到 VACUUM。需要 ~1× 库大小临时空间。
+            try await dbPool.writeWithoutTransaction { db in
+                try db.execute(sql: "VACUUM")
+            }
+            GSYLog.notice(.db, "vacuum 完成（VACUUM 整库重写，auto_vacuum=\(autoVacuumMode)）")
+        }
     }
 
     /// v1.3.zzzz Phase 6：返回 DB 的体积/计数快照，给「设置 → 存储与日志」UI 用。

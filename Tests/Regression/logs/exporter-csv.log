@@ -1,4 +1,4 @@
-2026-06-11 17:12:24.517 GSYCleanMac[52477:5456139] [GSYCleanMac] 已加载 79 条 vendor 规则
+2026-06-11 19:24:19.536 GSYCleanMac[1851:5733990] [GSYCleanMac] 已加载 79 条 vendor 规则
 [REGR] case=exporter-csv defaults_snapshot_keys=10 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=exporter-csv
 [REGR] case=exporter-csv tsv_lines=6 header=path	bytes	modificationDate	kind
@@ -7,4 +7,4 @@
 [REGR_OK] case=exporter-csv json non-empty=717 > 0
 [REGR_OK] case=exporter-csv json round-trip count=5
 [REGR] case=exporter-csv defaults_restored_keys=10
-[REGR_PASS] case=exporter-csv elapsed_ms=218
+[REGR_PASS] case=exporter-csv elapsed_ms=289

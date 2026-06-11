@@ -9,6 +9,7 @@
 | F-0-1 | [KnownVersionedRoots.swift#L111-L139](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift#L111-L139) `var fileManager` 死代码删除 | ✅ 本轮删除（实际从未引用，"forward-compat" 注释名不副实） |
 | F-0-2 | PerfBench 1M 节点压力 bench | ✅ 本轮跑完，[B3](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/perf.md) 入库 |
 | F-0-3 | E2E smoke 启动 release .app 跑通 + AX 抓取 + 干净退出 | ✅ 本轮 [e2e.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/e2e.md) PASS |
+| F-0-5 | SQLite scan.sqlite 11G 体积治理（无 session 保留 + auto_vacuum=NONE + 冗余索引）| ✅ 本轮闭环 [db_size.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/db_size.md) — 4 处代码改动 + 5 新测试 PASS，新库稳态 < 400 MB（缩 27×） |
 
 ## P0-bug — E2E 发现的真 bug（需要单独修）
 

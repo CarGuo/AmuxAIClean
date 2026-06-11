@@ -1,4 +1,4 @@
-2026-06-11 17:11:27.669 GSYCleanMac[52156:5454626] [GSYCleanMac] 已加载 79 条 vendor 规则
+2026-06-11 19:26:47.316 GSYCleanMac[10915:5747484] [GSYCleanMac] 已加载 79 条 vendor 规则
 [REGR] case=scan-custom-fixture defaults_snapshot_keys=10 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=scan-custom-fixture
 [REGR] case=scan-custom-fixture files=15 bytes=1049600 rows=11
@@ -7,4 +7,4 @@
 [REGR_OK] case=scan-custom-fixture isFinished=true
 [REGR_OK] case=scan-custom-fixture rows count=11 > 0
 [REGR] case=scan-custom-fixture defaults_restored_keys=10
-[REGR_PASS] case=scan-custom-fixture elapsed_ms=637
+[REGR_PASS] case=scan-custom-fixture elapsed_ms=728
