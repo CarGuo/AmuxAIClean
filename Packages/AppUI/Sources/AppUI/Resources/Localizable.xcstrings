@@ -7848,6 +7848,20 @@
         "en" : { "stringUnit" : { "state" : "translated", "value" : "LaunchServices · QuickLook · DNS" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "启动服务 · 预览 · DNS 缓存" } }
       }
+    },
+    "sidebar.row.dev_versioned" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Old Dev Versions" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "开发者旧版本" } }
+      }
+    },
+    "sidebar.subtitle.dev_versioned" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Xcode DeviceSupport · JetBrains Toolbox" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Xcode 设备支持 · JetBrains Toolbox" } }
+      }
     }
   }
 }

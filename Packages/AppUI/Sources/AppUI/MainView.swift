@@ -204,6 +204,16 @@ public struct MainView: View {
                 return
             }
             resetSelectionState()
+            // M4-T2 / 2026-06：开发者版本化收集根扫描 sentinel —— 不在 allCategories 里，
+            // 由 ScanCoordinator.scanKnownVersionedRoots(home:) 同步派发命中。
+            // 必须在 allCategories.first 之前拦截，否则会走 startScan(category:) 找不到 cat 直接 return。
+            if let id = new, id == MainView.devVersionedSentinelID {
+                runHeavyAfterCommit {
+                    coordinator.scanKnownVersionedRoots(
+                        home: FileManager.default.homeDirectoryForCurrentUser)
+                }
+                return
+            }
             guard let id = new, let cat = allCategories.first(where: { $0.id == id }) else { return }
             // v2：统一走 [runHeavyAfterCommit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HeavyTask.swift)
             // 模板（detached + sleep 16ms + MainActor.run），让 SwiftUI 先把
@@ -438,6 +448,8 @@ public struct MainView: View {
                     .tag(MainView.launchAgentSentinelID)
                 uninstallSidebarRow
                     .tag(MainView.uninstallSentinelID)
+                devVersionedSidebarRow
+                    .tag(MainView.devVersionedSentinelID)
             } header: {
                 Text("sidebar.section.apps", bundle: .module)
             }
@@ -500,6 +512,13 @@ public struct MainView: View {
     /// 的执行面板（rebuildLaunchServices / flushQuickLookCache / flushDNSCache），
     /// 与扫描 / 删除语义无关，沿 uninstall / undoHistory 同款 sentinel 旁路。
     static let maintenanceSentinelID: String = "maintenance.screen"
+
+    /// M4-T2 / 2026-06：「开发者旧版本」侧边项。点击触发
+    /// [ScanCoordinator.scanKnownVersionedRoots(home:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L710)，
+    /// 同步派发 Xcode DeviceSupport / JetBrains Toolbox 旧版本命中为 `developer.versioned`
+    /// snapshot。沿用主路径的 statusBar / listResults，因此走 onChange 显式 case 而非
+    /// "allCategories.first 自然 return"。
+    static let devVersionedSentinelID: String = "developer.versioned.scan"
 
     /// v1.5：sidebar Batch Scans section 的 row。结构与 sidebarRow / appFootprintSidebarRow
     /// 对齐：图标 + 标题 + 副标题。row 自身不带 tap handler，selection 切换由
@@ -627,6 +646,26 @@ public struct MainView: View {
                 Text("sidebar.row.maintenance", bundle: .module)
                     .font(.system(.body, design: .rounded))
                 Text("sidebar.subtitle.maintenance", bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// M4-T2 / 2026-06：「开发者旧版本」侧边 row —— 与 uninstall / launchAgent 同结构，
+    /// 图标用 hammer 表达"开发工具产物"。点击触发 ScanCoordinator.scanKnownVersionedRoots。
+    private var devVersionedSidebarRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "hammer")
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("sidebar.row.dev_versioned", bundle: .module)
+                    .font(.system(.body, design: .rounded))
+                Text("sidebar.subtitle.dev_versioned", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
