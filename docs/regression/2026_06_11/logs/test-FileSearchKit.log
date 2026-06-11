@@ -1,0 +1,62 @@
+[0/1] Planning build
+Building for debugging...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.17s)
+Test Suite 'All tests' started at 2026-06-11 14:25:56.368.
+Test Suite 'FileSearchKitPackageTests.xctest' started at 2026-06-11 14:25:56.369.
+Test Suite 'FileSearchEngineExtendedFiltersTests' started at 2026-06-11 14:25:56.369.
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_comment_contains_命中含子串的]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_comment_contains_命中含子串的]' passed (0.006 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_comment_equals_完全相等]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_comment_equals_完全相等]' passed (0.002 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_comment_isEmpty_命中无comment文件]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_comment_isEmpty_命中无comment文件]' passed (0.002 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_date_modifiedAfter_只命中较新文件]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_date_modifiedAfter_只命中较新文件]' passed (0.001 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_date_modifiedBefore_只命中较旧文件]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_date_modifiedBefore_只命中较旧文件]' passed (0.002 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_date_modifiedBetween_只命中区间内]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_date_modifiedBetween_只命中区间内]' passed (0.001 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_readFinderComment_helper_直接读取写入的plist]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_readFinderComment_helper_直接读取写入的plist]' passed (0.001 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_tags_hasAllOf_AND语义]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_tags_hasAllOf_AND语义]' passed (0.001 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_tags_hasAnyOf_OR语义]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_tags_hasAnyOf_OR语义]' passed (0.002 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_tags_hasTag_命中带指定tag的文件]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_tags_hasTag_命中带指定tag的文件]' passed (0.002 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_tags_isEmpty_只命中无tag的文件]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_tags_isEmpty_只命中无tag的文件]' passed (0.001 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_组合date_tags_comment_AND全满足才命中]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineExtendedFiltersTests test_组合date_tags_comment_AND全满足才命中]' passed (0.002 seconds).
+Test Suite 'FileSearchEngineExtendedFiltersTests' passed at 2026-06-11 14:25:56.392.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 0.022 (0.024) seconds
+Test Suite 'FileSearchEngineTests' started at 2026-06-11 14:25:56.392.
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_cancel_在consumer退出后停止枚举]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_cancel_在consumer退出后停止枚举]' passed (0.255 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_fileExtensionIncludes_只命中指定扩展名]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_fileExtensionIncludes_只命中指定扩展名]' passed (0.004 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_filter组合_AND语义同时满足才命中]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_filter组合_AND语义同时满足才命中]' passed (0.002 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_includeSubfoldersFalse_不递归子目录]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_includeSubfoldersFalse_不递归子目录]' passed (0.002 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_kindFolderOnly_只命中目录]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_kindFolderOnly_只命中目录]' passed (0.002 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_nameContains_命中所有同名文件]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_nameContains_命中所有同名文件]' passed (0.001 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_nameStartsWith_默认大小写不敏感]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_nameStartsWith_默认大小写不敏感]' passed (0.001 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_sizeBetween_只命中区间内的]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_sizeBetween_只命中区间内的]' passed (0.001 seconds).
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_流式_第一个结果不必等全部完成]' started.
+Test Case '-[FileSearchKitTests.FileSearchEngineTests test_流式_第一个结果不必等全部完成]' passed (0.044 seconds).
+Test Suite 'FileSearchEngineTests' passed at 2026-06-11 14:25:56.705.
+	 Executed 9 tests, with 0 failures (0 unexpected) in 0.311 (0.312) seconds
+Test Suite 'FileSearchKitPackageTests.xctest' passed at 2026-06-11 14:25:56.705.
+	 Executed 21 tests, with 0 failures (0 unexpected) in 0.333 (0.336) seconds
+Test Suite 'All tests' passed at 2026-06-11 14:25:56.705.
+	 Executed 21 tests, with 0 failures (0 unexpected) in 0.333 (0.337) seconds
+◇ Test run started.
+↳ Testing Library Version: 1501
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

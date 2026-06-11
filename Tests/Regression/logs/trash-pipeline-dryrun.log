@@ -1,12 +1,12 @@
-2026-06-04 17:13:35.894 GSYCleanMac[57823:2970635] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
-[REGR] case=trash-pipeline-dryrun defaults_snapshot_keys=4 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+2026-06-11 14:33:13.587 GSYCleanMac[77907:5120005] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR] case=trash-pipeline-dryrun defaults_snapshot_keys=10 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=trash-pipeline-dryrun
 [REGR] case=trash-pipeline-dryrun present=3 skipped=2 err=dryRun: 1 路径被安全策略拦截，1 路径不存在或无权限；首条原因=userDocumentsRoot
 [REGR_OK] case=trash-pipeline-dryrun present count=3
 [REGR_OK] case=trash-pipeline-dryrun skipped count=2
 [REGR_OK] case=trash-pipeline-dryrun err message contains reason=true
-[REGR_OK] case=trash-pipeline-dryrun real file still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrTrash-856D52A2-4654-4A3F-888D-45DA9122D47D/a.txt=true
-[REGR_OK] case=trash-pipeline-dryrun real file still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrTrash-856D52A2-4654-4A3F-888D-45DA9122D47D/b.txt=true
-[REGR_OK] case=trash-pipeline-dryrun real file still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrTrash-856D52A2-4654-4A3F-888D-45DA9122D47D/c.txt=true
-[REGR] case=trash-pipeline-dryrun defaults_restored_keys=4
-[REGR_PASS] case=trash-pipeline-dryrun elapsed_ms=213
+[REGR_OK] case=trash-pipeline-dryrun real file still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrTrash-17060234-5712-4B66-921B-57C2E9217F7E/a.txt=true
+[REGR_OK] case=trash-pipeline-dryrun real file still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrTrash-17060234-5712-4B66-921B-57C2E9217F7E/b.txt=true
+[REGR_OK] case=trash-pipeline-dryrun real file still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrTrash-17060234-5712-4B66-921B-57C2E9217F7E/c.txt=true
+[REGR] case=trash-pipeline-dryrun defaults_restored_keys=10
+[REGR_PASS] case=trash-pipeline-dryrun elapsed_ms=222

@@ -1,10 +1,10 @@
-2026-06-04 17:12:32.589 GSYCleanMac[56747:2968003] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
-[REGR] case=scan-custom-fixture defaults_snapshot_keys=4 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+2026-06-11 14:31:52.723 GSYCleanMac[74975:5114557] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR] case=scan-custom-fixture defaults_snapshot_keys=10 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=scan-custom-fixture
 [REGR] case=scan-custom-fixture files=15 bytes=1049600 rows=11
 [REGR_OK] case=scan-custom-fixture scannedFileCount=15
 [REGR_OK] case=scan-custom-fixture totalBytes=1049600
 [REGR_OK] case=scan-custom-fixture isFinished=true
 [REGR_OK] case=scan-custom-fixture rows count=11 > 0
-[REGR] case=scan-custom-fixture defaults_restored_keys=4
-[REGR_PASS] case=scan-custom-fixture elapsed_ms=641
+[REGR] case=scan-custom-fixture defaults_restored_keys=10
+[REGR_PASS] case=scan-custom-fixture elapsed_ms=616

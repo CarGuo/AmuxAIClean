@@ -1,0 +1,367 @@
+Building for debugging...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.13s)
+Test Suite 'All tests' started at 2026-06-11 14:25:46.488.
+Test Suite 'SafetyKitPackageTests.xctest' started at 2026-06-11 14:25:46.489.
+Test Suite 'BatchVendorAdditionsTests' started at 2026-06-11 14:25:46.489.
+Test Case '-[SafetyKitTests.BatchVendorAdditionsTests test_批量vendor_10条全部存在]' started.
+Test Case '-[SafetyKitTests.BatchVendorAdditionsTests test_批量vendor_10条全部存在]' passed (0.028 seconds).
+Test Case '-[SafetyKitTests.BatchVendorAdditionsTests test_批量vendor_recipe字段不为空字符串]' started.
+Test Case '-[SafetyKitTests.BatchVendorAdditionsTests test_批量vendor_recipe字段不为空字符串]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.BatchVendorAdditionsTests test_批量vendor_代表性path的verdict精确钉死]' started.
+Test Case '-[SafetyKitTests.BatchVendorAdditionsTests test_批量vendor_代表性path的verdict精确钉死]' passed (0.021 seconds).
+Test Case '-[SafetyKitTests.BatchVendorAdditionsTests test_批量vendor_所有path_reason非空]' started.
+Test Case '-[SafetyKitTests.BatchVendorAdditionsTests test_批量vendor_所有path_reason非空]' passed (0.021 seconds).
+Test Case '-[SafetyKitTests.BatchVendorAdditionsTests test_批量vendor_每个vendor的paths总数精确钉死]' started.
+Test Case '-[SafetyKitTests.BatchVendorAdditionsTests test_批量vendor_每个vendor的paths总数精确钉死]' passed (0.021 seconds).
+Test Case '-[SafetyKitTests.BatchVendorAdditionsTests test_批量vendor_硬安全网仍可拦截敏感凭证]' started.
+Test Case '-[SafetyKitTests.BatchVendorAdditionsTests test_批量vendor_硬安全网仍可拦截敏感凭证]' passed (0.023 seconds).
+Test Case '-[SafetyKitTests.BatchVendorAdditionsTests test_批量vendor_端到端evaluate命中真实路径]' started.
+Test Case '-[SafetyKitTests.BatchVendorAdditionsTests test_批量vendor_端到端evaluate命中真实路径]' passed (0.023 seconds).
+Test Suite 'BatchVendorAdditionsTests' passed at 2026-06-11 14:25:46.646.
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.156 (0.157) seconds
+Test Suite 'BundleProtectionTests' started at 2026-06-11 14:25:46.646.
+Test Case '-[SafetyKitTests.BundleProtectionTests testContainsWildcard_dropbox]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testContainsWildcard_dropbox]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testContainsWildcard_wireguard]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testContainsWildcard_wireguard]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testEmptyBundleReturnsNil]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testEmptyBundleReturnsNil]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testEngineContainersConfirm]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testEngineContainersConfirm]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testEngineHardForbidNotOverridden]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testEngineHardForbidNotOverridden]' passed (0.001 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testEngineNonLibraryPathNotAffected]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testEngineNonLibraryPathNotAffected]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testEnginePreferencesPlistConfirm]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testEnginePreferencesPlistConfirm]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testEngineSystemCriticalUpgradeToConfirm]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testEngineSystemCriticalUpgradeToConfirm]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testEngineSystemDirStillForbidden]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testEngineSystemDirStillForbidden]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testEngineUnknownCacheStillSafe]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testEngineUnknownCacheStillSafe]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testEngineUpgradesSafeToConfirmForProtectedApp]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testEngineUpgradesSafeToConfirmForProtectedApp]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testExactDataProtected_wechat]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testExactDataProtected_wechat]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testExactSystemCritical_dockForbidden]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testExactSystemCritical_dockForbidden]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testExactSystemCritical_finderForbidden]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testExactSystemCritical_finderForbidden]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testGlobMatch_caseInsensitive]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testGlobMatch_caseInsensitive]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testGlobMatch_handlesDotsInBundleID]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testGlobMatch_handlesDotsInBundleID]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testPrefixWildcard_1passwordVariants]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testPrefixWildcard_1passwordVariants]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testPrefixWildcard_jetbrainsAllIDEs]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testPrefixWildcard_jetbrainsAllIDEs]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testPrefixWildcard_settingsApp]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testPrefixWildcard_settingsApp]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testProtectedBundlesHasMinimumRules]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testProtectedBundlesHasMinimumRules]' passed (0.001 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testProtectedBundlesJSONLoads]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testProtectedBundlesJSONLoads]' passed (0.001 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testProtectedBundlesNoDuplicates]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testProtectedBundlesNoDuplicates]' passed (0.001 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testUnknownBundleReturnsNil]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testUnknownBundleReturnsNil]' passed (0.001 seconds).
+Test Case '-[SafetyKitTests.BundleProtectionTests testXcodeFallsIntoDataProtectedNotAppleUninstallable]' started.
+Test Case '-[SafetyKitTests.BundleProtectionTests testXcodeFallsIntoDataProtectedNotAppleUninstallable]' passed (0.000 seconds).
+Test Suite 'BundleProtectionTests' passed at 2026-06-11 14:25:46.655.
+	 Executed 24 tests, with 0 failures (0 unexpected) in 0.007 (0.009) seconds
+Test Suite 'CleanStatsStoreTests' started at 2026-06-11 14:25:46.655.
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_categoryDistribution_全量_按_totalBytes_降序]' started.
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_categoryDistribution_全量_按_totalBytes_降序]' passed (0.001 seconds).
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_categoryDistribution_按_days_过滤]' started.
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_categoryDistribution_按_days_过滤]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_dailyTrend_按天聚合_只返回有事件的天]' started.
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_dailyTrend_按天聚合_只返回有事件的天]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_dailyTrend_排除_window_外的事件]' started.
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_dailyTrend_排除_window_外的事件]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_record_0_字节_不入流]' started.
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_record_0_字节_不入流]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_record_累计_total_单调递增]' started.
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_record_累计_total_单调递增]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_record_负数_不入流]' started.
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_record_负数_不入流]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_reset_alsoResetLifetime_累计归零]' started.
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_reset_alsoResetLifetime_累计归零]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_reset_默认保留_lifetime_累计]' started.
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_reset_默认保留_lifetime_累计]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_retentionDays_落档时丢弃超期事件但保留_lifetime]' started.
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_retentionDays_落档时丢弃超期事件但保留_lifetime]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_持久化_文件_往返]' started.
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_持久化_文件_往返]' passed (0.002 seconds).
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_空_store_totalBytes_为_0]' started.
+Test Case '-[SafetyKitTests.CleanStatsStoreTests test_空_store_totalBytes_为_0]' passed (0.000 seconds).
+Test Suite 'CleanStatsStoreTests' passed at 2026-06-11 14:25:46.660.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 0.005 (0.006) seconds
+Test Suite 'GPUMetalShaderVendorTests' started at 2026-06-11 14:25:46.660.
+Test Case '-[SafetyKitTests.GPUMetalShaderVendorTests test_GPUMetalShader_evaluate_用户级metal路径直接命中]' started.
+Test Case '-[SafetyKitTests.GPUMetalShaderVendorTests test_GPUMetalShader_evaluate_用户级metal路径直接命中]' passed (0.022 seconds).
+Test Case '-[SafetyKitTests.GPUMetalShaderVendorTests test_GPUMetalShader_vendor_存在且含4条path]' started.
+Test Case '-[SafetyKitTests.GPUMetalShaderVendorTests test_GPUMetalShader_vendor_存在且含4条path]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.GPUMetalShaderVendorTests test_GPUMetalShader_每条path_verdict精确匹配]' started.
+Test Case '-[SafetyKitTests.GPUMetalShaderVendorTests test_GPUMetalShader_每条path_verdict精确匹配]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.GPUMetalShaderVendorTests test_GPUMetalShader_系统级metal路径_命中vendor且verdict为confirm]' started.
+Test Case '-[SafetyKitTests.GPUMetalShaderVendorTests test_GPUMetalShader_系统级metal路径_命中vendor且verdict为confirm]' passed (0.022 seconds).
+Test Suite 'GPUMetalShaderVendorTests' passed at 2026-06-11 14:25:46.745.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.084 (0.085) seconds
+Test Suite 'InstallerLeftoversVendorTests' started at 2026-06-11 14:25:46.745.
+Test Case '-[SafetyKitTests.InstallerLeftoversVendorTests test_macOSInstallerLeftovers_glob_命中真实子路径osinstallersetupd]' started.
+Test Case '-[SafetyKitTests.InstallerLeftoversVendorTests test_macOSInstallerLeftovers_glob_命中真实子路径osinstallersetupd]' passed (0.022 seconds).
+Test Case '-[SafetyKitTests.InstallerLeftoversVendorTests test_macOSInstallerLeftovers_vendor_存在且含4条path]' started.
+Test Case '-[SafetyKitTests.InstallerLeftoversVendorTests test_macOSInstallerLeftovers_vendor_存在且含4条path]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.InstallerLeftoversVendorTests test_macOSInstallerLeftovers_每条path_verdict精确匹配]' started.
+Test Case '-[SafetyKitTests.InstallerLeftoversVendorTests test_macOSInstallerLeftovers_每条path_verdict精确匹配]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.InstallerLeftoversVendorTests test_macOSInstallerLeftovers_系统receipts路径_永远forbid]' started.
+Test Case '-[SafetyKitTests.InstallerLeftoversVendorTests test_macOSInstallerLeftovers_系统receipts路径_永远forbid]' passed (0.024 seconds).
+Test Suite 'InstallerLeftoversVendorTests' passed at 2026-06-11 14:25:46.832.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.086 (0.086) seconds
+Test Suite 'PathGlobTests' started at 2026-06-11 14:25:46.832.
+Test Case '-[SafetyKitTests.PathGlobTests test_isGlob_含星号或问号返回true]' started.
+Test Case '-[SafetyKitTests.PathGlobTests test_isGlob_含星号或问号返回true]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.PathGlobTests test_isGlob_无元字符返回false]' started.
+Test Case '-[SafetyKitTests.PathGlobTests test_isGlob_无元字符返回false]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.PathGlobTests test_match_jetbrains版本号典型场景]' started.
+Test Case '-[SafetyKitTests.PathGlobTests test_match_jetbrains版本号典型场景]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.PathGlobTests test_match_不会接受跨段贪婪吞噬]' started.
+Test Case '-[SafetyKitTests.PathGlobTests test_match_不会接受跨段贪婪吞噬]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.PathGlobTests test_match_字面量不等]' started.
+Test Case '-[SafetyKitTests.PathGlobTests test_match_字面量不等]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.PathGlobTests test_match_字面量相等]' started.
+Test Case '-[SafetyKitTests.PathGlobTests test_match_字面量相等]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.PathGlobTests test_match_星号不跨斜杠]' started.
+Test Case '-[SafetyKitTests.PathGlobTests test_match_星号不跨斜杠]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.PathGlobTests test_match_星号匹配空串]' started.
+Test Case '-[SafetyKitTests.PathGlobTests test_match_星号匹配空串]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.PathGlobTests test_match_星号同段内]' started.
+Test Case '-[SafetyKitTests.PathGlobTests test_match_星号同段内]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.PathGlobTests test_match_问号不跨斜杠]' started.
+Test Case '-[SafetyKitTests.PathGlobTests test_match_问号不跨斜杠]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.PathGlobTests test_match_问号单字符]' started.
+Test Case '-[SafetyKitTests.PathGlobTests test_match_问号单字符]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.PathGlobTests test_matchPrefix_不同分支不匹配]' started.
+Test Case '-[SafetyKitTests.PathGlobTests test_matchPrefix_不同分支不匹配]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.PathGlobTests test_matchPrefix_子目录命中]' started.
+Test Case '-[SafetyKitTests.PathGlobTests test_matchPrefix_子目录命中]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.PathGlobTests test_matchPrefix_段数不足时不匹配]' started.
+Test Case '-[SafetyKitTests.PathGlobTests test_matchPrefix_段数不足时不匹配]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.PathGlobTests test_matchPrefix_精确根命中]' started.
+Test Case '-[SafetyKitTests.PathGlobTests test_matchPrefix_精确根命中]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.PathGlobTests test_takeSegments_典型场景]' started.
+Test Case '-[SafetyKitTests.PathGlobTests test_takeSegments_典型场景]' passed (0.000 seconds).
+Test Suite 'PathGlobTests' passed at 2026-06-11 14:25:46.834.
+	 Executed 16 tests, with 0 failures (0 unexpected) in 0.001 (0.002) seconds
+Test Suite 'RuleLoaderTests' started at 2026-06-11 14:25:46.834.
+Test Case '-[SafetyKitTests.RuleLoaderTests testEmptyPartialPathRuleSkippedSilently]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testEmptyPartialPathRuleSkippedSilently]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testEvaluateVendorSubpathKeepsSafe]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testEvaluateVendorSubpathKeepsSafe]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testEvaluateWithVendorDowngradesSafeRoot]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testEvaluateWithVendorDowngradesSafeRoot]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testHardForbidKeepsExplicitForbidPathRule]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testHardForbidKeepsExplicitForbidPathRule]' passed (0.002 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testHardForbidRejectsMaliciousPathsEntry]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testHardForbidRejectsMaliciousPathsEntry]' passed (0.001 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testHardForbidRejectsMaliciousRule]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testHardForbidRejectsMaliciousRule]' passed (0.001 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testIgnoresUnknownKeysForwardCompat]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testIgnoresUnknownKeysForwardCompat]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testParseMinimalEntry]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testParseMinimalEntry]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testParseMultipleEntries]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testParseMultipleEntries]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testParsePathsBackwardCompatibleWithLegacyYaml]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testParsePathsBackwardCompatibleWithLegacyYaml]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testParsePathsMixWithVendorRoot]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testParsePathsMixWithVendorRoot]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testParsePathsRejectsInvalidVerdict]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testParsePathsRejectsInvalidVerdict]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testParsePathsWithVerdictAndReason]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testParsePathsWithVerdictAndReason]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testPartialPathRuleMissingPathThrows]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testPartialPathRuleMissingPathThrows]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testPartialPathRuleMissingVerdictThrows]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testPartialPathRuleMissingVerdictThrows]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testPartialPathRuleVerdictTypoThrows]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testPartialPathRuleVerdictTypoThrows]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testPathOverrideCannotBypassHardForbid]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testPathOverrideCannotBypassHardForbid]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testPathOverrideForbidEscalates]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testPathOverrideForbidEscalates]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testPathOverrideSafeBeatsConfirm]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testPathOverrideSafeBeatsConfirm]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testPathOverrideSafeInheritsToSubpaths]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testPathOverrideSafeInheritsToSubpaths]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testPathsBlockDoesNotSwallowFollowingTopLevelKeys]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testPathsBlockDoesNotSwallowFollowingTopLevelKeys]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testPathsBlockExitsBeforeNextVendor]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testPathsBlockExitsBeforeNextVendor]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYaml_Step11C_VerdictMatrix]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYaml_Step11C_VerdictMatrix]' passed (0.024 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlAndroidStudioGlobIntegration]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlAndroidStudioGlobIntegration]' passed (0.023 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlCargoConfigBlockedByHardForbid]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlCargoConfigBlockedByHardForbid]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlCocoaPodsTrunkOverridesParent]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlCocoaPodsTrunkOverridesParent]' passed (0.023 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlContainsModernToolchains_Step11C]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlContainsModernToolchains_Step11C]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlD3EndToEnd]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlD3EndToEnd]' passed (0.023 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlJetBrainsGlobIntegration]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlJetBrainsGlobIntegration]' passed (0.022 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsAndroidPathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsAndroidPathRules]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsAntigravityPathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsAntigravityPathRules]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsApplePathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsApplePathRules]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsCargoPathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsCargoPathRules]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsClaudeCodePathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsClaudeCodePathRules]' passed (0.019 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsCocoaPodsPathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsCocoaPodsPathRules]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsCodeFamilyPathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsCodeFamilyPathRules]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsCodexPathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsCodexPathRules]' passed (0.019 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsContainersPathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsContainersPathRules]' passed (0.019 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsCopilotCliPathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsCopilotCliPathRules]' passed (0.019 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsCursorAgentPathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsCursorAgentPathRules]' passed (0.019 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsFlutterPathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsFlutterPathRules]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsGradlePathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsGradlePathRules]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsJetBrainsPathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsJetBrainsPathRules]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsMavenPathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsMavenPathRules]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsNodePackagersPathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsNodePackagersPathRules]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsPythonPathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsPythonPathRules]' passed (0.019 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsReactNativePathRules]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlLoadsReactNativePathRules]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlPreservesDefenseInDepthForbids]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlPreservesDefenseInDepthForbids]' passed (0.020 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlStep8EndToEnd]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testRealVendorsYamlStep8EndToEnd]' passed (0.022 seconds).
+Test Case '-[SafetyKitTests.RuleLoaderTests testVendorRulePrefixesExpandHome]' started.
+Test Case '-[SafetyKitTests.RuleLoaderTests testVendorRulePrefixesExpandHome]' passed (0.000 seconds).
+Test Suite 'RuleLoaderTests' passed at 2026-06-11 14:25:47.375.
+	 Executed 50 tests, with 0 failures (0 unexpected) in 0.537 (0.541) seconds
+Test Suite 'SafetyEngineTests' started at 2026-06-11 14:25:47.375.
+Test Case '-[SafetyKitTests.SafetyEngineTests testDotDotInPathRejected]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testDotDotInPathRejected]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testGoldenZoneDartSdkWithoutBinIsConfirm]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testGoldenZoneDartSdkWithoutBinIsConfirm]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testGoldenZoneDartToolBinSubstringForbidden]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testGoldenZoneDartToolBinSubstringForbidden]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testGoldenZoneGitSegmentForbidden]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testGoldenZoneGitSegmentForbidden]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testGoldenZoneGlobalStorageSubstringForbidden]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testGoldenZoneGlobalStorageSubstringForbidden]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testGoldenZoneNegativeCases]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testGoldenZoneNegativeCases]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testGoldenZoneSensitiveCredentialsForbidden]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testGoldenZoneSensitiveCredentialsForbidden]' passed (0.001 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testGoldenZoneSuffixForbidden]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testGoldenZoneSuffixForbidden]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testHomeDocumentsItemsAreConfirm]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testHomeDocumentsItemsAreConfirm]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testHomeRootIsForbidden]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testHomeRootIsForbidden]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testHomeSubpathsAreConfirm]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testHomeSubpathsAreConfirm]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testIsForbiddenWrapper]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testIsForbiddenWrapper]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testRelativePathRejected]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testRelativePathRejected]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testRootIsForbidden]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testRootIsForbidden]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testSystemPathsAreForbidden]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testSystemPathsAreForbidden]' passed (0.001 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testSystemVolumeRejected]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testSystemVolumeRejected]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testUserCachesAreSafe]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testUserCachesAreSafe]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.SafetyEngineTests testXcodeDerivedDataIsSafe]' started.
+Test Case '-[SafetyKitTests.SafetyEngineTests testXcodeDerivedDataIsSafe]' passed (0.000 seconds).
+Test Suite 'SafetyEngineTests' passed at 2026-06-11 14:25:47.381.
+	 Executed 18 tests, with 0 failures (0 unexpected) in 0.004 (0.006) seconds
+Test Suite 'VendorTrieGlobTests' started at 2026-06-11 14:25:47.381.
+Test Case '-[SafetyKitTests.VendorTrieGlobTests test_globHit命中glob子节点isExactRoot应为false]' started.
+Test Case '-[SafetyKitTests.VendorTrieGlobTests test_globHit命中glob子节点isExactRoot应为false]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.VendorTrieGlobTests test_globHit跨vendor命中时rule与override同源]' started.
+Test Case '-[SafetyKitTests.VendorTrieGlobTests test_globHit跨vendor命中时rule与override同源]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.VendorTrieGlobTests test_glob不跨段贪婪吞噬]' started.
+Test Case '-[SafetyKitTests.VendorTrieGlobTests test_glob不跨段贪婪吞噬]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.VendorTrieGlobTests test_glob加载时显式forbid的多重防御保留]' started.
+Test Case '-[SafetyKitTests.VendorTrieGlobTests test_glob加载时显式forbid的多重防御保留]' passed (0.001 seconds).
+Test Case '-[SafetyKitTests.VendorTrieGlobTests test_glob加载时硬禁区前缀被丢弃]' started.
+Test Case '-[SafetyKitTests.VendorTrieGlobTests test_glob加载时硬禁区前缀被丢弃]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.VendorTrieGlobTests test_glob命中后仍走evaluate走硬安全网拦截]' started.
+Test Case '-[SafetyKitTests.VendorTrieGlobTests test_glob命中后仍走evaluate走硬安全网拦截]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.VendorTrieGlobTests test_glob命中版本号目录子树]' started.
+Test Case '-[SafetyKitTests.VendorTrieGlobTests test_glob命中版本号目录子树]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.VendorTrieGlobTests test_glob规则不进trie而进globRules]' started.
+Test Case '-[SafetyKitTests.VendorTrieGlobTests test_glob规则不进trie而进globRules]' passed (0.000 seconds).
+Test Suite 'VendorTrieGlobTests' passed at 2026-06-11 14:25:47.384.
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+Test Suite 'VendorTrieTests' started at 2026-06-11 14:25:47.384.
+Test Case '-[SafetyKitTests.VendorTrieTests test_trie与朴素evaluate结果完全一致]' started.
+Test Case '-[SafetyKitTests.VendorTrieTests test_trie与朴素evaluate结果完全一致]' passed (0.087 seconds).
+Test Case '-[SafetyKitTests.VendorTrieTests test_trie保留path级override并通过match返回]' started.
+Test Case '-[SafetyKitTests.VendorTrieTests test_trie保留path级override并通过match返回]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.VendorTrieTests test_trie匹配159条vendor性能基准]' started.
+/Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Tests/SafetyKitTests/VendorTrieTests.swift:123: Test Case '-[SafetyKitTests.VendorTrieTests test_trie匹配159条vendor性能基准]' measured [Clock Monotonic Time, s] average: 0.702, relative standard deviation: 3.763%, values: [0.685991, 0.692642, 0.755103, 0.689175, 0.689104], performanceMetricID:com.apple.dt.XCTMetric_Clock.time.monotonic, baselineName: "", baselineAverage: , polarity: prefers smaller, maxPercentRegression: 10.000%, maxPercentRelativeStandardDeviation: 10.000%, maxRegression: 0.000, maxStandardDeviation: 0.000
+Test Case '-[SafetyKitTests.VendorTrieTests test_trie匹配159条vendor性能基准]' passed (5.211 seconds).
+Test Case '-[SafetyKitTests.VendorTrieTests test_trie命中子目录返回isExactRootFalse]' started.
+Test Case '-[SafetyKitTests.VendorTrieTests test_trie命中子目录返回isExactRootFalse]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.VendorTrieTests test_trie命中根目录返回isExactRootTrue]' started.
+Test Case '-[SafetyKitTests.VendorTrieTests test_trie命中根目录返回isExactRootTrue]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.VendorTrieTests test_trie让pathOverride沿子树继承]' started.
+Test Case '-[SafetyKitTests.VendorTrieTests test_trie让pathOverride沿子树继承]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.VendorTrieTests test_trie默认vendor根无pathOverride]' started.
+Test Case '-[SafetyKitTests.VendorTrieTests test_trie默认vendor根无pathOverride]' passed (0.000 seconds).
+Test Suite 'VendorTrieTests' passed at 2026-06-11 14:25:52.683.
+	 Executed 7 tests, with 0 failures (0 unexpected) in 5.299 (5.299) seconds
+Test Suite 'WhitelistStoreTests' started at 2026-06-11 14:25:52.683.
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_add_后_isWhitelisted_精确命中]' started.
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_add_后_isWhitelisted_精确命中]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_add_子项_不会让父目录命中]' started.
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_add_子项_不会让父目录命中]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_add_父目录_子项也命中_prefix]' started.
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_add_父目录_子项也命中_prefix]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_list_按_addedAt_倒序]' started.
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_list_按_addedAt_倒序]' passed (0.023 seconds).
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_normalize_去除尾_slash]' started.
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_normalize_去除尾_slash]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_prefix_不应误命中_相似前缀_目录]' started.
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_prefix_不应误命中_相似前缀_目录]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_remove_后_isWhitelisted_回归_false]' started.
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_remove_后_isWhitelisted_回归_false]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_持久化_文件_往返]' started.
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_持久化_文件_往返]' passed (0.002 seconds).
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_空_store_isWhitelisted_全部为_false]' started.
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_空_store_isWhitelisted_全部为_false]' passed (0.000 seconds).
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_重复_add_是_idempotent_刷新_addedAt]' started.
+Test Case '-[SafetyKitTests.WhitelistStoreTests test_重复_add_是_idempotent_刷新_addedAt]' passed (0.025 seconds).
+Test Suite 'WhitelistStoreTests' passed at 2026-06-11 14:25:52.736.
+	 Executed 10 tests, with 0 failures (0 unexpected) in 0.052 (0.053) seconds
+Test Suite 'SafetyKitPackageTests.xctest' passed at 2026-06-11 14:25:52.736.
+	 Executed 160 tests, with 0 failures (0 unexpected) in 6.233 (6.247) seconds
+Test Suite 'All tests' passed at 2026-06-11 14:25:52.736.
+	 Executed 160 tests, with 0 failures (0 unexpected) in 6.233 (6.248) seconds
+◇ Test run started.
+↳ Testing Library Version: 1501
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

@@ -1,9 +1,9 @@
-2026-06-04 17:13:16.496 GSYCleanMac[57027:2969372] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
-[REGR] case=uninstaller-dryrun defaults_snapshot_keys=4 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+2026-06-11 14:32:54.166 GSYCleanMac[76460:5118061] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR] case=uninstaller-dryrun defaults_snapshot_keys=10 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=uninstaller-dryrun
 [REGR] case=uninstaller-dryrun candidates=2
 [REGR_OK] case=uninstaller-dryrun candidate count > 0=2 > 0
-[REGR_OK] case=uninstaller-dryrun candidate still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrFakeApp-1BADF8A1-CCF4-4249-A234-36F06702F9C3/Library/Caches/com.gsyclean.regression.fake=true
-[REGR_OK] case=uninstaller-dryrun candidate still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrFakeApp-1BADF8A1-CCF4-4249-A234-36F06702F9C3/Library/Application Support/com.gsyclean.regression.fake=true
-[REGR] case=uninstaller-dryrun defaults_restored_keys=4
-[REGR_PASS] case=uninstaller-dryrun elapsed_ms=220
+[REGR_OK] case=uninstaller-dryrun candidate still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrFakeApp-BA7BA889-5873-4CA8-A746-D2ABE3306E99/Library/Application Support/com.gsyclean.regression.fake=true
+[REGR_OK] case=uninstaller-dryrun candidate still exists (dryRun): /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrFakeApp-BA7BA889-5873-4CA8-A746-D2ABE3306E99/Library/Caches/com.gsyclean.regression.fake=true
+[REGR] case=uninstaller-dryrun defaults_restored_keys=10
+[REGR_PASS] case=uninstaller-dryrun elapsed_ms=234

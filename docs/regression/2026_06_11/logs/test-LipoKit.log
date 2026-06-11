@@ -1,0 +1,43 @@
+[0/1] Planning build
+Building for debugging...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.17s)
+Test Suite 'All tests' started at 2026-06-11 14:26:01.962.
+Test Suite 'LipoKitPackageTests.xctest' started at 2026-06-11 14:26:01.964.
+Test Suite 'LipoKitTests' started at 2026-06-11 14:26:01.964.
+Test Case '-[LipoKitTests.LipoKitTests test_audit_2架构_savings等于x86切片大小]' started.
+Test Case '-[LipoKitTests.LipoKitTests test_audit_2架构_savings等于x86切片大小]' passed (0.019 seconds).
+Test Case '-[LipoKitTests.LipoKitTests test_audit_thin文件_返回nil_无瘦身]' started.
+Test Case '-[LipoKitTests.LipoKitTests test_audit_thin文件_返回nil_无瘦身]' passed (0.001 seconds).
+Test Case '-[LipoKitTests.LipoKitTests test_audit_目标架构不存在_savings为0]' started.
+Test Case '-[LipoKitTests.LipoKitTests test_audit_目标架构不存在_savings为0]' passed (0.001 seconds).
+Test Case '-[LipoKitTests.LipoKitTests test_auditBundle_递归扫整个目录_汇总所有FAT]' started.
+Test Case '-[LipoKitTests.LipoKitTests test_auditBundle_递归扫整个目录_汇总所有FAT]' passed (0.004 seconds).
+Test Case '-[LipoKitTests.LipoKitTests test_dryRunSavings_累加多个候选]' started.
+Test Case '-[LipoKitTests.LipoKitTests test_dryRunSavings_累加多个候选]' passed (0.001 seconds).
+Test Case '-[LipoKitTests.LipoKitTests test_dryRun不写盘_文件大小不变]' started.
+Test Case '-[LipoKitTests.LipoKitTests test_dryRun不写盘_文件大小不变]' passed (0.001 seconds).
+Test Case '-[LipoKitTests.LipoKitTests test_extract_仅保留arm64切片字节正确]' started.
+Test Case '-[LipoKitTests.LipoKitTests test_extract_仅保留arm64切片字节正确]' passed (0.004 seconds).
+Test Case '-[LipoKitTests.LipoKitTests test_extract_目标架构缺失_抛错]' started.
+Test Case '-[LipoKitTests.LipoKitTests test_extract_目标架构缺失_抛错]' passed (0.001 seconds).
+Test Case '-[LipoKitTests.LipoKitTests test_FAT_MAGIC_64识别_64bit_offset_size]' started.
+Test Case '-[LipoKitTests.LipoKitTests test_FAT_MAGIC_64识别_64bit_offset_size]' passed (0.000 seconds).
+Test Case '-[LipoKitTests.LipoKitTests test_FAT_magic识别正确_2架构]' started.
+Test Case '-[LipoKitTests.LipoKitTests test_FAT_magic识别正确_2架构]' passed (0.000 seconds).
+Test Case '-[LipoKitTests.LipoKitTests test_坏nfat_arch_返回notMachO]' started.
+Test Case '-[LipoKitTests.LipoKitTests test_坏nfat_arch_返回notMachO]' passed (0.000 seconds).
+Test Case '-[LipoKitTests.LipoKitTests test_文件太短返回notMachO]' started.
+Test Case '-[LipoKitTests.LipoKitTests test_文件太短返回notMachO]' passed (0.000 seconds).
+Test Case '-[LipoKitTests.LipoKitTests test_非fat_magic返回thin]' started.
+Test Case '-[LipoKitTests.LipoKitTests test_非fat_magic返回thin]' passed (0.000 seconds).
+Test Suite 'LipoKitTests' passed at 2026-06-11 14:26:02.000.
+	 Executed 13 tests, with 0 failures (0 unexpected) in 0.034 (0.036) seconds
+Test Suite 'LipoKitPackageTests.xctest' passed at 2026-06-11 14:26:02.000.
+	 Executed 13 tests, with 0 failures (0 unexpected) in 0.034 (0.036) seconds
+Test Suite 'All tests' passed at 2026-06-11 14:26:02.000.
+	 Executed 13 tests, with 0 failures (0 unexpected) in 0.034 (0.038) seconds
+◇ Test run started.
+↳ Testing Library Version: 1501
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

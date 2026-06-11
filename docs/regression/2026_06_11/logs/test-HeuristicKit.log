@@ -1,0 +1,56 @@
+[0/1] Planning build
+Building for debugging...
+[0/5] Copying protected_bundles.json
+[1/5] Write sources
+[2/5] Write swift-version--58304C5D6DBC2206.txt
+[4/13] Compiling SafetyKit VendorTrie.swift
+[5/13] Compiling SafetyKit SafetyEngine.swift
+[6/13] Compiling SafetyKit WhitelistStore.swift
+[7/14] Compiling SafetyKit PathGlob.swift
+[8/14] Emitting module SafetyKit
+[9/14] Compiling SafetyKit BundleProtection.swift
+[10/14] Compiling SafetyKit RuleLoader.swift
+[11/14] Compiling SafetyKit CleanStatsStore.swift
+[12/14] Compiling SafetyKit resource_bundle_accessor.swift
+[13/16] Compiling HeuristicKit HeuristicEngine.swift
+[14/16] Emitting module HeuristicKit
+[15/18] Emitting module HeuristicKitTests
+[16/18] Compiling HeuristicKitTests HeuristicEngineTests.swift
+[16/18] Write Objects.LinkFileList
+[17/18] Linking HeuristicKitPackageTests
+Build complete! (2.89s)
+Test Suite 'All tests' started at 2026-06-11 14:26:00.199.
+Test Suite 'HeuristicKitPackageTests.xctest' started at 2026-06-11 14:26:00.199.
+Test Suite 'HeuristicEngineTests' started at 2026-06-11 14:26:00.199.
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testAncestorPrefixesAccumulate]' started.
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testAncestorPrefixesAccumulate]' passed (0.001 seconds).
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testAncestorPrefixesUtility]' started.
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testAncestorPrefixesUtility]' passed (0.000 seconds).
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testForbiddenPathNeverGetsPositiveScore]' started.
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testForbiddenPathNeverGetsPositiveScore]' passed (0.002 seconds).
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testHomeRootForbiddenNeverPositive]' started.
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testHomeRootForbiddenNeverPositive]' passed (0.001 seconds).
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testJSONPersistAndLoadRoundTrip]' started.
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testJSONPersistAndLoadRoundTrip]' passed (0.009 seconds).
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testKeptIsMildlyNegativeNotForbidding]' started.
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testKeptIsMildlyNegativeNotForbidding]' passed (0.001 seconds).
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testRestoreImmediatelyTurnsScoreNegative]' started.
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testRestoreImmediatelyTurnsScoreNegative]' passed (0.001 seconds).
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testRestoreOnAncestorPropagatesNegativeToDescendants]' started.
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testRestoreOnAncestorPropagatesNegativeToDescendants]' passed (0.001 seconds).
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testScoreAlwaysInRange]' started.
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testScoreAlwaysInRange]' passed (0.242 seconds).
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testScoreMonotonicWithMoreTrashes]' started.
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testScoreMonotonicWithMoreTrashes]' passed (0.003 seconds).
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testTrashAccumulatesPositiveScore]' started.
+Test Case '-[HeuristicKitTests.HeuristicEngineTests testTrashAccumulatesPositiveScore]' passed (0.001 seconds).
+Test Suite 'HeuristicEngineTests' passed at 2026-06-11 14:26:00.462.
+	 Executed 11 tests, with 0 failures (0 unexpected) in 0.262 (0.263) seconds
+Test Suite 'HeuristicKitPackageTests.xctest' passed at 2026-06-11 14:26:00.462.
+	 Executed 11 tests, with 0 failures (0 unexpected) in 0.262 (0.263) seconds
+Test Suite 'All tests' passed at 2026-06-11 14:26:00.462.
+	 Executed 11 tests, with 0 failures (0 unexpected) in 0.262 (0.264) seconds
+◇ Test run started.
+↳ Testing Library Version: 1501
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

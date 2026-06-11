@@ -1,10 +1,10 @@
-2026-06-04 17:13:14.448 GSYCleanMac[57008:2969294] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
-[REGR] case=appfootprint-scan defaults_snapshot_keys=4 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+2026-06-11 14:32:52.108 GSYCleanMac[76439:5117984] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR] case=appfootprint-scan defaults_snapshot_keys=10 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=appfootprint-scan
 [REGR] case=appfootprint-scan bundleID=com.gsyclean.regression.fake appName=FakeRegression
 [REGR_OK] case=appfootprint-scan bundleID=com.gsyclean.regression.fake
 [REGR] case=appfootprint-scan bundleBytes=12777 bundleFiles=3
 [REGR_OK] case=appfootprint-scan bundle bytes > 0=12777 > 0
 [REGR_OK] case=appfootprint-scan bundle file count > 0=3 > 0
-[REGR] case=appfootprint-scan defaults_restored_keys=4
-[REGR_PASS] case=appfootprint-scan elapsed_ms=211
+[REGR] case=appfootprint-scan defaults_restored_keys=10
+[REGR_PASS] case=appfootprint-scan elapsed_ms=219

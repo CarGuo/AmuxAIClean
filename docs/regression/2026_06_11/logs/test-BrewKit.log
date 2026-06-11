@@ -1,0 +1,87 @@
+[0/1] Planning build
+Building for debugging...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.24s)
+Test Suite 'All tests' started at 2026-06-11 14:25:54.726.
+Test Suite 'BrewKitPackageTests.xctest' started at 2026-06-11 14:25:54.727.
+Test Suite 'BrewCleanupTests' started at 2026-06-11 14:25:54.727.
+Test Case '-[BrewKitTests.BrewCleanupTests test_dryRun_30天前的孤儿bottle被标记stale]' started.
+Test Case '-[BrewKitTests.BrewCleanupTests test_dryRun_30天前的孤儿bottle被标记stale]' passed (0.008 seconds).
+Test Case '-[BrewKitTests.BrewCleanupTests test_dryRun_新文件不算stale]' started.
+Test Case '-[BrewKitTests.BrewCleanupTests test_dryRun_新文件不算stale]' passed (0.002 seconds).
+Test Case '-[BrewKitTests.BrewCleanupTests test_dryRun_活跃symlink指向的文件被排除]' started.
+Test Case '-[BrewKitTests.BrewCleanupTests test_dryRun_活跃symlink指向的文件被排除]' passed (0.002 seconds).
+Test Case '-[BrewKitTests.BrewCleanupTests test_dryRun_混合场景_只命中孤儿且超龄]' started.
+Test Case '-[BrewKitTests.BrewCleanupTests test_dryRun_混合场景_只命中孤儿且超龄]' passed (0.023 seconds).
+Test Case '-[BrewKitTests.BrewCleanupTests test_dryRun_缺downloads目录_空plan]' started.
+Test Case '-[BrewKitTests.BrewCleanupTests test_dryRun_缺downloads目录_空plan]' passed (0.001 seconds).
+Test Case '-[BrewKitTests.BrewCleanupTests test_shouldRun_50MB且从未清理_允许执行]' started.
+Test Case '-[BrewKitTests.BrewCleanupTests test_shouldRun_50MB且从未清理_允许执行]' passed (0.000 seconds).
+Test Case '-[BrewKitTests.BrewCleanupTests test_shouldRun_7天冷却内_拒绝执行]' started.
+Test Case '-[BrewKitTests.BrewCleanupTests test_shouldRun_7天冷却内_拒绝执行]' passed (0.000 seconds).
+Test Case '-[BrewKitTests.BrewCleanupTests test_shouldRun_冷却已过_允许执行]' started.
+Test Case '-[BrewKitTests.BrewCleanupTests test_shouldRun_冷却已过_允许执行]' passed (0.000 seconds).
+Test Case '-[BrewKitTests.BrewCleanupTests test_shouldRun_恰好50MB边界算通过]' started.
+Test Case '-[BrewKitTests.BrewCleanupTests test_shouldRun_恰好50MB边界算通过]' passed (0.000 seconds).
+Test Case '-[BrewKitTests.BrewCleanupTests test_shouldRun_未达50MB阈值_拒绝执行]' started.
+Test Case '-[BrewKitTests.BrewCleanupTests test_shouldRun_未达50MB阈值_拒绝执行]' passed (0.000 seconds).
+Test Suite 'BrewCleanupTests' passed at 2026-06-11 14:25:54.767.
+	 Executed 10 tests, with 0 failures (0 unexpected) in 0.038 (0.039) seconds
+Test Suite 'BrewControllerTests' started at 2026-06-11 14:25:54.767.
+Test Case '-[BrewKitTests.BrewControllerTests test_cask_无receipt_仍能列出_默认显式安装]' started.
+Test Case '-[BrewKitTests.BrewControllerTests test_cask_无receipt_仍能列出_默认显式安装]' passed (0.002 seconds).
+Test Case '-[BrewKitTests.BrewControllerTests test_caskroom里的_点开头目录_应被忽略]' started.
+Test Case '-[BrewKitTests.BrewControllerTests test_caskroom里的_点开头目录_应被忽略]' passed (0.001 seconds).
+Test Case '-[BrewKitTests.BrewControllerTests test_init_with_prefix_可以直接构造]' started.
+Test Case '-[BrewKitTests.BrewControllerTests test_init_with_prefix_可以直接构造]' passed (0.003 seconds).
+Test Case '-[BrewKitTests.BrewControllerTests test_listAll_formula加cask混合_按name排序]' started.
+Test Case '-[BrewKitTests.BrewControllerTests test_listAll_formula加cask混合_按name排序]' passed (0.003 seconds).
+Test Case '-[BrewKitTests.BrewControllerTests test_依赖类formula_installedOnRequest为false]' started.
+Test Case '-[BrewKitTests.BrewControllerTests test_依赖类formula_installedOnRequest为false]' passed (0.001 seconds).
+Test Case '-[BrewKitTests.BrewControllerTests test_单个formula_含完整receipt_全字段解析正确]' started.
+Test Case '-[BrewKitTests.BrewControllerTests test_单个formula_含完整receipt_全字段解析正确]' passed (0.001 seconds).
+Test Case '-[BrewKitTests.BrewControllerTests test_同名多version_全部列出]' started.
+Test Case '-[BrewKitTests.BrewControllerTests test_同名多version_全部列出]' passed (0.002 seconds).
+Test Case '-[BrewKitTests.BrewControllerTests test_损坏receipt_不崩溃_其他字段降级为默认值]' started.
+Test Case '-[BrewKitTests.BrewControllerTests test_损坏receipt_不崩溃_其他字段降级为默认值]' passed (0.002 seconds).
+Test Case '-[BrewKitTests.BrewControllerTests test_空prefix_listAll_返回空数组]' started.
+Test Case '-[BrewKitTests.BrewControllerTests test_空prefix_listAll_返回空数组]' passed (0.000 seconds).
+Test Suite 'BrewControllerTests' passed at 2026-06-11 14:25:54.785.
+	 Executed 9 tests, with 0 failures (0 unexpected) in 0.016 (0.018) seconds
+Test Suite 'BrewRegistryTests' started at 2026-06-11 14:25:54.785.
+Test Case '-[BrewKitTests.BrewRegistryTests test_controller_outdated_cask可升级]' started.
+Test Case '-[BrewKitTests.BrewRegistryTests test_controller_outdated_cask可升级]' passed (0.003 seconds).
+Test Case '-[BrewKitTests.BrewRegistryTests test_controller_outdated_同名多version_每个独立判定]' started.
+Test Case '-[BrewKitTests.BrewRegistryTests test_controller_outdated_同名多version_每个独立判定]' passed (0.002 seconds).
+Test Case '-[BrewKitTests.BrewRegistryTests test_controller_outdated_命中可升级]' started.
+Test Case '-[BrewKitTests.BrewRegistryTests test_controller_outdated_命中可升级]' passed (0.002 seconds).
+Test Case '-[BrewKitTests.BrewRegistryTests test_controller_outdated_无registry信息_跳过]' started.
+Test Case '-[BrewKitTests.BrewRegistryTests test_controller_outdated_无registry信息_跳过]' passed (0.001 seconds).
+Test Case '-[BrewKitTests.BrewRegistryTests test_latestVersion_按kind路由]' started.
+Test Case '-[BrewKitTests.BrewRegistryTests test_latestVersion_按kind路由]' passed (0.001 seconds).
+Test Case '-[BrewKitTests.BrewRegistryTests test_load_nil目录_返回空]' started.
+Test Case '-[BrewKitTests.BrewRegistryTests test_load_nil目录_返回空]' passed (0.000 seconds).
+Test Case '-[BrewKitTests.BrewRegistryTests test_load_缺失文件_返回空registry]' started.
+Test Case '-[BrewKitTests.BrewRegistryTests test_load_缺失文件_返回空registry]' passed (0.000 seconds).
+Test Case '-[BrewKitTests.BrewRegistryTests test_parseCask_提取所有token_version]' started.
+Test Case '-[BrewKitTests.BrewRegistryTests test_parseCask_提取所有token_version]' passed (0.001 seconds).
+Test Case '-[BrewKitTests.BrewRegistryTests test_parseFormula_payload内层非数组_返回空]' started.
+Test Case '-[BrewKitTests.BrewRegistryTests test_parseFormula_payload内层非数组_返回空]' passed (0.001 seconds).
+Test Case '-[BrewKitTests.BrewRegistryTests test_parseFormula_payload非字符串_返回空]' started.
+Test Case '-[BrewKitTests.BrewRegistryTests test_parseFormula_payload非字符串_返回空]' passed (0.001 seconds).
+Test Case '-[BrewKitTests.BrewRegistryTests test_parseFormula_损坏外层json_返回空]' started.
+Test Case '-[BrewKitTests.BrewRegistryTests test_parseFormula_损坏外层json_返回空]' passed (0.001 seconds).
+Test Case '-[BrewKitTests.BrewRegistryTests test_parseFormula_提取所有name_versions_stable]' started.
+Test Case '-[BrewKitTests.BrewRegistryTests test_parseFormula_提取所有name_versions_stable]' passed (0.001 seconds).
+Test Case '-[BrewKitTests.BrewRegistryTests test_parseFormula_部分条目缺字段_跳过该条目]' started.
+Test Case '-[BrewKitTests.BrewRegistryTests test_parseFormula_部分条目缺字段_跳过该条目]' passed (0.001 seconds).
+Test Suite 'BrewRegistryTests' passed at 2026-06-11 14:25:54.801.
+	 Executed 13 tests, with 0 failures (0 unexpected) in 0.015 (0.016) seconds
+Test Suite 'BrewKitPackageTests.xctest' passed at 2026-06-11 14:25:54.801.
+	 Executed 32 tests, with 0 failures (0 unexpected) in 0.068 (0.073) seconds
+Test Suite 'All tests' passed at 2026-06-11 14:25:54.801.
+	 Executed 32 tests, with 0 failures (0 unexpected) in 0.068 (0.075) seconds
+◇ Test run started.
+↳ Testing Library Version: 1501
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

@@ -1,0 +1,61 @@
+[0/1] Planning build
+Building for debugging...
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.16s)
+Test Suite 'All tests' started at 2026-06-11 14:26:02.748.
+Test Suite 'LogKitPackageTests.xctest' started at 2026-06-11 14:26:02.749.
+Test Suite 'GSYLogTests' started at 2026-06-11 14:26:02.749.
+Test Case '-[LogKitTests.GSYLogTests test_GSYLog_configure_文件sink可写]' started.
+Test Case '-[LogKitTests.GSYLogTests test_GSYLog_configure_文件sink可写]' passed (0.005 seconds).
+Test Case '-[LogKitTests.GSYLogTests test_GSYLog_levelOrdering]' started.
+Test Case '-[LogKitTests.GSYLogTests test_GSYLog_levelOrdering]' passed (0.000 seconds).
+Test Case '-[LogKitTests.GSYLogTests test_GSYLog_minimumLevel_拦截低于阈值的日志]' started.
+Test Case '-[LogKitTests.GSYLogTests test_GSYLog_minimumLevel_拦截低于阈值的日志]' passed (0.001 seconds).
+Test Suite 'GSYLogTests' passed at 2026-06-11 14:26:02.755.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.006 (0.007) seconds
+Test Suite 'IOErrorClassifierTests' started at 2026-06-11 14:26:02.756.
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_CocoaFileNoSuchFile归类为notFound]' started.
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_CocoaFileNoSuchFile归类为notFound]' passed (0.000 seconds).
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_CocoaFileReadNoPermission归类为permissionDenied]' started.
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_CocoaFileReadNoPermission归类为permissionDenied]' passed (0.000 seconds).
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_CocoaFileReadNoSuchFile归类为notFound]' started.
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_CocoaFileReadNoSuchFile归类为notFound]' passed (0.000 seconds).
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_CocoaFileWriteNoPermission归类为permissionDenied]' started.
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_CocoaFileWriteNoPermission归类为permissionDenied]' passed (0.000 seconds).
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_Cocoa外层包装POSIX_EACCES应递归命中permissionDenied]' started.
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_Cocoa外层包装POSIX_EACCES应递归命中permissionDenied]' passed (0.000 seconds).
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_POSIX_EACCES归类为permissionDenied]' started.
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_POSIX_EACCES归类为permissionDenied]' passed (0.000 seconds).
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_POSIX_EIO归类为other]' started.
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_POSIX_EIO归类为other]' passed (0.000 seconds).
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_POSIX_ENOENT归类为notFound]' started.
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_POSIX_ENOENT归类为notFound]' passed (0.000 seconds).
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_POSIX_EPERM归类为permissionDenied]' started.
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_POSIX_EPERM归类为permissionDenied]' passed (0.000 seconds).
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_其他Cocoa错误归类为other]' started.
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_其他Cocoa错误归类为other]' passed (0.000 seconds).
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_完全未知域归类为other]' started.
+Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_完全未知域归类为other]' passed (0.000 seconds).
+Test Suite 'IOErrorClassifierTests' passed at 2026-06-11 14:26:02.758.
+	 Executed 11 tests, with 0 failures (0 unexpected) in 0.001 (0.002) seconds
+Test Suite 'LogFileSinkTests' started at 2026-06-11 14:26:02.758.
+Test Case '-[LogKitTests.LogFileSinkTests test_append_写入当天文件可被读回]' started.
+Test Case '-[LogKitTests.LogFileSinkTests test_append_写入当天文件可被读回]' passed (0.001 seconds).
+Test Case '-[LogKitTests.LogFileSinkTests test_currentFileURL_返回当天文件路径]' started.
+Test Case '-[LogKitTests.LogFileSinkTests test_currentFileURL_返回当天文件路径]' passed (0.001 seconds).
+Test Case '-[LogKitTests.LogFileSinkTests test_purge_不动非log前缀的文件]' started.
+Test Case '-[LogKitTests.LogFileSinkTests test_purge_不动非log前缀的文件]' passed (0.001 seconds).
+Test Case '-[LogKitTests.LogFileSinkTests test_purge_保留期内的旧文件保留]' started.
+Test Case '-[LogKitTests.LogFileSinkTests test_purge_保留期内的旧文件保留]' passed (0.001 seconds).
+Test Case '-[LogKitTests.LogFileSinkTests test_purge_超过保留期的旧文件被删除]' started.
+Test Case '-[LogKitTests.LogFileSinkTests test_purge_超过保留期的旧文件被删除]' passed (0.001 seconds).
+Test Suite 'LogFileSinkTests' passed at 2026-06-11 14:26:02.763.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.005 (0.005) seconds
+Test Suite 'LogKitPackageTests.xctest' passed at 2026-06-11 14:26:02.763.
+	 Executed 19 tests, with 0 failures (0 unexpected) in 0.013 (0.014) seconds
+Test Suite 'All tests' passed at 2026-06-11 14:26:02.763.
+	 Executed 19 tests, with 0 failures (0 unexpected) in 0.013 (0.015) seconds
+◇ Test run started.
+↳ Testing Library Version: 1501
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

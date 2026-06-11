@@ -1,10 +1,10 @@
-2026-06-04 17:13:07.270 GSYCleanMac[56947:2969070] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
-[REGR] case=large-files-threshold defaults_snapshot_keys=4 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+2026-06-11 14:32:43.921 GSYCleanMac[76332:5117662] [GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载
+[REGR] case=large-files-threshold defaults_snapshot_keys=10 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
 [REGR_BEGIN] case=large-files-threshold
 [REGR] case=large-files-threshold largeCount=3 firstName=big-0.bin
 [REGR_OK] case=large-files-threshold large count=3
 [REGR_OK] case=large-files-threshold large item bytes >= 1MB=1500000 > 1000000
 [REGR_OK] case=large-files-threshold large item bytes >= 1MB=1500000 > 1000000
 [REGR_OK] case=large-files-threshold large item bytes >= 1MB=1500000 > 1000000
-[REGR] case=large-files-threshold defaults_restored_keys=4
-[REGR_PASS] case=large-files-threshold elapsed_ms=638
+[REGR] case=large-files-threshold defaults_restored_keys=10
+[REGR_PASS] case=large-files-threshold elapsed_ms=640

@@ -1,0 +1,502 @@
+Building for debugging...
+[0/4] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.16s)
+Test Suite 'All tests' started at 2026-06-11 14:25:34.503.
+Test Suite 'ScanKitPackageTests.xctest' started at 2026-06-11 14:25:34.504.
+Test Suite 'BrowserOldFrameworkTests' started at 2026-06-11 14:25:34.504.
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_aged_chrome_with_5_old_versions]' started.
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_aged_chrome_with_5_old_versions]' passed (0.007 seconds).
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_async_discover_matches_sync_detect]' started.
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_async_discover_matches_sync_detect]' passed (0.003 seconds).
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_chrome_framework_returns_old_versions_only]' started.
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_chrome_framework_returns_old_versions_only]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_current_pointing_outside_versions_returns_empty]' started.
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_current_pointing_outside_versions_returns_empty]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_edge_updater_old_versions]' started.
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_edge_updater_old_versions]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_hit_metadata_is_complete]' started.
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_hit_metadata_is_complete]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_missing_framework_root_returns_empty]' started.
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_missing_framework_root_returns_empty]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_multiple_browser_frameworks_aggregated]' started.
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_multiple_browser_frameworks_aggregated]' passed (0.005 seconds).
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_no_current_symlink_returns_empty]' started.
+Test Case '-[ScanKitTests.BrowserOldFrameworkTests test_no_current_symlink_returns_empty]' passed (0.001 seconds).
+Test Suite 'BrowserOldFrameworkTests' passed at 2026-06-11 14:25:34.530.
+	 Executed 9 tests, with 0 failures (0 unexpected) in 0.025 (0.026) seconds
+Test Suite 'BulkScannerConcurrencyTests' started at 2026-06-11 14:25:34.530.
+Test Case '-[ScanKitTests.BulkScannerConcurrencyTests test_actualConcurrency严格cap在maxConcurrency]' started.
+Test Case '-[ScanKitTests.BulkScannerConcurrencyTests test_actualConcurrency严格cap在maxConcurrency]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.BulkScannerConcurrencyTests test_staySingleVolume开关不破坏单卷扫描正确性]' started.
+Test Case '-[ScanKitTests.BulkScannerConcurrencyTests test_staySingleVolume开关不破坏单卷扫描正确性]' passed (0.041 seconds).
+Test Case '-[ScanKitTests.BulkScannerConcurrencyTests test_单worker与多worker结果完全一致]' started.
+Test Case '-[ScanKitTests.BulkScannerConcurrencyTests test_单worker与多worker结果完全一致]' passed (0.045 seconds).
+Test Case '-[ScanKitTests.BulkScannerConcurrencyTests test_并发扫描总能finished而不卡死]' started.
+Test Case '-[ScanKitTests.BulkScannerConcurrencyTests test_并发扫描总能finished而不卡死]' passed (0.039 seconds).
+Test Case '-[ScanKitTests.BulkScannerConcurrencyTests test_深层链状目录在多worker下完整扫完不丢节点]' started.
+Test Case '-[ScanKitTests.BulkScannerConcurrencyTests test_深层链状目录在多worker下完整扫完不丢节点]' passed (0.036 seconds).
+Test Suite 'BulkScannerConcurrencyTests' passed at 2026-06-11 14:25:34.692.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.161 (0.162) seconds
+Test Suite 'BulkScannerMicroBatchTests' started at 2026-06-11 14:25:34.692.
+Test Case '-[ScanKitTests.BulkScannerMicroBatchTests test_5000文件场景_数据型yield次数应远低于文件数]' started.
+Test Case '-[ScanKitTests.BulkScannerMicroBatchTests test_5000文件场景_数据型yield次数应远低于文件数]' passed (1.171 seconds).
+Test Case '-[ScanKitTests.BulkScannerMicroBatchTests test_nodes_batch内元素应来自同一父目录]' started.
+Test Case '-[ScanKitTests.BulkScannerMicroBatchTests test_nodes_batch内元素应来自同一父目录]' passed (0.119 seconds).
+Test Case '-[ScanKitTests.BulkScannerMicroBatchTests test_兼容旧消费方_node与nodes累计entry一致]' started.
+Test Case '-[ScanKitTests.BulkScannerMicroBatchTests test_兼容旧消费方_node与nodes累计entry一致]' passed (0.181 seconds).
+Test Suite 'BulkScannerMicroBatchTests' passed at 2026-06-11 14:25:36.163.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 1.470 (1.471) seconds
+Test Suite 'BulkScannerPerfBaselineTests' started at 2026-06-11 14:25:36.163.
+Test Case '-[ScanKitTests.BulkScannerPerfBaselineTests test_baseline_单worker吞吐不低于下限]' started.
+/Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/BulkScannerPerfBaselineTests.swift:28: -[ScanKitTests.BulkScannerPerfBaselineTests test_baseline_单worker吞吐不低于下限] : Test skipped - 性能基线默认跳过；如需运行请设环境变量 RUN_PERF=1 (详见类注释)
+Test Case '-[ScanKitTests.BulkScannerPerfBaselineTests test_baseline_单worker吞吐不低于下限]' skipped (0.001 seconds).
+Test Case '-[ScanKitTests.BulkScannerPerfBaselineTests test_并行不退化_N4不应明显慢于N1]' started.
+/Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/BulkScannerPerfBaselineTests.swift:28: -[ScanKitTests.BulkScannerPerfBaselineTests test_并行不退化_N4不应明显慢于N1] : Test skipped - 性能基线默认跳过；如需运行请设环境变量 RUN_PERF=1 (详见类注释)
+Test Case '-[ScanKitTests.BulkScannerPerfBaselineTests test_并行不退化_N4不应明显慢于N1]' skipped (0.000 seconds).
+Test Case '-[ScanKitTests.BulkScannerPerfBaselineTests test_性能优化不改变总文件数]' started.
+Test Case '-[ScanKitTests.BulkScannerPerfBaselineTests test_性能优化不改变总文件数]' passed (0.189 seconds).
+Test Suite 'BulkScannerPerfBaselineTests' passed at 2026-06-11 14:25:36.354.
+	 Executed 3 tests, with 2 tests skipped and 0 failures (0 unexpected) in 0.190 (0.190) seconds
+Test Suite 'CacheDirTagTests' started at 2026-06-11 14:25:36.354.
+Test Case '-[ScanKitTests.CacheDirTagTests testInvalidSignatureNotDetected]' started.
+Test Case '-[ScanKitTests.CacheDirTagTests testInvalidSignatureNotDetected]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.CacheDirTagTests testNoTagFileNotDetected]' started.
+Test Case '-[ScanKitTests.CacheDirTagTests testNoTagFileNotDetected]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.CacheDirTagTests testTruncatedTagNotDetected]' started.
+Test Case '-[ScanKitTests.CacheDirTagTests testTruncatedTagNotDetected]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.CacheDirTagTests testValidCacheDirTagDetected]' started.
+Test Case '-[ScanKitTests.CacheDirTagTests testValidCacheDirTagDetected]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.CacheDirTagTests testValidSignatureWithLargeAppendedContent]' started.
+Test Case '-[ScanKitTests.CacheDirTagTests testValidSignatureWithLargeAppendedContent]' passed (0.014 seconds).
+Test Suite 'CacheDirTagTests' passed at 2026-06-11 14:25:36.372.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.017 (0.018) seconds
+Test Suite 'DevArtifactRulesTests' started at 2026-06-11 14:25:36.372.
+Test Case '-[ScanKitTests.DevArtifactRulesTests testAllIDsAreUnique]' started.
+Test Case '-[ScanKitTests.DevArtifactRulesTests testAllIDsAreUnique]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.DevArtifactRulesTests testBuildRulesRequireSiblingMarkers]' started.
+Test Case '-[ScanKitTests.DevArtifactRulesTests testBuildRulesRequireSiblingMarkers]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.DevArtifactRulesTests testDirectoryNamesAreLowercased]' started.
+Test Case '-[ScanKitTests.DevArtifactRulesTests testDirectoryNamesAreLowercased]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.DevArtifactRulesTests testGroupedCoversAllRules]' started.
+Test Case '-[ScanKitTests.DevArtifactRulesTests testGroupedCoversAllRules]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.DevArtifactRulesTests testGroupedOrderMatchesEcosystemAllCases]' started.
+Test Case '-[ScanKitTests.DevArtifactRulesTests testGroupedOrderMatchesEcosystemAllCases]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.DevArtifactRulesTests testNodeModulesRequiresPackageJson]' started.
+Test Case '-[ScanKitTests.DevArtifactRulesTests testNodeModulesRequiresPackageJson]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.DevArtifactRulesTests testRulesForCaseInsensitive]' started.
+Test Case '-[ScanKitTests.DevArtifactRulesTests testRulesForCaseInsensitive]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.DevArtifactRulesTests testRulesForReturnsExactMatch]' started.
+Test Case '-[ScanKitTests.DevArtifactRulesTests testRulesForReturnsExactMatch]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.DevArtifactRulesTests testTargetRequiresCargoToml]' started.
+Test Case '-[ScanKitTests.DevArtifactRulesTests testTargetRequiresCargoToml]' passed (0.000 seconds).
+Test Suite 'DevArtifactRulesTests' passed at 2026-06-11 14:25:36.374.
+	 Executed 9 tests, with 0 failures (0 unexpected) in 0.001 (0.002) seconds
+Test Suite 'DevArtifactScannerTests' started at 2026-06-11 14:25:36.374.
+Test Case '-[ScanKitTests.DevArtifactScannerTests testBuildHitsOnlyWithGradleSibling]' started.
+Test Case '-[ScanKitTests.DevArtifactScannerTests testBuildHitsOnlyWithGradleSibling]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.DevArtifactScannerTests testDisabledRuleNotHit]' started.
+Test Case '-[ScanKitTests.DevArtifactScannerTests testDisabledRuleNotHit]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.DevArtifactScannerTests testEmptyRuleSetReturnsZero]' started.
+Test Case '-[ScanKitTests.DevArtifactScannerTests testEmptyRuleSetReturnsZero]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.DevArtifactScannerTests testHitsNodeModulesWithSiblingPackageJson]' started.
+Test Case '-[ScanKitTests.DevArtifactScannerTests testHitsNodeModulesWithSiblingPackageJson]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.DevArtifactScannerTests testPrunesNestedAfterHit]' started.
+Test Case '-[ScanKitTests.DevArtifactScannerTests testPrunesNestedAfterHit]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.DevArtifactScannerTests testSkipsLibrary]' started.
+Test Case '-[ScanKitTests.DevArtifactScannerTests testSkipsLibrary]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.DevArtifactScannerTests testSkipsNodeModulesWithoutSiblingPackageJson]' started.
+Test Case '-[ScanKitTests.DevArtifactScannerTests testSkipsNodeModulesWithoutSiblingPackageJson]' passed (0.001 seconds).
+Test Suite 'DevArtifactScannerTests' passed at 2026-06-11 14:25:36.386.
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.012 (0.012) seconds
+Test Suite 'DuplicateScannerTests' started at 2026-06-11 14:25:36.386.
+Test Case '-[ScanKitTests.DuplicateScannerTests testDifferentSizeNoGroup]' started.
+Test Case '-[ScanKitTests.DuplicateScannerTests testDifferentSizeNoGroup]' passed (0.005 seconds).
+Test Case '-[ScanKitTests.DuplicateScannerTests testEmptyDirectoryReturnsEmpty]' started.
+Test Case '-[ScanKitTests.DuplicateScannerTests testEmptyDirectoryReturnsEmpty]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.DuplicateScannerTests testFilesBelowMinBytesIgnored]' started.
+Test Case '-[ScanKitTests.DuplicateScannerTests testFilesBelowMinBytesIgnored]' passed (0.003 seconds).
+Test Case '-[ScanKitTests.DuplicateScannerTests testHardlinkedFilesAreDeduplicatedByInode]' started.
+Test Case '-[ScanKitTests.DuplicateScannerTests testHardlinkedFilesAreDeduplicatedByInode]' passed (0.004 seconds).
+Test Case '-[ScanKitTests.DuplicateScannerTests testLargeFileBeyondThresholdMarkedPrefixOnly]' started.
+Test Case '-[ScanKitTests.DuplicateScannerTests testLargeFileBeyondThresholdMarkedPrefixOnly]' passed (0.004 seconds).
+Test Case '-[ScanKitTests.DuplicateScannerTests testMultipleGroupsSortedByTotalBytesDescending]' started.
+Test Case '-[ScanKitTests.DuplicateScannerTests testMultipleGroupsSortedByTotalBytesDescending]' passed (0.013 seconds).
+Test Case '-[ScanKitTests.DuplicateScannerTests testSafetyContractNoDeletionAPI]' started.
+Test Case '-[ScanKitTests.DuplicateScannerTests testSafetyContractNoDeletionAPI]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.DuplicateScannerTests testSamePrefixDifferentTailDistinguishedByFullHash]' started.
+Test Case '-[ScanKitTests.DuplicateScannerTests testSamePrefixDifferentTailDistinguishedByFullHash]' passed (0.004 seconds).
+Test Case '-[ScanKitTests.DuplicateScannerTests testSameSizeDifferentContentNoGroup]' started.
+Test Case '-[ScanKitTests.DuplicateScannerTests testSameSizeDifferentContentNoGroup]' passed (0.003 seconds).
+Test Case '-[ScanKitTests.DuplicateScannerTests testTCCRootIsSkippedWithEvent]' started.
+Test Case '-[ScanKitTests.DuplicateScannerTests testTCCRootIsSkippedWithEvent]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.DuplicateScannerTests testThreeIdenticalFilesProduceGroupOfThree]' started.
+Test Case '-[ScanKitTests.DuplicateScannerTests testThreeIdenticalFilesProduceGroupOfThree]' passed (0.008 seconds).
+Test Case '-[ScanKitTests.DuplicateScannerTests testTwoIdenticalFilesProduceOneGroup]' started.
+Test Case '-[ScanKitTests.DuplicateScannerTests testTwoIdenticalFilesProduceOneGroup]' passed (0.005 seconds).
+Test Suite 'DuplicateScannerTests' passed at 2026-06-11 14:25:36.442.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 0.055 (0.056) seconds
+Test Suite 'EngineConsistencyTests' started at 2026-06-11 14:25:36.442.
+Test Case '-[ScanKitTests.EngineConsistencyTests test_两引擎在同一目录下统计结果应一致]' started.
+Test Case '-[ScanKitTests.EngineConsistencyTests test_两引擎在同一目录下统计结果应一致]' passed (0.004 seconds).
+Test Case '-[ScanKitTests.EngineConsistencyTests test_软链接场景下两引擎都不应重复计字节]' started.
+Test Case '-[ScanKitTests.EngineConsistencyTests test_软链接场景下两引擎都不应重复计字节]' passed (0.007 seconds).
+Test Suite 'EngineConsistencyTests' passed at 2026-06-11 14:25:36.453.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.011 (0.011) seconds
+Test Suite 'FDAProbeTests' started at 2026-06-11 14:25:36.453.
+Test Case '-[ScanKitTests.FDAProbeTests test_探测_tmp目录可读_应返回granted]' started.
+Test Case '-[ScanKitTests.FDAProbeTests test_探测_tmp目录可读_应返回granted]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.FDAProbeTests test_探测不存在的家目录_应返回unknown]' started.
+Test Case '-[ScanKitTests.FDAProbeTests test_探测不存在的家目录_应返回unknown]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.FDAProbeTests test_探测当前用户_应返回合法枚举值之一]' started.
+Test Case '-[ScanKitTests.FDAProbeTests test_探测当前用户_应返回合法枚举值之一]' passed (0.000 seconds).
+Test Suite 'FDAProbeTests' passed at 2026-06-11 14:25:36.455.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'FirmlinksTests' started at 2026-06-11 14:25:36.455.
+Test Case '-[ScanKitTests.FirmlinksTests testLoadDoesNotCrashOnMissingFile]' started.
+Test Case '-[ScanKitTests.FirmlinksTests testLoadDoesNotCrashOnMissingFile]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.FirmlinksTests testRecommendedDataVolumeRoot]' started.
+Test Case '-[ScanKitTests.FirmlinksTests testRecommendedDataVolumeRoot]' passed (0.000 seconds).
+Test Suite 'FirmlinksTests' passed at 2026-06-11 14:25:36.455.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'GRDBScanResultStoreTests' started at 2026-06-11 14:25:36.455.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_aggregate_logical与allocated独立汇总]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_aggregate_logical与allocated独立汇总]' passed (0.052 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_aggregate_汇总字节数与条目数]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_aggregate_汇总字节数与条目数]' passed (0.047 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_beginSession_重复开启会清空旧数据]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_beginSession_重复开启会清空旧数据]' passed (0.009 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_clearAll_清空所有会话]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_clearAll_清空所有会话]' passed (0.011 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_evictSession_不存在的sid不抛错]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_evictSession_不存在的sid不抛错]' passed (0.008 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_evictSession_删除指定会话且不影响其他会话]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_evictSession_删除指定会话且不影响其他会话]' passed (0.009 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_evictSession_级联删除scan_result_无孤儿]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_evictSession_级联删除scan_result_无孤儿]' passed (0.009 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_finalizeSession_后再insert仍能追加]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_finalizeSession_后再insert仍能追加]' passed (0.008 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_inode_device_使用UInt64极值能正确往返]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_inode_device_使用UInt64极值能正确往返]' passed (0.008 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_insert_同session同path重复写入会追加多行]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_insert_同session同path重复写入会追加多行]' passed (0.008 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_insert_空数组不抛错且不影响aggregate]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_insert_空数组不抛错且不影响aggregate]' passed (0.007 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_query_offset与limit组合分页]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_query_offset与limit组合分页]' passed (0.008 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_query_onlyFiles_仅文件]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_query_onlyFiles_仅文件]' passed (0.007 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_query_pathPrefix_前缀过滤]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_query_pathPrefix_前缀过滤]' passed (0.008 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_query_排序_modificationDateDescending]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_query_排序_modificationDateDescending]' passed (0.007 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_query_排序_pathAscending]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_query_排序_pathAscending]' passed (0.007 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_query_跨session隔离]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_query_跨session隔离]' passed (0.009 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_批量插入与查询返回顺序按字节降序]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_批量插入与查询返回顺序按字节降序]' passed (0.007 seconds).
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_数据库目录被自动创建]' started.
+Test Case '-[ScanKitTests.GRDBScanResultStoreTests test_数据库目录被自动创建]' passed (0.005 seconds).
+Test Suite 'GRDBScanResultStoreTests' passed at 2026-06-11 14:25:36.691.
+	 Executed 19 tests, with 0 failures (0 unexpected) in 0.233 (0.236) seconds
+Test Suite 'HiddenFileTests' started at 2026-06-11 14:25:36.691.
+Test Case '-[ScanKitTests.HiddenFileTests test_BulkScanner在includeHidden为false时_应仅统计普通文件]' started.
+Test Case '-[ScanKitTests.HiddenFileTests test_BulkScanner在includeHidden为false时_应仅统计普通文件]' passed (0.003 seconds).
+Test Case '-[ScanKitTests.HiddenFileTests test_BulkScanner默认includeHidden为true_应统计全部三个文件]' started.
+Test Case '-[ScanKitTests.HiddenFileTests test_BulkScanner默认includeHidden为true_应统计全部三个文件]' passed (0.003 seconds).
+Test Case '-[ScanKitTests.HiddenFileTests test_Scanner对includeHidden两种取值的行为应与BulkScanner一致]' started.
+Test Case '-[ScanKitTests.HiddenFileTests test_Scanner对includeHidden两种取值的行为应与BulkScanner一致]' passed (0.002 seconds).
+Test Suite 'HiddenFileTests' passed at 2026-06-11 14:25:36.700.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.009 (0.009) seconds
+Test Suite 'InodeDedupTests' started at 2026-06-11 14:25:36.700.
+Test Case '-[ScanKitTests.InodeDedupTests test_BulkScanner关闭去重_累加两份字节]' started.
+Test Case '-[ScanKitTests.InodeDedupTests test_BulkScanner关闭去重_累加两份字节]' passed (0.004 seconds).
+Test Case '-[ScanKitTests.InodeDedupTests test_BulkScanner默认去重_只计一份字节]' started.
+Test Case '-[ScanKitTests.InodeDedupTests test_BulkScanner默认去重_只计一份字节]' passed (0.003 seconds).
+Test Case '-[ScanKitTests.InodeDedupTests test_Scanner路径去重一致性]' started.
+Test Case '-[ScanKitTests.InodeDedupTests test_Scanner路径去重一致性]' passed (0.002 seconds).
+Test Suite 'InodeDedupTests' passed at 2026-06-11 14:25:36.708.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.008 (0.009) seconds
+Test Suite 'InodeSetTests' started at 2026-06-11 14:25:36.708.
+Test Case '-[ScanKitTests.InodeSetTests testFirstSeenReturnsTrueOnlyOnce]' started.
+Test Case '-[ScanKitTests.InodeSetTests testFirstSeenReturnsTrueOnlyOnce]' passed (0.000 seconds).
+Test Suite 'InodeSetTests' passed at 2026-06-11 14:25:36.709.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'KnownVersionedRootsTests' started at 2026-06-11 14:25:36.709.
+Test Case '-[ScanKitTests.KnownVersionedRootsTests test_DeviceSupport_全部_keepLatest_是_2_且_semverPreferred]' started.
+Test Case '-[ScanKitTests.KnownVersionedRootsTests test_DeviceSupport_全部_keepLatest_是_2_且_semverPreferred]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.KnownVersionedRootsTests test_entries_至少包含_DeviceSupport_三条_和_Toolbox]' started.
+Test Case '-[ScanKitTests.KnownVersionedRootsTests test_entries_至少包含_DeviceSupport_三条_和_Toolbox]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.KnownVersionedRootsTests test_ruleID_全部唯一]' started.
+Test Case '-[ScanKitTests.KnownVersionedRootsTests test_ruleID_全部唯一]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.KnownVersionedRootsTests test_scanAll_只构造_3_版本_keepLatest_2_产出_1_旧版本]' started.
+Test Case '-[ScanKitTests.KnownVersionedRootsTests test_scanAll_只构造_3_版本_keepLatest_2_产出_1_旧版本]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.KnownVersionedRootsTests test_scanAll_构造_iOS_DeviceSupport_4_版本_保留最新_2_产出_2_旧版本]' started.
+Test Case '-[ScanKitTests.KnownVersionedRootsTests test_scanAll_构造_iOS_DeviceSupport_4_版本_保留最新_2_产出_2_旧版本]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.KnownVersionedRootsTests test_scanAll_构造_Toolbox_3_apps_keepLatest_1_每个_app_2_版本_产出_3_旧版本]' started.
+Test Case '-[ScanKitTests.KnownVersionedRootsTests test_scanAll_构造_Toolbox_3_apps_keepLatest_1_每个_app_2_版本_产出_3_旧版本]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.KnownVersionedRootsTests test_scanAll_空_home_返回空命中]' started.
+Test Case '-[ScanKitTests.KnownVersionedRootsTests test_scanAll_空_home_返回空命中]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.KnownVersionedRootsTests test_Toolbox_keepLatest_是_1_且_semverPreferred]' started.
+Test Case '-[ScanKitTests.KnownVersionedRootsTests test_Toolbox_keepLatest_是_1_且_semverPreferred]' passed (0.000 seconds).
+Test Suite 'KnownVersionedRootsTests' passed at 2026-06-11 14:25:36.716.
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.007 (0.007) seconds
+Test Suite 'MailDownloadsTests' started at 2026-06-11 14:25:36.716.
+Test Case '-[ScanKitTests.MailDownloadsTests test_age_threshold_strict_boundary]' started.
+Test Case '-[ScanKitTests.MailDownloadsTests test_age_threshold_strict_boundary]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.MailDownloadsTests test_custom_age_days_is_respected]' started.
+Test Case '-[ScanKitTests.MailDownloadsTests test_custom_age_days_is_respected]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.MailDownloadsTests test_empty_container_returns_empty]' started.
+Test Case '-[ScanKitTests.MailDownloadsTests test_empty_container_returns_empty]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MailDownloadsTests test_hit_metadata_is_complete]' started.
+Test Case '-[ScanKitTests.MailDownloadsTests test_hit_metadata_is_complete]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.MailDownloadsTests test_missing_container_returns_empty]' started.
+Test Case '-[ScanKitTests.MailDownloadsTests test_missing_container_returns_empty]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MailDownloadsTests test_multiple_container_roots_are_all_scanned]' started.
+Test Case '-[ScanKitTests.MailDownloadsTests test_multiple_container_roots_are_all_scanned]' passed (0.003 seconds).
+Test Case '-[ScanKitTests.MailDownloadsTests test_nested_subdirectories_are_walked]' started.
+Test Case '-[ScanKitTests.MailDownloadsTests test_nested_subdirectories_are_walked]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.MailDownloadsTests test_old_attachment_with_both_mtime_atime_older_than_30d_is_hit]' started.
+Test Case '-[ScanKitTests.MailDownloadsTests test_old_attachment_with_both_mtime_atime_older_than_30d_is_hit]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.MailDownloadsTests test_recent_atime_excludes_even_when_mtime_old]' started.
+Test Case '-[ScanKitTests.MailDownloadsTests test_recent_atime_excludes_even_when_mtime_old]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.MailDownloadsTests test_recent_mtime_excludes_even_when_atime_old]' started.
+Test Case '-[ScanKitTests.MailDownloadsTests test_recent_mtime_excludes_even_when_atime_old]' passed (0.001 seconds).
+Test Suite 'MailDownloadsTests' passed at 2026-06-11 14:25:36.728.
+	 Executed 10 tests, with 0 failures (0 unexpected) in 0.011 (0.012) seconds
+Test Suite 'MaintenanceTasksTests' started at 2026-06-11 14:25:36.728.
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_allCases_包含_3_个_user_space_任务]' started.
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_allCases_包含_3_个_user_space_任务]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_displayName_subtitle_非空]' started.
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_displayName_subtitle_非空]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_dscacheutil_路径正确_只跑_flushcache]' started.
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_dscacheutil_路径正确_只跑_flushcache]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_lsregister_路径正确_且不含_sudo]' started.
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_lsregister_路径正确_且不含_sudo]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_qlmanage_路径正确_只跑_r]' started.
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_qlmanage_路径正确_只跑_r]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_run_单任务_把_exit0_映射为_succeeded_true]' started.
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_run_单任务_把_exit0_映射为_succeeded_true]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_run_单任务_非零_exit_映射为_succeeded_false]' started.
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_run_单任务_非零_exit_映射为_succeeded_false]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_runAll_指定子集_只跑指定任务]' started.
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_runAll_指定子集_只跑指定任务]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_runAll_按顺序执行_默认全部_3_任务]' started.
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_runAll_按顺序执行_默认全部_3_任务]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_runAll_部分失败_其他任务继续执行]' started.
+Test Case '-[ScanKitTests.MaintenanceTasksTests test_runAll_部分失败_其他任务继续执行]' passed (0.000 seconds).
+Test Suite 'MaintenanceTasksTests' passed at 2026-06-11 14:25:36.730.
+	 Executed 10 tests, with 0 failures (0 unexpected) in 0.001 (0.002) seconds
+Test Suite 'MediaProbeTests' started at 2026-06-11 14:25:36.730.
+Test Case '-[ScanKitTests.MediaProbeTests test_探测不存在路径_应返回unknown]' started.
+Test Case '-[ScanKitTests.MediaProbeTests test_探测不存在路径_应返回unknown]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MediaProbeTests test_探测当前用户目录_不应抛错_应返回非nil]' started.
+Test Case '-[ScanKitTests.MediaProbeTests test_探测当前用户目录_不应抛错_应返回非nil]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MediaProbeTests test_推荐worker_HDD固定2]' started.
+Test Case '-[ScanKitTests.MediaProbeTests test_推荐worker_HDD固定2]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MediaProbeTests test_推荐worker_SSD应至少8个_受maxCap兜底]' started.
+Test Case '-[ScanKitTests.MediaProbeTests test_推荐worker_SSD应至少8个_受maxCap兜底]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MediaProbeTests test_推荐worker_unknown回退fallback]' started.
+Test Case '-[ScanKitTests.MediaProbeTests test_推荐worker_unknown回退fallback]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MediaProbeTests test_推荐worker_网络盘固定1]' started.
+Test Case '-[ScanKitTests.MediaProbeTests test_推荐worker_网络盘固定1]' passed (0.000 seconds).
+Test Suite 'MediaProbeTests' passed at 2026-06-11 14:25:36.731.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'MultiRootScannerTests' started at 2026-06-11 14:25:36.731.
+Test Case '-[ScanKitTests.MultiRootScannerTests test_rootPath信封不会串根]' started.
+Test Case '-[ScanKitTests.MultiRootScannerTests test_rootPath信封不会串根]' passed (0.004 seconds).
+Test Case '-[ScanKitTests.MultiRootScannerTests test_两个根都会yield各自的finished]' started.
+Test Case '-[ScanKitTests.MultiRootScannerTests test_两个根都会yield各自的finished]' passed (0.004 seconds).
+Test Case '-[ScanKitTests.MultiRootScannerTests test_多根文件总数与逐根扫描合计一致]' started.
+Test Case '-[ScanKitTests.MultiRootScannerTests test_多根文件总数与逐根扫描合计一致]' passed (0.010 seconds).
+Test Case '-[ScanKitTests.MultiRootScannerTests test_空roots立刻finish不挂死]' started.
+Test Case '-[ScanKitTests.MultiRootScannerTests test_空roots立刻finish不挂死]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.MultiRootScannerTests test_跨根hardlink独立计入字节_证明InodeSet独立]' started.
+Test Case '-[ScanKitTests.MultiRootScannerTests test_跨根hardlink独立计入字节_证明InodeSet独立]' passed (0.003 seconds).
+Test Suite 'MultiRootScannerTests' passed at 2026-06-11 14:25:36.753.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.021 (0.022) seconds
+Test Suite 'PkgutilReceiptsScannerTests' started at 2026-06-11 14:25:36.753.
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_absolutePaths_有_location_前缀]' started.
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_absolutePaths_有_location_前缀]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_absolutePaths_根卷]' started.
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_absolutePaths_根卷]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_joinVolumeLocation_去除_location_前后_slash]' started.
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_joinVolumeLocation_去除_location_前后_slash]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_joinVolumeLocation_根卷_单段_location]' started.
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_joinVolumeLocation_根卷_单段_location]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_joinVolumeLocation_根卷_空_location_返回空]' started.
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_joinVolumeLocation_根卷_空_location_返回空]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_joinVolumeLocation_非根卷]' started.
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_joinVolumeLocation_非根卷]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_receipts_packageInfo_失败_条目跳过]' started.
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_receipts_packageInfo_失败_条目跳过]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_receipts_按_prefix_过滤_并组装绝对路径]' started.
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_receipts_按_prefix_过滤_并组装绝对路径]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_receipts_空_prefix_返回所有]' started.
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_receipts_空_prefix_返回所有]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_regexEscape_dot_必须转义]' started.
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_regexEscape_dot_必须转义]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_regexEscape_无特殊字符_原样返回]' started.
+Test Case '-[ScanKitTests.PkgutilReceiptsScannerTests test_regexEscape_无特殊字符_原样返回]' passed (0.000 seconds).
+Test Suite 'PkgutilReceiptsScannerTests' passed at 2026-06-11 14:25:36.756.
+	 Executed 11 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+Test Suite 'ScanGoldenTests' started at 2026-06-11 14:25:36.756.
+Test Case '-[ScanKitTests.ScanGoldenTests test_BulkScanner_扫描结果_与_Golden_快照一致]' started.
+Test Case '-[ScanKitTests.ScanGoldenTests test_BulkScanner_扫描结果_与_Golden_快照一致]' passed (0.004 seconds).
+Test Suite 'ScanGoldenTests' passed at 2026-06-11 14:25:36.760.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.004 (0.004) seconds
+Test Suite 'ScannerEdgeCaseTests' started at 2026-06-11 14:25:36.760.
+Test Case '-[ScanKitTests.ScannerEdgeCaseTests test_AsyncStream在消费阻塞时仍能完成]' started.
+Test Case '-[ScanKitTests.ScannerEdgeCaseTests test_AsyncStream在消费阻塞时仍能完成]' passed (0.179 seconds).
+Test Case '-[ScanKitTests.ScannerEdgeCaseTests test_summary中permissionDeniedCount与yield次数一致]' started.
+Test Case '-[ScanKitTests.ScannerEdgeCaseTests test_summary中permissionDeniedCount与yield次数一致]' passed (0.003 seconds).
+Test Case '-[ScanKitTests.ScannerEdgeCaseTests test_权限被拒目录会发出permissionDenied事件]' started.
+Test Case '-[ScanKitTests.ScannerEdgeCaseTests test_权限被拒目录会发出permissionDenied事件]' passed (0.003 seconds).
+Test Suite 'ScannerEdgeCaseTests' passed at 2026-06-11 14:25:36.944.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.184 (0.185) seconds
+Test Suite 'ScannerSmokeTests' started at 2026-06-11 14:25:36.944.
+Test Case '-[ScanKitTests.ScannerSmokeTests testBulkScannerProducesSummary]' started.
+Test Case '-[ScanKitTests.ScannerSmokeTests testBulkScannerProducesSummary]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.ScannerSmokeTests testScanTempDirectoryProducesSummary]' started.
+Test Case '-[ScanKitTests.ScannerSmokeTests testScanTempDirectoryProducesSummary]' passed (0.001 seconds).
+Test Suite 'ScannerSmokeTests' passed at 2026-06-11 14:25:36.948.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.003 (0.003) seconds
+Test Suite 'SwapProbeTests' started at 2026-06-11 14:25:36.948.
+Test Case '-[ScanKitTests.SwapProbeTests test_parse_K单位与G单位_应正确换算]' started.
+Test Case '-[ScanKitTests.SwapProbeTests test_parse_K单位与G单位_应正确换算]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.SwapProbeTests test_parse_乱序与多空格_应稳健]' started.
+Test Case '-[ScanKitTests.SwapProbeTests test_parse_乱序与多空格_应稳健]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.SwapProbeTests test_parse_典型字符串_应正确拆分_total_used_free]' started.
+Test Case '-[ScanKitTests.SwapProbeTests test_parse_典型字符串_应正确拆分_total_used_free]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.SwapProbeTests test_parse_未加密标签_encrypted应为false]' started.
+Test Case '-[ScanKitTests.SwapProbeTests test_parse_未加密标签_encrypted应为false]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.SwapProbeTests test_parse_空字符串_应全部为0]' started.
+Test Case '-[ScanKitTests.SwapProbeTests test_parse_空字符串_应全部为0]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.SwapProbeTests test_probe_自定义vmDirectory_swapfile与sleepimage应组合在totalDiskFootprint]' started.
+Test Case '-[ScanKitTests.SwapProbeTests test_probe_自定义vmDirectory_swapfile与sleepimage应组合在totalDiskFootprint]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.SwapProbeTests test_sleepImageSize_不存在_应返回0]' started.
+Test Case '-[ScanKitTests.SwapProbeTests test_sleepImageSize_不存在_应返回0]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.SwapProbeTests test_sleepImageSize_存在文件_应返回字节数]' started.
+Test Case '-[ScanKitTests.SwapProbeTests test_sleepImageSize_存在文件_应返回字节数]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.SwapProbeTests test_Snapshot_diskFootprintAvailable_全为0时为false]' started.
+Test Case '-[ScanKitTests.SwapProbeTests test_Snapshot_diskFootprintAvailable_全为0时为false]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.SwapProbeTests test_Snapshot_测到swapfile时_swapDiskBytes应优先用文件大小]' started.
+Test Case '-[ScanKitTests.SwapProbeTests test_Snapshot_测到swapfile时_swapDiskBytes应优先用文件大小]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.SwapProbeTests test_Snapshot_读不到swapfile时_swapDiskBytes应回退到sysctlTotal]' started.
+Test Case '-[ScanKitTests.SwapProbeTests test_Snapshot_读不到swapfile时_swapDiskBytes应回退到sysctlTotal]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.SwapProbeTests test_sumSwapFiles_目录不存在_应回退为0]' started.
+Test Case '-[ScanKitTests.SwapProbeTests test_sumSwapFiles_目录不存在_应回退为0]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.SwapProbeTests test_sumSwapFiles_遍历临时目录_应只累加swapfile前缀文件]' started.
+Test Case '-[ScanKitTests.SwapProbeTests test_sumSwapFiles_遍历临时目录_应只累加swapfile前缀文件]' passed (0.001 seconds).
+Test Suite 'SwapProbeTests' passed at 2026-06-11 14:25:36.953.
+	 Executed 13 tests, with 0 failures (0 unexpected) in 0.004 (0.005) seconds
+Test Suite 'TCCSkipListTests' started at 2026-06-11 14:25:36.953.
+Test Case '-[ScanKitTests.TCCSkipListTests testCallHistoryIsSkipped]' started.
+Test Case '-[ScanKitTests.TCCSkipListTests testCallHistoryIsSkipped]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.TCCSkipListTests testMailDirectoryIsSkipped]' started.
+Test Case '-[ScanKitTests.TCCSkipListTests testMailDirectoryIsSkipped]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.TCCSkipListTests testMessagesDirectoryIsSkipped]' started.
+Test Case '-[ScanKitTests.TCCSkipListTests testMessagesDirectoryIsSkipped]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.TCCSkipListTests testMusicLibrarySuffixIsSkipped]' started.
+Test Case '-[ScanKitTests.TCCSkipListTests testMusicLibrarySuffixIsSkipped]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.TCCSkipListTests testNonLibraryPathIsNotSkipped]' started.
+Test Case '-[ScanKitTests.TCCSkipListTests testNonLibraryPathIsNotSkipped]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.TCCSkipListTests testPrefixCollisionIsNotMistakenlySkipped]' started.
+Test Case '-[ScanKitTests.TCCSkipListTests testPrefixCollisionIsNotMistakenlySkipped]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.TCCSkipListTests testSafariDirectoryIsSkipped]' started.
+Test Case '-[ScanKitTests.TCCSkipListTests testSafariDirectoryIsSkipped]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.TCCSkipListTests testSystemAbsolutePathIsSkipped]' started.
+Test Case '-[ScanKitTests.TCCSkipListTests testSystemAbsolutePathIsSkipped]' passed (0.000 seconds).
+Test Suite 'TCCSkipListTests' passed at 2026-06-11 14:25:36.955.
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.001 (0.002) seconds
+Test Suite 'TimeMachineFailedBackupTests' started at 2026-06-11 14:25:36.955.
+Test Case '-[ScanKitTests.TimeMachineFailedBackupTests test_arrhythmic_inProgress_older_than_24h_is_hit]' started.
+Test Case '-[ScanKitTests.TimeMachineFailedBackupTests test_arrhythmic_inProgress_older_than_24h_is_hit]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.TimeMachineFailedBackupTests test_completed_backups_never_appear_in_hits]' started.
+Test Case '-[ScanKitTests.TimeMachineFailedBackupTests test_completed_backups_never_appear_in_hits]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.TimeMachineFailedBackupTests test_custom_safety_window_is_respected]' started.
+Test Case '-[ScanKitTests.TimeMachineFailedBackupTests test_custom_safety_window_is_respected]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.TimeMachineFailedBackupTests test_hit_metadata_is_complete]' started.
+Test Case '-[ScanKitTests.TimeMachineFailedBackupTests test_hit_metadata_is_complete]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.TimeMachineFailedBackupTests test_inProgress_within_safety_window_is_excluded]' started.
+Test Case '-[ScanKitTests.TimeMachineFailedBackupTests test_inProgress_within_safety_window_is_excluded]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.TimeMachineFailedBackupTests test_multiple_hosts_each_returns_own_inProgress]' started.
+Test Case '-[ScanKitTests.TimeMachineFailedBackupTests test_multiple_hosts_each_returns_own_inProgress]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.TimeMachineFailedBackupTests test_no_backupdb_returns_empty]' started.
+Test Case '-[ScanKitTests.TimeMachineFailedBackupTests test_no_backupdb_returns_empty]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.TimeMachineFailedBackupTests test_non_directory_entries_are_skipped]' started.
+Test Case '-[ScanKitTests.TimeMachineFailedBackupTests test_non_directory_entries_are_skipped]' passed (0.001 seconds).
+Test Suite 'TimeMachineFailedBackupTests' passed at 2026-06-11 14:25:36.963.
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.008 (0.008) seconds
+Test Suite 'TreeSizeEstimatorTests' started at 2026-06-11 14:25:36.963.
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_5根并发_总耗时不超过最慢单根的3倍]' started.
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_5根并发_总耗时不超过最慢单根的3倍]' passed (5.190 seconds).
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_5根并发_短timeout应及时返回]' started.
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_5根并发_短timeout应及时返回]' passed (1.548 seconds).
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_5根并发_结果应等于各根之和]' started.
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_5根并发_结果应等于各根之和]' passed (0.189 seconds).
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_estimate_单一目录_应返回所有常规文件大小之和]' started.
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_estimate_单一目录_应返回所有常规文件大小之和]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_estimate_多根_应累加]' started.
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_estimate_多根_应累加]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_estimate_完全不存在的根_应优雅返回0或nil]' started.
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_estimate_完全不存在的根_应优雅返回0或nil]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_estimate_空根列表_应返回nil]' started.
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_estimate_空根列表_应返回nil]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_estimate_空目录_应返回0而非nil]' started.
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_estimate_空目录_应返回0而非nil]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_estimate_符号链接不应被递归吞]' started.
+Test Case '-[ScanKitTests.TreeSizeEstimatorTests test_estimate_符号链接不应被递归吞]' passed (0.001 seconds).
+Test Suite 'TreeSizeEstimatorTests' passed at 2026-06-11 14:25:43.895.
+	 Executed 9 tests, with 0 failures (0 unexpected) in 6.931 (6.932) seconds
+Test Suite 'VersionedRetainScannerTests' started at 2026-06-11 14:25:43.895.
+Test Case '-[ScanKitTests.VersionedRetainScannerTests test_lexicographic_按字典序保留尾2]' started.
+Test Case '-[ScanKitTests.VersionedRetainScannerTests test_lexicographic_按字典序保留尾2]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.VersionedRetainScannerTests test_mtime_最旧的mtime先回收]' started.
+Test Case '-[ScanKitTests.VersionedRetainScannerTests test_mtime_最旧的mtime先回收]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.VersionedRetainScannerTests test_semverPreferred_保留最新2版_iOSDeviceSupport布局]' started.
+Test Case '-[ScanKitTests.VersionedRetainScannerTests test_semverPreferred_保留最新2版_iOSDeviceSupport布局]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.VersionedRetainScannerTests test_候选数小于等于keepLatest时返回空]' started.
+Test Case '-[ScanKitTests.VersionedRetainScannerTests test_候选数小于等于keepLatest时返回空]' passed (0.001 seconds).
+Test Case '-[ScanKitTests.VersionedRetainScannerTests test_软链与文件被跳过_不计入版本数]' started.
+Test Case '-[ScanKitTests.VersionedRetainScannerTests test_软链与文件被跳过_不计入版本数]' passed (0.003 seconds).
+Test Case '-[ScanKitTests.VersionedRetainScannerTests test_隐藏目录跳过_compareSemver边界]' started.
+Test Case '-[ScanKitTests.VersionedRetainScannerTests test_隐藏目录跳过_compareSemver边界]' passed (0.001 seconds).
+Test Suite 'VersionedRetainScannerTests' passed at 2026-06-11 14:25:43.907.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.011 (0.011) seconds
+Test Suite 'VersionsScannerTests' started at 2026-06-11 14:25:43.907.
+Test Case '-[ScanKitTests.VersionsScannerTests testActorEntrypointMatchesSync]' started.
+Test Case '-[ScanKitTests.VersionsScannerTests testActorEntrypointMatchesSync]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.VersionsScannerTests testAlternativeNamesAndAbsoluteSymlink]' started.
+Test Case '-[ScanKitTests.VersionsScannerTests testAlternativeNamesAndAbsoluteSymlink]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.VersionsScannerTests testCurrentTargetOutsideVersionsReturnsEmpty]' started.
+Test Case '-[ScanKitTests.VersionsScannerTests testCurrentTargetOutsideVersionsReturnsEmpty]' passed (0.003 seconds).
+Test Case '-[ScanKitTests.VersionsScannerTests testHappyPathRustupLikeLayout]' started.
+Test Case '-[ScanKitTests.VersionsScannerTests testHappyPathRustupLikeLayout]' passed (0.002 seconds).
+Test Case '-[ScanKitTests.VersionsScannerTests testNoCurrentSymlinkReturnsEmpty]' started.
+Test Case '-[ScanKitTests.VersionsScannerTests testNoCurrentSymlinkReturnsEmpty]' passed (0.003 seconds).
+Test Case '-[ScanKitTests.VersionsScannerTests testSymlinkChildrenSkipped]' started.
+Test Case '-[ScanKitTests.VersionsScannerTests testSymlinkChildrenSkipped]' passed (0.002 seconds).
+Test Suite 'VersionsScannerTests' passed at 2026-06-11 14:25:43.922.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.014 (0.016) seconds
+Test Suite 'VolumeCapacityTests' started at 2026-06-11 14:25:43.922.
+Test Case '-[ScanKitTests.VolumeCapacityTests test_Snapshot_avail大于total时_usedBytes兜底为0]' started.
+Test Case '-[ScanKitTests.VolumeCapacityTests test_Snapshot_avail大于total时_usedBytes兜底为0]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.VolumeCapacityTests test_Snapshot_usedBytes_等于_total减available]' started.
+Test Case '-[ScanKitTests.VolumeCapacityTests test_Snapshot_usedBytes_等于_total减available]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.VolumeCapacityTests test_探测不存在路径_应返回nil]' started.
+Test Case '-[ScanKitTests.VolumeCapacityTests test_探测不存在路径_应返回nil]' passed (0.000 seconds).
+Test Case '-[ScanKitTests.VolumeCapacityTests test_探测根目录_应返回非nil_且usedBytes不为负]' started.
+Test Case '-[ScanKitTests.VolumeCapacityTests test_探测根目录_应返回非nil_且usedBytes不为负]' passed (0.025 seconds).
+Test Suite 'VolumeCapacityTests' passed at 2026-06-11 14:25:43.948.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.025 (0.026) seconds
+Test Suite 'ScanKitPackageTests.xctest' passed at 2026-06-11 14:25:43.948.
+	 Executed 196 tests, with 2 tests skipped and 0 failures (0 unexpected) in 9.423 (9.444) seconds
+Test Suite 'All tests' passed at 2026-06-11 14:25:43.948.
+	 Executed 196 tests, with 2 tests skipped and 0 failures (0 unexpected) in 9.423 (9.445) seconds
+[BulkScanner MicroBatch] entries=5050 dataYield=51 batchYield=51
+[TreeSizeEstimator Perf] 5-roots concurrent / slowest-single ratio = 1.80x  (concurrent=0.063s, slowest=0.035s)
+◇ Test run started.
+↳ Testing Library Version: 1501
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.
