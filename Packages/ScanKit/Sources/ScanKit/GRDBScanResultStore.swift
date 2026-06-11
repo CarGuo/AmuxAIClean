@@ -24,6 +24,9 @@ public struct ScanStoreDescription: Sendable, Equatable {
 public actor GRDBScanResultStore: ScanResultStore {
     public enum StoreError: Error, Sendable, Equatable {
         case cannotResolveStoreDirectory
+        /// `pruneOldSessions(keepLatest:)` 收到 `<= 0` 入参——拒绝执行。
+        /// "全清"语义请走 [clearAll()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift)，避免与"保留 N 个"API 共用同一入口造成误删。
+        case refuseDestructivePrune
     }
 
     /// 默认保留最新 session 数。竞品多数是 in-memory（DaisyDisk / GP / ODS），
@@ -34,7 +37,14 @@ public actor GRDBScanResultStore: ScanResultStore {
 
     private let dbPool: DatabasePool
     private let location: URL
-    /// 单次 finalize 自动 prune 的保留 session 数。`<= 0` 表示禁用（仅测试用）。
+    /// 单次 finalize 自动 prune 的保留 session 数。
+    ///
+    /// - `> 0`：finalize 末尾自动 `pruneOldSessions(keepLatest: keepLatestSessions + 1)`
+    ///   （+1 cushion 是为了保护"刚 finalize 完但 UI 仍在浏览上一轮结果"的 session 不被 race 删掉，
+    ///   详见 [finalizeSession()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift) 注释）。
+    /// - `<= 0`：禁用 finalize 自动 prune（**仅测试用**）。生产构造一律走 [defaultKeepLatestSessions](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift) 默认值。
+    ///   注意：这与公共方法 [pruneOldSessions(keepLatest:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift) 的入参语义**不同**——
+    ///   后者 `<= 0` 是显式错误（throw `StoreError.refuseDestructivePrune`），避免误删。
     private let keepLatestSessions: Int
 
     public init(
@@ -238,12 +248,19 @@ public actor GRDBScanResultStore: ScanResultStore {
         // 这是把"无界增长"扼杀在最早期的关键挂点——之前 89 个 session / 1490 万行
         // / 11 GB 的灾难根因正是这里缺失。
         //
+        // **+1 cushion**（修 race）：实际保留 keepLatestSessions + 1 个 session。
+        // 场景：用户在主窗口扫完 A（持有 sid=A 渲染树视图）→ 又连点 keepLatest 次
+        // 扫描 B/C/D…，最后一次 finalize 时若用 keepLatest 直切，A 会被静默清掉，
+        // 而 LargeFilesView 异步 query 返回 [] → 视图突然变空。+1 cushion 在 finalize
+        // 自动路径保留"上一轮可能仍在被 view 持有"的 session；UI 显式 prune
+        // 走 [pruneOldSessions(keepLatest:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift) 仍按精确值。
+        //
         // 容错：prune 失败不影响 finalize 语义（只是磁盘多占点空间），日志记录即可，
         // 绝不向调用方抛——finalize 是用户感知的"扫描完成"语义，不能因为后台清理失败
         // 让用户看到错误。
         if keepLatestSessions > 0 {
             do {
-                try await pruneOldSessions(keepLatest: keepLatestSessions)
+                try await pruneOldSessions(keepLatest: keepLatestSessions + 1)
             } catch {
                 GSYLog.error(.db, "finalize 自动 prune 失败 id=\(id.raw) err=\(error)")
             }
@@ -262,33 +279,39 @@ public actor GRDBScanResultStore: ScanResultStore {
     /// `PRAGMA incremental_vacuum` 路径释放给 OS。**不**走整库 VACUUM，避免
     /// 11G 库需要 11G 临时空间这种磁盘灾难（详见 [docs/regression/2026_06_11/db_size.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/db_size.md)）。
     ///
-    /// - Parameter keepLatest: 保留最新 N 个 session。`<= 0` 视为"全清"（语义上等价于 `clearAll` 但保留 schema）。
+    /// - Parameter keepLatest: 保留最新 N 个 session。**必须 > 0**，
+    ///   否则 throw `StoreError.refuseDestructivePrune`（"全清"语义请走 [clearAll()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift)，
+    ///   避免与"保留 N 个"API 共用同一入口造成误删）。
     /// - Returns: 实际删除的 session 行数。
     @discardableResult
     public func pruneOldSessions(keepLatest: Int) async throws -> Int {
+        guard keepLatest > 0 else {
+            // 拒绝破坏性入参：保留"保留 N 个最新"的纯粹语义，不再兼任"全清"。
+            // 全清请显式走 [clearAll()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift)；测试若需禁用 finalize 自动 prune，
+            // 在 init 时把 keepLatestSessions 传 0 即可（finalize 内部用 > 0 判断）。
+            GSYLog.warning(.db, "pruneOldSessions 拒绝执行：keepLatest=\(keepLatest) <= 0；如需全清请走 clearAll()")
+            throw StoreError.refuseDestructivePrune
+        }
         let deleted = try await dbPool.write { db -> Int in
             // 用子查询保留最新 keepLatest 个 session id，其余删。
-            // ORDER BY COALESCE(finalized_at, created_at) DESC：finalize 过的按
-            // finalize 时间排，未 finalize 的（异常残留）按 created_at 兜底。
+            // ORDER BY COALESCE(finalized_at, created_at) DESC, id DESC：
+            //   - 主排序键：finalize 过的按 finalize 时间；未 finalize（异常残留）按 created_at 兜底。
+            //   - **tiebreaker `id DESC`**：同毫秒批量 finalize / 时钟回退 / NULL 等场景下
+            //     SQLite 对相等键的相对顺序未定义，会导致同样的库两次 prune 得到不同"保留集"，
+            //     甚至误删本应保留的最新 session。id 是 UUID TEXT，作为稳定 tiebreaker 足够。
             // LIMIT/OFFSET 比 NOT IN 更利于 SQLite 走 scan_session 主键扫，
             // 但 IN 表达式更直观；scan_session 行数永远 < 1000 级别，差异可忽略。
-            let keepN = max(0, keepLatest)
-            if keepN == 0 {
-                // 全清，但保留 schema。等价 clearAll 的 DELETE 部分，不做 vacuum。
-                try db.execute(sql: "DELETE FROM scan_session")
-            } else {
-                try db.execute(
-                    sql: """
-                        DELETE FROM scan_session
-                        WHERE id NOT IN (
-                            SELECT id FROM scan_session
-                            ORDER BY COALESCE(finalized_at, created_at) DESC
-                            LIMIT ?
-                        )
-                        """,
-                    arguments: [keepN]
-                )
-            }
+            try db.execute(
+                sql: """
+                    DELETE FROM scan_session
+                    WHERE id NOT IN (
+                        SELECT id FROM scan_session
+                        ORDER BY COALESCE(finalized_at, created_at) DESC, id DESC
+                        LIMIT ?
+                    )
+                    """,
+                arguments: [keepLatest]
+            )
             return db.changesCount
         }
         if deleted > 0 {
@@ -622,6 +645,16 @@ public actor GRDBScanResultStore: ScanResultStore {
     internal func _debugRawScanResultCount() async throws -> Int {
         try await dbPool.read { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM scan_result") ?? 0
+        }
+    }
+
+    /// 测试专用：返回当前 DB 的 `PRAGMA auto_vacuum` 值（0=NONE / 1=FULL / 2=INCREMENTAL）。
+    /// 用来直接验证 init 时 `PRAGMA auto_vacuum=INCREMENTAL` 真的写入了 sqlite header——
+    /// 否则只看"vacuum 后 file size 收缩"这种间接信号，纯 VACUUM 也能通过，
+    /// 测试会在 INCREMENTAL 失效时仍然 pass，提供虚假信心。
+    internal func _debugAutoVacuumMode() async throws -> Int {
+        try await dbPool.read { db in
+            try Int.fetchOne(db, sql: "PRAGMA auto_vacuum") ?? 0
         }
     }
 }
