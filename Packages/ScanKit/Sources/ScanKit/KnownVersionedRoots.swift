@@ -112,9 +112,6 @@ public enum KnownVersionedRoots {
         var result: [Hit] = []
         result.reserveCapacity(64)
 
-        var fileManager = FileManager.default
-        _ = fileManager // suppress "never mutated" warning for forward compat
-
         for entry in entries {
             let collectionRoot = home.appendingPathComponent(entry.relativePath)
             var isDir: ObjCBool = false

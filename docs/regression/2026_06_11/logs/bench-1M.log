@@ -1,0 +1,1 @@
+(records=999967, batch=50000, txn=20, insert_ms=9784.38, cold_root_ms=4545.33, warm_root_ms=2763.84, mid_l1_ms=214.13, root_children=22, l1_children=22)

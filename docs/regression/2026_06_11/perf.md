@@ -55,11 +55,26 @@
 | `directChildrenAggregated` warm | 517.94 ms |
 | `directChildrenAggregated` mid (L1) | **24.28 ms** |
 
+### B3：1,000,000 节点 / **20 事务**（补跑压力 bench）
+
+| 项 | 值 |
+|---|---|
+| records | 999,967 |
+| batch | 50,000（=20 事务） |
+| insert 总时长 | **9,784.38 ms** |
+| `directChildrenAggregated` cold (root) | **4,545.33 ms** |
+| `directChildrenAggregated` warm (root) | **2,763.84 ms** ← 缓存收益首现，-39% |
+| `directChildrenAggregated` mid (L1) | **214.13 ms** |
+| 原始日志 | [bench-1M.log](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/logs/bench-1M.log) |
+
 ### 判读
 
-- **cold ≈ warm**：GRDB connection pool 持久化 prepared statement，第二次直接命中 → 缓存收益 < 1.6%。结论：**不需要单独加一层 Swift 端缓存**。
+- **50k → 300k 严格线性**：6× 数据 = 5.9× cold 延迟。
+- **300k → 1M 出现 8.9× 退化**（cold 510→4545 ms，3.3× 数据吃 8.9× 时延）。原因推断：1M 规模下 GROUP BY 中间结果集突破 SQLite 默认 page cache (2MB)，触发临时表溢写。**用户层影响有限**：1M 节点对应 ~1M 文件目录树，已是极端场景（如 `/Users` 全盘）；真实业务流仍走 [BulkScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift) 边扫边入库分摊。
+- **1M cold 4.5s → warm 2.8s = 缓存收益 39%**：300k 时未观察到（cold ≈ warm < 1.6%），1M 时缓存首次产生明显增益 — 印证 page cache 在大数据量下才真正参与。可考虑后续把 SQLite `cache_size` 从默认 -2000（2MB）提到 -10000（10MB）专门优化 ≥1M 场景。
+- **cold ≈ warm**（50k / 300k）：GRDB connection pool 持久化 prepared statement，第二次直接命中 → 缓存收益 < 1.6%。结论：**不需要单独加一层 Swift 端缓存**。
 - **B vs B2 线性扩展**：300k / 50k = 6× → cold 510/86 ≈ 5.9× — SQL GROUP BY 性能与节点数严格线性，**没有意外退化**。
-- **mid L1 = 4ms / 24ms**：用户在 [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 双击下钻单层，**4~24ms 完全无感**（macOS 单帧 16.6ms 预算内）。
+- **mid L1 = 4ms / 24ms / 214ms**：用户在 [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 双击下钻单层，50k/300k 完全无感（macOS 单帧 16.6ms 预算内）；1M 时 214ms 略可感知但不卡顿。
 
 ## 四、Bench C — vs 系统 `du`（正确性）
 
@@ -95,7 +110,7 @@ PerfBench 裸流 65k files/s vs CoordinatorBench 全链路 60k files/s — 业�
 
 ## 六、性能基线一句话总结
 
-> **65k files/s 扫描，5.5s 出 358k 文件 / 18 GB Caches；GRDB 下钻 mid-tree 4~24ms；ingest 全链路开销 <8%；比 `du` 又快又准。**
+> **65k files/s 扫描，5.5s 出 358k 文件 / 18 GB Caches；GRDB 下钻 mid-tree 4ms (50k) / 24ms (300k) / 214ms (1M)；ingest 全链路开销 <8%；比 `du` 又快又准。1M 节点 cold 4.5s 出现 page cache 溢出（后续 `cache_size` 可调）。**
 
 ## 七、可重复跑法
 
@@ -108,9 +123,10 @@ swift build -c release --package-path Tools/CoordinatorBench --product Coordinat
 # Bench A
 ./Tools/PerfBench/.build/release/PerfBench --root ~/Library/Caches
 
-# Bench B / B2
+# Bench B / B2 / B3
 ./Tools/PerfBench/.build/release/PerfBench --bench-direct-children --nodes 50000
 ./Tools/PerfBench/.build/release/PerfBench --bench-direct-children --nodes 300000 --insert-batch-size 50000
+./Tools/PerfBench/.build/release/PerfBench --bench-direct-children --nodes 1000000 --insert-batch-size 50000
 
 # Bench C
 ./Packages/ScanKit/.build/release/scankit-bench ~/Library/Caches

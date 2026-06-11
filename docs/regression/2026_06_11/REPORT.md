@@ -9,9 +9,10 @@
 | 子报告 | 链接 | 关键结论 |
 |---|---|---|
 | 单元测试 | [unit.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/unit.md) | 9 包 / 857 PASS / 2 skipped / 0 fail |
-| 性能基线 | [perf.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/perf.md) | 65k files/s 扫描 / GRDB mid 24ms / 比 du 快又准 |
+| 性能基线 | [perf.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/perf.md) | 65k files/s 扫描 / GRDB mid 4~214ms / 比 du 快又准 / 1M 节点 cold 4.5s |
 | GUI 回归 | [gui.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/gui.md) | 22 GUI case / PASS=22 / FAIL=0 |
 | 竞品矩阵 | [competitors_matrix.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/competitors_matrix.md) | 6 维 vs CMM / Pearcleaner / AppCleaner / DaisyDisk / ODS / GP |
+| 追踪条目 | [followups.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/followups.md) | 14 条 P0~P4 待办（含 SQLite cache_size 调优、Treemap、Lipo/Brew 接入 sidebar） |
 
 ## 二、需求三问 三句话回答
 
@@ -79,9 +80,10 @@ du -sh -A ~/Library/Caches
 |---|---|
 | 单元测试 | ✅ 857/857 PASS |
 | GUI 回归 | ✅ 22/22 PASS |
-| 性能基线 | ✅ 已固化为 perf.md 基线，后续回归直接对比 |
+| 性能基线 | ✅ 已固化为 perf.md 基线（含 50k/300k/**1M** 三档），后续回归直接对比 |
 | 竞品矩阵 | ✅ 已固化 7 篇竞品 6 维矩阵 |
 | 崩溃 | ✅ 0 |
-| 待办 (followup) | KnownVersionedRoots L115 `var→let`（前向兼容设计冲突，待真接 mock 时一并改） |
+| 待办追踪 | ✅ 已整理为 [followups.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/followups.md)（P0~P4 共 14 条） |
+| 本轮顺手修 | ✅ [KnownVersionedRoots.swift#L111-L139](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift#L111-L139) 删除死代码 `var fileManager` ；✅ 补跑 1M 节点压力 bench (B3) |
 
 > **本轮可签收交付。** 建议接下来用一个 commit 收尾 docs/regression/2026_06_11/ 4 份文档，作为 M4 收口后的回归基线。
