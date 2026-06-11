@@ -29,12 +29,13 @@
 
 ## P1 — 性能可优化（数据已证据齐全）
 
-### F-1-1 SQLite `cache_size` 调优（1M 节点场景）
+### F-1-1 SQLite `cache_size` 调优（1M 节点场景）✅ 已落地（2026-06-11）
 - **现象**：1M 节点 cold-root 4.5s，3.3× 数据吃 8.9× 时延（vs 300k）
 - **推断**：默认 `cache_size = -2000`（2MB）下 GROUP BY 中间结果集溢写临时表
 - **方案**：在 [GRDBScanResultStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift) 打开 connection 后 `PRAGMA cache_size = -10000`（10MB），再跑 B3 对比
 - **验收**：1M cold ≤ 2s（接近 warm 现值 2.76s 即可）
 - **依据**：[perf.md §B3 判读](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/perf.md)
+- **落地**：[prepareDatabase](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift#L71-L79) 加 `PRAGMA cache_size = -10000` + [_debugCacheSize()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift#L666-L672) debug 接缝 + [test_新建库_cache_size应为10MB](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/GRDBScanResultStoreTests.swift#L530-L539) 断言验证；ScanKit 全包 203 tests / 0 failures
 
 ### F-1-2 气泡图 / Treemap 可视化
 - **缺口**：[competitors_matrix §三](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/competitors_matrix.md) P1 — DaisyDisk Sunburst / GrandPerspective Squarified 是用户「一眼看见大目录」的核心体验
@@ -53,13 +54,15 @@
 - **缺口**：vs OnyX / CMM Maintenance 还差 Flush DNS / Repair Permissions / Rebuild LaunchServices / Rebuild Spotlight
 - **方案**：扩展 [MaintenanceScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MaintenanceScreen.swift) 子项卡片
 
-### F-2-3 Lipo 通用二进制瘦身接入 sidebar
+### F-2-3 Lipo 通用二进制瘦身接入 sidebar ✅ 已落地（2026-06-11）
 - **现状**：[LipoKit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LipoKit) 已完成，**未接入 sidebar**
 - **方案**：[ScanCategory.Kind](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCategory.swift#L9-L14) 增加 `case lipo`，在 [MainView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) sidebar 增 LipoScreen 入口
+- **落地**：走 sentinel ID 旁路（与 Maintenance / Uninstall / UndoHistory 同款，避免污染 ScanCategory 枚举）；新建 [LipoScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/LipoScreen.swift)（audit + extract + drop）；MainView 加 `lipoSentinelID` + Dev Tools section sidebar row + `isLipoMode` 分发；AppUI/Package.swift 加 LipoKit 依赖；Xcode App target 同步加 LipoKit framework
 
-### F-2-4 Brew 管理接入 sidebar
+### F-2-4 Brew 管理接入 sidebar ✅ 已落地（2026-06-11）
 - **现状**：[BrewKit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/BrewKit) 已完成，**未接入 sidebar**
 - **方案**：同 F-2-3
+- **落地**：新建 [BrewScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/BrewScreen.swift)（三 tab installed / outdated / cleanup，dry-run 不真删）；MainView 加 `brewSentinelID` + sidebar row + `isBrewMode` 分发；AppUI/Package.swift 加 BrewKit 依赖；Xcode App target 同步加 BrewKit framework；AppUI 全包 397 tests / 0 failures
 
 ## P3 — 体验 / 长尾
 

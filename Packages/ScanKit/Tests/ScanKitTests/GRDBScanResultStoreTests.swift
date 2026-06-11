@@ -526,4 +526,15 @@ final class GRDBScanResultStoreTests: XCTestCase {
         let mode = try await store._debugAutoVacuumMode()
         XCTAssertEqual(mode, 2, "新建库的 PRAGMA auto_vacuum 必须 == 2（INCREMENTAL），实际=\(mode)")
     }
+
+    func test_新建库_cache_size应为10MB() async throws {
+        // F-1-1：prepareDatabase 必须把 cache_size 提到 -10000（≈ 10 MB），
+        // 默认 -2000 在 1M 节点冷启动下 GROUP BY 中间结果集会溢写 temp 表，
+        // cold-root 4.5s 的瓶颈就在这里。任何人不小心删掉 PRAGMA 这一行
+        // 或改回默认值，这个测试就红。
+        let store = try GRDBScanResultStore(databaseURL: dbURL, keepLatestSessions: 0)
+        let cache = try await store._debugCacheSize()
+        XCTAssertEqual(cache, -10000,
+                       "cache_size 必须 == -10000（≈ 10 MB），实际=\(cache)；若 == -2000 表示 PRAGMA 没生效")
+    }
 }

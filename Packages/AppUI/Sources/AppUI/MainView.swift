@@ -480,6 +480,20 @@ public struct MainView: View {
             } header: {
                 Text("sidebar.section.maintenance", bundle: .module)
             }
+
+            // F-2-3 / F-2-4 / 2026-06：dev 工具集 section —— Lipo（通用二进制瘦身）+
+            // Brew（Homebrew 包管理）。两个 Kit（[LipoKit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LipoKit) /
+            // [BrewKit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/BrewKit)）很早就完成了，但一直没接 sidebar。
+            // 走 sentinel 旁路 + 独立 Screen，与 maintenance 同款不复用扫描状态栏。
+            // 字面量直接英文不进 xcstrings（dev 工具，不强求 i18n）。
+            Section {
+                lipoSidebarRow
+                    .tag(MainView.lipoSentinelID)
+                brewSidebarRow
+                    .tag(MainView.brewSentinelID)
+            } header: {
+                Text(verbatim: "Dev Tools")
+            }
         }
         // bug1：sidebar List 默认会在获得 keyboard focus 时画一圈蓝色焦点环
         // （包住整个 list 容器，看起来像"鼠标进入 sidebar 才出现的蓝框"）。
@@ -512,6 +526,15 @@ public struct MainView: View {
     /// 的执行面板（rebuildLaunchServices / flushQuickLookCache / flushDNSCache），
     /// 与扫描 / 删除语义无关，沿 uninstall / undoHistory 同款 sentinel 旁路。
     static let maintenanceSentinelID: String = "maintenance.screen"
+
+    /// F-2-3 / 2026-06：「Lipo 通用二进制瘦身」侧边项。LipoScreen 自带 .app 拾取 /
+    /// dryRun 列表 / extract 按钮，不复用扫描状态栏，走 sentinel 旁路。
+    static let lipoSentinelID: String = "lipo.screen"
+
+    /// F-2-4 / 2026-06：「Homebrew」侧边项。BrewScreen 三 tab（installed / outdated /
+    /// cleanup）直接读 Cellar / Caskroom + ~/Library/Caches/Homebrew，不执行 brew，
+    /// 也不复用扫描状态栏，走 sentinel 旁路。
+    static let brewSentinelID: String = "brew.screen"
 
     /// M4-T2 / 2026-06：「开发者旧版本」侧边项。点击触发
     /// [ScanCoordinator.scanKnownVersionedRoots(home:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L710)，
@@ -655,6 +678,45 @@ public struct MainView: View {
         .padding(.vertical, 2)
     }
 
+    /// F-2-3 / 2026-06：「Lipo」侧边 row —— 图标用 cpu 表达 "CPU 架构切片"。
+    /// 字面量直接 verbatim 英文，不进 xcstrings（dev 工具）。
+    private var lipoSidebarRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "cpu")
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: "Lipo")
+                    .font(.system(.body, design: .rounded))
+                Text(verbatim: "Slim FAT binaries to arm64")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// F-2-4 / 2026-06：「Homebrew」侧边 row —— 图标用 mug 借喻 brew。
+    private var brewSidebarRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "mug")
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: "Homebrew")
+                    .font(.system(.body, design: .rounded))
+                Text(verbatim: "Installed / outdated / cleanup")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
     /// M4-T2 / 2026-06：「开发者旧版本」侧边 row —— 与 uninstall / launchAgent 同结构，
     /// 图标用 hammer 表达"开发工具产物"。点击触发 ScanCoordinator.scanKnownVersionedRoots。
     private var devVersionedSidebarRow: some View {
@@ -759,6 +821,16 @@ public struct MainView: View {
         selectedCategory == MainView.maintenanceSentinelID
     }
 
+    /// F-2-3 / 2026-06：当前是否在「Lipo」模式。
+    private var isLipoMode: Bool {
+        selectedCategory == MainView.lipoSentinelID
+    }
+
+    /// F-2-4 / 2026-06：当前是否在「Homebrew」模式。
+    private var isBrewMode: Bool {
+        selectedCategory == MainView.brewSentinelID
+    }
+
     private var results: some View {
         VStack(spacing: 0) {
             if isAppFootprintMode {
@@ -782,6 +854,13 @@ public struct MainView: View {
                 // M4-T4 / 2026-06：「系统维护」整段独立 —— 三按钮 + outcome list，
                 // 自带 detached Task 执行 / 状态指示，不复用扫描进度 / 删除 UI。
                 MaintenanceScreen()
+            } else if isLipoMode {
+                // F-2-3 / 2026-06：Lipo 通用二进制瘦身 —— 自带 audit / extract，
+                // 完全脱离 ScanCoordinator / SafetyEngine 链路。
+                LipoScreen()
+            } else if isBrewMode {
+                // F-2-4 / 2026-06：Homebrew 包管理 —— 直接读 Cellar / Caskroom，不执行 brew。
+                BrewScreen()
             } else {
                 statusBar
                 Divider()

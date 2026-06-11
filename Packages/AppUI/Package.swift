@@ -9,12 +9,14 @@ let package = Package(
         .package(path: "../ScanKit"),
         .package(path: "../SafetyKit"),
         .package(path: "../HeuristicKit"),
-        .package(path: "../LogKit")
+        .package(path: "../LogKit"),
+        .package(path: "../LipoKit"),
+        .package(path: "../BrewKit")
     ],
     targets: [
         .target(
             name: "AppUI",
-            dependencies: ["ScanKit", "SafetyKit", "HeuristicKit", "LogKit"],
+            dependencies: ["ScanKit", "SafetyKit", "HeuristicKit", "LogKit", "LipoKit", "BrewKit"],
             path: "Sources/AppUI",
             resources: [.process("Resources")]
         ),

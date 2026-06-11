@@ -72,6 +72,11 @@ public actor GRDBScanResultStore: ScanResultStore {
             try db.execute(sql: "PRAGMA journal_mode = WAL")
             try db.execute(sql: "PRAGMA synchronous = NORMAL")
             try db.execute(sql: "PRAGMA temp_store = MEMORY")
+            // F-1-1 / 2026-06：1M 节点冷启动 cold-root 4.5s 的瓶颈在默认 cache_size = -2000（2 MB）
+            // 下 GROUP BY 中间结果集溢写 temp 表。提到 -10000（≈ 10 MB）让常用 prune /
+            // directChildrenAggregated 走纯内存路径，B3 实测可把 1M cold 拉回 ≤ 2s。
+            // 负号语义：SQLite 把绝对值当 KB 计；正号是页数。
+            try db.execute(sql: "PRAGMA cache_size = -10000")
             // **注意**：auto_vacuum 不能放这里。prepareDatabase 对**所有**连接执行，
             // 包括只读 reader 连接；只读连接跑 `PRAGMA auto_vacuum = INCREMENTAL`
             // 会抛 SQLite error 8（attempt to write a readonly database）。
@@ -655,6 +660,14 @@ public actor GRDBScanResultStore: ScanResultStore {
     internal func _debugAutoVacuumMode() async throws -> Int {
         try await dbPool.read { db in
             try Int.fetchOne(db, sql: "PRAGMA auto_vacuum") ?? 0
+        }
+    }
+
+    /// F-1-1 测试专用：返回当前连接的 `PRAGMA cache_size`。
+    /// 用来断言 [prepareDatabase](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift) 真把 cache 提到了 -10000，避免之后被人无意覆盖回默认 -2000。
+    internal func _debugCacheSize() async throws -> Int {
+        try await dbPool.read { db in
+            try Int.fetchOne(db, sql: "PRAGMA cache_size") ?? 0
         }
     }
 }
