@@ -7827,6 +7827,27 @@
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Use when sites resolve to outdated IPs (safe)." } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "网站解析到旧 IP 时执行（无害）。" } }
       }
+    },
+    "sidebar.section.maintenance" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Maintenance" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "系统维护" } }
+      }
+    },
+    "sidebar.row.maintenance" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "System Tasks" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "系统任务" } }
+      }
+    },
+    "sidebar.subtitle.maintenance" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "LaunchServices · QuickLook · DNS" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "启动服务 · 预览 · DNS 缓存" } }
+      }
     }
   }
 }

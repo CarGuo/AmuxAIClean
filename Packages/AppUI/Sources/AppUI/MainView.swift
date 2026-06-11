@@ -457,6 +457,17 @@ public struct MainView: View {
             } header: {
                 Text("sidebar.section.undo_history", bundle: .module)
             }
+
+            // M4-T4 / 2026-06：系统维护 section —— rebuildLaunchServices /
+            // flushQuickLookCache / flushDNSCache 三个 user-space 任务，
+            // 走 [MaintenanceScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MaintenanceScreen.swift)
+            // 自包含 UI，不复用扫描状态栏。
+            Section {
+                maintenanceSidebarRow
+                    .tag(MainView.maintenanceSentinelID)
+            } header: {
+                Text("sidebar.section.maintenance", bundle: .module)
+            }
         }
         // bug1：sidebar List 默认会在获得 keyboard focus 时画一圈蓝色焦点环
         // （包住整个 list 容器，看起来像"鼠标进入 sidebar 才出现的蓝框"）。
@@ -484,6 +495,11 @@ public struct MainView: View {
     /// Step 7：「最近清理」侧边项。UndoHistoryScreen 渲染最近 N 次 trash 批次 + 恢复按钮，
     /// 完全是一个事后管理面板，与扫描语义无关，故走 sentinel ID 旁路。
     static let undoHistorySentinelID: String = "undo.history"
+
+    /// M4-T4 / 2026-06：「系统维护」侧边项。MaintenanceScreen 是 3 个 user-space 任务
+    /// 的执行面板（rebuildLaunchServices / flushQuickLookCache / flushDNSCache），
+    /// 与扫描 / 删除语义无关，沿 uninstall / undoHistory 同款 sentinel 旁路。
+    static let maintenanceSentinelID: String = "maintenance.screen"
 
     /// v1.5：sidebar Batch Scans section 的 row。结构与 sidebarRow / appFootprintSidebarRow
     /// 对齐：图标 + 标题 + 副标题。row 自身不带 tap handler，selection 切换由
@@ -600,6 +616,26 @@ public struct MainView: View {
         .padding(.vertical, 2)
     }
 
+    /// M4-T4 / 2026-06：「系统维护」侧边 row —— 与 undoHistory / uninstall 同结构，
+    /// 图标用 wrench.and.screwdriver 表达"工具集合"。
+    private var maintenanceSidebarRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "wrench.and.screwdriver")
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("sidebar.row.maintenance", bundle: .module)
+                    .font(.system(.body, design: .rounded))
+                Text("sidebar.subtitle.maintenance", bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
     @ViewBuilder
     private func sidebarRow(_ cat: ScanCategory, iconOverride: String? = nil) -> some View {
         HStack(spacing: 8) {
@@ -679,6 +715,11 @@ public struct MainView: View {
         selectedCategory == MainView.undoHistorySentinelID
     }
 
+    /// M4-T4 / 2026-06：当前是否在「系统维护」模式。
+    private var isMaintenanceMode: Bool {
+        selectedCategory == MainView.maintenanceSentinelID
+    }
+
     private var results: some View {
         VStack(spacing: 0) {
             if isAppFootprintMode {
@@ -698,6 +739,10 @@ public struct MainView: View {
             } else if isUndoHistoryMode {
                 // Step 7：「最近清理」整段独立 —— 只读+恢复按钮，不复用扫描状态栏。
                 UndoHistoryScreen()
+            } else if isMaintenanceMode {
+                // M4-T4 / 2026-06：「系统维护」整段独立 —— 三按钮 + outcome list，
+                // 自带 detached Task 执行 / 状态指示，不复用扫描进度 / 删除 UI。
+                MaintenanceScreen()
             } else {
                 statusBar
                 Divider()
