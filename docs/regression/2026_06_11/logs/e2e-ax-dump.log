@@ -1,0 +1,7 @@
+frontmost=false
+window_count=2
+  window title=
+  window subrole=AXSystemDialog
+  window title=GSY Clean Mac
+  window subrole=AXStandardWindow
+menubar_count=2

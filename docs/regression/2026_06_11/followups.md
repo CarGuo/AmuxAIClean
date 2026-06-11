@@ -8,6 +8,18 @@
 |---|---|---|
 | F-0-1 | [KnownVersionedRoots.swift#L111-L139](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift#L111-L139) `var fileManager` 死代码删除 | ✅ 本轮删除（实际从未引用，"forward-compat" 注释名不副实） |
 | F-0-2 | PerfBench 1M 节点压力 bench | ✅ 本轮跑完，[B3](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/perf.md) 入库 |
+| F-0-3 | E2E smoke 启动 release .app 跑通 + AX 抓取 + 干净退出 | ✅ 本轮 [e2e.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/e2e.md) PASS |
+
+## P0-bug — E2E 发现的真 bug（需要单独修）
+
+### F-0-4 vendors.yaml / vendor_shared.yaml 未被打包进 .app
+- **现象**：[GSYCleanMacApp.swift#L467-L475](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift#L467-L475) 查 `Bundle.main` 的 `vendors.yaml` 永远查不到，每次启动 NSLog `vendors.yaml 未找到，跳过 vendor 规则加载`
+- **影响**：production 用户态 vendor 规则**完全不生效**，SafetyKit fallback 到代码内置 vendor 列表，命中精度下降（[Resources/Rules/vendors.yaml](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/vendors.yaml) 里所有 vendor 增量条目实际未被消费）
+- **根因**：[GSYCleanMac.xcodeproj/project.pbxproj](file:///Users/guoshuyu/workspace/GSYCleanMac/GSYCleanMac.xcodeproj/project.pbxproj) 的 Copy Bundle Resources phase 完全没引用 `Resources/Rules/` 目录或 `*.yaml` 文件
+- **方案**：xcode 打开 project → GSYCleanMac target → Build Phases → Copy Bundle Resources → 拖入 `Resources/Rules` 整目录（保持 folder reference 蓝色而非 group 黄色），重 build 验证
+- **验收**：`find .app -name vendors.yaml` 命中 1 个；启动 NSLog 改为 `已加载 N 条 vendor 规则`
+- **优先级**：**P0**（影响 release production 正确性）
+
 
 ## P1 — 性能可优化（数据已证据齐全）
 
