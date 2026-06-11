@@ -11,9 +11,9 @@
 | 单元测试 | [unit.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/unit.md) | 9 包 / 857 PASS / 2 skipped / 0 fail |
 | 性能基线 | [perf.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/perf.md) | 65k files/s 扫描 / GRDB mid 4~214ms / 比 du 快又准 / 1M 节点 cold 4.5s |
 | GUI 回归 | [gui.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/gui.md) | 22 GUI case / PASS=22 / FAIL=0 |
-| E2E 烟雾 | [e2e.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/e2e.md) | release .app 启动 1s + 退出 1s + exit 0；**发现 P0 bug：vendors.yaml 未打包** |
+| E2E 烟雾 | [e2e.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/e2e.md) | release .app 启动 ≤2s + 退出 1s + exit 0；P0 bug **F-0-4 vendors.yaml 未打包** ✅ 已修复（79 条规则加载） |
 | 竞品矩阵 | [competitors_matrix.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/competitors_matrix.md) | 6 维 vs CMM / Pearcleaner / AppCleaner / DaisyDisk / ODS / GP |
-| 追踪条目 | [followups.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/followups.md) | 14+1 条 P0~P4 待办（新增 F-0-4 vendors.yaml 打包 P0 bug） |
+| 追踪条目 | [followups.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/followups.md) | 15 条 P0~P4 待办（F-0-4 ✅ 已闭环；剩 P1/P2/P3/P4 共 14 条） |
 
 ## 二、需求三问 三句话回答
 

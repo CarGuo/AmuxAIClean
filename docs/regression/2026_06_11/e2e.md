@@ -62,6 +62,30 @@ find /tmp/gsy-e2e-dd/Build/Products/Release/GSYCleanMac.app -name "*.yaml"
 
 **修复方案**：详见 [followups.md F-0-4](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/followups.md)（需 Xcode GUI 操作 + 重 codesign，单独提交验证）。
 
+### 二次验证（用户当场修完）
+
+用户在 Xcode 里把 [Resources/Rules/](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules) 三个 yaml 加入了 GSYCleanMac target 的 Copy Bundle Resources phase（[pbxproj 已包含 3 个 PBXBuildFile 在 Resources phase](file:///Users/guoshuyu/workspace/GSYCleanMac/GSYCleanMac.xcodeproj/project.pbxproj)）。
+
+```bash
+$ find /tmp/gsy-e2e-dd/Build/Products/Release/GSYCleanMac.app -name "*.yaml"
+/tmp/gsy-e2e-dd/Build/Products/Release/GSYCleanMac.app/Contents/Resources/vendors.yaml
+/tmp/gsy-e2e-dd/Build/Products/Release/GSYCleanMac.app/Contents/Resources/safe_paths.yaml
+/tmp/gsy-e2e-dd/Build/Products/Release/GSYCleanMac.app/Contents/Resources/vendor_shared.yaml
+```
+
+**re-run e2e-smoke**：
+
+| 项 | 修前 | 修后 |
+|---|---|---|
+| .app 内 yaml | 0 个 | **3 个** ✅ |
+| 启动 NSLog | `vendors.yaml 未找到，跳过 vendor 规则加载` | **`已加载 79 条 vendor 规则`** ✅ |
+| 主窗口 | t+1s | t+2s（多了 yaml 解析时间，可接受） |
+| 退出 | exit 0 | exit 0 ✅ |
+| crash 关键字 | 0 | 0 ✅ |
+
+> **F-0-4 已闭环** —— production 安装包从「vendor 规则零生效」恢复到「79 条规则全部加载」，[SafetyKit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit) 命中精度归位。
+
+
 ## 四、E2E 烟雾结论
 
 | 维度 | 结论 |

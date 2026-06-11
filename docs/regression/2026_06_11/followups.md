@@ -12,13 +12,18 @@
 
 ## P0-bug — E2E 发现的真 bug（需要单独修）
 
-### F-0-4 vendors.yaml / vendor_shared.yaml 未被打包进 .app
+### F-0-4 vendors.yaml / vendor_shared.yaml 未被打包进 .app ✅ 已修复（2026-06-11）
 - **现象**：[GSYCleanMacApp.swift#L467-L475](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift#L467-L475) 查 `Bundle.main` 的 `vendors.yaml` 永远查不到，每次启动 NSLog `vendors.yaml 未找到，跳过 vendor 规则加载`
 - **影响**：production 用户态 vendor 规则**完全不生效**，SafetyKit fallback 到代码内置 vendor 列表，命中精度下降（[Resources/Rules/vendors.yaml](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/vendors.yaml) 里所有 vendor 增量条目实际未被消费）
 - **根因**：[GSYCleanMac.xcodeproj/project.pbxproj](file:///Users/guoshuyu/workspace/GSYCleanMac/GSYCleanMac.xcodeproj/project.pbxproj) 的 Copy Bundle Resources phase 完全没引用 `Resources/Rules/` 目录或 `*.yaml` 文件
 - **方案**：xcode 打开 project → GSYCleanMac target → Build Phases → Copy Bundle Resources → 拖入 `Resources/Rules` 整目录（保持 folder reference 蓝色而非 group 黄色），重 build 验证
-- **验收**：`find .app -name vendors.yaml` 命中 1 个；启动 NSLog 改为 `已加载 N 条 vendor 规则`
-- **优先级**：**P0**（影响 release production 正确性）
+- **修复实际操作**：用户在 Xcode GUI 里把 3 个 yaml 加入 Resources phase（pbxproj 新增 PBXBuildFile `4B62D5DE/DF/E0`、PBXFileReference `4B62D5DA/DB/DC`、PBXGroup `4B62D5DD Rules`，三个 yaml 进入 Resources Copy Phase `files` 数组与 `Assets.xcassets`/`InfoPlist.strings` 并列），实际效果为平铺到 `.app/Contents/Resources/` 顶层，被 [GSYCleanMacApp.swift#L467-L475](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift#L467-L475) 的 fallback 分支命中
+- **验收**：
+  - ✅ `find .app -name vendors.yaml` 命中 3 个 yaml（vendors / vendor_shared / safe_paths）
+  - ✅ 启动 NSLog 改为 `[GSYCleanMac] 已加载 79 条 vendor 规则`
+  - ✅ e2e-smoke 二次跑 RESULT PASS、crash_hits=0
+  - 详情：[e2e.md §三 二次验证](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/e2e.md)
+- **优先级**：~~**P0**~~ → ✅ 已闭环
 
 
 ## P1 — 性能可优化（数据已证据齐全）

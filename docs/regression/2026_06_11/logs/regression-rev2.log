@@ -1,0 +1,37 @@
+
+[1;36m[regression][0m 杀掉所有残留 GSYCleanMac 进程
+
+[1;36m[regression][0m xcodebuild Debug 增量构建（签名走 .xcodeproj 里 Automatic + Personal Team）
+--- xcodebuild: WARNING: Using the first of multiple matching destinations:
+{ platform:macOS, arch:arm64, id:00006000-0016788C0C23801E, name:My Mac }
+{ platform:macOS, arch:x86_64, id:00006000-0016788C0C23801E, name:My Mac }
+[1;32m  ✓ build 完成[0m
+
+[1;36m[regression][0m 开始跑 22 个 case（产物：��
+  [scan-custom-fixture             ] timeout=90s ... [1;32mPASS[0m  (637ms)
+  [scan-recommended                ] timeout=600s ... [1;32mPASS[0m  (31806ms)
+  [tree-drilldown                  ] timeout=90s ... [1;32mPASS[0m  (759ms)
+  [scan-cancel-restart             ] timeout=90s ... [1;32mPASS[0m  (616ms)
+  [large-files-threshold           ] timeout=90s ... [1;32mPASS[0m  (662ms)
+  [duplicate-scan                  ] timeout=90s ... [1;32mPASS[0m  (226ms)
+  [orphan-scan                     ] timeout=90s ... [1;32mPASS[0m  (222ms)
+  [appfootprint-scan               ] timeout=90s ... [1;32mPASS[0m  (223ms)
+  [uninstaller-dryrun              ] timeout=90s ... [1;32mPASS[0m  (249ms)
+  [launchagent-scan                ] timeout=90s ... [1;32mPASS[0m  (245ms)
+  [exporter-csv                    ] timeout=90s ... [1;32mPASS[0m  (218ms)
+  [hud-toggle                      ] timeout=90s ... [1;32mPASS[0m  (2297ms)
+  [tray-install-uninstall          ] timeout=90s ... [1;32mPASS[0m  (635ms)
+  [activation-policy               ] timeout=90s ... [1;32mPASS[0m  (437ms)
+  [quicklook-controller            ] timeout=90s ... [1;32mPASS[0m  (754ms)
+  [trash-pipeline-dryrun           ] timeout=90s ... [1;32mPASS[0m  (228ms)
+  [safety-engine-veto              ] timeout=90s ... [1;32mPASS[0m  (223ms)
+  [undo-history-restore            ] timeout=90s ... [1;32mPASS[0m  (224ms)
+  [trash-real-scan                 ] timeout=90s ... [1;32mPASS[0m  (561ms)
+  [fda-banner-diagnose             ] timeout=600s ... [1;32mPASS[0m  (26541ms)
+  [scan-perf-diagnose              ] timeout=900s ... [1;32mPASS[0m  (33672ms)
+  [sentinel-default-off            ] timeout=90s ... [1;32mPASS[0m  (1277ms)
+
+[1;36m[regression][0m 结果汇总
+  total=22  PASS=22  FAIL=0  TIMEOUT=0
+[1;32m  ✓ 汇总写入 /Users/guoshuyu/workspace/GSYCleanMac/Tests/Regression/last-run.json[0m
+[1;32m  ✓ 单 case log 在 /Users/guoshuyu/workspace/GSYCleanMac/Tests/Regression/logs/<case>.log[0m

@@ -1,24 +1,25 @@
-[E2E 16:34:11] STEP 0: pkill 残留 GSYCleanMac 进程
-[E2E 16:34:12] STEP 1: 启动 .app（捕获 stdout/stderr 到 e2e-runtime.log）
-[E2E 16:34:12]   launched pid=44097
-[E2E 16:34:12] STEP 2: 轮询主窗口就绪（最多 15s）
-[E2E 16:34:13]   t+1s pid=44097 windows=2
-[E2E 16:34:13]   ✅ 主窗口就绪 at t+1s
-[E2E 16:34:13] STEP 3: dump AX tree → e2e-ax-dump.log
-[E2E 16:34:13]   AX dump：       7 lines
-[E2E 16:34:13] STEP 4: osascript quit
-[E2E 16:34:13] STEP 5: 等待 .app 退出（≤10s）
-[E2E 16:34:15]   ✅ 退出 at t+1s
-[E2E 16:34:15] STEP 6: exit_code=0
-[E2E 16:34:15] STEP 7: 扫描 e2e-runtime.log 关键字
-[E2E 16:34:15]   crash_hits=0 warn_hits=0
-[E2E 16:34:15] 
-[E2E 16:34:15] ================== E2E VERDICT ==================
-[E2E 16:34:15]   build:          ✅ Release
-[E2E 16:34:15]   launch:         ✅ pid=44097
-[E2E 16:34:15]   main_window:    ✅ ready
-[E2E 16:34:15]   graceful_quit:  ✅
-[E2E 16:34:15]   exit_code:      0
-[E2E 16:34:15]   crash_keywords: 0
-[E2E 16:34:15] =================================================
-[E2E 16:34:15] RESULT: ✅ PASS
+[E2E 17:10:45] STEP 0: pkill 残留 GSYCleanMac 进程
+[E2E 17:10:46] STEP 1: 启动 .app（捕获 stdout/stderr 到 e2e-runtime.log）
+[E2E 17:10:46]   launched pid=51737
+[E2E 17:10:46] STEP 2: 轮询主窗口就绪（最多 15s）
+[E2E 17:10:50]   t+1s pid=51737 windows=0
+[E2E 17:10:52]   t+2s pid=51737 windows=2
+[E2E 17:10:52]   ✅ 主窗口就绪 at t+2s
+[E2E 17:10:52] STEP 3: dump AX tree → e2e-ax-dump.log
+[E2E 17:10:52]   AX dump：       7 lines
+[E2E 17:10:52] STEP 4: osascript quit
+[E2E 17:10:52] STEP 5: 等待 .app 退出（≤10s）
+[E2E 17:10:53]   ✅ 退出 at t+1s
+[E2E 17:10:53] STEP 6: exit_code=0
+[E2E 17:10:53] STEP 7: 扫描 e2e-runtime.log 关键字
+[E2E 17:10:53]   crash_hits=0 warn_hits=0
+[E2E 17:10:53] 
+[E2E 17:10:53] ================== E2E VERDICT ==================
+[E2E 17:10:53]   build:          ✅ Release
+[E2E 17:10:53]   launch:         ✅ pid=51737
+[E2E 17:10:53]   main_window:    ✅ ready
+[E2E 17:10:53]   graceful_quit:  ✅
+[E2E 17:10:53]   exit_code:      0
+[E2E 17:10:53]   crash_keywords: 0
+[E2E 17:10:53] =================================================
+[E2E 17:10:53] RESULT: ✅ PASS

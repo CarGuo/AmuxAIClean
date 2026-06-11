@@ -10,22 +10,64 @@
 		188D4F0C4C064DE743DAD63D /* ScanKit in Frameworks */ = {isa = PBXBuildFile; productRef = 19D65B1CECA5C738ECAABC8E /* ScanKit */; };
 		346749C64AC143BD266F6924 /* HeuristicKit in Frameworks */ = {isa = PBXBuildFile; productRef = 9BE894FC8C653B23C23D09DF /* HeuristicKit */; };
 		3823427E136FB5F3FBF834B5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8172DA6157D4CAFB06EB4D81 /* Assets.xcassets */; };
+		4B62D5DE2FDAB0B100E44F76 /* vendor_shared.yaml in Resources */ = {isa = PBXBuildFile; fileRef = 4B62D5DB2FDAB0B100E44F76 /* vendor_shared.yaml */; };
+		4B62D5DF2FDAB0B100E44F76 /* vendors.yaml in Resources */ = {isa = PBXBuildFile; fileRef = 4B62D5DC2FDAB0B100E44F76 /* vendors.yaml */; };
+		4B62D5E02FDAB0B100E44F76 /* safe_paths.yaml in Resources */ = {isa = PBXBuildFile; fileRef = 4B62D5DA2FDAB0B100E44F76 /* safe_paths.yaml */; };
+		5A1B0001000000000000A001 /* LipoKit in Frameworks */ = {isa = PBXBuildFile; productRef = 5A1B0004000000000000A004 /* LipoKit */; };
 		7760F7CD0E11FE5FD916213C /* RegressionRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4FBB712C198D188AD075C66 /* RegressionRunner.swift */; };
 		7E6A84ABC756B0F07C35C63B /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = F74FB5762A1E3FC026FA94BC /* InfoPlist.strings */; };
 		809E0552B37329DA1D6DA483 /* SafetyKit in Frameworks */ = {isa = PBXBuildFile; productRef = AC93BBF658D8303974FC7762 /* SafetyKit */; };
 		830A3D28FFEF7066DA1D0A50 /* AppUI in Frameworks */ = {isa = PBXBuildFile; productRef = 269F7078D84D8EA818521F88 /* AppUI */; };
 		922FBAF195DAE3DEAE29336B /* GSYCleanMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1AC343FA0785D39B6C91BD3 /* GSYCleanMacApp.swift */; };
-		C055F53EA2B18E72F41BAFE0 /* TestHarness in Frameworks */ = {isa = PBXBuildFile; productRef = 1B5433B113D90D03B92A6B22 /* TestHarness */; };
-		E0963A3E20D365A7E7DA8DE5 /* LogKit in Frameworks */ = {isa = PBXBuildFile; productRef = 869DB7788784E9203F564909 /* LogKit */; };
-		5A1B0001000000000000A001 /* LipoKit in Frameworks */ = {isa = PBXBuildFile; productRef = 5A1B0004000000000000A004 /* LipoKit */; };
 		AA01E001000000000000S001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA01F001000000000000S001 /* main.swift */; };
 		AA01E002000000000000S002 /* gsycleanmac-sentinel in Embed Helper Tools */ = {isa = PBXBuildFile; fileRef = AA01F002000000000000S002 /* gsycleanmac-sentinel */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		AA01J001000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist in Embed LaunchDaemons */ = {isa = PBXBuildFile; fileRef = AA01J002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */; };
+		C055F53EA2B18E72F41BAFE0 /* TestHarness in Frameworks */ = {isa = PBXBuildFile; productRef = 1B5433B113D90D03B92A6B22 /* TestHarness */; };
+		E0963A3E20D365A7E7DA8DE5 /* LogKit in Frameworks */ = {isa = PBXBuildFile; productRef = 869DB7788784E9203F564909 /* LogKit */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		AA01P001000000000000S001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 6B296BF115E133E6D6E8FAD0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA01N001000000000000S001;
+			remoteInfo = GSYCleanMacSentinel;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AA01H001000000000000S001 /* Embed Helper Tools */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				AA01E002000000000000S002 /* gsycleanmac-sentinel in Embed Helper Tools */,
+			);
+			name = "Embed Helper Tools";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA01J004000000000000S001 /* Embed LaunchDaemons */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/LaunchDaemons;
+			dstSubfolderSpec = 1;
+			files = (
+				AA01J001000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist in Embed LaunchDaemons */,
+			);
+			name = "Embed LaunchDaemons";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		48E91589CD8CC1788869F92C /* ScanKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ScanKit; path = Packages/ScanKit; sourceTree = SOURCE_ROOT; };
+		4B62D5DA2FDAB0B100E44F76 /* safe_paths.yaml */ = {isa = PBXFileReference; lastKnownFileType = text.yaml; path = safe_paths.yaml; sourceTree = "<group>"; };
+		4B62D5DB2FDAB0B100E44F76 /* vendor_shared.yaml */ = {isa = PBXFileReference; lastKnownFileType = text.yaml; path = vendor_shared.yaml; sourceTree = "<group>"; };
+		4B62D5DC2FDAB0B100E44F76 /* vendors.yaml */ = {isa = PBXFileReference; lastKnownFileType = text.yaml; path = vendors.yaml; sourceTree = "<group>"; };
 		576001034F25DE5ED4BAEA65 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
+		5A1B0002000000000000A002 /* LipoKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = LipoKit; path = Packages/LipoKit; sourceTree = SOURCE_ROOT; };
 		61A9164D7CAFFB5DE6E68891 /* AppUI */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AppUI; path = Packages/AppUI; sourceTree = SOURCE_ROOT; };
 		73050909E198F8F7E096DF5F /* LogKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = LogKit; path = Packages/LogKit; sourceTree = SOURCE_ROOT; };
 		7B61AB43A10B9C1BE7176E12 /* GSYCleanMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GSYCleanMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -34,15 +76,14 @@
 		887444FA009A4A5D18CE4E54 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		93739B16F64B55C9EA98583F /* SafetyKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = SafetyKit; path = Packages/SafetyKit; sourceTree = SOURCE_ROOT; };
 		A1AC343FA0785D39B6C91BD3 /* GSYCleanMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GSYCleanMacApp.swift; sourceTree = "<group>"; };
-		C4FBB712C198D188AD075C66 /* RegressionRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegressionRunner.swift; sourceTree = "<group>"; };
-		DF808A7550415E3DB686B545 /* HeuristicKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = HeuristicKit; path = Packages/HeuristicKit; sourceTree = SOURCE_ROOT; };
-		5A1B0002000000000000A002 /* LipoKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = LipoKit; path = Packages/LipoKit; sourceTree = SOURCE_ROOT; };
-		F4112C6CEEEE50474D0CB590 /* GSYCleanMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GSYCleanMac.entitlements; sourceTree = "<group>"; };
-		FEC26917DEEB32AB69EAA073 /* TestHarness */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TestHarness; path = Packages/TestHarness; sourceTree = SOURCE_ROOT; };
 		AA01F001000000000000S001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		AA01F002000000000000S002 /* gsycleanmac-sentinel */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "gsycleanmac-sentinel"; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA01F003000000000000S003 /* Sentinel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Sentinel.entitlements; sourceTree = "<group>"; };
 		AA01J002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.guoshuyu.cleanmac.sentinel.plist; sourceTree = "<group>"; };
+		C4FBB712C198D188AD075C66 /* RegressionRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegressionRunner.swift; sourceTree = "<group>"; };
+		DF808A7550415E3DB686B545 /* HeuristicKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = HeuristicKit; path = Packages/HeuristicKit; sourceTree = SOURCE_ROOT; };
+		F4112C6CEEEE50474D0CB590 /* GSYCleanMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GSYCleanMac.entitlements; sourceTree = "<group>"; };
+		FEC26917DEEB32AB69EAA073 /* TestHarness */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TestHarness; path = Packages/TestHarness; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -72,6 +113,16 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		4B62D5DD2FDAB0B100E44F76 /* Rules */ = {
+			isa = PBXGroup;
+			children = (
+				4B62D5DA2FDAB0B100E44F76 /* safe_paths.yaml */,
+				4B62D5DB2FDAB0B100E44F76 /* vendor_shared.yaml */,
+				4B62D5DC2FDAB0B100E44F76 /* vendors.yaml */,
+			);
+			path = Rules;
+			sourceTree = "<group>";
+		};
 		61C285C78FB6B3B4B4ED4D9E /* Packages */ = {
 			isa = PBXGroup;
 			children = (
@@ -84,38 +135,6 @@
 				FEC26917DEEB32AB69EAA073 /* TestHarness */,
 			);
 			path = Packages;
-			sourceTree = "<group>";
-		};
-		D033CDCECB74C859C35EF626 /* Resources */ = {
-			isa = PBXGroup;
-			children = (
-				8172DA6157D4CAFB06EB4D81 /* Assets.xcassets */,
-			);
-			path = Resources;
-			sourceTree = "<group>";
-		};
-		F4D53F41DAE8C57F9FB84DD2 /* App */ = {
-			isa = PBXGroup;
-			children = (
-				F74FB5762A1E3FC026FA94BC /* InfoPlist.strings */,
-				F4112C6CEEEE50474D0CB590 /* GSYCleanMac.entitlements */,
-				A1AC343FA0785D39B6C91BD3 /* GSYCleanMacApp.swift */,
-				7E48C094BFCC4AB8A1DD91EF /* Info.plist */,
-				AA01J003000000000000S001 /* LaunchDaemons */,
-				C4FBB712C198D188AD075C66 /* RegressionRunner.swift */,
-			);
-			path = App;
-			sourceTree = "<group>";
-		};
-		F5B9EE9F3D52B0611EC85C45 = {
-			isa = PBXGroup;
-			children = (
-				F4D53F41DAE8C57F9FB84DD2 /* App */,
-				61C285C78FB6B3B4B4ED4D9E /* Packages */,
-				D033CDCECB74C859C35EF626 /* Resources */,
-				AA01G001000000000000S001 /* Tools */,
-				087289FA5F5E417DFDAAFF48 /* Products */,
-			);
 			sourceTree = "<group>";
 		};
 		AA01G001000000000000S001 /* Tools */ = {
@@ -159,9 +178,57 @@
 			path = LaunchDaemons;
 			sourceTree = "<group>";
 		};
+		D033CDCECB74C859C35EF626 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				8172DA6157D4CAFB06EB4D81 /* Assets.xcassets */,
+				4B62D5DD2FDAB0B100E44F76 /* Rules */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		F4D53F41DAE8C57F9FB84DD2 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				F74FB5762A1E3FC026FA94BC /* InfoPlist.strings */,
+				F4112C6CEEEE50474D0CB590 /* GSYCleanMac.entitlements */,
+				A1AC343FA0785D39B6C91BD3 /* GSYCleanMacApp.swift */,
+				7E48C094BFCC4AB8A1DD91EF /* Info.plist */,
+				AA01J003000000000000S001 /* LaunchDaemons */,
+				C4FBB712C198D188AD075C66 /* RegressionRunner.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		F5B9EE9F3D52B0611EC85C45 = {
+			isa = PBXGroup;
+			children = (
+				F4D53F41DAE8C57F9FB84DD2 /* App */,
+				61C285C78FB6B3B4B4ED4D9E /* Packages */,
+				D033CDCECB74C859C35EF626 /* Resources */,
+				AA01G001000000000000S001 /* Tools */,
+				087289FA5F5E417DFDAAFF48 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		AA01N001000000000000S001 /* GSYCleanMacSentinel */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA01L001000000000000S001 /* Build configuration list for PBXNativeTarget "GSYCleanMacSentinel" */;
+			buildPhases = (
+				AA01S001000000000000S001 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = GSYCleanMacSentinel;
+			productName = "gsycleanmac-sentinel";
+			productReference = AA01F002000000000000S002 /* gsycleanmac-sentinel */;
+			productType = "com.apple.product-type.tool";
+		};
 		C8595EE1DD697C434C527FFD /* GSYCleanMac */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = B7108807F46F68B389DB5B19 /* Build configuration list for PBXNativeTarget "GSYCleanMac" */;
@@ -191,21 +258,6 @@
 			productReference = 7B61AB43A10B9C1BE7176E12 /* GSYCleanMac.app */;
 			productType = "com.apple.product-type.application";
 		};
-		AA01N001000000000000S001 /* GSYCleanMacSentinel */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = AA01L001000000000000S001 /* Build configuration list for PBXNativeTarget "GSYCleanMacSentinel" */;
-			buildPhases = (
-				AA01S001000000000000S001 /* Sources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = GSYCleanMacSentinel;
-			productName = "gsycleanmac-sentinel";
-			productReference = AA01F002000000000000S002 /* gsycleanmac-sentinel */;
-			productType = "com.apple.product-type.tool";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -215,10 +267,10 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
-					C8595EE1DD697C434C527FFD = {
+					AA01N001000000000000S001 = {
 						ProvisioningStyle = Automatic;
 					};
-					AA01N001000000000000S001 = {
+					C8595EE1DD697C434C527FFD = {
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -259,6 +311,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				3823427E136FB5F3FBF834B5 /* Assets.xcassets in Resources */,
+				4B62D5DE2FDAB0B100E44F76 /* vendor_shared.yaml in Resources */,
+				4B62D5DF2FDAB0B100E44F76 /* vendors.yaml in Resources */,
+				4B62D5E02FDAB0B100E44F76 /* safe_paths.yaml in Resources */,
 				7E6A84ABC756B0F07C35C63B /* InfoPlist.strings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -285,31 +340,6 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
-/* Begin PBXCopyFilesBuildPhase section */
-		AA01H001000000000000S001 /* Embed Helper Tools */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 6;
-			files = (
-				AA01E002000000000000S002 /* gsycleanmac-sentinel in Embed Helper Tools */,
-			);
-			name = "Embed Helper Tools";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		AA01J004000000000000S001 /* Embed LaunchDaemons */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "Contents/Library/LaunchDaemons";
-			dstSubfolderSpec = 1;
-			files = (
-				AA01J001000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist in Embed LaunchDaemons */,
-			);
-			name = "Embed LaunchDaemons";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXCopyFilesBuildPhase section */
-
 /* Begin PBXTargetDependency section */
 		AA01D001000000000000S001 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -317,16 +347,6 @@
 			targetProxy = AA01P001000000000000S001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
-
-/* Begin PBXContainerItemProxy section */
-		AA01P001000000000000S001 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 6B296BF115E133E6D6E8FAD0 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = AA01N001000000000000S001;
-			remoteInfo = GSYCleanMacSentinel;
-		};
-/* End PBXContainerItemProxy section */
 
 /* Begin PBXVariantGroup section */
 		F74FB5762A1E3FC026FA94BC /* InfoPlist.strings */ = {
@@ -429,6 +449,38 @@
 			};
 			name = Debug;
 		};
+		AA01C001000000000000S001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Tools/Sentinel/Sentinel.entitlements;
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 39PK4PKRP3;
+				ENABLE_HARDENED_RUNTIME = YES;
+				OTHER_CODE_SIGN_FLAGS = "$(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.guoshuyu.cleanmac.sentinel;
+				PRODUCT_NAME = "gsycleanmac-sentinel";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+		AA01C002000000000000S002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Tools/Sentinel/Sentinel.entitlements;
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 39PK4PKRP3;
+				ENABLE_HARDENED_RUNTIME = YES;
+				OTHER_CODE_SIGN_FLAGS = "$(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.guoshuyu.cleanmac.sentinel;
+				PRODUCT_NAME = "gsycleanmac-sentinel";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
 		AA15939A510205408FD806AE /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -510,38 +562,6 @@
 			};
 			name = Release;
 		};
-		AA01C001000000000000S001 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = Tools/Sentinel/Sentinel.entitlements;
-				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 39PK4PKRP3;
-				ENABLE_HARDENED_RUNTIME = YES;
-				OTHER_CODE_SIGN_FLAGS = "$(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)";
-				PRODUCT_BUNDLE_IDENTIFIER = com.guoshuyu.cleanmac.sentinel;
-				PRODUCT_NAME = "gsycleanmac-sentinel";
-				SDKROOT = macosx;
-				SKIP_INSTALL = YES;
-			};
-			name = Debug;
-		};
-		AA01C002000000000000S002 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = Tools/Sentinel/Sentinel.entitlements;
-				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 39PK4PKRP3;
-				ENABLE_HARDENED_RUNTIME = YES;
-				OTHER_CODE_SIGN_FLAGS = "$(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)";
-				PRODUCT_BUNDLE_IDENTIFIER = com.guoshuyu.cleanmac.sentinel;
-				PRODUCT_NAME = "gsycleanmac-sentinel";
-				SDKROOT = macosx;
-				SKIP_INSTALL = YES;
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -554,20 +574,20 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		B7108807F46F68B389DB5B19 /* Build configuration list for PBXNativeTarget "GSYCleanMac" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				A2999C26A9D4D1874A7E9E01 /* Debug */,
-				FF4D4ACE764132A9C1B5DA8E /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Debug;
-		};
 		AA01L001000000000000S001 /* Build configuration list for PBXNativeTarget "GSYCleanMacSentinel" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				AA01C001000000000000S001 /* Debug */,
 				AA01C002000000000000S002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B7108807F46F68B389DB5B19 /* Build configuration list for PBXNativeTarget "GSYCleanMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A2999C26A9D4D1874A7E9E01 /* Debug */,
+				FF4D4ACE764132A9C1B5DA8E /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
@@ -583,10 +603,6 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/HeuristicKit;
 		};
-		5A1B0005000000000000A005 /* XCLocalSwiftPackageReference "Packages/LipoKit" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = Packages/LipoKit;
-		};
 		5550FDAACEF586F16D32C0E1 /* XCLocalSwiftPackageReference "Packages/TestHarness" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/TestHarness;
@@ -594,6 +610,10 @@
 		57B86D3812435EBFA746BA95 /* XCLocalSwiftPackageReference "Packages/ScanKit" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/ScanKit;
+		};
+		5A1B0005000000000000A005 /* XCLocalSwiftPackageReference "Packages/LipoKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/LipoKit;
 		};
 		64FED8B5DF29585F8A271DEA /* XCLocalSwiftPackageReference "Packages/LogKit" */ = {
 			isa = XCLocalSwiftPackageReference;
@@ -618,6 +638,10 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = AppUI;
 		};
+		5A1B0004000000000000A004 /* LipoKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LipoKit;
+		};
 		869DB7788784E9203F564909 /* LogKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = LogKit;
@@ -625,10 +649,6 @@
 		9BE894FC8C653B23C23D09DF /* HeuristicKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = HeuristicKit;
-		};
-		5A1B0004000000000000A004 /* LipoKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = LipoKit;
 		};
 		AC93BBF658D8303974FC7762 /* SafetyKit */ = {
 			isa = XCSwiftPackageProductDependency;
