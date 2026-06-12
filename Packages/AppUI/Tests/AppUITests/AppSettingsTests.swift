@@ -153,4 +153,70 @@ final class AppSettingsTests: XCTestCase {
         let s2 = AppSettings(testSuite: suite)
         XCTAssertTrue(s2.hideFromDockWhenClosed, "_testReset 后应回到默认 true（v1.5.5）")
     }
+
+    // MARK: - v1.7 界面语言切换
+
+    @MainActor
+    func test_v17_preferredLanguage_默认应为system() throws {
+        // v1.7：未配置时默认 .system（跟随系统），不向 UserDefaults 写入任何值。
+        let suite = freshSuite()
+        let s = AppSettings(testSuite: suite)
+        XCTAssertEqual(s.preferredLanguage, .system,
+                       "首启时 preferredLanguage 必须 == .system（跟随系统语言）")
+    }
+
+    @MainActor
+    func test_v17_preferredLanguage_持久化_zhHans与en() throws {
+        // v1.7：写入 .zhHans 后重新构造应能读回；切到 .en 同样能读回。
+        let suite = freshSuite()
+        do {
+            let s = AppSettings(testSuite: suite)
+            s.preferredLanguage = .zhHans
+        }
+        let s2 = AppSettings(testSuite: suite)
+        XCTAssertEqual(s2.preferredLanguage, .zhHans, "zhHans 应能持久化")
+        s2.preferredLanguage = .en
+        let s3 = AppSettings(testSuite: suite)
+        XCTAssertEqual(s3.preferredLanguage, .en, "切到 en 应能持久化")
+    }
+
+    @MainActor
+    func test_v17_preferredLanguage_设回system应清键() throws {
+        // v1.7：用户从 .zhHans 切回 .system 时 didSet 应删 key，避免污染主域。
+        let suite = freshSuite()
+        let s = AppSettings(testSuite: suite)
+        s.preferredLanguage = .zhHans
+        s.preferredLanguage = .system
+        // 用一个底层 UserDefaults 二次确认 key 已删
+        let raw = UserDefaults(suiteName: suite)?.string(forKey: AppSettings.Keys.preferredLanguage)
+        XCTAssertNil(raw, ".system 时持久化键必须被移除，让运行时回退到系统语言")
+    }
+
+    @MainActor
+    func test_v17_effectiveLocale_映射正确() throws {
+        // v1.7：effectiveLocale 是 SwiftUI environment(\.locale, ...) 用的实际 Locale。
+        // .system → autoupdatingCurrent；.zhHans → "zh-Hans"；.en → "en"。
+        let s = AppSettings(testSuite: freshSuite())
+        XCTAssertEqual(s.effectiveLocale.identifier, Locale.autoupdatingCurrent.identifier,
+                       ".system 时 effectiveLocale 应等价于系统当前 Locale")
+        s.preferredLanguage = .zhHans
+        XCTAssertEqual(s.effectiveLocale.identifier, "zh-Hans",
+                       ".zhHans → Locale(identifier: \"zh-Hans\")")
+        s.preferredLanguage = .en
+        XCTAssertEqual(s.effectiveLocale.identifier, "en",
+                       ".en → Locale(identifier: \"en\")")
+    }
+
+    @MainActor
+    func test_v17_applyToAppleLanguagesIfNeeded_单测backend不写入主域() throws {
+        // v1.7 安全网：测试用独立 suite 调用 applyToAppleLanguagesIfNeeded 不得污染
+        // UserDefaults.standard 的 AppleLanguages（生产环境才写）。
+        let suite = freshSuite()
+        let beforeStandard = UserDefaults.standard.array(forKey: "AppleLanguages") as? [String]
+        let s = AppSettings(testSuite: suite)
+        s.preferredLanguage = .zhHans   // didSet 内部调 applyToAppleLanguagesIfNeeded
+        let afterStandard = UserDefaults.standard.array(forKey: "AppleLanguages") as? [String]
+        XCTAssertEqual(beforeStandard, afterStandard,
+                       "单测 backend 是 isolated suite 时，AppleLanguages 不得被改写")
+    }
 }

@@ -7862,6 +7862,55 @@
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Xcode DeviceSupport · JetBrains Toolbox" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Xcode 设备支持 · JetBrains Toolbox" } }
       }
+    },
+    "settings.section.appearance" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Appearance" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "外观" } }
+      }
+    },
+    "settings.language.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Interface Language" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "界面语言" } }
+      }
+    },
+    "settings.language.detail" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Override the system language for this app. Most text switches immediately; some system menus only update after restart." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "为本应用单独指定界面语言。大部分文本会立即切换；系统菜单等需要重启 App 才会完全生效。" } }
+      }
+    },
+    "settings.language.system" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Follow System" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "跟随系统" } }
+      }
+    },
+    "settings.language.zh_hans" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Simplified Chinese" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "简体中文" } }
+      }
+    },
+    "settings.language.en" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "English" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "英文" } }
+      }
+    },
+    "settings.language.restart_hint" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Restart the app to fully apply the language to system menus and alerts." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "重启 App 后系统菜单与原生弹窗也会切换到该语言。" } }
+      }
     }
   }
 }

@@ -106,7 +106,12 @@ struct GSYCleanMacApp: App {
                      pathStore: pathStore,
                      coordinator: coordinator)
             .frame(minWidth: 1080, minHeight: 640)
+            .environment(\.locale, settings.effectiveLocale)
             .task {
+                // v1.7：把用户在「设置 → 外观 → 界面语言」选定的覆盖值同步到 AppleLanguages，
+                // 让原生 NSAlert / NSMenu / 系统弹窗下次启动也跟着切。当次会话靠
+                // `.environment(\.locale, ...)` 即时切换 SwiftUI 自绘文本。
+                settings.applyToAppleLanguagesIfNeeded()
                 await evaluateTCCOnboarding()
                 // v1.1：尊重 settings.updateCheckEnabled 决定是否联网；用户可在设置里关
                 updateChecker.checkOnLaunch()
@@ -293,6 +298,7 @@ struct GSYCleanMacApp: App {
         // v1.0：标准 ⌘, 设置窗口（隐藏文件 toggle / 大文件阈值 / 自定义路径）。
         Settings {
             SettingsScene(settings: settings, pathStore: pathStore, updateChecker: updateChecker)
+                .environment(\.locale, settings.effectiveLocale)
         }
     }
 

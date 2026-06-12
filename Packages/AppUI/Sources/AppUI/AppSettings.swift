@@ -65,6 +65,12 @@ public final class AppSettings {
         /// unregister 时清）。给设置面板「最近被 Sentinel 发现的候选」面板做"自从启用以来"
         /// 的时间窗起点；同时用于诊断"用户开了但从来没成功过"的边界情况。
         public static let sentinelLastEnabled = "v1.6.sentinel_last_enabled"
+        /// v1.7：用户在设置面板里手动指定的 UI 语言（覆盖系统跟随）。
+        /// 持久化 raw string（`LanguageOverride.rawValue`）；`.system` 视为不覆盖。
+        /// 改动后会同步写 `AppleLanguages` 让原生控件/系统弹窗下次启动跟着切；
+        /// 当次会话靠 [effectiveLocale](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
+        /// + `environment(\.locale, ...)` 即时生效大部分自绘文本。
+        public static let preferredLanguage = "v1.7.preferred_language"
     }
 
     /// v1.3：HUD 屏幕位置预设。
@@ -192,6 +198,55 @@ public final class AppSettings {
             switch self {
             case .logical:  return String(localized: "size.accounting.logical", bundle: .module)
             case .physical: return String(localized: "size.accounting.physical", bundle: .module)
+            }
+        }
+    }
+
+    /// v1.7：UI 语言覆盖。
+    ///
+    /// 设计要点：
+    /// - **`.system`（默认）**：不覆盖。沿用 macOS 系统语言（系统设置 → 通用 →
+    ///   语言与地区 → 应用程序 里给本 App 单独指定的语言；若未指定则跟随系统首选语言）。
+    /// - **`.zhHans`、`.en`**：用户在「设置 → 扫描 → 界面语言」里显式选定，此时：
+    ///   1. 即时生效：通过 [effectiveLocale](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
+    ///      + `.environment(\.locale, ...)` 让所有走 SwiftUI 字符串目录的 `Text` 当次会话即换语言。
+    ///   2. 跨进程：[applyToAppleLanguagesIfNeeded](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
+    ///      会把 `AppleLanguages` 改写为 `["zh-Hans"]` / `["en"]`，让原生 NSAlert / NSMenu /
+    ///      系统弹窗、以及 Bundle.main 资源（Info.plist 等）在**下次启动**也是这门语言。
+    ///
+    /// 为什么不直接 swap：SwiftUI / AppKit 的非 SwiftUI 控件（NSMenu / NSAlert / NSOpenPanel）
+    /// 依赖 `Bundle.main.preferredLocalizations` —— 这是进程启动期固化的，运行时改 `AppleLanguages`
+    /// 不会改这些控件已经 cache 的本地化资源；故仍需冷启动一次。
+    public enum LanguageOverride: String, CaseIterable, Sendable, Hashable {
+        case system
+        case zhHans = "zh-Hans"
+        case en
+
+        public var label: String {
+            switch self {
+            case .system: return String(localized: "settings.language.system", bundle: .module)
+            case .zhHans: return String(localized: "settings.language.zh_hans", bundle: .module)
+            case .en:     return String(localized: "settings.language.en", bundle: .module)
+            }
+        }
+
+        /// 转成 SwiftUI / Foundation 的 `Locale`。`.system` 返回 nil，
+        /// 让 environment(\.locale, nil) 退回 SwiftUI 默认（继承自宿主 process）。
+        public var locale: Locale? {
+            switch self {
+            case .system: return nil
+            case .zhHans: return Locale(identifier: "zh-Hans")
+            case .en:     return Locale(identifier: "en")
+            }
+        }
+
+        /// 转成写入 `AppleLanguages` 的字符串数组。`.system` 返回 nil
+        /// 表示"删除覆盖键，回归系统选择"。
+        public var appleLanguagesValue: [String]? {
+            switch self {
+            case .system: return nil
+            case .zhHans: return ["zh-Hans"]
+            case .en:     return ["en"]
             }
         }
     }
@@ -368,6 +423,41 @@ public final class AppSettings {
         }
     }
 
+    /// v1.7：UI 语言覆盖（默认 `.system`）。
+    /// `didSet`：
+    /// 1. 同步持久化（`.system` → 删 key）。
+    /// 2. 同步把覆盖值写到 `AppleLanguages`（影响下次启动的 NSAlert / 系统资源选择）。
+    public var preferredLanguage: LanguageOverride {
+        didSet {
+            if preferredLanguage == .system {
+                defaults.removeObject(forKey: Keys.preferredLanguage)
+            } else {
+                defaults.set(preferredLanguage.rawValue, forKey: Keys.preferredLanguage)
+            }
+            applyToAppleLanguagesIfNeeded()
+        }
+    }
+
+    /// v1.7：把 [preferredLanguage](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
+    /// 映射成 SwiftUI 用的 `Locale`，给 `WindowGroup.environment(\.locale, ...)` 用。
+    /// `.system` 时返回 `Locale.autoupdatingCurrent`，让 SwiftUI 自然跟随系统。
+    public var effectiveLocale: Locale {
+        preferredLanguage.locale ?? .autoupdatingCurrent
+    }
+
+    /// v1.7：把覆盖值同步到 `UserDefaults.standard` 的 `AppleLanguages`。
+    /// 只在 backend 是 `UserDefaults.standard` 时执行（单测用独立 suite 时短路），
+    /// 避免测试时污染主域。设置 / 删除后**不会**立刻影响当前进程已加载的 NSBundle 资源——
+    /// 那些得等下一次冷启动；当次会话靠 SwiftUI environment(\.locale) 即时生效。
+    public func applyToAppleLanguagesIfNeeded() {
+        guard defaults == UserDefaults.standard else { return }
+        if let value = preferredLanguage.appleLanguagesValue {
+            UserDefaults.standard.set(value, forKey: "AppleLanguages")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "AppleLanguages")
+        }
+    }
+
     // MARK: - 构造
 
     /// 标准构造（生产代码用）：直接使用 `UserDefaults.standard`。
@@ -492,6 +582,14 @@ public final class AppSettings {
             self.sentinelEnabled = false
         }
         self.sentinelLastEnabled = defaults.object(forKey: Keys.sentinelLastEnabled) as? Date
+        // v1.7：UI 语言覆盖。默认 .system（跟随系统）。
+        // 不存在 / 解析失败 / 显式 "system" 都视为 .system，避免污染主域 AppleLanguages。
+        if let raw = defaults.string(forKey: Keys.preferredLanguage),
+           let parsed = LanguageOverride(rawValue: raw) {
+            self.preferredLanguage = parsed
+        } else {
+            self.preferredLanguage = .system
+        }
         // 初始化期一致性纠偏：万一上一次进程崩溃前留下了"trayEnabled=false 且 hideFromDockWhenClosed=true"
         // 的非法组合（didSet 没来得及触发），启动时强制以 trayEnabled 为准。
         if hideFromDockWhenClosed, !trayEnabled {
@@ -519,5 +617,6 @@ public final class AppSettings {
         defaults.removeObject(forKey: Keys.enabledDevArtifactRuleIDs)
         defaults.removeObject(forKey: Keys.sentinelEnabled)
         defaults.removeObject(forKey: Keys.sentinelLastEnabled)
+        defaults.removeObject(forKey: Keys.preferredLanguage)
     }
 }

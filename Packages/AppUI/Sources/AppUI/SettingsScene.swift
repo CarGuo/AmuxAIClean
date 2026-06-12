@@ -130,6 +130,30 @@ public struct SettingsScene: View {
     private var scanTab: some View {
         Form {
             Section {
+                Picker(selection: $settings.preferredLanguage) {
+                    ForEach(AppSettings.LanguageOverride.allCases, id: \.self) { lang in
+                        Text(lang.label).tag(lang)
+                    }
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("settings.language.title", bundle: .module)
+                        Text("settings.language.detail", bundle: .module)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .pickerStyle(.menu)
+                if settings.preferredLanguage != .system {
+                    Text("settings.language.restart_hint", bundle: .module)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } header: {
+                Text("settings.section.appearance", bundle: .module)
+            }
+            Section {
                 Toggle(isOn: $settings.showHidden) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("settings.scan.show_hidden.title", bundle: .module)
