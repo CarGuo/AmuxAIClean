@@ -191,18 +191,37 @@ struct AIAdviceSheet: View {
             temperature: aiSettings.temperature,
             redactPaths: aiSettings.redactPaths
         )
+        let authOptional: Bool
+        do {
+            authOptional = try OpenAIChatClient.allowsMissingAPIKey(baseURL: snapshot.baseURL)
+        } catch OpenAIChatClient.Error.invalidBaseURL {
+            state = .failure(String(localized: "ai.sheet.error.invalid_base_url", bundle: .module))
+            return
+        } catch OpenAIChatClient.Error.insecureBaseURL(let scheme, let host) {
+            state = .failure(String(format: String(localized: "ai.sheet.error.insecure_base_url.format", bundle: .module),
+                                    scheme, host))
+            return
+        } catch {
+            state = .failure(String(describing: error))
+            return
+        }
         let store = KeychainAPIKeyStore()
         let apiKey: String
         do {
-            guard let raw = try store.load(), !raw.isEmpty else {
+            let raw = try store.load() ?? ""
+            guard !raw.isEmpty || authOptional else {
                 state = .failure(String(localized: "ai.sheet.error.no_api_key", bundle: .module))
                 return
             }
             apiKey = raw
         } catch {
-            state = .failure(String(format: String(localized: "ai.sheet.error.keychain.format", bundle: .module),
-                                    String(describing: error)))
-            return
+            if authOptional {
+                apiKey = ""
+            } else {
+                state = .failure(String(format: String(localized: "ai.sheet.error.keychain.format", bundle: .module),
+                                        String(describing: error)))
+                return
+            }
         }
 
         // 异步采子项预览，避免在 main 上阻塞
@@ -242,6 +261,9 @@ struct AIAdviceSheet: View {
             state = .failure(String(localized: "ai.sheet.error.no_api_key", bundle: .module))
         } catch OpenAIChatClient.Error.invalidBaseURL {
             state = .failure(String(localized: "ai.sheet.error.invalid_base_url", bundle: .module))
+        } catch OpenAIChatClient.Error.insecureBaseURL(let scheme, let host) {
+            state = .failure(String(format: String(localized: "ai.sheet.error.insecure_base_url.format", bundle: .module),
+                                    scheme, host))
         } catch {
             state = .failure(String(describing: error))
         }

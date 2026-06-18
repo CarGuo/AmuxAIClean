@@ -102,6 +102,10 @@ public struct SimulatorDeleteCoordinator: Sendable {
                     invalidNames.append(hit.displayName)
                     continue
                 }
+                guard Self.isValidTailArg(tail, for: argsPrefix) else {
+                    invalidNames.append(hit.displayName)
+                    continue
+                }
                 items.append(Item(
                     cardID: card.id,
                     hitID: hit.id,
@@ -112,7 +116,7 @@ public struct SimulatorDeleteCoordinator: Sendable {
             }
         }
 
-        if !invalidNames.isEmpty && items.isEmpty {
+        if !invalidNames.isEmpty {
             return .invalid(reason: invalidNames.joined(separator: "\n"))
         }
         if items.isEmpty {
@@ -153,6 +157,28 @@ public struct SimulatorDeleteCoordinator: Sendable {
     private static func truncate(_ raw: String, max: Int = 512) -> String {
         if raw.count <= max { return raw }
         return String(raw.prefix(max)) + "…"
+    }
+
+    private static func isValidTailArg(_ tail: String, for argsPrefix: [String]) -> Bool {
+        if argsPrefix == ["simctl", "delete"] {
+            return isUUID(tail)
+        }
+        if argsPrefix == ["simctl", "runtime", "delete"] {
+            return tail.hasPrefix("com.apple.CoreSimulator.SimRuntime.")
+                && tail.allSatisfy { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }
+        }
+        return false
+    }
+
+    private static func isUUID(_ value: String) -> Bool {
+        let parts = value.split(separator: "-", omittingEmptySubsequences: false)
+        let lengths = [8, 4, 4, 4, 12]
+        guard parts.count == lengths.count else { return false }
+        for (part, length) in zip(parts, lengths) {
+            guard part.count == length,
+                  part.allSatisfy({ $0.isHexDigit }) else { return false }
+        }
+        return true
     }
 
     /// 默认 Simulator 运行检测：扫描 NSRunningApplication 是否含 `com.apple.iphonesimulator`。

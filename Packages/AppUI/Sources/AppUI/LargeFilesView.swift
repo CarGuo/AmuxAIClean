@@ -116,16 +116,8 @@ public struct LargeFilesView: View {
             }
             return .ignored
         }
-        // M1 内存优化：用户离开大文件视图后释放 LargeFileLeaf 内存（百 MB 级潜力）。
-        // 仅当 useScanStore ON 且 store 健康时生效；否则 noop，保持原行为。
-        // M3 增强：走 compactAfterScanPreservingCache，先把 store 里的 Top N 大文件
-        // 预读到内部二级缓存，再释放主索引——这样 UI 重进本页时 largeFiles(...) 直接
-        // 走缓存，不会出现"compact 后页面空白"的回退（即原 P0-D）。
-        .onDisappear {
-            if settings.useScanStore {
-                Task { await coordinator.compactAfterScanPreservingCache() }
-            }
-        }
+        // compactAfterScanPreservingCache 只缓存 size-desc Top N；在 Large Files 支持
+        // store-backed 异步排序/过滤前，不在视图层自动 compact，避免返回错误子集。
     }
 
     // MARK: - Header

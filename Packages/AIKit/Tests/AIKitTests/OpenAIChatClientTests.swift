@@ -220,6 +220,27 @@ final class OpenAIChatClientTests: XCTestCase {
         }
     }
 
+    func test_ask_local_loopback_allows_empty_api_key_without_authorization_header() async throws {
+        StubURLProtocol.observedRequests = []
+        StubURLProtocol.observedBodies = []
+        let payload = """
+        {"choices":[{"message":{"role":"assistant","content":"{\\"summary\\":\\"local\\",\\"canDelete\\":\\"confirm\\",\\"reason\\":\\"r\\",\\"sideEffects\\":[]}"}}]}
+        """
+        StubURLProtocol.nextResponse = .success(status: 200, data: payload.data(using: .utf8)!)
+        let snapshot = OpenAIChatClient.SettingsSnapshot(
+            baseURL: "http://localhost:11434",
+            model: "llama-local",
+            temperature: 0.2,
+            redactPaths: true
+        )
+        let client = OpenAIChatClient(settings: snapshot, apiKey: "", session: stubSession())
+        let advice = try await client.ask(makeInquiry())
+        XCTAssertEqual(advice.summary, "local")
+        let req = try XCTUnwrap(StubURLProtocol.observedRequests.first)
+        XCTAssertNil(req.value(forHTTPHeaderField: "Authorization"),
+                     "本地 loopback 端点空 key 时不应发送 Authorization header")
+    }
+
     func test_request_uses_bearer_and_redacts_path() async throws {
         StubURLProtocol.observedRequests = []
         let payload = """

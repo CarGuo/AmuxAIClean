@@ -1004,13 +1004,19 @@ public struct MainView: View {
                 // v1.7 M1 PR-5：Apple 工作流（Xcode / Simulator / DerivedData per-project / DeviceSupport）
                 // 复用 WorkflowDetailView 通用渲染壳，数据源 AppleWorkflow.cards + WorkflowRegistry.resolve。
                 // pipeline 透传 MainView 持有的 TrashPipeline 实例，删除走 NSWorkspace.recycle。
-                WorkflowDetailView(workflow: AppleWorkflow(), pipeline: pipeline)
+                WorkflowDetailView(workflow: AppleWorkflow(),
+                                   pipeline: pipeline,
+                                   accessDeniedPathsProvider: { accessDeniedPathsSnapshot() })
             } else if isWorkflowAndroidMode {
                 // v1.7 M1 PR-5：Android 工作流（gradle / .android / AVD / SDK / Android Studio）。
-                WorkflowDetailView(workflow: AndroidWorkflow(), pipeline: pipeline)
+                WorkflowDetailView(workflow: AndroidWorkflow(),
+                                   pipeline: pipeline,
+                                   accessDeniedPathsProvider: { accessDeniedPathsSnapshot() })
             } else if isWorkflowWebNodeMode {
                 // v1.7 M1 PR-5：Web / Node 工作流（pnpm-store / yarn / npm / electron / node-gyp / scattered node_modules）。
-                WorkflowDetailView(workflow: WebNodeWorkflow(), pipeline: pipeline)
+                WorkflowDetailView(workflow: WebNodeWorkflow(),
+                                   pipeline: pipeline,
+                                   accessDeniedPathsProvider: { accessDeniedPathsSnapshot() })
             } else {
                 statusBar
                 Divider()
@@ -1817,9 +1823,9 @@ public struct MainView: View {
 
     /// v2026.06.17 (AUDIT A4)：抽出 `performDelete` 与 `triggerLargeFileTrash` 重复的
     /// **pipeline 4 步握手** ——
-    /// (1) accessDenied 注入；(2) moveToTrash；(3) UndoHistory 写入；(4) snapshotLastOutcome → sheet/alert。
+    /// (1) accessDenied 注入；(2) moveToTrashReturningOutcome；(3) UndoHistory 写入；(4) outcome → sheet/alert。
     ///
-    /// 抽这步是因为两条链路任何一处忘了 setAccessDeniedPaths 或忘了走 snapshotLastOutcome
+    /// 抽这步是因为两条链路任何一处忘了 setAccessDeniedPaths 或忘了消费结构化 outcome
     /// 都会让"上层防护漏失 / 结构化 sheet 退化为文本 alert"的回归在 PR review 时几乎不可能被发现——
     /// 既然只剩一份真实现就把契约集中在一个方法里，强制单点维护。
     ///
@@ -1836,8 +1842,9 @@ public struct MainView: View {
         // 见 [DeletionPipeline.setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift#L37)
         // 自 v2026.06.17 (AUDIT A2) 起取消 protocol extension 默认 no-op，每个实现都必须显式提供。
         pipeline.setAccessDeniedPaths(accessDeniedPathsSnapshot())
-        // ② 真正调 pipeline。
-        let (moved, skipped, err, pairs) = await pipeline.moveToTrash(paths: paths, dryRun: dryRun)
+        // ② 真正调 pipeline，并用返回值里的 outcome 作为本轮权威结果。
+        let result = await pipeline.moveToTrashReturningOutcome(paths: paths, dryRun: dryRun)
+        let (moved, skipped, err, pairs) = result.legacy
         // ③ Step 7 UndoHistory：dryRun / 全 forbid / recycle err 时 pairs 都是空数组，addRecord 会 no-op 跳过。
         if !dryRun, err == nil, !pairs.isEmpty {
             UndoHistoryStore.shared.addRecord(
@@ -1846,7 +1853,7 @@ public struct MainView: View {
             )
         }
         // ④ 结构化 sheet / 旧 alert 二选一（v2026.06.16 修复 #4）。
-        presentTrashOutcome(moved: moved, skipped: skipped, err: err, dryRun: dryRun)
+        presentTrashOutcome(moved: moved, skipped: skipped, err: err, dryRun: dryRun, outcome: result.outcome)
         return TrashRunResult(moved: moved, skipped: skipped, err: err, pairs: pairs)
     }
 
@@ -1854,9 +1861,9 @@ public struct MainView: View {
     /// 真删（!dryRun）走结构化 sheet（`OperationResultPayload`），dryRun 仍走旧 alert
     /// （dryRun 不报失败明细，只看总数即可）。
     @MainActor
-    private func presentTrashOutcome(moved: Int, skipped: Int, err: String?, dryRun: Bool) {
+    private func presentTrashOutcome(moved: Int, skipped: Int, err: String?, dryRun: Bool, outcome: TrashOutcome?) {
         if !dryRun {
-            if let outcome = pipeline.snapshotLastOutcome() {
+            if let outcome {
                 deleteResultPayload = OperationResultPayload(outcome: outcome)
             } else if let err {
                 // pipeline 没暴露结构化结果（如 stub 实现）→ 回退到旧 alert

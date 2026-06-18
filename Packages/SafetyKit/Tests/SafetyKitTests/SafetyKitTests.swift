@@ -58,6 +58,26 @@ final class SafetyEngineTests: XCTestCase {
         XCTAssertEqual(v.0, .safe)
     }
 
+    func testSafeCacheSymlinkToApplicationsIsForbidden() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SafetySymlink-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root
+            .appendingPathComponent("Users", isDirectory: true)
+            .appendingPathComponent("foo", isDirectory: true)
+        let caches = home
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Caches", isDirectory: true)
+        try FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
+        let link = caches.appendingPathComponent("apps-link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: URL(fileURLWithPath: "/Applications"))
+
+        let v = engine.evaluate(path: link.appendingPathComponent("Safari.app").path,
+                                home: home.path)
+        XCTAssertEqual(v.0, .forbid)
+        XCTAssertEqual(v.1, .hardForbidPrefix)
+    }
+
     func testXcodeDerivedDataIsSafe() {
         let v = engine.evaluate(
             path: "/Users/foo/Library/Developer/Xcode/DerivedData/MyApp-abc",

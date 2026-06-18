@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// 受限子进程执行器（v1.7 M1 PR-2）。
 ///
@@ -25,7 +26,7 @@ public struct SubprocessExecutor: Sendable {
     /// `(executable, argsPrefix)` 两元组：
     /// - `executable`：必须精确匹配，例如 `/usr/bin/xcrun`；
     /// - `argsPrefix`：实际调用的 args 必须以此为前缀，例如 `["simctl", "delete"]` 允许
-    ///   `xcrun simctl delete DEADBEEF` 但拒绝 `xcrun simctl install`。
+    ///   `xcrun simctl delete <UUID>` 但拒绝 `xcrun simctl install`。
     ///
     /// 维护原则：**新增条目必须经过 V12 级集成测试同步加 case**，
     /// 详见 [SubprocessExecutorTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/SubprocessExecutorTests.swift)。
@@ -85,7 +86,7 @@ public struct SubprocessExecutor: Sendable {
     ///
     /// - Parameters:
     ///   - executable: 绝对可执行路径，如 `/usr/bin/xcrun`
-    ///   - args: 完整参数列表，如 `["simctl", "delete", "DEADBEEF"]`
+    ///   - args: 完整参数列表，如 `["simctl", "delete", "<UUID>"]`
     /// - Throws: `SubprocessError.notAllowed` 若不在 allowlist
     /// - Returns: `Result(exitCode, output)`；`exitCode = -1` 表 launch 失败，`-2` 表超时
     ///
@@ -105,6 +106,9 @@ public struct SubprocessExecutor: Sendable {
             && Array(args.prefix(entry.argsPrefix.count)) == entry.argsPrefix
         }
         guard isAllowed else {
+            throw SubprocessError.notAllowed(executable: executable, args: args)
+        }
+        guard Self.argumentsPassDestructiveTailPolicy(executable: executable, args: args) else {
             throw SubprocessError.notAllowed(executable: executable, args: args)
         }
 
@@ -202,13 +206,18 @@ public struct SubprocessExecutor: Sendable {
         let waitResult = semaphore.wait(timeout: .now() + timeout)
         if waitResult == .timedOut {
             task.terminate()
-            // terminate 异步生效；给 readabilityHandler 一次 flush 机会后再回收。
-            // 不再阻塞 wait，避免 timeout 路径继续挂起。
+            var killed = false
+            if semaphore.wait(timeout: .now() + 1.0) == .timedOut {
+                kill(task.processIdentifier, SIGKILL)
+                killed = true
+                _ = semaphore.wait(timeout: .now() + 1.0)
+            }
             bufferLock.lock()
             let pre = String(data: stdoutBuffer.data + stderrBuffer.data, encoding: .utf8) ?? ""
             bufferLock.unlock()
             cleanup()
-            return Result(exitCode: -2, output: "timeout after \(timeout)s; partial=\(pre)")
+            let suffix = killed ? " SIGKILL sent" : " terminated"
+            return Result(exitCode: -2, output: "timeout after \(timeout)s;\(suffix); partial=\(pre)")
         }
 
         // 正常退出：readabilityHandler 已把所有数据累积到 buffer 中。
@@ -219,5 +228,34 @@ public struct SubprocessExecutor: Sendable {
         let status = task.terminationStatus
         cleanup()
         return Result(exitCode: status, output: output)
+    }
+
+    static func argumentsPassDestructiveTailPolicy(executable: String, args: [String]) -> Bool {
+        guard executable == "/usr/bin/xcrun" else { return true }
+        if Array(args.prefix(2)) == ["simctl", "delete"] {
+            return args.count == 3 && isUUID(args[2])
+        }
+        if Array(args.prefix(3)) == ["simctl", "runtime", "delete"] {
+            return args.count == 4 && isRuntimeIdentifier(args[3])
+        }
+        return true
+    }
+
+    private static func isUUID(_ value: String) -> Bool {
+        let parts = value.split(separator: "-", omittingEmptySubsequences: false)
+        let lengths = [8, 4, 4, 4, 12]
+        guard parts.count == lengths.count else { return false }
+        for (part, length) in zip(parts, lengths) {
+            guard part.count == length,
+                  part.allSatisfy({ $0.isHexDigit }) else { return false }
+        }
+        return true
+    }
+
+    private static func isRuntimeIdentifier(_ value: String) -> Bool {
+        guard value.hasPrefix("com.apple.CoreSimulator.SimRuntime.") else { return false }
+        return value.allSatisfy { ch in
+            ch.isLetter || ch.isNumber || ch == "." || ch == "-"
+        }
     }
 }

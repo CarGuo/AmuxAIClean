@@ -105,15 +105,20 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
     /// - 失败：抛 [Error](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift)；
     /// - 成功：返回**已 clamp 过**的 AIAdvice，UI 可直接渲染。
     public func ask(_ inquiry: PathInquiry) async throws -> AIAdvice {
+        let url = try Self.endpointURL(baseURL: settings.baseURL)
         // **v2026.06.22 (P0-4)**：按需取 key，不在 struct 字段常驻
         let apiKey: String
         do {
             apiKey = try apiKeyProvider()
         } catch {
+            guard Self.allowsMissingAPIKey(forEndpoint: url) else {
+                throw Error.missingAPIKey
+            }
+            apiKey = ""
+        }
+        guard !apiKey.isEmpty || Self.allowsMissingAPIKey(forEndpoint: url) else {
             throw Error.missingAPIKey
         }
-        guard !apiKey.isEmpty else { throw Error.missingAPIKey }
-        let url = try Self.endpointURL(baseURL: settings.baseURL)
 
         // 1. 去敏（仅当用户开了 redactPaths 时执行；默认开）
         let sanitized: PathInquiry = settings.redactPaths
@@ -133,7 +138,9 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
         request.httpBody = try JSONEncoder().encode(body)
         request.timeoutInterval = 30
 
@@ -235,6 +242,17 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
     private static let loopbackHosts: Set<String> = [
         "localhost", "127.0.0.1", "::1", "[::1]"
     ]
+
+    public static func allowsMissingAPIKey(baseURL: String) throws -> Bool {
+        try allowsMissingAPIKey(forEndpoint: endpointURL(baseURL: baseURL))
+    }
+
+    private static func allowsMissingAPIKey(forEndpoint url: URL) -> Bool {
+        guard let host = URLComponents(url: url, resolvingAgainstBaseURL: false)?.host?.lowercased() else {
+            return false
+        }
+        return loopbackHosts.contains(host)
+    }
 
     /// **Review fix-soon #6**：用 `URLSessionDataTask` + `withTaskCancellationHandler`
     /// 把 Swift Concurrency 的 Task 取消信号真正桥到底层 HTTP 连接 cancel。

@@ -333,6 +333,31 @@ final class ScanCoordinatorStoreTests: XCTestCase {
                                     "compact 后 largeFileCollectedCount 应回退到缓存 count，不应是 0")
     }
 
+    func test_compactAfterScanPreservingCache_非默认排序不返回空列表() async throws {
+        let root = tempDir.appendingPathComponent("seed-cache-sort")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        for i in 0..<3 {
+            let url = root.appendingPathComponent("big\(i).bin")
+            try Data(repeating: 0xCD, count: (2 + i) * 1024 * 1024).write(to: url)
+        }
+
+        let store = try makeStore()
+        let coord = ScanCoordinator(resultStore: store)
+        coord.scan(category: makeCategory(rootPath: root.path),
+                   includeHidden: true,
+                   largeFileMinBytes: 1024 * 1024)
+        await waitScanFinished(coord, timeout: 8)
+
+        let sid = try XCTUnwrap(coord.currentSessionID)
+        _ = try await waitStoreAggregate(store: store, sid: sid, atLeast: 3, timeout: 4)
+        await coord.compactAfterScanPreservingCache(topN: 50)
+
+        let items = coord.largeFiles(minSizeMB: 1, sortKey: .sizeAsc, limit: 50)
+        XCTAssertEqual(items.count, coord.largeFileCollectedCount,
+                       "compact fallback 下 count/list 不应出现有 count 但列表为空的不一致")
+        XCTAssertEqual(items.map(\.bytes), items.map(\.bytes).sorted())
+    }
+
     /// M3 边界：topN=0 时退化为旧 compactAfterScan 行为（清主索引、不填缓存）。
     func test_compactAfterScanPreservingCache_topN0_等价于旧行为() async throws {
         let root = tempDir.appendingPathComponent("seed-topn0")

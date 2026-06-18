@@ -63,39 +63,53 @@ public struct PathRedactor: Sendable {
     /// `/Users/foo/...` → `/Users/<USER>/...`
     /// 也兼容 `/Users/foo` 结尾无斜杠的情况。
     private func redactUsersPrefix(in s: String) -> String {
-        replaceFirstPathSegment(prefix: "/Users/", in: s, with: Self.userPlaceholder)
+        replacePathSegments(prefix: "/Users/", in: s, with: Self.userPlaceholder)
     }
 
     /// Linux/Docker 残留路径偶尔出现 `/home/<user>/...`
     private func redactHomePrefix(in s: String) -> String {
-        replaceFirstPathSegment(prefix: "/home/", in: s, with: Self.userPlaceholder)
+        replacePathSegments(prefix: "/home/", in: s, with: Self.userPlaceholder)
     }
 
     /// `/Volumes/<name>/...` —— 若 name 命中 systemVolumes 白名单则保留，
     /// 否则用 `<VOLUME>` 占位。
     private func redactVolumes(in s: String) -> String {
         let token = "/Volumes/"
-        guard let range = s.range(of: token) else { return s }
-        let tail = s[range.upperBound...]
-        // 切到下一个 `/` 之前
-        let endIdx = tail.firstIndex(of: "/") ?? tail.endIndex
-        let volume = String(tail[..<endIdx])
-        if volume.isEmpty { return s }
-        if Self.systemVolumes.contains(volume) { return s }
-        let head = s[..<range.upperBound]
-        return "\(head)\(Self.volumePlaceholder)\(tail[endIdx...])"
+        var out = s
+        var searchStart = out.startIndex
+        while let range = out.range(of: token, range: searchStart..<out.endIndex) {
+            let tail = out[range.upperBound...]
+            let endIdx = tail.firstIndex(of: "/") ?? tail.endIndex
+            let volume = String(tail[..<endIdx])
+            if volume.isEmpty {
+                searchStart = range.upperBound
+                continue
+            }
+            if Self.systemVolumes.contains(volume) {
+                searchStart = endIdx
+                continue
+            }
+            out.replaceSubrange(range.upperBound..<endIdx, with: Self.volumePlaceholder)
+            searchStart = out.index(range.upperBound, offsetBy: Self.volumePlaceholder.count, limitedBy: out.endIndex) ?? out.endIndex
+        }
+        return out
     }
 
-    /// 通用：把 `<prefix><segment>(/<rest>)?` 里的 `<segment>` 替换为占位符。
-    /// 仅替换**第一次出现**——后续段不会再有用户名形态。
-    private func replaceFirstPathSegment(prefix: String, in s: String, with placeholder: String) -> String {
-        guard let range = s.range(of: prefix) else { return s }
-        let tail = s[range.upperBound...]
-        let endIdx = tail.firstIndex(of: "/") ?? tail.endIndex
-        let segment = tail[..<endIdx]
-        if segment.isEmpty { return s }
-        let head = s[..<range.upperBound]
-        return "\(head)\(placeholder)\(tail[endIdx...])"
+    /// 通用：把每个 `<prefix><segment>(/<rest>)?` 里的 `<segment>` 替换为占位符。
+    private func replacePathSegments(prefix: String, in s: String, with placeholder: String) -> String {
+        var out = s
+        var searchStart = out.startIndex
+        while let range = out.range(of: prefix, range: searchStart..<out.endIndex) {
+            let tail = out[range.upperBound...]
+            let endIdx = tail.firstIndex(of: "/") ?? tail.endIndex
+            if tail[..<endIdx].isEmpty {
+                searchStart = range.upperBound
+                continue
+            }
+            out.replaceSubrange(range.upperBound..<endIdx, with: placeholder)
+            searchStart = out.index(range.upperBound, offsetBy: placeholder.count, limitedBy: out.endIndex) ?? out.endIndex
+        }
+        return out
     }
 
     /// UUID 经典形：`8-4-4-4-12` hex。

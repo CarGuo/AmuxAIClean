@@ -15,6 +15,9 @@ import ScanKit
 /// 7. execute 多项 + 部分失败 → outcomes 数量 = items 数量，逐条独立结果；
 /// 8. execute throw（注入空 allowlist）→ exitCode -3，不中断后续。
 final class SimulatorDeleteCoordinatorTests: XCTestCase {
+    private let uuid1 = "11111111-2222-3333-4444-555555555555"
+    private let uuid2 = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    private let uuid3 = "12345678-1234-1234-1234-123456789abc"
 
     // MARK: - 工具：构造 card / hit
 
@@ -107,7 +110,7 @@ final class SimulatorDeleteCoordinatorTests: XCTestCase {
     /// 这是安全契约硬约束，防止破坏 booted 模拟器实例。
     func test_PR9_prepare_Simulator运行中_产出blocked_v17() {
         let coord = makeCoordinator(running: true)
-        let h = hit(name: "iPhone 16", path: "/tmp/d", tail: "DEAD-BEEF")
+        let h = hit(name: "iPhone 16", path: "/tmp/d", tail: uuid1)
         let plan = coord.prepare(cards: [deviceCard()],
                                   cardHits: ["card.apple.coresimulator-devices": [h]],
                                   selected: [h.id])
@@ -121,7 +124,7 @@ final class SimulatorDeleteCoordinatorTests: XCTestCase {
     /// args 严格 == `argsPrefix + [tailArg]`，确保 SubprocessExecutor allowlist 二道闸能命中。
     func test_PR9_prepare_正常_args严格拼接_v17() {
         let coord = makeCoordinator()
-        let dev = hit(name: "iPhone 16", path: "/tmp/dev1", tail: "UDID-1")
+        let dev = hit(name: "iPhone 16", path: "/tmp/dev1", tail: uuid1)
         let rt  = hit(name: "iOS 18.0", path: "/tmp/rt1",  tail: "com.apple.CoreSimulator.SimRuntime.iOS-18-0")
         let plan = coord.prepare(
             cards: [deviceCard(), runtimeCard()],
@@ -137,9 +140,21 @@ final class SimulatorDeleteCoordinatorTests: XCTestCase {
         XCTAssertEqual(items.count, 2)
         let devItem = items.first { $0.hitID == dev.id }!
         XCTAssertEqual(devItem.executable, "/usr/bin/xcrun")
-        XCTAssertEqual(devItem.args, ["simctl", "delete", "UDID-1"])
+        XCTAssertEqual(devItem.args, ["simctl", "delete", uuid1])
         let rtItem = items.first { $0.hitID == rt.id }!
         XCTAssertEqual(rtItem.args, ["simctl", "runtime", "delete", "com.apple.CoreSimulator.SimRuntime.iOS-18-0"])
+    }
+
+    func test_PR9_prepare_invalidTailArg_产出invalid_v17() {
+        let coord = makeCoordinator()
+        let h = hit(name: "danger", path: "/tmp/danger", tail: "all")
+        let plan = coord.prepare(cards: [deviceCard()],
+                                 cardHits: ["card.apple.coresimulator-devices": [h]],
+                                 selected: [h.id])
+        guard case let .invalid(reason) = plan else {
+            return XCTFail("非法 destructive tail 必须产出 .invalid")
+        }
+        XCTAssertTrue(reason.contains("danger"))
     }
 
     // MARK: - execute 分支
@@ -153,14 +168,14 @@ final class SimulatorDeleteCoordinatorTests: XCTestCase {
             hitID: "/tmp/dev1",
             displayName: "iPhone 16",
             executable: "/usr/bin/xcrun",
-            args: ["simctl", "delete", "UDID-1"]
+            args: ["simctl", "delete", uuid1]
         )
         let outcomes = await coord.execute(items: [item])
         XCTAssertEqual(outcomes.count, 1)
         XCTAssertEqual(outcomes[0].exitCode, 0)
         XCTAssertTrue(outcomes[0].isSuccess)
         XCTAssertTrue(outcomes[0].truncatedOutput.contains("<dryRun>"))
-        XCTAssertTrue(outcomes[0].truncatedOutput.contains("UDID-1"))
+        XCTAssertTrue(outcomes[0].truncatedOutput.contains(uuid1))
     }
 
     /// PR-9：execute 多项串行 → outcomes 数量 == items 数量，且次序保留。
@@ -173,10 +188,10 @@ final class SimulatorDeleteCoordinatorTests: XCTestCase {
                   executable: "/usr/bin/xcrun",
                   args: ["simctl", "delete", udid])
         }
-        let items = ["A", "B", "C"].map(mk)
+        let items = [uuid1, uuid2, uuid3].map(mk)
         let outcomes = await coord.execute(items: items)
         XCTAssertEqual(outcomes.count, 3)
-        XCTAssertEqual(outcomes.map { $0.item.displayName }, ["A", "B", "C"])
+        XCTAssertEqual(outcomes.map { $0.item.displayName }, [uuid1, uuid2, uuid3])
         for outcome in outcomes {
             XCTAssertTrue(outcome.isSuccess)
         }
@@ -209,6 +224,7 @@ final class SimulatorDeleteCoordinatorTests: XCTestCase {
 /// v1.7 M1 PR-9：WorkflowDetailViewModel 的 sheet/真删集成测试。
 @MainActor
 final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
+    private let uuid = "11111111-2222-3333-4444-555555555555"
 
     /// PR-9：模拟用户 → performDelete → advance → executeConfirmed，
     /// 验证 sheet 状态机 firstReview → secondConfirm → nil。
@@ -232,7 +248,7 @@ final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
                 sizeBytes: 0,
                 displayName: "iPhone 16",
                 note: nil,
-                commandLineTailArg: "UDID-XYZ"
+                commandLineTailArg: uuid
             )]
         ])
         vm.toggleSelection(hitID: "/tmp/dev", on: true)
@@ -274,7 +290,7 @@ final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
                 sizeBytes: 0,
                 displayName: "iPhone 16",
                 note: nil,
-                commandLineTailArg: "UDID-XYZ"
+                commandLineTailArg: uuid
             )]
         ])
         vm.toggleSelection(hitID: "/tmp/dev", on: true)
@@ -319,4 +335,3 @@ private struct StubPipelinePR9: DeletionPipeline {
 }
 
 // 测试侧 helper 移除：直接调 setTestHits / setTestCards。
-

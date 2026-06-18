@@ -2086,6 +2086,8 @@ public final class ScanCoordinator: ObservableObject {
         // 既保证 UI 同步路径不变，又不让 compact 后页面空白。
         let source: [LargeFileLeaf]
         if largeFileLeaves.isEmpty, let cache = compactedLargeFileTopN {
+            // compactedLargeFileTopN 是一个有限子集。自动 compact 已在 LargeFilesView 侧禁用，
+            // 但测试/手动调用 compact 后仍应保持 list/count 一致；完整排序过滤需后续 store-backed 查询。
             source = cache
         } else {
             source = largeFileLeaves.snapshot()

@@ -28,10 +28,15 @@ public struct WorkflowDetailView: View {
 
     public init(workflow: any DeveloperWorkflow,
                 pipeline: any DeletionPipeline,
-                home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+                home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                accessDeniedPathsProvider: (@MainActor () -> Set<String>)? = nil) {
         self.workflow = workflow
         self.pipeline = pipeline
-        _viewModel = StateObject(wrappedValue: WorkflowDetailViewModel(workflow: workflow, home: home))
+        _viewModel = StateObject(wrappedValue: WorkflowDetailViewModel(
+            workflow: workflow,
+            home: home,
+            accessDeniedPathsProvider: accessDeniedPathsProvider
+        ))
     }
 
     public var body: some View {
@@ -504,10 +509,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
 
     public var totalSelectedBytes: Int64 {
         var sum: Int64 = 0
-        for (_, hits) in cardHits {
-            for hit in hits where selected.contains(hit.id) {
-                sum &+= hit.sizeBytes ?? 0
-            }
+        for hit in foldedSelectedHitsForDisplay() {
+            sum &+= hit.sizeBytes ?? 0
         }
         return sum
     }
@@ -541,6 +544,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
     public func toggleSelection(hitID: String, on: Bool) {
         if on {
             selected.insert(hitID)
+            collapseNestedFilesystemSelections()
         } else {
             selected.remove(hitID)
         }
@@ -565,6 +569,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 fsPaths.append(contentsOf: selectedHits.map { $0.url.path })
             }
         }
+        fsPaths = Self.foldNestedPaths(fsPaths)
 
         // **v2026.06.22 (P0-1)**：与 [MainView.runTrash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
         // 对齐 4 步握手：accessDenied 注入 → moveToTrashReturningOutcome → UndoHistory.addRecord
@@ -721,6 +726,61 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 }
             }
         }
+        collapseNestedFilesystemSelections()
+    }
+
+    private func foldedSelectedHitsForDisplay() -> [WorkflowScanHit] {
+        var filesystemHits: [WorkflowScanHit] = []
+        var otherHits: [WorkflowScanHit] = []
+        for card in cards {
+            guard let hits = cardHits[card.id] else { continue }
+            let chosen = hits.filter { selected.contains($0.id) }
+            if case .filesystem = card.recipe {
+                filesystemHits.append(contentsOf: chosen)
+            } else {
+                otherHits.append(contentsOf: chosen)
+            }
+        }
+        let foldedPaths = Set(Self.foldNestedPaths(filesystemHits.map { $0.url.path }))
+        var seenFilesystemPaths: Set<String> = []
+        let uniqueFilesystemHits = filesystemHits.filter { hit in
+            guard foldedPaths.contains(hit.url.path) else { return false }
+            return seenFilesystemPaths.insert(hit.url.path).inserted
+        }
+        return uniqueFilesystemHits + otherHits
+    }
+
+    private func collapseNestedFilesystemSelections() {
+        var selectedFilesystemHits: [WorkflowScanHit] = []
+        for card in cards {
+            guard case .filesystem = card.recipe,
+                  let hits = cardHits[card.id] else { continue }
+            selectedFilesystemHits.append(contentsOf: hits.filter { selected.contains($0.id) })
+        }
+        let kept = Set(Self.foldNestedPaths(selectedFilesystemHits.map { $0.url.path }))
+        for hit in selectedFilesystemHits where !kept.contains(hit.url.path) {
+            selected.remove(hit.id)
+        }
+    }
+
+    static func foldNestedPaths(_ paths: [String]) -> [String] {
+        var kept: [String] = []
+        let sorted = Array(Set(paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path }))
+            .sorted { lhs, rhs in
+                let lc = lhs.split(separator: "/").count
+                let rc = rhs.split(separator: "/").count
+                if lc != rc { return lc < rc }
+                return lhs < rhs
+            }
+        for path in sorted {
+            if kept.contains(where: { isAncestor($0, of: path) }) { continue }
+            kept.append(path)
+        }
+        return kept
+    }
+
+    private static func isAncestor(_ ancestor: String, of child: String) -> Bool {
+        child == ancestor || child.hasPrefix(ancestor.hasSuffix("/") ? ancestor : ancestor + "/")
     }
 
     private static func resolveCard(source: DeveloperCard.PathSource, home: URL) async -> [WorkflowScanHit] {

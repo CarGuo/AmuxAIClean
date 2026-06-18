@@ -120,11 +120,20 @@ public enum DeletionRecipe: Sendable, Hashable {
         case .filesystem:
             return true
         case .commandLine(let executable, let args):
-            return SubprocessExecutor.defaultAllowlist.contains { entry in
+            guard SubprocessExecutor.defaultAllowlist.contains(where: { entry in
                 entry.executable == executable
                 && args.count >= entry.argsPrefix.count
                 && Array(args.prefix(entry.argsPrefix.count)) == entry.argsPrefix
+            }) else {
+                return false
             }
+            // Workflow cards store a command template prefix such as `simctl delete`.
+            // If a concrete tail is already present, apply the same destructive-tail rule
+            // used by SubprocessExecutor so this second gate cannot bless extra args.
+            if args == ["simctl", "delete"] || args == ["simctl", "runtime", "delete"] {
+                return true
+            }
+            return SubprocessExecutor.argumentsPassDestructiveTailPolicy(executable: executable, args: args)
         }
     }
 }

@@ -50,9 +50,13 @@ public actor NodeModulesScanner {
         var results: [NodeModulesHit] = []
         // visited 跨所有 dev 根共享，确保用户在 ~/Projects ↔ ~/Developer 互链时不重复 walk。
         var visited: Set<String> = []
+        // 整次扫描共享 size 估算预算，避免大量工程各自触发 5000 entries 枚举。
+        var sizeEntryBudget = 20_000
         for rootName in devRootNames {
             let root = home.appendingPathComponent(rootName, isDirectory: true)
-            walk(root: root, maxDepth: maxDepth, visited: &visited, into: &results)
+            if Task.isCancelled { break }
+            walk(root: root, maxDepth: maxDepth, visited: &visited,
+                 sizeEntryBudget: &sizeEntryBudget, into: &results)
         }
         return results
     }
@@ -78,6 +82,7 @@ public actor NodeModulesScanner {
     private static func walk(root: URL,
                              maxDepth: Int,
                              visited: inout Set<String>,
+                             sizeEntryBudget: inout Int,
                              into results: inout [NodeModulesHit]) {
         let fm = FileManager.default
         var isDir: ObjCBool = false
@@ -87,6 +92,7 @@ public actor NodeModulesScanner {
         // 用显式栈实现 DFS，便于精确控制深度与"命中后不下钻"。
         var stack: [(url: URL, depth: Int)] = [(root, 0)]
         while let (current, depth) = stack.popLast() {
+            if Task.isCancelled { return }
             // 物理化（resolve symlink）后去重——防止互链 / 自指 / 多根共享造成的重复 walk。
             let realPath = current.resolvingSymlinksInPath().path
             if !visited.insert(realPath).inserted {
@@ -95,7 +101,7 @@ public actor NodeModulesScanner {
 
             // 当前目录是 node_modules → 收集 hit，但**不再下钻**
             if current.lastPathComponent == "node_modules" {
-                results.append(makeHit(at: current))
+                results.append(makeHit(at: current, sizeEntryBudget: &sizeEntryBudget))
                 continue
             }
             // 已到最大深度 → 不再下钻
@@ -123,7 +129,7 @@ public actor NodeModulesScanner {
 
     /// 把一个 `node_modules` URL 转成 [NodeModulesHit]。
     /// 父目录名 = 工程名；估算大小 + 取 mtime。
-    private static func makeHit(at nodeModulesURL: URL) -> NodeModulesHit {
+    private static func makeHit(at nodeModulesURL: URL, sizeEntryBudget: inout Int) -> NodeModulesHit {
         let parent = nodeModulesURL.deletingLastPathComponent()
         let projectName = parent.lastPathComponent
         let mtime = (try? nodeModulesURL.resourceValues(forKeys: [.contentModificationDateKey]))?
@@ -131,7 +137,7 @@ public actor NodeModulesScanner {
         return NodeModulesHit(
             url: nodeModulesURL,
             projectName: projectName,
-            sizeBytes: estimateSize(at: nodeModulesURL.path),
+            sizeBytes: estimateSize(at: nodeModulesURL.path, remainingGlobalEntries: &sizeEntryBudget),
             modificationDate: mtime
         )
     }
@@ -141,8 +147,16 @@ public actor NodeModulesScanner {
     /// 遍历目录累加 totalFileAllocatedSize，回退 fileAllocatedSize。
     ///
     /// 失败语义：路径不存在 / 不是目录 / 无权限读 → 返回 `nil`（UI 侧显示 "—"）。
-    static func estimateSize(at path: String) -> Int64? {
+    static func estimateSize(at path: String, maxEntries: Int = 5_000) -> Int64? {
+        var unlimited = Int.max
+        return estimateSize(at: path, maxEntries: maxEntries, remainingGlobalEntries: &unlimited)
+    }
+
+    static func estimateSize(at path: String,
+                             maxEntries: Int = 5_000,
+                             remainingGlobalEntries: inout Int) -> Int64? {
         guard !path.isEmpty else { return nil }
+        guard remainingGlobalEntries > 0 else { return nil }
         let fm = FileManager.default
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else {
@@ -159,7 +173,13 @@ public actor NodeModulesScanner {
             return nil
         }
         var total: Int64 = 0
+        var visitedEntries = 0
         for case let fileURL as URL in enumerator {
+            if Task.isCancelled { return nil }
+            visitedEntries += 1
+            remainingGlobalEntries -= 1
+            if visitedEntries > maxEntries { return nil }
+            if remainingGlobalEntries < 0 { return nil }
             guard let values = try? fileURL.resourceValues(forKeys: keys) else { continue }
             if values.isRegularFile == true {
                 let size = values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0

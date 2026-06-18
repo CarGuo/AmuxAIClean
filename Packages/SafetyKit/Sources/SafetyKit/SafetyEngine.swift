@@ -226,9 +226,13 @@ public struct SafetyEngine: Sendable {
         if path.contains("/../") || path.hasSuffix("/..") || path == ".." {
             return (.forbid, .dotDotInPath)
         }
-        // 3. 标准化后再比较
+        // 3. 标准化后再比较；若路径中间包含 symlink，再用真实路径做一次更保守判定。
         let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
-        return evaluateStandardized(standardized: standardized, home: home)
+        let base = evaluateStandardized(standardized: standardized, home: home)
+        let resolved = Self.resolvedSymlinkPath(forStandardizedPath: standardized)
+        guard resolved != standardized else { return base }
+        let resolvedResult = evaluateStandardized(standardized: resolved, home: home)
+        return Self.moreRestrictive(base, resolvedResult)
     }
 
     /// 已 standardize 路径的内部判定。trie 重载会复用这个入口，避免重复 standardize。
@@ -472,10 +476,19 @@ public struct SafetyEngine: Sendable {
         if path.contains("/../") || path.hasSuffix("/..") || path == ".." {
             return (.forbid, .dotDotInPath, nil)
         }
-        // 2. 只 standardize 一次，复用给 base 判定 + trie 匹配
+        // 2. 只 standardize 一次，复用给 base 判定 + trie 匹配；若中间 symlink 指向更敏感位置，
+        // 先采用更保守的真实路径判定，避免 vendor safe 或 cache safe 覆盖真实禁区。
         let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
         let (baseVerdict, rejection) = evaluateStandardized(standardized: standardized, home: home)
         if baseVerdict == .forbid { return (baseVerdict, rejection, nil) }
+        let resolved = Self.resolvedSymlinkPath(forStandardizedPath: standardized)
+        if resolved != standardized {
+            let resolvedBase = evaluateStandardized(standardized: resolved, home: home)
+            let conservative = Self.moreRestrictive((baseVerdict, rejection), resolvedBase)
+            if conservative.0 != baseVerdict || conservative.1 != rejection {
+                return (conservative.0, conservative.1, nil)
+            }
+        }
 
         guard let hit = VendorTrie.match(standardizedPath: standardized, in: trie) else {
             return (baseVerdict, rejection, nil)
@@ -504,6 +517,25 @@ public struct SafetyEngine: Sendable {
         } else {
             // 命中 vendor 子目录 —— 用 baseVerdict（safe / confirm）
             return (baseVerdict, rejection, hit.rule)
+        }
+    }
+
+    private static func resolvedSymlinkPath(forStandardizedPath path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    private static func moreRestrictive(
+        _ lhs: (SafetyVerdict, SafetyRejection),
+        _ rhs: (SafetyVerdict, SafetyRejection)
+    ) -> (SafetyVerdict, SafetyRejection) {
+        severity(rhs.0) > severity(lhs.0) ? rhs : lhs
+    }
+
+    private static func severity(_ verdict: SafetyVerdict) -> Int {
+        switch verdict {
+        case .safe: return 0
+        case .confirm: return 1
+        case .forbid: return 2
         }
     }
 }

@@ -177,6 +177,17 @@ final class NodeModulesScannerTests: XCTestCase {
         XCTAssertEqual(hits.first?.projectName, "async-app")
     }
 
+    func test_estimateSize_超过entry上限返回nil() throws {
+        let home = try makeTempHome()
+        let nm = home.appendingPathComponent("node_modules", isDirectory: true)
+        try mkdir(nm)
+        try Data().write(to: nm.appendingPathComponent("a.js"))
+        try Data().write(to: nm.appendingPathComponent("b.js"))
+
+        XCTAssertNil(NodeModulesScanner.estimateSize(at: nm.path, maxEntries: 1),
+                     "超过 maxEntries 时应放弃精确估算，避免大 node_modules 卡住工作流")
+    }
+
     // MARK: - Review fix-soon #5：symlink 防护
 
     /// 软链指向同 home 内已被扫到的真实 node_modules → 不应被重复计数。

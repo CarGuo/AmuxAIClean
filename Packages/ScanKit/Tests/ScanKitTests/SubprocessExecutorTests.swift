@@ -77,14 +77,35 @@ final class SubprocessExecutorTests: XCTestCase {
 
     // MARK: - 5. allowlist 闸门：args 长于前缀 = 允许
 
-    /// PITFALL：`simctl delete DEADBEEF` 必须被 `["simctl","delete"]` 这种短前缀放过；
+    /// PITFALL：`simctl delete <UUID>` 必须被 `["simctl","delete"]` 这种短前缀放过；
     /// 若有人误写成 "args == prefix" 全等比较，此处会红。
     func test_executable_匹配且_args_长于前缀_允许() throws {
         let exec = SubprocessExecutor(timeout: 1, dryRun: true)
+        let uuid = "11111111-2222-3333-4444-555555555555"
         let r = try exec.run(executable: "/usr/bin/xcrun",
-                             args: ["simctl", "delete", "DEADBEEF-1234"])
+                             args: ["simctl", "delete", uuid])
         XCTAssertEqual(r.exitCode, 0)
-        XCTAssertTrue(r.output.contains("simctl delete DEADBEEF-1234"))
+        XCTAssertTrue(r.output.contains("simctl delete \(uuid)"))
+    }
+
+    func test_destructive_simctl_delete_tail_必须是真UUID() {
+        let exec = SubprocessExecutor(timeout: 1, dryRun: true)
+        XCTAssertThrowsError(try exec.run(executable: "/usr/bin/xcrun",
+                                          args: ["simctl", "delete", "all"])) { err in
+            guard case SubprocessExecutor.SubprocessError.notAllowed = err else {
+                return XCTFail("simctl delete all 必须被 tail policy 拒绝，得到：\(err)")
+            }
+        }
+    }
+
+    func test_destructive_simctl_delete_tail_拒绝额外参数() {
+        let exec = SubprocessExecutor(timeout: 1, dryRun: true)
+        XCTAssertThrowsError(try exec.run(executable: "/usr/bin/xcrun",
+                                          args: ["simctl", "delete", "11111111-2222-3333-4444-555555555555", "--extra"])) { err in
+            guard case SubprocessExecutor.SubprocessError.notAllowed = err else {
+                return XCTFail("simctl delete <UUID> --extra 必须被 tail policy 拒绝，得到：\(err)")
+            }
+        }
     }
 
     // MARK: - 6. dryRun 命中 allowlist：返回 exitCode 0 + `<dryRun> ` 前缀
@@ -94,12 +115,13 @@ final class SubprocessExecutorTests: XCTestCase {
     /// 所有依赖该约定的上层代码会静默失效——此处用 hasPrefix 钉死。
     func test_dryRun_命中allowlist_不真起进程_返回exitCode_0_含dryRun前缀() throws {
         let exec = SubprocessExecutor(timeout: 1, dryRun: true)
+        let runtimeID = "com.apple.CoreSimulator.SimRuntime.iOS-18-0"
         let r = try exec.run(executable: "/usr/bin/xcrun",
-                             args: ["simctl", "runtime", "delete", "abc"])
+                             args: ["simctl", "runtime", "delete", runtimeID])
         XCTAssertEqual(r.exitCode, 0)
         XCTAssertTrue(r.output.hasPrefix("<dryRun> /usr/bin/xcrun "),
                       "dryRun 必须输出完整 `<dryRun> <executable> <args>`，得到：\(r.output)")
-        XCTAssertTrue(r.output.contains("simctl runtime delete abc"))
+        XCTAssertTrue(r.output.contains("simctl runtime delete \(runtimeID)"))
     }
 
     // MARK: - 7. dryRun 未命中 allowlist：仍 throw notAllowed（先校验再 dryRun）
@@ -146,6 +168,18 @@ final class SubprocessExecutorTests: XCTestCase {
         XCTAssertTrue(r.output.contains("timeout"), "超时输出必须含 'timeout'：\(r.output)")
         XCTAssertLessThan(elapsed, 5,
                           "超时应在 ~0.5s 触发，不应等满 30s，实际耗时 \(elapsed)s")
+    }
+
+    func test_超时_忽略TERM时升级SIGKILL() throws {
+        let shell = SubprocessExecutor.AllowEntry(executable: "/bin/sh",
+                                                  argsPrefix: ["-c", "trap '' TERM; sleep 30"])
+        let exec = SubprocessExecutor(allowlist: [shell], timeout: 0.2, dryRun: false)
+        let start = Date()
+        let r = try exec.run(executable: "/bin/sh", args: ["-c", "trap '' TERM; sleep 30"])
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertEqual(r.exitCode, -2)
+        XCTAssertTrue(r.output.contains("SIGKILL sent"), "忽略 TERM 时必须升级 SIGKILL：\(r.output)")
+        XCTAssertLessThan(elapsed, 5)
     }
 
     // MARK: - 10. launch 失败：不存在路径 → exitCode = -1

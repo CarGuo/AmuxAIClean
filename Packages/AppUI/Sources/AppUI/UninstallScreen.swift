@@ -93,6 +93,7 @@ public struct UninstallScreen: View {
     @State private var isLoadingCandidates: Bool = false
     @State private var showRealDeleteConfirm: Bool = false
     @State private var lastResult: String?
+    @State private var isDeleting: Bool = false
 
     /// **v2026.06.16 修复 #4**：App 卸载结构化删除结果 sheet。
     /// 取代旧 alert 拼接 `uninstall.result.success/failure` 的纯文字弹窗。
@@ -277,7 +278,7 @@ public struct UninstallScreen: View {
             Button(allChecked ? String(localized: "uninstall.toggle.deselect.all", bundle: .module) : String(localized: "uninstall.toggle.select.all", bundle: .module)) {
                 toggleAll()
             }
-            .disabled(candidates.isEmpty)
+            .disabled(candidates.isEmpty || isDeleting)
 
             Spacer()
 
@@ -290,14 +291,14 @@ public struct UninstallScreen: View {
             } label: {
                 Label(String(localized: "uninstall.button.preview", bundle: .module), systemImage: "eye")
             }
-            .disabled(checked.isEmpty)
+            .disabled(checked.isEmpty || isDeleting)
 
             Button(role: .destructive) {
                 showRealDeleteConfirm = true
             } label: {
                 Label(String(localized: "uninstall.button.trash", bundle: .module), systemImage: "trash")
             }
-            .disabled(checked.isEmpty)
+            .disabled(checked.isEmpty || isDeleting)
         }
         .padding(16)
     }
@@ -399,7 +400,9 @@ public struct UninstallScreen: View {
     /// dryRun 默认 true；实删需走 `showRealDeleteConfirm` 二次确认。
     private func performDelete(dryRun: Bool) async {
         let paths = checkedPaths
-        guard !paths.isEmpty else { return }
+        guard !paths.isEmpty, !isDeleting else { return }
+        isDeleting = true
+        defer { isDeleting = false }
         // v1.3.zzzz Phase 3-A 对称防御：UninstallScreen 没接 BulkScanner 的
         // permissionDenied 数据源（候选来自 [UninstallStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UninstallStore.swift)
         // 的 NSMetadataQuery + AppCandidate），但 pipeline 是注入进来的、
@@ -408,7 +411,8 @@ public struct UninstallScreen: View {
         // 切到 UninstallScreen 走 trash 时就会"莫名 accessDenied 拒了某个 ~/Library/.. 路径"。
         // 主动清空一次是 O(1) 锁开销，零误伤。
         pipeline.setAccessDeniedPaths([])
-        let (moved, skipped, err, pairs) = await pipeline.moveToTrash(paths: paths, dryRun: dryRun)
+        let result = await pipeline.moveToTrashReturningOutcome(paths: paths, dryRun: dryRun)
+        let (moved, skipped, err, pairs) = result.legacy
         // Step 7：UninstallScreen 真删成功后写 UndoHistory（dryRun / 失败 pair 为空 → no-op）。
         if !dryRun, err == nil, !pairs.isEmpty {
             await MainActor.run {
@@ -421,7 +425,7 @@ public struct UninstallScreen: View {
         let mode = dryRun ? String(localized: "uninstall.result.mode.dryrun", bundle: .module) : ""
         await MainActor.run {
             // **v2026.06.16 修复 #4**：真删走结构化 sheet；dryRun 仍走旧 alert（只看总数即可）。
-            if !dryRun, let outcome = pipeline.snapshotLastOutcome() {
+            if !dryRun, let outcome = result.outcome {
                 self.lastResultPayload = OperationResultPayload(outcome: outcome)
                 if err == nil {
                     self.checked.removeAll()

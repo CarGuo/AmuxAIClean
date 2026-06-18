@@ -248,6 +248,59 @@ final class WorkflowDetailViewTests: XCTestCase {
         XCTAssertEqual(undo.history.count, 0, "全失败不应写 UndoHistory")
     }
 
+    func test_P0_1_performDelete_父子路径只提交父路径() async throws {
+        let home = makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (undo, undoURL) = try makeUndoStore()
+        defer { try? FileManager.default.removeItem(at: undoURL) }
+
+        let parent = WorkflowScanHit(url: URL(fileURLWithPath: "/A"),
+                                     sizeBytes: 300, displayName: "A", note: nil)
+        let child = WorkflowScanHit(url: URL(fileURLWithPath: "/A/build"),
+                                    sizeBytes: 100, displayName: "build", note: nil)
+        let sibling = WorkflowScanHit(url: URL(fileURLWithPath: "/B/cache"),
+                                      sizeBytes: 200, displayName: "cache", note: nil)
+        let card = makeFilesystemCard(id: "card.test")
+        let vm = WorkflowDetailViewModel(
+            workflow: AppleWorkflow(), home: home,
+            accessDeniedPathsProvider: { [] },
+            undoHistoryStore: undo
+        )
+        vm.setTestCards([card])
+        vm.setTestHits([card.id: [parent, child, sibling]])
+        vm.selected = [parent.id, child.id, sibling.id]
+
+        let pipe = StubDeletionPipeline()
+        pipe.stubOutcome = TrashOutcome(
+            movedPairs: [("/A", "/Trash/A"), ("/B/cache", "/Trash/cache")],
+            failedPaths: [], safetyRejected: [], missingPaths: []
+        )
+
+        await vm.performDelete(pipeline: pipe)
+
+        XCTAssertEqual(pipe.movedPathsReceived, ["/A", "/B/cache"])
+        XCTAssertEqual(undo.history.first?.filePairs.map(\.original), ["/A", "/B/cache"])
+    }
+
+    func test_totalSelectedBytes_同路径跨卡只统计一次() {
+        let home = makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let hit1 = WorkflowScanHit(url: URL(fileURLWithPath: "/A/cache"),
+                                   sizeBytes: 100, displayName: "cache", note: nil)
+        let hit2 = WorkflowScanHit(url: URL(fileURLWithPath: "/A/cache"),
+                                   sizeBytes: 100, displayName: "cache duplicate", note: nil)
+        let card1 = makeFilesystemCard(id: "card.one")
+        let card2 = makeFilesystemCard(id: "card.two")
+        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        vm.setTestCards([card1, card2])
+        vm.setTestHits([card1.id: [hit1], card2.id: [hit2]])
+        vm.selected = [hit1.id]
+
+        XCTAssertEqual(vm.totalSelectedBytes, 100,
+                       "同一路径被多张 filesystem card 命中时，footer 总量不能重复计数")
+    }
+
     // MARK: - v2026.06.22 (P0-5) expandGlob
 
     /// **P0-5**：`.literal` 路径含 `*` 时必须用 fnmatch 末段展开命中。

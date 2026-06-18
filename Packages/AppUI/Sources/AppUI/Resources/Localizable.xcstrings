@@ -8220,6 +8220,13 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Base URL 不是有效的端点。" } }
       }
     },
+    "ai.sheet.error.insecure_base_url.format" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Insecure Base URL: %1$@://%2$@. Use HTTPS for remote endpoints, or HTTP only for localhost / 127.0.0.1." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Base URL 不安全：%1$@://%2$@。远端端点请使用 HTTPS；HTTP 仅允许 localhost / 127.0.0.1。" } }
+      }
+    },
     "workflow.sidebar.section" : {
       "extractionState" : "manual",
       "localizations" : {

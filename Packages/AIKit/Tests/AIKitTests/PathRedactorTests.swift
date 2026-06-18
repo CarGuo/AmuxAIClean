@@ -13,6 +13,15 @@ final class PathRedactorTests: XCTestCase {
                        "/Users/<USER>/Library/Caches/foo")
     }
 
+    func test_all_user_prefixes_redacted() {
+        let input = "/Users/guoshuyu/a also /Users/alice/b and /home/bob/c"
+        let out = r.redact(input)
+        XCTAssertFalse(out.contains("guoshuyu"))
+        XCTAssertFalse(out.contains("alice"))
+        XCTAssertFalse(out.contains("bob"))
+        XCTAssertEqual(out, "/Users/<USER>/a also /Users/<USER>/b and /home/<USER>/c")
+    }
+
     // 2
     func test_users_root_only() {
         XCTAssertEqual(r.redact("/Users/guoshuyu"),
@@ -57,6 +66,11 @@ final class PathRedactorTests: XCTestCase {
         XCTAssertEqual(r.redact("/Volumes/MyBackup/photos"),
                        "/Volumes/<VOLUME>/photos",
                        "用户自定义卷名应打码")
+    }
+
+    func test_all_user_defined_volumes_redacted() {
+        XCTAssertEqual(r.redact("/Volumes/MyBackup/a and /Volumes/WorkDisk/b"),
+                       "/Volumes/<VOLUME>/a and /Volumes/<VOLUME>/b")
     }
 
     // 8

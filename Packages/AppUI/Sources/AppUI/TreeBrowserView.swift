@@ -215,7 +215,10 @@ public struct TreeBrowserView: View {
             }
         }
         .onChange(of: selectedPath) { _, new in
-            guard let new, let row = coordinator.row(for: new) else { return }
+            guard let new else { return }
+            let row = flatRows.first(where: { $0.row.path == new })?.row
+                ?? coordinator.row(for: new)
+            guard let row else { return }
             onSelect?(row)
         }
         .onKeyPress(keys: [KeyEquivalent("j"), .downArrow]) { _ in

@@ -39,9 +39,18 @@ final class DeveloperWorkflowSkeletonTests: XCTestCase {
     func test_DeletionRecipe_commandLine_命中allowlist_允许执行_v17_PR2() {
         // v1.7 M1 PR-2 起开放：xcrun simctl delete 在 SubprocessExecutor.defaultAllowlist 内
         let recipe = DeletionRecipe.commandLine(executable: "/usr/bin/xcrun",
-                                                args: ["simctl", "delete", "DEADBEEF"])
+                                                args: ["simctl", "delete"])
         XCTAssertTrue(recipe.isExecutableInCurrentBuild,
                       ".commandLine 命中 SubprocessExecutor allowlist 必须允许执行")
+    }
+
+    func test_DeletionRecipe_commandLine_具体破坏性命令拒绝额外参数() {
+        let recipe = DeletionRecipe.commandLine(
+            executable: "/usr/bin/xcrun",
+            args: ["simctl", "delete", "11111111-2222-3333-4444-555555555555", "--extra"]
+        )
+        XCTAssertFalse(recipe.isExecutableInCurrentBuild,
+                       "recipe 二道闸不能把带额外参数的 destructive simctl 命令标为可执行")
     }
 
     func test_DeletionRecipe_commandLine_未命中allowlist_仍然禁执行_安全门() {
