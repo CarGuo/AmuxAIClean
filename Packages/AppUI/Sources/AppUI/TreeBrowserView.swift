@@ -38,6 +38,11 @@ public struct TreeBrowserView: View {
     /// 走 NSWorkspace.recycle 通道（与大文件视图右键删共用 triggerLargeFileTrash）。
     /// 给 nil 时 TreeNodeView 的右键菜单与行内 trash 按钮都不会展示，便于在 readonly 场景复用。
     let onTrash: ((URL) -> Void)?
+    /// v2026.06 用户反馈 #1：右键"刷新此目录"。点击时传 path 给上层，
+    /// 上层调 [ScanCoordinator.rescanSubtree(at:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1529-L1545)
+    /// 清掉 store-fallback 缓存并 bump structuralRevision，本视图下一帧自动重拉。
+    /// 给 nil 时菜单不展示该项（便于在 readonly 场景复用）。
+    let onRefreshSubtree: ((String) -> Void)?
 
     /// SafetyEngine 静态共享：拦截 forbid 路径（家目录、`/`、SIP、`..` 等），
     /// 在弹菜单 / 行内 trash 按钮 hit-test 时就 disabled，并附 tooltip 解释为什么不能删。
@@ -77,11 +82,13 @@ public struct TreeBrowserView: View {
     public init(coordinator: ScanCoordinator,
                 rootPath: String,
                 onSelect: ((TreeRow) -> Void)? = nil,
-                onTrash: ((URL) -> Void)? = nil) {
+                onTrash: ((URL) -> Void)? = nil,
+                onRefreshSubtree: ((String) -> Void)? = nil) {
         self.coordinator = coordinator
         self.rootPath = rootPath
         self.onSelect = onSelect
         self.onTrash = onTrash
+        self.onRefreshSubtree = onRefreshSubtree
     }
 
     public var body: some View {
@@ -132,7 +139,8 @@ public struct TreeBrowserView: View {
                             isSelected: selectedPath == flat.row.path,
                             onToggleExpand: { toggleExpansionFor(path: flat.row.path) },
                             onSelect: { selectedPath = flat.row.path },
-                            onTrash: onTrash.map { _ in requestTrash(_:) }
+                            onTrash: onTrash.map { _ in requestTrash(_:) },
+                            onRefreshSubtree: onRefreshSubtree
                         )
                         .id(flat.row.path)
                         .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
@@ -669,6 +677,8 @@ struct TreeNodeRow: View {
     let onSelect: () -> Void
     /// 上层透传的"移到废纸篓"通道（已包含二次确认 wrapper）。nil 时菜单项与行内 trash 按钮都不展示。
     let onTrash: ((URL) -> Void)?
+    /// v2026.06 #1：右键"刷新此目录"回调。nil 或本行非 directory 时菜单不展示。
+    let onRefreshSubtree: ((String) -> Void)?
 
     private var row: TreeRow { flat.row }
     private var indent: CGFloat { CGFloat(flat.depth) * 16 }
@@ -801,6 +811,20 @@ struct TreeNodeRow: View {
                 }
             }
             Divider()
+            if row.isDirectory, let onRefreshSubtree {
+                Button {
+                    onSelect()
+                    onRefreshSubtree(row.path)
+                } label: {
+                    Label {
+                        Text("tree.menu.refresh", bundle: .module)
+                    } icon: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .keyboardShortcut("r", modifiers: [.command])
+                Divider()
+            }
             if canExpand {
                 Button {
                     onToggleExpand()

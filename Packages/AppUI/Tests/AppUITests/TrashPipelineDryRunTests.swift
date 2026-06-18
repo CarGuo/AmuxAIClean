@@ -310,22 +310,28 @@ final class TrashPipelineDryRunTests: XCTestCase {
                       "非 firmlink 路径应原样保留")
     }
 
-    // MARK: - v1.3.zzzz Phase 3-A：DeletionPipeline 协议层 setAccessDeniedPaths
+    // MARK: - v2026.06.17 (AUDIT A2)：DeletionPipeline 协议层 setAccessDeniedPaths
+    //
+    // 历史背景：v1.3.zzzz Phase 3-A 协议化时给 setAccessDeniedPaths 留了 protocol extension
+    // 默认 no-op，目的是不强迫每个实现都写。但 AUDIT A2 指出这是契约靠手记维系的脆弱点
+    // ——"上层忘了调"会被静默放行而非 compile-error。v2026.06.17 取消默认实现，每个
+    // DeletionPipeline 实现都必须显式提供（哪怕是 no-op，也要签字画押）。
 
     /// **场景**：MainView 收敛掉 `if let trash = pipeline as? TrashPipeline` cast 后，
     /// 直接对 `pipeline: any DeletionPipeline` 调 setAccessDeniedPaths。
-    /// 自定义没显式实现该方法的 DeletionPipeline 实现（如下面的 StubPipeline）应走协议默认 no-op，
-    /// **不应崩、不应抛**——这是协议层契约（v1.3.zzzz 路线 B 删 Helper 后真实运行时实际只剩 TrashPipeline 一份；
-    /// 此 case 仍保留，防止未来新加 DeletionPipeline 实现忘了走默认 no-op 的回归）。
-    func test_DeletionPipeline协议默认setAccessDeniedPaths为无操作() async {
-        // 用一个最小自定义实现：除 moveToTrash 外什么都不写，验证协议默认 no-op 生效。
+    /// 自定义只接显式 no-op 的 StubPipeline 必须不影响 moveToTrash 行为——
+    /// 这条防"未来某个 Stub 把 setAccessDeniedPaths 写错（如塞进类成员后干扰 moveToTrash）"。
+    func test_DeletionPipeline显式no_op_stub不影响moveToTrash() async {
+        // 用一个最小自定义实现：显式空实现 setAccessDeniedPaths。
         struct StubPipeline: DeletionPipeline {
             func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)]) {
                 return (paths.count, 0, nil, [])
             }
+            /// AUDIT A2 之后每个实现都必须显式写出；此处显式 no-op 表示 stub 不关心 accessDenied。
+            func setAccessDeniedPaths(_ paths: Set<String>) { /* test stub: no-op */ }
         }
         let stub: any DeletionPipeline = StubPipeline()
-        // 默认 no-op：不抛、不崩
+        // 显式 no-op：不抛、不崩
         stub.setAccessDeniedPaths([
             "/private/var/folders/zz/abc/T/x",
             "/var/folders/zz/abc/T/y",
@@ -337,8 +343,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
         XCTAssertNil(err)
     }
 
-    /// TrashPipeline 自己 override 了协议默认实现，setAccessDeniedPaths 必须**真**入集。
-    /// 这条与 [test_setAccessDeniedPaths_注入时即标准化为var折叠形态] 互补：
+    /// TrashPipeline 在自身类型上实现 setAccessDeniedPaths，paths 必须**真**入集。
     /// 这里走 `any DeletionPipeline` 静态分派，验证 dynamic dispatch 仍命中 TrashPipeline 实现。
     func test_TrashPipeline作为DeletionPipeline时setAccessDeniedPaths真入集() {
         let pipe: any DeletionPipeline = TrashPipeline()

@@ -24,6 +24,11 @@ let package = Package(
             resources: [
                 .copy("Fixtures")
             ]
+        ),
+        .executableTarget(
+            name: "workflow-cli",
+            dependencies: ["ScanKit"],
+            path: "Sources/workflow-cli"
         )
     ]
 )

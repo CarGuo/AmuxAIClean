@@ -1,0 +1,379 @@
+import SwiftUI
+import AppKit
+
+/// **v2026.06.16 修复 #4（删除结果弹窗 UX 重做）**
+///
+/// 旧 `.alert` 把"成功 X / 跳过 Y / 错误描述 / 命令行待办"四段文案拼接到一个 Text 里，
+/// 用户看到一堆纯文字"也不知道说明啥"。改造为结构化 sheet：
+///
+/// 1. **顶部状态**：大图标（绿/橙/红）+ 一句话标题（"清理完成 / 部分清理 / 清理失败"）
+/// 2. **三栏统计**：已移入废纸篓 / 失败 / 被安全规则拦截
+/// 3. **失败明细**（可折叠）：列出具体路径，提示常见原因 + Reveal in Finder / 复制路径列表
+/// 4. **被拦明细**（可折叠）：列出被 SafetyEngine 拦的路径与原因
+/// 5. **Done** 关闭
+///
+/// 接入点：调用方在 `pipeline.moveToTrash(...)` 后立即拉 `pipeline.snapshotLastOutcome()`，
+/// 把 [TrashOutcome](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift)
+/// 包装成 `OperationResultPayload` 喂给本 sheet。
+public struct OperationResultPayload: Identifiable {
+    public let id = UUID()
+    /// 成功移入废纸篓的 (原路径, 废纸篓路径) 对
+    public let movedPairs: [(originalPath: String, trashedPath: String)]
+    /// NSWorkspace.recycle 真正失败的路径
+    public let failedPaths: [String]
+    /// 被 SafetyEngine / accessDenied 拦的 (path, reason) 对
+    public let safetyRejected: [(path: String, reason: String)]
+    /// 命令行（simctl 等）还没接入 UI 而跳过的项数——仅 WorkflowDetailView 会用
+    public let commandLineSkipped: Int
+
+    public init(movedPairs: [(String, String)] = [],
+                failedPaths: [String] = [],
+                safetyRejected: [(String, String)] = [],
+                commandLineSkipped: Int = 0) {
+        self.movedPairs = movedPairs.map { (originalPath: $0.0, trashedPath: $0.1) }
+        self.failedPaths = failedPaths
+        self.safetyRejected = safetyRejected.map { (path: $0.0, reason: $0.1) }
+        self.commandLineSkipped = commandLineSkipped
+    }
+
+    /// 把 TrashPipeline 的 TrashOutcome 转成 payload。让 ViewModel 一行代码接入。
+    public init(outcome: TrashOutcome, commandLineSkipped: Int = 0) {
+        self.movedPairs = outcome.movedPairs
+        self.failedPaths = outcome.failedPaths
+        self.safetyRejected = outcome.safetyRejected
+        self.commandLineSkipped = commandLineSkipped
+    }
+
+    /// 状态判定优先级：有失败 / 有拦截 > 部分；纯成功 → success；全失败/全拦截 → failed。
+    ///
+    /// **v2026.06.22 (P0-1)**：`commandLineSkipped` 表示"已弹 simctl 确认 sheet 等用户继续"，
+    /// 它是**待执行**而非**失败**——把它计入 failedCount 会导致 OperationResultSheet 把
+    /// simctl 待确认的 commandLine 项一律渲染成红色 failed 状态。改为：failedCount 只统计
+    /// `failedPaths + safetyRejected`；`commandLineSkipped` 不影响状态判定，仅在
+    /// [commandLineHint](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/OperationResultSheet.swift)
+    /// 段落里独立展示。
+    public var status: Status {
+        let movedCount = movedPairs.count
+        let failedCount = failedPaths.count + safetyRejected.count
+        if failedCount == 0 {
+            // 没有真失败 → success；如果同时 moved=0 但 commandLineSkipped>0，仍算 success
+            // （因为后续 simctl 二次确认 sheet 会自己再弹 OperationResultPayload 汇总）。
+            return .success
+        }
+        if movedCount == 0 { return .failed }
+        return .partial
+    }
+
+    public enum Status {
+        case success
+        case partial
+        case failed
+    }
+}
+
+/// 删除操作结果 sheet。**所有 alert("删除结果")样式都应该换到这个 sheet。**
+public struct OperationResultSheet: View {
+    public let payload: OperationResultPayload
+    public let onDismiss: () -> Void
+
+    @State private var failedExpanded = true
+    @State private var blockedExpanded = false
+
+    public init(payload: OperationResultPayload, onDismiss: @escaping () -> Void) {
+        self.payload = payload
+        self.onDismiss = onDismiss
+    }
+
+    public var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    statsRow
+                    if payload.status == .success {
+                        successSummary
+                    }
+                    if !payload.failedPaths.isEmpty {
+                        failedSection
+                    }
+                    if !payload.safetyRejected.isEmpty {
+                        blockedSection
+                    }
+                    if payload.commandLineSkipped > 0 {
+                        commandLineHint
+                    }
+                }
+                .padding(20)
+            }
+            Divider()
+            footer
+        }
+        .frame(width: 560, height: 480)
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            Image(systemName: statusIconName)
+                .font(.system(size: 36, weight: .semibold))
+                .foregroundStyle(statusColor)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(statusTitleKey, bundle: .module)
+                    .font(.title2.bold())
+                Text(statusSubtitle)
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+                    .lineLimit(2)
+            }
+            Spacer()
+        }
+        .padding(20)
+    }
+
+    private var statusIconName: String {
+        switch payload.status {
+        case .success: return "checkmark.circle.fill"
+        case .partial: return "exclamationmark.triangle.fill"
+        case .failed: return "xmark.octagon.fill"
+        }
+    }
+
+    private var statusColor: Color {
+        switch payload.status {
+        case .success: return .green
+        case .partial: return .orange
+        case .failed: return .red
+        }
+    }
+
+    private var statusTitleKey: LocalizedStringKey {
+        switch payload.status {
+        case .success: return "op.result.title.success"
+        case .partial: return "op.result.title.partial"
+        case .failed: return "op.result.title.failed"
+        }
+    }
+
+    private var statusSubtitle: String {
+        let moved = payload.movedPairs.count
+        let total = moved + payload.failedPaths.count + payload.safetyRejected.count + payload.commandLineSkipped
+        return "\(moved) / \(total)"
+    }
+
+    // MARK: - Stats Row（三栏统计）
+
+    private var statsRow: some View {
+        HStack(spacing: 12) {
+            statTile(
+                icon: "trash.fill",
+                color: .green,
+                titleKey: "op.result.stat.moved",
+                count: payload.movedPairs.count
+            )
+            statTile(
+                icon: "xmark.circle.fill",
+                color: .red,
+                titleKey: "op.result.stat.failed",
+                count: payload.failedPaths.count
+            )
+            statTile(
+                icon: "shield.lefthalf.filled",
+                color: .orange,
+                titleKey: "op.result.stat.blocked",
+                count: payload.safetyRejected.count
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func statTile(icon: String, color: Color, titleKey: LocalizedStringKey, count: Int) -> some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: icon).foregroundStyle(color)
+                Text("\(count)")
+                    .font(.title3.monospacedDigit().bold())
+            }
+            Text(titleKey, bundle: .module)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(color.opacity(count > 0 ? 0.10 : 0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(color.opacity(count > 0 ? 0.35 : 0.10), lineWidth: 1)
+        )
+    }
+
+    // MARK: - Success Summary
+
+    private var successSummary: some View {
+        Label {
+            Text(String(format: String(localized: "op.result.summary.success %lld", bundle: .module), payload.movedPairs.count))
+                .font(.callout)
+        } icon: {
+            Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.green.opacity(0.08))
+        )
+    }
+
+    // MARK: - Failed Section（可折叠 + Reveal / Copy）
+
+    private var failedSection: some View {
+        DisclosureGroup(isExpanded: $failedExpanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("op.result.hint.failed", bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                pathListView(paths: payload.failedPaths, color: .red)
+                HStack(spacing: 8) {
+                    Button {
+                        copyToPasteboard(payload.failedPaths.joined(separator: "\n"))
+                    } label: {
+                        Label("op.result.button.copy", systemImage: "doc.on.doc")
+                    }
+                    if let first = payload.failedPaths.first {
+                        Button {
+                            revealInFinder(path: first)
+                        } label: {
+                            Label("op.result.button.reveal", systemImage: "folder")
+                        }
+                    }
+                    Spacer()
+                }
+                .controlSize(.small)
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "xmark.circle").foregroundStyle(.red)
+                Text("op.result.section.failed", bundle: .module).bold()
+                Text("(\(payload.failedPaths.count))").foregroundStyle(.secondary).font(.callout)
+            }
+        }
+    }
+
+    // MARK: - Blocked Section
+
+    private var blockedSection: some View {
+        DisclosureGroup(isExpanded: $blockedExpanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("op.result.hint.blocked", bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(payload.safetyRejected.prefix(20), id: \.path) { item in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.path)
+                                .font(.system(.caption, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text("reason: \(item.reason)")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    if payload.safetyRejected.count > 20 {
+                        Text("… +\(payload.safetyRejected.count - 20)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.orange.opacity(0.06))
+                )
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "shield.lefthalf.filled").foregroundStyle(.orange)
+                Text("op.result.section.blocked", bundle: .module).bold()
+                Text("(\(payload.safetyRejected.count))").foregroundStyle(.secondary).font(.callout)
+            }
+        }
+    }
+
+    // MARK: - 命令行待办提示
+
+    private var commandLineHint: some View {
+        Label {
+            Text(String(format: String(localized: "op.result.cmdline.skipped %lld", bundle: .module), payload.commandLineSkipped))
+                .font(.callout)
+        } icon: {
+            Image(systemName: "terminal").foregroundStyle(.blue)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.blue.opacity(0.08))
+        )
+    }
+
+    // MARK: - 路径列表通用渲染
+
+    @ViewBuilder
+    private func pathListView(paths: [String], color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(paths.prefix(20), id: \.self) { path in
+                Text(path)
+                    .font(.system(.caption, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if paths.count > 20 {
+                Text("… +\(paths.count - 20)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(color.opacity(0.06))
+        )
+    }
+
+    // MARK: - Footer
+
+    private var footer: some View {
+        HStack {
+            Spacer()
+            Button {
+                onDismiss()
+            } label: {
+                Text("op.result.button.done", bundle: .module)
+                    .frame(minWidth: 80)
+            }
+            .keyboardShortcut(.defaultAction)
+        }
+        .padding(16)
+    }
+
+    // MARK: - 系统集成
+
+    private func copyToPasteboard(_ text: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+    }
+
+    private func revealInFinder(path: String) {
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+}

@@ -94,6 +94,11 @@ public struct UninstallScreen: View {
     @State private var showRealDeleteConfirm: Bool = false
     @State private var lastResult: String?
 
+    /// **v2026.06.16 修复 #4**：App 卸载结构化删除结果 sheet。
+    /// 取代旧 alert 拼接 `uninstall.result.success/failure` 的纯文字弹窗。
+    /// `lastResult` 仍保留——若 pipeline 没暴露 snapshotLastOutcome 则回退旧 alert。
+    @State private var lastResultPayload: OperationResultPayload?
+
     public init(
         store: UninstallStore? = nil,
         pipeline: (any DeletionPipeline)? = nil,
@@ -135,6 +140,12 @@ public struct UninstallScreen: View {
         }
         .sheet(isPresented: $showRealDeleteConfirm) {
             confirmRealDeleteSheet
+        }
+        // **v2026.06.16 修复 #4**：卸载残留结构化删除结果 sheet。
+        .sheet(item: $lastResultPayload) { payload in
+            OperationResultSheet(payload: payload) {
+                lastResultPayload = nil
+            }
         }
         // v2：套布局沙箱——把 candidatesPane（卸载残留候选列表）内的长路径
         // ideal width 隔离在沙箱内，禁止反推外层 NavigationSplitView 的列宽。
@@ -409,7 +420,16 @@ public struct UninstallScreen: View {
         }
         let mode = dryRun ? String(localized: "uninstall.result.mode.dryrun", bundle: .module) : ""
         await MainActor.run {
-            if let err {
+            // **v2026.06.16 修复 #4**：真删走结构化 sheet；dryRun 仍走旧 alert（只看总数即可）。
+            if !dryRun, let outcome = pipeline.snapshotLastOutcome() {
+                self.lastResultPayload = OperationResultPayload(outcome: outcome)
+                if err == nil {
+                    self.checked.removeAll()
+                    if let app = self.selectedApp {
+                        Task { await self.reloadCandidates(for: app) }
+                    }
+                }
+            } else if let err {
                 self.lastResult = String(format: String(localized: "uninstall.result.failure", bundle: .module), mode, err, moved, skipped)
             } else {
                 self.lastResult = String(format: String(localized: "uninstall.result.success", bundle: .module), moved, mode, skipped)

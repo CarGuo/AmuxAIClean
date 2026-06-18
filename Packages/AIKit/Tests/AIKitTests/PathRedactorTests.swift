@@ -1,0 +1,74 @@
+import XCTest
+@testable import AIKit
+
+/// M5 / 2026-06：去敏契约 ≥ 8 case，钉死出网前的隐私边界。
+/// 任何 PR 削弱去敏能力都必须先改这里的契约。
+final class PathRedactorTests: XCTestCase {
+
+    private let r = PathRedactor()
+
+    // 1
+    func test_users_prefix_redacted() {
+        XCTAssertEqual(r.redact("/Users/guoshuyu/Library/Caches/foo"),
+                       "/Users/<USER>/Library/Caches/foo")
+    }
+
+    // 2
+    func test_users_root_only() {
+        XCTAssertEqual(r.redact("/Users/guoshuyu"),
+                       "/Users/<USER>")
+    }
+
+    // 3
+    func test_home_linux_style_prefix_redacted() {
+        XCTAssertEqual(r.redact("/home/alice/.cache/uv"),
+                       "/home/<USER>/.cache/uv")
+    }
+
+    // 4
+    func test_uuid_lowercase_redacted() {
+        let input = "/Users/guoshuyu/Library/Developer/Xcode/iOS DeviceSupport/abcdef12-3456-7890-abcd-ef1234567890"
+        let out = r.redact(input)
+        XCTAssertTrue(out.contains("<USER>"))
+        XCTAssertTrue(out.contains("<UUID>"))
+        XCTAssertFalse(out.contains("abcdef12-3456-7890-abcd-ef1234567890"))
+    }
+
+    // 5
+    func test_uuid_uppercase_redacted() {
+        let input = "/Library/Developer/CoreSimulator/Devices/B7F6E9C1-1234-4567-89AB-CDEF01234567/data"
+        let out = r.redact(input)
+        XCTAssertTrue(out.contains("<UUID>"))
+        XCTAssertFalse(out.contains("B7F6E9C1-1234-4567-89AB-CDEF01234567"))
+    }
+
+    // 6
+    func test_email_redacted() {
+        let out = r.redact("/Users/guoshuyu/Library/Mobile Documents/com~apple~CloudDocs/from-alice@example.com.eml")
+        XCTAssertTrue(out.contains("<EMAIL>"))
+        XCTAssertFalse(out.contains("alice@example.com"))
+    }
+
+    // 7
+    func test_volume_user_defined_redacted_system_keeps() {
+        XCTAssertEqual(r.redact("/Volumes/Macintosh HD/Users/guoshuyu/x"),
+                       "/Volumes/Macintosh HD/Users/<USER>/x",
+                       "系统卷白名单应保留")
+        XCTAssertEqual(r.redact("/Volumes/MyBackup/photos"),
+                       "/Volumes/<VOLUME>/photos",
+                       "用户自定义卷名应打码")
+    }
+
+    // 8
+    func test_no_op_for_clean_path() {
+        XCTAssertEqual(r.redact("/Applications/Safari.app"),
+                       "/Applications/Safari.app")
+        XCTAssertEqual(r.redact(""), "")
+    }
+
+    // 9 - 批量
+    func test_batch_redact() {
+        let out = r.redact(["/Users/guoshuyu/a", "/Users/guoshuyu/b", "/tmp/x"])
+        XCTAssertEqual(out, ["/Users/<USER>/a", "/Users/<USER>/b", "/tmp/x"])
+    }
+}

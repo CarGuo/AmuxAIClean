@@ -283,6 +283,38 @@ JSON schema，避免 plist 编辑器锁定与 YAML 解析依赖：
 3. 至少跑一次 `Scripts/run_debug.sh` 手动冒烟
 4. 单次提交合并推送
 
+### 4.6.6 M5 AIKit 落地（2026-06-15）
+
+**背景**：Mole CLI 没有 AI 能力——我们在功能对齐基础上，**新增**一条"用户主动询问 AI"的能力路径，让用户在 RowItem 上对不确定的目录/文件**主动右键**唤起 AI 解释"这是什么、能否删除"。**严守边界**：AI 给的 `canDelete` **仅供参考**，本地 [SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 三档闸 + [AIAdviceClamp](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PromptBuilder.swift) 是删除/勾选的唯一权威。
+
+**架构原则**：
+- **独立 Package**——[AIKit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit) 与 ScanKit / SafetyKit 解耦，删除 AI 模块不影响主流程
+- **协议中立**——只实现 OpenAI Chat Completions 协议，可对接 Azure / DeepSeek / Ollama / OpenRouter / 通义等任意兼容端点
+- **隐私优先**——[PathRedactor](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PathRedactor.swift) 默认开启，出网前替换 `<USER>` / `<UUID>` / `<EMAIL>` / `<VOLUME>` 占位符；API Key 走 macOS Keychain（`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`）
+- **按需触发**——不做自动；只在用户点 contextMenu "问 AI" 时才发一次请求
+- **后置 clamp**——AI 即使把 `.forbid` 路径回成 `.safe`，[AIAdviceClamp.clamp](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PromptBuilder.swift#L99-L116) 强制夹回 `.forbid`
+
+| ID | 任务 | 主要产物 | 状态判据 | 状态 |
+|---|---|---|---|---|
+| M5-T1 | AIKit Package 骨架 | [Package.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Package.swift)（Swift 6.0 / macOS 15 / 依赖 LogKit + SafetyKit）+ 6 源文件：[AISettings](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/AISettings.swift) / [KeychainAPIKeyStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/KeychainAPIKeyStore.swift) / [PathInquiry](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PathInquiry.swift) / [PathRedactor](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PathRedactor.swift) / [PromptBuilder](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PromptBuilder.swift) / [OpenAIChatClient](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift) | `cd Packages/AIKit && swift build` 通过 | ✅ 2026-06-15 |
+| M5-T2 | Keychain + AISettings + Settings AI Tab | API Key 走 Keychain（`com.guoshuyu.cleanmac.ai.apiKey`）；[AISettings](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/AISettings.swift) `@Observable` 五字段（enabled / baseURL / model / temperature / redactPaths）持久化到 UserDefaults（`v1.6.ai.*`）；[AISettingsTab](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AISettingsTab.swift) 在 SettingsScene 多插一个 AI tab | 用户能配置端点 / 模型 / Key，重启 App 后保留；Key 不进 UserDefaults | ✅ 2026-06-15 |
+| M5-T3 | PromptBuilder + 隐私去敏 + 本地 clamp | 内置 system prompt 写死硬禁路径（/System、/Library/Apple、/private/var、/usr 等）+ 凭证子串清单；user prompt 含 `localVerdict` 让 AI 站在本地判定上解释；[AIAdviceClamp.clamp](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PromptBuilder.swift#L99-L116) 出网回流后强制夹一遍 | AI 即使试图绕过红线，回流 AIAdvice 一定被夹到 forbid；prompt 不允许 UI 暴露自由编辑 | ✅ 2026-06-15 |
+| M5-T4 | RowView contextMenu + AIAdviceSheet | [RowView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowView.swift) 在 `aiSettings.isReadyForUI` 时显示 Divider + "问 AI"（sparkles icon）；[MainView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) `.sheet(item:)` 弹 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)（idle / loading / success / failure 状态机，友好错误翻译） | 配过端点 → 右键有"问 AI"；未配 → 提示去设置；网络失败 → 友好错误；都不会改 RowItem | ✅ 2026-06-15 |
+| M5-T5 | 测试落档 | AIKit 4 测试套 26/26：[AISettingsTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Tests/AIKitTests/AISettingsTests.swift) / [PathRedactorTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Tests/AIKitTests/PathRedactorTests.swift) / [PromptBuilderTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Tests/AIKitTests/PromptBuilderTests.swift) / [OpenAIChatClientTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Tests/AIKitTests/OpenAIChatClientTests.swift)（含 StubURLProtocol 无网络）；跨包契约 [AIDoesNotInfluenceSelectionTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/AIDoesNotInfluenceSelectionTests.swift) 9/9 钉死"AI 不得越权 RowItem 勾选权威 + clamp 夹回 forbid" | 35 个 case 全绿；I18nIntegrityTests 不破 | ✅ 2026-06-15 |
+| M5-T6 | i18n + Xcode 工程接入 + 全栈回归 | [Localizable.xcstrings](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Resources/Localizable.xcstrings) 新增 35 串 AI 相关 keys（双语）；[project.pbxproj](file:///Users/guoshuyu/workspace/GSYCleanMac/GSYCleanMac.xcodeproj/project.pbxproj) 接入 AIKit 本地包；`xcodebuild build` 成功 | I18nIntegrityTests 8/8 + xcodebuild BUILD SUCCEEDED | ✅ 2026-06-15 |
+
+**M5 收口口径**：
+- AIKit 6 源文件 + 4 测试套（26/26）+ AppUI 跨包契约 1 套（9/9）= 共 35 case 全绿
+- AppUI swift build 通过；I18nIntegrityTests 8/8 通过；xcodebuild build 通过
+- Xcode 工程已自动接入 AIKit 本地包（无需用户手动 Add Local）
+- **未引入** 任何对 SafetyEngine / ScanCoordinator / TrashPipeline 的反向依赖——AIKit 删除/禁用对主流程零影响
+
+**Mole 对齐结论（M5 后）**：
+- 数据清理覆盖度 ≥ Mole（vendors + KnownVersionedRoots + pkg receipts + protected_bundles 250+）
+- 维护命令对齐 Mole（lsregister / qlmanage / dscacheutil + 30s 超时）
+- **新增 Mole 无的能力**：AI 助手（按需点击，OpenAI 协议中立）、Keychain API Key、AIAdviceClamp 本地后置安全网
+- 仍**未做**（明确不做项见 §6）：Bash 函数 1:1 移植、CLI 入口、TUI
+
 ---
 
 ## 5. 测试与验收基线

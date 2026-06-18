@@ -42,8 +42,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
     /// v1.3.zzzz：上层一票否决集合（`permissionDenied` / `tccProtected` 路径），
     /// `moveToTrash` 内部用 NSLock 保护读写，调用方通过 [setAccessDeniedPaths](#) 注入最新快照。
-    /// 协议 [DeletionPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift) 签名不变，
-    /// 给未来其它 DeletionPipeline 实现一个安全默认值（v1.3.zzzz 路线 B 删 Helper 后实际只剩 TrashPipeline 一份）。
+    /// 协议 [DeletionPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift#L37)
+    /// 自 v2026.06.17 (AUDIT A2) 起取消 protocol extension 默认 no-op：每个实现都必须
+    /// 显式提供本方法，杜绝"上层忘了调"被静默放行的脆弱契约。
     ///
     /// **锁的作用范围（必读）**：`accessDeniedLock` 只盖 Set 的"写入"和"快照交接"
     /// （[setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L52) /
@@ -191,7 +192,24 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     }
 
     public func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)]) {
-        guard !paths.isEmpty else { return (0, 0, nil, []) }
+        let result = await performMoveToTrash(paths: paths, dryRun: dryRun)
+        return result.legacy
+    }
+
+    /// **v2026.06.22 (P0-3)**：原子返回结构化 outcome，避免 side-channel 单槽位被并发覆盖。
+    /// 同时也会同步写入 `_lastOutcome`，保持老 callsite 通过 `snapshotLastOutcome()` 读取的兼容。
+    public func moveToTrashReturningOutcome(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
+        return await performMoveToTrash(paths: paths, dryRun: dryRun)
+    }
+
+    /// 共享实现：一次计算 legacy 4 元组 + 结构化 outcome，**返回值**即权威结果，
+    /// 同时 `recordOutcome` 写入 lastOutcome 槽位仅为兼容旧 `snapshotLastOutcome()` 读取方。
+    private func performMoveToTrash(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
+        guard !paths.isEmpty else {
+            let outcome = TrashOutcome(movedPairs: [], failedPaths: [], safetyRejected: [], missingPaths: [])
+            recordOutcome(outcome)
+            return ((0, 0, nil, []), outcome)
+        }
         GSYLog.info(.trash, "moveToTrash 开始 dryRun=\(dryRun) paths=\(paths.count)")
 
         // M4 闸门：先按 SafetyEngine 切批。被 forbid 的不进入后续逻辑（既不 dryRun present
@@ -208,14 +226,20 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         if !rejected.isEmpty {
             GSYLog.warning(.trash, "moveToTrash 被 SafetyEngine 拦截 \(rejected.count)/\(paths.count) firstReason=\(rejected[0].reason.rawValue) firstPath=\(rejected[0].path)")
         }
+        let safetyRejectedTuples: [(String, String)] = rejected.map { ($0.path, $0.reason.rawValue) }
 
         if dryRun {
             var present = 0
-            var missing = 0
+            var missingPaths: [String] = []
             let fm = FileManager.default
             for p in allowed {
-                if fm.fileExists(atPath: p) { present += 1 } else { missing += 1 }
+                if fm.fileExists(atPath: p) {
+                    present += 1
+                } else {
+                    missingPaths.append(p)
+                }
             }
+            let missing = missingPaths.count
             let skipped = missing + rejected.count
             let err: String?
             if !rejected.isEmpty {
@@ -228,83 +252,161 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 err = nil
             }
             GSYLog.info(.trash, "moveToTrash dryRun 完成 present=\(present) skipped=\(skipped) missing=\(missing)")
-            return (present, skipped, err, [])
+            let outcome = TrashOutcome(movedPairs: [],
+                                       failedPaths: [],
+                                       safetyRejected: safetyRejectedTuples,
+                                       missingPaths: missingPaths)
+            recordOutcome(outcome)
+            return ((present, skipped, err, []), outcome)
         }
 
         // 全部都被 forbid：直接返回，不打扰 NSWorkspace
         if allowed.isEmpty {
             GSYLog.warning(.trash, "moveToTrash 全量拦截 rejected=\(rejected.count) firstReason=\(rejected.first?.reason.rawValue ?? "unknown")")
-            return (
+            let outcome = TrashOutcome(movedPairs: [],
+                                       failedPaths: [],
+                                       safetyRejected: safetyRejectedTuples,
+                                       missingPaths: [])
+            recordOutcome(outcome)
+            return ((
                 0,
                 rejected.count,
                 "safety-blocked: \(rejected.count) 路径被安全策略拦截；首条原因=\(rejected.first?.reason.rawValue ?? "unknown")",
                 []
-            )
+            ), outcome)
         }
 
-        let urls = allowed.map { URL(fileURLWithPath: $0) }
-        let rejectedCount = rejected.count
-        let firstReason = rejected.first?.reason.rawValue
+        // **v2026.06.16 修复 #2（system-images 删除拒绝）**：
+        // 旧实现把 allowed 整批（可能 100+ 条、单条 1-3GB）一次性塞给 NSWorkspace.recycle。
+        // NSWorkspace.recycle 在如下场景容易整批返回 "Some files could not be moved" 而不告知是哪条：
+        // 1. 批内单条文件被进程占用（emulator / qemu 持有 system.img 句柄）
+        // 2. 批内含 0444 只读文件 + xattr 复杂的 system image
+        // 3. 单次回收站操作有路径/数量上限
+        //
+        // 新实现：分批 → 批失败回退到单 URL 隔离重试，能精确捕获哪条 path 失败、不让一条坏路径拖垮整批。
+        let allowedURLs = allowed.map { URL(fileURLWithPath: $0) }
+        let movedPairs = await recycleInBatches(urls: allowedURLs)
+        let movedSet = Set(movedPairs.map { $0.0 })
+        let failedPaths = allowed.filter { !movedSet.contains($0) }
 
-        return await withCheckedContinuation { (cc: CheckedContinuation<(Int, Int, String?, [(String, String)]), Never>) in
-            let gate = TrashGate(cc: cc)
-            // recycle 是 async 回调，且最后只回调一次（成功 trashedURLs 列出，失败给 error）
+        let outcome = TrashOutcome(movedPairs: movedPairs,
+                                   failedPaths: failedPaths,
+                                   safetyRejected: safetyRejectedTuples,
+                                   missingPaths: [])
+        recordOutcome(outcome)
+
+        let movedCount = movedPairs.count
+        let totalSkipped = failedPaths.count + rejected.count
+        let firstReason = rejected.first?.reason.rawValue
+        let err: String?
+        if !failedPaths.isEmpty {
+            let partialNote = movedCount > 0 ? "（已成功放入废纸篓 \(movedCount) 项，可在「最近删除」恢复）" : ""
+            let firstFail = failedPaths.first.map { " 首个失败路径=\($0)" } ?? ""
+            if !rejected.isEmpty {
+                err = "recycle-failed: \(failedPaths.count) 项无法移到废纸篓\(partialNote)\(firstFail)"
+                    + "；另有 \(rejected.count) 路径被安全策略拦截（首条原因=\(firstReason ?? "unknown")）"
+            } else {
+                err = "recycle-failed: \(failedPaths.count) 项无法移到废纸篓\(partialNote)\(firstFail)"
+            }
+        } else if !rejected.isEmpty {
+            err = "safety-blocked: \(rejected.count) 路径被安全策略拦截；首条原因=\(firstReason ?? "unknown")"
+        } else {
+            err = nil
+        }
+        GSYLog.info(.trash, "moveToTrash 完成 moved=\(movedCount) failed=\(failedPaths.count) safetyRejected=\(rejected.count) totalSkipped=\(totalSkipped) pairs=\(movedPairs.count)")
+        return ((movedCount, totalSkipped, err, movedPairs), outcome)
+    }
+
+    /// **v2026.06.16 修复 #2**：分批 recycle + 单 URL 隔离重试。
+    /// - 第一轮：把 urls 按 `batchSize` 切片，每批一次 `NSWorkspace.recycle`；
+    /// - 任一批失败（含部分失败）→ 只对该批未成功的 URL **逐条** 再 recycle 一次，
+    ///   把"哪一条具体卡住"暴露出来，不让坏路径拖垮整批。
+    ///
+    /// **批大小 32**：经验值——既能利用 recycle 批处理优势降低系统开销，又能让单批失败时
+    /// 隔离重试的代价（最多 32 次单 URL recycle）可控。可改 `batchSize` 调优。
+    private func recycleInBatches(urls: [URL], batchSize: Int = 32) async -> [(String, String)] {
+        var allMoved: [(String, String)] = []
+        allMoved.reserveCapacity(urls.count)
+
+        var idx = 0
+        while idx < urls.count {
+            let end = min(idx + batchSize, urls.count)
+            let batch = Array(urls[idx..<end])
+            idx = end
+
+            let (batchMoved, batchHadError) = await Self.recycleOnce(urls: batch)
+            allMoved.append(contentsOf: batchMoved)
+
+            if batchHadError {
+                // 批失败：对未成功项逐条隔离 recycle，精确定位失败路径
+                let movedSet = Set(batchMoved.map { $0.0 })
+                let unmoved = batch.filter { !movedSet.contains($0.path) }
+                if !unmoved.isEmpty {
+                    GSYLog.warning(.trash, "moveToTrash 批失败，回退到单 URL 隔离重试 batch=\(batch.count) unmoved=\(unmoved.count)")
+                }
+                for url in unmoved {
+                    let (singleMoved, _) = await Self.recycleOnce(urls: [url])
+                    allMoved.append(contentsOf: singleMoved)
+                    // 单条仍失败：什么都不做——上层会通过 `allowed - allMoved` 反推 failedPaths
+                }
+            }
+        }
+        return allMoved
+    }
+
+    /// 单次 recycle 调用——把 NSWorkspace 的回调 async 化。
+    /// 返回：(成功 pair 列表, 是否触发 error 回调)。
+    /// 注意：error≠nil 不代表全失败，trashed 可能有部分项。
+    private static func recycleOnce(urls: [URL]) async -> (moved: [(String, String)], hadError: Bool) {
+        await withCheckedContinuation { (cc: CheckedContinuation<([(String, String)], Bool), Never>) in
+            let gate = RecycleOnceGate(cc: cc)
             NSWorkspace.shared.recycle(urls) { trashed, error in
-                let movedCount = trashed.count
-                let recycleSkipped = urls.count - movedCount
-                let totalSkipped = recycleSkipped + rejectedCount
-                // Step 7：把 NSWorkspace 回填的 [URL: URL] 转成 (originalPath, trashedPath) pair。
-                // v1.5.7：partial success 也要把已成功的项写 undo history。
-                // 之前的实现 `if error == nil { pairs = ... } else { pairs = [] }` 会让用户在
-                // "删了 100 个文件，最后 1 个失败" 时永远无法 undo 已经成功放进废纸篓的 99 个，
-                // 严重违反"删除可回滚"的产品契约。NSWorkspace.recycle 的回调语义保证 trashed
-                // 字典里的项是**确实已经移入废纸篓**的，无论 error 是否为 nil，这些 pair 都是可信的。
                 let pairs: [(String, String)] = trashed.map { (orig, trashedURL) in
                     (orig.path, trashedURL.path)
                 }
-                let err: String?
                 if let error {
-                    GSYLog.error(.trash, "NSWorkspace.recycle 失败 moved=\(movedCount)/\(urls.count) err=\(error.localizedDescription)")
-                    let partialNote = movedCount > 0 ? "（已成功放入废纸篓 \(movedCount) 项，可在「最近删除」恢复）" : ""
-                    if rejectedCount > 0 {
-                        err = "recycle-failed: \(error.localizedDescription)\(partialNote)"
-                            + "；另有 \(rejectedCount) 路径被安全策略拦截"
-                            + "（首条原因=\(firstReason ?? "unknown")）"
-                    } else {
-                        err = "recycle-failed: \(error.localizedDescription)\(partialNote)"
-                    }
-                } else if rejectedCount > 0 {
-                    err = "safety-blocked: \(rejectedCount) 路径被安全策略拦截；首条原因=\(firstReason ?? "unknown")"
-                } else {
-                    err = nil
+                    GSYLog.warning(.trash, "NSWorkspace.recycle 单批失败 batchSize=\(urls.count) moved=\(pairs.count) err=\(error.localizedDescription)")
                 }
-                GSYLog.info(.trash, "moveToTrash 完成 moved=\(movedCount) skipped=\(totalSkipped) pairs=\(pairs.count)")
-                gate.fire((movedCount, totalSkipped, err, pairs))
+                gate.fire((pairs, error != nil))
             }
         }
     }
+
+    // MARK: - lastOutcome 快照（OperationResultSheet 消费）
+
+    private let outcomeLock = NSLock()
+    private var _lastOutcome: TrashOutcome?
+
+    private func recordOutcome(_ outcome: TrashOutcome) {
+        outcomeLock.lock()
+        _lastOutcome = outcome
+        outcomeLock.unlock()
+    }
+
+    /// 暴露最后一次 moveToTrash 的结构化结果。UI 在 await 后立刻读。
+    public func snapshotLastOutcome() -> TrashOutcome? {
+        outcomeLock.lock()
+        defer { outcomeLock.unlock() }
+        return _lastOutcome
+    }
 }
 
-/// recycle 回调可能在任意线程；用 OneShot 保证 cc 只 resume 一次。
-private final class TrashGate: @unchecked Sendable {
+/// `recycleOnce` 用的单次 continuation 守门员，避免 NSWorkspace 偶发的多次回调导致双 resume crash。
+private final class RecycleOnceGate: @unchecked Sendable {
     private let lock = NSLock()
     private var fired = false
-    private let cc: CheckedContinuation<(Int, Int, String?, [(String, String)]), Never>
+    private let cc: CheckedContinuation<([(String, String)], Bool), Never>
 
-    init(cc: CheckedContinuation<(Int, Int, String?, [(String, String)]), Never>) {
+    init(cc: CheckedContinuation<([(String, String)], Bool), Never>) {
         self.cc = cc
     }
 
-    @discardableResult
-    func fire(_ value: (Int, Int, String?, [(String, String)])) -> Bool {
+    func fire(_ value: ([(String, String)], Bool)) {
         lock.lock()
-        if fired {
-            lock.unlock()
-            return false
-        }
+        guard !fired else { lock.unlock(); return }
         fired = true
         lock.unlock()
         cc.resume(returning: value)
-        return true
     }
 }
+

@@ -768,6 +768,15 @@ public final class ScanCoordinator: ObservableObject {
         )
         lastFinishedCategoryID = categoryID
         isScanning = false
+        // **Review fix-soon #3，2026-06-15**：scanKnownVersionedRoots 会改变 snapshot
+        // 里 "developer.versioned" 的行集合（特别是 PR 新增的 Android SDK / JetBrains
+        // 分组规则上线后，老 cache 里同路径的子项可能与新分组结果不一致）。
+        // 与 [scan(category:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1495-L1497)
+        // 走完后调 [invalidateTreeCacheAfterScan()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1495-L1497)
+        // 的行为对齐：本入口同样清掉 treeChildrenCache 并 bump childrenCacheVersion，
+        // 让 TreeBrowserView 不会用旧 sessionID 的 store-fallback 结果误展示已被
+        // 新规则重新分组的版本子目录。
+        invalidateTreeCacheAfterScan()
         GSYLog.info(.app,
                     "scanKnownVersionedRoots: \(rows.count) versioned candidates, total=\(totalAccum)")
     }
@@ -1494,6 +1503,43 @@ public final class ScanCoordinator: ObservableObject {
     @MainActor
     fileprivate func invalidateTreeCacheAfterScan() {
         treeChildrenCache.removeAll(keepingCapacity: true)
+        bumpChildrenCacheVersion()
+        bumpStructuralRevision()
+    }
+
+    /// v2026.06 用户反馈 #1：Tree 右键"刷新此目录"入口。
+    ///
+    /// **范围**：仅清掉 store-fallback 缓存（[treeChildrenCache](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L299)）
+    /// 中以 `path` 为根的所有 cacheKey（含子目录、所有 sortKey 组合），并触发
+    /// [bumpStructuralRevision()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L379)
+    /// 让 [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+    /// 重新走 [directChildren(of:sortedBy:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1422)
+    /// → store-fallback 异步重拉。
+    ///
+    /// **不做的事**：
+    /// 1. 不重启 BulkScanner（那是 runScan 入口的事），全量扫描成本无法承担在右键菜单里；
+    /// 2. 不改 `childEdges`（扫描期内存索引）——若该 path 命中 childEdges，下一帧 SwiftUI 仍走
+    ///    [materializeFromMemory](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1432)
+    ///    返回 internal 索引（这是按设计：扫描态下树形已经是最新的，缓存只是冷启动的兜底）。
+    /// 3. 不动 in-flight 集合，让正在飞的 task 自然写回（跨会话守卫已经保护好脏数据）。
+    ///
+    /// 用户在 deepIndex=off 路径下右键刷新一个目录，相当于"丢掉 store fallback 那一份残缺
+    /// 快照，重新走 GRDB"——典型场景：浏览器 cache / Xcode DerivedData 在 app 后台跑过一轮，
+    /// 用户回来发现 size 对不上，右键 refresh 即可。
+    @MainActor
+    public func rescanSubtree(at path: String) {
+        let prefixSelf = "\(path)|"
+        let prefixChildren = "\(path)/"
+        let removedKeys = treeChildrenCache.keys.filter { key in
+            key.hasPrefix(prefixSelf) || key.hasPrefix(prefixChildren)
+        }
+        guard !removedKeys.isEmpty || childEdges[path] == nil else {
+            // 内存索引命中（扫描期最新数据）且无 store-fallback 缓存：无需任何动作。
+            return
+        }
+        for key in removedKeys {
+            treeChildrenCache.removeValue(forKey: key)
+        }
         bumpChildrenCacheVersion()
         bumpStructuralRevision()
     }

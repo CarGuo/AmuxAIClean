@@ -1,4 +1,5 @@
 import Foundation
+import LogKit
 
 /// Mole 对齐 M3-T1：已知"按版本号保留最新 N 个"的 collection root 注册表。
 ///
@@ -30,17 +31,32 @@ public enum KnownVersionedRoots {
         public let ordering: VersionedRetainScanner.Ordering
         /// 规则 ID（与 vendors.yaml 的 vendor 名一致 + 子键），用于 perRoot 渲染 / 日志聚合
         public let ruleID: String
+        /// v1.7 PR-3 新增：子目录名分组正则（可选）。
+        ///
+        /// - `nil`（默认）：整 `collectionRoot` 下所有子目录视为单一组，行为完全等同 PR-3 之前；
+        /// - 非 nil：对每个子目录名 fullMatch，提取**第一个 capture group** 作为 group key；
+        ///   未匹配的子目录会被忽略（不参与排序、也不会被识别为旧版本）。
+        ///   每组独立排序 + 应用 keepLatest，避免跨产品比版本号（典型场景：
+        ///   `~/Library/Caches/JetBrains` 下并存 `IntelliJIdea2024.1` / `PyCharm2024.2` / `WebStorm2023.3`，
+        ///   按产品名分组后 IDEA 与 PyCharm 各自独立保留最新 N 版）。
+        ///
+        /// **降级保护**：若正则编译失败（NSRegularExpression init 抛错），
+        /// [scanAll](x-source-tag://KnownVersionedRoots.scanAll) 会 warn 一行日志，
+        /// 然后**降级为 nil 行为**（整 root 一组）以保证不丢扫描；测试 [KnownVersionedRootsGroupingTests] 覆盖。
+        public let groupingRegex: String?
 
         public init(relativePath: String,
                     displayName: String,
                     keepLatest: Int,
                     ordering: VersionedRetainScanner.Ordering,
-                    ruleID: String) {
+                    ruleID: String,
+                    groupingRegex: String? = nil) {
             self.relativePath = relativePath
             self.displayName = displayName
             self.keepLatest = keepLatest
             self.ordering = ordering
             self.ruleID = ruleID
+            self.groupingRegex = groupingRegex
         }
     }
 
@@ -72,6 +88,50 @@ public enum KnownVersionedRoots {
               keepLatest: 1,
               ordering: .semverPreferred,
               ruleID: "jetbrains.toolbox-apps.versioned"),
+        // —— Android SDK 子目录（对位 DEVELOPER_ONE_CLICK_PLAN §3）——
+        // 三类子目录均为「按版本号扁平排布」，semverPreferred 对位 `34.0.0` / `android-34` / `android-34-ext10` 等。
+        // keepLatest 取 2：构建工程实践常并存两套版本（debug 主线 + 备用回归），多了基本是历史升级残留。
+        // 注意：Android SDK 安装位置受 ANDROID_HOME / ANDROID_SDK_ROOT 环境变量影响，
+        // 这里仅注册 macOS 默认安装路径 `~/Library/Android/sdk`；非默认路径靠用户自定义路径补全（v1.8 UI）。
+        Entry(relativePath: "Library/Android/sdk/build-tools",
+              displayName: "Android SDK · build-tools（旧版本）",
+              keepLatest: 2,
+              ordering: .semverPreferred,
+              ruleID: "android.sdk-build-tools.versioned"),
+        Entry(relativePath: "Library/Android/sdk/platforms",
+              displayName: "Android SDK · platforms（旧版本）",
+              keepLatest: 2,
+              ordering: .semverPreferred,
+              ruleID: "android.sdk-platforms.versioned"),
+        Entry(relativePath: "Library/Android/sdk/system-images",
+              displayName: "Android SDK · system-images（旧版本）",
+              keepLatest: 2,
+              ordering: .semverPreferred,
+              ruleID: "android.sdk-system-images.versioned"),
+        // —— JetBrains 跨产品分组三条（v1.7 PR-3，对位 vendors.yaml JetBrains 节）——
+        // 同 root 下并存多个产品（IntelliJIdea / PyCharm / WebStorm / GoLand / Rider /
+        // CLion / DataGrip / RubyMine / PhpStorm / AppCode），按 `^([A-Za-z]+)\d{4}\.\d+$`
+        // 分组后每产品独立保留最新 keepLatest 版。
+        // keepLatest=1：JetBrains IDE 大版本年更新（2024.1 → 2024.2 → 2024.3），用户通常只用最新一档。
+        // 不匹配的子目录（如 Toolbox 自身、consentOptions）不会被识别（fullMatch 兜底）。
+        Entry(relativePath: "Library/Caches/JetBrains",
+              displayName: "JetBrains · 索引/编译缓存（旧版本）",
+              keepLatest: 1,
+              ordering: .semverPreferred,
+              ruleID: "jetbrains.caches.versioned-per-product",
+              groupingRegex: #"^([A-Za-z]+)\d{4}\.\d+$"#),
+        Entry(relativePath: "Library/Application Support/JetBrains",
+              displayName: "JetBrains · 配置(部分)（旧版本）",
+              keepLatest: 1,
+              ordering: .semverPreferred,
+              ruleID: "jetbrains.app-support.versioned-per-product",
+              groupingRegex: #"^([A-Za-z]+)\d{4}\.\d+$"#),
+        Entry(relativePath: "Library/Logs/JetBrains",
+              displayName: "JetBrains · 日志（旧版本）",
+              keepLatest: 1,
+              ordering: .semverPreferred,
+              ruleID: "jetbrains.logs.versioned-per-product",
+              groupingRegex: #"^([A-Za-z]+)\d{4}\.\d+$"#),
     ]
 
     // MARK: - 辅助
@@ -121,15 +181,97 @@ public enum KnownVersionedRoots {
             }
             let options = VersionedRetainScanner.Options(keepLatest: entry.keepLatest,
                                                           ordering: entry.ordering)
+
+            if let regex = entry.groupingRegex {
+                // PR-3 分组路径：先按正则 capture group 1 把子目录分桶，每桶独立 detect。
+                result.append(contentsOf: scanGrouped(entry: entry,
+                                                      collectionRoot: collectionRoot,
+                                                      options: options,
+                                                      groupingRegex: regex))
+            } else {
+                // PR-3 之前的旧行为：整 root 一组，直接 detect。
+                let rawHits = VersionedRetainScanner.detect(collectionRoot: collectionRoot,
+                                                            options: options)
+                for rh in rawHits {
+                    result.append(Hit(url: rh.url,
+                                      ruleID: entry.ruleID,
+                                      displayName: entry.displayName,
+                                      collectionRoot: rh.collectionRoot,
+                                      versionName: rh.versionName,
+                                      retainedLatest: rh.retainedLatest))
+                }
+            }
+        }
+        return result
+    }
+
+    /// PR-3 分组扫描内核（仅在 entry.groupingRegex 非 nil 时调用）。
+    ///
+    /// - 正则编译失败 → warn 一行，**降级为旧行为**（整 root 一组）保证不漏扫；
+    /// - 子目录名按 fullMatch 提取 group 1 作为 key（如 `IntelliJIdea2024.1` → `IntelliJIdea`）；
+    /// - 未匹配的子目录被忽略（避免把 `.DS_Store` / Toolbox 自身这类无版本号目录误判）；
+    /// - 每个 group 内单独跑 [VersionedRetainScanner.detect]，但因 detect 入口要求 collectionRoot
+    ///   是真实路径，这里改用其底层排序逻辑（直接复用 detect 的判定语义，避免造临时目录）。
+    private static func scanGrouped(entry: Entry,
+                                    collectionRoot: URL,
+                                    options: VersionedRetainScanner.Options,
+                                    groupingRegex: String) -> [Hit] {
+        let fm = FileManager.default
+        guard let nsRegex = try? NSRegularExpression(pattern: groupingRegex) else {
+            GSYLog.warning(.scan,
+                        "KnownVersionedRoots groupingRegex 编译失败，降级为旧行为 ruleID=\(entry.ruleID) pattern=\(groupingRegex)")
             let rawHits = VersionedRetainScanner.detect(collectionRoot: collectionRoot,
                                                         options: options)
-            for rh in rawHits {
-                result.append(Hit(url: rh.url,
+            return rawHits.map {
+                Hit(url: $0.url, ruleID: entry.ruleID, displayName: entry.displayName,
+                    collectionRoot: $0.collectionRoot, versionName: $0.versionName,
+                    retainedLatest: $0.retainedLatest)
+            }
+        }
+
+        guard let children = try? fm.contentsOfDirectory(atPath: collectionRoot.path) else {
+            return []
+        }
+
+        // 按 group key 分桶
+        var groups: [String: [(name: String, url: URL)]] = [:]
+        for name in children {
+            if name.hasPrefix(".") { continue }
+            let child = collectionRoot.appendingPathComponent(name)
+            var childIsDir: ObjCBool = false
+            guard fm.fileExists(atPath: child.path, isDirectory: &childIsDir),
+                  childIsDir.boolValue else { continue }
+
+            let range = NSRange(name.startIndex..<name.endIndex, in: name)
+            guard let match = nsRegex.firstMatch(in: name, range: range),
+                  match.range.location == 0,
+                  match.range.length == (name as NSString).length,
+                  match.numberOfRanges >= 2,
+                  let groupRange = Range(match.range(at: 1), in: name) else {
+                continue
+            }
+            let key = String(name[groupRange])
+            groups[key, default: []].append((name, child))
+        }
+
+        var result: [Hit] = []
+        result.reserveCapacity(groups.count * 2)
+
+        for (groupKey, candidates) in groups {
+            guard candidates.count > options.keepLatest else { continue }
+            let sorted = VersionedRetainScanner.sort(candidates: candidates,
+                                                     ordering: options.ordering)
+            let retainCount = options.keepLatest
+            let oldCount = sorted.count - retainCount
+            let retainedLatest = sorted.last?.name ?? ""
+            for i in 0..<oldCount {
+                let old = sorted[i]
+                result.append(Hit(url: old.url,
                                   ruleID: entry.ruleID,
-                                  displayName: entry.displayName,
-                                  collectionRoot: rh.collectionRoot,
-                                  versionName: rh.versionName,
-                                  retainedLatest: rh.retainedLatest))
+                                  displayName: "\(entry.displayName) · \(groupKey)",
+                                  collectionRoot: collectionRoot,
+                                  versionName: old.name,
+                                  retainedLatest: retainedLatest))
             }
         }
         return result

@@ -17,6 +17,26 @@ final class KnownVersionedRootsTests: XCTestCase {
         XCTAssertTrue(paths.contains("Library/Application Support/JetBrains/Toolbox/apps"))
     }
 
+    func test_entries_包含_Android_SDK_三条_keepLatest_2_且_semverPreferred() throws {
+        let androidPaths = [
+            "Library/Android/sdk/build-tools",
+            "Library/Android/sdk/platforms",
+            "Library/Android/sdk/system-images",
+        ]
+        for p in androidPaths {
+            guard let entry = KnownVersionedRoots.entries.first(where: { $0.relativePath == p }) else {
+                XCTFail("缺失 Android SDK entry：\(p)")
+                continue
+            }
+            XCTAssertEqual(entry.keepLatest, 2, "\(p) keepLatest 应为 2（DEVELOPER_ONE_CLICK_PLAN §3）")
+            if case .semverPreferred = entry.ordering {} else {
+                XCTFail("\(p) 应使用 semverPreferred 才能正确比较 34.0.0 / android-34 / android-34-ext10")
+            }
+            XCTAssertTrue(entry.ruleID.hasPrefix("android.sdk-"),
+                          "\(p) ruleID 应以 android.sdk- 开头，便于 UI 聚合")
+        }
+    }
+
     func test_DeviceSupport_全部_keepLatest_是_2_且_semverPreferred() throws {
         for entry in KnownVersionedRoots.entries where entry.relativePath.contains("DeviceSupport") {
             XCTAssertEqual(entry.keepLatest, 2, "DeviceSupport \(entry.relativePath) keepLatest 应为 2")
@@ -120,6 +140,57 @@ final class KnownVersionedRootsTests: XCTestCase {
         let hits = KnownVersionedRoots.scanAll(home: tmp)
         XCTAssertEqual(hits.count, 2, "3 版本 - keepLatest(1) = 2 个旧版本")
         XCTAssertEqual(hits.first?.ruleID, "jetbrains.toolbox-apps.versioned")
+    }
+
+    func test_scanAll_构造_Android_SDK_build_tools_5_版本_keepLatest_2_产出_3_旧版本() throws {
+        let tmp = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let bt = tmp.appendingPathComponent("Library/Android/sdk/build-tools", isDirectory: true)
+        try FileManager.default.createDirectory(at: bt, withIntermediateDirectories: true)
+        // 真实样本：build-tools 子目录名是纯 semver
+        for v in ["30.0.3", "31.0.0", "33.0.1", "34.0.0", "35.0.0"] {
+            try FileManager.default.createDirectory(
+                at: bt.appendingPathComponent(v, isDirectory: true),
+                withIntermediateDirectories: true)
+        }
+
+        let hits = KnownVersionedRoots.scanAll(home: tmp)
+        XCTAssertEqual(hits.count, 3, "5 版本 - keepLatest(2) = 3 个旧版本")
+        let oldNames = Set(hits.map(\.versionName))
+        XCTAssertEqual(oldNames, ["30.0.3", "31.0.0", "33.0.1"],
+                       "应保留 34.0.0 / 35.0.0 两个最新版本")
+        for h in hits {
+            XCTAssertEqual(h.ruleID, "android.sdk-build-tools.versioned")
+            XCTAssertEqual(h.retainedLatest, "35.0.0",
+                           "retainedLatest 应记录最大版本 35.0.0")
+        }
+    }
+
+    func test_scanAll_构造_Android_SDK_platforms_含_android_dash_前缀_semver_正确识别() throws {
+        let tmp = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let pl = tmp.appendingPathComponent("Library/Android/sdk/platforms", isDirectory: true)
+        try FileManager.default.createDirectory(at: pl, withIntermediateDirectories: true)
+        // 真实样本：platforms 子目录名带 `android-` 前缀
+        for v in ["android-30", "android-33", "android-34", "android-35"] {
+            try FileManager.default.createDirectory(
+                at: pl.appendingPathComponent(v, isDirectory: true),
+                withIntermediateDirectories: true)
+        }
+
+        let hits = KnownVersionedRoots.scanAll(home: tmp)
+        XCTAssertEqual(hits.count, 2, "4 版本 - keepLatest(2) = 2 个旧版本")
+        let oldNames = Set(hits.map(\.versionName))
+        // semverPreferred 会提取首段 [0-9.]+ 切片做 compareNumeric；
+        // `android-` 是前缀，semver 解析失败时 fallback 字典序。
+        // 字典序结果：android-30 < android-33 < android-34 < android-35
+        // 因此最旧两版应该是 android-30 / android-33
+        XCTAssertEqual(oldNames, ["android-30", "android-33"])
+        for h in hits {
+            XCTAssertEqual(h.ruleID, "android.sdk-platforms.versioned")
+        }
     }
 
     // MARK: - helper

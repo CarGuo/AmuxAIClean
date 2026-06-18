@@ -27,15 +27,103 @@ public protocol DeletionPipeline: Sendable {
     /// 历史上 [MainView.performDelete](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
     /// 只对 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)
     /// 走 `if let trash = pipeline as? TrashPipeline` cast 注入；现在 Helper 路线已下线，
-    /// 实际只剩 TrashPipeline 一份实现，但协议层仍保留这个钩子——给未来如 dry-run-only 调试管道、
-    /// 远程 audit 管道等新实现一个安全默认值，不强迫每个实现都接 accessDenied。
+    /// 实际只剩 TrashPipeline 一份实现。
+    ///
+    /// **v2026.06.17 (AUDIT A2)**：取消 protocol 默认 no-op 实现 ——
+    /// 默认 no-op 让"上层忘了调"变成静默放行而非 compile-error，是契约靠手记维系的脆弱点。
+    /// 现在所有 `DeletionPipeline` 实现都必须显式提供该方法：
+    /// - 真删除链路（[TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)）：真存进 `accessDeniedPaths` Set 并 normalize；
+    /// - 测试 stub / dry-run 调试管道：可显式 no-op，但**必须自己写出来**，签字画押。
     func setAccessDeniedPaths(_ paths: Set<String>)
+
+    /// v2026.06.16：上一轮 `moveToTrash` 的**结构化结果快照**——给 OperationResultSheet 用。
+    ///
+    /// 旧协议返回的 4 元组 `(moved, skipped, err?, pairs)` 只能用一行文案拼接
+    /// "Trash: X succeeded / Y skipped\nError: ..."，UI 没法做"展开失败列表 / 重试失败项"。
+    /// 改协议返回值的代价过大（≥10 处生产 + ≥10 处测试），故走"外挂结构体"模式：
+    /// 每次 `moveToTrash` 内部记录到 lastOutcome，UI 在 await 之后立刻 `snapshotLastOutcome()` 读。
+    ///
+    /// 协议给默认 nil 实现——历史 stub / dry-run pipeline 不强制提供。
+    ///
+    /// **v2026.06.22 (P0-3)**：side-channel 单槽位被识别为线程安全脆弱点
+    /// （MainView/WorkflowDetailView 任何两次并发 `moveToTrash` 都会互相覆盖快照，
+    /// 导致写错 UndoHistory + 展示错 OperationResultSheet）。生产路径应改用
+    /// 新方法 [moveToTrashReturningOutcome](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift)
+    /// 直接拿返回值；本方法保留向后兼容但仅用作"老调用方临时回退"，不应被新代码引用。
+    func snapshotLastOutcome() -> TrashOutcome?
+
+    /// **v2026.06.22 (P0-3)**：替代 `moveToTrash + snapshotLastOutcome()` 的 side-channel 模式，
+    /// 一次调用同时返回旧 4 元组（向后兼容）与结构化 `TrashOutcome`。
+    ///
+    /// 调用方应优先使用 `outcome` 字段；4 元组保留是为了让历史 call site 渐进迁移。
+    ///
+    /// 默认实现走旧 `moveToTrash` + `snapshotLastOutcome()`，保证已有 stub 不破。
+    func moveToTrashReturningOutcome(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?)
+}
+
+/// v2026.06.16：单次 `moveToTrash` 的结构化结果。`OperationResultSheet` 直接消费。
+public struct TrashOutcome: Sendable, Equatable {
+    /// 实际成功移入废纸篓的 (原路径, 废纸篓路径) 对——可写 UndoHistory。
+    public let movedPairs: [(originalPath: String, trashedPath: String)]
+    /// `NSWorkspace.recycle` 真正失败的路径清单（不含被 SafetyEngine 拦的）。
+    /// 来自分批 recycle 中的"批失败回退单 URL 隔离"路径。
+    public let failedPaths: [String]
+    /// 被 [SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 或 `accessDeniedPaths`
+    /// 拦下的路径清单（拒绝原因可读）。
+    public let safetyRejected: [(path: String, reason: String)]
+    /// dryRun 模式下的"路径不存在"清单（仅 dryRun=true 时填充）。
+    public let missingPaths: [String]
+
+    public init(movedPairs: [(String, String)],
+                failedPaths: [String],
+                safetyRejected: [(String, String)],
+                missingPaths: [String]) {
+        self.movedPairs = movedPairs.map { (originalPath: $0.0, trashedPath: $0.1) }
+        self.failedPaths = failedPaths
+        self.safetyRejected = safetyRejected.map { (path: $0.0, reason: $0.1) }
+        self.missingPaths = missingPaths
+    }
+
+    /// 总计提交的路径数（成功 + 失败 + 拒绝 + 缺失）。
+    public var totalSubmitted: Int {
+        movedPairs.count + failedPaths.count + safetyRejected.count + missingPaths.count
+    }
+
+    /// Equatable：tuple 类型自定义比较（Swift tuple 不直接 Equatable）。
+    public static func == (lhs: TrashOutcome, rhs: TrashOutcome) -> Bool {
+        guard lhs.failedPaths == rhs.failedPaths,
+              lhs.missingPaths == rhs.missingPaths,
+              lhs.movedPairs.count == rhs.movedPairs.count,
+              lhs.safetyRejected.count == rhs.safetyRejected.count else { return false }
+        for i in lhs.movedPairs.indices {
+            if lhs.movedPairs[i].originalPath != rhs.movedPairs[i].originalPath
+                || lhs.movedPairs[i].trashedPath != rhs.movedPairs[i].trashedPath {
+                return false
+            }
+        }
+        for i in lhs.safetyRejected.indices {
+            if lhs.safetyRejected[i].path != rhs.safetyRejected[i].path
+                || lhs.safetyRejected[i].reason != rhs.safetyRejected[i].reason {
+                return false
+            }
+        }
+        return true
+    }
 }
 
 extension DeletionPipeline {
-    /// 默认 no-op：给"不需要 accessDenied 投影"的 DeletionPipeline 实现一个安全默认值。
-    /// TrashPipeline 自己 override 真实现。
-    public func setAccessDeniedPaths(_ paths: Set<String>) {
-        // intentional no-op
+    /// 默认 nil：历史 stub / dry-run pipeline 没有结构化结果可暴露——返回 nil 即可。
+    /// UI 拿到 nil 会回退到旧的 4 元组拼接文案。
+    public func snapshotLastOutcome() -> TrashOutcome? {
+        return nil
+    }
+
+    /// **P0-3 默认实现**：复用旧 `moveToTrash` + `snapshotLastOutcome()`。
+    /// 真删除链路（TrashPipeline）会 override 此方法，**原子**返回 outcome，
+    /// 不再依赖 side-channel 快照槽位；stub / dryRun pipeline 走默认即可。
+    public func moveToTrashReturningOutcome(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
+        let legacy = await moveToTrash(paths: paths, dryRun: dryRun)
+        let outcome = snapshotLastOutcome()
+        return (legacy, outcome)
     }
 }

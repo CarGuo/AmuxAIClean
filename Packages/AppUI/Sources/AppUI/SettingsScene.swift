@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import LogKit
 import ScanKit
+import AIKit
 
 /// v1.0 设置窗口（⌘, 自动可用）。
 ///
@@ -15,6 +16,14 @@ public struct SettingsScene: View {
     @Bindable private var settings: AppSettings
     private let pathStore: UserPathStore
     @Bindable private var updateChecker: UpdateChecker
+    /// M5 / 2026-06：AI 模块配置。
+    /// **必须**由 App 层（[GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)）
+    /// 注入与 [MainView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
+    /// 共享同一份 @Observable 实例：⌘, 改了 AI Enabled / baseURL，RowView contextMenu
+    /// 的"问 AI"按钮要立刻刷新可见性。若两端各自 `AISettings()`，UserDefaults 持久化
+    /// 一致但 @Observable 通知不跨实例 → 需重启 App 才生效（Review fix #2，2026-06-15）。
+    /// 为兼容旧测试 / Preview，参数允许省略，省略时仍 new 一份私有实例（仅 settings 窗口自用）。
+    @Bindable private var aiSettings: AISettings
 
     /// 路径列表的 UI 镜像。actor 数据要在 SwiftUI 里显示必须先快照。
     @State private var pathsMirror: [URL] = []
@@ -53,10 +62,14 @@ public struct SettingsScene: View {
         }
     }
 
-    public init(settings: AppSettings, pathStore: UserPathStore, updateChecker: UpdateChecker) {
+    public init(settings: AppSettings,
+                pathStore: UserPathStore,
+                updateChecker: UpdateChecker,
+                aiSettings: AISettings? = nil) {
         self.settings = settings
         self.pathStore = pathStore
         self.updateChecker = updateChecker
+        self.aiSettings = aiSettings ?? AISettings()
     }
 
     public var body: some View {
@@ -107,6 +120,14 @@ public struct SettingsScene: View {
                         Text("settings.tab.storage", bundle: .module)
                     } icon: {
                         Image(systemName: "internaldrive")
+                    }
+                }
+            AISettingsTab(settings: aiSettings)
+                .tabItem {
+                    Label {
+                        Text("settings.tab.ai", bundle: .module)
+                    } icon: {
+                        Image(systemName: "sparkles")
                     }
                 }
             advancedTab

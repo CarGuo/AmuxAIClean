@@ -1,5 +1,6 @@
 import SwiftUI
 import SafetyKit
+import AIKit
 
 /// 列表行 —— 颜色徽章 + 体积条 + 勾选框（forbid 不可勾）。
 /// 见 PITFALLS §5.5：默认勾选只勾 .safe，confirm 不勾，forbid 锁定。
@@ -7,6 +8,11 @@ struct RowView: View {
     let row: RowItem
     @Binding var selected: Bool
     let maxBytes: Int64
+    /// M5 / 2026-06：AI 入口配置。
+    /// - nil 或 `!isReadyForUI`：contextMenu 不显示"问 AI"按钮（功能未启用）
+    /// - 非 nil：点击触发 `onAskAI(row)` 由父视图弹 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
+    var aiSettings: AISettings?
+    var onAskAI: ((RowItem) -> Void)?
 
     /// v1.3：active 行的字节数字脉动动画相位（0→1→0），由 .onAppear 触发。
     /// 仅在 row.isActive 时驱动，让"正在被扫描"的行字节数字明显闪动。
@@ -103,6 +109,17 @@ struct RowView: View {
             } label: {
                 Label(String(localized: "row.context.whitelist.add", bundle: .module),
                       systemImage: "hand.raised")
+            }
+            // M5 / 2026-06：按需触发"问 AI"。仅当 AISettings 已启用且具备最小条件
+            // （baseURL/model 非空）时显示；API Key 缺失留到 sheet 内提示。
+            if let ai = aiSettings, ai.isReadyForUI, let cb = onAskAI {
+                Divider()
+                Button {
+                    cb(row)
+                } label: {
+                    Label(String(localized: "row.context.ask_ai", bundle: .module),
+                          systemImage: "sparkles")
+                }
             }
         }
     }

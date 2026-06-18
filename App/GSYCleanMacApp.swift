@@ -4,6 +4,7 @@ import AppKit
 import LogKit
 import SafetyKit
 import ScanKit
+import AIKit
 
 @main
 struct GSYCleanMacApp: App {
@@ -13,6 +14,15 @@ struct GSYCleanMacApp: App {
     /// MainView 与 SettingsScene 共用同一份引用，⌘, 改了立刻生效。
     @State private var settings = AppSettings()
     private let pathStore = UserPathStore()
+
+    /// M5 / 2026-06：AI 模块配置——**必须由 App 层统一持有**并同时注入
+    /// [MainView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
+    /// 与 [SettingsScene](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SettingsScene.swift)，
+    /// 否则两个场景各自 new 一份 [AISettings](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/AISettings.swift)
+    /// 实例：底层 UserDefaults 仍一致，但 @Observable 的 in-process 通知不会跨实例传递，
+    /// 用户在 ⌘, 改了 AI Enabled / baseURL 后，RowView contextMenu 不会立刻刷新
+    /// （需重启 App 才生效）。详见 Review fix #2，2026-06-15。
+    @State private var aiSettings = AISettings()
 
     @State private var showTCCGuide: Bool = false
 
@@ -104,7 +114,8 @@ struct GSYCleanMacApp: App {
             MainView(vendors: vendors,
                      settings: settings,
                      pathStore: pathStore,
-                     coordinator: coordinator)
+                     coordinator: coordinator,
+                     aiSettings: aiSettings)
             .frame(minWidth: 1080, minHeight: 640)
             .environment(\.locale, settings.effectiveLocale)
             .task {
@@ -297,7 +308,10 @@ struct GSYCleanMacApp: App {
 
         // v1.0：标准 ⌘, 设置窗口（隐藏文件 toggle / 大文件阈值 / 自定义路径）。
         Settings {
-            SettingsScene(settings: settings, pathStore: pathStore, updateChecker: updateChecker)
+            SettingsScene(settings: settings,
+                          pathStore: pathStore,
+                          updateChecker: updateChecker,
+                          aiSettings: aiSettings)
                 .environment(\.locale, settings.effectiveLocale)
         }
     }

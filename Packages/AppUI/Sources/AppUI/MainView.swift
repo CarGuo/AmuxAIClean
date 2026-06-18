@@ -3,6 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 import ScanKit
 import SafetyKit
+import AIKit
 
 /// v1.3 review-fix B3：跨 target 的通知名常量。
 /// App 层在主窗口已被销毁的情况下 post 这个通知，MainView 监听并调 `openWindow(id:)` 重建。
@@ -29,6 +30,11 @@ public struct MainView: View {
     /// 当前版本仅用于内部 guard"删除中不要重复触发"。
     @State private var isDeleting: Bool = false
     @State private var deleteResult: String?
+
+    /// **v2026.06.16 修复 #4**：删除主路径 + 大文件 trash 的结构化结果 sheet。
+    /// 取代旧 alert 拼接 `delete.result.success/failure %@ %lld %lld` 的纯文字弹窗。
+    /// `deleteResult` 仍保留——`delete.result.path_invalid` 等纯路径校验提示仍走旧 alert。
+    @State private var deleteResultPayload: OperationResultPayload?
     @State private var isDropTargeted: Bool = false
     /// v1.0 T3：结果区视图模式（清单 vs 多层树）。
     ///
@@ -86,13 +92,23 @@ public struct MainView: View {
     private let recorder: HeuristicRecorder
     private let settings: AppSettings
     private let pathStore: UserPathStore
+    /// M5 / 2026-06：AI 模块配置。**必须由 App 层注入**与 [SettingsScene](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SettingsScene.swift)
+    /// 共享同一份 @Observable 实例：用户在 ⌘, 切 AI Enabled → RowView contextMenu
+    /// 的"问 AI"项要立刻刷新可见性。若各自 new 两份独立实例，虽然底层 UserDefaults
+    /// 一致，但 @Observable 的 in-process 通知不会跨实例传，会导致需重启 App 才生效
+    /// （Review fix #2，2026-06-15）。为兼容旧测试构造保留可选参数；省略时仍 new
+    /// 一份私有实例（同 process 内只有 MainView 自己用，无 drift 风险）。
+    @State private var aiSettings: AISettings
+    /// 用户在 contextMenu 点过的最近一行 —— 非 nil 即弹 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)。
+    @State private var aiAskingRow: RowItem?
 
     public init(pipeline: (any DeletionPipeline)? = nil,
                 vendors: [VendorRule] = [],
                 recorder: HeuristicRecorder = HeuristicRecorder(),
                 settings: AppSettings? = nil,
                 pathStore: UserPathStore? = nil,
-                coordinator: ScanCoordinator? = nil) {
+                coordinator: ScanCoordinator? = nil,
+                aiSettings: AISettings? = nil) {
         // v0 默认走 NSWorkspace.recycle（PITFALLS §5.9）：不需要 root，不需要 99 美元 Apple Developer Program
         // 用户撤销可以走 Finder → 显示废纸篓 → 放回原位
         // M4-P0 修复：把 vendors 透传到 TrashPipeline，让最后闸门启用 vendor 路径树判定
@@ -103,6 +119,8 @@ public struct MainView: View {
         // v1.3：coordinator 允许从 App 层注入，让 [FloatingScanHUD](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
         // 与主窗口共享同一个 ScanCoordinator 实例（订阅同一份 snapshot/isScanning），避免双扫。
         _coordinator = StateObject(wrappedValue: coordinator ?? ScanCoordinator(vendors: vendors))
+        // M5 / Review fix #2：AISettings 必须 App 层注入。未注入时（老测试 / 预览）退回独立实例。
+        _aiSettings = State(initialValue: aiSettings ?? AISettings())
     }
 
     /// 全部类目（preset + custom + libraryBrowse + largeFiles + fullDisk）—— 用于 toolbar / scan 查找。
@@ -157,6 +175,12 @@ public struct MainView: View {
                 }
             )
         }
+        // M5 / 2026-06：AI 询问 sheet —— item-based 触发，aiAskingRow 非 nil 即弹。
+        .sheet(item: $aiAskingRow) { row in
+            AIAdviceSheet(row: row,
+                          aiSettings: aiSettings,
+                          onClose: { aiAskingRow = nil })
+        }
         // **v1.5.3 修订**：之前这里挂了一个 ProgressView sheet 拦在主页面前面，
         // 视觉上变成"整页消失只剩 loading"，且 sheet dismiss 触发的重渲染 + store-fallback
         // 还会把已删项再从 GRDB 拉回来。现在删除走"乐观更新"：
@@ -168,6 +192,12 @@ public struct MainView: View {
             Button(String(localized: "main.delete.result.ok", bundle: .module)) { deleteResult = nil }
         } message: {
             Text(deleteResult ?? "")
+        }
+        // **v2026.06.16 修复 #4**：删除主路径 / 大文件 trash 结构化结果 sheet。
+        .sheet(item: $deleteResultPayload) { payload in
+            OperationResultSheet(payload: payload) {
+                deleteResultPayload = nil
+            }
         }
         .onChange(of: selectedCategory) { old, new in
             // v1.3.aa：原版 `guard let cat = allCategories.first(where: ...) else { return }`
@@ -494,6 +524,23 @@ public struct MainView: View {
             } header: {
                 Text(verbatim: "Dev Tools")
             }
+
+            // v1.7 M1 PR-5 / 2026-06：Developer Workflows section ——
+            // Apple / Android / Web-Node 三大生态按"工作流"分组的一键清理入口。
+            // 与 `batch.developer` sentinel（DevArtifactScanner 散点）共存，但
+            // 这三行走 [WorkflowDetailView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)
+            // 渲染卡片化 + 可勾选 + 动态扫描 + 回收站删除 全链路。
+            // 字面量改走 xcstrings（workflow.sidebar.* 前缀），中英双语。
+            Section {
+                workflowAppleSidebarRow
+                    .tag(MainView.workflowAppleSentinelID)
+                workflowAndroidSidebarRow
+                    .tag(MainView.workflowAndroidSentinelID)
+                workflowWebNodeSidebarRow
+                    .tag(MainView.workflowWebNodeSentinelID)
+            } header: {
+                Text("workflow.sidebar.section", bundle: .module)
+            }
         }
         // bug1：sidebar List 默认会在获得 keyboard focus 时画一圈蓝色焦点环
         // （包住整个 list 容器，看起来像"鼠标进入 sidebar 才出现的蓝框"）。
@@ -542,6 +589,25 @@ public struct MainView: View {
     /// snapshot。沿用主路径的 statusBar / listResults，因此走 onChange 显式 case 而非
     /// "allCategories.first 自然 return"。
     static let devVersionedSentinelID: String = "developer.versioned.scan"
+
+    /// v1.7 M1 PR-5：「Apple 开发者工作流」侧边项。沿用 maintenance / lipo / brew 同款 sentinel 旁路，
+    /// results 区渲染 [WorkflowDetailView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)，
+    /// 数据源 [AppleWorkflow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DeveloperWorkflow.swift)。
+    /// 与既有 `batch.developer` sentinel 共存——后者是"按类目散点扫"，本 sentinel 是"按 Apple 工作流分组扫"。
+    static let workflowAppleSentinelID: String = "workflow.apple"
+
+    /// v1.7 M1 PR-5：「Android 开发者工作流」侧边项。
+    static let workflowAndroidSentinelID: String = "workflow.android"
+
+    /// v1.7 M1 PR-5：「Web / Node 开发者工作流」侧边项。
+    static let workflowWebNodeSentinelID: String = "workflow.webnode"
+
+    /// v1.7 M1 PR-5：三个工作流 sentinel 集合。onChange 命中其一即清空状态，不再走 startScan 路径。
+    static let workflowSentinelIDs: Set<String> = [
+        workflowAppleSentinelID,
+        workflowAndroidSentinelID,
+        workflowWebNodeSentinelID,
+    ]
 
     /// v1.5：sidebar Batch Scans section 的 row。结构与 sidebarRow / appFootprintSidebarRow
     /// 对齐：图标 + 标题 + 副标题。row 自身不带 tap handler，selection 切换由
@@ -717,6 +783,64 @@ public struct MainView: View {
         .padding(.vertical, 2)
     }
 
+    /// v1.7 M1 PR-5：「Apple 工作流」侧边 row —— apple.logo 图标，副标题点明覆盖范围。
+    private var workflowAppleSidebarRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "applelogo")
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("workflow.sidebar.apple.title", bundle: .module)
+                    .font(.system(.body, design: .rounded))
+                Text("workflow.sidebar.apple.subtitle", bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// v1.7 M1 PR-5：「Android 工作流」侧边 row —— cube.box 借喻"包/构建产物"。
+    /// （SF Symbol 没有 Android 专属图标，cube.box 与 "AAR / APK / build artifacts" 语义对齐。）
+    private var workflowAndroidSidebarRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "cube.box")
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("workflow.sidebar.android.title", bundle: .module)
+                    .font(.system(.body, design: .rounded))
+                Text("workflow.sidebar.android.subtitle", bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// v1.7 M1 PR-5：「Web / Node 工作流」侧边 row —— globe 图标。
+    private var workflowWebNodeSidebarRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "globe")
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("workflow.sidebar.webnode.title", bundle: .module)
+                    .font(.system(.body, design: .rounded))
+                Text("workflow.sidebar.webnode.subtitle", bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
     /// M4-T2 / 2026-06：「开发者旧版本」侧边 row —— 与 uninstall / launchAgent 同结构，
     /// 图标用 hammer 表达"开发工具产物"。点击触发 ScanCoordinator.scanKnownVersionedRoots。
     private var devVersionedSidebarRow: some View {
@@ -831,6 +955,21 @@ public struct MainView: View {
         selectedCategory == MainView.brewSentinelID
     }
 
+    /// v1.7 M1 PR-5：当前是否在「Apple 工作流」模式。
+    private var isWorkflowAppleMode: Bool {
+        selectedCategory == MainView.workflowAppleSentinelID
+    }
+
+    /// v1.7 M1 PR-5：当前是否在「Android 工作流」模式。
+    private var isWorkflowAndroidMode: Bool {
+        selectedCategory == MainView.workflowAndroidSentinelID
+    }
+
+    /// v1.7 M1 PR-5：当前是否在「Web / Node 工作流」模式。
+    private var isWorkflowWebNodeMode: Bool {
+        selectedCategory == MainView.workflowWebNodeSentinelID
+    }
+
     private var results: some View {
         VStack(spacing: 0) {
             if isAppFootprintMode {
@@ -861,6 +1000,17 @@ public struct MainView: View {
             } else if isBrewMode {
                 // F-2-4 / 2026-06：Homebrew 包管理 —— 直接读 Cellar / Caskroom，不执行 brew。
                 BrewScreen()
+            } else if isWorkflowAppleMode {
+                // v1.7 M1 PR-5：Apple 工作流（Xcode / Simulator / DerivedData per-project / DeviceSupport）
+                // 复用 WorkflowDetailView 通用渲染壳，数据源 AppleWorkflow.cards + WorkflowRegistry.resolve。
+                // pipeline 透传 MainView 持有的 TrashPipeline 实例，删除走 NSWorkspace.recycle。
+                WorkflowDetailView(workflow: AppleWorkflow(), pipeline: pipeline)
+            } else if isWorkflowAndroidMode {
+                // v1.7 M1 PR-5：Android 工作流（gradle / .android / AVD / SDK / Android Studio）。
+                WorkflowDetailView(workflow: AndroidWorkflow(), pipeline: pipeline)
+            } else if isWorkflowWebNodeMode {
+                // v1.7 M1 PR-5：Web / Node 工作流（pnpm-store / yarn / npm / electron / node-gyp / scattered node_modules）。
+                WorkflowDetailView(workflow: WebNodeWorkflow(), pipeline: pipeline)
             } else {
                 statusBar
                 Divider()
@@ -905,6 +1055,11 @@ public struct MainView: View {
                                             // **v1.5.3**：行内 trash 按钮 / 右键菜单 / Delete 键
                                             // 都走这一条单删通道（取代 v1.3.zzzz Phase 4-B 的批量入口）。
                                             triggerLargeFileTrash(urls: [url])
+                                        },
+                                        onRefreshSubtree: { path in
+                                            // v2026.06 #1：右键"刷新此目录"。仅清 store-fallback 缓存，
+                                            // 不重启 BulkScanner（成本太高），详见 ScanCoordinator.rescanSubtree。
+                                            coordinator.rescanSubtree(at: path)
                                         }
                                     )
                                     // v2 修：TreeBrowserView 内部用 @State 缓存了
@@ -1028,7 +1183,9 @@ public struct MainView: View {
                     }
                 )
                 RowView(row: row, selected: isOn,
-                        maxBytes: coordinator.snapshot.rows.first?.bytes ?? 0)
+                        maxBytes: coordinator.snapshot.rows.first?.bytes ?? 0,
+                        aiSettings: aiSettings,
+                        onAskAI: { picked in aiAskingRow = picked })
                     .tag(row.id)
             }
         }
@@ -1070,6 +1227,14 @@ public struct MainView: View {
                     fdaStatus: coordinator.fdaStatus,
                     onOpenSettings: {
                         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    },
+                    onOpenFilesAndFolders: {
+                        // v2026.06 #1：跳「文件与文件夹」面板（Files & Folders 类目）。
+                        // 这是 macOS 14+ Downloads/Documents/Desktop 的实际授权开关，
+                        // 与 FDA 无关。anchor ID 不同——`Privacy_FilesAndFolders`。
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders") {
                             NSWorkspace.shared.open(url)
                         }
                     },
@@ -1640,16 +1805,74 @@ public struct MainView: View {
         }
     }
 
+    /// v2026.06.17 (AUDIT A4)：`performDelete` 与 `triggerLargeFileTrash` 共用的
+    /// pipeline 调用结果，callsite 自行处理 pruneDeleted / bytes 统计 / 关 sheet 等场景化逻辑。
+    @MainActor
+    private struct TrashRunResult {
+        let moved: Int
+        let skipped: Int
+        let err: String?
+        let pairs: [(String, String)]
+    }
+
+    /// v2026.06.17 (AUDIT A4)：抽出 `performDelete` 与 `triggerLargeFileTrash` 重复的
+    /// **pipeline 4 步握手** ——
+    /// (1) accessDenied 注入；(2) moveToTrash；(3) UndoHistory 写入；(4) snapshotLastOutcome → sheet/alert。
+    ///
+    /// 抽这步是因为两条链路任何一处忘了 setAccessDeniedPaths 或忘了走 snapshotLastOutcome
+    /// 都会让"上层防护漏失 / 结构化 sheet 退化为文本 alert"的回归在 PR review 时几乎不可能被发现——
+    /// 既然只剩一份真实现就把契约集中在一个方法里，强制单点维护。
+    ///
+    /// **不抽**的部分（特意保留在 callsite）：isDeleting sheet 控制、bytes 统计、
+    /// pruneDeleted（performDelete 在删后；triggerLargeFileTrash 在删前做乐观更新）、
+    /// selection.removeAll / largeFileSelection=nil、refreshVolumeCapacity——
+    /// 这些是两条链路的语义差异点（dryRun vs 强制真删 / 阻塞 sheet vs 乐观更新 / 主清单 vs 大文件单点），
+    /// 强行融合会让 runTrash 变成"5 个回调参数"的胖方法，掩盖差异反而更危险。
+    ///
+    /// - Parameter source: UndoHistory 的 `source` 字段（"clean" / "large-file"），便于侧栏未来分类。
+    @MainActor
+    private func runTrash(paths: [String], dryRun: Bool, source: String) async -> TrashRunResult {
+        // ① accessDenied 注入（防止历史 cast 被悄悄改丢、重新引入"漏调=误拒"）。
+        // 见 [DeletionPipeline.setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift#L37)
+        // 自 v2026.06.17 (AUDIT A2) 起取消 protocol extension 默认 no-op，每个实现都必须显式提供。
+        pipeline.setAccessDeniedPaths(accessDeniedPathsSnapshot())
+        // ② 真正调 pipeline。
+        let (moved, skipped, err, pairs) = await pipeline.moveToTrash(paths: paths, dryRun: dryRun)
+        // ③ Step 7 UndoHistory：dryRun / 全 forbid / recycle err 时 pairs 都是空数组，addRecord 会 no-op 跳过。
+        if !dryRun, err == nil, !pairs.isEmpty {
+            UndoHistoryStore.shared.addRecord(
+                source: source,
+                filePairs: pairs.map { UndoHistoryStore.Record.FilePair(original: $0.0, trashed: $0.1) }
+            )
+        }
+        // ④ 结构化 sheet / 旧 alert 二选一（v2026.06.16 修复 #4）。
+        presentTrashOutcome(moved: moved, skipped: skipped, err: err, dryRun: dryRun)
+        return TrashRunResult(moved: moved, skipped: skipped, err: err, pairs: pairs)
+    }
+
+    /// v2026.06.17 (AUDIT A4)：runTrash 的"结果呈现"子步骤——
+    /// 真删（!dryRun）走结构化 sheet（`OperationResultPayload`），dryRun 仍走旧 alert
+    /// （dryRun 不报失败明细，只看总数即可）。
+    @MainActor
+    private func presentTrashOutcome(moved: Int, skipped: Int, err: String?, dryRun: Bool) {
+        if !dryRun {
+            if let outcome = pipeline.snapshotLastOutcome() {
+                deleteResultPayload = OperationResultPayload(outcome: outcome)
+            } else if let err {
+                // pipeline 没暴露结构化结果（如 stub 实现）→ 回退到旧 alert
+                deleteResult = String(format: String(localized: "delete.result.failure %@ %lld %lld", bundle: .module), err, moved, skipped)
+            } else {
+                deleteResult = String(format: String(localized: "delete.result.success %lld %lld", bundle: .module), moved, skipped)
+            }
+        } else if let err {
+            deleteResult = String(format: String(localized: "delete.result.failure.dryrun %@ %lld %lld", bundle: .module), err, moved, skipped)
+        } else {
+            deleteResult = String(format: String(localized: "delete.result.success.dryrun %lld %lld", bundle: .module), moved, skipped)
+        }
+    }
+
     private func performDelete(dryRun: Bool) async {
         let paths = selectedRows.map(\.url.path)
-        // v1.3.zzzz：在调 pipeline 前把上层一票否决集合（accessDenied）推给 pipeline，
-        // 让 partitionByForbid 把这类路径以 SafetyRejection.accessDenied 拒掉，不进 dryRun present
-        // 计数、也不真 recycle。
-        // Phase 3-A 协议化后：所有 DeletionPipeline 实现都接这个钩子（v1.3.zzzz 路线 B 之后只剩
-        // TrashPipeline 一份实现；协议默认 no-op 仍保留供未来如 dry-run-only 调试管道复用，
-        // 见 [DeletionPipeline.setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift)），
-        // 不再需要 `as? TrashPipeline` cast——cast 容易在重构里被悄悄改丢、重新引入"漏调=误拒"。
-        pipeline.setAccessDeniedPaths(accessDeniedPathsSnapshot())
         // **v1.5.3**：真删（!dryRun）期间立刻拉起 ProgressView sheet。
         // dryRun 不动 isDeleting——预览不需要"正在删除"动画。
         if !dryRun {
@@ -1660,31 +1883,19 @@ public struct MainView: View {
                 isDeleting = false
             }
         }
-        let (moved, skipped, err, pairs) = await pipeline.moveToTrash(paths: paths, dryRun: dryRun)
-        // Step 7：真删成功后写 UndoHistory（dryRun / 全 forbid / recycle err 时 pairs 都是空数组，addRecord 会 no-op 跳过）。
-        if !dryRun, err == nil, !pairs.isEmpty {
-            UndoHistoryStore.shared.addRecord(
-                source: "clean",
-                filePairs: pairs.map { UndoHistoryStore.Record.FilePair(original: $0.0, trashed: $0.1) }
-            )
-        }
-        if let err {
-            let key: String.LocalizationValue = dryRun
-                ? "delete.result.failure.dryrun %@ %lld %lld"
-                : "delete.result.failure %@ %lld %lld"
-            deleteResult = String(format: String(localized: key, bundle: .module), err, moved, skipped)
-        } else {
-            let key: String.LocalizationValue = dryRun
-                ? "delete.result.success.dryrun %lld %lld"
-                : "delete.result.success %lld %lld"
-            deleteResult = String(format: String(localized: key, bundle: .module), moved, skipped)
+        // v2026.06.17 (AUDIT A4)：pipeline 4 步握手（accessDenied 注入 / moveToTrash / UndoHistory
+        // 写入 / snapshotLastOutcome → sheet）统一收口到 [runTrash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)，
+        // 与 [triggerLargeFileTrash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
+        // 共用，避免两处独立维护"漏一步就放行"的脆弱契约。
+        let result = await runTrash(paths: paths, dryRun: dryRun, source: "clean")
+        if result.err == nil {
             if !dryRun {
                 // HL 行为采集：真删之后才上报，dryRun 不污染统计
                 await recorder.recordTrashed(paths: paths)
                 // M4-T5：把这次成功移入废纸篓的字节数 / 类目记入 CleanStatsStore。
                 // bytes 取自 selectedRows 与 pairs 的交集（pairs 是 NSWorkspace.recycle 真正成功的项），
                 // 避免把"被 SafetyEngine 拦截"或"recycle 失败"的项也算进累计统计。
-                let succeededPaths = Set(pairs.map(\.0))
+                let succeededPaths = Set(result.pairs.map(\.0))
                 let movedBytes = selectedRows
                     .filter { succeededPaths.contains($0.url.path) }
                     .reduce(Int64(0)) { $0 + $1.bytes }
@@ -1749,29 +1960,14 @@ public struct MainView: View {
         coordinator.pruneDeleted(paths: paths)
         largeFileSelection = nil
         isDeleting = true
-        Task {
-            // 与 performDelete 保持一致的 accessDenied pre-flight。
-            // Phase 3-A 协议化：直接走 protocol 钩子，省 cast。
-            pipeline.setAccessDeniedPaths(accessDeniedPathsSnapshot())
-            let (moved, skipped, err, pairs) = await pipeline.moveToTrash(paths: paths, dryRun: false)
-            // Step 7：大文件单点 trash 也写入 UndoHistory（source 区分以便侧栏未来分类）。
-            if err == nil, !pairs.isEmpty {
-                await MainActor.run {
-                    UndoHistoryStore.shared.addRecord(
-                        source: "large-file",
-                        filePairs: pairs.map { UndoHistoryStore.Record.FilePair(original: $0.0, trashed: $0.1) }
-                    )
-                }
-            }
-            await MainActor.run {
-                isDeleting = false
-                if let err {
-                    deleteResult = String(format: String(localized: "delete.result.failure %@ %lld %lld", bundle: .module), err, moved, skipped)
-                } else {
-                    deleteResult = String(format: String(localized: "delete.result.success %lld %lld", bundle: .module), moved, skipped)
-                }
-            }
-            if err == nil {
+        Task { @MainActor in
+            // v2026.06.17 (AUDIT A4)：与 performDelete 共享 [runTrash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
+            // 的 pipeline 4 步握手：accessDenied 注入 / moveToTrash / UndoHistory 写入 /
+            // snapshotLastOutcome → sheet。任何一步漏掉都会让"上层防护漏失 / 结构化 sheet
+            // 退化为文本 alert"成为静默回归——统一收口后从语言层杜绝。
+            let result = await runTrash(paths: paths, dryRun: false, source: "large-file")
+            isDeleting = false
+            if result.err == nil {
                 await recorder.recordTrashed(paths: paths)
             }
         }
@@ -1781,6 +1977,15 @@ public struct MainView: View {
 
     /// NSOpenPanel 选目录添加到 UserPathStore。
     /// 见 PITFALLS §5.6：默认 canChooseFiles=false 防误选单文件；多选避免反复弹窗。
+    ///
+    /// v2026.06 用户反馈 #2：原实现用 `panel.begin { ... }` modeless 弹窗，在某些场景下
+    /// 会"卡死"——根因：SwiftUI menu/popover 收起时主窗口可能短暂失去 keyWindow 状态，
+    /// `panel.begin` 内部 attach 不到 owner window，AppKit 转 fallback 走 modal mainloop
+    /// 但 SwiftUI 同时还持有事件焦点 → 两边互等 → UI 假死。
+    ///
+    /// **修复**：优先 `beginSheetModal(for:)` 走 sheet（必有 owner），找不到主窗口才退回
+    /// `runModal()`（同步阻塞但 NSOpenPanel 自己有事件循环，能正常返回）。
+    /// 关键差异：`begin` 是 modeless（无 owner），后两者都有明确 owner 或独立 modal loop。
     private func addCustomPathViaPanel() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -1788,9 +1993,9 @@ public struct MainView: View {
         panel.allowsMultipleSelection = true
         panel.title = String(localized: "panel.choose_dir.title", bundle: .module)
         panel.prompt = String(localized: "panel.add", bundle: .module)
-        panel.begin { response in
-            guard response == .OK else { return }
-            let urls = panel.urls
+
+        let handleURLs: ([URL]) -> Void = { urls in
+            guard !urls.isEmpty else { return }
             Task {
                 for url in urls {
                     _ = await pathStore.add(url)
@@ -1798,6 +2003,23 @@ public struct MainView: View {
                 await refreshCustomPaths()
             }
         }
+
+        // 优先 sheet：找一个仍在场上的 window 作为 owner。
+        // NSApp.keyWindow 失活时 fallback 到 mainWindow / windows.first。
+        let owner = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible })
+        if let owner {
+            panel.beginSheetModal(for: owner) { response in
+                guard response == .OK else { return }
+                handleURLs(panel.urls)
+            }
+            return
+        }
+
+        // 无任何可用 window：退到独立 modal loop。runModal 是同步的，
+        // 但 NSOpenPanel 自带 event loop，不会让主线程死锁——只会阻塞 ~人选完目录的时间。
+        let response = panel.runModal()
+        guard response == .OK else { return }
+        handleURLs(panel.urls)
     }
 
     /// 侧边自定义路径行的 contextMenu「移除」。
@@ -1845,6 +2067,9 @@ private struct PermissionStatusBanner: View {
     /// `~/.Trash` 之类**独立 TCC**项（不属于 FDA），需要单独引导用户。
     let fdaStatus: FDAProbe.Status
     let onOpenSettings: () -> Void
+    /// v2026.06 #1：用户在 banner 上点「打开文件与文件夹访问设置」时跳的 URL。
+    /// 与 FDA 是**两个独立类目**——开了 FDA 不会自动开它，必须各开各的。
+    var onOpenFilesAndFolders: (() -> Void)? = nil
     /// v1.3：用户在 banner 上点「授权后扫描这些目录」——
     /// 跳系统设置 + 触发当前 category 重扫。MainView 在 onRescan 里串起来。
     /// 给 nil 视为兼容路径（按钮不显示），但本仓库目前 MainView 一定传非 nil。
@@ -1873,13 +2098,62 @@ private struct PermissionStatusBanner: View {
 
     /// 主行动按钮文案：FDA 受阻强调"打开权限"；纯 TCC 跳过强调"授权后重扫"。
     private var actionLabel: String {
-        fdaCount > 0 ? "打开完全磁盘访问权限" : "授权后扫描这些目录"
+        // v2026.06 用户反馈 #1：已开 FDA 但 denied 列表里全是 ~/Downloads / ~/Documents /
+        // ~/Desktop 等"独立 TCC 类目"时，提示"打开 FDA"是错的——这些目录不归 FDA 管，
+        // 用户开了 FDA 也不会解开。改为引导到 Files & Folders 类目。
+        if needsFilesAndFolders {
+            return String(localized: "permission.banner.action.open_files_and_folders", bundle: .module)
+        }
+        return fdaCount > 0
+            ? String(localized: "permission.banner.action.open_fda", bundle: .module)
+            : String(localized: "permission.banner.action.open_and_rescan", bundle: .module)
+    }
+
+    /// v2026.06 用户反馈 #1：判断"denied 列表是否需要 Files & Folders 类目"。
+    ///
+    /// macOS 14+ 把 Downloads / Documents / Desktop / Trash / 可移动卷 等抠出 FDA 范围，
+    /// 单独走 [Files & Folders](https://support.apple.com/guide/security/sec29c19a25b/web)
+    /// 类目（细粒度，逐 App 逐目录授权）。开关在
+    /// 「系统设置 → 隐私与安全性 → 文件与文件夹」。
+    ///
+    /// 触发条件：
+    /// - FDA 已 granted（或 unknown，"FDA 没开"那条路径更优先）；
+    /// - denied 列表里至少有一条命中独立 TCC 类目的目录。
+    private var needsFilesAndFolders: Bool {
+        guard fdaStatus != .denied else { return false }
+        return fdaDeniedPaths.contains(where: Self.isIndependentTCCCategory)
+    }
+
+    /// v2026.06 用户反馈 #1：判断一个路径是否属于"独立 TCC 类目"——
+    /// 即开了 FDA **也**不会自动解开、必须单独授权的目录。
+    /// 命中列表参考 Apple TCC 源码（`tccd` 的 `kTCCService*`）。
+    static func isIndependentTCCCategory(_ path: String) -> Bool {
+        let home = NSHomeDirectory()
+        let hits = [
+            "\(home)/Downloads",
+            "\(home)/Documents",
+            "\(home)/Desktop",
+            "\(home)/.Trash"
+        ]
+        for h in hits {
+            if path == h || path.hasPrefix("\(h)/") { return true }
+        }
+        // 可移动卷 / 网络卷：单独 TCC 类目（kTCCServiceSystemPolicyRemovableVolumes /
+        // NetworkVolumes），完全不在 FDA 范畴。
+        if path.hasPrefix("/Volumes/") { return true }
+        return false
     }
 
     /// v1.3.zz：检测"明明 FDA 已开却仍 denied"——多半 = 用户授权的是 .app，
     /// 但当前进程是 Debug build 或路径不一样的产物，TCC 按 codesign hash 索引匹不上。
     /// 或者 = denied 路径里全是 ~/.Trash 之类**独立 TCC**项（不属于 FDA 范畴）。
+    ///
+    /// v2026.06 #1：新增 Files & Folders 提示——已开 FDA 但 denied 列表里有
+    /// ~/Downloads / ~/Documents / ~/Desktop 这种"独立 TCC 类目"，必须单独授权。
     private var diagnosticHint: String? {
+        if needsFilesAndFolders {
+            return String(localized: "permission.hint.files_and_folders", bundle: .module)
+        }
         let trashDenied = fdaDeniedPaths.contains { $0.hasSuffix("/.Trash") }
         if fdaStatus == .granted && trashDenied {
             return String(localized: "permission.hint.trash_not_fda", bundle: .module)
@@ -1909,7 +2183,11 @@ private struct PermissionStatusBanner: View {
                 // 现在两种场景都露出主行动按钮，文案因情境而异。
                 if fdaCount > 0 || tccCount > 0 {
                     Button(actionLabel) {
-                        if let onRescan {
+                        if needsFilesAndFolders, let onOpenFilesAndFolders {
+                            // v2026.06 #1：独立 TCC 类目 → 跳「文件与文件夹」面板，
+                            // 与 FDA 是两个不同的开关，开了 FDA 也不会自动开它。
+                            onOpenFilesAndFolders()
+                        } else if let onRescan {
                             onRescan()
                         } else {
                             onOpenSettings()

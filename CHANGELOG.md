@@ -26,6 +26,8 @@
 - `UndoHistoryStore.saveHistory`：编码后通过 `Task.detached(.utility)` 后台落盘，避免大批量删除后 MainActor 卡顿 100~300ms；保留 `.synchronous` 策略给测试用
 - `GSYLog`：静态可变 `_minimumLevel` / `_fileSink` 改为 `os_unfair_lock` 守护，消除并发 sink 写入时的 data race
 - `TrashPipeline` partial-success 修复：`NSWorkspace.recycle` 同时返回 `trashed` 非空 + `error` 非 nil 时（如 100 项中最后 1 项失败），不再丢弃已成功项的 undo pair；错误文案附"(已成功放入废纸篓 X 项，可在「最近删除」恢复)"
+- **AUDIT A2**：[DeletionPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift) 协议取消 `setAccessDeniedPaths(_:)` 的 protocol extension 默认 no-op——历史默认实现让"上层忘了调"会被静默放行而非 compile-error，是契约靠手记维系的脆弱点；现在每个 `DeletionPipeline` 实现都必须显式提供该方法，杜绝"漏调=误拒"未来重新爬回来；测试 stub（`StubPipelinePR9` / `StubPipeline`）相应补显式 no-op
+- **AUDIT A4**：[MainView.performDelete](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) 与 [MainView.triggerLargeFileTrash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) 抽出共用 `runTrash(paths:dryRun:source:)`，收口"accessDenied 注入 / moveToTrash / UndoHistory 写入 / snapshotLastOutcome → sheet/alert" 4 步握手——两处独立维护时任何一步漏掉都会让"上层防护漏失 / 结构化 sheet 退化为文本 alert"成为静默回归，统一收口后从语言层杜绝
 
 ### Documented
 - `VendorTrieNode`：写明"build-once / read-many"契约，禁止扫描期任何 mutator

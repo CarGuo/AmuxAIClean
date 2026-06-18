@@ -15,6 +15,7 @@
 		4B62D5E02FDAB0B100E44F76 /* safe_paths.yaml in Resources */ = {isa = PBXBuildFile; fileRef = 4B62D5DA2FDAB0B100E44F76 /* safe_paths.yaml */; };
 		5A1B0001000000000000A001 /* LipoKit in Frameworks */ = {isa = PBXBuildFile; productRef = 5A1B0004000000000000A004 /* LipoKit */; };
 		5A1B0011000000000000B001 /* BrewKit in Frameworks */ = {isa = PBXBuildFile; productRef = 5A1B0014000000000000B004 /* BrewKit */; };
+		5A1B0021000000000000C001 /* AIKit in Frameworks */ = {isa = PBXBuildFile; productRef = 5A1B0024000000000000C004 /* AIKit */; };
 		7760F7CD0E11FE5FD916213C /* RegressionRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4FBB712C198D188AD075C66 /* RegressionRunner.swift */; };
 		7E6A84ABC756B0F07C35C63B /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = F74FB5762A1E3FC026FA94BC /* InfoPlist.strings */; };
 		809E0552B37329DA1D6DA483 /* SafetyKit in Frameworks */ = {isa = PBXBuildFile; productRef = AC93BBF658D8303974FC7762 /* SafetyKit */; };
@@ -70,6 +71,7 @@
 		576001034F25DE5ED4BAEA65 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
 		5A1B0002000000000000A002 /* LipoKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = LipoKit; path = Packages/LipoKit; sourceTree = SOURCE_ROOT; };
 		5A1B0012000000000000B002 /* BrewKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = BrewKit; path = Packages/BrewKit; sourceTree = SOURCE_ROOT; };
+		5A1B0022000000000000C002 /* AIKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AIKit; path = Packages/AIKit; sourceTree = SOURCE_ROOT; };
 		61A9164D7CAFFB5DE6E68891 /* AppUI */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AppUI; path = Packages/AppUI; sourceTree = SOURCE_ROOT; };
 		73050909E198F8F7E096DF5F /* LogKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = LogKit; path = Packages/LogKit; sourceTree = SOURCE_ROOT; };
 		7B61AB43A10B9C1BE7176E12 /* GSYCleanMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GSYCleanMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -101,6 +103,7 @@
 				C055F53EA2B18E72F41BAFE0 /* TestHarness in Frameworks */,
 				5A1B0001000000000000A001 /* LipoKit in Frameworks */,
 				5A1B0011000000000000B001 /* BrewKit in Frameworks */,
+				5A1B0021000000000000C001 /* AIKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -133,6 +136,7 @@
 				DF808A7550415E3DB686B545 /* HeuristicKit */,
 				5A1B0002000000000000A002 /* LipoKit */,
 				5A1B0012000000000000B002 /* BrewKit */,
+				5A1B0022000000000000C002 /* AIKit */,
 				73050909E198F8F7E096DF5F /* LogKit */,
 				93739B16F64B55C9EA98583F /* SafetyKit */,
 				48E91589CD8CC1788869F92C /* ScanKit */,
@@ -258,6 +262,7 @@
 				1B5433B113D90D03B92A6B22 /* TestHarness */,
 				5A1B0004000000000000A004 /* LipoKit */,
 				5A1B0014000000000000B004 /* BrewKit */,
+				5A1B0024000000000000C004 /* AIKit */,
 			);
 			productName = GSYCleanMac;
 			productReference = 7B61AB43A10B9C1BE7176E12 /* GSYCleanMac.app */;
@@ -299,6 +304,7 @@
 				5550FDAACEF586F16D32C0E1 /* XCLocalSwiftPackageReference "Packages/TestHarness" */,
 				5A1B0005000000000000A005 /* XCLocalSwiftPackageReference "Packages/LipoKit" */,
 				5A1B0015000000000000B005 /* XCLocalSwiftPackageReference "Packages/BrewKit" */,
+				5A1B0025000000000000C005 /* XCLocalSwiftPackageReference "Packages/AIKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 087289FA5F5E417DFDAAFF48 /* Products */;
@@ -625,6 +631,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/BrewKit;
 		};
+		5A1B0025000000000000C005 /* XCLocalSwiftPackageReference "Packages/AIKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/AIKit;
+		};
 		64FED8B5DF29585F8A271DEA /* XCLocalSwiftPackageReference "Packages/LogKit" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/LogKit;
@@ -655,6 +665,10 @@
 		5A1B0014000000000000B004 /* BrewKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = BrewKit;
+		};
+		5A1B0024000000000000C004 /* AIKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AIKit;
 		};
 		869DB7788784E9203F564909 /* LogKit */ = {
 			isa = XCSwiftPackageProductDependency;

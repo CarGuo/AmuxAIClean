@@ -6343,6 +6343,34 @@
         }
       }
     },
+    "permission.hint.files_and_folders" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Tip: Downloads/Documents/Desktop/Trash and removable volumes are NOT covered by Full Disk Access on macOS 14+. They need a separate switch under System Settings → Privacy & Security → Files and Folders → GSYCleanMac." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "提示：在 macOS 14+ 上，下载/文稿/桌面/废纸篓/可移动卷 不属于「完全磁盘访问」管辖，需要在 系统设置 → 隐私与安全性 → 文件与文件夹 → GSYCleanMac 下单独打开开关。" } }
+      }
+    },
+    "permission.banner.action.open_fda" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Open Full Disk Access" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "打开完全磁盘访问权限" } }
+      }
+    },
+    "permission.banner.action.open_files_and_folders" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Open Files and Folders Settings" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "打开「文件与文件夹」设置" } }
+      }
+    },
+    "permission.banner.action.open_and_rescan" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Grant and Rescan" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "授权后扫描这些目录" } }
+      }
+    },
     "hud.volume.default" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -7910,6 +7938,636 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Restart the app to fully apply the language to system menus and alerts." } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "重启 App 后系统菜单与原生弹窗也会切换到该语言。" } }
+      }
+    },
+    "settings.tab.ai" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "AI" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "AI" } }
+      }
+    },
+    "settings.ai.section.toggle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "AI Assistant" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "AI 助手" } }
+      }
+    },
+    "settings.ai.enabled.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Enable AI assistant" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "启用 AI 助手" } }
+      }
+    },
+    "settings.ai.enabled.detail" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "When enabled, right-click a row in the main list and choose \"Ask AI\" to get a one-shot opinion on what the path is and whether it is safe to delete. No automatic requests are made; one click = one HTTP request." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "启用后，可在主列表右键单击行并选择「问 AI」，由配置的 AI 给出一次性判断：这是什么、是否可删。不会自动发起任何请求；一次点击 = 一次 HTTP 请求。" } }
+      }
+    },
+    "settings.ai.section.endpoint" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Endpoint" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "端点配置" } }
+      }
+    },
+    "settings.ai.base_url.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Base URL" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Base URL" } }
+      }
+    },
+    "settings.ai.model.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Model" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "模型" } }
+      }
+    },
+    "settings.ai.endpoint.detail" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Compatible with any OpenAI-protocol endpoint (Azure / DeepSeek / OpenRouter / Ollama / vLLM / Qwen / ...). Examples: https://api.openai.com, https://api.deepseek.com, http://localhost:11434/v1" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "兼容任何 OpenAI 协议端点（Azure / DeepSeek / OpenRouter / Ollama / vLLM / 通义 等）。示例：https://api.openai.com、https://api.deepseek.com、http://localhost:11434/v1" } }
+      }
+    },
+    "settings.ai.section.api_key" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "API Key" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "API Key" } }
+      }
+    },
+    "settings.ai.api_key.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "New key" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "新 Key" } }
+      }
+    },
+    "settings.ai.api_key.empty" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "(not configured)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "（尚未配置）" } }
+      }
+    },
+    "settings.ai.api_key.save" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Save" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "保存" } }
+      }
+    },
+    "settings.ai.api_key.remove" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Remove" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "删除" } }
+      }
+    },
+    "settings.ai.api_key.saved" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saved to Keychain." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已保存到钥匙串。" } }
+      }
+    },
+    "settings.ai.api_key.removed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Removed from Keychain." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已从钥匙串删除。" } }
+      }
+    },
+    "settings.ai.api_key.save_failed.format" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Keychain operation failed: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "钥匙串操作失败：%@" } }
+      }
+    },
+    "settings.ai.api_key.footer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Stored in the macOS Keychain (AfterFirstUnlockThisDeviceOnly). Never written to UserDefaults or app files. Leave empty for Ollama / vLLM running locally without auth." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "存于 macOS 钥匙串（AfterFirstUnlockThisDeviceOnly），不会写入 UserDefaults 或 App 文件。本地 Ollama / vLLM 等无鉴权场景可留空。" } }
+      }
+    },
+    "settings.ai.section.advanced" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Advanced" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "高级" } }
+      }
+    },
+    "settings.ai.redact.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Redact paths before sending" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "出网前对路径去敏" } }
+      }
+    },
+    "settings.ai.redact.detail" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Replace your username, device UUIDs and emails in the prompt with placeholders. ON by default." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "将提示词中的用户名、设备 UUID、邮箱替换为占位符。默认开启。" } }
+      }
+    },
+    "settings.ai.redact.warning" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Warning: with redaction OFF, raw paths containing your username and UUIDs will be sent to the configured AI endpoint." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "警告：关闭去敏后，含用户名与 UUID 的原始路径将原样发送给所配置的 AI 端点。" } }
+      }
+    },
+    "settings.ai.temperature.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Temperature" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "采样温度" } }
+      }
+    },
+    "row.context.ask_ai" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Ask AI" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "问 AI" } }
+      }
+    },
+    "ai.sheet.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "AI Insight" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "AI 判断" } }
+      }
+    },
+    "ai.sheet.loading" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Asking the model..." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在询问模型…" } }
+      }
+    },
+    "ai.sheet.reason" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Reasoning" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "判断依据" } }
+      }
+    },
+    "ai.sheet.side_effects" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Side effects after deletion" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "删除后可能的副作用" } }
+      }
+    },
+    "ai.sheet.disclaimer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Advisory only. The built-in safety engine remains the final authority for selection: items flagged forbid stay locked even if AI says otherwise." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "AI 建议仅供参考。本地三档安全闸仍是勾选的唯一权威：本地判为 forbid 的项不会因 AI 解读而解锁。" } }
+      }
+    },
+    "ai.sheet.failed.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Request failed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请求失败" } }
+      }
+    },
+    "ai.sheet.retry" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Retry" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "重试" } }
+      }
+    },
+    "ai.sheet.close" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Close" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "关闭" } }
+      }
+    },
+    "ai.sheet.verdict.safe" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "AI suggests: safe to delete" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "AI 建议：可删除" } }
+      }
+    },
+    "ai.sheet.verdict.confirm" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "AI suggests: confirm before deleting" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "AI 建议：确认后再删" } }
+      }
+    },
+    "ai.sheet.verdict.forbid" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "AI suggests: do not delete" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "AI 建议：不要删除" } }
+      }
+    },
+    "ai.sheet.error.not_configured" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "AI is not fully configured. Open Settings → AI to enable it and set a base URL / model." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "AI 尚未配置完成。请打开「设置 → AI」启用并填写 Base URL / 模型。" } }
+      }
+    },
+    "ai.sheet.error.no_api_key" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "API Key is missing. Open Settings → AI to add it (or leave empty for a local Ollama / vLLM endpoint that needs no auth)." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未配置 API Key。请到「设置 → AI」中填写（或留空，若使用本地 Ollama / vLLM 等无鉴权端点）。" } }
+      }
+    },
+    "ai.sheet.error.keychain.format" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Could not read Keychain: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "读取钥匙串失败：%@" } }
+      }
+    },
+    "ai.sheet.error.http.format" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Server returned HTTP %lld. %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "服务端返回 HTTP %lld。%@" } }
+      }
+    },
+    "ai.sheet.error.transport.format" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Network error: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "网络错误：%@" } }
+      }
+    },
+    "ai.sheet.error.invalid_base_url" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Base URL is not a valid endpoint." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Base URL 不是有效的端点。" } }
+      }
+    },
+    "workflow.sidebar.section" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Developer Workflows" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "开发者工作流" } }
+      }
+    },
+    "workflow.sidebar.apple.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Apple" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Apple" } }
+      }
+    },
+    "workflow.sidebar.apple.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Xcode / Simulator / DeviceSupport" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Xcode / Simulator / DeviceSupport" } }
+      }
+    },
+    "workflow.sidebar.android.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Android" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Android" } }
+      }
+    },
+    "workflow.sidebar.android.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "gradle / SDK / AVD / Android Studio" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "gradle / SDK / AVD / Android Studio" } }
+      }
+    },
+    "workflow.sidebar.webnode.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Web / Node" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Web / Node" } }
+      }
+    },
+    "workflow.sidebar.webnode.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "pnpm / yarn / npm / electron / node_modules" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "pnpm / yarn / npm / electron / node_modules" } }
+      }
+    },
+    "workflow.detail.alert.ok" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "OK" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "好" } }
+      }
+    },
+    "workflow.detail.empty_placeholder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No matching workflow directories were found on this Mac" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "当前机器未检测到该工作流相关目录" } }
+      }
+    },
+    "workflow.detail.scanning" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Scanning…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在扫描…" } }
+      }
+    },
+    "workflow.detail.empty_card" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Nothing cleanable here" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未发现可清理条目" } }
+      }
+    },
+    "workflow.detail.footer.summary %lld %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Selected %1$lld items · %2$@ total" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已选 %1$lld 项 · 共 %2$@" } }
+      }
+    },
+    "workflow.detail.action.rescan" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Rescan" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "重新扫描" } }
+      }
+    },
+    "workflow.detail.action.trash" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Move to Trash" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "移到废纸篓" } }
+      }
+    },
+    "workflow.detail.alert.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Workflow Cleanup Result" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "工作流清理结果" } }
+      }
+    },
+    "workflow.detail.delete.trash_summary %lld %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Trash: %1$lld succeeded / %2$lld skipped" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "回收站删除：成功 %1$lld / 跳过 %2$lld" } }
+      }
+    },
+    "workflow.detail.delete.error_format %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Error: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "错误：%@" } }
+      }
+    },
+    "workflow.detail.delete.commandline_skipped %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Command-line deletion (e.g. simctl) is not wired into the UI yet — please retry after PR-6. Skipped %1$lld item(s)." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "命令行删除（如 simctl）暂未接入 UI，请在 PR-6 后再试。已跳过 %1$lld 项。" } }
+      }
+    },
+    "op.result.title.success" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cleanup Complete" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "清理完成" } }
+      }
+    },
+    "op.result.title.partial" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Partially Cleaned" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "部分清理完成" } }
+      }
+    },
+    "op.result.title.failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cleanup Failed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "清理失败" } }
+      }
+    },
+    "op.result.stat.moved" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Trashed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已移入废纸篓" } }
+      }
+    },
+    "op.result.stat.failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Failed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "失败" } }
+      }
+    },
+    "op.result.stat.blocked" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Blocked by Safety" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "被安全规则拦截" } }
+      }
+    },
+    "op.result.section.failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Items that could not be moved to Trash" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "无法移到废纸篓的项" } }
+      }
+    },
+    "op.result.section.blocked" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Items blocked by safety rules" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "被安全规则拦截的项" } }
+      }
+    },
+    "op.result.section.missing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Paths not found" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未找到的路径" } }
+      }
+    },
+    "op.result.hint.failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "These paths could not be moved to Trash. Common causes: the file is in use by another process (e.g. running emulator), permissions issue, or special attributes (xattr / read-only). Try quitting the related app and retry, or delete the path manually in Finder." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "这些路径无法移到废纸篓。常见原因：文件被其他进程占用（如运行中的模拟器）、权限问题、或特殊属性（xattr / 只读）。可以先退出相关应用再重试，或者在「访达」里手动删除。" } }
+      }
+    },
+    "op.result.hint.blocked" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "These paths are protected by built-in safety rules to prevent destroying the system or other apps." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "这些路径被内置安全规则保护，避免误删系统或其他应用。" } }
+      }
+    },
+    "op.result.button.reveal" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Reveal in Finder" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "在访达中显示" } }
+      }
+    },
+    "op.result.button.copy" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Copy Path List" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "复制路径列表" } }
+      }
+    },
+    "op.result.button.done" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Done" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "完成" } }
+      }
+    },
+    "op.result.summary.success %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%lld item(s) successfully moved to Trash. You can restore them from Trash if needed." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已成功将 %lld 项移到废纸篓，如需恢复可在「废纸篓」中找到。" } }
+      }
+    },
+    "op.result.cmdline.skipped %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%lld command-line items still pending — please use the simulator panel to delete them." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "另有 %lld 项命令行删除任务待处理，请在模拟器面板继续操作。" } }
+      }
+    },
+    "tree.menu.refresh" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Refresh This Folder" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "刷新此目录" } }
+      }
+    },
+    "workflow.card.empty_chip" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Nothing found" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂未发现" } }
+      }
+    },
+    "workflow.risk.tooltip.safe" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Safe to clean — caches & build artifacts that will be regenerated on demand." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可放心清理：均为缓存或构建产物，下次构建会自动重新生成。" } }
+      }
+    },
+    "workflow.risk.tooltip.confirm" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Needs confirmation — clean only when you understand the impact (e.g., next build/launch may slow down)." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需要确认：可能影响下次构建/启动速度，请评估后再清理。" } }
+      }
+    },
+    "workflow.risk.tooltip.blocked" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Direct delete is blocked — use the dedicated simctl / safety channel from the panel actions." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "禁止直接删除：请使用面板按钮走专用 simctl/安全通道。" } }
+      }
+    },
+    "workflow.detail.simctl.invalid %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Some simctl items are missing identifiers and were skipped:\n%@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "以下 simctl 项缺少标识符，已跳过：\n%@" } }
+      }
+    },
+    "workflow.detail.simctl.blocked_running %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Simulator.app is running. %1$lld simctl item(s) were blocked. Please quit Simulator first." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "检测到 Simulator.app 正在运行，已阻断 %1$lld 项 simctl 删除。请先退出 Simulator。" } }
+      }
+    },
+    "workflow.detail.simctl.summary %lld %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "simctl: %1$lld succeeded / %2$lld failed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "simctl 删除：成功 %1$lld / 失败 %2$lld" } }
+      }
+    },
+    "workflow.detail.simctl.sheet.review_title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Review simctl Deletions" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "确认要删除的 simctl 项" } }
+      }
+    },
+    "workflow.detail.simctl.sheet.review_subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The following commands will be executed in the next step." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "下一步将执行以下命令，请先核对清单。" } }
+      }
+    },
+    "workflow.detail.simctl.sheet.confirm_title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Final Confirmation" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最终确认" } }
+      }
+    },
+    "workflow.detail.simctl.sheet.confirm_subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "This action is destructive and cannot be undone." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "此操作具有破坏性，无法撤销。" } }
+      }
+    },
+    "workflow.detail.simctl.sheet.confirm_irreversible" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "⚠️ Once confirmed, simctl will permanently remove the listed devices/runtimes. They will not appear in Trash." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "⚠️ 确认后 simctl 将永久删除以上设备/runtime，不会进入回收站。" } }
+      }
+    },
+    "workflow.detail.simctl.sheet.cancel" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cancel" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消" } }
+      }
+    },
+    "workflow.detail.simctl.sheet.continue" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Continue" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "下一步" } }
+      }
+    },
+    "workflow.detail.simctl.sheet.confirm_delete" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Confirm Delete" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "确认删除" } }
       }
     }
   }
