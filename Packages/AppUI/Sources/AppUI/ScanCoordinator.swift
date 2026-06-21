@@ -309,6 +309,50 @@ public final class ScanCoordinator: ObservableObject {
     /// **不**参与 @Published（不需要触发 view 更新）。
     private var treeChildrenInFlight: Set<String> = []
 
+    /// v2026.06.20 **目录 mtime 兜底缓存**。
+    ///
+    /// 背景：用户反馈"为什么有的地方修改时间就一直不显示"。
+    /// 现状：BulkScanner 只对真正 yield 出的 `.node` 写入
+    /// [DirAgg.modificationDate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L189)；
+    /// 但中间层目录（叶子上溯过程中累加的 ancestor）可能没有自己的 `.node` 事件，
+    /// 这些 row 在 [materializeFromMemory](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 输出时 `modificationDate == nil`，UI 永远显示 `·`。
+    ///
+    /// 修复策略：directChildren 输出真实存在的"目录"行时，若 agg.modificationDate=nil
+    /// 但路径在磁盘上存在，就 `lstat` 一次拿 inode mtime 兜底，并缓存避免每帧重算。
+    /// **不命中磁盘的虚拟节点（如多根伪 root `(开发者构建产物)`）不会落到这里**——
+    /// 它们走 [synthesizeMultiRootTopLevel](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1777)，
+    /// path 不是真实文件系统路径，stat 失败时缓存 `.failure` 表示"问就是 nil"，
+    /// 下次同样命中直接返回 nil 不再 stat（避免 4w 行 × 每帧重 stat）。
+    ///
+    /// 缓存 key 是绝对路径；生命周期与扫描会话绑定，[startScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 在切换 root 时一并 removeAll，避免跨扫描泄漏陈旧 mtime。
+    private enum MtimeFallbackResult {
+        case found(Date)
+        case failure
+    }
+    private var mtimeFallbackCache: [String: MtimeFallbackResult] = [:]
+
+    /// 给目录路径 `path` 取一次磁盘 inode mtime；命中缓存直接返回。
+    /// 该函数只读 file 系统，不写状态，故无需 @MainActor 隔离能保证（ScanCoordinator
+    /// 本身就是 @MainActor），但 `lstat` 的耗时（亚毫秒级）和调用频率（每条可见行最多
+    /// 一次，命中缓存后零成本）权衡下来落在主线程也可接受——避免引入 actor hop。
+    private func resolveDirMtimeFallback(forPath path: String) -> Date? {
+        if let cached = mtimeFallbackCache[path] {
+            switch cached {
+            case .found(let d): return d
+            case .failure:      return nil
+            }
+        }
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+           let d = attrs[.modificationDate] as? Date {
+            mtimeFallbackCache[path] = .found(d)
+            return d
+        }
+        mtimeFallbackCache[path] = .failure
+        return nil
+    }
+
     /// **Step 9a / 2026-06**：cache 写入版本号统一推进入口。
     /// 所有改 [treeChildrenCache](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
     /// 的位置（写新键 / 删旧键 / removeAll / patch-by-prune）必须串到这里。
@@ -606,6 +650,9 @@ public final class ScanCoordinator: ObservableObject {
         treeChildrenCache.removeAll(keepingCapacity: true)
         bumpChildrenCacheVersion()
         treeChildrenInFlight.removeAll(keepingCapacity: true)
+        // v2026.06.20：mtime 兜底缓存也跟随会话清零——
+        // 用户两次扫描之间完全可能在 Finder/CLI 改文件，旧 mtime 必须作废。
+        mtimeFallbackCache.removeAll(keepingCapacity: true)
         bumpStructuralRevision()
         largeFileLeaves.removeAll(keepingCapacity: true)
         // M3：新 scan 启动必须清掉上一轮 compact 缓存的 Top N，避免新会话期间
@@ -828,6 +875,9 @@ public final class ScanCoordinator: ObservableObject {
         treeChildrenCache.removeAll(keepingCapacity: true)
         bumpChildrenCacheVersion()
         treeChildrenInFlight.removeAll(keepingCapacity: true)
+        // v2026.06.20：mtime 兜底缓存也跟随会话清零——
+        // 用户两次扫描之间完全可能在 Finder/CLI 改文件，旧 mtime 必须作废。
+        mtimeFallbackCache.removeAll(keepingCapacity: true)
         bumpStructuralRevision()
         largeFileLeaves.removeAll(keepingCapacity: true)
         // M3：新 scan 启动必须清掉上一轮 compact 缓存的 Top N，避免新会话期间
@@ -939,6 +989,8 @@ public final class ScanCoordinator: ObservableObject {
         treeChildrenCache.removeAll(keepingCapacity: true)
         bumpChildrenCacheVersion()
         treeChildrenInFlight.removeAll(keepingCapacity: true)
+        // v2026.06.20：mtime 兜底缓存与扫描会话同寿，cancel/reset 一并清空。
+        mtimeFallbackCache.removeAll(keepingCapacity: true)
         largeFileLeaves.removeAll(keepingCapacity: true)
         bumpStructuralRevision()
         compactedLargeFileTopN = nil
@@ -1673,6 +1725,24 @@ public final class ScanCoordinator: ObservableObject {
         let leafKeys = fileLeaves.keys.filter { isUnderDeleted($0) }
         for k in leafKeys { fileLeaves.removeValue(forKey: k) }
 
+        // **v2026.06.22**：把 LargeFilesView 的数据源 `largeFileLeaves` 一并清理。
+        // 修复用户反馈"大文件列表删除后内容还在"——这条链路过去**完全独立**于 dirIndex/childEdges，
+        // 历史 pruneDeleted 只动后两者，已删大文件永远残留 heap 直到下次 startScan 重置。
+        // compactedLargeFileTopN（M3 内存优化后的二级缓存）同样需要清理，否则 compact
+        // 之后大文件视图回退到该缓存时还会显示已删项。
+        let largeRemoved = largeFileLeaves.removeAll(where: { isUnderDeleted($0.path) })
+        if largeRemoved > 0 {
+            GSYLog.info(.scan, "pruneDeleted largeFileLeaves 剔除 \(largeRemoved)")
+        }
+        if var cache = compactedLargeFileTopN {
+            let beforeCache = cache.count
+            cache.removeAll(where: { isUnderDeleted($0.path) })
+            if cache.count != beforeCache {
+                compactedLargeFileTopN = cache
+                GSYLog.info(.scan, "pruneDeleted compactedLargeFileTopN 剔除 \(beforeCache - cache.count)")
+            }
+        }
+
         // childEdges 双向：把 key 命中的整段去掉；同时把别的父节点 children set 里的命中项剔除。
         let edgeKeysToDrop = childEdges.keys.filter { isUnderDeleted($0) }
         for k in edgeKeysToDrop { childEdges.removeValue(forKey: k) }
@@ -1849,6 +1919,12 @@ public final class ScanCoordinator: ObservableObject {
         let rows: [TreeRow] = kids.map { childPath in
             if let agg = dirIndex[childPath] {
                 // 目录
+                // v2026.06.20：agg.modificationDate 在"中间层 ancestor 目录"上经常为 nil
+                // （BulkScanner 没单独 yield 该目录的 .node 事件，只把它当祖先累加 bytes）。
+                // 用 [resolveDirMtimeFallback](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+                // lstat 一次拿磁盘 inode mtime，O(1) 缓存避免每帧 stat，让"修改时间"
+                // 列对真实存在的目录都能显示出来。
+                let mtime = agg.modificationDate ?? resolveDirMtimeFallback(forPath: childPath)
                 return TreeRow(
                     path: childPath,
                     title: (childPath as NSString).lastPathComponent,
@@ -1856,7 +1932,7 @@ public final class ScanCoordinator: ObservableObject {
                     fileCount: agg.fileCount,
                     isDirectory: true,
                     hasChildren: !(childEdges[childPath]?.isEmpty ?? true),
-                    modificationDate: agg.modificationDate
+                    modificationDate: mtime
                 )
             } else if let leaf = fileLeaves[childPath] {
                 // 文件
@@ -1987,6 +2063,15 @@ public final class ScanCoordinator: ObservableObject {
             } else {
                 // 目录：bytes/count 用子树累加值。hasChildren 判定与旧版一致：
                 // 至少 1 条记录，且不是"唯一一条直接孩子叶子"。
+                // v2026.06.20：accessState == .normal 时（即真正能 stat 的目录）做 mtime 兜底，
+                // 让 GRDB store-fallback 路径也能在 inodeModificationDate 缺失时显示出真实时间，
+                // 与 [materializeFromMemory](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+                // 的兜底逻辑一致。permissionDenied / tccProtected 不 stat，避免触发系统弹权限。
+                let mtime: Date? = {
+                    if let d = agg.inodeModificationDate { return d }
+                    guard accessState == .normal else { return nil }
+                    return resolveDirMtimeFallback(forPath: segPath)
+                }()
                 return TreeRow(
                     path: segPath,
                     title: agg.segment,
@@ -1996,7 +2081,7 @@ public final class ScanCoordinator: ObservableObject {
                     hasChildren: agg.descendantCount >= 1
                         && !(agg.descendantCount == 1 && agg.hasInode == false),
                     accessState: accessState,
-                    modificationDate: agg.inodeModificationDate
+                    modificationDate: mtime
                 )
             }
         }
@@ -2039,6 +2124,9 @@ public final class ScanCoordinator: ObservableObject {
     /// 字典直接定位，避免遍历。
     public func row(for path: String) -> TreeRow? {
         if let agg = dirIndex[path] {
+            // v2026.06.20：与 [materializeFromMemory](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+            // 同款 mtime 兜底，保证 onSelect → detail 面板与 tree 列里"修改时间"显示一致。
+            let mtime = agg.modificationDate ?? resolveDirMtimeFallback(forPath: path)
             return TreeRow(
                 path: path,
                 title: (path as NSString).lastPathComponent,
@@ -2046,7 +2134,7 @@ public final class ScanCoordinator: ObservableObject {
                 fileCount: agg.fileCount,
                 isDirectory: true,
                 hasChildren: !(childEdges[path]?.isEmpty ?? true),
-                modificationDate: agg.modificationDate
+                modificationDate: mtime
             )
         }
         if let leaf = fileLeaves[path] {

@@ -196,15 +196,34 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         return result.legacy
     }
 
-    /// **v2026.06.22 (P0-3)**：原子返回结构化 outcome，避免 side-channel 单槽位被并发覆盖。
+    /// **v2026.06.17 (P0-3)**：原子返回结构化 outcome，避免 side-channel 单槽位被并发覆盖。
     /// 同时也会同步写入 `_lastOutcome`，保持老 callsite 通过 `snapshotLastOutcome()` 读取的兼容。
     public func moveToTrashReturningOutcome(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
         return await performMoveToTrash(paths: paths, dryRun: dryRun)
     }
 
+    /// **v2026.06.22**：用户从 [OperationResultSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/OperationResultSheet.swift) "强制删除"
+    /// 按钮触发的二次提交通道——**绕过 vendor 规则**（vendors.yaml 中
+    /// `paths: [{verdict: forbid}]` 整段不再生效），但**保留** SafetyEngine 的所有
+    /// 硬安全网（[hardForbidPrefixes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L185)
+    /// / [userRootForbidden](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L155)
+    /// / sensitive credentials / system volumes / hard 后缀）以及 `accessDeniedPaths`
+    /// 一票否决——这两类是物理安全底线，无论用户多坚持都不允许越过。
+    ///
+    /// 实现：内部走与 `moveToTrash` 同一份 `performMoveToTrash`，但临时把 `trie` 置 nil
+    /// 让 `partitionByForbid` 退化到无 vendor 规则的判定路径。
+    ///
+    /// 用户契约：UI 必须先弹一次「二次确认」对话框（建议命名"我已知风险，仍然删除"），
+    /// 把"vendor 规则曾经拦下"的原因写明，避免误触。
+    public func moveToTrashForce(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
+        return await performMoveToTrash(paths: paths, dryRun: dryRun, skipVendorRule: true)
+    }
+
     /// 共享实现：一次计算 legacy 4 元组 + 结构化 outcome，**返回值**即权威结果，
     /// 同时 `recordOutcome` 写入 lastOutcome 槽位仅为兼容旧 `snapshotLastOutcome()` 读取方。
-    private func performMoveToTrash(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
+    /// `skipVendorRule=true` 时把 trie 置 nil 让 [partitionByForbid](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L151)
+    /// 走"无 vendor 规则"路径——仅供 `moveToTrashForce` 内部使用。
+    private func performMoveToTrash(paths: [String], dryRun: Bool, skipVendorRule: Bool = false) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
         guard !paths.isEmpty else {
             let outcome = TrashOutcome(movedPairs: [], failedPaths: [], safetyRejected: [], missingPaths: [])
             recordOutcome(outcome)
@@ -220,9 +239,12 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         let (allowed, rejected) = Self.partitionByForbid(
             paths: paths,
             safety: safety,
-            trie: trie,
+            trie: skipVendorRule ? nil : trie,
             accessDeniedPaths: accessDenied
         )
+        if skipVendorRule {
+            GSYLog.warning(.trash, "moveToTrashForce 启用 skipVendorRule=true vendor 规则被绕过，仅保留 SafetyEngine 硬安全网 + accessDenied")
+        }
         if !rejected.isEmpty {
             GSYLog.warning(.trash, "moveToTrash 被 SafetyEngine 拦截 \(rejected.count)/\(paths.count) firstReason=\(rejected[0].reason.rawValue) firstPath=\(rejected[0].path)")
         }

@@ -222,12 +222,46 @@ public final class AppSettings {
         case zhHans = "zh-Hans"
         case en
 
+        /// 默认 label（沿用 process Bundle.main.preferredLocalizations，与原行为兼容）。
+        /// **注意 bug 历史**：这里的 `String(localized:)` 重载不读 SwiftUI 环境 locale，
+        /// 而是读进程级 `Bundle.main.preferredLocalizations`。在用户已经把 App 整体环境
+        /// locale 改成 zh-Hans、但 Bundle.main 仍是 en 的窗口里，Picker 选项会显示为
+        /// 英文（"Simplified Chinese / Follow System / English"），与周围中文 UI 不一致。
+        /// 解决：UI 调用方应使用下面的 [label(in:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)，
+        /// 把当前 SwiftUI 环境的 `Locale` 透传进来，确保选项文本与界面其它文本同语言。
         public var label: String {
+            label(in: nil)
+        }
+
+        /// 按指定 locale 返回 label。`nil` 时退化为 process 默认（与 [label](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift) 等价）。
+        ///
+        /// 实现：直接走 `Bundle.module` 的 `localizedString(forKey:...)`——
+        /// 先按 `locale.identifier` 找匹配的 `.lproj`（xcstrings 编译产物为各语言 lproj），
+        /// 命中则用该语言的字符串；否则回落 Bundle.module 自身的 development localization
+        /// （base = en），与 SwiftUI `Text(_:bundle:)` 在 `environment(\.locale, ...)` 下
+        /// 的解析行为对齐，避免"选项文本与界面其它文本"语言不一致。
+        public func label(in locale: Locale?) -> String {
+            let key: String
             switch self {
-            case .system: return String(localized: "settings.language.system", bundle: .module)
-            case .zhHans: return String(localized: "settings.language.zh_hans", bundle: .module)
-            case .en:     return String(localized: "settings.language.en", bundle: .module)
+            case .system: key = "settings.language.system"
+            case .zhHans: key = "settings.language.zh_hans"
+            case .en:     key = "settings.language.en"
             }
+            guard let locale, let table = Self.tableName(for: locale),
+                  let path = Bundle.module.path(forResource: table, ofType: "lproj"),
+                  let bundle = Bundle(path: path) else {
+                return String(localized: String.LocalizationValue(key), bundle: .module)
+            }
+            return bundle.localizedString(forKey: key, value: nil, table: nil)
+        }
+
+        /// 把 SwiftUI 环境给的 `Locale` 映射到 Bundle.module 内的 lproj 名称。
+        /// 只关心我们 ship 的两种语言；其它 locale 回 nil 让上层走默认 bundle 解析。
+        private static func tableName(for locale: Locale) -> String? {
+            let id = locale.identifier
+            if id.hasPrefix("zh") { return "zh-Hans" }
+            if id.hasPrefix("en") { return "en" }
+            return nil
         }
 
         /// 转成 SwiftUI / Foundation 的 `Locale`。`.system` 返回 nil，

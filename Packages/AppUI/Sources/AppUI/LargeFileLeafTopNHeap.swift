@@ -68,6 +68,41 @@ struct LargeFileLeafTopNHeap {
         storage.removeAll(keepingCapacity: keepingCapacity)
     }
 
+    /// **v2026.06.22**：按路径前缀剔除已删叶子，并重建 min-heap 不变量。
+    ///
+    /// 背景：用户反馈 "大文件列表，删除后没列表没更新，内容还在"。
+    /// 根因：[ScanCoordinator.pruneDeleted](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1621)
+    /// 历史上只剔除 `buckets / dirIndex / childEdges / fileLeaves / snapshot.rows /
+    /// treeChildrenCache`；而 LargeFilesView 直接 `coordinator.largeFiles(...)` →
+    /// 走 `largeFileLeaves.snapshot()`，**完全没经过 pruneDeleted 的洗手段**，
+    /// 已删项永驻 heap 直到下次 startScan 重置。
+    ///
+    /// 实现：filter-then-rebuild —— heap 元素总数 ≤ 1000（capacity 默认），一次 O(N)
+    /// 过滤后用 [heapify](https://en.wikipedia.org/wiki/Binary_heap#Building_a_heap) 自底向上
+    /// `siftDown` 在 O(N) 时间内重建不变量，无须重头 push。
+    ///
+    /// 调用契约：`shouldRemove` 必须无副作用且幂等（pruneDeleted 同一帧可能传若干路径）。
+    /// 返回值：实际被剔除的条目数；==0 时调用方可跳过 UI 重渲染。
+    @discardableResult
+    mutating func removeAll(where shouldRemove: (ScanCoordinator.LargeFileLeaf) -> Bool) -> Int {
+        guard !storage.isEmpty else { return 0 }
+        let before = storage.count
+        storage.removeAll(where: shouldRemove)
+        let removed = before - storage.count
+        if removed > 0 {
+            // 重建 min-heap：从最后一个非叶子节点向前 siftDown。
+            // 复杂度 O(n) — Floyd's heapify 经典算法。
+            if storage.count > 1 {
+                var i = (storage.count / 2) - 1
+                while i >= 0 {
+                    siftDown(from: i)
+                    i -= 1
+                }
+            }
+        }
+        return removed
+    }
+
     // MARK: - Heap 维护（min-heap，比较键 = bytes）
 
     @inline(__always)

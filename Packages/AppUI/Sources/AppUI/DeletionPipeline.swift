@@ -59,6 +59,13 @@ public protocol DeletionPipeline: Sendable {
     ///
     /// 默认实现走旧 `moveToTrash` + `snapshotLastOutcome()`，保证已有 stub 不破。
     func moveToTrashReturningOutcome(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?)
+
+    /// **v2026.06.22**：用户从 [OperationResultSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/OperationResultSheet.swift)
+    /// 「强制删除」按钮触发的二次提交通道——**绕过 vendor 规则**，但保留所有 SafetyEngine 硬安全网。
+    /// 协议给默认 fallback 实现：回退到普通 `moveToTrashReturningOutcome`（即 stub / 不支持 force 的链路
+    /// 等价于普通删除）。真删除链路 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)
+    /// 会 override 走 `skipVendorRule=true` 路径。
+    func moveToTrashForce(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?)
 }
 
 /// v2026.06.16：单次 `moveToTrash` 的结构化结果。`OperationResultSheet` 直接消费。
@@ -125,5 +132,12 @@ extension DeletionPipeline {
         let legacy = await moveToTrash(paths: paths, dryRun: dryRun)
         let outcome = snapshotLastOutcome()
         return (legacy, outcome)
+    }
+
+    /// **v2026.06.22 默认 fallback**：stub / 不支持 force 的链路直接退化到普通删除路径。
+    /// 真删除链路 [TrashPipeline.moveToTrashForce](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)
+    /// 会 override 此方法走 `skipVendorRule=true`。
+    public func moveToTrashForce(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
+        return await moveToTrashReturningOutcome(paths: paths, dryRun: dryRun)
     }
 }

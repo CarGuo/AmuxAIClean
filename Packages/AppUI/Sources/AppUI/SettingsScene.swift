@@ -25,6 +25,13 @@ public struct SettingsScene: View {
     /// 为兼容旧测试 / Preview，参数允许省略，省略时仍 new 一份私有实例（仅 settings 窗口自用）。
     @Bindable private var aiSettings: AISettings
 
+    /// 当前 SwiftUI 环境的 locale —— 给语言 Picker 选项做"按当前界面语言展示"用。
+    /// [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
+    /// 已经在两个 Scene 上挂 `.environment(\.locale, settings.effectiveLocale)`，
+    /// 这里读出来再透传给 [LanguageOverride.label(in:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
+    /// 即可让 Picker 选项跟随。
+    @Environment(\.locale) private var currentEnvironmentLocale
+
     /// 路径列表的 UI 镜像。actor 数据要在 SwiftUI 里显示必须先快照。
     @State private var pathsMirror: [URL] = []
 
@@ -148,12 +155,37 @@ public struct SettingsScene: View {
 
     // MARK: - Tabs
 
+    /// **v2026.06.18**：让用户在改完语言后自助"立即重启 App"，把原生主菜单/系统弹窗
+    /// 也带到新语言。`relaunch` 走标准 macOS pattern：
+    /// `/usr/bin/open -n` 异步打开自身一份新进程 → 当前进程 `terminate`。
+    /// 不强制——也不在每次切语言时自动调用，避免破坏用户当前操作流。
+    private func restartApp() {
+        let bundleURL = Bundle.main.bundleURL
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        task.arguments = ["-n", bundleURL.path]
+        do {
+            try task.run()
+        } catch {
+            // 启动失败就什么都不做——保持当前进程存活，用户至少不会"两边都没了"。
+            return
+        }
+        // 给新进程一点点起跑时间再退当前进程，避免极少数情况下 launchd 还没接到新实例。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            NSApp.terminate(nil)
+        }
+    }
+
     private var scanTab: some View {
         Form {
             Section {
                 Picker(selection: $settings.preferredLanguage) {
                     ForEach(AppSettings.LanguageOverride.allCases, id: \.self) { lang in
-                        Text(lang.label).tag(lang)
+                        // **v2026.06.18 修复**：原来用 `lang.label` 走 `String(localized:)`，
+                        // 该重载不读 SwiftUI 环境 locale，只读 process Bundle.main.preferredLocalizations，
+                        // 导致中文界面下 Picker 选项仍显示 "Simplified Chinese / English / Follow System"。
+                        // 现在显式透传环境 locale，让选项文本与界面其它文本同语言。
+                        Text(lang.label(in: currentEnvironmentLocale)).tag(lang)
                     }
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
@@ -166,10 +198,19 @@ public struct SettingsScene: View {
                 }
                 .pickerStyle(.menu)
                 if settings.preferredLanguage != .system {
-                    Text("settings.language.restart_hint", bundle: .module)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(alignment: .top, spacing: 8) {
+                        Text("settings.language.restart_hint", bundle: .module)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        Button {
+                            restartApp()
+                        } label: {
+                            Text("settings.language.restart_now", bundle: .module)
+                        }
+                        .controlSize(.small)
+                    }
                 }
             } header: {
                 Text("settings.section.appearance", bundle: .module)

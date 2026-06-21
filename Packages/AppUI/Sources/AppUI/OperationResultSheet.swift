@@ -75,13 +75,22 @@ public struct OperationResultPayload: Identifiable {
 public struct OperationResultSheet: View {
     public let payload: OperationResultPayload
     public let onDismiss: () -> Void
+    /// **v2026.06.22 新增**：用户点击 blockedSection 的「强制删除」按钮触发。
+    /// 仅当宿主调用方愿意提供 force 通道时才注入；为 nil 时按钮整体隐藏。
+    /// 参数是 reason 含 "vendor" 的可 force 路径子集（硬安全网类 / accessDenied 类不传入）。
+    public let onForceDelete: (([String]) -> Void)?
 
     @State private var failedExpanded = true
-    @State private var blockedExpanded = false
+    @State private var blockedExpanded = true
+    /// 二次确认弹窗状态——避免用户误触跨过 vendor 规则。
+    @State private var showForceConfirm = false
 
-    public init(payload: OperationResultPayload, onDismiss: @escaping () -> Void) {
+    public init(payload: OperationResultPayload,
+                onDismiss: @escaping () -> Void,
+                onForceDelete: (([String]) -> Void)? = nil) {
         self.payload = payload
         self.onDismiss = onDismiss
+        self.onForceDelete = onForceDelete
     }
 
     public var body: some View {
@@ -110,6 +119,32 @@ public struct OperationResultSheet: View {
             footer
         }
         .frame(width: 560, height: 480)
+        .alert("op.result.force_delete.confirm.title", isPresented: $showForceConfirm) {
+            Button("op.result.force_delete.confirm.cancel", role: .cancel) { }
+            Button("op.result.force_delete.confirm.ok", role: .destructive) {
+                let targets = forceDeletablePaths
+                guard !targets.isEmpty else { return }
+                onForceDelete?(targets)
+                onDismiss()
+            }
+        } message: {
+            Text(String(format: String(localized: "op.result.force_delete.confirm.message %lld", bundle: .module),
+                        forceDeletablePaths.count))
+        }
+    }
+
+    /// **v2026.06.22**：从 `safetyRejected` 中筛出"可被 force 通道处理"的路径——
+    /// 仅 vendorPathRule（reason 含 "vendor"）允许 force；硬安全网（hardForbid* /
+    /// userRoot* / sensitiveCredential / systemVolume）与 accessDenied 类一律不允许。
+    /// 这是 UI 层的最后一道 gate——即便 TrashPipeline 内部也会再次 enforce 硬安全网，
+    /// 这里仍然预过滤，避免用户点了「强制删除」却看到"全部还是被拦"的体验问题。
+    private var forceDeletablePaths: [String] {
+        payload.safetyRejected.compactMap { item in
+            let r = item.reason.lowercased()
+            // 含 vendor 关键字（vendorPathRule / vendor-rule 等）→ 可 force
+            if r.contains("vendor") { return item.path }
+            return nil
+        }
     }
 
     // MARK: - Header
@@ -297,6 +332,23 @@ public struct OperationResultSheet: View {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(Color.orange.opacity(0.06))
                 )
+                // **v2026.06.22**：force 通道按钮——仅当宿主提供 onForceDelete 且确实
+                // 存在 vendor 规则拦下的项时显示。点击触发二次确认弹窗。
+                if onForceDelete != nil, !forceDeletablePaths.isEmpty {
+                    HStack(spacing: 8) {
+                        Button(role: .destructive) {
+                            showForceConfirm = true
+                        } label: {
+                            Label(
+                                String(format: String(localized: "op.result.force_delete.button %lld", bundle: .module),
+                                       forceDeletablePaths.count),
+                                systemImage: "exclamationmark.shield"
+                            )
+                        }
+                        .controlSize(.small)
+                        Spacer()
+                    }
+                }
             }
             .padding(.top, 8)
         } label: {

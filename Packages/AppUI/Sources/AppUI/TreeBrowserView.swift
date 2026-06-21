@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import SafetyKit
+import AIKit
 
 /// v1.0 T3 / T5：多层下钻浏览器 + 列排序 + 键盘导航。
 ///
@@ -43,6 +44,21 @@ public struct TreeBrowserView: View {
     /// 清掉 store-fallback 缓存并 bump structuralRevision，本视图下一帧自动重拉。
     /// 给 nil 时菜单不展示该项（便于在 readonly 场景复用）。
     let onRefreshSubtree: ((String) -> Void)?
+    /// v2026.06.18 **加入待处理**回调（购物车）。点击 contextMenu 的"加入待处理"项
+    /// 把 (path, title, bytes, isDirectory) 透给上层，由上层调
+    /// [StashStore.add](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashStore.swift#L80-L82) 入库。
+    /// 给 nil 时菜单不展示该项（保持向后兼容；readonly / 无 stash 场景仍可复用）。
+    let onStash: ((TreeRow) -> Void)?
+    /// v2026.06.18 **是否已加入待处理**查询。contextMenu 用它把"加入待处理"按钮置灰
+    /// + 改文案"已在待处理列表"。给 nil 时按 `false` 处理（旧 callsite 不受影响）。
+    let isStashed: ((String) -> Bool)?
+    /// v2026.06.20 **AI 设置**——决定 tree 行的 sparkles AI 按钮是否真正"可点"。
+    /// nil（旧 callsite）或 `!isReadyForUI` → 按钮以 disabled + 提示 "请先在设置中配置 AI"
+    /// 的形式出现（与 List 视图行为对齐），让用户知道有这个功能但需要先去配。
+    let aiSettings: AISettings?
+    /// v2026.06.20 **AI 入口回调**。给 nil（旧 callsite）时按钮根本不出现；
+    /// 给值后无论 aiSettings 是否就绪都会出现按钮，未就绪时按 disabled。
+    let onAskAI: ((TreeRow) -> Void)?
 
     /// SafetyEngine 静态共享：拦截 forbid 路径（家目录、`/`、SIP、`..` 等），
     /// 在弹菜单 / 行内 trash 按钮 hit-test 时就 disabled，并附 tooltip 解释为什么不能删。
@@ -83,12 +99,20 @@ public struct TreeBrowserView: View {
                 rootPath: String,
                 onSelect: ((TreeRow) -> Void)? = nil,
                 onTrash: ((URL) -> Void)? = nil,
-                onRefreshSubtree: ((String) -> Void)? = nil) {
+                onRefreshSubtree: ((String) -> Void)? = nil,
+                onStash: ((TreeRow) -> Void)? = nil,
+                isStashed: ((String) -> Bool)? = nil,
+                aiSettings: AISettings? = nil,
+                onAskAI: ((TreeRow) -> Void)? = nil) {
         self.coordinator = coordinator
         self.rootPath = rootPath
         self.onSelect = onSelect
         self.onTrash = onTrash
         self.onRefreshSubtree = onRefreshSubtree
+        self.onStash = onStash
+        self.isStashed = isStashed
+        self.aiSettings = aiSettings
+        self.onAskAI = onAskAI
     }
 
     public var body: some View {
@@ -132,19 +156,42 @@ public struct TreeBrowserView: View {
                     // 选中态、键盘导航、行内 trash 行为全部由 TreeNodeRow 内部维护，
                     // 切容器对外行为不变。
                     List(flatRows) { flat in
-                        TreeNodeRow(
-                            flat: flat,
-                            maxBytes: maxBytes,
-                            isExpanded: expanded[flat.row.path] ?? false,
-                            isSelected: selectedPath == flat.row.path,
-                            onToggleExpand: { toggleExpansionFor(path: flat.row.path) },
-                            onSelect: { selectedPath = flat.row.path },
-                            onTrash: onTrash.map { _ in requestTrash(_:) },
-                            onRefreshSubtree: onRefreshSubtree
-                        )
-                        .id(flat.row.path)
-                        .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
-                        .listRowSeparator(.hidden)
+                        if flat.isLoadingPlaceholder {
+                            // v2026.06.20 加载占位行——不参与 selection / contextMenu / 键盘导航。
+                            // 缩进对齐到子级 depth，与真实子项位置一致；左侧 spinner + "加载中…"。
+                            HStack(spacing: 6) {
+                                Spacer().frame(width: CGFloat(flat.depth) * 16 + 22)
+                                ProgressView()
+                                    .controlSize(.mini)
+                                Text("tree.loading.children", bundle: .module)
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 2)
+                            .id(flat.id)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+                            .listRowSeparator(.hidden)
+                        } else {
+                            TreeNodeRow(
+                                flat: flat,
+                                maxBytes: maxBytes,
+                                isExpanded: expanded[flat.row.path] ?? false,
+                                isSelected: selectedPath == flat.row.path,
+                                onToggleExpand: { toggleExpansionFor(path: flat.row.path) },
+                                onSelect: { selectedPath = flat.row.path },
+                                onTrash: onTrash.map { _ in requestTrash(_:) },
+                                onRefreshSubtree: onRefreshSubtree,
+                                onStash: onStash,
+                                isStashed: isStashed?(flat.row.path) ?? false,
+                                aiSettings: aiSettings,
+                                onAskAI: onAskAI
+                            )
+                            .id(flat.row.path)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+                            .listRowSeparator(.hidden)
+                        }
                     }
                     .listStyle(.plain)
                     .environment(\.defaultMinListRowHeight, 0)
@@ -318,7 +365,11 @@ public struct TreeBrowserView: View {
                 appendDescendantPairs(parent: kid.path, depth: 1, into: &pairs)
             }
         }
-        flatRows = Self.computeVerdicts(for: pairs) { Self.safety.evaluate(path: $0).0 }
+        let base = Self.computeVerdicts(for: pairs) { Self.safety.evaluate(path: $0).0 }
+        // v2026.06.20：把"展开但孩子还在异步加载"的目录后面插一个加载占位行，
+        // 让用户在 store-fallback 拉子节点的几十~几百毫秒窗口里看到 spinner，
+        // 而不是空白的展开。详见 [insertLoadingPlaceholders](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
+        flatRows = insertLoadingPlaceholders(into: base)
         maxBytes = topLevel.map(\.bytes).max() ?? 0
         // 顶层空 + isFetchingChildren 才算"拉取中"；否则维持 false 让 view 走 isScanning / 真空两态。
         isFetchingRoot = topLevel.isEmpty
@@ -334,6 +385,53 @@ public struct TreeBrowserView: View {
                 appendDescendantPairs(parent: k.path, depth: depth + 1, into: &out)
             }
         }
+    }
+
+    /// v2026.06.20 **子节点加载占位插入**。
+    ///
+    /// 触发场景：用户展开一个目录 → 该目录 directChildren 当前还在异步拉（store-fallback
+    /// 在 BG queue 起的 Task 没回写 [treeChildrenCache](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L283-L283)）
+    /// → directChildren 暂时返回 []。旧版表现：chevron 已经翻成"↓"但下面什么都没有，
+    /// 用户以为"展开了空目录"，几百 ms 后突然出来一堆子项，体验割裂。
+    ///
+    /// 新策略：对 base 数组按顺序扫一遍，每个"isDirectory + 展开"的行后面看下一行是否真是它的子项
+    /// （depth = 父+1）；若不是 + ScanCoordinator 报告 isFetching → 插一个 `isLoadingPlaceholder` 行，
+    /// 单独的 ProgressView 渲染。
+    ///
+    /// 性能：base 数组遍历 1 次，每行 O(1) 字典查询，不 O(N²)。占位行不参与 verdict 评估。
+    private func insertLoadingPlaceholders(into base: [FlatTreeRow]) -> [FlatTreeRow] {
+        var out: [FlatTreeRow] = []
+        out.reserveCapacity(base.count + 4)
+        for (i, item) in base.enumerated() {
+            out.append(item)
+            // 仅对"可展开 + 已展开 + 实际可访问"的目录考虑插占位
+            guard item.row.isDirectory,
+                  expanded[item.row.path] == true,
+                  item.row.accessState == .normal else { continue }
+            // 已经有真实子项跟在后面？next.depth 严格大于父 depth 即说明 SwiftUI 看得到子项，
+            // 这种情况就不再插占位（避免"加载中…"与真实子项同框）。
+            let next = (i + 1 < base.count) ? base[i + 1] : nil
+            if let next, next.depth > item.depth { continue }
+            // 此时父展开 + 紧邻无真实子项；仅当 ScanCoordinator 报告还在拉时才插
+            guard coordinator.isFetchingChildren(of: item.row.path, sortedBy: sortKey)
+            else { continue }
+            let placeholderRow = TreeRow(
+                path: item.row.path,
+                title: "",
+                bytes: 0,
+                fileCount: 0,
+                isDirectory: false,
+                hasChildren: false,
+                modificationDate: nil
+            )
+            out.append(FlatTreeRow(
+                row: placeholderRow,
+                depth: item.depth + 1,
+                verdict: .safe,
+                isLoadingPlaceholder: true
+            ))
+        }
+        return out
     }
 
     // MARK: - flatRows 增量 patch（v1.5.6 性能优化）
@@ -373,6 +471,12 @@ public struct TreeBrowserView: View {
     ///
     /// 复杂度：O(N find + M new subtree)，N=当前 flatRows 行数，M=新展开子树行数。
     /// 旧实现是 O(N total + 整树 directChildren 调用)。
+    ///
+    /// v2026.06.20：插入完真实子项后，若该 path 子项空但 `isFetchingChildren==true`，
+    /// 单独插一个加载占位 row，给用户"我点了 → 正在拉"的及时反馈，避免几百 ms 的空白窗口。
+    /// 真实子项一旦到位，下次 publishSnapshot 触发 structuralRevision bump → 走整树
+    /// [rebuildFlatRows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L323-L344)
+    /// 自然把占位行替换掉，无需手工维护"占位行 lifetime"。
     private func incrementalExpand(path: String) {
         guard let idx = flatRows.firstIndex(where: { $0.row.path == path }) else {
             rebuildFlatRows(); return
@@ -381,7 +485,30 @@ public struct TreeBrowserView: View {
         var pairs: [(TreeRow, Int)] = []
         appendDescendantPairs(parent: path, depth: parentDepth + 1, into: &pairs)
         let inserted = Self.computeVerdicts(for: pairs) { Self.safety.evaluate(path: $0).0 }
-        flatRows.insert(contentsOf: inserted, at: idx + 1)
+        if !inserted.isEmpty {
+            flatRows.insert(contentsOf: inserted, at: idx + 1)
+            return
+        }
+        // pairs.isEmpty → 父展开但暂时没真实子项；仅当 ScanCoordinator 报告还在异步拉时插占位
+        let parentRow = flatRows[idx].row
+        guard parentRow.accessState == .normal,
+              coordinator.isFetchingChildren(of: path, sortedBy: sortKey)
+        else { return }
+        let placeholderRow = TreeRow(
+            path: path,
+            title: "",
+            bytes: 0,
+            fileCount: 0,
+            isDirectory: false,
+            hasChildren: false,
+            modificationDate: nil
+        )
+        flatRows.insert(FlatTreeRow(
+            row: placeholderRow,
+            depth: parentDepth + 1,
+            verdict: .safe,
+            isLoadingPlaceholder: true
+        ), at: idx + 1)
     }
 
     /// 单点折叠：在 flatRows 里找到 `path`，删掉它**之后**所有 depth > path.depth 的
@@ -663,7 +790,15 @@ struct FlatTreeRow: Identifiable, Hashable {
     let row: TreeRow
     let depth: Int
     let verdict: SafetyVerdict
-    var id: String { row.path }
+    /// v2026.06.20 当本行是"加载占位行"时为 true。占位行 id 用父路径 + "::__loading__"
+    /// 后缀，避免与真实 path 冲突；UI 端只渲染一个 ProgressView + "加载中…" 文案，
+    /// 不响应点击 / 不算入选中态 / 不进入键盘导航候选集。
+    var isLoadingPlaceholder: Bool = false
+    /// v2026.06.20：占位行的 id 不能用 `row.path`（会与真实 path 冲突 / 影响 selectedPath
+    /// 等键盘导航逻辑），改用 `row.path + "::__loading__"`。普通行保持原行为。
+    var id: String {
+        isLoadingPlaceholder ? "\(row.path)::__loading__" : row.path
+    }
 }
 
 /// **v1.5.4 重构**：单行树节点视图（不再递归自身）。
@@ -682,6 +817,14 @@ struct TreeNodeRow: View {
     let onTrash: ((URL) -> Void)?
     /// v2026.06 #1：右键"刷新此目录"回调。nil 或本行非 directory 时菜单不展示。
     let onRefreshSubtree: ((String) -> Void)?
+    /// v2026.06.18 **加入待处理**回调（购物车）。nil 时 contextMenu 不展示该项。
+    let onStash: ((TreeRow) -> Void)?
+    /// v2026.06.18 当前行是否已加入待处理。true 时按钮置灰 + 改文案。
+    let isStashed: Bool
+    /// v2026.06.20 AI 设置（决定 sparkles 按钮可点 / 灰）。nil 时同 readonly：按钮根本不出现。
+    let aiSettings: AISettings?
+    /// v2026.06.20 AI 入口回调。给 nil 时按钮不出现；给值后未配置 → disabled + 提示去设置。
+    let onAskAI: ((TreeRow) -> Void)?
 
     private var row: TreeRow { flat.row }
     private var indent: CGFloat { CGFloat(flat.depth) * 16 }
@@ -726,6 +869,40 @@ struct TreeNodeRow: View {
                 }
             }
             TreeBrowserRow(row: row, maxBytes: maxBytes)
+            // v2026.06.20 **行内"问 AI"按钮**——抽到独立 helper 减轻 body 的 type-check 负担。
+            // 详细注释见 [aiActionButton](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
+            aiActionButton
+            // v2026.06.20 **行内"加入待处理"按钮**——放在 trash 之前，作为"非破坏性
+            // 暂存"的快速通道，与右键菜单完全等价。状态可视：未加入时显示空托盘
+            // 图标（`tray.and.arrow.down`），已加入显示满托盘（`tray.full.fill`）
+            // + 置灰 + 鼠标悬停文案改成"已在待处理"。
+            //
+            // 设计要点：
+            // 1. 用 `isStashed` 字段（外层 `TreeBrowserView` 把 `stash.contains(path)`
+            //    映射进来，O(1) Set 查询）决定 icon / 文案 / disabled，不在 row body
+            //    重算时回查 StashStore，避免 SwiftUI hot path 多一次跨 Observable 订阅。
+            // 2. 行内按钮永远存在（只要 onStash 非 nil），不依赖 `onTrash`——
+            //    待处理本身不是破坏性操作，readonly 视图同样应允许暂存。
+            // 3. `.buttonStyle(.plain)` + 22pt hit area，与三角披露 / trash 按钮一致，
+            //    Finder 风手感。
+            if let onStash {
+                Button {
+                    guard !isStashed else { NSSound.beep(); return }
+                    onSelect()
+                    onStash(row)
+                } label: {
+                    Image(systemName: isStashed ? "tray.full.fill" : "tray.and.arrow.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(isStashed ? Color.accentColor : Color.secondary)
+                        .frame(width: 28, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isStashed)
+                .help(isStashed
+                      ? String(localized: "tree.row.stash.already", bundle: .module)
+                      : String(localized: "tree.row.stash", bundle: .module))
+            }
             // **v1.5.3**：行内 trash 按钮——单击 = 立刻调 onTrash（已经过外层二次确认 wrapper）。
             if let onTrash {
                 Button {
@@ -792,6 +969,58 @@ struct TreeNodeRow: View {
                 }
                 .disabled(isForbidden)
                 .keyboardShortcut(.delete, modifiers: [])
+                // v2026.06.18 **加入待处理**入口紧邻"移到废纸篓"，与"清空-vs-囤起来"
+                // 是同一动作面的两种处置方式，放在一起手感更对。
+                if let onStash {
+                    Button {
+                        onSelect()
+                        onStash(row)
+                    } label: {
+                        Label {
+                            Text(isStashed
+                                 ? "tree.menu.stash_already"
+                                 : "tree.menu.stash",
+                                 bundle: .module)
+                        } icon: {
+                            Image(systemName: isStashed ? "tray.full.fill" : "tray.and.arrow.down")
+                        }
+                    }
+                    .disabled(isStashed)
+                }
+                Divider()
+            } else if let onStash {
+                // 即使 onTrash 缺席（只读视图复用本组件）也允许"加入待处理"
+                // —— 待处理本身不是破坏性操作，无需依赖删除链路。
+                Button {
+                    onSelect()
+                    onStash(row)
+                } label: {
+                    Label {
+                        Text(isStashed
+                             ? "tree.menu.stash_already"
+                             : "tree.menu.stash",
+                             bundle: .module)
+                    } icon: {
+                        Image(systemName: isStashed ? "tray.full.fill" : "tray.and.arrow.down")
+                    }
+                }
+                .disabled(isStashed)
+                Divider()
+            }
+            // v2026.06.20 contextMenu 也提供"问 AI"项，与行内 sparkles 按钮等价。
+            // 仅当 onAskAI && aiSettings.isReadyForUI 时才出现；未配置不显示
+            // —— contextMenu 是动作面板，disabled 在这里反馈差，宁可隐藏。
+            if let onAskAI, let ai = aiSettings, ai.isReadyForUI {
+                Button {
+                    onSelect()
+                    onAskAI(row)
+                } label: {
+                    Label {
+                        Text("tree.menu.ask_ai", bundle: .module)
+                    } icon: {
+                        Image(systemName: "sparkles")
+                    }
+                }
                 Divider()
             }
             Button {
@@ -865,6 +1094,36 @@ struct TreeNodeRow: View {
                     Image(systemName: "textformat")
                 }
             }
+        }
+    }
+
+    /// v2026.06.20 行内"问 AI"按钮（sparkles）。抽到独立 ViewBuilder 以
+    /// 防止 TreeNodeRow.body 过长触发 SwiftUI 编译器 "unable to type-check
+    /// in reasonable time"。语义与 RowView 的 AI 入口对齐：
+    /// - `onAskAI == nil` → 不出现（readonly / 无 AI 入口的视图）
+    /// - `onAskAI != nil` 但 `aiSettings == nil || !isReadyForUI` →
+    ///   出现，灰色 sparkles + disabled + tooltip 提示 "请先在设置中配置 AI"
+    /// - 都满足 → accentColor sparkles + 可点击，回调上层弹 AIAdviceSheet
+    @ViewBuilder
+    private var aiActionButton: some View {
+        if let onAskAI {
+            let aiReady = (aiSettings?.isReadyForUI == true)
+            Button {
+                guard aiReady else { NSSound.beep(); return }
+                onSelect()
+                onAskAI(row)
+            } label: {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(aiReady ? Color.accentColor : Color.secondary.opacity(0.4))
+                    .frame(width: 28, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!aiReady)
+            .help(aiReady
+                  ? String(localized: "tree.row.ai", bundle: .module)
+                  : String(localized: "tree.row.ai.not_configured", bundle: .module))
         }
     }
 }
@@ -973,12 +1232,17 @@ struct TreeBrowserRow: View {
     }
 
     /// v1.5.4：列内 mtime 短文案。
-    /// - 缺失 / accessDenied → "—"
+    /// - accessDenied → "—"（语义："无法访问"）
+    /// - 目录/文件存在但无 mtime（聚合根 / 虚拟节点 / 首帧 publish）→ "·"
+    ///   v2026.06.18：用户反馈"为什么 Modified 没有了"——根行（如"Xcode Build Artifacts"）
+    ///   是聚合虚拟节点，没有自身 inode，所以拿不到 mtime。把"—"和"·"区分开能让
+    ///   用户一眼看出"这不是 bug，是这一行本来就没有自己的修改时间"。
     /// - 当年 → "MM-dd"
     /// - 跨年 → "yyyy-MM-dd"
     /// 用 cached formatter 避免每行重新建（SwiftUI body 高频重算）。
     static func mtimeDisplay(_ date: Date?, denied: Bool) -> String {
-        guard !denied, let date = date else { return "—" }
+        if denied { return "—" }
+        guard let date else { return "·" }
         let cal = Calendar.current
         if cal.isDate(date, equalTo: Date(), toGranularity: .year) {
             return Self.shortFormatter.string(from: date)
@@ -987,8 +1251,11 @@ struct TreeBrowserRow: View {
     }
 
     /// 鼠标悬停时显示完整时间——窄列里的省略不丢精度。
+    /// v2026.06.18：mtime 缺失时给出明确的解释，避免被误解为"bug 没读到"。
     static func mtimeFullHelp(_ date: Date?) -> String {
-        guard let date = date else { return "" }
+        guard let date = date else {
+            return String(localized: "tree.column.mtime.aggregate_help", bundle: .module)
+        }
         return Self.fullDateTimeFormatter.string(from: date)
     }
 

@@ -4184,6 +4184,69 @@
         }
       }
     },
+    "main.scan.progress.eta": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%@ left · elapsed %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "约剩 %@ · 已用 %@" } }
+      }
+    },
+    "main.scan.progress.elapsed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "elapsed %@ · estimating remaining…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已用 %@ · 剩余时间估算中…" } }
+      }
+    },
+    "main.scan.progress.percent": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%d%% · scanned %@ · est. ~%@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%d%% · 已扫 %@ · 预估约 %@" } }
+      }
+    },
+    "main.section.dev_tools": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Dev Tools" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开发者工具" } }
+      }
+    },
+    "main.devtool.lipo.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Lipo" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Lipo 瘦身" } }
+      }
+    },
+    "main.devtool.lipo.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Slim FAT binaries to arm64" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "将通用二进制裁剪为 arm64" } }
+      }
+    },
+    "main.devtool.brew.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Homebrew" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Homebrew" } }
+      }
+    },
+    "main.devtool.brew.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Installed / outdated / cleanup" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已装 / 过期 / 清理缓存" } }
+      }
+    },
+    "tree.column.mtime.aggregate_help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Aggregate row — this node has no inode mtime of its own (e.g. a virtual root or a bucket)." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "聚合节点 — 该行没有自身的修改时间（例如虚拟根目录或分类汇总）。" } }
+      }
+    },
     "main.scan.progress.multi.row": {
       "extractionState": "manual",
       "localizations": {
@@ -7908,8 +7971,8 @@
     "settings.language.detail" : {
       "extractionState" : "manual",
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Override the system language for this app. Most text switches immediately; some system menus only update after restart." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "为本应用单独指定界面语言。大部分文本会立即切换；系统菜单等需要重启 App 才会完全生效。" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Set the app's interface language. Most text switches instantly — no restart needed." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "为本应用单独指定界面语言。大部分文本会立即切换，无需重启。" } }
       }
     },
     "settings.language.system" : {
@@ -7936,8 +7999,15 @@
     "settings.language.restart_hint" : {
       "extractionState" : "manual",
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Restart the app to fully apply the language to system menus and alerts." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "重启 App 后系统菜单与原生弹窗也会切换到该语言。" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Only the top menu bar and a few native system dialogs need a restart to switch language." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "仅顶部主菜单与少数系统原生弹窗需要重启 App 后才会跟着切换。" } }
+      }
+    },
+    "settings.language.restart_now" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Restart App Now" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "立即重启 App" } }
       }
     },
     "settings.tab.ai" : {
@@ -7952,6 +8022,41 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "AI Assistant" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "AI 助手" } }
+      }
+    },
+    "settings.ai.howto.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "How to use" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "如何使用" } }
+      }
+    },
+    "settings.ai.howto.step1" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "1. Turn on \"AI Assistant\" below and fill in the endpoint / model / API Key." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "1. 打开下方的「启用 AI 助手」总开关，并填好端点 / 模型 / API Key。" } }
+      }
+    },
+    "settings.ai.howto.step2" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "2. Back to the main window, right-click any scan result row (recommended cleanups, large files, custom paths, tree browser) and choose ✨ \"Ask AI\"." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "2. 回到主界面，在任意扫描结果行（推荐清理 / 大文件 / 自定义路径 / 树视图）上右键，选择 ✨「问 AI」即可询问该路径是否可以删除。" } }
+      }
+    },
+    "settings.ai.howto.step3" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "3. The result sheet only shows advice; nothing is auto-selected for deletion. The local 3-tier gate (safe / confirm / forbid) stays the final authority." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "3. 结果面板只展示建议，不会自动勾选删除。最终是否删除仍由本地三档闸（安全 / 确认 / 禁止）说了算。" } }
+      }
+    },
+    "settings.ai.howto.disabled_hint" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Tip: the \"Ask AI\" right-click menu is hidden until \"AI Assistant\" below is turned on." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "提示：未打开下方「启用 AI 助手」时，主界面右键不会出现「问 AI」菜单项。" } }
       }
     },
     "settings.ai.enabled.title" : {
@@ -8465,6 +8570,41 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "另有 %lld 项命令行删除任务待处理，请在模拟器面板继续操作。" } }
       }
     },
+    "op.result.force_delete.button %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Force Delete %lld vendor-blocked item(s)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "强制删除被 vendor 规则拦下的 %lld 项" } }
+      }
+    },
+    "op.result.force_delete.confirm.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Force delete vendor-blocked items?" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "确认强制删除被 vendor 规则拦下的项？" } }
+      }
+    },
+    "op.result.force_delete.confirm.message %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "These %lld item(s) were blocked by vendor rules (e.g., Android SDK system-images). Force delete bypasses vendor rules but still keeps system-level safety nets (system volumes, credentials, hard-forbidden paths). Items will be moved to Trash and can be restored." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "这 %lld 项被 vendor 规则（如 Android SDK system-images）拦下。强制删除会绕过 vendor 规则，但仍然保留系统级安全网（系统卷、凭据、硬禁路径）。文件会移入废纸篓，可随时恢复。" } }
+      }
+    },
+    "op.result.force_delete.confirm.ok" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "I understand, delete anyway" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "我已知风险，仍然删除" } }
+      }
+    },
+    "op.result.force_delete.confirm.cancel" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cancel" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消" } }
+      }
+    },
     "tree.menu.refresh" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -8575,6 +8715,272 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Confirm Delete" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "确认删除" } }
+      }
+    },
+    "tree.menu.stash" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Add to Stash" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "加入待处理" } }
+      }
+    },
+    "tree.menu.stash_already" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Already in Stash" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已在待处理" } }
+      }
+    },
+    "toolbar.stash.title_with_count" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Stash (%lld)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "待处理 (%lld)" } }
+      }
+    },
+    "toolbar.stash.help" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Open Stash" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "查看稍后处理列表" } }
+      }
+    },
+    "toolbar.stash.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Stash" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "待处理" } }
+      }
+    },
+    "toolbar.stash.help_with_count" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Open Stash (%lld pending)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "查看待处理列表（%lld 项）" } }
+      }
+    },
+    "tree.row.stash" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Add to Stash" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "加入待处理" } }
+      }
+    },
+    "tree.row.stash.already" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Already in Stash" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已在待处理" } }
+      }
+    },
+    "tree.row.ai" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Ask AI" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "问 AI" } }
+      }
+    },
+    "tree.row.ai.not_configured" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Configure AI in Settings to enable" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请先在设置中配置 AI" } }
+      }
+    },
+    "tree.menu.ask_ai" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Ask AI…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "问 AI…" } }
+      }
+    },
+    "main.scan.progress.estimate_low" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Estimate exceeded, still scanning…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "估算偏小，仍在扫描…" } }
+      }
+    },
+    "main.scan.progress.percent.tooltip" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Estimate is a pre-scan guess (4s soft sampling) used as a denominator for the progress bar — it is NOT the disk size and may differ a lot from the final scanned total." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "「预估」是扫描前对该目录总量的一次软估算（4 秒采样），仅用作进度条分母，不是磁盘容量；与最终扫描结果可能差异较大。" } }
+      }
+    },
+    "stash.screen.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Stash" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "稍后处理" } }
+      }
+    },
+    "stash.empty.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Stash is empty" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "待处理列表为空" } }
+      }
+    },
+    "stash.empty.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Right-click any item in the tree and choose \"Add to Stash\" to collect it here." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "在树视图任意条目上右键选择\"加入待处理\"，即可把它收集到这里。" } }
+      }
+    },
+    "stash.summary.count_bytes" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%lld items · %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%lld 项 · %@" } }
+      }
+    },
+    "stash.row.remove" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Remove from Stash" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "从待处理移除" } }
+      }
+    },
+    "stash.action.close" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Close" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "关闭" } }
+      }
+    },
+    "stash.action.clear_all" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Clear All" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "清空" } }
+      }
+    },
+    "stash.action.trash_all" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Move All to Trash" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "全部移到废纸篓" } }
+      }
+    },
+    "stash.action.trash_one" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Move to Trash" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "移到废纸篓" } }
+      }
+    },
+    "stash.action.ai_all" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Ask AI for All" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "一键 AI 判断" } }
+      }
+    },
+    "stash.action.ai_all.help_disabled" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Batch AI is not enabled in this version. Use the per-row AI button instead." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本版本暂未启用批量 AI，请使用单行 AI 按钮。" } }
+      }
+    },
+    "stash.action.ai_one" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Ask AI" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "问 AI" } }
+      }
+    },
+    "stash.confirm.cancel" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cancel" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消" } }
+      }
+    },
+    "stash.confirm.clear_all.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Clear Stash?" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "清空待处理列表？" } }
+      }
+    },
+    "stash.confirm.clear_all.message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "This only removes items from the stash. Files on disk are not touched." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "仅会清空待处理列表，不会删除磁盘上的文件。" } }
+      }
+    },
+    "stash.confirm.clear_all.confirm" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Clear" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "清空" } }
+      }
+    },
+    "stash.confirm.trash_all.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Move All Stashed Items to Trash?" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "将待处理项全部移到废纸篓？" } }
+      }
+    },
+    "stash.confirm.trash_all.message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%1$lld items (%2$@) will be moved to Trash. You can restore them from the Trash before emptying it." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "将把 %1$lld 项（共 %2$@）移到废纸篓。清空废纸篓前可随时还原。" } }
+      }
+    },
+    "stash.confirm.trash_all.confirm" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Move to Trash" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "移到废纸篓" } }
+      }
+    },
+    "stash.action.ai_all.help" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Run AI advice on every stashed item, one by one." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "对待处理列表里的每一项依次询问 AI。" } }
+      }
+    },
+    "stash.action.ai_all.help_disabled_not_configured" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Configure AI in Settings (enable + API key) to use batch AI." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请先在设置里启用 AI 并填好 API Key，才能使用一键 AI。" } }
+      }
+    },
+    "stash.ai.row.querying" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Asking AI…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在询问 AI…" } }
+      }
+    },
+    "stash.ai.batch.progress" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%1$lld / %2$lld" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%1$lld / %2$lld" } }
+      }
+    },
+    "stash.ai.batch.progress.with_path" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%1$lld / %2$lld · %3$@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%1$lld / %2$lld · 正在询问 %3$@" } }
+      }
+    },
+    "stash.ai.batch.cancel" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cancel" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消" } }
       }
     }
   }

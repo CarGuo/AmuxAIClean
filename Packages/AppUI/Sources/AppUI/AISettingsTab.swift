@@ -25,6 +25,39 @@ struct AISettingsTab: View {
 
     var body: some View {
         Form {
+            // MARK: 如何使用（v2026.06.18 加）
+            // 用户反馈：填了 API Key 后不知道功能从哪进入。这里给一段可见性极高的
+            // 三步指引，并在总开关 OFF 时给一条额外提示，避免「填了 key 但开关没开」
+            // 的隐藏失败模式（[isReadyForUI](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/AISettings.swift)
+            // 在 enabled==false 时返回 false → contextMenu "问 AI" 不显示）。
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("settings.ai.howto.step1", bundle: .module)
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("settings.ai.howto.step2", bundle: .module)
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("settings.ai.howto.step3", bundle: .module)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !settings.enabled {
+                        Label {
+                            Text("settings.ai.howto.disabled_hint", bundle: .module)
+                                .font(.caption)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                        }
+                        .padding(.top, 2)
+                    }
+                }
+            } header: {
+                Text("settings.ai.howto.title", bundle: .module)
+            }
+
             // MARK: 总开关
             Section {
                 Toggle(isOn: $settings.enabled) {

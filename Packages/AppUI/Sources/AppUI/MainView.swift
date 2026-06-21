@@ -102,6 +102,21 @@ public struct MainView: View {
     /// 用户在 contextMenu 点过的最近一行 —— 非 nil 即弹 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)。
     @State private var aiAskingRow: RowItem?
 
+    /// v2026.06.18 **稍后处理（购物车）**：跨视图共享的待处理集合。
+    /// 来源：tree row contextMenu → onStash → 入库；
+    /// 出口：toolbar 右侧"待处理(N)"按钮 → 打开 [StashScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashScreen.swift)。
+    /// 用 @State 持 StashStore 实例，与 MainView 同生命周期；不持久化（参考购物车语义）。
+    @State private var stash: StashStore = StashStore()
+    /// 控制 [StashScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashScreen.swift)
+    /// sheet 的开关；与 [stash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
+    /// 分开以便 sheet dismiss 时不会清空购物车数据。
+    @State private var isStashScreenPresented: Bool = false
+    /// v2026.06.19 **一键 AI 队列引擎**。与 [stash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
+    /// 同生命周期；sheet 关闭时不取消跑中的队列（用户可能想后台先跑着，回头再开）。
+    /// 实际并不会在 sheet 关闭后继续可见进度——但已得到的 verdict 仍然写在 store
+    /// 里，下次打开 sheet 依然能看到徽标。
+    @State private var stashAIQueue: StashAIQueue = StashAIQueue()
+
     public init(pipeline: (any DeletionPipeline)? = nil,
                 vendors: [VendorRule] = [],
                 recorder: HeuristicRecorder = HeuristicRecorder(),
@@ -181,6 +196,45 @@ public struct MainView: View {
                           aiSettings: aiSettings,
                           onClose: { aiAskingRow = nil })
         }
+        // v2026.06.18 **稍后处理 sheet**。点 toolbar 的 `tray.full.fill` 按钮触发；
+        // 在 sheet 内做"一键清理 / 一键 AI / 单独清理 / 单独 AI / 剔除"集中操作。
+        // 复用现有 trigger / aiAskingRow 通道，不引入第二条删除/AI 链路。
+        .sheet(isPresented: $isStashScreenPresented) {
+            StashScreen(
+                stash: stash,
+                aiQueue: stashAIQueue,
+                aiSettings: aiSettings,
+                onClose: { isStashScreenPresented = false },
+                onCleanOne: { entry in
+                    // 单独清理：复用 triggerLargeFileTrash（已含乐观更新 + 历史写入）。
+                    // 删除发起后再把对应 path 从待处理摘掉，避免 sheet 行残留。
+                    triggerLargeFileTrash(urls: [URL(fileURLWithPath: entry.path)])
+                    stash.remove(entry.path)
+                },
+                onCleanAll: { entries in
+                    let urls = entries.map { URL(fileURLWithPath: $0.path) }
+                    triggerLargeFileTrash(urls: urls)
+                    stash.remove(paths: entries.map(\.path))
+                },
+                onAskAIOne: { entry in
+                    // 单独 AI：复用 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
+                    // 通道（item-based sheet），不在 StashScreen 内再造一份 AI 渲染。
+                    // 先把 stash sheet 收掉再弹 AI，避免 macOS sheet 叠层 (不支持 sheet 之上 sheet)。
+                    let row = makeAIQueryRow(from: entry)
+                    isStashScreenPresented = false
+                    DispatchQueue.main.async { aiAskingRow = row }
+                },
+                onRunAIBatch: {
+                    // v2026.06.19 一键 AI 队列入口：
+                    // 把闭包推给 [StashAIQueue.start](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)，
+                    // 它内部串行循环 + 每条单独写回 stash 缓存。
+                    // 重置上一轮的 verdict，避免新跑的 done 跟旧的 done 视觉上混淆——
+                    // 用户期望"一键 AI"是一次干净的重新评估。
+                    stash.clearAIVerdicts()
+                    stashAIQueue.start(stash: stash, aiSettings: aiSettings)
+                }
+            )
+        }
         // **v1.5.3 修订**：之前这里挂了一个 ProgressView sheet 拦在主页面前面，
         // 视觉上变成"整页消失只剩 loading"，且 sheet dismiss 触发的重渲染 + store-fallback
         // 还会把已删项再从 GRDB 拉回来。现在删除走"乐观更新"：
@@ -194,10 +248,19 @@ public struct MainView: View {
             Text(deleteResult ?? "")
         }
         // **v2026.06.16 修复 #4**：删除主路径 / 大文件 trash 结构化结果 sheet。
+        // **v2026.06.22 (#11)**：注入 `onForceDelete` 回调——当 sheet 列出 vendor 规则拦下的项时，
+        // 用户可点「强制删除」走 [performForceDelete](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
+        // 路径（绕 vendor trie 但保留所有 SafetyEngine 硬安全网）。
         .sheet(item: $deleteResultPayload) { payload in
-            OperationResultSheet(payload: payload) {
-                deleteResultPayload = nil
-            }
+            OperationResultSheet(
+                payload: payload,
+                onDismiss: { deleteResultPayload = nil },
+                onForceDelete: { paths in
+                    Task { @MainActor in
+                        await performForceDelete(paths: paths)
+                    }
+                }
+            )
         }
         .onChange(of: selectedCategory) { old, new in
             // v1.3.aa：原版 `guard let cat = allCategories.first(where: ...) else { return }`
@@ -522,7 +585,7 @@ public struct MainView: View {
                 brewSidebarRow
                     .tag(MainView.brewSentinelID)
             } header: {
-                Text(verbatim: "Dev Tools")
+                Text("main.section.dev_tools", bundle: .module)
             }
 
             // v1.7 M1 PR-5 / 2026-06：Developer Workflows section ——
@@ -752,9 +815,9 @@ public struct MainView: View {
                 .foregroundStyle(.tint)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
-                Text(verbatim: "Lipo")
+                Text("main.devtool.lipo.title", bundle: .module)
                     .font(.system(.body, design: .rounded))
-                Text(verbatim: "Slim FAT binaries to arm64")
+                Text("main.devtool.lipo.subtitle", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -771,9 +834,9 @@ public struct MainView: View {
                 .foregroundStyle(.tint)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
-                Text(verbatim: "Homebrew")
+                Text("main.devtool.brew.title", bundle: .module)
                     .font(.system(.body, design: .rounded))
-                Text(verbatim: "Installed / outdated / cleanup")
+                Text("main.devtool.brew.subtitle", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -1066,6 +1129,36 @@ public struct MainView: View {
                                             // v2026.06 #1：右键"刷新此目录"。仅清 store-fallback 缓存，
                                             // 不重启 BulkScanner（成本太高），详见 ScanCoordinator.rescanSubtree。
                                             coordinator.rescanSubtree(at: path)
+                                        },
+                                        onStash: { row in
+                                            // v2026.06.18：把 TreeRow 装进购物车。
+                                            // 入口在 tree row contextMenu / "加入待处理"。
+                                            stash.add(path: row.path,
+                                                      title: row.title,
+                                                      bytes: row.bytes,
+                                                      isDirectory: row.isDirectory)
+                                        },
+                                        isStashed: { path in stash.contains(path) },
+                                        aiSettings: aiSettings,
+                                        onAskAI: { row in
+                                            // v2026.06.20：tree 行 sparkles 按钮 → 复用 List 视图
+                                            // 同一个 sheet 入口（aiAskingRow）。先把 TreeRow 映射成
+                                            // RowItem 喂给 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)。
+                                            // SafetyEngine.evaluate 与 List 路径一致，让 AI 在拒删时
+                                            // 看到同样的 verdict / rejection 上下文。
+                                            let (v, rj) = TreeBrowserView.safety.evaluate(path: row.path)
+                                            aiAskingRow = RowItem(
+                                                id: row.path,
+                                                url: URL(fileURLWithPath: row.path),
+                                                title: row.title,
+                                                isDirectory: row.isDirectory,
+                                                bytes: row.bytes,
+                                                logicalBytes: row.bytes,
+                                                fileCount: row.fileCount,
+                                                verdict: v,
+                                                rejection: rj,
+                                                modificationDate: row.modificationDate
+                                            )
                                         }
                                     )
                                     // v2 修：TreeBrowserView 内部用 @State 缓存了
@@ -1263,12 +1356,18 @@ public struct MainView: View {
             }
             HStack {
                 if coordinator.isScanning {
-                    ProgressView().controlSize(.small)
                     if coordinator.perRootProgress.isEmpty {
-                        // 单根扫描：保留原有"扫描中… N 个文件 · X MB"单行行为。
-                        Text(String(format: String(localized: "main.scan.progress.single", bundle: .module), coordinator.snapshot.scannedFileCount, formattedBytes(coordinator.snapshot.totalBytes)))
-                            .font(.callout)
+                        // v2026.06.18：单根扫描信息显著增强。
+                        // 用户反馈："正在扫描能不能加个进度？扫了百分之多少，预计还剩多少时间"。
+                        // 数据源：
+                        //   - 百分比 / 进度条 ← `expectedTotalBytes` 已估出 → snapshot.totalBytes / expected
+                        //   - ETA ← snapshot.estimatedRemaining（由 publishSnapshot 基于 EWMA 速率算）
+                        //   - 已用时间 ← snapshot.elapsed
+                        // 三者都没估出来时退化回最原始的"扫描中… N 文件 · X MB"，与旧版完全一致，
+                        // 不会出现"进度条挂在 0% 不动"的误导。
+                        singleRootProgress
                     } else {
+                        ProgressView().controlSize(.small)
                         // v1.3：多根并行扫描——按 rootPath 字典序输出多行（每根一条），
                         // 已 finished 的根用 ✓ 替代 ●，文案"{title} · {bytes} · {fileCount} 文件"。
                         // 字典序稳定排序：避免 dict 遍历顺序导致行序抖动。
@@ -1556,6 +1655,12 @@ public struct MainView: View {
         ToolbarItem(placement: .primaryAction) {
             fullDiskButton
         }
+        // v2026.06.18 购物车入口。count==0 时整项隐藏（避免 toolbar 永远多出
+        // 一个"空购物车"按钮造成视觉噪音）。SwiftUI ToolbarItem 内 if 分支会让
+        // 该 item 在 layout 阶段被剔除，无需特殊处理。
+        ToolbarItem(placement: .primaryAction) {
+            stashToolbarButton
+        }
         ToolbarItem(placement: .primaryAction) {
             scanControlButton
         }
@@ -1691,6 +1796,63 @@ public struct MainView: View {
         .disabled(coordinator.isScanning)
     }
 
+    /// v2026.06.18 **稍后处理（待处理）**入口。
+    ///
+    /// 行为：
+    /// - `stash.count == 0` → 整按钮 `.hidden`（toolbar 视觉收敛，没东西不暴露入口）
+    /// - `stash.count > 0`  → 显示 `tray.full.fill` 工作托盘图标 + 右上角红色数字徽标
+    /// - 点击：把 [isStashScreenPresented](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) 翻 true，
+    ///   主体的 `.sheet` 监听该 flag 弹 [StashScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashScreen.swift)
+    ///
+    /// v2026.06.20 用户反馈：之前用 `cart.fill` 图标 + Label 文本里夹一个 `(N)`，
+    /// 既看着像电商购物车（语义不对——这是"工作待处理"，不是"购物清单"），数字也
+    /// 被混在 toolbar Label 文本里，远不如直接把数量做成"角标"那样一眼可见。
+    /// 改成：自定义 label = Image(`tray.full.fill`) + `.overlay` 一个胶囊红角标显示
+    /// 实时 `stash.count`；超过 99 显示 `99+` 避免角标过宽撑爆 toolbar 槽位。
+    @ViewBuilder
+    private var stashToolbarButton: some View {
+        if stash.count > 0 {
+            Button {
+                isStashScreenPresented = true
+            } label: {
+                Label {
+                    Text("toolbar.stash.title", bundle: .module)
+                } icon: {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "tray.full.fill")
+                        stashCountBadge
+                            .alignmentGuide(.top) { d in d[.top] + 2 }
+                            .alignmentGuide(.trailing) { d in d[.trailing] - 2 }
+                    }
+                }
+            }
+            .help(String(format: String(localized: "toolbar.stash.help_with_count", bundle: .module),
+                         stash.count))
+        }
+    }
+
+    /// 待处理数量徽标（红底白字胶囊），独立成 ViewBuilder 便于阅读 + 复用样式。
+    /// 1~99 显示真实数；≥100 显示 `99+`，避免 toolbar 角标过宽。
+    @ViewBuilder
+    private var stashCountBadge: some View {
+        let display = stash.count > 99 ? "99+" : "\(stash.count)"
+        Text(display)
+            .font(.system(size: 9, weight: .bold).monospacedDigit())
+            .foregroundStyle(.white)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.red)
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1)
+            )
+            .offset(x: 6, y: -4)
+            .accessibilityHidden(true)
+    }
+
     /// 现有的"停止 / 重新扫描"按钮，按当前状态二选一。
     @ViewBuilder
     private var scanControlButton: some View {
@@ -1800,6 +1962,132 @@ public struct MainView: View {
 
     private func formattedBytes(_ b: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: b, countStyle: .file)
+    }
+
+    /// v2026.06.18 把购物车里的 [StashEntry](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashStore.swift#L35-L51)
+    /// 转成 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
+    /// 需要的 [RowItem](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L6-L60)。
+    /// 因为 AIAdviceSheet 只读 title / url / bytes / verdict 等基础字段做请求拼装，
+    /// 不需要 logicalBytes / vendor 等填值——这里全部走兜底常量 0/.nil 即可。
+    /// `verdict` 现场调一次 [SafetyEngine.evaluate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L212)
+    /// 拿语义，让 AI sheet 也能看到本地三档闸的初判。
+    private func makeAIQueryRow(from entry: StashStore.StashEntry) -> RowItem {
+        let (verdict, rejection) = TreeBrowserView.safety.evaluate(path: entry.path)
+        return RowItem(
+            id: entry.path,
+            url: URL(fileURLWithPath: entry.path),
+            title: entry.title,
+            isDirectory: entry.isDirectory,
+            bytes: entry.bytes,
+            logicalBytes: entry.bytes,
+            fileCount: 0,
+            verdict: verdict,
+            rejection: rejection
+        )
+    }
+
+    /// **v2026.06.18**：把 TimeInterval 渲染成"1h 23m 04s / 5m 12s / 47s"等紧凑文案。
+    /// 与 [FloatingScanHUD.durationString](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
+    /// 风格保持一致——状态栏和悬浮窗看到的剩余时间口径同源，避免割裂。
+    /// 负数 / NaN / +inf 一律按 0 处理（防呆，UI 永远不会出现 "-3s"）。
+    private func formatDuration(_ seconds: TimeInterval) -> String {
+        guard seconds.isFinite, seconds > 0 else { return "0s" }
+        let total = Int(seconds.rounded())
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 { return String(format: "%dh %02dm %02ds", h, m, s) }
+        if m > 0 { return String(format: "%dm %02ds", m, s) }
+        return String(format: "%ds", s)
+    }
+
+    /// **v2026.06.18**：单根扫描态信息区。
+    /// 三段式：
+    ///   行1（顶部）：进度条（有分母 → 真比例条；无分母 → 不确定 ProgressView）
+    ///   行2（主行）：扫描中… N 个文件 · X MB（与旧版完全一致，保证不回归）
+    ///   行3（副行）：百分比 + 已扫/预计 + 已用/剩余时间（按数据可用程度逐步显示）
+    /// 没有 expectedTotalBytes 时 行1 / 行3 仍然展示，给出"已用时间 · 估算中…"，
+    /// 让用户看得到"系统还在算"，不会以为程序卡了。
+    ///
+    /// v2026.06.20 修：用户反馈"扫 workspace 进度条直接 100%，但后续还要扫好久"。
+    /// 根因：[TreeSizeEstimator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/TreeSizeEstimator.swift)
+    /// 4s 软超时；走完不了的根（含 `~/workspace` / `~/Library/Caches` 这种几十万 inode 的根）
+    /// 拿到一个**严重低估**的 expectedTotalBytes。BulkScanner 真实 ingest 字节很快就把这个数顶穿，
+    /// 旧版用 `min(1.0, ...)` 把 fraction 钳在 1.0，UI 表现为"100% 卡很久"。
+    ///
+    /// 新策略：把"已扫 > 估算分母"识别为"估算不可靠"，分两层处理：
+    /// 1. 比率层：当 `scanned > expected` 时，**抛弃** expected 退化成不确定进度条
+    ///    （ProgressView() 的 spinner），而不是钉在 100%。
+    /// 2. 文案层：仍然显示 `已扫 X · 已用 T`，但不再骗用户"还有 N MB"，
+    ///    改为"估算偏小，仍在扫描…"提示，鼓励用户耐心等待。
+    /// 同时 ETA 在 ScanCoordinator [publishSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 那侧也加了同样的"denom > scanned"卫语：分母穿透时本帧不出 ETA（旧版 ETA 必然算成负值再被钳成 0，
+    /// UI 上"剩余 0s"持续闪烁，体验同样误导）。
+    @ViewBuilder
+    private var singleRootProgress: some View {
+        let scanned = coordinator.snapshot.totalBytes
+        let expected = coordinator.expectedTotalBytes
+        let elapsed = coordinator.snapshot.elapsed
+        let eta = coordinator.snapshot.estimatedRemaining
+
+        // 0~1 比例。expected 缺失 / scanned > expected（估算偏小）时退化为 nil → 不确定进度。
+        // **v2026.06.20**：去掉旧的 `min(1.0, ...)` 钳位——分母被穿透就直接 nil，
+        // 让 UI 切回 indeterminate ProgressView，不再让用户误以为快完成了。
+        let estimateOvershoot = (expected.map { scanned > $0 } ?? false)
+        let fraction: Double? = {
+            guard let exp = expected, exp > 0, !estimateOvershoot else { return nil }
+            return max(0.0, Double(scanned) / Double(exp))
+        }()
+
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                if let f = fraction {
+                    ProgressView(value: f)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: 180)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+                Text(String(format: String(localized: "main.scan.progress.single", bundle: .module),
+                            coordinator.snapshot.scannedFileCount,
+                            formattedBytes(scanned)))
+                    .font(.callout)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            HStack(spacing: 10) {
+                if let f = fraction, let exp = expected {
+                    Text(String(format: String(localized: "main.scan.progress.percent", bundle: .module),
+                                Int(f * 100),
+                                formattedBytes(scanned),
+                                formattedBytes(exp)))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        // v2026.06.22：用户反馈"144G/13.75G 那个 13.75G 是什么意思？"
+                        // 文案已经从 "/ ~%@" 改成 "· 预估约 %@"，再叠一层 tooltip 把口径讲清，
+                        // 杜绝"被误读为磁盘总容量"的歧义（TreeSizeEstimator 4s 软估算可能严重偏小）。
+                        .help(Text("main.scan.progress.percent.tooltip", bundle: .module))
+                } else if estimateOvershoot {
+                    // **v2026.06.20**：分母被穿透——明确告诉用户"估算偏小，还在扫"，
+                    // 避免老 UI"100% / -0s 剩余"造成的"是不是卡死了"误判。
+                    Text("main.scan.progress.estimate_low", bundle: .module)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                if let eta {
+                    Text(String(format: String(localized: "main.scan.progress.eta", bundle: .module),
+                                formatDuration(eta),
+                                formatDuration(elapsed)))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(String(format: String(localized: "main.scan.progress.elapsed", bundle: .module),
+                                formatDuration(elapsed)))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
     }
 
     // FIXME: emoji removed 2026-05-25
@@ -1915,13 +2203,14 @@ public struct MainView: View {
                     }
                 }
                 selection.removeAll()
-                // **v1.5.3**：把已删 path 从 ScanCoordinator 的 snapshot.rows / 内存索引 /
-                // treeChildrenCache 全部剔除——修复"删除后 item 仍在列表"的 bug 根因。
-                // 注意：pipeline 实际成功的项数是 moved，但它没把"哪些 url 真删了"返回给我们；
-                // skipped 通常是 forbid / 同名冲突 / 不存在等。保守做法：把所有候选 paths 都
-                // 喂给 pruneDeleted——pruneDeleted 是按 path 前缀匹配 snapshot.rows 来删的，
-                // 即便某条路径其实没删掉（如已被外部移走），从 UI 视角也已经"不在了"，行为正确。
-                coordinator.pruneDeleted(paths: paths)
+                // **v2026.06.22 修复 #11**：把 `pruneDeleted` 从"删前/删后全候选"改成"删后只剔成功项"，
+                // 杜绝旧实现"删除失败（被 vendor 规则 / accessDenied / recycle 异常拦下）也从 item 消失"的 bug。
+                // 失败/拦截项保留在列表里，用户可在 [OperationResultSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/OperationResultSheet.swift)
+                // 看到原因，并点「强制删除」走 [performForceDelete](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)。
+                let succeededOnly = result.pairs.map { $0.0 }
+                if !succeededOnly.isEmpty {
+                    coordinator.pruneDeleted(paths: succeededOnly)
+                }
                 // v1.3：删除完成后立即重探卷容量，sidebar 容量条会跟随变化（"清理后空闲变多"反馈）。
                 // pruneDeleted 内部已调 refreshVolumeCapacity，这里保留 explicit 调用作为兜底。
                 coordinator.refreshVolumeCapacity()
@@ -1959,12 +2248,10 @@ public struct MainView: View {
         guard !urls.isEmpty else { return }
         guard !isDeleting else { return } // 防重入：删除中不接受新点击
         let paths = urls.map(\.path)
-        // **v1.5.3 修订**：改成"乐观更新"——pruneDeleted 立即生效，节点视觉立刻消失；
-        // 移废纸篓真删走后台 Task，结果用 alert 通知。这样：
-        //   1. 不弹 ProgressView sheet（避免整页白屏 dim cover）
-        //   2. 删完不会因为 store-fallback 把已删项又拉回来（pruneDeleted 现在会落 store）
-        //   3. 失败时 alert 提示，下次扫描会重新补齐 row
-        coordinator.pruneDeleted(paths: paths)
+        // **v2026.06.22 修复 #11/#12**：旧实现在删除「前」就 `pruneDeleted(paths)`（乐观更新），
+        // 导致被 SafetyEngine / vendor 规则拦下的项也从大文件列表消失，用户看到"清理失败"但
+        // item 已不见，找不到入口再点「强制删除」。新逻辑：删完后只 prune `result.pairs.map { $0.0 }`
+        // （NSWorkspace.recycle 真成功的项），失败/拦截项继续留在列表里给用户重试。
         largeFileSelection = nil
         isDeleting = true
         Task { @MainActor in
@@ -1977,7 +2264,44 @@ public struct MainView: View {
             if result.err == nil {
                 await recorder.recordTrashed(paths: paths)
             }
+            // v2026.06.22：删完后只剔真成功的 paths——失败/拦截项继续留在大文件列表里。
+            let succeededOnly = result.pairs.map { $0.0 }
+            if !succeededOnly.isEmpty {
+                coordinator.pruneDeleted(paths: succeededOnly)
+            }
+            coordinator.refreshVolumeCapacity()
         }
+    }
+
+    /// **v2026.06.22 新增（修复 #11 强制删除入口）**：从 [OperationResultSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/OperationResultSheet.swift)
+    /// 「强制删除」按钮触发——把被 vendor 规则拦下的 paths 再次提交，走 [TrashPipeline.moveToTrashForce](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)
+    /// 路径绕过 vendor trie，但仍保留 SafetyEngine 所有硬安全网（hardForbidPrefixes / userRootForbidden /
+    /// sensitiveCredential / systemVolume / hardForbidSuffixes）与 `accessDeniedPaths` 一票否决——
+    /// 即真的"操作系统不允许"或"凭据 / 系统卷"绝不会被这条通道放行。
+    ///
+    /// 与 performDelete 不同的是：
+    /// - 不再次进入 selection / dryRun 流程，直接拿调用方传入的 paths 走真删；
+    /// - 不写 isDeleting sheet（用户已经在 OperationResultSheet 里，关闭后才看到结果）；
+    /// - pruneDeleted 同样只剔真成功的 pairs；
+    /// - 走独立 `source: "force"` 进 UndoHistory 便于侧栏识别。
+    @MainActor
+    private func performForceDelete(paths: [String]) async {
+        guard !paths.isEmpty else { return }
+        pipeline.setAccessDeniedPaths(accessDeniedPathsSnapshot())
+        let result = await pipeline.moveToTrashForce(paths: paths, dryRun: false)
+        let (moved, skipped, err, pairs) = result.legacy
+        if err == nil, !pairs.isEmpty {
+            UndoHistoryStore.shared.addRecord(
+                source: "force",
+                filePairs: pairs.map { UndoHistoryStore.Record.FilePair(original: $0.0, trashed: $0.1) }
+            )
+        }
+        presentTrashOutcome(moved: moved, skipped: skipped, err: err, dryRun: false, outcome: result.outcome)
+        let succeededOnly = pairs.map { $0.0 }
+        if !succeededOnly.isEmpty {
+            coordinator.pruneDeleted(paths: succeededOnly)
+        }
+        coordinator.refreshVolumeCapacity()
     }
 
     // MARK: - 自定义路径（添加 / 删除 / 拖拽）
