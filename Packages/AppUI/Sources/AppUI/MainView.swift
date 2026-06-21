@@ -1329,14 +1329,14 @@ public struct MainView: View {
         //   2) 扫描期主列表流式按 path 字典序排，首行 bytes 几乎每帧都在涨 →
         //      `maxBytes` 参与 RowContentView 的 Equatable 比较 → 每行都被判不相等 →
         //      Equatable 短路完全失效。
-        // 现在：① 取最大 bytes（实际上扫描期已按 path 序，不再是按 size 序的首行——
-        //   改用 `lazy.map(\.bytes).max()`，仍 O(N) 但只算一次；
+        // 现在：① v2026.06.21 改读 `coordinator.snapshot.maxRowBytes`（stored let，
+        //   由 publishSnapshot 一次性预算好），body 帧不再 O(N) 扫；
         //   ② 量化到下一个 2 的幂次，让相邻帧大概率相等（10MB → 16MB，11MB 仍 16MB），
         //   命中 Equatable 短路 → 千行场景 body 调用数从"每帧 × N"降到接近 0。
-        let maxBytesRaw = coordinator.snapshot.rows.lazy.map(\.bytes).max() ?? 0
-        let maxBytes = Self.quantizeToPow2(maxBytesRaw)
+        let snap = coordinator.snapshot
+        let maxBytes = Self.quantizeToPow2(snap.maxRowBytes)
         return List(selection: $detail) {
-            ForEach(coordinator.snapshot.rows) { row in
+            ForEach(snap.rows) { row in
                 let isOn = Binding<Bool>(
                     get: { selection.contains(row.id) },
                     set: { newValue in

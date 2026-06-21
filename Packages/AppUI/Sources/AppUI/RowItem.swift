@@ -377,7 +377,7 @@ public enum LargeFileSortKey: String, CaseIterable, Sendable, Hashable {
 }
 
 /// UI 节流后的扫描快照。
-public struct ScanSnapshot: Sendable {
+public struct ScanSnapshot: Sendable, Equatable {
     public let categoryID: String
     public let rows: [RowItem]
     public let totalBytes: Int64
@@ -392,6 +392,26 @@ public struct ScanSnapshot: Sendable {
     ///   2) bytesPerSecond > 0 且 elapsed > 0.5s（采样不足时不报，避免开始 100ms 就显示"还需 6 小时"）；
     /// 否则为 nil —— UI 显示"估算中…"。
     public let estimatedRemaining: TimeInterval?
+
+    // MARK: - 可清理口径预聚合（v2026.06.21 perf）
+    //
+    // 旧实现把 safeBytes/confirmBytes/forbidBytes 实现为 `computed property`，每帧
+    // 每次 sidebar / footer 访问都跑一次 O(N) reduce —— sidebar 在 dev 扫几百行
+    // 时被反复打。改为 stored let，由 [publishSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 在生成 snapshot 时一次性算完。
+    //
+    // 同时本结构加上 `Equatable`，让 `@Published var snapshot = ...`（流式帧每 0.4s 推）
+    // 在内容真没变（rows / totalBytes / scannedFileCount / bytesPerSecond / eta / safe/...）
+    // 都一致时被 SwiftUI 自动短路 —— 不再触发 objectWillChange.send()，
+    // 不再让整棵 MainView.body 失效。这是用户感受 "sidebar/主列表一起卡" 的核心治理点。
+    /// `.safe` 行字节合计 —— 业界 "Cleanable / Auto-cleanable" 口径。
+    public let safeBytes: Int64
+    /// `.confirm` 行字节合计 —— UI 单列段，**不要**并进 cleanable 数字。
+    public let confirmBytes: Int64
+    /// `.forbid` 行字节合计 —— 仅供审计 / 调试，UI 一般不展示。
+    public let forbidBytes: Int64
+    /// rows 的最大 bytes，用于 [RowContentView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowView.swift) 体积条归一化。
+    /// 由 publishSnapshot 同步算好（与 [MainView.listResults](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) 旧 lazy map.max 等价）。
+    public let maxRowBytes: Int64
 
     public static let empty = ScanSnapshot(categoryID: "", rows: [], totalBytes: 0,
                                            scannedFileCount: 0, isFinished: false, elapsed: 0,
@@ -408,6 +428,25 @@ public struct ScanSnapshot: Sendable {
         self.elapsed = elapsed
         self.bytesPerSecond = bytesPerSecond
         self.estimatedRemaining = estimatedRemaining
+        // 一次性扫 rows 算 verdict 三桶 + maxRowBytes，零额外内存分配。
+        // 对应原 [safeBytes/confirmBytes/forbidBytes 三个 computed reduce + listResults max].
+        // 即便 N=几百，单次 O(N) 比每帧多个消费者各跑一次 O(N) 便宜得多。
+        var s: Int64 = 0
+        var c: Int64 = 0
+        var f: Int64 = 0
+        var m: Int64 = 0
+        for r in rows {
+            switch r.verdict {
+            case .safe: s &+= r.bytes
+            case .confirm: c &+= r.bytes
+            case .forbid: f &+= r.bytes
+            }
+            if r.bytes > m { m = r.bytes }
+        }
+        self.safeBytes = s
+        self.confirmBytes = c
+        self.forbidBytes = f
+        self.maxRowBytes = m
     }
 
     /// v1.3：用户语义"还未扫描过"的判定。
@@ -418,7 +457,7 @@ public struct ScanSnapshot: Sendable {
         !isFinished && scannedFileCount == 0 && rows.isEmpty
     }
 
-    // MARK: - 可清理口径（v1.6 / 2026-06）
+    // MARK: - 可清理口径（v1.6 / 2026-06；v2026.06.21 改为 stored let）
     //
     // 设计背景：截图反馈"扫多少 = Cleanable 多少"被用户当面质疑后，把"可清理字节数"
     // 收敛到 **ScanSnapshot 内** 作为单一权威口径，杜绝 totalBytes 被错灌进 sidebar 的
@@ -430,26 +469,10 @@ public struct ScanSnapshot: Sendable {
     //   - .confirm 项需用户审阅，独立桶单算（confirmBytes），UI 可拆为"需要确认"段；
     //   - .forbid 项是绝对不动（SIP / 用户文档 / 凭证），列出来仅为审计。
     //
-    // 实现取舍：
-    //   - O(N) reduce on rows —— rows 已是节流后聚合（一级子目录），数量级几十~几百行，
-    //     远低于 ScanSnapshot publish 频率（节流 ≥150ms），不需要缓存；
-    //   - 单元测试 [CleanableBytesContractTests] 守恒：safe + confirm + forbid == Σrows.bytes，
-    //     防止后续 SafetyVerdict 增枚举时漏改这里。
-
-    /// `.safe` 行字节合计 —— 即业界口径的"Cleanable / Auto-cleanable"。
-    public var safeBytes: Int64 {
-        rows.reduce(0) { $1.verdict == .safe ? $0 + $1.bytes : $0 }
-    }
-
-    /// `.confirm` 行字节合计 —— "需要用户确认"段，UI 应单列，**不要**并进 cleanable 数字。
-    public var confirmBytes: Int64 {
-        rows.reduce(0) { $1.verdict == .confirm ? $0 + $1.bytes : $0 }
-    }
-
-    /// `.forbid` 行字节合计 —— 仅供审计 / 调试输出，UI 一般不展示。
-    public var forbidBytes: Int64 {
-        rows.reduce(0) { $1.verdict == .forbid ? $0 + $1.bytes : $0 }
-    }
+    // 实现：safeBytes / confirmBytes / forbidBytes 已在 init 内一次性预聚合为
+    // stored let（见本结构开头），UI 直接读字段，零额外开销。守恒由
+    // [CleanableBytesContractTests] 保证 safe + confirm + forbid == Σrows.bytes，
+    // 防止后续 SafetyVerdict 增枚举时漏改 init 预聚合。
 
     /// 业界口径的"可清理字节数"——**仅** `.safe` 行求和。
     ///

@@ -382,7 +382,9 @@ public final class ScanCoordinator: ObservableObject {
     /// 覆盖），保留它是为：
     ///   - 单元测试断言"cache 写入 N 次 → version 自增 N 次"
     ///   - 未来 view 想做"按 cache 命中率细粒度刷新"留 hook
-    @Published public private(set) var childrenCacheVersion: UInt64 = 0
+    ///
+    /// v2026.06.21 perf：移除 @Published（同 treeRevision 的理由）。
+    public private(set) var childrenCacheVersion: UInt64 = 0
     /// in-flight 路径集合：避免同 path 在 cache miss 时被 view body 多次重算疯狂启 Task。
     /// **不**参与 @Published（不需要触发 view 更新）。
     private var treeChildrenInFlight: Set<String> = []
@@ -454,7 +456,13 @@ public final class ScanCoordinator: ObservableObject {
     /// 5. [invalidateTreeCacheAfterScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1147)（扫描结束清 cache）
     ///
     /// 用 `&+=` 让计数器溢出时自然回卷而非 trap；view 端只关心"变没变"，绝对值无意义。
-    @Published public private(set) var treeRevision: UInt64 = 0
+    ///
+    /// v2026.06.21 perf：**移除 @Published**。
+    /// 旧设计让 4 个 revision 都是 @Published mirror，导致 ScanCoordinator 任一 bump
+    /// 都让 MainView body / sidebar / footer 全失效（dev 扫每秒 ≥5 次 body 重算 = 卡顿核心）。
+    /// 现在 view 端走 `coordinator.treeBrowser.*`（独立 ObservableObject）订阅；
+    /// 本字段保留为普通 `public private(set) var` 仅供单测 / 外部代码直接读数。
+    public private(set) var treeRevision: UInt64 = 0
 
     /// Step 2 P0-2 / 2026-06：treeRevision 拆分 —— 结构性脏标。
     /// 含义：节点新增 / 节点删除 / 排序键变化 / cache 整轮失效。订阅这条信号的 view
@@ -463,7 +471,9 @@ public final class ScanCoordinator: ObservableObject {
     /// 与 `tickRevision` 的边界由 [bumpStructuralRevision()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) /
     /// [bumpTickRevision()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 两个 helper 单点收敛 —— 任何代码不再直接写
     /// `treeRevision &+= 1`，避免漏判类别。
-    @Published public private(set) var structuralRevision: UInt64 = 0
+    ///
+    /// v2026.06.21 perf：移除 @Published（同 treeRevision 的理由）。
+    public private(set) var structuralRevision: UInt64 = 0
 
     /// v1.5.7：结构变化的 hint —— "本次 structuralRevision 升的根因是这些 path 被删了"。
     /// 仅在 [pruneDeleted](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1422-L1542)
@@ -489,7 +499,9 @@ public final class ScanCoordinator: ObservableObject {
     ///
     /// publishSnapshot 流式 tick（0.4s/帧）只推这条；当帧检测到 `(buckets.count,
     /// dirIndex.count, fileLeaves.count)` 三元组变化时，由 helper 兜底升格为 structural。
-    @Published public private(set) var tickRevision: UInt64 = 0
+    ///
+    /// v2026.06.21 perf：移除 @Published（同 treeRevision 的理由）。
+    public private(set) var tickRevision: UInt64 = 0
 
     /// 上一帧 publishSnapshot 时三个核心索引的 (count, count, count) 快照，用于 O(1)
     /// 判定"本帧是否新增节点"——任一计数变化即视为结构变化。
@@ -516,6 +528,11 @@ public final class ScanCoordinator: ObservableObject {
     /// 树形视图按"显式 structural"通道感知拓扑变化，纯 bytes 累加不再打扰它。
     private func bumpTickRevision() {
         tickRevision &+= 1
+        // v2026.06.21 perf：保持与 [TreeBrowserStore.bumpTickRevision](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift#L67-L70)
+        // 完全对齐（store 端 tick 也会推 treeRevision 作老订阅者兼容），
+        // 否则 [TreeBrowserStoreTests.test_扫描期间coord的mirror与store同步](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/TreeBrowserStoreTests.swift#L96-L99)
+        // 会判 coord.treeRevision 落后 store.treeRevision 一个 tick。
+        treeRevision &+= 1
         treeBrowser.bumpTickRevision()
     }
 
@@ -2890,7 +2907,7 @@ public final class ScanCoordinator: ObservableObject {
             eta = nil
         }
 
-        snapshot = ScanSnapshot(
+        let nextSnapshot = ScanSnapshot(
             categoryID: categoryID,
             rows: rows,
             totalBytes: totalBytes,
@@ -2900,6 +2917,19 @@ public final class ScanCoordinator: ObservableObject {
             bytesPerSecond: bytesPerSecondEMA,
             estimatedRemaining: finished ? nil : eta
         )
+        // v2026.06.21 perf：Equatable 短路。
+        // 用户对比反馈"开发者构建产物比 Library 卡得夸张"——根因之一是 @Published
+        // 不会自动比较，每帧重复赋同样内容仍会 send objectWillChange，把 MainView.body
+        // 整体失效，连带 sidebar / statusBar / listResults 全跑 O(N)。
+        // ScanSnapshot 现在 Equatable（rows / 三桶字节 / max / bytesPerSecond / eta 全字段
+        // 参与对比），等价帧直接 return 不写 @Published；典型 dev 扫场景"两根并行 throttle
+        // 错峰共振导致空帧 publish"会被这里挡下，body 失效频率从 ≥5次/秒 降到内容真有变化
+        // 才触发。等价比较的代价是 N 行 RowItem.== 浅比，远低于 SwiftUI body 重新跑一次。
+        //
+        // 注意：finished 帧不能短路——下游 lastFinishedCategoryID / lastIngestAt 清理
+        // 与 (buckets/dirIndex/fileLeaves) 索引快照对齐都依赖这里跑完。
+        if !finished && snapshot == nextSnapshot { return }
+        snapshot = nextSnapshot
         if finished {
             lastFinishedCategoryID = categoryID
             // 扫完清空 lastIngestAt，避免下一次切排序键 / 重扫前的 stale 数据让旧 row 误亮

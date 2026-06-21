@@ -30,6 +30,14 @@ import AIKit
 ///    - 选中态：当前选中行用 selection 高亮 + accessibility focus
 public struct TreeBrowserView: View {
     @ObservedObject var coordinator: ScanCoordinator
+    /// v2026.06.21 perf：单独订阅 `coordinator.treeBrowser`（独立 ObservableObject）。
+    /// 旧版用 `coordinator.structuralRevision` / `coordinator.childrenCacheVersion`
+    /// 作 @Published mirror，导致 ScanCoordinator 任一 @Published 变化也都触发
+    /// MainView/sidebar/listResults 整体失效（dev 扫场景每秒 ≥5 次 body 重算）。
+    /// 现在 4 个 revision 字段从 ScanCoordinator @Published 移除，
+    /// TreeBrowserView 单独通过本字段订阅 store —— MainView body 不再因
+    /// structural / tick / treeRevision / childrenCacheVersion 失效。
+    @ObservedObject var treeBrowser: TreeBrowserStore
     let rootPath: String
     /// 选中行变化时的回调；MainView 用它把 TreeRow 喂给右侧详情面板。
     /// 设计 bug A：之前 selectedPath 只活在 TreeBrowserView 内部，
@@ -125,6 +133,9 @@ public struct TreeBrowserView: View {
                 onAskAI: ((TreeRow) -> Void)? = nil,
                 globalSortKey: Binding<MainListSortKey>? = nil) {
         self.coordinator = coordinator
+        // 直接从 coordinator 取嵌套的 store 作 @ObservedObject 订阅。
+        // ScanCoordinator.treeBrowser 是 `public let`，跨实例稳定，符合 ObservedObject 契约。
+        self.treeBrowser = coordinator.treeBrowser
         self.rootPath = rootPath
         self.onSelect = onSelect
         self.onTrash = onTrash
@@ -293,9 +304,9 @@ public struct TreeBrowserView: View {
         // 三个 onChange 走同一组工具方法——之前直接在 body 里堆 3 个 onChange 闭包让
         // SwiftUI ViewBuilder 类型推断超时（"unable to type-check this expression"）。
         // 这里只挂一个 onChange，其它两个走 modifier 链上下方继续，避免类型膨胀。
-        .onChange(of: coordinator.structuralRevision) { _, _ in handleStructuralBump() }
+        .onChange(of: treeBrowser.structuralRevision) { _, _ in handleStructuralBump() }
         .onChange(of: coordinator.isScanning) { _, nowScanning in handleScanningToggle(nowScanning: nowScanning) }
-        .onChange(of: coordinator.childrenCacheVersion) { _, _ in handleChildrenCacheBump() }
+        .onChange(of: treeBrowser.childrenCacheVersion) { _, _ in handleChildrenCacheBump() }
         .onChange(of: flatRows.first?.row.path) { _, _ in
             // 切排序 / 切扫描根 → 顶层第一行变化时把选中态拉回首行，避免选中飞走
             let visiblePathSet = Set(flatRows.map(\.row.path))
