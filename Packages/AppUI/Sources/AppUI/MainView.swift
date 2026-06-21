@@ -1773,6 +1773,11 @@ public struct MainView: View {
     private var shouldShowBatchScanShortcuts: Bool {
         if coordinator.isScanning { return true }
         guard let id = selectedCategory else { return true }
+        // v2026.06.21：开发者旧版本扫描 sentinel 不在 allCategories 里——
+        // 原逻辑 `!allCategories.contains` 会返 true，导致右上角三按钮在用户已选 sentinel
+        // 且扫完后还残留（用户截图反馈"右上角三个要去掉的按键还在"）。
+        // 显式识别 sentinel：当它被选中且不在扫描时，等同于"已停在某类目"，按规则 3 隐藏。
+        if id == MainView.devVersionedSentinelID { return false }
         // 与 scanControlButton 的判定一致——只有这条 if 能落到"重新扫描"分支时才折叠。
         return !allCategories.contains(where: { $0.id == id })
     }
@@ -1983,6 +1988,22 @@ public struct MainView: View {
                 // v1.3：统一走 resetSelectionState()，避免重新扫描后 detail/treeSelection 残留
                 resetSelectionState()
                 startScan(category: cat)
+            } label: {
+                Label {
+                    Text("toolbar.scan.rescan", bundle: .module)
+                } icon: {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+                .help(String(localized: "toolbar.help.rescan", bundle: .module))
+        } else if selectedCategory == MainView.devVersionedSentinelID {
+            // v2026.06.21：开发者旧版本扫描 sentinel 不在 allCategories 里，
+            // 上面 `allCategories.first` 永远拿不到 cat，重新扫描按钮就没了
+            // （用户截图反馈"那个常驻重新扫描按键哪里去了"）。这里专门走一支。
+            Button {
+                resetSelectionState()
+                coordinator.scanKnownVersionedRoots(
+                    home: FileManager.default.homeDirectoryForCurrentUser)
             } label: {
                 Label {
                     Text("toolbar.scan.rescan", bundle: .module)

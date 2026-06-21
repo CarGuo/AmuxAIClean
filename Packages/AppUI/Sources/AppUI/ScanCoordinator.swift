@@ -188,7 +188,16 @@ public final class ScanCoordinator: ObservableObject {
     /// （见 [directChildren(of:sortedBy:)](#)），把 perRootProgress 的真实根升级成顶层 TreeRow。
     public static let multiRootSentinelPath: String = "(多目录)"
     public static let developerSentinelPath: String = "(开发者构建产物)"
-    public static let multiRootSentinelPaths: Set<String> = [multiRootSentinelPath, developerSentinelPath]
+    /// v2026.06.21：开发者旧版本扫描（[scanKnownVersionedRoots](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L847)）
+    /// 走的伪根。原来用 `home.path` 当 currentRootPath，TreeBrowserView 拿这个去
+    /// `directChildren(of:)` 时 childEdges/store 全都没数据（本扫描不 ingest），
+    /// 表现为"清单 28 条 / 树形空"。统一改成专用 sentinel + 走
+    /// [synthesizeVersionedTopLevel](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 合成顶层。
+    public static let versionedRootSentinelPath: String = "(开发者旧版本)"
+    public static let multiRootSentinelPaths: Set<String> = [
+        multiRootSentinelPath, developerSentinelPath, versionedRootSentinelPath
+    ]
 
     /// 便利属性 —— 转发自 `snapshot.isFinished`，
     /// 让 UI 可以直接 `coordinator.isFinished` 判断三态，不必每处都写 `coordinator.snapshot.isFinished`。
@@ -862,7 +871,11 @@ public final class ScanCoordinator: ObservableObject {
         lastSampleBytes = 0
         etaEligible = false
         expectedTotalBytes = nil
-        currentRootPath = home.path
+        // v2026.06.21：用专用 sentinel 而非 home.path，让 TreeBrowserView 走
+        // [synthesizeVersionedTopLevel] 把 snapshot.rows 合成树形顶层；
+        // 否则 directChildren(of: home.path) 在 childEdges/store 都找不到子项，
+        // 树形视图永远空（用户反馈"清单 28 文件，树形为空"）。
+        currentRootPath = ScanCoordinator.versionedRootSentinelPath
         isScanning = true
         lastError = nil
         permissionDeniedPaths = []
@@ -870,64 +883,90 @@ public final class ScanCoordinator: ObservableObject {
         let categoryID = "developer.versioned"
         activeCategoryID = categoryID
 
-        let hits = KnownVersionedRoots.scanAll(home: home)
-        var rows: [RowItem] = []
-        rows.reserveCapacity(hits.count)
-        var totalAccum: Int64 = 0
-        for hit in hits {
-            let (verdict, rejection, vendor) = engine.evaluate(path: hit.url.path,
-                                                               trie: trie, home: self.home)
-            let size = Self.directorySize(at: hit.url)
-            totalAccum &+= size
-            let localizedDisplay = String(localized: String.LocalizationValue(hit.displayName), bundle: .module)
-            let composedTitle: String
-            if let groupKey = hit.groupKey, !groupKey.isEmpty {
-                composedTitle = "\(localizedDisplay) · \(groupKey) · \(hit.versionName)"
-            } else {
-                composedTitle = "\(localizedDisplay) · \(hit.versionName)"
+        // v2026.06.21 P0：原本 KnownVersionedRoots.scanAll + 逐 hit directorySize 的全
+        // 同步遍历直接挂在 @MainActor 上跑，Xcode DeviceSupport / JetBrains Toolbox
+        // 这类 GB 级目录会让主线程冻结到秒级（命中 30 条 × 每条 GB 全递归读 fileSize）。
+        // 改用 Task.detached 派到默认 executor 做 IO，结尾 await MainActor.run 一次性
+        // 回主线程发布 snapshot，参考 [scanDeveloper L1142-L1149] 同款模式，并保留
+        // activeCategoryID 防过期检查避免用户中途切走时覆盖新分类的 snapshot。
+        let engineCopy = engine
+        let trieRef = trie
+        let homeStr = self.home
+        let startedAtCopy = startedAt
+        scanTask = Task.detached { [weak self] in
+            let hits = KnownVersionedRoots.scanAll(home: home)
+            var rows: [RowItem] = []
+            rows.reserveCapacity(hits.count)
+            var totalAccum: Int64 = 0
+            for hit in hits {
+                if Task.isCancelled { return }
+                let (verdict, rejection, vendor) = engineCopy.evaluate(path: hit.url.path,
+                                                                       trie: trieRef, home: homeStr)
+                let size = Self.directorySize(at: hit.url)
+                totalAccum &+= size
+                let localizedDisplay = String(localized: String.LocalizationValue(hit.displayName), bundle: .module)
+                let composedTitle: String
+                if let groupKey = hit.groupKey, !groupKey.isEmpty {
+                    composedTitle = "\(localizedDisplay) · \(groupKey) · \(hit.versionName)"
+                } else {
+                    composedTitle = "\(localizedDisplay) · \(hit.versionName)"
+                }
+                rows.append(RowItem(
+                    id: hit.url.path,
+                    url: hit.url,
+                    title: composedTitle,
+                    isDirectory: true,
+                    bytes: size,
+                    logicalBytes: size,
+                    fileCount: 0,
+                    verdict: verdict,
+                    rejection: rejection,
+                    vendorName: vendor?.name,
+                    vendorNote: "retain: \(hit.retainedLatest)",
+                    isActive: false,
+                    modificationDate: nil
+                ))
             }
-            rows.append(RowItem(
-                id: hit.url.path,
-                url: hit.url,
-                title: composedTitle,
-                isDirectory: true,
-                bytes: size,
-                logicalBytes: size,
-                fileCount: 0,
-                verdict: verdict,
-                rejection: rejection,
-                vendorName: vendor?.name,
-                vendorNote: "retain: \(hit.retainedLatest)",
-                isActive: false,
-                modificationDate: nil
-            ))
+            let sortedRows = rows.sorted { $0.bytes > $1.bytes }
+            let rowsCount = rows.count
+            let totalCaptured = totalAccum
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                // 防过期：用户在后台扫描期间切到别的分类入口时，activeCategoryID 已被
+                // 后续 scan() 改写；本次结果直接丢弃，不污染新分类的 snapshot。
+                guard self.activeCategoryID == categoryID else { return }
+                self.snapshot = ScanSnapshot(
+                    categoryID: categoryID,
+                    rows: sortedRows,
+                    totalBytes: totalCaptured,
+                    scannedFileCount: rowsCount,
+                    isFinished: true,
+                    elapsed: Date().timeIntervalSince(startedAtCopy)
+                )
+                self.lastFinishedCategoryID = categoryID
+                self.isScanning = false
+                // **Review fix-soon #3，2026-06-15**：scanKnownVersionedRoots 会改变 snapshot
+                // 里 "developer.versioned" 的行集合（特别是 PR 新增的 Android SDK / JetBrains
+                // 分组规则上线后，老 cache 里同路径的子项可能与新分组结果不一致）。
+                // 与 [scan(category:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1495-L1497)
+                // 走完后调 [invalidateTreeCacheAfterScan()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1495-L1497)
+                // 的行为对齐：本入口同样清掉 treeChildrenCache 并 bump childrenCacheVersion，
+                // 让 TreeBrowserView 不会用旧 sessionID 的 store-fallback 结果误展示已被
+                // 新规则重新分组的版本子目录。
+                self.invalidateTreeCacheAfterScan()
+                GSYLog.info(.app,
+                            "scanKnownVersionedRoots: \(rowsCount) versioned candidates, total=\(totalCaptured)")
+            }
         }
-        snapshot = ScanSnapshot(
-            categoryID: categoryID,
-            rows: rows.sorted { $0.bytes > $1.bytes },
-            totalBytes: totalAccum,
-            scannedFileCount: rows.count,
-            isFinished: true,
-            elapsed: Date().timeIntervalSince(startedAt)
-        )
-        lastFinishedCategoryID = categoryID
-        isScanning = false
-        // **Review fix-soon #3，2026-06-15**：scanKnownVersionedRoots 会改变 snapshot
-        // 里 "developer.versioned" 的行集合（特别是 PR 新增的 Android SDK / JetBrains
-        // 分组规则上线后，老 cache 里同路径的子项可能与新分组结果不一致）。
-        // 与 [scan(category:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1495-L1497)
-        // 走完后调 [invalidateTreeCacheAfterScan()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1495-L1497)
-        // 的行为对齐：本入口同样清掉 treeChildrenCache 并 bump childrenCacheVersion，
-        // 让 TreeBrowserView 不会用旧 sessionID 的 store-fallback 结果误展示已被
-        // 新规则重新分组的版本子目录。
-        invalidateTreeCacheAfterScan()
-        GSYLog.info(.app,
-                    "scanKnownVersionedRoots: \(rows.count) versioned candidates, total=\(totalAccum)")
     }
 
     /// 单层递归 size 估算。仅用于 [scanKnownVersionedRoots](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
     /// 这种小目录场景；大目录会走 BulkScanner 的并发实现。
-    private static func directorySize(at url: URL) -> Int64 {
+    ///
+    /// v2026.06.21 P0：标 `nonisolated` 让 P0 修复后的 `Task.detached` 能在默认 executor
+    /// 上直接调用，否则会被 ScanCoordinator 的 @MainActor 隔离拉回主线程，前面把 IO
+    /// 派后台的努力全部作废。函数体只读 FileManager.enumerator，本来就线程安全。
+    nonisolated private static func directorySize(at url: URL) -> Int64 {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(at: url,
                                              includingPropertiesForKeys: [.fileSizeKey],
@@ -1140,7 +1179,16 @@ public final class ScanCoordinator: ObservableObject {
 
         // 异步勘察 + 启动扫描；勘察自身有 60s 超时和 GSYLog 埋点
         scanTask = Task { [weak self] in
-            let opts = DevArtifactScanner.Options(enabledRuleIDs: enabledRuleIDs)
+            // v2026.06.21 修复 #3：用户反馈"扫描过程中出现『结果已截断』，然后就停止了"。
+            // 根因 = [DevArtifactScanner.Options.maxHits](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DevArtifactScanner.swift#L68)
+            // 默认 200 在真实开发机上极易被打满（一个 Xcode DerivedData + 一棵 node_modules 就够），
+            // 命中即 break 让用户既看到"结果已截断"banner，又因为后续 runMultiRootScan
+            // 需要处理 200 巨型根，前几条 root（DerivedData/Library/Caches/Xcode 等 GB 级）
+            // 占用全部并发槽 → UI 进度长时间静止，用户感知为"停止了"。
+            // 提高到 2000——HitDiscover 阶段每次 break 都是浪费已花的目录遍历成本，
+            // 而 hits 数组扩到 2000 个 (~几十 KB) 远比 break 之后丢弃发现的成本小。
+            // 真实开发机即使最离谱的场景（mirror node_modules）也极难超过 2000。
+            let opts = DevArtifactScanner.Options(enabledRuleIDs: enabledRuleIDs, maxHits: 2000)
             let result = await DevArtifactScanner(options: opts).discoverWithMetadata(home: homeURL)
             let hits = result.hits
             // 防过期：勘察期间用户可能切走或重新点击其他扫描入口
@@ -1613,6 +1661,12 @@ public final class ScanCoordinator: ObservableObject {
         // 都查不到任何子项 → directChildren 返 [] → TreeBrowserView 渲染
         // "No expandable children yet"（用户截图反馈）。
         // 真实根（如 ~/Library/Caches）展开后走的还是原 directChildren 逻辑。
+        if path == ScanCoordinator.versionedRootSentinelPath {
+            // v2026.06.21：开发者旧版本扫描不进 BulkScanner，所以 perRootProgress 是空的。
+            // 直接把 snapshot.rows 升级为顶层 TreeRow——title/bytes 都现成，
+            // 复用 [synthesizeVersionedTopLevel] 集中维护排序与 hasChildren=false 语义。
+            return synthesizeVersionedTopLevel(sortedBy: key)
+        }
         if ScanCoordinator.multiRootSentinelPaths.contains(path) {
             return synthesizeMultiRootTopLevel(sortedBy: key)
         }
@@ -1991,6 +2045,29 @@ public final class ScanCoordinator: ObservableObject {
                 isDirectory: true,
                 hasChildren: p.fileCount > 0,
                 accessState: .normal
+            )
+        }
+        return sortTreeRows(rows, by: key)
+    }
+
+    /// v2026.06.21：开发者旧版本扫描结束后的 TreeBrowserView 顶层合成。
+    ///
+    /// 与 [synthesizeMultiRootTopLevel] 的区别：旧版本扫描不进 BulkScanner 管线，
+    /// `perRootProgress` 永远空；hits 都已经放在 `snapshot.rows` 里（title 是带
+    /// i18n 与版本号的 "iOS DeviceSupport · 18.0" 这种），所以直接把 snapshot.rows
+    /// 上升成 TreeRow。`hasChildren=false`——TreeBrowserView 拿这个判定不画披露
+    /// 三角；用户要看具体子文件可在 Finder 里展开（与多根 1-tier 风格一致）。
+    private func synthesizeVersionedTopLevel(sortedBy key: TreeSortKey) -> [TreeRow] {
+        let rows: [TreeRow] = snapshot.rows.map { row in
+            TreeRow(
+                path: row.url.path,
+                title: row.title,
+                bytes: row.bytes,
+                fileCount: row.fileCount,
+                isDirectory: row.isDirectory,
+                hasChildren: false,
+                accessState: .normal,
+                modificationDate: row.modificationDate
             )
         }
         return sortTreeRows(rows, by: key)

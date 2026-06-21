@@ -13,7 +13,7 @@ import XCTest
 @MainActor
 final class ScanCoordinatorKnownVersionedRootsTests: XCTestCase {
 
-    func test_scanKnownVersionedRoots_命中4版本Xcode_仅产2条旧版候选() throws {
+    func test_scanKnownVersionedRoots_命中4版本Xcode_仅产2条旧版候选() async throws {
         let tmp = try makeTempHome()
         defer { try? FileManager.default.removeItem(at: tmp) }
         let support = tmp.appendingPathComponent("Library/Developer/Xcode/iOS DeviceSupport",
@@ -28,13 +28,18 @@ final class ScanCoordinatorKnownVersionedRootsTests: XCTestCase {
 
         let coord = ScanCoordinator(home: tmp.path)
         coord.scanKnownVersionedRoots(home: tmp)
+        // v2026.06.21 P0：scanKnownVersionedRoots 改为 Task.detached 派后台扫 IO，
+        // 需要轮询等 snapshot 落地，与 [ScanCoordinatorStoreTests.waitScanFinished]
+        // 同模式（轮询 isScanning + snapshot.isFinished，30ms 间隔，6s 超时）。
+        await waitScanFinished(coord)
 
         XCTAssertEqual(coord.snapshot.categoryID, "developer.versioned")
         XCTAssertEqual(coord.snapshot.isFinished, true)
         XCTAssertEqual(coord.snapshot.rows.count, 2,
                        "keepLatest=2 → 4 版本中应有 2 版被识别为可回收旧版")
         XCTAssertFalse(coord.isScanning)
-        XCTAssertEqual(coord.currentRootPath, tmp.path)
+        XCTAssertEqual(coord.currentRootPath, ScanCoordinator.versionedRootSentinelPath,
+                       "v2026.06.21：开发者旧版本扫描统一用 sentinel 让 TreeBrowserView 走合成顶层")
         // 每条 row 必须是 Xcode DeviceSupport 子目录之一
         for row in coord.snapshot.rows {
             XCTAssertTrue(row.url.path.hasPrefix(support.path),
@@ -43,12 +48,13 @@ final class ScanCoordinatorKnownVersionedRootsTests: XCTestCase {
         }
     }
 
-    func test_scanKnownVersionedRoots_空home_finishedSnapshotWithEmptyRows() throws {
+    func test_scanKnownVersionedRoots_空home_finishedSnapshotWithEmptyRows() async throws {
         let tmp = try makeTempHome()
         defer { try? FileManager.default.removeItem(at: tmp) }
 
         let coord = ScanCoordinator(home: tmp.path)
         coord.scanKnownVersionedRoots(home: tmp)
+        await waitScanFinished(coord)
 
         XCTAssertEqual(coord.snapshot.rows.count, 0)
         XCTAssertEqual(coord.snapshot.isFinished, true)
@@ -63,5 +69,15 @@ final class ScanCoordinatorKnownVersionedRootsTests: XCTestCase {
                                     isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    /// 轮询等扫描事件循环结束（isScanning false 且 snapshot.isFinished）。
+    /// 复用 [ScanCoordinatorStoreTests.waitScanFinished] 的 30ms 间隔 + 6s 超时策略。
+    private func waitScanFinished(_ coord: ScanCoordinator,
+                                  timeout: TimeInterval = 6) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while (coord.isScanning || !coord.snapshot.isFinished) && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 30_000_000) // 30ms
+        }
     }
 }
