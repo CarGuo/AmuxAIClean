@@ -1730,28 +1730,12 @@ public struct MainView: View {
         ToolbarItem(placement: .primaryAction) {
             sortMenu
         }
-        // v1.5 P2 / Q2：用户反馈"右上角这三个 logo（推荐/开发者/整盘）扫描完一次后
-        // 就不需要了，应该让出空间给一个『重新扫描』入口"。
-        //
-        // 设计：只在"未开始扫描 / 处于扫描中"两种状态下展示三个入口；
-        // 一旦 [scanControlButton](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1916)
-        // 已经能渲染出"重新扫描"按钮（即 isScanning=false 且 selectedCategory != nil
-        // 且能在 allCategories 命中），就把这三个折叠掉——用户要换扫描类型仍可走
-        // sidebar 的"批量扫描"组（永远在），不影响功能可达性。
-        //
-        // 这样工具栏在最常见的"扫描完成 → 看结果"态下右侧只剩 [全局排序 + 重新扫描]
-        // 两枚按钮，跟用户截图诉求一致。
-        if shouldShowBatchScanShortcuts {
-            ToolbarItem(placement: .primaryAction) {
-                recommendedAllButton
-            }
-            ToolbarItem(placement: .primaryAction) {
-                developerScanButton
-            }
-            ToolbarItem(placement: .primaryAction) {
-                fullDiskButton
-            }
-        }
+        // v2026.06.21：原右上角「推荐 / 开发者 / 整盘」三个 logo 按钮直接移除——
+        // 用户反馈这三个入口长期占位制造视觉噪音；功能可达性由 sidebar 的
+        // 「批量扫描」分组完整承担，toolbar 右侧只保留：全局排序 + 购物车 + 单一
+        // [scanControlButton](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1762)
+        // （重新扫描 / 扫描中）。helpers triggerRecommendedScan / triggerDeveloperScan /
+        // triggerFullDiskScan 保留，sidebar onChange 仍在用。
         // v2026.06.18 购物车入口。count==0 时整项隐藏（避免 toolbar 永远多出
         // 一个"空购物车"按钮造成视觉噪音）。SwiftUI ToolbarItem 内 if 分支会让
         // 该 item 在 layout 阶段被剔除，无需特殊处理。
@@ -1761,25 +1745,6 @@ public struct MainView: View {
         ToolbarItem(placement: .primaryAction) {
             scanControlButton
         }
-    }
-
-    /// v1.5 P2 / Q2：是否在 toolbar 展示"推荐 / 开发者 / 整盘"三个批量入口。
-    ///
-    /// 规则：
-    /// 1. 当前正在扫描 → **展示**（用户可能想中途比较，也方便看 Label 文案知道在跑哪个）
-    /// 2. 没扫过任何类目（首次启动）→ **展示**（给用户一个起步入口）
-    /// 3. 已选某类目且已停（即 scanControlButton 会画出"重新扫描"）→ **隐藏**
-    ///    （让出空间给单按钮"重新扫描"——用户截图诉求）
-    private var shouldShowBatchScanShortcuts: Bool {
-        if coordinator.isScanning { return true }
-        guard let id = selectedCategory else { return true }
-        // v2026.06.21：开发者旧版本扫描 sentinel 不在 allCategories 里——
-        // 原逻辑 `!allCategories.contains` 会返 true，导致右上角三按钮在用户已选 sentinel
-        // 且扫完后还残留（用户截图反馈"右上角三个要去掉的按键还在"）。
-        // 显式识别 sentinel：当它被选中且不在扫描时，等同于"已停在某类目"，按规则 3 隐藏。
-        if id == MainView.devVersionedSentinelID { return false }
-        // 与 scanControlButton 的判定一致——只有这条 if 能落到"重新扫描"分支时才折叠。
-        return !allCategories.contains(where: { $0.id == id })
     }
 
     /// v1.3：主列表排序选择器。
@@ -1804,40 +1769,6 @@ public struct MainView: View {
             Label(settings.mainListSortKey.label, systemImage: "arrow.up.arrow.down")
         }
         .help(String(localized: "sort.menu.help", bundle: .module))
-    }
-
-    /// v1.3：「全部推荐扫描」—— 一键并行扫描 ScanCategories.recommended() 5 个根。
-    /// 解决用户反馈"看起来还是只有一个目录在动"——多根并行 + statusBar 多行进度让"打满核"可见。
-    private var recommendedAllButton: some View {
-        Button {
-            triggerRecommendedScan()
-        } label: {
-            Label {
-                Text("toolbar.scan.recommended", bundle: .module)
-            } icon: {
-                Image(systemName: "rectangle.3.group")
-            }
-        }
-        .help(String(localized: "toolbar.help.recommended", bundle: .module))
-        .disabled(coordinator.isScanning)
-    }
-
-    /// v1.4：「开发者构建产物」—— 在 `~` 下勘察主流框架的 build / 依赖目录并并行扫描。
-    /// 覆盖 Node / RN / Electron / Flutter / Android / iOS / Rust / Go / Python / JVM 等生态，
-    /// 命中规则 + 兄弟脚手架兜底（如 node_modules 必须兄弟有 package.json），杜绝误命中。
-    /// 启用规则集由 [AppSettings.enabledDevArtifactRuleIDs] 控制（默认全开）。
-    private var developerScanButton: some View {
-        Button {
-            triggerDeveloperScan()
-        } label: {
-            Label {
-                Text("toolbar.scan.dev", bundle: .module)
-            } icon: {
-                Image(systemName: "hammer")
-            }
-        }
-        .help(String(localized: "toolbar.help.dev", bundle: .module))
-        .disabled(coordinator.isScanning)
     }
 
     /// v1.5：把 toolbar「全部推荐扫描」按钮的逻辑抽成 helper，供 sidebar Batch Scans
@@ -1895,21 +1826,6 @@ public struct MainView: View {
         )
         .contentShape(Capsule(style: .continuous))
         .animation(.easeInOut(duration: 0.12), value: pathBarFocused)
-    }
-
-    /// v1.0 T5：整盘扫描快捷按钮。
-    private var fullDiskButton: some View {
-        Button {
-            triggerFullDiskScan()
-        } label: {
-            Label {
-                Text("toolbar.scan.full_disk", bundle: .module)
-            } icon: {
-                Image(systemName: "internaldrive")
-            }
-        }
-        .help(String(localized: "toolbar.help.full_disk", bundle: .module))
-        .disabled(coordinator.isScanning)
     }
 
     /// v2026.06.18 **稍后处理（待处理）**入口。
