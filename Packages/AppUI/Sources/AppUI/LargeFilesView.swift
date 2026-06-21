@@ -164,7 +164,8 @@ public struct LargeFilesView: View {
 
             Image(systemName: "doc.richtext")
                 .foregroundStyle(.tint)
-            Text("≥ \(settings.minFileSizeMB) MB · Top \(limit)")
+            Text(String(format: String(localized: "largefiles.threshold.badge %lld %lld", bundle: .module),
+                        settings.minFileSizeMB, limit))
                 .font(.callout)
             Spacer()
             if needsRescanForLowerThreshold {
@@ -451,6 +452,7 @@ public struct LargeFilesView: View {
         let f = DateFormatter()
         f.dateStyle = .short
         f.timeStyle = .short
+        f.locale = .current
         return f
     }()
 

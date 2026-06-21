@@ -205,16 +205,15 @@ public struct MainView: View {
         // v1.5 P2 / Q3：AI 未配置时点击"问 AI" → 弹"前往设置？"alert，
         // 用户确认则调 openSettings()（macOS 14+ 标准 action）。
         // 取代旧的"按钮直接隐藏 / disabled"路径，让用户知道有这能力 + 怎么开。
-        .alert(String(localized: "ai.unconfigured.alert.title", defaultValue: "AI 尚未配置", bundle: .module),
+        .alert(String(localized: "ai.unconfigured.alert.title", bundle: .module),
                isPresented: $aiUnconfiguredAlert) {
-            Button(String(localized: "ai.unconfigured.alert.open_settings", defaultValue: "前往设置", bundle: .module)) {
+            Button(String(localized: "ai.unconfigured.alert.open_settings", bundle: .module)) {
                 openSettings()
             }
-            Button(String(localized: "ai.unconfigured.alert.cancel", defaultValue: "取消", bundle: .module),
+            Button(String(localized: "ai.unconfigured.alert.cancel", bundle: .module),
                    role: .cancel) {}
         } message: {
             Text(String(localized: "ai.unconfigured.alert.message",
-                        defaultValue: "「问 AI」需要先在设置中填好 API Base URL / Model / API Key。点「前往设置」可立即打开 AI 设置面板。",
                         bundle: .module))
         }
         // v2026.06.18 **稍后处理 sheet**。点 toolbar 的 `tray.full.fill` 按钮触发；

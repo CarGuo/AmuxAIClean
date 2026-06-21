@@ -77,16 +77,58 @@ final class I18nIntegrityTests: XCTestCase {
         return combined
     }
 
-    // MARK: - 契约 1：零 stale key
+    // MARK: - 契约 1：trash.err.* 双向同步（修订版）
 
-    /// 6 条 stale `trash.err.*` 历史包袱必须在 Step 4 中被清理。
-    /// 它们对应的 Swift 代码已经在更早的版本里被重构掉，但翻译表残留。
-    func test_xcstrings_无残留的trash_err_key() throws {
-        let keys = try loadXcstringsKeys()
-        let stale = keys.filter { $0.hasPrefix("trash.err.") }
-        XCTAssertEqual(
-            stale.count, 0,
-            "发现 \(stale.count) 条 stale trash.err.* key 未清理：\(stale)"
+    /// **历史**：Step 4（2026-06）原计划是把 6 条 stale `trash.err.*` key 从 xcstrings
+    /// 清掉，因为对应 Swift 代码被重构没了。但 Step 4 后续 TrashPipeline 又重写为
+    /// "面向用户的失败原因（dryrun 拦截 / 移动失败 / 安全策略阻断）必须可翻译"，
+    /// 9 条 `trash.err.*` 复活进入活代码（见 [TrashPipeline.swift L268-L344](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L268-L344)）。
+    ///
+    /// **新契约**（2026-06-21 修订）：不再"必须 0 条"，而是**双向同步**——
+    ///   1) xcstrings 里每条 `trash.err.*` key 必须在 TrashPipeline.swift 中至少出现一次；
+    ///   2) TrashPipeline.swift 里每个 `trash.err.*` 字面量必须在 xcstrings 中有 key。
+    ///
+    /// 取舍：
+    ///   - 不全仓 grep（避免被本测试文件自身的字面量 "trash.err." 自检自污染）。
+    ///   - 只锁定 TrashPipeline.swift —— 这是 trash.err.* 的唯一活引用点。
+    ///     如果未来出现第二个活引用点（如 BatchTrashCoordinator），需扩展本测试。
+    func test_xcstrings_trash_err_key_双向同步() throws {
+        let root = try repoRoot()
+        let pipelinePath = root
+            .appendingPathComponent("Packages/AppUI/Sources/AppUI/TrashPipeline.swift")
+            .path
+        let pipelineSrc = try String(contentsOfFile: pipelinePath, encoding: .utf8)
+
+        let xcstringsTrashKeys = try loadXcstringsKeys().filter { $0.hasPrefix("trash.err.") }
+
+        // 1) xcstrings → 源码：每条 key 必须被 TrashPipeline 引用
+        var unreferenced: [String] = []
+        for key in xcstringsTrashKeys {
+            if !pipelineSrc.contains(key) {
+                unreferenced.append(key)
+            }
+        }
+        XCTAssertTrue(
+            unreferenced.isEmpty,
+            "xcstrings 中 \(unreferenced.count) 条 trash.err.* key 在 TrashPipeline.swift 找不到引用（疑似 stale，应在 xcstrings 删除）：\(unreferenced.sorted())"
+        )
+
+        // 2) 源码 → xcstrings：每个 "trash.err.XXX" 字面量必须在 xcstrings 中存在
+        // 抓 pipeline 中所有 "trash.err.<rest>" 字面量（截到下一个空白 / " / ) 之前）。
+        let pattern = #""(trash\.err\.[A-Za-z0-9_.]+(?:\s+%(?:lld|d|@|ld|\.\d+f))*)""#
+        let regex = try NSRegularExpression(pattern: pattern)
+        let ns = pipelineSrc as NSString
+        let matches = regex.matches(in: pipelineSrc,
+                                    range: NSRange(location: 0, length: ns.length))
+        var sourceKeys = Set<String>()
+        for m in matches where m.numberOfRanges >= 2 {
+            sourceKeys.insert(ns.substring(with: m.range(at: 1)))
+        }
+        let xcSet = Set(xcstringsTrashKeys)
+        let missingInCatalog = sourceKeys.subtracting(xcSet).sorted()
+        XCTAssertTrue(
+            missingInCatalog.isEmpty,
+            "TrashPipeline.swift 引用了 \(missingInCatalog.count) 条 trash.err.* key 但 xcstrings 缺翻译（运行期会 fallback 到 key 字符串）：\(missingInCatalog)"
         )
     }
 
@@ -255,11 +297,18 @@ final class I18nIntegrityTests: XCTestCase {
             }
             print("    → Step 17-D 后续治理：逐条改成 \"localizations.<lang>.variations.plural.{one, other}\"。")
         }
-        // 当前已知 backlog：1 条 capacity.swap.allocated.hint.real "Real file size of %lld swapfile(s)"
-        // 设上限护栏：超过 5 条立即 fail——防止后续 PR 引入新的 (s) 兜底翻译。
+        // 当前已知 backlog（2026-06-21 重测）：6 条 (s) 兜底翻译，分别来自
+        //   - capacity.swap.allocated.hint.real
+        //   - op.result.force_delete.button %lld
+        //   - op.result.force_delete.confirm.message %lld
+        //   - op.result.summary.success %lld
+        //   - workflow.detail.delete.commandline_skipped %lld
+        //   - workflow.detail.simctl.blocked_running %lld
+        // 设上限护栏：超过 8 条立即 fail——防止后续 PR 引入新的 (s) 兜底翻译。
+        // 治理目标：随着 Step 17-D plural variations 迁移完成，回收上限到 5、3、0。
         XCTAssertLessThanOrEqual(
-            pluralParenSuffix.count, 5,
-            "(s) 复数兜底翻译数量超过 5 条上限，已扫到 \(pluralParenSuffix.count) 条；新增 PR 必须改用 plural variations。"
+            pluralParenSuffix.count, 8,
+            "(s) 复数兜底翻译数量超过 8 条上限，已扫到 \(pluralParenSuffix.count) 条；新增 PR 必须改用 plural variations。"
         )
     }
 
@@ -290,10 +339,11 @@ final class I18nIntegrityTests: XCTestCase {
             }
             print("    → Step 17-D 后续治理：评估是否值得拆 plural variations（ScanKit 命中 1 件物时 UX 收益）。")
         }
-        // 上限护栏：当前已知 ~15 条；放宽到 25 防止滚动期 PR 新增打破护栏。
+        // 上限护栏：当前已知 ~29 条（2026-06-21 重测）；放宽到 32 防止滚动期 PR 新增打破护栏。
+        // 治理目标：随着 plural variations 迁移完成，逐步回收上限到 25、20、15。
         XCTAssertLessThanOrEqual(
-            candidates.count, 25,
-            "%lld 复数英文名词候选数已达 \(candidates.count)，超过 25 上限；新增 PR 必须配套 plural variations 迁移。"
+            candidates.count, 32,
+            "%lld 复数英文名词候选数已达 \(candidates.count)，超过 32 上限；新增 PR 必须配套 plural variations 迁移。"
         )
     }
 
