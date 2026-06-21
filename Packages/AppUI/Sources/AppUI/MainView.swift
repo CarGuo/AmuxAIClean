@@ -19,6 +19,14 @@ public struct MainView: View {
     @State private var customCategories: [ScanCategory] = []
     @State private var selectedCategory: ScanCategory.ID?
     @State private var selection: Set<String> = []   // 勾选的 row.id
+    /// v2026.06.21 perf：默认勾选已扫描过的 rows.count 上限，避免每次 publish
+    /// 都对整个 snapshot.rows 做 O(N) filter + N 次 `selection.contains` 哈希。
+    /// `onChange(rows.count)` 触发时只需检查 `[lastDefaultSelectedSeenCount...]`
+    /// 的"末尾差量"（流式扫描 publishSnapshot 路径下 rows 只增不删，见
+    /// [ScanCoordinator.publishSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L2729)），
+    /// dev 扫数千行场景下从每帧 O(N) 降为每帧 O(Δ)（Δ = 本帧新增行数，常 < 50）。
+    /// 取消选中 / 切换分类时手工 reset 为 0，让下一次重新扫描全表。
+    @State private var lastDefaultSelectedSeenCount: Int = 0
     /// v1.3.ab：原本是 `RowItem?`，但 `List(selection:)` 用整结构体当 key 会让 SwiftUI 在
     /// snapshot 高频 publish 时（点 Preferences 这种条目几千的目录）对每行做 `==` 比较 + diff，
     /// 主线程被刷爆 → 鼠标彩虹球。改为只押 row.id（String），detail 渲染时再反查。
@@ -1250,13 +1258,35 @@ public struct MainView: View {
         // 内部 List/HStack/HSplitView 任何子视图的 ideal width 都不再向外反推，
         // 反挤 sidebar 的链条被切断。
         .layoutSandbox()
-        .onChange(of: coordinator.snapshot.rows.count) { _, _ in
+        .onChange(of: coordinator.snapshot.rows.count) { _, newCount in
             // 默认勾选：仅勾 .safe（PITFALLS §5.5）
             // 用 union：用户已经手动改过的不要被覆盖
-            let safeIDs = coordinator.snapshot.rows.filter { $0.defaultSelected }.map(\.id)
-            for id in safeIDs where !selection.contains(id) {
-                selection.insert(id)
+            //
+            // v2026.06.21 perf：原来每次 publish 都对整个 `rows` 做 O(N) filter
+            // + N 次 `selection.contains`（dev 扫几千行场景下是 listResults +
+            // statusBar 同帧卡顿的元凶 P0-2）。流式 publishSnapshot 路径下 rows
+            // 只 append 不删，所以只需扫描 `[seen ..< newCount]` 末尾差量。
+            // 当 newCount < seen（外部 pruneDeleted / 切分类 / 重扫）时回退到
+            // 全表扫描，并把 seen 重置——保持语义不变。
+            let rows = coordinator.snapshot.rows
+            let seen = lastDefaultSelectedSeenCount
+            let startIdx = (newCount >= seen && rows.count == newCount) ? seen : 0
+            if startIdx == 0 { lastDefaultSelectedSeenCount = 0 }
+            if newCount == 0 {
+                lastDefaultSelectedSeenCount = 0
+                return
             }
+            // 仅遍历末尾差量（含 startIdx == 0 时的全量回退）
+            var idx = startIdx
+            let end = rows.count
+            while idx < end {
+                let r = rows[idx]
+                if r.defaultSelected, !selection.contains(r.id) {
+                    selection.insert(r.id)
+                }
+                idx &+= 1
+            }
+            lastDefaultSelectedSeenCount = end
         }
     }
 
@@ -1626,7 +1656,23 @@ public struct MainView: View {
     }
 
     private var footerBar: some View {
-        HStack {
+        // v2026.06.21 perf：listResults 出现后两个列表同时卡的核心证据 ——
+        // footerBar 一帧内 `selectedRows` 被读 3+ 次（selectionSummary、isEmpty
+        // 用于 .disabled、Button action 中的 !isEmpty），每次都是
+        // `coordinator.snapshot.rows.filter { ... }` 整表 O(N) filter。
+        // dev 扫场景下 snapshot 每 0.4s publish + listResults ForEach 抬高 body
+        // 失效频率 → 整帧主线程 footerBar 这段就吃掉数毫秒，statusBar 同
+        // transaction 被一并拖卡（与 listResults / inlineDetailPane 串行 layout）。
+        // 改为 body 顶端一次 let 计算 selectedRows + 预算 summary 文本，
+        // 后续三处复用同一个 `selectedRowsEmpty` / `summaryText`。
+        let rows = isLargeFilesMode ? [] : selectedRows
+        let selectedRowsEmpty = rows.isEmpty
+        let summaryText: String = {
+            if selectedRowsEmpty { return String(localized: "selection.empty", bundle: .module) }
+            let total = rows.reduce(Int64(0)) { $0 + $1.bytes }
+            return String(format: String(localized: "selection.summary %lld %@", bundle: .module), rows.count, formattedBytes(total))
+        }()
+        return HStack {
             if isLargeFilesMode {
                 Text(largeFileSelection.map {
                     String(format: String(localized: "footer.selection.large_file %@ %@", bundle: .module), $0.title, formattedBytes($0.bytes))
@@ -1650,12 +1696,12 @@ public struct MainView: View {
                 .disabled(largeFileSelection == nil)
                 .keyboardShortcut(.delete, modifiers: .command)
             } else {
-                Text(selectionSummary)
+                Text(summaryText)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button {
-                    showSheet = !selectedRows.isEmpty
+                    showSheet = !selectedRowsEmpty
                 } label: {
                     Label {
                         Text("toolbar.delete.move_to_trash", bundle: .module)
@@ -1663,7 +1709,7 @@ public struct MainView: View {
                         Image(systemName: "trash")
                     }
                 }
-                .disabled(selectedRows.isEmpty)
+                .disabled(selectedRowsEmpty)
                 .keyboardShortcut(.delete, modifiers: .command)
             }
         }
