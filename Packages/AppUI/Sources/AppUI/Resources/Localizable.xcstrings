@@ -5799,40 +5799,6 @@
         }
       }
     },
-    "mainview.devartifact.warn.timeout": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Scan timed out"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "扫描超时"
-          }
-        }
-      }
-    },
-    "mainview.devartifact.warn.truncated": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Result truncated"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "结果已截断"
-          }
-        }
-      }
-    },
     "mainview.path_chip.collapse": {
       "extractionState": "manual",
       "localizations": {
@@ -5863,6 +5829,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "查看路径"
+          }
+        }
+      }
+    },
+    "mainview.switch_category.confirm.cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep Current"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "留在当前"
+          }
+        }
+      }
+    },
+    "mainview.switch_category.confirm.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switching will discard the current scan results and start a new scan. Continue?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "切换将清空当前扫描结果并开始新的扫描，是否继续？"
+          }
+        }
+      }
+    },
+    "mainview.switch_category.confirm.proceed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard and Switch"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "放弃并切换"
+          }
+        }
+      }
+    },
+    "mainview.switch_category.confirm.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switch scan target?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "切换扫描目标？"
           }
         }
       }

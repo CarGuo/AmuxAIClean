@@ -110,6 +110,9 @@ public struct TreeBrowserView: View {
     /// 替代旧版 `coordinator.isFetchingChildren(of: rootPath, sortedBy:)` 的实时调用——
     /// flatRows 重建时同步推断，view body 只读 state，少一次 coordinator 调用。
     @State private var isFetchingRoot: Bool = false
+    /// v2026.06.21 性能：扫描中合并 structural / childrenCache bump，1s 节流一次重建。
+    /// nil 表示当前没有挂起的 rebuild；非 nil 表示已 schedule，再次 bump 会取消旧的并续期。
+    @State private var pendingScanningRebuild: DispatchWorkItem? = nil
 
     public init(coordinator: ScanCoordinator,
                 rootPath: String,
@@ -285,16 +288,14 @@ public struct TreeBrowserView: View {
         // 不再被流式 publishSnapshot 的 0.4s tick（仅 bytes 变化）拖着整树重算。
         // tickRevision 通过其它 @Published 入口（如 RowItem 自身）驱动 RowView 内部刷新数值，
         // 这里 view 不订阅。
-        .onChange(of: coordinator.structuralRevision) { _, _ in
-            // v1.5.7：若本次 bump 由 pruneDeleted 触发，则走"只剔被删 path 子树"的
-            // 增量 patch，避免 12 GB / 万级目录用户的整树 rebuild 卡顿。
-            // hint 不在 → 老路径 rebuildFlatRows 兜底。
-            if let pruned = coordinator.consumeLastPrunedPaths(), !pruned.isEmpty {
-                applyPrunePatch(deletedPaths: pruned)
-            } else {
-                rebuildFlatRows()
-            }
-        }
+        //
+        // v2026.06.21 性能：扫描进行中防抖 1s（详见 [handleStructuralBump](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)）。
+        // 三个 onChange 走同一组工具方法——之前直接在 body 里堆 3 个 onChange 闭包让
+        // SwiftUI ViewBuilder 类型推断超时（"unable to type-check this expression"）。
+        // 这里只挂一个 onChange，其它两个走 modifier 链上下方继续，避免类型膨胀。
+        .onChange(of: coordinator.structuralRevision) { _, _ in handleStructuralBump() }
+        .onChange(of: coordinator.isScanning) { _, nowScanning in handleScanningToggle(nowScanning: nowScanning) }
+        .onChange(of: coordinator.childrenCacheVersion) { _, _ in handleChildrenCacheBump() }
         .onChange(of: flatRows.first?.row.path) { _, _ in
             // 切排序 / 切扫描根 → 顶层第一行变化时把选中态拉回首行，避免选中飞走
             let visiblePathSet = Set(flatRows.map(\.row.path))
@@ -700,6 +701,60 @@ public struct TreeBrowserView: View {
             out.append(FlatTreeRow(row: row, depth: depth, verdict: evaluator(row.path)))
         }
         return out
+    }
+
+    /// v2026.06.21 性能：扫描中把结构性 bump 节流到 1s 一次。
+    /// 取消上一次挂起的 work item 续期，最迟 1s 后做一次 rebuildFlatRows。
+    /// 扫描结束的边沿（onChange(coordinator.isScanning) → false）会立刻 fire 一次
+    /// 拿到终态，无需依赖此节流。
+    private func scheduleScanningRebuild() {
+        pendingScanningRebuild?.cancel()
+        let work = DispatchWorkItem { [self] in
+            // 触发主线程上下文中的 rebuild；DispatchQueue.main 投递保证 @State 安全。
+            pendingScanningRebuild = nil
+            rebuildFlatRows()
+        }
+        pendingScanningRebuild = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
+    }
+
+    /// v2026.06.21：structuralRevision bump 入口（从 body onChange 抽出来避免类型推断超时）。
+    /// 流程：
+    ///   1. 优先消费 pruneDeleted hint → 走"只剔被删 path 子树"的 patch（避免大树整 rebuild）。
+    ///   2. 扫描中：聚合到 1s 一次的 rebuild（用户视觉无法分辨 < 1s 的树形微调）。
+    ///   3. 扫描外：立刻 rebuild 拿到最新视图。
+    private func handleStructuralBump() {
+        if let pruned = coordinator.consumeLastPrunedPaths(), !pruned.isEmpty {
+            applyPrunePatch(deletedPaths: pruned)
+            return
+        }
+        if coordinator.isScanning {
+            scheduleScanningRebuild()
+        } else {
+            pendingScanningRebuild?.cancel()
+            pendingScanningRebuild = nil
+            rebuildFlatRows()
+        }
+    }
+
+    /// v2026.06.21：扫描结束边沿——把扫描期间合并的 rebuild 立刻 fire 拿到终态。
+    /// 也兼容 isScanning 切回 true 的回边沿：进入扫描态不主动 rebuild（等 structural bump）。
+    private func handleScanningToggle(nowScanning: Bool) {
+        if !nowScanning {
+            pendingScanningRebuild?.cancel()
+            pendingScanningRebuild = nil
+            rebuildFlatRows()
+        }
+    }
+
+    /// v2026.06.21：directChildren GRDB 写回路径只 bump childrenCacheVersion（不再 bump
+    /// structuralRevision），这里独立监听并复用 scheduleScanningRebuild 节流。
+    private func handleChildrenCacheBump() {
+        if coordinator.isScanning {
+            scheduleScanningRebuild()
+        } else {
+            rebuildFlatRows()
+        }
     }
 
     /// 行内三角 / 单击整行 / 右键菜单 / 双击 → 共用的展开切换入口。

@@ -24,6 +24,13 @@ public struct MainView: View {
     /// 主线程被刷爆 → 鼠标彩虹球。改为只押 row.id（String），detail 渲染时再反查。
     @State private var detail: String?
     @State private var showSheet: Bool = false
+    /// v2026.06.21：切换 category 前若已有扫描结果，弹确认对话框。
+    /// `pendingCategoryChange` 暂存"用户想切到的 new"，`isRevertingSelection`
+    /// 用于在取消时把 selectedCategory 还原回 old 而不再次走确认分支
+    /// （SwiftUI 的 binding 改值会再次触发 onChange，必须用 flag 短路一次）。
+    @State private var pendingCategorySwitch: (old: String?, new: String?)?
+    @State private var isRevertingSelection: Bool = false
+    @State private var showSwitchCategoryConfirm: Bool = false
     /// **v1.5.3 修订**：删除走乐观更新——前端 pruneDeleted 立即生效，
     /// 后台 pipeline.moveToTrash 异步执行，仅在结束后用 deleteResult alert 报结果。
     /// 这个 flag 仍保留（未来如有"批量删除大数据集"场景可重新挂 progress UI），
@@ -186,6 +193,33 @@ public struct MainView: View {
         }
         .navigationTitle(Text("main.nav.title", bundle: .module))
         .toolbar { toolbar }
+        // v2026.06.21：切换扫描目标前确认。`titleVisibility: .visible` 让 message 不被吃掉。
+        // 设计：role:.destructive 暗示"放弃当前结果"是有损操作；cancel 同时复位 selection
+        // 回到 old（用 isRevertingSelection 短路再次 onChange）。
+        .confirmationDialog(
+            String(localized: "mainview.switch_category.confirm.title", bundle: .module),
+            isPresented: $showSwitchCategoryConfirm,
+            titleVisibility: .visible
+        ) {
+            Button(role: .destructive) {
+                guard let pending = pendingCategorySwitch else { return }
+                pendingCategorySwitch = nil
+                applyCategorySwitch(from: pending.old, to: pending.new)
+            } label: {
+                Text("mainview.switch_category.confirm.proceed", bundle: .module)
+            }
+            Button(role: .cancel) {
+                // 还原 selection 回 old；isRevertingSelection 让随后的 onChange 自然 return。
+                guard let pending = pendingCategorySwitch else { return }
+                pendingCategorySwitch = nil
+                isRevertingSelection = true
+                selectedCategory = pending.old
+            } label: {
+                Text("mainview.switch_category.confirm.cancel", bundle: .module)
+            }
+        } message: {
+            Text("mainview.switch_category.confirm.message", bundle: .module)
+        }
         .sheet(isPresented: $showSheet) {
             DeleteSheet(
                 items: selectedRows,
@@ -306,42 +340,22 @@ public struct MainView: View {
             //
             // v1.5 review-fix #3：batchFullDisk 也走 triggerFullDiskScan()，与另两个
             // batch sentinel 分支风格统一——helper 是后续维护扩展点。
+            //
+            // v2026.06.21：切换前若已有扫描结果，弹确认对话框，避免用户误触切走重扫。
+            // 用户反馈："切了就要重新扫描了，应该问一下"。
             guard old != new else { return }
-            if let id = new, ScanCategory.batchScanIDs.contains(id) {
-                switch id {
-                case ScanCategory.batchRecommendedID:
-                    triggerRecommendedScan()
-                case ScanCategory.batchDeveloperID:
-                    triggerDeveloperScan()
-                case ScanCategory.batchFullDiskID:
-                    triggerFullDiskScan()
-                default:
-                    // v1.5 review-fix #1：batchScanIDs 已穷尽 3 个 case；future 加 sentinel
-                    // 必须同步加 case，否则 selection 切到新 sentinel 会被静默吞掉。
-                    // 用 assertionFailure 把疏漏暴露在 debug 期。
-                    assertionFailure("Unhandled batch scan sentinel id: \(id) — add case to MainView.onChange switch.")
-                }
+            // 走回滚分支（用户点了"留在当前"）→ 不再走业务，flag 复位即可。
+            if isRevertingSelection {
+                isRevertingSelection = false
                 return
             }
-            resetSelectionState()
-            // M4-T2 / 2026-06：开发者版本化收集根扫描 sentinel —— 不在 allCategories 里，
-            // 由 ScanCoordinator.scanKnownVersionedRoots(home:) 同步派发命中。
-            // 必须在 allCategories.first 之前拦截，否则会走 startScan(category:) 找不到 cat 直接 return。
-            if let id = new, id == MainView.devVersionedSentinelID {
-                runHeavyAfterCommit {
-                    coordinator.scanKnownVersionedRoots(
-                        home: FileManager.default.homeDirectoryForCurrentUser)
-                }
+            // 已有结果（任意一种形态：snapshot.rows / perRoot 进度 / 仍在扫描）→ 拦确认。
+            if shouldConfirmCategorySwitch {
+                pendingCategorySwitch = (old, new)
+                showSwitchCategoryConfirm = true
                 return
             }
-            guard let id = new, let cat = allCategories.first(where: { $0.id == id }) else { return }
-            // v2：统一走 [runHeavyAfterCommit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HeavyTask.swift)
-            // 模板（detached + sleep 16ms + MainActor.run），让 SwiftUI 先把
-            // 「sidebar 高亮 / 旧 detail 清空 / loading 状态」这一帧 commit 出去再开始扫。
-            // 这样 Preferences 这种条目巨多的目录入扫时不再卡彩虹球。
-            runHeavyAfterCommit {
-                startScan(category: cat)
-            }
+            applyCategorySwitch(from: old, to: new)
         }
         .onChange(of: viewMode) { _, _ in
             // bug A：清单 ↔ 树形 切换时各清各的选中态，避免两条选中互相覆盖。
@@ -1423,7 +1437,12 @@ public struct MainView: View {
             // devArtifactDidTimeout 字段仅保留作内部诊断，UI 不再读。
             HStack {
                 if coordinator.isScanning {
-                    if coordinator.perRootProgress.isEmpty {
+                    // v2026.06.21 perf F2：`coordinator.perRootProgress` 是 computed property，
+                    // 内部 merging O(N) 两个字典，原本在同一 body 帧里被 L1440（isEmpty 判断）
+                    // 和 L1468（values.sorted）各访问一次 → 重复算两次 merge，N=几百根时
+                    // 是肉眼可见的滑动卡顿。在 HStack 顶端提一个 local let，body 帧内只算一次。
+                    let perRoot = coordinator.perRootProgress
+                    if perRoot.isEmpty {
                         // v2026.06.18：单根扫描信息显著增强。
                         // 用户反馈："正在扫描能不能加个进度？扫了百分之多少，预计还剩多少时间"。
                         // 数据源：
@@ -1451,7 +1470,7 @@ public struct MainView: View {
                         // 触发的整体重 diff，整个列表/sidebar 滑动都会卡。
                         // 改 `LazyVStack` 让只有窗口内的 ~6 行真正参与 measure/layout，
                         // 几百行时主线程 frame budget 立刻回归 60fps。
-                        let rows = coordinator.perRootProgress.values.sorted(by: { $0.rootPath < $1.rootPath })
+                        let rows = perRoot.values.sorted(by: { $0.rootPath < $1.rootPath })
                         ScrollView(.vertical, showsIndicators: true) {
                             LazyVStack(alignment: .leading, spacing: 2) {
                                 ForEach(rows, id: \.rootPath) { p in
@@ -1773,6 +1792,62 @@ public struct MainView: View {
         .help(String(localized: "sort.menu.help", bundle: .module))
     }
 
+    /// v2026.06.21：是否需要在切换 category 前弹确认。
+    /// 判定口径："用户切走后会丢失"的状态都算——任一为真即弹：
+    ///   - 当前在扫描（无论哪类入口）
+    ///   - 主 snapshot 有 row（普通 category / batch 完成后留存）
+    ///   - perRoot 还有 active 行（batch 扫描中间态）
+    ///   - perRoot 有 finished 行（batch 完成后留存）
+    /// 不能光靠 `coordinator.snapshot.isFinished` 判定：batch 扫描在 sidebar
+    /// 留存的不是 snapshot.rows，而是 perRootFinishedSlim。
+    private var shouldConfirmCategorySwitch: Bool {
+        if coordinator.isScanning { return true }
+        if !coordinator.snapshot.rows.isEmpty { return true }
+        if !coordinator.perRootProgressActive.isEmpty { return true }
+        if coordinator.perRootFinishedCount > 0 { return true }
+        return false
+    }
+
+    /// v2026.06.21：原 onChange(selectedCategory) 的 body 抽出来，供"无须确认"与
+    /// "已确认" 两条路径共用，避免把"分发到 trigger* / runHeavyAfterCommit"逻辑
+    /// 复制到 confirmationDialog 的回调里去（一旦后续加 sentinel 又得改两处）。
+    private func applyCategorySwitch(from old: String?, to new: String?) {
+        if let id = new, ScanCategory.batchScanIDs.contains(id) {
+            switch id {
+            case ScanCategory.batchRecommendedID:
+                triggerRecommendedScan()
+            case ScanCategory.batchDeveloperID:
+                triggerDeveloperScan()
+            case ScanCategory.batchFullDiskID:
+                triggerFullDiskScan()
+            default:
+                // v1.5 review-fix #1：batchScanIDs 已穷尽 3 个 case；future 加 sentinel
+                // 必须同步加 case，否则 selection 切到新 sentinel 会被静默吞掉。
+                assertionFailure("Unhandled batch scan sentinel id: \(id) — add case to MainView.applyCategorySwitch switch.")
+            }
+            return
+        }
+        resetSelectionState()
+        // M4-T2 / 2026-06：开发者版本化收集根扫描 sentinel —— 不在 allCategories 里，
+        // 由 ScanCoordinator.scanKnownVersionedRoots(home:) 同步派发命中。
+        // 必须在 allCategories.first 之前拦截，否则会走 startScan(category:) 找不到 cat 直接 return。
+        if let id = new, id == MainView.devVersionedSentinelID {
+            runHeavyAfterCommit {
+                coordinator.scanKnownVersionedRoots(
+                    home: FileManager.default.homeDirectoryForCurrentUser)
+            }
+            return
+        }
+        guard let id = new, let cat = allCategories.first(where: { $0.id == id }) else { return }
+        // v2：统一走 [runHeavyAfterCommit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HeavyTask.swift)
+        // 模板（detached + sleep 16ms + MainActor.run），让 SwiftUI 先把
+        // 「sidebar 高亮 / 旧 detail 清空 / loading 状态」这一帧 commit 出去再开始扫。
+        // 这样 Preferences 这种条目巨多的目录入扫时不再卡彩虹球。
+        runHeavyAfterCommit {
+            startScan(category: cat)
+        }
+    }
+
     /// v1.5：把 toolbar「全部推荐扫描」按钮的逻辑抽成 helper，供 sidebar Batch Scans
     /// 入口复用。除了起扫还把 selectedCategory 同步到 batch sentinel，让 sidebar
     /// 蓝条高亮跟手——没有这一步用户感知不到自己当前在跑哪条。
@@ -1922,6 +1997,30 @@ public struct MainView: View {
                 resetSelectionState()
                 coordinator.scanKnownVersionedRoots(
                     home: FileManager.default.homeDirectoryForCurrentUser)
+            } label: {
+                Label {
+                    Text("toolbar.scan.rescan", bundle: .module)
+                } icon: {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+                .help(String(localized: "toolbar.help.rescan", bundle: .module))
+        } else if let id = selectedCategory, ScanCategory.batchScanIDs.contains(id) {
+            // v2026.06.21：批量扫描三条（推荐 / 开发者 / 整盘）sentinel 也走 trigger* helper，
+            // 之前 scanControlButton 仅在 allCategories.first(cat) 命中时才出现，
+            // 这三个 sentinel 不在 allCategories 里 → 用户反馈"推荐扫描右上角没有重新扫描按键"。
+            // 这里按 sentinel id 分发到 helper（helper 自己负责 resetSelectionState 与起扫）。
+            Button {
+                switch id {
+                case ScanCategory.batchRecommendedID:
+                    triggerRecommendedScan()
+                case ScanCategory.batchDeveloperID:
+                    triggerDeveloperScan()
+                case ScanCategory.batchFullDiskID:
+                    triggerFullDiskScan()
+                default:
+                    assertionFailure("Unhandled batch scan sentinel id: \(id) — add case to MainView.scanControlButton switch.")
+                }
             } label: {
                 Label {
                     Text("toolbar.scan.rescan", bundle: .module)

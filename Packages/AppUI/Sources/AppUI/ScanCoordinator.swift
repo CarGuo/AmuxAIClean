@@ -1190,6 +1190,13 @@ public final class ScanCoordinator: ObservableObject {
             let scanner = DevArtifactScanner(options: opts)
             let homeStr = self?.home ?? NSHomeDirectory()
             // partial 回调在 detached 线程，必须跳回主 actor 写 @MainActor 隔离的字段
+            // v2026.06.21 性能：原本每个 batch（每 20 hit）都立刻调一次 syncPerRootPublished，
+            // discover 命中几百条时 partial 阶段触发 10+ 次同步——每次都让 MainView 整 body
+            // 重算，dev 扫主列表滑动卡顿的最大单点。改为：staging 写入是 hot path 保留；
+            // syncPerRootPublished 节流到 0.4s 一次（与 runMultiRootScan throttle 对齐），
+            // 用 nonisolated(unsafe) 包装一个时间戳 box 做窗口判定。最终 flush 由 walk 结束
+            // 后的 MainActor.run（L1232 之后）兜底，不会漏掉尾巴。
+            let partialSyncBox = PartialSyncWindow()
             let onPartial: @Sendable ([DevArtifactScanner.Hit]) -> Void = { [weak self] batch in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -1203,8 +1210,13 @@ public final class ScanCoordinator: ObservableObject {
                         let title = "\(localizedDisplay) · \(shortPath)"
                         self.perRootStaging[path] = PerRootProgress(rootPath: path, title: title)
                     }
-                    // 主动同步一次 @Published，让 sidebar 立刻看到新增行
-                    self.syncPerRootPublished(from: self.perRootStaging)
+                    // 节流：距离上次 sync ≥ 0.4s 才推；否则只动 staging，等下个 partial 或最终
+                    // result 之后的兜底 sync。这样 sidebar 新行最坏延迟 0.4s 出现，UX 无感。
+                    let now = Date().timeIntervalSinceReferenceDate
+                    if now - partialSyncBox.lastSync >= 0.4 {
+                        partialSyncBox.lastSync = now
+                        self.syncPerRootPublished(from: self.perRootStaging)
+                    }
                 }
             }
             let result = await scanner.discoverWithMetadataStreamed(
@@ -1735,11 +1747,12 @@ public final class ScanCoordinator: ObservableObject {
                     self.treeChildrenCache[cacheKey] = rows
                     self.bumpChildrenCacheVersion()
                     self.treeChildrenInFlight.remove(cacheKey)
-                    // v1.5.4：cache 写回 → 通知 [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
-                    // 重建 flatRows，否则展开瞬间空白后无 publisher 唤醒（`treeChildrenCache` 已
-                    // 解耦 @Published，靠 [structuralRevision](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L322)
-                    // 触发；Step 9a 之后绑定关系仍然成立）。
-                    self.bumpStructuralRevision()
+                    // v2026.06.21 性能：原本这里 `bumpStructuralRevision()` —— 但每次
+                    // 后台 fetch 回写都让 TreeBrowserView 整树 rebuild（DFS + verdict +
+                    // perRoot 顶层合成 O(N log N)），dev/批量扫描期 cache miss 频繁
+                    // 时直接把主线程打满。改为只 bump `childrenCacheVersion`；
+                    // TreeBrowserView 单独 onChange 它做"仅当影响可见 flatRows 时局部
+                    // 刷新"。剪枝/scan 结束/排序切换那些真正的结构性变更仍走 structural。
                 }
             }
         }
@@ -3060,4 +3073,17 @@ extension String {
         if slash == p.startIndex { return "/" }
         return String(p[p.startIndex..<slash])
     }
+}
+
+// MARK: - v2026.06.21 perf：onPartial 节流窗口
+
+/// `scanDeveloperArtifacts` 的 `onPartial` 闭包需要在多次回调之间共享"上次 sync 时间戳"。
+/// 闭包要 `@Sendable`，又要可变状态——直接用 var capture 会被 Swift 6 拒绝；
+/// 包一层 reference type 即可。所有读写都被 `Task { @MainActor ... }` 串行化在主 actor
+/// 上，没有 data race，因此不需要 lock。
+@MainActor
+final class PartialSyncWindow {
+    /// 上次调用 `syncPerRootPublished` 的时间戳（`Date.timeIntervalSinceReferenceDate`）。
+    /// 0 = 首次，肯定通过 0.4s 阈值——保证 sidebar 第一行立刻出现。
+    var lastSync: TimeInterval = 0
 }
