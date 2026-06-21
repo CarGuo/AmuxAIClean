@@ -27,6 +27,29 @@ public struct MainView: View {
     /// dev 扫数千行场景下从每帧 O(N) 降为每帧 O(Δ)（Δ = 本帧新增行数，常 < 50）。
     /// 取消选中 / 切换分类时手工 reset 为 0，让下一次重新扫描全表。
     @State private var lastDefaultSelectedSeenCount: Int = 0
+    /// v2026.06.22 perf：底部主列表（listResults）**扫描中**展示用快照。
+    ///
+    /// 用户反馈："开发者构建产物" dev 扫场景下底部 List 流式刷新太频繁，
+    /// 哪怕 ScanCoordinator 已经 0.4s/帧 publishSnapshot，几百根 + node_modules
+    /// 上万小文件的事件密度下 listResults 的 ForEach diff + RowView body
+    /// 仍把整帧 layout 吃光，与 statusBar / footerBar 同 transaction 串行
+    /// → 两个列表一起卡。
+    ///
+    /// 这里**只**节流 listResults 的展示帧，**不**改 ScanCoordinator 的 publish
+    /// 频率：statusBar / TreeBrowserView / sidebar / footer 仍然按 0.4s 跟手。
+    /// 节流规则：
+    /// - 扫描中（`coordinator.isScanning == true`）：每 5s 才把 latest
+    ///   `coordinator.snapshot` 拷一份到这里。
+    /// - 非扫描中（finished / idle / 切换分类清空）：立刻同步 latest，
+    ///   保证扫描结束瞬间用户立刻看到完整列表（不再有 5s 收尾延迟）。
+    @State private var throttledListSnapshot: ScanSnapshot? = nil
+    /// 最近一次同步 throttledListSnapshot 的墙钟时间，用于判断 5s 节流窗。
+    /// `Date` 在主线程已够精度（5s 阈值 vs ms 级抖动），不需要单调时钟。
+    @State private var lastListSnapshotPublishAt: Date = .distantPast
+    /// 节流闸拒掉的"最后一帧"兜底 task：保证即使 5s 内只来一次 publish，
+    /// 也会在窗口结束时被刷出，不会"卡到下一次 publish 才补齐"。
+    /// 任何新一次 sync 触发都会取消旧的并重新 schedule（典型 trailing-edge debounce）。
+    @State private var pendingListSyncWorkItem: DispatchWorkItem? = nil
     /// v1.3.ab：原本是 `RowItem?`，但 `List(selection:)` 用整结构体当 key 会让 SwiftUI 在
     /// snapshot 高频 publish 时（点 Preferences 这种条目几千的目录）对每行做 `==` 比较 + diff，
     /// 主线程被刷爆 → 鼠标彩虹球。改为只押 row.id（String），detail 渲染时再反查。
@@ -1288,6 +1311,22 @@ public struct MainView: View {
             }
             lastDefaultSelectedSeenCount = end
         }
+        // v2026.06.22 perf：listResults **扫描中**展示节流为 5s/帧。
+        // 设计要点：
+        //  - onAppear：首次出现立刻同步一份（让用户切到 List 视图时不会看到空白）。
+        //  - onChange(snapshot)：扫描中走 5s 节流；非扫描中立刻同步。
+        //  - onChange(isScanning)：从 true→false 时立即把 latest 补齐，
+        //    避免"扫描刚结束但列表停在 5s 前的旧帧"的视觉残影。
+        .onAppear {
+            syncThrottledListSnapshotIfNeeded(force: true)
+        }
+        .onChange(of: coordinator.snapshot) { _, _ in
+            syncThrottledListSnapshotIfNeeded(force: false)
+        }
+        .onChange(of: coordinator.isScanning) { _, nowScanning in
+            // 扫描结束立刻补齐 latest（force=true 绕过 5s 闸）
+            if !nowScanning { syncThrottledListSnapshotIfNeeded(force: true) }
+        }
     }
 
     /// 视图模式切换条（**v1.3.zzzz Phase 4-A 起：树形为主、清单降级**）。
@@ -1363,7 +1402,14 @@ public struct MainView: View {
         //   由 publishSnapshot 一次性预算好），body 帧不再 O(N) 扫；
         //   ② 量化到下一个 2 的幂次，让相邻帧大概率相等（10MB → 16MB，11MB 仍 16MB），
         //   命中 Equatable 短路 → 千行场景 body 调用数从"每帧 × N"降到接近 0。
-        let snap = coordinator.snapshot
+        //
+        // v2026.06.22 perf：扫描中底部 List 5s 才换一次帧。
+        // 改读 [throttledListSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L45)
+        // —— 由 syncThrottledListSnapshotIfNeeded 节流闸维护，扫描中 5s/帧、
+        // 非扫描中或扫描结束瞬间立刻同步 latest。这条只对底部 List 生效，
+        // statusBar / TreeBrowserView / sidebar / footerBar 仍按 0.4s 跟手。
+        // 首次渲染 throttled 还为 nil 时回退到 coordinator.snapshot 兜底。
+        let snap = throttledListSnapshot ?? coordinator.snapshot
         let maxBytes = Self.quantizeToPow2(snap.maxRowBytes)
         return List(selection: $detail) {
             ForEach(snap.rows) { row in
@@ -2148,6 +2194,58 @@ public struct MainView: View {
         } else {
             aiUnconfiguredAlert = true
         }
+    }
+
+    /// v2026.06.22 perf：listResults 节流闸（5s/帧 during scan，立刻 during idle）。
+    ///
+    /// `force=true` 绕过 5s 窗（onAppear / 扫描结束兜底用）。
+    /// `force=false` 走节流：
+    ///   - 不在扫描中（finished/idle）：立刻同步；
+    ///   - 在扫描中且距离上次同步 ≥ 5s：立刻同步；
+    ///   - 在扫描中且 < 5s：取消旧 pending task，新 schedule 一个"剩余时间"
+    ///     后再尝试，避免"5s 内只来一次 publish 后停滞"。
+    ///
+    /// 只读 listResults 一处使用，不会影响 statusBar / TreeBrowserView /
+    /// footerBar / sidebar 任一其他面（它们继续按 0.4s/帧 跟手）。
+    private func syncThrottledListSnapshotIfNeeded(force: Bool) {
+        let latest = coordinator.snapshot
+        // 切到新分类 / 重扫导致 rows 清空时：throttle 闸毫无意义，立刻同步
+        let isEmptyReset = latest.rows.isEmpty
+        if force || isEmptyReset || !coordinator.isScanning {
+            pendingListSyncWorkItem?.cancel()
+            pendingListSyncWorkItem = nil
+            throttledListSnapshot = latest
+            lastListSnapshotPublishAt = Date()
+            return
+        }
+        let elapsed = Date().timeIntervalSince(lastListSnapshotPublishAt)
+        let throttleWindow: TimeInterval = 5.0
+        if elapsed >= throttleWindow {
+            pendingListSyncWorkItem?.cancel()
+            pendingListSyncWorkItem = nil
+            throttledListSnapshot = latest
+            lastListSnapshotPublishAt = Date()
+            return
+        }
+        // 节流命中：取消旧 pending 任务，schedule 一个新的兜底任务
+        // 在剩余时间结束时把"那一刻最新的 snapshot"刷出
+        pendingListSyncWorkItem?.cancel()
+        let remaining = throttleWindow - elapsed
+        // coordinator 是 @StateObject 持有的 class 实例（ScanCoordinator），
+        // 用 weak 捕获避免 view 卸载后 task 仍持有；StateObject 生命周期与
+        // view identity 绑定，正常路径下 5s 兜底任务执行时 coordinator 仍活着。
+        let coordRef = coordinator
+        let work = DispatchWorkItem { [weak coordRef] in
+            guard let coordRef else { return }
+            // 仍在扫描中才需要补帧；否则 onChange(isScanning) 已经兜底过
+            if coordRef.isScanning {
+                throttledListSnapshot = coordRef.snapshot
+                lastListSnapshotPublishAt = Date()
+            }
+            pendingListSyncWorkItem = nil
+        }
+        pendingListSyncWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + remaining, execute: work)
     }
 
     private var selectedRows: [RowItem] {
