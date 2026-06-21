@@ -1416,28 +1416,11 @@ public struct MainView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
             }
-            // v1.3 P0-D：开发者构建产物勘察阶段命中数过多或超时时的提示 banner。
-            // 只在 dev 扫描结果上下文里出现（activeCategoryID 等于 developer.multi），
-            // 以及 didTruncate / didTimeout 任一为 true 时显示。
-            if coordinator.activeCategoryID == ScanCoordinator.developerCategoryID
-                && (coordinator.devArtifactDidTruncate || coordinator.devArtifactDidTimeout) {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    Text(coordinator.devArtifactDidTimeout
-                         ? LocalizedStringKey("mainview.devartifact.warn.timeout")
-                         : LocalizedStringKey("mainview.devartifact.warn.truncated"),
-                         bundle: .module)
-                        .font(.callout)
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color.orange.opacity(0.12))
-                .cornerRadius(6)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 8)
-            }
+            // v2026.06.21：原"勘察超时 / 结果已截断" banner 已整体移除。
+            // 用户明确反馈：进入这种状态本身就是异常，不应该让用户看到内部限流状态。
+            // 配合 [DevArtifactScanner.Options.maxHits](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DevArtifactScanner.swift)
+            // 默认值改为 .max（实际永远不截断），devArtifactDidTruncate /
+            // devArtifactDidTimeout 字段仅保留作内部诊断，UI 不再读。
             HStack {
                 if coordinator.isScanning {
                     if coordinator.perRootProgress.isEmpty {

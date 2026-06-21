@@ -706,7 +706,14 @@ public struct TreeBrowserView: View {
     /// 不在乎 [TreeNodeRow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
     /// 内部的 canExpand 状态，外层这里仅 toggle expanded[path]——
     /// 不能展开的行 row 内部已经把按钮 / 双击 hit-test disable 掉。
+    ///
+    /// v2026.06.21：扫描进行中**禁止展开切换**。
+    /// 用户反馈：dev 扫描进行中点击 chevron 展开会触发 store-fallback 异步抓取，
+    /// 大量并发 IO + MainActor 上的 dirIndex 重建会和 ingest burst 互相挤占主线程，
+    /// 体感卡顿急剧放大。扫描中保留 row 显示但拦截 expansion，等扫完再让用户展开。
+    /// 已展开状态不主动收起（保留用户当前视图），仅拒绝**新的展开请求**与折叠请求。
     private func toggleExpansionFor(path: String) {
+        if coordinator.isScanning { return }
         expanded[path] = !(expanded[path] ?? false)
     }
 
@@ -724,6 +731,16 @@ public struct TreeBrowserView: View {
 
     private func setExpansion(_ open: Bool) {
         guard let cur = selectedPath else { return }
+        // v2026.06.21：见 toggleExpansionFor 同名注释——扫描中拦截展开，仅允许选中移动。
+        if coordinator.isScanning {
+            // 但 h 在叶子上跳到父节点的"导航"语义保留（不改 expanded 状态，只移动选中）。
+            if !open, let flat = flatRows.first(where: { $0.row.path == cur }),
+               !(flat.row.isDirectory && flat.row.hasChildren),
+               let parent = parentVisible(of: cur) {
+                selectedPath = parent
+            }
+            return
+        }
         if let flat = flatRows.first(where: { $0.row.path == cur }),
            flat.row.isDirectory && flat.row.hasChildren {
             expanded[cur] = open
@@ -737,6 +754,8 @@ public struct TreeBrowserView: View {
 
     private func toggleExpansion() {
         guard let cur = selectedPath else { return }
+        // v2026.06.21：见 toggleExpansionFor 同名注释。
+        if coordinator.isScanning { return }
         guard let flat = flatRows.first(where: { $0.row.path == cur }),
               flat.row.isDirectory && flat.row.hasChildren else { return }
         expanded[cur] = !(expanded[cur] ?? false)

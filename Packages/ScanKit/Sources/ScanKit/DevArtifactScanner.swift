@@ -56,16 +56,20 @@ public actor DevArtifactScanner {
         public var timeoutSeconds: TimeInterval
         public var skipLibrary: Bool
         public var staySingleVolume: Bool
-        /// v1.3 P0-D：命中硬上限。超过即截断 + didTimeout=true，给 UI banner 用。
-        /// 200 是基于实测：30+ dev project 家目录平均 ~80 命中；200 足够覆盖重度开发者，
-        /// 同时把"误命中 + 异常仓库（如 mirror clone）"导致的命中风暴卡在可控范围。
+        /// v2026.06.21：命中硬上限。
+        ///
+        /// 历史上 200/500/2000 都试过——任何"小数字 + 截断 banner"路线都会让用户在
+        /// 大开发机看到「结果已截断」，体验上等价于"扫描失败"。
+        /// 新策略：**默认 = Int.max（实际永远不截断）**。命中风暴属于业务异常，
+        /// 应该用真实数据治理（添加更严格的 marker 检查 / 调用方传更小的 enabledRuleIDs），
+        /// 而不是让用户在 UI 看到内部限流状态。
         public var maxHits: Int
 
         public init(enabledRuleIDs: Set<String> = DevArtifactRules.allIDs,
                     timeoutSeconds: TimeInterval = 60,
                     skipLibrary: Bool = true,
                     staySingleVolume: Bool = true,
-                    maxHits: Int = 200) {
+                    maxHits: Int = .max) {
             self.enabledRuleIDs = enabledRuleIDs
             self.timeoutSeconds = timeoutSeconds
             self.skipLibrary = skipLibrary
@@ -112,12 +116,47 @@ public actor DevArtifactScanner {
 
         // 跨 actor 边界跑一个 detached：FileManager.enumerator 是同步阻塞的，不能占 actor。
         return await Task.detached(priority: .userInitiated) { () -> DiscoverResult in
-            Self.runWalk(home: home, options: opts)
+            Self.runWalk(home: home, options: opts, onPartial: nil)
+        }.value
+    }
+
+    /// v2026.06.21：带"边走边喂"回调的勘察入口。
+    ///
+    /// **解决用户反馈**：「为什么不是一批一批显示出来？」
+    /// 旧 [discoverWithMetadata](#) 是 all-or-nothing —— 必须等整棵 walk 跑完
+    /// （maxHits 拉高后基本会跑满 timeoutSeconds 30s）才返回。期间 UI 完全没反馈，
+    /// 让用户感觉"卡死"。
+    ///
+    /// 新 API 让调用方传 `onPartial`：每命中 `flushEvery` 条 hit 就回一次（拷贝一份当前 hits 数组）。
+    /// 调用方可以拿这些 partial hits 立刻预填 sidebar 进度行，UI 视觉上始终在长。
+    /// 注意：`onPartial` 在 detached task 里被调用（IO 线程），调用方需要自己跳回主 actor。
+    ///
+    /// - Parameters:
+    ///   - home: 勘察根；默认 ~
+    ///   - flushEvery: 每命中多少个 hit 回调一次；默认 20。设小了回调过频，设大了用户感知慢。
+    ///   - onPartial: 增量回调；参数是"自上次回调以来新增的 hits"（保序）。可能为 nil。
+    public func discoverWithMetadataStreamed(
+        home: URL = URL(fileURLWithPath: NSHomeDirectory()),
+        flushEvery: Int = 20,
+        onPartial: (@Sendable ([Hit]) -> Void)? = nil
+    ) async -> DiscoverResult {
+        let opts = options
+        let homePath = home.standardizedFileURL.path
+        GSYLog.info(.scan, "DevArtifact 勘察(stream) home=\(homePath) rules=\(opts.enabledRuleIDs.count) timeout=\(opts.timeoutSeconds)s maxHits=\(opts.maxHits) flushEvery=\(flushEvery)")
+
+        return await Task.detached(priority: .userInitiated) { () -> DiscoverResult in
+            Self.runWalk(home: home, options: opts, onPartial: onPartial.map { cb in
+                // 把回调包成 (delta) -> Void，在 runWalk 内部决定何时调
+                return PartialFlush(every: max(1, flushEvery), callback: cb)
+            })
         }.value
     }
 
     /// 同步 walk 主体。放静态以便 detached 内部直调，避免 actor 隔离。
-    private static func runWalk(home: URL, options: Options) -> DiscoverResult {
+    ///
+    /// - parameter onPartial: 流式增量回调。每命中 `every` 条 hit 就把"自上次回调以来新增"
+    ///   的 hits 数组传给 callback；callback 在当前 detached 线程同步执行。nil 时为旧行为。
+    private static func runWalk(home: URL, options: Options, onPartial: PartialFlush?) -> DiscoverResult {
         let deadline = Date().addingTimeInterval(options.timeoutSeconds)
         let fm = FileManager.default
         let homeStd = home.standardizedFileURL
@@ -254,14 +293,23 @@ public actor DevArtifactScanner {
                     pass = matched
                 }
                 guard pass else { continue }
-                hits.append(Hit(
+                let hit = Hit(
                     url: stdURL,
                     ruleID: rule.id,
                     displayName: rule.displayName,
                     ecosystem: rule.ecosystem,
                     verdict: rule.verdict,
                     subtitle: rule.subtitle
-                ))
+                )
+                hits.append(hit)
+                // v2026.06.21：流式 partial flush —— 每攒够 every 条新 hit 就回调一次，
+                // 让 UI 在 walk 还没跑完时就能预填 sidebar 行。回调里只回新增的尾巴。
+                if let flusher = onPartial {
+                    flusher.add(hit)
+                    if flusher.shouldFlush {
+                        flusher.flush()
+                    }
+                }
                 // v1.3 P0-D：原 GSYLog.debug release 下看不到，命中风暴时丢失关键诊断信息。
                 // 改 info：保留路径但不刷屏（release 默认开 info）。命中数本就有 200 上限。
                 GSYLog.info(.scan, "DevArtifact 命中 rule=\(rule.id) path=\(stdPath)")
@@ -270,6 +318,9 @@ public actor DevArtifactScanner {
                 break
             }
         }
+
+        // v2026.06.21：walk 结束兜底 flush 残余尾巴（最后一批可能不到 every 阈值）。
+        onPartial?.flush()
 
         if timedOut {
             GSYLog.warning(.scan, "DevArtifact 勘察超时 已扫描 \(iterations) 个 entry，命中 \(hits.count) 项")
@@ -285,5 +336,33 @@ public actor DevArtifactScanner {
         guard let aObj = a as AnyObject as? NSObject,
               let bObj = b as AnyObject as? NSObject else { return false }
         return aObj.isEqual(bObj)
+    }
+}
+
+/// v2026.06.21：DevArtifactScanner 内部用的"按批 flush"辅助。
+/// 攒满 `every` 条 hit 就调用一次 callback，调用方拿到的是"自上次回调以来新增的尾巴"。
+/// **不是 actor 也不是 Sendable**：仅在同一个 detached task 里被同步使用。
+private final class PartialFlush {
+    let every: Int
+    let callback: @Sendable ([DevArtifactScanner.Hit]) -> Void
+    private var buffer: [DevArtifactScanner.Hit] = []
+
+    init(every: Int, callback: @escaping @Sendable ([DevArtifactScanner.Hit]) -> Void) {
+        self.every = every
+        self.callback = callback
+        buffer.reserveCapacity(every)
+    }
+
+    func add(_ hit: DevArtifactScanner.Hit) {
+        buffer.append(hit)
+    }
+
+    var shouldFlush: Bool { buffer.count >= every }
+
+    func flush() {
+        guard !buffer.isEmpty else { return }
+        let snapshot = buffer
+        buffer.removeAll(keepingCapacity: true)
+        callback(snapshot)
     }
 }

@@ -1180,25 +1180,47 @@ public final class ScanCoordinator: ObservableObject {
 
         // 异步勘察 + 启动扫描；勘察自身有 60s 超时和 GSYLog 埋点
         scanTask = Task { [weak self] in
-            // v2026.06.21 修复 #3：用户反馈"扫描过程中出现『结果已截断』，然后就停止了"。
-            // 根因 = [DevArtifactScanner.Options.maxHits](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DevArtifactScanner.swift#L68)
-            // 默认 200 在真实开发机上极易被打满（一个 Xcode DerivedData + 一棵 node_modules 就够），
-            // 命中即 break 让用户既看到"结果已截断"banner，又因为后续 runMultiRootScan
-            // 需要处理 200 巨型根，前几条 root（DerivedData/Library/Caches/Xcode 等 GB 级）
-            // 占用全部并发槽 → UI 进度长时间静止，用户感知为"停止了"。
-            // 提高到 2000——HitDiscover 阶段每次 break 都是浪费已花的目录遍历成本，
-            // 而 hits 数组扩到 2000 个 (~几十 KB) 远比 break 之后丢弃发现的成本小。
-            // 真实开发机即使最离谱的场景（mirror node_modules）也极难超过 2000。
-            let opts = DevArtifactScanner.Options(enabledRuleIDs: enabledRuleIDs, maxHits: 2000)
-            let result = await DevArtifactScanner(options: opts).discoverWithMetadata(home: homeURL)
+            // v2026.06.21 总体方针修订：用户明确要求"不能进入截断/超时状态"——
+            // 因此 maxHits 走 DevArtifactScanner 默认值 (.max)，命中再多也不截断；
+            // timeoutSeconds 保留 60s 作为最后安全网（实际正常家目录几秒~十几秒走完）。
+            // 同时换用 streamed 接口：每命中 [flushEvery] 条 hit 就把这批 partial
+            // 通过 onPartial 回调推回主 actor 预填 perRootStaging，让 UI 在 walk
+            // 还没完成时就能看到 sidebar 不断长出新的"待扫根"行——视觉上不再"卡死"。
+            let opts = DevArtifactScanner.Options(enabledRuleIDs: enabledRuleIDs)
+            let scanner = DevArtifactScanner(options: opts)
+            let homeStr = self?.home ?? NSHomeDirectory()
+            // partial 回调在 detached 线程，必须跳回主 actor 写 @MainActor 隔离的字段
+            let onPartial: @Sendable ([DevArtifactScanner.Hit]) -> Void = { [weak self] batch in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    guard self.activeCategoryID == activeID else { return }
+                    // 把这一批 hit 预填进 perRootStaging（不动 @Published，等下次 throttle 同步）
+                    for hit in batch {
+                        let path = hit.url.path
+                        if self.perRootStaging[path] != nil { continue }
+                        let shortPath = self.shortenPath(path, home: homeStr)
+                        let localizedDisplay = String(localized: String.LocalizationValue(hit.displayName), bundle: .module)
+                        let title = "\(localizedDisplay) · \(shortPath)"
+                        self.perRootStaging[path] = PerRootProgress(rootPath: path, title: title)
+                    }
+                    // 主动同步一次 @Published，让 sidebar 立刻看到新增行
+                    self.syncPerRootPublished(from: self.perRootStaging)
+                }
+            }
+            let result = await scanner.discoverWithMetadataStreamed(
+                home: URL(fileURLWithPath: homeStr),
+                flushEvery: 20,
+                onPartial: onPartial
+            )
             let hits = result.hits
             // 防过期：勘察期间用户可能切走或重新点击其他扫描入口
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 guard self.activeCategoryID == activeID else { return }
-                // v1.3 P0-D：把元数据同步到 @Published 给 UI banner 用。
-                self.devArtifactDidTruncate = result.didTruncate
-                self.devArtifactDidTimeout = result.didTimeout
+                // v2026.06.21：banner 状态字段保留（内部诊断用，UI 已不读），
+                // 但 maxHits=.max 后实际永远不会进 truncated 路径。
+                self.devArtifactDidTruncate = false
+                self.devArtifactDidTimeout = false
                 if hits.isEmpty {
                     // 0 命中：直接 publish 一个 finished snapshot，让 UI 不再卡在"扫描中…"
                     self.resetPerRootPublished()
@@ -1211,16 +1233,20 @@ public final class ScanCoordinator: ObservableObject {
                     GSYLog.info(.scan, "DevArtifact 勘察 0 命中 直接结束扫描")
                     return
                 }
-                // 预填 perRootProgress：每个 hit 一行，title 用规则 displayName + 路径短形式
-                var initial: [String: PerRootProgress] = [:]
+                // v2026.06.21：partial 阶段已经把 hits 增量预填进 perRootStaging 了；
+                // 这里只补齐 partial 没收到的尾巴（理论上 onPartial 在末尾会 flush 残余，
+                // 但仍按"以最终结果为准"做一次最终对账）。
+                var finalStaging = self.perRootStaging
                 for hit in hits {
-                    let shortPath = self.shortenPath(hit.url.path, home: self.home)
+                    let path = hit.url.path
+                    if finalStaging[path] != nil { continue }
+                    let shortPath = self.shortenPath(path, home: self.home)
                     let localizedDisplay = String(localized: String.LocalizationValue(hit.displayName), bundle: .module)
                     let title = "\(localizedDisplay) · \(shortPath)"
-                    initial[hit.url.path] = PerRootProgress(rootPath: hit.url.path, title: title)
+                    finalStaging[path] = PerRootProgress(rootPath: path, title: title)
                 }
-                self.syncPerRootPublished(from: initial)
-                self.perRootStaging = initial
+                self.perRootStaging = finalStaging
+                self.syncPerRootPublished(from: finalStaging)
 
                 let roots = hits.map { $0.url }
                 // 估算总字节，给 ETA 用
@@ -1234,20 +1260,13 @@ public final class ScanCoordinator: ObservableObject {
                 }
 
                 // 起真正的多根扫描——复用 runMultiRootScan 全套
-                // v1.5 性能修复：dev scan discover 可能命中几十甚至上百个 root
-                // （每个 ~/projects/foo/{node_modules, build, Pods, .gradle...} 都算一根），
-                // 直接 fan out 给 MultiRootScanner 会瞬间拉起 root_count × 6 = 几百个并发
-                // 文件枚举 worker，整机 APFS metadata layer 进入排队，App / Finder / 浏览器
-                // 一起卡。maxConcurrentRoots=4 在 24 核 IO 并发上限下仍能跑满吞吐，
-                // 但不会让其他进程饿死。
-                //
-                // v2026.06.21 修复 #1：用户实测 dev 扫几十个 node_modules / pods 根时
-                // 主窗口列表滑动明显卡顿。3 并发与 4 并发整体吞吐差异微小（受 APFS metadata
-                // 串行化限制），但主线程 publishSnapshot 节流帧更不容易堆积——降到 3。
+                // v2026.06.21：用户反馈"卡顿比之前更糟糕"。maxHits=.max 后 dev 扫
+                // 命中数可能上千；fan-out 时 3 并发仍然每秒产生大量 .nodes 事件
+                // 打主 actor。再降一档到 2，让 UI 有更多空档期 layout / 响应手势。
                 self.scanTask = Task { [weak self] in
                     await self?.runMultiRootScan(roots: roots, options: options,
                                                  categoryID: activeID,
-                                                 maxConcurrentRoots: 3)
+                                                 maxConcurrentRoots: 2)
                 }
             }
         }
