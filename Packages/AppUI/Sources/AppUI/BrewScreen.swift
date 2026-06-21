@@ -26,11 +26,11 @@ public struct BrewScreen: View {
     enum Tab: String, CaseIterable, Identifiable {
         case installed, outdated, cleanup
         var id: String { rawValue }
-        var label: String {
+        var labelKey: LocalizedStringKey {
             switch self {
-            case .installed: return "Installed"
-            case .outdated:  return "Outdated"
-            case .cleanup:   return "Cleanup"
+            case .installed: return "brew.tab.installed"
+            case .outdated:  return "brew.tab.outdated"
+            case .cleanup:   return "brew.tab.cleanup"
             }
         }
         var icon: String {
@@ -68,10 +68,10 @@ public struct BrewScreen: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Homebrew")
+                Text("brew.header.title", bundle: .module)
                     .font(.title2.bold())
                 if let prefix = controller?.prefix.path {
-                    Text("prefix: \(prefix)")
+                    Text(verbatim: String(format: String(localized: "brew.header.prefix %@", bundle: .module), prefix))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -83,7 +83,11 @@ public struct BrewScreen: View {
             Button {
                 refresh()
             } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
+                Label {
+                    Text("brew.action.refresh", bundle: .module)
+                } icon: {
+                    Image(systemName: "arrow.clockwise")
+                }
             }
             .disabled(controller == nil || isLoading)
         }
@@ -91,10 +95,14 @@ public struct BrewScreen: View {
 
     private var notInstalledHint: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Homebrew not detected", systemImage: "exclamationmark.triangle")
+            Label {
+                Text("brew.not_installed.title", bundle: .module)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle")
+            }
                 .font(.headline)
                 .foregroundStyle(.orange)
-            Text("BrewScreen looks for /opt/homebrew (Apple Silicon) or /usr/local (Intel). Install Homebrew first, then reopen this screen.")
+            Text("brew.not_installed.body", bundle: .module)
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -104,7 +112,11 @@ public struct BrewScreen: View {
     private var tabBar: some View {
         Picker("", selection: $selectedTab) {
             ForEach(Tab.allCases) { t in
-                Label(t.label, systemImage: t.icon).tag(t)
+                Label {
+                    Text(t.labelKey, bundle: .module)
+                } icon: {
+                    Image(systemName: t.icon)
+                }.tag(t)
             }
         }
         .pickerStyle(.segmented)
@@ -121,7 +133,11 @@ public struct BrewScreen: View {
     @ViewBuilder
     private var content: some View {
         if let err = lastError {
-            Label(err, systemImage: "exclamationmark.triangle")
+            Label {
+                Text(verbatim: err)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle")
+            }
                 .font(.callout)
                 .foregroundStyle(.red)
         }
@@ -137,12 +153,12 @@ public struct BrewScreen: View {
     @ViewBuilder
     private var installedSection: some View {
         if packages.isEmpty && !isLoading {
-            Text("No formula / cask installed.")
+            Text("brew.installed.empty", bundle: .module)
                 .font(.callout)
                 .foregroundStyle(.tertiary)
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                Text("\(packages.count) packages")
+                Text(verbatim: String(format: String(localized: "brew.installed.count %lld", bundle: .module), packages.count))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 ScrollView {
@@ -164,16 +180,16 @@ public struct BrewScreen: View {
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(pkg.name).font(.system(.body, design: .monospaced))
-                    Text(pkg.version)
+                    Text(verbatim: pkg.name).font(.system(.body, design: .monospaced))
+                    Text(verbatim: pkg.version)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if pkg.installedOnRequest == false && pkg.kind == .formula {
-                        Text("dep").font(.caption2).foregroundStyle(.tertiary)
+                        Text("brew.tag.dep", bundle: .module).font(.caption2).foregroundStyle(.tertiary)
                     }
                 }
                 if let tap = pkg.tap {
-                    Text(tap).font(.caption).foregroundStyle(.tertiary)
+                    Text(verbatim: tap).font(.caption).foregroundStyle(.tertiary)
                 }
             }
             Spacer()
@@ -194,12 +210,12 @@ public struct BrewScreen: View {
     private var outdatedSection: some View {
         if outdated.isEmpty && !isLoading {
             // dev 期不下载 jws；用户主动点 Refresh 才尝试。
-            Text("Outdated tab needs `BrewRegistry` jws cache. Click Refresh to compute against your local Homebrew api cache (~/Library/Caches/Homebrew/api).")
+            Text("brew.outdated.empty_hint", bundle: .module)
                 .font(.callout)
                 .foregroundStyle(.tertiary)
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                Text("\(outdated.count) upgradable")
+                Text(verbatim: String(format: String(localized: "brew.outdated.count %lld", bundle: .module), outdated.count))
                     .font(.subheadline)
                     .foregroundStyle(.orange)
                 ScrollView {
@@ -219,8 +235,8 @@ public struct BrewScreen: View {
             Image(systemName: "arrow.up.circle.fill")
                 .foregroundStyle(.orange)
                 .frame(width: 18)
-            Text(o.package.name).font(.system(.body, design: .monospaced))
-            Text("\(o.package.version) → \(o.latestVersion)")
+            Text(verbatim: o.package.name).font(.system(.body, design: .monospaced))
+            Text(verbatim: "\(o.package.version) → \(o.latestVersion)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
@@ -237,12 +253,16 @@ public struct BrewScreen: View {
         if let plan = cleanupPlan {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Label("\(plan.stalePaths.count) stale · \(byteString(plan.totalBytes))",
-                          systemImage: "trash")
+                    Label {
+                        Text(verbatim: String(format: String(localized: "brew.cleanup.summary %lld %@", bundle: .module),
+                                              plan.stalePaths.count, byteString(plan.totalBytes)))
+                    } icon: {
+                        Image(systemName: "trash")
+                    }
                         .font(.subheadline)
                         .foregroundStyle(plan.isEmpty ? Color.secondary : Color.orange)
                     Spacer()
-                    Text("dry-run only · manual `brew cleanup` to delete")
+                    Text("brew.cleanup.dry_run_note", bundle: .module)
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
@@ -252,7 +272,7 @@ public struct BrewScreen: View {
                             HStack(spacing: 6) {
                                 Image(systemName: "doc")
                                     .foregroundStyle(.secondary)
-                                Text(url.lastPathComponent)
+                                Text(verbatim: url.lastPathComponent)
                                     .font(.system(.body, design: .monospaced))
                                     .lineLimit(1)
                                     .truncationMode(.middle)
@@ -266,15 +286,15 @@ public struct BrewScreen: View {
                 }
             }
         } else if isLoading {
-            Text("Computing cleanup plan...")
+            Text("brew.cleanup.computing", bundle: .module)
                 .font(.callout)
                 .foregroundStyle(.secondary)
         } else if cleanup == nil {
-            Text("Homebrew cache directory missing (~/Library/Caches/Homebrew).")
+            Text("brew.cleanup.cache_missing", bundle: .module)
                 .font(.callout)
                 .foregroundStyle(.tertiary)
         } else {
-            Text("Click Refresh to compute the cleanup plan (dry-run).")
+            Text("brew.cleanup.idle_hint", bundle: .module)
                 .font(.callout)
                 .foregroundStyle(.tertiary)
         }

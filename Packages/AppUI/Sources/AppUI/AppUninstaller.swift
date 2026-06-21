@@ -71,10 +71,10 @@ public struct AppMetadata: Hashable, Sendable {
         guard
             let any = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any]
         else {
-            throw NSError(domain: "AppUninstaller", code: -1, userInfo: [NSLocalizedDescriptionKey: "Info.plist 不是 dict"])
+            throw NSError(domain: "AppUninstaller", code: -1, userInfo: [NSLocalizedDescriptionKey: String(localized: "uninstaller.err.plist_not_dict", bundle: .module)])
         }
         guard let bundleID = any["CFBundleIdentifier"] as? String, !bundleID.isEmpty else {
-            throw NSError(domain: "AppUninstaller", code: -2, userInfo: [NSLocalizedDescriptionKey: "缺少 CFBundleIdentifier"])
+            throw NSError(domain: "AppUninstaller", code: -2, userInfo: [NSLocalizedDescriptionKey: String(localized: "uninstaller.err.missing_bundle_id", bundle: .module)])
         }
         let nameFromPlist = (any["CFBundleName"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         // 退化：取 .app 的文件名去掉 .app 后缀

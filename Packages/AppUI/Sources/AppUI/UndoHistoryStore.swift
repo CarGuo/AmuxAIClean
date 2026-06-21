@@ -161,7 +161,7 @@ public final class UndoHistoryStore: ObservableObject {
             guard fm.fileExists(atPath: pair.trashed) else {
                 skipped += 1
                 if firstError == nil {
-                    firstError = "trashedPath 不存在: \(pair.trashed)"
+                    firstError = String(format: String(localized: "undo.err.trashed_missing %@", bundle: .module), pair.trashed)
                 }
                 continue
             }
@@ -172,7 +172,7 @@ public final class UndoHistoryStore: ObservableObject {
                 if let conflictErr = conflictResult {
                     skipped += 1
                     if firstError == nil {
-                        firstError = "冲突解决失败: \(conflictErr)"
+                        firstError = String(format: String(localized: "undo.err.conflict_resolution_failed %@", bundle: .module), conflictErr)
                     }
                     continue
                 }
@@ -188,7 +188,7 @@ public final class UndoHistoryStore: ObservableObject {
             } catch {
                 skipped += 1
                 if firstError == nil {
-                    firstError = "moveItem 失败: \(error.localizedDescription)"
+                    firstError = String(format: String(localized: "undo.err.move_item_failed %@", bundle: .module), error.localizedDescription)
                 }
                 GSYLog.error(.trash, "UndoHistory restoreRecord mv 失败 \(pair.trashed) → \(pair.original) err=\(error.localizedDescription)")
             }

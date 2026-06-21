@@ -21,8 +21,10 @@ import Foundation
 /// 删除通道统一为 `.filesystem`（回收站），不引入 `.commandLine`，因此所有卡片均无 allowlist 校验风险。
 public struct AndroidWorkflow: DeveloperWorkflow {
     public let id: String = "workflow.android"
-    public let displayName: String = "Android 开发者一键清理"
-    public let subtitle: String = "Gradle / Android SDK / AVD / Android Studio 缓存与旧版本"
+    /// i18n key —— UI 层用 `Text(LocalizedStringKey(...), bundle: .module)` 渲染。
+    public let displayName: String = "workflow.android.displayName"
+    /// i18n key —— UI 层用 `Text(LocalizedStringKey(...), bundle: .module)` 渲染。
+    public let subtitle: String = "workflow.android.subtitle"
 
     public init() {}
 
@@ -52,8 +54,8 @@ public struct AndroidWorkflow: DeveloperWorkflow {
             // 1. card.android.gradle-caches —— Gradle 依赖与构建缓存，下次 build 自动重建
             result.append(DeveloperCard(
                 id: "card.android.gradle-caches",
-                title: "Gradle 构建缓存",
-                summary: "Gradle 下载的依赖与构建中间产物，删后下次 build 会重新下载",
+                title: "card.android.gradle-caches.title",
+                summary: "card.android.gradle-caches.summary",
                 source: .literal(paths: ["~/.gradle/caches"]),
                 recipe: .filesystem,
                 risk: .safe))
@@ -61,8 +63,8 @@ public struct AndroidWorkflow: DeveloperWorkflow {
             // 2. card.android.gradle-daemon —— Gradle 守护进程日志与 jvm 状态，安全可删
             result.append(DeveloperCard(
                 id: "card.android.gradle-daemon",
-                title: "Gradle Daemon 日志",
-                summary: "Gradle 守护进程的运行日志与状态，删后下次启动 daemon 自动重建",
+                title: "card.android.gradle-daemon.title",
+                summary: "card.android.gradle-daemon.summary",
                 source: .literal(paths: ["~/.gradle/daemon"]),
                 recipe: .filesystem,
                 risk: .safe))
@@ -77,8 +79,8 @@ public struct AndroidWorkflow: DeveloperWorkflow {
             if Self.dirExists(buildCache) {
                 result.append(DeveloperCard(
                     id: "card.android.android-build-cache",
-                    title: "Android Build Cache",
-                    summary: "Android Gradle Plugin 的构建缓存，删后首次 build 变慢但功能不受影响",
+                    title: "card.android.android-build-cache.title",
+                    summary: "card.android.android-build-cache.summary",
                     source: .literal(paths: ["~/.android/build-cache"]),
                     recipe: .filesystem,
                     risk: .safe))
@@ -88,8 +90,8 @@ public struct AndroidWorkflow: DeveloperWorkflow {
             //    （父目录 ~/.android 存在即认为可展示，方便用户首次使用工具时一键清理）
             result.append(DeveloperCard(
                 id: "card.android.android-cache",
-                title: "Android SDK Manager 缓存",
-                summary: "SDK Manager 下载临时缓存，删后无业务影响",
+                title: "card.android.android-cache.title",
+                summary: "card.android.android-cache.summary",
                 source: .literal(paths: ["~/.android/cache"]),
                 recipe: .filesystem,
                 risk: .safe))
@@ -100,8 +102,8 @@ public struct AndroidWorkflow: DeveloperWorkflow {
             if Self.dirExists(avd) {
                 result.append(DeveloperCard(
                     id: "card.android.android-avd",
-                    title: "Android 模拟器（AVD）",
-                    summary: "AVD 实例数据（含应用 sandbox 与 SD 卡镜像），删除前请确认无需保留",
+                    title: "card.android.android-avd.title",
+                    summary: "card.android.android-avd.summary",
                     source: .literal(paths: ["~/.android/avd"]),
                     recipe: .filesystem,
                     risk: .confirm))
@@ -113,16 +115,16 @@ public struct AndroidWorkflow: DeveloperWorkflow {
         //      避免在 SDK 路径变动（如 Studio 自定义 location）时漏出卡片入口
         result.append(DeveloperCard(
             id: "card.android.sdk-build-tools",
-            title: "Android SDK · Build Tools（旧版本）",
-            summary: "保留最新版 build-tools，旧版本可在 SDK Manager 中重新安装",
+            title: "card.android.sdk-build-tools.title",
+            summary: "card.android.sdk-build-tools.summary",
             source: .versionedRoot(ruleID: "android.sdk-build-tools.versioned"),
             recipe: .filesystem,
             risk: .safe))
 
         result.append(DeveloperCard(
             id: "card.android.sdk-platforms",
-            title: "Android SDK · Platforms（旧版本）",
-            summary: "保留最新 platform，旧 API Level 可按需在 SDK Manager 中重新下载",
+            title: "card.android.sdk-platforms.title",
+            summary: "card.android.sdk-platforms.summary",
             source: .versionedRoot(ruleID: "android.sdk-platforms.versioned"),
             recipe: .filesystem,
             risk: .safe))
@@ -130,8 +132,8 @@ public struct AndroidWorkflow: DeveloperWorkflow {
         // System Images 单镜像 1~3 GB，删除不可逆且重下耗时较长 → confirm
         result.append(DeveloperCard(
             id: "card.android.sdk-system-images",
-            title: "Android SDK · System Images（旧版本）",
-            summary: "模拟器系统镜像，单个 1~3 GB；删除前请确认对应 AVD 不再使用",
+            title: "card.android.sdk-system-images.title",
+            summary: "card.android.sdk-system-images.summary",
             source: .versionedRoot(ruleID: "android.sdk-system-images.versioned"),
             recipe: .filesystem,
             risk: .confirm))
@@ -141,16 +143,16 @@ public struct AndroidWorkflow: DeveloperWorkflow {
         //       由 UI 层在执行阶段 expand。这两张卡不做存在性预检（glob 无法直接 stat）。
         result.append(DeveloperCard(
             id: "card.android.jetbrains-androidstudio-caches",
-            title: "Android Studio 缓存（JetBrains）",
-            summary: "Android Studio 索引与本地缓存，删后首次启动会重建索引",
+            title: "card.android.jetbrains-androidstudio-caches.title",
+            summary: "card.android.jetbrains-androidstudio-caches.summary",
             source: .literal(paths: ["~/Library/Caches/Google/AndroidStudio*"]),
             recipe: .filesystem,
             risk: .safe))
 
         result.append(DeveloperCard(
             id: "card.android.jetbrains-androidstudio-logs",
-            title: "Android Studio 日志（JetBrains)",
-            summary: "Android Studio 运行日志，删后无业务影响",
+            title: "card.android.jetbrains-androidstudio-logs.title",
+            summary: "card.android.jetbrains-androidstudio-logs.summary",
             source: .literal(paths: ["~/Library/Logs/Google/AndroidStudio*"]),
             recipe: .filesystem,
             risk: .safe))

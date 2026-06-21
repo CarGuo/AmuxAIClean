@@ -148,7 +148,7 @@ final class RuleLoaderTests: XCTestCase {
             guard case RuleLoader.LoadError.malformed(_, let reason) = err else {
                 return XCTFail("应抛出 malformed: \(err)")
             }
-            XCTAssertTrue(reason.contains("verdict 必须是"),
+            XCTAssertTrue(reason.contains("verdict must be"),
                           "错误信息应说明合法 verdict 取值，得到 \(reason)")
         }
     }

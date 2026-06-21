@@ -41,16 +41,19 @@ public struct DevArtifactRule: Identifiable, Hashable, Sendable {
         /// 形如 `ecosystem.web` / `ecosystem.appleMobile` 等。
         public var localizationKey: String { "ecosystem.\(rawValue)" }
 
+        /// i18n key —— UI 层用 `String(localized: LocalizedStringResource(stringLiteral: ecosystem.displayName), bundle: .module)` 或
+        /// `Text(LocalizedStringKey(ecosystem.displayName), bundle: .module)` 渲染。
+        /// 与 `localizationKey` 等价，保留两个名字仅为兼容旧调用方。
         public var displayName: String {
             switch self {
-            case .web:            return "Web / Node 生态"
-            case .appleMobile:    return "iOS / macOS"
-            case .androidFlutter: return "Android / Flutter"
-            case .rust:           return "Rust"
-            case .go:             return "Go"
-            case .python:         return "Python"
-            case .jvm:            return "JVM（Maven / Gradle 全局缓存）"
-            case .general:        return "通用缓存"
+            case .web:            return "ecosystem.web.displayName"
+            case .appleMobile:    return "ecosystem.appleMobile.displayName"
+            case .androidFlutter: return "ecosystem.androidFlutter.displayName"
+            case .rust:           return "ecosystem.rust.displayName"
+            case .go:             return "ecosystem.go.displayName"
+            case .python:         return "ecosystem.python.displayName"
+            case .jvm:            return "ecosystem.jvm.displayName"
+            case .general:        return "ecosystem.general.displayName"
             }
         }
     }
@@ -69,6 +72,14 @@ public struct DevArtifactRule: Identifiable, Hashable, Sendable {
     /// 兄弟脚手架文件名候选——任一存在即视为「真项目」。空数组表示「不要求兄弟兜底」。
     /// 注意是「兄弟」不是「父」：`X/node_modules` 的兄弟指的是 X 下与 node_modules 同级的文件。
     public let siblingMarkers: [String]
+    /// v1.3 P0-D 兜底：兄弟文件扩展名候选——任一兄弟以这些扩展名结尾即视为命中。
+    /// 用于 `__pycache__` 这种"必然与同级 .py 共存"但缺少明确脚手架文件的场景。
+    /// 扩展名带前导点（如 `".py"`），小写比较。空数组表示不启用。
+    public let siblingExtensionMarkers: [String]
+    /// v1.3 P0-D 兜底：父目录路径后缀候选——父目录路径以这些后缀结尾即视为命中。
+    /// 用于 `xcuserdata` 这种"必然嵌在 .xcodeproj/.xcworkspace 内"但没有同级文件的场景。
+    /// 比较时已对 parent.path 标准化；后缀含前导点（如 `".xcodeproj"`）。空数组表示不启用。
+    public let parentSuffixMarkers: [String]
     /// 命中后是否需要往下钻找该子树里**更内层**的同名 / 其他规则——一律 false：
     /// 命中即整棵剪枝（性能 + 避免重复计数）。语义上保留作扩展位。
     public let pruneSubtree: Bool
@@ -83,11 +94,15 @@ public struct DevArtifactRule: Identifiable, Hashable, Sendable {
                 ecosystem: Ecosystem,
                 verdict: Verdict,
                 subtitle: String,
-                pruneSubtree: Bool = true) {
+                pruneSubtree: Bool = true,
+                siblingExtensionMarkers: [String] = [],
+                parentSuffixMarkers: [String] = []) {
         self.id = id
         self.displayName = displayName
         self.directoryName = directoryName.lowercased()
         self.siblingMarkers = siblingMarkers
+        self.siblingExtensionMarkers = siblingExtensionMarkers.map { $0.lowercased() }
+        self.parentSuffixMarkers = parentSuffixMarkers.map { $0.lowercased() }
         self.pruneSubtree = pruneSubtree
         self.ecosystem = ecosystem
         self.verdict = verdict
@@ -108,55 +123,55 @@ public enum DevArtifactRules {
               directoryName: "node_modules",
               siblingMarkers: ["package.json"],
               ecosystem: .web, verdict: .safe,
-              subtitle: "JavaScript 依赖，运行 npm/yarn/pnpm install 重建"),
+              subtitle: "rule.web.node_modules.subtitle"),
         .init(id: "web.next",
               displayName: ".next",
               directoryName: ".next",
               siblingMarkers: ["package.json", "next.config.js", "next.config.mjs", "next.config.ts"],
               ecosystem: .web, verdict: .safe,
-              subtitle: "Next.js 构建缓存"),
+              subtitle: "rule.web.next.subtitle"),
         .init(id: "web.nuxt",
               displayName: ".nuxt",
               directoryName: ".nuxt",
               siblingMarkers: ["package.json", "nuxt.config.js", "nuxt.config.ts"],
               ecosystem: .web, verdict: .safe,
-              subtitle: "Nuxt 构建缓存"),
+              subtitle: "rule.web.nuxt.subtitle"),
         .init(id: "web.svelte_kit",
               displayName: ".svelte-kit",
               directoryName: ".svelte-kit",
               siblingMarkers: ["package.json", "svelte.config.js"],
               ecosystem: .web, verdict: .safe,
-              subtitle: "SvelteKit 构建缓存"),
+              subtitle: "rule.web.svelte_kit.subtitle"),
         .init(id: "web.parcel_cache",
               displayName: ".parcel-cache",
               directoryName: ".parcel-cache",
               siblingMarkers: ["package.json"],
               ecosystem: .web, verdict: .safe,
-              subtitle: "Parcel 构建缓存"),
+              subtitle: "rule.web.parcel_cache.subtitle"),
         .init(id: "web.expo",
               displayName: ".expo",
               directoryName: ".expo",
               siblingMarkers: ["package.json", "app.json", "app.config.js", "app.config.ts"],
               ecosystem: .web, verdict: .safe,
-              subtitle: "Expo（React Native）本地缓存"),
+              subtitle: "rule.web.expo.subtitle"),
         .init(id: "web.dist",
               displayName: "dist",
               directoryName: "dist",
               siblingMarkers: ["package.json"],
               ecosystem: .web, verdict: .safe,
-              subtitle: "前端打包产物（Vite / Webpack）"),
+              subtitle: "rule.web.dist.subtitle"),
         .init(id: "web.out_next",
               displayName: "out",
               directoryName: "out",
               siblingMarkers: ["package.json"],
               ecosystem: .web, verdict: .confirm,
-              subtitle: "Next.js export 产物（也常见于其他 Web 项目）"),
+              subtitle: "rule.web.out_next.subtitle"),
         .init(id: "web.coverage",
               displayName: "coverage",
               directoryName: "coverage",
               siblingMarkers: ["package.json", "jest.config.js", "jest.config.ts", "vitest.config.ts"],
               ecosystem: .web, verdict: .safe,
-              subtitle: "前端测试覆盖率报告"),
+              subtitle: "rule.web.coverage.subtitle"),
 
         // MARK: iOS / macOS
         .init(id: "apple.pods",
@@ -164,31 +179,32 @@ public enum DevArtifactRules {
               directoryName: "pods",
               siblingMarkers: ["Podfile", "Podfile.lock"],
               ecosystem: .appleMobile, verdict: .confirm,
-              subtitle: "CocoaPods 依赖目录，pod install 重建"),
+              subtitle: "rule.apple.pods.subtitle"),
         .init(id: "apple.swiftpm_build",
               displayName: ".build",
               directoryName: ".build",
               siblingMarkers: ["Package.swift"],
               ecosystem: .appleMobile, verdict: .safe,
-              subtitle: "Swift Package Manager 本地构建产物"),
+              subtitle: "rule.apple.swiftpm_build.subtitle"),
         .init(id: "apple.spm_dot",
               displayName: ".swiftpm",
               directoryName: ".swiftpm",
               siblingMarkers: ["Package.swift"],
               ecosystem: .appleMobile, verdict: .confirm,
-              subtitle: "SwiftPM 配置 / Xcode workspace 数据"),
+              subtitle: "rule.apple.spm_dot.subtitle"),
         .init(id: "apple.carthage",
               displayName: "Carthage",
               directoryName: "carthage",
               siblingMarkers: ["Cartfile", "Cartfile.resolved"],
               ecosystem: .appleMobile, verdict: .safe,
-              subtitle: "Carthage 依赖产物"),
+              subtitle: "rule.apple.carthage.subtitle"),
         .init(id: "apple.xcuserdata",
               displayName: "xcuserdata",
               directoryName: "xcuserdata",
               siblingMarkers: [],
               ecosystem: .appleMobile, verdict: .safe,
-              subtitle: "Xcode 个人 workspace 状态（无需兄弟兜底，本目录只在 .xcodeproj/.xcworkspace 内）"),
+              subtitle: "rule.apple.xcuserdata.subtitle",
+              parentSuffixMarkers: [".xcodeproj", ".xcworkspace"]),
 
         // MARK: Android / Flutter
         .init(id: "android.gradle_proj",
@@ -196,31 +212,31 @@ public enum DevArtifactRules {
               directoryName: ".gradle",
               siblingMarkers: ["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"],
               ecosystem: .androidFlutter, verdict: .safe,
-              subtitle: "项目级 Gradle 缓存（非 ~/.gradle 全局缓存，那条单独有）"),
+              subtitle: "rule.android.gradle_proj.subtitle"),
         .init(id: "android.build_gradle",
-              displayName: "build（Gradle 项目）",
+              displayName: "rule.android.build_gradle.displayName",
               directoryName: "build",
               siblingMarkers: ["build.gradle", "build.gradle.kts", "pom.xml"],
               ecosystem: .androidFlutter, verdict: .safe,
-              subtitle: "Android / JVM 构建产物"),
+              subtitle: "rule.android.build_gradle.subtitle"),
         .init(id: "android.cxx",
               displayName: ".cxx",
               directoryName: ".cxx",
               siblingMarkers: ["build.gradle", "build.gradle.kts", "CMakeLists.txt"],
               ecosystem: .androidFlutter, verdict: .safe,
-              subtitle: "Android NDK / CMake 中间产物"),
+              subtitle: "rule.android.cxx.subtitle"),
         .init(id: "flutter.dart_tool",
               displayName: ".dart_tool",
               directoryName: ".dart_tool",
               siblingMarkers: ["pubspec.yaml"],
               ecosystem: .androidFlutter, verdict: .safe,
-              subtitle: "Flutter / Dart 工具缓存"),
+              subtitle: "rule.flutter.dart_tool.subtitle"),
         .init(id: "flutter.build",
-              displayName: "build（Flutter 项目）",
+              displayName: "rule.flutter.build.displayName",
               directoryName: "build",
               siblingMarkers: ["pubspec.yaml"],
               ecosystem: .androidFlutter, verdict: .safe,
-              subtitle: "Flutter 构建产物"),
+              subtitle: "rule.flutter.build.subtitle"),
 
         // MARK: Rust
         .init(id: "rust.target",
@@ -228,7 +244,7 @@ public enum DevArtifactRules {
               directoryName: "target",
               siblingMarkers: ["Cargo.toml"],
               ecosystem: .rust, verdict: .safe,
-              subtitle: "Rust / Cargo 构建产物，cargo build 重建"),
+              subtitle: "rule.rust.target.subtitle"),
 
         // MARK: Go
         .init(id: "go.vendor",
@@ -236,45 +252,46 @@ public enum DevArtifactRules {
               directoryName: "vendor",
               siblingMarkers: ["go.mod"],
               ecosystem: .go, verdict: .confirm,
-              subtitle: "Go module vendor，go mod vendor 重建"),
+              subtitle: "rule.go.vendor.subtitle"),
 
         // MARK: Python
         .init(id: "py.pycache",
               displayName: "__pycache__",
               directoryName: "__pycache__",
-              siblingMarkers: [],
+              siblingMarkers: ["__init__.py", "pyproject.toml", "setup.py", "requirements.txt", "Pipfile"],
               ecosystem: .python, verdict: .safe,
-              subtitle: "Python 字节码缓存，运行时自动重建"),
+              subtitle: "rule.py.pycache.subtitle",
+              siblingExtensionMarkers: [".py"]),
         .init(id: "py.venv",
               displayName: ".venv / venv",
               directoryName: ".venv",
               siblingMarkers: ["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"],
               ecosystem: .python, verdict: .confirm,
-              subtitle: "Python 虚拟环境（删后需重建）"),
+              subtitle: "rule.py.venv.subtitle"),
         .init(id: "py.venv2",
               displayName: "venv",
               directoryName: "venv",
               siblingMarkers: ["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"],
               ecosystem: .python, verdict: .confirm,
-              subtitle: "Python 虚拟环境（venv 命名变体）"),
+              subtitle: "rule.py.venv2.subtitle"),
         .init(id: "py.pytest_cache",
               displayName: ".pytest_cache",
               directoryName: ".pytest_cache",
               siblingMarkers: [],
               ecosystem: .python, verdict: .safe,
-              subtitle: "pytest 测试缓存"),
+              subtitle: "rule.py.pytest_cache.subtitle"),
         .init(id: "py.mypy_cache",
               displayName: ".mypy_cache",
               directoryName: ".mypy_cache",
               siblingMarkers: [],
               ecosystem: .python, verdict: .safe,
-              subtitle: "mypy 类型检查缓存"),
+              subtitle: "rule.py.mypy_cache.subtitle"),
         .init(id: "py.tox",
               displayName: ".tox",
               directoryName: ".tox",
               siblingMarkers: ["tox.ini", "pyproject.toml"],
               ecosystem: .python, verdict: .safe,
-              subtitle: "tox 测试虚拟环境"),
+              subtitle: "rule.py.tox.subtitle"),
 
         // MARK: 通用
         .init(id: "general.turbo",
@@ -282,13 +299,13 @@ public enum DevArtifactRules {
               directoryName: ".turbo",
               siblingMarkers: ["package.json", "turbo.json"],
               ecosystem: .general, verdict: .safe,
-              subtitle: "Turborepo 任务缓存"),
+              subtitle: "rule.general.turbo.subtitle"),
         .init(id: "general.cache",
               displayName: ".cache",
               directoryName: ".cache",
               siblingMarkers: ["package.json"],
               ecosystem: .general, verdict: .safe,
-              subtitle: "通用 .cache（仅在 Node 项目下命中）"),
+              subtitle: "rule.general.cache.subtitle"),
     ]
 
     /// 内置全集 ID 集合。

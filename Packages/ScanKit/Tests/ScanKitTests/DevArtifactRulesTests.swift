@@ -62,4 +62,39 @@ final class DevArtifactRulesTests: XCTestCase {
         XCTAssertTrue(rules.contains { $0.siblingMarkers.contains("Cargo.toml") },
                       "target 必须有 Cargo.toml 兜底（避免误伤通用 target/ 目录）")
     }
+
+    // MARK: - v1.3 P0-D 新增字段兜底
+
+    /// xcuserdata 规则必须带 .xcodeproj / .xcworkspace 父路径后缀兜底——
+    /// 这是它唯一可靠的命中条件（xcuserdata 同级通常没有任何 marker 文件）。
+    func test_xcuserdata规则带有父路径后缀兜底() {
+        let rules = DevArtifactRules.rules(for: "xcuserdata")
+        XCTAssertFalse(rules.isEmpty, "应至少有一条 xcuserdata 规则")
+        XCTAssertTrue(rules.contains { Set($0.parentSuffixMarkers) == Set([".xcodeproj", ".xcworkspace"]) },
+                      "xcuserdata 规则必须配置 .xcodeproj / .xcworkspace 父路径后缀兜底")
+    }
+
+    /// py.pycache 规则必须带 .py 兄弟扩展名兜底——
+    /// 一些纯脚本目录没有 setup.py / pyproject.toml 等精确 marker，但只要同级有 .py 文件就应当命中。
+    func test_pycache规则带有py兄弟扩展名兜底() {
+        let rules = DevArtifactRules.rules(for: "__pycache__")
+        XCTAssertFalse(rules.isEmpty, "应至少有一条 __pycache__ 规则")
+        XCTAssertTrue(rules.contains { $0.siblingExtensionMarkers.contains(".py") },
+                      "py.pycache 规则必须包含 .py 兄弟扩展名兜底")
+    }
+
+    /// DevArtifactRule.init 默认值兼容性：旧调用方不传新字段时两个兜底列表应当为空。
+    func test_新字段默认值为空_向后兼容() {
+        let rule = DevArtifactRule(id: "test.compat",
+                                   displayName: "compat",
+                                   directoryName: "compat",
+                                   siblingMarkers: [],
+                                   ecosystem: .web,
+                                   verdict: .safe,
+                                   subtitle: "compat test")
+        XCTAssertTrue(rule.siblingExtensionMarkers.isEmpty,
+                      "未显式传值时 siblingExtensionMarkers 默认应为空")
+        XCTAssertTrue(rule.parentSuffixMarkers.isEmpty,
+                      "未显式传值时 parentSuffixMarkers 默认应为空")
+    }
 }

@@ -239,6 +239,38 @@ public enum TreeSortKey: String, CaseIterable, Sendable, Hashable {
         case .mtime: return .mtimeDesc
         }
     }
+
+    /// v1.5 P2 / Q1：把全局 [MainListSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L71)
+    /// 映射到树视图排序键。
+    ///
+    /// 树视图 4 列（size/name/count/mtime）几乎与主列表一一对应；fileCount 映到 count。
+    /// 用法：TreeBrowserView 不再持 @State，改 `TreeSortKey.from(global: settings.mainListSortKey)`。
+    public static func from(global key: MainListSortKey) -> TreeSortKey {
+        switch key {
+        case .sizeDesc:      return .sizeDesc
+        case .sizeAsc:       return .sizeAsc
+        case .nameAsc:       return .nameAsc
+        case .nameDesc:      return .nameDesc
+        case .fileCountDesc: return .countDesc
+        case .fileCountAsc:  return .countAsc
+        case .mtimeDesc:     return .mtimeDesc
+        case .mtimeAsc:      return .mtimeAsc
+        }
+    }
+
+    /// 反向映射：列头点击后写回全局键，让所有列表保持同步。
+    public var asGlobal: MainListSortKey {
+        switch self {
+        case .sizeDesc:  return .sizeDesc
+        case .sizeAsc:   return .sizeAsc
+        case .nameAsc:   return .nameAsc
+        case .nameDesc:  return .nameDesc
+        case .countDesc: return .fileCountDesc
+        case .countAsc:  return .fileCountAsc
+        case .mtimeDesc: return .mtimeDesc
+        case .mtimeAsc:  return .mtimeAsc
+        }
+    }
 }
 
 /// v1.0 T4：大文件列表行模型。
@@ -307,6 +339,39 @@ public enum LargeFileSortKey: String, CaseIterable, Sendable, Hashable {
         switch column {
         case .size:  return .sizeDesc
         case .mtime: return .mtimeDesc
+        }
+    }
+
+    /// v1.5 P2 / Q1：把全局 [MainListSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L71)
+    /// 映射到大文件列表自己支持的子集。
+    ///
+    /// 大文件列表只展示 size + mtime 两列：
+    /// - size / fileCount 维度（fileCount 在大文件无意义） → 全归 size 方向
+    /// - name 维度（大文件没有"name 列"） → 也归 size desc（用户体感最一致）
+    /// - mtime 维度 → 直接对应
+    ///
+    /// 用法：LargeFilesView 不再持 @State，改 `LargeFileSortKey.from(global: settings.mainListSortKey)`。
+    public static func from(global key: MainListSortKey) -> LargeFileSortKey {
+        switch key {
+        case .sizeDesc, .fileCountDesc, .nameAsc, .nameDesc:
+            return .sizeDesc
+        case .sizeAsc, .fileCountAsc:
+            return .sizeAsc
+        case .mtimeDesc:
+            return .mtimeDesc
+        case .mtimeAsc:
+            return .mtimeAsc
+        }
+    }
+
+    /// 反向映射：列头点击后写回全局键。
+    /// 大文件只有 size / mtime 两维，回写时其它维度保持不变（由调用方决定怎么 merge）。
+    public var asGlobal: MainListSortKey {
+        switch self {
+        case .sizeDesc:  return .sizeDesc
+        case .sizeAsc:   return .sizeAsc
+        case .mtimeDesc: return .mtimeDesc
+        case .mtimeAsc:  return .mtimeAsc
         }
     }
 }

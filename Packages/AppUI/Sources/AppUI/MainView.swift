@@ -101,6 +101,12 @@ public struct MainView: View {
     @State private var aiSettings: AISettings
     /// 用户在 contextMenu 点过的最近一行 —— 非 nil 即弹 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)。
     @State private var aiAskingRow: RowItem?
+    /// v1.5 P2 / Q3：AI 未配置时点击"问 AI"会把这里置 true，弹 alert 引导用户前往设置。
+    /// 旧实现是按钮直接隐藏 / disabled —— 用户根本不知道有这个能力。
+    @State private var aiUnconfiguredAlert: Bool = false
+    /// macOS 14+：通过环境拿到打开"设置..."窗口的标准 action。
+    /// Q3 alert 的"前往设置"按钮会调用它，免去手写 NSApp.sendAction 私有 selector。
+    @Environment(\.openSettings) private var openSettings
 
     /// v2026.06.18 **稍后处理（购物车）**：跨视图共享的待处理集合。
     /// 来源：tree row contextMenu → onStash → 入库；
@@ -196,6 +202,21 @@ public struct MainView: View {
                           aiSettings: aiSettings,
                           onClose: { aiAskingRow = nil })
         }
+        // v1.5 P2 / Q3：AI 未配置时点击"问 AI" → 弹"前往设置？"alert，
+        // 用户确认则调 openSettings()（macOS 14+ 标准 action）。
+        // 取代旧的"按钮直接隐藏 / disabled"路径，让用户知道有这能力 + 怎么开。
+        .alert(String(localized: "ai.unconfigured.alert.title", defaultValue: "AI 尚未配置", bundle: .module),
+               isPresented: $aiUnconfiguredAlert) {
+            Button(String(localized: "ai.unconfigured.alert.open_settings", defaultValue: "前往设置", bundle: .module)) {
+                openSettings()
+            }
+            Button(String(localized: "ai.unconfigured.alert.cancel", defaultValue: "取消", bundle: .module),
+                   role: .cancel) {}
+        } message: {
+            Text(String(localized: "ai.unconfigured.alert.message",
+                        defaultValue: "「问 AI」需要先在设置中填好 API Base URL / Model / API Key。点「前往设置」可立即打开 AI 设置面板。",
+                        bundle: .module))
+        }
         // v2026.06.18 **稍后处理 sheet**。点 toolbar 的 `tray.full.fill` 按钮触发；
         // 在 sheet 内做"一键清理 / 一键 AI / 单独清理 / 单独 AI / 剔除"集中操作。
         // 复用现有 trigger / aiAskingRow 通道，不引入第二条删除/AI 链路。
@@ -208,21 +229,28 @@ public struct MainView: View {
                 onCleanOne: { entry in
                     // 单独清理：复用 triggerLargeFileTrash（已含乐观更新 + 历史写入）。
                     // 删除发起后再把对应 path 从待处理摘掉，避免 sheet 行残留。
-                    triggerLargeFileTrash(urls: [URL(fileURLWithPath: entry.path)])
+                    // v2026.06.21 修复 #3：suppressSuccessSheet=true。stash 路径已经通过
+                    // 「item 从列表消失」反馈成功，纯成功不再叠 OperationResultSheet——
+                    // 否则用户关闭 stash sheet 后会被一个多余的"清理完成"弹窗困住。
+                    // 失败 / 拦截项仍会弹（用户必须看见）。
+                    triggerLargeFileTrash(urls: [URL(fileURLWithPath: entry.path)],
+                                          suppressSuccessSheet: true)
                     stash.remove(entry.path)
                 },
                 onCleanAll: { entries in
                     let urls = entries.map { URL(fileURLWithPath: $0.path) }
-                    triggerLargeFileTrash(urls: urls)
+                    triggerLargeFileTrash(urls: urls, suppressSuccessSheet: true)
                     stash.remove(paths: entries.map(\.path))
                 },
                 onAskAIOne: { entry in
                     // 单独 AI：复用 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
                     // 通道（item-based sheet），不在 StashScreen 内再造一份 AI 渲染。
                     // 先把 stash sheet 收掉再弹 AI，避免 macOS sheet 叠层 (不支持 sheet 之上 sheet)。
+                    //
+                    // v1.5 P2 / Q3：走 requestAI 收敛 —— 未配置弹"前往设置"alert。
                     let row = makeAIQueryRow(from: entry)
                     isStashScreenPresented = false
-                    DispatchQueue.main.async { aiAskingRow = row }
+                    DispatchQueue.main.async { requestAI(row: row) }
                 },
                 onRunAIBatch: {
                     // v2026.06.19 一键 AI 队列入口：
@@ -1146,8 +1174,10 @@ public struct MainView: View {
                                             // RowItem 喂给 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)。
                                             // SafetyEngine.evaluate 与 List 路径一致，让 AI 在拒删时
                                             // 看到同样的 verdict / rejection 上下文。
+                                            //
+                                            // v1.5 P2 / Q3：走 requestAI 收敛 —— 未配置时弹 alert。
                                             let (v, rj) = TreeBrowserView.safety.evaluate(path: row.path)
-                                            aiAskingRow = RowItem(
+                                            requestAI(row: RowItem(
                                                 id: row.path,
                                                 url: URL(fileURLWithPath: row.path),
                                                 title: row.title,
@@ -1158,8 +1188,15 @@ public struct MainView: View {
                                                 verdict: v,
                                                 rejection: rj,
                                                 modificationDate: row.modificationDate
-                                            )
-                                        }
+                                            ))
+                                        },
+                                        // v1.5 P2 / Q1：把全局排序键 binding 喂给树视图，
+                                        // 工具栏排序图标切换或列头点击 → 全局键同步 →
+                                        // 主列表 / 树形 / 大文件视图都按同一序展示。
+                                        globalSortKey: Binding(
+                                            get: { settings.mainListSortKey },
+                                            set: { settings.mainListSortKey = $0 }
+                                        )
                                     )
                                     // v2 修：TreeBrowserView 内部用 @State 缓存了
                                     // selectedPath / expanded / sortKey；如果换了扫描根
@@ -1272,7 +1309,20 @@ public struct MainView: View {
     }
 
     private var listResults: some View {
-        List(selection: $detail) {
+        // v1.5 P2 滑动卡顿修复：把 maxBytes 提到 ForEach 外，并量化到下一个 2 的幂次。
+        //
+        // 旧实现：`maxBytes: coordinator.snapshot.rows.first?.bytes ?? 0`
+        //   1) 在 ForEach 闭包里每行都访问一次 snapshot.rows（每行都建立一次 observation）
+        //   2) 扫描期主列表流式按 path 字典序排，首行 bytes 几乎每帧都在涨 →
+        //      `maxBytes` 参与 RowContentView 的 Equatable 比较 → 每行都被判不相等 →
+        //      Equatable 短路完全失效。
+        // 现在：① 取最大 bytes（实际上扫描期已按 path 序，不再是按 size 序的首行——
+        //   改用 `lazy.map(\.bytes).max()`，仍 O(N) 但只算一次；
+        //   ② 量化到下一个 2 的幂次，让相邻帧大概率相等（10MB → 16MB，11MB 仍 16MB），
+        //   命中 Equatable 短路 → 千行场景 body 调用数从"每帧 × N"降到接近 0。
+        let maxBytesRaw = coordinator.snapshot.rows.lazy.map(\.bytes).max() ?? 0
+        let maxBytes = Self.quantizeToPow2(maxBytesRaw)
+        return List(selection: $detail) {
             ForEach(coordinator.snapshot.rows) { row in
                 let isOn = Binding<Bool>(
                     get: { selection.contains(row.id) },
@@ -1282,9 +1332,10 @@ public struct MainView: View {
                     }
                 )
                 RowView(row: row, selected: isOn,
-                        maxBytes: coordinator.snapshot.rows.first?.bytes ?? 0,
+                        maxBytes: maxBytes,
                         aiSettings: aiSettings,
-                        onAskAI: { picked in aiAskingRow = picked })
+                        // v1.5 P2 / Q3：走 requestAI 收敛 —— 未配置时弹 alert 引导设置。
+                        onAskAI: { picked in requestAI(row: picked) })
                     .tag(row.id)
             }
         }
@@ -1296,6 +1347,18 @@ public struct MainView: View {
         // （比如 10 GB+ 路径很长的行）反向把 ideal width 抬高 → 把整个外层 sidebar 挤掉。
         .frame(minWidth: 320, maxWidth: .infinity)
         .layoutPriority(1)
+    }
+
+    /// v1.5 P2：把任意正整数量化到下一个 2 的幂次（≤0 直接返回 0）。
+    /// 让 maxBytes 在扫描流式帧之间保持"阶梯式增长"——相邻帧大概率相等，
+    /// 配合 RowContentView 的 Equatable 比较实现真正的 body 短路。
+    static func quantizeToPow2(_ x: Int64) -> Int64 {
+        guard x > 0 else { return 0 }
+        // bit_length(x) = 64 - leadingZeroBitCount；2^(bit_length) 即"≥x 的最小 2 的幂"。
+        let lz = x.leadingZeroBitCount
+        let bits = 64 - lz
+        if bits >= 63 { return Int64.max }
+        return Int64(1) << bits
     }
 
     /// v1.3：是否应显示顶部权限 banner。
@@ -1351,6 +1414,28 @@ public struct MainView: View {
                         }
                     }
                 )
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            }
+            // v1.3 P0-D：开发者构建产物勘察阶段命中数过多或超时时的提示 banner。
+            // 只在 dev 扫描结果上下文里出现（activeCategoryID 等于 developer.multi），
+            // 以及 didTruncate / didTimeout 任一为 true 时显示。
+            if coordinator.activeCategoryID == ScanCoordinator.developerCategoryID
+                && (coordinator.devArtifactDidTruncate || coordinator.devArtifactDidTimeout) {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(coordinator.devArtifactDidTimeout
+                         ? LocalizedStringKey("mainview.devartifact.warn.timeout")
+                         : LocalizedStringKey("mainview.devartifact.warn.truncated"),
+                         bundle: .module)
+                        .font(.callout)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.orange.opacity(0.12))
+                .cornerRadius(6)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
             }
@@ -1646,14 +1731,27 @@ public struct MainView: View {
         ToolbarItem(placement: .primaryAction) {
             sortMenu
         }
-        ToolbarItem(placement: .primaryAction) {
-            recommendedAllButton
-        }
-        ToolbarItem(placement: .primaryAction) {
-            developerScanButton
-        }
-        ToolbarItem(placement: .primaryAction) {
-            fullDiskButton
+        // v1.5 P2 / Q2：用户反馈"右上角这三个 logo（推荐/开发者/整盘）扫描完一次后
+        // 就不需要了，应该让出空间给一个『重新扫描』入口"。
+        //
+        // 设计：只在"未开始扫描 / 处于扫描中"两种状态下展示三个入口；
+        // 一旦 [scanControlButton](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1916)
+        // 已经能渲染出"重新扫描"按钮（即 isScanning=false 且 selectedCategory != nil
+        // 且能在 allCategories 命中），就把这三个折叠掉——用户要换扫描类型仍可走
+        // sidebar 的"批量扫描"组（永远在），不影响功能可达性。
+        //
+        // 这样工具栏在最常见的"扫描完成 → 看结果"态下右侧只剩 [全局排序 + 重新扫描]
+        // 两枚按钮，跟用户截图诉求一致。
+        if shouldShowBatchScanShortcuts {
+            ToolbarItem(placement: .primaryAction) {
+                recommendedAllButton
+            }
+            ToolbarItem(placement: .primaryAction) {
+                developerScanButton
+            }
+            ToolbarItem(placement: .primaryAction) {
+                fullDiskButton
+            }
         }
         // v2026.06.18 购物车入口。count==0 时整项隐藏（避免 toolbar 永远多出
         // 一个"空购物车"按钮造成视觉噪音）。SwiftUI ToolbarItem 内 if 分支会让
@@ -1664,6 +1762,20 @@ public struct MainView: View {
         ToolbarItem(placement: .primaryAction) {
             scanControlButton
         }
+    }
+
+    /// v1.5 P2 / Q2：是否在 toolbar 展示"推荐 / 开发者 / 整盘"三个批量入口。
+    ///
+    /// 规则：
+    /// 1. 当前正在扫描 → **展示**（用户可能想中途比较，也方便看 Label 文案知道在跑哪个）
+    /// 2. 没扫过任何类目（首次启动）→ **展示**（给用户一个起步入口）
+    /// 3. 已选某类目且已停（即 scanControlButton 会画出"重新扫描"）→ **隐藏**
+    ///    （让出空间给单按钮"重新扫描"——用户截图诉求）
+    private var shouldShowBatchScanShortcuts: Bool {
+        if coordinator.isScanning { return true }
+        guard let id = selectedCategory else { return true }
+        // 与 scanControlButton 的判定一致——只有这条 if 能落到"重新扫描"分支时才折叠。
+        return !allCategories.contains(where: { $0.id == id })
     }
 
     /// v1.3：主列表排序选择器。
@@ -1938,6 +2050,23 @@ public struct MainView: View {
         treeSelection = nil
     }
 
+    /// v1.5 P2 / Q3：统一的"用户请求问 AI"入口。
+    ///
+    /// 行为：
+    /// - AI 已就绪（`aiSettings.isReadyForUI`）→ 把 row 喂给 `aiAskingRow` 弹
+    ///   [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
+    /// - 未就绪 → 翻 `aiUnconfiguredAlert`，弹"前往设置？"alert，用户确认走 openSettings()
+    ///
+    /// 这是 Q3 修复的核心收敛点：所有 onAskAI callsite（List / Tree / Stash）
+    /// 都走这里，避免散落判断 isReadyForUI 又散落 alert，将来语义有变只改一处。
+    private func requestAI(row: RowItem) {
+        if aiSettings.isReadyForUI {
+            aiAskingRow = row
+        } else {
+            aiUnconfiguredAlert = true
+        }
+    }
+
     private var selectedRows: [RowItem] {
         coordinator.snapshot.rows.filter { selection.contains($0.id) && $0.isSelectable }
     }
@@ -2124,8 +2253,13 @@ public struct MainView: View {
     /// 强行融合会让 runTrash 变成"5 个回调参数"的胖方法，掩盖差异反而更危险。
     ///
     /// - Parameter source: UndoHistory 的 `source` 字段（"clean" / "large-file"），便于侧栏未来分类。
+    /// - Parameter suppressSuccessSheet: 仅当 outcome 完全成功（无 failed/blocked/commandLine）时
+    ///   抑制 OperationResultSheet 弹出。专为 stash 路径设计——见 v2026.06.21 修复 #3：
+    ///   stash sheet 已经通过"item 消失"反馈成功，叠加一个全屏 sheet 体验割裂；但失败 / 拦截
+    ///   仍要弹（用户在 stash 里只看到 item 消失，看不到"被 vendor 拦"，必须有显式入口）。
     @MainActor
-    private func runTrash(paths: [String], dryRun: Bool, source: String) async -> TrashRunResult {
+    private func runTrash(paths: [String], dryRun: Bool, source: String,
+                          suppressSuccessSheet: Bool = false) async -> TrashRunResult {
         // ① accessDenied 注入（防止历史 cast 被悄悄改丢、重新引入"漏调=误拒"）。
         // 见 [DeletionPipeline.setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift#L37)
         // 自 v2026.06.17 (AUDIT A2) 起取消 protocol extension 默认 no-op，每个实现都必须显式提供。
@@ -2141,7 +2275,18 @@ public struct MainView: View {
             )
         }
         // ④ 结构化 sheet / 旧 alert 二选一（v2026.06.16 修复 #4）。
-        presentTrashOutcome(moved: moved, skipped: skipped, err: err, dryRun: dryRun, outcome: result.outcome)
+        //
+        // v2026.06.21 修复 #3：stash 路径开 suppressSuccessSheet——纯成功时不再叠 sheet。
+        // 仅当 outcome 有 failed/blocked/commandLineSkipped 时才弹（用户需要看到非成功项）。
+        let shouldSuppress: Bool = {
+            guard suppressSuccessSheet, let outcome = result.outcome else { return false }
+            let hasIssue = !outcome.failedPaths.isEmpty
+                || !outcome.safetyRejected.isEmpty
+            return !hasIssue
+        }()
+        if !shouldSuppress {
+            presentTrashOutcome(moved: moved, skipped: skipped, err: err, dryRun: dryRun, outcome: result.outcome)
+        }
         return TrashRunResult(moved: moved, skipped: skipped, err: err, pairs: pairs)
     }
 
@@ -2244,7 +2389,7 @@ public struct MainView: View {
     /// 大文件视图右键"移到废纸篓…"回调。
     /// 直接走 pipeline.moveToTrash + DeleteSheet 简化版（一次只对一个 url，
     /// 不复用主清单的 selection sheet——大文件场景没有 SafetyEngine 默认勾选语义）。
-    private func triggerLargeFileTrash(urls: [URL]) {
+    private func triggerLargeFileTrash(urls: [URL], suppressSuccessSheet: Bool = false) {
         guard !urls.isEmpty else { return }
         guard !isDeleting else { return } // 防重入：删除中不接受新点击
         let paths = urls.map(\.path)
@@ -2259,7 +2404,12 @@ public struct MainView: View {
             // 的 pipeline 4 步握手：accessDenied 注入 / moveToTrash / UndoHistory 写入 /
             // snapshotLastOutcome → sheet。任何一步漏掉都会让"上层防护漏失 / 结构化 sheet
             // 退化为文本 alert"成为静默回归——统一收口后从语言层杜绝。
-            let result = await runTrash(paths: paths, dryRun: false, source: "large-file")
+            //
+            // v2026.06.21 修复 #3：把 stash 路径传入的 suppressSuccessSheet 透传——
+            // 纯成功时不弹 OperationResultSheet，仅当真有失败 / 拦截才弹（避免 stash sheet
+            // 关闭后用户被"多余的成功弹窗"困扰）。
+            let result = await runTrash(paths: paths, dryRun: false, source: "large-file",
+                                        suppressSuccessSheet: suppressSuccessSheet)
             isDeleting = false
             if result.err == nil {
                 await recorder.recordTrashed(paths: paths)
@@ -2507,7 +2657,13 @@ private struct PermissionStatusBanner: View {
                     .font(.callout)
                     .fontWeight(.medium)
                 Spacer()
-                Button(expanded ? "收起" : "查看路径") { expanded.toggle() }
+                Button {
+                    expanded.toggle()
+                } label: {
+                    Text(expanded ? LocalizedStringKey("mainview.path_chip.collapse")
+                                  : LocalizedStringKey("mainview.path_chip.expand"),
+                         bundle: .module)
+                }
                     .buttonStyle(.plain)
                     .font(.caption)
                 // v1.3：tcc-only 场景之前没有任何"主动授权"入口，

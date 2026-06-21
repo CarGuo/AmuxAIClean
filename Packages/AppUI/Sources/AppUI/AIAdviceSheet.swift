@@ -87,9 +87,15 @@ struct AIAdviceSheet: View {
         case .success(let advice):
             VStack(alignment: .leading, spacing: 14) {
                 // 摘要
-                Text(advice.summary)
-                    .font(.body)
-                    .fixedSize(horizontal: false, vertical: true)
+                if advice.summary == AIAdvice.unparsableSummaryKey {
+                    Text(LocalizedStringKey(AIAdvice.unparsableSummaryKey), bundle: .module)
+                        .font(.body)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(verbatim: advice.summary)
+                        .font(.body)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 // 三档徽章
                 HStack(spacing: 8) {
@@ -105,7 +111,7 @@ struct AIAdviceSheet: View {
                         Text("ai.sheet.reason", bundle: .module)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text(advice.reason)
+                        Text(verbatim: localizedReason(advice.reason))
                             .font(.callout)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -172,6 +178,15 @@ struct AIAdviceSheet: View {
             .keyboardShortcut(.defaultAction)
         }
         .padding()
+    }
+
+    /// 识别 AIKit 暴露的本地策略覆盖 sentinel 前缀，替换为本地化文案。
+    private func localizedReason(_ reason: String) -> String {
+        let prefix = AIAdviceClamp.localPolicyOverridePrefix
+        guard reason.hasPrefix(prefix) else { return reason }
+        let tail = String(reason.dropFirst(prefix.count))
+        let localizedPrefix = String(localized: "ai.advice.local_policy_override.prefix", bundle: .module)
+        return localizedPrefix + tail
     }
 
     // MARK: - 行为

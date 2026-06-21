@@ -265,11 +265,14 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             let skipped = missing + rejected.count
             let err: String?
             if !rejected.isEmpty {
-                err = "dryRun: \(rejected.count) 路径被安全策略拦截"
-                    + (missing > 0 ? "，\(missing) 路径不存在或无权限" : "")
-                    + "；首条原因=\(rejected[0].reason.rawValue)"
+                var s = String(format: String(localized: "trash.err.dryrun.safety_blocked %lld", bundle: .module), rejected.count)
+                if missing > 0 {
+                    s += String(format: String(localized: "trash.err.dryrun.missing_suffix %lld", bundle: .module), missing)
+                }
+                s += String(format: String(localized: "trash.err.first_reason_suffix %@", bundle: .module), rejected[0].reason.rawValue)
+                err = s
             } else if missing > 0 {
-                err = "dryRun: \(missing) 路径不存在或无权限"
+                err = String(format: String(localized: "trash.err.dryrun.missing %lld", bundle: .module), missing)
             } else {
                 err = nil
             }
@@ -322,16 +325,24 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         let firstReason = rejected.first?.reason.rawValue
         let err: String?
         if !failedPaths.isEmpty {
-            let partialNote = movedCount > 0 ? "（已成功放入废纸篓 \(movedCount) 项，可在「最近删除」恢复）" : ""
-            let firstFail = failedPaths.first.map { " 首个失败路径=\($0)" } ?? ""
+            let partialNote = movedCount > 0
+                ? String(format: String(localized: "trash.err.partial_note %lld", bundle: .module), movedCount)
+                : ""
+            let firstFail = failedPaths.first.map {
+                String(format: String(localized: "trash.err.first_fail_path %@", bundle: .module), $0)
+            } ?? ""
             if !rejected.isEmpty {
-                err = "recycle-failed: \(failedPaths.count) 项无法移到废纸篓\(partialNote)\(firstFail)"
-                    + "；另有 \(rejected.count) 路径被安全策略拦截（首条原因=\(firstReason ?? "unknown")）"
+                err = String(format: String(localized: "trash.err.recycle_failed %lld %@ %@", bundle: .module),
+                             failedPaths.count, partialNote, firstFail)
+                    + String(format: String(localized: "trash.err.also_safety_blocked %lld %@", bundle: .module),
+                             rejected.count, firstReason ?? "unknown")
             } else {
-                err = "recycle-failed: \(failedPaths.count) 项无法移到废纸篓\(partialNote)\(firstFail)"
+                err = String(format: String(localized: "trash.err.recycle_failed %lld %@ %@", bundle: .module),
+                             failedPaths.count, partialNote, firstFail)
             }
         } else if !rejected.isEmpty {
-            err = "safety-blocked: \(rejected.count) 路径被安全策略拦截；首条原因=\(firstReason ?? "unknown")"
+            err = String(format: String(localized: "trash.err.safety_blocked_only %lld %@", bundle: .module),
+                         rejected.count, firstReason ?? "unknown")
         } else {
             err = nil
         }

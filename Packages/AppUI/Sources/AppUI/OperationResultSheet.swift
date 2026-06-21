@@ -119,9 +119,23 @@ public struct OperationResultSheet: View {
             footer
         }
         .frame(width: 560, height: 480)
-        .alert("op.result.force_delete.confirm.title", isPresented: $showForceConfirm) {
-            Button("op.result.force_delete.confirm.cancel", role: .cancel) { }
-            Button("op.result.force_delete.confirm.ok", role: .destructive) {
+        // v2026.06.21 修复：原来这里 title / button 都直接传字符串字面量，Swift 会推断
+        // 成 `LocalizedStringKey`，但**未显式提供 bundle**，SwiftUI 默认从 `Bundle.main`
+        // 查表。AppUI 是 SPM 子模块，字符串只在 `Bundle.module` 的 Localizable.xcstrings
+        // 里，于是 alert 会直接渲染 raw key（"op.result.force_delete.confirm.title" 等）。
+        // 改成用 `String(localized: ... , bundle: .module)` 显式取出本地化文案再传入。
+        .alert(
+            String(localized: "op.result.force_delete.confirm.title", bundle: .module),
+            isPresented: $showForceConfirm
+        ) {
+            Button(
+                String(localized: "op.result.force_delete.confirm.cancel", bundle: .module),
+                role: .cancel
+            ) { }
+            Button(
+                String(localized: "op.result.force_delete.confirm.ok", bundle: .module),
+                role: .destructive
+            ) {
                 let targets = forceDeletablePaths
                 guard !targets.isEmpty else { return }
                 onForceDelete?(targets)
@@ -314,7 +328,10 @@ public struct OperationResultSheet: View {
                                 .font(.system(.caption, design: .monospaced))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
-                            Text("reason: \(item.reason)")
+                            // v2026.06.21 修复：原来直接显示 `reason: \(item.reason)`，
+                            // raw 字符串例如 "vendorPathRule" 用户根本看不懂，也没多语言。
+                            // 改为通过 humanReadableReason() 映射到本地化文案。
+                            Text(humanReadableReason(item.reason))
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
                         }
@@ -332,23 +349,8 @@ public struct OperationResultSheet: View {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(Color.orange.opacity(0.06))
                 )
-                // **v2026.06.22**：force 通道按钮——仅当宿主提供 onForceDelete 且确实
-                // 存在 vendor 规则拦下的项时显示。点击触发二次确认弹窗。
-                if onForceDelete != nil, !forceDeletablePaths.isEmpty {
-                    HStack(spacing: 8) {
-                        Button(role: .destructive) {
-                            showForceConfirm = true
-                        } label: {
-                            Label(
-                                String(format: String(localized: "op.result.force_delete.button %lld", bundle: .module),
-                                       forceDeletablePaths.count),
-                                systemImage: "exclamationmark.shield"
-                            )
-                        }
-                        .controlSize(.small)
-                        Spacer()
-                    }
-                }
+                // **v2026.06.21**：force 通道按钮按用户反馈搬到 footer（更显眼 + 离 Done 远）
+                // 这里 blockedSection 内部不再放按钮。
             }
             .padding(.top, 8)
         } label: {
@@ -403,8 +405,27 @@ public struct OperationResultSheet: View {
 
     // MARK: - Footer
 
+    /// v2026.06.21 修复：用户要求强制删除按钮"应该是红色，然后放在完成栏里"。
+    /// - 仅当存在 vendor 规则拦下的项 + 宿主提供 onForceDelete 时才显示
+    /// - 用 BorderedProminent + .tint(.red) 让"危险动作"在 footer 一眼可辨
+    /// - 与 Done 按钮分两侧，避免误触
+    /// - 点击触发 `showForceConfirm` 二次确认 alert（原逻辑保留）
     private var footer: some View {
-        HStack {
+        HStack(spacing: 12) {
+            if onForceDelete != nil, !forceDeletablePaths.isEmpty {
+                Button(role: .destructive) {
+                    showForceConfirm = true
+                } label: {
+                    Label(
+                        String(format: String(localized: "op.result.force_delete.button %lld", bundle: .module),
+                               forceDeletablePaths.count),
+                        systemImage: "exclamationmark.shield.fill"
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .controlSize(.regular)
+            }
             Spacer()
             Button {
                 onDismiss()
@@ -427,5 +448,33 @@ public struct OperationResultSheet: View {
 
     private func revealInFinder(path: String) {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    /// v2026.06.21 修复：把 SafetyEngine / TrashPipeline 抛上来的 raw reason 字符串
+    /// （vendorPathRule / hardForbid* / userRootEssential / sensitiveCredential /
+    /// systemVolumeReadOnly / accessDenied …）映射成用户能看懂、且已多语言的本地化文案。
+    /// 任何未识别的 reason 退化为「命中内置安全规则」+ 把原 raw reason 拼到末尾，
+    /// 既不会让用户对着 raw token 发呆，也方便我们排查时一眼看出是哪条规则。
+    private func humanReadableReason(_ raw: String) -> String {
+        let lower = raw.lowercased()
+        let key: String
+        if lower.contains("vendor") {
+            key = "op.result.reason.vendor_path_rule"
+        } else if lower.contains("hardforbid") || lower.contains("hard_forbid") || lower.contains("hard-forbid") {
+            key = "op.result.reason.hard_forbid"
+        } else if lower.contains("userroot") || lower.contains("user_root") || lower.contains("user-root") {
+            key = "op.result.reason.user_root"
+        } else if lower.contains("credential") || lower.contains("keychain") {
+            key = "op.result.reason.sensitive_credential"
+        } else if lower.contains("systemvolume") || lower.contains("system_volume") || lower.contains("readonly") || lower.contains("sealed") {
+            key = "op.result.reason.system_volume"
+        } else if lower.contains("accessdenied") || lower.contains("access_denied") || lower.contains("permission") {
+            key = "op.result.reason.access_denied"
+        } else {
+            // 未识别 → 走通用文案，附上 raw token 方便后续日志反查
+            let generic = String(localized: "op.result.reason.generic", bundle: .module)
+            return "\(generic) [\(raw)]"
+        }
+        return String(localized: String.LocalizationValue(key), bundle: .module)
     }
 }

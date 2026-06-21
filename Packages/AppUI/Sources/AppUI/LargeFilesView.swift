@@ -25,10 +25,28 @@ public struct LargeFilesView: View {
     /// Top N 截断。默认 200（ROADMAP）。可由调用方覆盖。
     let limit: Int
 
-    /// 当前列表排序键。本地 @State 是为了"列头点击不污染全局 settings.sortKey"——
-    /// settings.sortKey 是给清单 / 树视图共用的，大文件视图列只有 size / mtime 两列，
-    /// 与之模型不一致。
-    @State private var sortKey: LargeFileSortKey = .sizeDesc
+    /// v1.5 P2 / Q1：当前列表排序键。
+    ///
+    /// **历史**：之前用 `@State private var sortKey: LargeFileSortKey = .sizeDesc`，
+    /// 注释解释是"不污染全局 settings.sortKey"——但实际造成用户在工具栏点全局排序图标
+    /// 切到 nameAsc 后，大文件页面依然是 sizeDesc，体验割裂（Q1 根因）。
+    ///
+    /// **现在**：单向派生自 [AppSettings.mainListSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift#L339)
+    /// （大文件只有 size+mtime 两列，nameAsc 等 → fallback 到 sizeDesc，见
+    /// [LargeFileSortKey.from(global:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L354)）。
+    /// 列头点击通过 [sortKeyBinding](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/LargeFilesView.swift)
+    /// 反向写回全局键，实现双向同步。
+    private var sortKey: LargeFileSortKey {
+        LargeFileSortKey.from(global: settings.mainListSortKey)
+    }
+
+    /// v1.5 P2 / Q1：列头点击使用的 binding —— 写入会回译到全局键。
+    private var sortKeyBinding: Binding<LargeFileSortKey> {
+        Binding(
+            get: { LargeFileSortKey.from(global: settings.mainListSortKey) },
+            set: { settings.mainListSortKey = $0.asGlobal }
+        )
+    }
 
     /// v1.2 P2-3：当前类型 chip 筛选；nil 表示"全部"。
     /// 与 mtimeFilter 不同的是，类型筛选**不持久化**——它是查看行为而非偏好。
@@ -409,7 +427,9 @@ public struct LargeFilesView: View {
 
     private func columnButton(title: String, column: LargeFileSortKey.Column) -> some View {
         Button {
-            sortKey = sortKey.toggled(to: column)
+            // v1.5 P2 / Q1：列头点击 → 写 sortKeyBinding → 回译到 settings.mainListSortKey，
+            // 同帧通知主列表 / 树视图重排。
+            sortKeyBinding.wrappedValue = sortKey.toggled(to: column)
         } label: {
             HStack(spacing: 4) {
                 Text(title)
@@ -485,10 +505,13 @@ public struct LargeFilesView: View {
             Button {
                 batch.toggle(item.path)
             } label: {
-                Label(
-                    isPicked ? "取消勾选" : "勾选用于批量删除",
-                    systemImage: isPicked ? "square" : "checkmark.square"
-                )
+                Label {
+                    Text(isPicked ? LocalizedStringKey("largefiles.menu.unpick")
+                                  : LocalizedStringKey("largefiles.menu.pick"),
+                         bundle: .module)
+                } icon: {
+                    Image(systemName: isPicked ? "square" : "checkmark.square")
+                }
             }
             Divider()
             Button {

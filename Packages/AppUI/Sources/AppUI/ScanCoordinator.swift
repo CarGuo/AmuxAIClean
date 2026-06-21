@@ -21,6 +21,12 @@ public final class ScanCoordinator: ObservableObject {
     /// 与 permissionDeniedPaths 合并展示在统一 banner，**不会触发系统弹窗**。
     @Published public private(set) var tccProtectedSkippedPaths: [String] = []
 
+    /// v1.3 P0-D：开发者构建产物勘察是否触发了截断（命中数达上限 或 walk 超时）。
+    /// UI 在 dev 扫描结果区可读此标志展示 banner："命中过多，仅展示前 N 项"。
+    /// 仅在 scanDeveloper 路径上有意义；其他扫描入口启动时会被清零。
+    @Published public private(set) var devArtifactDidTruncate: Bool = false
+    @Published public private(set) var devArtifactDidTimeout: Bool = false
+
     /// M4-T1：本轮扫描启动时从 [WhitelistStore.shared](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/WhitelistStore.swift)
     /// 拉一份的内存快照（normalized 后的 path Set）。publishSnapshot 是同步函数，
     /// 不能在 hot path 里 `await` 一个 actor —— 因此扫描入口拉一次快照，全程同步命中。
@@ -80,11 +86,72 @@ public final class ScanCoordinator: ObservableObject {
     ///   按 rootPath 累加 bytes / fileCount；该根 .finished 事件到达时翻 isFinished=true。
     /// v1.3.zz 性能修复：每文件不再直接写 @Published（每写都触发 SwiftUI 全 view 重算），改成
     /// 写到 perRootStaging（普通字典），由 publishSnapshot（throttle 0.4s）批量同步到这里。
-    @Published public private(set) var perRootProgress: [String: PerRootProgress] = [:]
+    ///
+    /// v1.5 P1-B 性能修复：旧实现是整个 dict 替换 → SwiftUI 把 statusBar / 多根 ScrollView
+    /// 大面积重 diff。dev scan 几十/几百根时极其卡。改为拆分为两份 @Published：
+    /// - [perRootProgressActive](#)：仅 in-flight（isFinished==false）的根，体量小、变化频繁；
+    /// - [perRootFinishedSlim](#)：已 finished 的根的轻量快照，体量随完成数增长但每个根只 push 一次；
+    /// - [perRootFinishedCount](#)：finished 数量，方便 UI 只看个数变化触发刷新。
+    /// 本字段保留为只读计算属性合并两者，让现有读取者（树形顶层合成 / status banner）无须改动。
+    public var perRootProgress: [String: PerRootProgress] {
+        if perRootFinishedSlim.isEmpty { return perRootProgressActive }
+        if perRootProgressActive.isEmpty { return perRootFinishedSlim }
+        return perRootProgressActive.merging(perRootFinishedSlim) { active, _ in active }
+    }
+
+    /// v1.5 P1-B：in-flight 根的进度。throttle 同步时只触达"还在扫"的根，整体重 diff 面收敛。
+    @Published public private(set) var perRootProgressActive: [String: PerRootProgress] = [:]
+
+    /// v1.5 P1-B：已 finished 根的轻量快照（保留 bytes/fileCount/title 用于树形顶层），
+    /// 每根 finish 时一次性 push，之后不再变化 —— SwiftUI 对该字典的子树渲染会稳定下来。
+    @Published public private(set) var perRootFinishedSlim: [String: PerRootProgress] = [:]
+
+    /// v1.5 P1-B：已 finished 根的数量。便于 UI 只关心数量变化（例如显示 "3/5 已完成"）时，
+    /// 避免依赖整 dict 触发重 diff。
+    @Published public private(set) var perRootFinishedCount: Int = 0
 
     /// v1.3.zz 性能修复用：staging 累计区，每 .node 事件直接累计这里，避开 @Published 触发 SwiftUI invalidation。
     /// publishSnapshot 节流点会把它同步到 perRootProgress（0.4s 一次）。
     private var perRootStaging: [String: PerRootProgress] = [:]
+
+    /// v1.5 P1-B：把 staging 字典拆分同步到 active / finishedSlim / finishedCount。
+    /// - 仅当 active / finishedSlim 真的变化时才 assign，避免无谓 willChange。
+    /// - finishedSlim 的 key set 单调增（finish 后不会回到 in-flight），所以只比 count 就够。
+    private func syncPerRootPublished(from staging: [String: PerRootProgress]) {
+        var nextActive: [String: PerRootProgress] = [:]
+        nextActive.reserveCapacity(staging.count)
+        var nextFinishedCount = 0
+        var newlyFinished: [(String, PerRootProgress)] = []
+        for (k, v) in staging {
+            if v.isFinished {
+                nextFinishedCount += 1
+                // 与已有 slim 不同才记下，避免无谓写入
+                if perRootFinishedSlim[k] != v {
+                    newlyFinished.append((k, v))
+                }
+            } else {
+                nextActive[k] = v
+            }
+        }
+        if perRootProgressActive != nextActive {
+            perRootProgressActive = nextActive
+        }
+        if !newlyFinished.isEmpty {
+            var slim = perRootFinishedSlim
+            for (k, v) in newlyFinished { slim[k] = v }
+            perRootFinishedSlim = slim
+        }
+        if perRootFinishedCount != nextFinishedCount {
+            perRootFinishedCount = nextFinishedCount
+        }
+    }
+
+    /// v1.5 P1-B：完整重置三份 @Published（用于 cancel / 重新预填）。
+    private func resetPerRootPublished() {
+        if !perRootProgressActive.isEmpty { perRootProgressActive = [:] }
+        if !perRootFinishedSlim.isEmpty { perRootFinishedSlim = [:] }
+        if perRootFinishedCount != 0 { perRootFinishedCount = 0 }
+    }
 
     /// 单根的实时进度快照。
     /// - title：UI 直接展示的中文友好名（取自 ScanCategory.title），如"用户缓存"/"应用日志"；
@@ -171,7 +238,8 @@ public final class ScanCoordinator: ObservableObject {
     /// 循环消费一两轮（cancel 的传播是协作式，不是抢占式）。如果不带本次 token，
     /// 旧 ingest 会把数据写到刚被新 scan 重置过的 buckets/dirIndex 上，污染新 categoryID 的 snapshot。
     /// runScan 的每次事件处理之前先校验 `myCategoryID == activeCategoryID`，不一致直接 break。
-    private var activeCategoryID: String?
+    /// v1.3 P0-D：暴露 read-only 给 UI 用于判断 banner 上下文（仍是内部更新）。
+    public private(set) var activeCategoryID: String?
 
     /// 一级子目录 -> 累计统计；用 path 作 key 保证稳定。
     private struct Bucket {
@@ -429,10 +497,15 @@ public final class ScanCoordinator: ObservableObject {
 
     /// 单点收敛：推进数值脏标。
     /// 仅在确认"节点拓扑没变（仅 buckets[k].bytes 累加之类）"时调用。
-    /// `treeRevision` 也跟着走，让兼容订阅者不死寂；但 `structuralRevision` 不动。
+    ///
+    /// v1.5 P2 滑动卡顿修复：
+    /// 此前为了"兼容订阅者不死寂"也把 `treeRevision` 一起推 —— 但 `treeRevision` 是
+    /// TreeBrowserView 的"结构变化"信号，每帧 +1 等于强制 TreeBrowserView rebuildFlatRows()
+    /// + 整个主列表所有 RowView body 重算，是滑动期主帧丢的第二大头（review-swarm 命中 #5）。
+    /// 现在只 tick 数值通道（`tickRevision` + `treeBrowser.bumpTickRevision()`），
+    /// 树形视图按"显式 structural"通道感知拓扑变化，纯 bytes 累加不再打扰它。
     private func bumpTickRevision() {
         tickRevision &+= 1
-        treeRevision &+= 1
         treeBrowser.bumpTickRevision()
     }
 
@@ -441,6 +514,16 @@ public final class ScanCoordinator: ObservableObject {
     /// 仅作运行期遥测与测试观察用，**不参与 @Published**（不触发 view 更新）。
     private var verdictCacheHits: Int = 0
     private var verdictCacheMisses: Int = 0
+
+    /// v1.5 P1-C：publishSnapshot 流式帧"排序结果"缓存。
+    /// 不变量：扫描中 ingest 只 add 不 remove bucket（buckets.count 单调增），
+    /// 同时白名单 whitelistSnapshot 在帧间一般不变 ——
+    /// 所以当 `(buckets.count, whitelistSnapshot.count)` 与上一帧相同时，
+    /// 流式帧（finished=false）的 sorted id 序（path 字典序）必然与上一帧完全一致，
+    /// 可直接复用，跳过 O(N log N) 排序。
+    /// finished=true 帧走用户 sort，不参与缓存。
+    private var lastStreamSortedIds: [String] = []
+    private var lastStreamSortCacheKey: (bucketCount: Int, whitelistCount: Int) = (-1, -1)
 
     /// 测试观察口：暴露 verdict cache 命中统计。
     /// 仅 internal —— 同 module 的测试代码可读；外部 framework 不可见。
@@ -613,7 +696,7 @@ public final class ScanCoordinator: ObservableObject {
         tccProtectedSkippedPaths = []
         lastError = nil
         // v1.3：cancel 时同时清掉多根扫描进度，避免 statusBar 上残留旧根的"扫描中"行。
-        perRootProgress = [:]
+        resetPerRootPublished()
         perRootStaging = [:]
         // v1.3：标记本次状态为"用户主动停止"，让 statusBar 显示"已停止"而非"还未扫描"。
         wasCancelled = true
@@ -727,6 +810,13 @@ public final class ScanCoordinator: ObservableObject {
         }
         // v1.0 T5：整盘扫描时强制开启 staySingleVolume，避免误吃外接卷 / 网络挂载点把扫描时间打爆
         let isFullDisk = category.kind == .fullDisk
+        // v1.3 P0-C：整盘扫描节点量 100k+，deep index 在 MainActor ingest 内做
+        // 祖先回溯 + childEdges/dirIndex/fileLeaves 写入会瞬间打爆主线程帧预算。
+        // 整盘永远走 store-fallback 路径（同步表面 + 后台 GRDB 填充）。
+        if isFullDisk && enableTreeDeepIndex {
+            GSYLog.info(.scan, "ScanCoordinator 整盘扫描强制关闭 enableTreeDeepIndex（防止 MainActor ingest burst）")
+            enableTreeDeepIndex = false
+        }
         scanTask = Task { [weak self] in
             await self?.runScan(rootURL: rootURL, categoryID: categoryID,
                                 includeHidden: includeHidden, staySingleVolume: isFullDisk)
@@ -789,10 +879,17 @@ public final class ScanCoordinator: ObservableObject {
                                                                trie: trie, home: self.home)
             let size = Self.directorySize(at: hit.url)
             totalAccum &+= size
+            let localizedDisplay = String(localized: String.LocalizationValue(hit.displayName), bundle: .module)
+            let composedTitle: String
+            if let groupKey = hit.groupKey, !groupKey.isEmpty {
+                composedTitle = "\(localizedDisplay) · \(groupKey) · \(hit.versionName)"
+            } else {
+                composedTitle = "\(localizedDisplay) · \(hit.versionName)"
+            }
             rows.append(RowItem(
                 id: hit.url.path,
                 url: hit.url,
-                title: "\(hit.displayName) · \(hit.versionName)",
+                title: composedTitle,
                 isDirectory: true,
                 bytes: size,
                 logicalBytes: size,
@@ -926,7 +1023,7 @@ public final class ScanCoordinator: ObservableObject {
         for c in cats {
             initial[c.rootPath] = PerRootProgress(rootPath: c.rootPath, title: c.displayTitle)
         }
-        perRootProgress = initial
+        syncPerRootPublished(from: initial)
         // v1.3.zz 性能修复：staging 同步初始化，让 .node 事件累计的目标存在
         perRootStaging = initial
 
@@ -978,6 +1075,13 @@ public final class ScanCoordinator: ObservableObject {
                               enabledRuleIDs: Set<String> = DevArtifactRules.allIDs) {
         cancel()
         wasCancelled = false
+        // v1.3 P0-C：开发者构建产物扫描典型命中 30+ 根 × 每根上万 node，
+        // 若 enableTreeDeepIndex 开着，MainActor ingest 会被祖先回溯 + index 写入打挂。
+        // 强制关闭，让 TreeBrowser 走 store-fallback 异步路径（与全盘扫一致策略）。
+        if enableTreeDeepIndex {
+            GSYLog.info(.scan, "ScanCoordinator dev 扫描强制关闭 enableTreeDeepIndex（防止 MainActor ingest burst）")
+            enableTreeDeepIndex = false
+        }
         buckets.removeAll(keepingCapacity: true)
         // Step 3 P0-3：buckets 整轮清空 → bucket 上的 cachedVerdict 也跟着消失。
         // 但独立维护的命中率计数器需要显式归零，否则跨会话累计无意义。
@@ -1011,6 +1115,9 @@ public final class ScanCoordinator: ObservableObject {
         lastError = nil
         permissionDeniedPaths = []
         tccProtectedSkippedPaths = []
+        // v1.3 P0-D：dev 扫描入口归零截断标志，避免上次的状态污染本次 banner。
+        devArtifactDidTruncate = false
+        devArtifactDidTimeout = false
         activeCategoryID = ScanCoordinator.developerCategoryID
 
         let session = ScanSessionID()
@@ -1034,14 +1141,18 @@ public final class ScanCoordinator: ObservableObject {
         // 异步勘察 + 启动扫描；勘察自身有 60s 超时和 GSYLog 埋点
         scanTask = Task { [weak self] in
             let opts = DevArtifactScanner.Options(enabledRuleIDs: enabledRuleIDs)
-            let hits = await DevArtifactScanner(options: opts).discover(home: homeURL)
+            let result = await DevArtifactScanner(options: opts).discoverWithMetadata(home: homeURL)
+            let hits = result.hits
             // 防过期：勘察期间用户可能切走或重新点击其他扫描入口
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 guard self.activeCategoryID == activeID else { return }
+                // v1.3 P0-D：把元数据同步到 @Published 给 UI banner 用。
+                self.devArtifactDidTruncate = result.didTruncate
+                self.devArtifactDidTimeout = result.didTimeout
                 if hits.isEmpty {
                     // 0 命中：直接 publish 一个 finished snapshot，让 UI 不再卡在"扫描中…"
-                    self.perRootProgress = [:]
+                    self.resetPerRootPublished()
                     self.perRootStaging = [:]
                     self.snapshot = ScanSnapshot(categoryID: activeID, rows: [],
                                                  totalBytes: 0, scannedFileCount: 0,
@@ -1055,10 +1166,11 @@ public final class ScanCoordinator: ObservableObject {
                 var initial: [String: PerRootProgress] = [:]
                 for hit in hits {
                     let shortPath = self.shortenPath(hit.url.path, home: self.home)
-                    let title = "\(hit.displayName) · \(shortPath)"
+                    let localizedDisplay = String(localized: String.LocalizationValue(hit.displayName), bundle: .module)
+                    let title = "\(localizedDisplay) · \(shortPath)"
                     initial[hit.url.path] = PerRootProgress(rootPath: hit.url.path, title: title)
                 }
-                self.perRootProgress = initial
+                self.syncPerRootPublished(from: initial)
                 self.perRootStaging = initial
 
                 let roots = hits.map { $0.url }
@@ -1079,10 +1191,14 @@ public final class ScanCoordinator: ObservableObject {
                 // 文件枚举 worker，整机 APFS metadata layer 进入排队，App / Finder / 浏览器
                 // 一起卡。maxConcurrentRoots=4 在 24 核 IO 并发上限下仍能跑满吞吐，
                 // 但不会让其他进程饿死。
+                //
+                // v2026.06.21 修复 #1：用户实测 dev 扫几十个 node_modules / pods 根时
+                // 主窗口列表滑动明显卡顿。3 并发与 4 并发整体吞吐差异微小（受 APFS metadata
+                // 串行化限制），但主线程 publishSnapshot 节流帧更不容易堆积——降到 3。
                 self.scanTask = Task { [weak self] in
                     await self?.runMultiRootScan(roots: roots, options: options,
                                                  categoryID: activeID,
-                                                 maxConcurrentRoots: 4)
+                                                 maxConcurrentRoots: 3)
                 }
             }
         }
@@ -1218,7 +1334,15 @@ public final class ScanCoordinator: ObservableObject {
         // v1.3.z 性能修复：见 runScan 同名注释。多根模式 throttle 同步抬到 0.40。
         let throttle: TimeInterval = 0.40
         // v1.3.y 性能修复：见 runScan 同名注释。多根模式同样需要让出主 actor。
-        let yieldEvery = 256
+        // v2026.06.21 修复 #4（卡顿+超长）：
+        //   - 旧实现 `yieldEvery=256` 是按**事件数**计，而 `.nodes(arr)` 一个事件可能含
+        //     几百个 node，主线程实际处理时间远超字面值。dev scan discover 命中几十根 +
+        //     每根几万 node 时，主线程被 ingest 连续占住 200~500ms，列表滑动直接卡死。
+        //   - 改为按**实际处理的 node 个数**累加：`.node` 计 1、`.nodes(arr)` 计 `arr.count`。
+        //   - 阈值降到 96：node 路径上典型 ingest ~5–15µs，96 节点 ≈ 0.5–1.5ms 让出一次，
+        //     既能保证 ProMotion 120Hz 滑动 (8.3ms/帧) 有足够主线程空隙，又不让 ingest
+        //     吞吐被 yield 反噬（一次 await 调度本身有几十微秒成本）。
+        let yieldEvery = 96
         var consumedSinceYield = 0
 
         for await wrapped in await scanner.scan(roots: roots, maxConcurrentRoots: maxConcurrentRoots) {
@@ -1226,6 +1350,9 @@ public final class ScanCoordinator: ObservableObject {
             // 与 runScan 同款过期事件保护：activeCategoryID 被覆盖即旧 stream 残留事件，丢弃。
             guard activeCategoryID == categoryID else { break }
             let rootPath = wrapped.rootPath
+            // v2026.06.21 修复 #4：本事件实际"处理了几个 node"，作为 yield 计数权重。
+            // .node 计 1；.nodes(arr) 计 arr.count；非数据事件计 1（让控制类事件也参与 yield）。
+            var consumedThisEvent = 1
             switch wrapped.event {
             case .node(let node):
                 ingest(node: node, rootPath: rootPath)
@@ -1249,6 +1376,7 @@ public final class ScanCoordinator: ObservableObject {
                     p.fileCount += stagingDelta.files
                     perRootStaging[rootPath] = p
                 }
+                consumedThisEvent = max(1, arr.count)
             case .progress:
                 break
             case .finished:
@@ -1268,7 +1396,7 @@ public final class ScanCoordinator: ObservableObject {
                 // 推荐扫描固定 5 根、整盘扫描 1 根，throttle 0.4s 滞后看得见；
                 // 仅 dev scan / fullDisk discover 命中很多根时才走纯 throttle 路径。
                 if perRootStaging.count <= 10 {
-                    perRootProgress = perRootStaging
+                    syncPerRootPublished(from: perRootStaging)
                     lastEmit = Date()
                 }
             case .failed(let error):
@@ -1293,12 +1421,17 @@ public final class ScanCoordinator: ObservableObject {
             if now.timeIntervalSince(lastEmit) >= throttle {
                 lastEmit = now
                 // v1.3.zz 性能修复：节流同步 staging → @Published，让 UI 0.4s 看一次进度
-                perRootProgress = perRootStaging
+                syncPerRootPublished(from: perRootStaging)
                 publishSnapshot(categoryID: categoryID, finished: false)
+                // v1.3 P0-C：publishSnapshot 触发 SwiftUI 大面积 invalidate，主动让 1ms
+                // 给主线程跑 layout/render + 接受用户手势；不让的话下一批 .nodes 立即上来
+                // 又把 MainActor 抢走，形成"扫得越快越卡"反馈环。
+                try? await Task.sleep(nanoseconds: 1_000_000)
             }
 
-            // 性能修复：每 N 个事件让出一次主 actor
-            consumedSinceYield += 1
+            // v2026.06.21 修复 #4：按"实际 node 个数"累加，不再按 event 个数。
+            // .nodes(arr) 一个 event 累 arr.count，从而真正让 yield 跟主线程占用对齐。
+            consumedSinceYield += consumedThisEvent
             if consumedSinceYield >= yieldEvery {
                 consumedSinceYield = 0
                 await Task.yield()
@@ -1306,7 +1439,7 @@ public final class ScanCoordinator: ObservableObject {
         }
         guard activeCategoryID == categoryID else { return }
         // v1.3.zz 性能修复：收尾把 staging 最后状态同步到 @Published，让 UI 看到完整最终值
-        perRootProgress = perRootStaging
+        syncPerRootPublished(from: perRootStaging)
         // v1.3.zzz 关键时序修复（同 runScan 收尾）：finalize 必须**先于** publishSnapshot(finished:true)。
         // 旧时序：publishSnapshot → view 立即拉树形 → query 0 条（GRDB 还没 commit）。
         // 多根并行场景（推荐清理 5 根）原本一直是 fire-and-forget flushAndFinalizeStore()，
@@ -1352,8 +1485,11 @@ public final class ScanCoordinator: ObservableObject {
         // v1.3.y 性能修复：72 万 .node 每次都写一次 lastIngestAt 主线程字典 → 主线程压力大。
         // 该值仅用于 publishSnapshot 时（≥150ms 一次）判 active，精度做到 ~50ms 完全够；
         // 同 bucket 在 50ms 窗口内重复的写入直接跳过，把字典写入次数从 N 降到 N / (50ms 内同 bucket node 数)。
+        // v1.5 P1-D：去抖窗口从 0.05s 抬到 0.2s。配合 publishSnapshot 0.4s 节流与
+        // activityWindow=0.8s 仍完全安全（active 判定不会误失活），但字典写入再降一档，
+        // dev scan 几十/几百根高密度 ingest 时主线程字典写入压力进一步下降。
         let nowTI = Date.timeIntervalSinceReferenceDate
-        if let prev = lastIngestAt[bucketPath], nowTI - prev < 0.05 {
+        if let prev = lastIngestAt[bucketPath], nowTI - prev < 0.20 {
             // 窗口内已写过，跳过
         } else {
             lastIngestAt[bucketPath] = nowTI
@@ -2561,8 +2697,42 @@ public final class ScanCoordinator: ObservableObject {
         }
         if finished {
             rows = filtered.sorted(by: { mainListSortKey.lessThan($0, $1) })
+            // 流式 cache 不用于 finished，但避免下次扫描首帧误命中——失效掉
+            lastStreamSortedIds.removeAll(keepingCapacity: true)
+            lastStreamSortCacheKey = (-1, -1)
         } else {
-            rows = filtered.sorted { $0.id < $1.id }
+            // v1.5 P1-C：流式帧排序缓存。
+            // 命中条件：bucketCount 与上次相同（ingest 单调增 → 相同即 key set 完全相同）
+            // 且 whitelistCount 与上次相同（避免白名单变化产生不同的 filtered 序列影响）。
+            // 命中时直接按上次的 id 序重排 filtered，跳过 O(N log N) 排序。
+            let currentKey = (bucketCount: buckets.count, whitelistCount: whitelistSnapshot.count)
+            let cacheHit = currentKey.bucketCount > 0
+                && currentKey.bucketCount == lastStreamSortCacheKey.bucketCount
+                && currentKey.whitelistCount == lastStreamSortCacheKey.whitelistCount
+                && lastStreamSortedIds.count == filtered.count
+            if cacheHit {
+                // 按缓存 id 序重组 filtered（一次哈希构表 + 一次顺序拼装，O(N) 替代 O(N log N)）。
+                var byID: [String: RowItem] = [:]
+                byID.reserveCapacity(filtered.count)
+                for r in filtered { byID[r.id] = r }
+                var reordered: [RowItem] = []
+                reordered.reserveCapacity(filtered.count)
+                for id in lastStreamSortedIds {
+                    if let r = byID[id] { reordered.append(r) }
+                }
+                // 兜底：若映射出现不一致（理论上不应该发生），fallback 走真排序
+                if reordered.count == filtered.count {
+                    rows = reordered
+                } else {
+                    rows = filtered.sorted { $0.id < $1.id }
+                    lastStreamSortedIds = rows.map { $0.id }
+                    lastStreamSortCacheKey = currentKey
+                }
+            } else {
+                rows = filtered.sorted { $0.id < $1.id }
+                lastStreamSortedIds = rows.map { $0.id }
+                lastStreamSortCacheKey = currentKey
+            }
         }
 
         // v1.3：ETA 采样 —— 在每帧 publishSnapshot 时基于自上次采样的字节增量算瞬时速率，
@@ -2587,6 +2757,14 @@ public final class ScanCoordinator: ObservableObject {
 
         // v1.3.x：ETA 分母统一走 expectedTotalBytes —— 整盘扫在 scan() 入口已设成 volumeSnapshot.usedBytes，
         // 推荐扫 / 自定义扫由 TreeSizeEstimator 异步填充。这里只判断是否已经有可信分母。
+        //
+        // v2026.06.21 修复 #1：原来 `min(estimate, 4*3600)` 会让"远超 30 分钟的估算"被钳成
+        // 一个恒定的 "4:00:00"，HUD/主窗口长时间显示 "~ 4:00:00" 让用户以为"还要扫 4 小时"。
+        // 实际上速率窗口噪声 / 多根 dev 扫的间歇 stall 都会让 instant ETA 飙到几十小时，
+        // 这种估算根本不可信，呈现给用户反而是负价值。改为：
+        //   - 估算值 > 30 分钟 → 视为"不可信"直接返回 nil，UI 回落到 "已用 %@" 文案
+        //   - 估算值 <= 30 分钟 → 正常显示
+        // 这样既保留"快完成时的精确剩余时间"，又避免"长扫时段一个假上限糊脸"。
         let eta: TimeInterval?
         if !finished,
            etaEligible,
@@ -2595,8 +2773,9 @@ public final class ScanCoordinator: ObservableObject {
            let denom = expectedTotalBytes,
            denom > totalBytes {
             let remainingBytes = Double(denom - totalBytes)
-            // 上限保护：ETA 不超过 4 小时（防呆——速率瞬时低导致估天文数）
-            eta = min(remainingBytes / bytesPerSecondEMA, 4 * 3600)
+            let raw = remainingBytes / bytesPerSecondEMA
+            // 超过 30 分钟 = 估算不可信，宁可不显示 ETA（不再钳成 4:00:00 误导用户）
+            eta = (raw.isFinite && raw <= 30 * 60) ? raw : nil
         } else {
             eta = nil
         }

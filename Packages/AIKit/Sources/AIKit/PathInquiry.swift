@@ -102,10 +102,16 @@ public struct AIAdvice: Sendable, Equatable, Codable {
 
     /// 安全 fallback：构造一个"无可奉告"的占位 advice，
     /// 用于 AI 解析失败但又不想抛 hard error 的场景（让 UI 至少能展示一段说明）。
+    ///
+    /// `summary` 使用稳定的 sentinel key（`AIAdvice.unparsableSummaryKey`），
+    /// UI 层检测到该 key 后会替换为本地化文案，避免在 AIKit 内引入 Bundle.module。
     public static func unparsable(rawText: String) -> AIAdvice {
-        AIAdvice(summary: "AI 返回内容无法解析为结构化建议",
+        AIAdvice(summary: unparsableSummaryKey,
                  canDelete: .confirm,
                  reason: rawText.prefix(200).description,
                  sideEffects: [])
     }
+
+    /// fallback summary 的稳定 sentinel key。UI 层应当识别此值并替换为本地化文案。
+    public static let unparsableSummaryKey: String = "ai.advice.unparsable.summary"
 }

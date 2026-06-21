@@ -47,9 +47,9 @@ public struct LipoScreen: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Lipo / Universal Binary Slim")
+            Text("lipo.header.title", bundle: .module)
                 .font(.title2.bold())
-            Text("Audit .app bundles for FAT binaries and extract a single architecture to reclaim disk space.")
+            Text("lipo.header.subtitle", bundle: .module)
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -59,21 +59,25 @@ public struct LipoScreen: View {
         HStack(spacing: 8) {
             Image(systemName: "tray.and.arrow.down")
                 .foregroundStyle(.secondary)
-            TextField("Bundle path (e.g. /Applications/Foo.app)", text: $bundlePath)
+            TextField(String(localized: "lipo.input.placeholder", bundle: .module), text: $bundlePath)
                 .textFieldStyle(.roundedBorder)
             Button {
                 pickBundle()
             } label: {
                 Image(systemName: "folder")
             }
-            .help("Choose a .app bundle")
+            .help(Text("lipo.input.pick.help", bundle: .module))
             Button {
                 runAudit()
             } label: {
                 if isAuditing {
                     ProgressView().controlSize(.small)
                 } else {
-                    Label("Audit", systemImage: "magnifyingglass")
+                    Label {
+                        Text("lipo.action.audit", bundle: .module)
+                    } icon: {
+                        Image(systemName: "magnifyingglass")
+                    }
                 }
             }
             .disabled(isAuditing || bundlePath.isEmpty)
@@ -85,27 +89,37 @@ public struct LipoScreen: View {
     private var resultsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                Text("Candidates").font(.headline)
+                Text("lipo.results.title", bundle: .module).font(.headline)
                 if !candidates.isEmpty {
-                    Text("· \(candidates.count) files · save \(byteString(totalSavings))")
+                    Text(verbatim: String(format: String(localized: "lipo.results.summary %lld %@", bundle: .module),
+                                          candidates.count,
+                                          byteString(totalSavings)))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
                 if extractedSavings > 0 {
-                    Label("Reclaimed \(byteString(extractedSavings))",
-                          systemImage: "checkmark.seal.fill")
+                    Label {
+                        Text(verbatim: String(format: String(localized: "lipo.results.reclaimed %@", bundle: .module),
+                                              byteString(extractedSavings)))
+                    } icon: {
+                        Image(systemName: "checkmark.seal.fill")
+                    }
                         .font(.subheadline)
                         .foregroundStyle(.green)
                 }
             }
             if let err = lastError {
-                Label(err, systemImage: "exclamationmark.triangle")
+                Label {
+                    Text(verbatim: err)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle")
+                }
                     .font(.callout)
                     .foregroundStyle(.red)
             }
             if candidates.isEmpty && !isAuditing && lastError == nil {
-                Text("No multi-arch binaries detected. Drop a .app here or run Audit on a bundle path above.")
+                Text("lipo.results.empty", bundle: .module)
                     .font(.callout)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -129,15 +143,16 @@ public struct LipoScreen: View {
                 .foregroundStyle(.tint)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
-                Text(displayPath(cand.path))
+                Text(verbatim: displayPath(cand.path))
                     .font(.system(.body, design: .monospaced))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 HStack(spacing: 6) {
-                    Text(archesLabel(cand))
+                    Text(verbatim: archesLabel(cand))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text("· save \(byteString(cand.savings))")
+                    Text(verbatim: String(format: String(localized: "lipo.candidate.save %@", bundle: .module),
+                                          byteString(cand.savings)))
                         .font(.caption)
                         .foregroundStyle(cand.savings > 0 ? .green : .secondary)
                 }
@@ -149,7 +164,7 @@ public struct LipoScreen: View {
             Button {
                 runExtract(cand)
             } label: {
-                Text("Extract arm64")
+                Text("lipo.action.extract_arm64", bundle: .module)
             }
             .disabled(extracting.contains(cand.path) || cand.targetSlice == nil)
         }
@@ -193,7 +208,8 @@ public struct LipoScreen: View {
             } catch {
                 await MainActor.run {
                     extracting.remove(cand.path)
-                    lastError = "Extract failed for \(cand.path): \(error)"
+                    lastError = String(format: String(localized: "lipo.error.extract_failed %@ %@", bundle: .module),
+                                       cand.path, String(describing: error))
                 }
             }
         }
@@ -205,7 +221,7 @@ public struct LipoScreen: View {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.application, .directory]
-        panel.message = "Choose a .app bundle or directory to audit."
+        panel.message = String(localized: "lipo.picker.message", bundle: .module)
         if panel.runModal() == .OK, let url = panel.url {
             bundlePath = url.path
         }

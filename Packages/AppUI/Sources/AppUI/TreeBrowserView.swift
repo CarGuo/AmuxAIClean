@@ -60,10 +60,26 @@ public struct TreeBrowserView: View {
     /// 给值后无论 aiSettings 是否就绪都会出现按钮，未就绪时按 disabled。
     let onAskAI: ((TreeRow) -> Void)?
 
+    /// v1.5 P2 / Q1：可选的"全局排序键" binding。
+    ///
+    /// 设计动机（review-swarm Q1 根因）：
+    /// 之前 TreeBrowserView 自己持 `@State private var sortKey: TreeSortKey = .sizeDesc`，
+    /// 与 [AppSettings.mainListSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift#L339)
+    /// 完全解耦。结果用户在工具栏点"全局排序图标"切到 nameAsc，主列表反应了，
+    /// 但切到「树形视图」依然是初始 sizeDesc，体验严重不一致。
+    ///
+    /// 现在给一个**可选** binding：
+    /// - 有值（MainView 的 callsite 已升级）→ 列头点击 / 全局菜单切换双向同步
+    /// - nil（测试桩 / 其它复用场景）→ fallback 走本地 @State，保持向后兼容
+    let globalSortKey: Binding<MainListSortKey>?
+
     /// SafetyEngine 静态共享：拦截 forbid 路径（家目录、`/`、SIP、`..` 等），
     /// 在弹菜单 / 行内 trash 按钮 hit-test 时就 disabled，并附 tooltip 解释为什么不能删。
     static let safety = SafetyEngine()
 
+    /// v1.5 P2 / Q1：本地 fallback @State —— 仅在 `globalSortKey == nil` 时生效。
+    /// 有 globalSortKey 时通过 `effectiveSortKey` 的 getter 优先读外部 binding，
+    /// 这个 @State 完全不参与 body 渲染（也就不会触发额外 invalidation）。
     @State private var sortKey: TreeSortKey = .sizeDesc
     @State private var selectedPath: String?
     /// 各节点是否展开（path -> Bool）；放在父视图集中管理，
@@ -103,7 +119,8 @@ public struct TreeBrowserView: View {
                 onStash: ((TreeRow) -> Void)? = nil,
                 isStashed: ((String) -> Bool)? = nil,
                 aiSettings: AISettings? = nil,
-                onAskAI: ((TreeRow) -> Void)? = nil) {
+                onAskAI: ((TreeRow) -> Void)? = nil,
+                globalSortKey: Binding<MainListSortKey>? = nil) {
         self.coordinator = coordinator
         self.rootPath = rootPath
         self.onSelect = onSelect
@@ -113,6 +130,30 @@ public struct TreeBrowserView: View {
         self.isStashed = isStashed
         self.aiSettings = aiSettings
         self.onAskAI = onAskAI
+        self.globalSortKey = globalSortKey
+    }
+
+    /// v1.5 P2 / Q1：当前生效的 [TreeSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L191)。
+    /// 优先读 `globalSortKey`，没传才用本地 @State。
+    private var effectiveSortKey: TreeSortKey {
+        if let g = globalSortKey { return .from(global: g.wrappedValue) }
+        return sortKey
+    }
+
+    /// v1.5 P2 / Q1：给 TreeColumnHeader 用的 binding。
+    /// 列头点击 → set 自动按 `globalSortKey != nil` 选择写入通道。
+    /// 写全局通道时通过 `TreeSortKey.asGlobal` 回译，主列表 / 大文件视图同帧感知。
+    private var headerSortBinding: Binding<TreeSortKey> {
+        Binding(
+            get: { effectiveSortKey },
+            set: { newKey in
+                if let g = globalSortKey {
+                    g.wrappedValue = newKey.asGlobal
+                } else {
+                    sortKey = newKey
+                }
+            }
+        )
     }
 
     public var body: some View {
@@ -121,7 +162,7 @@ public struct TreeBrowserView: View {
         // 这一份扁平 @State 里。view 重算只读 state，重建在 onChange / onAppear 里发生，
         // 不会被 SwiftUI 的 diff 频繁触发递归。
         VStack(spacing: 0) {
-            TreeColumnHeader(sortKey: $sortKey)
+            TreeColumnHeader(sortKey: headerSortBinding)
             Divider()
             if flatRows.isEmpty {
                 VStack(spacing: 8) {
@@ -231,7 +272,9 @@ public struct TreeBrowserView: View {
         .onChange(of: expanded) { oldExp, newExp in
             applyExpandedChange(old: oldExp, new: newExp)
         }
-        .onChange(of: sortKey) { _, _ in rebuildFlatRows() }
+        // v1.5 P2 / Q1：监听"生效排序键"——它内部已根据 globalSortKey/本地 @State 合流，
+        // 两边任意一侧切换都会触发 rebuildFlatRows，保证树视图与全局排序图标同步。
+        .onChange(of: effectiveSortKey) { _, _ in rebuildFlatRows() }
         .onChange(of: rootPath) { _, _ in
             // 切扫描根：清掉旧 expanded 防止脏 path 残留撑起 flatRows
             expanded.removeAll(keepingCapacity: true)
@@ -354,7 +397,7 @@ public struct TreeBrowserView: View {
     /// 4w 节点级一次重建 < 10ms（实测，主 bottleneck 是 `directChildren` 内部 sort，
     /// 但每个 path 只调 1 次而不是 N 次）。
     private func rebuildFlatRows() {
-        let topLevel = coordinator.directChildren(of: rootPath, sortedBy: sortKey)
+        let topLevel = coordinator.directChildren(of: rootPath, sortedBy: effectiveSortKey)
         // v2026.06 Step 1：先把 (row, depth) 拍扁，再走 computeVerdicts
         // 一次性把 verdict 算好——SafetyEngine.evaluate 只在这里调，每行 1 次。
         var pairs: [(TreeRow, Int)] = []
@@ -373,12 +416,12 @@ public struct TreeBrowserView: View {
         maxBytes = topLevel.map(\.bytes).max() ?? 0
         // 顶层空 + isFetchingChildren 才算"拉取中"；否则维持 false 让 view 走 isScanning / 真空两态。
         isFetchingRoot = topLevel.isEmpty
-            && coordinator.isFetchingChildren(of: rootPath, sortedBy: sortKey)
+            && coordinator.isFetchingChildren(of: rootPath, sortedBy: effectiveSortKey)
     }
 
     private func appendDescendantPairs(parent: String, depth: Int,
                                        into out: inout [(TreeRow, Int)]) {
-        let kids = coordinator.directChildren(of: parent, sortedBy: sortKey)
+        let kids = coordinator.directChildren(of: parent, sortedBy: effectiveSortKey)
         for k in kids {
             out.append((k, depth))
             if k.isDirectory && (expanded[k.path] ?? false) {
@@ -413,7 +456,7 @@ public struct TreeBrowserView: View {
             let next = (i + 1 < base.count) ? base[i + 1] : nil
             if let next, next.depth > item.depth { continue }
             // 此时父展开 + 紧邻无真实子项；仅当 ScanCoordinator 报告还在拉时才插
-            guard coordinator.isFetchingChildren(of: item.row.path, sortedBy: sortKey)
+            guard coordinator.isFetchingChildren(of: item.row.path, sortedBy: effectiveSortKey)
             else { continue }
             let placeholderRow = TreeRow(
                 path: item.row.path,
@@ -492,7 +535,7 @@ public struct TreeBrowserView: View {
         // pairs.isEmpty → 父展开但暂时没真实子项；仅当 ScanCoordinator 报告还在异步拉时插占位
         let parentRow = flatRows[idx].row
         guard parentRow.accessState == .normal,
-              coordinator.isFetchingChildren(of: path, sortedBy: sortKey)
+              coordinator.isFetchingChildren(of: path, sortedBy: effectiveSortKey)
         else { return }
         let placeholderRow = TreeRow(
             path: path,
@@ -744,9 +787,18 @@ struct TreeColumnHeader: View {
             // v1.5.4：mtime 列。98pt 给"yyyy-MM-dd"或"3 天前"宽度足够。
             headerButton(label: String(localized: "tree.column.mtime", bundle: .module), column: .mtime)
                 .frame(width: 98, alignment: .trailing)
-            // **v1.5.3**：行内 trash 按钮列宽（28pt），跟 TreeNodeView 对齐——
-            // 表头本身不画按钮，只占位让标题列宽与下方一致。
-            Spacer().frame(width: 28)
+            // v2026.06.21 反馈修复：之前 mtime 与按钮列贴边，视觉上像"挤在一起"。
+            // 加一个 12pt gap，让 mtime 文案与「操作」列有清晰的视觉分隔。
+            Spacer().frame(width: 12)
+            // **v2026.06.21 修复**：原来这里只是一个 84pt 的 Spacer 占位，没有标题，
+            // 用户原话「这个栏目也没有写『操作』这个栏目信息」。改成正式的「操作」
+            // 表头文案，居中显示在 84pt（AI 28 + Stash 28 + Trash 28）按钮列上方，
+            // 让用户一眼知道这一列点开会发生什么；不参与点击切排序，所以不复用
+            // headerButton 而是直接 Text。
+            Text("tree.column.actions", bundle: .module)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 84, alignment: .center)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
@@ -869,6 +921,11 @@ struct TreeNodeRow: View {
                 }
             }
             TreeBrowserRow(row: row, maxBytes: maxBytes)
+            // v2026.06.21 反馈修复：在数据 Row 与「操作」按钮组之间也插入与表头
+            // 一致的 12pt 间隙（表头 mtime 与 actions 同样间隔 12pt），避免行内
+            // mtime 数字与三枚按钮贴在一起，跟表头列宽完全对齐。
+            // 注意：HStack 自身 spacing=6 已贡献了 6pt，再加 6pt 凑到 12pt。
+            Spacer().frame(width: 6, height: 1)
             // v2026.06.20 **行内"问 AI"按钮**——抽到独立 helper 减轻 body 的 type-check 负担。
             // 详细注释见 [aiActionButton](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
             aiActionButton
@@ -1008,9 +1065,12 @@ struct TreeNodeRow: View {
                 Divider()
             }
             // v2026.06.20 contextMenu 也提供"问 AI"项，与行内 sparkles 按钮等价。
-            // 仅当 onAskAI && aiSettings.isReadyForUI 时才出现；未配置不显示
-            // —— contextMenu 是动作面板，disabled 在这里反馈差，宁可隐藏。
-            if let onAskAI, let ai = aiSettings, ai.isReadyForUI {
+            //
+            // v1.5 P2 / Q3 修复：旧实现"未配置则不显示"——用户根本不知道有 AI 入口
+            // 也不会被引导去设置。改为"只要 onAskAI 不为 nil 就显示"：未就绪时同样
+            // 回调上层，由 MainView 在 callback 内弹"AI 未配置，前往设置？"alert，
+            // 跟 List 视图保持一致行为。
+            if let onAskAI {
                 Button {
                     onSelect()
                     onAskAI(row)
@@ -1102,14 +1162,16 @@ struct TreeNodeRow: View {
     /// in reasonable time"。语义与 RowView 的 AI 入口对齐：
     /// - `onAskAI == nil` → 不出现（readonly / 无 AI 入口的视图）
     /// - `onAskAI != nil` 但 `aiSettings == nil || !isReadyForUI` →
-    ///   出现，灰色 sparkles + disabled + tooltip 提示 "请先在设置中配置 AI"
+    ///   出现，**淡 sparkles + tooltip 提示 "AI 未配置，点击前往设置"**，
+    ///   点击仍回调 `onAskAI(row)`，由上层弹"前往设置？"alert（Q3 修复）
     /// - 都满足 → accentColor sparkles + 可点击，回调上层弹 AIAdviceSheet
     @ViewBuilder
     private var aiActionButton: some View {
         if let onAskAI {
             let aiReady = (aiSettings?.isReadyForUI == true)
             Button {
-                guard aiReady else { NSSound.beep(); return }
+                // v1.5 P2 / Q3：未就绪时不再 beep（用户无感知）——直接回调上层，
+                // MainView 负责弹"AI 未配置，前往设置？"alert，给用户明确引导。
                 onSelect()
                 onAskAI(row)
             } label: {
@@ -1120,7 +1182,6 @@ struct TreeNodeRow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(!aiReady)
             .help(aiReady
                   ? String(localized: "tree.row.ai", bundle: .module)
                   : String(localized: "tree.row.ai.not_configured", bundle: .module))

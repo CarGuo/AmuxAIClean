@@ -68,23 +68,23 @@ public enum KnownVersionedRoots {
     public static let entries: [Entry] = [
         // —— Apple DeviceSupport 三条（对位 Mole clean_xcode_device_support）——
         Entry(relativePath: "Library/Developer/Xcode/iOS DeviceSupport",
-              displayName: "Xcode · iOS DeviceSupport（旧版本）",
+              displayName: "versioned-root.apple.ios-device-support.displayName",
               keepLatest: 2,
               ordering: .semverPreferred,
               ruleID: "apple.ios-device-support.versioned"),
         Entry(relativePath: "Library/Developer/Xcode/watchOS DeviceSupport",
-              displayName: "Xcode · watchOS DeviceSupport（旧版本）",
+              displayName: "versioned-root.apple.watchos-device-support.displayName",
               keepLatest: 2,
               ordering: .semverPreferred,
               ruleID: "apple.watchos-device-support.versioned"),
         Entry(relativePath: "Library/Developer/Xcode/macOS DeviceSupport",
-              displayName: "Xcode · macOS DeviceSupport（旧版本）",
+              displayName: "versioned-root.apple.macos-device-support.displayName",
               keepLatest: 2,
               ordering: .semverPreferred,
               ruleID: "apple.macos-device-support.versioned"),
         // —— JetBrains Toolbox apps（对位 Mole clean_dev_jetbrains_toolbox）——
         Entry(relativePath: "Library/Application Support/JetBrains/Toolbox/apps",
-              displayName: "JetBrains Toolbox（旧版本）",
+              displayName: "versioned-root.jetbrains.toolbox-apps.displayName",
               keepLatest: 1,
               ordering: .semverPreferred,
               ruleID: "jetbrains.toolbox-apps.versioned"),
@@ -94,17 +94,17 @@ public enum KnownVersionedRoots {
         // 注意：Android SDK 安装位置受 ANDROID_HOME / ANDROID_SDK_ROOT 环境变量影响，
         // 这里仅注册 macOS 默认安装路径 `~/Library/Android/sdk`；非默认路径靠用户自定义路径补全（v1.8 UI）。
         Entry(relativePath: "Library/Android/sdk/build-tools",
-              displayName: "Android SDK · build-tools（旧版本）",
+              displayName: "versioned-root.android.sdk-build-tools.displayName",
               keepLatest: 2,
               ordering: .semverPreferred,
               ruleID: "android.sdk-build-tools.versioned"),
         Entry(relativePath: "Library/Android/sdk/platforms",
-              displayName: "Android SDK · platforms（旧版本）",
+              displayName: "versioned-root.android.sdk-platforms.displayName",
               keepLatest: 2,
               ordering: .semverPreferred,
               ruleID: "android.sdk-platforms.versioned"),
         Entry(relativePath: "Library/Android/sdk/system-images",
-              displayName: "Android SDK · system-images（旧版本）",
+              displayName: "versioned-root.android.sdk-system-images.displayName",
               keepLatest: 2,
               ordering: .semverPreferred,
               ruleID: "android.sdk-system-images.versioned"),
@@ -115,19 +115,19 @@ public enum KnownVersionedRoots {
         // keepLatest=1：JetBrains IDE 大版本年更新（2024.1 → 2024.2 → 2024.3），用户通常只用最新一档。
         // 不匹配的子目录（如 Toolbox 自身、consentOptions）不会被识别（fullMatch 兜底）。
         Entry(relativePath: "Library/Caches/JetBrains",
-              displayName: "JetBrains · 索引/编译缓存（旧版本）",
+              displayName: "versioned-root.jetbrains.caches.displayName",
               keepLatest: 1,
               ordering: .semverPreferred,
               ruleID: "jetbrains.caches.versioned-per-product",
               groupingRegex: #"^([A-Za-z]+)\d{4}\.\d+$"#),
         Entry(relativePath: "Library/Application Support/JetBrains",
-              displayName: "JetBrains · 配置(部分)（旧版本）",
+              displayName: "versioned-root.jetbrains.app-support.displayName",
               keepLatest: 1,
               ordering: .semverPreferred,
               ruleID: "jetbrains.app-support.versioned-per-product",
               groupingRegex: #"^([A-Za-z]+)\d{4}\.\d+$"#),
         Entry(relativePath: "Library/Logs/JetBrains",
-              displayName: "JetBrains · 日志（旧版本）",
+              displayName: "versioned-root.jetbrains.logs.displayName",
               keepLatest: 1,
               ordering: .semverPreferred,
               ruleID: "jetbrains.logs.versioned-per-product",
@@ -150,17 +150,23 @@ public enum KnownVersionedRoots {
         /// 被保留的最新一版的名字（来自 VersionedRetainScanner.Hit.retainedLatest），
         /// UI 可显示「将保留：xxx」帮助用户对账
         public let retainedLatest: String
+        /// v1.7 PR-3 分组扫描产物：当 entry.groupingRegex 命中时，这里存原始的 group key
+        /// （如 `IntelliJIdea`），UI 端在解析 `displayName` (i18n key) 后再拼到一起；
+        /// 非分组场景为 nil。i18n 边界保持在 UI 层。
+        public let groupKey: String?
 
         public var id: String { "\(ruleID)|\(url.path)" }
 
         public init(url: URL, ruleID: String, displayName: String,
-                    collectionRoot: URL, versionName: String, retainedLatest: String) {
+                    collectionRoot: URL, versionName: String, retainedLatest: String,
+                    groupKey: String? = nil) {
             self.url = url
             self.ruleID = ruleID
             self.displayName = displayName
             self.collectionRoot = collectionRoot
             self.versionName = versionName
             self.retainedLatest = retainedLatest
+            self.groupKey = groupKey
         }
     }
 
@@ -268,10 +274,11 @@ public enum KnownVersionedRoots {
                 let old = sorted[i]
                 result.append(Hit(url: old.url,
                                   ruleID: entry.ruleID,
-                                  displayName: "\(entry.displayName) · \(groupKey)",
+                                  displayName: entry.displayName,
                                   collectionRoot: collectionRoot,
                                   versionName: old.name,
-                                  retainedLatest: retainedLatest))
+                                  retainedLatest: retainedLatest,
+                                  groupKey: groupKey))
             }
         }
         return result

@@ -46,11 +46,11 @@ public final class SentinelManager {
         /// UI 展示的人类可读文案。
         public var displayLabel: String {
             switch self {
-            case .notRegistered: return "未启用"
-            case .enabled: return "运行中"
-            case .requiresApproval: return "需要授权（前往系统设置 → 登录项）"
-            case .notFound: return "未找到"
-            case .unknown(let raw): return "未知 (\(raw))"
+            case .notRegistered: return String(localized: "sentinel.status.not_registered", bundle: .module)
+            case .enabled: return String(localized: "sentinel.status.enabled", bundle: .module)
+            case .requiresApproval: return String(localized: "sentinel.status.requires_approval", bundle: .module)
+            case .notFound: return String(localized: "sentinel.status.not_found", bundle: .module)
+            case .unknown(let raw): return String(format: String(localized: "sentinel.status.unknown %lld", bundle: .module), raw)
             }
         }
     }
@@ -110,15 +110,10 @@ public final class SentinelManager {
 
     private func presentApprovalAlert() {
         let alert = NSAlert()
-        alert.messageText = "请在系统设置中允许后台守护"
-        alert.informativeText = """
-        GSY 清理管家的「Sentinel 后台守护」已注册，但需要你在 \
-        「系统设置 → 通用 → 登录项与扩展」中手动允许后才能运行。
-
-        守护进程仅在系统空闲时被动监听，开关随时可关。
-        """
-        alert.addButton(withTitle: "前往系统设置")
-        alert.addButton(withTitle: "稍后")
+        alert.messageText = String(localized: "sentinel.alert.approval.title", bundle: .module)
+        alert.informativeText = String(localized: "sentinel.alert.approval.body", bundle: .module)
+        alert.addButton(withTitle: String(localized: "sentinel.alert.button.open_settings", bundle: .module))
+        alert.addButton(withTitle: String(localized: "sentinel.alert.button.later", bundle: .module))
         alert.alertStyle = .informational
         let resp = alert.runModal()
         if resp == .alertFirstButtonReturn {
@@ -128,17 +123,12 @@ public final class SentinelManager {
 
     private func presentRegisterFailureAlert(error: Error) {
         let alert = NSAlert()
-        alert.messageText = "Sentinel 启用失败"
-        let logHint = GSYLog.currentLogFileURL()?.path ?? "诊断日志（设置 → 关于 → 打开日志目录）"
-        alert.informativeText = """
-        系统拒绝注册后台守护：
-        \(error.localizedDescription)
-
-        你可以打开「系统设置 → 通用 → 登录项与扩展」检查相关项；如重复失败，请把 \
-        \(logHint) 反馈给作者。
-        """
-        alert.addButton(withTitle: "前往系统设置")
-        alert.addButton(withTitle: "好")
+        alert.messageText = String(localized: "sentinel.alert.register_failed.title", bundle: .module)
+        let logHint = GSYLog.currentLogFileURL()?.path ?? String(localized: "sentinel.alert.register_failed.log_hint_fallback", bundle: .module)
+        alert.informativeText = String(format: String(localized: "sentinel.alert.register_failed.body %@ %@", bundle: .module),
+                                        error.localizedDescription, logHint)
+        alert.addButton(withTitle: String(localized: "sentinel.alert.button.open_settings", bundle: .module))
+        alert.addButton(withTitle: String(localized: "sentinel.alert.button.ok", bundle: .module))
         alert.alertStyle = .warning
         let resp = alert.runModal()
         if resp == .alertFirstButtonReturn {

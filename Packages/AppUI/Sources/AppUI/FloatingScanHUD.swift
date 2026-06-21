@@ -1481,9 +1481,10 @@ struct FloatingScanHUDView: View {
             Text(scanTimerText)
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
-                .help(coordinator.snapshot.estimatedRemaining != nil
-                      ? "预计剩余时间（基于扫描速率与已用容量估算）"
-                      : "已扫描时长（速率不足或非整盘扫描时无法估剩余）")
+                .help(Text(coordinator.snapshot.estimatedRemaining != nil
+                           ? LocalizedStringKey("hud.eta.help.remaining")
+                           : LocalizedStringKey("hud.eta.help.elapsed"),
+                           bundle: .module))
             Spacer(minLength: 0)
         }
     }

@@ -165,8 +165,10 @@ public enum DeletionRecipe: Sendable, Hashable {
 ///    NSRunningApplication 列表，命中则 devices/runtimes 两卡降级为 blocked，避免破坏正在运行的实例。
 public struct AppleWorkflow: DeveloperWorkflow {
     public let id: String = "workflow.apple"
-    public let displayName: String = "Apple 开发者一键清理"
-    public let subtitle: String = "Xcode / Simulator / SwiftPM / CocoaPods 等本地缓存与旧版本"
+    /// i18n key —— UI 层用 `Text(LocalizedStringKey(...), bundle: .module)` 渲染。
+    public let displayName: String = "workflow.apple.displayName"
+    /// i18n key —— UI 层用 `Text(LocalizedStringKey(...), bundle: .module)` 渲染。
+    public let subtitle: String = "workflow.apple.subtitle"
 
     /// Simulator 运行检测器：闭包注入便于测试时替换为 stub。
     /// 默认实现走 NSWorkspace（仅 macOS 主进程可用，单测中可注入恒 false 的 stub）。
@@ -205,8 +207,8 @@ public struct AppleWorkflow: DeveloperWorkflow {
         if Self.dirExists(derivedData) {
             result.append(DeveloperCard(
                 id: "card.apple.derived-data",
-                title: "Xcode DerivedData",
-                summary: "Xcode 编译派生数据，下次 build 自动重建",
+                title: "card.apple.derived-data.title",
+                summary: "card.apple.derived-data.summary",
                 source: .literal(paths: [derivedData.path]),
                 recipe: .filesystem,
                 risk: .safe))
@@ -216,8 +218,8 @@ public struct AppleWorkflow: DeveloperWorkflow {
             //     真正的 per-project scanner 在 PR-4 接 UI 时实现，本 PR 仅注册卡片入口
             result.append(DeveloperCard(
                 id: "card.apple.derived-data-per-project",
-                title: "Xcode DerivedData · 按工程分组",
-                summary: "DerivedData/<Project-Hash>/ 子目录列表，可单选某个不再活跃的工程",
+                title: "card.apple.derived-data-per-project.title",
+                summary: "card.apple.derived-data-per-project.summary",
                 source: .dynamicScanner(scannerID: "scanner.derived-data-per-project"),
                 recipe: .filesystem,
                 risk: .safe))
@@ -228,8 +230,8 @@ public struct AppleWorkflow: DeveloperWorkflow {
         if Self.dirExists(archives) {
             result.append(DeveloperCard(
                 id: "card.apple.archives",
-                title: "Xcode Archives",
-                summary: "TestFlight / App Store 上传记录与 dSYM，删后无法符号化历史 crash",
+                title: "card.apple.archives.title",
+                summary: "card.apple.archives.summary",
                 source: .literal(paths: [archives.path]),
                 recipe: .filesystem,
                 risk: .confirm))
@@ -238,9 +240,9 @@ public struct AppleWorkflow: DeveloperWorkflow {
         // 3-5. DeviceSupport 三系（safe）—— 走 KnownVersionedRoots 保留最新 2 版
         //      不直接清空 DeviceSupport 目录，避免误删当前在用版本
         for (subdir, ruleID, name) in [
-            ("iOS DeviceSupport",    "apple.ios-device-support.versioned",     "Xcode · iOS DeviceSupport（旧版本）"),
-            ("watchOS DeviceSupport", "apple.watchos-device-support.versioned", "Xcode · watchOS DeviceSupport（旧版本）"),
-            ("macOS DeviceSupport",  "apple.macos-device-support.versioned",   "Xcode · macOS DeviceSupport（旧版本）"),
+            ("iOS DeviceSupport",    "apple.ios-device-support.versioned",     "card.apple.ios-devicesupport.title"),
+            ("watchOS DeviceSupport", "apple.watchos-device-support.versioned", "card.apple.watchos-devicesupport.title"),
+            ("macOS DeviceSupport",  "apple.macos-device-support.versioned",   "card.apple.macos-devicesupport.title"),
         ] {
             let dir = xcodeRoot.appendingPathComponent(subdir, isDirectory: true)
             guard Self.dirExists(dir) else { continue }
@@ -249,7 +251,7 @@ public struct AppleWorkflow: DeveloperWorkflow {
             result.append(DeveloperCard(
                 id: "card.apple.\(idSuffix)",
                 title: name,
-                summary: "保留最新 2 个版本，旧版本可在连接对应系统设备时自动重新下载",
+                summary: "card.apple.devicesupport.summary",
                 source: .versionedRoot(ruleID: ruleID),
                 recipe: .filesystem,
                 risk: .safe))
@@ -261,8 +263,8 @@ public struct AppleWorkflow: DeveloperWorkflow {
         if Self.dirExists(csCaches) {
             result.append(DeveloperCard(
                 id: "card.apple.coresimulator-caches",
-                title: "CoreSimulator Caches",
-                summary: "iOS 模拟器运行时缓存，无业务影响",
+                title: "card.apple.coresimulator-caches.title",
+                summary: "card.apple.coresimulator-caches.summary",
                 source: .literal(paths: [csCaches.path]),
                 recipe: .filesystem,
                 risk: .safe))
@@ -278,10 +280,10 @@ public struct AppleWorkflow: DeveloperWorkflow {
         if Self.dirExists(csDevices) {
             result.append(DeveloperCard(
                 id: "card.apple.coresimulator-devices",
-                title: "iOS 模拟器实例（按 UDID 选删）",
+                title: "card.apple.coresimulator-devices.title",
                 summary: simulatorRunning
-                    ? "⚠️ 检测到 Simulator.app 正在运行，删除已禁用"
-                    : "通过 `xcrun simctl delete <UDID>` 删除已不用的模拟器实例",
+                    ? "card.apple.coresimulator-devices.summary.blocked"
+                    : "card.apple.coresimulator-devices.summary",
                 source: .dynamicScanner(scannerID: "scanner.simctl-devices"),
                 recipe: .commandLine(executable: "/usr/bin/xcrun",
                                      args: ["simctl", "delete"]),
@@ -293,10 +295,10 @@ public struct AppleWorkflow: DeveloperWorkflow {
         if Self.dirExists(csRoot) {
             result.append(DeveloperCard(
                 id: "card.apple.coresimulator-runtimes",
-                title: "iOS 模拟器 Runtime（旧版本）",
+                title: "card.apple.coresimulator-runtimes.title",
                 summary: simulatorRunning
-                    ? "⚠️ 检测到 Simulator.app 正在运行，删除已禁用"
-                    : "通过 `xcrun simctl runtime delete <ID>` 删除老版本 iOS runtime",
+                    ? "card.apple.coresimulator-runtimes.summary.blocked"
+                    : "card.apple.coresimulator-runtimes.summary",
                 source: .dynamicScanner(scannerID: "scanner.simctl-runtimes"),
                 recipe: .commandLine(executable: "/usr/bin/xcrun",
                                      args: ["simctl", "runtime", "delete"]),
@@ -310,8 +312,8 @@ public struct AppleWorkflow: DeveloperWorkflow {
         if Self.dirExists(csVolumes) {
             result.append(DeveloperCard(
                 id: "card.apple.coresimulator-volumes",
-                title: "CoreSimulator Volumes（runtime 镜像）",
-                summary: "已挂载的 iOS runtime 镜像目录，可与 Runtime 卡配套清理",
+                title: "card.apple.coresimulator-volumes.title",
+                summary: "card.apple.coresimulator-volumes.summary",
                 source: .literal(paths: [csVolumes.path]),
                 recipe: .filesystem,
                 risk: .safe))

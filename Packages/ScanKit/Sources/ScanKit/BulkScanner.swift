@@ -24,12 +24,18 @@ import LogKit
 /// 5. **取消传播**：每个 worker 自检 `Task.isCancelled`
 /// 6. **死锁 / 饥饿**：DirQueue.popOrFinish() 在 inFlight==0 && stack.isEmpty 时返回
 ///    `.done`，所有 worker 同时收到才退出
+/// 7. **目录回环防护**（v1.3 P0-A）：`DirInodeSet` 按 (dev,ino) 拦截重复目录入队，
+///    覆盖 APFS firmlink、dir hardlink、pnpm symlink-to-dir 三类陷阱；
+///    同时严格消费 `options.followSymlinks` —— 默认 false 时 symlink 指向的目录绝不下钻，
+///    彻底切断 `~/Library/Mobile Documents/.../node_modules/.bin` 类回环导致的 Stream 永不 finish。
 ///
 /// 失败回退：如果根目录无法 `open(O_RDONLY)`（典型于 TCC / Full Disk Access），
 /// 调用方应回退到 `Scanner` 的 FileManager 路径。
 public actor BulkScanner {
     private let options: ScanOptions
     private let inodeSet = InodeSet()
+    /// v1.3 P0-A：与 `inodeSet`（文件字节去重）分离的目录入队去重表。详见 DirInodeSet。
+    private let dirInodeSet = DirInodeSet()
 
     public init(options: ScanOptions = .default) {
         self.options = options
@@ -42,9 +48,13 @@ public actor BulkScanner {
         // 改为 .unbounded：worker 永远可以 yield，消费方背压由 actor await 自然形成；不会丢事件。
         // 同时显式 reset inodeSet，防止 BulkScanner 实例被复用时跨次污染（dedupe 把字节归零）。
         inodeSet.reset()
+        // v1.3 P0-A：目录入队去重表也必须跨次清空，否则第二次扫描时所有目录都被判"已访问"
+        // → 整棵树被跳过，summary 直接 fileCount=0。
+        dirInodeSet.reset()
         return AsyncStream(bufferingPolicy: .unbounded) { continuation in
             let opts = options
             let inodes = inodeSet
+            let dirInodes = dirInodeSet
             let task = Task.detached(priority: .userInitiated) {
                 let start = Date()
                 let stats = ScanStats()
@@ -70,13 +80,15 @@ public actor BulkScanner {
 
                 // 把根目录的 dev_t 取出来（lstat 一次），用于跨卷停下钻判断。
                 // 用 let + 立即求值；Swift 6 严格并发不允许闭包捕获可变 var。
+                // v1.3 P0-A：顺手把根目录的 (dev,ino) 登记进 dirInodes，避免后续遇到
+                // 指向根的 firmlink（如 /System/Volumes/Data ↔ /）时回环重扫。
                 let rootDev: UInt64 = {
-                    guard opts.staySingleVolume else { return 0 }
                     var sb = stat()
-                    if lstat(root.path, &sb) == 0 {
-                        return UInt64(bitPattern: Int64(sb.st_dev))
-                    }
-                    return 0
+                    guard lstat(root.path, &sb) == 0 else { return 0 }
+                    let dev = UInt64(bitPattern: Int64(sb.st_dev))
+                    let ino = UInt64(sb.st_ino)
+                    _ = dirInodes.insertIfFirstSeen(device: dev, inode: ino)
+                    return opts.staySingleVolume ? dev : 0
                 }()
 
                 // v1.3：mediaAware → 按介质类型自适应 worker 数。
@@ -101,6 +113,7 @@ public actor BulkScanner {
                                 queue: queue,
                                 stats: stats,
                                 inodes: inodes,
+                                dirInodes: dirInodes,
                                 options: opts,
                                 rootDev: rootDev,
                                 continuation: continuation
@@ -136,6 +149,7 @@ public actor BulkScanner {
         queue: DirQueue,
         stats: ScanStats,
         inodes: InodeSet,
+        dirInodes: DirInodeSet,
         options: ScanOptions,
         rootDev: UInt64,
         continuation: AsyncStream<ScanEvent>.Continuation
@@ -151,6 +165,7 @@ public actor BulkScanner {
                     queue: queue,
                     stats: stats,
                     inodes: inodes,
+                    dirInodes: dirInodes,
                     options: options,
                     rootDev: rootDev,
                     continuation: continuation
@@ -169,6 +184,7 @@ public actor BulkScanner {
         queue: DirQueue,
         stats: ScanStats,
         inodes: InodeSet,
+        dirInodes: DirInodeSet,
         options: ScanOptions,
         rootDev: UInt64,
         continuation: AsyncStream<ScanEvent>.Continuation
@@ -234,10 +250,18 @@ public actor BulkScanner {
                     if options.respectTCCSkipList && TCCSkipList.shouldSkip(absPath) {
                         localTCCSkipped += 1
                         continuation.yield(.tccProtectedSkipped(path: absPath))
-                    } else if !options.staySingleVolume || rootDev == 0 || entry.device == rootDev {
-                        // 跨卷停下钻：dev 不一致就不入队
+                    } else if options.staySingleVolume && rootDev != 0 && entry.device != rootDev {
+                        // 跨卷停下钻：dev 不一致就不入队（注意 firmlink 跨 dev，由 followFirmlinks 单独拦）
+                    } else if entry.isSymlink && !options.followSymlinks {
+                        // v1.3 P0-A：symlink-to-dir 必须在这里硬截断。
+                        // 否则 pnpm/lerna `node_modules/.bin/* → ../foo`、`~/Library/Mobile Documents`
+                        // 等场景会让 BFS 反复回环，Stream 永远不会 finish（20 分钟还在扫的根因之一）。
+                    } else if dirInodes.insertIfFirstSeen(device: entry.device, inode: entry.inode) {
+                        // 首次访问该 (dev,ino)：入队。
+                        // dir hardlink（Time Machine）、firmlink（同 inode 不同路径）均在此被吸收。
                         newDirs.append(absPath)
                     }
+                    // else：dirInodes 命中，目录回环被切断，直接跳过。
                 }
             } else {
                 localFileCount += 1

@@ -204,10 +204,14 @@ struct StashScreen: View {
 
     /// v2026.06.19 行内 AI 徽标。
     /// - `.pending`：若正是正在询问的当前条目 → 显示小转圈；否则隐藏（避免一片灰点干扰）
-    /// - `.done(.safe, _)`：绿色 ✓
-    /// - `.done(.confirm, _)`：橙色 ?
-    /// - `.done(.forbid, _)`：红色 ✕
-    /// - `.error`：红色感叹号 + tooltip 显示错误消息
+    /// - `.done(.safe, _)`：绿色 ✓ + "可清理"
+    /// - `.done(.confirm, _)`：橙色 ? + "建议确认"
+    /// - `.done(.forbid, _)`：红色 ✕ + "建议保留"
+    /// - `.error`：红色感叹号 + "判断失败" + tooltip 显示错误消息
+    ///
+    /// v2026.06.21 修复：原来只渲染 SF Symbol 图标 + tooltip，用户原话「一键 AI 判断
+    /// 你显示结论文本，不能只显示个图标」。改成 icon + 短文案的胶囊样式，结论
+    /// 一眼可见；tooltip 仍保留 LLM 返回的 summary / error，供想看细节的用户悬停查阅。
     @ViewBuilder
     private func aiBadge(for entry: StashStore.StashEntry) -> some View {
         switch entry.aiVerdict {
@@ -220,29 +224,47 @@ struct StashScreen: View {
                 EmptyView()
             }
         case .done(let verdict, let summary):
-            badgeIcon(for: verdict)
+            verdictChip(for: verdict)
                 .help(summary)
         case .error(let message):
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.red)
-                .help(message)
+            HStack(spacing: 4) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                Text("stash.ai.verdict.error", bundle: .module)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Color.red.opacity(0.12), in: Capsule())
+            .help(message)
         }
     }
 
-    /// 三档 verdict → SF Symbol + 颜色。与本地 SafetyEngine 着色保持一致语义。
+    /// 三档 verdict → SF Symbol + 颜色 + 短文案胶囊。与本地 SafetyEngine 着色保持一致语义。
+    /// 文案 key 走新增的 `stash.ai.verdict.*`，已多语言。
     @ViewBuilder
-    private func badgeIcon(for verdict: SafetyVerdict) -> some View {
-        switch verdict {
-        case .safe:
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-        case .confirm:
-            Image(systemName: "questionmark.circle.fill")
-                .foregroundStyle(.orange)
-        case .forbid:
-            Image(systemName: "xmark.octagon.fill")
-                .foregroundStyle(.red)
+    private func verdictChip(for verdict: SafetyVerdict) -> some View {
+        let style: (icon: String, color: Color, key: LocalizedStringKey) = {
+            switch verdict {
+            case .safe:
+                return ("checkmark.circle.fill", .green, "stash.ai.verdict.safe")
+            case .confirm:
+                return ("questionmark.circle.fill", .orange, "stash.ai.verdict.confirm")
+            case .forbid:
+                return ("xmark.octagon.fill", .red, "stash.ai.verdict.forbid")
+            }
+        }()
+        HStack(spacing: 4) {
+            Image(systemName: style.icon)
+                .foregroundStyle(style.color)
+            Text(style.key, bundle: .module)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(style.color)
         }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(style.color.opacity(0.12), in: Capsule())
     }
 
     private var footer: some View {

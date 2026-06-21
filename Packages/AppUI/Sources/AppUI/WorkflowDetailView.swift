@@ -103,9 +103,9 @@ public struct WorkflowDetailView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(workflow.displayName)
+            Text(LocalizedStringKey(workflow.displayName), bundle: .module)
                 .font(.title2.bold())
-            Text(workflow.subtitle)
+            Text(LocalizedStringKey(workflow.subtitle), bundle: .module)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
@@ -157,9 +157,9 @@ public struct WorkflowDetailView: View {
                 // 加 .help() tooltip，鼠标 hover 即可看到一句话解释每档清理风险。
                 .help(Text(riskTooltipKey(for: card.risk), bundle: .module))
             VStack(alignment: .leading, spacing: 2) {
-                Text(card.title)
+                Text(LocalizedStringKey(card.title), bundle: .module)
                     .font(.system(.body, design: .rounded))
-                Text(card.summary)
+                Text(LocalizedStringKey(card.summary), bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -231,10 +231,10 @@ public struct WorkflowDetailView: View {
             .disabled(card.risk == .blocked)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(hit.displayName)
+                Text(verbatim: hit.displayName)
                     .font(.system(.body))
                 if let note = hit.note {
-                    Text(note)
+                    Text(verbatim: note)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -804,7 +804,14 @@ public final class WorkflowDetailViewModel: ObservableObject {
             let hits = KnownVersionedRoots.scanAll(home: home).filter { $0.ruleID == ruleID }
             return hits.map { hit in
                 let size = Self.directorySize(at: hit.url)
-                return WorkflowScanHit(url: hit.url, sizeBytes: size, displayName: hit.displayName, note: hit.versionName)
+                let localizedName = String(localized: String.LocalizationValue(hit.displayName), bundle: .module)
+                let composedName: String
+                if let groupKey = hit.groupKey, !groupKey.isEmpty {
+                    composedName = "\(localizedName) · \(groupKey)"
+                } else {
+                    composedName = localizedName
+                }
+                return WorkflowScanHit(url: hit.url, sizeBytes: size, displayName: composedName, note: hit.versionName)
             }
         case .vendor:
             // PR-5 阶段不接 vendor 源——卡片侧目前没人用，留位避免编译警告。

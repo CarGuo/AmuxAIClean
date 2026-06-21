@@ -214,12 +214,12 @@ public enum RuleLoader {
                     try applyPath(line: rest, into: &currentPath!, lineNo: lineNo)
                     continue
                 }
-                throw LoadError.malformed(line: lineNo, reason: "意外的列表项缩进")
+                throw LoadError.malformed(line: lineNo, reason: "unexpected list-item indentation")
             }
 
             // 非 `- ` 开头：要么是 vendor 顶层 key/value，要么是 paths 项内的 key/value
             guard current != nil else {
-                throw LoadError.malformed(line: lineNo, reason: "key 出现在 list item 前")
+                throw LoadError.malformed(line: lineNo, reason: "key appears before list item")
             }
 
             // fix-3：pathsMode 内若遇到非 `- ` 开头但 leading <= vendorTopKeyIndent，
@@ -256,7 +256,7 @@ public enum RuleLoader {
                 // paths 块内的 key/value（缩进通常为 6）
                 guard currentPath != nil else {
                     throw LoadError.malformed(line: lineNo,
-                                              reason: "paths 子键出现在列表项前")
+                                              reason: "paths sub-key appears before its list item")
                 }
                 try applyPath(line: trimmed, into: &currentPath!, lineNo: lineNo)
                 continue
@@ -295,7 +295,7 @@ public enum RuleLoader {
         case "verdict":
             guard let v = SafetyVerdict.parse(yaml: value) else {
                 throw LoadError.malformed(line: lineNo,
-                                          reason: "verdict 必须是 safe/confirm/forbid，得到 \(value)")
+                                          reason: "verdict must be safe/confirm/forbid, got \(value)")
             }
             pr.verdict = v
         case "reason": pr.reason = value
@@ -306,7 +306,7 @@ public enum RuleLoader {
 
     private static func splitKeyValue(line: String, lineNo: Int) throws -> (String, String) {
         guard let colon = line.firstIndex(of: ":") else {
-            throw LoadError.malformed(line: lineNo, reason: "未找到 ':'")
+            throw LoadError.malformed(line: lineNo, reason: "missing ':' separator")
         }
         let key = line[..<colon].trimmingCharacters(in: .whitespaces)
         let valuePart = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
@@ -363,10 +363,10 @@ private struct PartialPathRule {
             return (nil, nil)
         }
         guard let path, !path.isEmpty else {
-            return (nil, "path-rule 缺少 'path' 字段")
+            return (nil, "path-rule missing 'path' field")
         }
         guard let verdict else {
-            return (nil, "path-rule 缺少 'verdict' 字段（path=\(path)）")
+            return (nil, "path-rule missing 'verdict' field (path=\(path))")
         }
         return (PathRule(path: path, verdict: verdict, reason: reason, recipe: recipe), nil)
     }

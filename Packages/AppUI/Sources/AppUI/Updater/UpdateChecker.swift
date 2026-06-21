@@ -166,7 +166,7 @@ public final class UpdateChecker {
         GSYLog.info(.updater, "runCheck 开始 force=\(force) url=\(urlStr)")
         guard let url = URL(string: urlStr) else {
             GSYLog.error(.updater, "URL 构造失败 url=\(urlStr)")
-            lastResult = .failed("URL 构造失败：\(urlStr)")
+            lastResult = .failed(String(format: String(localized: "updater.error.url_build_failed %@", bundle: .module), urlStr))
             return
         }
         var req = URLRequest(url: url)
@@ -221,7 +221,7 @@ public final class UpdateChecker {
         let raw = try JSONDecoder().decode(RawRelease.self, from: data)
         guard let url = URL(string: raw.html_url) else {
             throw NSError(domain: "UpdateChecker", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "html_url 解析失败"])
+                          userInfo: [NSLocalizedDescriptionKey: String(localized: "updater.error.html_url_parse_failed", bundle: .module)])
         }
         let date: Date? = raw.published_at.flatMap {
             ISO8601DateFormatter().date(from: $0)
@@ -329,7 +329,11 @@ public struct UpdatePromptView: View {
             if hashesLoaded && !expectedHashes.isEmpty {
                 Divider()
                 VStack(alignment: .leading, spacing: 4) {
-                    Label("预期 SHA256（下载后用 `shasum -a 256 <文件>` 比对）", systemImage: "checkmark.seal")
+                    Label {
+                        Text("updater.prompt.sha256_label", bundle: .module)
+                    } icon: {
+                        Image(systemName: "checkmark.seal")
+                    }
                         .font(.caption).foregroundStyle(.secondary)
                     ForEach(expectedHashes.sorted(by: { $0.key < $1.key }), id: \.key) { name, hex in
                         HStack(alignment: .top, spacing: 6) {

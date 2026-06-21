@@ -98,6 +98,10 @@ public struct ChatMessage: Sendable, Equatable, Codable {
 /// 拿到原始 AIAdvice 后立即过这里，再返回给 UI。
 public enum AIAdviceClamp {
 
+    /// 本地策略覆盖 AI verdict 时给 reason 前缀的 sentinel marker。
+    /// UI 层应当识别此前缀并替换为本地化文案。
+    public static let localPolicyOverridePrefix: String = "[ai.advice.local_policy_override] "
+
     /// 钉死规则：本地 forbid → AI 必须 forbid；硬禁路径前缀 → 强制 forbid。
     /// 这是产品红线，**AI 不能替代 [SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift)**。
     public static func clamp(_ advice: AIAdvice, against inquiry: PathInquiry) -> AIAdvice {
@@ -107,7 +111,7 @@ public enum AIAdviceClamp {
                 return AIAdvice(
                     summary: advice.summary,
                     canDelete: .forbid,
-                    reason: "[本地安全策略已拒绝] " + advice.reason,
+                    reason: Self.localPolicyOverridePrefix + advice.reason,
                     sideEffects: advice.sideEffects
                 )
             }

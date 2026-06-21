@@ -24,8 +24,10 @@ import Foundation
 /// 删除通道统一为 `.filesystem`（回收站），不引入 `.commandLine`，因此所有卡片均无 allowlist 校验风险。
 public struct WebNodeWorkflow: DeveloperWorkflow {
     public let id: String = "workflow.web-node"
-    public let displayName: String = "Web / Node 开发者一键清理"
-    public let subtitle: String = "pnpm / yarn / npm / node-gyp / electron 缓存与散落 node_modules"
+    /// i18n key —— UI 层用 `Text(LocalizedStringKey(...), bundle: .module)` 渲染。
+    public let displayName: String = "workflow.web-node.displayName"
+    /// i18n key —— UI 层用 `Text(LocalizedStringKey(...), bundle: .module)` 渲染。
+    public let subtitle: String = "workflow.web-node.subtitle"
 
     public init() {}
 
@@ -43,8 +45,8 @@ public struct WebNodeWorkflow: DeveloperWorkflow {
         if pnpmProbes.contains(where: Self.dirExists) {
             result.append(DeveloperCard(
                 id: "card.webnode.pnpm-store",
-                title: "pnpm 全局 store",
-                summary: "pnpm 全局包硬链接 store，删后下次 `pnpm install` 自动重建",
+                title: "card.webnode.pnpm-store.title",
+                summary: "card.webnode.pnpm-store.summary",
                 source: .literal(paths: ["~/Library/pnpm/store", "~/.pnpm-store"]),
                 recipe: .filesystem,
                 risk: .safe))
@@ -61,8 +63,8 @@ public struct WebNodeWorkflow: DeveloperWorkflow {
         if yarnProbes.contains(where: Self.dirExists) {
             result.append(DeveloperCard(
                 id: "card.webnode.yarn-cache",
-                title: "Yarn 全局缓存",
-                summary: "Yarn 全局包缓存，删后下次 `yarn install` 自动重建",
+                title: "card.webnode.yarn-cache.title",
+                summary: "card.webnode.yarn-cache.summary",
                 source: .literal(paths: ["~/Library/Caches/Yarn", "~/.yarn/cache", "~/.cache/yarn"]),
                 recipe: .filesystem,
                 risk: .safe))
@@ -75,8 +77,8 @@ public struct WebNodeWorkflow: DeveloperWorkflow {
         if Self.dirExists(npmRoot) {
             result.append(DeveloperCard(
                 id: "card.webnode.npm-cache",
-                title: "npm 全局缓存",
-                summary: "npm 包下载缓存（_cacache），删后下次 `npm install` 自动重建",
+                title: "card.webnode.npm-cache.title",
+                summary: "card.webnode.npm-cache.summary",
                 source: .literal(paths: ["~/.npm/_cacache", "~/.npm"]),
                 recipe: .filesystem,
                 risk: .safe))
@@ -87,8 +89,8 @@ public struct WebNodeWorkflow: DeveloperWorkflow {
         //    不做存在性预检：路径单一且重建无副作用，避免因为目录不存在而隐藏入口。
         result.append(DeveloperCard(
             id: "card.webnode.node-gyp-cache",
-            title: "node-gyp 编译缓存",
-            summary: "node-gyp 编译时下载的 Node header 缓存，删后下次原生构建自动重建",
+            title: "card.webnode.node-gyp-cache.title",
+            summary: "card.webnode.node-gyp-cache.summary",
             source: .literal(paths: ["~/Library/Caches/node-gyp"]),
             recipe: .filesystem,
             risk: .safe))
@@ -97,8 +99,8 @@ public struct WebNodeWorkflow: DeveloperWorkflow {
         //    Electron prebuilt 压缩包缓存，单版本 70~150 MB，多版本叠加常见 1~2 GB。
         result.append(DeveloperCard(
             id: "card.webnode.electron-cache",
-            title: "Electron prebuilt 缓存",
-            summary: "Electron 预构建二进制缓存，删后下次 `electron` 构建自动重新下载",
+            title: "card.webnode.electron-cache.title",
+            summary: "card.webnode.electron-cache.summary",
             source: .literal(paths: [
                 "~/Library/Caches/electron",
                 "~/Library/Application Support/Caches/electron",
@@ -114,8 +116,8 @@ public struct WebNodeWorkflow: DeveloperWorkflow {
         //      而不是因为某个根恰好不存在就把入口藏掉。
         result.append(DeveloperCard(
             id: "card.webnode.node-modules-scattered",
-            title: "散落的 node_modules（按工程扫）",
-            summary: "扫描 ~/Developer / ~/Projects / ~/Code / ~/workspace / ~/src 下的 node_modules",
+            title: "card.webnode.node-modules-scattered.title",
+            summary: "card.webnode.node-modules-scattered.summary",
             source: .dynamicScanner(scannerID: "scanner.node-modules-scattered"),
             recipe: .filesystem,
             risk: .confirm))
