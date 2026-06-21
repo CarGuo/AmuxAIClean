@@ -58,7 +58,7 @@ final class ScanCoordinatorMultiTests: XCTestCase {
         // 同步部分立即生效（scanRecommended 不是 async）
         XCTAssertEqual(coord.perRootProgress.count, 5,
                        "scanRecommended 应在启动同帧预填 5 条 perRootProgress，UI 立刻能渲染 5 行")
-        XCTAssertEqual(coord.currentRootPath, "(多目录)",
+        XCTAssertEqual(coord.currentRootPath, ScanCoordinator.multiRootSentinelPath,
                        "currentRootPath 应被设为多目录占位，避免 UI 用具体某根作展示主体")
         XCTAssertTrue(coord.isScanning, "应进入 isScanning")
 

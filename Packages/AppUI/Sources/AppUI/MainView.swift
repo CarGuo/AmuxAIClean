@@ -1576,7 +1576,7 @@ public struct MainView: View {
                     .foregroundStyle(.tint)
                 Text("results.empty.nothing_to_clean", bundle: .module)
                     .foregroundStyle(.secondary)
-                Text(rootPath)
+                sentinelAwareRootPathText(rootPath)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.tertiary)
                     .textSelection(.enabled)
@@ -1601,6 +1601,25 @@ public struct MainView: View {
                 .padding(.top, 4)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// v2026.06.21：placeholder 的 `.finishedEmpty(rootPath)` 分支会拿 `currentRootPath`
+    /// 直接渲染。当多根/开发者构建产物/开发者旧版本扫描走伪根时，
+    /// rootPath 是 [ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L185)
+    /// 里定义的英文 sentinel ID，不该当作真实路径展示——这里映射到对应
+    /// `path.sentinel.*` xcstrings key 走本地化显示；非 sentinel 仍按原路径打印。
+    @ViewBuilder
+    private func sentinelAwareRootPathText(_ rootPath: String) -> some View {
+        switch rootPath {
+        case ScanCoordinator.multiRootSentinelPath:
+            Text("path.sentinel.multi_root", bundle: .module)
+        case ScanCoordinator.developerSentinelPath:
+            Text("path.sentinel.dev_artifact", bundle: .module)
+        case ScanCoordinator.versionedRootSentinelPath:
+            Text("path.sentinel.versioned_root", bundle: .module)
+        default:
+            Text(rootPath)
         }
     }
 

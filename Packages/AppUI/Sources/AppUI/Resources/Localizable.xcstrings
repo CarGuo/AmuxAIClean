@@ -6615,6 +6615,57 @@
         }
       }
     },
+    "path.sentinel.dev_artifact": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(Developer build artifacts)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(开发者构建产物)"
+          }
+        }
+      }
+    },
+    "path.sentinel.multi_root": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(Multiple roots)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(多目录)"
+          }
+        }
+      }
+    },
+    "path.sentinel.versioned_root": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(Older developer versions)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(开发者旧版本)"
+          }
+        }
+      }
+    },
     "permission.banner.action.open_and_rescan": {
       "extractionState": "manual",
       "localizations": {

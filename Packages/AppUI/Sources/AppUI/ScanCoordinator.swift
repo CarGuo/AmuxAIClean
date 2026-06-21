@@ -186,15 +186,16 @@ public final class ScanCoordinator: ObservableObject {
     /// （树形/finishedEmpty 等场景需要一个非 nil 值）。这两个值不是真实目录，
     /// store 里也不会有"以它们为父"的子项；树形视图遇到它们时要走「合成多根顶层」分支
     /// （见 [directChildren(of:sortedBy:)](#)），把 perRootProgress 的真实根升级成顶层 TreeRow。
-    public static let multiRootSentinelPath: String = "(多目录)"
-    public static let developerSentinelPath: String = "(开发者构建产物)"
-    /// v2026.06.21：开发者旧版本扫描（[scanKnownVersionedRoots](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L847)）
-    /// 走的伪根。原来用 `home.path` 当 currentRootPath，TreeBrowserView 拿这个去
-    /// `directChildren(of:)` 时 childEdges/store 全都没数据（本扫描不 ingest），
-    /// 表现为"清单 28 条 / 树形空"。统一改成专用 sentinel + 走
-    /// [synthesizeVersionedTopLevel](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
-    /// 合成顶层。
-    public static let versionedRootSentinelPath: String = "(开发者旧版本)"
+    ///
+    /// v2026.06.21：原值为中文字面（"(多目录)" / "(开发者构建产物)" / "(开发者旧版本)"），
+    /// 由于 [placeholder(for:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1572)
+    /// 的 `.finishedEmpty(rootPath)` 分支会直接 `Text(rootPath)` 给英文用户看，
+    /// 那相当于英文 UI 露出三个中文 token。统一改成纯英文 sentinel ID（带双下划线前后缀，
+    /// 不会与任何真实文件路径冲突），UI 侧检测到 sentinel 后走 `path.sentinel.*`
+    /// xcstrings key 走本地化显示。
+    public static let multiRootSentinelPath: String = "__sentinel_multi_root__"
+    public static let developerSentinelPath: String = "__sentinel_dev_artifact__"
+    public static let versionedRootSentinelPath: String = "__sentinel_versioned_root__"
     public static let multiRootSentinelPaths: Set<String> = [
         multiRootSentinelPath, developerSentinelPath, versionedRootSentinelPath
     ]
