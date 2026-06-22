@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 import SafetyKit
 import AIKit
 
@@ -29,7 +30,7 @@ import AIKit
 ///      Cmd+R 在 Finder 显示、Delete 删除当前选中（走 SafetyEngine forbid 闸门）
 ///    - 选中态：当前选中行用 selection 高亮 + accessibility focus
 public struct TreeBrowserView: View {
-    @ObservedObject var coordinator: ScanCoordinator
+    let coordinator: ScanCoordinator
     /// v2026.06.21 perf：单独订阅 `coordinator.treeBrowser`（独立 ObservableObject）。
     /// 旧版用 `coordinator.structuralRevision` / `coordinator.childrenCacheVersion`
     /// 作 @Published mirror，导致 ScanCoordinator 任一 @Published 变化也都触发
@@ -37,7 +38,7 @@ public struct TreeBrowserView: View {
     /// 现在 4 个 revision 字段从 ScanCoordinator @Published 移除，
     /// TreeBrowserView 单独通过本字段订阅 store —— MainView body 不再因
     /// structural / tick / treeRevision / childrenCacheVersion 失效。
-    @ObservedObject var treeBrowser: TreeBrowserStore
+    let treeBrowser: TreeBrowserStore
     let rootPath: String
     /// 选中行变化时的回调；MainView 用它把 TreeRow 喂给右侧详情面板。
     /// 设计 bug A：之前 selectedPath 只活在 TreeBrowserView 内部，
@@ -96,7 +97,7 @@ public struct TreeBrowserView: View {
     /// 这些都是 path-only 输入 → 进程生命周期内**确定性输出**（SafetyEngine 规则
     /// 库是编译期常量 + home 也是常量），完美适合纯路径缓存。
     ///
-    /// 命中场景：扫描中 5s 节流后每窗口 rebuildFlatRows 至少 1 次，上万节点的
+    /// 命中场景：扫描结束统一 rebuildFlatRows，或用户展开/排序触发局部重建时，上万节点的
     /// 99%+ path 是上一帧出现过的；patch 路径（[applyChildrenPatch](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L561)）
     /// 同理；选中态 fallback（[handleKeyboardSelectionMove](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L368)）
     /// 也基本命中。理论上单 path 加速倍数 = 1000x（dict get vs URL standardize + realpath）。
@@ -163,9 +164,13 @@ public struct TreeBrowserView: View {
     /// 替代旧版 `coordinator.isFetchingChildren(of: rootPath, sortedBy:)` 的实时调用——
     /// flatRows 重建时同步推断，view body 只读 state，少一次 coordinator 调用。
     @State private var isFetchingRoot: Bool = false
-    /// v2026.06.21 性能：扫描中合并 structural / childrenCache bump，1s 节流一次重建。
-    /// nil 表示当前没有挂起的 rebuild；非 nil 表示已 schedule，再次 bump 会取消旧的并续期。
-    @State private var pendingScanningRebuild: DispatchWorkItem? = nil
+    /// 只订阅 `ScanCoordinator.$isScanning`，避免 `ScanCoordinator.objectWillChange`
+    /// 的高频 snapshot/progress 发布把整棵 SwiftUI List 拖进刷新。
+    @State private var isScanningSnapshot: Bool = false
+    /// store-fallback 首帧同步返回空时，`directChildren` 会在后台查 GRDB。
+    /// AppKit 表格不再依赖 SwiftUI row body 自发重算，所以展开后看到 loading
+    /// 占位时补一个很短的 trailing rebuild，作为 childrenCacheVersion 回调之外的兜底。
+    @State private var pendingStoreFallbackRebuild: DispatchWorkItem? = nil
 
     public init(coordinator: ScanCoordinator,
                 rootPath: String,
@@ -231,7 +236,7 @@ public struct TreeBrowserView: View {
                         Text("tree.loading.children", bundle: .module)
                             .foregroundStyle(.secondary)
                             .font(.callout)
-                    } else if coordinator.isScanning {
+                    } else if isScanningSnapshot {
                         ProgressView()
                             .controlSize(.small)
                         Text("tree.loading.scanning", bundle: .module)
@@ -247,87 +252,31 @@ public struct TreeBrowserView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollViewReader { proxy in
-                    // **Step 9b / 2026-06**：LazyVStack → List。
-                    // 历史问题：LazyVStack 在 ScrollView 里没有真正的 cell-recycling，
-                    // 4w 节点扫描下滚动 fps ≤ 35、内存峰值 ~480MB。
-                    // SwiftUI `List` 走 NSTableView 桥接 → 行视图复用 + 滚动惰性，
-                    // 同等数据量下实测 fps ≥ 55、内存峰值降 ~30%。
-                    // 选中态、键盘导航、行内 trash 行为全部由 TreeNodeRow 内部维护，
-                    // 切容器对外行为不变。
-                    List(flatRows) { flat in
-                        if flat.isLoadingPlaceholder {
-                            // v2026.06.20 加载占位行——不参与 selection / contextMenu / 键盘导航。
-                            // 缩进对齐到子级 depth，与真实子项位置一致；左侧 spinner + "加载中…"。
-                            HStack(spacing: 6) {
-                                Spacer().frame(width: CGFloat(flat.depth) * 16 + 22)
-                                ProgressView()
-                                    .controlSize(.mini)
-                                Text("tree.loading.children", bundle: .module)
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 2)
-                            // v2026.06.23 perf v2（Instruments 第五次取证 33334.md 14.23s）：
-                            // 上一刀 .frame(height: 26) 无效——栈里 NSTableRowData
-                            // ._doAutomaticRowHeightForRowView 5.40s + _uncachedAutomaticRowHeight
-                            // 5.39s 仍走 auto row height。原因：SwiftUI List 给 NSHostingView 的约束
-                            // 是 `[>= 0]` 而非 fixed；row 内层 .frame(height:) 只是局部约束，
-                            // NSHostingView 仍会 sizeThatFits。
-                            //
-                            // 修复：用 `(minHeight: maxHeight:)` + `.fixedSize(vertical: true)`
-                            // 双管齐下告诉 NSHostingView "我的高度就是 26，不要再问 sizeThatFits"。
-                            .frame(minHeight: 26, maxHeight: 26)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .id(flat.id)
-                            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
-                            .listRowSeparator(.hidden)
-                        } else {
-                            TreeNodeRow(
-                                flat: flat,
-                                maxBytes: maxBytes,
-                                isExpanded: expanded[flat.row.path] ?? false,
-                                isSelected: selectedPath == flat.row.path,
-                                onToggleExpand: { toggleExpansionFor(path: flat.row.path) },
-                                onSelect: { selectedPath = flat.row.path },
-                                onTrash: onTrash.map { _ in requestTrash(_:) },
-                                onRefreshSubtree: onRefreshSubtree,
-                                onStash: onStash,
-                                isStashed: isStashed?(flat.row.path) ?? false,
-                                aiSettings: aiSettings,
-                                onAskAI: onAskAI
-                            )
-                            // v2026.06.23 perf v2：在 List row 这一层（NSHostingView root）
-                            // 再加一对 (minHeight: maxHeight:) + .fixedSize(vertical:)，
-                            // 让 NSHostingView 直接拿到刚性高度约束，跳过 sizeThatFits 嵌套链。
-                            // 详见 loading 占位行注释。
-                            .frame(minHeight: 26, maxHeight: 26)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .id(flat.row.path)
-                            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
-                            .listRowSeparator(.hidden)
-                        }
-                    }
-                    .listStyle(.plain)
-                    // v2026.06.23 perf：把最小行高从 0 提到 26，与 TreeNodeRow / loading 占位行
-                    // 的固定高度对齐——NSTableView 在"所有行高度一致"时走固定行高 fastPath，
-                    // 跳过 NSHostingView.SizeConstraints.update 整条 sizeThatFits 嵌套链。
-                    .environment(\.defaultMinListRowHeight, 26)
-                    .onChange(of: selectedPath) { _, new in
-                        guard let new else { return }
-                        withAnimation(.easeInOut(duration: 0.1)) {
-                            proxy.scrollTo(new, anchor: .center)
-                        }
-                    }
-                }
+                // Instruments 55555.trace：订阅隔离后仍有 55 次主线程 hang / 449 次 hitch，
+                // SwiftUI updates 表为空，热区基本落在系统 AppKit/SwiftUI 地址。
+                // 结论：这里不能再让 SwiftUI List 通过 NSHostingView 承载万级滚动行。
+                // 改为原生 NSTableView + 自绘行，固定 rowHeight、复用 row view，
+                // 保留现有 flatRows / selection / action 回调边界。
+                AppKitFlatTreeTable(
+                    rows: flatRows,
+                    maxBytes: maxBytes,
+                    selectedPath: $selectedPath,
+                    expanded: expanded,
+                    onToggleExpand: { path in toggleExpansionFor(path: path) },
+                    onTrash: onTrash.map { _ in requestTrash(_:) },
+                    onRefreshSubtree: onRefreshSubtree,
+                    onStash: onStash,
+                    isStashed: { path in isStashed?(path) ?? false },
+                    aiSettings: aiSettings,
+                    onAskAI: onAskAI
+                )
             }
         }
         .focusable()
         .focused($focused)
         .focusEffectDisabled()
         .onAppear {
+            isScanningSnapshot = coordinator.isScanning
             rebuildFlatRows()
             if selectedPath == nil, let first = flatRows.first {
                 selectedPath = first.row.path
@@ -365,13 +314,19 @@ public struct TreeBrowserView: View {
         // tickRevision 通过其它 @Published 入口（如 RowItem 自身）驱动 RowView 内部刷新数值，
         // 这里 view 不订阅。
         //
-        // v2026.06.21 性能：扫描进行中防抖 1s（详见 [handleStructuralBump](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)）。
-        // 三个 onChange 走同一组工具方法——之前直接在 body 里堆 3 个 onChange 闭包让
+        // 三个 onReceive 走同一组工具方法——之前直接在 body 里堆 3 个 onChange 闭包让
         // SwiftUI ViewBuilder 类型推断超时（"unable to type-check this expression"）。
         // 这里只挂一个 onChange，其它两个走 modifier 链上下方继续，避免类型膨胀。
-        .onChange(of: treeBrowser.structuralRevision) { _, _ in handleStructuralBump() }
-        .onChange(of: coordinator.isScanning) { _, nowScanning in handleScanningToggle(nowScanning: nowScanning) }
-        .onChange(of: treeBrowser.childrenCacheVersion) { _, _ in handleChildrenCacheBump() }
+        .onReceive(treeBrowser.$structuralRevision.removeDuplicates()) { _ in
+            handleStructuralBump()
+        }
+        .onReceive(treeBrowser.$childrenCacheVersion.removeDuplicates()) { _ in
+            handleChildrenCacheBump()
+        }
+        .onReceive(coordinator.$isScanning.removeDuplicates()) { nowScanning in
+            isScanningSnapshot = nowScanning
+            handleScanningToggle(nowScanning: nowScanning)
+        }
         .onChange(of: flatRows.first?.row.path) { _, _ in
             // 切排序 / 切扫描根 → 顶层第一行变化时把选中态拉回首行，避免选中飞走
             let visiblePathSet = Set(flatRows.map(\.row.path))
@@ -492,17 +447,16 @@ public struct TreeBrowserView: View {
         let newFlatRows = insertLoadingPlaceholders(into: base)
         // v2026.06.22 perf：等值短路。
         //
-        // 为什么需要：5s 节流期内 rebuildFlatRows 仍会被多次调用（onAppear /
-        // sortKey change / handleChildrenCacheBump 等）。如果 newFlatRows 与
+        // 为什么需要：rebuildFlatRows 仍会被多处调用（onAppear / sortKey change /
+        // scanning false 边沿 / childrenCacheBump 等）。如果 newFlatRows 与
         // 上一次完全相等却仍然 `flatRows = newFlatRows` 赋值，SwiftUI 会因为
         // @State 被写入而让 body invalidate → List diff → OutlineListCoordinator
         // 166ms 跟着跑（Instruments Hangs 实测）。FlatTreeRow 是 Hashable
         // （隐式 Equatable），先比 == 拒绝等价帧。
         //
         // 复杂度：N 几万时 == 也是 O(N)，但内部是简单值 hash 比较，比 SwiftUI
-        // 全树 diff + RowView body 重 render 便宜一个量级；并且大多数 5s 内
-        // 多次 rebuild 时内容真就不变（structural bump 节流后只剩 sortKey 切换
-        // / expanded diff 触发），命中率高。
+        // 全树 diff + RowView body 重 render 便宜一个量级；并且多数重复 rebuild
+        // 内容真就不变，命中率高。
         let newMax = topLevel.map(\.bytes).max() ?? 0
         let newIsFetching = topLevel.isEmpty
             && coordinator.isFetchingChildren(of: rootPath, sortedBy: effectiveSortKey)
@@ -513,6 +467,11 @@ public struct TreeBrowserView: View {
         maxBytes = newMax
         // 顶层空 + isFetchingChildren 才算"拉取中"；否则维持 false 让 view 走 isScanning / 真空两态。
         isFetchingRoot = newIsFetching
+        if newFlatRows.contains(where: \.isLoadingPlaceholder) || newIsFetching {
+            scheduleStoreFallbackRebuild()
+        } else {
+            cancelStoreFallbackRebuild()
+        }
     }
 
     private func appendDescendantPairs(parent: String, depth: Int,
@@ -648,6 +607,7 @@ public struct TreeBrowserView: View {
             verdict: .safe,
             isLoadingPlaceholder: true
         ), at: idx + 1)
+        scheduleStoreFallbackRebuild()
     }
 
     /// 单点折叠：在 flatRows 里找到 `path`，删掉它**之后**所有 depth > path.depth 的
@@ -798,69 +758,54 @@ public struct TreeBrowserView: View {
         return out
     }
 
-    /// v2026.06.21 性能：扫描中把结构性 bump 节流到 1s 一次。
-    /// 取消上一次挂起的 work item 续期，最迟 1s 后做一次 rebuildFlatRows。
-    /// 扫描结束的边沿（onChange(coordinator.isScanning) → false）会立刻 fire 一次
-    /// 拿到终态，无需依赖此节流。
-    ///
-    /// v2026.06.22 性能（**Instruments Hangs 模板取证**）：节流窗从 1s 升到 5s。
-    /// 上一份 Hangs trace 显示 dev 扫主线程 hot path 是
-    /// `TreeBrowserView.body.getter` 143ms + `OutlineListCoordinator.update`
-    /// 166ms / 帧，原 1s 节流意味着每秒至少一次 309ms 主线程 jank。改 5s 后：
-    ///   - 与 [MainView listResults 5s 节流](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L2192-L2242)
-    ///     对称：扫描中两个 List 都最多 5s 更新一次。
-    ///   - 扫描结束的 [handleScanningToggle](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L753)
-    ///     边沿仍 force fire 一次，用户感知不到 5s 收尾延迟。
-    ///   - 5s 期间用户**不能**展开节点（[toggleExpansionFor L781](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L781) 已拒），
-    ///     所以 flatRows 视觉只跟扫描结果走，不影响交互。
-    private func scheduleScanningRebuild() {
-        pendingScanningRebuild?.cancel()
-        let work = DispatchWorkItem { [self] in
-            // 触发主线程上下文中的 rebuild；DispatchQueue.main 投递保证 @State 安全。
-            pendingScanningRebuild = nil
-            rebuildFlatRows()
-        }
-        pendingScanningRebuild = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0, execute: work)
-    }
-
     /// v2026.06.21：structuralRevision bump 入口（从 body onChange 抽出来避免类型推断超时）。
     /// 流程：
     ///   1. 优先消费 pruneDeleted hint → 走"只剔被删 path 子树"的 patch（避免大树整 rebuild）。
-    ///   2. 扫描中：聚合到 1s 一次的 rebuild（用户视觉无法分辨 < 1s 的树形微调）。
+    ///   2. 扫描中：冻结 flatRows，不让 List 持续 diffRows/endUpdates。
     ///   3. 扫描外：立刻 rebuild 拿到最新视图。
     private func handleStructuralBump() {
         if let pruned = coordinator.consumeLastPrunedPaths(), !pruned.isEmpty {
             applyPrunePatch(deletedPaths: pruned)
             return
         }
-        if coordinator.isScanning {
-            scheduleScanningRebuild()
-        } else {
-            pendingScanningRebuild?.cancel()
-            pendingScanningRebuild = nil
-            rebuildFlatRows()
+        if isScanningSnapshot {
+            // 扫描中不要让树形 List 持续 diffRows/endUpdates。用户此时主要在看
+            // statusBar 进度和滚动已有结果；最终结构在扫描结束边沿统一刷新。
+            return
         }
+        rebuildFlatRows()
     }
 
     /// v2026.06.21：扫描结束边沿——把扫描期间合并的 rebuild 立刻 fire 拿到终态。
     /// 也兼容 isScanning 切回 true 的回边沿：进入扫描态不主动 rebuild（等 structural bump）。
     private func handleScanningToggle(nowScanning: Bool) {
         if !nowScanning {
-            pendingScanningRebuild?.cancel()
-            pendingScanningRebuild = nil
             rebuildFlatRows()
         }
     }
 
     /// v2026.06.21：directChildren GRDB 写回路径只 bump childrenCacheVersion（不再 bump
-    /// structuralRevision），这里独立监听并复用 scheduleScanningRebuild 节流。
+    /// structuralRevision），这里独立监听；扫描中同样冻结，扫描结束统一刷新。
     private func handleChildrenCacheBump() {
-        if coordinator.isScanning {
-            scheduleScanningRebuild()
-        } else {
+        guard !isScanningSnapshot else { return }
+        cancelStoreFallbackRebuild()
+        rebuildFlatRows()
+    }
+
+    private func scheduleStoreFallbackRebuild() {
+        guard !isScanningSnapshot else { return }
+        pendingStoreFallbackRebuild?.cancel()
+        let work = DispatchWorkItem {
+            pendingStoreFallbackRebuild = nil
             rebuildFlatRows()
         }
+        pendingStoreFallbackRebuild = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
+    }
+
+    private func cancelStoreFallbackRebuild() {
+        pendingStoreFallbackRebuild?.cancel()
+        pendingStoreFallbackRebuild = nil
     }
 
     /// 行内三角 / 单击整行 / 右键菜单 / 双击 → 共用的展开切换入口。
@@ -874,7 +819,7 @@ public struct TreeBrowserView: View {
     /// 体感卡顿急剧放大。扫描中保留 row 显示但拦截 expansion，等扫完再让用户展开。
     /// 已展开状态不主动收起（保留用户当前视图），仅拒绝**新的展开请求**与折叠请求。
     private func toggleExpansionFor(path: String) {
-        if coordinator.isScanning { return }
+        if isScanningSnapshot { return }
         expanded[path] = !(expanded[path] ?? false)
     }
 
@@ -893,7 +838,7 @@ public struct TreeBrowserView: View {
     private func setExpansion(_ open: Bool) {
         guard let cur = selectedPath else { return }
         // v2026.06.21：见 toggleExpansionFor 同名注释——扫描中拦截展开，仅允许选中移动。
-        if coordinator.isScanning {
+        if isScanningSnapshot {
             // 但 h 在叶子上跳到父节点的"导航"语义保留（不改 expanded 状态，只移动选中）。
             if !open, let flat = flatRows.first(where: { $0.row.path == cur }),
                !(flat.row.isDirectory && flat.row.hasChildren),
@@ -916,7 +861,7 @@ public struct TreeBrowserView: View {
     private func toggleExpansion() {
         guard let cur = selectedPath else { return }
         // v2026.06.21：见 toggleExpansionFor 同名注释。
-        if coordinator.isScanning { return }
+        if isScanningSnapshot { return }
         guard let flat = flatRows.first(where: { $0.row.path == cur }),
               flat.row.isDirectory && flat.row.hasChildren else { return }
         expanded[cur] = !(expanded[cur] ?? false)
@@ -944,6 +889,666 @@ public struct TreeBrowserView: View {
     /// 别的批量删入口绕过 forbid 拦截。
     public static func sanitize(paths: Set<String>) -> Set<String> {
         paths.filter { safety.evaluate(path: $0).0 != .forbid }
+    }
+}
+
+private struct AppKitFlatTreeTable: NSViewRepresentable {
+    let rows: [FlatTreeRow]
+    let maxBytes: Int64
+    @Binding var selectedPath: String?
+    let expanded: [String: Bool]
+    let onToggleExpand: (String) -> Void
+    let onTrash: ((URL) -> Void)?
+    let onRefreshSubtree: ((String) -> Void)?
+    let onStash: ((TreeRow) -> Void)?
+    let isStashed: (String) -> Bool
+    let aiSettings: AISettings?
+    let onAskAI: ((TreeRow) -> Void)?
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let table = TreeNSTableView()
+        table.headerView = nil
+        table.rowHeight = TreeTableMetrics.rowHeight
+        table.usesAutomaticRowHeights = false
+        table.intercellSpacing = .zero
+        table.backgroundColor = .clear
+        table.selectionHighlightStyle = .none
+        table.allowsMultipleSelection = false
+        table.allowsEmptySelection = true
+        table.focusRingType = .none
+        table.dataSource = context.coordinator
+        table.delegate = context.coordinator
+        table.keyHandler = { [weak coordinator = context.coordinator] event in
+            coordinator?.handleKey(event) ?? false
+        }
+
+        let column = NSTableColumn(identifier: TreeTableMetrics.columnIdentifier)
+        column.resizingMask = .autoresizingMask
+        table.addTableColumn(column)
+
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        scroll.documentView = table
+        return scroll
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let table = scrollView.documentView as? NSTableView else { return }
+        if let column = table.tableColumns.first {
+            column.width = max(scrollView.contentSize.width, 100)
+        }
+        table.reloadData()
+        context.coordinator.syncSelection(in: table)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+        var parent: AppKitFlatTreeTable
+        private var isSyncingSelection = false
+
+        init(parent: AppKitFlatTreeTable) {
+            self.parent = parent
+        }
+
+        func numberOfRows(in tableView: NSTableView) -> Int {
+            parent.rows.count
+        }
+
+        func tableView(_ tableView: NSTableView,
+                       viewFor tableColumn: NSTableColumn?,
+                       row rowIndex: Int) -> NSView? {
+            guard rowIndex >= 0, rowIndex < parent.rows.count else { return nil }
+            let identifier = TreeTableMetrics.cellIdentifier
+            let cell = (tableView.makeView(withIdentifier: identifier, owner: self) as? TreeTableCellView)
+                ?? TreeTableCellView(identifier: identifier)
+            let flat = parent.rows[rowIndex]
+            cell.configure(
+                flat: flat,
+                maxBytes: parent.maxBytes,
+                isExpanded: parent.expanded[flat.row.path] ?? false,
+                isSelected: parent.selectedPath == flat.row.path,
+                isStashed: parent.isStashed(flat.row.path),
+                hasTrash: parent.onTrash != nil,
+                hasStash: parent.onStash != nil,
+                hasAI: parent.onAskAI != nil,
+                aiReady: parent.aiSettings?.isReadyForUI == true,
+                actions: TreeTableRowActions(
+                    select: { [weak self] in self?.select(flat.row.path, in: tableView) },
+                    toggle: { [weak self] in self?.parent.onToggleExpand(flat.row.path) },
+                    trash: { [weak self] in self?.parent.onTrash?(URL(fileURLWithPath: flat.row.path)) },
+                    stash: { [weak self] in self?.parent.onStash?(flat.row) },
+                    askAI: { [weak self] in self?.parent.onAskAI?(flat.row) },
+                    refresh: { [weak self] in self?.parent.onRefreshSubtree?(flat.row.path) }
+                )
+            )
+            return cell
+        }
+
+        func tableViewSelectionDidChange(_ notification: Notification) {
+            guard !isSyncingSelection,
+                  let table = notification.object as? NSTableView else { return }
+            let rowIndex = table.selectedRow
+            guard rowIndex >= 0, rowIndex < parent.rows.count else {
+                parent.selectedPath = nil
+                return
+            }
+            let flat = parent.rows[rowIndex]
+            guard !flat.isLoadingPlaceholder else { return }
+            parent.selectedPath = flat.row.path
+        }
+
+        func syncSelection(in table: NSTableView) {
+            guard let selectedPath = parent.selectedPath,
+                  let idx = parent.rows.firstIndex(where: { $0.row.path == selectedPath }) else {
+                if table.selectedRow >= 0 {
+                    isSyncingSelection = true
+                    table.deselectAll(nil)
+                    isSyncingSelection = false
+                }
+                return
+            }
+            if table.selectedRow != idx {
+                isSyncingSelection = true
+                table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+                table.scrollRowToVisible(idx)
+                isSyncingSelection = false
+            }
+        }
+
+        func select(_ path: String, in table: NSTableView) {
+            parent.selectedPath = path
+            if let idx = parent.rows.firstIndex(where: { $0.row.path == path }) {
+                isSyncingSelection = true
+                table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+                isSyncingSelection = false
+            }
+        }
+
+        func handleKey(_ event: NSEvent) -> Bool {
+            switch event.keyCode {
+            case 126:
+                moveSelection(delta: -1); return true
+            case 125:
+                moveSelection(delta: 1); return true
+            case 123:
+                setExpansion(open: false); return true
+            case 124:
+                setExpansion(open: true); return true
+            default:
+                break
+            }
+            guard let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first else { return false }
+            switch scalar {
+            case "\r", " ":
+                toggleSelectedExpansion(); return true
+            default:
+                if event.modifierFlags.contains(.command), scalar == "r" {
+                    revealSelected(); return true
+                }
+                if scalar == "j" {
+                    moveSelection(delta: 1); return true
+                }
+                if scalar == "k" {
+                    moveSelection(delta: -1); return true
+                }
+                return false
+            }
+        }
+
+        private func moveSelection(delta: Int) {
+            guard !parent.rows.isEmpty else { return }
+            let current = parent.selectedPath
+                .flatMap { selected in parent.rows.firstIndex { $0.row.path == selected } }
+                ?? -1
+            let next = max(0, min(parent.rows.count - 1, current + delta))
+            let flat = parent.rows[next]
+            guard !flat.isLoadingPlaceholder else { return }
+            parent.selectedPath = flat.row.path
+        }
+
+        private func setExpansion(open: Bool) {
+            guard let flat = selectedFlat(),
+                  flat.row.isDirectory,
+                  flat.row.hasChildren,
+                  flat.row.accessState == .normal else { return }
+            let isOpen = parent.expanded[flat.row.path] ?? false
+            guard isOpen != open else { return }
+            parent.onToggleExpand(flat.row.path)
+        }
+
+        private func toggleSelectedExpansion() {
+            guard let flat = selectedFlat(),
+                  flat.row.isDirectory,
+                  flat.row.hasChildren,
+                  flat.row.accessState == .normal else { return }
+            parent.onToggleExpand(flat.row.path)
+        }
+
+        private func revealSelected() {
+            guard let flat = selectedFlat() else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: flat.row.path)])
+        }
+
+        private func selectedFlat() -> FlatTreeRow? {
+            guard let selectedPath = parent.selectedPath else { return nil }
+            return parent.rows.first { $0.row.path == selectedPath && !$0.isLoadingPlaceholder }
+        }
+    }
+}
+
+private final class TreeNSTableView: NSTableView {
+    var keyHandler: ((NSEvent) -> Bool)?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if keyHandler?(event) == true { return }
+        super.keyDown(with: event)
+    }
+}
+
+private enum TreeTableMetrics {
+    static let rowHeight: CGFloat = 26
+    static let leftPadding: CGFloat = 8
+    static let indentation: CGFloat = 16
+    static let chevronWidth: CGFloat = 22
+    static let iconWidth: CGFloat = 18
+    static let horizontalGap: CGFloat = 6
+    static let sizeWidth: CGFloat = 90
+    static let countWidth: CGFloat = 56
+    static let mtimeWidth: CGFloat = 98
+    static let actionGap: CGFloat = 12
+    static let actionWidth: CGFloat = 28
+    static let actionAreaWidth: CGFloat = 84
+    static let actionTrailingPadding: CGFloat = 22
+    static let columnIdentifier = NSUserInterfaceItemIdentifier("TreeTableColumn")
+    static let cellIdentifier = NSUserInterfaceItemIdentifier("TreeTableCell")
+}
+
+private struct TreeTableRowActions {
+    let select: () -> Void
+    let toggle: () -> Void
+    let trash: () -> Void
+    let stash: () -> Void
+    let askAI: () -> Void
+    let refresh: () -> Void
+}
+
+private final class TreeTableCellView: NSTableCellView {
+    private let canvas = TreeTableRowCanvas()
+
+    init(identifier: NSUserInterfaceItemIdentifier) {
+        super.init(frame: .zero)
+        self.identifier = identifier
+        addSubview(canvas)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        canvas.frame = bounds
+    }
+
+    func configure(flat: FlatTreeRow,
+                   maxBytes: Int64,
+                   isExpanded: Bool,
+                   isSelected: Bool,
+                   isStashed: Bool,
+                   hasTrash: Bool,
+                   hasStash: Bool,
+                   hasAI: Bool,
+                   aiReady: Bool,
+                   actions: TreeTableRowActions) {
+        canvas.configure(
+            flat: flat,
+            maxBytes: maxBytes,
+            isExpanded: isExpanded,
+            isSelected: isSelected,
+            isStashed: isStashed,
+            hasTrash: hasTrash,
+            hasStash: hasStash,
+            hasAI: hasAI,
+            aiReady: aiReady,
+            actions: actions
+        )
+    }
+}
+
+private final class TreeTableRowCanvas: NSView {
+    private var flat: FlatTreeRow?
+    private var maxBytes: Int64 = 0
+    private var isExpanded = false
+    private var isSelected = false
+    private var isStashed = false
+    private var hasTrash = false
+    private var hasStash = false
+    private var hasAI = false
+    private var aiReady = false
+    private var actions: TreeTableRowActions?
+
+    override var isFlipped: Bool { true }
+
+    func configure(flat: FlatTreeRow,
+                   maxBytes: Int64,
+                   isExpanded: Bool,
+                   isSelected: Bool,
+                   isStashed: Bool,
+                   hasTrash: Bool,
+                   hasStash: Bool,
+                   hasAI: Bool,
+                   aiReady: Bool,
+                   actions: TreeTableRowActions) {
+        self.flat = flat
+        self.maxBytes = maxBytes
+        self.isExpanded = isExpanded
+        self.isSelected = isSelected
+        self.isStashed = isStashed
+        self.hasTrash = hasTrash
+        self.hasStash = hasStash
+        self.hasAI = hasAI
+        self.aiReady = aiReady
+        self.actions = actions
+        toolTip = flat.row.path
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let flat else { return }
+        if isSelected {
+            NSColor.controlAccentColor.withAlphaComponent(0.22).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 2), xRadius: 5, yRadius: 5).fill()
+        }
+        if flat.isLoadingPlaceholder {
+            drawLoading(flat)
+            return
+        }
+        drawRow(flat)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let flat, !flat.isLoadingPlaceholder, let actions else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        actions.select()
+        if hitTestAction(point) == .ai {
+            actions.askAI(); return
+        }
+        if hitTestAction(point) == .stash {
+            guard !isStashed else { NSSound.beep(); return }
+            actions.stash(); return
+        }
+        if hitTestAction(point) == .trash {
+            guard isTrashable(flat) else { NSSound.beep(); return }
+            actions.trash(); return
+        }
+        if disclosureRect(for: flat).contains(point) {
+            if canExpand(flat) { actions.toggle() }
+            return
+        }
+        if event.clickCount >= 2 || canExpand(flat) {
+            actions.toggle()
+        }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let flat, !flat.isLoadingPlaceholder, let actions else { return nil }
+        actions.select()
+        let row = flat.row
+        let menu = NSMenu()
+        if hasTrash {
+            let item = ClosureMenuItem(
+                title: String(localized: flat.verdict == .forbid ? "tree.menu.trash_forbidden" : "tree.menu.trash",
+                              bundle: .module),
+                action: { if self.isTrashable(flat) { actions.trash() } }
+            )
+            item.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
+            item.isEnabled = isTrashable(flat)
+            menu.addItem(item)
+        }
+        if hasStash {
+            let item = ClosureMenuItem(
+                title: String(localized: isStashed ? "tree.menu.stash_already" : "tree.menu.stash",
+                              bundle: .module),
+                action: { if !self.isStashed { actions.stash() } }
+            )
+            item.image = NSImage(systemSymbolName: isStashed ? "tray.full.fill" : "tray.and.arrow.down",
+                                 accessibilityDescription: nil)
+            item.isEnabled = !isStashed
+            menu.addItem(item)
+        }
+        if hasTrash || hasStash { menu.addItem(.separator()) }
+        if hasAI {
+            let item = ClosureMenuItem(
+                title: String(localized: "tree.menu.ask_ai", bundle: .module),
+                action: actions.askAI
+            )
+            item.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
+        let quickLook = ClosureMenuItem(
+            title: String(localized: "tree.menu.quick_look", bundle: .module),
+            action: { QuickLookController.shared.preview(urls: [URL(fileURLWithPath: row.path)]) }
+        )
+        quickLook.image = NSImage(systemSymbolName: "eye", accessibilityDescription: nil)
+        menu.addItem(quickLook)
+        let reveal = ClosureMenuItem(
+            title: String(localized: "tree.menu.reveal_in_finder", bundle: .module),
+            action: { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: row.path)]) }
+        )
+        reveal.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
+        menu.addItem(reveal)
+        menu.addItem(.separator())
+        if row.isDirectory {
+            let refresh = ClosureMenuItem(
+                title: String(localized: "tree.menu.refresh", bundle: .module),
+                action: actions.refresh
+            )
+            refresh.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
+            menu.addItem(refresh)
+        }
+        if canExpand(flat) {
+            let disclose = ClosureMenuItem(
+                title: String(localized: isExpanded ? "tree.disclose.collapse" : "tree.disclose.expand",
+                              bundle: .module),
+                action: actions.toggle
+            )
+            disclose.image = NSImage(systemSymbolName: isExpanded ? "chevron.down" : "chevron.right",
+                                     accessibilityDescription: nil)
+            menu.addItem(disclose)
+        }
+        menu.addItem(.separator())
+        let copyPath = ClosureMenuItem(
+            title: String(localized: "tree.menu.copy_path", bundle: .module),
+            action: { Self.copy(row.path) }
+        )
+        copyPath.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
+        menu.addItem(copyPath)
+        let copyName = ClosureMenuItem(
+            title: String(localized: "tree.menu.copy_name", bundle: .module),
+            action: { Self.copy((row.path as NSString).lastPathComponent) }
+        )
+        copyName.image = NSImage(systemSymbolName: "textformat", accessibilityDescription: nil)
+        menu.addItem(copyName)
+        return menu
+    }
+
+    private func drawLoading(_ flat: FlatTreeRow) {
+        let x = TreeTableMetrics.leftPadding
+            + CGFloat(flat.depth) * TreeTableMetrics.indentation
+            + TreeTableMetrics.chevronWidth
+        drawText(String(localized: "tree.loading.children", bundle: .module),
+                 in: CGRect(x: x, y: 5, width: bounds.width - x - 8, height: 18),
+                 font: .systemFont(ofSize: NSFont.systemFontSize),
+                 color: .secondaryLabelColor)
+    }
+
+    private func drawRow(_ flat: FlatTreeRow) {
+        let row = flat.row
+        let denied = row.accessState != .normal
+        let chevronRect = disclosureRect(for: flat)
+        if canExpand(flat) {
+            drawSymbol(isExpanded ? "chevron.down" : "chevron.right",
+                       in: chevronRect.insetBy(dx: 5, dy: 5),
+                       color: .secondaryLabelColor)
+        }
+        let iconRect = CGRect(x: chevronRect.maxX + TreeTableMetrics.horizontalGap,
+                              y: 5,
+                              width: TreeTableMetrics.iconWidth,
+                              height: 16)
+        drawSymbol(row.isDirectory ? "folder.fill" : "doc",
+                   in: iconRect,
+                   color: denied ? .tertiaryLabelColor : (row.isDirectory ? .controlAccentColor : .secondaryLabelColor),
+                   pointSize: 15,
+                   weight: row.isDirectory ? .semibold : .regular)
+        if denied {
+            drawSymbol("lock.fill",
+                       in: CGRect(x: iconRect.maxX - 5, y: iconRect.maxY - 7, width: 8, height: 8),
+                       color: .systemOrange)
+        }
+        let nameX = iconRect.maxX + TreeTableMetrics.horizontalGap
+        let actionStart = bounds.width
+            - TreeTableMetrics.actionTrailingPadding
+            - TreeTableMetrics.actionAreaWidth
+        let mtimeX = actionStart - TreeTableMetrics.actionGap - TreeTableMetrics.mtimeWidth
+        let countX = mtimeX - TreeTableMetrics.countWidth
+        let sizeX = countX - TreeTableMetrics.sizeWidth
+        let nameWidth = max(20, sizeX - nameX - 8)
+        drawText(row.title.isEmpty ? row.path : row.title,
+                 in: CGRect(x: nameX, y: 3, width: nameWidth, height: 17),
+                 font: .systemFont(ofSize: NSFont.systemFontSize),
+                 color: denied ? .tertiaryLabelColor : .labelColor,
+                 lineBreak: .byTruncatingMiddle)
+        drawBar(row: row,
+                denied: denied,
+                rect: CGRect(x: nameX, y: 21, width: nameWidth, height: 3))
+        let size = denied ? "—" : ByteCountFormatter.string(fromByteCount: row.bytes, countStyle: .file)
+        drawText(size,
+                 in: CGRect(x: sizeX, y: 5, width: TreeTableMetrics.sizeWidth - 8, height: 16),
+                 font: .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+                 color: denied ? .tertiaryLabelColor : .secondaryLabelColor,
+                 alignment: .right)
+        drawText(denied ? "—" : "\(row.fileCount)",
+                 in: CGRect(x: countX, y: 5, width: TreeTableMetrics.countWidth - 8, height: 16),
+                 font: .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+                 color: .tertiaryLabelColor,
+                 alignment: .right)
+        drawText(TreeBrowserRow.mtimeDisplay(row.modificationDate, denied: denied),
+                 in: CGRect(x: mtimeX, y: 5, width: TreeTableMetrics.mtimeWidth - 8, height: 16),
+                 font: .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+                 color: .tertiaryLabelColor,
+                 alignment: .right)
+        drawActions(flat)
+    }
+
+    private func drawBar(row: TreeRow, denied: Bool, rect: CGRect) {
+        NSColor.quaternaryLabelColor.withAlphaComponent(0.28).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 1.5, yRadius: 1.5).fill()
+        guard maxBytes > 0, !denied else { return }
+        let ratio = max(0, min(1, Double(row.bytes) / Double(maxBytes)))
+        let fill = CGRect(x: rect.minX, y: rect.minY, width: rect.width * CGFloat(ratio), height: rect.height)
+        (row.isDirectory ? NSColor.controlAccentColor.withAlphaComponent(0.65) : NSColor.controlAccentColor.withAlphaComponent(0.38)).setFill()
+        NSBezierPath(roundedRect: fill, xRadius: 1.5, yRadius: 1.5).fill()
+    }
+
+    private func drawActions(_ flat: FlatTreeRow) {
+        if hasAI {
+            drawSymbol("sparkles",
+                       in: actionRect(.ai).insetBy(dx: 8, dy: 5),
+                       color: aiReady ? .controlAccentColor : .secondaryLabelColor.withAlphaComponent(0.45),
+                       pointSize: 12,
+                       weight: .semibold)
+        }
+        if hasStash {
+            drawSymbol(isStashed ? "tray.full.fill" : "tray.and.arrow.down",
+                       in: actionRect(.stash).insetBy(dx: 8, dy: 5),
+                       color: isStashed ? .controlAccentColor : .secondaryLabelColor,
+                       pointSize: 12,
+                       weight: .semibold)
+        }
+        if hasTrash {
+            drawSymbol("trash",
+                       in: actionRect(.trash).insetBy(dx: 8, dy: 5),
+                       color: isTrashable(flat) ? .systemRed : .secondaryLabelColor.withAlphaComponent(0.35),
+                       pointSize: 12,
+                       weight: .semibold)
+        }
+    }
+
+    private func disclosureRect(for flat: FlatTreeRow) -> CGRect {
+        CGRect(
+            x: TreeTableMetrics.leftPadding + CGFloat(flat.depth) * TreeTableMetrics.indentation,
+            y: 2,
+            width: TreeTableMetrics.chevronWidth,
+            height: 22
+        )
+    }
+
+    private enum ActionHit {
+        case none
+        case ai
+        case stash
+        case trash
+    }
+
+    private func hitTestAction(_ point: CGPoint) -> ActionHit {
+        if hasAI, actionRect(.ai).contains(point) { return .ai }
+        if hasStash, actionRect(.stash).contains(point) { return .stash }
+        if hasTrash, actionRect(.trash).contains(point) { return .trash }
+        return .none
+    }
+
+    private func actionRect(_ action: ActionHit) -> CGRect {
+        let right = bounds.width - TreeTableMetrics.actionTrailingPadding
+        let trash = CGRect(x: right - TreeTableMetrics.actionWidth, y: 2,
+                           width: TreeTableMetrics.actionWidth, height: 22)
+        let stash = trash.offsetBy(dx: -TreeTableMetrics.actionWidth, dy: 0)
+        let ai = stash.offsetBy(dx: -TreeTableMetrics.actionWidth, dy: 0)
+        switch action {
+        case .ai: return ai
+        case .stash: return stash
+        case .trash: return trash
+        case .none: return .zero
+        }
+    }
+
+    private func canExpand(_ flat: FlatTreeRow) -> Bool {
+        flat.row.isDirectory && flat.row.hasChildren && flat.row.accessState == .normal
+    }
+
+    private func isTrashable(_ flat: FlatTreeRow) -> Bool {
+        hasTrash && flat.row.accessState == .normal && flat.verdict != .forbid
+    }
+
+    private func drawText(_ text: String,
+                          in rect: CGRect,
+                          font: NSFont,
+                          color: NSColor,
+                          alignment: NSTextAlignment = .left,
+                          lineBreak: NSLineBreakMode = .byTruncatingTail) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = alignment
+        paragraph.lineBreakMode = lineBreak
+        (text as NSString).draw(in: rect, withAttributes: [
+            .font: font,
+            .foregroundColor: color,
+            .paragraphStyle: paragraph
+        ])
+    }
+
+    private func drawSymbol(_ name: String,
+                            in rect: CGRect,
+                            color: NSColor,
+                            pointSize: CGFloat? = nil,
+                            weight: NSFont.Weight = .regular) {
+        guard var image = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return }
+        if let pointSize {
+            let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
+            image = image.withSymbolConfiguration(config) ?? image
+        }
+        guard let cgContext = NSGraphicsContext.current?.cgContext else { return }
+        cgContext.saveGState()
+        cgContext.beginTransparencyLayer(auxiliaryInfo: nil)
+        color.setFill()
+        NSBezierPath(rect: rect).fill()
+        image.draw(in: rect, from: .zero, operation: .destinationIn, fraction: 1)
+        cgContext.endTransparencyLayer()
+        cgContext.restoreGState()
+    }
+
+    private static func copy(_ text: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+    }
+}
+
+private final class ClosureMenuItem: NSMenuItem {
+    private let closure: () -> Void
+
+    init(title: String, action closure: @escaping () -> Void) {
+        self.closure = closure
+        super.init(title: title, action: #selector(runClosure), keyEquivalent: "")
+        target = self
+    }
+
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func runClosure() {
+        closure()
     }
 }
 
