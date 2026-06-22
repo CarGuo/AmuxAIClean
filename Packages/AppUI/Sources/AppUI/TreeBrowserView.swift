@@ -270,10 +270,17 @@ public struct TreeBrowserView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 4)
                             .padding(.vertical, 2)
-                            // v2026.06.23 perf：与 TreeNodeRow 同步加固定高度 26pt，
-                            // 保证 NSTableView 整张表都走"固定行高 fastPath"——只要有任意一行
-                            // 走自适应高度，整表都会回退到 perRowSizeThatFits 慢路径。
-                            .frame(height: 26)
+                            // v2026.06.23 perf v2（Instruments 第五次取证 33334.md 14.23s）：
+                            // 上一刀 .frame(height: 26) 无效——栈里 NSTableRowData
+                            // ._doAutomaticRowHeightForRowView 5.40s + _uncachedAutomaticRowHeight
+                            // 5.39s 仍走 auto row height。原因：SwiftUI List 给 NSHostingView 的约束
+                            // 是 `[>= 0]` 而非 fixed；row 内层 .frame(height:) 只是局部约束，
+                            // NSHostingView 仍会 sizeThatFits。
+                            //
+                            // 修复：用 `(minHeight: maxHeight:)` + `.fixedSize(vertical: true)`
+                            // 双管齐下告诉 NSHostingView "我的高度就是 26，不要再问 sizeThatFits"。
+                            .frame(minHeight: 26, maxHeight: 26)
+                            .fixedSize(horizontal: false, vertical: true)
                             .id(flat.id)
                             .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
                             .listRowSeparator(.hidden)
@@ -292,6 +299,12 @@ public struct TreeBrowserView: View {
                                 aiSettings: aiSettings,
                                 onAskAI: onAskAI
                             )
+                            // v2026.06.23 perf v2：在 List row 这一层（NSHostingView root）
+                            // 再加一对 (minHeight: maxHeight:) + .fixedSize(vertical:)，
+                            // 让 NSHostingView 直接拿到刚性高度约束，跳过 sizeThatFits 嵌套链。
+                            // 详见 loading 占位行注释。
+                            .frame(minHeight: 26, maxHeight: 26)
+                            .fixedSize(horizontal: false, vertical: true)
                             .id(flat.row.path)
                             .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
                             .listRowSeparator(.hidden)
@@ -1150,14 +1163,16 @@ struct TreeNodeRow: View {
         .padding(.horizontal, 4)
         .padding(.vertical, 1)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // v2026.06.23 perf（Instruments Time Profiler 第四次取证 33334.md 15.61s）：
-        // 主线程 NSView.layoutSubtreeWithOldSize 11.24s + OutlineListCoordinator.diffRows 10.81s
-        // 的根因是 TreeNodeRow 没有固定高度，每行都触发 NSHostingView.SizeConstraints.update
-        // → ViewGraph.sizeThatFits → _FlexFrameLayout → _AlignmentLayout → _PaddingLayout
-        // → StackLayout（4-5s 嵌套链）。固定 26pt 后 NSTableView 走"固定行高 fastPath"，
-        // 不再为每行重新走整条 sizeThatFits 链。
+        // v2026.06.23 perf v2（Instruments 第五次取证 33334.md 14.23s）：
+        // 上一刀 .frame(height: 26) 无效——栈里 NSTableRowData._doAutomaticRowHeightForRowView
+        // 5.40s + _uncachedAutomaticRowHeight 5.39s 仍走 auto row height。
+        // SwiftUI .frame(height:) 等价于 (minHeight:idealHeight:maxHeight: nil)，
+        // NSHostingView 仍会 sizeThatFits 内部 child 来定 ideal。
+        // 改用 (minHeight: maxHeight:) 把上下界都钉死成 26，NSHostingView 拿到的就是
+        // 刚性 26pt 约束，跳过整条 _FlexFrameLayout → _AlignmentLayout → _PaddingLayout
+        // → StackLayout 嵌套 sizeThatFits 链。
         // 26 = 行内最大元素（22pt chevron/icon） + 上下 padding(.vertical, 1) × 2。
-        .frame(height: 26)
+        .frame(minHeight: 26, maxHeight: 26)
         .background(
             RoundedRectangle(cornerRadius: 5)
                 .fill(isSelected ? Color.accentColor.opacity(0.30) : Color.clear)
