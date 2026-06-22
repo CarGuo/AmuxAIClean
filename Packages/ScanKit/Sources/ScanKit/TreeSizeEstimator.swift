@@ -64,66 +64,74 @@ public enum TreeSizeEstimator {
     }
 
     /// 单个根的字节估算。
-    /// 用 `FileManager.enumerator` 而非 `getattrlistbulk`：
-    /// - 简化实现（getattrlistbulk Swift 调用要写一堆 unsafe）
-    /// - 估算只跑一次，性能差异可忽略
-    /// - 自动处理符号链接（默认 `[]` options 即跳过 symlink 递归）
     ///
-    /// v2026.06.22 perf（**Instruments Time Profiler 取证**）：
-    /// dev 扫 33334.md trace 显示 walkRoot 占 41.9%（1.62s 异步中 690ms），
-    /// 其中 `URL.resourceValues(forKeys:)` 97ms + `fileResourceIdentifier.getter`
-    /// / `volumeIdentifier` fastCharacterContents 链 51ms。优化策略：
-    ///   1. **resourceKeys 收紧**：includingPropertiesForKeys 与 per-entry
-    ///      resourceValues 都从 3 个 key 砍到 2 个 key（[.fileSizeKey, .isRegularFileKey]），
-    ///      取消每行拉 `.volumeIdentifierKey`。每个 entry 少一次 NSURL bridge。
-    ///   2. **跨卷检查降频**：从"每行查"改"每 256 行查"，与超时检查复用同一计数器
-    ///      `iterations & 0xFF == 0`。最坏情况多吃 255 个跨卷 entry，几 KB 误差
-    ///      对"估算分母"用途完全可接受（本来就允许 3-5% 误差）。
-    ///   3. 不改 enumerator / 不切 getattrlistbulk —— 风险面 0，纯减字段。
+    /// v2026.06.23 perf（**Instruments Time Profiler 第三次取证**）：
+    /// 上一刀"收紧 resourceKeys + 跨卷降频"只把 walkRoot 从 690ms 降到 333ms（35.2%
+    /// 仍是最大头）。继续抓栈发现真凶不是 resourceKeys 数量，而是
+    /// `FileManager.enumerator` 内部整条 Foundation/CoreFoundation/LaunchServices 链：
+    ///   - `_FSURLCreateWithPathAndExtendedAttributes` 34ms
+    ///   - `_FSURLCacheResourcePropertiesForKeys` 28ms
+    ///   - `_FileCacheSetPropertyValueForKey` 9.6ms
+    ///   - `LaunchServices::URLPropertyProvider::prepareIsPackageValue` 13ms
+    /// 即使 includingPropertiesForKeys 收紧到最小，`.skipsPackageDescendants`
+    /// 仍会强制触发 LaunchServices Database 查询判定 isPackage，无法绕过。
+    ///
+    /// 优化策略：彻底放弃 `FileManager.enumerator`，改用项目里已封装好的
+    /// [BulkEnumerate.enumerate(fd:dirPath:_:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L443-L573)
+    /// （getattrlistbulk + attrlist 直读 dirent + inode metadata，64KB 缓冲）+ 手动 DFS：
+    ///   - 跳过 NSURL bridge / FileCache / LaunchServices isPackage 全部开销
+    ///   - 直接从 attrlist 拿 `logicalSize`，免去 per-entry resourceValues 调用
+    ///   - 跨卷用 `entry.device`（已经从 attrlist 解析好）vs root `stat.st_dev`，
+    ///     省去 `.volumeIdentifierKey` 的 NSURL bridge
+    ///   - 隐藏文件按名字前缀 `.` 跳过（对齐原 `.skipsHiddenFiles` 行为）
+    ///   - 符号链接不递归（对齐原默认 `[]` options 行为）
+    ///   - 不做 isPackage 判定（estimator 本来就允许 3-5% 误差，bundle 内文件被吃掉
+    ///     轻微高估，对"估算分母"用途无感）
+    /// 预期：单根 333ms → ~50ms（5-10x 提升）。
     private static func walkRoot(_ root: URL, deadline: Date) -> Int64? {
-        let fm = FileManager.default
-        // 先确认根的设备 ID（实现"跨卷停止"用）
-        let rootDevice = (try? root.resourceValues(forKeys: [.volumeIdentifierKey]))?.volumeIdentifier
-        guard let enumerator = fm.enumerator(
-            at: root,
-            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants],
-            errorHandler: { _, _ in true } // 任何错误（权限/丢失文件）继续走，不打断估算
-        ) else { return nil }
+        // 拿根目录的 device id 作为跨卷判定基准（一次 stat 调用，省去 NSURL.volumeIdentifierKey）
+        // 注意 BulkEntry.device 是 UInt64（来自 attrlist ATTR_CMN_DEVID），stat.st_dev 是 dev_t（Int32），
+        // 这里统一转 UInt64 比较。
+        var rootStat = stat()
+        guard stat(root.path, &rootStat) == 0 else { return nil }
+        let rootDevice = UInt64(bitPattern: Int64(rootStat.st_dev))
 
+        var stack: [String] = [root.path]
         var total: Int64 = 0
-        // enumerator 是个有副作用的迭代器；用 next() 而不是 for-in 才能配合超时检查中途退出
         var iterations = 0
-        while let item = enumerator.nextObject() as? URL {
-            iterations += 1
-            // 每 256 个条目检查一次超时 + 跨卷边界（频繁检查会反向拖慢自己）
-            if iterations & 0xFF == 0 {
-                if Date() >= deadline { break }
-                // v2026.06.22 perf：跨卷检查从 per-entry 降到 per-256-entry。
-                // 跨卷场景：用户根目录里挂了外接盘 / 镜像卷。256 entry 容差
-                // 对估算（本就允许 3-5% 误差）无感。
-                if let rdev = rootDevice,
-                   let dev = (try? item.resourceValues(forKeys: [.volumeIdentifierKey]))?.volumeIdentifier,
-                   !areVolumeIdentifiersEqual(dev, rdev) {
-                    enumerator.skipDescendants()
-                    continue
-                }
-            }
-            // v2026.06.22 perf：per-entry resourceValues 只拉 fileSize + isRegularFile
-            // 两个最小必需 key，省掉 volumeIdentifier 的 NSURL bridge / fastCharacterContents。
-            let values = try? item.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-            if values?.isRegularFile == true, let size = values?.fileSize {
-                total += Int64(size)
-            }
-        }
-        return total
-    }
+        // 软上限：估算不接受走太多目录（防御性，正常根 ~10k 目录以内）
+        var anyEntry = false
 
-    /// `volumeIdentifier` 类型擦除版相等比较。
-    /// macOS 上是 NSObject 子类（实现了 isEqual），但类型在 SDK 里是 `Any`。
-    private static func areVolumeIdentifiersEqual(_ a: Any, _ b: Any) -> Bool {
-        guard let aObj = a as AnyObject as? NSObject,
-              let bObj = b as AnyObject as? NSObject else { return false }
-        return aObj.isEqual(bObj)
+        while let dirPath = stack.popLast() {
+            if Date() >= deadline { break }
+            let fd = open(dirPath, O_RDONLY, 0)
+            if fd < 0 { continue }
+
+            BulkEnumerate.enumerate(fd: fd, dirPath: dirPath) { entry in
+                iterations += 1
+                // 每 256 个条目检查一次超时（getattrlistbulk 本身已批量，避免每次回调 Date()）
+                if iterations & 0xFF == 0, Date() >= deadline { return false }
+
+                // 对齐原 .skipsHiddenFiles：名字前缀 . 跳过
+                if entry.name.hasPrefix(".") { return true }
+                // 符号链接不递归、也不计大小（避免 iCloud / Application Support 里 symlink 爆炸）
+                if entry.isSymlink { return true }
+                // 跨卷停止：device 来自 attrlist，无需 NSURL bridge
+                if entry.device != rootDevice { return true }
+
+                anyEntry = true
+                if entry.isDirectory {
+                    stack.append("\(dirPath)/\(entry.name)")
+                } else {
+                    // logicalSize 对齐原 .fileSizeKey 含义
+                    total += entry.logicalSize
+                }
+                return true
+            }
+            close(fd)
+        }
+
+        // root 完全没遍历到任何 entry 时返回 nil（保持与旧实现"完全失败"语义一致）
+        return anyEntry ? total : (total > 0 ? total : nil)
     }
 }
