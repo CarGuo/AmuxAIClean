@@ -270,6 +270,10 @@ public struct TreeBrowserView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 4)
                             .padding(.vertical, 2)
+                            // v2026.06.23 perf：与 TreeNodeRow 同步加固定高度 26pt，
+                            // 保证 NSTableView 整张表都走"固定行高 fastPath"——只要有任意一行
+                            // 走自适应高度，整表都会回退到 perRowSizeThatFits 慢路径。
+                            .frame(height: 26)
                             .id(flat.id)
                             .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
                             .listRowSeparator(.hidden)
@@ -294,7 +298,10 @@ public struct TreeBrowserView: View {
                         }
                     }
                     .listStyle(.plain)
-                    .environment(\.defaultMinListRowHeight, 0)
+                    // v2026.06.23 perf：把最小行高从 0 提到 26，与 TreeNodeRow / loading 占位行
+                    // 的固定高度对齐——NSTableView 在"所有行高度一致"时走固定行高 fastPath，
+                    // 跳过 NSHostingView.SizeConstraints.update 整条 sizeThatFits 嵌套链。
+                    .environment(\.defaultMinListRowHeight, 26)
                     .onChange(of: selectedPath) { _, new in
                         guard let new else { return }
                         withAnimation(.easeInOut(duration: 0.1)) {
@@ -1143,6 +1150,14 @@ struct TreeNodeRow: View {
         .padding(.horizontal, 4)
         .padding(.vertical, 1)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // v2026.06.23 perf（Instruments Time Profiler 第四次取证 33334.md 15.61s）：
+        // 主线程 NSView.layoutSubtreeWithOldSize 11.24s + OutlineListCoordinator.diffRows 10.81s
+        // 的根因是 TreeNodeRow 没有固定高度，每行都触发 NSHostingView.SizeConstraints.update
+        // → ViewGraph.sizeThatFits → _FlexFrameLayout → _AlignmentLayout → _PaddingLayout
+        // → StackLayout（4-5s 嵌套链）。固定 26pt 后 NSTableView 走"固定行高 fastPath"，
+        // 不再为每行重新走整条 sizeThatFits 链。
+        // 26 = 行内最大元素（22pt chevron/icon） + 上下 padding(.vertical, 1) × 2。
+        .frame(height: 26)
         .background(
             RoundedRectangle(cornerRadius: 5)
                 .fill(isSelected ? Color.accentColor.opacity(0.30) : Color.clear)
