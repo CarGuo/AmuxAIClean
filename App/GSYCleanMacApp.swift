@@ -270,40 +270,24 @@ struct GSYCleanMacApp: App {
             }
         }
         .commands {
-            // v1.1：Help 菜单加"检查更新"入口
-            CommandGroup(after: .appInfo) {
-                Button(String(localized: "menu.app.checkUpdates", bundle: AppUIResources.bundle)) {
-                    updateChecker.checkNow()
-                }
-            }
-            // v1.3：View 菜单加"显示扫描悬浮窗"toggle，⌘⇧H 快捷键。
-            // 用 CommandGroup(after: .toolbar) 让它落在 macOS 标准"显示"区。
-            CommandGroup(after: .toolbar) {
-                Divider()
-                Toggle(String(localized: "menu.view.showHUD", bundle: AppUIResources.bundle), isOn: hudBinding)
-                    .keyboardShortcut("h", modifiers: [.command, .shift])
-            }
-            // v1.5.7：替换 SwiftUI 默认的占位 Help 菜单，提供生产级帮助入口。
-            CommandGroup(replacing: .help) {
-                Button(String(localized: "menu.help.help", bundle: AppUIResources.bundle)) {
-                    Self.openExternal("https://github.com/CarGuo/GSYCleanMac#readme")
-                }
-                .keyboardShortcut("?", modifiers: [.command])
-                Divider()
-                Button(String(localized: "menu.help.privacy", bundle: AppUIResources.bundle)) {
-                    Self.openExternal("https://github.com/CarGuo/GSYCleanMac/blob/main/PRIVACY.md")
-                }
-                Button(String(localized: "menu.help.terms", bundle: AppUIResources.bundle)) {
-                    Self.openExternal("https://github.com/CarGuo/GSYCleanMac/blob/main/TERMS.md")
-                }
-                Divider()
-                Button(String(localized: "menu.help.feedback", bundle: AppUIResources.bundle)) {
-                    Self.openExternal("https://github.com/CarGuo/GSYCleanMac/issues/new/choose")
-                }
-                Button(String(localized: "menu.help.revealLogs", bundle: AppUIResources.bundle)) {
-                    Self.revealLogsInFinder()
-                }
-            }
+            // v2026.06.22 perf：把 .commands 内容拆到独立 Commands struct。
+            //
+            // 根因（Instruments Hangs 模板取证）：dev 扫场景下每 0.4s 一次
+            // publishSnapshot → Scene body invalidate → SwiftUI 重跑这个
+            // `.commands { }` 闭包 → AppKit 调
+            // `AppDelegate.makeMainMenuUpdateImmediately` 整张 NSMenu 拆建 →
+            // 7 个 NSMenuItem 全部走 String(localized:) + bundle:
+            // AppUIResources.bundle 重新查表（NSCache.objectForKey /
+            // NSPathStore2.fastCharacterContents / NSAttributedString.init）
+            // → 主线程 100~600ms microhang 连成串。
+            //
+            // 修复双管齐下：
+            //  ① 拆为 [GSYCleanCommands](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
+            //     独立 Commands struct，参数（class ref + Binding）等价时
+            //     SwiftUI 跳过菜单重建。
+            //  ② 7 个标题改为 GSYCleanCommands 内部的 static let，进程内
+            //     `String(localized:)` 只查一次表，再也不进 NSCache。
+            GSYCleanCommands(updateChecker: updateChecker, hudShown: hudBinding)
         }
 
         // v1.0：标准 ⌘, 设置窗口（隐藏文件 toggle / 大文件阈值 / 自定义路径）。
@@ -505,8 +489,12 @@ struct GSYCleanMacApp: App {
 
     /// v1.5.7：Help 菜单统一的外链跳转入口。
     /// 只允许 https，避免后续被改成 file:// / shell: 等危险 scheme。
+    ///
+    /// v2026.06.22 perf：从 `private` 放宽到 `fileprivate`，让同文件的
+    /// [GSYCleanCommands](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
+    /// 可以复用，避免把整个 helper 在 Commands struct 内再写一份。
     @MainActor
-    private static func openExternal(_ urlString: String) {
+    fileprivate static func openExternal(_ urlString: String) {
         guard let url = URL(string: urlString),
               url.scheme == "https" else {
             NSLog("[GSYCleanMac] openExternal 拒绝非 https URL: \(urlString)")
@@ -517,8 +505,12 @@ struct GSYCleanMacApp: App {
 
     /// v1.5.7：Help → 在 Finder 中显示日志。
     /// 日志路径与 [GSYLog.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LogKit/Sources/LogKit/GSYLog.swift) 默认 sink 保持一致。
+    ///
+    /// v2026.06.22 perf：从 `private` 放宽到 `fileprivate`，让同文件的
+    /// [GSYCleanCommands](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
+    /// 可以复用（理由同 [openExternal](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)）。
     @MainActor
-    private static func revealLogsInFinder() {
+    fileprivate static func revealLogsInFinder() {
         let fm = FileManager.default
         let logDir = fm.urls(for: .libraryDirectory, in: .userDomainMask)
             .first?
@@ -531,5 +523,76 @@ struct GSYCleanMacApp: App {
             try? fm.createDirectory(at: logDir, withIntermediateDirectories: true)
         }
         NSWorkspace.shared.activateFileViewerSelecting([logDir])
+    }
+}
+
+/// v2026.06.22 perf：从 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
+/// 的 `.commands { }` 拆出，让 dev 扫 publish 风暴下 Scene body invalidate
+/// **不再**让 AppKit 重建整张 NSMenu。
+///
+/// 关键设计：
+/// - 内部 7 个标题改为 `static let`：进程内 `String(localized:)` 只查一次表，
+///   再也不进 NSCache.objectForKey / NSPathStore2.fastCharacterContents
+///   （Instruments Hangs 模板 backtrace 的核心热点）。
+/// - 自身只持有 class ref + Binding 两个轻量值：SwiftUI 在 .commands diff
+///   阶段比较等价时直接短路菜单重建。
+/// - **不持有 AppSettings**：dev 扫期间 settings 不会变，但 AppSettings
+///   是 `@Observable`，作为 stored prop 会让本 struct 被 SwiftUI 视为
+///   会变化的依赖；改成只传 `Binding<Bool>` 后依赖面收紧到 hudEnabled 一项。
+private struct GSYCleanCommands: Commands {
+    let updateChecker: UpdateChecker
+    @Binding var hudShown: Bool
+
+    // MARK: - 本地化文案 static let（消除每帧 NSCache/NSPathStore2 查表）
+    private static let titleCheckUpdates =
+        String(localized: "menu.app.checkUpdates", bundle: AppUIResources.bundle)
+    private static let titleShowHUD =
+        String(localized: "menu.view.showHUD", bundle: AppUIResources.bundle)
+    private static let titleHelp =
+        String(localized: "menu.help.help", bundle: AppUIResources.bundle)
+    private static let titlePrivacy =
+        String(localized: "menu.help.privacy", bundle: AppUIResources.bundle)
+    private static let titleTerms =
+        String(localized: "menu.help.terms", bundle: AppUIResources.bundle)
+    private static let titleFeedback =
+        String(localized: "menu.help.feedback", bundle: AppUIResources.bundle)
+    private static let titleRevealLogs =
+        String(localized: "menu.help.revealLogs", bundle: AppUIResources.bundle)
+
+    var body: some Commands {
+        // v1.1：Help 菜单加"检查更新"入口（实际落在 appInfo 后面，约定俗成）
+        CommandGroup(after: .appInfo) {
+            Button(Self.titleCheckUpdates) {
+                updateChecker.checkNow()
+            }
+        }
+        // v1.3：View 菜单加"显示扫描悬浮窗"toggle，⌘⇧H 快捷键。
+        // 用 CommandGroup(after: .toolbar) 让它落在 macOS 标准"显示"区。
+        CommandGroup(after: .toolbar) {
+            Divider()
+            Toggle(Self.titleShowHUD, isOn: $hudShown)
+                .keyboardShortcut("h", modifiers: [.command, .shift])
+        }
+        // v1.5.7：替换 SwiftUI 默认的占位 Help 菜单，提供生产级帮助入口。
+        CommandGroup(replacing: .help) {
+            Button(Self.titleHelp) {
+                GSYCleanMacApp.openExternal("https://github.com/CarGuo/GSYCleanMac#readme")
+            }
+            .keyboardShortcut("?", modifiers: [.command])
+            Divider()
+            Button(Self.titlePrivacy) {
+                GSYCleanMacApp.openExternal("https://github.com/CarGuo/GSYCleanMac/blob/main/PRIVACY.md")
+            }
+            Button(Self.titleTerms) {
+                GSYCleanMacApp.openExternal("https://github.com/CarGuo/GSYCleanMac/blob/main/TERMS.md")
+            }
+            Divider()
+            Button(Self.titleFeedback) {
+                GSYCleanMacApp.openExternal("https://github.com/CarGuo/GSYCleanMac/issues/new/choose")
+            }
+            Button(Self.titleRevealLogs) {
+                GSYCleanMacApp.revealLogsInFinder()
+            }
+        }
     }
 }
