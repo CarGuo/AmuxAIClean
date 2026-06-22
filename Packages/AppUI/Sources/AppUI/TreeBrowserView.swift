@@ -85,6 +85,51 @@ public struct TreeBrowserView: View {
     /// 在弹菜单 / 行内 trash 按钮 hit-test 时就 disabled，并附 tooltip 解释为什么不能删。
     static let safety = SafetyEngine()
 
+    /// v2026.06.22 perf：path → SafetyVerdict 进程内缓存（**Instruments Time Profiler 取证**）。
+    ///
+    /// 33334.md（commit 5fe7e91 后第二刀取证）显示 [rebuildFlatRows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L411-L451)
+    /// 一次跑 139ms 中 124ms（89%）全部在 [SafetyEngine.evaluate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L212)：
+    ///   - evaluateStandardized 58.8ms
+    ///   - resolvedSymlinkPath 31.7ms（含 realpath syscall）
+    ///   - URL.init(fileURLWithPath:) 11.7ms
+    ///   - URL.standardizedFileURL.getter 6.9ms
+    /// 这些都是 path-only 输入 → 进程生命周期内**确定性输出**（SafetyEngine 规则
+    /// 库是编译期常量 + home 也是常量），完美适合纯路径缓存。
+    ///
+    /// 命中场景：扫描中 5s 节流后每窗口 rebuildFlatRows 至少 1 次，上万节点的
+    /// 99%+ path 是上一帧出现过的；patch 路径（[applyChildrenPatch](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L561)）
+    /// 同理；选中态 fallback（[handleKeyboardSelectionMove](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L368)）
+    /// 也基本命中。理论上单 path 加速倍数 = 1000x（dict get vs URL standardize + realpath）。
+    ///
+    /// 并发：computeVerdicts 调用者都在 MainActor 上，但为安全起见仍用 NSLock 保护
+    /// （后续可能从 BG queue 触发 [filterDeletableForbiddenPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L881)）。
+    /// NSLock 在无竞争场景接近 0 开销，完全 amortize。
+    ///
+    /// 容量上限 50k：dev 扫几百根 + 上万节点，按目录数估算 5w 上限足够覆盖；
+    /// 超过 50k 直接 reset（不做 LRU 是因为 dev 工具单次会话规模可控，简洁优先）。
+    private enum VerdictCache {
+        nonisolated(unsafe) private static var cache: [String: SafetyVerdict] = [:]
+        nonisolated(unsafe) private static let lock = NSLock()
+        private static let maxEntries = 50_000
+
+        static func verdict(for path: String) -> SafetyVerdict {
+            lock.lock()
+            if let hit = cache[path] {
+                lock.unlock()
+                return hit
+            }
+            lock.unlock()
+            // 真算放在锁外：SafetyEngine.evaluate 可能 100us+，
+            // 锁内只做 dict 读写，避免阻塞并发评估。
+            let v = safety.evaluate(path: path).0
+            lock.lock()
+            if cache.count >= maxEntries { cache.removeAll(keepingCapacity: true) }
+            cache[path] = v
+            lock.unlock()
+            return v
+        }
+    }
+
     /// v1.5 P2 / Q1：本地 fallback @State —— 仅在 `globalSortKey == nil` 时生效。
     /// 有 globalSortKey 时通过 `effectiveSortKey` 的 getter 优先读外部 binding，
     /// 这个 @State 完全不参与 body 渲染（也就不会触发额外 invalidation）。
@@ -365,7 +410,7 @@ public struct TreeBrowserView: View {
             if let flat = flatRows.first(where: { $0.row.path == cur }) {
                 verdict = flat.verdict
             } else {
-                verdict = Self.safety.evaluate(path: cur).0
+                verdict = Self.VerdictCache.verdict(for: cur)
             }
             guard verdict != .forbid else {
                 NSSound.beep()
@@ -420,7 +465,7 @@ public struct TreeBrowserView: View {
                 appendDescendantPairs(parent: kid.path, depth: 1, into: &pairs)
             }
         }
-        let base = Self.computeVerdicts(for: pairs) { Self.safety.evaluate(path: $0).0 }
+        let base = Self.computeVerdicts(for: pairs) { Self.VerdictCache.verdict(for: $0) }
         // v2026.06.20：把"展开但孩子还在异步加载"的目录后面插一个加载占位行，
         // 让用户在 store-fallback 拉子节点的几十~几百毫秒窗口里看到 spinner，
         // 而不是空白的展开。详见 [insertLoadingPlaceholders](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
@@ -558,7 +603,7 @@ public struct TreeBrowserView: View {
         let parentDepth = flatRows[idx].depth
         var pairs: [(TreeRow, Int)] = []
         appendDescendantPairs(parent: path, depth: parentDepth + 1, into: &pairs)
-        let inserted = Self.computeVerdicts(for: pairs) { Self.safety.evaluate(path: $0).0 }
+        let inserted = Self.computeVerdicts(for: pairs) { Self.VerdictCache.verdict(for: $0) }
         if !inserted.isEmpty {
             flatRows.insert(contentsOf: inserted, at: idx + 1)
             return
