@@ -75,6 +75,26 @@ public final class StashStore {
     /// 同步 mutation 自动通过 @Observable 触发刷新。
     public private(set) var entries: [StashEntry] = []
 
+    /// v2026.06.23 perf（Instruments 第六次取证 33334.md 703.80ms）：
+    /// `contains(_:)` 是 row body 求值热路径（[MainView L1213](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1213)
+    /// `isStashed: { path in stash.contains(path) }` 每行调一次），
+    /// 旧实现 `entries.contains(where: { $0.id == path })` 是 O(N) 全扫 +
+    /// 每次还要 `ObservationRegistrar.access(\.entries)` 注册依赖
+    /// （trace 显示 closure #5 in MainView.results.getter → StashStore.contains
+    /// 2.5ms 在 hot path）。100 行可视 × 60fps × 50 条 stash = 每秒 30 万次
+    /// 字符串相等比较 → 滚动卡顿。
+    ///
+    /// 修复：维护一个 `pathIndex: Set<String>` 镜像，跟 entries 在每个 mutation
+    /// 点同步。`contains` 改读这个 set → O(1) hash 查找 + 单次 Observation
+    /// 依赖注册（依赖 pathIndex 而非 entries，stash 内部条目顺序变化不再
+    /// invalidate 所有 row）。
+    ///
+    /// 注意 `@ObservationIgnored` **不能**用——这里恰恰要 Observation：
+    /// stash 增删时 `isStashed` 闭包需要重新求值翻转徽标。但订阅源从
+    /// `entries` 数组改成 `pathIndex` set，set mutation 与 row count
+    /// 无关，避免任何小变化都让所有 row body 重跑。
+    public private(set) var pathIndex: Set<String> = []
+
     public init() {}
 
     /// 待处理总数。`Toolbar` badge 直接读这个值，==0 时按钮整体隐藏。
@@ -90,8 +110,10 @@ public final class StashStore {
     /// 这个返回值给 UI 用——加入时可顺手 toast / 蜂鸣区分"成功 vs 重复加入"。
     @discardableResult
     public func add(_ entry: StashEntry) -> Bool {
-        if entries.contains(where: { $0.id == entry.id }) { return false }
+        // v2026.06.23 perf：先查 O(1) pathIndex 而不是 O(N) entries.contains。
+        if pathIndex.contains(entry.id) { return false }
         entries.append(entry)
+        pathIndex.insert(entry.id)
         return true
     }
 
@@ -102,13 +124,15 @@ public final class StashStore {
     }
 
     /// 是否已加入待处理。tree row contextMenu 用它来"已加入则禁用按钮 + 改文案"。
+    /// v2026.06.23 perf：O(N) entries.contains → O(1) Set.contains（详见 [pathIndex](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashStore.swift#L96) 文档）。
     public func contains(_ path: String) -> Bool {
-        entries.contains(where: { $0.id == path })
+        pathIndex.contains(path)
     }
 
     /// 移除单条。用户在 StashScreen 点 ✕ 或右键"剔除"。
     public func remove(_ path: String) {
         entries.removeAll { $0.id == path }
+        pathIndex.remove(path)
     }
 
     /// 批量移除。一键清理 / 单独清理走真删通道之前，先把对应路径从待处理里摘掉，
@@ -116,11 +140,13 @@ public final class StashStore {
     public func remove(paths: [String]) {
         let set = Set(paths)
         entries.removeAll { set.contains($0.id) }
+        pathIndex.subtract(set)
     }
 
     /// 清空待处理。用户主动点"清空"或一键清理全部成功后调用。
     public func clear() {
         entries.removeAll()
+        pathIndex.removeAll()
     }
 
     /// v2026.06.19 写入单条 AI 判断结果。由 [StashAIQueue](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)
