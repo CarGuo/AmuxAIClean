@@ -424,11 +424,30 @@ public struct TreeBrowserView: View {
         // v2026.06.20：把"展开但孩子还在异步加载"的目录后面插一个加载占位行，
         // 让用户在 store-fallback 拉子节点的几十~几百毫秒窗口里看到 spinner，
         // 而不是空白的展开。详见 [insertLoadingPlaceholders](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
-        flatRows = insertLoadingPlaceholders(into: base)
-        maxBytes = topLevel.map(\.bytes).max() ?? 0
-        // 顶层空 + isFetchingChildren 才算"拉取中"；否则维持 false 让 view 走 isScanning / 真空两态。
-        isFetchingRoot = topLevel.isEmpty
+        let newFlatRows = insertLoadingPlaceholders(into: base)
+        // v2026.06.22 perf：等值短路。
+        //
+        // 为什么需要：5s 节流期内 rebuildFlatRows 仍会被多次调用（onAppear /
+        // sortKey change / handleChildrenCacheBump 等）。如果 newFlatRows 与
+        // 上一次完全相等却仍然 `flatRows = newFlatRows` 赋值，SwiftUI 会因为
+        // @State 被写入而让 body invalidate → List diff → OutlineListCoordinator
+        // 166ms 跟着跑（Instruments Hangs 实测）。FlatTreeRow 是 Hashable
+        // （隐式 Equatable），先比 == 拒绝等价帧。
+        //
+        // 复杂度：N 几万时 == 也是 O(N)，但内部是简单值 hash 比较，比 SwiftUI
+        // 全树 diff + RowView body 重 render 便宜一个量级；并且大多数 5s 内
+        // 多次 rebuild 时内容真就不变（structural bump 节流后只剩 sortKey 切换
+        // / expanded diff 触发），命中率高。
+        let newMax = topLevel.map(\.bytes).max() ?? 0
+        let newIsFetching = topLevel.isEmpty
             && coordinator.isFetchingChildren(of: rootPath, sortedBy: effectiveSortKey)
+        if flatRows == newFlatRows && maxBytes == newMax && isFetchingRoot == newIsFetching {
+            return
+        }
+        flatRows = newFlatRows
+        maxBytes = newMax
+        // 顶层空 + isFetchingChildren 才算"拉取中"；否则维持 false 让 view 走 isScanning / 真空两态。
+        isFetchingRoot = newIsFetching
     }
 
     private func appendDescendantPairs(parent: String, depth: Int,
@@ -718,6 +737,17 @@ public struct TreeBrowserView: View {
     /// 取消上一次挂起的 work item 续期，最迟 1s 后做一次 rebuildFlatRows。
     /// 扫描结束的边沿（onChange(coordinator.isScanning) → false）会立刻 fire 一次
     /// 拿到终态，无需依赖此节流。
+    ///
+    /// v2026.06.22 性能（**Instruments Hangs 模板取证**）：节流窗从 1s 升到 5s。
+    /// 上一份 Hangs trace 显示 dev 扫主线程 hot path 是
+    /// `TreeBrowserView.body.getter` 143ms + `OutlineListCoordinator.update`
+    /// 166ms / 帧，原 1s 节流意味着每秒至少一次 309ms 主线程 jank。改 5s 后：
+    ///   - 与 [MainView listResults 5s 节流](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L2192-L2242)
+    ///     对称：扫描中两个 List 都最多 5s 更新一次。
+    ///   - 扫描结束的 [handleScanningToggle](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L753)
+    ///     边沿仍 force fire 一次，用户感知不到 5s 收尾延迟。
+    ///   - 5s 期间用户**不能**展开节点（[toggleExpansionFor L781](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L781) 已拒），
+    ///     所以 flatRows 视觉只跟扫描结果走，不影响交互。
     private func scheduleScanningRebuild() {
         pendingScanningRebuild?.cancel()
         let work = DispatchWorkItem { [self] in
@@ -726,7 +756,7 @@ public struct TreeBrowserView: View {
             rebuildFlatRows()
         }
         pendingScanningRebuild = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0, execute: work)
     }
 
     /// v2026.06.21：structuralRevision bump 入口（从 body onChange 抽出来避免类型推断超时）。
