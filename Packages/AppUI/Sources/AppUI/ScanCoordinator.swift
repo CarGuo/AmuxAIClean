@@ -110,6 +110,20 @@ public final class ScanCoordinator: ObservableObject {
     /// 避免依赖整 dict 触发重 diff。
     @Published public private(set) var perRootFinishedCount: Int = 0
 
+    /// v2026.06.22 perf：UI 展示用的「已按 rootPath 字典序预排序」的数组形态。
+    ///
+    /// 背景（trace 6.67 s，主线程 NSHostingView.layout 778 ms）：
+    /// 旧实现在 [statusBar L1549](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1549)
+    /// 每帧 body 重 eval 都跑一次 `perRootProgress.values.sorted(by: { $0.rootPath < $1.rootPath })`：
+    ///   - sort 几百根 String 字典序比较：~10 ms（_stringCompare 链）
+    ///   - sort 闭包带 MainActor 上下文：每对比较都触发 `swift_task_isCurrentExecutor` ~6 ms
+    ///   - 总计 statusBar.getter 单帧 44.3 ms，60fps 滚动直接吃光 frame budget。
+    ///
+    /// 现在：在 syncPerRootPublished 同步点一次性排序好，UI 直接读，零 sort。
+    /// 由于 perRootProgressActive + perRootFinishedSlim 已经 @Published（throttle 0.4s
+    /// 才更新），这个数组的更新频率天然就被 throttle 住——比每帧 sort 收益大几个量级。
+    @Published public private(set) var perRootProgressSorted: [PerRootProgress] = []
+
     /// v1.3.zz 性能修复用：staging 累计区，每 .node 事件直接累计这里，避开 @Published 触发 SwiftUI invalidation。
     /// publishSnapshot 节流点会把它同步到 perRootProgress（0.4s 一次）。
     private var perRootStaging: [String: PerRootProgress] = [:]
@@ -144,6 +158,14 @@ public final class ScanCoordinator: ObservableObject {
         if perRootFinishedCount != nextFinishedCount {
             perRootFinishedCount = nextFinishedCount
         }
+
+        // v2026.06.22 perf：同步维护 sorted 数组（UI 直接读，零 sort）。
+        // staging 是合并后的最终态；这里就一次性按 rootPath 字典序排好。
+        // 仅当真的变化才 assign，避免无谓 willChange / SwiftUI 重 diff。
+        let nextSorted = staging.values.sorted(by: { $0.rootPath < $1.rootPath })
+        if perRootProgressSorted != nextSorted {
+            perRootProgressSorted = nextSorted
+        }
     }
 
     /// v1.5 P1-B：完整重置三份 @Published（用于 cancel / 重新预填）。
@@ -151,6 +173,7 @@ public final class ScanCoordinator: ObservableObject {
         if !perRootProgressActive.isEmpty { perRootProgressActive = [:] }
         if !perRootFinishedSlim.isEmpty { perRootFinishedSlim = [:] }
         if perRootFinishedCount != 0 { perRootFinishedCount = 0 }
+        if !perRootProgressSorted.isEmpty { perRootProgressSorted = [] }
     }
 
     /// 单根的实时进度快照。

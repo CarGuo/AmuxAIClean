@@ -1513,12 +1513,14 @@ public struct MainView: View {
             // devArtifactDidTimeout 字段仅保留作内部诊断，UI 不再读。
             HStack {
                 if coordinator.isScanning {
-                    // v2026.06.21 perf F2：`coordinator.perRootProgress` 是 computed property，
-                    // 内部 merging O(N) 两个字典，原本在同一 body 帧里被 L1440（isEmpty 判断）
-                    // 和 L1468（values.sorted）各访问一次 → 重复算两次 merge，N=几百根时
-                    // 是肉眼可见的滑动卡顿。在 HStack 顶端提一个 local let，body 帧内只算一次。
-                    let perRoot = coordinator.perRootProgress
-                    if perRoot.isEmpty {
+                    // v2026.06.22 perf：直接读 coordinator.perRootProgressSorted（已在
+                    // syncPerRootPublished 里按 rootPath 字典序预排序，throttle 0.4s 一次）。
+                    // 旧实现每帧 body 都 `.sorted(by:)` 一遍几百根字符串，trace 6.67s 显示
+                    // statusBar.getter 单帧 44.3 ms（sort 闭包 + MainActor isCurrentExecutor
+                    // 检查 6 ms × N + String._stringCompare 10 ms × N log N），60fps 滚动
+                    // 直接吃光 frame budget。
+                    let rows = coordinator.perRootProgressSorted
+                    if rows.isEmpty {
                         // v2026.06.18：单根扫描信息显著增强。
                         // 用户反馈："正在扫描能不能加个进度？扫了百分之多少，预计还剩多少时间"。
                         // 数据源：
@@ -1546,7 +1548,10 @@ public struct MainView: View {
                         // 触发的整体重 diff，整个列表/sidebar 滑动都会卡。
                         // 改 `LazyVStack` 让只有窗口内的 ~6 行真正参与 measure/layout，
                         // 几百行时主线程 frame budget 立刻回归 60fps。
-                        let rows = perRoot.values.sorted(by: { $0.rootPath < $1.rootPath })
+                        //
+                        // v2026.06.22 perf：rows 已在外层 L1522 通过
+                        // [perRootProgressSorted](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L125)
+                        // 拿到（预排序）；这里直接复用，省掉旧的 .sorted(by:) 闭包。
                         ScrollView(.vertical, showsIndicators: true) {
                             LazyVStack(alignment: .leading, spacing: 2) {
                                 ForEach(rows, id: \.rootPath) { p in
