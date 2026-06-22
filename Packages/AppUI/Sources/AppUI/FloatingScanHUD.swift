@@ -728,7 +728,10 @@ struct FloatingScanHUDView: View {
     /// 这就是 SwiftUI 等价于 Flutter Hero / AnimatedContainer 的实现。
     @Namespace private var islandHeroNS
     /// probe 测量层独立 namespace——避免 probe 的 matchedGeometryEffect 和主层冲突。
-    @Namespace private var islandProbeNS
+    /// 收起态/展开态 probe 也必须拆开，否则同一个 probe namespace 内会同时插入两套
+    /// `isSource: true` 的 hero 元素，SwiftUI 会报 multiple inserted views。
+    @Namespace private var islandStripProbeNS
+    @Namespace private var islandExpandedProbeNS
 
     init(coordinator: ScanCoordinator,
          settings: AppSettings,
@@ -1197,11 +1200,12 @@ struct FloatingScanHUDView: View {
 
     /// **独立尺寸探测层**——在主视图之外，永远渲染两种态的内容，测量它们的自然尺寸。
     /// 这层不参与 spring 动画，写回 islandState 的值始终是稳态目标，不会因 spring 中间帧污染。
-    /// **关键**：probe 用独立 namespace（islandProbeNS），避免 hero ID 和主层冲突。
+    /// **关键**：probe 用独立 namespace，避免 hero ID 和主层冲突；两种 probe
+    /// 再各用一个 namespace，避免同组内出现多个 `isSource: true`。
     @ViewBuilder
     private func islandSizeProbe(pillH: CGFloat, notchWidth: CGFloat) -> some View {
         ZStack {
-            closedStripLayout(pillH: pillH, notchWidth: notchWidth, isSource: true, namespace: islandProbeNS)
+            closedStripLayout(pillH: pillH, notchWidth: notchWidth, isSource: true, namespace: islandStripProbeNS)
                 .fixedSize()
                 .background(
                     GeometryReader { geo in
@@ -1212,7 +1216,7 @@ struct FloatingScanHUDView: View {
                     }
                 )
 
-            expandedHeroLayout(pillH: pillH, isSource: true, namespace: islandProbeNS)
+            expandedHeroLayout(pillH: pillH, isSource: true, namespace: islandExpandedProbeNS)
                 .frame(width: 540)
                 .fixedSize(horizontal: false, vertical: true)
                 .background(

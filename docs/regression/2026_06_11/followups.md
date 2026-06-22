@@ -9,7 +9,6 @@
 | F-0-1 | [KnownVersionedRoots.swift#L111-L139](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift#L111-L139) `var fileManager` 死代码删除 | ✅ 本轮删除（实际从未引用，"forward-compat" 注释名不副实） |
 | F-0-2 | PerfBench 1M 节点压力 bench | ✅ 本轮跑完，[B3](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/perf.md) 入库 |
 | F-0-3 | E2E smoke 启动 release .app 跑通 + AX 抓取 + 干净退出 | ✅ 本轮 [e2e.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/e2e.md) PASS |
-| F-0-5 | SQLite scan.sqlite 11G 体积治理（无 session 保留 + auto_vacuum=NONE + 冗余索引）| ✅ 本轮闭环 [db_size.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/db_size.md) — 4 处代码改动 + 5 新测试 PASS，新库稳态 < 400 MB（缩 27×） |
 
 ## P0-bug — E2E 发现的真 bug（需要单独修）
 
@@ -29,17 +28,9 @@
 
 ## P1 — 性能可优化（数据已证据齐全）
 
-### F-1-1 SQLite `cache_size` 调优（1M 节点场景）✅ 已落地（2026-06-11）
-- **现象**：1M 节点 cold-root 4.5s，3.3× 数据吃 8.9× 时延（vs 300k）
-- **推断**：默认 `cache_size = -2000`（2MB）下 GROUP BY 中间结果集溢写临时表
-- **方案**：在 [GRDBScanResultStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift) 打开 connection 后 `PRAGMA cache_size = -10000`（10MB），再跑 B3 对比
-- **验收**：1M cold ≤ 2s（接近 warm 现值 2.76s 即可）
-- **依据**：[perf.md §B3 判读](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/perf.md)
-- **落地**：[prepareDatabase](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift#L71-L79) 加 `PRAGMA cache_size = -10000` + [_debugCacheSize()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift#L666-L672) debug 接缝 + [test_新建库_cache_size应为10MB](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/GRDBScanResultStoreTests.swift#L530-L539) 断言验证；ScanKit 全包 203 tests / 0 failures
-
-### F-1-2 气泡图 / Treemap 可视化
+### F-1-1 气泡图 / Treemap 可视化
 - **缺口**：[competitors_matrix §三](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/competitors_matrix.md) P1 — DaisyDisk Sunburst / GrandPerspective Squarified 是用户「一眼看见大目录」的核心体验
-- **方案**：基于 [GRDBScanResultStore.directChildrenAggregated](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift#L289) 已下推聚合数据，新增 Canvas/Metal Treemap view，作为 [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 兄弟视图
+- **方案**：基于 [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 当前树数据源和按需子树扫描结果新增 Canvas/Metal Treemap view
 - **验收**：300k 节点 root 视图 60fps 可平移缩放
 
 ## P2 — 功能缺口（竞品已有，我们暂无）

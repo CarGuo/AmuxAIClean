@@ -9,12 +9,11 @@
 | 子报告 | 链接 | 关键结论 |
 |---|---|---|
 | 单元测试 | [unit.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/unit.md) | 9 包 / 857 PASS / 2 skipped / 0 fail |
-| 性能基线 | [perf.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/perf.md) | 65k files/s 扫描 / GRDB mid 4~214ms / 比 du 快又准 / 1M 节点 cold 4.5s |
+| 性能基线 | [perf.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/perf.md) | 65k files/s 扫描 / 比 du 快又准 / 全链路 ingest 开销 <8% |
 | GUI 回归 | [gui.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/gui.md) | 22 GUI case / PASS=22 / FAIL=0 |
 | E2E 烟雾 | [e2e.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/e2e.md) | release .app 启动 ≤2s + 退出 1s + exit 0；P0 bug **F-0-4 vendors.yaml 未打包** ✅ 已修复（79 条规则加载） |
-| DB 体积治理 | [db_size.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/db_size.md) | scan.sqlite 11 GB → 稳态 < 400 MB（缩 27×）：3 真凶 + 4 处代码改动 + 5 新测试 PASS |
 | 竞品矩阵 | [competitors_matrix.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/competitors_matrix.md) | 6 维 vs CMM / Pearcleaner / AppCleaner / DaisyDisk / ODS / GP |
-| 追踪条目 | [followups.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/followups.md) | 16 条 P0~P4 待办（F-0-4 ✅ + F-0-5 ✅ 已闭环；剩 P1/P2/P3/P4 共 14 条） |
+| 追踪条目 | [followups.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/followups.md) | P0~P4 待办（F-0-4 ✅ 已闭环） |
 
 ## 二、需求三问 三句话回答
 
@@ -24,14 +23,13 @@
 ### 2. 性能数据？
 **✅ 4 套 bench 已跑实测**：
 - **裸扫描**：~/Library/Caches 358k files / 18 GB → **5.46s** = ~65k files/s
-- **Tree 展开**：300k 节点下 cold 510ms / **mid-tree 24ms** (单帧内)
 - **全链路 Coordinator+ingest**：repo 81k files / 7.4 GB → **1.36s** (业务层开销 <8%)
 - **vs du**：5.5s vs du 9.7s，**快 43% + 多算 1 GB**（du -sh -A 因 TCC 漏算）
 
 ### 3. 和竞品对比，性能 / 功能是否正常可用？
 **✅ 性能在多数维度领先，功能 90% 对齐+独家亮点 5 项**：
 - **独家**：Safety Engine yaml 规则可审计 / Dry-run + UndoHistory 双保险 / 测试覆盖 857 个
-- **领先**：扫描比 `du` 快又准、Tree 下钻 24ms / 全链路 1.4s
+- **领先**：扫描比 `du` 快又准、全链路 1.4s
 - **缺口 P1**：气泡图 / Treemap 可视化（DaisyDisk Sunburst / GrandPerspective Squarified）
 - **缺口 P2~P4**：浏览器隐私 / 系统维护脚本 / Cloud Storage / Brew GUI / App Updater / 状态栏菜单
 
@@ -44,9 +42,6 @@
 
 ### 3.2 TCC 漏算证据（已归档报告）
 `du -sh -A ~/Library/Caches` 命中 9 处 "Operation not permitted"（com.apple.HomeKit / CloudKit / Safari / findmy / containermanagerd / FamilyCircle / homed / fmipcore / ap.adprivacyd），最终漏算 ~1 GB。我们 BulkScanner 走 [TCCSkipList](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift) 主动跳 + stat fallback，多抢回这部分数据 — **这是 GSYCleanMac vs du 的关键卖点**。
-
-### 3.3 GRDB 线性扩展已验证
-50k → 300k 节点 cold-root 86ms → 510ms ≈ 5.9× 数据 = 5.9× 延迟，索引命中良好，**无 N² / Nlog² 隐藏复杂度**。
 
 ## 四、复现命令（一锅出）
 

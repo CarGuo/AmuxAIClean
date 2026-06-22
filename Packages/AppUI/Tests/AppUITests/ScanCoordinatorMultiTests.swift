@@ -65,6 +65,29 @@ final class ScanCoordinatorMultiTests: XCTestCase {
         coord.cancel()
     }
 
+    func test_scanRecommended扫描中树表不暴露staging半成品_完成后显示最终根节点() async throws {
+        let home = try makeFakeHome()
+        defer { cleanup(home) }
+
+        let coord = ScanCoordinator(home: home)
+        coord.scanRecommended(includeHidden: true)
+
+        XCTAssertEqual(coord.perRootProgress.count, 5,
+                       "顶部进度仍应立即拿到 5 个根")
+        XCTAssertTrue(coord.directChildren(of: ScanCoordinator.multiRootSentinelPath,
+                                           sortedBy: .sizeDesc).isEmpty,
+                      "扫描中树表不应读取 perRootStaging，否则会显示 8KB/0KB 这种目录 inode 半成品")
+
+        await waitUntil(10) { !coord.isScanning }
+
+        let rows = coord.directChildren(of: ScanCoordinator.multiRootSentinelPath,
+                                        sortedBy: .sizeDesc)
+        XCTAssertEqual(rows.count, 5,
+                       "扫描完成后树表才应显示 5 个推荐根")
+        XCTAssertTrue(rows.allSatisfy { $0.bytes >= 256 && $0.fileCount >= 1 },
+                      "完成态树表应使用最终 perRootProgress，不应继续显示半成品 0KB/0 文件")
+    }
+
     func test_cancel清空perRootProgress() async throws {
         let home = try makeFakeHome()
         defer { cleanup(home) }

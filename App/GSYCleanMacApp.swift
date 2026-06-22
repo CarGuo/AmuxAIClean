@@ -78,33 +78,15 @@ struct GSYCleanMacApp: App {
         // v1.6：Sentinel 管理器与 AppSettings 同生命周期；register / unregister
         // 由启动钩子 + onChange 驱动，AppSettings 里 didSet 不直接调 SMAppService。
         self._sentinelManager = State(initialValue: SentinelManager(settings: s))
-        // M1 内存优化：仅当用户开启 useScanStore feature flag 时构造 GRDB store。
-        // v1.3.z 起：deepIndex 已正式翻成 off，TreeBrowserView 必须走 GRDB store
-        // 才能下钻；所以 store 不再受 useScanStore 守卫，**强制开启**。
-        // useScanStore 仅用作"如果用户在设置里关，则不去主动跨进程持久化大文件 cache"
-        // 的次要 hint；store 本身始终在线。构造失败仍优雅降级到 nil（罕见，
-        // 仅磁盘满 / Application Support 不可写等极端情况）。
-        let store: ScanResultStore? = {
-            do {
-                let url = try GRDBScanResultStore.defaultDatabaseURL()
-                return try GRDBScanResultStore(databaseURL: url)
-            } catch {
-                NSLog("[GSYCleanMac] GRDBScanResultStore 初始化失败，退回内存模式：\(error)")
-                return nil
-            }
-        }()
-        // v1.3.z：性能开关——ingest 维护 dirIndex/childEdges/fileLeaves
-        // 的祖先上溯字典写入是主线程瓶颈，70 GB workspace A/B 实测：
-        //   deepIndex=on  → 326s（首次默认，被用户怒斥 19 分钟卡死）
-        //   deepIndex=off → 36.6s（throttle 0.40s 后逼近 IO 上限）
-        // **正式默认翻成 off**：所有用户开箱即用快路径，TreeBrowserView 通过
-        // ScanCoordinator.directChildrenAsync 走 GRDB store 仍能正常下钻。
-        // （仅当用户显式设 GSY_DEEP_INDEX=1 才回退到内存索引——主要给开发者做 A/B
-        //  对比用，正式用户不再触碰这条慢路径。）
+        // v2026.06.22：产品路径不再打开/写入扫描数据库。
+        // 扫描结果每次来自实时扫描；树形下钻由 ScanCoordinator.directChildrenAsync
+        // 后台按需扫描当前目录并聚合直接子项，避免扫描结果数据库与扫描收尾落盘等待。
+        //
+        // 深索引仍默认关闭：祖先字典维护是扫描期主线程卡顿的历史根因。开发者可用
+        // GSY_DEEP_INDEX=1 做 A/B，但正式用户走无数据库、按需后台下钻方案。
         let deepIndex = (ProcessInfo.processInfo.environment["GSY_DEEP_INDEX"] ?? "0") != "0"
         self._coordinator = StateObject(
             wrappedValue: ScanCoordinator(vendors: loadedVendors,
-                                          resultStore: store,
                                           enableTreeDeepIndex: deepIndex)
         )
     }

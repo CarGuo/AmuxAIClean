@@ -27,10 +27,12 @@ public struct BrewPackage: Sendable, Equatable {
     public let tap: String?
     /// Cellar/{name}/{version} 或 Caskroom/{name}/{version}
     public let path: URL
+    /// 当前 version 目录占用的近似字节数，用于 UI 展示。
+    public let sizeBytes: Int64
 
     public init(name: String, version: String, kind: BrewPackageKind,
                 installedAt: Date?, installedOnRequest: Bool,
-                tap: String?, path: URL) {
+                tap: String?, path: URL, sizeBytes: Int64 = 0) {
         self.name = name
         self.version = version
         self.kind = kind
@@ -38,6 +40,7 @@ public struct BrewPackage: Sendable, Equatable {
         self.installedOnRequest = installedOnRequest
         self.tap = tap
         self.path = path
+        self.sizeBytes = sizeBytes
     }
 }
 
@@ -145,8 +148,26 @@ public struct BrewController: Sendable {
             installedAt: info?.installedAt,
             installedOnRequest: info?.installedOnRequest ?? (kind == .cask),
             tap: info?.tap,
-            path: verDir
+            path: verDir,
+            sizeBytes: directoryAllocatedSize(at: verDir)
         )
+    }
+
+    private func directoryAllocatedSize(at url: URL) -> Int64 {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileAllocatedSizeKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles],
+            errorHandler: nil
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            let values = try? fileURL.resourceValues(forKeys: Set(keys))
+            guard values?.isRegularFile == true else { continue }
+            total &+= Int64(values?.totalFileAllocatedSize ?? values?.fileAllocatedSize ?? 0)
+        }
+        return total
     }
 
     private struct ReceiptInfo {

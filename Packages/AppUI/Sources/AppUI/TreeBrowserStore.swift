@@ -22,7 +22,7 @@ public final class TreeBrowserStore: ObservableObject {
     /// **不**标 @Published —— 写入只 bump [childrenCacheVersion](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift#L47-L47)。
     public var treeChildrenCache: [String: [TreeRow]] = [:]
 
-    /// store-fallback 异步 fetch 期间正在飞的 cacheKey 集合（节流，避免重复并发）。
+    /// 按需子树扫描期间正在飞的 cacheKey 集合（节流，避免重复并发）。
     /// **不**参与 @Published（无视图依赖它）。
     public var treeChildrenInFlight: Set<String> = []
 

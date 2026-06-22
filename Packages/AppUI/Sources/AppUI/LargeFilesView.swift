@@ -1,5 +1,7 @@
 import SwiftUI
 import AppKit
+import Combine
+import AIKit
 
 /// v1.0 T4：大文件视图。
 ///
@@ -13,7 +15,7 @@ import AppKit
 /// 4. **不显示安全徽章 / 默认勾选**：大文件清理本来就要"用户确认才删"，
 ///    不能再叫 SafetyEngine 把 ~/Movies/big.mov 标成 .safe。
 public struct LargeFilesView: View {
-    @ObservedObject var coordinator: ScanCoordinator
+    let coordinator: ScanCoordinator
     @Bindable var settings: AppSettings
 
     /// 行内当前选中（用于右侧详情，也作为 .delete 快捷键的锚）。
@@ -21,6 +23,10 @@ public struct LargeFilesView: View {
 
     /// 移到废纸篓回调；由 MainView 注入，复用主界面的 DeleteSheet 流程。
     let onTrash: ([URL]) -> Void
+    let onStash: (LargeFileItem) -> Void
+    let isStashed: (String) -> Bool
+    let aiSettings: AISettings?
+    let onAskAI: (LargeFileItem) -> Void
 
     /// Top N 截断。默认 200（ROADMAP）。可由调用方覆盖。
     let limit: Int
@@ -55,24 +61,34 @@ public struct LargeFilesView: View {
     /// v1.2 P1-5：批量选择状态。@State 而非 @StateObject——@Observable 时代的写法。
     /// 跨视图刷新（如 mtime/kind 切换）不会被重建，保留用户的勾选意图。
     @State private var batch = BatchSelection()
+    @State private var displayedItems: [LargeFileItem] = []
+    @State private var displayedKindCounts: [(FileKind, Int)] = []
 
     public init(coordinator: ScanCoordinator,
                 settings: AppSettings,
                 selection: Binding<LargeFileItem?>,
                 limit: Int = 200,
-                onTrash: @escaping ([URL]) -> Void) {
+                onTrash: @escaping ([URL]) -> Void,
+                onStash: @escaping (LargeFileItem) -> Void,
+                isStashed: @escaping (String) -> Bool,
+                aiSettings: AISettings?,
+                onAskAI: @escaping (LargeFileItem) -> Void) {
         self.coordinator = coordinator
         self.settings = settings
         self._selection = selection
         self.limit = limit
         self.onTrash = onTrash
+        self.onStash = onStash
+        self.isStashed = isStashed
+        self.aiSettings = aiSettings
+        self.onAskAI = onAskAI
     }
 
     /// 视图层"实时计算"出的当前列表。
     /// 类型筛选在协调器返回的 LargeFileItem 列表上做最后一道过滤；
     /// 不下放到 ScanCoordinator 是因为类型筛选属于纯 UI 行为，
     /// 没必要让它污染数据层 API。
-    private var items: [LargeFileItem] {
+    private var currentItems: [LargeFileItem] {
         let base = coordinator.largeFiles(
             minSizeMB: settings.minFileSizeMB,
             sortKey: sortKey,
@@ -86,7 +102,7 @@ public struct LargeFilesView: View {
     /// 类型 chip 行需要展示的桶 + 该桶在"类型未筛选时"的命中数。
     /// 数量取自 mtime 已过滤的全集而不是 kind 筛选后的子集，
     /// 否则点了某个 kind 后其他 chip 数字会变成 0，体验差。
-    private var kindCounts: [(FileKind, Int)] {
+    private var currentKindCounts: [(FileKind, Int)] {
         let base = coordinator.largeFiles(
             minSizeMB: settings.minFileSizeMB,
             sortKey: .sizeDesc,
@@ -114,6 +130,20 @@ public struct LargeFilesView: View {
             && viewThresholdBytes < coordinator.largeFileScanThresholdBytes
     }
 
+    private func syncDisplayedLargeFiles(force: Bool) {
+        let latest = currentItems
+        let latestCounts = currentKindCounts
+        if force || !coordinator.isScanning || latest.isEmpty {
+            displayedItems = latest
+            displayedKindCounts = latestCounts
+            return
+        }
+        if displayedItems.isEmpty, !latest.isEmpty {
+            displayedItems = latest
+            displayedKindCounts = latestCounts
+        }
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             header
@@ -122,8 +152,23 @@ public struct LargeFilesView: View {
             Divider()
             content
         }
+        .onAppear {
+            syncDisplayedLargeFiles(force: true)
+        }
+        .onReceive(coordinator.$snapshot) { _ in
+            syncDisplayedLargeFiles(force: false)
+        }
+        .onReceive(coordinator.$isScanning.removeDuplicates()) { scanning in
+            if !scanning {
+                syncDisplayedLargeFiles(force: true)
+            }
+        }
+        .onChange(of: settings.minFileSizeMB) { _, _ in syncDisplayedLargeFiles(force: true) }
+        .onChange(of: settings.mtimeFilter) { _, _ in syncDisplayedLargeFiles(force: true) }
+        .onChange(of: settings.mainListSortKey) { _, _ in syncDisplayedLargeFiles(force: true) }
+        .onChange(of: kindFilter) { _, _ in syncDisplayedLargeFiles(force: true) }
         // v1.2 P2-4：Spacebar 触发 Quick Look 预览当前选中。
-        // 注意 onKeyPress 必须挂在最外层 VStack，否则 LazyVStack 内部的 row 拿不到焦点。
+        // 注意 onKeyPress 必须挂在最外层 VStack，否则 AppKit table 焦点路径会吞掉外层快捷键。
         .focusable()
         // bug B：.focusable() 会让 macOS 画蓝色焦点环包整张大文件视图，关掉。
         .focusEffectDisabled()
@@ -146,7 +191,7 @@ public struct LargeFilesView: View {
             // 设计点：visible 列表受 mtime + kind 双重过滤，
             // 全选只动"看得见"的，不会偷偷把隐藏项扫进选区。
             Button {
-                let paths = items.map { $0.path }
+                let paths = displayedItems.map { $0.path }
                 switch batch.headerState(visible: paths) {
                 case .all:
                     batch.deselectAll(visible: paths)
@@ -159,7 +204,7 @@ public struct LargeFilesView: View {
                     .imageScale(.large)
             }
             .buttonStyle(.plain)
-            .disabled(items.isEmpty)
+            .disabled(displayedItems.isEmpty)
             .help(Text("largefiles.help.toggle_select_all", bundle: .module))
 
             Image(systemName: "doc.richtext")
@@ -175,7 +220,7 @@ public struct LargeFilesView: View {
             }
 
             // v1.2 P1-5：批量删除按钮。仅"可见且勾选"的项参与，避免误删隐藏选区。
-            let visiblePaths = items.map { $0.path }
+            let visiblePaths = displayedItems.map { $0.path }
             let pickedCount = batch.selectedCount(in: visiblePaths)
             if pickedCount > 0 {
                 Button(role: .destructive) {
@@ -190,7 +235,7 @@ public struct LargeFilesView: View {
                 .controlSize(.small)
             }
 
-            Text(String(format: String(localized: "largefiles.toolbar.count %lld", bundle: .module), items.count))
+            Text(String(format: String(localized: "largefiles.toolbar.count %lld", bundle: .module), displayedItems.count))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
@@ -209,7 +254,7 @@ public struct LargeFilesView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .disabled(items.isEmpty)
+            .disabled(displayedItems.isEmpty)
             .help(Text("largefiles.help.export", bundle: .module))
         }
         .padding(.horizontal, 16)
@@ -218,7 +263,7 @@ public struct LargeFilesView: View {
 
     /// 三态 checkbox 图标。
     private var headerCheckboxImage: String {
-        switch batch.headerState(visible: items.map { $0.path }) {
+        switch batch.headerState(visible: displayedItems.map { $0.path }) {
         case .all:     return "checkmark.square.fill"
         case .partial: return "minus.square.fill"
         case .none:    return "square"
@@ -283,7 +328,7 @@ public struct LargeFilesView: View {
     ///   避免给 FileKind 多塞一个语义含糊的 case。
     @ViewBuilder
     private var kindBar: some View {
-        let counts = kindCounts
+        let counts = displayedKindCounts
         if counts.isEmpty {
             EmptyView()
         } else {
@@ -366,20 +411,26 @@ public struct LargeFilesView: View {
 
     @ViewBuilder
     private var content: some View {
-        if items.isEmpty {
+        if displayedItems.isEmpty {
             emptyState
         } else {
             VStack(spacing: 0) {
                 columnHeader
                 Divider()
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(items) { item in
-                            row(for: item)
-                            Divider().opacity(0.4)
-                        }
-                    }
-                }
+                AppKitLargeFilesTable(
+                    items: displayedItems,
+                    selectedItem: $selection,
+                    selectedPaths: batch.selected,
+                    aiReady: aiSettings?.isReadyForUI == true,
+                    isStashed: isStashed,
+                    onTogglePick: { batch.toggle($0) },
+                    onAskAI: { item in onAskAI(item) },
+                    onStash: { item in
+                        guard !isStashed(item.path) else { NSSound.beep(); return }
+                        onStash(item)
+                    },
+                    onTrash: { item in onTrash([item.url]) }
+                )
             }
         }
     }
@@ -446,94 +497,6 @@ public struct LargeFilesView: View {
         .help(Text(String(format: String(localized: "largefiles.help.sort_toggle %@", bundle: .module), title)))
     }
 
-    // MARK: - Row
-
-    private static let mtimeFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateStyle = .short
-        f.timeStyle = .short
-        f.locale = .current
-        return f
-    }()
-
-    @ViewBuilder
-    private func row(for item: LargeFileItem) -> some View {
-        let isSelected = (selection?.path == item.path)
-        let kind = item.kind
-        let isPicked = batch.isSelected(item.path)
-        HStack(spacing: 10) {
-            // v1.2 P1-5：行级勾选 checkbox。点击只 toggle 不影响 row 选中（selection），
-            // 这样用户能一边选中看详情，一边批量勾选要删的。
-            Button {
-                batch.toggle(item.path)
-            } label: {
-                Image(systemName: isPicked ? "checkmark.square.fill" : "square")
-                    .foregroundStyle(isPicked ? Color.accentColor : Color.secondary)
-                    .imageScale(.large)
-            }
-            .buttonStyle(.plain)
-            .frame(width: 22)
-
-            Image(systemName: kind.systemImageName)
-                .foregroundStyle(kind.tint)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.title)
-                    .font(.system(.body, design: .rounded))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text((item.path as NSString).deletingLastPathComponent)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Text(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file))
-                .font(.system(.body, design: .monospaced))
-                .frame(width: 110, alignment: .trailing)
-            Text(item.modificationDate.map { Self.mtimeFormatter.string(from: $0) } ?? "—")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: 130, alignment: .trailing)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-        .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
-        .contentShape(Rectangle())
-        .onTapGesture { selection = item }
-        .help(item.path)
-        .contextMenu {
-            Button {
-                batch.toggle(item.path)
-            } label: {
-                Label {
-                    Text(isPicked ? LocalizedStringKey("largefiles.menu.unpick")
-                                  : LocalizedStringKey("largefiles.menu.pick"),
-                         bundle: .module)
-                } icon: {
-                    Image(systemName: isPicked ? "square" : "checkmark.square")
-                }
-            }
-            Divider()
-            Button {
-                QuickLookController.shared.preview(urls: [item.url])
-            } label: { Label(String(localized: "largefiles.context.quicklook", bundle: .module), systemImage: "eye") }
-            Button {
-                NSWorkspace.shared.activateFileViewerSelecting([item.url])
-            } label: { Label(String(localized: "largefiles.context.reveal_finder", bundle: .module), systemImage: "folder") }
-            Button {
-                let pb = NSPasteboard.general
-                pb.clearContents()
-                pb.setString(item.path, forType: .string)
-            } label: { Label(String(localized: "largefiles.context.copy_path", bundle: .module), systemImage: "doc.on.doc") }
-            Divider()
-            Button(role: .destructive) {
-                onTrash([item.url])
-            } label: { Label(String(localized: "largefiles.context.move_to_trash", bundle: .module), systemImage: "trash") }
-        }
-    }
-
     // MARK: - 导出（v1.2 P2-6）
 
     private enum ExportFormat { case json, tsv }
@@ -541,7 +504,7 @@ public struct LargeFilesView: View {
     /// 弹 NSSavePanel 写到磁盘。
     /// 这里把"业务转换 → 序列化 → 写盘"分三步，方便日后接 sheet/loading。
     private func exportCurrent(format: ExportFormat) {
-        let rows = items.map { Exporter.Row($0) }
+        let rows = displayedItems.map { Exporter.Row($0) }
         let data: Data
         let suggested: String
         switch format {
@@ -567,6 +530,538 @@ public struct LargeFilesView: View {
                 alert.informativeText = String(format: String(localized: "largefiles.export.failed.body", bundle: .module), error.localizedDescription)
                 alert.runModal()
             }
+        }
+    }
+}
+
+private struct AppKitLargeFilesTable: NSViewRepresentable {
+    let items: [LargeFileItem]
+    @Binding var selectedItem: LargeFileItem?
+    let selectedPaths: Set<String>
+    let aiReady: Bool
+    let isStashed: (String) -> Bool
+    let onTogglePick: (String) -> Void
+    let onAskAI: (LargeFileItem) -> Void
+    let onStash: (LargeFileItem) -> Void
+    let onTrash: (LargeFileItem) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let table = LargeFilesNSTableView()
+        table.headerView = nil
+        table.rowHeight = LargeFilesTableMetrics.rowHeight
+        table.usesAutomaticRowHeights = false
+        table.intercellSpacing = .zero
+        table.backgroundColor = .clear
+        table.selectionHighlightStyle = .none
+        table.allowsMultipleSelection = false
+        table.allowsEmptySelection = true
+        table.focusRingType = .none
+        table.dataSource = context.coordinator
+        table.delegate = context.coordinator
+        table.keyHandler = { [weak coordinator = context.coordinator] event in
+            coordinator?.handleKey(event) ?? false
+        }
+
+        let column = NSTableColumn(identifier: LargeFilesTableMetrics.columnIdentifier)
+        column.resizingMask = .autoresizingMask
+        table.addTableColumn(column)
+
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        scroll.documentView = table
+        return scroll
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let table = scrollView.documentView as? NSTableView else { return }
+        if let column = table.tableColumns.first {
+            column.width = max(scrollView.contentSize.width, 100)
+        }
+        table.reloadData()
+        context.coordinator.syncSelection(in: table)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+        var parent: AppKitLargeFilesTable
+        private var isSyncingSelection = false
+
+        init(parent: AppKitLargeFilesTable) {
+            self.parent = parent
+        }
+
+        func numberOfRows(in tableView: NSTableView) -> Int {
+            parent.items.count
+        }
+
+        func tableView(_ tableView: NSTableView,
+                       viewFor tableColumn: NSTableColumn?,
+                       row rowIndex: Int) -> NSView? {
+            guard rowIndex >= 0, rowIndex < parent.items.count else { return nil }
+            let identifier = LargeFilesTableMetrics.cellIdentifier
+            let cell = (tableView.makeView(withIdentifier: identifier, owner: self) as? LargeFilesTableCellView)
+                ?? LargeFilesTableCellView(identifier: identifier)
+            let item = parent.items[rowIndex]
+            cell.configure(
+                item: item,
+                isSelected: parent.selectedItem?.path == item.path,
+                isPicked: parent.selectedPaths.contains(item.path),
+                isStashed: parent.isStashed(item.path),
+                aiReady: parent.aiReady,
+                actions: LargeFilesRowActions(
+                    select: { [weak self] in self?.select(item, in: tableView) },
+                    togglePick: { [weak self] in self?.parent.onTogglePick(item.path) },
+                    askAI: { [weak self] in self?.parent.onAskAI(item) },
+                    stash: { [weak self] in self?.parent.onStash(item) },
+                    trash: { [weak self] in self?.parent.onTrash(item) }
+                )
+            )
+            return cell
+        }
+
+        func tableViewSelectionDidChange(_ notification: Notification) {
+            guard !isSyncingSelection,
+                  let table = notification.object as? NSTableView else { return }
+            let rowIndex = table.selectedRow
+            guard rowIndex >= 0, rowIndex < parent.items.count else {
+                parent.selectedItem = nil
+                return
+            }
+            parent.selectedItem = parent.items[rowIndex]
+        }
+
+        func syncSelection(in table: NSTableView) {
+            let target: Int
+            if let selectedPath = parent.selectedItem?.path,
+               let idx = parent.items.firstIndex(where: { $0.path == selectedPath }) {
+                target = idx
+            } else {
+                target = -1
+            }
+            guard table.selectedRow != target else { return }
+            isSyncingSelection = true
+            defer { isSyncingSelection = false }
+            if target >= 0 {
+                table.selectRowIndexes(IndexSet(integer: target), byExtendingSelection: false)
+            } else {
+                table.deselectAll(nil)
+            }
+        }
+
+        private func select(_ item: LargeFileItem, in table: NSTableView) {
+            parent.selectedItem = item
+            if let idx = parent.items.firstIndex(where: { $0.path == item.path }) {
+                table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+            }
+        }
+
+        func handleKey(_ event: NSEvent) -> Bool {
+            switch event.keyCode {
+            case 126: moveSelection(by: -1); return true
+            case 125: moveSelection(by: 1); return true
+            case 49:
+                guard let selected = parent.selectedItem else { return false }
+                QuickLookController.shared.preview(urls: [selected.url])
+                return true
+            case 51:
+                guard let selected = parent.selectedItem else { return false }
+                parent.onTrash(selected)
+                return true
+            default:
+                return false
+            }
+        }
+
+        private func moveSelection(by delta: Int) {
+            guard !parent.items.isEmpty else { return }
+            let current: Int
+            if let selectedPath = parent.selectedItem?.path,
+               let idx = parent.items.firstIndex(where: { $0.path == selectedPath }) {
+                current = idx
+            } else {
+                current = -1
+            }
+            let next = max(0, min(parent.items.count - 1, current + delta))
+            parent.selectedItem = parent.items[next]
+        }
+    }
+}
+
+private final class LargeFilesNSTableView: NSTableView {
+    var keyHandler: ((NSEvent) -> Bool)?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if keyHandler?(event) == true { return }
+        super.keyDown(with: event)
+    }
+}
+
+private enum LargeFilesTableMetrics {
+    static let rowHeight: CGFloat = 42
+    static let leftPadding: CGFloat = 16
+    static let checkboxWidth: CGFloat = 22
+    static let iconWidth: CGFloat = 20
+    static let horizontalGap: CGFloat = 10
+    static let sizeWidth: CGFloat = 110
+    static let mtimeWidth: CGFloat = 130
+    static let actionGap: CGFloat = 12
+    static let actionWidth: CGFloat = 28
+    static let actionAreaWidth: CGFloat = 84
+    static let actionTrailingPadding: CGFloat = 18
+    static let columnIdentifier = NSUserInterfaceItemIdentifier("LargeFilesTableColumn")
+    static let cellIdentifier = NSUserInterfaceItemIdentifier("LargeFilesTableCell")
+}
+
+private struct LargeFilesRowActions {
+    let select: () -> Void
+    let togglePick: () -> Void
+    let askAI: () -> Void
+    let stash: () -> Void
+    let trash: () -> Void
+}
+
+private final class LargeFilesTableCellView: NSTableCellView {
+    private let canvas = LargeFilesRowCanvas()
+
+    init(identifier: NSUserInterfaceItemIdentifier) {
+        super.init(frame: .zero)
+        self.identifier = identifier
+        addSubview(canvas)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        canvas.frame = bounds
+    }
+
+    func configure(item: LargeFileItem,
+                   isSelected: Bool,
+                   isPicked: Bool,
+                   isStashed: Bool,
+                   aiReady: Bool,
+                   actions: LargeFilesRowActions) {
+        canvas.configure(item: item,
+                         isSelected: isSelected,
+                         isPicked: isPicked,
+                         isStashed: isStashed,
+                         aiReady: aiReady,
+                         actions: actions)
+    }
+}
+
+private final class LargeFilesRowCanvas: NSView {
+    private var item: LargeFileItem?
+    private var isSelected = false
+    private var isPicked = false
+    private var isStashed = false
+    private var aiReady = false
+    private var actions: LargeFilesRowActions?
+
+    override var isFlipped: Bool { true }
+
+    func configure(item: LargeFileItem,
+                   isSelected: Bool,
+                   isPicked: Bool,
+                   isStashed: Bool,
+                   aiReady: Bool,
+                   actions: LargeFilesRowActions) {
+        self.item = item
+        self.isSelected = isSelected
+        self.isPicked = isPicked
+        self.isStashed = isStashed
+        self.aiReady = aiReady
+        self.actions = actions
+        toolTip = item.path
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let item else { return }
+        if isSelected {
+            NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 6, dy: 3), xRadius: 5, yRadius: 5).fill()
+        }
+        drawRow(item)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let item, let actions else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        if checkboxRect.contains(point) {
+            actions.togglePick()
+            return
+        }
+        actions.select()
+        switch hitTestAction(point) {
+        case .ai:
+            actions.askAI()
+        case .stash:
+            guard !isStashed else { NSSound.beep(); return }
+            actions.stash()
+        case .trash:
+            actions.trash()
+        case .none:
+            if event.clickCount >= 2 {
+                QuickLookController.shared.preview(urls: [item.url])
+            }
+        }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let item, let actions else { return nil }
+        actions.select()
+        let menu = NSMenu()
+        let pick = LargeFilesClosureMenuItem(
+            title: String(localized: isPicked ? "largefiles.menu.unpick" : "largefiles.menu.pick",
+                          bundle: .module),
+            action: actions.togglePick
+        )
+        pick.image = NSImage(systemSymbolName: isPicked ? "square" : "checkmark.square",
+                             accessibilityDescription: nil)
+        menu.addItem(pick)
+        menu.addItem(.separator())
+        let ask = LargeFilesClosureMenuItem(
+            title: String(localized: "tree.menu.ask_ai", bundle: .module),
+            action: actions.askAI
+        )
+        ask.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)
+        menu.addItem(ask)
+        let stash = LargeFilesClosureMenuItem(
+            title: String(localized: isStashed ? "tree.menu.stash_already" : "tree.menu.stash",
+                          bundle: .module),
+            action: { if !self.isStashed { actions.stash() } }
+        )
+        stash.image = NSImage(systemSymbolName: isStashed ? "tray.full.fill" : "tray.and.arrow.down",
+                              accessibilityDescription: nil)
+        stash.isEnabled = !isStashed
+        menu.addItem(stash)
+        menu.addItem(.separator())
+        let quickLook = LargeFilesClosureMenuItem(
+            title: String(localized: "largefiles.context.quicklook", bundle: .module),
+            action: { QuickLookController.shared.preview(urls: [item.url]) }
+        )
+        quickLook.image = NSImage(systemSymbolName: "eye", accessibilityDescription: nil)
+        menu.addItem(quickLook)
+        let reveal = LargeFilesClosureMenuItem(
+            title: String(localized: "largefiles.context.reveal_finder", bundle: .module),
+            action: { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
+        )
+        reveal.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
+        menu.addItem(reveal)
+        let copyPath = LargeFilesClosureMenuItem(
+            title: String(localized: "largefiles.context.copy_path", bundle: .module),
+            action: { Self.copy(item.path) }
+        )
+        copyPath.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
+        menu.addItem(copyPath)
+        menu.addItem(.separator())
+        let trash = LargeFilesClosureMenuItem(
+            title: String(localized: "largefiles.context.move_to_trash", bundle: .module),
+            action: actions.trash
+        )
+        trash.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
+        menu.addItem(trash)
+        return menu
+    }
+
+    private func drawRow(_ item: LargeFileItem) {
+        let kind = item.kind
+        drawSymbol(isPicked ? "checkmark.square.fill" : "square",
+                   in: checkboxRect.insetBy(dx: 2, dy: 10),
+                   color: isPicked ? .controlAccentColor : .secondaryLabelColor,
+                   pointSize: 15,
+                   weight: .regular)
+        let iconRect = CGRect(x: checkboxRect.maxX + LargeFilesTableMetrics.horizontalGap,
+                              y: 11,
+                              width: LargeFilesTableMetrics.iconWidth,
+                              height: 18)
+        drawSymbol(kind.systemImageName,
+                   in: iconRect,
+                   color: kind.tableColor,
+                   pointSize: 15,
+                   weight: .regular)
+        let nameX = iconRect.maxX + LargeFilesTableMetrics.horizontalGap
+        let actionStart = bounds.width
+            - LargeFilesTableMetrics.actionTrailingPadding
+            - LargeFilesTableMetrics.actionAreaWidth
+        let mtimeX = actionStart - LargeFilesTableMetrics.actionGap - LargeFilesTableMetrics.mtimeWidth
+        let sizeX = mtimeX - LargeFilesTableMetrics.sizeWidth
+        let nameWidth = max(30, sizeX - nameX - 8)
+        drawText(item.title,
+                 in: CGRect(x: nameX, y: 6, width: nameWidth, height: 17),
+                 font: .systemFont(ofSize: NSFont.systemFontSize),
+                 color: .labelColor,
+                 lineBreak: .byTruncatingMiddle)
+        drawText((item.path as NSString).deletingLastPathComponent,
+                 in: CGRect(x: nameX, y: 23, width: nameWidth, height: 14),
+                 font: .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+                 color: .secondaryLabelColor,
+                 lineBreak: .byTruncatingMiddle)
+        drawText(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file),
+                 in: CGRect(x: sizeX, y: 12, width: LargeFilesTableMetrics.sizeWidth - 8, height: 17),
+                 font: .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
+                 color: .labelColor,
+                 alignment: .right)
+        drawText(item.modificationDate.map { Self.mtimeFormatter.string(from: $0) } ?? "—",
+                 in: CGRect(x: mtimeX, y: 13, width: LargeFilesTableMetrics.mtimeWidth - 8, height: 16),
+                 font: .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+                 color: .secondaryLabelColor,
+                 alignment: .right)
+        drawActions()
+    }
+
+    private var checkboxRect: CGRect {
+        CGRect(x: LargeFilesTableMetrics.leftPadding, y: 0,
+               width: LargeFilesTableMetrics.checkboxWidth,
+               height: LargeFilesTableMetrics.rowHeight)
+    }
+
+    private enum ActionHit {
+        case none
+        case ai
+        case stash
+        case trash
+    }
+
+    private func hitTestAction(_ point: CGPoint) -> ActionHit {
+        if actionRect(.ai).contains(point) { return .ai }
+        if actionRect(.stash).contains(point) { return .stash }
+        if actionRect(.trash).contains(point) { return .trash }
+        return .none
+    }
+
+    private func drawActions() {
+        drawSymbol("sparkles",
+                   in: actionRect(.ai).insetBy(dx: 8, dy: 7),
+                   color: aiReady ? .controlAccentColor : .secondaryLabelColor.withAlphaComponent(0.45),
+                   pointSize: 12,
+                   weight: .semibold)
+        drawSymbol(isStashed ? "tray.full.fill" : "tray.and.arrow.down",
+                   in: actionRect(.stash).insetBy(dx: 8, dy: 7),
+                   color: isStashed ? .controlAccentColor : .secondaryLabelColor,
+                   pointSize: 12,
+                   weight: .semibold)
+        drawSymbol("trash",
+                   in: actionRect(.trash).insetBy(dx: 8, dy: 7),
+                   color: .systemRed,
+                   pointSize: 12,
+                   weight: .semibold)
+    }
+
+    private func actionRect(_ action: ActionHit) -> CGRect {
+        let right = bounds.width - LargeFilesTableMetrics.actionTrailingPadding
+        let trash = CGRect(x: right - LargeFilesTableMetrics.actionWidth, y: 3,
+                           width: LargeFilesTableMetrics.actionWidth, height: 36)
+        let stash = trash.offsetBy(dx: -LargeFilesTableMetrics.actionWidth, dy: 0)
+        let ai = stash.offsetBy(dx: -LargeFilesTableMetrics.actionWidth, dy: 0)
+        switch action {
+        case .ai: return ai
+        case .stash: return stash
+        case .trash: return trash
+        case .none: return .zero
+        }
+    }
+
+    private func drawText(_ text: String,
+                          in rect: CGRect,
+                          font: NSFont?,
+                          color: NSColor?,
+                          alignment: NSTextAlignment = .left,
+                          lineBreak: NSLineBreakMode = .byTruncatingTail) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = alignment
+        paragraph.lineBreakMode = lineBreak
+        var attributes: [NSAttributedString.Key: Any] = [
+            .paragraphStyle: paragraph
+        ]
+        if let font {
+            attributes[.font] = font
+        }
+        if let color {
+            attributes[.foregroundColor] = color
+        }
+        (text as NSString).draw(in: rect, withAttributes: attributes)
+    }
+
+    private func drawSymbol(_ name: String,
+                            in rect: CGRect,
+                            color: NSColor,
+                            pointSize: CGFloat,
+                            weight: NSFont.Weight) {
+        guard var image = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return }
+        let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
+        image = image.withSymbolConfiguration(config) ?? image
+        guard let cgContext = NSGraphicsContext.current?.cgContext else { return }
+        cgContext.saveGState()
+        cgContext.beginTransparencyLayer(auxiliaryInfo: nil)
+        color.setFill()
+        NSBezierPath(rect: rect).fill()
+        image.draw(in: rect, from: .zero, operation: .destinationIn, fraction: 1)
+        cgContext.endTransparencyLayer()
+        cgContext.restoreGState()
+    }
+
+    private static func copy(_ text: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+    }
+
+    private static let mtimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .short
+        f.timeStyle = .short
+        f.locale = .current
+        return f
+    }()
+}
+
+private final class LargeFilesClosureMenuItem: NSMenuItem {
+    private let closure: () -> Void
+
+    init(title: String, action closure: @escaping () -> Void) {
+        self.closure = closure
+        super.init(title: title, action: #selector(runClosure), keyEquivalent: "")
+        target = self
+    }
+
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func runClosure() {
+        closure()
+    }
+}
+
+private extension FileKind {
+    var tableColor: NSColor {
+        switch self {
+        case .video: return NSColor(red: 0.86, green: 0.31, blue: 0.34, alpha: 1)
+        case .image: return NSColor(red: 0.20, green: 0.65, blue: 0.78, alpha: 1)
+        case .audio: return NSColor(red: 0.55, green: 0.40, blue: 0.85, alpha: 1)
+        case .archive: return NSColor(red: 0.92, green: 0.58, blue: 0.20, alpha: 1)
+        case .disk: return NSColor(red: 0.40, green: 0.30, blue: 0.70, alpha: 1)
+        case .installer: return NSColor(red: 0.30, green: 0.70, blue: 0.40, alpha: 1)
+        case .design: return NSColor(red: 0.88, green: 0.42, blue: 0.66, alpha: 1)
+        case .document: return NSColor(red: 0.45, green: 0.55, blue: 0.65, alpha: 1)
+        case .code: return NSColor(red: 0.20, green: 0.55, blue: 0.65, alpha: 1)
+        case .other: return .secondaryLabelColor
         }
     }
 }

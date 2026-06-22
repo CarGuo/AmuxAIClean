@@ -487,6 +487,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
     /// 测试可注入临时目录 store。
     private let undoHistoryStore: UndoHistoryStore
     private var didBootstrap: Bool = false
+    private let maxConcurrentCardLoads = 2
 
     public init(workflow: any DeveloperWorkflow,
                 home: URL,
@@ -705,17 +706,41 @@ public final class WorkflowDetailViewModel: ObservableObject {
     }
 
     private func loadAllCards() async {
-        await withTaskGroup(of: (String, [WorkflowScanHit]).self) { group in
-            for card in cards {
-                let cardID = card.id
-                let source = card.source
-                cardLoading.insert(cardID)
-                group.addTask { [home] in
-                    let hits = await Self.resolveCard(source: source, home: home)
-                    return (cardID, hits)
-                }
+        let cardsSnapshot = cards
+        let versionedHits = cardsSnapshot.contains { card in
+            if case .versionedRoot = card.source { return true }
+            return false
+        } ? KnownVersionedRoots.scanAll(home: home) : []
+
+        var startIndex = 0
+        while startIndex < cardsSnapshot.count {
+            let endIndex = min(startIndex + maxConcurrentCardLoads, cardsSnapshot.count)
+            let batch = Array(cardsSnapshot[startIndex..<endIndex])
+            startIndex = endIndex
+
+            for card in batch {
+                cardLoading.insert(card.id)
             }
-            for await (cardID, hits) in group {
+
+            let results = await withTaskGroup(of: (String, [WorkflowScanHit]).self,
+                                              returning: [(String, [WorkflowScanHit])].self) { group in
+                for card in batch {
+                    let cardID = card.id
+                    let source = card.source
+                    group.addTask { [home, versionedHits] in
+                        let hits = await Self.resolveCard(source: source, home: home, versionedHits: versionedHits)
+                        return (cardID, hits)
+                    }
+                }
+                var collected: [(String, [WorkflowScanHit])] = []
+                collected.reserveCapacity(batch.count)
+                for await result in group {
+                    collected.append(result)
+                }
+                return collected
+            }
+
+            for (cardID, hits) in results {
                 cardHits[cardID] = hits
                 cardTotalBytes[cardID] = hits.reduce(0) { $0 &+ ($1.sizeBytes ?? 0) }
                 cardLoading.remove(cardID)
@@ -783,7 +808,9 @@ public final class WorkflowDetailViewModel: ObservableObject {
         child == ancestor || child.hasPrefix(ancestor.hasSuffix("/") ? ancestor : ancestor + "/")
     }
 
-    private static func resolveCard(source: DeveloperCard.PathSource, home: URL) async -> [WorkflowScanHit] {
+    private static func resolveCard(source: DeveloperCard.PathSource,
+                                    home: URL,
+                                    versionedHits: [KnownVersionedRoots.Hit] = []) async -> [WorkflowScanHit] {
         switch source {
         case .literal(let paths):
             // **v2026.06.22 (P0-5)**：`.literal` 分支历史只走 `FileManager.fileExists`，不展开 glob。
@@ -801,7 +828,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
             }
             return results
         case .versionedRoot(let ruleID):
-            let hits = KnownVersionedRoots.scanAll(home: home).filter { $0.ruleID == ruleID }
+            let allHits = versionedHits.isEmpty ? KnownVersionedRoots.scanAll(home: home) : versionedHits
+            let hits = allHits.filter { $0.ruleID == ruleID }
             return hits.map { hit in
                 let size = Self.directorySize(at: hit.url)
                 let localizedName = String(localized: String.LocalizationValue(hit.displayName), bundle: .module)

@@ -7,14 +7,13 @@ import XCTest
 ///
 /// 为什么所有 `ScanCoordinator(enableTreeDeepIndex: true)`：
 /// v1.3.z 起 `enableTreeDeepIndex` 默认 false，意味着同步 directChildren 在内存索引
-/// 不命中时会**返空 + 派后台 task 拉 GRDB → cache hit 后下次 view body 才能拿到**。
+/// 不命中时会**返空 + 派后台 task 按需扫描当前目录 → cache hit 后下次 view body 才能拿到**。
 /// 这是产品上的"懒加载"策略，但单元测试只想验证排序——开 deepIndex=on 让内存里
 /// 直接构造好整棵 childEdges 索引，directChildren 同步返非空，**测试意图与排序逻辑强相关**。
 ///
 /// 这不是"测试为了 pass 而绕过实际行为"——deepIndex=on 路径的排序代码与 deepIndex=off
 /// 路径完全共用（都走 [materializeFromMemory + 排序闭包](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)），
-/// 排序正确性只测一份。store-fallback 缓存路径的回归保护在
-/// [ScanCoordinatorStoreTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/ScanCoordinatorStoreTests.swift)。
+/// 排序正确性只测一份。按需扫描缓存路径的回归保护在 TreeDownDrillTests / FullDisk tests。
 @MainActor
 final class TreeBrowserSortTests: XCTestCase {
 

@@ -18,6 +18,7 @@ public struct AppFootprintScreen: View {
     @State private var apps: [InstalledApp] = []
     @State private var items: [AppFootprintItem] = []
     @State private var selected: AppFootprintItem?
+    @State private var pendingIDs: Set<String> = []
     @State private var isLoading: Bool = false
     @State private var progressDone: Int = 0
     @State private var progressTotal: Int = 0
@@ -101,7 +102,7 @@ public struct AppFootprintScreen: View {
     }
 
     private var table: some View {
-        let maxBytes = max(1, items.first?.totalBytes ?? 1)
+        let maxBytes = max(1, items.map(\.totalBytes).max() ?? 1)
         return List(selection: $selected) {
             ForEach(filtered) { item in
                 row(item, maxBytes: maxBytes)
@@ -114,6 +115,7 @@ public struct AppFootprintScreen: View {
 
     @ViewBuilder
     private func row(_ item: AppFootprintItem, maxBytes: Int64) -> some View {
+        let isPending = pendingIDs.contains(item.id)
         let ratio = Double(item.totalBytes) / Double(maxBytes)
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
@@ -131,26 +133,39 @@ public struct AppFootprintScreen: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 1) {
-                    Text(byteString(item.totalBytes))
-                        .font(.callout.monospacedDigit())
-                    Text(String(format: String(localized: "appfootprint.row.bundle_data", bundle: .module), byteString(item.appBundleBytes), byteString(item.relatedBytes)))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    if isPending {
+                        HStack(spacing: 4) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("appfootprint.row.computing", bundle: .module)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text(byteString(item.totalBytes))
+                            .font(.callout.monospacedDigit())
+                        Text(String(format: String(localized: "appfootprint.row.bundle_data", bundle: .module), byteString(item.appBundleBytes), byteString(item.relatedBytes)))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
-            ratioBar(ratio: ratio)
+            ratioBar(ratio: ratio, isPending: isPending)
         }
         .padding(.vertical, 4)
     }
 
-    private func ratioBar(ratio: Double) -> some View {
-        GeometryReader { geo in
+    private func ratioBar(ratio: Double, isPending: Bool = false) -> some View {
+        let clamped = min(1, max(0, ratio))
+        return GeometryReader { geo in
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 3)
                     .fill(Color.secondary.opacity(0.15))
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(Color.accentColor.opacity(0.85))
-                    .frame(width: max(2, geo.size.width * CGFloat(min(1, max(0, ratio)))))
+                if !isPending && clamped > 0 {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(Color.accentColor.opacity(0.85))
+                        .frame(width: max(2, geo.size.width * CGFloat(clamped)))
+                }
             }
         }
         .frame(height: 4)
@@ -163,7 +178,7 @@ public struct AppFootprintScreen: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if !items.isEmpty {
-                Text(String(format: String(localized: "appfootprint.footer.total", bundle: .module), byteString(items.map(\.totalBytes).reduce(0, +))))
+                Text(String(format: String(localized: "appfootprint.footer.total", bundle: .module), byteString(loadedItems.map(\.totalBytes).reduce(0, +))))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -181,13 +196,33 @@ public struct AppFootprintScreen: View {
     private var rightPane: some View {
         VStack(spacing: 0) {
             if let item = selected {
-                detailHeader(item)
-                Divider()
-                detailList(item)
+                if pendingIDs.contains(item.id) {
+                    pendingDetail(item)
+                } else {
+                    detailHeader(item)
+                    Divider()
+                    detailList(item)
+                }
             } else {
                 placeholder(String(localized: "appfootprint.placeholder.select_app", bundle: .module), systemImage: "sidebar.right")
             }
         }
+    }
+
+    private func pendingDetail(_ item: AppFootprintItem) -> some View {
+        VStack(spacing: 12) {
+            appIcon(for: item.appURL)
+                .frame(width: 42, height: 42)
+            Text(item.appName)
+                .font(.title3)
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("appfootprint.row.computing", bundle: .module)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func detailHeader(_ item: AppFootprintItem) -> some View {
@@ -259,6 +294,10 @@ public struct AppFootprintScreen: View {
         }
     }
 
+    private var loadedItems: [AppFootprintItem] {
+        items.filter { !pendingIDs.contains($0.id) }
+    }
+
     private var emptyText: String {
         if !search.trimmingCharacters(in: .whitespaces).isEmpty {
             return String(localized: "appfootprint.empty.no_match", bundle: .module)
@@ -276,20 +315,32 @@ public struct AppFootprintScreen: View {
         progressTotal = 0
         items = []
         selected = nil
+        pendingIDs = []
         let installed = await store.listInstalledApps()
         apps = installed
         progressTotal = installed.count
+        pendingIDs = Set(installed.map(\.id))
+        items = installed.map(placeholderItem(for:))
+        selected = items.first
 
         // docs/AUDIT_2026_06.md §4.1 P3 两阶段加载：
-        // 第 1 阶段 = 上面已显示 isLoading + total（用户立刻看到"正在扫 N 个 app"）
-        // 第 2 阶段 = stream 边算边 yield，每个 item 落地就 append + 倒序重排，
-        // 用户不必等所有 app 扫完才看到第一行；最肥的 app 算完后自动跳到顶部。
+        // 第 1 阶段 = 先显示 /Applications 一层应用清单（每行"统计中"），避免首个大 app
+        // 的 bundle snapshot 把页面长时间卡在空态。
+        // 第 2 阶段 = stream 边算边替换对应 item + 倒序重排；不额外放大底层 IO 并发。
         let stream = scanner.scanAllStream(apps: installed)
         streamTask = Task { @MainActor in
             for await item in stream {
                 if Task.isCancelled { break }
-                items.append(item)
-                items.sort { $0.totalBytes > $1.totalBytes }
+                if let index = items.firstIndex(where: { $0.id == item.id }) {
+                    items[index] = item
+                } else {
+                    items.append(item)
+                }
+                pendingIDs.remove(item.id)
+                sortItemsForDisplay()
+                if selected?.id == item.id {
+                    selected = item
+                }
                 progressDone += 1
             }
             // 仅当未被取消时才置 isLoading=false——否则 reload() 二次触发会把
@@ -297,6 +348,38 @@ public struct AppFootprintScreen: View {
             if !Task.isCancelled {
                 isLoading = false
             }
+        }
+    }
+
+    private func placeholderItem(for app: InstalledApp) -> AppFootprintItem {
+        AppFootprintItem(
+            bundleID: app.metadata.bundleID,
+            appName: app.metadata.appName,
+            appURL: app.appURL,
+            appBundleBytes: 0,
+            relatedBytes: 0,
+            buckets: [
+                AppFootprintBucket(
+                    path: app.appURL.path,
+                    bytes: 0,
+                    fileCount: 0,
+                    kind: .bundle
+                )
+            ]
+        )
+    }
+
+    private func sortItemsForDisplay() {
+        items.sort { lhs, rhs in
+            let lhsPending = pendingIDs.contains(lhs.id)
+            let rhsPending = pendingIDs.contains(rhs.id)
+            if lhsPending != rhsPending {
+                return !lhsPending
+            }
+            if lhs.totalBytes != rhs.totalBytes {
+                return lhs.totalBytes > rhs.totalBytes
+            }
+            return lhs.appName.localizedCaseInsensitiveCompare(rhs.appName) == .orderedAscending
         }
     }
 

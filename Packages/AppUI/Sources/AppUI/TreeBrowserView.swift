@@ -3,6 +3,7 @@ import AppKit
 import Combine
 import SafetyKit
 import AIKit
+import LogKit
 
 /// v1.0 T3 / T5：多层下钻浏览器 + 列排序 + 键盘导航。
 ///
@@ -50,7 +51,7 @@ public struct TreeBrowserView: View {
     let onTrash: ((URL) -> Void)?
     /// v2026.06 用户反馈 #1：右键"刷新此目录"。点击时传 path 给上层，
     /// 上层调 [ScanCoordinator.rescanSubtree(at:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1529-L1545)
-    /// 清掉 store-fallback 缓存并 bump structuralRevision，本视图下一帧自动重拉。
+    /// 清掉按需子树缓存并 bump structuralRevision，本视图下一帧自动重拉。
     /// 给 nil 时菜单不展示该项（便于在 readonly 场景复用）。
     let onRefreshSubtree: ((String) -> Void)?
     /// v2026.06.18 **加入待处理**回调（购物车）。点击 contextMenu 的"加入待处理"项
@@ -167,10 +168,13 @@ public struct TreeBrowserView: View {
     /// 只订阅 `ScanCoordinator.$isScanning`，避免 `ScanCoordinator.objectWillChange`
     /// 的高频 snapshot/progress 发布把整棵 SwiftUI List 拖进刷新。
     @State private var isScanningSnapshot: Bool = false
-    /// store-fallback 首帧同步返回空时，`directChildren` 会在后台查 GRDB。
+    /// 按需子树扫描首帧同步返回空时，`directChildren` 会在后台扫描当前目录。
     /// AppKit 表格不再依赖 SwiftUI row body 自发重算，所以展开后看到 loading
     /// 占位时补一个很短的 trailing rebuild，作为 childrenCacheVersion 回调之外的兜底。
-    @State private var pendingStoreFallbackRebuild: DispatchWorkItem? = nil
+    @State private var pendingAsyncChildrenRebuild: DispatchWorkItem? = nil
+    /// 扫描完成后对顶层目录做一次限量预热，减少首次展开 `/Users` / `/Applications`
+    /// 这类大目录时的空等。key = `path|sortKey`，避免排序切换后误认为已预热。
+    @State private var prefetchedChildCacheKeys: Set<String> = []
 
     public init(coordinator: ScanCoordinator,
                 rootPath: String,
@@ -230,16 +234,16 @@ public struct TreeBrowserView: View {
             Divider()
             if flatRows.isEmpty {
                 VStack(spacing: 8) {
-                    if isFetchingRoot {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("tree.loading.children", bundle: .module)
-                            .foregroundStyle(.secondary)
-                            .font(.callout)
-                    } else if isScanningSnapshot {
+                    if isScanningSnapshot {
                         ProgressView()
                             .controlSize(.small)
                         Text("tree.loading.scanning", bundle: .module)
+                            .foregroundStyle(.secondary)
+                            .font(.callout)
+                    } else if isFetchingRoot {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("tree.loading.children", bundle: .module)
                             .foregroundStyle(.secondary)
                             .font(.callout)
                     } else {
@@ -306,6 +310,7 @@ public struct TreeBrowserView: View {
         .onChange(of: rootPath) { _, _ in
             // 切扫描根：清掉旧 expanded 防止脏 path 残留撑起 flatRows
             expanded.removeAll(keepingCapacity: true)
+            prefetchedChildCacheKeys.removeAll(keepingCapacity: true)
             rebuildFlatRows()
         }
         // Step 2 P0-2 / 2026-06：从 `coordinator.treeRevision` 切到
@@ -442,7 +447,7 @@ public struct TreeBrowserView: View {
         }
         let base = Self.computeVerdicts(for: pairs) { Self.VerdictCache.verdict(for: $0) }
         // v2026.06.20：把"展开但孩子还在异步加载"的目录后面插一个加载占位行，
-        // 让用户在 store-fallback 拉子节点的几十~几百毫秒窗口里看到 spinner，
+        // 让用户在按需子树扫描的等待窗口里看到 spinner，
         // 而不是空白的展开。详见 [insertLoadingPlaceholders](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
         let newFlatRows = insertLoadingPlaceholders(into: base)
         // v2026.06.22 perf：等值短路。
@@ -461,6 +466,7 @@ public struct TreeBrowserView: View {
         let newIsFetching = topLevel.isEmpty
             && coordinator.isFetchingChildren(of: rootPath, sortedBy: effectiveSortKey)
         if flatRows == newFlatRows && maxBytes == newMax && isFetchingRoot == newIsFetching {
+            prefetchVisibleTopLevelChildrenIfNeeded()
             return
         }
         flatRows = newFlatRows
@@ -468,10 +474,11 @@ public struct TreeBrowserView: View {
         // 顶层空 + isFetchingChildren 才算"拉取中"；否则维持 false 让 view 走 isScanning / 真空两态。
         isFetchingRoot = newIsFetching
         if newFlatRows.contains(where: \.isLoadingPlaceholder) || newIsFetching {
-            scheduleStoreFallbackRebuild()
+            scheduleAsyncChildrenRebuild()
         } else {
-            cancelStoreFallbackRebuild()
+            cancelAsyncChildrenRebuild()
         }
+        prefetchVisibleTopLevelChildrenIfNeeded()
     }
 
     private func appendDescendantPairs(parent: String, depth: Int,
@@ -487,7 +494,7 @@ public struct TreeBrowserView: View {
 
     /// v2026.06.20 **子节点加载占位插入**。
     ///
-    /// 触发场景：用户展开一个目录 → 该目录 directChildren 当前还在异步拉（store-fallback
+    /// 触发场景：用户展开一个目录 → 该目录 directChildren 当前还在异步拉（按需子树扫描
     /// 在 BG queue 起的 Task 没回写 [treeChildrenCache](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L283-L283)）
     /// → directChildren 暂时返回 []。旧版表现：chevron 已经翻成"↓"但下面什么都没有，
     /// 用户以为"展开了空目录"，几百 ms 后突然出来一堆子项，体验割裂。
@@ -607,7 +614,7 @@ public struct TreeBrowserView: View {
             verdict: .safe,
             isLoadingPlaceholder: true
         ), at: idx + 1)
-        scheduleStoreFallbackRebuild()
+        scheduleAsyncChildrenRebuild()
     }
 
     /// 单点折叠：在 flatRows 里找到 `path`，删掉它**之后**所有 depth > path.depth 的
@@ -779,33 +786,58 @@ public struct TreeBrowserView: View {
     /// v2026.06.21：扫描结束边沿——把扫描期间合并的 rebuild 立刻 fire 拿到终态。
     /// 也兼容 isScanning 切回 true 的回边沿：进入扫描态不主动 rebuild（等 structural bump）。
     private func handleScanningToggle(nowScanning: Bool) {
-        if !nowScanning {
+        if nowScanning {
+            prefetchedChildCacheKeys.removeAll(keepingCapacity: true)
+        } else {
             rebuildFlatRows()
         }
     }
 
-    /// v2026.06.21：directChildren GRDB 写回路径只 bump childrenCacheVersion（不再 bump
+    /// v2026.06.21：directChildren 异步写回路径只 bump childrenCacheVersion（不再 bump
     /// structuralRevision），这里独立监听；扫描中同样冻结，扫描结束统一刷新。
     private func handleChildrenCacheBump() {
         guard !isScanningSnapshot else { return }
-        cancelStoreFallbackRebuild()
+        cancelAsyncChildrenRebuild()
         rebuildFlatRows()
     }
 
-    private func scheduleStoreFallbackRebuild() {
+    private func scheduleAsyncChildrenRebuild() {
         guard !isScanningSnapshot else { return }
-        pendingStoreFallbackRebuild?.cancel()
+        pendingAsyncChildrenRebuild?.cancel()
         let work = DispatchWorkItem {
-            pendingStoreFallbackRebuild = nil
+            pendingAsyncChildrenRebuild = nil
             rebuildFlatRows()
         }
-        pendingStoreFallbackRebuild = work
+        pendingAsyncChildrenRebuild = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
     }
 
-    private func cancelStoreFallbackRebuild() {
-        pendingStoreFallbackRebuild?.cancel()
-        pendingStoreFallbackRebuild = nil
+    private func cancelAsyncChildrenRebuild() {
+        pendingAsyncChildrenRebuild?.cancel()
+        pendingAsyncChildrenRebuild = nil
+    }
+
+    private func prefetchVisibleTopLevelChildrenIfNeeded() {
+        guard !isScanningSnapshot else { return }
+        let candidates = flatRows
+            .filter {
+                $0.depth == 0
+                    && $0.row.isDirectory
+                    && $0.row.hasChildren
+                    && $0.row.accessState == .normal
+            }
+            .prefix(4)
+        var paths: [String] = []
+        var keys: [String] = []
+        for flat in candidates {
+            let cacheKey = "\(flat.row.path)|\(effectiveSortKey.rawValue)"
+            guard !prefetchedChildCacheKeys.contains(cacheKey) else { continue }
+            paths.append(flat.row.path)
+            keys.append(cacheKey)
+        }
+        guard !paths.isEmpty else { return }
+        prefetchedChildCacheKeys.formUnion(keys)
+        coordinator.prefetchTreeChildren(paths: paths, sortedBy: effectiveSortKey, limit: 4)
     }
 
     /// 行内三角 / 单击整行 / 右键菜单 / 双击 → 共用的展开切换入口。
@@ -814,7 +846,7 @@ public struct TreeBrowserView: View {
     /// 不能展开的行 row 内部已经把按钮 / 双击 hit-test disable 掉。
     ///
     /// v2026.06.21：扫描进行中**禁止展开切换**。
-    /// 用户反馈：dev 扫描进行中点击 chevron 展开会触发 store-fallback 异步抓取，
+    /// 用户反馈：dev 扫描进行中点击 chevron 展开会触发按需子树扫描，
     /// 大量并发 IO + MainActor 上的 dirIndex 重建会和 ingest burst 互相挤占主线程，
     /// 体感卡顿急剧放大。扫描中保留 row 显示但拦截 expansion，等扫完再让用户展开。
     /// 已展开状态不主动收起（保留用户当前视图），仅拒绝**新的展开请求**与折叠请求。
@@ -974,7 +1006,7 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
                 flat: flat,
                 maxBytes: parent.maxBytes,
                 isExpanded: parent.expanded[flat.row.path] ?? false,
-                isSelected: parent.selectedPath == flat.row.path,
+                isSelected: !flat.isLoadingPlaceholder && parent.selectedPath == flat.row.path,
                 isStashed: parent.isStashed(flat.row.path),
                 hasTrash: parent.onTrash != nil,
                 hasStash: parent.onStash != nil,
@@ -1116,19 +1148,20 @@ private final class TreeNSTableView: NSTableView {
 }
 
 private enum TreeTableMetrics {
-    static let rowHeight: CGFloat = 26
+    static let rowHeight: CGFloat = 30
     static let leftPadding: CGFloat = 8
-    static let indentation: CGFloat = 16
-    static let chevronWidth: CGFloat = 22
-    static let iconWidth: CGFloat = 18
-    static let horizontalGap: CGFloat = 6
+    static let indentation: CGFloat = 18
+    static let chevronWidth: CGFloat = 24
+    static let iconWidth: CGFloat = 24
+    static let iconHeight: CGFloat = 20
+    static let horizontalGap: CGFloat = 8
     static let sizeWidth: CGFloat = 90
     static let countWidth: CGFloat = 56
     static let mtimeWidth: CGFloat = 98
     static let actionGap: CGFloat = 12
     static let actionWidth: CGFloat = 28
     static let actionAreaWidth: CGFloat = 84
-    static let actionTrailingPadding: CGFloat = 22
+    static let actionTrailingPadding: CGFloat = 16
     static let columnIdentifier = NSUserInterfaceItemIdentifier("TreeTableColumn")
     static let cellIdentifier = NSUserInterfaceItemIdentifier("TreeTableCell")
 }
@@ -1242,21 +1275,28 @@ private final class TreeTableRowCanvas: NSView {
         let point = convert(event.locationInWindow, from: nil)
         actions.select()
         if hitTestAction(point) == .ai {
+            GSYLog.notice(.operation, "tree.row.ai path=\(flat.row.path)")
             actions.askAI(); return
         }
         if hitTestAction(point) == .stash {
             guard !isStashed else { NSSound.beep(); return }
+            GSYLog.notice(.operation, "tree.row.stash path=\(flat.row.path)")
             actions.stash(); return
         }
         if hitTestAction(point) == .trash {
             guard isTrashable(flat) else { NSSound.beep(); return }
+            GSYLog.notice(.operation, "tree.row.trash path=\(flat.row.path)")
             actions.trash(); return
         }
         if disclosureRect(for: flat).contains(point) {
-            if canExpand(flat) { actions.toggle() }
+            if canExpand(flat) {
+                GSYLog.notice(.operation, "tree.row.toggle path=\(flat.row.path) expanded=\(!isExpanded)")
+                actions.toggle()
+            }
             return
         }
         if event.clickCount >= 2 || canExpand(flat) {
+            GSYLog.notice(.operation, "tree.row.toggle path=\(flat.row.path) expanded=\(!isExpanded)")
             actions.toggle()
         }
     }
@@ -1313,7 +1353,10 @@ private final class TreeTableRowCanvas: NSView {
         if row.isDirectory {
             let refresh = ClosureMenuItem(
                 title: String(localized: "tree.menu.refresh", bundle: .module),
-                action: actions.refresh
+                action: {
+                    GSYLog.notice(.operation, "tree.menu.refresh path=\(row.path)")
+                    actions.refresh()
+                }
             )
             refresh.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
             menu.addItem(refresh)
@@ -1359,19 +1402,19 @@ private final class TreeTableRowCanvas: NSView {
         let denied = row.accessState != .normal
         let chevronRect = disclosureRect(for: flat)
         if canExpand(flat) {
-            drawSymbol(isExpanded ? "chevron.down" : "chevron.right",
-                       in: chevronRect.insetBy(dx: 5, dy: 5),
-                       color: .secondaryLabelColor)
+            drawDisclosureTriangle(in: chevronRect,
+                                   expanded: isExpanded,
+                                   color: .secondaryLabelColor)
         }
         let iconRect = CGRect(x: chevronRect.maxX + TreeTableMetrics.horizontalGap,
                               y: 5,
                               width: TreeTableMetrics.iconWidth,
-                              height: 16)
+                              height: TreeTableMetrics.iconHeight)
         drawSymbol(row.isDirectory ? "folder.fill" : "doc",
                    in: iconRect,
                    color: denied ? .tertiaryLabelColor : (row.isDirectory ? .controlAccentColor : .secondaryLabelColor),
-                   pointSize: 15,
-                   weight: row.isDirectory ? .semibold : .regular)
+                   pointSize: row.isDirectory ? 20 : 18,
+                   weight: .regular)
         if denied {
             drawSymbol("lock.fill",
                        in: CGRect(x: iconRect.maxX - 5, y: iconRect.maxY - 7, width: 8, height: 8),
@@ -1386,70 +1429,81 @@ private final class TreeTableRowCanvas: NSView {
         let sizeX = countX - TreeTableMetrics.sizeWidth
         let nameWidth = max(20, sizeX - nameX - 8)
         drawText(row.title.isEmpty ? row.path : row.title,
-                 in: CGRect(x: nameX, y: 3, width: nameWidth, height: 17),
-                 font: .systemFont(ofSize: NSFont.systemFontSize),
+                 in: CGRect(x: nameX, y: 3, width: nameWidth, height: 19),
+                 font: .systemFont(ofSize: 15),
                  color: denied ? .tertiaryLabelColor : .labelColor,
                  lineBreak: .byTruncatingMiddle)
         drawBar(row: row,
                 denied: denied,
-                rect: CGRect(x: nameX, y: 21, width: nameWidth, height: 3))
-        let size = denied ? "—" : ByteCountFormatter.string(fromByteCount: row.bytes, countStyle: .file)
+                rect: CGRect(x: nameX, y: 24, width: nameWidth, height: 2))
+        let pendingSize = row.isSizePending && !denied
+        let size = (denied || pendingSize) ? "—" : ByteCountFormatter.string(fromByteCount: row.bytes, countStyle: .file)
         drawText(size,
-                 in: CGRect(x: sizeX, y: 5, width: TreeTableMetrics.sizeWidth - 8, height: 16),
-                 font: .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
-                 color: denied ? .tertiaryLabelColor : .secondaryLabelColor,
+                 in: CGRect(x: sizeX, y: 6, width: TreeTableMetrics.sizeWidth - 8, height: 17),
+                 font: .monospacedSystemFont(ofSize: 13.5, weight: .regular),
+                 color: (denied || pendingSize) ? .tertiaryLabelColor : .secondaryLabelColor,
                  alignment: .right)
-        drawText(denied ? "—" : "\(row.fileCount)",
-                 in: CGRect(x: countX, y: 5, width: TreeTableMetrics.countWidth - 8, height: 16),
-                 font: .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+        drawText((denied || pendingSize) ? "—" : "\(row.fileCount)",
+                 in: CGRect(x: countX, y: 6, width: TreeTableMetrics.countWidth - 8, height: 17),
+                 font: .monospacedSystemFont(ofSize: 13.5, weight: .regular),
                  color: .tertiaryLabelColor,
                  alignment: .right)
         drawText(TreeBrowserRow.mtimeDisplay(row.modificationDate, denied: denied),
-                 in: CGRect(x: mtimeX, y: 5, width: TreeTableMetrics.mtimeWidth - 8, height: 16),
-                 font: .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+                 in: CGRect(x: mtimeX, y: 6, width: TreeTableMetrics.mtimeWidth - 8, height: 17),
+                 font: .monospacedSystemFont(ofSize: 13.5, weight: .regular),
                  color: .tertiaryLabelColor,
                  alignment: .right)
         drawActions(flat)
     }
 
     private func drawBar(row: TreeRow, denied: Bool, rect: CGRect) {
-        NSColor.quaternaryLabelColor.withAlphaComponent(0.28).setFill()
+        NSColor.quaternaryLabelColor.withAlphaComponent(0.14).setFill()
         NSBezierPath(roundedRect: rect, xRadius: 1.5, yRadius: 1.5).fill()
-        guard maxBytes > 0, !denied else { return }
+        guard maxBytes > 0, !denied, !row.isSizePending else { return }
         let ratio = max(0, min(1, Double(row.bytes) / Double(maxBytes)))
         let fill = CGRect(x: rect.minX, y: rect.minY, width: rect.width * CGFloat(ratio), height: rect.height)
-        (row.isDirectory ? NSColor.controlAccentColor.withAlphaComponent(0.65) : NSColor.controlAccentColor.withAlphaComponent(0.38)).setFill()
+        (row.isDirectory ? NSColor.controlAccentColor.withAlphaComponent(0.56) : NSColor.controlAccentColor.withAlphaComponent(0.30)).setFill()
         NSBezierPath(roundedRect: fill, xRadius: 1.5, yRadius: 1.5).fill()
     }
 
     private func drawActions(_ flat: FlatTreeRow) {
         if hasAI {
             drawSymbol("sparkles",
-                       in: actionRect(.ai).insetBy(dx: 8, dy: 5),
+                       in: symbolRect(in: actionRect(.ai), side: 16),
                        color: aiReady ? .controlAccentColor : .secondaryLabelColor.withAlphaComponent(0.45),
-                       pointSize: 12,
-                       weight: .semibold)
+                       pointSize: 14,
+                       weight: .regular)
         }
         if hasStash {
             drawSymbol(isStashed ? "tray.full.fill" : "tray.and.arrow.down",
-                       in: actionRect(.stash).insetBy(dx: 8, dy: 5),
+                       in: symbolRect(in: actionRect(.stash), side: 16),
                        color: isStashed ? .controlAccentColor : .secondaryLabelColor,
-                       pointSize: 12,
-                       weight: .semibold)
+                       pointSize: 14,
+                       weight: .regular)
         }
         if hasTrash {
             drawSymbol("trash",
-                       in: actionRect(.trash).insetBy(dx: 8, dy: 5),
+                       in: symbolRect(in: actionRect(.trash), side: 16),
                        color: isTrashable(flat) ? .systemRed : .secondaryLabelColor.withAlphaComponent(0.35),
-                       pointSize: 12,
-                       weight: .semibold)
+                       pointSize: 14,
+                       weight: .regular)
         }
+    }
+
+    private func drawDisclosureTriangle(in rect: CGRect,
+                                        expanded: Bool,
+                                        color: NSColor) {
+        drawSymbol(expanded ? "chevron.down" : "chevron.right",
+                   in: symbolRect(in: rect, side: 18),
+                   color: color,
+                   pointSize: 17,
+                   weight: .medium)
     }
 
     private func disclosureRect(for flat: FlatTreeRow) -> CGRect {
         CGRect(
             x: TreeTableMetrics.leftPadding + CGFloat(flat.depth) * TreeTableMetrics.indentation,
-            y: 2,
+            y: 4,
             width: TreeTableMetrics.chevronWidth,
             height: 22
         )
@@ -1471,7 +1525,7 @@ private final class TreeTableRowCanvas: NSView {
 
     private func actionRect(_ action: ActionHit) -> CGRect {
         let right = bounds.width - TreeTableMetrics.actionTrailingPadding
-        let trash = CGRect(x: right - TreeTableMetrics.actionWidth, y: 2,
+        let trash = CGRect(x: right - TreeTableMetrics.actionWidth, y: 4,
                            width: TreeTableMetrics.actionWidth, height: 22)
         let stash = trash.offsetBy(dx: -TreeTableMetrics.actionWidth, dy: 0)
         let ai = stash.offsetBy(dx: -TreeTableMetrics.actionWidth, dy: 0)
@@ -1481,6 +1535,16 @@ private final class TreeTableRowCanvas: NSView {
         case .trash: return trash
         case .none: return .zero
         }
+    }
+
+    private func symbolRect(in rect: CGRect, side: CGFloat? = nil) -> CGRect {
+        let resolvedSide = min(side ?? min(rect.width, rect.height), rect.width, rect.height)
+        return CGRect(
+            x: rect.midX - resolvedSide / 2,
+            y: rect.midY - resolvedSide / 2,
+            width: resolvedSide,
+            height: resolvedSide
+        )
     }
 
     private func canExpand(_ flat: FlatTreeRow) -> Bool {
@@ -1493,18 +1557,23 @@ private final class TreeTableRowCanvas: NSView {
 
     private func drawText(_ text: String,
                           in rect: CGRect,
-                          font: NSFont,
-                          color: NSColor,
+                          font: NSFont?,
+                          color: NSColor?,
                           alignment: NSTextAlignment = .left,
                           lineBreak: NSLineBreakMode = .byTruncatingTail) {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = alignment
         paragraph.lineBreakMode = lineBreak
-        (text as NSString).draw(in: rect, withAttributes: [
-            .font: font,
-            .foregroundColor: color,
+        var attributes: [NSAttributedString.Key: Any] = [
             .paragraphStyle: paragraph
-        ])
+        ]
+        if let font {
+            attributes[.font] = font
+        }
+        if let color {
+            attributes[.foregroundColor] = color
+        }
+        (text as NSString).draw(in: rect, withAttributes: attributes)
     }
 
     private func drawSymbol(_ name: String,
@@ -1513,18 +1582,36 @@ private final class TreeTableRowCanvas: NSView {
                             pointSize: CGFloat? = nil,
                             weight: NSFont.Weight = .regular) {
         guard var image = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return }
+        let colorConfig = NSImage.SymbolConfiguration(hierarchicalColor: color)
         if let pointSize {
             let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
+                .applying(colorConfig)
             image = image.withSymbolConfiguration(config) ?? image
+        } else {
+            image = image.withSymbolConfiguration(colorConfig) ?? image
         }
-        guard let cgContext = NSGraphicsContext.current?.cgContext else { return }
-        cgContext.saveGState()
-        cgContext.beginTransparencyLayer(auxiliaryInfo: nil)
-        color.setFill()
-        NSBezierPath(rect: rect).fill()
-        image.draw(in: rect, from: .zero, operation: .destinationIn, fraction: 1)
-        cgContext.endTransparencyLayer()
-        cgContext.restoreGState()
+        image.draw(in: aspectFitRect(for: image, in: rect),
+                   from: .zero,
+                   operation: .sourceOver,
+                   fraction: 1,
+                   respectFlipped: true,
+                   hints: nil)
+    }
+
+    private func aspectFitRect(for image: NSImage, in rect: CGRect) -> CGRect {
+        let imageSize = image.size
+        guard imageSize.width > 0, imageSize.height > 0,
+              rect.width > 0, rect.height > 0
+        else { return rect }
+        let scale = min(rect.width / imageSize.width, rect.height / imageSize.height)
+        let width = imageSize.width * scale
+        let height = imageSize.height * scale
+        return CGRect(
+            x: rect.midX - width / 2,
+            y: rect.midY - height / 2,
+            width: width,
+            height: height
+        )
     }
 
     private static func copy(_ text: String) {
@@ -1575,15 +1662,15 @@ struct TreeColumnHeader: View {
             // v2026.06.21 反馈修复：之前 mtime 与按钮列贴边，视觉上像"挤在一起"。
             // 加一个 12pt gap，让 mtime 文案与「操作」列有清晰的视觉分隔。
             Spacer().frame(width: 12)
-            // **v2026.06.21 修复**：原来这里只是一个 84pt 的 Spacer 占位，没有标题，
+            // **v2026.06.21 修复**：原来这里只是一个固定 Spacer 占位，没有标题，
             // 用户原话「这个栏目也没有写『操作』这个栏目信息」。改成正式的「操作」
-            // 表头文案，居中显示在 84pt（AI 28 + Stash 28 + Trash 28）按钮列上方，
+            // 表头文案，居中显示在按钮列上方，
             // 让用户一眼知道这一列点开会发生什么；不参与点击切排序，所以不复用
             // headerButton 而是直接 Text。
             Text("tree.column.actions", bundle: .module)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 84, alignment: .center)
+                .frame(width: TreeTableMetrics.actionAreaWidth, alignment: .center)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)

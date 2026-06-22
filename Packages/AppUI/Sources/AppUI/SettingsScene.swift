@@ -3,6 +3,7 @@ import AppKit
 import LogKit
 import ScanKit
 import AIKit
+import UniformTypeIdentifiers
 
 /// v1.0 设置窗口（⌘, 自动可用）。
 ///
@@ -34,40 +35,8 @@ public struct SettingsScene: View {
 
     /// 路径列表的 UI 镜像。actor 数据要在 SwiftUI 里显示必须先快照。
     @State private var pathsMirror: [URL] = []
-
-    /// v1.3.zzzz Phase 6：「存储与日志」Tab 的 DB 体积/计数快照。
-    @State private var storageDescription: ScanStoreDescription?
-    @State private var storageBusy: Bool = false
-    @State private var storageMessage: String?
-    @State private var pendingStorageAction: StorageAction?
-
-    /// 三级清理动作 + 对应二次确认文案。
-    fileprivate enum StorageAction: Identifiable {
-        case vacuum
-        case clearAll
-        case deleteFiles
-        var id: String {
-            switch self {
-            case .vacuum: return "vacuum"
-            case .clearAll: return "clearAll"
-            case .deleteFiles: return "deleteFiles"
-            }
-        }
-        var titleKey: String {
-            switch self {
-            case .vacuum: return "settings.storage.alert.vacuum.title"
-            case .clearAll: return "settings.storage.alert.clear_all.title"
-            case .deleteFiles: return "settings.storage.alert.delete_files.title"
-            }
-        }
-        var messageKey: String {
-            switch self {
-            case .vacuum: return "settings.storage.alert.vacuum.message"
-            case .clearAll: return "settings.storage.alert.clear_all.message"
-            case .deleteFiles: return "settings.storage.alert.delete_files.message"
-            }
-        }
-    }
+    @State private var logActionMessage: String?
+    @State private var confirmClearLogs = false
 
     public init(settings: AppSettings,
                 pathStore: UserPathStore,
@@ -149,7 +118,6 @@ public struct SettingsScene: View {
         .frame(width: 520, height: 460)
         .task {
             await refreshPaths()
-            await refreshStorage()
         }
     }
 
@@ -636,134 +604,12 @@ extension SettingsScene {
     }
 }
 
-// MARK: - 存储与日志 Tab（v1.3.zzzz Phase 6）
+// MARK: - 日志 Tab
 
 extension SettingsScene {
-    /// 「存储与日志」Tab：DB 体积展示 + 三级清理 + 日志目录入口。
+    /// 「日志」Tab：扫描结果不再落持久库，这里只保留诊断日志入口。
     fileprivate var storageTab: some View {
         Form {
-            Section {
-                if let desc = storageDescription {
-                    LabeledContent {
-                        Text(desc.databaseURL.path)
-                            .font(.caption)
-                            .lineLimit(2)
-                            .truncationMode(.middle)
-                            .textSelection(.enabled)
-                    } label: {
-                        Text("settings.storage.db_path", bundle: .module)
-                    }
-                    LabeledContent {
-                        Text(Self.formatBytes(desc.totalSizeBytes))
-                            .monospacedDigit()
-                    } label: {
-                        Text("settings.storage.total_size", bundle: .module)
-                    }
-                    LabeledContent {
-                        Text(String(format: String(localized: "settings.storage.session_rows.format", bundle: .module), desc.sessionCount, desc.resultRowCount))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    } label: {
-                        Text("settings.storage.session_results", bundle: .module)
-                    }
-                } else {
-                    HStack {
-                        ProgressView().controlSize(.small)
-                        Text("settings.storage.loading", bundle: .module)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                HStack {
-                    Button {
-                        Task { await refreshStorage() }
-                    } label: {
-                        Label {
-                            Text("settings.storage.refresh", bundle: .module)
-                        } icon: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                    }
-                    .disabled(storageBusy)
-                    Spacer()
-                    Button {
-                        revealDatabaseInFinder()
-                    } label: {
-                        Label {
-                            Text("settings.storage.reveal_finder", bundle: .module)
-                        } icon: {
-                            Image(systemName: "folder")
-                        }
-                    }
-                }
-            } header: {
-                Text("settings.storage.section.db", bundle: .module)
-            } footer: {
-                Text("settings.storage.section.db.footer", bundle: .module)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
-                HStack {
-                    Button {
-                        pendingStorageAction = .vacuum
-                    } label: {
-                        Label {
-                            Text("settings.storage.action.vacuum", bundle: .module)
-                        } icon: {
-                            Image(systemName: "rectangle.compress.vertical")
-                        }
-                    }
-                    .disabled(storageBusy)
-                    Spacer()
-                }
-                HStack {
-                    Button {
-                        pendingStorageAction = .clearAll
-                    } label: {
-                        Label {
-                            Text("settings.storage.action.clear_all", bundle: .module)
-                        } icon: {
-                            Image(systemName: "trash")
-                        }
-                    }
-                    .disabled(storageBusy)
-                    Spacer()
-                }
-                HStack {
-                    Button(role: .destructive) {
-                        pendingStorageAction = .deleteFiles
-                    } label: {
-                        Label {
-                            Text("settings.storage.action.delete_files", bundle: .module)
-                        } icon: {
-                            Image(systemName: "exclamationmark.triangle")
-                        }
-                    }
-                    .disabled(storageBusy)
-                    Spacer()
-                }
-                if let msg = storageMessage {
-                    Text(msg)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                }
-                if storageBusy {
-                    HStack {
-                        ProgressView().controlSize(.small)
-                        Text("settings.storage.processing", bundle: .module)
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            } header: {
-                Text("settings.storage.section.cleanup", bundle: .module)
-            } footer: {
-                Text("settings.storage.section.cleanup.footer", bundle: .module)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
             Section {
                 LabeledContent {
                     Text(GSYLog.currentLogDirectory?.path ?? String(localized: "settings.storage.log.no_file_sink", bundle: .module))
@@ -797,6 +643,35 @@ extension SettingsScene {
                     }
                     .disabled(GSYLog.currentLogFileURL() == nil)
                 }
+                HStack {
+                    Button {
+                        exportLogs()
+                    } label: {
+                        Label {
+                            Text("settings.storage.log.export", bundle: .module)
+                        } icon: {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                    }
+                    .disabled(GSYLog.currentLogFiles().isEmpty)
+                    Spacer()
+                    Button(role: .destructive) {
+                        confirmClearLogs = true
+                    } label: {
+                        Label {
+                            Text("settings.storage.log.clear", bundle: .module)
+                        } icon: {
+                            Image(systemName: "trash")
+                        }
+                    }
+                    .disabled(GSYLog.currentLogDirectory == nil)
+                }
+                if let logActionMessage {
+                    Text(logActionMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
             } header: {
                 Text("settings.storage.section.log", bundle: .module)
             } footer: {
@@ -807,99 +682,19 @@ extension SettingsScene {
         }
         .formStyle(.grouped)
         .padding()
-        .alert(item: $pendingStorageAction) { action in
-            Alert(
-                title: Text(String(localized: String.LocalizationValue(action.titleKey), bundle: .module)),
-                message: Text(String(localized: String.LocalizationValue(action.messageKey), bundle: .module)),
-                primaryButton: .destructive(Text("settings.storage.alert.confirm", bundle: .module)) {
-                    Task { await performStorageAction(action) }
-                },
-                secondaryButton: .cancel(Text("settings.storage.alert.cancel", bundle: .module))
-            )
-        }
-    }
-
-    // MARK: 存储行为
-
-    /// 拉一次 DB 描述快照刷新 UI。
-    fileprivate func refreshStorage() async {
-        guard let url = try? GRDBScanResultStore.defaultDatabaseURL() else {
-            await MainActor.run {
-                storageDescription = nil
-                storageMessage = String(localized: "settings.storage.error.app_support", bundle: .module)
+        .confirmationDialog(
+            String(localized: "settings.storage.log.clear.confirm.title", bundle: .module),
+            isPresented: $confirmClearLogs,
+            titleVisibility: .visible
+        ) {
+            Button(String(localized: "settings.storage.log.clear.confirm.action", bundle: .module),
+                   role: .destructive) {
+                clearLogs()
             }
-            return
-        }
-        // 文件不存在（首次启动 / 已删除）：直接给一个零计数的描述，避免阻塞 UI。
-        if !FileManager.default.fileExists(atPath: url.path) {
-            await MainActor.run {
-                storageDescription = ScanStoreDescription(
-                    databaseURL: url,
-                    totalSizeBytes: 0,
-                    sessionCount: 0,
-                    resultRowCount: 0
-                )
-            }
-            return
-        }
-        do {
-            let store = try GRDBScanResultStore(databaseURL: url)
-            let desc = try await store.describeStorage()
-            await MainActor.run {
-                storageDescription = desc
-            }
-        } catch {
-            GSYLog.error(.settings, "refreshStorage 失败 err=\(error)")
-            await MainActor.run {
-                storageMessage = String(format: String(localized: "settings.storage.error.read.format", bundle: .module), error.localizedDescription)
-            }
-        }
-    }
-
-    fileprivate func performStorageAction(_ action: StorageAction) async {
-        await MainActor.run {
-            storageBusy = true
-            storageMessage = nil
-        }
-        defer {
-            Task { @MainActor in storageBusy = false }
-        }
-        guard let url = try? GRDBScanResultStore.defaultDatabaseURL() else {
-            await MainActor.run { storageMessage = String(localized: "settings.storage.error.db_path", bundle: .module) }
-            return
-        }
-        GSYLog.notice(.settings, "执行存储清理 action=\(action.id) path=\(url.path)")
-        do {
-            switch action {
-            case .vacuum:
-                let store = try GRDBScanResultStore(databaseURL: url)
-                try await store.vacuum()
-                await MainActor.run { storageMessage = String(localized: "settings.storage.result.vacuum_done", bundle: .module) }
-            case .clearAll:
-                let store = try GRDBScanResultStore(databaseURL: url)
-                try await store.clearAll()
-                await MainActor.run { storageMessage = String(localized: "settings.storage.result.clear_all_done", bundle: .module) }
-            case .deleteFiles:
-                // 文件级删除前提：当前进程内没有 store 持有句柄。Settings 窗口里
-                // 即便用户正在主窗口扫描也很难命中（Settings 是独立 Scene），
-                // 这里用 nonisolated 静态删，下次构造 store 时 migration 会重建。
-                try GRDBScanResultStore.deleteDatabaseFiles(at: url)
-                await MainActor.run { storageMessage = String(localized: "settings.storage.result.delete_files_done", bundle: .module) }
-            }
-        } catch {
-            GSYLog.error(.settings, "存储清理失败 action=\(action.id) err=\(error)")
-            await MainActor.run { storageMessage = String(format: String(localized: "settings.storage.result.failed.format", bundle: .module), error.localizedDescription) }
-        }
-        await refreshStorage()
-    }
-
-    fileprivate func revealDatabaseInFinder() {
-        guard let url = try? GRDBScanResultStore.defaultDatabaseURL() else { return }
-        if FileManager.default.fileExists(atPath: url.path) {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        } else {
-            // 文件还没建：退一级展示父目录。
-            NSWorkspace.shared.open(url.deletingLastPathComponent())
+            Button(String(localized: "settings.storage.log.clear.confirm.cancel", bundle: .module),
+                   role: .cancel) {}
+        } message: {
+            Text("settings.storage.log.clear.confirm.message", bundle: .module)
         }
     }
 
@@ -908,11 +703,13 @@ extension SettingsScene {
     fileprivate func openLogDirectory() {
         guard let dir = GSYLog.currentLogDirectory else { return }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        GSYLog.notice(.operation, "settings.log.open_directory path=\(dir.path)")
         NSWorkspace.shared.open(dir)
     }
 
     fileprivate func openTodayLogFile() {
         guard let url = GSYLog.currentLogFileURL() else { return }
+        GSYLog.notice(.operation, "settings.log.open_today path=\(url.path)")
         if FileManager.default.fileExists(atPath: url.path) {
             NSWorkspace.shared.open(url)
         } else {
@@ -921,14 +718,33 @@ extension SettingsScene {
         }
     }
 
-    // MARK: 工具
-
-    fileprivate static func formatBytes(_ bytes: Int64) -> String {
-        let f = ByteCountFormatter()
-        f.allowedUnits = [.useKB, .useMB, .useGB]
-        f.countStyle = .file
-        return f.string(fromByteCount: bytes)
+    fileprivate func exportLogs() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "GSYCleanMac-Logs.txt"
+        panel.allowedContentTypes = [.plainText]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try GSYLog.exportLogs(to: url)
+            GSYLog.notice(.operation, "settings.log.export path=\(url.path) files=\(GSYLog.currentLogFiles().count)")
+            logActionMessage = String(format: String(localized: "settings.storage.log.export.done %@", bundle: .module), url.path)
+        } catch {
+            GSYLog.error(.operation, "settings.log.export_failed path=\(url.path) error=\(error)")
+            logActionMessage = String(format: String(localized: "settings.storage.log.export.failed %@", bundle: .module), "\(error)")
+        }
     }
+
+    fileprivate func clearLogs() {
+        do {
+            let count = try GSYLog.clearLogs()
+            GSYLog.notice(.operation, "settings.log.clear count=\(count)")
+            logActionMessage = String(format: String(localized: "settings.storage.log.clear.done %d", bundle: .module), count)
+        } catch {
+            GSYLog.error(.operation, "settings.log.clear_failed error=\(error)")
+            logActionMessage = String(format: String(localized: "settings.storage.log.clear.failed %@", bundle: .module), "\(error)")
+        }
+    }
+
 }
 
 // MARK: - 高级 / 后台守护 Tab（v1.6 Sentinel）

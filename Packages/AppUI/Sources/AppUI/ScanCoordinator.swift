@@ -13,8 +13,44 @@ import SafetyKit
 /// - **节流期总字节优先稳定**：UI 上的"已扫 X MB"不能跳变
 @MainActor
 public final class ScanCoordinator: ObservableObject {
+    private actor TreeChildrenFetchGate {
+        private let limit: Int
+        private var active = 0
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        init(limit: Int) {
+            self.limit = max(1, limit)
+        }
+
+        func acquire() async {
+            if active < limit {
+                active += 1
+                return
+            }
+            await withCheckedContinuation { continuation in
+                waiters.append(continuation)
+            }
+        }
+
+        func release() {
+            if waiters.isEmpty {
+                active = max(0, active - 1)
+            } else {
+                waiters.removeFirst().resume()
+            }
+        }
+    }
+
+    private nonisolated static let treeChildrenFetchGate = TreeChildrenFetchGate(limit: 2)
+
+    public enum ScanPhase: Sendable, Equatable {
+        case idle
+        case scanning
+    }
+
     @Published public private(set) var snapshot: ScanSnapshot = .empty
     @Published public private(set) var isScanning: Bool = false
+    @Published public private(set) var scanPhase: ScanPhase = .idle
     @Published public private(set) var lastError: String?
     @Published public private(set) var permissionDeniedPaths: [String] = []
     /// v1.1：因 TCC 雷区（Music / Photos / Mail 等）被主动 skip 的路径列表。
@@ -207,7 +243,7 @@ public final class ScanCoordinator: ObservableObject {
 
     /// v1.5：多根扫描时 [currentRootPath](#) 设为这两个伪路径之一，给 UI 占位
     /// （树形/finishedEmpty 等场景需要一个非 nil 值）。这两个值不是真实目录，
-    /// store 里也不会有"以它们为父"的子项；树形视图遇到它们时要走「合成多根顶层」分支
+    /// 也不会有"以它们为父"的真实文件系统子项；树形视图遇到它们时要走「合成多根顶层」分支
     /// （见 [directChildren(of:sortedBy:)](#)），把 perRootProgress 的真实根升级成顶层 TreeRow。
     ///
     /// v2026.06.21：原值为中文字面（"(多目录)" / "(开发者构建产物)" / "(开发者旧版本)"），
@@ -241,30 +277,8 @@ public final class ScanCoordinator: ObservableObject {
     private let trie: VendorTrieNode
     private var scanTask: Task<Void, Never>?
 
-    /// v1.3.x（M1 内存优化）：扫描结果落盘后端。可选注入；nil 表示走"全量内存"原行为。
-    /// 开启路径：[AppSettings.useScanStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
-    /// 在 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
-    /// 启动时根据 flag 决定是否注入 [GRDBScanResultStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift)。
-    public let resultStore: ScanResultStore?
-
-    /// 当前扫描会话 ID。每次 scan() / scanRecommended() 入口生成一个新的。
-    /// 写入 store 时全部携带这个 sessionID，evict 时按 session 删除。
-    public private(set) var currentSessionID: ScanSessionID?
-
-    /// 写入 store 的 batch 缓冲区。达到 [ScanCoordinator.storeFlushBatchSize](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
-    /// 即异步 flush 一次。仅在 resultStore != nil 时写入。
-    private var storeBatch: [ScanResultRecord] = []
-    /// 每 1000 条 flush 一次——经验值：太小频繁写、太大主线程内存抖。
-    private let storeFlushBatchSize = 1000
-    /// store 是否处于"健康"状态：任何一次 insert / begin 失败即 false，后续写入静默跳过，
-    /// 不能让 store 故障污染主扫描流程（功能正常优先于内存优化）。
-    private var storeHealthy: Bool = true
-
-    /// P0-B 修复：store 写盘任务的 daisychain 头。
-    /// flushStoreBatch / flushAndFinalizeStore 都把自己的工作 append 到这条链尾，
-    /// 保证 insert / finalize **严格按调用顺序**到达 store actor。
-    /// 修复前两个 detached Task 互相竞争 actor 入队顺序——可能 finalize 先于 in-flight insert。
-    private var storeWriteChain: Task<Void, Never>?
+    /// 树形后台展开的代际 token。每次新扫描 / 取消都会刷新，防止旧展开任务写回新扫描缓存。
+    private var treeFetchGeneration = UUID()
 
     /// v1.3：当前"活跃"的 categoryID。
     /// 防 [坑 1]：旧 scan 被 cancel 后，AsyncStream 缓冲里残留的 .node 事件仍可能被旧 for-await
@@ -376,13 +390,13 @@ public final class ScanCoordinator: ObservableObject {
     /// v1.5.4 加 modificationDate：来源同 dirIndex —— 直接拿 [FSNode.modificationDate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/FSNode.swift#L14)。
     private var fileLeaves: [String: (bytes: Int64, isDir: Bool, modificationDate: Date?)] = [:]
 
-    /// v1.3.z：TreeBrowserView 的 store-fallback 缓存。
+    /// TreeBrowserView 的按需子树扫描缓存。
     ///
     /// 当 `enableTreeDeepIndex == false`（v1.3.z 起的默认）时，内存里没有
     /// `childEdges/dirIndex/fileLeaves`，TreeBrowserView 不能再同步拿到子项。
     /// 但 SwiftUI body 不能 await，所以这里做"同步表面 + 后台填充"双层缓存：
     ///   - body 每次调 `directChildren(of:sortedBy:)`，先看本 cache
-    ///   - cache miss → 同步返 [], 同时启一个后台 Task 走 GRDB 查 store, 写回 cache
+    ///   - cache miss → 同步返 [], 同时启一个后台 Task 扫描当前目录子树并写回 cache
     ///   - 写回时 @Published 触发 view 重算, 第二帧拿到结果
     ///
     /// key = `"\(path)|\(sortKey.rawValue)"`，让不同排序各自缓存（用户切排序不丢上次结果）。
@@ -473,7 +487,7 @@ public final class ScanCoordinator: ObservableObject {
     ///
     /// 所有可能改变"directChildren(of:_) 输出"的入口必须 `treeRevision &+= 1`：
     /// 1. [publishSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1873)（流式 ingest tick / finished 收尾）
-    /// 2. `treeChildrenCache` 主线程写回（store-fallback 异步 fetch 完成）
+    /// 2. `treeChildrenCache` 主线程写回（按需子树扫描完成）
     /// 3. [pruneDeleted](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1174)（删除乐观更新）
     /// 4. 启动新扫描 / cancel 后的 cache 清空
     /// 5. [invalidateTreeCacheAfterScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1147)（扫描结束清 cache）
@@ -606,8 +620,8 @@ public final class ScanCoordinator: ObservableObject {
     ///   - 内存：1000 × ~64B（path/bytes/mtime）= ~64KB，常驻可忽略。
     ///   - 插入复杂度：O(log 1000) ≈ 10 次比较，远小于原"无脑 append + 末尾 N log N 排序"。
     public static let largeFileTopNCapacity: Int = 1000
-    /// M3：compactAfterScanPreservingCache 之后的"二级缓存"。
-    /// 把 store 里的 Top N 大文件预读到这，UI 重进大文件页时仍可同步渲染——
+    /// compactAfterScanPreservingCache 之后的"二级缓存"。
+    /// 把 Top N 大文件保留到这，UI 重进大文件页时仍可同步渲染——
     /// 既享受了主索引被释放的内存收益，又不让 UI 出现空白回退。
     /// `nil` 表示尚未 compact 或主路径仍可用；非 nil 表示 largeFileLeaves 已清空，UI 应读这里。
     private var compactedLargeFileTopN: [LargeFileLeaf]?
@@ -666,9 +680,9 @@ public final class ScanCoordinator: ObservableObject {
     /// v1.3.z 性能开关：是否在 ingest 时构建多层下钻索引（dirIndex / childEdges / fileLeaves）。
     /// - true：扫描期就维护好整棵树索引，TreeBrowserView 进入即可同步渲染。
     ///   **代价**：大目录（70 GB / 72 万文件）下，主线程会被 576 万次祖先上溯字典写入压住 ~5 分钟。
-    /// - false（v1.3.zz 起的默认）：跳过深索引维护；TreeBrowserView 通过 GRDB store-fallback 异步下钻
-    ///   （首次 cache miss → 后台 Task 查 store → 回填 cache → SwiftUI 重新渲染），首屏延迟 100ms 级。
-    /// 切换不影响：buckets（主列表）、totalBytes、scannedFiles、largeFileLeaves、resultStore 落库。
+    /// - false（v1.3.zz 起的默认）：跳过深索引维护；TreeBrowserView 通过后台按需扫描异步下钻
+    ///   （首次 cache miss → 后台 Task 扫当前目录 → 回填 cache → SwiftUI 重新渲染）。
+    /// 切换不影响：buckets（主列表）、totalBytes、scannedFiles、largeFileLeaves。
     public var enableTreeDeepIndex: Bool = false
 
     /// Step 10a / 2026-06：系统探针 SSOT。
@@ -683,14 +697,15 @@ public final class ScanCoordinator: ObservableObject {
     /// bumpStructuralRevision / bumpTickRevision / bumpChildrenCacheVersion
     /// 三个 helper 内部双写到 store 与 mirror 保证一致。
     public let treeBrowser: TreeBrowserStore
+    private static let fullDiskDataRootPath = Firmlinks.recommendedDataVolumeRoot.path
+    private let fullDiskFirmlinkRules: [(dataPrefix: String, publicPrefix: String)]
 
     public init(vendors: [VendorRule] = [], home: String = NSHomeDirectory(),
-                resultStore: ScanResultStore? = nil,
                 enableTreeDeepIndex: Bool = false) {
         self.vendors = vendors
         self.home = home
-        self.resultStore = resultStore
         self.enableTreeDeepIndex = enableTreeDeepIndex
+        self.fullDiskFirmlinkRules = Self.makeFullDiskFirmlinkRules()
         // 性能关键：vendors 在 init 时已确定，扫描期不会变。
         // 一次构建 trie 复用整个生命周期，避免 publishSnapshot 每帧 N 次重建。
         self.trie = VendorTrie.build(vendors: vendors, home: home)
@@ -730,9 +745,13 @@ public final class ScanCoordinator: ObservableObject {
     }
 
     public func cancel() {
+        if isScanning || scanTask != nil {
+            GSYLog.notice(.operation, "scan.cancel activeCategory=\(activeCategoryID ?? "nil") root=\(currentRootPath ?? "nil")")
+        }
         scanTask?.cancel()
         scanTask = nil
         isScanning = false
+        scanPhase = .idle
         // v1.3：cancel 同时清 activeCategoryID，让旧 stream 残留事件能被自检识别为"过期"并丢弃。
         activeCategoryID = nil
         // v1.3 review-fix：cancel 必须 reset snapshot 与 currentRootPath，
@@ -750,19 +769,7 @@ public final class ScanCoordinator: ObservableObject {
         perRootStaging = [:]
         // v1.3：标记本次状态为"用户主动停止"，让 statusBar 显示"已停止"而非"还未扫描"。
         wasCancelled = true
-        // M1 内存优化：本轮取消后 store 中残留的半截 session 直接 evict，避免占盘。
-        // v1.5.7：不再 try? 静默吞错，evict 失败要落日志，便于诊断半截 session 堆积。
-        if let store = resultStore, let sid = currentSessionID {
-            Task.detached {
-                do {
-                    try await store.evictSession(sid)
-                } catch {
-                    GSYLog.error(.scan, "cancelScan evictSession sid=\(sid) failed: \(error)")
-                }
-            }
-        }
-        currentSessionID = nil
-        storeBatch.removeAll(keepingCapacity: false)
+        treeFetchGeneration = UUID()
     }
 
     public func scan(category: ScanCategory, includeHidden: Bool = true,
@@ -778,8 +785,7 @@ public final class ScanCoordinator: ObservableObject {
         dirIndex.removeAll(keepingCapacity: true)
         childEdges.removeAll(keepingCapacity: true)
         fileLeaves.removeAll(keepingCapacity: true)
-        // v1.3.z：清掉上一轮的 TreeBrowserView store-fallback 缓存，
-        // 避免新 sessionID 期间 view 看到旧 sessionID 的 store query 结果。
+        // 清掉上一轮的 TreeBrowserView 按需子树缓存，避免新扫描看到旧展开结果。
         treeChildrenCache.removeAll(keepingCapacity: true)
         bumpChildrenCacheVersion()
         treeChildrenInFlight.removeAll(keepingCapacity: true)
@@ -808,6 +814,7 @@ public final class ScanCoordinator: ObservableObject {
         snapshot = ScanSnapshot(categoryID: category.id, rows: [], totalBytes: 0,
                                 scannedFileCount: 0, isFinished: false, elapsed: 0)
         isScanning = true
+        scanPhase = .scanning
         lastError = nil
         permissionDeniedPaths = []
         tccProtectedSkippedPaths = []
@@ -830,18 +837,9 @@ public final class ScanCoordinator: ObservableObject {
 
         let rootURL = category.rootURL
         let categoryID = category.id
+        GSYLog.notice(.flow, "scan.start category=\(category.id) root=\(rootURL.path) includeHidden=\(includeHidden) largeFileMinBytes=\(largeFileMinBytes)")
 
-        // M1 内存优化：开启 store 时为本轮扫描建会话；失败则降级（storeHealthy=false）。
-        let session = ScanSessionID()
-        currentSessionID = session
-        storeBatch.removeAll(keepingCapacity: true)
-        storeHealthy = true
-        if let store = resultStore {
-            Task.detached { [storeRef = store] in
-                do { try await storeRef.beginSession(session) }
-                catch { /* 静默降级，不影响扫描 */ }
-            }
-        }
+        treeFetchGeneration = UUID()
 
         // v1.3.x：非整盘扫描启动 TreeSizeEstimator 给 ETA 分母；整盘扫直接用 volumeSnapshot.usedBytes
         // （在 publishSnapshot 内部判断），无需再 walk 一遍。
@@ -862,7 +860,7 @@ public final class ScanCoordinator: ObservableObject {
         let isFullDisk = category.kind == .fullDisk
         // v1.3 P0-C：整盘扫描节点量 100k+，deep index 在 MainActor ingest 内做
         // 祖先回溯 + childEdges/dirIndex/fileLeaves 写入会瞬间打爆主线程帧预算。
-        // 整盘永远走 store-fallback 路径（同步表面 + 后台 GRDB 填充）。
+        // 整盘永远走按需子树扫描路径（同步表面 + 后台填充）。
         if isFullDisk && enableTreeDeepIndex {
             GSYLog.info(.scan, "ScanCoordinator 整盘扫描强制关闭 enableTreeDeepIndex（防止 MainActor ingest burst）")
             enableTreeDeepIndex = false
@@ -918,11 +916,13 @@ public final class ScanCoordinator: ObservableObject {
         // 树形视图永远空（用户反馈"清单 28 文件，树形为空"）。
         currentRootPath = ScanCoordinator.versionedRootSentinelPath
         isScanning = true
+        scanPhase = .scanning
         lastError = nil
         permissionDeniedPaths = []
         tccProtectedSkippedPaths = []
         let categoryID = "developer.versioned"
         activeCategoryID = categoryID
+        GSYLog.notice(.flow, "scan.versioned.start home=\(home.path)")
 
         // v2026.06.21 P0：原本 KnownVersionedRoots.scanAll + 逐 hit directorySize 的全
         // 同步遍历直接挂在 @MainActor 上跑，Xcode DeviceSupport / JetBrains Toolbox
@@ -986,17 +986,18 @@ public final class ScanCoordinator: ObservableObject {
                 )
                 self.lastFinishedCategoryID = categoryID
                 self.isScanning = false
+                self.scanPhase = .idle
                 // **Review fix-soon #3，2026-06-15**：scanKnownVersionedRoots 会改变 snapshot
                 // 里 "developer.versioned" 的行集合（特别是 PR 新增的 Android SDK / JetBrains
                 // 分组规则上线后，老 cache 里同路径的子项可能与新分组结果不一致）。
                 // 与 [scan(category:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1495-L1497)
                 // 走完后调 [invalidateTreeCacheAfterScan()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1495-L1497)
                 // 的行为对齐：本入口同样清掉 treeChildrenCache 并 bump childrenCacheVersion，
-                // 让 TreeBrowserView 不会用旧 sessionID 的 store-fallback 结果误展示已被
+                // 让 TreeBrowserView 不会用旧扫描的展开缓存误展示已被
                 // 新规则重新分组的版本子目录。
                 self.invalidateTreeCacheAfterScan()
-                GSYLog.info(.app,
-                            "scanKnownVersionedRoots: \(rowsCount) versioned candidates, total=\(totalCaptured)")
+                GSYLog.notice(.flow,
+                              "scan.versioned.finish rows=\(rowsCount) totalBytes=\(totalCaptured) elapsed=\(String(format: "%.2f", Date().timeIntervalSince(startedAtCopy)))")
             }
         }
     }
@@ -1047,8 +1048,8 @@ public final class ScanCoordinator: ObservableObject {
         dirIndex.removeAll(keepingCapacity: true)
         childEdges.removeAll(keepingCapacity: true)
         fileLeaves.removeAll(keepingCapacity: true)
-        // v1.3.z：清掉上一轮的 TreeBrowserView store-fallback 缓存，
-        // 避免新 sessionID 期间 view 看到旧 sessionID 的 store query 结果。
+        // 清掉上一轮的 TreeBrowserView 按需子树缓存，
+        // 避免新扫描期间 view 看到旧扫描的展开结果。
         treeChildrenCache.removeAll(keepingCapacity: true)
         bumpChildrenCacheVersion()
         treeChildrenInFlight.removeAll(keepingCapacity: true)
@@ -1079,22 +1080,13 @@ public final class ScanCoordinator: ObservableObject {
         snapshot = ScanSnapshot(categoryID: ScanCoordinator.multiRootCategoryID, rows: [],
                                 totalBytes: 0, scannedFileCount: 0, isFinished: false, elapsed: 0)
         isScanning = true
+        scanPhase = .scanning
         lastError = nil
         permissionDeniedPaths = []
         tccProtectedSkippedPaths = []
         activeCategoryID = ScanCoordinator.multiRootCategoryID
 
-        // M1 内存优化：多根扫描共享一个 session（all roots → one logical scan）。
-        let session = ScanSessionID()
-        currentSessionID = session
-        storeBatch.removeAll(keepingCapacity: true)
-        storeHealthy = true
-        if let store = resultStore {
-            Task.detached { [storeRef = store] in
-                do { try await storeRef.beginSession(session) }
-                catch { /* 静默降级 */ }
-            }
-        }
+        treeFetchGeneration = UUID()
 
         let cats = ScanCategories.recommended(home: home)
         // 预填 perRootProgress，UI 立刻能看到 5 行"扫描中…"行；
@@ -1108,6 +1100,7 @@ public final class ScanCoordinator: ObservableObject {
         perRootStaging = initial
 
         let roots = cats.map { $0.rootURL }
+        GSYLog.notice(.flow, "scan.recommended.start roots=\(roots.map(\.path).joined(separator: ",")) includeHidden=\(includeHidden)")
         // v1.3.x：异步估算总字节数，用作 ETA 分母。
         // 4s 软超时 + 后台 detached → 完全不阻塞正式扫描的启动。
         let activeID = ScanCoordinator.multiRootCategoryID
@@ -1157,7 +1150,7 @@ public final class ScanCoordinator: ObservableObject {
         wasCancelled = false
         // v1.3 P0-C：开发者构建产物扫描典型命中 30+ 根 × 每根上万 node，
         // 若 enableTreeDeepIndex 开着，MainActor ingest 会被祖先回溯 + index 写入打挂。
-        // 强制关闭，让 TreeBrowser 走 store-fallback 异步路径（与全盘扫一致策略）。
+        // 强制关闭，让 TreeBrowser 走按需子树扫描路径（与全盘扫一致策略）。
         if enableTreeDeepIndex {
             GSYLog.info(.scan, "ScanCoordinator dev 扫描强制关闭 enableTreeDeepIndex（防止 MainActor ingest burst）")
             enableTreeDeepIndex = false
@@ -1192,6 +1185,7 @@ public final class ScanCoordinator: ObservableObject {
         snapshot = ScanSnapshot(categoryID: ScanCoordinator.developerCategoryID, rows: [],
                                 totalBytes: 0, scannedFileCount: 0, isFinished: false, elapsed: 0)
         isScanning = true
+        scanPhase = .scanning
         lastError = nil
         permissionDeniedPaths = []
         tccProtectedSkippedPaths = []
@@ -1200,18 +1194,8 @@ public final class ScanCoordinator: ObservableObject {
         devArtifactDidTimeout = false
         activeCategoryID = ScanCoordinator.developerCategoryID
 
-        let session = ScanSessionID()
-        currentSessionID = session
-        storeBatch.removeAll(keepingCapacity: true)
-        storeHealthy = true
-        if let store = resultStore {
-            Task.detached { [storeRef = store] in
-                do { try await storeRef.beginSession(session) }
-                catch { /* 静默降级 */ }
-            }
-        }
+        treeFetchGeneration = UUID()
 
-        let homeURL = URL(fileURLWithPath: home)
         let respectTCC = (fdaStatus == .denied)
         let options = ScanOptions(includeHidden: includeHidden,
                                   staySingleVolume: false,
@@ -1282,6 +1266,7 @@ public final class ScanCoordinator: ObservableObject {
                                                  isFinished: true,
                                                  elapsed: Date().timeIntervalSince(self.startedAt))
                     self.isScanning = false
+                    self.scanPhase = .idle
                     GSYLog.info(.scan, "DevArtifact 勘察 0 命中 直接结束扫描")
                     return
                 }
@@ -1420,14 +1405,9 @@ public final class ScanCoordinator: ObservableObject {
         // 若已被新 scan 取代，本次"完成"事件不应该覆盖新的 in-progress snapshot；
         // isScanning / scanTask 由新 scan 自己管理，这里也不要重置。
         guard activeCategoryID == categoryID else { return }
-        // v1.3.zzz 关键时序修复：finalize 必须**先于** publishSnapshot(finished:true)。
-        // 旧时序：publishSnapshot → view 立即拉树形 → query 0 条（GRDB 还没 commit）。
-        // 新时序：先 await flushAndFinalizeStoreAsync() 让 GRDB 写入全部落盘，再 publish
-        // finished → view 看到的"扫描完成"瞬间 query 一定能命中。
-        // M1 内存优化：扫完把残留 batch 写盘并 finalize session。
-        await flushAndFinalizeStoreAsync()
         publishSnapshot(categoryID: categoryID, finished: true)
         isScanning = false
+        scanPhase = .idle
         scanTask = nil
         activeCategoryID = nil
         // v1.3.zz 流式修复 ③：扫描结束后清掉 treeChildrenCache 里"扫描期间被钉空"
@@ -1450,6 +1430,8 @@ public final class ScanCoordinator: ObservableObject {
     /// - 每个 .finished 翻该根的 isFinished=true；所有根 finish 后 stream 自然关闭。
     private func runMultiRootScan(roots: [URL], options: ScanOptions, categoryID: String, maxConcurrentRoots: Int = 4) async {
         let scanner = MultiRootScanner(options: options)
+        let expectedRootPaths = Set(roots.map(\.path))
+        var finishedRootPaths = Set<String>()
         var lastEmit = Date(timeIntervalSince1970: 0)
         // v1.3.z 性能修复：见 runScan 同名注释。多根模式 throttle 同步抬到 0.40。
         let throttle: TimeInterval = 0.40
@@ -1500,6 +1482,7 @@ public final class ScanCoordinator: ObservableObject {
             case .progress:
                 break
             case .finished:
+                finishedRootPaths.insert(rootPath)
                 if var p = perRootStaging[rootPath] {
                     p.isFinished = true
                     perRootStaging[rootPath] = p
@@ -1556,17 +1539,17 @@ public final class ScanCoordinator: ObservableObject {
                 consumedSinceYield = 0
                 await Task.yield()
             }
+            if !expectedRootPaths.isEmpty,
+               expectedRootPaths.isSubset(of: finishedRootPaths) {
+                break
+            }
         }
         guard activeCategoryID == categoryID else { return }
         // v1.3.zz 性能修复：收尾把 staging 最后状态同步到 @Published，让 UI 看到完整最终值
         syncPerRootPublished(from: perRootStaging)
-        // v1.3.zzz 关键时序修复（同 runScan 收尾）：finalize 必须**先于** publishSnapshot(finished:true)。
-        // 旧时序：publishSnapshot → view 立即拉树形 → query 0 条（GRDB 还没 commit）。
-        // 多根并行场景（推荐清理 5 根）原本一直是 fire-and-forget flushAndFinalizeStore()，
-        // 用户反馈"还是一样"很可能就是命中此路径。改用 await 版本与 runScan 对齐。
-        await flushAndFinalizeStoreAsync()
         publishSnapshot(categoryID: categoryID, finished: true)
         isScanning = false
+        scanPhase = .idle
         scanTask = nil
         activeCategoryID = nil
         // v1.3.zz 流式修复 ③：见 runScan 同名注释。
@@ -1593,12 +1576,12 @@ public final class ScanCoordinator: ObservableObject {
 
     private func ingest(node: FSNode, rootPath: String) {
         // 把 node 归到"根的第一级子目录"——这是聚合行，不展平
-        let nodePath = node.path
-        guard nodePath.hasPrefix(rootPath + "/") else { return }
-        let tail = String(nodePath.dropFirst(rootPath.count + 1))
+        let nodePath = displayPathForScanNode(node.path, rootPath: rootPath)
+        guard let projection = Self.bucketProjection(nodePath: nodePath, rootPath: rootPath) else { return }
+        let tail = projection.tail
         let firstSegment = tail.split(separator: "/", maxSplits: 1).first.map(String.init) ?? tail
         guard !firstSegment.isEmpty else { return }
-        let bucketPath = "\(rootPath)/\(firstSegment)"
+        let bucketPath = projection.bucketPath
 
         // v1.3：刷新该 bucket 的"最近 ingest 时间"，作为 active 判定的活跃度信号。
         // 用 timeIntervalSinceReferenceDate 比 Date() 更轻量，单调递增足够。
@@ -1618,20 +1601,6 @@ public final class ScanCoordinator: ObservableObject {
         // v1.3：根据当前 accountingMode 选 logical / physical 字节作为"显示总量"。
         // logicalBytes 副字段始终维护 ATTR_FILE_TOTALSIZE，方便后续 UI 切口径无需重扫的优化。
         let bytes = displayBytes(of: node)
-
-        // M1 内存优化：所有节点都进 store batch（store 开启时）。
-        // 这里只 append 不 flush；flush 由满 1000 触发或 run* 收尾触发。
-        if let sid = currentSessionID, resultStore != nil, storeHealthy {
-            let parent = (nodePath as NSString).deletingLastPathComponent
-            storeBatch.append(ScanResultRecord(
-                sessionID: sid,
-                node: node,
-                parentPath: parent
-            ))
-            if storeBatch.count >= storeFlushBatchSize {
-                flushStoreBatch()
-            }
-        }
 
         // 文件累计
         if !node.isDirectory {
@@ -1713,6 +1682,47 @@ public final class ScanCoordinator: ObservableObject {
         }
     }
 
+    private static func makeFullDiskFirmlinkRules() -> [(dataPrefix: String, publicPrefix: String)] {
+        return Firmlinks.load()
+            .map { source, target in
+                let publicPrefix = source.hasPrefix("/") ? source : "/" + source
+                let relativeTarget = target.hasPrefix("/") ? String(target.dropFirst()) : target
+                return (dataPrefix: fullDiskDataRootPath + "/" + relativeTarget, publicPrefix: publicPrefix)
+            }
+            .sorted { lhs, rhs in
+                lhs.dataPrefix.count > rhs.dataPrefix.count
+            }
+    }
+
+    private func displayPathForScanNode(_ path: String, rootPath: String) -> String {
+        guard rootPath == "/" else { return path }
+        guard path.hasPrefix(Self.fullDiskDataRootPath + "/") else { return path }
+        for rule in fullDiskFirmlinkRules {
+            if path == rule.dataPrefix {
+                return rule.publicPrefix
+            }
+            if path.hasPrefix(rule.dataPrefix + "/") {
+                return rule.publicPrefix + String(path.dropFirst(rule.dataPrefix.count))
+            }
+        }
+        return path
+    }
+
+    static func bucketProjection(nodePath: String, rootPath: String) -> (tail: String, bucketPath: String)? {
+        if rootPath == "/" {
+            guard nodePath.hasPrefix("/"), nodePath != "/" else { return nil }
+            let tail = String(nodePath.dropFirst())
+            guard let firstSegment = tail.split(separator: "/", maxSplits: 1).first.map(String.init),
+                  !firstSegment.isEmpty else { return nil }
+            return (tail, "/" + firstSegment)
+        }
+        guard nodePath.hasPrefix(rootPath + "/") else { return nil }
+        let tail = String(nodePath.dropFirst(rootPath.count + 1))
+        guard let firstSegment = tail.split(separator: "/", maxSplits: 1).first.map(String.init),
+              !firstSegment.isEmpty else { return nil }
+        return (tail, "\(rootPath)/\(firstSegment)")
+    }
+
     // MARK: - T3 多层下钻 API
 
     /// 给 TreeBrowserView 用：取某目录路径下"直接子项"按 size 降序排好的列表。
@@ -1725,12 +1735,18 @@ public final class ScanCoordinator: ObservableObject {
     /// 排序稳定性：主键相等时一律按 path 升序兜底，保证 ForEach 不抖。
     ///
     /// v1.3.z 起：当 `enableTreeDeepIndex == false`（默认）且本路径不在内存索引中时，
-    /// 走 store-fallback 缓存：本次同步返 cache（首次为空），同时启动后台 Task 通过
-    /// `directChildrenAsync` 查 GRDB 写回 cache，下一帧 SwiftUI 自动重算。
+    /// 走按需子树扫描缓存：本次同步返 cache（首次为空），同时启动后台 Task 通过
+    /// `directChildrenAsync` 扫描当前目录写回 cache，下一帧 SwiftUI 自动重算。
     public func directChildren(of path: String, sortedBy key: TreeSortKey) -> [TreeRow] {
+        // 扫描中禁用树表从 staging / snapshot 拉半成品数据。扫描期间树表只显示
+        // loading，等最终快照发布后再一次性展示稳定节点，避免滚动卡顿
+        // 和 8KB / 0KB 这种目录 inode 半成品误导用户。
+        if isScanning, !enableTreeDeepIndex {
+            return []
+        }
         // v1.5：多根扫描伪路径分支——把 perRootProgress 里的真实根升级成顶层 TreeRow。
-        // 没有这一支时 path == "(多目录)" / "(开发者构建产物)" 在 store / childEdges 里
-        // 都查不到任何子项 → directChildren 返 [] → TreeBrowserView 渲染
+        // 没有这一支时 path == "(多目录)" / "(开发者构建产物)" 在 childEdges / 按需扫描里
+        // 都查不到真实文件系统子项 → directChildren 返 [] → TreeBrowserView 渲染
         // "No expandable children yet"（用户截图反馈）。
         // 真实根（如 ~/Library/Caches）展开后走的还是原 directChildren 逻辑。
         if path == ScanCoordinator.versionedRootSentinelPath {
@@ -1745,9 +1761,15 @@ public final class ScanCoordinator: ObservableObject {
         if let kids = childEdges[path] {
             return materializeFromMemory(kids: kids, sortedBy: key)
         }
+        // Root-level safety net: the flat list already owns the first-level bucket
+        // projection. When deepIndex is off, never let a missing/late async fetch
+        // turn a non-empty scan into an empty tree root.
+        if path == currentRootPath, !isScanning, !snapshot.rows.isEmpty {
+            return snapshotTopLevelRows(sortedBy: key)
+        }
         // 内存索引不命中。enableTreeDeepIndex=on 时这就是"真没有"，直接返空（保持旧语义）。
         guard !enableTreeDeepIndex else { return [] }
-        // deepIndex=off 路径：进 store-fallback 缓存。
+        // deepIndex=off 路径：进按需子树扫描缓存。
         let cacheKey = "\(path)|\(key.rawValue)"
         if let cached = treeChildrenCache[cacheKey] {
             // v1.3.zz 流式修复 ②：扫描进行中时，cache 里的"空快照"会被周期性清掉
@@ -1758,63 +1780,168 @@ public final class ScanCoordinator: ObservableObject {
                 return cached
             }
         }
-        // cache miss：启动一次后台 fetch（同 path 复用，不重复发）。
-        if !treeChildrenInFlight.contains(cacheKey), resultStore != nil, currentSessionID != nil {
-            treeChildrenInFlight.insert(cacheKey)
-            // 派发瞬间快照 sid，让 task 自带"我属于哪个 session"上下文，
-            // 写回时如果 sid 已经被新 scan 顶掉，则丢弃结果（不污染新会话 cache）。
-            let dispatchedSid = currentSessionID
-            Task { [weak self] in
-                guard let self else { return }
-                let rows = await self.directChildrenAsync(of: path, sortedBy: key)
-                // 写回主线程缓存。@Published 会触发只依赖此条 cache 的 view 重算。
-                await MainActor.run {
-                    // v1.3.zz 流式修复 ①：跨会话保护——若 sid 在 fetch 期间被 cancel/scan 顶掉，
-                    // 这次结果是"上一辈子"的，不能写进当前会话的 cache（否则下次 view 看到的是错的）。
-                    guard dispatchedSid == self.currentSessionID else {
-                        self.treeChildrenInFlight.remove(cacheKey)
-                        return
-                    }
-                    // v1.3.zz 流式修复 ②：**扫描进行中**且 rows 为空时，**不**写 cache。
-                    // 否则空结果会被锁住直到下次 cancel/scan 才清——用户看到的就是
-                    // "树形从来没出来，因为第一帧 fetch 时 store 还空"。不写 cache → 下次
-                    // body 重渲染会再次触发 fetch，每次拉到的都是当下最新的 ingested 量。
-                    // 节流保护见 treeChildrenInFlight：同 path 不会重复并发。
-                    if rows.isEmpty && self.isScanning {
-                        self.treeChildrenInFlight.remove(cacheKey)
-                        return
-                    }
-                    self.treeChildrenCache[cacheKey] = rows
-                    self.bumpChildrenCacheVersion()
-                    self.treeChildrenInFlight.remove(cacheKey)
-                    // v2026.06.21 性能：原本这里 `bumpStructuralRevision()` —— 但每次
-                    // 后台 fetch 回写都让 TreeBrowserView 整树 rebuild（DFS + verdict +
-                    // perRoot 顶层合成 O(N log N)），dev/批量扫描期 cache miss 频繁
-                    // 时直接把主线程打满。改为只 bump `childrenCacheVersion`；
-                    // TreeBrowserView 单独 onChange 它做"仅当影响可见 flatRows 时局部
-                    // 刷新"。剪枝/scan 结束/排序切换那些真正的结构性变更仍走 structural。
-                }
-            }
+        // cache miss：启动 staged fetch（同 path 复用，不重复发）。
+        if !isScanning, !treeChildrenInFlight.contains(cacheKey) {
+            startTreeChildrenFetch(path: path, sortedBy: key, cacheKey: cacheKey)
         }
         return []
     }
 
-    /// v1.3.zz 流式修复 ③：扫描结束（runScan/runMultiRootScan 末尾、flushAndFinalizeStore 之后）时调用，
-    /// 把 cache 里**所有**项目作废，触发下一次 view body 重新拉一次"finalize 后的全量结果"。
+    @MainActor
+    private func startTreeChildrenFetch(path: String, sortedBy key: TreeSortKey, cacheKey: String) {
+        treeChildrenInFlight.insert(cacheKey)
+        GSYLog.info(.flow, "tree.children.fetch.start path=\(path) sort=\(key.rawValue)")
+        let dispatchedGeneration = treeFetchGeneration
+        let deniedSet = Set(permissionDeniedPaths)
+        let tccSet = Set(tccProtectedSkippedPaths)
+        let useLogicalBytes = accountingMode == .logical
+
+        Task { [weak self] in
+            guard let self else { return }
+            let shallowStarted = DispatchTime.now().uptimeNanoseconds
+            let shallowRows = await Task.detached(priority: .userInitiated) {
+                Self.scanDirectChildrenShallow(
+                    rootPath: path,
+                    sortedBy: key,
+                    useLogicalBytes: useLogicalBytes,
+                    deniedSet: deniedSet,
+                    tccSet: tccSet
+                )
+            }.value
+            let shallowElapsedMs = Double(DispatchTime.now().uptimeNanoseconds - shallowStarted) / 1_000_000
+
+            await MainActor.run {
+                guard dispatchedGeneration == self.treeFetchGeneration else {
+                    self.treeChildrenInFlight.remove(cacheKey)
+                    GSYLog.info(.flow, "tree.children.fetch.drop_stale_stage=shallow path=\(path) sort=\(key.rawValue) rows=\(shallowRows.count) elapsed_ms=\(String(format: "%.2f", shallowElapsedMs))")
+                    return
+                }
+                if !shallowRows.isEmpty, !self.isScanning {
+                    self.storeFetchedChildren(path: path, sortedBy: key, rows: shallowRows)
+                    GSYLog.info(.flow, "tree.children.fetch.shallow path=\(path) sort=\(key.rawValue) rows=\(shallowRows.count) elapsed_ms=\(String(format: "%.2f", shallowElapsedMs))")
+                }
+            }
+
+            let shouldContinue = await MainActor.run {
+                dispatchedGeneration == self.treeFetchGeneration && !self.isScanning
+            }
+            guard shouldContinue else {
+                _ = await MainActor.run { self.treeChildrenInFlight.remove(cacheKey) }
+                return
+            }
+
+            await Self.treeChildrenFetchGate.acquire()
+            if Task.isCancelled {
+                await Self.treeChildrenFetchGate.release()
+                _ = await MainActor.run { self.treeChildrenInFlight.remove(cacheKey) }
+                return
+            }
+
+            let deepStarted = DispatchTime.now().uptimeNanoseconds
+            let rows = await self.directChildrenAsync(of: path, sortedBy: key)
+            await Self.treeChildrenFetchGate.release()
+            let deepElapsedMs = Double(DispatchTime.now().uptimeNanoseconds - deepStarted) / 1_000_000
+
+            await MainActor.run {
+                guard dispatchedGeneration == self.treeFetchGeneration else {
+                    self.treeChildrenInFlight.remove(cacheKey)
+                    GSYLog.info(.flow, "tree.children.fetch.drop_stale_stage=deep path=\(path) sort=\(key.rawValue) rows=\(rows.count) elapsed_ms=\(String(format: "%.2f", deepElapsedMs))")
+                    return
+                }
+                if rows.isEmpty && self.isScanning {
+                    self.treeChildrenInFlight.remove(cacheKey)
+                    GSYLog.info(.flow, "tree.children.fetch.drop_scanning path=\(path) sort=\(key.rawValue) elapsed_ms=\(String(format: "%.2f", deepElapsedMs))")
+                    return
+                }
+                self.storeFetchedChildren(path: path, sortedBy: key, rows: rows)
+                self.treeChildrenInFlight.remove(cacheKey)
+                GSYLog.info(.flow, "tree.children.fetch.finish path=\(path) sort=\(key.rawValue) rows=\(rows.count) elapsed_ms=\(String(format: "%.2f", deepElapsedMs))")
+                // v2026.06.21 性能：这里仍只 bump childrenCacheVersion，避免每次后台
+                // 回写都触发整树 structural rebuild。
+            }
+        }
+    }
+
+    /// 后台按需子节点扫描结果的唯一写入口。
     ///
-    /// **v1.3.zzzz 修复**：之前实现是"只清空 cache，保留非空"，初衷是避免扫完后 600ms 真空闪烁。
-    /// 但实测日志（[/tmp/gsy-tree.log](file:///tmp/gsy-tree.log) `snapshotFiles=1752 ... rows=1000`）暴露
-    /// 一个更严重的 bug：扫描中第一次 fetch 时，[storeBatch](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
-    /// 还没全 flush，GRDB 里只有 1000 条（`storeFlushBatchSize` 触发的批量提交节点），
-    /// fetch 拿到的是**残缺的部分快照**。一旦写进 cache，"只清空"策略保留下这条
-    /// 非空但残缺的 1000 行，扫完后 view 永远 cache-hit → **总和与清单对不上**。
+    /// 除了写 `path|sortKey` 自身 cache，还会把 `path` 这条父行同步回已存在的祖先 cache。
+    /// 这样可以避免竞态下出现"父目录仍是 0KB，但展开后子项已经有几十 GB"的视觉矛盾：
+    /// 子层 cache 回来后，父层 cache 里的同 path 行至少要与子层聚合保持一致。
+    @MainActor
+    private func storeFetchedChildren(path: String, sortedBy key: TreeSortKey, rows: [TreeRow]) {
+        let cacheKey = "\(path)|\(key.rawValue)"
+        treeChildrenCache[cacheKey] = rows
+        reconcileCachedParentRows(parentPath: path, children: rows)
+        bumpChildrenCacheVersion()
+    }
+
+    @MainActor
+    private func reconcileCachedParentRows(parentPath: String, children: [TreeRow]) {
+        guard !children.isEmpty else { return }
+        let childBytes = children.reduce(Int64(0)) { $0 + $1.bytes }
+        let childFileCount = children.reduce(0) { $0 + $1.fileCount }
+        var updates: [(String, [TreeRow])] = []
+        updates.reserveCapacity(2)
+
+        for (cacheKey, rows) in treeChildrenCache {
+            guard let idx = rows.firstIndex(where: { $0.path == parentPath }) else { continue }
+            var updated = rows
+            let old = rows[idx]
+            updated[idx] = TreeRow(
+                path: old.path,
+                title: old.title,
+                bytes: max(old.bytes, childBytes),
+                fileCount: max(old.fileCount, childFileCount),
+                isDirectory: old.isDirectory,
+                hasChildren: old.hasChildren || !children.isEmpty,
+                accessState: old.accessState,
+                modificationDate: old.modificationDate,
+                isSizePending: children.contains(where: \.isSizePending)
+            )
+            let sortKey = Self.sortKeyFromCacheKey(cacheKey) ?? .sizeDesc
+            updates.append((cacheKey, updated.sorted { Self.sortTreeRow($0, before: $1, by: sortKey) }))
+        }
+
+        for (cacheKey, rows) in updates {
+            treeChildrenCache[cacheKey] = rows
+        }
+    }
+
+    nonisolated private static func sortKeyFromCacheKey(_ cacheKey: String) -> TreeSortKey? {
+        guard let pipe = cacheKey.lastIndex(of: "|") else { return nil }
+        return TreeSortKey(rawValue: String(cacheKey[cacheKey.index(after: pipe)...]))
+    }
+
+    /// 扫描完成后的轻量预热：只预取当前树表最可能被点击的顶层目录，降低首次展开等待。
     ///
-    /// 闪烁其实来自上一轮的 GRDB query race（`flushAndFinalizeStore` fire-and-forget 导致
-    /// query 拿 0 条），那个已经在 [flushAndFinalizeStoreAsync](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
-    /// 修干净。现在 finalize 之后 GRDB 一定 ready，全清 cache 后下一次 fetch
-    /// 几十毫秒就回来，不会再有真空窗口。
-    ///
-    /// in-flight 集合**不**清，让正在飞的 task 自然写回（写回时跨会话守卫会自动跳过非当前 sid）。
+    /// 约束：
+    /// - 扫描中不跑，避免和主扫描争 IO；
+    /// - deepIndex 已有内存索引时不跑；
+    /// - 路径已 cache / in-flight 时不重复；
+    /// - 顺序执行，避免全盘根下同时扫多个大目录造成新的卡顿。
+    @MainActor
+    public func prefetchTreeChildren(paths: [String], sortedBy key: TreeSortKey, limit: Int = 4) {
+        guard !isScanning, !enableTreeDeepIndex else { return }
+        var targets: [(path: String, cacheKey: String)] = []
+        targets.reserveCapacity(min(paths.count, limit))
+        for path in paths {
+            guard targets.count < limit else { break }
+            guard childEdges[path] == nil else { continue }
+            let cacheKey = "\(path)|\(key.rawValue)"
+            guard treeChildrenCache[cacheKey] == nil,
+                  !treeChildrenInFlight.contains(cacheKey)
+            else { continue }
+            targets.append((path, cacheKey))
+        }
+        guard !targets.isEmpty else { return }
+        GSYLog.info(.flow, "tree.children.prefetch.start count=\(targets.count) sort=\(key.rawValue)")
+        for target in targets {
+            startTreeChildrenFetch(path: target.path, sortedBy: key, cacheKey: target.cacheKey)
+        }
+    }
+
+    /// 扫描结束时作废展开缓存，下一次 view body 会按当前最终快照重新拉取。
+    /// in-flight 集合不清，让正在飞的 task 自然写回；写回时 generation 会拦掉过期结果。
     @MainActor
     fileprivate func invalidateTreeCacheAfterScan() {
         treeChildrenCache.removeAll(keepingCapacity: true)
@@ -1824,12 +1951,12 @@ public final class ScanCoordinator: ObservableObject {
 
     /// v2026.06 用户反馈 #1：Tree 右键"刷新此目录"入口。
     ///
-    /// **范围**：仅清掉 store-fallback 缓存（[treeChildrenCache](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L299)）
+    /// **范围**：仅清掉按需子树扫描缓存（[treeChildrenCache](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L299)）
     /// 中以 `path` 为根的所有 cacheKey（含子目录、所有 sortKey 组合），并触发
     /// [bumpStructuralRevision()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L379)
     /// 让 [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
     /// 重新走 [directChildren(of:sortedBy:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1422)
-    /// → store-fallback 异步重拉。
+    /// → 后台重新扫描该目录。
     ///
     /// **不做的事**：
     /// 1. 不重启 BulkScanner（那是 runScan 入口的事），全量扫描成本无法承担在右键菜单里；
@@ -1838,18 +1965,19 @@ public final class ScanCoordinator: ObservableObject {
     ///    返回 internal 索引（这是按设计：扫描态下树形已经是最新的，缓存只是冷启动的兜底）。
     /// 3. 不动 in-flight 集合，让正在飞的 task 自然写回（跨会话守卫已经保护好脏数据）。
     ///
-    /// 用户在 deepIndex=off 路径下右键刷新一个目录，相当于"丢掉 store fallback 那一份残缺
-    /// 快照，重新走 GRDB"——典型场景：浏览器 cache / Xcode DerivedData 在 app 后台跑过一轮，
+    /// 用户在 deepIndex=off 路径下右键刷新一个目录，相当于丢掉该目录的展开缓存并重扫。
+    /// 典型场景：浏览器 cache / Xcode DerivedData 在 app 后台跑过一轮，
     /// 用户回来发现 size 对不上，右键 refresh 即可。
     @MainActor
     public func rescanSubtree(at path: String) {
+        GSYLog.notice(.operation, "tree.subtree.refresh path=\(path)")
         let prefixSelf = "\(path)|"
         let prefixChildren = "\(path)/"
         let removedKeys = treeChildrenCache.keys.filter { key in
             key.hasPrefix(prefixSelf) || key.hasPrefix(prefixChildren)
         }
         guard !removedKeys.isEmpty || childEdges[path] == nil else {
-            // 内存索引命中（扫描期最新数据）且无 store-fallback 缓存：无需任何动作。
+            // 内存索引命中（扫描期最新数据）且无按需缓存：无需任何动作。
             return
         }
         for key in removedKeys {
@@ -1878,8 +2006,7 @@ public final class ScanCoordinator: ObservableObject {
     /// 3. **treeChildrenCache**：受影响的父目录条目失效。cacheKey 是 `"\(path)|\(sortKey)"`，
     ///    必须按 path 前缀匹配清掉所有该父目录的排序变体。
     ///
-    /// 注：**store 层（GRDB）不动**——store 是"扫描结果归档"，删除是用户行为，
-    /// 不应回写 store。下次扫描会重新建库覆盖旧 session。
+    /// 注：这里只改当前内存快照。下次扫描会重新以文件系统真实状态为准。
     @MainActor
     public func pruneDeleted(paths: [String]) {
         guard !paths.isEmpty else { return }
@@ -2018,7 +2145,7 @@ public final class ScanCoordinator: ObservableObject {
 
         // ③ **v1.5.3 修订**：原先这里粗暴 `treeChildrenCache.removeAll()`，
         // 后果是连"根目录"那条 cache 也被一起干掉，view 重渲拉根目录 → cache miss
-        // → store-fallback 异步 fetch → 整页 "Loading children…"（用户截图：空白页）。
+        // → 异步 fetch → 整页 "Loading children…"（用户截图：空白页）。
         //
         // 正确做法是**静默 patch**：
         //   a) cacheKey 的 path 部分本身是被删项或其子孙 → removeValue（这条 cache 已经无意义）
@@ -2057,58 +2184,45 @@ public final class ScanCoordinator: ObservableObject {
         // 卷容量重新探测：清完反馈"空闲变多"。
         refreshVolumeCapacity()
 
-        // ④ **v1.5.3 新增**：把删除落到 store 层。不这样做的话 [directChildren](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1048)
-        // 在内存索引 miss 时会走 store-fallback 异步读 GRDB，已删项原样写回 cache，
-        // 用户视觉上"删了又冒出来"。后台 fire-and-forget：UI 已经走过乐观更新（步骤 ①-③），
-        // store 写慢一点也不会影响视觉表现。
-        if let store = resultStore, let sid = currentSessionID {
-            let paths = normalized
-            Task.detached {
-                do {
-                    try await store.deletePaths(sessionID: sid, paths: paths)
-                } catch {
-                    GSYLog.error(.scan, "deletePaths failed: \(error)")
-                }
-            }
-        }
     }
 
     /// v1.3.zz：暴露给 [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
-    /// 区分"刚 cache miss、后台 fetch 还在飞" vs "真的查到 0 条子项"——
+    /// 区分"后台 fetch 还在飞" vs "真的查到 0 条子项"——
     /// 前者应显 ProgressView 占位避免误导用户以为没数据；后者才显"还没有可展开的子节点"。
     ///
-    /// 实现：cacheKey 在 `treeChildrenInFlight` 集合 / 或者 deepIndex=off + store/sid 在场
-    /// 但 cache 还没写回（首帧尚未派发 Task），都算 fetching。
+    /// 实现：cacheKey 在 `treeChildrenInFlight` 集合里，表示后台按需扫描已经派发但 cache 还没写回。
     public func isFetchingChildren(of path: String, sortedBy key: TreeSortKey) -> Bool {
+        // 扫描中树表不做子节点加载，避免"扫描还没结束却显示正在加载子节点"。
+        if isScanning { return false }
         // v1.5：多根伪路径下 directChildren 是同步合成（perRootProgress），不存在 fetching。
         if ScanCoordinator.multiRootSentinelPaths.contains(path) { return false }
         // 内存命中或 deepIndex=on 时，directChildren 已是同步路径，不存在 fetching。
         if childEdges[path] != nil { return false }
         guard !enableTreeDeepIndex else { return false }
         let cacheKey = "\(path)|\(key.rawValue)"
+        if treeChildrenInFlight.contains(cacheKey) { return true }
         if treeChildrenCache[cacheKey] != nil { return false }
-        // store / sid 缺一就不可能 fetch，不算 fetching（让 view 立即显空态）。
-        guard resultStore != nil, currentSessionID != nil else { return false }
-        // 任意一种"还在飞 / 即将派发"都算 fetching：
-        // - in-flight 集合含 cacheKey：Task 正在跑
-        // - cache 没写回 + 不在 in-flight：这是 directChildren 第一帧的情况，下一帧才会派 Task
-        return true
+        return false
     }
 
     /// v1.5：多根扫描伪路径下合成"顶层" TreeRow——把 perRootProgress 里的真实根
     /// 升级成树形顶层节点。每行 path 是真实目录（如 ~/Library/Caches），
     /// 用户展开时 TreeBrowserView 会再次调 [directChildren(of:sortedBy:)](#) 拿真实的下一层
-    /// （走原 childEdges / store-fallback 路径，无需改动）。
+    /// （走原 childEdges / 按需子树扫描路径，无需改动）。
     /// - bytes / fileCount 直接复用 已统计好的值
     /// - title 沿用 .title（已带 displayName + 短路径）
     ///
-    /// v1.5 review-fix #5：优先读 perRootStaging（实时最新），fallback perRootProgress。
-    /// perRootProgress 经 throttle (0.4s) 才同步，扫描中切到树形顶层会有 ≤0.4s 滞后；
-    /// 读 staging 拿到的是事件刚更新完的最新值。
+    /// 扫描中不再由树表读取 staging；这里在完成态优先读已经发布给 UI 的
+    /// perRootProgress，避免最终列表继续拿到 staging 里的半成品 inode 行。
     /// review-fix #6：hasChildren 不再硬编码 true—— fileCount==0 的 root（discover
     /// 命中但还未 ingest，或扫完确实空）就不显示披露三角，避免"展开后空树"的误导。
     private func synthesizeMultiRootTopLevel(sortedBy key: TreeSortKey) -> [TreeRow] {
-        let source: [String: PerRootProgress] = perRootStaging.isEmpty ? perRootProgress : perRootStaging
+        let source: [String: PerRootProgress]
+        if isScanning {
+            source = perRootStaging.isEmpty ? perRootProgress : perRootStaging
+        } else {
+            source = perRootProgress.isEmpty ? perRootStaging : perRootProgress
+        }
         let rows: [TreeRow] = source.values.map { p in
             TreeRow(
                 path: p.rootPath,
@@ -2243,165 +2357,300 @@ public final class ScanCoordinator: ObservableObject {
             }
         }
         return rows.sorted { (a, b) in
-            switch key {
-            case .sizeDesc:
-                if a.bytes != b.bytes { return a.bytes > b.bytes }
-            case .sizeAsc:
-                if a.bytes != b.bytes { return a.bytes < b.bytes }
-            case .nameAsc:
-                let cmp = a.title.localizedCaseInsensitiveCompare(b.title)
-                if cmp != .orderedSame { return cmp == .orderedAscending }
-            case .nameDesc:
-                let cmp = a.title.localizedCaseInsensitiveCompare(b.title)
-                if cmp != .orderedSame { return cmp == .orderedDescending }
-            case .countDesc:
-                if a.fileCount != b.fileCount { return a.fileCount > b.fileCount }
-            case .countAsc:
-                if a.fileCount != b.fileCount { return a.fileCount < b.fileCount }
-            case .mtimeDesc:
-                let av = a.modificationDate, bv = b.modificationDate
-                if av == nil && bv != nil { return false }
-                if av != nil && bv == nil { return true }
-                if let l = av, let r = bv, l != r { return l > r }
-            case .mtimeAsc:
-                let av = a.modificationDate, bv = b.modificationDate
-                if av == nil && bv != nil { return false }
-                if av != nil && bv == nil { return true }
-                if let l = av, let r = bv, l != r { return l < r }
-            }
-            return a.path < b.path
+            Self.sortTreeRow(a, before: b, by: key)
         }
     }
 
-    /// v1.3.z：异步 directChildren —— 当 deepIndex=off 让目录树仍可下钻。
-    ///
-    /// 路径选择：
-    /// - 内存命中（deepIndex=on 或 path 已经在 childEdges 里）：直接走同步 `directChildren(of:sortedBy:)`，0 IO；
-    /// - 否则若 store 已注入 + 当前会话 finalize 完毕：通过 `store.directChildrenAggregated(...)` 一条 SQL GROUP BY 拿结果；
-    /// - 都没有：返回空数组（与同步版本同语义）。
-    ///
-    /// v1.3.zzzz 重写：把 Swift 侧的 Dictionary GROUP BY 整段下推到 SQL（参见
-    /// [GRDBScanResultStore.directChildrenAggregated](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/GRDBScanResultStore.swift)），
-    /// 同时把 [permissionDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L19)
-    /// / [tccProtectedSkippedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L21)
-    /// 合入结果的 [TreeRow.accessState](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L116)。
-    /// UI 据此渲染锁定徽章而不是误导性的 0KB。
-    ///
-    /// 注意：本方法只读取 GRDB，不改任何 @Published / 内存索引；调用方负责把结果丢给 SwiftUI。
-    public func directChildrenAsync(of path: String, sortedBy key: TreeSortKey) async -> [TreeRow] {
-        // Fast path：内存里已经有，直接同步取（保持与 deepIndex=on 完全一致的行为）。
-        if childEdges[path] != nil {
-            return directChildren(of: path, sortedBy: key)
-        }
-        // Slow path：走 store。需要 store + 当前 sessionID 都在。
-        guard let store = resultStore, let sid = currentSessionID else { return [] }
-        GSYLog.debug(.tree, "directChildrenAsync 走 store path=\(path)")
-
-        // v1.3.zzzz：把"该 path 的子项 + 子树聚合"整段下推到单条 SQL GROUP BY。
-        // 替代旧版 query→Swift Dictionary GROUP BY 的 ~100ms 慢路径，目标 ~10ms。
-        let aggregates: [DirectChildAggregate]
-        do {
-            aggregates = try await store.directChildrenAggregated(
-                sessionID: sid,
-                parentPath: path
+    private func snapshotTopLevelRows(sortedBy key: TreeSortKey) -> [TreeRow] {
+        let rows = snapshot.rows.map { row in
+            var isDirValue = ObjCBool(row.isDirectory)
+            let exists = FileManager.default.fileExists(atPath: row.url.path, isDirectory: &isDirValue)
+            let isDirectory = exists ? isDirValue.boolValue : row.isDirectory
+            let hasChildren = isDirectory && row.fileCount > 0
+            return TreeRow(
+                path: row.url.path,
+                title: row.title,
+                bytes: row.bytes,
+                fileCount: row.fileCount,
+                isDirectory: isDirectory,
+                hasChildren: hasChildren,
+                modificationDate: row.modificationDate
             )
-        } catch {
-            GSYLog.error(.tree, "directChildrenAggregated 失败 path=\(path) err=\(error)")
-            return []
         }
+        return rows.sorted { Self.sortTreeRow($0, before: $1, by: key) }
+    }
 
-        // 从主线程读 access-denied 索引——这两个 @Published 数组在 ScanCoordinator
-        // actor 上下文里访问是同步安全的。建 Set 之后查询是 O(1)。
-        let deniedSet = Set(permissionDeniedPaths)
-        let tccSet = Set(tccProtectedSkippedPaths)
+    nonisolated private static func sortTreeRow(_ a: TreeRow, before b: TreeRow, by key: TreeSortKey) -> Bool {
+        switch key {
+        case .sizeDesc:
+            if a.bytes != b.bytes { return a.bytes > b.bytes }
+        case .sizeAsc:
+            if a.bytes != b.bytes { return a.bytes < b.bytes }
+        case .nameAsc:
+            let cmp = a.title.localizedCaseInsensitiveCompare(b.title)
+            if cmp != .orderedSame { return cmp == .orderedAscending }
+        case .nameDesc:
+            let cmp = a.title.localizedCaseInsensitiveCompare(b.title)
+            if cmp != .orderedSame { return cmp == .orderedDescending }
+        case .countDesc:
+            if a.fileCount != b.fileCount { return a.fileCount > b.fileCount }
+        case .countAsc:
+            if a.fileCount != b.fileCount { return a.fileCount < b.fileCount }
+        case .mtimeDesc:
+            let av = a.modificationDate, bv = b.modificationDate
+            if av == nil && bv != nil { return false }
+            if av != nil && bv == nil { return true }
+            if let l = av, let r = bv, l != r { return l > r }
+        case .mtimeAsc:
+            let av = a.modificationDate, bv = b.modificationDate
+            if av == nil && bv != nil { return false }
+            if av != nil && bv == nil { return true }
+            if let l = av, let r = bv, l != r { return l < r }
+        }
+        return a.path < b.path
+    }
 
-        let prefix = path.hasSuffix("/") ? path : path + "/"
-        let rows: [TreeRow] = aggregates.map { agg in
-            let segPath = prefix + agg.segment
-            // 决定这一行是文件还是目录：用 SQL 端聚合时算好的 isDirectory；
-            // 兜底：hasInode=false 但只有 1 条文件 record 时 → 文件叶子。
-            let isFileLeaf = !agg.isDirectory
-                && agg.descendantCount == 1
-                && agg.fileDescendantCount == 1
-                && agg.descendantBytes == agg.fileDescendantBytes
-            // accessState 优先级：tccProtected > permissionDenied > normal
-            // tccProtected 是用户层"sandbox 整段拒"，permissionDenied 是"运行时拒"，
-            // 都意味着子目录里没数据，但成因不同，UI 文案不一样。
+    private struct OnDemandChildAggregate: Sendable {
+        var path: String
+        var title: String
+        var bytes: Int64 = 0
+        var fileCount: Int = 0
+        var directChildSeen: Bool = false
+        var isDirectory: Bool = true
+        var hasChildren: Bool = false
+        var modificationDate: Date?
+        var accessState: TreeRow.AccessState = .normal
+    }
+
+    nonisolated private static func scanDirectChildrenShallow(rootPath: String,
+                                                              sortedBy key: TreeSortKey,
+                                                              useLogicalBytes: Bool,
+                                                              deniedSet: Set<String>,
+                                                              tccSet: Set<String>) -> [TreeRow] {
+        var isRootDirectory = ObjCBool(false)
+        guard FileManager.default.fileExists(atPath: rootPath, isDirectory: &isRootDirectory),
+              isRootDirectory.boolValue
+        else { return [] }
+
+        let root = URL(fileURLWithPath: rootPath, isDirectory: true)
+        let keys: Set<URLResourceKey> = [
+            .isDirectoryKey,
+            .isSymbolicLinkKey,
+            .contentModificationDateKey,
+            .fileSizeKey,
+            .fileAllocatedSizeKey,
+            .totalFileSizeKey,
+            .totalFileAllocatedSizeKey
+        ]
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsSubdirectoryDescendants]
+        ) else { return [] }
+
+        let rows = urls.compactMap { url -> TreeRow? in
+            let path = url.path
+            let values = try? url.resourceValues(forKeys: keys)
+            let isSymlink = values?.isSymbolicLink ?? false
+            let isDirectory = (values?.isDirectory ?? false) && !isSymlink
             let accessState: TreeRow.AccessState
-            if tccSet.contains(segPath) {
+            if tccSet.contains(path) {
                 accessState = .tccProtected
-            } else if deniedSet.contains(segPath) {
+            } else if deniedSet.contains(path) {
                 accessState = .permissionDenied
             } else {
                 accessState = .normal
             }
-            if isFileLeaf {
-                return TreeRow(
-                    path: segPath,
-                    title: agg.segment,
-                    bytes: agg.fileDescendantBytes,
-                    fileCount: 1,
-                    isDirectory: false,
-                    hasChildren: false,
-                    accessState: accessState,
-                    modificationDate: agg.inodeModificationDate
-                )
+
+            let bytes: Int64
+            let fileCount: Int
+            if isDirectory {
+                bytes = 0
+                fileCount = 0
             } else {
-                // 目录：bytes/count 用子树累加值。hasChildren 判定与旧版一致：
-                // 至少 1 条记录，且不是"唯一一条直接孩子叶子"。
-                // v2026.06.20：accessState == .normal 时（即真正能 stat 的目录）做 mtime 兜底，
-                // 让 GRDB store-fallback 路径也能在 inodeModificationDate 缺失时显示出真实时间，
-                // 与 [materializeFromMemory](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
-                // 的兜底逻辑一致。permissionDenied / tccProtected 不 stat，避免触发系统弹权限。
-                let mtime: Date? = {
-                    if let d = agg.inodeModificationDate { return d }
-                    guard accessState == .normal else { return nil }
-                    return resolveDirMtimeFallback(forPath: segPath)
-                }()
-                return TreeRow(
-                    path: segPath,
-                    title: agg.segment,
-                    bytes: agg.descendantBytes,
-                    fileCount: max(agg.descendantCount, 1),
-                    isDirectory: true,
-                    hasChildren: agg.descendantCount >= 1
-                        && !(agg.descendantCount == 1 && agg.hasInode == false),
-                    accessState: accessState,
-                    modificationDate: mtime
-                )
+                let allocated = values?.totalFileAllocatedSize ?? values?.fileAllocatedSize
+                let logical = values?.totalFileSize ?? values?.fileSize
+                bytes = Int64(max(0, useLogicalBytes ? (logical ?? allocated ?? 0) : (allocated ?? logical ?? 0)))
+                fileCount = 1
+            }
+
+            return TreeRow(
+                path: path,
+                title: url.lastPathComponent,
+                bytes: bytes,
+                fileCount: fileCount,
+                isDirectory: isDirectory,
+                hasChildren: isDirectory && accessState == .normal,
+                accessState: accessState,
+                modificationDate: values?.contentModificationDate,
+                isSizePending: isDirectory && accessState == .normal
+            )
+        }
+
+        return rows.sorted { Self.sortTreeRow($0, before: $1, by: key) }
+    }
+
+    nonisolated private static func scanDirectChildrenOnDemand(rootPath: String,
+                                                               sortedBy key: TreeSortKey,
+                                                               useLogicalBytes: Bool,
+                                                               respectTCCSkipList: Bool,
+                                                               deniedSet: Set<String>,
+                                                               tccSet: Set<String>) async -> [TreeRow] {
+        guard FileManager.default.fileExists(atPath: rootPath) else { return [] }
+
+        var aggregates: [String: OnDemandChildAggregate] = [:]
+        let root = URL(fileURLWithPath: rootPath, isDirectory: true)
+        let scanner = BulkScanner(options: ScanOptions(
+            includeHidden: true,
+            includePackageContents: true,
+            followSymlinks: false,
+            followFirmlinks: false,
+            dedupByInode: true,
+            useAllocatedSize: !useLogicalBytes,
+            staySingleVolume: true,
+            respectTCCSkipList: respectTCCSkipList
+        ))
+
+        for await event in scanner.scan(root: root) {
+            switch event {
+            case .node(let node):
+                mergeOnDemandNode(node,
+                                  rootPath: rootPath,
+                                  useLogicalBytes: useLogicalBytes,
+                                  into: &aggregates)
+            case .nodes(let nodes):
+                for node in nodes {
+                    mergeOnDemandNode(node,
+                                      rootPath: rootPath,
+                                      useLogicalBytes: useLogicalBytes,
+                                      into: &aggregates)
+                }
+            case .permissionDenied(let path):
+                markOnDemandAccess(path,
+                                   rootPath: rootPath,
+                                   accessState: .permissionDenied,
+                                   into: &aggregates)
+            case .tccProtectedSkipped(let path):
+                markOnDemandAccess(path,
+                                   rootPath: rootPath,
+                                   accessState: .tccProtected,
+                                   into: &aggregates)
+            case .progress, .finished, .failed, .cacheDirTagged:
+                continue
             }
         }
 
-        return rows.sorted { (a, b) in
-            switch key {
-            case .sizeDesc:
-                if a.bytes != b.bytes { return a.bytes > b.bytes }
-            case .sizeAsc:
-                if a.bytes != b.bytes { return a.bytes < b.bytes }
-            case .nameAsc:
-                let cmp = a.title.localizedCaseInsensitiveCompare(b.title)
-                if cmp != .orderedSame { return cmp == .orderedAscending }
-            case .nameDesc:
-                let cmp = a.title.localizedCaseInsensitiveCompare(b.title)
-                if cmp != .orderedSame { return cmp == .orderedDescending }
-            case .countDesc:
-                if a.fileCount != b.fileCount { return a.fileCount > b.fileCount }
-            case .countAsc:
-                if a.fileCount != b.fileCount { return a.fileCount < b.fileCount }
-            case .mtimeDesc:
-                // nil 一律最后；保证"最近修改"头部不被空 mtime 占位
-                let av = a.modificationDate, bv = b.modificationDate
-                if av == nil && bv != nil { return false }
-                if av != nil && bv == nil { return true }
-                if let l = av, let r = bv, l != r { return l > r }
-            case .mtimeAsc:
-                let av = a.modificationDate, bv = b.modificationDate
-                if av == nil && bv != nil { return false }
-                if av != nil && bv == nil { return true }
-                if let l = av, let r = bv, l != r { return l < r }
+        let rows = aggregates.values.map { agg in
+            let accessState: TreeRow.AccessState
+            if tccSet.contains(agg.path) {
+                accessState = .tccProtected
+            } else if deniedSet.contains(agg.path) {
+                accessState = .permissionDenied
+            } else {
+                accessState = agg.accessState
             }
-            return a.path < b.path
+            return TreeRow(
+                path: agg.path,
+                title: agg.title,
+                bytes: agg.bytes,
+                fileCount: max(agg.fileCount, agg.isDirectory ? 1 : agg.fileCount),
+                isDirectory: agg.isDirectory,
+                hasChildren: agg.isDirectory && agg.hasChildren,
+                accessState: accessState,
+                modificationDate: agg.modificationDate
+            )
         }
+        return rows.sorted { Self.sortTreeRow($0, before: $1, by: key) }
+    }
+
+    nonisolated private static func mergeOnDemandNode(_ node: FSNode,
+                                                      rootPath: String,
+                                                      useLogicalBytes: Bool,
+                                                      into aggregates: inout [String: OnDemandChildAggregate]) {
+        guard let projection = directChildProjection(rootPath: rootPath, nodePath: node.path) else { return }
+        let displayBytes = useLogicalBytes ? node.logicalSize : node.allocatedSize
+        var aggregate = aggregates[projection.childPath] ?? OnDemandChildAggregate(
+            path: projection.childPath,
+            title: projection.segment
+        )
+        aggregate.bytes += displayBytes
+        if !node.isDirectory {
+            aggregate.fileCount += 1
+        }
+        if projection.isDirectChild {
+            aggregate.directChildSeen = true
+            aggregate.isDirectory = node.isDirectory
+            aggregate.modificationDate = node.modificationDate
+            if !node.isDirectory {
+                aggregate.fileCount = max(aggregate.fileCount, 1)
+            }
+        } else {
+            aggregate.hasChildren = true
+        }
+        aggregates[projection.childPath] = aggregate
+    }
+
+    nonisolated private static func markOnDemandAccess(_ path: String,
+                                                       rootPath: String,
+                                                       accessState: TreeRow.AccessState,
+                                                       into aggregates: inout [String: OnDemandChildAggregate]) {
+        guard let projection = directChildProjection(rootPath: rootPath, nodePath: path) else { return }
+        // 只把"直接子项本身不可访问"画成锁。
+        //
+        // 如果 /Users/guoshuyu/Library/Mail 被 TCC 拒绝，直接子项是 /Users/guoshuyu；
+        // 这个父目录本身已经成功列出且可展开，不能因为更深层后代被拒而把父行灰掉。
+        // 更深层的权限问题仍由 scanner 的 permissionDenied/tccProtectedSkipped 事件
+        // 进入全局 banner 与日志，但不污染当前层级的可交互状态。
+        guard projection.isDirectChild else { return }
+        var aggregate = aggregates[projection.childPath] ?? OnDemandChildAggregate(
+            path: projection.childPath,
+            title: projection.segment
+        )
+        aggregate.isDirectory = true
+        aggregate.hasChildren = false
+        aggregate.accessState = accessState
+        aggregates[projection.childPath] = aggregate
+    }
+
+    nonisolated private static func directChildProjection(rootPath: String,
+                                                         nodePath: String) -> (childPath: String, segment: String, isDirectChild: Bool)? {
+        guard nodePath != rootPath else { return nil }
+        let prefix = rootPath == "/" ? "/" : rootPath + "/"
+        guard nodePath.hasPrefix(prefix) else { return nil }
+        let tail = String(nodePath.dropFirst(prefix.count))
+        guard let segment = tail.split(separator: "/", maxSplits: 1).first.map(String.init),
+              !segment.isEmpty else { return nil }
+        let childPath = rootPath == "/" ? "/" + segment : prefix + segment
+        return (childPath, segment, !tail.contains("/"))
+    }
+
+    /// 异步 directChildren —— deepIndex 关闭时，后台扫描当前目录并聚合直接子项。
+    ///
+    /// 这条路径替代旧扫描数据库 fallback：
+    /// - 不写全量节点数据库，不产生扫描收尾落盘等待；
+    /// - 不在主线程遍历文件系统；
+    /// - 只在用户真正展开某个目录时扫描该目录子树，结果写入 `treeChildrenCache`。
+    public func directChildrenAsync(of path: String, sortedBy key: TreeSortKey) async -> [TreeRow] {
+        if childEdges[path] != nil {
+            return directChildren(of: path, sortedBy: key)
+        }
+        let deniedSet = Set(permissionDeniedPaths)
+        let tccSet = Set(tccProtectedSkippedPaths)
+        let useLogicalBytes = accountingMode == .logical
+        let respectTCC = fdaStatus != .granted
+
+        let rows = await Task.detached(priority: .utility) {
+            await Self.scanDirectChildrenOnDemand(
+                rootPath: path,
+                sortedBy: key,
+                useLogicalBytes: useLogicalBytes,
+                respectTCCSkipList: respectTCC,
+                deniedSet: deniedSet,
+                tccSet: tccSet
+            )
+        }.value
+
+        return rows
     }
 
     /// v1.3 bug1：根据 path O(1) 反查 TreeRow。
@@ -2456,12 +2705,12 @@ public final class ScanCoordinator: ObservableObject {
         guard limit > 0 else { return [] }
         let minBytes = Int64(max(0, minSizeMB)) * 1024 * 1024
         let now = Date()
-        // M3：主索引已被 compact 释放时回退到二级缓存（store 预读的 Top N）。
+        // 主索引已被 compact 释放时回退到二级缓存（内存保留的 Top N）。
         // 既保证 UI 同步路径不变，又不让 compact 后页面空白。
         let source: [LargeFileLeaf]
         if largeFileLeaves.isEmpty, let cache = compactedLargeFileTopN {
             // compactedLargeFileTopN 是一个有限子集。自动 compact 已在 LargeFilesView 侧禁用，
-            // 但测试/手动调用 compact 后仍应保持 list/count 一致；完整排序过滤需后续 store-backed 查询。
+            // 但测试/手动调用 compact 后仍应保持 list/count 一致。
             source = cache
         } else {
             source = largeFileLeaves.snapshot()
@@ -2503,251 +2752,6 @@ public final class ScanCoordinator: ObservableObject {
 
     /// v1.0 T4：当前会话扫描期阈值（bytes）。视图据此判断是否需要"调阈值后重扫"。
     public var largeFileScanThresholdBytes: Int64 { largeFileMinBytes }
-
-    // MARK: - M1 内存优化：store flush / finalize / compact / 远端查询
-
-    /// 把当前累计的 storeBatch 异步刷到 store。**MainActor 安全**：
-    /// 取出 batch 引用 → 清空内存数组 → daisychain append。
-    /// 失败把 storeHealthy 翻 false 静默降级。
-    private func flushStoreBatch() {
-        guard let store = resultStore, !storeBatch.isEmpty, storeHealthy else { return }
-        let pending = storeBatch
-        storeBatch.removeAll(keepingCapacity: true)
-        // P0-B 修复：把这批 insert 串到 storeWriteChain 末尾，避免与后续 finalize 乱序。
-        let prev = storeWriteChain
-        storeWriteChain = Task.detached { [storeRef = store] in
-            await prev?.value
-            do {
-                try await storeRef.insert(pending)
-            } catch {
-                // 失败仅静默降级——不能让 store 故障污染主扫描流程。
-                // 不把 storeHealthy 翻 false 也无碍：下一次 flush 仍会尝试写，
-                // 真要持续失败下次 batch 还是会失败，行为上等价，免去跨 actor 写共享态。
-            }
-        }
-    }
-
-    /// runScan / runMultiRootScan 收尾时调用：flush 残留 batch 并 finalize session。
-    /// 任何失败都不抛出（functionality first：内存优化失败 != 扫描失败）。
-    /// P0-B 修复：通过 daisychain 保证 finalize **严格在所有已派出 insert 之后**执行。
-    ///
-    /// **注意**：本方法是 fire-and-forget，detached task 还在跑就立刻返回。
-    /// 如果调用方在返回后立刻发出"扫描完成"信号 → view 立刻 query GRDB →
-    /// 会拿到 0 行（写入尚未落盘 / WAL 还没 commit）。
-    /// 想确保 query 拿得到数据，必须改用 [flushAndFinalizeStoreAsync](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)。
-    private func flushAndFinalizeStore() {
-        guard let store = resultStore, let sid = currentSessionID else { return }
-        let pending = storeBatch
-        storeBatch.removeAll(keepingCapacity: false)
-        let healthy = storeHealthy
-        let prev = storeWriteChain
-        storeWriteChain = Task.detached { [storeRef = store] in
-            // 等之前所有 insert 落盘后再 finalize，避免 finalize 抢先到 actor。
-            await prev?.value
-            // v1.5.7：不再 try?，insert/finalize 异常落日志（仍降级到 healthy 路径之外）。
-            if healthy, !pending.isEmpty {
-                do {
-                    try await storeRef.insert(pending)
-                } catch {
-                    GSYLog.error(.scan, "flushStoreBatch insert sid=\(sid) count=\(pending.count) failed: \(error)")
-                }
-            }
-            do {
-                try await storeRef.finalizeSession(sid)
-            } catch {
-                GSYLog.error(.scan, "flushStoreBatch finalize sid=\(sid) failed: \(error)")
-            }
-        }
-    }
-
-    /// **v1.3.zzz 关键修复**：runScan / runMultiRootScan 收尾的"等待版"。
-    ///
-    /// 实测 bug（[/tmp/gsy-tree.log](file:///tmp/gsy-tree.log) `[grdb]` 行）：
-    /// 扫完之后第一次 query GRDB 拿到 0 条记录，但 SQL 直接 `sqlite3 scan.sqlite`
-    /// 同 sid 同 prefix 立即查得到 3631 条。差几百毫秒到几秒不等。
-    ///
-    /// 根因：旧的 fire-and-forget 版本 `flushAndFinalizeStore()` 把 insert+finalize
-    /// 派到 `Task.detached` 里就立刻返回，runScan 紧接着 publishSnapshot(finished: true)，
-    /// view 立刻渲染树形 → query 走 dbPool.read 拿到的是写入完成**之前**的快照。
-    ///
-    /// 修法：把 detached task 派出后**直接 await 它结束**。这样 publishSnapshot finished
-    /// 之后所有写入都已 commit，view query 一定能命中。
-    ///
-    /// **v1.5.6 崩溃修复**（[Crash 2026-06-04 22:05:45](file:///Users/guoshuyu/Library/Logs/DiagnosticReports/GSYCleanMac-2026-06-04-220545.ips)
-    /// `Thread stack size exceeded due to excessive recursion` /
-    /// `swift_task_escalateImpl → withStatusRecordLock → callback_fn(escalateImpl::$_0)` 反复重入）：
-    ///
-    /// 旧实现把 insert+finalize 包在 `Task.detached`，detached 内 `await prev?.value`，
-    /// caller 又 `await task.value` —— **两层 await 嵌套在同一条 task dependency chain 上**。
-    /// macOS 26.2 / Swift 6.x runtime 在做 priority escalation 时遍历该 chain 出现递归不收敛，
-    /// 把 cooperative 线程栈写穿（thread 7 栈顶 0x000000016b7d7ff0 落在 guard page）。
-    ///
-    /// 新实现去掉中间那层 detached：caller **直接在 MainActor 上**先等链尾，再亲自
-    /// `await store.insert/finalize`。actor 本身的 mailbox 串行性 + 单一调用方 = 顺序保证。
-    /// chain 字段保持 nil → fire-and-forget [flushStoreBatch](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1879)
-    /// 的 daisychain 语义不受影响（它仍然继续 chain 自己的）。
-    ///
-    /// 测试覆盖：[StoreWriteOrderingTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/StoreWriteOrderingTests.swift)
-    /// 全 4 契约（含"finalize 严格在所有 insert 之后"、"async 返回时 leftover/finalize 全落盘"）
-    /// 必须仍然全绿。
-    private func flushAndFinalizeStoreAsync() async {
-        guard let store = resultStore, let sid = currentSessionID else { return }
-        let pending = storeBatch
-        storeBatch.removeAll(keepingCapacity: false)
-        let healthy = storeHealthy
-        // 取走当前链尾；把字段先清 nil 防止后续 fire-and-forget 续到这条死 chain 上。
-        let prev = storeWriteChain
-        storeWriteChain = nil
-        // 1) 先在 MainActor 上等链上残余（fire-and-forget 的 insert）落盘。
-        //    这一次 await 是"caller 上的纯等待"，不再嵌套到一个内部 await 同 chain 的 detached 里，
-        //    runtime escalation 不会再有递归边。
-        await prev?.value
-        // 2) caller 亲自 await actor —— store 是 actor，mailbox 天然 FIFO；
-        //    单调用方场景下，串行性由"先 insert 再 finalize"的代码顺序直接保证。
-        // v1.5.7：不再 try? 静默吞错，insert/finalize 异常都要进日志。
-        if healthy, !pending.isEmpty {
-            do {
-                try await store.insert(pending)
-            } catch {
-                GSYLog.error(.scan, "flushAndFinalize insert sid=\(sid) count=\(pending.count) failed: \(error)")
-            }
-        }
-        do {
-            try await store.finalizeSession(sid)
-        } catch {
-            GSYLog.error(.scan, "flushAndFinalize finalize sid=\(sid) failed: \(error)")
-        }
-    }
-
-    /// **M1 核心**：把"扫完后内存大头"的缓存释放掉，下次需要时从 store 流式查询。
-    ///
-    /// 释放内容（实测口径）：
-    /// - largeFileLeaves（大文件叶子）+ lastIngestAt（已不再有 active 判定需求）
-    /// - 量级 KB ~ MB 级（取决于 `largeFileMinBytes` 与命中数）。**注意**：扫描后真正
-    ///   占大头的是 dirIndex / childEdges / fileLeaves（百 MB 级），由 store 替代后续会处理；
-    ///   本方法**不动**这些主索引（保留树视图依赖）。
-    ///
-    /// **保留**：
-    /// - buckets（一级聚合行 —— RowItem 渲染需要，量小）
-    /// - dirIndex / childEdges / fileLeaves（树视图依赖；后续 M 再迁移到 store）
-    ///
-    /// 调用约束：
-    /// - 仅在 `isFinished == true` 且本轮 store 健康时才执行（否则 noop）。
-    /// - 仅当 [AppSettings.useScanStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift) ON
-    ///   且 resultStore 已注入时由 UI 主动调用（如 LargeFilesView.onDisappear）。
-    /// - 调完之后 [largeFileCollectedCount](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
-    ///   会归零；UI 必须改走 [largeFilesFromStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
-    ///   读盘。
-    public func compactAfterScan() {
-        guard isFinished, resultStore != nil, storeHealthy else { return }
-        largeFileLeaves.removeAll(keepingCapacity: false)
-        lastIngestAt.removeAll(keepingCapacity: false)
-    }
-
-    /// **M3 核心**：[compactAfterScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 的"UI 无感"增强版。
-    ///
-    /// 旧 [compactAfterScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 直接清空 [largeFileLeaves](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
-    /// 后，UI 重进大文件页时 `largeFiles(...)` 返回空——必须改写视图层异步重新查询，侵入式。
-    ///
-    /// 本方法的玩法：
-    /// 1. 先从 store 异步拿当前 session 的 Top N 大文件（默认 N=200，与 LargeFilesView 渲染上限一致）
-    /// 2. 把结果回填到内部缓存 `compactedLargeFileTopN`
-    /// 3. 再清空主索引 [largeFileLeaves](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
-    /// 4. UI 端 `largeFiles(...)` 自动 fallback 到该缓存（同步、零侵入）
-    ///
-    /// 内存帐（实测口径，不夸大）：
-    /// - 释放：本轮 session 累计的 `largeFileLeaves`（每记录 ~64B）+ `lastIngestAt`
-    ///   字典。`largeFileMinBytes` 默认下大文件叶子量级是数百 ~ 数千条（KB ~ MB 量级），
-    ///   并非主索引大头（dirIndex/childEdges/fileLeaves 才是真正百 MB 级，仍由 store 替代后再处理）。
-    /// - 保留：Top N 缓存（N=200 → 200 × 64B ≈ 12.8 KB），可忽略。
-    /// - 净收益：消除 LargeFilesView 长会话内的"叶子持续累积"，UI 体验无回退。
-    ///
-    /// 调用约束（与同步版一致）：
-    /// - 仅 `isFinished == true` 且 store 可用时执行；否则 noop。
-    /// - 任何 store 失败均静默降级（functionality first）。
-    /// - **跨 await TOCTOU 防御**：`store.query` 是 async，期间 `cancel()` 或新 `scan()` 可能
-    ///   把 `currentSessionID` 重置 / 替换。await 后必须重校验 `currentSessionID == sid && isFinished`，
-    ///   否则会把上一会话的 Top N 错误覆盖到新会话状态、并清空新会话正在累积的 `largeFileLeaves`。
-    public func compactAfterScanPreservingCache(topN: Int = 200) async {
-        guard isFinished, let store = resultStore, let sid = currentSessionID, storeHealthy else { return }
-        guard topN > 0 else {
-            // 等价于旧同步行为
-            largeFileLeaves.removeAll(keepingCapacity: false)
-            lastIngestAt.removeAll(keepingCapacity: false)
-            return
-        }
-        let q = ScanResultQuery(
-            sessionID: sid,
-            onlyFiles: true,
-            limit: topN,
-            offset: 0,
-            sort: .allocatedSizeDescending
-        )
-        let preloaded: [LargeFileLeaf]
-        do {
-            let rows = try await store.query(q)
-            preloaded = rows.map {
-                LargeFileLeaf(path: $0.path, bytes: $0.allocatedSize, modificationDate: $0.modificationDate)
-            }
-        } catch {
-            // store 故障：不释放主索引，避免空白回退；下次 UI 触发会重试。
-            return
-        }
-        // M3-P0 修复：await 之后重校验 session/isFinished 一致性，规避 cancel→重扫 race
-        guard currentSessionID == sid, isFinished else {
-            // 上一会话的结果已不再适用：丢弃 preloaded、不动 largeFileLeaves
-            return
-        }
-        compactedLargeFileTopN = preloaded
-        largeFileLeaves.removeAll(keepingCapacity: false)
-        lastIngestAt.removeAll(keepingCapacity: false)
-    }
-
-    /// 从 store 取大文件（异步分页查询版）。
-    /// 仅当 store 注入且本轮 session 仍在时返回有效数据；否则返回空数组。
-    ///
-    /// 与同步版 [largeFiles](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
-    /// 的差别：后者从内存数组读，compactAfterScan 之后会空；本方法走磁盘，compact 之后仍可用。
-    /// LargeFilesView 应在 compact ON 路径下优先调本方法。
-    public func largeFilesFromStore(minSizeMB: Int,
-                                    sortKey: LargeFileSortKey,
-                                    limit: Int = 200,
-                                    mtimeFilter: AppSettings.MtimeFilter = .all) async -> [LargeFileItem] {
-        guard let store = resultStore, let sid = currentSessionID, limit > 0 else { return [] }
-        let q = ScanResultQuery(
-            sessionID: sid,
-            onlyFiles: true,
-            limit: max(limit * 4, 800),
-            offset: 0,
-            sort: .allocatedSizeDescending
-        )
-        let rows: [ScanResultRecord]
-        do { rows = try await store.query(q) } catch { return [] }
-        let minBytes = Int64(max(0, minSizeMB)) * 1024 * 1024
-        let now = Date()
-        let filtered = rows
-            .filter { $0.allocatedSize >= minBytes }
-            .filter { mtimeFilter.passes($0.modificationDate, now: now) }
-            .map { LargeFileItem(path: $0.path, bytes: $0.allocatedSize, modificationDate: $0.modificationDate) }
-        let sorted = filtered.sorted { (a, b) in
-            switch sortKey {
-            case .sizeDesc:
-                if a.bytes != b.bytes { return a.bytes > b.bytes }
-            case .sizeAsc:
-                if a.bytes != b.bytes { return a.bytes < b.bytes }
-            case .mtimeDesc:
-                let ad = a.modificationDate ?? .distantPast
-                let bd = b.modificationDate ?? .distantPast
-                if ad != bd { return ad > bd }
-            case .mtimeAsc:
-                let ad = a.modificationDate ?? .distantFuture
-                let bd = b.modificationDate ?? .distantFuture
-                if ad != bd { return ad < bd }
-            }
-            return a.path < b.path
-        }
-        return Array(sorted.prefix(limit))
-    }
 
     private func publishSnapshot(categoryID: String, finished: Bool) {
         // v1.3 修「只有一行在动」错觉：
@@ -2997,6 +3001,8 @@ public final class ScanCoordinator: ObservableObject {
     /// 这里以"简化字典"接收（path -> bytes 即可）由方法内部包装成真实结构。
     func _seedForTesting(
         snapshot: ScanSnapshot? = nil,
+        currentRootPath: String? = nil,
+        isScanning: Bool? = nil,
         buckets: [String: Int64]? = nil,
         dirIndex: [String]? = nil,
         dirIndexFull: [String: (bytes: Int64, fileCount: Int)]? = nil,
@@ -3007,6 +3013,12 @@ public final class ScanCoordinator: ObservableObject {
     ) {
         if let snap = snapshot {
             self.snapshot = snap
+        }
+        if let currentRootPath {
+            self.currentRootPath = currentRootPath
+        }
+        if let isScanning {
+            self.isScanning = isScanning
         }
         if let buckets {
             self.buckets.removeAll()
@@ -3063,6 +3075,12 @@ public final class ScanCoordinator: ObservableObject {
     func _fileLeavesKeysForTesting() -> [String] { Array(fileLeaves.keys) }
     func _childEdgesForTesting() -> [String: Set<String>] { childEdges }
     func _treeChildrenCacheForTesting() -> [String: [TreeRow]] { treeChildrenCache }
+    func _storeFetchedChildrenForTesting(path: String, sortedBy key: TreeSortKey, rows: [TreeRow]) {
+        storeFetchedChildren(path: path, sortedBy: key, rows: rows)
+    }
+    func _displayPathForScanNodeForTesting(_ path: String, rootPath: String) -> String {
+        displayPathForScanNode(path, rootPath: rootPath)
+    }
 
     // MARK: - Step 17-A: 内存占用护栏 readers（仅供 [DirIndexMemoryFootprintTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/DirIndexMemoryFootprintTests.swift)）
 
@@ -3072,31 +3090,6 @@ public final class ScanCoordinator: ObservableObject {
     static var _dirAggSizeForTesting: Int { MemoryLayout<DirAgg>.size }
     static var _bucketSizeForTesting: Int { MemoryLayout<Bucket>.size }
 
-    // MARK: - Step 17-B: store 写盘 daisychain 顺序契约 helpers
-    // 仅供 [StoreWriteOrderingTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/StoreWriteOrderingTests.swift)
-
-    /// 注入 sessionID + storeBatch，让顺序契约测能直接驱动 flushStoreBatch / flushAndFinalize。
-    /// 与 [_seedForTesting](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
-    /// 同套路：`internal` 可见，optional 参数 nil-skip。
-    func _seedStoreForTesting(
-        sessionID: ScanSessionID? = nil,
-        storeBatch: [ScanResultRecord]? = nil,
-        storeHealthy: Bool? = nil
-    ) {
-        if let sessionID { self.currentSessionID = sessionID }
-        if let storeBatch { self.storeBatch = storeBatch }
-        if let storeHealthy { self.storeHealthy = storeHealthy }
-    }
-
-    /// 让顺序契约测从外部触发一次 storeBatch flush（产品代码 hot-path 走的也是这个入口）。
-    func _flushStoreBatchForTesting() { flushStoreBatch() }
-
-    /// 让顺序契约测从外部触发收尾 flush + finalize 并 await 落盘。
-    func _flushAndFinalizeStoreAsyncForTesting() async { await flushAndFinalizeStoreAsync() }
-
-    /// 等到当前 daisychain 链尾的 task 落盘——给 _flushStoreBatchForTesting 这种
-    /// fire-and-forget 入口的测试用，断言前先确保 in-flight 写入已经全部落地。
-    func _awaitStoreWriteChainForTesting() async { await storeWriteChain?.value }
 }
 
 // MARK: - v1.5.7 perf：原生 String 路径切分（避免 NSString 桥接 + 拷贝）

@@ -716,6 +716,23 @@
         }
       }
     },
+    "appfootprint.row.computing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Calculating"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "统计中"
+          }
+        }
+      }
+    },
     "banner.fda.denied.more": {
       "extractionState": "manual",
       "localizations": {
@@ -2252,13 +2269,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "🐘 Large Files"
+            "value": "Large Files"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "🐘 大文件"
+            "value": "大文件"
           }
         }
       }
@@ -4428,13 +4445,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Click \"🐘 Large Files\" on the left to start scanning"
+            "value": "Click \"Large Files\" on the left to start scanning"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "点左侧 \"🐘 大文件\" 开始扫描"
+            "value": "点左侧 \"大文件\" 开始扫描"
           }
         }
       }
@@ -4983,227 +5000,6 @@
         }
       }
     },
-    "lipo.action.audit": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Audit"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "审计"
-          }
-        }
-      }
-    },
-    "lipo.action.extract_arm64": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Extract arm64"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "抽取 arm64"
-          }
-        }
-      }
-    },
-    "lipo.candidate.save %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Save: %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "可节省：%@"
-          }
-        }
-      }
-    },
-    "lipo.error.extract_failed %@ %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Extract failed: %@ — %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "抽取失败：%@ — %@"
-          }
-        }
-      }
-    },
-    "lipo.header.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Extract arm64 slice from x86_64+arm64 universal binaries to reclaim disk space."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "从 x86_64+arm64 通用二进制中抽取 arm64 切片以节省空间。"
-          }
-        }
-      }
-    },
-    "lipo.header.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Slim Universal Binary"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "瘦身通用二进制"
-          }
-        }
-      }
-    },
-    "lipo.input.pick.help": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pick a file or app bundle to audit"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "选择文件或 .app 进行审计"
-          }
-        }
-      }
-    },
-    "lipo.input.placeholder": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Drop .app or binary here, or click Pick…"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "拖入 .app 或二进制文件，或点击选择…"
-          }
-        }
-      }
-    },
-    "lipo.picker.message": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Choose .app or binary file"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "选择 .app 或二进制文件"
-          }
-        }
-      }
-    },
-    "lipo.results.empty": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No universal binaries found."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "未发现通用二进制。"
-          }
-        }
-      }
-    },
-    "lipo.results.reclaimed %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reclaimed: %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已回收：%@"
-          }
-        }
-      }
-    },
-    "lipo.results.summary %lld %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld universal binaries, reclaimable %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld 个通用二进制，可回收 %@"
-          }
-        }
-      }
-    },
-    "lipo.results.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Audit Results"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "审计结果"
-          }
-        }
-      }
-    },
     "main.delete.result.ok": {
       "extractionState": "manual",
       "localizations": {
@@ -5319,40 +5115,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Homebrew"
-          }
-        }
-      }
-    },
-    "main.devtool.lipo.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Slim FAT binaries to arm64"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "将通用二进制裁剪为 arm64"
-          }
-        }
-      }
-    },
-    "main.devtool.lipo.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Lipo"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Lipo 瘦身"
           }
         }
       }
@@ -8757,278 +8519,6 @@
         }
       }
     },
-    "settings.storage.action.clear_all": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Clear scan results"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "清空扫描结果"
-          }
-        }
-      }
-    },
-    "settings.storage.action.delete_files": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Delete database files"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "删除数据库文件"
-          }
-        }
-      }
-    },
-    "settings.storage.action.vacuum": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Compact database (VACUUM)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "压缩数据库（VACUUM）"
-          }
-        }
-      }
-    },
-    "settings.storage.alert.cancel": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cancel"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "取消"
-          }
-        }
-      }
-    },
-    "settings.storage.alert.clear_all.message": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Truncates the scan_session / scan_result tables and then runs VACUUM. All historical scan records will be unrecoverable."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "清空 scan_session / scan_result 全表后再 VACUUM。所有历史扫描记录将不可恢复。"
-          }
-        }
-      }
-    },
-    "settings.storage.alert.clear_all.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Clear scan results"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "清空扫描结果"
-          }
-        }
-      }
-    },
-    "settings.storage.alert.confirm": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Confirm"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "确认"
-          }
-        }
-      }
-    },
-    "settings.storage.alert.delete_files.message": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Deletes the .sqlite + -wal + -shm files directly from disk (most destructive). A new database will be built on the next launch."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "直接从磁盘删除 .sqlite + -wal + -shm 三个文件（破坏性最强）。下次启动会重新建库。"
-          }
-        }
-      }
-    },
-    "settings.storage.alert.delete_files.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Delete database files"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "删除数据库文件"
-          }
-        }
-      }
-    },
-    "settings.storage.alert.vacuum.message": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Runs VACUUM on SQLite. This only compacts space and never deletes any business data. The size may grow again after the next scan."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "对 SQLite 执行 VACUUM，仅紧凑空间不删除任何业务数据。下次扫描后体积可能再次回升。"
-          }
-        }
-      }
-    },
-    "settings.storage.alert.vacuum.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Compact database"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "压缩数据库"
-          }
-        }
-      }
-    },
-    "settings.storage.db_path": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Database path"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "数据库路径"
-          }
-        }
-      }
-    },
-    "settings.storage.error.app_support": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Failed to resolve Application Support directory"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "无法解析 Application Support 目录"
-          }
-        }
-      }
-    },
-    "settings.storage.error.db_path": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Failed to resolve database path"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "无法解析数据库路径"
-          }
-        }
-      }
-    },
-    "settings.storage.error.read.format": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Read failed: %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "读取失败：%@"
-          }
-        }
-      }
-    },
-    "settings.storage.loading": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Loading database info…"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在读取数据库信息…"
-          }
-        }
-      }
-    },
     "settings.storage.log.dir": {
       "extractionState": "manual",
       "localizations": {
@@ -9097,189 +8587,172 @@
         }
       }
     },
-    "settings.storage.processing": {
+    "settings.storage.log.export": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Processing…"
+            "value": "Export logs"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "处理中…"
+            "value": "导出日志"
           }
         }
       }
     },
-    "settings.storage.refresh": {
+    "settings.storage.log.export.done %@": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Refresh"
+            "value": "Exported to %@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "刷新"
+            "value": "已导出到 %@"
           }
         }
       }
     },
-    "settings.storage.result.clear_all_done": {
+    "settings.storage.log.export.failed %@": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "All scan results have been cleared."
+            "value": "Export failed: %@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已清空全部扫描结果。"
+            "value": "导出失败：%@"
           }
         }
       }
     },
-    "settings.storage.result.delete_files_done": {
+    "settings.storage.log.clear": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Deleted .sqlite / -wal / -shm files."
+            "value": "Clear logs"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已删除 .sqlite / -wal / -shm 文件。"
+            "value": "清理日志"
           }
         }
       }
     },
-    "settings.storage.result.failed.format": {
+    "settings.storage.log.clear.done %d": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Failed: %@"
+            "value": "Cleared %d log files"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "失败：%@"
+            "value": "已清理 %d 个日志文件"
           }
         }
       }
     },
-    "settings.storage.result.vacuum_done": {
+    "settings.storage.log.clear.failed %@": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "VACUUM finished."
+            "value": "Clear failed: %@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "VACUUM 已完成。"
+            "value": "清理失败：%@"
           }
         }
       }
     },
-    "settings.storage.reveal_finder": {
+    "settings.storage.log.clear.confirm.title": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Reveal in Finder"
+            "value": "Clear runtime logs?"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在 Finder 显示"
+            "value": "清理运行日志？"
           }
         }
       }
     },
-    "settings.storage.section.cleanup": {
+    "settings.storage.log.clear.confirm.message": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cleanup actions"
+            "value": "Existing log files will be removed. A new empty log file will be created for today."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "清理操作"
+            "value": "现有日志文件会被删除，并重新创建今天的空日志文件。"
           }
         }
       }
     },
-    "settings.storage.section.cleanup.footer": {
+    "settings.storage.log.clear.confirm.action": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "From light to heavy: VACUUM only compacts space; clearing tables drops scan history but keeps the schema; deleting files is the most thorough and the database will be rebuilt next launch."
+            "value": "Clear logs"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "由轻到重：VACUUM 仅紧凑空间；清空表丢扫描历史保留 schema；删文件最彻底，下次启动重建。"
+            "value": "清理日志"
           }
         }
       }
     },
-    "settings.storage.section.db": {
+    "settings.storage.log.clear.confirm.cancel": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Scan database (SQLite)"
+            "value": "Cancel"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "扫描数据库（SQLite）"
-          }
-        }
-      }
-    },
-    "settings.storage.section.db.footer": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Total size = .sqlite + -wal + -shm combined. In WAL mode -wal can grow temporarily and is reclaimed after VACUUM."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "总体积 = .sqlite + -wal + -shm 三个文件合计。WAL 模式下 -wal 可能临时较大，VACUUM 后会回收。"
+            "value": "取消"
           }
         }
       }
@@ -9314,57 +8787,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "按天滚动，保留最近 7 天。Debug 构建默认含 debug 级，Release 构建仅 info 及以上。遇到问题可把日志附给开发者。"
-          }
-        }
-      }
-    },
-    "settings.storage.session_results": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sessions / results"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "会话 / 结果"
-          }
-        }
-      }
-    },
-    "settings.storage.session_rows.format": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld sessions · %lld rows"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld 会话 · %lld 行"
-          }
-        }
-      }
-    },
-    "settings.storage.total_size": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Total size"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "总体积"
           }
         }
       }
@@ -9919,13 +9341,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Uninstall Leftovers"
+            "value": "App Uninstaller"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "卸载残留"
+            "value": "应用卸载"
           }
         }
       }
@@ -10208,13 +9630,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Pick an app and clean its leftovers"
+            "value": "Pick an installed app and review related files"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "挑一个 App 清掉它的残留"
+            "value": "选择已安装 App，查看关联文件"
           }
         }
       }
@@ -12129,13 +11551,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Scanning, gathering children…"
+            "value": "Scanning. Tree nodes will load after completion…"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "扫描中，正在采集子节点…"
+            "value": "扫描中，完成后加载树节点…"
           }
         }
       }
@@ -12843,13 +12265,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No leftover candidates found"
+            "value": "No related files found"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "未发现残留候选项"
+            "value": "未发现关联文件"
           }
         }
       }
@@ -12860,13 +12282,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Scanning leftovers…"
+            "value": "Scanning related files…"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在扫描残留…"
+            "value": "正在扫描关联文件…"
           }
         }
       }

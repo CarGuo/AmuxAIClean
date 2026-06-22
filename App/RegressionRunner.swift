@@ -186,7 +186,7 @@ final class RegressionRunner {
         let dirBytesSum = dirRows.reduce(Int64(0)) { $0 + $1.bytes }
         log("[REGR] case=\(caseID) parent=\(nest1Row.url.path) bytes=\(nest1Row.bytes) kids=\(kids.count) dirRows=\(dirRows.count) dirBytesSum=\(dirBytesSum)")
         // 关键回归断言：nest1 一定有 file-0.bin + nest2 两个直接子项；
-        // 目录子项 nest2 的 bytes 必须 > 0（v1.3.z 的 0 KB bug 修复后通过 store-fallback 子树聚合得到）
+        // 目录子项 nest2 的 bytes 必须 > 0（v1.3.z 的 0 KB bug 修复后通过按需子树聚合得到）
         assertGreater(kids.count, 0, "kids count")
         for r in dirRows {
             assertGreater(Int(r.bytes), 0, "dir row bytes must be subtree aggregate, got \(r.bytes) for \(r.path)")

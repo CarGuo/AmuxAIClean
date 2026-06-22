@@ -193,6 +193,9 @@ public struct BrewScreen: View {
                 }
             }
             Spacer()
+            Text(byteString(pkg.sizeBytes))
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(.secondary)
             if let date = pkg.installedAt {
                 Text(date, style: .date)
                     .font(.caption)

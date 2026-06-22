@@ -50,6 +50,8 @@ public enum GSYLog {
         case tree       = "Tree"
         case safety     = "Safety"
         case trash      = "Trash"
+        case operation  = "Operation"
+        case flow       = "Flow"
         case updater    = "Updater"
         case settings   = "Settings"
         case regression = "Regression"
@@ -111,6 +113,22 @@ public enum GSYLog {
 
     /// 当前活跃文件 URL（按天滚动当天那个），UI 「查看今日日志」按钮要用。
     public static func currentLogFileURL() -> URL? { fileSink?.currentFileURL }
+
+    /// 当前所有滚动日志文件，按文件名升序。
+    public static func currentLogFiles() -> [URL] { fileSink?.logFiles() ?? [] }
+
+    /// 导出所有滚动日志到一个 UTF-8 文本文件。
+    public static func exportLogs(to destination: URL) throws {
+        guard let sink = fileSink else { return }
+        try sink.exportCombined(to: destination)
+    }
+
+    /// 清理所有滚动日志并重新打开当天空日志。
+    @discardableResult
+    public static func clearLogs() throws -> Int {
+        guard let sink = fileSink else { return 0 }
+        return try sink.clearLogs()
+    }
 
     // MARK: - 调用入口
 

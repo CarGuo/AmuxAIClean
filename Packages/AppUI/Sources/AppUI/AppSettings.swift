@@ -50,11 +50,6 @@ public final class AppSettings {
         /// **v1.5.5 起默认 ON**（用户反馈：菜单栏托盘已是完整入口，Dock 图标重复）。
         /// 开启后 App 更接近"菜单栏小工具"形态：关窗 = 入后台，要靠菜单栏托盘把它拉回来。
         public static let hideFromDockWhenClosed = "v1.hide_from_dock_when_closed"
-        /// v1.3.x（M1 内存优化）：扫描结果是否落 SQLite store 并在扫完后允许内存 compact。
-        /// 默认 OFF（feature flag），稳定后默认 ON。开启后扫描期会异步把 node 批量写入
-        /// `~/Library/Application Support/GSYCleanMac/scan.sqlite`，UI 在大文件视图等场景
-        /// 可以在退出页面时主动 compact 内存中的大文件叶子缓存，下次进入再从 store 取。
-        public static let useScanStore = "v1.use_scan_store"
         /// v1.4：开发者构建产物扫描的规则启用集合，存为 `[String]`（DevArtifactRule.id 数组）。
         /// 默认 = `DevArtifactRules.allIDs`（全开），用户可在设置面板逐项关。
         public static let enabledDevArtifactRuleIDs = "v1.4.enabled_dev_artifact_rules"
@@ -403,19 +398,6 @@ public final class AppSettings {
         }
     }
 
-    /// v1.3.x（M1 内存优化）：扫描结果是否落 SQLite store。默认 `false`（feature flag）。
-    ///
-    /// 开启后：
-    /// - [ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
-    ///   扫描期把 node 批量写入 `~/Library/Application Support/GSYCleanMac/scan.sqlite`
-    /// - 大文件视图等可在退出时调 `compactAfterScan()` 释放内存中 LargeFileLeaf 数组（百 MB 级）
-    /// - 后续重新进入大文件视图时从 store 流式分页查询
-    ///
-    /// 关闭则保持原"全量内存驻留"行为，确保功能不退化。
-    public var useScanStore: Bool {
-        didSet { defaults.set(useScanStore, forKey: Keys.useScanStore) }
-    }
-
     /// v1.4：开发者构建产物扫描启用的规则 ID 集合。
     ///
     /// 设计：
@@ -594,12 +576,6 @@ public final class AppSettings {
         } else {
             self.hideFromDockWhenClosed = true
         }
-        // M1 内存优化：useScanStore feature flag 默认 OFF，灰度后再翻 ON。
-        if let raw = defaults.object(forKey: Keys.useScanStore) as? Bool {
-            self.useScanStore = raw
-        } else {
-            self.useScanStore = false
-        }
         // v1.4：开发者构建产物扫描规则——首启 / 未配置时全开，并把
         // 后续新增的内置规则**自动并入**当前用户启用集合。
         // 设计要点：用户先前关掉的规则（即已写入 defaults 但 raw 中不含的）保持关闭尊重用户选择；
@@ -647,7 +623,6 @@ public final class AppSettings {
         defaults.removeObject(forKey: Keys.hudPlacement)
         defaults.removeObject(forKey: Keys.hudPlacementForcedIsland)
         defaults.removeObject(forKey: Keys.hideFromDockWhenClosed)
-        defaults.removeObject(forKey: Keys.useScanStore)
         defaults.removeObject(forKey: Keys.enabledDevArtifactRuleIDs)
         defaults.removeObject(forKey: Keys.sentinelEnabled)
         defaults.removeObject(forKey: Keys.sentinelLastEnabled)

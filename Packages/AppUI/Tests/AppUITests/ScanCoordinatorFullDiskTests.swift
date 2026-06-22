@@ -42,4 +42,195 @@ final class ScanCoordinatorFullDiskTests: XCTestCase {
         XCTAssertEqual(ScanCategory.fullDisk.rootPath, "/")
         XCTAssertEqual(ScanCategory.fullDisk.id, "fulldisk.root")
     }
+
+    func test_fullDiskBucketProjection_doesNotCreateDoubleSlash() {
+        let app = ScanCoordinator.bucketProjection(nodePath: "/Applications/Xcode.app",
+                                                   rootPath: "/")
+        XCTAssertEqual(app?.tail, "Applications/Xcode.app")
+        XCTAssertEqual(app?.bucketPath, "/Applications")
+
+        let user = ScanCoordinator.bucketProjection(nodePath: "/Users/guoshuyu/Downloads/a.zip",
+                                                    rootPath: "/")
+        XCTAssertEqual(user?.tail, "Users/guoshuyu/Downloads/a.zip")
+        XCTAssertEqual(user?.bucketPath, "/Users")
+
+        XCTAssertNil(ScanCoordinator.bucketProjection(nodePath: "/", rootPath: "/"),
+                     "根自身不能作为自己的第一级子节点")
+    }
+
+    func test_fullDiskFirmlinkDataVolumePath_mapsToPublicPathBeforeBucketAndStore() {
+        let coord = ScanCoordinator()
+        let library = coord._displayPathForScanNodeForTesting(
+            "/System/Volumes/Data/Library/Caches/com.example/a.bin",
+            rootPath: "/"
+        )
+        XCTAssertEqual(library, "/Library/Caches/com.example/a.bin",
+                       "全盘扫描必须在入 bucket/store 前把 Data 卷 firmlink 投影回用户看到的 /Library，否则 /Library 会显示 0KB 且无法展开")
+
+        let bucket = ScanCoordinator.bucketProjection(nodePath: library, rootPath: "/")
+        XCTAssertEqual(bucket?.bucketPath, "/Library")
+        XCTAssertEqual(bucket?.tail, "Library/Caches/com.example/a.bin")
+    }
+
+    func test_nonFullDiskScan_doesNotRewriteDataVolumePath() {
+        let coord = ScanCoordinator()
+        let path = "/System/Volumes/Data/Library/Caches/com.example/a.bin"
+        XCTAssertEqual(
+            coord._displayPathForScanNodeForTesting(path, rootPath: "/System/Volumes/Data"),
+            path,
+            "非全盘扫描不能擅自改写用户指定根路径，避免推荐/自定义扫描路径口径被污染"
+        )
+    }
+
+    func test_fullDiskDirectChildren_usesSnapshotRowsForRootWhenStoreCacheMisses() {
+        let coord = ScanCoordinator(enableTreeDeepIndex: false)
+        let rows = [
+            RowItem(id: "/Applications",
+                    url: URL(fileURLWithPath: "/Applications", isDirectory: true),
+                    title: "Applications",
+                    isDirectory: true,
+                    bytes: 300,
+                    logicalBytes: 300,
+                    fileCount: 2,
+                    verdict: .safe,
+                    rejection: .ok),
+            RowItem(id: "/Users",
+                    url: URL(fileURLWithPath: "/Users", isDirectory: true),
+                    title: "Users",
+                    isDirectory: true,
+                    bytes: 100,
+                    logicalBytes: 100,
+                    fileCount: 1,
+                    verdict: .safe,
+                    rejection: .ok)
+        ]
+        coord._seedForTesting(
+            snapshot: ScanSnapshot(categoryID: ScanCategory.fullDisk.id,
+                                   rows: rows,
+                                   totalBytes: 400,
+                                   scannedFileCount: 3,
+                                   isFinished: true,
+                                   elapsed: 1),
+            currentRootPath: "/"
+        )
+
+        let top = coord.directChildren(of: "/", sortedBy: .sizeDesc)
+        XCTAssertEqual(top.map(\.path), ["/Applications", "/Users"])
+        XCTAssertTrue(top.allSatisfy(\.hasChildren))
+    }
+
+    func test_fullDiskDirectChildren_doesNotUseSnapshotRowsWhileScanning() {
+        let coord = ScanCoordinator(enableTreeDeepIndex: false)
+        let rows = [
+            RowItem(id: "/Applications",
+                    url: URL(fileURLWithPath: "/Applications", isDirectory: true),
+                    title: "Applications",
+                    isDirectory: true,
+                    bytes: 300,
+                    logicalBytes: 300,
+                    fileCount: 2,
+                    verdict: .safe,
+                    rejection: .ok)
+        ]
+        coord._seedForTesting(
+            snapshot: ScanSnapshot(categoryID: ScanCategory.fullDisk.id,
+                                   rows: rows,
+                                   totalBytes: 300,
+                                   scannedFileCount: 2,
+                                   isFinished: false,
+                                   elapsed: 1),
+            currentRootPath: "/",
+            isScanning: true
+        )
+
+        XCTAssertTrue(coord.directChildren(of: "/", sortedBy: .sizeDesc).isEmpty,
+                      "扫描中不能用半成品 snapshot rows 直接画树根，避免滚动期持续抖动/卡死")
+        XCTAssertTrue(coord._treeChildrenCacheForTesting().isEmpty,
+                      "扫描中不应启动按需下钻写树缓存")
+    }
+
+    func test_onDemandDeepPermissionDenied_doesNotLockDirectParent() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("OnDemandAccess-\(UUID().uuidString)", isDirectory: true)
+        let parent = root.appendingPathComponent("A", isDirectory: true)
+        let locked = parent.appendingPathComponent("locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try "secret".write(to: locked.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: locked.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let coord = ScanCoordinator(enableTreeDeepIndex: false)
+        coord._seedForTesting(
+            snapshot: ScanSnapshot(categoryID: "test",
+                                   rows: [],
+                                   totalBytes: 0,
+                                   scannedFileCount: 0,
+                                   isFinished: true,
+                                   elapsed: 1),
+            currentRootPath: root.path,
+            isScanning: false
+        )
+
+        XCTAssertTrue(coord.directChildren(of: root.path).isEmpty)
+        let cacheKey = "\(root.path)|\(TreeSortKey.sizeDesc.rawValue)"
+        let deadline = Date().addingTimeInterval(3)
+        var cached: [TreeRow] = []
+        while Date() < deadline {
+            cached = coord._treeChildrenCacheForTesting()[cacheKey] ?? []
+            if !cached.isEmpty { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        let row = try XCTUnwrap(cached.first { $0.path == parent.path })
+        XCTAssertEqual(row.accessState, .normal,
+                       "深层 denied/TCC 只应该进入 banner/log，不能把已成功列出的直接父目录画成锁")
+    }
+
+    func test_snapshotTopLevelRows_verifiesFileBucketIsNotExpandable() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("FullDiskSnapshotRows-\(UUID().uuidString)", isDirectory: true)
+        let file = root.appendingPathComponent(".VolumeIcon.icns")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data([0x01]).write(to: file)
+
+        let coord = ScanCoordinator(enableTreeDeepIndex: false)
+        coord._seedForTesting(
+            snapshot: ScanSnapshot(categoryID: "test",
+                                   rows: [
+                                    RowItem(id: file.path,
+                                            url: file,
+                                            title: file.lastPathComponent,
+                                            isDirectory: true,
+                                            bytes: 1,
+                                            logicalBytes: 1,
+                                            fileCount: 1,
+                                            verdict: .safe,
+                                            rejection: .ok)
+                                   ],
+                                   totalBytes: 1,
+                                   scannedFileCount: 1,
+                                   isFinished: true,
+                                   elapsed: 1),
+            currentRootPath: root.path
+        )
+
+        let top = coord.directChildren(of: root.path, sortedBy: .sizeDesc)
+        XCTAssertEqual(top.count, 1)
+        XCTAssertFalse(top[0].isDirectory)
+        XCTAssertFalse(top[0].hasChildren)
+    }
+
+    func test_normalBucketProjection_keepsExistingRootSemantics() {
+        let p = ScanCoordinator.bucketProjection(nodePath: "/Users/me/Library/Caches/a.bin",
+                                                 rootPath: "/Users/me")
+        XCTAssertEqual(p?.tail, "Library/Caches/a.bin")
+        XCTAssertEqual(p?.bucketPath, "/Users/me/Library")
+
+        XCTAssertNil(ScanCoordinator.bucketProjection(nodePath: "/Users/other/file",
+                                                      rootPath: "/Users/me"))
+    }
 }

@@ -24,7 +24,7 @@ func runBench(root: String, timeoutSeconds: Double, deepIndex: Bool) async {
 
     // v1.3.z 性能开关：默认关闭 TreeBrowserView 用的深索引。
     // 这会跳过 ingest 中"沿祖先上溯字典累加"的热路径（占主线程 ~80% 时间）。
-    // 不影响 buckets 主列表 / totalBytes / scannedFiles / largeFileLeaves / GRDB 落库。
+    // 不影响 buckets 主列表 / totalBytes / scannedFiles / largeFileLeaves。
     let coordinator = ScanCoordinator(enableTreeDeepIndex: deepIndex)
     let started = Date()
 

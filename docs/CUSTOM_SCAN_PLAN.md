@@ -148,7 +148,7 @@ public actor ScanProfileStore {
 | `OverlayExcludeGlobTests` | exclude_globs 在 BulkScanner 阶段就剪枝 |
 | `RuleLoaderHotReloadTests` | 写入文件 → 监听触发 → SafetyEngine snapshot 替换；并发安全 |
 | `ScanProfileStoreTests` | CRUD + import/export 往返 |
-| `ProfileSwitchKeepsCacheValidTests` | 切换 Profile 不污染 ScanResultStore |
+| `ProfileSwitchKeepsCacheValidTests` | 切换 Profile 不污染当前扫描缓存 |
 
 ---
 

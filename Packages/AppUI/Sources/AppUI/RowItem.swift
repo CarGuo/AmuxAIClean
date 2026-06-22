@@ -29,7 +29,7 @@ public struct RowItem: Identifiable, Hashable, Sendable {
     /// 取来直接挂上；不走"max(子孙 mtime)"聚合，避免 dirIndex 多维护一字段以及 publish 抖动。
     /// 数据来源已经在扫描层免费——[BulkScanner.enumerate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L390-L412)
     /// 的 attrlist 位图已请求 ATTR_CMN_MODTIME，本字段从源头透传过来不增加 syscall。
-    /// 可选是因为：极早期 publish 帧 / store-fallback 拉到的旧记录可能缺失。
+    /// 可选是因为：极早期 publish 帧 / 按需子树扫描结果可能缺失。
     public let modificationDate: Date?
 
     public init(id: String, url: URL, title: String, isDirectory: Bool, bytes: Int64,
@@ -151,8 +151,13 @@ public struct TreeRow: Identifiable, Hashable, Sendable {
     ///
     /// 与 [RowItem.modificationDate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L33)
     /// 一致采用 Finder 风格——目录就是它自己 inode 的 mtime（修改子项时由内核自动更新），
-    /// 不再额外聚合 max(子孙)。store-fallback 路径会从 GRDB.modification_date 列拉。
+    /// 不再额外聚合 max(子孙)。按需子树扫描路径会从文件系统元数据补齐。
     public let modificationDate: Date?
+    /// 按需展开的第一阶段只列出直接子项，目录大小会在后台受控聚合后补齐。
+    ///
+    /// 这让 `/Users` 这类直接子项很少、但子树很大的目录可以先显示结构，
+    /// 避免为了等待整棵子树大小而让展开动作看起来卡住。
+    public let isSizePending: Bool
 
     public enum AccessState: String, Sendable, Hashable, Codable {
         /// 正常扫描得到的数据
@@ -170,7 +175,8 @@ public struct TreeRow: Identifiable, Hashable, Sendable {
     public init(path: String, title: String, bytes: Int64, fileCount: Int,
                 isDirectory: Bool, hasChildren: Bool,
                 accessState: AccessState = .normal,
-                modificationDate: Date? = nil) {
+                modificationDate: Date? = nil,
+                isSizePending: Bool = false) {
         self.path = path
         self.title = title
         self.bytes = bytes
@@ -179,6 +185,7 @@ public struct TreeRow: Identifiable, Hashable, Sendable {
         self.hasChildren = hasChildren
         self.accessState = accessState
         self.modificationDate = modificationDate
+        self.isSizePending = isSizePending
     }
 }
 

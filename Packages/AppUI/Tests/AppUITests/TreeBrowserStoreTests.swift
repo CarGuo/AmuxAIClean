@@ -73,6 +73,53 @@ final class TreeBrowserStoreTests: XCTestCase {
         XCTAssertEqual(store.tickRevision, 0, "cache 写入不应升 tick")
     }
 
+    func test_子层cache写回会同步修正父层聚合避免父目录0KB() {
+        let coord = ScanCoordinator(home: NSTemporaryDirectory())
+        let parentPath = "/Users/guoshuyu"
+        let libraryPath = parentPath + "/Library"
+        coord._seedForTesting(
+            isScanning: false,
+            treeChildrenCache: [
+                "\(parentPath)|\(TreeSortKey.sizeDesc.rawValue)": [
+                    TreeRow(
+                        path: libraryPath,
+                        title: "Library",
+                        bytes: 0,
+                        fileCount: 1,
+                        isDirectory: true,
+                        hasChildren: true
+                    )
+                ]
+            ]
+        )
+
+        coord._storeFetchedChildrenForTesting(
+            path: libraryPath,
+            sortedBy: .sizeDesc,
+            rows: [
+                TreeRow(path: libraryPath + "/Developer",
+                        title: "Developer",
+                        bytes: 22_000_000_000,
+                        fileCount: 1_190,
+                        isDirectory: true,
+                        hasChildren: true),
+                TreeRow(path: libraryPath + "/Updates",
+                        title: "Updates",
+                        bytes: 943_100_000,
+                        fileCount: 14,
+                        isDirectory: true,
+                        hasChildren: false)
+            ]
+        )
+
+        let cache = coord._treeChildrenCacheForTesting()
+        let parentRows = cache["\(parentPath)|\(TreeSortKey.sizeDesc.rawValue)"] ?? []
+        let library = parentRows.first { $0.path == libraryPath }
+        XCTAssertEqual(library?.bytes, 22_943_100_000)
+        XCTAssertEqual(library?.fileCount, 1_204)
+        XCTAssertTrue(library?.hasChildren == true)
+    }
+
     // MARK: - ScanCoordinator 与 store 同步契约
 
     /// 一次完整扫描完成后，coord 上的 mirror 与 store 上的 SSOT 必须同步推进。

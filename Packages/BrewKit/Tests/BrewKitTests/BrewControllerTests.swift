@@ -42,6 +42,8 @@ final class BrewControllerTests: XCTestCase {
         try makeFormula(name: "git-lfs", version: "3.7.0",
                         installedAt: Date(timeIntervalSince1970: 1_754_457_713),
                         installedOnRequest: true, tap: "homebrew/core")
+        try Data(repeating: 0x42, count: 12_345)
+            .write(to: prefix.appendingPathComponent("Cellar/git-lfs/3.7.0/bin"))
         let c = BrewController(prefix: prefix)
         let pkgs = c.listFormulae()
         XCTAssertEqual(pkgs.count, 1)
@@ -52,6 +54,7 @@ final class BrewControllerTests: XCTestCase {
         XCTAssertEqual(p.installedAt?.timeIntervalSince1970, 1_754_457_713)
         XCTAssertTrue(p.installedOnRequest)
         XCTAssertEqual(p.tap, "homebrew/core")
+        XCTAssertGreaterThanOrEqual(p.sizeBytes, 12_345)
     }
 
     // MARK: - 契约 4：依赖（installed_on_request=false）正确归属

@@ -100,7 +100,6 @@ final class WorkflowDetailViewTests: XCTestCase {
             MainView.duplicateSentinelID,
             MainView.undoHistorySentinelID,
             MainView.maintenanceSentinelID,
-            MainView.lipoSentinelID,
             MainView.brewSentinelID,
             MainView.devVersionedSentinelID,
             MainView.workflowAppleSentinelID,

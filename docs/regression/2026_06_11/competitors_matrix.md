@@ -92,7 +92,7 @@
 
 1. **开源 + 免费 + 安全引擎透明可审计** — [SafetyKit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit) 全套规则在 [Resources/Rules](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules) 用户可读 yaml，**唯一一家**。
 2. **比 du 又快又准** — 5.5s 扫 18 GB / 358k files (du -sh -A 需 9.7s 且漏算 1 GB TCC 目录)。
-3. **GRDB 下钻 mid-tree 24ms** — 100% 在单帧预算内。Pearcleaner / AppCleaner 仅两层下钻，CMM Space Lens 主推 bubble 视觉而非列表 perf。
+3. **后台按需下钻** — 展开目录时只聚合当前子树直接子项，不引入扫描收尾落盘等待。Pearcleaner / AppCleaner 仅两层下钻，CMM Space Lens 主推 bubble 视觉而非列表 perf。
 4. **Vendor 规则可扩展** — `vendors.yaml` 用户可自加 cleanup 规则，闭源四家全无。
 5. **Dry-run 模式 + UndoHistory 双保险** — 删除前可预览影响，删除后可回滚，**业内独此一份**。
 6. **9 包 / 857 tests 单元覆盖** — 所有竞品均闭源（除 Pearcleaner / GrandPerspective），用户无从核查测试边界。

@@ -9,12 +9,12 @@ import Foundation
 ///   - percentEncodePath 17 ms
 ///   - String._decomposed (Unicode 归一化) 35 ms
 ///   - _SwiftURL.__allocating_init 144 ms
-/// 且所有热路径消费方（ScanResultStore / ScanCoordinator.ingest / DuplicateScanner）
+/// 且所有热路径消费方（ScanCoordinator.ingest / DuplicateScanner）
 /// 拿到 FSNode 后**立刻 `.url.path` 反向 bridge 回 String**，URL 这次构造完全是
 /// 无用功——双向 bridge 都白花。
 ///
 /// 现实现：`path: String` 改为 stored；`url: URL` 改为 computed（按需现造，cold
-/// path 才会触发）。BulkScanner / ScanResultStore / ingest 全部直接用 `node.path`，
+/// path 才会触发）。BulkScanner / ingest 全部直接用 `node.path`，
 /// 一次 URL 构造也不会发生。
 public struct FSNode: Sendable, Hashable {
     /// 绝对路径（POSIX）。BulkScanner 内部就是按 String 拼出来的，不走 URL bridge。

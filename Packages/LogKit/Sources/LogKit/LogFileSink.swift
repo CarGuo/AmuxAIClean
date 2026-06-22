@@ -55,6 +55,31 @@ public final class LogFileSink: @unchecked Sendable {
         queue.sync { _currentFileURL }
     }
 
+    public func logFiles() -> [URL] {
+        queue.sync { logFilesLocked() }
+    }
+
+    public func exportCombined(to destination: URL) throws {
+        var result: Result<Void, Error>!
+        queue.sync {
+            result = Result {
+                try self.exportCombinedLocked(to: destination)
+            }
+        }
+        try result.get()
+    }
+
+    @discardableResult
+    public func clearLogs() throws -> Int {
+        var result: Result<Int, Error>!
+        queue.sync {
+            result = Result {
+                try self.clearLogsLocked()
+            }
+        }
+        return try result.get()
+    }
+
     /// append 一行日志。若跨天会先关旧文件 → 删旧 → 开新文件。
     public func append(_ line: String) {
         queue.async { [weak self] in
@@ -134,5 +159,50 @@ public final class LogFileSink: @unchecked Sendable {
                 try? fm.removeItem(at: url)
             }
         }
+    }
+
+    private func logFilesLocked() -> [URL] {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return items
+            .filter { $0.lastPathComponent.hasPrefix("GSYCleanMac-") && $0.pathExtension == "log" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    private func exportCombinedLocked(to destination: URL) throws {
+        try handle?.synchronize()
+        let files = logFilesLocked()
+        var data = Data()
+        for file in files {
+            let header = "\n===== \(file.lastPathComponent) =====\n"
+            data.append(Data(header.utf8))
+            if let fileData = try? Data(contentsOf: file) {
+                data.append(fileData)
+                if !fileData.isEmpty, fileData.last != 0x0A {
+                    data.append(0x0A)
+                }
+            }
+        }
+        try data.write(to: destination, options: [.atomic])
+    }
+
+    private func clearLogsLocked() throws -> Int {
+        try handle?.close()
+        handle = nil
+        _currentFileURL = nil
+        currentDayKey = ""
+
+        let files = logFilesLocked()
+        var removed = 0
+        for file in files {
+            try FileManager.default.removeItem(at: file)
+            removed += 1
+        }
+        rotateIfNeededLocked(now: Date())
+        return removed
     }
 }

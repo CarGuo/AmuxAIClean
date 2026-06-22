@@ -22,7 +22,7 @@ import CoreServices
 /// 设计：参见 [docs/SENTINEL_DESIGN.md].
 ///
 /// 入口约束：
-/// - 仅依赖 Foundation + CoreServices（不引 SwiftUI / GRDB / AppUI / SafetyKit）
+/// - 仅依赖 Foundation + CoreServices（不引 SwiftUI / AppUI / SafetyKit）
 /// - 目标 RSS < 5 MB / CPU < 1%（静默期）
 /// - 单文件 main.swift 可独立 `swift run gsycleanmac-sentinel` 验证逻辑
 

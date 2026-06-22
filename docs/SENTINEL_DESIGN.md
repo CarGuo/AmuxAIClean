@@ -101,7 +101,7 @@ GSYCleanMac 当前是纯前台 App：用户主动 `⌘O` 才会扫描。两个�
   - 加 `PBXTargetDependency` → `GSYCleanMacSentinel`，确保 helper build 在前
   - 加 `PBXCopyFilesBuildPhase` 名为 `Embed Helper Tools`，`dstSubfolderSpec = 6`（Executables → `Contents/MacOS/`），引用 helper product 的 PBXBuildFile（`ATTRIBUTES = (CodeSignOnCopy, )` 在 copy 阶段重签）
 - 二进制路径（落地）：`GSYCleanMac.app/Contents/MacOS/gsycleanmac-sentinel`
-- 实测体积：~248 KB（无 SwiftUI / 无 GRDB / 无 AppUI 依赖，arm64 单架构 Debug build）
+- 实测体积：~248 KB（无 SwiftUI / 无扫描数据库 / 无 AppUI 依赖，arm64 单架构 Debug build）
 - LaunchDaemon plist embed `Contents/Library/LaunchDaemons/com.guoshuyu.cleanmac.sentinel.plist`：留待 step6_main_app 阶段，在主 App target 加第二个 `Copy Files Build Phase`（`dstSubfolderSpec = 1` Wrapper + `dstPath = Contents/Library/LaunchDaemons`）
 
 > **历史失真说明**：原 spec v1 草案曾设想"主 App target 里插 Build Phase 生成 helper"或"SwiftPM executableTarget + .pbxproj copy phase embed binary"，落地时发现：（1）Build Phase 生成 helper 路径需要 Run Script 调用 swiftc 自治编译，与"原生 Xcode 路径"原则相违；（2）SwiftPM executable embed 路径在 [Apple Developer Forum thread 814686](https://developer.apple.com/forums/thread/814686)（2026-02）archive 阶段会撞 "Multiple commands produce .o" 冲突。最终回归 Apple 官方 PBXNativeTarget Command Line Tool 路径。

@@ -93,7 +93,7 @@
 
 ### 2.4 安全门
 
-- 所有"调子进程"的扫描结果**不**写入 ScanResultStore 缓存（输出可能因系统状态变化），避免假数据。
+- 所有"调子进程"的扫描结果只参与本次实时展示，不写入持久缓存（输出可能因系统状态变化），避免假数据。
 - 检测到 Simulator.app / Xcode.app 正在运行（`NSWorkspace.shared.runningApplications`）时，**整组**改为只读，不可勾选删除。
 
 ### 2.5 测试

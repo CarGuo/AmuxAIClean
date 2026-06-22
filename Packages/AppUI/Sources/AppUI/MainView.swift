@@ -49,11 +49,11 @@ public struct MainView: View {
     @State private var detail: String?
     @State private var showSheet: Bool = false
     /// v2026.06.21：切换 category 前若已有扫描结果，弹确认对话框。
-    /// `pendingCategoryChange` 暂存"用户想切到的 new"，`isRevertingSelection`
-    /// 用于在取消时把 selectedCategory 还原回 old 而不再次走确认分支
-    /// （SwiftUI 的 binding 改值会再次触发 onChange，必须用 flag 短路一次）。
+    /// v2026.06.22 修订：确认必须发生在写入 `selectedCategory` 之前。
+    /// SwiftUI `List(selection:)` 的默认 binding 会先切屏、后触发 `.onChange`，用户看到的就是
+    /// "已经切到大文件了才问是否切换"。现在 sidebar 走自定义 binding setter，
+    /// `pendingCategorySwitch` 只保存用户意图；确认通过后才真正写入 selectedCategory。
     @State private var pendingCategorySwitch: (old: String?, new: String?)?
-    @State private var isRevertingSelection: Bool = false
     @State private var showSwitchCategoryConfirm: Bool = false
     /// **v1.5.3 修订**：删除走乐观更新——前端 pruneDeleted 立即生效，
     /// 后台 pipeline.moveToTrash 异步执行，仅在结束后用 deleteResult alert 报结果。
@@ -233,11 +233,7 @@ public struct MainView: View {
                 Text("mainview.switch_category.confirm.proceed", bundle: .module)
             }
             Button(role: .cancel) {
-                // 还原 selection 回 old；isRevertingSelection 让随后的 onChange 自然 return。
-                guard let pending = pendingCategorySwitch else { return }
                 pendingCategorySwitch = nil
-                isRevertingSelection = true
-                selectedCategory = pending.old
             } label: {
                 Text("mainview.switch_category.confirm.cancel", bundle: .module)
             }
@@ -321,9 +317,9 @@ public struct MainView: View {
             )
         }
         // **v1.5.3 修订**：之前这里挂了一个 ProgressView sheet 拦在主页面前面，
-        // 视觉上变成"整页消失只剩 loading"，且 sheet dismiss 触发的重渲染 + store-fallback
-        // 还会把已删项再从 GRDB 拉回来。现在删除走"乐观更新"：
-        //   1. 点删 → 立即 pruneDeleted（snapshot.rows + childEdges + treeChildrenCache + store）
+        // 视觉上变成"整页消失只剩 loading"，且 sheet dismiss 触发的重渲染会打断当前页面。
+        // 现在删除走"乐观更新"：
+        //   1. 点删 → 立即 pruneDeleted（snapshot.rows + childEdges + treeChildrenCache）
         //   2. 用户视觉上节点立刻消失，无 modal sheet
         //   3. 后台 pipeline.moveToTrash 异步执行，完成后只弹结果 alert（成功/失败）
         // 真删失败时通过 deleteResult alert 提示，pruneDeleted 已扣除的 row 由下一次扫描重新补齐。
@@ -346,40 +342,6 @@ public struct MainView: View {
                     }
                 }
             )
-        }
-        .onChange(of: selectedCategory) { old, new in
-            // v1.3.aa：原版 `guard let cat = allCategories.first(where: ...) else { return }`
-            // 在切到 sentinel（appFootprint/launchAgent/uninstall/duplicate）时直接 return，
-            // 既不会 resetSelectionState 也不会清 detail/treeSelection——表现就是问题 2：
-            // 上一屏的"启动项详情"残留在右侧栏没清掉。
-            // 现在拆成两步：①只要 selection 变了就先清状态；②若是 ScanCategory 才起扫。
-            //
-            // v1.5：再加一支 batch.* sentinel 分发——sidebar 顶部 Batch Scans 三行。
-            // 用户从 sidebar 选中其中一条 = 等价点 toolbar 对应按钮。
-            //
-            // v1.5 review-fix #2：batch.* 分支的 reset 由 trigger* helper 自己负责，
-            // 这里不再重复 reset——因为 toolbar 直接调 helper 时（如重复点同一按钮）
-            // selectedCategory 没变化 onChange 不触发，reset 必须由 helper 兜底。
-            // 非 batch 分支（普通 ScanCategory / appFootprint 等 sentinel）仍由 onChange 顶部 reset。
-            //
-            // v1.5 review-fix #3：batchFullDisk 也走 triggerFullDiskScan()，与另两个
-            // batch sentinel 分支风格统一——helper 是后续维护扩展点。
-            //
-            // v2026.06.21：切换前若已有扫描结果，弹确认对话框，避免用户误触切走重扫。
-            // 用户反馈："切了就要重新扫描了，应该问一下"。
-            guard old != new else { return }
-            // 走回滚分支（用户点了"留在当前"）→ 不再走业务，flag 复位即可。
-            if isRevertingSelection {
-                isRevertingSelection = false
-                return
-            }
-            // 已有结果（任意一种形态：snapshot.rows / perRoot 进度 / 仍在扫描）→ 拦确认。
-            if shouldConfirmCategorySwitch {
-                pendingCategorySwitch = (old, new)
-                showSwitchCategoryConfirm = true
-                return
-            }
-            applyCategorySwitch(from: old, to: new)
         }
         .onChange(of: viewMode) { _, _ in
             // bug A：清单 ↔ 树形 切换时各清各的选中态，避免两条选中互相覆盖。
@@ -440,7 +402,7 @@ public struct MainView: View {
             // 注：path 当前不直接 deep-link 到具体卸载条目（候选展示在 UninstallScreen 列表里），
             // 后续可通过 NotificationCenter 二次广播由 UninstallScreen 自己消费 path 实现高亮。
             openWindow(id: "main")
-            selectedCategory = MainView.uninstallSentinelID
+            requestCategorySwitch(to: MainView.uninstallSentinelID)
             _ = note
         }
         .alert(
@@ -503,7 +465,7 @@ public struct MainView: View {
     }
 
     private var sidebarList: some View {
-        List(selection: $selectedCategory) {
+        List(selection: sidebarSelectionBinding) {
             // v1.5: Batch Scans —— sidebar 与 toolbar 三大扫描入口的镜像。
             // 解决用户截图反馈：点 toolbar 锤子 / 推荐 / 全盘后，左侧 sidebar
             // 没有任何选中态，感知不到"我现在在跑哪条"。
@@ -639,14 +601,10 @@ public struct MainView: View {
                 Text("sidebar.section.maintenance", bundle: .module)
             }
 
-            // F-2-3 / F-2-4 / 2026-06：dev 工具集 section —— Lipo（通用二进制瘦身）+
-            // Brew（Homebrew 包管理）。两个 Kit（[LipoKit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LipoKit) /
-            // [BrewKit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/BrewKit)）很早就完成了，但一直没接 sidebar。
+            // F-2-4 / 2026-06：dev 工具集 section —— Homebrew 包管理。
             // 走 sentinel 旁路 + 独立 Screen，与 maintenance 同款不复用扫描状态栏。
             // 字面量直接英文不进 xcstrings（dev 工具，不强求 i18n）。
             Section {
-                lipoSidebarRow
-                    .tag(MainView.lipoSentinelID)
                 brewSidebarRow
                     .tag(MainView.brewSentinelID)
             } header: {
@@ -702,10 +660,6 @@ public struct MainView: View {
     /// 与扫描 / 删除语义无关，沿 uninstall / undoHistory 同款 sentinel 旁路。
     static let maintenanceSentinelID: String = "maintenance.screen"
 
-    /// F-2-3 / 2026-06：「Lipo 通用二进制瘦身」侧边项。LipoScreen 自带 .app 拾取 /
-    /// dryRun 列表 / extract 按钮，不复用扫描状态栏，走 sentinel 旁路。
-    static let lipoSentinelID: String = "lipo.screen"
-
     /// F-2-4 / 2026-06：「Homebrew」侧边项。BrewScreen 三 tab（installed / outdated /
     /// cleanup）直接读 Cellar / Caskroom + ~/Library/Caches/Homebrew，不执行 brew，
     /// 也不复用扫描状态栏，走 sentinel 旁路。
@@ -718,7 +672,7 @@ public struct MainView: View {
     /// "allCategories.first 自然 return"。
     static let devVersionedSentinelID: String = "developer.versioned.scan"
 
-    /// v1.7 M1 PR-5：「Apple 开发者工作流」侧边项。沿用 maintenance / lipo / brew 同款 sentinel 旁路，
+    /// v1.7 M1 PR-5：「Apple 开发者工作流」侧边项。沿用 maintenance / brew 同款 sentinel 旁路，
     /// results 区渲染 [WorkflowDetailView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)，
     /// 数据源 [AppleWorkflow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DeveloperWorkflow.swift)。
     /// 与既有 `batch.developer` sentinel 共存——后者是"按类目散点扫"，本 sentinel 是"按 Apple 工作流分组扫"。
@@ -863,26 +817,6 @@ public struct MainView: View {
                 Text("sidebar.row.maintenance", bundle: .module)
                     .font(.system(.body, design: .rounded))
                 Text("sidebar.subtitle.maintenance", bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
-    /// F-2-3 / 2026-06：「Lipo」侧边 row —— 图标用 cpu 表达 "CPU 架构切片"。
-    /// 字面量直接 verbatim 英文，不进 xcstrings（dev 工具）。
-    private var lipoSidebarRow: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "cpu")
-                .foregroundStyle(.tint)
-                .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("main.devtool.lipo.title", bundle: .module)
-                    .font(.system(.body, design: .rounded))
-                Text("main.devtool.lipo.subtitle", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -1073,11 +1007,6 @@ public struct MainView: View {
         selectedCategory == MainView.maintenanceSentinelID
     }
 
-    /// F-2-3 / 2026-06：当前是否在「Lipo」模式。
-    private var isLipoMode: Bool {
-        selectedCategory == MainView.lipoSentinelID
-    }
-
     /// F-2-4 / 2026-06：当前是否在「Homebrew」模式。
     private var isBrewMode: Bool {
         selectedCategory == MainView.brewSentinelID
@@ -1121,10 +1050,6 @@ public struct MainView: View {
                 // M4-T4 / 2026-06：「系统维护」整段独立 —— 三按钮 + outcome list，
                 // 自带 detached Task 执行 / 状态指示，不复用扫描进度 / 删除 UI。
                 MaintenanceScreen()
-            } else if isLipoMode {
-                // F-2-3 / 2026-06：Lipo 通用二进制瘦身 —— 自带 audit / extract，
-                // 完全脱离 ScanCoordinator / SafetyEngine 链路。
-                LipoScreen()
             } else if isBrewMode {
                 // F-2-4 / 2026-06：Homebrew 包管理 —— 直接读 Cellar / Caskroom，不执行 brew。
                 BrewScreen()
@@ -1157,6 +1082,29 @@ public struct MainView: View {
                         selection: $largeFileSelection,
                         onTrash: { urls in
                             triggerLargeFileTrash(urls: urls)
+                        },
+                        onStash: { item in
+                            stash.add(path: item.path,
+                                      title: item.title,
+                                      bytes: item.bytes,
+                                      isDirectory: false)
+                        },
+                        isStashed: { path in stash.contains(path) },
+                        aiSettings: aiSettings,
+                        onAskAI: { item in
+                            let (v, rj) = TreeBrowserView.safety.evaluate(path: item.path)
+                            requestAI(row: RowItem(
+                                id: item.path,
+                                url: item.url,
+                                title: item.title,
+                                isDirectory: false,
+                                bytes: item.bytes,
+                                logicalBytes: item.bytes,
+                                fileCount: 1,
+                                verdict: v,
+                                rejection: rj,
+                                modificationDate: item.modificationDate
+                            ))
                         }
                     )
                 } else if coordinator.snapshot.rows.isEmpty {
@@ -1191,7 +1139,7 @@ public struct MainView: View {
                                             triggerLargeFileTrash(urls: [url])
                                         },
                                         onRefreshSubtree: { path in
-                                            // v2026.06 #1：右键"刷新此目录"。仅清 store-fallback 缓存，
+                                            // v2026.06 #1：右键"刷新此目录"。仅清按需子树缓存，
                                             // 不重启 BulkScanner（成本太高），详见 ScanCoordinator.rescanSubtree。
                                             coordinator.rescanSubtree(at: path)
                                         },
@@ -1512,43 +1460,11 @@ public struct MainView: View {
                 if coordinator.isScanning {
                     // v2026.06.22 perf：直接读 coordinator.perRootProgressSorted（已在
                     // syncPerRootPublished 里按 rootPath 字典序预排序，throttle 0.4s 一次）。
-                    // 旧实现每帧 body 都 `.sorted(by:)` 一遍几百根字符串，trace 6.67s 显示
-                    // statusBar.getter 单帧 44.3 ms（sort 闭包 + MainActor isCurrentExecutor
-                    // 检查 6 ms × N + String._stringCompare 10 ms × N log N），60fps 滚动
-                    // 直接吃光 frame budget。
                     let rows = coordinator.perRootProgressSorted
                     if rows.isEmpty {
-                        // v2026.06.18：单根扫描信息显著增强。
-                        // 用户反馈："正在扫描能不能加个进度？扫了百分之多少，预计还剩多少时间"。
-                        // 数据源：
-                        //   - 百分比 / 进度条 ← `expectedTotalBytes` 已估出 → snapshot.totalBytes / expected
-                        //   - ETA ← snapshot.estimatedRemaining（由 publishSnapshot 基于 EWMA 速率算）
-                        //   - 已用时间 ← snapshot.elapsed
-                        // 三者都没估出来时退化回最原始的"扫描中… N 文件 · X MB"，与旧版完全一致，
-                        // 不会出现"进度条挂在 0% 不动"的误导。
                         singleRootProgress
                     } else {
                         ProgressView().controlSize(.small)
-                        // v1.3：多根并行扫描——按 rootPath 字典序输出多行（每根一条），
-                        // 已 finished 的根用 ✓ 替代 ●，文案"{title} · {bytes} · {fileCount} 文件"。
-                        // 字典序稳定排序：避免 dict 遍历顺序导致行序抖动。
-                        //
-                        // v1.5：dev scan discover 阶段命中几十/几百根时这里直接平铺会把
-                        // toolbar 下窄区撑爆（用户截图 2/3 反馈"很丑很奇怪 / 不能滑动"）。
-                        // 用 ScrollView + frame(maxHeight:) 限到 ~120pt（约 6 行），让
-                        // 多余的根在内部滚动而非把整个 statusBar 顶高。
-                        // 同时 0 字节期间用 `--` 占位避免"Zero KB · 0 文件"持续闪烁。
-                        //
-                        // v1.5 性能修复：之前用裸 `VStack { ForEach }` 平铺 → 几百行时
-                        // 即便外层 ScrollView 限高，SwiftUI 仍然会一次性 measure/layout 所有
-                        // 子 view，再加上每 0.4s publishSnapshot + 多次 .finished 立即 publish
-                        // 触发的整体重 diff，整个列表/sidebar 滑动都会卡。
-                        // 改 `LazyVStack` 让只有窗口内的 ~6 行真正参与 measure/layout，
-                        // 几百行时主线程 frame budget 立刻回归 60fps。
-                        //
-                        // v2026.06.22 perf：rows 已在外层 L1522 通过
-                        // [perRootProgressSorted](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L125)
-                        // 拿到（预排序）；这里直接复用，省掉旧的 .sorted(by:) 闭包。
                         ScrollView(.vertical, showsIndicators: true) {
                             LazyVStack(alignment: .leading, spacing: 2) {
                                 ForEach(rows, id: \.rootPath) { p in
@@ -1902,10 +1818,29 @@ public struct MainView: View {
         return false
     }
 
+    private var sidebarSelectionBinding: Binding<String?> {
+        Binding(
+            get: { selectedCategory },
+            set: { requestCategorySwitch(to: $0) }
+        )
+    }
+
+    private func requestCategorySwitch(to new: String?) {
+        let old = selectedCategory
+        guard old != new else { return }
+        if shouldConfirmCategorySwitch {
+            pendingCategorySwitch = (old, new)
+            showSwitchCategoryConfirm = true
+            return
+        }
+        applyCategorySwitch(from: old, to: new)
+    }
+
     /// v2026.06.21：原 onChange(selectedCategory) 的 body 抽出来，供"无须确认"与
     /// "已确认" 两条路径共用，避免把"分发到 trigger* / runHeavyAfterCommit"逻辑
     /// 复制到 confirmationDialog 的回调里去（一旦后续加 sentinel 又得改两处）。
     private func applyCategorySwitch(from old: String?, to new: String?) {
+        guard old != new else { return }
         if let id = new, ScanCategory.batchScanIDs.contains(id) {
             switch id {
             case ScanCategory.batchRecommendedID:
@@ -1921,6 +1856,7 @@ public struct MainView: View {
             }
             return
         }
+        selectedCategory = new
         resetSelectionState()
         // M4-T2 / 2026-06：开发者版本化收集根扫描 sentinel —— 不在 allCategories 里，
         // 由 ScanCoordinator.scanKnownVersionedRoots(home:) 同步派发命中。
@@ -2151,7 +2087,7 @@ public struct MainView: View {
             await refreshCustomPaths()
             await MainActor.run {
                 let cat = ScanCategory.makeCustom(url: url)
-                selectedCategory = cat.id
+                requestCategorySwitch(to: cat.id)
                 pathBarInput = ""
             }
         }
