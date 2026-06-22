@@ -1,8 +1,24 @@
 import Foundation
 
 /// 文件系统节点（文件 / 目录）。
+///
+/// 性能历史（2024.xx，trace 4.83s）：
+/// 旧实现把 `url: URL` 作为 stored let。BulkScanner.processDirectory 每个 entry 都
+/// 调一次 `URL(fileURLWithPath: absPath)`，trace 显示这条链 147 ms：
+///   - RFC3986Parser.parse 40 ms
+///   - percentEncodePath 17 ms
+///   - String._decomposed (Unicode 归一化) 35 ms
+///   - _SwiftURL.__allocating_init 144 ms
+/// 且所有热路径消费方（ScanResultStore / ScanCoordinator.ingest / DuplicateScanner）
+/// 拿到 FSNode 后**立刻 `.url.path` 反向 bridge 回 String**，URL 这次构造完全是
+/// 无用功——双向 bridge 都白花。
+///
+/// 现实现：`path: String` 改为 stored；`url: URL` 改为 computed（按需现造，cold
+/// path 才会触发）。BulkScanner / ScanResultStore / ingest 全部直接用 `node.path`，
+/// 一次 URL 构造也不会发生。
 public struct FSNode: Sendable, Hashable {
-    public let url: URL
+    /// 绝对路径（POSIX）。BulkScanner 内部就是按 String 拼出来的，不走 URL bridge。
+    public let path: String
     public let isDirectory: Bool
     public let isSymlink: Bool
     /// 物理占用（字节）。
@@ -13,6 +29,37 @@ public struct FSNode: Sendable, Hashable {
     public let device: UInt64
     public let modificationDate: Date?
 
+    /// 旧字段兼容：computed property。优先用 `path` 字段；只在调用方真的需要
+    /// `URL` 能力（标准化 / scheme 判断等）时才付出 RFC3986Parser 这笔账。
+    @inlinable
+    public var url: URL {
+        URL(fileURLWithPath: path, isDirectory: isDirectory)
+    }
+
+    /// 主初始化器：BulkScanner / 其他热路径用这个，零 URL 构造。
+    public init(
+        path: String,
+        isDirectory: Bool,
+        isSymlink: Bool,
+        allocatedSize: Int64,
+        logicalSize: Int64,
+        inode: UInt64,
+        device: UInt64,
+        modificationDate: Date?
+    ) {
+        self.path = path
+        self.isDirectory = isDirectory
+        self.isSymlink = isSymlink
+        self.allocatedSize = allocatedSize
+        self.logicalSize = logicalSize
+        self.inode = inode
+        self.device = device
+        self.modificationDate = modificationDate
+    }
+
+    /// 兼容旧调用点（外部 / 测试可能仍按 URL 构造）。内部把 URL 拍成 path 存。
+    /// 注意：这条路径会触发一次 `url.path` bridge，比新的 `init(path:...)` 慢，
+    /// 不要在热路径用。
     public init(
         url: URL,
         isDirectory: Bool,
@@ -23,14 +70,16 @@ public struct FSNode: Sendable, Hashable {
         device: UInt64,
         modificationDate: Date?
     ) {
-        self.url = url
-        self.isDirectory = isDirectory
-        self.isSymlink = isSymlink
-        self.allocatedSize = allocatedSize
-        self.logicalSize = logicalSize
-        self.inode = inode
-        self.device = device
-        self.modificationDate = modificationDate
+        self.init(
+            path: url.path,
+            isDirectory: isDirectory,
+            isSymlink: isSymlink,
+            allocatedSize: allocatedSize,
+            logicalSize: logicalSize,
+            inode: inode,
+            device: device,
+            modificationDate: modificationDate
+        )
     }
 }
 

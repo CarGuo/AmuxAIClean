@@ -25,7 +25,7 @@ public struct ScanResultRecord: Sendable, Hashable, Codable {
         parentPath: String? = nil
     ) {
         self.sessionID = sessionID
-        self.path = node.url.path
+        self.path = node.path
         self.isDirectory = node.isDirectory
         self.isSymlink = node.isSymlink
         self.allocatedSize = node.allocatedSize

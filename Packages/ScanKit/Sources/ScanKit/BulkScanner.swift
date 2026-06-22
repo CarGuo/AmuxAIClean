@@ -273,9 +273,13 @@ public actor BulkScanner {
                 }
             }
 
-            let url = URL(fileURLWithPath: absPath, isDirectory: entry.isDirectory)
+            // P0：直接 path 主路径，省掉 URL(fileURLWithPath:) 的 147 ms（trace 4.83s）。
+            // 旧实现：每个 entry 都 URL.init → RFC3986Parser.parse + percentEncodePath
+            // + String._decomposed Unicode 归一化，且所有消费方拿到后立刻 .url.path
+            // 反向 bridge 回 String，纯白工。FSNode 已把 url 改成 computed，需要 URL
+            // 的 cold path 自己付钱即可。
             let node = FSNode(
-                url: url,
+                path: absPath,
                 isDirectory: entry.isDirectory,
                 isSymlink: entry.isSymlink,
                 allocatedSize: entry.allocatedSize,

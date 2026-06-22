@@ -177,7 +177,7 @@ public actor DuplicateScanner {
                     if !inodes.insertIfFirstSeen(device: node.device, inode: node.inode) {
                         return
                     }
-                    sizeBuckets[size, default: []].append(node.url.path)
+                    sizeBuckets[size, default: []].append(node.path)
                     fileScannedCount += 1
                 }
                 switch event {

@@ -1570,7 +1570,7 @@ public final class ScanCoordinator: ObservableObject {
 
     private func ingest(node: FSNode, rootPath: String) {
         // 把 node 归到"根的第一级子目录"——这是聚合行，不展平
-        let nodePath = node.url.path
+        let nodePath = node.path
         guard nodePath.hasPrefix(rootPath + "/") else { return }
         let tail = String(nodePath.dropFirst(rootPath.count + 1))
         let firstSegment = tail.split(separator: "/", maxSplits: 1).first.map(String.init) ?? tail
