@@ -24,6 +24,8 @@ jobs:
     name: Swift Package Tests
     runs-on: macos-15
     timeout-minutes: 25
+    # 2026-06-23：临时完全屏蔽 GitHub Actions，避免误触发消耗 runner 时长。
+    if: false
 
     steps:
       - name: Checkout

@@ -1,14 +1,10 @@
 name: Release
 
-# v1.6 / 2026-06：Release 是本仓库**唯一**自动跑的 workflow。
+# v1.6 / 2026-06：Release workflow 仅保留手动入口，本地打包为主。
 # 触发条件：
-#   1) push tag 形如 v1.2.3   —— 真发版自动走完整打包链路
-#   2) workflow_dispatch      —— 临时手动验 release pipeline，不打 tag 也能跑
-# 设计意图：日常 push / PR 全部静默（见 ci.yml 注释），把所有 Actions 额度全留给真正的发版。
+#   1) workflow_dispatch      —— 临时手动验 release pipeline，不打 tag 也能跑
+# 设计意图：tag push 不再自动发版，避免本地打包发布时重复消耗 Actions。
 on:
-  push:
-    tags:
-      - 'v*.*.*'
   workflow_dispatch:
     inputs:
       version:
@@ -25,6 +21,8 @@ jobs:
     name: Build & Package DMG
     runs-on: macos-15
     timeout-minutes: 30
+    # 2026-06-23：临时完全屏蔽 GitHub Actions，发版改由本地脚本完成。
+    if: false
     permissions:
       contents: write
 
