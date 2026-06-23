@@ -5,19 +5,33 @@ import SafetyKit
 /// 见 PITFALLS §5.7。
 public struct DeleteSheet: View {
     public let items: [RowItem]
+    public let runningConflicts: [RunningAppGuard.Conflict]
     public let onCancel: () -> Void
     public let onConfirm: (_ dryRun: Bool) -> Void
 
     @State private var dryRun: Bool = true
 
-    public init(items: [RowItem], onCancel: @escaping () -> Void, onConfirm: @escaping (Bool) -> Void) {
+    public init(items: [RowItem],
+                runningConflicts: [RunningAppGuard.Conflict] = [],
+                onCancel: @escaping () -> Void,
+                onConfirm: @escaping (Bool) -> Void) {
         self.items = items
+        self.runningConflicts = runningConflicts
         self.onCancel = onCancel
         self.onConfirm = onConfirm
     }
 
     private var totalBytes: Int64 { items.reduce(0) { $0 + $1.bytes } }
     private var totalFiles: Int { items.reduce(0) { $0 + $1.fileCount } }
+    private var conflictTitles: [String] {
+        var seen = Set<String>()
+        var titles: [String] = []
+        for conflict in runningConflicts where seen.insert(conflict.title).inserted {
+            titles.append(conflict.title)
+            if titles.count >= 5 { break }
+        }
+        return titles
+    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -31,6 +45,28 @@ public struct DeleteSheet: View {
             .padding(20)
 
             Divider()
+
+            if !conflictTitles.isEmpty {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .font(.system(size: 15, weight: .semibold))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("delete.running_app.warning.title", bundle: .module)
+                            .font(.callout.weight(.semibold))
+                        Text(String(format: String(localized: "delete.running_app.warning.detail %@", bundle: .module),
+                                    conflictTitles.joined(separator: ", ")))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .background(Color.orange.opacity(0.08))
+
+                Divider()
+            }
 
             // 预览列表（最多前 30 行；多了滚动）
             List {
@@ -91,6 +127,7 @@ public struct DeleteSheet: View {
                     onConfirm(dryRun)
                 }
                 .keyboardShortcut(.defaultAction)
+                .disabled(!dryRun && !conflictTitles.isEmpty)
             }
             .padding(20)
         }

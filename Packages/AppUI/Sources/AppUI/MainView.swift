@@ -243,6 +243,7 @@ public struct MainView: View {
         .sheet(isPresented: $showSheet) {
             DeleteSheet(
                 items: selectedRows,
+                runningConflicts: runningAppConflicts(for: selectedRows),
                 onCancel: { showSheet = false },
                 onConfirm: { dryRun in
                     showSheet = false
@@ -2481,8 +2482,7 @@ public struct MainView: View {
     }
 
     private func runningAppBlockMessage(for rows: [RowItem]) -> String? {
-        let conflicts = RunningAppGuard.conflicts(rows: rows,
-                                                  runningBundleIDs: RunningAppGuard.currentRunningBundleIDs())
+        let conflicts = runningAppConflicts(for: rows)
         guard !conflicts.isEmpty else { return nil }
         var seen = Set<String>()
         var names: [String] = []
@@ -2492,6 +2492,11 @@ public struct MainView: View {
         }
         return String(format: String(localized: "delete.running_app.blocked %@", bundle: .module),
                       names.joined(separator: ", "))
+    }
+
+    private func runningAppConflicts(for rows: [RowItem]) -> [RunningAppGuard.Conflict] {
+        RunningAppGuard.conflicts(rows: rows,
+                                  runningBundleIDs: RunningAppGuard.currentRunningBundleIDs())
     }
 
     // MARK: - v1.0 T4 大文件辅助

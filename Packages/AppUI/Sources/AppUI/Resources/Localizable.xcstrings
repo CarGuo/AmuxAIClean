@@ -2620,6 +2620,40 @@
         }
       }
     },
+    "delete.running_app.warning.detail %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Running app: %@. Preview is still available, but true deletion is disabled until the app quits."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在运行：%@。仍可执行预览，但真正移到废纸篓前需要先退出应用。"
+          }
+        }
+      }
+    },
+    "delete.running_app.warning.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Related app is still running"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相关应用仍在运行"
+          }
+        }
+      }
+    },
     "delete.result.failure %@ %lld %lld": {
       "extractionState": "manual",
       "localizations": {

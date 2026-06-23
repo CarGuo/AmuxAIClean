@@ -223,6 +223,21 @@ Still deliberately not enabled from guesses:
 - Feishu/Lark, DingTalk, QQ/TIM/WeCom, WPS/Kingsoft, Baidu Netdisk, Alibaba Drive, Quark Drive, 115, NetEase Cloud Music, iQIYI, Youku.
 - These need local fixture capture or official path docs before shipping any path beyond generic bundle cache roots.
 
+### Fixture capture workflow
+
+The project now includes a read-only capture helper:
+
+```bash
+Scripts/capture_app_cache_fixture.sh --out /tmp/gsy-cache-fixtures --with-size Feishu DingTalk WPS QQ TIM WeCom
+```
+
+The helper records installed app bundle identifiers and matched Library candidates into Markdown and JSONL. It is intentionally not a rule importer:
+
+- Captured paths are evidence, not production rules.
+- `--with-size` is opt-in because `du` can be expensive on large caches.
+- New production rules still require SafetyEngine blockers, running-app guards, risk labels, and tests.
+- Chat databases, received files, cloud sync roots, browser profile roots, and office account data remain blocked even if the fixture finds them.
+
 Domestic communication and collaboration:
 
 - WeChat: logs/temp/cache only; chat databases and file storage blocked.
