@@ -43,6 +43,20 @@ final class AppUninstallerTests: XCTestCase {
         return appURL
     }
 
+    func test_DefaultFileManagerSnapshot_大目录应受文件数预算限制() throws {
+        let tmp = try makeTempDir("bounded-snapshot")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        for idx in 0..<8 {
+            try Data(repeating: UInt8(idx), count: 4)
+                .write(to: tmp.appendingPathComponent("file-\(idx).bin"))
+        }
+
+        let snapshot = DefaultFileManagerSnapshot(maxDescendantFiles: 3)
+            .snapshot(at: tmp.path)
+        XCTAssertLessThanOrEqual(snapshot.fileCount, 3, "真实磁盘 snapshot 需要有预算，避免大型容器把 UI 等死")
+    }
+
     // MARK: - 1. Info.plist 解析
 
     func test_AppMetadata_readsInfoPlist() throws {

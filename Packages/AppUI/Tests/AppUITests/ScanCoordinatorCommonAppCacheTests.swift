@@ -85,6 +85,40 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         XCTAssertEqual(coord.snapshot.confirmBytes, 256)
     }
 
+    func test_scanCommonAppCaches_treeRootShowsSnapshotRows() async throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let cache = home.appendingPathComponent("Library/Caches/com.demo.App",
+                                                isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try Data(repeating: 0xAB, count: 64).write(to: cache.appendingPathComponent("cache.bin"))
+
+        let vendors = [
+            VendorRule(
+                name: "Demo Cache",
+                bundleIDPrefix: "com.demo.App",
+                category: "common_app_cache",
+                source: "fixture",
+                paths: [
+                    PathRule(path: "~/Library/Caches/com.demo.App",
+                             verdict: .safe,
+                             reason: "cache")
+                ]
+            )
+        ]
+
+        let coord = ScanCoordinator(vendors: vendors, home: home.path)
+        coord.scanCommonAppCaches()
+        await waitScanFinished(coord)
+
+        let children = coord.directChildren(of: ScanCoordinator.commonAppCacheSentinelPath,
+                                            sortedBy: .sizeDesc)
+        XCTAssertEqual(children.map(\.title), ["Demo Cache"])
+        XCTAssertEqual(children.first?.bytes, 64)
+        XCTAssertEqual(children.first?.hasChildren, true)
+    }
+
     func test_scanCommonAppCaches_canExcludeConfirmRules() async throws {
         let home = try makeTempHome()
         defer { try? FileManager.default.removeItem(at: home) }

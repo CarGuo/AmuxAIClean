@@ -837,12 +837,14 @@ struct FloatingScanHUDView: View {
     }
     /// 扫描态时间标签——v2026.06.23 起仅显示已用时长（"已 0:14"）。
     /// 剩余时间不可信，已统一停用，避免"~ 4:00:00"这类误导文案。
-    private var scanTimerText: String {
-        return String(format: String(localized: "hud.time.elapsed %@", bundle: .module), durationString(coordinator.snapshot.elapsed))
+    private func scanTimerText(at date: Date = Date()) -> String {
+        return String(format: String(localized: "hud.time.elapsed %@", bundle: .module),
+                      durationString(coordinator.elapsedForDisplay(referenceDate: date)))
     }
     /// 同上，紧凑版（给灵动岛展开态用，节省横向空间）。
-    private var scanTimerShortText: String {
-        return String(format: String(localized: "hud.time.elapsed %@", bundle: .module), durationShort(coordinator.snapshot.elapsed))
+    private func scanTimerShortText(at date: Date = Date()) -> String {
+        return String(format: String(localized: "hud.time.elapsed %@", bundle: .module),
+                      durationShort(coordinator.elapsedForDisplay(referenceDate: date)))
     }
 
     var body: some View {
@@ -1167,7 +1169,7 @@ struct FloatingScanHUDView: View {
     }
 
     private var heroLeftSub: String? {
-        if case .scanning = phase { return islandClosedScanTimerText }
+        if case .scanning = phase { return islandClosedScanTimerText() }
         return nil
     }
 
@@ -1343,9 +1345,8 @@ struct FloatingScanHUDView: View {
     }
 
     /// 收起态左胶囊扫描中文案：v2026.06.23 起仅显示已用时长（剩余时间不可信，统一不再展示）。
-    private var islandClosedScanTimerText: String {
-        let elapsed = coordinator.snapshot.elapsed
-        return String(format: String(localized: "hud.time.elapsed %@", bundle: .module), durationShort(elapsed))
+    private func islandClosedScanTimerText(at date: Date = Date()) -> String {
+        return scanTimerShortText(at: date)
     }
 
     private var islandClosedMainFontSize: CGFloat {
@@ -1473,10 +1474,12 @@ struct FloatingScanHUDView: View {
                 .foregroundStyle(.secondary)
             Text("·")
                 .foregroundStyle(.tertiary)
-            Text(scanTimerText)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .help(Text(LocalizedStringKey("hud.eta.help.elapsed"), bundle: .module))
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(scanTimerText(at: context.date))
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .help(Text(LocalizedStringKey("hud.eta.help.elapsed"), bundle: .module))
+            }
             Spacer(minLength: 0)
         }
     }
@@ -1566,20 +1569,21 @@ struct FloatingScanHUDView: View {
     }
 
     private func durationString(_ s: TimeInterval) -> String {
-        if s < 60 { return "\(Int(s.rounded()))s" }
-        if s < 3600 {
-            let m = Int(s) / 60
-            let sec = Int(s) % 60
+        let total = displayDurationSeconds(s)
+        if total < 60 { return "\(total)s" }
+        if total < 3600 {
+            let m = total / 60
+            let sec = total % 60
             return "\(m)m \(sec)s"
         }
-        let h = Int(s) / 3600
-        let m = (Int(s) % 3600) / 60
+        let h = total / 3600
+        let m = (total % 3600) / 60
         return "\(h)h \(m)m"
     }
 
     /// 紧凑时长格式化，给灵动岛收起态左胶囊用——"45s" / "1:23" / "1:02:03"。
     private func durationShort(_ s: TimeInterval) -> String {
-        let total = max(0, Int(s.rounded()))
+        let total = displayDurationSeconds(s)
         if total < 60 { return "\(total)s" }
         let h = total / 3600
         let m = (total % 3600) / 60
@@ -1588,6 +1592,11 @@ struct FloatingScanHUDView: View {
             return String(format: "%d:%02d:%02d", h, m, sec)
         }
         return String(format: "%d:%02d", m, sec)
+    }
+
+    private func displayDurationSeconds(_ s: TimeInterval) -> Int {
+        guard s.isFinite, s > 0 else { return 0 }
+        return max(1, Int(s.rounded(.up)))
     }
 
     private func bytesString(_ b: Int64) -> String {

@@ -23,7 +23,7 @@ public struct InstalledApp: Hashable, Sendable, Identifiable {
 /// 设计要点：
 /// - 仅扫一层 `/Applications`（不递归），每条条目附带 `AppMetadata`
 /// - 解析失败的 .app（缺少 Info.plist / 缺 CFBundleIdentifier）静默跳过
-/// - 候选项委托给已有的 `AppUninstaller.candidates(for:)`，**不重复实现匹配规则**
+/// - 候选项委托给已有的 `AppUninstaller.candidatesAsync(for:)`，**不重复实现匹配规则**
 /// - 孤儿残留独立扫描：`scanOrphans()` 走 [OrphanScanner](OrphanScanner.swift)，反查无主目录
 public actor UninstallStore {
     private let applicationsPath: String
@@ -65,7 +65,7 @@ public actor UninstallStore {
 
     /// 给定一个已选 App，返回卸载残留候选项。
     public func selectApp(_ app: InstalledApp) async -> [UninstallCandidate] {
-        uninstaller.candidates(for: app.metadata)
+        await uninstaller.candidatesAsync(for: app.metadata, includeFallbacks: false)
     }
 
     /// 反向扫描三大用户库目录，列出"无主"残留候选。
@@ -94,6 +94,7 @@ public struct UninstallScreen: View {
     @State private var showRealDeleteConfirm: Bool = false
     @State private var lastResult: String?
     @State private var isDeleting: Bool = false
+    @State private var candidateTask: Task<Void, Never>?
 
     /// **v2026.06.16 修复 #4**：App 卸载结构化删除结果 sheet。
     /// 取代旧 alert 拼接 `uninstall.result.success/failure` 的纯文字弹窗。
@@ -151,6 +152,10 @@ public struct UninstallScreen: View {
         // v2：套布局沙箱——把 candidatesPane（卸载残留候选列表）内的长路径
         // ideal width 隔离在沙箱内，禁止反推外层 NavigationSplitView 的列宽。
         .layoutSandbox()
+        .onDisappear {
+            candidateTask?.cancel()
+            candidateTask = nil
+        }
     }
 
     // MARK: - 左栏
@@ -187,12 +192,14 @@ public struct UninstallScreen: View {
             }
             .listStyle(.inset)
             .onChange(of: selectedApp) { _, new in
+                candidateTask?.cancel()
                 guard let app = new else {
                     candidates = []
                     checked = []
+                    isLoadingCandidates = false
                     return
                 }
-                Task { await reloadCandidates(for: app) }
+                candidateTask = Task { await reloadCandidates(for: app) }
             }
         }
     }
@@ -206,7 +213,7 @@ public struct UninstallScreen: View {
             if selectedApp == nil {
                 placeholder(String(localized: "uninstall.placeholder.select.app", bundle: .module), icon: "app.dashed")
             } else if isLoadingCandidates {
-                placeholder(String(localized: "uninstall.placeholder.scanning", bundle: .module), icon: "hourglass")
+                loadingPlaceholder(String(localized: "uninstall.placeholder.scanning", bundle: .module))
             } else if candidates.isEmpty {
                 placeholder(String(localized: "uninstall.placeholder.empty", bundle: .module), icon: "sparkles")
             } else {
@@ -385,6 +392,7 @@ public struct UninstallScreen: View {
     }
 
     private func reloadCandidates(for app: InstalledApp) async {
+        let selectedID = app.id
         await MainActor.run {
             self.isLoadingCandidates = true
             self.candidates = []
@@ -392,6 +400,8 @@ public struct UninstallScreen: View {
         }
         let list = await store.selectApp(app)
         await MainActor.run {
+            guard !Task.isCancelled else { return }
+            guard self.selectedApp?.id == selectedID else { return }
             self.candidates = list
             self.isLoadingCandidates = false
         }
@@ -470,6 +480,18 @@ public struct UninstallScreen: View {
                 .foregroundStyle(.tertiary)
             Text(text).foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func loadingPlaceholder(_ text: String) -> some View {
+        VStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.large)
+            Text(text)
+                .foregroundStyle(.secondary)
+        }
+        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+        .animation(.easeInOut(duration: 0.18), value: isLoadingCandidates)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

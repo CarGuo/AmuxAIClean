@@ -130,7 +130,10 @@ public struct AppUninstaller: Sendable {
     public init(
         homeDirectory: String = NSHomeDirectory(),
         systemLibrary: String = "/Library",
-        fileManager: FileManagerSnapshotting = DefaultFileManagerSnapshot(),
+        fileManager: FileManagerSnapshotting = DefaultFileManagerSnapshot(
+            maxDescendantFiles: 250_000,
+            maxSnapshotDuration: 6
+        ),
         vendorRules: [VendorRule] = [],
         spotlight: SpotlightProbing? = nil,
         spotlightTimeout: TimeInterval = 1.5,
@@ -355,7 +358,10 @@ extension AppUninstaller {
     /// 这里把 **匹配** 仍保持同步（CPU 廉价），只把 **`snapshot(at:)` 这种重 IO**
     /// 丢给 `Task.detached` 并发执行，并用 8 个 in-flight 槽位的滑动窗口限流，
     /// 避免对 50 个候选直接 spawn 50 个线程。
-    public func candidatesAsync(for meta: AppMetadata) async -> [UninstallCandidate] {
+    public func candidatesAsync(
+        for meta: AppMetadata,
+        includeFallbacks: Bool = true
+    ) async -> [UninstallCandidate] {
         struct PendingMatch: Sendable {
             let path: String
             let reason: MatchReason
@@ -364,8 +370,10 @@ extension AppUninstaller {
         var pendings: [PendingMatch] = []
         var seenPaths = Set<String>()
         for root in searchRoots() {
+            if Task.isCancelled { return [] }
             guard let entries = fileManager.firstLevelEntries(at: root.path) else { continue }
             for entry in entries {
+                if Task.isCancelled { return [] }
                 guard let reason = matchReason(name: entry.name, scope: root.scope, meta: meta) else { continue }
                 if seenPaths.insert(entry.path).inserted {
                     pendings.append(.init(path: entry.path, reason: reason))
@@ -375,7 +383,9 @@ extension AppUninstaller {
 
         // 同步版的 vendor 路径展开 —— 这里只决定 path/reason，bytes/fileCount 留给并发段计算。
         for vendor in matchedVendors(for: meta) {
+            if Task.isCancelled { return [] }
             for absPath in vendor.absolutePathPrefixes(home: homeDirectory) {
+                if Task.isCancelled { return [] }
                 if !seenPaths.insert(absPath).inserted { continue }
                 pendings.append(.init(path: absPath, reason: .vendorRule(vendor.name)))
             }
@@ -397,7 +407,9 @@ extension AppUninstaller {
 
             func makeTask(_ p: PendingMatch) -> @Sendable () async -> UninstallCandidate? {
                 {
+                    if Task.isCancelled { return nil }
                     let snap = fm.snapshot(at: p.path)
+                    if Task.isCancelled { return nil }
                     // vendor 路径如果实际不存在（snap 全 0 且 firstLevelEntries 为 nil），丢弃，
                     // 否则会在 UI 上挂一堆 0B 假候选迷惑用户。
                     if vendorReasonPaths.contains(p.path),
@@ -412,24 +424,38 @@ extension AppUninstaller {
             }
 
             while inFlight < maxInFlight, let p = iterator.next() {
+                if Task.isCancelled {
+                    group.cancelAll()
+                    break
+                }
                 group.addTask(priority: .utility, operation: makeTask(p))
                 inFlight += 1
             }
 
             while let result = await group.next() {
+                if Task.isCancelled {
+                    group.cancelAll()
+                    break
+                }
                 if let c = result { collected.append(c) }
                 if let p = iterator.next() {
                     group.addTask(priority: .utility, operation: makeTask(p))
                 }
             }
 
+            guard includeFallbacks else {
+                return collected
+            }
+
             // Step 11A / 2026-06：Spotlight 兜底补刀。
             // 主 12 root 漏掉的非典型路径（用户文档下、iCloud 同步盘等）由 Spotlight 索引补上。
             // 严格谓词（bundleID 完全相等 / appName 严格相等忽略大小写）+ 与主路径 dedup +
             // 二次校验 matchesStrictPrefix 防止 com.foo.bar 误命中 com.foo.barbarian。
+            if Task.isCancelled { return collected }
             let spotlightCandidates = await spotlightFallback(meta: meta, seenPaths: Set(collected.map(\.path)))
             collected.append(contentsOf: spotlightCandidates)
             // M4-T3：pkgutil receipts 兜底补刀（系统级 pkg 安装的 app 的清单展开）
+            if Task.isCancelled { return collected }
             var pkgSeen = Set(collected.map(\.path))
             let pkgCandidates = pkgReceiptCandidates(for: meta, seenPaths: &pkgSeen)
             collected.append(contentsOf: pkgCandidates)
@@ -523,9 +549,19 @@ public struct FSSnapshot: Hashable, Sendable {
 public struct DefaultFileManagerSnapshot: FileManagerSnapshotting {
     /// EACCES 时被调用一次的 handler（默认 nil = 不上报，保留旧静默语义）。
     public let permissionDeniedHandler: (@Sendable (String) -> Void)?
+    /// 单个目录最多统计的文件数。nil 表示完整递归。
+    public let maxDescendantFiles: Int?
+    /// 单个目录最多统计时长。nil 表示不按时间截断。
+    public let maxSnapshotDuration: TimeInterval?
 
-    public init(permissionDeniedHandler: (@Sendable (String) -> Void)? = nil) {
+    public init(
+        permissionDeniedHandler: (@Sendable (String) -> Void)? = nil,
+        maxDescendantFiles: Int? = nil,
+        maxSnapshotDuration: TimeInterval? = nil
+    ) {
         self.permissionDeniedHandler = permissionDeniedHandler
+        self.maxDescendantFiles = maxDescendantFiles
+        self.maxSnapshotDuration = maxSnapshotDuration
     }
 
     public func firstLevelEntries(at path: String) -> [FSEntry]? {
@@ -551,8 +587,17 @@ public struct DefaultFileManagerSnapshot: FileManagerSnapshotting {
         }
         var totalBytes: Int64 = 0
         var totalFiles: Int = 0
+        let startedAt = Date()
         if let en = fm.enumerator(atPath: path) {
             for case let rel as String in en {
+                if let maxDescendantFiles, totalFiles >= maxDescendantFiles {
+                    GSYLog.info(.scan, "FileManagerSnapshot truncated by file budget: \(path), files=\(totalFiles)")
+                    break
+                }
+                if let maxSnapshotDuration, Date().timeIntervalSince(startedAt) >= maxSnapshotDuration {
+                    GSYLog.info(.scan, "FileManagerSnapshot truncated by time budget: \(path), files=\(totalFiles)")
+                    break
+                }
                 let full = "\(path)/\(rel)"
                 var sub: ObjCBool = false
                 guard fm.fileExists(atPath: full, isDirectory: &sub) else { continue }

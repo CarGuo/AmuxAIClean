@@ -529,6 +529,23 @@
         }
       }
     },
+    "appfootprint.detail.total_size": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Size %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "大小 %@"
+          }
+        }
+      }
+    },
     "appfootprint.empty.no_apps": {
       "extractionState": "manual",
       "localizations": {
@@ -729,6 +746,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "统计中"
+          }
+        }
+      }
+    },
+    "appfootprint.row.related_computing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Related data calculating"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关联数据统计中"
           }
         }
       }
@@ -2497,6 +2531,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "只读视图，不会删除任何文件"
+          }
+        }
+      }
+    },
+    "common_app_cache.standard.title %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Cache"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 缓存"
           }
         }
       }

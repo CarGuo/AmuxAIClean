@@ -41,6 +41,20 @@ final class AppUninstallerSpotlightTests: XCTestCase {
         }
     }
 
+    private struct SlowSpotlight: SpotlightProbing {
+        let delay: TimeInterval
+
+        func probeByBundleID(_ bundleID: String, timeout: TimeInterval) async -> [String] {
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            return []
+        }
+
+        func probeByAppName(_ appName: String, timeout: TimeInterval) async -> [String] {
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            return []
+        }
+    }
+
     private let demoMeta = AppMetadata(
         bundleID: "com.acme.demo",
         bundleVendor: "com.acme",
@@ -143,6 +157,30 @@ final class AppUninstallerSpotlightTests: XCTestCase {
         let result = await unins.candidatesAsync(for: demoMeta)
         XCTAssertEqual(result.count, 1, "Spotlight 返空不应影响主路径产出")
         XCTAssertEqual(result[0].path, mainEntry.path)
+    }
+
+    func test_includeFallbacksFalse_不等待Spotlight兜底() async {
+        let home = "/H"
+        let cachesPath = "\(home)/Library/Caches"
+        let mainEntry = FSEntry(name: "com.acme.demo", path: "\(cachesPath)/com.acme.demo")
+        let fake = FakeFM(
+            entriesByRoot: [cachesPath: [mainEntry]],
+            snapshots: [mainEntry.path: .init(bytes: 100, fileCount: 1)]
+        )
+        let unins = AppUninstaller(
+            homeDirectory: home,
+            systemLibrary: "/Library",
+            fileManager: fake,
+            spotlight: SlowSpotlight(delay: 0.3)
+        )
+
+        let start = Date()
+        let result = await unins.candidatesAsync(for: demoMeta, includeFallbacks: false)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertEqual(result.count, 1)
+        XCTAssertEqual(result[0].path, mainEntry.path)
+        XCTAssertLessThan(elapsed, 0.15, "卸载页首屏不应等待 Spotlight/pkgutil 兜底")
     }
 
     // MARK: - 4. 防穿透 /System 等无关路径

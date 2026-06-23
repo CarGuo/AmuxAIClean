@@ -17,6 +17,10 @@ import ScanKit
 @MainActor
 @Observable
 public final class AppSettings {
+    public static let defaultMinFileSizeMB = 100
+    public static let allowedMinFileSizeMB = 10
+    public static let allowedMaxFileSizeMB = 10_240
+
     // MARK: - 持久化键
 
     public enum Keys {
@@ -66,6 +70,10 @@ public final class AppSettings {
         /// 当次会话靠 [effectiveLocale](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
         /// + `environment(\.locale, ...)` 即时生效大部分自绘文本。
         public static let preferredLanguage = "v1.7.preferred_language"
+    }
+
+    private static func isValidMinFileSizeMB(_ value: Int) -> Bool {
+        (allowedMinFileSizeMB...allowedMaxFileSizeMB).contains(value)
     }
 
     /// v1.3：HUD 屏幕位置预设。
@@ -496,10 +504,12 @@ public final class AppSettings {
         } else {
             self.showHidden = true
         }
-        if let raw = defaults.object(forKey: Keys.minFileSizeMB) as? Int, raw > 0 {
+        if let raw = defaults.object(forKey: Keys.minFileSizeMB) as? Int,
+           Self.isValidMinFileSizeMB(raw) {
             self.minFileSizeMB = raw
         } else {
-            self.minFileSizeMB = 100
+            self.minFileSizeMB = Self.defaultMinFileSizeMB
+            defaults.set(Self.defaultMinFileSizeMB, forKey: Keys.minFileSizeMB)
         }
         if let raw = defaults.string(forKey: Keys.sortKey),
            let parsed = SortKey(rawValue: raw) {

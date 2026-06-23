@@ -6,13 +6,13 @@ import SafetyKit
 /// 设计原则（PITFALLS §5.4 / §5.5 / §5.6）：
 /// - **只读、不删** —— 这一屏只展示"哪个 app 在你磁盘上吃了多少空间"，不附带任何"清理"按钮。
 ///   想真正清理某 app 的数据请走「卸载残留」屏（UninstallScreen），那里有 SafetyEngine 默认勾选 + dryRun + 二次确认。
-/// - **复用既有能力** —— 安装清单走 [UninstallStore.listInstalledApps()](UninstallScreen.swift)；
-///   每个 app 的关联目录及其字节数走 [AppUninstaller.candidatesAsync(for:)](AppUninstaller.swift)；
-///   .app bundle 自身大小走 [DefaultFileManagerSnapshot.snapshot(at:)](AppUninstaller.swift)。
+/// - **默认只看 App 本体** —— 安装清单走 [UninstallStore.listInstalledApps()](UninstallScreen.swift)；
+///   应用占用 UI 只统计 `.app` bundle 自身体积。关联目录属于「应用卸载」的精细候选扫描，
+///   不在本屏默认触发。
 /// - **TCC 不踩** —— AppUninstaller 内部用 `firstLevelEntries(at:)` 反查残留；同时本扫描不下钻到
 ///   ~/Library/Mail / Photos / Music 等 TCC 雷区（vendors.yaml 没有这些 vendor 的 catch-all 路径）。
-/// - **不并发死命发** —— `AppFootprintScanner.scanAll()` 串行处理 app（candidatesAsync 内部已经
-///   做了 8 in-flight 限流，再外层并发会让磁盘 IO 抖得很厉害）。
+/// - **不并发死命发** —— `AppFootprintScanner.scanAllStream()` 只开有限外层并发，
+///   `candidatesAsync` 内部也有限流；真实磁盘 snapshot 还有单目录预算，避免大型 App 把页面等死。
 
 // MARK: - 数据模型
 
@@ -49,6 +49,8 @@ public struct AppFootprintItem: Hashable, Sendable, Identifiable {
     public let bundleID: String
     public let appName: String
     public let appURL: URL
+    /// true 表示 bundle 与关联目录都已统计；false 表示只完成了部分阶段。
+    public let isComplete: Bool
     /// .app bundle 自身字节数（如 /Applications/Foo.app 整个目录的大小）。
     public let appBundleBytes: Int64
     /// 关联目录（用户数据 + 启动项 + vendor 命中）的字节数总和。
@@ -62,6 +64,7 @@ public struct AppFootprintItem: Hashable, Sendable, Identifiable {
         bundleID: String,
         appName: String,
         appURL: URL,
+        isComplete: Bool = true,
         appBundleBytes: Int64,
         relatedBytes: Int64,
         buckets: [AppFootprintBucket]
@@ -69,6 +72,7 @@ public struct AppFootprintItem: Hashable, Sendable, Identifiable {
         self.bundleID = bundleID
         self.appName = appName
         self.appURL = appURL
+        self.isComplete = isComplete
         self.appBundleBytes = appBundleBytes
         self.relatedBytes = relatedBytes
         self.buckets = buckets
@@ -87,7 +91,10 @@ public actor AppFootprintScanner {
 
     public init(
         uninstaller: AppUninstaller = AppUninstaller(),
-        snapshot: any FileManagerSnapshotting = DefaultFileManagerSnapshot()
+        snapshot: any FileManagerSnapshotting = DefaultFileManagerSnapshot(
+            maxDescendantFiles: 120_000,
+            maxSnapshotDuration: 4
+        )
     ) {
         self.uninstaller = uninstaller
         self.snapshot = snapshot
@@ -133,15 +140,179 @@ public actor AppFootprintScanner {
     ///
     /// - Tag: scanAllStream
     public nonisolated func scanAllStream(
-        apps: [InstalledApp]
+        apps: [InstalledApp],
+        maxConcurrent: Int = 3
     ) -> AsyncStream<AppFootprintItem> {
         AsyncStream { continuation in
             let task = Task.detached(priority: .userInitiated) { [self] in
-                for app in apps {
-                    if Task.isCancelled { break }
-                    let item = await self.scanOne(app: app)
-                    if Task.isCancelled { break }
-                    continuation.yield(item)
+                guard !apps.isEmpty else {
+                    continuation.finish()
+                    return
+                }
+                let limit = max(1, min(maxConcurrent, apps.count))
+                await withTaskGroup(of: AppFootprintItem?.self) { group in
+                    var iterator = apps.makeIterator()
+                    var inFlight = 0
+
+                    func enqueue(_ app: InstalledApp) {
+                        inFlight += 1
+                        group.addTask(priority: .utility) { [self] in
+                            if Task.isCancelled { return nil }
+                            let item = await self.scanOne(app: app)
+                            if Task.isCancelled { return nil }
+                            return item
+                        }
+                    }
+
+                    while inFlight < limit, let app = iterator.next(), !Task.isCancelled {
+                        enqueue(app)
+                    }
+
+                    while let item = await group.next() {
+                        inFlight -= 1
+                        if Task.isCancelled {
+                            group.cancelAll()
+                            break
+                        }
+                        if let item {
+                            continuation.yield(item)
+                        }
+                        if let next = iterator.next(), !Task.isCancelled {
+                            enqueue(next)
+                        }
+                    }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
+    /// UI 默认入口：只统计 `.app` bundle 本体大小。
+    ///
+    /// 这避免了「应用占用」为了展示排行榜而复用卸载残留的关联目录扫描，尤其是
+    /// WeChat / 浏览器 / Office 这类巨大 Container，不应在只读排行榜里被默认深扫。
+    public nonisolated func scanBundleStream(
+        apps: [InstalledApp],
+        maxConcurrent: Int = 4
+    ) -> AsyncStream<AppFootprintItem> {
+        AsyncStream { continuation in
+            let task = Task.detached(priority: .userInitiated) { [self] in
+                guard !apps.isEmpty else {
+                    continuation.finish()
+                    return
+                }
+                let limit = max(1, min(maxConcurrent, apps.count))
+                await withTaskGroup(of: AppFootprintItem?.self) { group in
+                    var iterator = apps.makeIterator()
+                    var inFlight = 0
+
+                    func enqueue(_ app: InstalledApp) {
+                        inFlight += 1
+                        group.addTask(priority: .utility) { [self] in
+                            if Task.isCancelled { return nil }
+                            let bundleSnap = snapshot.snapshot(at: app.appURL.path)
+                            if Task.isCancelled { return nil }
+                            return AppFootprintScanner.makeItem(
+                                app: app,
+                                bundleSnap: bundleSnap,
+                                relatedBuckets: [],
+                                isComplete: true
+                            )
+                        }
+                    }
+
+                    while inFlight < limit, let app = iterator.next(), !Task.isCancelled {
+                        enqueue(app)
+                    }
+
+                    while let item = await group.next() {
+                        inFlight -= 1
+                        if Task.isCancelled {
+                            group.cancelAll()
+                            break
+                        }
+                        if let item {
+                            continuation.yield(item)
+                        }
+                        if let next = iterator.next(), !Task.isCancelled {
+                            enqueue(next)
+                        }
+                    }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
+    /// 面向 UI 的渐进式扫描：先 yield `.app` bundle 本体，再后台补关联目录。
+    ///
+    /// 与 `scanAllStream` 的区别：
+    /// - `scanAllStream` 保持旧契约：每个 app 只 yield 一条完整结果，方便单测和批处理。
+    /// - 本方法每个 app 最多 yield 两条同 id item：`isComplete=false` 的 bundle 阶段，
+    ///   以及 `isComplete=true` 的完整阶段。UI 按 id 覆盖即可，不会长期显示 0 KB。
+    public nonisolated func scanProgressiveStream(
+        apps: [InstalledApp],
+        maxConcurrent: Int = 3
+    ) -> AsyncStream<AppFootprintItem> {
+        AsyncStream { continuation in
+            let task = Task.detached(priority: .userInitiated) { [self] in
+                guard !apps.isEmpty else {
+                    continuation.finish()
+                    return
+                }
+                let limit = max(1, min(maxConcurrent, apps.count))
+                await withTaskGroup(of: Void.self) { group in
+                    var iterator = apps.makeIterator()
+                    var inFlight = 0
+
+                    func enqueue(_ app: InstalledApp) {
+                        inFlight += 1
+                        group.addTask(priority: .utility) { [self] in
+                            if Task.isCancelled { return }
+                            let bundleSnap = snapshot.snapshot(at: app.appURL.path)
+                            let partial = AppFootprintScanner.makeItem(
+                                app: app,
+                                bundleSnap: bundleSnap,
+                                relatedBuckets: [],
+                                isComplete: false
+                            )
+                            if !Task.isCancelled {
+                                continuation.yield(partial)
+                            }
+                            if Task.isCancelled { return }
+                            let relatedBuckets = await self.relatedBuckets(for: app)
+                            let complete = AppFootprintScanner.makeItem(
+                                app: app,
+                                bundleSnap: bundleSnap,
+                                relatedBuckets: relatedBuckets,
+                                isComplete: true
+                            )
+                            if !Task.isCancelled {
+                                continuation.yield(complete)
+                            }
+                        }
+                    }
+
+                    while inFlight < limit, let app = iterator.next(), !Task.isCancelled {
+                        enqueue(app)
+                    }
+
+                    while await group.next() != nil {
+                        inFlight -= 1
+                        if Task.isCancelled {
+                            group.cancelAll()
+                            break
+                        }
+                        if let next = iterator.next(), !Task.isCancelled {
+                            enqueue(next)
+                        }
+                    }
                 }
                 continuation.finish()
             }
@@ -152,23 +323,18 @@ public actor AppFootprintScanner {
     }
 
     /// 单个 app 的聚合 —— 包内可见以便测试。
-    func scanOne(app: InstalledApp) async -> AppFootprintItem {
+    nonisolated func scanOne(app: InstalledApp) async -> AppFootprintItem {
         // (1) bundle 自身
         let bundleSnap = snapshot.snapshot(at: app.appURL.path)
-        let bundleBucket = AppFootprintBucket(
-            path: app.appURL.path,
-            bytes: bundleSnap.bytes,
-            fileCount: bundleSnap.fileCount,
-            kind: .bundle
-        )
+        let relatedBuckets = await relatedBuckets(for: app)
+        return Self.makeItem(app: app, bundleSnap: bundleSnap, relatedBuckets: relatedBuckets, isComplete: true)
+    }
 
-        // (2) 关联目录（走既有的 candidatesAsync，自带 8 in-flight 限流）
+    private nonisolated func relatedBuckets(for app: InstalledApp) async -> [AppFootprintBucket] {
         let cands = await uninstaller.candidatesAsync(for: app.metadata)
-        var relatedBytes: Int64 = 0
         var relatedBuckets: [AppFootprintBucket] = []
         relatedBuckets.reserveCapacity(cands.count)
         for c in cands {
-            relatedBytes += c.bytes
             relatedBuckets.append(.init(
                 path: c.path,
                 bytes: c.bytes,
@@ -179,12 +345,29 @@ public actor AppFootprintScanner {
 
         // 桶按字节数倒序，UI 上"哪条最肥"在最前面
         relatedBuckets.sort { $0.bytes > $1.bytes }
+        return relatedBuckets
+    }
+
+    private static func makeItem(
+        app: InstalledApp,
+        bundleSnap: FSSnapshot,
+        relatedBuckets: [AppFootprintBucket],
+        isComplete: Bool
+    ) -> AppFootprintItem {
+        let bundleBucket = AppFootprintBucket(
+            path: app.appURL.path,
+            bytes: bundleSnap.bytes,
+            fileCount: bundleSnap.fileCount,
+            kind: .bundle
+        )
+        let relatedBytes = relatedBuckets.reduce(Int64(0)) { $0 + $1.bytes }
         let buckets = [bundleBucket] + relatedBuckets
 
         return AppFootprintItem(
             bundleID: app.metadata.bundleID,
             appName: app.metadata.appName,
             appURL: app.appURL,
+            isComplete: isComplete,
             appBundleBytes: bundleSnap.bytes,
             relatedBytes: relatedBytes,
             buckets: buckets

@@ -1,4 +1,5 @@
 import XCTest
+import Foundation
 @testable import AppUI
 
 /// UninstallStore —— 卸载视图的状态 actor 测试
@@ -65,6 +66,39 @@ final class UninstallStoreTests: XCTestCase {
             at: sysLibrary.appendingPathComponent("LaunchDaemons"),
             withIntermediateDirectories: true
         )
+    }
+
+    private struct SlowSnapshotFM: FileManagerSnapshotting {
+        let delay: TimeInterval
+
+        func firstLevelEntries(at path: String) -> [FSEntry]? {
+            guard path.hasSuffix("Library/Application Support") else { return [] }
+            return (0..<4).map { index in
+                FSEntry(
+                    name: "com.slow.demo.\(index)",
+                    path: "\(path)/com.slow.demo.\(index)"
+                )
+            }
+        }
+
+        func snapshot(at path: String) -> FSSnapshot {
+            Thread.sleep(forTimeInterval: delay)
+            return FSSnapshot(bytes: 1, fileCount: 1)
+        }
+    }
+
+    private struct SlowSpotlight: SpotlightProbing {
+        let delay: TimeInterval
+
+        func probeByBundleID(_ bundleID: String, timeout: TimeInterval) async -> [String] {
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            return []
+        }
+
+        func probeByAppName(_ appName: String, timeout: TimeInterval) async -> [String] {
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            return []
+        }
     }
 
     // MARK: - 1. 空 /Applications 返回空
@@ -135,6 +169,74 @@ final class UninstallStoreTests: XCTestCase {
             paths.contains(home.appendingPathComponent("Library/Preferences/com.acme.demo.plist").path),
             "Preferences/com.acme.demo.plist 应命中"
         )
+    }
+
+    func test_selectApp应走异步候选扫描避免多个残留目录串行等待() async {
+        let app = InstalledApp(
+            appURL: URL(fileURLWithPath: "/Applications/Slow.app"),
+            metadata: AppMetadata(
+                bundleID: "com.slow.demo",
+                bundleVendor: "com.slow",
+                appName: "Slow",
+                executableName: nil
+            )
+        )
+        let uninstaller = AppUninstaller(
+            homeDirectory: "/H",
+            systemLibrary: "/Library",
+            fileManager: SlowSnapshotFM(delay: 0.15)
+        )
+        let store = UninstallStore(applicationsPath: "/Applications", uninstaller: uninstaller)
+
+        let start = Date()
+        let cands = await store.selectApp(app)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertEqual(cands.count, 4)
+        XCTAssertLessThan(
+            elapsed,
+            0.45,
+            "selectApp 不能退回同步 candidates(for:)；4 个 150ms snapshot 串行会接近 600ms"
+        )
+    }
+
+    func test_selectApp不等待SpotlightPkgutil兜底_避免普通App切换长时间loading() async {
+        let app = InstalledApp(
+            appURL: URL(fileURLWithPath: "/Applications/Fast.app"),
+            metadata: AppMetadata(
+                bundleID: "com.fast.demo",
+                bundleVendor: "com.fast",
+                appName: "FastDemo",
+                executableName: nil
+            )
+        )
+        let home = "/H"
+        let cachesPath = "\(home)/Library/Caches"
+        let path = "\(cachesPath)/com.fast.demo"
+        struct FM: FileManagerSnapshotting {
+            let cachesPath: String
+            let path: String
+            func firstLevelEntries(at p: String) -> [FSEntry]? {
+                p == cachesPath ? [FSEntry(name: "com.fast.demo", path: path)] : []
+            }
+            func snapshot(at p: String) -> FSSnapshot {
+                FSSnapshot(bytes: 10, fileCount: 1)
+            }
+        }
+        let uninstaller = AppUninstaller(
+            homeDirectory: home,
+            systemLibrary: "/Library",
+            fileManager: FM(cachesPath: cachesPath, path: path),
+            spotlight: SlowSpotlight(delay: 0.3)
+        )
+        let store = UninstallStore(applicationsPath: "/Applications", uninstaller: uninstaller)
+
+        let start = Date()
+        let cands = await store.selectApp(app)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertEqual(cands.map(\.path), [path])
+        XCTAssertLessThan(elapsed, 0.15, "UninstallStore.selectApp 首屏必须只走主路径快速候选")
     }
 
     // MARK: - 3. 删除走 dryRun 不会真动文件

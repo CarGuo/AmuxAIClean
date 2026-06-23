@@ -28,6 +28,19 @@ final class CommonAppCacheRulesTests: XCTestCase {
             XCTAssertTrue(names.contains(expected), "common_app_cache 应包含 \(expected)")
         }
 
+        for expected in [
+            "WeChat Data Review",
+            "DingTalk Review",
+            "Lark / Feishu Review",
+            "WPS Office Review",
+            "Baidu Netdisk Review",
+            "Thunder Review",
+            "Telegram Review",
+            "Youdao Note Review"
+        ] {
+            XCTAssertTrue(names.contains(expected), "common_app_cache 应包含展示/确认型规则 \(expected)")
+        }
+
         for rule in commonRules {
             XCTAssertFalse(rule.paths.isEmpty, "\(rule.name) 必须声明 paths")
             for pathRule in rule.paths {
@@ -82,6 +95,30 @@ final class CommonAppCacheRulesTests: XCTestCase {
         )
         XCTAssertEqual(chrome.0, .safe)
         XCTAssertEqual(chrome.2?.name, "Chrome Cache")
+
+        let wechatData = engine.evaluate(
+            path: "\(home)/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/wxid_x/file.dat",
+            trie: trie,
+            home: home
+        )
+        XCTAssertEqual(wechatData.0, .confirm)
+        XCTAssertEqual(wechatData.2?.name, "WeChat Data Review")
+
+        let wpsData = engine.evaluate(
+            path: "\(home)/Library/Containers/com.kingsoft.wpsoffice.mac/Data/.kingsoft/wps/state.db",
+            trie: trie,
+            home: home
+        )
+        XCTAssertEqual(wpsData.0, .confirm)
+        XCTAssertEqual(wpsData.2?.name, "WPS Office Review")
+
+        let larkCache = engine.evaluate(
+            path: "\(home)/Library/Caches/LarkShell/index",
+            trie: trie,
+            home: home
+        )
+        XCTAssertEqual(larkCache.0, .safe)
+        XCTAssertEqual(larkCache.2?.name, "Lark / Feishu Review")
     }
 
     func testCommonAppCacheBlockedNeighborsStayForbid() throws {

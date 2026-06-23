@@ -614,6 +614,18 @@ public final class ScanCoordinator: ObservableObject {
         publishSnapshot(categoryID: categoryID, finished: false)
     }
 
+    /// UI 专用的工作计时口径。
+    ///
+    /// `snapshot.elapsed` 只会在扫描数据发布时更新；勘察、聚合、一次性规则扫描等阶段可能
+    /// 长时间没有新 snapshot，若 UI 直接读它就会出现“有些入口计时动、有些入口停在 0”的错觉。
+    /// 这里把“工作计时”从“扫描结果发布”里解耦：扫描中按会话起点实时计算，结束后回到最终快照。
+    public func elapsedForDisplay(referenceDate: Date = Date()) -> TimeInterval {
+        guard isScanning, startedAt > .distantPast else {
+            return max(0, snapshot.elapsed)
+        }
+        return max(0, max(snapshot.elapsed, referenceDate.timeIntervalSince(startedAt)))
+    }
+
     /// v1.0 T4：大文件叶子集合。
     /// 仅当 `largeFileMinBytes > 0` 时才会被填充（避免普通扫描浪费内存）。
     /// 每条记录原样保留 path / bytes / mtime，让 `largeFiles(...)` 能按多种 sortKey
@@ -1078,16 +1090,19 @@ public final class ScanCoordinator: ObservableObject {
                       "scan.common_app_cache.start rules=\(vendorsCopy.filter { $0.category == "common_app_cache" }.count) includeConfirm=\(includeConfirm)")
 
         scanTask = Task.detached { [weak self] in
-            let hits = CommonAppCacheScanner.detect(vendors: vendorsCopy,
+            let standardRules = Self.standardInstalledAppCacheRules()
+            let hits = CommonAppCacheScanner.detect(vendors: vendorsCopy + standardRules,
                                                     home: homeURL,
                                                     options: options)
             var rows: [RowItem] = []
             rows.reserveCapacity(hits.count)
             var totalAccum: Int64 = 0
             var countAccum = 0
+            var seenPaths = Set<String>()
 
             for hit in hits {
                 if Task.isCancelled { return }
+                guard seenPaths.insert(hit.url.standardizedFileURL.path).inserted else { continue }
                 let (evaluatedVerdict, rejection, vendor) = engineCopy.evaluate(path: hit.url.path,
                                                                                 trie: trieRef,
                                                                                 home: homeStr)
@@ -1140,6 +1155,40 @@ public final class ScanCoordinator: ObservableObject {
                               "scan.common_app_cache.finish rows=\(rowsCount) totalBytes=\(totalCaptured) entries=\(fileCountCaptured) elapsed=\(String(format: "%.2f", Date().timeIntervalSince(activeStartedAt)))")
             }
         }
+    }
+
+    nonisolated private static func standardInstalledAppCacheRules() -> [VendorRule] {
+        let appsPath = "/Applications"
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: appsPath) else { return [] }
+
+        var rules: [VendorRule] = []
+        rules.reserveCapacity(names.count)
+        for name in names where name.hasSuffix(".app") {
+            let appURL = URL(fileURLWithPath: appsPath).appendingPathComponent(name)
+            guard let meta = try? AppMetadata.read(appURL: appURL) else { continue }
+            let bundleID = meta.bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !bundleID.isEmpty else { continue }
+            let paths = [
+                "~/Library/Caches/\(bundleID)",
+                "~/Library/Containers/\(bundleID)/Data/Library/Caches",
+                "~/Library/HTTPStorages/\(bundleID)"
+            ].map {
+                PathRule(path: $0,
+                         verdict: .safe,
+                         reason: "standard macOS app cache")
+            }
+
+            rules.append(VendorRule(
+                name: String(format: String(localized: "common_app_cache.standard.title %@", bundle: .module),
+                             meta.appName),
+                bundleIDPrefix: bundleID,
+                category: "common_app_cache",
+                source: "standard-macos-cache",
+                paths: paths
+            ))
+        }
+        return rules
     }
 
     /// 单层递归 size 估算。仅用于 [scanKnownVersionedRoots](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
@@ -1345,6 +1394,7 @@ public final class ScanCoordinator: ObservableObject {
                                   staySingleVolume: false,
                                   respectTCCSkipList: respectTCC)
         let activeID = ScanCoordinator.developerCategoryID
+        let activeStartedAt = startedAt
 
         // 异步勘察 + 启动扫描；勘察自身有 60s 超时和 GSYLog 埋点
         scanTask = Task { [weak self] in
@@ -1408,7 +1458,7 @@ public final class ScanCoordinator: ObservableObject {
                     self.snapshot = ScanSnapshot(categoryID: activeID, rows: [],
                                                  totalBytes: 0, scannedFileCount: 0,
                                                  isFinished: true,
-                                                 elapsed: Date().timeIntervalSince(self.startedAt))
+                                                 elapsed: Date().timeIntervalSince(activeStartedAt))
                     self.isScanning = false
                     self.scanPhase = .idle
                     GSYLog.info(.scan, "DevArtifact 勘察 0 命中 直接结束扫描")
@@ -1898,6 +1948,9 @@ public final class ScanCoordinator: ObservableObject {
             // 直接把 snapshot.rows 升级为顶层 TreeRow——title/bytes 都现成，
             // 复用 [synthesizeVersionedTopLevel] 集中维护排序与 hasChildren=false 语义。
             return synthesizeVersionedTopLevel(sortedBy: key)
+        }
+        if path == ScanCoordinator.commonAppCacheSentinelPath {
+            return snapshotTopLevelRows(sortedBy: key)
         }
         if ScanCoordinator.multiRootSentinelPaths.contains(path) {
             return synthesizeMultiRootTopLevel(sortedBy: key)

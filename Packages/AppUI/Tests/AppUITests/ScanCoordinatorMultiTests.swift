@@ -102,6 +102,20 @@ final class ScanCoordinatorMultiTests: XCTestCase {
         XCTAssertFalse(coord.isScanning)
     }
 
+    func test_elapsedForDisplay扫描中不依赖snapshot发布节奏() async throws {
+        let home = try makeFakeHome()
+        defer { cleanup(home) }
+
+        let coord = ScanCoordinator(home: home)
+        coord.scanRecommended(includeHidden: true)
+        defer { coord.cancel() }
+
+        XCTAssertEqual(coord.snapshot.elapsed, 0, "启动同帧 snapshot 仍可能是 0")
+        let displayElapsed = coord.elapsedForDisplay(referenceDate: Date().addingTimeInterval(3))
+        XCTAssertGreaterThanOrEqual(displayElapsed, 2.9,
+                                    "扫描中 UI 工作计时必须按 startedAt 推进，不能依赖下一帧 snapshot")
+    }
+
     func test_多根全部finish后isScanning翻false且每根都isFinished() async throws {
         let home = try makeFakeHome()
         defer { cleanup(home) }

@@ -283,7 +283,7 @@ public struct SettingsScene: View {
                     Spacer()
                     Stepper(String(format: String(localized: "settings.large.value.format", bundle: .module), settings.minFileSizeMB),
                             value: $settings.minFileSizeMB,
-                            in: 10...10240,
+                            in: AppSettings.allowedMinFileSizeMB...AppSettings.allowedMaxFileSizeMB,
                             step: 10)
                         .labelsHidden()
                     Text(String(format: String(localized: "settings.large.value.format", bundle: .module), settings.minFileSizeMB))

@@ -73,6 +73,16 @@ final class AppSettingsTests: XCTestCase {
     }
 
     @MainActor
+    func test_脏数据_低于设置页下限的旧阈值应迁移回默认100MB() throws {
+        let suite = freshSuite()
+        let d = UserDefaults(suiteName: suite)!
+        d.set(1, forKey: AppSettings.Keys.minFileSizeMB)
+        let s = AppSettings(testSuite: suite)
+        XCTAssertEqual(s.minFileSizeMB, 100, "历史调试值 1MB 不能继续污染大文件默认阈值")
+        XCTAssertEqual(d.integer(forKey: AppSettings.Keys.minFileSizeMB), 100, "迁移后应写回默认值，避免下次启动继续显示 1MB")
+    }
+
+    @MainActor
     func test_testReset_应把所有键清空() throws {
         let suite = freshSuite()
         let s = AppSettings(testSuite: suite)

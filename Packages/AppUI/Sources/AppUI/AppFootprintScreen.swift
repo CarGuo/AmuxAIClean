@@ -134,19 +134,19 @@ public struct AppFootprintScreen: View {
                 Spacer()
                 VStack(alignment: .trailing, spacing: 1) {
                     if isPending {
+                        Text(item.totalBytes > 0 ? byteString(item.totalBytes) : String(localized: "appfootprint.row.computing", bundle: .module))
+                            .font(item.totalBytes > 0 ? .callout.monospacedDigit() : .caption)
+                            .foregroundStyle(item.totalBytes > 0 ? .primary : .secondary)
                         HStack(spacing: 4) {
                             ProgressView()
                                 .controlSize(.small)
                             Text("appfootprint.row.computing", bundle: .module)
-                                .font(.caption)
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
                     } else {
                         Text(byteString(item.totalBytes))
                             .font(.callout.monospacedDigit())
-                        Text(String(format: String(localized: "appfootprint.row.bundle_data", bundle: .module), byteString(item.appBundleBytes), byteString(item.relatedBytes)))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -236,7 +236,7 @@ public struct AppFootprintScreen: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(String(format: String(localized: "appfootprint.detail.total_buckets", bundle: .module), byteString(item.totalBytes), item.buckets.count))
+                Text(String(format: String(localized: "appfootprint.detail.total_size", bundle: .module), byteString(item.totalBytes)))
                     .font(.callout.monospacedDigit())
             }
             Spacer()
@@ -248,7 +248,7 @@ public struct AppFootprintScreen: View {
     private func detailList(_ item: AppFootprintItem) -> some View {
         List {
             ForEach(item.buckets) { b in
-                bucketRow(b, total: max(1, item.totalBytes))
+                bucketRow(b)
                     .contextMenu {
                         Button {
                             revealInFinder(path: b.path)
@@ -261,8 +261,7 @@ public struct AppFootprintScreen: View {
         .listStyle(.inset)
     }
 
-    private func bucketRow(_ b: AppFootprintBucket, total: Int64) -> some View {
-        let ratio = Double(b.bytes) / Double(total)
+    private func bucketRow(_ b: AppFootprintBucket) -> some View {
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
                 Image(systemName: bucketIcon(b.kind))
@@ -276,10 +275,6 @@ public struct AppFootprintScreen: View {
                 Text(byteString(b.bytes))
                     .font(.callout.monospacedDigit())
             }
-            ratioBar(ratio: ratio)
-            Text(String(format: String(localized: "appfootprint.bucket.kind_count", bundle: .module), bucketLabel(b.kind), b.fileCount))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 3)
     }
@@ -323,11 +318,8 @@ public struct AppFootprintScreen: View {
         items = installed.map(placeholderItem(for:))
         selected = items.first
 
-        // docs/AUDIT_2026_06.md §4.1 P3 两阶段加载：
-        // 第 1 阶段 = 先显示 /Applications 一层应用清单（每行"统计中"），避免首个大 app
-        // 的 bundle snapshot 把页面长时间卡在空态。
-        // 第 2 阶段 = stream 边算边替换对应 item + 倒序重排；不额外放大底层 IO 并发。
-        let stream = scanner.scanAllStream(apps: installed)
+        // 应用占用只展示已安装 App 本体大小，不触发卸载残留的关联目录深扫。
+        let stream = scanner.scanBundleStream(apps: installed)
         streamTask = Task { @MainActor in
             for await item in stream {
                 if Task.isCancelled { break }
@@ -336,12 +328,14 @@ public struct AppFootprintScreen: View {
                 } else {
                     items.append(item)
                 }
-                pendingIDs.remove(item.id)
+                if item.isComplete {
+                    pendingIDs.remove(item.id)
+                    progressDone += 1
+                }
                 sortItemsForDisplay()
                 if selected?.id == item.id {
                     selected = item
                 }
-                progressDone += 1
             }
             // 仅当未被取消时才置 isLoading=false——否则 reload() 二次触发会把
             // 新一轮的 isLoading 立刻误清零。
@@ -356,6 +350,7 @@ public struct AppFootprintScreen: View {
             bundleID: app.metadata.bundleID,
             appName: app.metadata.appName,
             appURL: app.appURL,
+            isComplete: false,
             appBundleBytes: 0,
             relatedBytes: 0,
             buckets: [
@@ -422,15 +417,6 @@ public struct AppFootprintScreen: View {
         case .userData:    return .blue
         case .launchAgent: return .orange
         case .vendorRule:  return .purple
-        }
-    }
-
-    private func bucketLabel(_ k: AppFootprintBucket.Kind) -> String {
-        switch k {
-        case .bundle:      return String(localized: "appfootprint.bucket.bundle", bundle: .module)
-        case .userData:    return String(localized: "appfootprint.bucket.user_data", bundle: .module)
-        case .launchAgent: return String(localized: "appfootprint.bucket.launch_agent", bundle: .module)
-        case .vendorRule:  return String(localized: "appfootprint.bucket.vendor_rule", bundle: .module)
         }
     }
 

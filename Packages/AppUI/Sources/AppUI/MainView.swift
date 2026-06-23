@@ -2248,7 +2248,7 @@ public struct MainView: View {
     /// 负数 / NaN / +inf 一律按 0 处理（防呆，UI 永远不会出现 "-3s"）。
     private func formatDuration(_ seconds: TimeInterval) -> String {
         guard seconds.isFinite, seconds > 0 else { return "0s" }
-        let total = Int(seconds.rounded())
+        let total = max(1, Int(seconds.rounded(.up)))
         let h = total / 3600
         let m = (total % 3600) / 60
         let s = total % 60
@@ -2283,7 +2283,6 @@ public struct MainView: View {
     private var singleRootProgress: some View {
         let scanned = coordinator.snapshot.totalBytes
         let expected = coordinator.expectedTotalBytes
-        let elapsed = coordinator.snapshot.elapsed
 
         // 0~1 比例。expected 缺失 / scanned > expected（估算偏小）时退化为 nil → **隐藏进度条**。
         //
@@ -2324,10 +2323,12 @@ public struct MainView: View {
                 // v2026.06.23：仅展示「已用时间」，不再展示「剩余时间」。
                 // ETA 计算在长扫场景下不可信，已在 ScanCoordinator 侧停止下发；
                 // 这里 UI 也不再读 estimatedRemaining，避免任何残留入口偷渡回来。
-                Text(String(format: String(localized: "main.scan.progress.elapsed", bundle: .module),
-                            formatDuration(elapsed)))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(String(format: String(localized: "main.scan.progress.elapsed", bundle: .module),
+                                formatDuration(coordinator.elapsedForDisplay(referenceDate: context.date))))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
     }

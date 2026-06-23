@@ -26,6 +26,37 @@ final class AppFootprintStreamTests: XCTestCase {
         }
     }
 
+    private struct SlowSnapshotFM: FileManagerSnapshotting {
+        let snapshots: [String: FSSnapshot]
+        let slowPath: String
+
+        func firstLevelEntries(at path: String) -> [FSEntry]? { [] }
+
+        func snapshot(at path: String) -> FSSnapshot {
+            if path == slowPath {
+                Thread.sleep(forTimeInterval: 0.25)
+            }
+            return snapshots[path] ?? .init(bytes: 0, fileCount: 0)
+        }
+    }
+
+    private struct SlowRelatedFM: FileManagerSnapshotting {
+        let entriesByRoot: [String: [FSEntry]]
+        let snapshots: [String: FSSnapshot]
+        let slowPath: String
+
+        func firstLevelEntries(at path: String) -> [FSEntry]? {
+            entriesByRoot[path]
+        }
+
+        func snapshot(at path: String) -> FSSnapshot {
+            if path == slowPath {
+                Thread.sleep(forTimeInterval: 0.25)
+            }
+            return snapshots[path] ?? .init(bytes: 0, fileCount: 0)
+        }
+    }
+
     private func makeApp(
         bundleID: String,
         name: String,
@@ -71,6 +102,97 @@ final class AppFootprintStreamTests: XCTestCase {
             collected.append(item)
         }
         XCTAssertEqual(collected.count, 3, "stream 必须 yield 3 条且不重不漏")
+    }
+
+    func test_scanAllStream_有限并发避免首个大App阻塞首屏结果() async {
+        let slow = makeApp(bundleID: "com.slow", name: "Slow", atPath: "/Slow.app")
+        let fast = makeApp(bundleID: "com.fast", name: "Fast", atPath: "/Fast.app")
+        let fm = SlowSnapshotFM(
+            snapshots: [
+                slow.appURL.path: .init(bytes: 900, fileCount: 9),
+                fast.appURL.path: .init(bytes: 10, fileCount: 1)
+            ],
+            slowPath: slow.appURL.path
+        )
+        let unins = AppUninstaller(homeDirectory: "/H", fileManager: fm, vendorRules: [])
+        let scanner = AppFootprintScanner(uninstaller: unins, snapshot: fm)
+
+        var first: AppFootprintItem?
+        for await item in scanner.scanAllStream(apps: [slow, fast], maxConcurrent: 2) {
+            first = item
+            break
+        }
+
+        XCTAssertEqual(first?.bundleID, "com.fast",
+                       "首个 app 很慢时，stream 应允许后续轻量 app 先返回，避免 UI 长时间全 0KB")
+    }
+
+    func test_scanProgressiveStream_先yieldBundle阶段再yield完整关联数据() async {
+        let app = makeApp(bundleID: "com.demo.app", name: "Demo", atPath: "/Demo.app")
+        let home = "/H"
+        let cachesPath = "\(home)/Library/Caches"
+        let relatedPath = "\(cachesPath)/com.demo.app"
+        let fm = SlowRelatedFM(
+            entriesByRoot: [
+                cachesPath: [FSEntry(name: "com.demo.app", path: relatedPath)]
+            ],
+            snapshots: [
+                app.appURL.path: .init(bytes: 100, fileCount: 1),
+                relatedPath: .init(bytes: 900, fileCount: 9)
+            ],
+            slowPath: relatedPath
+        )
+        let unins = AppUninstaller(homeDirectory: home, fileManager: fm, vendorRules: [])
+        let scanner = AppFootprintScanner(uninstaller: unins, snapshot: fm)
+
+        var yielded: [AppFootprintItem] = []
+        for await item in scanner.scanProgressiveStream(apps: [app], maxConcurrent: 1) {
+            yielded.append(item)
+        }
+
+        XCTAssertEqual(yielded.count, 2)
+        XCTAssertFalse(yielded[0].isComplete, "第一条应先给 UI 一个 bundle-only 阶段，避免长时间 0KB")
+        XCTAssertEqual(yielded[0].appBundleBytes, 100)
+        XCTAssertEqual(yielded[0].relatedBytes, 0)
+        XCTAssertEqual(yielded[0].totalBytes, 100)
+        XCTAssertTrue(yielded[1].isComplete)
+        XCTAssertEqual(yielded[1].appBundleBytes, 100)
+        XCTAssertEqual(yielded[1].relatedBytes, 900)
+        XCTAssertEqual(yielded[1].totalBytes, 1000)
+    }
+
+    func test_scanBundleStream_只统计App本体不触发关联目录深扫() async {
+        let app = makeApp(bundleID: "com.demo.app", name: "Demo", atPath: "/Demo.app")
+        let home = "/H"
+        let cachesPath = "\(home)/Library/Caches"
+        let relatedPath = "\(cachesPath)/com.demo.app"
+        let fm = SlowRelatedFM(
+            entriesByRoot: [
+                cachesPath: [FSEntry(name: "com.demo.app", path: relatedPath)]
+            ],
+            snapshots: [
+                app.appURL.path: .init(bytes: 100, fileCount: 1),
+                relatedPath: .init(bytes: 900, fileCount: 9)
+            ],
+            slowPath: relatedPath
+        )
+        let unins = AppUninstaller(homeDirectory: home, fileManager: fm, vendorRules: [])
+        let scanner = AppFootprintScanner(uninstaller: unins, snapshot: fm)
+
+        let start = Date()
+        var yielded: [AppFootprintItem] = []
+        for await item in scanner.scanBundleStream(apps: [app], maxConcurrent: 1) {
+            yielded.append(item)
+        }
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertEqual(yielded.count, 1)
+        XCTAssertTrue(yielded[0].isComplete)
+        XCTAssertEqual(yielded[0].appBundleBytes, 100)
+        XCTAssertEqual(yielded[0].relatedBytes, 0)
+        XCTAssertEqual(yielded[0].totalBytes, 100)
+        XCTAssertEqual(yielded[0].buckets.count, 1)
+        XCTAssertLessThan(elapsed, 0.15, "应用占用只看 .app 本体，不应触发慢关联目录扫描")
     }
 
     // MARK: - 2. 流式 yield 与 scanAll 结果集一致
