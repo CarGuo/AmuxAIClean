@@ -23,6 +23,8 @@ Reference datasets and projects to mine:
 
 - BleachBit CleanerML: declarative cleaner XML, useful for modeling rule shape and safety metadata, but mostly Linux/Windows paths.
   Source: https://github.com/bleachbit/cleanerml
+- BleachBit CleanerML documentation: useful for rule semantics such as glob/walk/deep matching, OS guards, running-process guards, and schema validation.
+  Source: https://docs.bleachbit.org/cml/cleanerml.html
 - Winapp2.ini: large community-maintained cleaner database, useful for app taxonomy and transient-data naming patterns. Windows paths must not be copied directly.
   Source: https://github.com/MoscaDotTo/Winapp2
 - BleachBit Winapp2 guide: documents the scale and import model for community cleaners.
@@ -31,6 +33,8 @@ Reference datasets and projects to mine:
   Sources: https://docs.brew.sh/Manpage and https://docs.brew.sh/FAQ
 - macOS developer-cache cleaners such as `cache-cleaner` / `mac-cleaner-cli`: useful as command-backed references for Docker, npm, Homebrew, git, and build caches, but every command/path must be revalidated before enabling.
   Sources: https://github.com/markcallen/cache-cleaner and https://github.com/guhcostan/mac-cleaner-cli
+- macOS app-cleaner projects such as Pearcleaner: useful for bundle/app relation discovery and competitor scope, but its uninstall/orphan model is broader than cache cleaning.
+  Source: https://github.com/alienator88/Pearcleaner
 
 ## Rule Model
 
@@ -80,29 +84,65 @@ Never include:
 
 ## First Rule Batch
 
-Domestic apps:
+Consumer and productivity apps should ship as a separate rule batch from developer caches. Their data-loss profile is different: chat apps and office suites often mix cache, documents, offline assets, and account/session databases in nearby folders. Rules must therefore prefer app-declared cache locations, Electron cache subfolders, and update/log payloads; message databases, synced documents, and browser profiles are blocked unless a dedicated product surface explains the consequences.
+
+Domestic communication and collaboration:
 
 - WeChat: logs/temp/cache only; chat databases and file storage blocked.
 - QQ / TIM: logs/cache only; received files blocked by default.
 - DingTalk: cache/log/update payloads.
-- Feishu / Lark: cache/log/update payloads.
+- Feishu / Lark: cache/log/update payloads; prefer the app's built-in cache clear affordance when available, and block message/workspace databases.
 - Tencent Meeting: logs/cache.
+- WeCom / Enterprise WeChat: cache/log/update payloads; messages and received files blocked.
+
+Domestic productivity and office:
+
+- WPS Office: cache/log/update payloads; cloud documents, templates, recent file databases, and account data blocked.
+- Kingsoft Docs: cache/log only; synced workspace data blocked.
+- Youdao / Baidu / Tencent document tools: cache/log/update payloads only; user documents blocked.
+
+Domestic cloud and media:
+
 - Baidu Netdisk: cache/temp/update payloads; synced files blocked.
+- Alibaba Drive / Quark Drive / 115: cache/temp/update payloads; synced folders and offline files blocked.
 - NetEase Cloud Music: cache confirm; downloaded music blocked.
 - Bilibili / iQIYI / Youku desktop cache if installed.
 
-International apps:
+International communication and collaboration:
 
 - Slack: `Cache`, `Code Cache`, `GPUCache`, logs.
 - Discord: `Cache`, `Code Cache`, `GPUCache`.
 - Teams: cache/log/update payloads.
 - Zoom: logs/cache.
+- Notion / Obsidian / Evernote: web/cache/log only; vaults, notebooks, and synced databases blocked.
+
+International productivity and office:
+
+- Microsoft Office: `~/Library/Containers/com.microsoft.*` cache/log/temp subpaths only; Outlook mail stores, OneDrive sync roots, templates, identities, and AutoRecovery require confirm or blocked depending on path.
+- Google Drive: application cache/log/update payloads only; synced Drive folders blocked.
+- Google Chrome / Edge / Brave / Arc: browser cache directories only, never profile data.
+- Adobe Creative Cloud / Acrobat: cache/log/update payloads confirm; user projects, presets, libraries, and cloud sync roots blocked.
+- Dropbox / OneDrive / Box: app cache/log/update payloads only; sync roots blocked.
+
+Browser and Electron template:
+
 - Chrome / Edge / Brave / Arc: browser cache directories only, never profile data.
+- Electron apps may opt into `Cache`, `Code Cache`, `GPUCache`, `Service Worker/CacheStorage`, `logs`, and `Crashpad/completed` only. `Local Storage`, `IndexedDB`, `Cookies`, `Session Storage`, and profile roots are blocked by default because they may contain login/session/business data.
+
+Developer-adjacent apps that are also consumer-facing:
+
 - VS Code / Cursor: logs, CachedData, GPUCache; extensions confirm.
 - JetBrains IDEs: caches/logs, old version caches.
 - Docker Desktop: build cache should be command-backed or confirm; volumes blocked.
 - Postman / Insomnia: cache/log only; workspaces blocked.
 - Spotify: cache confirm; downloaded/offline content confirm.
+
+Rule evidence sources for consumer/productivity apps:
+
+- AppCleaner/Pearcleaner-style leftover discovery is useful for finding related bundle IDs and Library locations, but its uninstall model is broader than cache cleaning. Cache rules must not inherit "all related files" behavior.
+- BleachBit CleanerML contribution guidance is a good policy baseline: option names must accurately describe what they delete, and cleaners should avoid settings the user may regret deleting.
+- Vendor help pages, such as Feishu/Lark's cache clearing FAQ, are high-confidence sources for whether an app treats a cache as disposable.
+  Sources: https://www.feishu.cn/hc/en-US/articles/399507903065-clear-cache-and-system-reset-faqs and https://www.larksuite.com/hc/en-US/articles/360048488246-clear-cache-and-system-reset-faqs
 
 ## Developer Cache Rule Batch
 

@@ -2,12 +2,12 @@ import SwiftUI
 import AppKit
 import ScanKit
 
-/// v1.2 P2-1 重复文件去重屏（**只读视图**）。
+/// v1.2 P2-1 重复文件去重屏。
 ///
 /// 与 [AppFootprintScreen.swift](AppFootprintScreen.swift) / [LaunchAgentScreen.swift] 同源约定：
-/// - 这是「**查看 / 比对**」入口，**不带删除按钮**；右键菜单仅 "在 Finder 中显示" / "拷贝路径"。
-/// - 没有 trash 调用、没有勾选 set、没有清单提交。
-/// - 顶部 banner 醒目提示「重复检测可能漏报或误报」，引导用户用 Finder 自行处理。
+/// - DuplicateScanner 只负责「查看 / 比对」，不暴露删除 API。
+/// - UI 层提供每组处理入口，删除动作统一走 TrashPipeline 移到废纸篓。
+/// - 顶部 banner 醒目提示「重复检测可能漏报或误报」，prefix-only 组建议手动核对。
 public struct DuplicateScreen: View {
     /// 顶栏「最小尺寸」滑杆挡位。
     enum SizeStep: Int, CaseIterable, Identifiable {
@@ -44,8 +44,26 @@ public struct DuplicateScreen: View {
     @State private var sizingFiles: Int = 0
     @State private var scanTask: Task<Void, Never>?
     @State private var tccSkippedRoots: [String] = []
+    @State private var activeSheet: ActiveSheet?
+    @State private var isDeletingDuplicates: Bool = false
 
-    public init() {}
+    private let pipeline: any DeletionPipeline
+
+    private enum ActiveSheet: Identifiable {
+        case handle(DuplicateGroup)
+        case result(OperationResultPayload)
+
+        var id: String {
+            switch self {
+            case .handle(let group): return "handle-\(group.id)"
+            case .result(let payload): return "result-\(payload.id)"
+            }
+        }
+    }
+
+    public init(pipeline: (any DeletionPipeline)? = nil) {
+        self.pipeline = pipeline ?? TrashPipeline()
+    }
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -77,6 +95,22 @@ public struct DuplicateScreen: View {
         // 让 banner / topBar 内的 chip / 滑杆 即使 ideal width 较大也不会反推外层。
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onDisappear { scanTask?.cancel() }
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .handle(let group):
+                DuplicateHandleSheet(
+                    group: group,
+                    isDeleting: isDeletingDuplicates,
+                    onCancel: { activeSheet = nil },
+                    onDefault: { deleteDuplicatePaths(group: group, paths: DuplicateHandlingPlan.defaultDeleteTargets(for: group)) },
+                    onManual: { paths in deleteDuplicatePaths(group: group, paths: paths) }
+                )
+            case .result(let payload):
+                OperationResultSheet(payload: payload) {
+                    activeSheet = nil
+                }
+            }
+        }
         // v2：套布局沙箱——切断左右两栏（leftList / rightDetail）任何一行 path
         // 反向把 detail 列宽推大、再反挤外层 NavigationSplitView sidebar 的链条。
         .layoutSandbox()
@@ -251,6 +285,16 @@ public struct DuplicateScreen: View {
                 Spacer()
                 Text(byteString(g.totalBytes))
                     .font(.callout.monospacedDigit())
+                Button {
+                    activeSheet = .handle(g)
+                } label: {
+                    Label(String(localized: "duplicate.action.handle", bundle: .module),
+                          systemImage: "checklist")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.borderless)
+                .help(String(localized: "duplicate.action.handle", bundle: .module))
+                .disabled(isDeletingDuplicates)
             }
             Text(String(format: String(localized: "duplicate.group.reclaim_per", bundle: .module), byteString(g.reclaimableBytes), byteString(g.bytes)))
                 .font(.caption)
@@ -306,6 +350,14 @@ public struct DuplicateScreen: View {
                 Spacer()
                 Text(String(format: String(localized: "duplicate.detail.copies_size", bundle: .module), g.paths.count, byteString(g.bytes)))
                     .font(.callout.monospacedDigit())
+                Button {
+                    activeSheet = .handle(g)
+                } label: {
+                    Label(String(localized: "duplicate.action.handle", bundle: .module),
+                          systemImage: "checklist")
+                }
+                .controlSize(.small)
+                .disabled(isDeletingDuplicates)
             }
             Text(String(format: String(localized: "duplicate.detail.reclaimable", bundle: .module), byteString(g.reclaimableBytes)))
                 .font(.caption)
@@ -360,7 +412,7 @@ public struct DuplicateScreen: View {
                     .foregroundStyle(.blue)
             }
             Spacer()
-            Text("common.read_only_no_delete", bundle: .module)
+            Text("duplicate.footer.delete_hint", bundle: .module)
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
@@ -444,6 +496,50 @@ public struct DuplicateScreen: View {
         NSPasteboard.general.setString(s, forType: .string)
     }
 
+    private func deleteDuplicatePaths(group: DuplicateGroup, paths: [String]) {
+        guard DuplicateHandlingPlan.isValidDeleteTargets(paths, for: group), !isDeletingDuplicates else { return }
+        isDeletingDuplicates = true
+        Task {
+            pipeline.setAccessDeniedPaths([])
+            let result = await pipeline.moveToTrashReturningOutcome(paths: paths, dryRun: false)
+            await MainActor.run {
+                isDeletingDuplicates = false
+                let movedPairs = result.outcome?.movedPairs.map { ($0.originalPath, $0.trashedPath) } ?? result.legacy.3
+                if !movedPairs.isEmpty {
+                    UndoHistoryStore.shared.addRecord(
+                        source: "duplicate",
+                        filePairs: movedPairs.map { UndoHistoryStore.Record.FilePair(original: $0.0, trashed: $0.1) }
+                    )
+                    pruneMovedDuplicatePaths(Set(movedPairs.map(\.0)))
+                }
+                if let outcome = result.outcome {
+                    activeSheet = .result(OperationResultPayload(outcome: outcome))
+                } else {
+                    activeSheet = .result(OperationResultPayload(
+                        movedPairs: movedPairs,
+                        failedPaths: result.legacy.2 == nil ? [] : paths,
+                        safetyRejected: []
+                    ))
+                }
+            }
+        }
+    }
+
+    private func pruneMovedDuplicatePaths(_ moved: Set<String>) {
+        guard !moved.isEmpty else { return }
+        groups = groups.compactMap { group in
+            let remaining = group.paths.filter { !moved.contains($0) }
+            guard remaining.count >= 2 else { return nil }
+            return DuplicateGroup(hashKey: group.hashKey,
+                                  bytes: group.bytes,
+                                  paths: remaining,
+                                  reliability: group.reliability)
+        }
+        if let selectedGroupID, !groups.contains(where: { $0.id == selectedGroupID }) {
+            self.selectedGroupID = groups.first?.id
+        }
+    }
+
     // MARK: - Scan driver
 
     private func startScan() {
@@ -491,5 +587,178 @@ public struct DuplicateScreen: View {
             bucketsTotal = 0
             sizingFiles = 0
         }
+    }
+}
+
+private struct DuplicateHandleSheet: View {
+    let group: DuplicateGroup
+    let isDeleting: Bool
+    let onCancel: () -> Void
+    let onDefault: () -> Void
+    let onManual: ([String]) -> Void
+
+    @State private var manualTargets: Set<String>
+
+    init(group: DuplicateGroup,
+         isDeleting: Bool,
+         onCancel: @escaping () -> Void,
+         onDefault: @escaping () -> Void,
+         onManual: @escaping ([String]) -> Void) {
+        self.group = group
+        self.isDeleting = isDeleting
+        self.onCancel = onCancel
+        self.onDefault = onDefault
+        self.onManual = onManual
+        _manualTargets = State(initialValue: Set(DuplicateHandlingPlan.defaultDeleteTargets(for: group)))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider()
+            VStack(alignment: .leading, spacing: 12) {
+                defaultSection
+                Divider()
+                manualSection
+            }
+            .padding(20)
+            Divider()
+            footer
+        }
+        .frame(width: 640, height: 520)
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            Image(systemName: group.reliability == .full ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                .font(.system(size: 32, weight: .semibold))
+                .foregroundStyle(group.reliability == .full ? .green : .orange)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("duplicate.handle.title", bundle: .module)
+                    .font(.title2.bold())
+                Text(String(format: String(localized: "duplicate.handle.subtitle %lld %@", bundle: .module),
+                            group.paths.count,
+                            ByteCountFormatter.string(fromByteCount: group.reclaimableBytes, countStyle: .file)))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(20)
+    }
+
+    private var defaultSection: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "1.circle")
+                .foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("duplicate.handle.default.title", bundle: .module)
+                    .font(.headline)
+                Text(String(format: String(localized: "duplicate.handle.default.detail %@", bundle: .module),
+                            URL(fileURLWithPath: group.paths.first ?? "").lastPathComponent))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                if group.reliability != .full {
+                    Text("duplicate.handle.prefix.warning", bundle: .module)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+            Spacer()
+            Button {
+                onDefault()
+            } label: {
+                if isDeleting {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text("duplicate.handle.default.button", bundle: .module)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isDeleting || group.paths.count < 2)
+        }
+    }
+
+    private var manualSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("duplicate.handle.manual.title", bundle: .module)
+                .font(.headline)
+            Text("duplicate.handle.manual.detail", bundle: .module)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            List {
+                ForEach(group.paths, id: \.self) { path in
+                    Toggle(isOn: binding(for: path)) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(URL(fileURLWithPath: path).lastPathComponent)
+                                .font(.callout)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text(path)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                    .toggleStyle(.checkbox)
+                    .disabled(isDeleting)
+                }
+            }
+            .listStyle(.inset)
+            .frame(minHeight: 210)
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            Text(String(format: String(localized: "duplicate.handle.selected %lld %@", bundle: .module),
+                        manualTargets.count,
+                        ByteCountFormatter.string(fromByteCount: group.bytes * Int64(manualTargets.count), countStyle: .file)))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button(String(localized: "delete.action.cancel", bundle: .module), role: .cancel) {
+                onCancel()
+            }
+            .keyboardShortcut(.cancelAction)
+            Button(String(localized: "duplicate.handle.manual.button", bundle: .module), role: .destructive) {
+                onManual(Array(manualTargets))
+            }
+            .disabled(isDeleting || !DuplicateHandlingPlan.isValidDeleteTargets(Array(manualTargets), for: group))
+            .keyboardShortcut(.defaultAction)
+        }
+        .padding(20)
+    }
+
+    private func binding(for path: String) -> Binding<Bool> {
+        Binding(
+            get: { manualTargets.contains(path) },
+            set: { newValue in
+                if newValue {
+                    manualTargets.insert(path)
+                } else {
+                    manualTargets.remove(path)
+                }
+            }
+        )
+    }
+}
+
+enum DuplicateHandlingPlan {
+    static func defaultDeleteTargets(for group: DuplicateGroup) -> [String] {
+        Array(group.paths.dropFirst())
+    }
+
+    static func isValidDeleteTargets(_ paths: [String], for group: DuplicateGroup) -> Bool {
+        let uniqueTargets = Set(paths)
+        guard !uniqueTargets.isEmpty,
+              uniqueTargets.count == paths.count,
+              uniqueTargets.count < group.paths.count else {
+            return false
+        }
+        let allPaths = Set(group.paths)
+        return uniqueTargets.isSubset(of: allPaths)
     }
 }

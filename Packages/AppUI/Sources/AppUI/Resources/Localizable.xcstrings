@@ -2960,19 +2960,36 @@
         }
       }
     },
+    "duplicate.action.handle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Handle"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "处理"
+          }
+        }
+      }
+    },
     "duplicate.banner.detail": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Hardlinks, clonefile, and prefix-only matches may all affect verdicts. Please verify manually before deleting. This view is read-only and never deletes; please handle in Finder."
+            "value": "Hardlinks, clonefile, and prefix-only matches may all affect verdicts. Files are moved to Trash only after you confirm a duplicate group."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "hardlink / clonefile / 仅前缀一致 都可能影响判定，删除前请人工核对。本视图为只读模式，不会删除任何文件，请用 Finder 自行处理。"
+            "value": "hardlink / clonefile / 仅前缀一致 都可能影响判定。只有在你确认某个重复组后，才会将文件移到废纸篓。"
           }
         }
       }
@@ -3068,13 +3085,30 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tip: this view never deletes files. Confirm in Finder and handle manually."
+            "value": "Tip: full-file hash groups are safer to process. Prefix-only groups should be reviewed manually."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "提示：本视图不会删除任何文件，请在 Finder 中确认后自行处理。"
+            "value": "提示：全文件 hash 一致的组更适合处理；仅前缀一致的组建议手动核对。"
+          }
+        }
+      }
+    },
+    "duplicate.footer.delete_hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use Handle on a duplicate group to choose what moves to Trash"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点击重复组的「处理」选择要移到废纸篓的副本"
           }
         }
       }
@@ -3177,6 +3211,176 @@
           "stringUnit": {
             "state": "translated",
             "value": "可释放 %@ · 单份 %@"
+          }
+        }
+      }
+    },
+    "duplicate.handle.default.button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep first"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保留第一个"
+          }
+        }
+      }
+    },
+    "duplicate.handle.default.detail %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep %@ and move the other copies to Trash."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保留 %@，其它副本移到废纸篓。"
+          }
+        }
+      }
+    },
+    "duplicate.handle.default.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Default handling"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认处理"
+          }
+        }
+      }
+    },
+    "duplicate.handle.manual.button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move selected to Trash"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将选中项移到废纸篓"
+          }
+        }
+      }
+    },
+    "duplicate.handle.manual.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select the copies to remove. At least one copy must remain."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择要移走的副本，至少必须保留一份。"
+          }
+        }
+      }
+    },
+    "duplicate.handle.manual.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manual selection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手动选择"
+          }
+        }
+      }
+    },
+    "duplicate.handle.prefix.warning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This group only matched by prefix hash; review paths before moving files."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该组仅前缀 hash 一致，移动前请先核对路径。"
+          }
+        }
+      }
+    },
+    "duplicate.handle.selected %lld %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld selected · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选 %lld 项 · %@"
+          }
+        }
+      }
+    },
+    "duplicate.handle.subtitle %lld %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld copies · reclaimable %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 份 · 可释放 %@"
+          }
+        }
+      }
+    },
+    "duplicate.handle.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Handle duplicate group"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "处理重复组"
           }
         }
       }
