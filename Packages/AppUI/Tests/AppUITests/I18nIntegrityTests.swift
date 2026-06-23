@@ -305,8 +305,15 @@ final class I18nIntegrityTests: XCTestCase {
     }
 
     /// 遍历 xcstrings strings 字典，为每条 key 抽出所有 (locale, value) pair。
-    /// 返回 [(key, locale, value)] 平铺数组。
-    /// 仅取 stringUnit.value（plural variations 暂未启用，先记 backlog）。
+    /// 返回 [(key, locale, value, hasVariations)] 平铺数组。
+    ///
+    /// **substitution 形态 (2026-06-23 升级)**：之前仅取 `locDict.stringUnit.value`，
+    /// 漏扫了 `substitutions.<name>.variations.plural.{one,other}.stringUnit.value`
+    /// 里的实际翻译。本次升级后：substitution 内的 plural 子条目也会被展开为独立 unit，
+    /// `key` 字段附 `[#sub:<name>:<category>]` 后缀以便定位。
+    /// 同时 `hasVariations` 字段含义升级为"该顶层 key 任意 locale 已启用 variations
+    /// （顶层 variations 或 substitutions）"——避免 plural-hygiene 契约把已迁移的 key
+    /// 反复列入 backlog。
     private func loadAllStringUnits() throws -> [(key: String, locale: String, value: String, hasVariations: Bool)] {
         let json = try loadXcstringsRaw()
         guard let strings = json["strings"] as? [String: Any] else { return [] }
@@ -314,72 +321,109 @@ final class I18nIntegrityTests: XCTestCase {
         for (key, raw) in strings {
             guard let entry = raw as? [String: Any] else { continue }
             guard let locs = entry["localizations"] as? [String: Any] else { continue }
+            // 先扫一遍：该 key 是否在任一 locale 启用了 variations（顶层 or substitutions）。
+            let keyHasVariations = locs.values.contains { locRaw in
+                guard let d = locRaw as? [String: Any] else { return false }
+                return !Self.extractPluralDicts(from: d).isEmpty
+            }
             for (locale, locRaw) in locs {
                 guard let locDict = locRaw as? [String: Any] else { continue }
-                let hasVariations = (locDict["variations"] != nil)
+                // 形态 A：顶层 stringUnit.value（含 substitution 模板字符串如 "%#@count@"）
                 if let unit = locDict["stringUnit"] as? [String: Any],
                    let v = unit["value"] as? String {
-                    out.append((key, locale, v, hasVariations))
+                    out.append((key, locale, v, keyHasVariations))
+                }
+                // 形态 B：substitutions.<name>.variations.plural.<cat>.stringUnit.value
+                if let subs = locDict["substitutions"] as? [String: Any] {
+                    for (subName, subRaw) in subs {
+                        guard let subDict = subRaw as? [String: Any],
+                              let variations = subDict["variations"] as? [String: Any],
+                              let plural = variations["plural"] as? [String: Any] else { continue }
+                        for (cat, catRaw) in plural {
+                            guard let catDict = catRaw as? [String: Any],
+                                  let unit = catDict["stringUnit"] as? [String: Any],
+                                  let v = unit["value"] as? String else { continue }
+                            let subKey = "\(key)[#sub:\(subName):\(cat)]"
+                            // substitution 子条目的 hasVariations 视为 true（它本身就是 plural 内容）
+                            out.append((subKey, locale, v, true))
+                        }
+                    }
                 }
             }
         }
         return out
     }
 
-    /// 契约 4：plural-shape backlog 钉在 CI 输出
+    /// 契约 4：plural-shape backlog —— 已升级为**硬契约**
     ///
-    /// xcstrings 里凡是 value 含英文字面 `(s)` 复数标记（如 `swapfile(s)` / `file(s)`），
+    /// xcstrings 里凡是 en value 含字面 `(s)` 复数标记（如 `swapfile(s)` / `item(s)`），
     /// 严格意义上都是"翻译质量降级"——英文 `1 swapfile` vs `2 swapfiles` 写错就尴尬。
-    /// Apple 推荐改造为 [String Catalog plural variations](https://developer.apple.com/documentation/xcode/localizing-and-varying-text-with-a-string-catalog)。
+    /// Apple 推荐改造为 [String Catalog plural variations](https://developer.apple.com/documentation/xcode/localizing-and-varying-text-with-a-string-catalog)
+    /// （substitutions + `%#@name@` 命名占位符 + `variations.plural.{one,other}`）。
     ///
-    /// **本契约 warn-only**：当前 xcstrings 共 0 条 variations，迁移成本零代码、纯翻译表
-    /// 改造，可以分阶段做。这条用例的目标是把 backlog 数量钉在 CI 输出，让维护者
-    /// 每次 PR 都能看到当前剩余条数，不让其无声膨胀。
+    /// **治理史**：
+    ///   - 2026-06-21：本契约引入，warn-only，backlog 6 条，上限 8；
+    ///   - 2026-06-23（P1 收尾）：完成 4 条 (s) 真迁移（capacity.swap.allocated.hint.real /
+    ///     op.result.force_delete.button / op.result.force_delete.confirm.message /
+    ///     op.result.summary.success），剩下 2 条 workflow.detail.* 在 i18n 删除 stale
+    ///     时已被一并清掉（属于 stale），实际 backlog → 0；升级为**硬上限 0**。
+    ///
+    /// **范围**：
+    ///   - 只看顶层 en value（zh 不需要复数；其它语言走变体规则各自有 plural form）；
+    ///   - 排除 hasVariations=true 的 key（已迁移者不该再被列入 backlog）；
+    ///   - **同时**扫 substitution 内 plural 子条目：若 `Apple translated %lld file(s)`
+    ///     这种"迁移半途"再次出现也会被抓到（substitution 内允许 plural form，但 form
+    ///     内不应该再用 `(s)` 兜底——既然走 substitution 就应该 form 写完整）。
     func test_xcstrings_plural_shape_backlog_warn_only() throws {
         let units = try loadAllStringUnits()
-        // 命中 (s) 复数标记的 (key, locale)
-        let pluralParenSuffix = units.filter { unit in
-            // 仅看英文 value（zh 不需要复数；其它语言走变体规则各自有 plural form）。
-            unit.locale == "en" && unit.value.range(of: #"\b\w+\(s\)"#, options: .regularExpression) != nil
+        let regex = try NSRegularExpression(pattern: #"\b\w+\(s\)"#, options: [])
+        let offenders = units.filter { unit in
+            guard unit.locale == "en" else { return false }
+            // 顶层 unit：已迁移者跳过
+            let isSubChild = unit.key.contains("[#sub:")
+            if !isSubChild && unit.hasVariations { return false }
+            let ns = unit.value as NSString
+            return regex.numberOfMatches(in: unit.value, range: NSRange(location: 0, length: ns.length)) > 0
         }
-        if !pluralParenSuffix.isEmpty {
-            print("⚠️ [I18n plural backlog] \(pluralParenSuffix.count) 条 en 翻译用 `(s)` 兜底复数（待迁移到 String Catalog plural variations）：")
-            for u in pluralParenSuffix.sorted(by: { $0.key < $1.key }) {
+        if !offenders.isEmpty {
+            print("❌ [I18n plural backlog 硬契约] 检测到 \(offenders.count) 条 en value 仍用 `(s)` 兜底复数：")
+            for u in offenders.sorted(by: { $0.key < $1.key }) {
                 print("    - [\(u.key)] \(u.value)")
             }
-            print("    → Step 17-D 后续治理：逐条改成 \"localizations.<lang>.variations.plural.{one, other}\"。")
+            print("    → 修复路径：在 xcstrings 中加 substitutions + `%#@name@` 占位符 + variations.plural.{one,other}。")
+            print("    → 参照：op.result.summary.success %lld 的现有结构。")
         }
-        // 当前已知 backlog（2026-06-21 重测）：6 条 (s) 兜底翻译，分别来自
-        //   - capacity.swap.allocated.hint.real
-        //   - op.result.force_delete.button %lld
-        //   - op.result.force_delete.confirm.message %lld
-        //   - op.result.summary.success %lld
-        //   - workflow.detail.delete.commandline_skipped %lld
-        //   - workflow.detail.simctl.blocked_running %lld
-        // 设上限护栏：超过 8 条立即 fail——防止后续 PR 引入新的 (s) 兜底翻译。
-        // 治理目标：随着 Step 17-D plural variations 迁移完成，回收上限到 5、3、0。
-        XCTAssertLessThanOrEqual(
-            pluralParenSuffix.count, 8,
-            "(s) 复数兜底翻译数量超过 8 条上限，已扫到 \(pluralParenSuffix.count) 条；新增 PR 必须改用 plural variations。"
+        XCTAssertEqual(
+            offenders.count, 0,
+            "(s) 复数兜底翻译数量必须为 0，已扫到 \(offenders.count) 条；必须改用 String Catalog plural variations。"
         )
     }
 
-    /// 契约 5：number-format hygiene 钉在 CI 输出
+    /// 契约 5：number-format hygiene —— 持续 warn-only，阈值收紧
     ///
     /// 凡是 value 同时包含 `%lld` / `%d` 与英文复数名词（files / items / sessions / rows /
     /// directories / apps）的 key，都是潜在的 plural variations 候选。
     /// 例如 `"%lld files"` 在英文里 `1 files` 反人类，但 zh-Hans `1 个文件` 就 OK。
     ///
-    /// 本契约只**计数 + 列出 backlog**，不强制 fail，理由同契约 4——逐条迁移成本可控、
-    /// 但不能让基数无声膨胀。
+    /// **治理史**：
+    ///   - 2026-06-21：上限 32（实测 29）；
+    ///   - 2026-06-23（P1 收尾）：substitution-aware 化（已迁移条目自动从候选中剔除），
+    ///     重新校准；当前 backlog 评估为 32 条（detail-only，无 UX 紧迫），保持 warn-only。
+    ///
+    /// 本契约仍只**计数 + 列出 backlog**，不强制 fail。32 条多为 "scanning %lld files"
+    /// 这种纯进度条文案，单 vs 复数差异极小，逐条迁移成本不匹配收益；保持 backlog 跟踪即可。
     func test_xcstrings_number_plural_backlog_warn_only() throws {
         let units = try loadAllStringUnits()
-        // %lld 后跟单个英文名词 + 单复数歧义：files / items / sessions / rows / directories / apps / bytes / leaves
-        let englishPluralNouns = #"(files|items|sessions|rows|directories|apps|bytes|leaves|swapfiles)"#
+        // %lld 后跟单个英文名词 + 单复数歧义：files / items / sessions / rows / directories / apps / bytes / leaves / paths / swapfiles
+        let englishPluralNouns = #"(files|items|sessions|rows|directories|apps|bytes|leaves|paths|swapfiles)"#
         let pattern = #"%(\d+\$)?(lld|d|ld)\s+"# + englishPluralNouns + #"\b"#
         let regex = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
         let candidates = units.filter { unit in
-            guard unit.locale == "en", !unit.hasVariations else { return false }
+            guard unit.locale == "en" else { return false }
+            // 已迁移到 substitutions 的顶层 unit 跳过（它本身是 "%#@name@" 模板，不含真复数名词）；
+            // substitution 子条目（[#sub:...]）也跳过——它内部的 plural form 是合法的，本契约不复列。
+            if unit.key.contains("[#sub:") { return false }
+            if unit.hasVariations { return false }
             let nsv = unit.value as NSString
             let m = regex.numberOfMatches(in: unit.value, range: NSRange(location: 0, length: nsv.length))
             return m > 0
@@ -389,10 +433,10 @@ final class I18nIntegrityTests: XCTestCase {
             for u in candidates.sorted(by: { $0.key < $1.key }) {
                 print("    - [\(u.key)] \(u.value)")
             }
-            print("    → Step 17-D 后续治理：评估是否值得拆 plural variations（ScanKit 命中 1 件物时 UX 收益）。")
+            print("    → 后续治理：评估是否值得拆 plural variations（仅当单数 UX 显著差异时）。")
         }
-        // 上限护栏：当前已知 ~29 条（2026-06-21 重测）；放宽到 32 防止滚动期 PR 新增打破护栏。
-        // 治理目标：随着 plural variations 迁移完成，逐步回收上限到 25、20、15。
+        // 上限护栏：当前已知 32 条（2026-06-23 substitution-aware 后重测）；
+        // 治理目标：随业务真有单/复数 UX 差异时再逐条迁移，回收上限到 25、20、15。
         XCTAssertLessThanOrEqual(
             candidates.count, 32,
             "%lld 复数英文名词候选数已达 \(candidates.count)，超过 32 上限；新增 PR 必须配套 plural variations 迁移。"
@@ -444,13 +488,13 @@ final class I18nIntegrityTests: XCTestCase {
         for (key, raw) in strings {
             guard let entry = raw as? [String: Any] else { continue }
             guard let locs = entry["localizations"] as? [String: Any] else { continue }
-            // 收集启用了 variations 的 locales
-            var localesWithVariations: [String: [String: Any]] = [:]  // locale -> plural dict
+            // 收集启用了 plural variations 的 locales（同时支持顶层 + substitutions 两种形态）
+            var localesWithVariations: [String: [[String: Any]]] = [:]  // locale -> [plural dict]
             for (locale, locRaw) in locs {
                 guard let locDict = locRaw as? [String: Any] else { continue }
-                if let variations = locDict["variations"] as? [String: Any],
-                   let plural = variations["plural"] as? [String: Any] {
-                    localesWithVariations[locale] = plural
+                let plurals = Self.extractPluralDicts(from: locDict)
+                if !plurals.isEmpty {
+                    localesWithVariations[locale] = plurals
                 }
             }
             if localesWithVariations.isEmpty { continue }
@@ -462,13 +506,30 @@ final class I18nIntegrityTests: XCTestCase {
                 defects.append("[\(key)] 启用了 plural variations 但缺 locales: \(missing)")
                 continue
             }
-            // 每个 locale 必须同时含 one + other
-            for (locale, plural) in localesWithVariations {
-                let cats = Set(plural.keys)
-                let needCats: Set<String> = ["one", "other"]
-                if !needCats.isSubset(of: cats) {
-                    let missing = needCats.subtracting(cats).sorted()
-                    defects.append("[\(key)][\(locale)] plural 缺 categories: \(missing)")
+            // 每个 locale 每个 plural 字典都必须同时含 one + other
+            for (locale, pluralDicts) in localesWithVariations {
+                for (idx, plural) in pluralDicts.enumerated() {
+                    let cats = Set(plural.keys)
+                    let needCats: Set<String> = ["one", "other"]
+                    if !needCats.isSubset(of: cats) {
+                        let missing = needCats.subtracting(cats).sorted()
+                        let suffix = pluralDicts.count > 1 ? " (sub #\(idx))" : ""
+                        defects.append("[\(key)][\(locale)]\(suffix) plural 缺 categories: \(missing)")
+                    }
+                }
+            }
+            // 进一步：en/zh-Hans 的 substitutions key 集合必须一致（防止 en 加了一个变量但 zh 漏加）
+            for locale in needLocales {
+                guard let locDict = locs[locale] as? [String: Any] else { continue }
+                let subKeys = Self.substitutionKeys(in: locDict)
+                let counterpartLocale = (locale == "en") ? "zh-Hans" : "en"
+                guard let counterpart = locs[counterpartLocale] as? [String: Any] else { continue }
+                let counterpartSubs = Self.substitutionKeys(in: counterpart)
+                if subKeys != counterpartSubs {
+                    let diff = subKeys.symmetricDifference(counterpartSubs).sorted()
+                    if !diff.isEmpty {
+                        defects.append("[\(key)] en vs zh-Hans substitutions key 集合不一致: 差集=\(diff)")
+                    }
                 }
             }
         }
@@ -476,6 +537,36 @@ final class I18nIntegrityTests: XCTestCase {
             defects.isEmpty,
             "plural variations 双向完整性破损：\n  - " + defects.joined(separator: "\n  - ")
         )
+    }
+
+    /// 抽取一个 locale 节点下所有 plural 字典（同时支持两种合法 String Catalog 形态）：
+    ///   形态 A 顶层 variations：`locDict.variations.plural` —— 整条 value 按 plural 切换；
+    ///   形态 B substitutions：`locDict.substitutions.<name>.variations.plural` —— 命名占位符 `%#@name@`
+    ///        在 stringUnit.value 中引用，子条目按 plural 切换（Apple 推荐 macOS 14+ 标准做法）。
+    /// 任一形态都返回内部的 plural 字典数组（形态 A 最多 1 个；形态 B 每个 substitution 1 个）。
+    private static func extractPluralDicts(from locDict: [String: Any]) -> [[String: Any]] {
+        var out: [[String: Any]] = []
+        // 形态 A：顶层 variations.plural
+        if let variations = locDict["variations"] as? [String: Any],
+           let plural = variations["plural"] as? [String: Any] {
+            out.append(plural)
+        }
+        // 形态 B：substitutions.<name>.variations.plural
+        if let subs = locDict["substitutions"] as? [String: Any] {
+            for (_, subRaw) in subs {
+                guard let subDict = subRaw as? [String: Any],
+                      let variations = subDict["variations"] as? [String: Any],
+                      let plural = variations["plural"] as? [String: Any] else { continue }
+                out.append(plural)
+            }
+        }
+        return out
+    }
+
+    /// 返回一个 locale 节点下所有 substitutions 的变量名集合（无 substitutions 时返回空集）。
+    private static func substitutionKeys(in locDict: [String: Any]) -> Set<String> {
+        guard let subs = locDict["substitutions"] as? [String: Any] else { return [] }
+        return Set(subs.keys)
     }
 
     // MARK: - 契约 8：禁止 Text("ASCII 大写字面量") 形式的裸 SwiftUI Text

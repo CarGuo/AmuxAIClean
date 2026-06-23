@@ -1368,13 +1368,57 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Real file size of %lld swapfile(s)"
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "Real file size of %lld swapfile"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "Real file size of %lld swapfiles"
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld 个 swapfile 的真实文件大小"
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld 个 swapfile 的真实文件大小"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld 个 swapfile 的真实文件大小"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -5550,13 +5594,57 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Force Delete %lld vendor-blocked item(s)"
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "Force Delete %lld vendor-blocked item"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "Force Delete %lld vendor-blocked items"
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "强制删除被 vendor 规则拦下的 %lld 项"
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "强制删除被 vendor 规则拦下的 %lld 项"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "强制删除被 vendor 规则拦下的 %lld 项"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -5584,13 +5672,57 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "These %lld item(s) were blocked by vendor rules (e.g., Android SDK system-images). Force delete bypasses vendor rules but still keeps system-level safety nets (system volumes, credentials, hard-forbidden paths). Items will be moved to Trash and can be restored."
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "This %lld item was blocked by vendor rules (e.g., Android SDK system-images). Force delete bypasses vendor rules but still keeps system-level safety nets (system volumes, credentials, hard-forbidden paths). The item will be moved to Trash and can be restored."
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "These %lld items were blocked by vendor rules (e.g., Android SDK system-images). Force delete bypasses vendor rules but still keeps system-level safety nets (system volumes, credentials, hard-forbidden paths). Items will be moved to Trash and can be restored."
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "这 %lld 项被 vendor 规则（如 Android SDK system-images）拦下。强制删除会绕过 vendor 规则，但仍然保留系统级安全网（系统卷、凭据、硬禁路径）。文件会移入废纸篓，可随时恢复。"
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "这 %lld 项被 vendor 规则（如 Android SDK system-images）拦下。强制删除会绕过 vendor 规则，但仍然保留系统级安全网（系统卷、凭据、硬禁路径）。文件会移入废纸篓，可随时恢复。"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "这 %lld 项被 vendor 规则（如 Android SDK system-images）拦下。强制删除会绕过 vendor 规则，但仍然保留系统级安全网（系统卷、凭据、硬禁路径）。文件会移入废纸篓，可随时恢复。"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -5873,13 +6005,57 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld item(s) successfully moved to Trash. You can restore them from Trash if needed."
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld item successfully moved to Trash. You can restore it from Trash if needed."
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld items successfully moved to Trash. You can restore them from Trash if needed."
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已成功将 %lld 项移到废纸篓，如需恢复可在「废纸篓」中找到。"
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "已成功将 %lld 项移到废纸篓，如需恢复可在「废纸篓」中找到。"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "已成功将 %lld 项移到废纸篓，如需恢复可在「废纸篓」中找到。"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
