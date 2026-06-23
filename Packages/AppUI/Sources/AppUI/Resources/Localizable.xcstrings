@@ -427,108 +427,6 @@
         }
       }
     },
-    "appfootprint.bucket.bundle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "App Bundle"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "App Bundle"
-          }
-        }
-      }
-    },
-    "appfootprint.bucket.kind_count": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ · %lld files"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ · %lld 文件"
-          }
-        }
-      }
-    },
-    "appfootprint.bucket.launch_agent": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Launch agent / vendor shared"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "启动项 / 厂商共享"
-          }
-        }
-      }
-    },
-    "appfootprint.bucket.user_data": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "User data"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "用户数据"
-          }
-        }
-      }
-    },
-    "appfootprint.bucket.vendor_rule": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Vendor rule"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "厂商规则"
-          }
-        }
-      }
-    },
-    "appfootprint.detail.total_buckets": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Total %@ · %lld items"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "总占用 %@ · %lld 项"
-          }
-        }
-      }
-    },
     "appfootprint.detail.total_size": {
       "extractionState": "manual",
       "localizations": {
@@ -716,23 +614,6 @@
         }
       }
     },
-    "appfootprint.row.bundle_data": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bundle %@ · data %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bundle %@ · 数据 %@"
-          }
-        }
-      }
-    },
     "appfootprint.row.computing": {
       "extractionState": "manual",
       "localizations": {
@@ -746,23 +627,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "统计中"
-          }
-        }
-      }
-    },
-    "appfootprint.row.related_computing": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Related data calculating"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "关联数据统计中"
           }
         }
       }
@@ -1056,23 +920,6 @@
         }
       }
     },
-    "brew.cleanup.idle_hint": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Click Cleanup to start a dry-run."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "点击「清理」开始预演。"
-          }
-        }
-      }
-    },
     "brew.cleanup.failed %@": {
       "extractionState": "manual",
       "localizations": {
@@ -1086,6 +933,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "移动失败：%@"
+          }
+        }
+      }
+    },
+    "brew.cleanup.idle_hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Click Cleanup to start a dry-run."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点击「清理」开始预演。"
           }
         }
       }
@@ -1600,278 +1464,6 @@
         }
       }
     },
-    "card.android.adb.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Temporary files generated by ADB"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "ADB 运行产生的临时文件"
-          }
-        }
-      }
-    },
-    "card.android.adb.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "ADB Temp Files"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "ADB 临时文件"
-          }
-        }
-      }
-    },
-    "card.android.android_studio.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "IDE caches, can be safely cleared"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "IDE 缓存，可安全清理"
-          }
-        }
-      }
-    },
-    "card.android.android_studio.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Android Studio Caches"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Android Studio 缓存"
-          }
-        }
-      }
-    },
-    "card.android.android_studio_logs.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "IDE log files"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "IDE 日志文件"
-          }
-        }
-      }
-    },
-    "card.android.android_studio_logs.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Android Studio Logs"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Android Studio 日志"
-          }
-        }
-      }
-    },
-    "card.android.avd.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "AVD snapshots and disk images"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "AVD 镜像和磁盘文件"
-          }
-        }
-      }
-    },
-    "card.android.avd.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Android Emulator Snapshots"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "安卓模拟器镜像"
-          }
-        }
-      }
-    },
-    "card.android.gradle.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cached Gradle modules and build outputs"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "缓存的 Gradle 模块和构建产物"
-          }
-        }
-      }
-    },
-    "card.android.gradle.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Gradle Cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Gradle 缓存"
-          }
-        }
-      }
-    },
-    "card.android.kotlin.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Kotlin compiler cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Kotlin 编译器缓存"
-          }
-        }
-      }
-    },
-    "card.android.kotlin.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Kotlin Daemon Cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Kotlin 守护进程缓存"
-          }
-        }
-      }
-    },
-    "card.android.maven.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Maven repository cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Maven 仓库缓存"
-          }
-        }
-      }
-    },
-    "card.android.maven.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Maven Local Cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Maven 本地缓存"
-          }
-        }
-      }
-    },
-    "card.android.sdk_tmp.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Temporary files produced during SDK installs"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "SDK 安装期间产生的临时文件"
-          }
-        }
-      }
-    },
-    "card.android.sdk_tmp.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Android SDK Temp"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Android SDK 临时文件"
-          }
-        }
-      }
-    },
     "card.apple.archives.summary": {
       "extractionState": "manual",
       "localizations": {
@@ -1906,74 +1498,6 @@
         }
       }
     },
-    "card.apple.coresim.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Simulator service cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "模拟器服务缓存"
-          }
-        }
-      }
-    },
-    "card.apple.coresim.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "CoreSimulator Cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "CoreSimulator 缓存"
-          }
-        }
-      }
-    },
-    "card.apple.derived.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Build intermediates, can be regenerated"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "构建中间产物，可重新生成"
-          }
-        }
-      }
-    },
-    "card.apple.derived.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Xcode DerivedData"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Xcode DerivedData"
-          }
-        }
-      }
-    },
     "card.apple.devicesupport.summary": {
       "extractionState": "manual",
       "localizations": {
@@ -1987,295 +1511,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "已连接设备的符号文件"
-          }
-        }
-      }
-    },
-    "card.apple.devicesupport.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Device Support Cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "设备支持缓存"
-          }
-        }
-      }
-    },
-    "card.apple.simulator.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Files generated by simulator boot"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "模拟器启动产生的文件"
-          }
-        }
-      }
-    },
-    "card.apple.simulator.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Simulator Runtime"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "模拟器运行时"
-          }
-        }
-      }
-    },
-    "card.apple.spm.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Build cache from package resolution"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "包解析的构建缓存"
-          }
-        }
-      }
-    },
-    "card.apple.spm.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Swift Package Manager Cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Swift Package 缓存"
-          }
-        }
-      }
-    },
-    "card.web.bun.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bun runtime cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bun 运行时缓存"
-          }
-        }
-      }
-    },
-    "card.web.bun.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bun Cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bun 缓存"
-          }
-        }
-      }
-    },
-    "card.web.electron.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Electron download cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Electron 下载缓存"
-          }
-        }
-      }
-    },
-    "card.web.electron.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Electron Cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Electron 缓存"
-          }
-        }
-      }
-    },
-    "card.web.node_modules.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Local dependencies in project node_modules"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "项目内的 node_modules 依赖"
-          }
-        }
-      }
-    },
-    "card.web.node_modules.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Node Modules"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Node Modules"
-          }
-        }
-      }
-    },
-    "card.web.npm.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Global npm cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "全局 npm 缓存"
-          }
-        }
-      }
-    },
-    "card.web.npm.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "npm Cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "npm 缓存"
-          }
-        }
-      }
-    },
-    "card.web.pnpm.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Global pnpm content-addressable store"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "全局 pnpm 内容寻址仓库"
-          }
-        }
-      }
-    },
-    "card.web.pnpm.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "pnpm Store"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "pnpm 仓库"
-          }
-        }
-      }
-    },
-    "card.web.yarn.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Global Yarn cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "全局 Yarn 缓存"
-          }
-        }
-      }
-    },
-    "card.web.yarn.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Yarn Cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Yarn 缓存"
           }
         }
       }
@@ -2501,23 +1736,6 @@
         }
       }
     },
-    "common.ok": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "OK"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "好"
-          }
-        }
-      }
-    },
     "common.button.cancel": {
       "extractionState": "manual",
       "localizations": {
@@ -2552,512 +1770,19 @@
         }
       }
     },
-    "port_cleaner.button.kill": {
+    "common.ok": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Quit"
+            "value": "OK"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "结束"
-          }
-        }
-      }
-    },
-    "port_cleaner.button.kill_group": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Quit group"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "结束分组"
-          }
-        }
-      }
-    },
-    "port_cleaner.button.kill_one": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Quit process"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "结束进程"
-          }
-        }
-      }
-    },
-    "port_cleaner.button.kill_selected": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Quit Selected"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "结束所选"
-          }
-        }
-      }
-    },
-    "port_cleaner.column.action": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Action"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "操作"
-          }
-        }
-      }
-    },
-    "port_cleaner.column.local": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Local"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "本地地址"
-          }
-        }
-      }
-    },
-    "port_cleaner.column.pid": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "PID"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "PID"
-          }
-        }
-      }
-    },
-    "port_cleaner.column.process": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Process"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "进程"
-          }
-        }
-      }
-    },
-    "port_cleaner.column.proto": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Proto"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "协议"
-          }
-        }
-      }
-    },
-    "port_cleaner.column.user": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "User"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "用户"
-          }
-        }
-      }
-    },
-    "port_cleaner.confirm.message": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This will ask %d process(es) to quit. Unsaved work in those apps may be lost."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "将请求结束 %d 个进程，相关应用未保存的内容可能丢失。"
-          }
-        }
-      }
-    },
-    "port_cleaner.confirm.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Quit process?"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "结束进程？"
-          }
-        }
-      }
-    },
-    "port_cleaner.footer.hint": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Select rows, then quit selected processes if the port is safe to release."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "勾选条目后可结束所选进程，请确认端口确实可以释放。"
-          }
-        }
-      }
-    },
-    "port_cleaner.footer.selected": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%d selected"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已选 %d 项"
-          }
-        }
-      }
-    },
-    "port_cleaner.group.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%d ports · %d PIDs"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%d 个端口 · %d 个 PID"
-          }
-        }
-      }
-    },
-    "port_cleaner.kill.invalid_pid": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Invalid PID"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "无效 PID"
-          }
-        }
-      }
-    },
-    "port_cleaner.kill.refuse_self": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Refused to kill the current app"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已拒绝结束当前应用"
-          }
-        }
-      }
-    },
-    "port_cleaner.kill.result": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Quit request sent to %d process(es), %d failed."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已请求结束 %d 个进程，失败 %d 个。"
-          }
-        }
-      }
-    },
-    "port_cleaner.kill.success": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Quit request sent"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已结束"
-          }
-        }
-      }
-    },
-    "port_cleaner.placeholder.empty": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No listening ports found."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "没有找到监听端口。"
-          }
-        }
-      }
-    },
-    "port_cleaner.placeholder.scanning": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Scanning listening ports..."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在扫描监听端口..."
-          }
-        }
-      }
-    },
-    "port_cleaner.result.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Port Cleanup Result"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "端口清理结果"
-          }
-        }
-      }
-    },
-    "port_cleaner.search.placeholder": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Port, PID, process, path"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "端口、PID、进程、路径"
-          }
-        }
-      }
-    },
-    "port_cleaner.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Find apps occupying local ports and release them by quitting the process."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "查看本机端口占用，按进程释放被占用端口。"
-          }
-        }
-      }
-    },
-    "port_cleaner.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%d ports · %d groups · %d PIDs"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%d 个端口 · %d 个分组 · %d 个 PID"
-          }
-        }
-      }
-    },
-    "port_cleaner.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Port Cleaner"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "清理端口"
-          }
-        }
-      }
-    },
-    "port_cleaner.view.flat": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Flat"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "平铺"
-          }
-        }
-      }
-    },
-    "port_cleaner.view.grouped": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "By App"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "按应用"
-          }
-        }
-      }
-    },
-    "sidebar.row.port_cleaner": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Port Cleaner"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "清理端口"
-          }
-        }
-      }
-    },
-    "sidebar.subtitle.port_cleaner": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Quit apps occupying ports"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "结束端口占用进程"
+            "value": "好"
           }
         }
       }
@@ -3198,57 +1923,6 @@
         }
       }
     },
-    "delete.running_app.blocked %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The related app is still running: %@.\nQuit it and try again to avoid deleting cache files while the app is writing them."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "相关应用仍在运行：%@。\n请先退出应用再重试，避免在应用写入缓存时删除文件。"
-          }
-        }
-      }
-    },
-    "delete.running_app.warning.detail %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Running app: %@. Preview is still available, but true deletion is disabled until the app quits."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在运行：%@。仍可执行预览，但真正移到废纸篓前需要先退出应用。"
-          }
-        }
-      }
-    },
-    "delete.running_app.warning.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Related app is still running"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "相关应用仍在运行"
-          }
-        }
-      }
-    },
     "delete.result.failure %@ %lld %lld": {
       "extractionState": "manual",
       "localizations": {
@@ -3330,6 +2004,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "已处理 %1$lld 项（预览），跳过 %2$lld 项"
+          }
+        }
+      }
+    },
+    "delete.running_app.blocked %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The related app is still running: %@.\nQuit it and try again to avoid deleting cache files while the app is writing them."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相关应用仍在运行：%@。\n请先退出应用再重试，避免在应用写入缓存时删除文件。"
+          }
+        }
+      }
+    },
+    "delete.running_app.warning.detail %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Running app: %@. Preview is still available, but true deletion is disabled until the app quits."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在运行：%@。仍可执行预览，但真正移到废纸篓前需要先退出应用。"
+          }
+        }
+      }
+    },
+    "delete.running_app.warning.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Related app is still running"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相关应用仍在运行"
           }
         }
       }
@@ -6190,40 +4915,6 @@
         }
       }
     },
-    "main.scan.progress.estimate_low": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Estimate exceeded, still scanning…"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "估算偏小，仍在扫描…"
-          }
-        }
-      }
-    },
-    "main.scan.progress.eta": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ left · elapsed %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "约剩 %@ · 已用 %@"
-          }
-        }
-      }
-    },
     "main.scan.progress.multi.row": {
       "extractionState": "manual",
       "localizations": {
@@ -7125,23 +5816,6 @@
         }
       }
     },
-    "op.result.section.missing": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Paths not found"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "未找到的路径"
-          }
-        }
-      }
-    },
     "op.result.stat.blocked": {
       "extractionState": "manual",
       "localizations": {
@@ -7295,40 +5969,6 @@
         }
       }
     },
-    "pathbar.help": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Type a folder and press Return, or drag a folder into the window"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "输入文件夹回车，或者拖拽文件夹到窗口"
-          }
-        }
-      }
-    },
-    "pathbar.placeholder": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Type a folder and press Return, or drag a folder"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "推荐扫描"
-          }
-        }
-      }
-    },
     "path.sentinel.common_app_cache": {
       "extractionState": "manual",
       "localizations": {
@@ -7393,6 +6033,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "(开发者旧版本)"
+          }
+        }
+      }
+    },
+    "pathbar.help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type a folder and press Return, or drag a folder into the window"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入文件夹回车，或者拖拽文件夹到窗口"
+          }
+        }
+      }
+    },
+    "pathbar.placeholder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type a folder and press Return, or drag a folder"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "推荐扫描"
           }
         }
       }
@@ -7563,6 +6237,482 @@
           "stringUnit": {
             "state": "translated",
             "value": "提示：~/.Trash 不属于「完全磁盘访问」范畴——它是 macOS 14+ 单独的隐私项，需要在 系统设置 → 隐私与安全 → 自动化 / 文件与文件夹 里单独允许；或者改用 Finder 自带的「清空废纸篓」。"
+          }
+        }
+      }
+    },
+    "port_cleaner.button.kill": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quit"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结束"
+          }
+        }
+      }
+    },
+    "port_cleaner.button.kill_group": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quit group"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结束分组"
+          }
+        }
+      }
+    },
+    "port_cleaner.button.kill_one": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quit process"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结束进程"
+          }
+        }
+      }
+    },
+    "port_cleaner.button.kill_selected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quit Selected"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结束所选"
+          }
+        }
+      }
+    },
+    "port_cleaner.column.action": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Action"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "操作"
+          }
+        }
+      }
+    },
+    "port_cleaner.column.local": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地地址"
+          }
+        }
+      }
+    },
+    "port_cleaner.column.pid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PID"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PID"
+          }
+        }
+      }
+    },
+    "port_cleaner.column.process": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Process"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "进程"
+          }
+        }
+      }
+    },
+    "port_cleaner.column.proto": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proto"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "协议"
+          }
+        }
+      }
+    },
+    "port_cleaner.column.user": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "User"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用户"
+          }
+        }
+      }
+    },
+    "port_cleaner.confirm.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This will ask %d process(es) to quit. Unsaved work in those apps may be lost."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将请求结束 %d 个进程，相关应用未保存的内容可能丢失。"
+          }
+        }
+      }
+    },
+    "port_cleaner.confirm.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quit process?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结束进程？"
+          }
+        }
+      }
+    },
+    "port_cleaner.footer.hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select rows, then quit selected processes if the port is safe to release."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "勾选条目后可结束所选进程，请确认端口确实可以释放。"
+          }
+        }
+      }
+    },
+    "port_cleaner.footer.selected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d selected"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选 %d 项"
+          }
+        }
+      }
+    },
+    "port_cleaner.group.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d ports · %d PIDs"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d 个端口 · %d 个 PID"
+          }
+        }
+      }
+    },
+    "port_cleaner.kill.invalid_pid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invalid PID"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无效 PID"
+          }
+        }
+      }
+    },
+    "port_cleaner.kill.refuse_self": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refused to kill the current app"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已拒绝结束当前应用"
+          }
+        }
+      }
+    },
+    "port_cleaner.kill.result": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quit request sent to %d process(es), %d failed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已请求结束 %d 个进程，失败 %d 个。"
+          }
+        }
+      }
+    },
+    "port_cleaner.kill.success": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quit request sent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已结束"
+          }
+        }
+      }
+    },
+    "port_cleaner.placeholder.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No listening ports found."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有找到监听端口。"
+          }
+        }
+      }
+    },
+    "port_cleaner.placeholder.scanning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scanning listening ports..."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在扫描监听端口..."
+          }
+        }
+      }
+    },
+    "port_cleaner.result.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Port Cleanup Result"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "端口清理结果"
+          }
+        }
+      }
+    },
+    "port_cleaner.search.placeholder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Port, PID, process, path"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "端口、PID、进程、路径"
+          }
+        }
+      }
+    },
+    "port_cleaner.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Find apps occupying local ports and release them by quitting the process."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看本机端口占用，按进程释放被占用端口。"
+          }
+        }
+      }
+    },
+    "port_cleaner.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d ports · %d groups · %d PIDs"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d 个端口 · %d 个分组 · %d 个 PID"
+          }
+        }
+      }
+    },
+    "port_cleaner.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Port Cleaner"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理端口"
+          }
+        }
+      }
+    },
+    "port_cleaner.view.flat": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flat"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "平铺"
+          }
+        }
+      }
+    },
+    "port_cleaner.view.grouped": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "By App"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按应用"
           }
         }
       }
@@ -7818,23 +6968,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "node_modules 目录"
-          }
-        }
-      }
-    },
-    "rule.web.npm_cache": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "npm cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "npm 缓存"
           }
         }
       }
@@ -9454,6 +8587,125 @@
         }
       }
     },
+    "settings.storage.log.clear": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear logs"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理日志"
+          }
+        }
+      }
+    },
+    "settings.storage.log.clear.confirm.action": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear logs"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理日志"
+          }
+        }
+      }
+    },
+    "settings.storage.log.clear.confirm.cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消"
+          }
+        }
+      }
+    },
+    "settings.storage.log.clear.confirm.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Existing log files will be removed. A new empty log file will be created for today."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "现有日志文件会被删除，并重新创建今天的空日志文件。"
+          }
+        }
+      }
+    },
+    "settings.storage.log.clear.confirm.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear runtime logs?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理运行日志？"
+          }
+        }
+      }
+    },
+    "settings.storage.log.clear.done %d": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cleared %d log files"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已清理 %d 个日志文件"
+          }
+        }
+      }
+    },
+    "settings.storage.log.clear.failed %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear failed: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理失败：%@"
+          }
+        }
+      }
+    },
     "settings.storage.log.dir": {
       "extractionState": "manual",
       "localizations": {
@@ -9467,57 +8719,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "日志目录"
-          }
-        }
-      }
-    },
-    "settings.storage.log.no_file_sink": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "(file sink disabled)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "（未启用文件落盘）"
-          }
-        }
-      }
-    },
-    "settings.storage.log.open_dir": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open log directory"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "打开日志目录"
-          }
-        }
-      }
-    },
-    "settings.storage.log.open_today": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "View today's log"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "查看今日日志"
           }
         }
       }
@@ -9573,121 +8774,53 @@
         }
       }
     },
-    "settings.storage.log.clear": {
+    "settings.storage.log.no_file_sink": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Clear logs"
+            "value": "(file sink disabled)"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "清理日志"
+            "value": "（未启用文件落盘）"
           }
         }
       }
     },
-    "settings.storage.log.clear.done %d": {
+    "settings.storage.log.open_dir": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cleared %d log files"
+            "value": "Open log directory"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已清理 %d 个日志文件"
+            "value": "打开日志目录"
           }
         }
       }
     },
-    "settings.storage.log.clear.failed %@": {
+    "settings.storage.log.open_today": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Clear failed: %@"
+            "value": "View today's log"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "清理失败：%@"
-          }
-        }
-      }
-    },
-    "settings.storage.log.clear.confirm.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Clear runtime logs?"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "清理运行日志？"
-          }
-        }
-      }
-    },
-    "settings.storage.log.clear.confirm.message": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Existing log files will be removed. A new empty log file will be created for today."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "现有日志文件会被删除，并重新创建今天的空日志文件。"
-          }
-        }
-      }
-    },
-    "settings.storage.log.clear.confirm.action": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Clear logs"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "清理日志"
-          }
-        }
-      }
-    },
-    "settings.storage.log.clear.confirm.cancel": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cancel"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "取消"
+            "value": "查看今日日志"
           }
         }
       }
@@ -10253,6 +9386,23 @@
         }
       }
     },
+    "sidebar.row.port_cleaner": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Port Cleaner"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理端口"
+          }
+        }
+      }
+    },
     "sidebar.row.undo_history": {
       "extractionState": "manual",
       "localizations": {
@@ -10538,6 +9688,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "启动服务 · 预览 · DNS 缓存"
+          }
+        }
+      }
+    },
+    "sidebar.subtitle.port_cleaner": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quit apps occupying ports"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结束端口占用进程"
           }
         }
       }
@@ -11630,57 +10797,6 @@
         }
       }
     },
-    "toolbar.scan.dev": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Developer Scan"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "开发者扫描"
-          }
-        }
-      }
-    },
-    "toolbar.scan.full_disk": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Full Disk Scan"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "整盘扫描"
-          }
-        }
-      }
-    },
-    "toolbar.scan.recommended": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Recommended Scan"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "全部推荐扫描"
-          }
-        }
-      }
-    },
     "toolbar.scan.rescan": {
       "extractionState": "manual",
       "localizations": {
@@ -11762,23 +10878,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "待处理"
-          }
-        }
-      }
-    },
-    "toolbar.stash.title_with_count": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Stash (%lld)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "待处理 (%lld)"
           }
         }
       }
@@ -13670,108 +12769,6 @@
         }
       }
     },
-    "versioned-root.coresim.cache": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "CoreSimulator Cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "CoreSimulator 缓存"
-          }
-        }
-      }
-    },
-    "versioned-root.simulator": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Simulator Devices"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "模拟器设备"
-          }
-        }
-      }
-    },
-    "versioned-root.spm.cache": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "SwiftPM Cache"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "SwiftPM 缓存"
-          }
-        }
-      }
-    },
-    "versioned-root.xcode.archives": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Xcode Archives"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Xcode Archives"
-          }
-        }
-      }
-    },
-    "versioned-root.xcode.derived": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Xcode DerivedData"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Xcode DerivedData"
-          }
-        }
-      }
-    },
-    "versioned-root.xcode.device_support": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Device Support"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "设备支持"
-          }
-        }
-      }
-    },
     "view.mode.list": {
       "extractionState": "manual",
       "localizations": {
@@ -13925,23 +12922,6 @@
         }
       }
     },
-    "workflow.android.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Android Development (Gradle + AVD)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "安卓开发（Gradle + AVD）"
-          }
-        }
-      }
-    },
     "workflow.apple.subtitle": {
       "extractionState": "manual",
       "localizations": {
@@ -13955,23 +12935,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Xcode DerivedData / Archives、模拟器运行时等"
-          }
-        }
-      }
-    },
-    "workflow.apple.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Apple Developer (Xcode + Simulator)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "苹果开发（Xcode + 模拟器）"
           }
         }
       }
@@ -14061,57 +13024,6 @@
         }
       }
     },
-    "workflow.detail.delete.commandline_skipped %lld": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Command-line deletion (e.g. simctl) is not wired into the UI yet — please retry after PR-6. Skipped %1$lld item(s)."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "命令行删除（如 simctl）暂未接入 UI，请在 PR-6 后再试。已跳过 %1$lld 项。"
-          }
-        }
-      }
-    },
-    "workflow.detail.delete.error_format %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Error: %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "错误：%@"
-          }
-        }
-      }
-    },
-    "workflow.detail.delete.trash_summary %lld %lld": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Trash: %1$lld succeeded / %2$lld skipped"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "回收站删除：成功 %1$lld / 跳过 %2$lld"
-          }
-        }
-      }
-    },
     "workflow.detail.empty_card": {
       "extractionState": "manual",
       "localizations": {
@@ -14176,40 +13088,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在扫描…"
-          }
-        }
-      }
-    },
-    "workflow.detail.simctl.blocked_running %lld": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Simulator.app is running. %1$lld simctl item(s) were blocked. Please quit Simulator first."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "检测到 Simulator.app 正在运行，已阻断 %1$lld 项 simctl 删除。请先退出 Simulator。"
-          }
-        }
-      }
-    },
-    "workflow.detail.simctl.invalid %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Some simctl items are missing identifiers and were skipped:\n%@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "以下 simctl 项缺少标识符，已跳过：\n%@"
           }
         }
       }
@@ -14533,40 +13411,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Web / Node"
-          }
-        }
-      }
-    },
-    "workflow.web.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "node_modules, npm cache, Yarn cache, etc."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "node_modules、npm 缓存、Yarn 缓存等"
-          }
-        }
-      }
-    },
-    "workflow.web.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Web / Node Development"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "前端 / Node 开发"
           }
         }
       }

@@ -34,6 +34,11 @@ final class I18nIntegrityTests: XCTestCase {
     /// 必须一并纳入引用扫描范围，否则会误报 stale。
     private static let appTargetSources = "App"
 
+    /// 兄弟包根目录 —— ScanKit / AIKit / BrewKit / SafetyKit / FileSearchKit / HeuristicKit /
+    /// LogKit / TestHarness 等子包里大量声明 `WorkflowCard.title/summary = "card.xxx.title"`
+    /// 等 i18n key 字面量。若不纳入扫描，会把这些活引用全部误报为 stale。
+    private static let siblingPackagesRoot = "Packages"
+
     /// 找仓库根：从当前测试文件一路 ../ 找到 .git
     private func repoRoot() throws -> URL {
         var url = URL(fileURLWithPath: #filePath)
@@ -58,16 +63,40 @@ final class I18nIntegrityTests: XCTestCase {
         return Array(strings?.keys ?? Dictionary<String, Any>().keys)
     }
 
-    /// 读 AppUI + App target 全部 .swift 源文件内容（拼成一大段，方便 grep）
+    /// 读 AppUI + App target + 所有兄弟包 Sources 的全部 .swift 源文件内容（拼成一大段，方便 grep）
+    ///
+    /// **范围决策（2026-06-21 修订）**：旧实现只扫 AppUI + App，导致 ScanKit / AIKit 等
+    /// 子包里以字面量声明的 i18n key（如 `WorkflowCard.title = "card.apple.archives.title"`）
+    /// 被全部误判为 stale，把 backlog 从真实的 ~10 条膨胀到 75 条。
+    /// 现在改为递归扫整个 `Packages/` 目录下所有 `.swift`，但排除：
+    ///   - 所有 `Tests/` 目录（避免测试夹具里的样例字面量自污染）；
+    ///   - SwiftPM `.build/` 构建产物 + 第三方 `checkouts/` 签出（如 GRDB.swift 的 DemoApps，
+    ///     里面的 `"category.foo.bar"` 字面量可能与我们 i18n key 巧合命中，造成 false negative
+    ///     掩盖真 stale；硬失败契约下尤其危险）；
+    ///   - 用户级 `DerivedData/`（Xcode 构建目录可能被 enumerator 遍历到）。
     private func loadAllSwiftSources() throws -> String {
         let root = try repoRoot()
         let fm = FileManager.default
         var combined = ""
-        for relDir in [Self.appUISources, Self.appTargetSources] {
+        // App target 单独处理（不在 Packages 下）
+        for relDir in [Self.appTargetSources] {
             let dir = root.appendingPathComponent(relDir)
             let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: nil)
             while let url = enumerator?.nextObject() as? URL {
                 guard url.pathExtension == "swift" else { continue }
+                if Self.shouldSkipSwiftSource(url: url) { continue }
+                if let s = try? String(contentsOf: url, encoding: .utf8) {
+                    combined += s
+                    combined += "\n"
+                }
+            }
+        }
+        // 兄弟包：递归扫 Packages/ 下所有 .swift，跳过 Tests/ 与构建/依赖目录
+        let pkgRoot = root.appendingPathComponent(Self.siblingPackagesRoot)
+        if let enumerator = fm.enumerator(at: pkgRoot, includingPropertiesForKeys: nil) {
+            while let url = enumerator.nextObject() as? URL {
+                guard url.pathExtension == "swift" else { continue }
+                if Self.shouldSkipSwiftSource(url: url) { continue }
                 if let s = try? String(contentsOf: url, encoding: .utf8) {
                     combined += s
                     combined += "\n"
@@ -75,6 +104,18 @@ final class I18nIntegrityTests: XCTestCase {
             }
         }
         return combined
+    }
+
+    /// 统一的 .swift 源过滤：跳过测试目录、SwiftPM 构建/签出、Xcode DerivedData。
+    /// 同时用于 [loadAllSwiftSources](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/I18nIntegrityTests.swift)
+    /// 与契约 8 的裸字面量扫描，保证两边扫描范围一致——避免 stale 检测漏报、裸字面量检测误报。
+    private static func shouldSkipSwiftSource(url: URL) -> Bool {
+        let comps = url.pathComponents
+        if comps.contains("Tests") { return true }
+        if comps.contains(".build") { return true }
+        if comps.contains("checkouts") { return true }
+        if comps.contains("DerivedData") { return true }
+        return false
     }
 
     // MARK: - 契约 1：trash.err.* 双向同步（修订版）
@@ -132,30 +173,36 @@ final class I18nIntegrityTests: XCTestCase {
         )
     }
 
-    /// 一条更宽的契约（**当前降级为 warn-only**）：xcstrings 每条 key 都应在 Swift
-    /// 源中至少出现一次。
+    /// 一条更宽的契约（**2026-06-23 升级为硬失败**）：xcstrings 每条 key 都必须在 Swift
+    /// 源中至少出现一次（或匹配白名单动态前缀）。
     ///
-    /// 范围决策（Step 4 / 2026-06）：先跑一次发现 41 条 xcstrings key 在 Swift 源里
-    /// 无显式字面量引用，远超原计划"6 条 trash.err.*"。其中很多是合法的运行期拼接
-    /// （`verdict.<value>` / `view.mode.<value>` / `ecosystem.<id>` / `status.<state>`
-    /// 等），盲目删除会破坏运行期 i18n。
+    /// **历史**：
+    ///   - Step 4 / 2026-06 首跑发现 41 条 backlog（实测 75 条），先**降级为 warn-only**
+    ///     钉在 CI 输出，让维护者每次 PR 都能看到；同时保留 6 条 trash.err.* 硬契约。
+    ///   - 2026-06-21 用户决定"激进治理"——逐条 grep 全仓 + 排除测试夹具污染，
+    ///     先把测试源扫描范围扩到 `Packages/` 全部子包（修复 ScanKit / AIKit 等
+    ///     字面量 key 被误判 stale 的根因），再核实剩余 68 条**全部源码 0 引用**——
+    ///     从 xcstrings 真删，使 backlog 回归 0。
+    ///   - 2026-06-23：本契约从 warn-only 升级为**硬失败**——任何新 PR 引入
+    ///     orphan key（白名单外、源码 0 引用）将立即中断 CI，逼迫维护者要么
+    ///     补字面量引用，要么扩白名单（带 PR 说明），要么删 xcstrings。
     ///
-    /// 取舍：
-    ///   - Step 4 范围**严格收敛到原计划**：只清 6 条 trash.err.* + DeleteSheet 按钮。
-    ///   - 这条用例**降级为 print warning + 不 fail**，以便：
-    ///       1) 把 41 条 backlog 钉在 CI 输出里持续可见；
-    ///       2) 不阻塞 Step 4 commit；
-    ///       3) Step 4.5 / 后续专项治理时拉清单逐条审计。
-    ///   - 白名单先扩到能识别"有动态前缀"的常见模式，把噪声压低。
+    /// 白名单语义（任一前缀命中即跳过）：
+    ///   - **运行期由 enum.rawValue / ID 拼接出完整 key**（编译期 grep 看不见完整字面量）；
+    ///   - 已在其它专项契约中单独覆盖的家族（如 trash.err.* 已被契约 1 双向校验）。
+    ///
+    /// **函数名保留 `_warn_only` 后缀**：CI 脚本 / 文档 / git blame 历史可能引用，
+    /// 重命名会断裂；语义已在文档与断言上明确升级，名称仅作历史标记。
     func test_xcstrings_所有key都被Swift源引用_warn_only() throws {
         let keys = try loadXcstringsKeys()
         let sources = try loadAllSwiftSources()
 
         // 白名单：动态拼接的 key 前缀（运行期由 enum / id 拼出完整 key）。
         // 命中即跳过 —— 编译期 grep 看不见完整字面量是合理的。
+        // 维护规则：扩白名单必须在 PR 里说清"哪段代码拼出哪些 key"，并在此处加注释。
         let dynamicPrefixes = [
             "category.id.",      // ScanCategory.id 拼接
-            "trash.err.",        // 本测试已单独检查（stale 已扫到）
+            "trash.err.",        // 本测试已单独检查（契约 1 双向同步）
             "verdict.",          // VerdictBadge：verdict.safe / forbid / review
             "view.mode.",        // 视图模式 enum：view.mode.list / tree / main_badge
             "ecosystem.",        // ecosystem ID：ecosystem.python / rust / go / web ...
@@ -181,14 +228,19 @@ final class I18nIntegrityTests: XCTestCase {
             }
         }
 
-        // ⚠️ 不 XCTFail，仅打印 backlog 让 CI 留下证据。
-        if !orphans.isEmpty {
-            print("⚠️ [I18n backlog] \(orphans.count) 条 xcstrings key 在 Swift 源中无显式引用（白名单外）：")
-            for key in orphans.sorted() {
-                print("    - \(key)")
-            }
-            print("    → 待 Step 4.5 专项治理：逐条确认是动态拼接 / 真 stale / 漏改。")
-        }
+        // 硬契约：任何 orphan 即 fail。打印完整清单方便维护者快速定位。
+        XCTAssertTrue(
+            orphans.isEmpty,
+            """
+            发现 \(orphans.count) 条 xcstrings key 在 Swift 源中无显式引用（白名单外）。
+            处理选项（择一）：
+              1) 补源码引用（如新增 Text("key", bundle: .module)）；
+              2) 若 key 实际由运行期 enum / ID 拼接生成，在 dynamicPrefixes 中扩白名单前缀并加注释；
+              3) 若 key 已废弃，从 Localizable.xcstrings 中删除。
+            orphan 列表：
+              - \(orphans.sorted().joined(separator: "\n              - "))
+            """
+        )
     }
 
     // MARK: - 契约 2：零中文按钮硬编码
@@ -423,6 +475,96 @@ final class I18nIntegrityTests: XCTestCase {
         XCTAssertTrue(
             defects.isEmpty,
             "plural variations 双向完整性破损：\n  - " + defects.joined(separator: "\n  - ")
+        )
+    }
+
+    // MARK: - 契约 8：禁止 Text("ASCII 大写字面量") 形式的裸 SwiftUI Text
+
+    /// **契约目标**：所有 SwiftUI `Text(...)` 调用必须满足下列任一条件：
+    ///   1) 走 i18n key：`Text("some.key", bundle: .module)` —— xcstrings 翻译；
+    ///   2) 走非 i18n 文本：`Text(verbatim: ...)` —— 显式声明此字符串不需翻译（用户名、版本号、动态拼接等）；
+    ///   3) 走静态非 i18n 短文本：`Text("—")` / `Text("/")` 等 1~2 字符符号 —— 由后续白名单覆盖（当前 0 例）。
+    ///
+    /// **禁止**：`Text("Help")` / `Text("File Not Found")` —— 任何**首字符是 ASCII 大写字母**
+    /// 的英文字面量都属于"用户可见英文按钮 / 标签 / 提示"，必须 i18n。
+    /// 若非英文用户看到中文系统时仍显示英文，会与已有翻译体系不一致。
+    ///
+    /// **历史**：2026-06 review-swarm 找到 [LaunchAgentScreen.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/LaunchAgentScreen.swift)
+    /// 的 `Text("RunAtLoad")` 和 [PortCleanerScreen.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/PortCleanerScreen.swift)
+    /// 的 `Text("PID")` 两处漏 i18n（commit 043718c 已修），暴露了缺少自动化契约的盲区。
+    /// 本契约把这条规矩固化为 grep 硬失败，防止未来再漏。
+    ///
+    /// **扫描范围**：整个 `Packages/` 下所有 Source 代码（不含 Tests/、不含 Resources/），
+    /// 以及 App target（顶层 Scene/Commands）。
+    ///
+    /// **匹配策略**（保守）：
+    ///   - 只扫 `Text("X..."` 形式（双引号 + 紧跟首字符为 ASCII 大写 A-Z）；
+    ///   - 排除同一行包含 `verbatim:` / `bundle:` / `String(format:` 关键字（这些都是合法用法）；
+    ///   - 排除注释行（首字符 `//` 或 `///` 或 `*`）；
+    ///   - 排除 SwiftUI `Image(systemName:)` / `.help(Text(...))` 等场景的 i18n key（带 bundle 必然有）。
+    func test_no_bare_capitalized_Text_literal() throws {
+        let root = try repoRoot()
+        let fm = FileManager.default
+        var violations: [String] = []
+
+        // 扫所有 .swift 源（与 loadAllSwiftSources 同范围：App target + Packages 下所有非 Tests 文件）
+        let dirs = [
+            root.appendingPathComponent(Self.appTargetSources),
+            root.appendingPathComponent(Self.siblingPackagesRoot),
+        ]
+        // 正则：Text("X...") 中 X 是 ASCII 大写字母；不含其它"]/n/" 之类（保守，只锁定 Text 之后到第一个 " 的内容）。
+        // 注意：必须排除 Text("xxx" + "yyy") / Text(String(...)) 等非字面量分支——本正则只匹配"Text 开头 + 单段双引号字面量"。
+        let textLiteralPattern = try NSRegularExpression(
+            pattern: #"\bText\("([A-Z][^"]*)"\s*\)"#,
+            options: []
+        )
+
+        for dir in dirs {
+            guard let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: nil) else { continue }
+            while let url = enumerator.nextObject() as? URL {
+                guard url.pathExtension == "swift" else { continue }
+                if Self.shouldSkipSwiftSource(url: url) { continue }
+                // 跳过测试本身（防止本测试的正则字面量自污染）
+                if url.lastPathComponent == "I18nIntegrityTests.swift" { continue }
+
+                guard let src = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                let lines = src.split(separator: "\n", omittingEmptySubsequences: false)
+                for (idx, rawLine) in lines.enumerated() {
+                    let line = String(rawLine)
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if trimmed.hasPrefix("//") || trimmed.hasPrefix("///") || trimmed.hasPrefix("*") {
+                        continue
+                    }
+                    // 同一行含合法关键字 → 跳过（说明该 Text 调用已显式声明 bundle / verbatim / format）。
+                    // 注意：必须在 regex 检查前过滤，避免 Text("Foo", bundle: .module) 被误判。
+                    if line.contains("bundle:") || line.contains("verbatim:") {
+                        continue
+                    }
+
+                    let ns = line as NSString
+                    let matches = textLiteralPattern.matches(
+                        in: line,
+                        range: NSRange(location: 0, length: ns.length)
+                    )
+                    for m in matches where m.numberOfRanges >= 2 {
+                        let literal = ns.substring(with: m.range(at: 1))
+                        let relPath = url.path.replacingOccurrences(of: root.path + "/", with: "")
+                        violations.append("\(relPath):\(idx + 1)  Text(\"\(literal)\")")
+                    }
+                }
+            }
+        }
+
+        XCTAssertTrue(
+            violations.isEmpty,
+            """
+            发现 \(violations.count) 处裸 SwiftUI `Text("[A-Z]...")` 字面量（英文用户可见但未走 i18n）：
+              \(violations.joined(separator: "\n  "))
+            修复（择一）：
+              1) 改为 `Text("some.i18n.key", bundle: .module)` 并在 Localizable.xcstrings 添加翻译；
+              2) 若该字符串不需翻译（运行期拼接 / 用户输入 / 版本号等），改为 `Text(verbatim: ...)`；
+              3) 若是注释中的示例，请确保整行以 `//` 开头。
+            """
         )
     }
 }
