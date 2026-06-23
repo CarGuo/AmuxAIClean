@@ -134,18 +134,27 @@ public struct VendorTrie: @unchecked Sendable {
         var node = trie
         var depth = 0
         // 跟踪沿途遇到的最深 path-override（祖先 override 也对子节点生效）。
-        var inheritedOverride: PathRule? = nil
+        var inheritedOverride: (rule: VendorRule, depth: Int, pathRule: PathRule)? = nil
         var firstRuleHit: (VendorRule, Int)? = nil
         for seg in segments {
             guard let next = node.children[seg] else { break }
             node = next
             depth += 1
             if let ovr = node.pathOverride {
-                inheritedOverride = ovr
+                if let owner = node.rule {
+                    inheritedOverride = (owner, depth, ovr)
+                }
             }
             if firstRuleHit == nil, let rule = node.rule {
                 firstRuleHit = (rule, depth)
             }
+        }
+        if let overrideHit = inheritedOverride {
+            return (
+                overrideHit.rule,
+                overrideHit.depth == segments.count,
+                overrideHit.pathRule
+            )
         }
         if let (rule, hitDepth) = firstRuleHit {
             let isExactRoot = (hitDepth == segments.count)
@@ -159,13 +168,14 @@ public struct VendorTrie: @unchecked Sendable {
             // vendor B 时，返回 `(rule: A, override: B.pathOverride)` 元数据来源不一致 ——
             // UI 显示的 vendorName 会是 A，但 verdict/reason/recipe 来自 B，造成误导。
             // 取 globHit.rule 与 isExactRoot=globHit.isExactRoot 让 (rule, override) 同源。
-            if inheritedOverride == nil,
+            if !trie.globRules.isEmpty,
                let globHit = matchGlob(standardizedPath: standardizedPath, in: trie) {
                 return (globHit.rule, globHit.isExactRoot, globHit.pathOverride)
             }
-            return (rule, isExactRoot, inheritedOverride)
+            return (rule, isExactRoot, nil)
         }
         // trie miss：扫描 globRules
+        guard !trie.globRules.isEmpty else { return nil }
         return matchGlob(standardizedPath: standardizedPath, in: trie)
     }
 

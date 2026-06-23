@@ -469,7 +469,7 @@ public struct MainView: View {
             // v1.5: Batch Scans —— sidebar 与 toolbar 三大扫描入口的镜像。
             // 解决用户截图反馈：点 toolbar 锤子 / 推荐 / 全盘后，左侧 sidebar
             // 没有任何选中态，感知不到"我现在在跑哪条"。
-            // 这里 3 行的 .tag 用 ScanCategory.batchXxxID 三个 sentinel；
+            // 这里的 .tag 用 ScanCategory.batchXxxID sentinel；
             // onChange(selectedCategory) 看见这三 id 时不走 startScan(category:)
             // 而是分发到对应 trigger* helper（toolbar 同款）。
             Section {
@@ -487,6 +487,11 @@ public struct MainView: View {
                              titleKey: LocalizedStringKey("batch.fulldisk.title"),
                              subtitleKey: LocalizedStringKey("batch.fulldisk.subtitle"))
                     .tag(ScanCategory.batchFullDiskID)
+
+                batchScanRow(icon: "sparkles",
+                             titleKey: LocalizedStringKey("batch.common_app_cache.title"),
+                             subtitleKey: LocalizedStringKey("batch.common_app_cache.subtitle"))
+                    .tag(ScanCategory.batchCommonAppCacheID)
             } header: {
                 Text("sidebar.section.batch", bundle: .module)
             }
@@ -1614,6 +1619,8 @@ public struct MainView: View {
             Text("path.sentinel.dev_artifact", bundle: .module)
         case ScanCoordinator.versionedRootSentinelPath:
             Text("path.sentinel.versioned_root", bundle: .module)
+        case ScanCoordinator.commonAppCacheSentinelPath:
+            Text("path.sentinel.common_app_cache", bundle: .module)
         default:
             Text(rootPath)
         }
@@ -1849,8 +1856,10 @@ public struct MainView: View {
                 triggerDeveloperScan()
             case ScanCategory.batchFullDiskID:
                 triggerFullDiskScan()
+            case ScanCategory.batchCommonAppCacheID:
+                triggerCommonAppCacheScan()
             default:
-                // v1.5 review-fix #1：batchScanIDs 已穷尽 3 个 case；future 加 sentinel
+                // v1.5 review-fix #1：batchScanIDs 已穷尽当前 case；future 加 sentinel
                 // 必须同步加 case，否则 selection 切到新 sentinel 会被静默吞掉。
                 assertionFailure("Unhandled batch scan sentinel id: \(id) — add case to MainView.applyCategorySwitch switch.")
             }
@@ -1897,6 +1906,13 @@ public struct MainView: View {
         selectedCategory = ScanCategory.batchDeveloperID
         coordinator.scanDeveloper(includeHidden: settings.showHidden,
                                   enabledRuleIDs: settings.enabledDevArtifactRuleIDs)
+    }
+
+    /// 常见应用缓存扫描入口：规则命中列表，不做大根递归。
+    private func triggerCommonAppCacheScan() {
+        resetSelectionState()
+        selectedCategory = ScanCategory.batchCommonAppCacheID
+        coordinator.scanCommonAppCaches()
     }
 
     /// v1.0 T5：路径栏 —— 输 `/` 回车扫整盘；输任意已存在目录回车直接扫。
@@ -2036,7 +2052,7 @@ public struct MainView: View {
             }
                 .help(String(localized: "toolbar.help.rescan", bundle: .module))
         } else if let id = selectedCategory, ScanCategory.batchScanIDs.contains(id) {
-            // v2026.06.21：批量扫描三条（推荐 / 开发者 / 整盘）sentinel 也走 trigger* helper，
+            // v2026.06.21：批量扫描 sentinel 也走 trigger* helper，
             // 之前 scanControlButton 仅在 allCategories.first(cat) 命中时才出现，
             // 这三个 sentinel 不在 allCategories 里 → 用户反馈"推荐扫描右上角没有重新扫描按键"。
             // 这里按 sentinel id 分发到 helper（helper 自己负责 resetSelectionState 与起扫）。
@@ -2048,6 +2064,8 @@ public struct MainView: View {
                     triggerDeveloperScan()
                 case ScanCategory.batchFullDiskID:
                     triggerFullDiskScan()
+                case ScanCategory.batchCommonAppCacheID:
+                    triggerCommonAppCacheScan()
                 default:
                     assertionFailure("Unhandled batch scan sentinel id: \(id) — add case to MainView.scanControlButton switch.")
                 }
@@ -2406,7 +2424,12 @@ public struct MainView: View {
     }
 
     private func performDelete(dryRun: Bool) async {
-        let paths = selectedRows.map(\.url.path)
+        let rows = selectedRows
+        let paths = rows.map(\.url.path)
+        if !dryRun, let message = runningAppBlockMessage(for: rows) {
+            deleteResult = message
+            return
+        }
         // **v1.5.3**：真删（!dryRun）期间立刻拉起 ProgressView sheet。
         // dryRun 不动 isDeleting——预览不需要"正在删除"动画。
         if !dryRun {
@@ -2455,6 +2478,20 @@ public struct MainView: View {
                 coordinator.refreshVolumeCapacity()
             }
         }
+    }
+
+    private func runningAppBlockMessage(for rows: [RowItem]) -> String? {
+        let conflicts = RunningAppGuard.conflicts(rows: rows,
+                                                  runningBundleIDs: RunningAppGuard.currentRunningBundleIDs())
+        guard !conflicts.isEmpty else { return nil }
+        var seen = Set<String>()
+        var names: [String] = []
+        for conflict in conflicts where seen.insert(conflict.title).inserted {
+            names.append(conflict.title)
+            if names.count >= 5 { break }
+        }
+        return String(format: String(localized: "delete.running_app.blocked %@", bundle: .module),
+                      names.joined(separator: ", "))
     }
 
     // MARK: - v1.0 T4 大文件辅助

@@ -86,6 +86,143 @@ Never include:
 
 Consumer and productivity apps should ship as a separate rule batch from developer caches. Their data-loss profile is different: chat apps and office suites often mix cache, documents, offline assets, and account/session databases in nearby folders. Rules must therefore prefer app-declared cache locations, Electron cache subfolders, and update/log payloads; message databases, synced documents, and browser profiles are blocked unless a dedicated product surface explains the consequences.
 
+## Researched Candidate Rule Matrix
+
+This section is based on open-source macOS cleaner rules plus the project's existing `Resources/Rules/vendors.yaml` and `vendor_shared.yaml`. The user examples are not treated as the whole scope; the product should ship capabilities by app family, then add concrete app mappings when the path evidence is strong.
+
+Sources checked:
+
+- `mac-cleanup-go`: broad macOS target list with risk categories and Trash/manual modes.
+  Source: https://github.com/2ykwang/mac-cleanup-go
+- `mac-cleanup-py`: older but useful app-specific cleanup modules for Adobe, Google Drive, Steam, Teams, Telegram, Obsidian, Chromium, Arc, and EA.
+  Source: https://github.com/mac-cleanup/mac-cleanup-py
+- `mac-cleaner-cli`: browser cache scanner and path helpers for Chrome, Safari, Firefox, Arc, plus developer caches.
+  Source: https://github.com/guhcostan/mac-cleaner-cli
+- BleachBit CleanerML and Winapp2: rule-shape, option semantics, guards, and large community taxonomy. Their paths are not macOS-first and must not be copied directly.
+  Sources: https://github.com/bleachbit/cleanerml, https://docs.bleachbit.org/cml/cleanerml.html, https://github.com/MoscaDotTo/Winapp2
+- Feishu/Lark vendor docs: validates that the product treats cache clearing as a supported operation.
+  Sources: https://www.feishu.cn/hc/en-US/articles/399507903065-clear-cache-and-system-reset-faqs and https://www.larksuite.com/hc/en-US/articles/360048488246-clear-cache-and-system-reset-faqs
+
+### Capability families
+
+| Family | Capability | Initial apps | Default risk | Notes |
+| --- | --- | --- | --- | --- |
+| Browser cache | Browser HTTP/GPU/shader cache only | Chrome, Edge, Brave, Arc, Chromium, Safari, Firefox | safe or confirm | Never delete profile roots, cookies, history, login data, web data, or Local State. |
+| Electron cache | `Cache`, `Code Cache`, `GPUCache`, `Dawn*Cache`, `ShaderCache`, logs, completed crash reports | Slack, Discord, Notion, Obsidian, Linear, Postman, ChatGPT, Claude, Codex, VS Code forks | safe | Each app must opt in with bundle/app support mapping. No generic "delete every Electron app" pass. |
+| Chat and meetings | App cache/log/update payloads | WeChat, Tencent Meeting, WhatsApp, Skype, Teams, Zoom, Feishu/Lark after fixture | safe or confirm | Message DB, received files, IndexedDB, Local Storage, and media roots are blocked unless a dedicated chat-storage UI is built. |
+| Cloud sync | Cache only, never sync roots | Google Drive, Dropbox, OneDrive, Box after fixture | confirm | Require running-app guard because sync clients may rewrite caches while active. Offline re-download cost should be visible. |
+| Office/productivity | Container cache/log/temp only | Microsoft Office, WPS, Kingsoft Docs, Evernote, Bear, Logseq | safe or confirm | Outlook stores, Office group container root, cloud docs, templates, AutoRecovery, and account data are blocked. WPS/Kingsoft need local fixture evidence before enabling beyond cache bundle dirs. |
+| Design/media | Media/render/cache dirs only | Adobe, Premiere, Sketch, Figma, Blender, DaVinci, Final Cut, Bilibili, IINA, VLC, mpv | confirm | Render/media cache can be large and rebuildable but expensive; show side effects and keep running-app guard. |
+| Game launchers | Launcher cache, shader cache, logs, temp downloads | Steam, Epic, Battle.net, GOG, EA, Riot | confirm | Game libraries, saves, mods, and user screenshots are blocked. |
+| Remote/utility | App cache/logs | TeamViewer, AnyDesk, Alfred, CleanShot, The Unarchiver | safe | Simple bundle-cache mappings, low first-batch risk. |
+| Developer assistant apps | App cache/logs, not workspace/user data | Postman, TablePlus, Charles, Sequel Ace, VMware, Parallels | safe or confirm | DB connection profiles, collections, VMs, snapshots, and workspaces are blocked. |
+
+### P0: safe first batch
+
+These are good first implementation candidates because the evidence points to cache/log directories and deletion can go through the existing Trash pipeline.
+
+| App/capability | Candidate paths | Evidence | Guard |
+| --- | --- | --- | --- |
+| WeChat cache | `~/Library/Caches/com.tencent.xinWeChat/*` | `mac-cleanup-go` | Exclude while WeChat is running. Do not touch chat DB or file storage. |
+| Tencent Meeting cache | `~/Library/Caches/com.tencent.meeting/*` | `mac-cleanup-go` | Exclude while running. |
+| WhatsApp cache | `~/Library/Caches/net.whatsapp.WhatsApp/*` | `mac-cleanup-go` | Exclude while running; do not touch message DB/media. |
+| Skype cache | `~/Library/Caches/com.skype.skype/*` | `mac-cleanup-go` | Exclude while running. |
+| Zoom cache/update | `~/Library/Caches/us.zoom.xos/*`, `~/Library/Application Support/zoom.us/AutoUpdater/*` | `mac-cleanup-go` | Exclude while running. |
+| Notion cache | `~/Library/Application Support/Notion/Cache/*`, `~/Library/Application Support/Notion/Code Cache/*`, `~/Library/Application Support/Notion/GPUCache/*`, `~/Library/Caches/notion.id/*` | `mac-cleanup-go` | Exclude while running; do not touch workspace/db roots. |
+| Obsidian cache/log | `~/Library/Application Support/obsidian/Cache/*`, `Code Cache/*`, `GPUCache/*`, `DawnGraphiteCache/*`, `DawnWebGPUCache/*`, `*.log` | `mac-cleanup-go`, `mac-cleanup-py` | Exclude while running; vaults are blocked. |
+| Linear cache | `~/Library/Application Support/Linear/Cache/*`, `Code Cache/*`, `~/Library/Caches/com.linear/*` | `mac-cleanup-go` | Exclude while running. |
+| Figma cache | `~/Library/Caches/com.figma.Desktop/*` | `mac-cleanup-go` | Exclude while running. |
+| ChatGPT cache | `~/Library/Caches/com.openai.chat/*` | `mac-cleanup-go` | Exclude while running. |
+| Claude cache | `~/Library/Caches/com.anthropic.claudefordesktop/*`, `~/Library/Caches/claude-cli-nodejs/*` | `mac-cleanup-go` | Exclude desktop app while running. |
+| Codex cache/log | `~/Library/Application Support/Codex/Cache/*`, `Code Cache/*`, `GPUCache/*`, `Dawn*Cache/*`, `~/Library/Logs/com.openai.codex/*` | `mac-cleanup-go` | Exclude while running. |
+| Google Updater cache | `~/Library/Application Support/Google/GoogleUpdater/crx_cache/*`, `~/Library/Application Support/Google/GoogleUpdater/*.old` | `mac-cleanup-go` | Vendor shared-dir guard: never delete `~/Library/Application Support/Google` root. |
+| IINA/VLC/mpv cache | `~/Library/Caches/com.colliderli.iina/*`, `~/Library/Caches/org.videolan.vlc/*`, `~/Library/Caches/io.mpv/*` | `mac-cleanup-go` | Exclude while running. |
+| Bilibili cache | `~/Library/Caches/tv.danmaku.bili/*` | `mac-cleanup-go` | Exclude while running. |
+| Sketch cache | `~/Library/Caches/com.bohemiancoding.sketch3/*` | `mac-cleanup-go` | Exclude while running. |
+| Postman cache | `~/Library/Caches/com.postmanlabs.mac/*` | `mac-cleanup-go` | Workspaces/databases blocked. |
+| TablePlus/Charles/Sequel Ace cache | `~/Library/Caches/com.tinyapp.TablePlus/*`, `~/Library/Caches/com.charlesproxy.charles/*`, `~/Library/Caches/com.sequel-ace.sequel-ace/*` | `mac-cleanup-go` | Connection profiles blocked. |
+
+### P1: useful but confirmation required
+
+These can free real space, but the UI must show side effects such as re-download, reindex, re-render, or app restart.
+
+| App/capability | Candidate paths | Evidence | Guard |
+| --- | --- | --- | --- |
+| Google Drive cache | `~/Library/Application Support/Google/DriveFS/*/content_cache/*`, `~/Library/Caches/com.google.drivefs/*` | `mac-cleanup-go`, `mac-cleanup-py` | Confirm + exclude while running. Do not kill the app automatically. Sync roots and CloudStorage documents are blocked. |
+| Dropbox cache | `~/Dropbox/.dropbox.cache/*` | `mac-cleanup-go`, `mac-cleanup-py` | Confirm + exclude while running. Never scan/delete the Dropbox sync root as cache. |
+| OneDrive cache | `~/Library/Caches/com.microsoft.OneDrive/*` | `mac-cleanup-go` | Confirm + exclude while running. OneDrive sync roots and Office group container roots blocked. |
+| Adobe media cache | `~/Library/Application Support/Adobe/Common/Media Cache Files/*`, `~/Library/Application Support/Adobe/Common/Media Cache/*`, `~/Library/Caches/com.adobe.PremierePro.*/*` | `mac-cleanup-go`, `mac-cleanup-py` | Confirm + exclude while Adobe apps are running. Never delete Adobe shared root, presets, libraries, projects, or cloud sync roots. |
+| Steam cache | `~/Library/Application Support/Steam/appcache`, `depotcache`, `logs`, `steamapps/shadercache`, `steamapps/temp`, `steamapps/download` | `mac-cleanup-py` | Confirm + exclude while running. Game libraries, saves, screenshots, and workshop content blocked. |
+| Battle.net/Epic/GOG/EA/Riot cache | `~/Library/Caches/com.blizzard.Battle.net/*`, `~/Library/Application Support/Battle.net/Cache/*`, `~/Library/Caches/com.epicgames.EpicGamesLauncher/*`, `~/Library/Caches/com.gog.galaxy/*`, `~/Library/Caches/com.ea.*/*`, `~/Library/Caches/com.riotgames.*/*` | `mac-cleanup-go`, `mac-cleanup-py` | Confirm; game content blocked. |
+| Teams safe subset | `~/Library/Application Support/Microsoft/Teams/Cache`, `Application Cache`, `Code Cache`, `gpucache`, `tmp`, logs/watchdog files | `mac-cleanup-py` | Confirm + exclude while running. `IndexedDB`, `databases`, `Local Storage`, `blob_storage` are not in the safe subset. |
+| VMware/Parallels cache | `~/Library/Caches/com.vmware.fusion/*`, `~/Library/Caches/com.parallels.*/*` | `mac-cleanup-go` | Confirm. VM bundles, snapshots, and disk images blocked. |
+| DaVinci/Final Cut render cache | `~/Library/Caches/com.blackmagic-design.DaVinciResolve/*`, `~/Movies/CacheClip/*`, `~/Library/Caches/com.apple.FinalCut/*` | `mac-cleanup-go` | Confirm with render/proxy cache warning. Project libraries blocked. |
+
+### P2: block by default or manual guide only
+
+These were found in existing tools, but they are too risky for a generic common-cache rule.
+
+| App/path family | Existing source evidence | GSYCleanMac decision |
+| --- | --- | --- |
+| Telegram `postbox/db` | `mac-cleanup-go`, `mac-cleanup-py` | Manual guide only. It may contain chat history and media indexes. Do not delete through normal cache flow. |
+| Arc `History`, `Cookies`, `Web Data` | `mac-cleanup-py` | Block. Only `~/Library/Caches/Arc`, `~/Library/Caches/company.thebrowser.Browser`, and CloudKit cache candidates can be considered. |
+| Teams `IndexedDB`, `databases`, `Local Storage`, `blob_storage` | `mac-cleanup-py` | Block or require a dedicated "reset Teams local data" UI. Not part of cache cleanup. |
+| Browser profile roots | Generic browser cleaners | Block. Only explicit cache paths under cache roots/profile cache subdirs. |
+| Microsoft Office group container root | Project `vendor_shared.yaml` | Block. Only app-specific cache/log/temp subpaths after rule evidence. |
+| Apple Mail, Photos, Music libraries | OS/app data | Block in common-cache batch. Require dedicated product surfaces. |
+| Chat received-file roots and message DBs | App data | Block. Cache cleanup is not chat-history cleanup. |
+| WPS/Kingsoft/Feishu/DingTalk guessed Application Support roots | Not enough current open-rule evidence | Do not enable from guesses. Add fixture discovery first, then enable only cache/log/update subpaths. |
+
+### Domestic and international rollout list
+
+This is the broader coverage backlog. It should be implemented by evidence strength, not by brand importance.
+
+Ready from open-rule evidence:
+
+- Domestic: WeChat, Tencent Meeting, Bilibili.
+- International communication: WhatsApp, Skype, Zoom, Teams safe subset, Slack/Discord through Electron template after explicit mapping.
+- International productivity/knowledge: Notion, Obsidian, Linear, Figma, Evernote, Bear, Logseq.
+- AI tools: ChatGPT, Claude, Codex, Antigravity/Qoder/Filo only if installed and fixture verified.
+- Cloud sync: Dropbox, Google Drive, OneDrive.
+- Browser: Chrome, Safari, Firefox, Arc, plus Chrome-family browsers through explicit mappings for Edge/Brave/Chromium.
+- Design/media/game: Adobe/Premiere, Sketch, Blender, IINA, VLC, mpv, Steam, Epic, Battle.net, GOG, EA, Riot.
+- Developer-adjacent: Postman, TablePlus, Charles, Sequel Ace, VMware, Parallels, TeamViewer, AnyDesk, Alfred, CleanShot.
+
+Needs local fixture or official docs before enabling:
+
+- Feishu/Lark: vendor cache-reset docs exist, but exact macOS paths should be captured from an installed app and limited to cache/log/update payloads.
+- DingTalk: capture installed bundle IDs and Library cache/log locations; do not infer from app name alone.
+- WPS/Kingsoft Docs: capture cache/log/update paths; cloud docs, templates, recent-file DBs, and account state are blocked.
+- QQ/TIM/WeCom: capture cache/log locations; chat DB and received files blocked.
+- Baidu Netdisk, Alibaba Drive, Quark Drive, 115: capture cache/temp/update paths; sync/offline roots blocked.
+- NetEase Cloud Music, iQIYI, Youku: distinguish streaming cache from downloaded/offline media before enabling.
+
+### Rule import policy
+
+- Existing open-source rules are evidence, not executable truth.
+- Every imported path must pass the SafetyEngine and shared-vendor-dir checks.
+- A rule with only guessed paths must stay disabled until a fixture proves path existence and side effects.
+- Globs should only appear at the last one or two path components. Never glob a vendor root such as `~/Library/Application Support/Microsoft/*`.
+- Running-app guards are required for browsers, Electron apps, chat apps, sync clients, Adobe apps, game launchers, and VM tools.
+- Deletion defaults to Trash. Direct delete is not allowed for common app caches.
+- The scan must publish incrementally and cap concurrent path walkers to avoid async storms and UI stalls.
+
+### First implementation slice
+
+The first real code slice is now split into two production-safe layers:
+
+1. Rule metadata support landed in `vendors.yaml`: `category`, `source`, and explicit `bundle_id_prefix` for running-app guards.
+2. `CommonAppCacheScanner` expands only `~` and explicit cache paths, skips missing/empty paths, and returns real size/count metadata.
+3. Shipped P0 rules for WeChat, Tencent Meeting, Zoom, WhatsApp, Skype, Notion, Obsidian, Linear, Figma, ChatGPT, Claude, Codex, Slack, Discord, Google Updater, Chrome, Edge, Brave, Firefox, Safari, IINA, VLC, mpv, Bilibili, Sketch, Postman, TablePlus, Charles, and Sequel Ace.
+4. Shipped P1 confirm rules for Google Drive, Dropbox, OneDrive, Adobe/Premiere, Steam, and Teams safe subset.
+5. Added blocked-neighbor rules/tests for Telegram DB, Arc cookies/history, Teams IndexedDB/Local Storage, browser cookies/history/login data, Office group container, CloudStorage/sync roots, chat/business local storage, and app data roots that must not be treated as cache.
+6. True deletion of common-app cache rows is blocked when the related app's bundle id is currently running. Dry-run preview remains allowed.
+
+Still deliberately not enabled from guesses:
+
+- Feishu/Lark, DingTalk, QQ/TIM/WeCom, WPS/Kingsoft, Baidu Netdisk, Alibaba Drive, Quark Drive, 115, NetEase Cloud Music, iQIYI, Youku.
+- These need local fixture capture or official path docs before shipping any path beyond generic bundle cache roots.
+
 Domestic communication and collaboration:
 
 - WeChat: logs/temp/cache only; chat databases and file storage blocked.

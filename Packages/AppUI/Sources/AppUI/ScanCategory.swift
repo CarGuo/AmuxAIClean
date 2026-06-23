@@ -86,9 +86,9 @@ public struct ScanCategory: Identifiable, Hashable, Sendable {
 
     // MARK: v1.5 — Batch Scans Sidebar Sentinel IDs
     //
-    // toolbar 上的 3 个扫描入口（推荐 / 开发者 / 全盘）以前只能从右上角触发，
+    // toolbar 上的扫描入口（推荐 / 开发者 / 全盘 / 常见软件缓存）以前只能从右上角触发，
     // 用户感知不到"我现在在跑哪条"。v1.5 在 sidebar 顶部新加 Batch Scans section
-    // 列 3 行；点 row = 触发对应 toolbar 按钮，扫描进行中 selectedCategory 自动
+    // 列出这些入口；点 row = 触发对应 toolbar 按钮，扫描进行中 selectedCategory 自动
     // 同步到对应 sentinel id，从而让 sidebar 蓝条高亮跟手。
     //
     // 这 3 个 id 不进 sidebarRow 的标题/副标题渲染（在 sidebarList 里另起 view），
@@ -96,7 +96,13 @@ public struct ScanCategory: Identifiable, Hashable, Sendable {
     public static let batchRecommendedID: String = "batch.recommended"
     public static let batchDeveloperID: String = "batch.developer"
     public static let batchFullDiskID: String = "batch.fulldisk"
-    public static let batchScanIDs: Set<String> = [batchRecommendedID, batchDeveloperID, batchFullDiskID]
+    public static let batchCommonAppCacheID: String = "batch.common_app_cache"
+    public static let batchScanIDs: Set<String> = [
+        batchRecommendedID,
+        batchDeveloperID,
+        batchFullDiskID,
+        batchCommonAppCacheID
+    ]
 
     /// v1.0 T4：大文件入口。默认走 `~`（用户主目录），由 `LargeFilesView` 配合
     /// `AppSettings.minFileSizeMB` 阈值过滤后展示 Top N。`rootPath` 可被调用方覆盖
@@ -161,4 +167,3 @@ public enum ScanCategories {
         ]
     }
 }
-

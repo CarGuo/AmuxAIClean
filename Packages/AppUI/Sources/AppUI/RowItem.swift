@@ -15,6 +15,8 @@ public struct RowItem: Identifiable, Hashable, Sendable {
     public let rejection: SafetyRejection
     public let vendorName: String?
     public let vendorNote: String?
+    /// 可选：该行归属 App 的 bundle id 前缀。仅用于删除前的运行中 App 防护。
+    public let runningBundleIDPrefix: String?
     /// v1.3：该聚合行是否"正在被扫描"。
     ///
     /// 判定来自 [ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
@@ -35,6 +37,7 @@ public struct RowItem: Identifiable, Hashable, Sendable {
     public init(id: String, url: URL, title: String, isDirectory: Bool, bytes: Int64,
                 logicalBytes: Int64, fileCount: Int, verdict: SafetyVerdict, rejection: SafetyRejection,
                 vendorName: String? = nil, vendorNote: String? = nil,
+                runningBundleIDPrefix: String? = nil,
                 isActive: Bool = false,
                 modificationDate: Date? = nil) {
         self.id = id
@@ -48,6 +51,7 @@ public struct RowItem: Identifiable, Hashable, Sendable {
         self.rejection = rejection
         self.vendorName = vendorName
         self.vendorNote = vendorNote
+        self.runningBundleIDPrefix = runningBundleIDPrefix
         self.isActive = isActive
         self.modificationDate = modificationDate
     }

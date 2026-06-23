@@ -10,13 +10,15 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../TestHarness"),
-        .package(path: "../LogKit")
+        .package(path: "../LogKit"),
+        .package(path: "../SafetyKit")
     ],
     targets: [
         .target(
             name: "ScanKit",
             dependencies: [
-                "LogKit"
+                "LogKit",
+                "SafetyKit"
             ],
             path: "Sources/ScanKit"
         ),
@@ -29,6 +31,7 @@ let package = Package(
             name: "ScanKitTests",
             dependencies: [
                 "ScanKit",
+                "SafetyKit",
                 .product(name: "TestHarness", package: "TestHarness")
             ],
             path: "Tests/ScanKitTests",

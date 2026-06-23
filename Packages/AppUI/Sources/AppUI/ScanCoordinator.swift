@@ -241,6 +241,12 @@ public final class ScanCoordinator: ObservableObject {
     /// 让 UI 可以渲染不同标题（"开发者构建产物" vs "全部推荐扫描"），但底层 runMultiRootScan 共用。
     public static let developerCategoryID: String = "developer.multi"
 
+    /// 常见应用缓存规则扫描的 categoryID。
+    ///
+    /// 该入口只消费 `vendors.yaml` 中 `category=common_app_cache` 的显式规则，结果是
+    /// "命中路径列表"，不是普通文件系统目录树，因此不走 BulkScanner 流式 ingest。
+    public static let commonAppCacheCategoryID: String = "common_app_cache"
+
     /// v1.5：多根扫描时 [currentRootPath](#) 设为这两个伪路径之一，给 UI 占位
     /// （树形/finishedEmpty 等场景需要一个非 nil 值）。这两个值不是真实目录，
     /// 也不会有"以它们为父"的真实文件系统子项；树形视图遇到它们时要走「合成多根顶层」分支
@@ -255,8 +261,12 @@ public final class ScanCoordinator: ObservableObject {
     public static let multiRootSentinelPath: String = "__sentinel_multi_root__"
     public static let developerSentinelPath: String = "__sentinel_dev_artifact__"
     public static let versionedRootSentinelPath: String = "__sentinel_versioned_root__"
+    public static let commonAppCacheSentinelPath: String = "__sentinel_common_app_cache__"
     public static let multiRootSentinelPaths: Set<String> = [
-        multiRootSentinelPath, developerSentinelPath, versionedRootSentinelPath
+        multiRootSentinelPath,
+        developerSentinelPath,
+        versionedRootSentinelPath,
+        commonAppCacheSentinelPath
     ]
 
     /// 便利属性 —— 转发自 `snapshot.isFinished`，
@@ -1002,6 +1012,136 @@ public final class ScanCoordinator: ObservableObject {
         }
     }
 
+    /// 常见应用缓存扫描入口。
+    ///
+    /// 这里不是从某个大根目录递归构建树，而是消费 `vendors.yaml` 里审计过的
+    /// `category=common_app_cache` 路径规则，做"规则命中列表"。因此：
+    /// - IO 和目录计量全部在后台 executor 完成；
+    /// - 主线程只在开始/结束各发布一次状态，不产生扫描中列表抖动；
+    /// - 发布前仍走 SafetyEngine，保证硬禁区不会被规则误写绕过。
+    public func scanCommonAppCaches(includeConfirm: Bool = true) {
+        cancel()
+        wasCancelled = false
+        buckets.removeAll(keepingCapacity: true)
+        verdictCacheHits = 0
+        verdictCacheMisses = 0
+        dirIndex.removeAll(keepingCapacity: true)
+        childEdges.removeAll(keepingCapacity: true)
+        fileLeaves.removeAll(keepingCapacity: true)
+        treeChildrenCache.removeAll(keepingCapacity: true)
+        bumpChildrenCacheVersion()
+        treeChildrenInFlight.removeAll(keepingCapacity: true)
+        mtimeFallbackCache.removeAll(keepingCapacity: true)
+        bumpStructuralRevision()
+        largeFileLeaves.removeAll(keepingCapacity: true)
+        compactedLargeFileTopN = nil
+        lastIngestAt.removeAll(keepingCapacity: true)
+        self.largeFileMinBytes = 0
+        resetPerRootPublished()
+        perRootStaging = [:]
+        totalBytes = 0
+        scannedFiles = 0
+        startedAt = Date()
+        bytesPerSecondEMA = 0
+        lastSampleAt = nil
+        lastSampleBytes = 0
+        etaEligible = false
+        expectedTotalBytes = nil
+        currentRootPath = ScanCoordinator.commonAppCacheSentinelPath
+        snapshot = ScanSnapshot(categoryID: ScanCoordinator.commonAppCacheCategoryID,
+                                rows: [],
+                                totalBytes: 0,
+                                scannedFileCount: 0,
+                                isFinished: false,
+                                elapsed: 0)
+        isScanning = true
+        scanPhase = .scanning
+        lastError = nil
+        permissionDeniedPaths = []
+        tccProtectedSkippedPaths = []
+        devArtifactDidTruncate = false
+        devArtifactDidTimeout = false
+        activeCategoryID = ScanCoordinator.commonAppCacheCategoryID
+        whitelistSnapshot = []
+        treeFetchGeneration = UUID()
+
+        let categoryID = ScanCoordinator.commonAppCacheCategoryID
+        let activeStartedAt = startedAt
+        let vendorsCopy = vendors
+        let engineCopy = engine
+        let trieRef = trie
+        let homeStr = home
+        let homeURL = URL(fileURLWithPath: homeStr, isDirectory: true)
+        let included: Set<SafetyVerdict> = includeConfirm ? [.safe, .confirm] : [.safe]
+        let options = CommonAppCacheScanner.Options(includedVerdicts: included)
+        GSYLog.notice(.flow,
+                      "scan.common_app_cache.start rules=\(vendorsCopy.filter { $0.category == "common_app_cache" }.count) includeConfirm=\(includeConfirm)")
+
+        scanTask = Task.detached { [weak self] in
+            let hits = CommonAppCacheScanner.detect(vendors: vendorsCopy,
+                                                    home: homeURL,
+                                                    options: options)
+            var rows: [RowItem] = []
+            rows.reserveCapacity(hits.count)
+            var totalAccum: Int64 = 0
+            var countAccum = 0
+
+            for hit in hits {
+                if Task.isCancelled { return }
+                let (evaluatedVerdict, rejection, vendor) = engineCopy.evaluate(path: hit.url.path,
+                                                                                trie: trieRef,
+                                                                                home: homeStr)
+                let rowBytes = hit.sizeBytes
+                totalAccum &+= rowBytes
+                countAccum &+= hit.entryCount
+                rows.append(RowItem(
+                    id: hit.url.path,
+                    url: hit.url,
+                    title: hit.ruleName,
+                    isDirectory: hit.isDirectory,
+                    bytes: rowBytes,
+                    logicalBytes: rowBytes,
+                    fileCount: hit.entryCount,
+                    verdict: evaluatedVerdict,
+                    rejection: rejection,
+                    vendorName: vendor?.name ?? hit.ruleName,
+                    vendorNote: hit.reason ?? hit.source,
+                    runningBundleIDPrefix: hit.bundleIDPrefix,
+                    isActive: false,
+                    modificationDate: Self.modificationDate(at: hit.url)
+                ))
+            }
+
+            let sortedRows = rows.sorted { lhs, rhs in
+                if lhs.bytes == rhs.bytes { return lhs.id < rhs.id }
+                return lhs.bytes > rhs.bytes
+            }
+            let rowsCount = sortedRows.count
+            let totalCaptured = totalAccum
+            let fileCountCaptured = countAccum
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                guard self.activeCategoryID == categoryID else { return }
+                self.snapshot = ScanSnapshot(
+                    categoryID: categoryID,
+                    rows: sortedRows,
+                    totalBytes: totalCaptured,
+                    scannedFileCount: fileCountCaptured,
+                    isFinished: true,
+                    elapsed: Date().timeIntervalSince(activeStartedAt)
+                )
+                self.lastFinishedCategoryID = categoryID
+                self.isScanning = false
+                self.scanPhase = .idle
+                self.activeCategoryID = nil
+                self.invalidateTreeCacheAfterScan()
+                self.refreshVolumeCapacity()
+                GSYLog.notice(.flow,
+                              "scan.common_app_cache.finish rows=\(rowsCount) totalBytes=\(totalCaptured) entries=\(fileCountCaptured) elapsed=\(String(format: "%.2f", Date().timeIntervalSince(activeStartedAt)))")
+            }
+        }
+    }
+
     /// 单层递归 size 估算。仅用于 [scanKnownVersionedRoots](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
     /// 这种小目录场景；大目录会走 BulkScanner 的并发实现。
     ///
@@ -1021,6 +1161,10 @@ public final class ScanCoordinator: ObservableObject {
             }
         }
         return total
+    }
+
+    nonisolated private static func modificationDate(at url: URL) -> Date? {
+        try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 
     /// v1.3：多根并行扫描入口（"全部推荐扫描"）。

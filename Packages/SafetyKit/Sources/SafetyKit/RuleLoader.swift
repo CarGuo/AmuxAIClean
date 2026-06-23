@@ -6,6 +6,10 @@ public struct VendorRule: Sendable, Equatable {
     public let bundleIDPrefix: String?
     public let appSupportSubdir: String?
     public let cachesPath: String?
+    /// 可选规则分类。用于把同一份 vendors.yaml 按能力面切片，例如 common_app_cache。
+    public let category: String?
+    /// 可选证据来源，供规则审计 / 导出日志展示。
+    public let source: String?
     public let note: String?
     /// 显式声明的 path 级规则（DEV_ARTIFACTS_RULES.md §2.x 表格直接对应）。
     /// 命中其中任一条目时，verdict 由该条目而非默认 `.confirm` 决定。
@@ -14,12 +18,15 @@ public struct VendorRule: Sendable, Equatable {
     public let paths: [PathRule]
 
     public init(name: String, bundleIDPrefix: String? = nil, appSupportSubdir: String? = nil,
-                cachesPath: String? = nil, note: String? = nil,
+                cachesPath: String? = nil, category: String? = nil, source: String? = nil,
+                note: String? = nil,
                 paths: [PathRule] = []) {
         self.name = name
         self.bundleIDPrefix = bundleIDPrefix
         self.appSupportSubdir = appSupportSubdir
         self.cachesPath = cachesPath
+        self.category = category
+        self.source = source
         self.note = note
         self.paths = paths
     }
@@ -282,6 +289,8 @@ public enum RuleLoader {
         case "bundle_id_prefix": rule.bundleIDPrefix = value
         case "app_support_subdir": rule.appSupportSubdir = value
         case "caches_path": rule.cachesPath = value
+        case "category": rule.category = value
+        case "source": rule.source = value
         case "note": rule.note = value
         default: break // 忽略未知字段（向前兼容）
         }
@@ -328,6 +337,8 @@ private struct PartialRule {
     var bundleIDPrefix: String?
     var appSupportSubdir: String?
     var cachesPath: String?
+    var category: String?
+    var source: String?
     var note: String?
     var paths: [PathRule] = []
 
@@ -338,6 +349,8 @@ private struct PartialRule {
             bundleIDPrefix: bundleIDPrefix,
             appSupportSubdir: appSupportSubdir,
             cachesPath: cachesPath,
+            category: category,
+            source: source,
             note: note,
             paths: paths
         )

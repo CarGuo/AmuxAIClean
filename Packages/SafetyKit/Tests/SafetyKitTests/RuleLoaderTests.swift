@@ -46,6 +46,23 @@ final class RuleLoaderTests: XCTestCase {
         XCTAssertEqual(rules[0].name, "X")
     }
 
+    func testParseRuleMetadataCategoryAndSource() throws {
+        let yaml = """
+        vendors:
+          - name: "WeChat Cache"
+            category: "common_app_cache"
+            source: "mac-cleanup-go"
+            paths:
+              - path: "~/Library/Caches/com.tencent.xinWeChat"
+                verdict: "safe"
+                reason: "cache"
+        """
+        let rules = try RuleLoader.parse(yaml)
+        XCTAssertEqual(rules.count, 1)
+        XCTAssertEqual(rules[0].category, "common_app_cache")
+        XCTAssertEqual(rules[0].source, "mac-cleanup-go")
+    }
+
     func testHardForbidRejectsMaliciousRule() throws {
         let yaml = """
         vendors:

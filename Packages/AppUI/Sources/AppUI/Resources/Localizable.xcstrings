@@ -818,6 +818,40 @@
         }
       }
     },
+    "batch.common_app_cache.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "WeChat, browsers, Slack and app cache rules"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "微信、浏览器、Slack 等应用缓存规则"
+          }
+        }
+      }
+    },
+    "batch.common_app_cache.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Common App Caches"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "常见软件缓存"
+          }
+        }
+      }
+    },
     "batch.developer.subtitle": {
       "extractionState": "manual",
       "localizations": {
@@ -2565,6 +2599,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在移到废纸篓…"
+          }
+        }
+      }
+    },
+    "delete.running_app.blocked %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The related app is still running: %@.\nQuit it and try again to avoid deleting cache files while the app is writing them."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相关应用仍在运行：%@。\n请先退出应用再重试，避免在应用写入缓存时删除文件。"
           }
         }
       }
@@ -6627,7 +6678,24 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "输入文件夹回车或者拖拽文件夹"
+            "value": "推荐扫描"
+          }
+        }
+      }
+    },
+    "path.sentinel.common_app_cache": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(Common app caches)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(常见软件缓存)"
           }
         }
       }
