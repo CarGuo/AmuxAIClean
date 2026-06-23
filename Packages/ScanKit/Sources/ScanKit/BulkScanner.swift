@@ -250,8 +250,8 @@ public actor BulkScanner {
                     if options.respectTCCSkipList && TCCSkipList.shouldSkip(absPath) {
                         localTCCSkipped += 1
                         continuation.yield(.tccProtectedSkipped(path: absPath))
-                    } else if options.staySingleVolume && rootDev != 0 && entry.device != rootDev {
-                        // 跨卷停下钻：dev 不一致就不入队（注意 firmlink 跨 dev，由 followFirmlinks 单独拦）
+                    } else if options.staySingleVolume && !options.followFirmlinks && rootDev != 0 && entry.device != rootDev {
+                        // 跨卷停下钻：dev 不一致就不入队。followFirmlinks=true 时允许 macOS firmlink 跨 dev 下钻。
                     } else if entry.isSymlink && !options.followSymlinks {
                         // v1.3 P0-A：symlink-to-dir 必须在这里硬截断。
                         // 否则 pnpm/lerna `node_modules/.bin/* → ../foo`、`~/Library/Mobile Documents`
@@ -466,18 +466,22 @@ enum BulkEnumerate {
         let bufSize = 64 * 1024
         let buffer = UnsafeMutableRawPointer.allocate(byteCount: bufSize, alignment: 8)
         defer { buffer.deallocate() }
+        var emittedNames: Set<String> = []
 
         while true {
             let retcount = getattrlistbulk(fd, &attrList, buffer, bufSize, 0)
             if retcount == 0 { break } // 0 = 真读完了
             if retcount < 0 {
-                // v1.3 P0 修复：原本 retcount<0 与 retcount==0 一起静默 break，
-                // 一个 195k entry 的目录中途任意一次 getattrlistbulk 出错（EIO/ENOTSUP/EINTR/权限）
-                // 都会让剩余成千上万条 entry 全部丢失（这正是 ijkplayer 漏算的主因之一）。
-                // 现在：把 errno 抓出来记录到 stderr，便于诊断；继续保持向上 break，避免无限循环。
                 let err = errno
-                FileHandle.standardError.write(Data("[ScanKit] getattrlistbulk EIO: errno=\(err) at \(dirPath)\n".utf8))
-                GSYLog.warning(.scan, "getattrlistbulk EIO errno=\(err) dir=\(dirPath)")
+                if err == EINTR {
+                    continue
+                }
+                let fallbackCount = enumerateWithFileManagerFallback(
+                    dirPath: dirPath,
+                    skipping: emittedNames,
+                    body
+                )
+                GSYLog.warning(.scan, "getattrlistbulk errno=\(err) dir=\(dirPath) fallbackEntries=\(fallbackCount)")
                 break
             }
 
@@ -569,10 +573,48 @@ enum BulkEnumerate {
                     device: device,
                     modificationDate: modDate
                 )
+                emittedNames.insert(name)
                 if !body(entry) { return }
 
                 cursor = nextCursor
             }
         }
+    }
+
+    @discardableResult
+    static func enumerateWithFileManagerFallback(
+        dirPath: String,
+        skipping emittedNames: Set<String>,
+        _ body: (BulkEntry) -> Bool
+    ) -> Int {
+        let names: [String]
+        do {
+            names = try FileManager.default.contentsOfDirectory(atPath: dirPath)
+        } catch {
+            GSYLog.warning(.scan, "FileManager fallback enumerate failed dir=\(dirPath) err=\(error.localizedDescription)")
+            return 0
+        }
+
+        var emitted = 0
+        for name in names where !emittedNames.contains(name) {
+            if name == "." || name == ".." { continue }
+            let path = "\(dirPath)/\(name)"
+            var sb = stat()
+            guard lstat(path, &sb) == 0 else { continue }
+            let mode = sb.st_mode & S_IFMT
+            let entry = BulkEntry(
+                name: name,
+                isDirectory: mode == S_IFDIR,
+                isSymlink: mode == S_IFLNK,
+                allocatedSize: Int64(sb.st_blocks) * 512,
+                logicalSize: Int64(sb.st_size),
+                inode: UInt64(sb.st_ino),
+                device: UInt64(bitPattern: Int64(sb.st_dev)),
+                modificationDate: Date(timeIntervalSince1970: TimeInterval(sb.st_mtimespec.tv_sec) + TimeInterval(sb.st_mtimespec.tv_nsec) / 1e9)
+            )
+            emitted += 1
+            if !body(entry) { break }
+        }
+        return emitted
     }
 }

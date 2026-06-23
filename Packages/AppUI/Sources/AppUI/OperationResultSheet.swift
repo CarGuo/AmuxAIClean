@@ -290,13 +290,21 @@ public struct OperationResultSheet: View {
                     Button {
                         copyToPasteboard(payload.failedPaths.joined(separator: "\n"))
                     } label: {
-                        Label("op.result.button.copy", systemImage: "doc.on.doc")
+                        Label {
+                            Text("op.result.button.copy", bundle: .module)
+                        } icon: {
+                            Image(systemName: "doc.on.doc")
+                        }
                     }
                     if let first = payload.failedPaths.first {
                         Button {
                             revealInFinder(path: first)
                         } label: {
-                            Label("op.result.button.reveal", systemImage: "folder")
+                            Label {
+                                Text("op.result.button.reveal", bundle: .module)
+                            } icon: {
+                                Image(systemName: "folder")
+                            }
                         }
                     }
                     Spacer()

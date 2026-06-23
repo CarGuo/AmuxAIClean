@@ -572,6 +572,8 @@ public struct MainView: View {
                     .tag(MainView.appFootprintSentinelID)
                 launchAgentSidebarRow
                     .tag(MainView.launchAgentSentinelID)
+                portCleanerSidebarRow
+                    .tag(MainView.portCleanerSentinelID)
                 uninstallSidebarRow
                     .tag(MainView.uninstallSentinelID)
                 devVersionedSidebarRow
@@ -648,6 +650,10 @@ public struct MainView: View {
     /// v1.2 P1-7：「启动项」侧边项。同样走 sentinel ID 旁路 —— 它是只读视图，
     /// 没有勾选/删除动作，不该污染 ScanCategory 体系。
     static let launchAgentSentinelID: String = "launchagent.list"
+
+    /// v1.8：「清理端口」侧边项。端口占用是运行时进程资源，和磁盘扫描模型不同，
+    /// 使用独立屏幕 + 后台 lsof scanner，不进入 ScanCategory。
+    static let portCleanerSentinelID: String = "port.cleaner"
 
     /// v1.2 P1-8：「卸载残留」侧边项。UninstallScreen 自带 SafetyEngine + dryRun
     /// + 二次确认 sheet，外层 MainView 不应再叠加扫描/删除 UI，故走 sentinel ID 旁路。
@@ -748,6 +754,24 @@ public struct MainView: View {
                 Text("sidebar.row.launch_agents", bundle: .module)
                     .font(.system(.body, design: .rounded))
                 Text("sidebar.subtitle.launch_agents", bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var portCleanerSidebarRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "network")
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("sidebar.row.port_cleaner", bundle: .module)
+                    .font(.system(.body, design: .rounded))
+                Text("sidebar.subtitle.port_cleaner", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -993,6 +1017,11 @@ public struct MainView: View {
         selectedCategory == MainView.launchAgentSentinelID
     }
 
+    /// v1.8：当前是否在「清理端口」模式。
+    private var isPortCleanerMode: Bool {
+        selectedCategory == MainView.portCleanerSentinelID
+    }
+
     /// v1.2 P1-8：当前是否在卸载残留模式。
     private var isUninstallMode: Bool {
         selectedCategory == MainView.uninstallSentinelID
@@ -1041,6 +1070,9 @@ public struct MainView: View {
             } else if isLaunchAgentMode {
                 // 「启动项」同样整段独立 —— 只读视图，无扫描进度 / 勾选 / 删除按钮。
                 LaunchAgentScreen()
+            } else if isPortCleanerMode {
+                // 「清理端口」是运行时进程工具：后台 lsof 扫描，kill 前二次确认，不复用磁盘扫描 UI。
+                PortCleanerScreen()
             } else if isUninstallMode {
                 // 「卸载残留」整段独立：UninstallScreen 自带 SafetyEngine + dryRun + 二次确认，
                 // 外层不能再叠 statusBar / footerBar / 删除按钮，避免重复或绕过安全契约。

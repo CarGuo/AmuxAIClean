@@ -167,4 +167,41 @@ final class MultiRootScannerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(totalBytes, 8192,
             "跨根 hardlink 应各自计入字节（实测 \(totalBytes)），低于 8192 说明 InodeSet 跨根共享了")
     }
+
+    func test_timeoutSyntheticSummary_保留已观察到的partial进度() async throws {
+        let root = URL(fileURLWithPath: "/tmp/synthetic-root")
+        let clock = MultiRootProgressClock()
+
+        await clock.record(nodes: [
+            FSNode(path: "/tmp/synthetic-root/a.bin",
+                   isDirectory: false,
+                   isSymlink: false,
+                   allocatedSize: 4096,
+                   logicalSize: 2048,
+                   inode: 1,
+                   device: 1,
+                   modificationDate: nil),
+            FSNode(path: "/tmp/synthetic-root/sub",
+                   isDirectory: true,
+                   isSymlink: false,
+                   allocatedSize: 0,
+                   logicalSize: 0,
+                   inode: 2,
+                   device: 1,
+                   modificationDate: nil)
+        ])
+        await clock.recordProgress(scannedBytes: 8192, fileCount: 3)
+        await clock.recordPermissionDenied()
+        await clock.recordTCCProtectedSkipped()
+
+        let summary = await clock.syntheticSummary(root: root, elapsed: 1.25)
+
+        XCTAssertEqual(summary.root, root)
+        XCTAssertEqual(summary.totalAllocatedBytes, 8192, "超时合成 summary 不能把已发布进度归零")
+        XCTAssertEqual(summary.totalLogicalBytes, 2048)
+        XCTAssertEqual(summary.fileCount, 3)
+        XCTAssertEqual(summary.directoryCount, 1)
+        XCTAssertEqual(summary.permissionDeniedCount, 1)
+        XCTAssertEqual(summary.tccProtectedSkippedCount, 1)
+    }
 }

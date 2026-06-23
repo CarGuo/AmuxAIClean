@@ -46,7 +46,7 @@ public actor MultiRootScanner {
         self.options = options
     }
 
-    /// v1.3 P0-B：per-root 硬超时，超过即强制 cancel + 合成 .finished 让上游收敛。
+    /// v1.3 P0-B：per-root 硬超时，超过即强制 cancel + 合成 partial .finished 让上游收敛。
     /// 默认 5 分钟；dev/fullDisk 实测正常 root < 60s 完成，5 分钟覆盖极端 USB 慢盘已绰绰有余。
     public static let defaultPerRootTimeout: TimeInterval = 300
 
@@ -69,7 +69,7 @@ public actor MultiRootScanner {
     ///   再放大整个 APFS metadata layer 进入 lock-step 串行化，反而更慢。
     ///   v1.5 性能修复：dev scan discover 命中 30+ root 直接 fan out 时整机
     ///   IO 子系统拥塞，App 与 Finder/浏览器一起卡。Sliding window 是最小修改面治本方案。
-    /// - parameter perRootTimeout: 单根硬超时，默认 5 分钟。超时合成空 .finished 让上游收敛。
+    /// - parameter perRootTimeout: 单根硬超时，默认 5 分钟。超时合成 partial .finished 让上游收敛。
     /// - parameter noProgressTimeout: 单根无进展超时，默认 90 秒。
     /// - parameter totalDeadline: 整体扫描 deadline，默认 20 分钟。超过即所有未完成 root 强 cancel。
     public func scan(
@@ -139,7 +139,7 @@ public actor MultiRootScanner {
 
     /// v1.5：抽出"扫单根"，给 sliding window 调度复用。
     /// v1.3 P0-B：包了 per-root hard timeout + no-progress watchdog。
-    /// 超时时主动合成空 `.finished` summary 让上游 ingest 流程收敛，避免 UI 永远"扫描中"。
+    /// 超时时主动合成 partial `.finished` summary 让上游 ingest 流程收敛，避免 UI 永远"扫描中"。
     private static func scanOne(
         root: URL,
         opts: ScanOptions,
@@ -153,7 +153,7 @@ public actor MultiRootScanner {
         let rootPath = root.path
         let started = Date()
         // 进度时钟：scanOne 主体每收到一个事件刷新，watchdog 通过 actor 读取判定 hang。
-        let progressClock = ProgressClock()
+        let progressClock = MultiRootProgressClock()
         // hardTimeout 哨兵 + noProgress watchdog 共用一个 cancellation 信号：通过 cancel
         // outer Task（withTimeoutSentinels 内）联动；这里直接捕获 Task.current 思路不通，
         // 改成包一层 child Task 拿到句柄。
@@ -165,7 +165,17 @@ public actor MultiRootScanner {
                 while !Task.isCancelled, let ev = await iterator.next() {
                     // 任何"实质事件"都刷新进度时钟。.tccProtectedSkipped/.cacheDirTagged 也算进展。
                     switch ev {
-                    case .node, .nodes, .progress, .permissionDenied, .tccProtectedSkipped, .cacheDirTagged:
+                    case .node(let node):
+                        await progressClock.record(node: node)
+                    case .nodes(let nodes):
+                        await progressClock.record(nodes: nodes)
+                    case .progress(let scannedBytes, let fileCount):
+                        await progressClock.recordProgress(scannedBytes: scannedBytes, fileCount: fileCount)
+                    case .permissionDenied:
+                        await progressClock.recordPermissionDenied()
+                    case .tccProtectedSkipped:
+                        await progressClock.recordTCCProtectedSkipped()
+                    case .cacheDirTagged:
                         await progressClock.touch()
                     case .finished:
                         // 上游已经产出真实 summary，标记一下，scanOne 末尾就不补合成 .finished。
@@ -203,33 +213,64 @@ public actor MultiRootScanner {
             await group.waitForAll()
         }
         // 兜底：若上面任一超时触发，BulkScanner 那边可能还没机会 yield .finished。
-        // 这里合成一条空 .finished，让上层 ScanCoordinator 的 finished 计数能加一，整体收敛。
+        // 这里合成一条 partial .finished，让上层 ScanCoordinator 的 finished 计数能加一，整体收敛。
         // 通过 progressClock.didReceiveFinished 标志判断是否需要补。
         if await progressClock.didReceiveFinished == false {
-            let synthetic = ScanSummary(
-                root: root,
-                totalAllocatedBytes: 0,
-                totalLogicalBytes: 0,
-                fileCount: 0,
-                directoryCount: 0,
-                dedupedHardlinkBytes: 0,
-                elapsed: Date().timeIntervalSince(started),
-                permissionDeniedCount: 0,
-                tccProtectedSkippedCount: 0
-            )
+            let synthetic = await progressClock.syntheticSummary(root: root, elapsed: Date().timeIntervalSince(started))
             continuation.yield(MultiRootEvent(rootPath: rootPath, event: .finished(synthetic)))
-            GSYLog.warning(.scan, "MultiRootScanner 合成空 .finished 让上游收敛 root=\(rootPath) elapsed=\(String(format: "%.1f", synthetic.elapsed))s")
+            GSYLog.warning(.scan, "MultiRootScanner 合成 partial .finished 让上游收敛 root=\(rootPath) bytes=\(synthetic.totalAllocatedBytes) files=\(synthetic.fileCount) elapsed=\(String(format: "%.1f", synthetic.elapsed))s")
         }
     }
 }
 
 /// scanOne 内部进度时钟：watchdog 用它判 hang，scanOne 末尾用 didReceiveFinished 决定是否补合成 .finished。
-private actor ProgressClock {
+actor MultiRootProgressClock {
     private var lastTouch: Date = Date()
     var didReceiveFinished: Bool = false
+    private var latestProgressBytes: Int64 = 0
+    private var latestProgressFileCount: Int = 0
+    private var observedAllocatedBytes: Int64 = 0
+    private var observedLogicalBytes: Int64 = 0
+    private var observedFileCount: Int = 0
+    private var observedDirectoryCount: Int = 0
+    private var permissionDeniedCount: Int = 0
+    private var tccProtectedSkippedCount: Int = 0
 
     func touch() {
         lastTouch = Date()
+    }
+
+    func record(node: FSNode) {
+        record(nodes: [node])
+    }
+
+    func record(nodes: [FSNode]) {
+        touch()
+        for node in nodes {
+            if node.isDirectory {
+                observedDirectoryCount += 1
+            } else {
+                observedFileCount += 1
+                observedAllocatedBytes += node.allocatedSize
+                observedLogicalBytes += node.logicalSize
+            }
+        }
+    }
+
+    func recordProgress(scannedBytes: Int64, fileCount: Int) {
+        touch()
+        latestProgressBytes = max(latestProgressBytes, scannedBytes)
+        latestProgressFileCount = max(latestProgressFileCount, fileCount)
+    }
+
+    func recordPermissionDenied() {
+        touch()
+        permissionDeniedCount += 1
+    }
+
+    func recordTCCProtectedSkipped() {
+        touch()
+        tccProtectedSkippedCount += 1
     }
 
     func markFinished() {
@@ -238,5 +279,19 @@ private actor ProgressClock {
 
     func secondsSinceLastTouch() -> TimeInterval {
         Date().timeIntervalSince(lastTouch)
+    }
+
+    func syntheticSummary(root: URL, elapsed: TimeInterval) -> ScanSummary {
+        ScanSummary(
+            root: root,
+            totalAllocatedBytes: max(latestProgressBytes, observedAllocatedBytes),
+            totalLogicalBytes: observedLogicalBytes,
+            fileCount: max(latestProgressFileCount, observedFileCount),
+            directoryCount: observedDirectoryCount,
+            dedupedHardlinkBytes: 0,
+            elapsed: elapsed,
+            permissionDeniedCount: permissionDeniedCount,
+            tccProtectedSkippedCount: tccProtectedSkippedCount
+        )
     }
 }

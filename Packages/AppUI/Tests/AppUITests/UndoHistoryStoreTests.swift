@@ -115,6 +115,9 @@ final class UndoHistoryStoreTests: XCTestCase {
         // stale 整条被剔除，partial 和 alive 保留
         XCTAssertEqual(store.history.count, 2)
         XCTAssertEqual(Set(store.history.map { $0.source }), Set(["partial", "alive"]))
+        let partial = try XCTUnwrap(store.history.first { $0.source == "partial" })
+        XCTAssertEqual(partial.filePairs.count, 1, "partial record 里不可恢复的 ghost pair 应被逐项剔除")
+        XCTAssertEqual(partial.filePairs.first?.trashed, realA)
     }
 
     func testRestoreRecordHappyPathMovesFileBackAndRemovesRecord() async throws {
@@ -147,5 +150,44 @@ final class UndoHistoryStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: trashedFile.path))
         // record 已被 history 移除
         XCTAssertEqual(store.history.count, 0)
+    }
+
+    func testRestoreRecordPartialFailureKeepsRemainingRestorablePairs() async throws {
+        let dir = tempDir()
+        let url = storeURL(in: dir)
+        let store = UndoHistoryStore(storeURL: url, maxHistoryCount: 10)
+
+        let trashDir = dir.appendingPathComponent("trash", isDirectory: true)
+        let origDir = dir.appendingPathComponent("orig", isDirectory: true)
+        try FileManager.default.createDirectory(at: trashDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: origDir, withIntermediateDirectories: true)
+
+        let okTrashed = trashDir.appendingPathComponent("ok.log")
+        let blockedTrashed = trashDir.appendingPathComponent("blocked.log")
+        let okOriginal = origDir.appendingPathComponent("ok.log")
+        let blockedOriginalParent = origDir.appendingPathComponent("blocked-parent-file")
+        let blockedOriginal = blockedOriginalParent.appendingPathComponent("blocked.log")
+
+        try "ok".write(to: okTrashed, atomically: true, encoding: .utf8)
+        try "blocked".write(to: blockedTrashed, atomically: true, encoding: .utf8)
+        try "not-a-directory".write(to: blockedOriginalParent, atomically: true, encoding: .utf8)
+
+        store.addRecord(source: "clean", filePairs: [
+            .init(original: okOriginal.path, trashed: okTrashed.path),
+            .init(original: blockedOriginal.path, trashed: blockedTrashed.path)
+        ])
+        let record = try XCTUnwrap(store.history.first)
+
+        let (restored, skipped, err) = await store.restoreRecord(record)
+
+        XCTAssertEqual(restored, 1)
+        XCTAssertEqual(skipped, 1)
+        XCTAssertNotNil(err)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: okOriginal.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: blockedTrashed.path))
+        XCTAssertEqual(store.history.count, 1, "partial 失败后不能整条移除，否则剩余文件失去恢复入口")
+        XCTAssertEqual(store.history[0].filePairs, [
+            .init(original: blockedOriginal.path, trashed: blockedTrashed.path)
+        ])
     }
 }

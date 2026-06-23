@@ -121,19 +121,26 @@ public final class UndoHistoryStore: ObservableObject {
         GSYLog.info(.trash, "UndoHistory 写入 source=\(source) pairs=\(filePairs.count) total=\(history.count)")
     }
 
-    /// 检查并移除"trashedPath 已不存在"的陈旧记录（用户手动清空了系统废纸篓）。
-    /// **判定口径**：record 的所有 pair 的 trashedPath 都不存在 → 整条 record 被剔除。
-    /// 部分存在则保留（用户可能只清空了部分）。
+    /// 检查并移除"trashedPath 已不存在"的陈旧 pair（用户手动清空了系统废纸篓）。
+    /// **判定口径**：逐 pair 剔除不可恢复项；若 record 已没有任何可恢复 pair，才剔除整条 record。
     public func cleanupStaleEntries() {
-        let initialCount = history.count
-        history.removeAll { record in
-            record.filePairs.allSatisfy { pair in
-                !fm.fileExists(atPath: pair.trashed)
+        let oldHistory = history
+        history = history.compactMap { record in
+            let existingPairs = record.filePairs.filter { pair in
+                fm.fileExists(atPath: pair.trashed)
             }
+            guard !existingPairs.isEmpty else { return nil }
+            if existingPairs.count == record.filePairs.count { return record }
+            return Record(
+                id: record.id,
+                timestamp: record.timestamp,
+                source: record.source,
+                filePairs: existingPairs
+            )
         }
-        if history.count < initialCount {
+        if history != oldHistory {
             saveHistory()
-            GSYLog.info(.trash, "UndoHistory cleanupStaleEntries 剔除 \(initialCount - history.count) 条")
+            GSYLog.info(.trash, "UndoHistory cleanupStaleEntries 更新 records \(oldHistory.count) → \(history.count)")
         }
     }
 
@@ -153,6 +160,7 @@ public final class UndoHistoryStore: ObservableObject {
         var restored = 0
         var skipped = 0
         var firstError: String?
+        var remainingPairs: [Record.FilePair] = []
 
         for pair in record.filePairs {
             let trashedURL = URL(fileURLWithPath: pair.trashed)
@@ -171,6 +179,7 @@ public final class UndoHistoryStore: ObservableObject {
                 let conflictResult = await Self.recycleConflict(at: originalURL)
                 if let conflictErr = conflictResult {
                     skipped += 1
+                    remainingPairs.append(pair)
                     if firstError == nil {
                         firstError = String(format: String(localized: "undo.err.conflict_resolution_failed %@", bundle: .module), conflictErr)
                     }
@@ -187,6 +196,7 @@ public final class UndoHistoryStore: ObservableObject {
                 restored += 1
             } catch {
                 skipped += 1
+                remainingPairs.append(pair)
                 if firstError == nil {
                     firstError = String(format: String(localized: "undo.err.move_item_failed %@", bundle: .module), error.localizedDescription)
                 }
@@ -194,9 +204,17 @@ public final class UndoHistoryStore: ObservableObject {
             }
         }
 
-        // 整条记录从历史剔除（即便 partial 成功，剩余的 trashed 也已不再可信）
         if let idx = history.firstIndex(where: { $0.id == record.id }) {
-            history.remove(at: idx)
+            if remainingPairs.isEmpty {
+                history.remove(at: idx)
+            } else {
+                history[idx] = Record(
+                    id: record.id,
+                    timestamp: record.timestamp,
+                    source: record.source,
+                    filePairs: remainingPairs
+                )
+            }
             saveHistory()
         }
 

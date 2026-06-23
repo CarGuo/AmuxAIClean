@@ -43,6 +43,7 @@ public final class SystemProbeStore: ObservableObject {
     @Published public private(set) var swapSnapshot: SwapProbe.Snapshot?
 
     private let home: String
+    private let refreshBridge = SystemProbeRefreshBridge()
 
     /// v2026.06.20 NSWorkspace mount / unmount / app-active 三类通知 token，
     /// 包装在独立 nonisolated 容器里，让 `deinit`（非 MainActor 隔离）能安全释放。
@@ -51,8 +52,7 @@ public final class SystemProbeStore: ObservableObject {
 
     /// v2026.06.20 15s 轻量轮询定时器；DispatchSourceTimer 而非 Timer 是因为
     /// Timer 受 RunLoop 模式影响（拖拽窗口时停摆），SourceTimer 走独立 queue，
-    /// 主线程 hop 由 [tickPoll](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SystemProbeStore.swift)
-    /// 内显式 `Task { @MainActor in ... }` 完成。
+    /// 主线程只负责发布后台 probe 的结果。
     /// `nonisolated(unsafe)` 因为我们只在 init 写、deinit 读取 cancel，单线程顺序安全。
     private nonisolated(unsafe) var pollTimer: DispatchSourceTimer?
 
@@ -61,6 +61,7 @@ public final class SystemProbeStore: ObservableObject {
         self.fdaStatus = FDAProbe.probe(home: home)
         self.volumeSnapshot = VolumeCapacity.probe()
         self.swapSnapshot = SwapProbe.probe()
+        self.refreshBridge.store = self
         installAutoRefreshHooks()
     }
 
@@ -90,73 +91,74 @@ public final class SystemProbeStore: ObservableObject {
     /// "用户清完回收站 → 切回 App"的典型动作链。
     private func installAutoRefreshHooks() {
         let wsNC = NSWorkspace.shared.notificationCenter
+        let bridge = refreshBridge
 
-        // v2026.06.21 修复（第三轮，最终版）：
-        // 此前两轮分别用 `MainActor.assumeIsolated` / `Task { @MainActor in ... }` /
-        // `DispatchQueue.main.async { self?.tickPoll() }` 都未能消灭崩溃：
-        //   Thread 8 (com.apple.root.background-qos) → _dispatch_assert_queue_fail
-        //   "Block was expected to execute on queue [com.apple.main-thread]"
-        // 根因：Swift 6 严格并发模式下，**只要 `@Sendable` closure 捕获 `@MainActor`
-        // 隔离类型的 `self`（即便是 [weak self]）**，runtime 在 closure prologue 就会
-        // 用 `_swift_task_checkIsolatedSwift` → `dispatch_assert_queue(main)` 校验
-        // 当前 executor，在 background queue 上必 trap。
-        //
-        // 最终方案：让所有 closure **从一开始就跑在 main queue**，根本不需要 hop：
-        // 1. NotificationCenter observer 全部 `queue: .main`（OperationQueue.main 投递）
-        // 2. closure 内部再 `DispatchQueue.main.async`，把执行从 OperationQueue.main 切到
-        //    main dispatch queue —— 这恰好就是 MainActor 的底层执行器，无 trap。
-        // 3. **DispatchSourceTimer 的 queue 直接用 `DispatchQueue.main`** 而非 background。
-        //    这样 timer event handler 一启动就在 main，self?.tickPoll() 直接调用，
-        //    完全绕过 `dispatch_assert_queue` 校验路径。
-        //    15s/次 + 仅做 statfs 级 syscall，主线程 < 1ms 抖动，可接受。
         let mountToken = wsNC.addObserver(
             forName: NSWorkspace.didMountNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            DispatchQueue.main.async { self?.refreshVolumeCapacity() }
+        ) { _ in
+            bridge.scheduleVolumeRefresh()
         }
         let unmountToken = wsNC.addObserver(
             forName: NSWorkspace.didUnmountNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            DispatchQueue.main.async { self?.refreshVolumeCapacity() }
+        ) { _ in
+            bridge.scheduleVolumeRefresh()
         }
         // App becomes active：用户从 Finder 清完回收站切回我们时立即同步。
         let appActiveToken = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            DispatchQueue.main.async { self?.refreshVolumeCapacity() }
+        ) { _ in
+            bridge.scheduleVolumeRefresh()
         }
         tokenBag.append(mountToken)
         tokenBag.append(unmountToken)
         tokenBag.append(appActiveToken)
 
-        // 15s 轻量轮询：DispatchSourceTimer 直接挂在 main queue —— 不再下 background。
-        // 代价：tick 时主线程多一次 statfs syscall（< 1ms），可忽略。
-        // 收益：彻底无 executor hop，无 dispatch_assert_queue trap 风险。
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
+        // 15s 轻量轮询：后台 queue 执行 statfs / sysctl / vm 目录枚举；
+        // event handler 不捕获 @MainActor self，避免 Swift 6 executor 校验 trap。
+        let timer = DispatchSource.makeTimerSource(queue: SystemProbeRefreshBridge.queue)
         timer.schedule(deadline: .now() + 15, repeating: 15, leeway: .seconds(3))
-        timer.setEventHandler { [weak self] in
-            self?.tickPoll()
+        timer.setEventHandler {
+            bridge.scheduleVolumeRefresh()
         }
         timer.resume()
         pollTimer = timer
     }
 
-    /// 轮询事件：只在卷容量真的变化时才发 @Published 更新（VolumeCapacity.Snapshot 是 Equatable，
-    /// 相等不写入就不广播 → SwiftUI 不重绘）。
-    private func tickPoll() {
-        let fresh = VolumeCapacity.probe()
-        if fresh != volumeSnapshot {
-            volumeSnapshot = fresh
+    fileprivate func applyVolumeRefresh(_ snapshot: SystemProbeRefreshSnapshot) {
+        if snapshot.volume != volumeSnapshot {
+            volumeSnapshot = snapshot.volume
         }
-        let freshSwap = SwapProbe.probe()
-        if freshSwap != swapSnapshot {
-            swapSnapshot = freshSwap
+        if snapshot.swap != swapSnapshot {
+            swapSnapshot = snapshot.swap
+        }
+    }
+}
+
+private struct SystemProbeRefreshSnapshot: Sendable {
+    let volume: VolumeCapacity.Snapshot?
+    let swap: SwapProbe.Snapshot?
+}
+
+private final class SystemProbeRefreshBridge: @unchecked Sendable {
+    static let queue = DispatchQueue(label: "com.guoshuyu.cleanmac.system-probe", qos: .utility)
+
+    weak var store: SystemProbeStore?
+
+    func scheduleVolumeRefresh() {
+        Self.queue.async { [weak self] in
+            let snapshot = SystemProbeRefreshSnapshot(
+                volume: VolumeCapacity.probe(),
+                swap: SwapProbe.probe()
+            )
+            Task { @MainActor [weak self] in
+                self?.store?.applyVolumeRefresh(snapshot)
+            }
         }
     }
 }

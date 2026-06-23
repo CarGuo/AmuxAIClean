@@ -37,11 +37,11 @@ struct UndoHistoryScreen: View {
             // 视图打开时主动刷新一次：用户可能刚清空了系统废纸篓
             store.cleanupStaleEntries()
         }
-        .alert("undo_history.alert.title", isPresented: Binding(
+        .alert(String(localized: "undo_history.alert.title", bundle: .module), isPresented: Binding(
             get: { alertMessage != nil },
             set: { if !$0 { alertMessage = nil } }
         ), actions: {
-            Button("undo_history.alert.ok") { alertMessage = nil }
+            Button(String(localized: "undo_history.alert.ok", bundle: .module)) { alertMessage = nil }
         }, message: {
             Text(alertMessage ?? "")
         })
@@ -107,8 +107,11 @@ struct UndoHistoryScreen: View {
                     Button {
                         Task { await performRestore(record) }
                     } label: {
-                        Label("undo_history.button.restore", systemImage: "arrow.uturn.backward")
-                            .bundle()
+                        Label {
+                            Text("undo_history.button.restore", bundle: .module)
+                        } icon: {
+                            Image(systemName: "arrow.uturn.backward")
+                        }
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(isRestoring)
@@ -158,10 +161,4 @@ struct UndoHistoryScreen: View {
             selectedRecordID = store.history.first?.id
         }
     }
-}
-
-private extension Label where Title == Text, Icon == Image {
-    /// SwiftUI bundle helper：让 Label 的 LocalizedStringKey 走 .module bundle。
-    /// （Label(LocalizedStringKey, systemImage:) 默认是 main bundle，扫不到 Packages 下的 xcstrings。）
-    func bundle() -> some View { self }
 }
