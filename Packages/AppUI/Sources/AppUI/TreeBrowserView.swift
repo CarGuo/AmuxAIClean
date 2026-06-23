@@ -446,10 +446,9 @@ public struct TreeBrowserView: View {
             }
         }
         let base = Self.computeVerdicts(for: pairs) { Self.VerdictCache.verdict(for: $0) }
-        // v2026.06.20：把"展开但孩子还在异步加载"的目录后面插一个加载占位行，
-        // 让用户在按需子树扫描的等待窗口里看到 spinner，
-        // 而不是空白的展开。详见 [insertLoadingPlaceholders](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
-        let newFlatRows = insertLoadingPlaceholders(into: base)
+        // v2026.06.23：把"已展开且孩子仍在异步补齐"的目录标成 inline loading，
+        // AppKit 行会在名字后面画一个 mini spinner，不再插整行占位。
+        let newFlatRows = markLoadingChildren(in: base)
         // v2026.06.22 perf：等值短路。
         //
         // 为什么需要：rebuildFlatRows 仍会被多处调用（onAppear / sortKey change /
@@ -473,7 +472,7 @@ public struct TreeBrowserView: View {
         maxBytes = newMax
         // 顶层空 + isFetchingChildren 才算"拉取中"；否则维持 false 让 view 走 isScanning / 真空两态。
         isFetchingRoot = newIsFetching
-        if newFlatRows.contains(where: \.isLoadingPlaceholder) || newIsFetching {
+        if newFlatRows.contains(where: \.isLoadingChildren) || newIsFetching {
             scheduleAsyncChildrenRebuild()
         } else {
             cancelAsyncChildrenRebuild()
@@ -492,49 +491,34 @@ public struct TreeBrowserView: View {
         }
     }
 
-    /// v2026.06.20 **子节点加载占位插入**。
+    /// v2026.06.23 **子节点加载状态标记**。
     ///
     /// 触发场景：用户展开一个目录 → 该目录 directChildren 当前还在异步拉（按需子树扫描
     /// 在 BG queue 起的 Task 没回写 [treeChildrenCache](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L283-L283)）
     /// → directChildren 暂时返回 []。旧版表现：chevron 已经翻成"↓"但下面什么都没有，
     /// 用户以为"展开了空目录"，几百 ms 后突然出来一堆子项，体验割裂。
     ///
-    /// 新策略：对 base 数组按顺序扫一遍，每个"isDirectory + 展开"的行后面看下一行是否真是它的子项
-    /// （depth = 父+1）；若不是 + ScanCoordinator 报告 isFetching → 插一个 `isLoadingPlaceholder` 行，
-    /// 单独的 ProgressView 渲染。
+    /// 新策略：对 base 数组按顺序扫一遍，每个"isDirectory + 展开 + ScanCoordinator 报告 isFetching"
+    /// 的行打上 `isLoadingChildren`。AppKit 自绘行会在名字后面放一个 mini spinner；
+    /// 不再插入整行 loading，避免展开时列表高度抖动，也避免用户误以为多了一个子节点。
     ///
-    /// 性能：base 数组遍历 1 次，每行 O(1) 字典查询，不 O(N²)。占位行不参与 verdict 评估。
-    private func insertLoadingPlaceholders(into base: [FlatTreeRow]) -> [FlatTreeRow] {
+    /// 性能：base 数组遍历 1 次，每行 O(1) 字典查询，不 O(N²)。
+    private func markLoadingChildren(in base: [FlatTreeRow]) -> [FlatTreeRow] {
         var out: [FlatTreeRow] = []
-        out.reserveCapacity(base.count + 4)
-        for (i, item) in base.enumerated() {
-            out.append(item)
+        out.reserveCapacity(base.count)
+        for item in base {
+            var nextItem = item
             // 仅对"可展开 + 已展开 + 实际可访问"的目录考虑插占位
             guard item.row.isDirectory,
                   expanded[item.row.path] == true,
-                  item.row.accessState == .normal else { continue }
-            // 已经有真实子项跟在后面？next.depth 严格大于父 depth 即说明 SwiftUI 看得到子项，
-            // 这种情况就不再插占位（避免"加载中…"与真实子项同框）。
-            let next = (i + 1 < base.count) ? base[i + 1] : nil
-            if let next, next.depth > item.depth { continue }
-            // 此时父展开 + 紧邻无真实子项；仅当 ScanCoordinator 报告还在拉时才插
-            guard coordinator.isFetchingChildren(of: item.row.path, sortedBy: effectiveSortKey)
-            else { continue }
-            let placeholderRow = TreeRow(
-                path: item.row.path,
-                title: "",
-                bytes: 0,
-                fileCount: 0,
-                isDirectory: false,
-                hasChildren: false,
-                modificationDate: nil
-            )
-            out.append(FlatTreeRow(
-                row: placeholderRow,
-                depth: item.depth + 1,
-                verdict: .safe,
-                isLoadingPlaceholder: true
-            ))
+                  item.row.accessState == .normal,
+                  coordinator.isFetchingChildren(of: item.row.path, sortedBy: effectiveSortKey)
+            else {
+                out.append(nextItem)
+                continue
+            }
+            nextItem.isLoadingChildren = true
+            out.append(nextItem)
         }
         return out
     }
@@ -577,44 +561,27 @@ public struct TreeBrowserView: View {
     /// 复杂度：O(N find + M new subtree)，N=当前 flatRows 行数，M=新展开子树行数。
     /// 旧实现是 O(N total + 整树 directChildren 调用)。
     ///
-    /// v2026.06.20：插入完真实子项后，若该 path 子项空但 `isFetchingChildren==true`，
-    /// 单独插一个加载占位 row，给用户"我点了 → 正在拉"的及时反馈，避免几百 ms 的空白窗口。
-    /// 真实子项一旦到位，下次 publishSnapshot 触发 structuralRevision bump → 走整树
-    /// [rebuildFlatRows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L323-L344)
-    /// 自然把占位行替换掉，无需手工维护"占位行 lifetime"。
+    /// v2026.06.23：展开后若子项大小仍在后台补齐，只在父行名字后显示 mini spinner，
+    /// 不再插入整行 loading，避免列表高度跳动。
     private func incrementalExpand(path: String) {
         guard let idx = flatRows.firstIndex(where: { $0.row.path == path }) else {
             rebuildFlatRows(); return
         }
+        flatRows[idx].isLoadingChildren = false
         let parentDepth = flatRows[idx].depth
         var pairs: [(TreeRow, Int)] = []
         appendDescendantPairs(parent: path, depth: parentDepth + 1, into: &pairs)
         let inserted = Self.computeVerdicts(for: pairs) { Self.VerdictCache.verdict(for: $0) }
+        let parentRow = flatRows[idx].row
+        let isFetchingChildren = parentRow.accessState == .normal
+            && coordinator.isFetchingChildren(of: path, sortedBy: effectiveSortKey)
+        flatRows[idx].isLoadingChildren = isFetchingChildren
         if !inserted.isEmpty {
             flatRows.insert(contentsOf: inserted, at: idx + 1)
+            if isFetchingChildren { scheduleAsyncChildrenRebuild() }
             return
         }
-        // pairs.isEmpty → 父展开但暂时没真实子项；仅当 ScanCoordinator 报告还在异步拉时插占位
-        let parentRow = flatRows[idx].row
-        guard parentRow.accessState == .normal,
-              coordinator.isFetchingChildren(of: path, sortedBy: effectiveSortKey)
-        else { return }
-        let placeholderRow = TreeRow(
-            path: path,
-            title: "",
-            bytes: 0,
-            fileCount: 0,
-            isDirectory: false,
-            hasChildren: false,
-            modificationDate: nil
-        )
-        flatRows.insert(FlatTreeRow(
-            row: placeholderRow,
-            depth: parentDepth + 1,
-            verdict: .safe,
-            isLoadingPlaceholder: true
-        ), at: idx + 1)
-        scheduleAsyncChildrenRebuild()
+        if isFetchingChildren { scheduleAsyncChildrenRebuild() }
     }
 
     /// 单点折叠：在 flatRows 里找到 `path`，删掉它**之后**所有 depth > path.depth 的
@@ -625,6 +592,7 @@ public struct TreeBrowserView: View {
         guard let idx = flatRows.firstIndex(where: { $0.row.path == path }) else {
             rebuildFlatRows(); return
         }
+        flatRows[idx].isLoadingChildren = false
         let parentDepth = flatRows[idx].depth
         var end = idx + 1
         while end < flatRows.count && flatRows[end].depth > parentDepth {
@@ -1154,6 +1122,10 @@ private enum TreeTableMetrics {
     static let chevronWidth: CGFloat = 24
     static let iconWidth: CGFloat = 24
     static let iconHeight: CGFloat = 20
+    static let folderPointSize: CGFloat = 20
+    static let disclosurePointSize: CGFloat = folderPointSize - 3
+    static let inlineProgressSide: CGFloat = 12
+    static let inlineProgressGap: CGFloat = 6
     static let horizontalGap: CGFloat = 8
     static let sizeWidth: CGFloat = 90
     static let countWidth: CGFloat = 56
@@ -1219,6 +1191,7 @@ private final class TreeTableCellView: NSTableCellView {
 }
 
 private final class TreeTableRowCanvas: NSView {
+    private let inlineProgress = NSProgressIndicator()
     private var flat: FlatTreeRow?
     private var maxBytes: Int64 = 0
     private var isExpanded = false
@@ -1231,6 +1204,26 @@ private final class TreeTableRowCanvas: NSView {
     private var actions: TreeTableRowActions?
 
     override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        inlineProgress.style = .spinning
+        inlineProgress.controlSize = .mini
+        inlineProgress.isIndeterminate = true
+        inlineProgress.isDisplayedWhenStopped = false
+        inlineProgress.isHidden = true
+        inlineProgress.usesThreadedAnimation = true
+        addSubview(inlineProgress)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        updateInlineProgress()
+    }
 
     func configure(flat: FlatTreeRow,
                    maxBytes: Int64,
@@ -1253,6 +1246,7 @@ private final class TreeTableRowCanvas: NSView {
         self.aiReady = aiReady
         self.actions = actions
         toolTip = flat.row.path
+        updateInlineProgress()
         needsDisplay = true
     }
 
@@ -1413,7 +1407,7 @@ private final class TreeTableRowCanvas: NSView {
         drawSymbol(row.isDirectory ? "folder.fill" : "doc",
                    in: iconRect,
                    color: denied ? .tertiaryLabelColor : (row.isDirectory ? .controlAccentColor : .secondaryLabelColor),
-                   pointSize: row.isDirectory ? 20 : 18,
+                   pointSize: row.isDirectory ? TreeTableMetrics.folderPointSize : 18,
                    weight: .regular)
         if denied {
             drawSymbol("lock.fill",
@@ -1428,9 +1422,13 @@ private final class TreeTableRowCanvas: NSView {
         let countX = mtimeX - TreeTableMetrics.countWidth
         let sizeX = countX - TreeTableMetrics.sizeWidth
         let nameWidth = max(20, sizeX - nameX - 8)
+        let nameFont = NSFont.systemFont(ofSize: 13)
+        let nameTextRect = self.nameTextRect(x: nameX,
+                                             width: nameWidth,
+                                             loadingChildren: flat.isLoadingChildren)
         drawText(row.title.isEmpty ? row.path : row.title,
-                 in: CGRect(x: nameX, y: 3, width: nameWidth, height: 19),
-                 font: .systemFont(ofSize: 15),
+                 in: nameTextRect,
+                 font: nameFont,
                  color: denied ? .tertiaryLabelColor : .labelColor,
                  lineBreak: .byTruncatingMiddle)
         drawBar(row: row,
@@ -1494,9 +1492,9 @@ private final class TreeTableRowCanvas: NSView {
                                         expanded: Bool,
                                         color: NSColor) {
         drawSymbol(expanded ? "chevron.down" : "chevron.right",
-                   in: symbolRect(in: rect, side: 18),
+                   in: symbolRect(in: rect, side: TreeTableMetrics.disclosurePointSize),
                    color: color,
-                   pointSize: 17,
+                   pointSize: TreeTableMetrics.disclosurePointSize,
                    weight: .medium)
     }
 
@@ -1535,6 +1533,63 @@ private final class TreeTableRowCanvas: NSView {
         case .trash: return trash
         case .none: return .zero
         }
+    }
+
+    private func nameTextRect(x: CGFloat, width: CGFloat, loadingChildren: Bool) -> CGRect {
+        let reserved = loadingChildren
+            ? TreeTableMetrics.inlineProgressSide + TreeTableMetrics.inlineProgressGap
+            : 0
+        return CGRect(x: x,
+                      y: 3,
+                      width: max(20, width - reserved),
+                      height: 19)
+    }
+
+    private func inlineProgressRect(for flat: FlatTreeRow) -> CGRect? {
+        guard flat.isLoadingChildren,
+              !flat.isLoadingPlaceholder,
+              bounds.width > 0 else { return nil }
+
+        let chevronRect = disclosureRect(for: flat)
+        let iconRect = CGRect(x: chevronRect.maxX + TreeTableMetrics.horizontalGap,
+                              y: 5,
+                              width: TreeTableMetrics.iconWidth,
+                              height: TreeTableMetrics.iconHeight)
+        let nameX = iconRect.maxX + TreeTableMetrics.horizontalGap
+        let actionStart = bounds.width
+            - TreeTableMetrics.actionTrailingPadding
+            - TreeTableMetrics.actionAreaWidth
+        let mtimeX = actionStart - TreeTableMetrics.actionGap - TreeTableMetrics.mtimeWidth
+        let countX = mtimeX - TreeTableMetrics.countWidth
+        let sizeX = countX - TreeTableMetrics.sizeWidth
+        let nameWidth = max(20, sizeX - nameX - 8)
+        guard nameWidth > TreeTableMetrics.inlineProgressSide else { return nil }
+
+        let font = NSFont.systemFont(ofSize: 13)
+        let text = flat.row.title.isEmpty ? flat.row.path : flat.row.title
+        let textRect = nameTextRect(x: nameX, width: nameWidth, loadingChildren: true)
+        let measured = ceil((text as NSString).size(withAttributes: [.font: font]).width)
+        let side = TreeTableMetrics.inlineProgressSide
+        let preferredX = textRect.minX + measured + TreeTableMetrics.inlineProgressGap
+        let maxX = nameX + nameWidth - side
+        let x = min(max(preferredX, textRect.minX), maxX)
+        return CGRect(x: x,
+                      y: floor((bounds.height - side) / 2),
+                      width: side,
+                      height: side)
+    }
+
+    private func updateInlineProgress() {
+        guard let flat,
+              let rect = inlineProgressRect(for: flat)
+        else {
+            inlineProgress.stopAnimation(nil)
+            inlineProgress.isHidden = true
+            return
+        }
+        inlineProgress.frame = rect
+        inlineProgress.isHidden = false
+        inlineProgress.startAnimation(nil)
     }
 
     private func symbolRect(in rect: CGRect, side: CGFloat? = nil) -> CGRect {
@@ -1718,6 +1773,9 @@ struct FlatTreeRow: Identifiable, Hashable {
     /// 后缀，避免与真实 path 冲突；UI 端只渲染一个 ProgressView + "加载中…" 文案，
     /// 不响应点击 / 不算入选中态 / 不进入键盘导航候选集。
     var isLoadingPlaceholder: Bool = false
+    /// 已展开目录的子节点深度聚合还在后台进行时为 true。
+    /// AppKit 行会在名称后显示一个 mini spinner；不影响 selection / path identity。
+    var isLoadingChildren: Bool = false
     /// v2026.06.20：占位行的 id 不能用 `row.path`（会与真实 path 冲突 / 影响 selectedPath
     /// 等键盘导航逻辑），改用 `row.path + "::__loading__"`。普通行保持原行为。
     var id: String {

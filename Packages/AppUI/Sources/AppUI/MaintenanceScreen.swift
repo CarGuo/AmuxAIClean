@@ -4,7 +4,7 @@ import ScanKit
 /// M4-T4：维护任务屏（user-space，无 sudo）。
 ///
 /// 包 [MaintenanceTasks](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/MaintenanceTasks.swift)
-/// 的三个内置任务（rebuildLaunchServices / flushQuickLookCache / flushDNSCache），
+/// 的两个内置任务（flushQuickLookCache / flushDNSCache），
 /// 提供按钮、批量执行入口、按时间倒序的执行结果列表。
 ///
 /// 设计契约：
@@ -165,7 +165,6 @@ public struct MaintenanceScreen: View {
 
     private func icon(for task: MaintenanceTasks.Task) -> String {
         switch task {
-        case .rebuildLaunchServices: return "arrow.triangle.2.circlepath"
         case .flushQuickLookCache:   return "eye.trianglebadge.exclamationmark"
         case .flushDNSCache:         return "network"
         }
@@ -173,8 +172,6 @@ public struct MaintenanceScreen: View {
 
     private func localizedTitle(for task: MaintenanceTasks.Task) -> String {
         switch task {
-        case .rebuildLaunchServices:
-            return String(localized: "maintenance.task.launchservices.title", bundle: .module)
         case .flushQuickLookCache:
             return String(localized: "maintenance.task.quicklook.title", bundle: .module)
         case .flushDNSCache:
@@ -184,8 +181,6 @@ public struct MaintenanceScreen: View {
 
     private func localizedSubtitle(for task: MaintenanceTasks.Task) -> String {
         switch task {
-        case .rebuildLaunchServices:
-            return String(localized: "maintenance.task.launchservices.subtitle", bundle: .module)
         case .flushQuickLookCache:
             return String(localized: "maintenance.task.quicklook.subtitle", bundle: .module)
         case .flushDNSCache:

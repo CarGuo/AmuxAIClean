@@ -6,9 +6,9 @@ final class MaintenanceTasksTests: XCTestCase {
 
     // MARK: - Task 元数据
 
-    func test_allCases_包含_3_个_user_space_任务() {
+    func test_allCases_包含_2_个_user_space_任务() {
         XCTAssertEqual(Set(MaintenanceTasks.Task.allCases), [
-            .rebuildLaunchServices, .flushQuickLookCache, .flushDNSCache
+            .flushQuickLookCache, .flushDNSCache
         ])
     }
 
@@ -20,14 +20,6 @@ final class MaintenanceTasksTests: XCTestCase {
     }
 
     // MARK: - 命令路径契约（防止有人不小心改成 sudo）
-
-    func test_lsregister_路径正确_且不含_sudo() {
-        let cmd = MaintenanceTasks.lsregisterCommand
-        XCTAssertTrue(cmd.launchPath.hasSuffix("/lsregister"))
-        XCTAssertFalse(cmd.launchPath.contains("sudo"))
-        XCTAssertEqual(cmd.arguments,
-                       ["-kill", "-r", "-domain", "local", "-domain", "system", "-domain", "user"])
-    }
 
     func test_qlmanage_路径正确_只跑_r() {
         let cmd = MaintenanceTasks.qlmanageCommand
@@ -55,35 +47,32 @@ final class MaintenanceTasksTests: XCTestCase {
 
     func test_run_单任务_非零_exit_映射为_succeeded_false() {
         let fake = FakeMaintenanceRunner(results: [.init(exitCode: 1, output: "boom")])
-        let outcome = MaintenanceTasks(runner: fake).run(.rebuildLaunchServices)
+        let outcome = MaintenanceTasks(runner: fake).run(.flushQuickLookCache)
         XCTAssertFalse(outcome.succeeded)
         XCTAssertEqual(outcome.log, "boom")
     }
 
-    func test_runAll_按顺序执行_默认全部_3_任务() {
+    func test_runAll_按顺序执行_默认全部_2_任务() {
         let fake = FakeMaintenanceRunner(results: [
-            .init(exitCode: 0, output: "lsreg"),
             .init(exitCode: 0, output: "ql"),
             .init(exitCode: 0, output: "dns")
         ])
         let outcomes = MaintenanceTasks(runner: fake).runAll()
         XCTAssertEqual(outcomes.map(\.task),
-                       [.rebuildLaunchServices, .flushQuickLookCache, .flushDNSCache])
+                       [.flushQuickLookCache, .flushDNSCache])
         XCTAssertTrue(outcomes.allSatisfy(\.succeeded))
-        XCTAssertEqual(fake.executedCommands.count, 3)
+        XCTAssertEqual(fake.executedCommands.count, 2)
     }
 
     func test_runAll_部分失败_其他任务继续执行() {
         let fake = FakeMaintenanceRunner(results: [
-            .init(exitCode: 0, output: "ok"),
             .init(exitCode: 7, output: "ql failed"),
             .init(exitCode: 0, output: "ok")
         ])
         let outcomes = MaintenanceTasks(runner: fake).runAll()
-        XCTAssertEqual(outcomes.count, 3, "中间失败不应中断后续任务")
-        XCTAssertTrue(outcomes[0].succeeded)
-        XCTAssertFalse(outcomes[1].succeeded)
-        XCTAssertTrue(outcomes[2].succeeded)
+        XCTAssertEqual(outcomes.count, 2, "中间失败不应中断后续任务")
+        XCTAssertFalse(outcomes[0].succeeded)
+        XCTAssertTrue(outcomes[1].succeeded)
     }
 
     func test_runAll_指定子集_只跑指定任务() {

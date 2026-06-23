@@ -590,8 +590,8 @@ public struct MainView: View {
                 Text("sidebar.section.undo_history", bundle: .module)
             }
 
-            // M4-T4 / 2026-06：系统维护 section —— rebuildLaunchServices /
-            // flushQuickLookCache / flushDNSCache 三个 user-space 任务，
+            // M4-T4 / 2026-06：系统维护 section —— flushQuickLookCache /
+            // flushDNSCache 两个 user-space 任务，
             // 走 [MaintenanceScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MaintenanceScreen.swift)
             // 自包含 UI，不复用扫描状态栏。
             Section {
@@ -655,8 +655,8 @@ public struct MainView: View {
     /// 完全是一个事后管理面板，与扫描语义无关，故走 sentinel ID 旁路。
     static let undoHistorySentinelID: String = "undo.history"
 
-    /// M4-T4 / 2026-06：「系统维护」侧边项。MaintenanceScreen 是 3 个 user-space 任务
-    /// 的执行面板（rebuildLaunchServices / flushQuickLookCache / flushDNSCache），
+    /// M4-T4 / 2026-06：「系统维护」侧边项。MaintenanceScreen 是 2 个 user-space 任务
+    /// 的执行面板（flushQuickLookCache / flushDNSCache），
     /// 与扫描 / 删除语义无关，沿 uninstall / undoHistory 同款 sentinel 旁路。
     static let maintenanceSentinelID: String = "maintenance.screen"
 
@@ -2265,11 +2265,12 @@ public struct MainView: View {
         let scanned = coordinator.snapshot.totalBytes
         let expected = coordinator.expectedTotalBytes
         let elapsed = coordinator.snapshot.elapsed
-        let eta = coordinator.snapshot.estimatedRemaining
 
-        // 0~1 比例。expected 缺失 / scanned > expected（估算偏小）时退化为 nil → 不确定进度。
-        // **v2026.06.20**：去掉旧的 `min(1.0, ...)` 钳位——分母被穿透就直接 nil，
-        // 让 UI 切回 indeterminate ProgressView，不再让用户误以为快完成了。
+        // 0~1 比例。expected 缺失 / scanned > expected（估算偏小）时退化为 nil → **隐藏进度条**。
+        //
+        // v2026.06.23 产品决策：剩余时间根本算不准（速率窗口噪声 + 多根 stall + estimator 偏小都会
+        // 让 ETA 严重失真），整段 ETA 文案不再展示。同理，没分母时也不再用 indeterminate spinner
+        // 假装"在前进"——直接只显示已扫字节 + 已用时间，让用户看到的每个数字都是真实可信的。
         let estimateOvershoot = (expected.map { scanned > $0 } ?? false)
         let fraction: Double? = {
             guard let exp = expected, exp > 0, !estimateOvershoot else { return nil }
@@ -2278,12 +2279,11 @@ public struct MainView: View {
 
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
+                // 仅当能估出 fraction 时才显示进度条；否则不画 spinner（避免"还在估算"的错觉）。
                 if let f = fraction {
                     ProgressView(value: f)
                         .progressViewStyle(.linear)
                         .frame(maxWidth: 180)
-                } else {
-                    ProgressView().controlSize(.small)
                 }
                 Text(String(format: String(localized: "main.scan.progress.single", bundle: .module),
                             coordinator.snapshot.scannedFileCount,
@@ -2300,29 +2300,15 @@ public struct MainView: View {
                                 formattedBytes(exp)))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        // v2026.06.22：用户反馈"144G/13.75G 那个 13.75G 是什么意思？"
-                        // 文案已经从 "/ ~%@" 改成 "· 预估约 %@"，再叠一层 tooltip 把口径讲清，
-                        // 杜绝"被误读为磁盘总容量"的歧义（TreeSizeEstimator 4s 软估算可能严重偏小）。
                         .help(Text("main.scan.progress.percent.tooltip", bundle: .module))
-                } else if estimateOvershoot {
-                    // **v2026.06.20**：分母被穿透——明确告诉用户"估算偏小，还在扫"，
-                    // 避免老 UI"100% / -0s 剩余"造成的"是不是卡死了"误判。
-                    Text("main.scan.progress.estimate_low", bundle: .module)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
                 }
-                if let eta {
-                    Text(String(format: String(localized: "main.scan.progress.eta", bundle: .module),
-                                formatDuration(eta),
-                                formatDuration(elapsed)))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text(String(format: String(localized: "main.scan.progress.elapsed", bundle: .module),
-                                formatDuration(elapsed)))
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
+                // v2026.06.23：仅展示「已用时间」，不再展示「剩余时间」。
+                // ETA 计算在长扫场景下不可信，已在 ScanCoordinator 侧停止下发；
+                // 这里 UI 也不再读 estimatedRemaining，避免任何残留入口偷渡回来。
+                Text(String(format: String(localized: "main.scan.progress.elapsed", bundle: .module),
+                            formatDuration(elapsed)))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
             }
         }
     }
@@ -2627,6 +2613,13 @@ public struct MainView: View {
 
     /// onDrop 回调：从拖入的 NSItemProvider 解 fileURL，目录才入库。
     /// 见 PITFALLS §5.7：拖入文件不应被当作扫描根，避免对单文件做整盘扫描。
+    ///
+    /// v2026.06.23 行为升级：拖入文件夹后**自动加入自定义路径 + 立刻开始扫描**。
+    /// - 若该路径已存在于 [UserPathStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UserPathStore.swift)，
+    ///   `add` 内部去重不会重复持久化；这里仍然会切到对应类目并触发扫描（"已存在就直接扫描"）。
+    /// - 多文件夹同时拖入时，只对**第一个**有效目录开扫——
+    ///   ScanCoordinator 同时只支持单个 active scan，多根并发会互相打架；
+    ///   其余目录已写入 customCategories，用户可在侧栏自行点击逐个扫。
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
         var accepted = false
         for provider in providers {
@@ -2637,7 +2630,33 @@ public struct MainView: View {
                 var isDir: ObjCBool = false
                 let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
                 guard exists, isDir.boolValue else { return }
-                Task {
+                Task { @MainActor in
+                    _ = await pathStore.add(url)
+                    await refreshCustomPaths()
+                    // 自动选中该自定义类目并触发扫描；
+                    // 已存在的路径 cat.id 相同，requestCategorySwitch 内部
+                    // 会因 "old==new" 直接 return —— 此时主动再起一次扫描。
+                    let cat = ScanCategory.makeCustom(url: url)
+                    if selectedCategory == cat.id {
+                        startScan(category: cat)
+                    } else {
+                        requestCategorySwitch(to: cat.id)
+                    }
+                }
+            }
+            // 多文件夹拖入：仅对第一个 provider 触发扫描，其余只入库，
+            // 防止 ScanCoordinator 多扫并发互相覆盖。
+            break
+        }
+        // 剩余的 provider 仍走"只入库不扫描"路径，把整批文件夹都加到 customCategories
+        for provider in providers.dropFirst() {
+            guard provider.canLoadObject(ofClass: URL.self) else { continue }
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                var isDir: ObjCBool = false
+                let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+                guard exists, isDir.boolValue else { return }
+                Task { @MainActor in
                     _ = await pathStore.add(url)
                     await refreshCustomPaths()
                 }

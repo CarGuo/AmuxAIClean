@@ -2909,30 +2909,12 @@ public final class ScanCoordinator: ObservableObject {
         }
         let elapsedTotal = nowDate.timeIntervalSince(startedAt)
 
-        // v1.3.x：ETA 分母统一走 expectedTotalBytes —— 整盘扫在 scan() 入口已设成 volumeSnapshot.usedBytes，
-        // 推荐扫 / 自定义扫由 TreeSizeEstimator 异步填充。这里只判断是否已经有可信分母。
-        //
-        // v2026.06.21 修复 #1：原来 `min(estimate, 4*3600)` 会让"远超 30 分钟的估算"被钳成
-        // 一个恒定的 "4:00:00"，HUD/主窗口长时间显示 "~ 4:00:00" 让用户以为"还要扫 4 小时"。
-        // 实际上速率窗口噪声 / 多根 dev 扫的间歇 stall 都会让 instant ETA 飙到几十小时，
-        // 这种估算根本不可信，呈现给用户反而是负价值。改为：
-        //   - 估算值 > 30 分钟 → 视为"不可信"直接返回 nil，UI 回落到 "已用 %@" 文案
-        //   - 估算值 <= 30 分钟 → 正常显示
-        // 这样既保留"快完成时的精确剩余时间"，又避免"长扫时段一个假上限糊脸"。
-        let eta: TimeInterval?
-        if !finished,
-           etaEligible,
-           bytesPerSecondEMA > 1024,
-           elapsedTotal > 0.5,
-           let denom = expectedTotalBytes,
-           denom > totalBytes {
-            let remainingBytes = Double(denom - totalBytes)
-            let raw = remainingBytes / bytesPerSecondEMA
-            // 超过 30 分钟 = 估算不可信，宁可不显示 ETA（不再钳成 4:00:00 误导用户）
-            eta = (raw.isFinite && raw <= 30 * 60) ? raw : nil
-        } else {
-            eta = nil
-        }
+        // v2026.06.23 产品决策：不再向 UI 下发 ETA（剩余时间）。
+        // 长扫场景下速率窗口噪声 + estimator 偏小都会让 ETA 严重失真，呈现给用户反而误导。
+        // 上游 UI / HUD 已停止读取 estimatedRemaining；这里把字段恒置 nil，作为单一数据源闸门，
+        // 杜绝未来某条入口"偷偷"把 ETA 再加回来。`expectedTotalBytes` 仍然继续算并下发，
+        // 给"有分母时显示进度条 + 百分比"用——这是用户唯一信得过的进度表达。
+        let eta: TimeInterval? = nil
 
         let nextSnapshot = ScanSnapshot(
             categoryID: categoryID,

@@ -9,8 +9,7 @@ import LogKit
 ///   - 不动 SIP-protected 路径
 ///   - 不在 release 路径里走 `Process.run` 之前先经 SafetyEngine 审计 ✓
 ///
-/// 3 个开箱即用任务（每个都可独立调度，互不依赖）：
-///   - `.rebuildLaunchServices`  — 右键「打开方式」列表错乱、重复条目时用
+/// 2 个开箱即用任务（每个都可独立调度，互不依赖）：
 ///   - `.flushQuickLookCache`    — Finder 预览图变白 / 不刷新缩略图时用
 ///   - `.flushDNSCache`          — Safari / Chrome DNS 漂移到旧 IP 时用
 ///
@@ -21,13 +20,11 @@ import LogKit
 public struct MaintenanceTasks: Sendable {
 
     public enum Task: Sendable, Hashable, CaseIterable {
-        case rebuildLaunchServices
         case flushQuickLookCache
         case flushDNSCache
 
         public var displayName: String {
             switch self {
-            case .rebuildLaunchServices: return "重建启动服务数据库"
             case .flushQuickLookCache:   return "清理 QuickLook 缓存"
             case .flushDNSCache:         return "刷新 DNS 缓存"
             }
@@ -36,8 +33,6 @@ public struct MaintenanceTasks: Sendable {
         /// 给 UI 用的解释：什么时候点这个、点了会发生什么。
         public var subtitle: String {
             switch self {
-            case .rebuildLaunchServices:
-                return "右键「打开方式」错乱或重复时执行"
             case .flushQuickLookCache:
                 return "Finder 预览图发白或不更新时执行"
             case .flushDNSCache:
@@ -68,8 +63,6 @@ public struct MaintenanceTasks: Sendable {
     public func run(_ task: Task) -> Outcome {
         GSYLog.info(.app, "MaintenanceTasks 执行 task=\(task)")
         switch task {
-        case .rebuildLaunchServices:
-            return execute(task: task, command: Self.lsregisterCommand)
         case .flushQuickLookCache:
             return execute(task: task, command: Self.qlmanageCommand)
         case .flushDNSCache:
@@ -93,10 +86,6 @@ public struct MaintenanceTasks: Sendable {
     }
 
     // MARK: - 命令定义（独立 static，便于测试观测）
-
-    static let lsregisterCommand = MaintenanceCommand(
-        launchPath: "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
-        arguments: ["-kill", "-r", "-domain", "local", "-domain", "system", "-domain", "user"])
 
     static let qlmanageCommand = MaintenanceCommand(
         launchPath: "/usr/bin/qlmanage",

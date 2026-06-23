@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import BrewKit
 
 /// F-2-4 / 2026-06：Homebrew 包管理屏（sidebar 入口接入）。
@@ -21,7 +22,9 @@ public struct BrewScreen: View {
     @State private var cleanupPlan: BrewCleanupPlan?
     @State private var selectedTab: Tab = .installed
     @State private var isLoading: Bool = false
+    @State private var isCleaning: Bool = false
     @State private var lastError: String?
+    @State private var cleanupResult: String?
 
     enum Tab: String, CaseIterable, Identifiable {
         case installed, outdated, cleanup
@@ -265,9 +268,24 @@ public struct BrewScreen: View {
                         .font(.subheadline)
                         .foregroundStyle(plan.isEmpty ? Color.secondary : Color.orange)
                     Spacer()
-                    Text("brew.cleanup.dry_run_note", bundle: .module)
+                    if isCleaning {
+                        ProgressView().controlSize(.small)
+                    }
+                    Button {
+                        moveCleanupToTrash(plan)
+                    } label: {
+                        Label(String(localized: "brew.cleanup.move_to_trash", bundle: .module),
+                              systemImage: "trash")
+                    }
+                    .disabled(plan.isEmpty || isCleaning)
+                }
+                Text("brew.cleanup.dry_run_note", bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                if let cleanupResult {
+                    Text(verbatim: cleanupResult)
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 }
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
@@ -354,6 +372,35 @@ public struct BrewScreen: View {
             await MainActor.run {
                 cleanupPlan = plan
                 isLoading = false
+            }
+        }
+    }
+
+    private func moveCleanupToTrash(_ plan: BrewCleanupPlan) {
+        guard !plan.isEmpty, !isCleaning else { return }
+        isCleaning = true
+        cleanupResult = nil
+        Task {
+            let result = await recycle(plan.stalePaths)
+            await MainActor.run {
+                isCleaning = false
+                if let error = result.error {
+                    cleanupResult = String(format: String(localized: "brew.cleanup.failed %@", bundle: .module), error)
+                } else {
+                    cleanupResult = String(format: String(localized: "brew.cleanup.moved %lld %@", bundle: .module),
+                                           result.moved,
+                                           byteString(plan.totalBytes))
+                    reloadCleanup()
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func recycle(_ urls: [URL]) async -> (moved: Int, error: String?) {
+        await withCheckedContinuation { continuation in
+            NSWorkspace.shared.recycle(urls) { trashed, error in
+                continuation.resume(returning: (trashed.count, error?.localizedDescription))
             }
         }
     }

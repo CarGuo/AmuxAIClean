@@ -1005,6 +1005,57 @@
         }
       }
     },
+    "brew.cleanup.failed %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move failed: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移动失败：%@"
+          }
+        }
+      }
+    },
+    "brew.cleanup.move_to_trash": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move to Trash"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移到废纸篓"
+          }
+        }
+      }
+    },
+    "brew.cleanup.moved %lld %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Moved %lld items to Trash, about %@."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已移动 %lld 项到废纸篓，约 %@。"
+          }
+        }
+      }
+    },
     "brew.cleanup.summary %lld %@": {
       "extractionState": "manual",
       "localizations": {
@@ -5476,40 +5527,6 @@
         }
       }
     },
-    "maintenance.task.launchservices.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fix duplicated or wrong entries in \"Open With\" menu."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "右键「打开方式」列表错乱或重复时执行。"
-          }
-        }
-      }
-    },
-    "maintenance.task.launchservices.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Rebuild Launch Services"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "重建启动服务数据库"
-          }
-        }
-      }
-    },
     "maintenance.task.quicklook.subtitle": {
       "extractionState": "manual",
       "localizations": {
@@ -6383,13 +6400,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Press / + return to scan whole disk; type any existing directory + return to scan it"
+            "value": "Type a folder and press Return, or drag a folder into the window"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "输 / 回车扫整盘；输已存在目录回车开始扫该目录"
+            "value": "输入文件夹回车，或者拖拽文件夹到窗口"
           }
         }
       }
@@ -6400,13 +6417,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Type a path or / and press return to scan whole disk"
+            "value": "Type a folder and press Return, or drag a folder"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "输入路径或 / 回车扫整盘"
+            "value": "输入文件夹回车或者拖拽文件夹"
           }
         }
       }

@@ -835,19 +835,13 @@ struct FloatingScanHUDView: View {
         }
         return String(localized: "hud.speed.estimating", bundle: .module)
     }
-    /// 扫描态时间标签——ETA 优先（"~ 1m 23s"），无 ETA 退化为已用时长（"已 0:14"）。
-    /// 保证"扫描中"区域永远有时间数字可看，不再因 ETA=nil 完全消失。
+    /// 扫描态时间标签——v2026.06.23 起仅显示已用时长（"已 0:14"）。
+    /// 剩余时间不可信，已统一停用，避免"~ 4:00:00"这类误导文案。
     private var scanTimerText: String {
-        if let eta = coordinator.snapshot.estimatedRemaining {
-            return String(format: String(localized: "hud.time.remaining %@", bundle: .module), durationString(eta))
-        }
         return String(format: String(localized: "hud.time.elapsed %@", bundle: .module), durationString(coordinator.snapshot.elapsed))
     }
     /// 同上，紧凑版（给灵动岛展开态用，节省横向空间）。
     private var scanTimerShortText: String {
-        if let eta = coordinator.snapshot.estimatedRemaining {
-            return String(format: String(localized: "hud.time.remaining %@", bundle: .module), durationShort(eta))
-        }
         return String(format: String(localized: "hud.time.elapsed %@", bundle: .module), durationShort(coordinator.snapshot.elapsed))
     }
 
@@ -1348,11 +1342,8 @@ struct FloatingScanHUDView: View {
         }
     }
 
-    /// 收起态左胶囊扫描中倒计时文案：ETA 优先（"~ 1m 23s"），否则退化为已用时长（"已 0:14"）。
+    /// 收起态左胶囊扫描中文案：v2026.06.23 起仅显示已用时长（剩余时间不可信，统一不再展示）。
     private var islandClosedScanTimerText: String {
-        if let eta = coordinator.snapshot.estimatedRemaining {
-            return "~ " + durationShort(eta)
-        }
         let elapsed = coordinator.snapshot.elapsed
         return String(format: String(localized: "hud.time.elapsed %@", bundle: .module), durationShort(elapsed))
     }
@@ -1485,10 +1476,7 @@ struct FloatingScanHUDView: View {
             Text(scanTimerText)
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
-                .help(Text(coordinator.snapshot.estimatedRemaining != nil
-                           ? LocalizedStringKey("hud.eta.help.remaining")
-                           : LocalizedStringKey("hud.eta.help.elapsed"),
-                           bundle: .module))
+                .help(Text(LocalizedStringKey("hud.eta.help.elapsed"), bundle: .module))
             Spacer(minLength: 0)
         }
     }
