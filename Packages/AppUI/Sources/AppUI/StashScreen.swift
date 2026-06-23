@@ -21,8 +21,9 @@ import SafetyKit
 ///    联动摘掉对应条目。
 /// 3. **AI 入口同样复用** [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
 ///    —— 单独 AI 时 onAskAIOne 关闭本 sheet 后切到 AIAdviceSheet（macOS 不支持 sheet 套 sheet）。
-///    一键 AI 暂不在 v1 实现（涉及 LLM 速率 / 并发节流，需要单独 PR 设计 UI），
-///    按钮显式 disabled + tooltip 解释，给用户**可见但暂未启用**的信号。
+///    **v2026.06.19 更新**：一键 AI 已通过 [StashAIQueue](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)
+///    落地（footer 三态：idle / running / 错误 + 重试），节流与并发由 queue 引擎内部串行化处理；
+///    UI 上仍在 stash 为空 / aiSettings 未就绪 / 已 running 时 disable，配合 tooltip 解释。
 /// 4. **危险操作二次确认**：清空购物车 / 一键废纸篓 都走 `.confirmationDialog`，
 ///    与 [MainView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
 ///    主页面"删前确认"风格一致。

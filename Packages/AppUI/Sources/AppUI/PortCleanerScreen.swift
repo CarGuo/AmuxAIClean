@@ -193,7 +193,7 @@ public struct PortCleanerScreen: View {
                 .frame(width: TableMetrics.localWidth, alignment: .leading)
             Text("port_cleaner.column.proto", bundle: .module)
                 .frame(width: TableMetrics.protoWidth, alignment: .leading)
-            Text("PID")
+            Text("port_cleaner.column.pid", bundle: .module)
                 .frame(width: TableMetrics.pidWidth, alignment: .leading)
             Text("port_cleaner.column.user", bundle: .module)
                 .frame(width: TableMetrics.userWidth, alignment: .leading)

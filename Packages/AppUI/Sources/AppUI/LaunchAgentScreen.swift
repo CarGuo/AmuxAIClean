@@ -126,7 +126,7 @@ public struct LaunchAgentScreen: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if item.runAtLoad {
-                    Text("RunAtLoad")
+                    Text("launchagent.badge.run_at_load", bundle: .module)
                         .font(.caption2.bold())
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)

@@ -2365,7 +2365,7 @@ public struct MainView: View {
         }
     }
 
-    // FIXME: emoji removed 2026-05-25
+    // 注：2026-05-25 移除原本拼接的 emoji，保留 SF Symbol + 文本，避免不同语言下 emoji 渲染不一致。
     private func verdictLabel(_ v: SafetyVerdict) -> String {
         switch v {
         case .safe: return String(localized: "main.delete.safety.safe", bundle: .module)

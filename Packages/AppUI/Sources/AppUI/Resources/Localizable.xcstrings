@@ -2654,6 +2654,23 @@
         }
       }
     },
+    "port_cleaner.column.pid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PID"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PID"
+          }
+        }
+      }
+    },
     "port_cleaner.column.process": {
       "extractionState": "manual",
       "localizations": {
@@ -5778,6 +5795,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "用户级 (~/Library/LaunchAgents)"
+          }
+        }
+      }
+    },
+    "launchagent.badge.run_at_load": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Run at load"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开机自启"
           }
         }
       }
