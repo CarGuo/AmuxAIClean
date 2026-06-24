@@ -658,4 +658,121 @@ final class I18nIntegrityTests: XCTestCase {
             """
         )
     }
+
+    // MARK: - 契约 9：Swift 引用的 i18n key 必须在 xcstrings 中存在（反向体检）
+
+    /// **契约目标**：补足契约 1 的反方向缺口。
+    ///   - 契约 1：xcstrings 中的 key 必须被 Swift 引用（防 stale 死翻译）；
+    ///   - 契约 9（本契约）：Swift 中引用的 i18n key 必须在 xcstrings 中存在（防误删活着的 key）。
+    ///
+    /// **背景**（2026-06，P0 stale 清理）：commit a3c276f 一次性删除 68 条 stale key，
+    /// 删除前没有自动化护栏证明"被删的 key 全部已与 Swift 解耦"。事后 P4 死代码体检
+    /// 用 Python 脚本一次性核对了"被删 key ∩ Swift 当前引用 = ∅"，验证安全。但下一次
+    /// stale 清理 PR 不应该依赖"事后跑脚本"——必须在 CI 把这条契约前置。
+    ///
+    /// **运行时风险**：Apple Foundation `String(localized:)` 找不到 key 时不会抛错，
+    /// 而是**回退到 key 字符串本身**作为显示文本。英文用户会看到 `delete.action.preview`
+    /// 这种原始 key 出现在 UI 上——而且只在该 view 真正被展示时才会发现，单元测试覆盖率
+    /// 难以兜底。grep 契约是唯一的编译前防线。
+    ///
+    /// **扫描策略**：
+    ///   1) 用与契约 1 完全一致的范围（App target + Packages/Sources，排除 Tests/.build/checkouts）；
+    ///   2) 用 regex 匹配 `String(localized: "key"` / `Text("key"` 形式提取所有候选 key 字面量；
+    ///   3) 与 xcstrings 当前 key 集做差集；
+    ///   4) 排除动态前缀白名单（同契约 1 的 `dynamicPrefixes`）—— 这些 key 是运行期拼接的，
+    ///      字面量在 Swift 源里出现时不是完整 key；
+    ///   5) 排除"看起来不像 i18n key 的字面量"（不含 `.`、含空格、长度 < 3 等）。
+    ///
+    /// **失败示例**：若有人删 `delete.action.preview` 但 [DeleteSheet.swift] 仍写
+    /// `Text("delete.action.preview", bundle: .module)`，本契约红灯，打印缺失 key 与引用位置。
+    func test_swift_referenced_i18n_keys_必须在_xcstrings_中存在() throws {
+        let root = try repoRoot()
+        let fm = FileManager.default
+
+        // 1) 收 xcstrings 当前 key 集
+        let definedKeys = Set(try loadXcstringsKeys())
+
+        // 2) regex 匹配 String(localized: "...") 与 Text("...", bundle: ...) 中的字面量
+        //    关键字 anchor 确保只挑 i18n 入口，不被普通字符串污染。
+        let stringLocalizedPattern = try NSRegularExpression(
+            pattern: #"String\(localized:\s*"([^"]+)""#,
+            options: []
+        )
+        let textBundlePattern = try NSRegularExpression(
+            pattern: #"Text\("([^"]+)"\s*,\s*bundle:"#,
+            options: []
+        )
+        // .help(Text("key", bundle: .module)) / Label(LocalizedStringKey("key"), ...) 等场景
+        // 都会落到上面两个正则之一（前者通过 Text 入口，后者较少见）。
+
+        // 3) 与契约 1 同步的动态前缀白名单（运行期拼接，字面量是前缀不是完整 key）
+        let dynamicPrefixes: [String] = [
+            "category.id.", "trash.err.", "verdict.", "view.mode.",
+            "ecosystem.", "status.", "hud.", "tree.batch.", "tree.checkbox.",
+            "delete.progress.", "delete.alert.", "results.", "selection.summary.",
+            "settings.dev.", "drop.error.", "common.", "toolbar.help.",
+        ]
+
+        // 4) 扫源
+        var referencedWithLocation: [(key: String, location: String)] = []
+        let dirs = [
+            root.appendingPathComponent(Self.appTargetSources),
+            root.appendingPathComponent(Self.siblingPackagesRoot),
+        ]
+        for dir in dirs {
+            guard let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: nil) else { continue }
+            while let url = enumerator.nextObject() as? URL {
+                guard url.pathExtension == "swift" else { continue }
+                if Self.shouldSkipSwiftSource(url: url) { continue }
+                // 跳过本测试文件本身（避免示例 key 字面量自污染）
+                if url.lastPathComponent == "I18nIntegrityTests.swift" { continue }
+
+                guard let src = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                let lines = src.split(separator: "\n", omittingEmptySubsequences: false)
+                for (idx, rawLine) in lines.enumerated() {
+                    let line = String(rawLine)
+                    // 跳过注释行
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if trimmed.hasPrefix("//") || trimmed.hasPrefix("///") || trimmed.hasPrefix("*") {
+                        continue
+                    }
+                    let ns = line as NSString
+                    let fullRange = NSRange(location: 0, length: ns.length)
+                    for pat in [stringLocalizedPattern, textBundlePattern] {
+                        for m in pat.matches(in: line, range: fullRange) where m.numberOfRanges >= 2 {
+                            let literal = ns.substring(with: m.range(at: 1))
+                            let relPath = url.path.replacingOccurrences(of: root.path + "/", with: "")
+                            referencedWithLocation.append((literal, "\(relPath):\(idx + 1)"))
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5) 过滤 + 差集
+        var missing: [(key: String, location: String)] = []
+        for (key, loc) in referencedWithLocation {
+            // 必须含 "." 才像 i18n key（排除如 Text("OK", bundle: ...) 这种短 key？
+            // 实际上 OK 也应该在 xcstrings 中——不放行短 key，硬要求所有 Text 引用的 key 都在表中）
+            // 但要排除动态前缀
+            if dynamicPrefixes.contains(where: { key.hasPrefix($0) }) { continue }
+            // 跳过纯空 / 全空白
+            if key.trimmingCharacters(in: .whitespaces).isEmpty { continue }
+            if !definedKeys.contains(key) {
+                missing.append((key, loc))
+            }
+        }
+
+        XCTAssertTrue(
+            missing.isEmpty,
+            """
+            发现 \(missing.count) 处 Swift 引用了 xcstrings 中不存在的 i18n key（运行期将回退到 key 字符串本身显示）：
+              \(missing.map { "\($0.location)  \"\($0.key)\"" }.joined(separator: "\n  "))
+            修复（择一）：
+              1) 在 Localizable.xcstrings 添加该 key 的翻译（en + zh-Hans）；
+              2) 若 key 已废弃，从 Swift 源中删除对应 Text/String(localized:) 调用；
+              3) 若 key 实际是运行期前缀拼接生成，把前缀加入 dynamicPrefixes 白名单并注释说明。
+            """
+        )
+    }
 }
