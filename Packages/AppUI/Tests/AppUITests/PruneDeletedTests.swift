@@ -195,6 +195,76 @@ final class PruneDeletedTests: XCTestCase {
             "空 paths 应早返，structuralRevision 不变")
     }
 
+    func test_pruneDeleted_删除子项时snapshot祖先行与totalBytes同步扣减() {
+        let coord = ScanCoordinator()
+        let parent = RowItem(
+            id: "/A",
+            url: URL(fileURLWithPath: "/A"),
+            title: "A",
+            isDirectory: true,
+            bytes: 1_000,
+            logicalBytes: 1_000,
+            fileCount: 5,
+            verdict: .safe,
+            rejection: .ok
+        )
+        coord._seedForTesting(
+            snapshot: ScanSnapshot(
+                categoryID: "t",
+                rows: [parent],
+                totalBytes: 1_000,
+                scannedFileCount: 5,
+                isFinished: true,
+                elapsed: 0
+            ),
+            dirIndexFull: [
+                "/A": (bytes: 1_000, fileCount: 5),
+                "/A/build": (bytes: 300, fileCount: 3),
+                "/A/keep": (bytes: 700, fileCount: 2),
+            ]
+        )
+
+        coord.pruneDeleted(paths: ["/A/build"])
+
+        XCTAssertEqual(coord.snapshot.totalBytes, 700)
+        XCTAssertEqual(coord.snapshot.rows.first?.bytes, 700,
+                       "snapshot 里的可见父级 row 必须随子项删除同步变小")
+        XCTAssertEqual(coord.snapshot.rows.first?.fileCount, 2)
+    }
+
+    func test_pruneDeleted_删除多根子项时perRoot父级同步扣减() {
+        let coord = ScanCoordinator()
+        let derivedData = "/Users/test/Library/Developer/Xcode/DerivedData"
+        let compilationCache = "\(derivedData)/CompilationCache.noindex"
+        coord._seedForTesting(
+            currentRootPath: ScanCoordinator.multiRootSentinelPath,
+            dirIndexFull: [
+                derivedData: (bytes: 1_000, fileCount: 5),
+                compilationCache: (bytes: 300, fileCount: 3),
+                "\(derivedData)/ModuleCache.noindex": (bytes: 700, fileCount: 2),
+            ],
+            perRootStaging: [
+                derivedData: ScanCoordinator.PerRootProgress(
+                    rootPath: derivedData,
+                    title: "Xcode 构建产物",
+                    bytes: 1_000,
+                    fileCount: 5,
+                    isFinished: true
+                )
+            ]
+        )
+
+        coord.pruneDeleted(paths: [compilationCache])
+
+        let progress = coord.perRootProgress[derivedData]
+        XCTAssertEqual(progress?.bytes, 700,
+                       "多根树顶层父级来自 perRootProgress，必须随子项删除同步扣减")
+        XCTAssertEqual(progress?.fileCount, 2)
+        let topLevel = coord.directChildren(of: ScanCoordinator.multiRootSentinelPath, sortedBy: .sizeDesc)
+        XCTAssertEqual(topLevel.first?.bytes, 700)
+        XCTAssertEqual(topLevel.first?.fileCount, 2)
+    }
+
     // MARK: - 边界：尾斜杠归一化
 
     func test_pruneDeleted_尾斜杠应被等价处理() {

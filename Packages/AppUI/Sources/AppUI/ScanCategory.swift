@@ -19,6 +19,8 @@ public struct ScanCategory: Identifiable, Hashable, Sendable {
     public let title: String
     /// 副标题：同上。
     public let subtitle: String
+    /// 可选的长说明：用于 tooltip / help，不参与扫描或排序热路径。
+    public let help: String?
     public let rootPath: String
     /// 默认 verdict —— 决定子项默认是否被勾选。
     public let defaultVerdict: SafetyVerdict
@@ -45,12 +47,32 @@ public struct ScanCategory: Identifiable, Hashable, Sendable {
         return subtitle
     }
 
+    /// 本地化后的长说明；未配置时退回副标题。
+    public var displayHelp: String {
+        guard let help else { return displaySubtitle }
+        if titleIsLocalizationKey {
+            return String(localized: String.LocalizationValue(help), bundle: .module)
+        }
+        return help
+    }
+
+    /// 仅在显式配置长说明时返回 tooltip 文案；避免普通分类多做一次本地化。
+    public var displayHelpIfConfigured: String? {
+        guard let help else { return nil }
+        if titleIsLocalizationKey {
+            return String(localized: String.LocalizationValue(help), bundle: .module)
+        }
+        return help
+    }
+
     public init(id: String, title: String, subtitle: String, rootPath: String,
                 defaultVerdict: SafetyVerdict, kind: Kind = .preset,
-                titleIsLocalizationKey: Bool = false) {
+                titleIsLocalizationKey: Bool = false,
+                help: String? = nil) {
         self.id = id
         self.title = title
         self.subtitle = subtitle
+        self.help = help
         self.rootPath = rootPath
         self.defaultVerdict = defaultVerdict
         self.kind = kind
@@ -146,7 +168,8 @@ public enum ScanCategories {
                 subtitle: "category.xcode.subtitle",
                 rootPath: "\(home)/Library/Developer/Xcode/DerivedData",
                 defaultVerdict: .safe,
-                titleIsLocalizationKey: true
+                titleIsLocalizationKey: true,
+                help: "category.xcode.help"
             ),
             .init(
                 id: "user.downloads",

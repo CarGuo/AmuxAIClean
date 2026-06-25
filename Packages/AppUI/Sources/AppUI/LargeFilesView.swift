@@ -134,14 +134,31 @@ public struct LargeFilesView: View {
         let latest = currentItems
         let latestCounts = currentKindCounts
         if force || !coordinator.isScanning || latest.isEmpty {
-            displayedItems = latest
-            displayedKindCounts = latestCounts
+            publishDisplayedLargeFiles(items: latest, kindCounts: latestCounts)
             return
         }
         if displayedItems.isEmpty, !latest.isEmpty {
-            displayedItems = latest
-            displayedKindCounts = latestCounts
+            publishDisplayedLargeFiles(items: latest, kindCounts: latestCounts)
         }
+    }
+
+    private func publishDisplayedLargeFiles(items: [LargeFileItem],
+                                            kindCounts: [(FileKind, Int)]) {
+        if displayedItems != items {
+            displayedItems = items
+        }
+        if !Self.kindCountsEqual(displayedKindCounts, kindCounts) {
+            displayedKindCounts = kindCounts
+        }
+    }
+
+    private static func kindCountsEqual(_ lhs: [(FileKind, Int)],
+                                        _ rhs: [(FileKind, Int)]) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        for (left, right) in zip(lhs, rhs) where left.0 != right.0 || left.1 != right.1 {
+            return false
+        }
+        return true
     }
 
     public var body: some View {
@@ -881,11 +898,7 @@ private final class LargeFilesRowCanvas: NSView {
 
     private func drawRow(_ item: LargeFileItem) {
         let kind = item.kind
-        drawSymbol(isPicked ? "checkmark.square.fill" : "square",
-                   in: checkboxRect.insetBy(dx: 2, dy: 10),
-                   color: isPicked ? .controlAccentColor : .secondaryLabelColor,
-                   pointSize: 15,
-                   weight: .regular)
+        drawCheckbox(in: checkboxRect, checked: isPicked)
         let iconRect = CGRect(x: checkboxRect.maxX + LargeFilesTableMetrics.horizontalGap,
                               y: 11,
                               width: LargeFilesTableMetrics.iconWidth,
@@ -929,6 +942,39 @@ private final class LargeFilesRowCanvas: NSView {
         CGRect(x: LargeFilesTableMetrics.leftPadding, y: 0,
                width: LargeFilesTableMetrics.checkboxWidth,
                height: LargeFilesTableMetrics.rowHeight)
+    }
+
+    private func drawCheckbox(in rect: CGRect, checked: Bool) {
+        let side: CGFloat = 16
+        let box = CGRect(
+            x: rect.midX - side / 2,
+            y: rect.midY - side / 2,
+            width: side,
+            height: side
+        )
+        let path = NSBezierPath(roundedRect: box, xRadius: 3, yRadius: 3)
+        path.lineWidth = 1.8
+        if checked {
+            NSColor.controlAccentColor.setFill()
+            path.fill()
+            NSColor.controlAccentColor.setStroke()
+            path.stroke()
+
+            let mark = NSBezierPath()
+            mark.lineWidth = 2.2
+            mark.lineCapStyle = .round
+            mark.lineJoinStyle = .round
+            mark.move(to: CGPoint(x: box.minX + 3.8, y: box.minY + 8.6))
+            mark.line(to: CGPoint(x: box.minX + 6.9, y: box.minY + 11.4))
+            mark.line(to: CGPoint(x: box.minX + 12.4, y: box.minY + 4.9))
+            NSColor.white.setStroke()
+            mark.stroke()
+        } else {
+            NSColor.clear.setFill()
+            path.fill()
+            NSColor.secondaryLabelColor.setStroke()
+            path.stroke()
+        }
     }
 
     private enum ActionHit {

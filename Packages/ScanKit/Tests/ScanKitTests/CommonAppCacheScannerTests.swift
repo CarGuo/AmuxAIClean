@@ -120,6 +120,47 @@ final class CommonAppCacheScannerTests: XCTestCase {
         XCTAssertEqual(hits[0].url.lastPathComponent, "safe")
     }
 
+    func testPrioritizedCandidates_scanSafeCachesBeforeConfirmReviewPaths() throws {
+        let home = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let review = home.appendingPathComponent("Library/Application Support/ChatApp", isDirectory: true)
+        let cache = home.appendingPathComponent("Library/Caches/Browser", isDirectory: true)
+        try FileManager.default.createDirectory(at: review, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+
+        let vendors = [
+            VendorRule(
+                name: "Chat Review",
+                category: "common_app_cache",
+                paths: [
+                    PathRule(path: "~/Library/Application Support/ChatApp",
+                             verdict: .confirm,
+                             reason: "large review path")
+                ]
+            ),
+            VendorRule(
+                name: "Browser Cache",
+                category: "common_app_cache",
+                paths: [
+                    PathRule(path: "~/Library/Caches/Browser",
+                             verdict: .safe,
+                             reason: "cache")
+                ]
+            )
+        ]
+
+        let candidates = CommonAppCacheScanner.prioritizedCandidates(
+            rules: vendors,
+            includedVerdicts: [.safe, .confirm],
+            homePath: home.path,
+            fileManager: .default,
+            maxGlobExpansionsPerRule: 128
+        )
+
+        XCTAssertEqual(candidates.map(\.rule.name), ["Browser Cache", "Chat Review"])
+    }
+
     private func makeTempDir() throws -> URL {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("CommonAppCacheScannerTests-\(UUID().uuidString)", isDirectory: true)

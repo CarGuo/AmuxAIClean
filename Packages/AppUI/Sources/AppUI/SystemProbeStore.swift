@@ -45,29 +45,22 @@ public final class SystemProbeStore: ObservableObject {
     private let home: String
     private let refreshBridge = SystemProbeRefreshBridge()
 
-    /// v2026.06.20 NSWorkspace mount / unmount / app-active 三类通知 token，
-    /// 包装在独立 nonisolated 容器里，让 `deinit`（非 MainActor 隔离）能安全释放。
-    /// `NotificationTokenBag` 自己的 deinit 会逐个 removeObserver。
-    private let tokenBag = NotificationTokenBag()
+    public convenience init(home: String = NSHomeDirectory()) {
+        self.init(home: home, pollInterval: .seconds(15), pollLeeway: .seconds(3), startAutoRefresh: true)
+    }
 
-    /// v2026.06.20 15s 轻量轮询定时器；DispatchSourceTimer 而非 Timer 是因为
-    /// Timer 受 RunLoop 模式影响（拖拽窗口时停摆），SourceTimer 走独立 queue，
-    /// 主线程只负责发布后台 probe 的结果。
-    /// `nonisolated(unsafe)` 因为我们只在 init 写、deinit 读取 cancel，单线程顺序安全。
-    private nonisolated(unsafe) var pollTimer: DispatchSourceTimer?
-
-    public init(home: String = NSHomeDirectory()) {
+    init(home: String,
+         pollInterval: DispatchTimeInterval,
+         pollLeeway: DispatchTimeInterval,
+         startAutoRefresh: Bool) {
         self.home = home
         self.fdaStatus = FDAProbe.probe(home: home)
         self.volumeSnapshot = VolumeCapacity.probe()
         self.swapSnapshot = SwapProbe.probe()
         self.refreshBridge.store = self
-        installAutoRefreshHooks()
-    }
-
-    deinit {
-        // tokenBag.deinit 会触发 removeObserver；pollTimer.cancel 线程安全。
-        pollTimer?.cancel()
+        if startAutoRefresh {
+            refreshBridge.installAutoRefreshHooks(pollInterval: pollInterval, pollLeeway: pollLeeway)
+        }
     }
 
     /// 用户从系统设置回到 App 后调用，重探 FDA 状态与卷容量。
@@ -89,47 +82,6 @@ public final class SystemProbeStore: ObservableObject {
     /// 不挂 FSEventStream 监听根目录：那是 PathScale 级开销（任何 syscall 都会触发回调），
     /// 对"卷可用容量"这种粒度的指标完全过 spec。轻量轮询 15s 已经足以覆盖
     /// "用户清完回收站 → 切回 App"的典型动作链。
-    private func installAutoRefreshHooks() {
-        let wsNC = NSWorkspace.shared.notificationCenter
-        let bridge = refreshBridge
-
-        let mountToken = wsNC.addObserver(
-            forName: NSWorkspace.didMountNotification,
-            object: nil,
-            queue: .main
-        ) { _ in
-            bridge.scheduleVolumeRefresh()
-        }
-        let unmountToken = wsNC.addObserver(
-            forName: NSWorkspace.didUnmountNotification,
-            object: nil,
-            queue: .main
-        ) { _ in
-            bridge.scheduleVolumeRefresh()
-        }
-        // App becomes active：用户从 Finder 清完回收站切回我们时立即同步。
-        let appActiveToken = NotificationCenter.default.addObserver(
-            forName: NSApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { _ in
-            bridge.scheduleVolumeRefresh()
-        }
-        tokenBag.append(mountToken)
-        tokenBag.append(unmountToken)
-        tokenBag.append(appActiveToken)
-
-        // 15s 轻量轮询：后台 queue 执行 statfs / sysctl / vm 目录枚举；
-        // event handler 不捕获 @MainActor self，避免 Swift 6 executor 校验 trap。
-        let timer = DispatchSource.makeTimerSource(queue: SystemProbeRefreshBridge.queue)
-        timer.schedule(deadline: .now() + 15, repeating: 15, leeway: .seconds(3))
-        timer.setEventHandler {
-            bridge.scheduleVolumeRefresh()
-        }
-        timer.resume()
-        pollTimer = timer
-    }
-
     fileprivate func applyVolumeRefresh(_ snapshot: SystemProbeRefreshSnapshot) {
         if snapshot.volume != volumeSnapshot {
             volumeSnapshot = snapshot.volume
@@ -149,16 +101,65 @@ private final class SystemProbeRefreshBridge: @unchecked Sendable {
     static let queue = DispatchQueue(label: "com.guoshuyu.cleanmac.system-probe", qos: .utility)
 
     weak var store: SystemProbeStore?
+    private let tokenBag = NotificationTokenBag()
+    private var pollTimer: DispatchSourceTimer?
+
+    deinit {
+        pollTimer?.cancel()
+    }
+
+    func installAutoRefreshHooks(pollInterval: DispatchTimeInterval, pollLeeway: DispatchTimeInterval) {
+        let wsNC = NSWorkspace.shared.notificationCenter
+
+        let mountToken = wsNC.addObserver(
+            forName: NSWorkspace.didMountNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.scheduleVolumeRefresh()
+        }
+        let unmountToken = wsNC.addObserver(
+            forName: NSWorkspace.didUnmountNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.scheduleVolumeRefresh()
+        }
+        let appActiveToken = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.scheduleVolumeRefresh()
+        }
+        tokenBag.append(mountToken)
+        tokenBag.append(unmountToken)
+        tokenBag.append(appActiveToken)
+
+        // 关键边界：timer handler 必须在非 MainActor 类型里创建。否则 Swift 6 会把
+        // @MainActor store 方法中的闭包标成 MainActor executor，在后台 queue 入口 trap。
+        let timer = DispatchSource.makeTimerSource(queue: Self.queue)
+        timer.schedule(deadline: .now() + pollInterval, repeating: pollInterval, leeway: pollLeeway)
+        timer.setEventHandler { [weak self] in
+            self?.probeAndPublish()
+        }
+        timer.resume()
+        pollTimer = timer
+    }
 
     func scheduleVolumeRefresh() {
         Self.queue.async { [weak self] in
-            let snapshot = SystemProbeRefreshSnapshot(
-                volume: VolumeCapacity.probe(),
-                swap: SwapProbe.probe()
-            )
-            Task { @MainActor [weak self] in
-                self?.store?.applyVolumeRefresh(snapshot)
-            }
+            self?.probeAndPublish()
+        }
+    }
+
+    private func probeAndPublish() {
+        let snapshot = SystemProbeRefreshSnapshot(
+            volume: VolumeCapacity.probe(),
+            swap: SwapProbe.probe()
+        )
+        Task { @MainActor [weak self] in
+            self?.store?.applyVolumeRefresh(snapshot)
         }
     }
 }

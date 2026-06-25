@@ -100,47 +100,103 @@ public actor CommonAppCacheScanner {
         let rules = vendors.filter { $0.category == options.category }
         GSYLog.info(.scan, "CommonAppCache scan start rules=\(rules.count) timeout=\(options.timeoutSeconds)s")
 
-        ruleLoop: for rule in rules {
+        let candidates = prioritizedCandidates(
+            rules: rules,
+            includedVerdicts: options.includedVerdicts,
+            homePath: homePath,
+            fileManager: fm,
+            maxGlobExpansionsPerRule: options.maxGlobExpansionsPerRule
+        )
+
+        for candidate in candidates {
             if Date() >= deadline { break }
-            for pathRule in rule.paths where options.includedVerdicts.contains(pathRule.verdict) {
-                if Date() >= deadline { break ruleLoop }
-                let expanded = expandPattern(
-                    pathRule.path,
-                    home: homePath,
-                    fileManager: fm,
-                    maxResults: options.maxGlobExpansionsPerRule
-                )
-                for path in expanded {
-                    if Date() >= deadline { break ruleLoop }
-                    var isDirectory = ObjCBool(false)
-                    guard fm.fileExists(atPath: path, isDirectory: &isDirectory) else { continue }
-                    let size = sizeOfPath(
-                        path,
-                        isDirectory: isDirectory.boolValue,
-                        deadline: deadline,
-                        maxEntries: options.maxEntriesPerPath
-                    )
-                    let bytes = size.bytes
-                    guard bytes > 0 else { continue }
-                    hits.append(Hit(
-                        ruleName: rule.name,
-                        bundleIDPrefix: rule.bundleIDPrefix,
-                        source: rule.source,
-                        url: URL(fileURLWithPath: path),
-                        isDirectory: isDirectory.boolValue,
-                        verdict: pathRule.verdict,
-                        reason: pathRule.reason,
-                        sizeBytes: bytes,
-                        entryCount: size.entryCount
-                    ))
-                }
-            }
+            let size = sizeOfPath(
+                candidate.path,
+                isDirectory: candidate.isDirectory,
+                deadline: deadline,
+                maxEntries: options.maxEntriesPerPath
+            )
+            let bytes = size.bytes
+            guard bytes > 0 else { continue }
+            hits.append(Hit(
+                ruleName: candidate.rule.name,
+                bundleIDPrefix: candidate.rule.bundleIDPrefix,
+                source: candidate.rule.source,
+                url: URL(fileURLWithPath: candidate.path),
+                isDirectory: candidate.isDirectory,
+                verdict: candidate.pathRule.verdict,
+                reason: candidate.pathRule.reason,
+                sizeBytes: bytes,
+                entryCount: size.entryCount
+            ))
         }
 
         GSYLog.info(.scan, "CommonAppCache scan finished hits=\(hits.count)")
         return hits.sorted {
             if $0.sizeBytes == $1.sizeBytes { return $0.url.path < $1.url.path }
             return $0.sizeBytes > $1.sizeBytes
+        }
+    }
+
+    struct Candidate {
+        let rule: VendorRule
+        let pathRule: PathRule
+        let path: String
+        let isDirectory: Bool
+        let originalRuleIndex: Int
+        let originalPathIndex: Int
+    }
+
+    static func prioritizedCandidates(
+        rules: [VendorRule],
+        includedVerdicts: Set<SafetyVerdict>,
+        homePath: String,
+        fileManager: FileManager,
+        maxGlobExpansionsPerRule: Int
+    ) -> [Candidate] {
+        var candidates: [Candidate] = []
+        for (ruleIndex, rule) in rules.enumerated() {
+            for (pathIndex, pathRule) in rule.paths.enumerated()
+                where includedVerdicts.contains(pathRule.verdict) {
+                let expanded = expandPattern(
+                    pathRule.path,
+                    home: homePath,
+                    fileManager: fileManager,
+                    maxResults: maxGlobExpansionsPerRule
+                )
+                for path in expanded {
+                    var isDirectory = ObjCBool(false)
+                    guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory) else { continue }
+                    candidates.append(Candidate(
+                        rule: rule,
+                        pathRule: pathRule,
+                        path: path,
+                        isDirectory: isDirectory.boolValue,
+                        originalRuleIndex: ruleIndex,
+                        originalPathIndex: pathIndex
+                    ))
+                }
+            }
+        }
+        return candidates.sorted { lhs, rhs in
+            let lhsRank = verdictPriority(lhs.pathRule.verdict)
+            let rhsRank = verdictPriority(rhs.pathRule.verdict)
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            if lhs.originalRuleIndex != rhs.originalRuleIndex {
+                return lhs.originalRuleIndex < rhs.originalRuleIndex
+            }
+            if lhs.originalPathIndex != rhs.originalPathIndex {
+                return lhs.originalPathIndex < rhs.originalPathIndex
+            }
+            return lhs.path < rhs.path
+        }
+    }
+
+    private static func verdictPriority(_ verdict: SafetyVerdict) -> Int {
+        switch verdict {
+        case .safe: return 0
+        case .confirm: return 1
+        case .forbid: return 2
         }
     }
 

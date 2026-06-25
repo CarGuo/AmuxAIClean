@@ -475,26 +475,34 @@ public struct MainView: View {
             // 而是分发到对应 trigger* helper（toolbar 同款）。
             Section {
                 batchScanRow(icon: "rectangle.3.group",
-                             titleKey: LocalizedStringKey("batch.recommended.title"),
-                             subtitleKey: LocalizedStringKey("batch.recommended.subtitle"))
+                             titleKey: "batch.recommended.title",
+                             subtitleKey: "batch.recommended.subtitle")
                     .tag(ScanCategory.batchRecommendedID)
 
                 batchScanRow(icon: "hammer",
-                             titleKey: LocalizedStringKey("batch.developer.title"),
-                             subtitleKey: LocalizedStringKey("batch.developer.subtitle"))
+                             titleKey: "batch.developer.title",
+                             subtitleKey: "batch.developer.subtitle",
+                             helpKey: "batch.developer.help")
                     .tag(ScanCategory.batchDeveloperID)
 
                 batchScanRow(icon: "internaldrive",
-                             titleKey: LocalizedStringKey("batch.fulldisk.title"),
-                             subtitleKey: LocalizedStringKey("batch.fulldisk.subtitle"))
+                             titleKey: "batch.fulldisk.title",
+                             subtitleKey: "batch.fulldisk.subtitle")
                     .tag(ScanCategory.batchFullDiskID)
 
                 batchScanRow(icon: "sparkles",
-                             titleKey: LocalizedStringKey("batch.common_app_cache.title"),
-                             subtitleKey: LocalizedStringKey("batch.common_app_cache.subtitle"))
+                             titleKey: "batch.common_app_cache.title",
+                             subtitleKey: "batch.common_app_cache.subtitle")
                     .tag(ScanCategory.batchCommonAppCacheID)
             } header: {
                 Text("sidebar.section.batch", bundle: .module)
+            }
+
+            Section {
+                sidebarRow(largeFilesCategory)
+                    .tag(largeFilesCategory.id)
+            } header: {
+                Text("sidebar.section.large_files", bundle: .module)
             }
 
             Section {
@@ -551,13 +559,6 @@ public struct MainView: View {
                 }
             } header: {
                 Text("sidebar.section.library", bundle: .module)
-            }
-
-            Section {
-                sidebarRow(largeFilesCategory)
-                    .tag(largeFilesCategory.id)
-            } header: {
-                Text("sidebar.section.large_files", bundle: .module)
             }
 
             Section {
@@ -708,16 +709,17 @@ public struct MainView: View {
     /// onChange(selectedCategory) 统一调度到对应 trigger* helper。
     /// v1.5 review-fix #13：去掉 dead `id` 参数（外部 .tag(...) 使用，本函数不需要）。
     private func batchScanRow(icon: String,
-                              titleKey: LocalizedStringKey,
-                              subtitleKey: LocalizedStringKey) -> some View {
+                              titleKey: String,
+                              subtitleKey: String,
+                              helpKey: String? = nil) -> some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
                 .foregroundStyle(.tint)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
-                Text(titleKey, bundle: .module)
+                Text(LocalizedStringKey(titleKey), bundle: .module)
                     .font(.system(.body, design: .rounded))
-                Text(subtitleKey, bundle: .module)
+                Text(LocalizedStringKey(subtitleKey), bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -725,6 +727,7 @@ public struct MainView: View {
             }
         }
         .padding(.vertical, 2)
+        .modifier(OptionalHelpModifier(helpText: helpText(helpKey)))
     }
 
     private var appFootprintSidebarRow: some View {
@@ -970,6 +973,12 @@ public struct MainView: View {
             }
         }
         .padding(.vertical, 2)
+        .modifier(OptionalHelpModifier(helpText: cat.displayHelpIfConfigured))
+    }
+
+    private func helpText(_ helpKey: String?) -> String? {
+        guard let helpKey else { return nil }
+        return String(localized: String.LocalizationValue(helpKey), bundle: .module)
     }
 
     private func iconName(for kind: ScanCategory.Kind) -> String {
@@ -2932,5 +2941,17 @@ private struct PermissionStatusBanner: View {
         .background(tintColor.opacity(0.08))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(tintColor.opacity(0.3)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct OptionalHelpModifier: ViewModifier {
+    let helpText: String?
+
+    func body(content: Content) -> some View {
+        if let helpText {
+            content.help(helpText)
+        } else {
+            content
+        }
     }
 }

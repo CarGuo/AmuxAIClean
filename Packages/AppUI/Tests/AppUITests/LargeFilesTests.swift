@@ -103,6 +103,19 @@ final class LargeFilesTests: XCTestCase {
         XCTAssertEqual(names, ["large.mp4", "medium.iso"].sorted())
     }
 
+    func test_大文件扫描不构建通用主列表bucket() async throws {
+        let root = try makeFixture()
+        defer { cleanup(root) }
+        let coord = ScanCoordinator()
+        coord.scan(category: makeCategory(rootPath: root.path),
+                   largeFileMinBytes: 1 * 1024 * 1024)
+        await waitFinished(coord)
+        XCTAssertTrue(coord.snapshot.rows.isEmpty,
+                      "大文件入口应只维护 Top-N 文件集合，不构建主列表 rows，避免百万文件扫描期拖垮 MainActor")
+        XCTAssertEqual(coord.snapshot.scannedFileCount, 4)
+        XCTAssertEqual(coord.largeFileCollectedCount, 2)
+    }
+
     func test_视图期阈值上调_可以二次过滤() async throws {
         let root = try makeFixture()
         defer { cleanup(root) }

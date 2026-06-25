@@ -166,19 +166,17 @@ public final class ScanCoordinator: ObservableObject {
 
     /// v1.5 P1-B：把 staging 字典拆分同步到 active / finishedSlim / finishedCount。
     /// - 仅当 active / finishedSlim 真的变化时才 assign，避免无谓 willChange。
-    /// - finishedSlim 的 key set 单调增（finish 后不会回到 in-flight），所以只比 count 就够。
+    /// - 删除成功后的乐观 prune 可能让 finished root 的 bytes/fileCount 变小，甚至移除整根；
+    ///   因此 finishedSlim 不能再假设 key set 单调增。
     private func syncPerRootPublished(from staging: [String: PerRootProgress]) {
         var nextActive: [String: PerRootProgress] = [:]
         nextActive.reserveCapacity(staging.count)
         var nextFinishedCount = 0
-        var newlyFinished: [(String, PerRootProgress)] = []
+        var nextFinishedSlim: [String: PerRootProgress] = [:]
         for (k, v) in staging {
             if v.isFinished {
                 nextFinishedCount += 1
-                // 与已有 slim 不同才记下，避免无谓写入
-                if perRootFinishedSlim[k] != v {
-                    newlyFinished.append((k, v))
-                }
+                nextFinishedSlim[k] = v
             } else {
                 nextActive[k] = v
             }
@@ -186,10 +184,8 @@ public final class ScanCoordinator: ObservableObject {
         if perRootProgressActive != nextActive {
             perRootProgressActive = nextActive
         }
-        if !newlyFinished.isEmpty {
-            var slim = perRootFinishedSlim
-            for (k, v) in newlyFinished { slim[k] = v }
-            perRootFinishedSlim = slim
+        if perRootFinishedSlim != nextFinishedSlim {
+            perRootFinishedSlim = nextFinishedSlim
         }
         if perRootFinishedCount != nextFinishedCount {
             perRootFinishedCount = nextFinishedCount
@@ -649,6 +645,9 @@ public final class ScanCoordinator: ObservableObject {
     private var compactedLargeFileTopN: [LargeFileLeaf]?
     /// 当前扫描会话中"采集大文件的下限"。0 表示不采集。
     private var largeFileMinBytes: Int64 = 0
+    /// 大文件入口只需要文件级 Top-N，不需要主列表 bucket / 树形索引 / Safety verdict 行。
+    /// 保持这个边界能避免百万级文件扫描把 MainActor 拖进通用结果树构建。
+    private var largeFileTopNOnlyScan: Bool = false
 
     private var totalBytes: Int64 = 0
     private var scannedFiles: Int = 0
@@ -786,6 +785,7 @@ public final class ScanCoordinator: ObservableObject {
         permissionDeniedPaths = []
         tccProtectedSkippedPaths = []
         lastError = nil
+        largeFileTopNOnlyScan = false
         // v1.3：cancel 时同时清掉多根扫描进度，避免 statusBar 上残留旧根的"扫描中"行。
         resetPerRootPublished()
         perRootStaging = [:]
@@ -821,6 +821,8 @@ public final class ScanCoordinator: ObservableObject {
         compactedLargeFileTopN = nil
         // v1.3：清掉上一轮的 ingest 时间戳，避免新扫描启动瞬间旧 bucket 仍被判 active
         lastIngestAt.removeAll(keepingCapacity: true)
+        let topNOnlyLargeFileScan = category.kind == .largeFiles
+        self.largeFileTopNOnlyScan = topNOnlyLargeFileScan
         self.largeFileMinBytes = max(0, largeFileMinBytes)
         totalBytes = 0
         scannedFiles = 0
@@ -889,7 +891,8 @@ public final class ScanCoordinator: ObservableObject {
         }
         scanTask = Task { [weak self] in
             await self?.runScan(rootURL: rootURL, categoryID: categoryID,
-                                includeHidden: includeHidden, staySingleVolume: isFullDisk)
+                                includeHidden: includeHidden, staySingleVolume: isFullDisk,
+                                largeFileTopNOnly: topNOnlyLargeFileScan)
         }
     }
 
@@ -924,6 +927,7 @@ public final class ScanCoordinator: ObservableObject {
         largeFileLeaves.removeAll(keepingCapacity: true)
         compactedLargeFileTopN = nil
         lastIngestAt.removeAll(keepingCapacity: true)
+        largeFileTopNOnlyScan = false
         totalBytes = 0
         scannedFiles = 0
         startedAt = Date()
@@ -1048,6 +1052,7 @@ public final class ScanCoordinator: ObservableObject {
         largeFileLeaves.removeAll(keepingCapacity: true)
         compactedLargeFileTopN = nil
         lastIngestAt.removeAll(keepingCapacity: true)
+        largeFileTopNOnlyScan = false
         self.largeFileMinBytes = 0
         resetPerRootPublished()
         perRootStaging = [:]
@@ -1256,6 +1261,7 @@ public final class ScanCoordinator: ObservableObject {
         compactedLargeFileTopN = nil
         // v1.3：清掉上一轮的 ingest 时间戳，避免新扫描启动瞬间旧 bucket 仍被判 active
         lastIngestAt.removeAll(keepingCapacity: true)
+        largeFileTopNOnlyScan = false
         self.largeFileMinBytes = 0
         totalBytes = 0
         scannedFiles = 0
@@ -1365,6 +1371,7 @@ public final class ScanCoordinator: ObservableObject {
         bumpStructuralRevision()
         compactedLargeFileTopN = nil
         lastIngestAt.removeAll(keepingCapacity: true)
+        largeFileTopNOnlyScan = false
         self.largeFileMinBytes = 0
         totalBytes = 0
         scannedFiles = 0
@@ -1512,7 +1519,11 @@ public final class ScanCoordinator: ObservableObject {
         return path
     }
 
-    private func runScan(rootURL: URL, categoryID: String, includeHidden: Bool, staySingleVolume: Bool = false) async {
+    private func runScan(rootURL: URL,
+                         categoryID: String,
+                         includeHidden: Bool,
+                         staySingleVolume: Bool = false,
+                         largeFileTopNOnly: Bool = false) async {
         let rootPath = rootURL.path
         // v1.0 T2：把 AppSettings.showHidden 透传到 ScanOptions
         // v1.0 T5：整盘扫描时叠加 staySingleVolume=true（详见 ScanOptions 文档）
@@ -1533,14 +1544,10 @@ public final class ScanCoordinator: ObservableObject {
         // footerBar / selectedRows.filter）；扫描期 UI 没人盯帧率，250-400ms 完全够看到字节跳动。
         // 抬到 0.40 后预期 ViewGraph 重算次数降到 ~2.5 fps，主线程让出给 ingest。
         let throttle: TimeInterval = 0.40
-        // v1.3.y 性能修复（workspace 7 分钟卡死定位结论）：
-        // BulkScanner unbounded buffer 在 72 万 .node 量级会让 for-await 在 @MainActor 上
-        // 连续吃完缓冲区中的几百~几千个事件才返回，期间 SwiftUI ViewGraph 完全没机会渲染，
-        // 但 publishSnapshot 又持续 mutate @Published snapshot 字段 → ObservationCenter
-        // 累积海量 pending invalidate，下次让出时一次性遍历所有 KeyPath（hash 风暴），
-        // 主线程被压在 ObservationRegistrar.State.cancel 里几乎 100% CPU 跑不动 ingest。
-        // 解决：每处理 yieldEvery 个事件主动 await Task.yield()，让主 actor 短暂让出
-        // 给 RunLoop / ViewGraph，invalidate 摊销而非堆积。
+        // v1.3.y / v2026.06.25 性能修复：
+        // BulkScanner 会把一个目录下的多个 node 合并成 `.nodes(arr)`。旧实现按"事件数"
+        // 计数让出，百万级文件扫描时一个事件可能代表几百个 node，MainActor 仍会被连续
+        // 占住太久。这里改为按实际 node 数计数，让 SwiftUI / RunLoop 有稳定空档。
         let yieldEvery = 256
         var consumedSinceYield = 0
 
@@ -1550,12 +1557,25 @@ public final class ScanCoordinator: ObservableObject {
             // activeCategoryID 在 cancel() 里被清空、在新 scan 入口被重新打上；只要本次 stream 已被
             // 新一轮 scan 取代，下面这一行就会让旧 for-await 立刻跳出循环，不再写 buckets/dirIndex。
             guard activeCategoryID == categoryID else { break }
+            var consumedThisEvent = 1
             switch event {
             case .node(let node):
-                ingest(node: node, rootPath: rootPath)
+                if largeFileTopNOnly {
+                    ingestLargeFileNode(node, rootPath: rootPath)
+                } else {
+                    ingest(node: node, rootPath: rootPath)
+                }
             case .nodes(let arr):
-                // Step 13B micro-batch：批量 ingest，减少跨 actor hop 开销
-                for node in arr { ingest(node: node, rootPath: rootPath) }
+                // Step 13B micro-batch：批量 ingest，减少跨 actor hop 开销。
+                // 大文件入口只保留 Top-N，不构建通用树形/主列表索引。
+                for node in arr {
+                    if largeFileTopNOnly {
+                        ingestLargeFileNode(node, rootPath: rootPath)
+                    } else {
+                        ingest(node: node, rootPath: rootPath)
+                    }
+                }
+                consumedThisEvent = max(1, arr.count)
             case .progress(let bytes, let count):
                 // BulkScanner 自带的 progress 我们也用上，但首选 node 累计
                 _ = bytes
@@ -1589,7 +1609,7 @@ public final class ScanCoordinator: ObservableObject {
             }
 
             // 性能修复：每 N 个事件让出一次主 actor（详见上方注释）
-            consumedSinceYield += 1
+            consumedSinceYield += consumedThisEvent
             if consumedSinceYield >= yieldEvery {
                 consumedSinceYield = 0
                 await Task.yield()
@@ -1873,6 +1893,21 @@ public final class ScanCoordinator: ObservableObject {
                     childEdges[parent, default: []].insert(nodePath)
                 }
             }
+        }
+    }
+
+    private func ingestLargeFileNode(_ node: FSNode, rootPath: String) {
+        guard !node.isDirectory else { return }
+        let nodePath = displayPathForScanNode(node.path, rootPath: rootPath)
+        let bytes = displayBytes(of: node)
+        scannedFiles += 1
+        totalBytes += bytes
+        if largeFileMinBytes > 0 && bytes >= largeFileMinBytes {
+            largeFileLeaves.consider(LargeFileLeaf(
+                path: nodePath,
+                bytes: bytes,
+                modificationDate: node.modificationDate
+            ))
         }
     }
 
@@ -2223,23 +2258,95 @@ public final class ScanCoordinator: ObservableObject {
             return false
         }
 
+        func isAncestor(_ ancestor: String, of child: String) -> Bool {
+            child.hasPrefix(ancestor + "/")
+        }
+
+        let deletedRoots = Array(Set(normalized)).filter { path in
+            !normalized.contains { other in other != path && isAncestor(other, of: path) }
+        }
+
+        func contribution(for path: String) -> (bytes: Int64, logicalBytes: Int64, fileCount: Int)? {
+            if let leaf = fileLeaves[path] {
+                return (leaf.bytes, leaf.bytes, 1)
+            }
+            if let agg = dirIndex[path] {
+                return (agg.bytes, agg.logicalBytes, agg.fileCount)
+            }
+            if let bucket = buckets[path] {
+                return (bucket.bytes, bucket.logicalBytes, bucket.fileCount)
+            }
+            if let row = snapshot.rows.first(where: { $0.id == path }) {
+                return (row.bytes, row.logicalBytes, row.fileCount)
+            }
+            return nil
+        }
+
+        let deletedContributions: [(path: String, bytes: Int64, logicalBytes: Int64, fileCount: Int)] =
+            deletedRoots.compactMap { path in
+                guard let c = contribution(for: path) else { return nil }
+                return (path, c.bytes, c.logicalBytes, c.fileCount)
+            }
+        let totalDeletedBytes = deletedContributions.reduce(Int64(0)) { $0 + $1.bytes }
+        let totalDeletedFiles = deletedContributions.reduce(0) { $0 + $1.fileCount }
+
         // ① snapshot.rows：保持 categoryID / isFinished / elapsed 等。
+        // 删除子项时，祖先 row 是值快照；必须用同一份 deletedContributions 同步扣减，
+        // 否则树/列表父级会继续显示旧聚合。
         let oldSnap = self.snapshot
-        let newRows = oldSnap.rows.filter { !isUnderDeleted($0.id) }
-        if newRows.count != oldSnap.rows.count {
-            let removedBytes = oldSnap.rows
-                .filter { isUnderDeleted($0.id) }
-                .reduce(Int64(0)) { $0 + $1.bytes }
+        var newRows: [RowItem] = []
+        newRows.reserveCapacity(oldSnap.rows.count)
+        var removedRowBytes: Int64 = 0
+        for row in oldSnap.rows {
+            if isUnderDeleted(row.id) {
+                removedRowBytes += row.bytes
+                continue
+            }
+            let dec = deletedContributions.reduce((bytes: Int64(0), logicalBytes: Int64(0), fileCount: 0)) { acc, item in
+                guard isAncestor(row.id, of: item.path) else { return acc }
+                return (
+                    acc.bytes + item.bytes,
+                    acc.logicalBytes + item.logicalBytes,
+                    acc.fileCount + item.fileCount
+                )
+            }
+            if dec.bytes > 0 || dec.logicalBytes > 0 || dec.fileCount > 0 {
+                newRows.append(RowItem(
+                    id: row.id,
+                    url: row.url,
+                    title: row.title,
+                    isDirectory: row.isDirectory,
+                    bytes: max(0, row.bytes - dec.bytes),
+                    logicalBytes: max(0, row.logicalBytes - dec.logicalBytes),
+                    fileCount: max(0, row.fileCount - dec.fileCount),
+                    verdict: row.verdict,
+                    rejection: row.rejection,
+                    vendorName: row.vendorName,
+                    vendorNote: row.vendorNote,
+                    runningBundleIDPrefix: row.runningBundleIDPrefix,
+                    isActive: row.isActive,
+                    modificationDate: row.modificationDate
+                ))
+            } else {
+                newRows.append(row)
+            }
+        }
+        let snapshotBytesToSubtract = totalDeletedBytes > 0 ? totalDeletedBytes : removedRowBytes
+        if newRows != oldSnap.rows || snapshotBytesToSubtract > 0 {
             self.snapshot = ScanSnapshot(
                 categoryID: oldSnap.categoryID,
                 rows: newRows,
-                totalBytes: max(0, oldSnap.totalBytes - removedBytes),
+                totalBytes: max(0, oldSnap.totalBytes - snapshotBytesToSubtract),
                 scannedFileCount: oldSnap.scannedFileCount, // 不动：scannedFile 是历史扫描指标
                 isFinished: oldSnap.isFinished,
                 elapsed: oldSnap.elapsed,
                 bytesPerSecond: oldSnap.bytesPerSecond,
                 estimatedRemaining: oldSnap.estimatedRemaining
             )
+        }
+        if snapshotBytesToSubtract > 0 {
+            totalBytes = max(0, totalBytes - snapshotBytesToSubtract)
+            scannedFiles = max(0, scannedFiles - totalDeletedFiles)
         }
 
         // ② 内存索引：buckets/dirIndex/childEdges/fileLeaves
@@ -2272,28 +2379,14 @@ public final class ScanCoordinator: ObservableObject {
             cur.fileCount &+= fileCount
             pendingDecrements[ancestor] = cur
         }
-        for delPath in normalized {
-            // 取被删项的贡献量
-            let contribBytes: Int64
-            let contribLogical: Int64
-            let contribCount: Int
-            if let leaf = fileLeaves[delPath] {
-                contribBytes = leaf.bytes
-                contribLogical = leaf.bytes  // leaf 没单独存 logicalBytes，取近似
-                contribCount = 1
-            } else if let agg = dirIndex[delPath] {
-                contribBytes = agg.bytes
-                contribLogical = agg.logicalBytes
-                contribCount = agg.fileCount
-            } else {
-                continue
-            }
+        for item in deletedContributions {
+            let delPath = item.path
             // 沿路径回溯到顶层 "/"
             var cursor = (delPath as NSString).deletingLastPathComponent
             while !cursor.isEmpty, cursor != "/" {
                 // 该祖先若本身在删除范围里，下面整段会 removeValue 掉，回溯无意义；早跳。
                 if isUnderDeleted(cursor) { break }
-                accumulate(into: cursor, bytes: contribBytes, logicalBytes: contribLogical, fileCount: contribCount)
+                accumulate(into: cursor, bytes: item.bytes, logicalBytes: item.logicalBytes, fileCount: item.fileCount)
                 let parent = (cursor as NSString).deletingLastPathComponent
                 if parent == cursor { break }
                 cursor = parent
@@ -2305,6 +2398,34 @@ public final class ScanCoordinator: ObservableObject {
             agg.logicalBytes = max(0, agg.logicalBytes - dec.logicalBytes)
             agg.fileCount = max(0, agg.fileCount - dec.fileCount)
             dirIndex[ancestor] = agg
+        }
+
+        // 多根扫描的顶层行（推荐清理 / 开发者构建产物）来自 perRootProgress，
+        // 不读 dirIndex。删除某个根下的子项后必须同步扣减，否则会出现
+        // "子目录消失了，父级根行大小仍然不变"。
+        if !deletedContributions.isEmpty {
+            let sourcePerRoot = perRootStaging.isEmpty ? perRootProgress : perRootStaging
+            if !sourcePerRoot.isEmpty {
+                var nextPerRoot: [String: PerRootProgress] = [:]
+                nextPerRoot.reserveCapacity(sourcePerRoot.count)
+                for (rootPath, progress) in sourcePerRoot {
+                    if isUnderDeleted(rootPath) { continue }
+                    let dec = deletedContributions.reduce((bytes: Int64(0), fileCount: 0)) { acc, item in
+                        guard isAncestor(rootPath, of: item.path) else { return acc }
+                        return (acc.bytes + item.bytes, acc.fileCount + item.fileCount)
+                    }
+                    if dec.bytes > 0 || dec.fileCount > 0 {
+                        var updated = progress
+                        updated.bytes = max(0, updated.bytes - dec.bytes)
+                        updated.fileCount = max(0, updated.fileCount - dec.fileCount)
+                        nextPerRoot[rootPath] = updated
+                    } else {
+                        nextPerRoot[rootPath] = progress
+                    }
+                }
+                perRootStaging = nextPerRoot
+                syncPerRootPublished(from: nextPerRoot)
+            }
         }
 
         let dirKeys = dirIndex.keys.filter { isUnderDeleted($0) }
@@ -2950,7 +3071,48 @@ public final class ScanCoordinator: ObservableObject {
     /// v1.0 T4：当前会话扫描期阈值（bytes）。视图据此判断是否需要"调阈值后重扫"。
     public var largeFileScanThresholdBytes: Int64 { largeFileMinBytes }
 
+    private func sampleScanRate(nowDate: Date = Date()) -> TimeInterval {
+        let sampleStart = lastSampleAt ?? startedAt
+        let dt = nowDate.timeIntervalSince(sampleStart)
+        let dBytes = totalBytes - lastSampleBytes
+        if dt >= 0.05, dBytes >= 0 {
+            let instant = Double(dBytes) / max(dt, 0.001)
+            if bytesPerSecondEMA == 0 {
+                bytesPerSecondEMA = instant
+            } else {
+                let alpha = 0.3
+                bytesPerSecondEMA = alpha * instant + (1 - alpha) * bytesPerSecondEMA
+            }
+            lastSampleAt = nowDate
+            lastSampleBytes = totalBytes
+        }
+        return nowDate.timeIntervalSince(startedAt)
+    }
+
     private func publishSnapshot(categoryID: String, finished: Bool) {
+        if largeFileTopNOnlyScan {
+            let elapsedTotal = sampleScanRate()
+            let nextSnapshot = ScanSnapshot(
+                categoryID: categoryID,
+                rows: [],
+                totalBytes: totalBytes,
+                scannedFileCount: scannedFiles,
+                isFinished: finished,
+                elapsed: elapsedTotal,
+                bytesPerSecond: bytesPerSecondEMA,
+                estimatedRemaining: nil
+            )
+            if !finished && snapshot == nextSnapshot { return }
+            snapshot = nextSnapshot
+            if finished {
+                lastFinishedCategoryID = categoryID
+                lastIngestAt.removeAll(keepingCapacity: true)
+                lastStreamSortedIds.removeAll(keepingCapacity: true)
+                lastStreamSortCacheKey = (-1, -1)
+            }
+            return
+        }
+
         // v1.3 修「只有一行在动」错觉：
         //   扫描期间按 path 字典序排（位置稳定），让用户看到所有一级子目录的字节
         //   各自独立、同时跳动；只有 finished=true 那一帧切到用户选定的 mainListSortKey
@@ -3090,21 +3252,7 @@ public final class ScanCoordinator: ObservableObject {
         // 再 EWMA 平滑（α=0.3）。注意 elapsed 起点是 startedAt，速率窗口起点是 lastSampleAt
         // （第一帧没有"上次"，初始化成 startedAt 让首个采样长度 = elapsed）。
         let nowDate = Date()
-        let sampleStart = lastSampleAt ?? startedAt
-        let dt = nowDate.timeIntervalSince(sampleStart)
-        let dBytes = totalBytes - lastSampleBytes
-        if dt >= 0.05, dBytes >= 0 {
-            let instant = Double(dBytes) / max(dt, 0.001)
-            if bytesPerSecondEMA == 0 {
-                bytesPerSecondEMA = instant
-            } else {
-                let alpha = 0.3
-                bytesPerSecondEMA = alpha * instant + (1 - alpha) * bytesPerSecondEMA
-            }
-            lastSampleAt = nowDate
-            lastSampleBytes = totalBytes
-        }
-        let elapsedTotal = nowDate.timeIntervalSince(startedAt)
+        let elapsedTotal = sampleScanRate(nowDate: nowDate)
 
         // v2026.06.23 产品决策：不再向 UI 下发 ETA（剩余时间）。
         // 长扫场景下速率窗口噪声 + estimator 偏小都会让 ETA 严重失真，呈现给用户反而误导。
@@ -3188,7 +3336,8 @@ public final class ScanCoordinator: ObservableObject {
         fileLeaves: [String]? = nil,
         fileLeavesFull: [String: Int64]? = nil,
         childEdges: [String: Set<String>]? = nil,
-        treeChildrenCache: [String: [TreeRow]]? = nil
+        treeChildrenCache: [String: [TreeRow]]? = nil,
+        perRootStaging: [String: PerRootProgress]? = nil
     ) {
         if let snap = snapshot {
             self.snapshot = snap
@@ -3241,6 +3390,10 @@ public final class ScanCoordinator: ObservableObject {
         }
         if let treeChildrenCache {
             self.treeChildrenCache = treeChildrenCache
+        }
+        if let perRootStaging {
+            self.perRootStaging = perRootStaging
+            syncPerRootPublished(from: perRootStaging)
         }
     }
 

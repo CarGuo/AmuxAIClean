@@ -756,13 +756,30 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Discover build / node_modules / Pods"
+            "value": "Build caches that may be regenerated"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "勘察 build / node_modules / Pods 等"
+            "value": "可重建的构建缓存与依赖产物"
+          }
+        }
+      }
+    },
+    "batch.developer.help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Developer artifacts are mostly caches or generated output. Tools such as Xcode may recreate them after cleanup; sparse cache files can show a large logical size while using much less disk space."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开发者构建产物大多是缓存或生成物，清理后 Xcode 等工具可能自动重建；部分稀疏缓存文件会显示很大的逻辑大小，但实际占用可能小得多。"
           }
         }
       }
@@ -1752,13 +1769,30 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "DerivedData / Archives / iOS DeviceSupport"
+            "value": "DerivedData caches that Xcode may recreate"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "DerivedData / Archives / iOS DeviceSupport"
+            "value": "Xcode 可重建的 DerivedData 缓存"
+          }
+        }
+      }
+    },
+    "category.xcode.help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DerivedData contains Xcode build caches such as CompilationCache.noindex and ModuleCache.noindex. Xcode or SwiftBuild may recreate them after cleanup, and sparse files can make the displayed logical size differ from the space actually freed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DerivedData 包含 CompilationCache.noindex、ModuleCache.noindex 等 Xcode 构建缓存。清理后 Xcode 或 SwiftBuild 可能重新创建它们；稀疏文件还会让显示的逻辑大小和实际释放空间不完全一致。"
           }
         }
       }
@@ -6236,13 +6270,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Type a folder and press Return, or drag a folder"
+            "value": "Type or drag files"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "推荐扫描"
+            "value": "输入和拖动文件"
           }
         }
       }

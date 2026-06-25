@@ -87,4 +87,20 @@ final class SystemProbeStoreTests: XCTestCase {
             "store.refreshFDAStatus 必须触发 store.objectWillChange 至少 1 次"
         )
     }
+
+    func test_autoRefreshTimer后台触发不带MainActor队列断言() async throws {
+        let store = SystemProbeStore(
+            home: NSTemporaryDirectory(),
+            pollInterval: .milliseconds(20),
+            pollLeeway: .milliseconds(1),
+            startAutoRefresh: true
+        )
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        withExtendedLifetime(store) {
+            _ = store.volumeSnapshot
+            _ = store.swapSnapshot
+        }
+    }
 }
