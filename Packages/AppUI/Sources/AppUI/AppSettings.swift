@@ -33,7 +33,7 @@ public final class AppSettings {
         public static let skippedUpdateTag = "v1.skipped_update_tag"
         /// 大文件 / 树视图修改日期过滤（v1.2 P1-4）。
         public static let mtimeFilter = "v1.mtime_filter"
-        /// v1.3：字节口径（logical / physical），默认 logical 与系统设置/Finder 对齐
+        /// v1.3：字节口径（logical / physical），默认 logical 与系统设置/Finder 对齐。
         public static let sizeAccountingMode = "v1.size_accounting_mode"
         /// v1.3：主列表（推荐清理 / 自定义路径）排序键，默认 sizeDesc
         public static let mainListSortKey = "v1.main_list_sort_key"

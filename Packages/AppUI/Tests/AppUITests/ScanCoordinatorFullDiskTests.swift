@@ -149,6 +149,83 @@ final class ScanCoordinatorFullDiskTests: XCTestCase {
                       "扫描中不应启动按需下钻写树缓存")
     }
 
+    func test_fullDiskFinishedSnapshot_doesNotAutoPrefetchTopLevelRoots() {
+        let coord = ScanCoordinator(enableTreeDeepIndex: false)
+        let rows = [
+            RowItem(id: "/Users",
+                    url: URL(fileURLWithPath: "/Users", isDirectory: true),
+                    title: "Users",
+                    isDirectory: true,
+                    bytes: 100,
+                    logicalBytes: 100,
+                    fileCount: 1,
+                    verdict: .safe,
+                    rejection: .ok),
+            RowItem(id: "/System",
+                    url: URL(fileURLWithPath: "/System", isDirectory: true),
+                    title: "System",
+                    isDirectory: true,
+                    bytes: 200,
+                    logicalBytes: 200,
+                    fileCount: 2,
+                    verdict: .safe,
+                    rejection: .ok)
+        ]
+        coord._seedForTesting(
+            snapshot: ScanSnapshot(categoryID: ScanCategory.fullDisk.id,
+                                   rows: rows,
+                                   totalBytes: 300,
+                                   scannedFileCount: 3,
+                                   isFinished: true,
+                                   elapsed: 1),
+            currentRootPath: "/",
+            isScanning: false
+        )
+
+        coord.prefetchTreeChildren(paths: ["/Users", "/System"], sortedBy: .sizeDesc)
+
+        XCTAssertTrue(coord._treeChildrenInFlightForTesting().isEmpty,
+                      "全盘扫描完成后不能自动二次深扫顶层大目录；用户主动展开时再按需加载")
+        XCTAssertTrue(coord._treeChildrenCacheForTesting().isEmpty)
+    }
+
+    func test_nonFullDiskFinishedSnapshot_stillAllowsAutomaticPrefetch() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("TreePrefetch-\(UUID().uuidString)", isDirectory: true)
+        let parent = root.appendingPathComponent("Parent", isDirectory: true)
+        let child = parent.appendingPathComponent("child.txt")
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        try Data([0x01]).write(to: child)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let coord = ScanCoordinator(enableTreeDeepIndex: false)
+        coord._seedForTesting(
+            snapshot: ScanSnapshot(categoryID: "test.category",
+                                   rows: [],
+                                   totalBytes: 1,
+                                   scannedFileCount: 1,
+                                   isFinished: true,
+                                   elapsed: 1),
+            currentRootPath: root.path,
+            isScanning: false
+        )
+
+        coord.prefetchTreeChildren(paths: [parent.path], sortedBy: .sizeDesc)
+
+        let cacheKey = "\(parent.path)|\(TreeSortKey.sizeDesc.rawValue)"
+        XCTAssertTrue(coord._treeChildrenInFlightForTesting().contains(cacheKey),
+                      "非全盘场景仍应保留自动预热，避免回归普通目录首次展开体验")
+
+        let deadline = Date().addingTimeInterval(2)
+        var cached: [TreeRow] = []
+        while Date() < deadline {
+            cached = coord._treeChildrenCacheForTesting()[cacheKey] ?? []
+            if !cached.isEmpty { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        XCTAssertEqual(cached.map(\.path), [child.path])
+    }
+
     func test_onDemandDeepPermissionDenied_doesNotLockDirectParent() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("OnDemandAccess-\(UUID().uuidString)", isDirectory: true)

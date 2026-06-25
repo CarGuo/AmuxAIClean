@@ -19,6 +19,7 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(s.updateCheckEnabled, "v1.1：启动检查更新默认 ON")
         XCTAssertNil(s.skippedUpdateTag, "默认无跳过版本")
         XCTAssertEqual(s.mtimeFilter, .all, "v1.2：mtime 过滤默认 .all（先看到全貌）")
+        XCTAssertEqual(s.sizeAccountingMode, .logical, "默认应与 Finder / 系统设置的显示大小一致")
     }
 
     @MainActor

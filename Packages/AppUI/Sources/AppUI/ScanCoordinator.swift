@@ -2154,6 +2154,10 @@ public final class ScanCoordinator: ObservableObject {
     @MainActor
     public func prefetchTreeChildren(paths: [String], sortedBy key: TreeSortKey, limit: Int = 4) {
         guard !isScanning, !enableTreeDeepIndex else { return }
+        if shouldSuppressAutomaticTreePrefetch {
+            GSYLog.info(.flow, "tree.children.prefetch.skip reason=full_disk_root")
+            return
+        }
         var targets: [(path: String, cacheKey: String)] = []
         targets.reserveCapacity(min(paths.count, limit))
         for path in paths {
@@ -2170,6 +2174,14 @@ public final class ScanCoordinator: ObservableObject {
         for target in targets {
             startTreeChildrenFetch(path: target.path, sortedBy: key, cacheKey: target.cacheKey)
         }
+    }
+
+    /// 全盘扫描根 `/` 的最终快照已经持有一级目录聚合值。这里如果自动预取 `/Users`、
+    /// `/System` 等顶层目录，会在扫描结束后立刻二次深扫整盘主分支；用户按 Space 预览或
+    /// 继续操作时会和这轮重 IO 抢资源。保留用户主动展开时的按需 fetch，只禁止无人触发的
+    /// top-level prefetch。
+    private var shouldSuppressAutomaticTreePrefetch: Bool {
+        currentRootPath == "/" && snapshot.categoryID == ScanCategory.fullDisk.id
     }
 
     /// 扫描结束时作废展开缓存，下一次 view body 会按当前最终快照重新拉取。
@@ -3407,6 +3419,7 @@ public final class ScanCoordinator: ObservableObject {
     func _fileLeavesKeysForTesting() -> [String] { Array(fileLeaves.keys) }
     func _childEdgesForTesting() -> [String: Set<String>] { childEdges }
     func _treeChildrenCacheForTesting() -> [String: [TreeRow]] { treeChildrenCache }
+    func _treeChildrenInFlightForTesting() -> Set<String> { treeChildrenInFlight }
     func _storeFetchedChildrenForTesting(path: String, sortedBy key: TreeSortKey, rows: [TreeRow]) {
         storeFetchedChildren(path: path, sortedBy: key, rows: rows)
     }
