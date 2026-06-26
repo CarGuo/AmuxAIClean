@@ -7,7 +7,7 @@ import LogKit
 /// 自己 know-it 的目录），下一次扫描完成后还是出现，体验很差。
 ///
 /// 设计：
-/// - **JSON file 持久化**：默认写在 `~/Library/Application Support/GSYCleanMac/whitelist.json`，
+/// - **JSON file 持久化**：默认写在 `~/Library/Application Support/AmuxAIClean/whitelist.json`，
 ///   走文件而非 UserDefaults 是为了便于用户自己编辑 / 备份；
 /// - **actor 隔离 + 内存缓存**：每次 add/remove 立刻更新内存 set 并异步落盘，避免阻塞 UI；
 /// - **prefix 匹配**：判断一条扫描结果是否被加白时，用 path prefix 命中（用户把 `~/X` 加白后
@@ -181,6 +181,6 @@ public actor WhitelistStore {
                                             in: .userDomainMask,
                                             appropriateFor: nil,
                                             create: true) else { return nil }
-        return appSupport.appendingPathComponent("GSYCleanMac/whitelist.json")
+        return appSupport.appendingPathComponent("AmuxAIClean/whitelist.json")
     }
 }

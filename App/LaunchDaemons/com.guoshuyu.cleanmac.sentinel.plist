@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.guoshuyu.cleanmac.sentinel</string>
+    <string>com.amux.ai.Clean.sentinel</string>
     <key>BundleProgram</key>
-    <string>Contents/MacOS/gsycleanmac-sentinel</string>
+    <string>Contents/MacOS/amuxaiclean-sentinel</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -17,8 +17,8 @@
     <key>Nice</key>
     <integer>10</integer>
     <key>StandardOutPath</key>
-    <string>/tmp/com.guoshuyu.cleanmac.sentinel.out.log</string>
+    <string>/tmp/com.amux.ai.Clean.sentinel.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/com.guoshuyu.cleanmac.sentinel.err.log</string>
+    <string>/tmp/com.amux.ai.Clean.sentinel.err.log</string>
 </dict>
 </plist>

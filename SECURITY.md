@@ -52,7 +52,7 @@
 
 ### 闸门一：连接级（Connection-Level）
 
-- Helper（v1 不启用，留 v2）走 `NSXPCListener`，`mach service` 名字写死 `com.guoshuyu.cleanmac.helper`
+- Helper（v1 不启用，留 v2）走 `NSXPCListener`，`mach service` 名字写死 `com.amux.ai.Clean.helper`
 - 主 App 用 `audit_token_t` + `SecCodeCopyGuestWithAttributes` 验证 connecting peer 的签名
 - 任何不带预期 Team ID / bundle ID 的连接立即 invalidate
 
@@ -80,13 +80,13 @@
 
 ## 4. 数据持久化与隐私
 
-GSYCleanMac 是**完全离线**应用：
+AmuxAIClean 是**完全离线**应用：
 
 - 不发起任何 HTTP 请求（NSAllowsArbitraryLoads=false）
 - 不收集遥测、不上报崩溃
 - 唯一持久化文件：
-  - `~/Library/Application Support/GSYCleanMac/heuristic.json`：仅存 bundleID 维度的 `(deleted, restored, kept)` 三元组计数，无路径
-  - `~/Library/Preferences/com.guoshuyu.cleanmac.plist`：UI 偏好（窗口大小、阈值等）
+  - `~/Library/Application Support/AmuxAIClean/heuristic.json`：仅存 bundleID 维度的 `(deleted, restored, kept)` 三元组计数，无路径
+  - `~/Library/Preferences/com.amux.ai.Clean.plist`：UI 偏好（窗口大小、阈值等）
 - 不读取剪贴板、不读取通讯录、不读取浏览器历史
 
 ---

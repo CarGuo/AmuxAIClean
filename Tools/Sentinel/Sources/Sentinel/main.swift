@@ -1,13 +1,13 @@
 import Foundation
 import CoreServices
 
-/// GSYCleanMac Sentinel Daemon
+/// AmuxAIClean Sentinel Daemon
 ///
 /// 后台守护进程，负责两个场景的发现：
 ///
 /// **场景 1 · 卸载残留发现**：
 ///   FSEventStream 监听 `~/.Trash`，检测 `.app` / `.bundle` 进入废纸篓，
-///   触发 `gsycleanmac://uninstall?path=...` 唤起主 App 跳到 UninstallScreen。
+///   触发 `amuxaiclean://uninstall?path=...` 唤起主 App 跳到 UninstallScreen。
 ///
 /// **场景 2 · 推荐清理发现**：
 ///   FSEventStream 监听 4 个清理热点：
@@ -16,15 +16,15 @@ import CoreServices
 ///   - `~/Library/Developer/Xcode/DerivedData`
 ///   - 配置中追加的 node_modules / Pods 等
 ///   累积事件到 rolling top-100 ringbuffer，写到
-///   `~/Library/Application Support/GSYCleanMac/sentinel-pending.json`，
-///   持续 5GB 增量阈值后触发 `gsycleanmac://action/scan/full`。
+///   `~/Library/Application Support/AmuxAIClean/sentinel-pending.json`，
+///   持续 5GB 增量阈值后触发 `amuxaiclean://action/scan/full`。
 ///
 /// 设计：参见 [docs/SENTINEL_DESIGN.md].
 ///
 /// 入口约束：
 /// - 仅依赖 Foundation + CoreServices（不引 SwiftUI / AppUI / SafetyKit）
 /// - 目标 RSS < 5 MB / CPU < 1%（静默期）
-/// - 单文件 main.swift 可独立 `swift run gsycleanmac-sentinel` 验证逻辑
+/// - 单文件 main.swift 可独立 `swift run amuxaiclean-sentinel` 验证逻辑
 
 let log = SentinelLog.shared
 log.info("Sentinel daemon starting (pid=\(getpid()))")
@@ -66,7 +66,7 @@ enum SentinelPaths {
     }
 
     static var supportDirectory: URL {
-        home.appendingPathComponent("Library/Application Support/GSYCleanMac")
+        home.appendingPathComponent("Library/Application Support/AmuxAIClean")
     }
 }
 
@@ -74,7 +74,7 @@ enum SentinelPaths {
 
 final class SentinelLog: @unchecked Sendable {
     static let shared = SentinelLog()
-    private let queue = DispatchQueue(label: "com.guoshuyu.cleanmac.sentinel.log")
+    private let queue = DispatchQueue(label: "com.amux.ai.Clean.sentinel.log")
 
     func info(_ message: @autoclosure @escaping () -> String) {
         emit("INFO ", message())
@@ -103,7 +103,7 @@ final class SentinelLog: @unchecked Sendable {
 final class TrashListener: @unchecked Sendable {
     private let dispatcher: URLSchemeDispatcher
     private var stream: FSEventStreamRef?
-    private let queue = DispatchQueue(label: "com.guoshuyu.cleanmac.sentinel.trash", qos: .utility)
+    private let queue = DispatchQueue(label: "com.amux.ai.Clean.sentinel.trash", qos: .utility)
     private var debounceWorkItem: DispatchWorkItem?
     private var pendingPaths: Set<String> = []
 
@@ -207,7 +207,7 @@ struct HotspotEvent: Codable, Hashable {
 final class HotspotRingBuffer: @unchecked Sendable {
     private let capacity: Int
     private let persistPath: String
-    private let queue = DispatchQueue(label: "com.guoshuyu.cleanmac.sentinel.ring", qos: .utility)
+    private let queue = DispatchQueue(label: "com.amux.ai.Clean.sentinel.ring", qos: .utility)
     private var events: [HotspotEvent] = []
 
     init(capacity: Int, persistPath: String) {
@@ -259,7 +259,7 @@ final class HotspotListener: @unchecked Sendable {
     private let ringBuffer: HotspotRingBuffer
     private let dispatcher: URLSchemeDispatcher
     private var stream: FSEventStreamRef?
-    private let queue = DispatchQueue(label: "com.guoshuyu.cleanmac.sentinel.hotspot", qos: .utility)
+    private let queue = DispatchQueue(label: "com.amux.ai.Clean.sentinel.hotspot", qos: .utility)
     private var debounceWorkItem: DispatchWorkItem?
     private var pendingEvents: [HotspotEvent] = []
     /// 累计 5GB 后触发推荐扫描通知
@@ -385,7 +385,7 @@ final class URLSchemeDispatcher: @unchecked Sendable {
             SentinelLog.shared.warn("openUninstall percent-encoding failed: \(path)")
             return
         }
-        guard let url = URL(string: "gsycleanmac://uninstall?path=\(encoded)") else {
+        guard let url = URL(string: "amuxaiclean://uninstall?path=\(encoded)") else {
             SentinelLog.shared.warn("openUninstall URL construct failed: \(path)")
             return
         }
@@ -394,7 +394,7 @@ final class URLSchemeDispatcher: @unchecked Sendable {
     }
 
     func openScanFull() {
-        guard let url = URL(string: "gsycleanmac://action/scan/full") else { return }
+        guard let url = URL(string: "amuxaiclean://action/scan/full") else { return }
         SentinelLog.shared.info("Dispatching scan/full: \(url.absoluteString)")
         Self.openURL(url)
     }

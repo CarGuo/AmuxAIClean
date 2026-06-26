@@ -40,7 +40,7 @@ public struct AppFootprintScreen: View {
         // 嵌进 MainView NavigationSplitView 的 content 列（min:420 ideal:520）后，
         // 内层 minWidth 之和 680 > 外层 ideal 520，把外层 sidebar 都挤掉了一半。
         // 改成普通 HStack：左列表自适应、右详情固定占比。窄屏下整个 NavigationSplitView
-        // 仍能正常约束，不会再撑破 sidebar。也去掉 navigationTitle，避免覆盖主窗"GSY 清理管家"。
+        // 仍能正常约束，不会再撑破 sidebar。也去掉 navigationTitle，避免覆盖主窗"AmuxAIClean"。
         HStack(spacing: 0) {
             leftPane
                 .frame(minWidth: 240, idealWidth: 320)

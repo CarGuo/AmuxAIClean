@@ -4,7 +4,7 @@
 #
 # 做了什么：
 #   1. 用 ./Scripts/run_debug.sh 起一个干净的 Debug 实例
-#   2. 用 osascript 把 GSYCleanMac 拉到前台，逐个切到 4 个目标场景
+#   2. 用 osascript 把 AmuxAIClean 拉到前台，逐个切到 4 个目标场景
 #   3. 用 screencapture 把对应窗口截到 docs/screenshots/
 #
 # 输出（覆写）：
@@ -16,7 +16,7 @@
 # 前置条件（只配一次）：
 #   - 系统设置 → 隐私与安全 → 屏幕录制 → 勾选 Terminal / iTerm
 #   - 系统设置 → 隐私与安全 → 辅助功能 → 勾选 Terminal / iTerm
-#   - 系统设置 → 隐私与安全 → 完全磁盘访问 → 勾选 GSYCleanMac
+#   - 系统设置 → 隐私与安全 → 完全磁盘访问 → 勾选 AmuxAIClean
 #     （后者为了让推荐扫描真的能跑出非空结果）
 #
 # 用法：
@@ -36,6 +36,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCHEME="GSYCleanMac"
+APP_NAME="AmuxAIClean"
 OUT_DIR="${ROOT}/docs/screenshots"
 
 mkdir -p "$OUT_DIR"
@@ -70,8 +71,8 @@ fi
 sleep 2
 
 activate() {
-    osascript -e "tell application \"${SCHEME}\" to activate" >/dev/null 2>&1 || true
-    osascript -e "tell application \"System Events\" to tell process \"${SCHEME}\" to set frontmost to true" >/dev/null 2>&1 || true
+    osascript -e "tell application \"${APP_NAME}\" to activate" >/dev/null 2>&1 || true
+    osascript -e "tell application \"System Events\" to tell process \"${APP_NAME}\" to set frontmost to true" >/dev/null 2>&1 || true
     sleep 1
 }
 
@@ -79,7 +80,7 @@ activate() {
 main_window_id() {
     osascript <<'OSA' 2>/dev/null || true
 tell application "System Events"
-    tell process "GSYCleanMac"
+    tell process "AmuxAIClean"
         set winList to every window
         if (count of winList) is 0 then return ""
         return id of (first window whose subrole is "AXStandardWindow")
@@ -105,7 +106,7 @@ click_sidebar_row() {
     local idx="$1"
     osascript <<OSA 2>/dev/null || true
 tell application "System Events"
-    tell process "GSYCleanMac"
+    tell process "AmuxAIClean"
         try
             tell first window
                 tell first outline of first scroll area
@@ -123,7 +124,7 @@ OSA
 open_settings() {
     osascript <<'OSA' 2>/dev/null || true
 tell application "System Events"
-    tell process "GSYCleanMac"
+    tell process "AmuxAIClean"
         keystroke "," using {command down}
     end tell
 end tell
@@ -160,7 +161,7 @@ shoot_hud_tray() {
     activate
     # HUD 由托盘菜单 "悬浮 HUD" 触发；托盘图标点击坐标抓不到，
     # 退化为：直接全屏截图，要求用户点亮 HUD 后跑。
-    note "请在 5 秒内点亮托盘 HUD（点状态栏 GSYCleanMac 图标 → 悬浮 HUD），然后保持鼠标不动..."
+    note "请在 5 秒内点亮托盘 HUD（点状态栏 AmuxAIClean 图标 → 悬浮 HUD），然后保持鼠标不动..."
     sleep 5
     screencapture -o -x "${OUT_DIR}/v1.4-hud-tray.png"
     echo "  -> ${OUT_DIR}/v1.4-hud-tray.png"
@@ -174,7 +175,7 @@ shoot_settings_dev() {
     # 设置 Tab 顺序：通用 / 推荐扫描 / 开发者扫描规则 / 安全保护 / 自动检查更新 / 关于
     osascript <<'OSA' 2>/dev/null || true
 tell application "System Events"
-    tell process "GSYCleanMac"
+    tell process "AmuxAIClean"
         try
             click button 3 of toolbar 1 of window "Settings"
         on error
@@ -190,7 +191,7 @@ OSA
     local wid
     wid="$(osascript <<'OSA' 2>/dev/null || true
 tell application "System Events"
-    tell process "GSYCleanMac"
+    tell process "AmuxAIClean"
         try
             return id of (first window whose name is "Settings" or name is "设置")
         end try

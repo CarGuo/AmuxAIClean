@@ -416,13 +416,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "GSY Clean Mac"
+            "value": "AmuxAIClean"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "GSY 清理管家"
+            "value": "AmuxAIClean"
           }
         }
       }
@@ -4880,13 +4880,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "GSY Clean Mac"
+            "value": "AmuxAIClean"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "GSY 清理管家"
+            "value": "AmuxAIClean"
           }
         }
       }
@@ -5390,13 +5390,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "GSY Clean Mac Help"
+            "value": "AmuxAIClean Help"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "GSY 清理管家帮助"
+            "value": "AmuxAIClean帮助"
           }
         }
       }
@@ -6389,13 +6389,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tip: This process detected FDA = denied. If you just toggled GSYCleanMac on in System Settings, please try: ① fully quit and relaunch the app; ② confirm the .app you ticked is exactly the one running now (Debug builds and shipped .app have separate TCC grants)."
+            "value": "Tip: This process detected FDA = denied. If you just toggled AmuxAIClean on in System Settings, please try: ① fully quit and relaunch the app; ② confirm the .app you ticked is exactly the one running now (Debug builds and shipped .app have separate TCC grants)."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "提示：当前进程探测到 FDA = 未授权。如果你刚刚在系统设置里给 GSYCleanMac 打了勾，请尝试：① 退出本 App 完全重启；② 确认你打勾的 .app 路径就是当前正在运行的这一个（开发版 Debug build 与正式 .app 的 TCC 授权是分开的）。"
+            "value": "提示：当前进程探测到 FDA = 未授权。如果你刚刚在系统设置里给 AmuxAIClean 打了勾，请尝试：① 退出本 App 完全重启；② 确认你打勾的 .app 路径就是当前正在运行的这一个（开发版 Debug build 与正式 .app 的 TCC 授权是分开的）。"
           }
         }
       }
@@ -6423,13 +6423,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tip: Downloads/Documents/Desktop/Trash and removable volumes are NOT covered by Full Disk Access on macOS 14+. They need a separate switch under System Settings → Privacy & Security → Files and Folders → GSYCleanMac."
+            "value": "Tip: Downloads/Documents/Desktop/Trash and removable volumes are NOT covered by Full Disk Access on macOS 14+. They need a separate switch under System Settings → Privacy & Security → Files and Folders → AmuxAIClean."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "提示：在 macOS 14+ 上，下载/文稿/桌面/废纸篓/可移动卷 不属于「完全磁盘访问」管辖，需要在 系统设置 → 隐私与安全性 → 文件与文件夹 → GSYCleanMac 下单独打开开关。"
+            "value": "提示：在 macOS 14+ 上，下载/文稿/桌面/废纸篓/可移动卷 不属于「完全磁盘访问」管辖，需要在 系统设置 → 隐私与安全性 → 文件与文件夹 → AmuxAIClean 下单独打开开关。"
           }
         }
       }
@@ -7239,13 +7239,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Open Login Items in System Settings and enable “GSYCleanMac”."
+            "value": "Open Login Items in System Settings and enable “AmuxAIClean”."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请前往「系统设置 → 登录项」启用「GSYCleanMac」。"
+            "value": "请前往「系统设置 → 登录项」启用「AmuxAIClean」。"
           }
         }
       }
@@ -7528,13 +7528,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Passively watches Trash and a few hot caches when the system is idle. When 5GB+ of cumulative noise is detected over 30s, the main app is pinged via gsycleanmac:// to surface candidates. Off by default; toggle off any time."
+            "value": "Passively watches Trash and a few hot caches when the system is idle. When 5GB+ of cumulative noise is detected over 30s, the main app is pinged via amuxaiclean:// to surface candidates. Off by default; toggle off any time."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "仅在系统空闲时被动监听废纸篓与少量缓存目录。30 秒内累计噪音超过 5GB 时通过 gsycleanmac:// 唤起主 App 提示候选项。默认关闭，随时可关。"
+            "value": "仅在系统空闲时被动监听废纸篓与少量缓存目录。30 秒内累计噪音超过 5GB 时通过 amuxaiclean:// 唤起主 App 提示候选项。默认关闭，随时可关。"
           }
         }
       }
@@ -10758,13 +10758,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Open System Settings → Privacy & Security → Full Disk Access, then toggle on GSYCleanMac."
+            "value": "Open System Settings → Privacy & Security → Full Disk Access, then toggle on AmuxAIClean."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "打开「系统设置 → 隐私与安全性 → 完全磁盘访问」，开启 GSYCleanMac。"
+            "value": "打开「系统设置 → 隐私与安全性 → 完全磁盘访问」，开启 AmuxAIClean。"
           }
         }
       }
@@ -10826,13 +10826,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "To accurately clean leftover caches in private folders such as Mail / Safari / Calendar, GSY Clean Mac needs Full Disk Access."
+            "value": "To accurately clean leftover caches in private folders such as Mail / Safari / Calendar, AmuxAIClean needs Full Disk Access."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "为了准确清理 Mail / Safari / 日历等隐私目录的残留缓存，GSY 清理管家需要「完全磁盘访问」权限。"
+            "value": "为了准确清理 Mail / Safari / 日历等隐私目录的残留缓存，AmuxAIClean需要「完全磁盘访问」权限。"
           }
         }
       }
@@ -11268,13 +11268,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Quit GSY Clean Mac"
+            "value": "Quit AmuxAIClean"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "退出 GSY 清理管家"
+            "value": "退出 AmuxAIClean"
           }
         }
       }

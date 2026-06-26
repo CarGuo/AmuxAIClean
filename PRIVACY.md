@@ -33,16 +33,16 @@
 
 ## 3. 本地数据存储
 
-GSYCleanMac 完全本地运行，以下数据**只存在你本机**，从不离开你的设备：
+AmuxAIClean 完全本地运行，以下数据**只存在你本机**，从不离开你的设备：
 
 | 类型 | 路径 | 用途 | 保留时长 |
 |---|---|---|---|
-| 启发式扫描缓存 | `~/Library/Application Support/GSYCleanMac/HeuristicScanStore.json` | 复用上次扫描结果，加速二次扫描 | 直到你手动清除 / 卸载 |
-| 撤销历史 | `~/Library/Application Support/GSYCleanMac/UndoHistory.json` | 支持「最近删除」恢复 | 默认保留最近 200 条 |
-| 偏好设置 | `~/Library/Preferences/com.guoshuyu.cleanmac.plist` | 主题、语言、扫描偏好 | 直到卸载 |
-| 运行日志 | `~/Library/Logs/GSYCleanMac/*.log` | 调试排错 | 自动滚动保留 ≤ 7 天 |
+| 启发式扫描缓存 | `~/Library/Application Support/AmuxAIClean/heuristic.json` | 复用上次扫描结果，加速二次扫描 | 直到你手动清除 / 卸载 |
+| 撤销历史 | `~/Library/Application Support/AmuxAIClean/` | 支持「最近删除」恢复 | 默认保留最近 200 条 |
+| 偏好设置 | `~/Library/Preferences/com.amux.ai.Clean.plist` | 主题、语言、扫描偏好 | 直到卸载 |
+| 运行日志 | `~/Library/Logs/AmuxAIClean/*.log` | 调试排错 | 自动滚动保留 ≤ 7 天 |
 
-你可在「关于」面板或终端执行 `rm -rf ~/Library/Application\ Support/GSYCleanMac ~/Library/Logs/GSYCleanMac` 随时彻底清除。
+你可在「关于」面板或终端执行 `rm -rf ~/Library/Application\ Support/AmuxAIClean ~/Library/Logs/AmuxAIClean` 随时彻底清除。
 
 ## 4. 权限说明
 
@@ -52,7 +52,7 @@ GSYCleanMac 完全本地运行，以下数据**只存在你本机**，从不离�
 | 用户选定文件夹（NSOpenPanel） | 自定义扫描位置 | 无法添加自定义扫描目录 |
 | 网络出站（仅 api.github.com） | 检查更新 | 无法收到新版本提示，需手动到 GitHub Releases 查看 |
 
-GSYCleanMac **不请求**：通讯录、日历、相机、麦克风、位置、提醒事项、照片、辅助功能（Accessibility）、屏幕录制、自动化（AppleScript 控制其他 App）。
+AmuxAIClean **不请求**：通讯录、日历、相机、麦克风、位置、提醒事项、照片、辅助功能（Accessibility）、屏幕录制、自动化（AppleScript 控制其他 App）。
 
 ## 5. 源代码与可审计性
 
@@ -64,7 +64,7 @@ GSYCleanMac **不请求**：通讯录、日历、相机、麦克风、位置、�
 
 ## 6. 第三方依赖
 
-GSYCleanMac 只链接：
+AmuxAIClean 只链接：
 
 - Apple 系统框架（SwiftUI / Foundation / AppKit / Combine / os.log）
 - 0 个第三方 Swift Package
@@ -72,7 +72,7 @@ GSYCleanMac 只链接：
 
 ## 7. 儿童隐私
 
-GSYCleanMac 不面向 13 岁以下儿童，不区分用户年龄，不收集任何可识别个人身份的信息（PII）。
+AmuxAIClean 不面向 13 岁以下儿童，不区分用户年龄，不收集任何可识别个人身份的信息（PII）。
 
 ## 8. 变更
 
@@ -86,4 +86,4 @@ GSYCleanMac 不面向 13 岁以下儿童，不区分用户年龄，不收集任�
 
 **English Summary**
 
-GSYCleanMac collects **zero** telemetry. The only outbound network call is a one-shot GitHub Releases API request for update checking (can be disabled in settings). No analytics SDK is bundled. All scan data stays on your Mac. Source code is MIT-licensed and fully auditable.
+AmuxAIClean collects **zero** telemetry. The only outbound network call is a one-shot GitHub Releases API request for update checking (can be disabled in settings). No analytics SDK is bundled. All scan data stays on your Mac. Source code is MIT-licensed and fully auditable.

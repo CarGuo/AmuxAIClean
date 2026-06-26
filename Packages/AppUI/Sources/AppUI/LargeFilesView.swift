@@ -527,10 +527,10 @@ public struct LargeFilesView: View {
         switch format {
         case .json:
             data = Exporter.toJSON(rows)
-            suggested = "GSYCleanMac-LargeFiles.json"
+            suggested = "AmuxAIClean-LargeFiles.json"
         case .tsv:
             data = Exporter.toTSV(rows).data(using: .utf8) ?? Data()
-            suggested = "GSYCleanMac-LargeFiles.tsv"
+            suggested = "AmuxAIClean-LargeFiles.tsv"
         }
 
         let panel = NSSavePanel()

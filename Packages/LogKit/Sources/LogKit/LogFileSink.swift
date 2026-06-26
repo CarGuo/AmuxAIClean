@@ -2,7 +2,7 @@ import Foundation
 
 /// 文件日志 sink —— 按天滚动，超过保留期自动删除旧文件。
 ///
-/// 落盘位置：`~/Library/Logs/GSYCleanMac/GSYCleanMac-YYYY-MM-DD.log`
+/// 落盘位置：`~/Library/Logs/AmuxAIClean/AmuxAIClean-YYYY-MM-DD.log`
 /// （macOS 标准 user logs，Console.app 也能直接打开）。
 ///
 /// **写入策略**：
@@ -18,7 +18,7 @@ public final class LogFileSink: @unchecked Sendable {
     public let directory: URL
     public let retentionDays: Int
 
-    private let queue = DispatchQueue(label: "GSYCleanMac.LogFileSink", qos: .utility)
+    private let queue = DispatchQueue(label: "AmuxAIClean.LogFileSink", qos: .utility)
     /// 当前打开的文件句柄。同一天可复用，跨天关闭重开。
     private var handle: FileHandle?
     private var currentDayKey: String = ""
@@ -38,7 +38,7 @@ public final class LogFileSink: @unchecked Sendable {
     }
 
     public static func defaultDirectory(fileManager: FileManager = .default) throws -> URL {
-        // ~/Library/Logs/GSYCleanMac/
+        // ~/Library/Logs/AmuxAIClean/
         // 注意：macOS 沙盒下 .libraryDirectory 是容器内 Library，非沙盒下是 ~/Library。
         // 当前 App 不开 sandbox，所以 .libraryDirectory 拿到就是 ~/Library。
         let lib = try fileManager.url(
@@ -48,7 +48,7 @@ public final class LogFileSink: @unchecked Sendable {
             create: false
         )
         return lib.appendingPathComponent("Logs", isDirectory: true)
-            .appendingPathComponent("GSYCleanMac", isDirectory: true)
+            .appendingPathComponent("AmuxAIClean", isDirectory: true)
     }
 
     public var currentFileURL: URL? {
@@ -122,7 +122,7 @@ public final class LogFileSink: @unchecked Sendable {
         try? handle?.close()
         handle = nil
         // 打开新文件。
-        let url = directory.appendingPathComponent("GSYCleanMac-\(today).log", isDirectory: false)
+        let url = directory.appendingPathComponent("AmuxAIClean-\(today).log", isDirectory: false)
         if !FileManager.default.fileExists(atPath: url.path) {
             FileManager.default.createFile(atPath: url.path, contents: nil)
         }
@@ -150,7 +150,7 @@ public final class LogFileSink: @unchecked Sendable {
         ) else { return }
         for url in items {
             // 只动我们自己产生的文件，避免误删用户后续手动放进来的东西。
-            guard url.lastPathComponent.hasPrefix("GSYCleanMac-"),
+            guard url.lastPathComponent.hasPrefix("AmuxAIClean-"),
                   url.pathExtension == "log" else { continue }
             // 当前正在写的文件不删。
             if url == _currentFileURL { continue }
@@ -169,7 +169,7 @@ public final class LogFileSink: @unchecked Sendable {
             options: [.skipsHiddenFiles]
         ) else { return [] }
         return items
-            .filter { $0.lastPathComponent.hasPrefix("GSYCleanMac-") && $0.pathExtension == "log" }
+            .filter { $0.lastPathComponent.hasPrefix("AmuxAIClean-") && $0.pathExtension == "log" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 

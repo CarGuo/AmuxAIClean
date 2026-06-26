@@ -215,7 +215,7 @@ public enum GSYLog {
 private final class LoggerCache: @unchecked Sendable {
     private let lock = NSLock()
     private var loggers: [GSYLog.Subsystem: os.Logger] = [:]
-    private let bundleSubsystem = "com.guoshuyu.cleanmac"
+    private let bundleSubsystem = "com.amux.ai.Clean"
 
     func logger(for s: GSYLog.Subsystem) -> os.Logger {
         lock.lock(); defer { lock.unlock() }

@@ -35,18 +35,18 @@ final class SentinelURLRouterTests: XCTestCase {
     }
 
     func test_handle_未知host_应记ignored() {
-        let outcome = SentinelURLRouter.handle(URL(string: "gsycleanmac://wat")!)
+        let outcome = SentinelURLRouter.handle(URL(string: "amuxaiclean://wat")!)
         XCTAssertEqual(outcome, .ignored(reason: "unknown-host"))
     }
 
     func test_handle_action未知子段_应记ignored() {
-        let outcome = SentinelURLRouter.handle(URL(string: "gsycleanmac://action/scan/quick")!)
+        let outcome = SentinelURLRouter.handle(URL(string: "amuxaiclean://action/scan/quick")!)
         XCTAssertEqual(outcome, .ignored(reason: "unknown-action"))
     }
 
     func test_handle_actionScanFull_应广播通知_并返回startFullScan() {
         let exp = expectation(forNotification: .gsySentinelStartFullScan, object: nil)
-        let outcome = SentinelURLRouter.handle(URL(string: "gsycleanmac://action/scan/full")!)
+        let outcome = SentinelURLRouter.handle(URL(string: "amuxaiclean://action/scan/full")!)
         XCTAssertEqual(outcome, .startFullScan)
         wait(for: [exp], timeout: 1.0)
     }
@@ -59,7 +59,7 @@ final class SentinelURLRouterTests: XCTestCase {
             captured.set(note.userInfo)
             return true
         }
-        let outcome = SentinelURLRouter.handle(URL(string: "gsycleanmac://uninstall")!)
+        let outcome = SentinelURLRouter.handle(URL(string: "amuxaiclean://uninstall")!)
         XCTAssertEqual(outcome, .openUninstall(path: nil))
         wait(for: [exp], timeout: 1.0)
         XCTAssertNil(captured.info?[SentinelURLRouter.uninstallPathKey])
@@ -74,7 +74,7 @@ final class SentinelURLRouterTests: XCTestCase {
             return true
         }
         let encoded = tmp.path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? tmp.path
-        let url = URL(string: "gsycleanmac://uninstall?path=\(encoded)")!
+        let url = URL(string: "amuxaiclean://uninstall?path=\(encoded)")!
         let outcome = SentinelURLRouter.handle(url)
         XCTAssertEqual(outcome, .openUninstall(path: tmp.path))
         wait(for: [exp], timeout: 1.0)
@@ -87,21 +87,21 @@ final class SentinelURLRouterTests: XCTestCase {
             captured.set(note.userInfo)
             return true
         }
-        let outcome = SentinelURLRouter.handle(URL(string: "gsycleanmac://uninstall?path=Applications/Foo")!)
+        let outcome = SentinelURLRouter.handle(URL(string: "amuxaiclean://uninstall?path=Applications/Foo")!)
         XCTAssertEqual(outcome, .openUninstall(path: nil), "相对路径必须被拒")
         wait(for: [exp], timeout: 1.0)
         XCTAssertNil(captured.info?[SentinelURLRouter.uninstallPathKey])
     }
 
     func test_handle_uninstall路径含dotdot_应被拒() {
-        let outcome = SentinelURLRouter.handle(URL(string: "gsycleanmac://uninstall?path=/Applications/../etc")!)
+        let outcome = SentinelURLRouter.handle(URL(string: "amuxaiclean://uninstall?path=/Applications/../etc")!)
         XCTAssertEqual(outcome, .openUninstall(path: nil), "含 .. 必须被拒")
     }
 
     func test_handle_uninstall不存在路径_应被拒() {
         let bogus = "/tmp/__gsy_sentinel_router_should_not_exist_\(UUID().uuidString)"
         let encoded = bogus.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? bogus
-        let outcome = SentinelURLRouter.handle(URL(string: "gsycleanmac://uninstall?path=\(encoded)")!)
+        let outcome = SentinelURLRouter.handle(URL(string: "amuxaiclean://uninstall?path=\(encoded)")!)
         XCTAssertEqual(outcome, .openUninstall(path: nil), "不存在的路径必须被拒")
     }
 
@@ -130,7 +130,7 @@ final class SentinelURLRouterTests: XCTestCase {
     // MARK: - 常量契约
 
     func test_scheme常量与Info_plist一致() {
-        XCTAssertEqual(SentinelURLRouter.scheme, "gsycleanmac",
+        XCTAssertEqual(SentinelURLRouter.scheme, "amuxaiclean",
                        "URL Scheme 必须与 App/Info.plist CFBundleURLSchemes 一致")
     }
 

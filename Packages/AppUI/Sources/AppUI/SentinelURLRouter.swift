@@ -1,13 +1,13 @@
 import Foundation
 import LogKit
 
-/// v1.6 Sentinel URL Scheme 路由：解析 `gsycleanmac://` 系列链接，并广播
+/// v1.6 Sentinel URL Scheme 路由：解析 `amuxaiclean://` 系列链接，并广播
 /// 为已订阅的 NotificationCenter 事件，与 [.gsyOpenMainWindowRequested](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L9-L11)
 /// 同模式（避免新增 NavigationCoordinator 抽象，详见 [docs/SENTINEL_DESIGN.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/SENTINEL_DESIGN.md) §5.4）。
 ///
 /// **支持的链接格式**：
-/// - `gsycleanmac://uninstall?path=<percent-encoded absolute path>` —— 跳卸载页
-/// - `gsycleanmac://action/scan/full` —— 触发完整扫描
+/// - `amuxaiclean://uninstall?path=<percent-encoded absolute path>` —— 跳卸载页
+/// - `amuxaiclean://action/scan/full` —— 触发完整扫描
 ///
 /// **路径防注入**：
 /// - `path` 参数必须是绝对路径（`/` 开头）
@@ -15,16 +15,16 @@ import LogKit
 /// - 必须不包含 `..` 段（防 traversal）
 /// - 校验失败 → 仅广播 `.gsySentinelOpenUninstall` 不带 path（让 UI 走默认 fallback）
 public extension Notification.Name {
-    /// daemon 通过 `gsycleanmac://uninstall?path=...` 拉起，主 App 监听后跳卸载页。
+    /// daemon 通过 `amuxaiclean://uninstall?path=...` 拉起，主 App 监听后跳卸载页。
     /// `userInfo[SentinelURLRouter.uninstallPathKey]` = `String?`（绝对路径，已校验）。
-    static let gsySentinelOpenUninstall = Notification.Name("GSYCleanMac.sentinel.openUninstall")
-    /// daemon 通过 `gsycleanmac://action/scan/full` 拉起，主 App 监听后触发完整扫描。
-    static let gsySentinelStartFullScan = Notification.Name("GSYCleanMac.sentinel.startFullScan")
+    static let gsySentinelOpenUninstall = Notification.Name("AmuxAIClean.sentinel.openUninstall")
+    /// daemon 通过 `amuxaiclean://action/scan/full` 拉起，主 App 监听后触发完整扫描。
+    static let gsySentinelStartFullScan = Notification.Name("AmuxAIClean.sentinel.startFullScan")
 }
 
 public enum SentinelURLRouter {
 
-    public static let scheme = "gsycleanmac"
+    public static let scheme = "amuxaiclean"
     /// `Notification.userInfo` 用的 path 键。
     public static let uninstallPathKey = "path"
 
@@ -57,7 +57,7 @@ public enum SentinelURLRouter {
             GSYLog.info(.sentinel, "route uninstall path=\(validated ?? "<nil>")")
             return .openUninstall(path: validated)
         case "action":
-            // 形如 gsycleanmac://action/scan/full —— host=action / pathSegments=[scan, full]
+            // 形如 amuxaiclean://action/scan/full —— host=action / pathSegments=[scan, full]
             if pathSegments == ["scan", "full"] {
                 NotificationCenter.default.post(name: .gsySentinelStartFullScan, object: nil)
                 GSYLog.info(.sentinel, "route action/scan/full")

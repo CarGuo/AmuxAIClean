@@ -20,7 +20,7 @@
 |---|---|---|
 | macOS | 15 Sequoia 或更高 | |
 | Xcode | 16+ | 自带 Swift 6 toolchain |
-| Apple ID | 任意（免费） | Xcode → Settings → Accounts 登录后自动生成 Personal Team |
+| Apple Developer 账号 | 企业账号 / 个人账号均可 | 当前仓库默认使用企业 Team `W6H34N9728` + Apple Distribution 手动签名；fork 需要替换为自己的 Team / signing 配置 |
 | Homebrew | optional | 仅 `xcbeautify` 装饰输出 / `create-dmg` 打 DMG 时需要 |
 
 > 不再需要 `xcodegen` —— v1.5.x 起项目回归原生 Xcode 工程，[GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 直接入仓。
@@ -35,22 +35,22 @@ cd GSYCleanMac
 ./Scripts/setup_dev.sh
 ```
 
-[Scripts/setup_dev.sh](../Scripts/setup_dev.sh) 会：检查 macOS / Xcode / Homebrew，确认 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 已就绪，引导你在 Xcode 里登 Apple ID + 选 Personal Team。
+[Scripts/setup_dev.sh](../Scripts/setup_dev.sh) 会：检查 macOS / Xcode / Homebrew，确认 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 已就绪，并提示你在 Xcode 里确认 Team / signing 配置。
 
 ---
 
-## Free Apple ID Run（Debug 跑）
+## 签名配置
 
-> **fork 用户必读**：仓库里 [GSYCleanMac.xcodeproj/project.pbxproj](../GSYCleanMac.xcodeproj/project.pbxproj) 写死了 `DEVELOPMENT_TEAM = 39PK4PKRP3`（项目作者 [@CarGuo](https://github.com/CarGuo) 自己的 Personal Team ID），直接 build 会报 `No Account for Team "39PK4PKRP3"` 或 `No matching profile`。**第一次跑必须改成你自己的 Team ID**，方法二选一：
+> **fork 用户必读**：仓库里 [GSYCleanMac.xcodeproj/project.pbxproj](../GSYCleanMac.xcodeproj/project.pbxproj) 当前按企业证书配置为 `DEVELOPMENT_TEAM = W6H34N9728` + `CODE_SIGN_STYLE = Manual` + `CODE_SIGN_IDENTITY = Apple Distribution`。没有对应企业证书时，直接 build 会报 `No matching profile` 或 codesign 身份缺失。**第一次跑必须改成你自己的 Team / signing 配置**，方法二选一：
 
 **方式 A（图形化，推荐新手）**：
 
 1. 双击打开 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj)
-2. Xcode → Settings → Accounts → 用 Apple ID 登录（不用付费 Developer Program）
+2. Xcode → Settings → Accounts → 用你的 Apple Developer 账号登录
 3. 选中 `GSYCleanMac` target → `Signing & Capabilities`
-   - 勾 `Automatically manage signing`
-   - `Team` 下拉选你自己的 `<你的名字> (Personal Team)`
-   - `Bundle Identifier` 必要时改成你自己的（如 `com.<你的id>.cleanmac.GSYCleanMac`）
+   - 企业分发：保持 Manual signing，选择自己的企业 Team / Apple Distribution 证书 / provisioning profile
+   - 本地调试：也可以改回 Automatically manage signing，`Team` 下拉选你自己的 Team
+   - `Bundle Identifier` 必要时改成你自己的（如 `com.<你的id>.cleanmac.AmuxAIClean`）
 4. ⌘S 保存（会写进 [project.pbxproj](../GSYCleanMac.xcodeproj/project.pbxproj) 的 `DEVELOPMENT_TEAM` 字段）
 5. 点 `Run` 跑起来
 
@@ -58,11 +58,11 @@ cd GSYCleanMac
 
 ```bash
 # 在 https://developer.apple.com/account 右上角找到自己的 Team ID（10 位）
-sed -i '' 's/39PK4PKRP3/<你的Team ID>/g' GSYCleanMac.xcodeproj/project.pbxproj
+sed -i '' 's/W6H34N9728/<你的Team ID>/g' GSYCleanMac.xcodeproj/project.pbxproj
 xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build
 ```
 
-**为什么要 Personal Team 而不是 ad-hoc**：免费 Personal Team 颁发的 Apple Development 证书 SHA-1 稳定 → 跨 build cdhash 稳定 → TCC（含完全磁盘访问）一次授权终身有效；而 ad-hoc (`-`) 每次 cdhash 都变，TCC 每次都要重新授权（v1.5.x 之前的痛点）。
+**为什么要稳定 Team 签名而不是 ad-hoc**：Apple Development / Apple Distribution 证书 SHA-1 稳定 → 跨 build cdhash 稳定 → TCC（含完全磁盘访问）授权不随每次构建反复失效；而 ad-hoc (`-`) 每次 cdhash 都变，TCC 每次都要重新授权（v1.5.x 之前的痛点）。
 
 ---
 
@@ -72,7 +72,7 @@ xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Deb
 xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build
 ```
 
-签名完全由 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 里的 `CODE_SIGN_STYLE = Automatic` + `DEVELOPMENT_TEAM = <你的 Team>` 决定，命令行不用再传 `CODE_SIGN_IDENTITY` / `CODE_SIGNING_REQUIRED` 等 override。产物路径用 `xcodebuild -showBuildSettings` 动态查（脚本已封装，见 [Scripts/run_debug.sh](../Scripts/run_debug.sh)）。
+签名完全由 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 里的 `CODE_SIGN_STYLE = Manual` + `CODE_SIGN_IDENTITY = Apple Distribution` + `DEVELOPMENT_TEAM = W6H34N9728` 决定，命令行不用再传 `CODE_SIGN_IDENTITY` / `CODE_SIGNING_REQUIRED` 等 override。产物路径用 `xcodebuild -showBuildSettings` 动态查（脚本已封装，见 [Scripts/run_debug.sh](../Scripts/run_debug.sh)）。
 
 ---
 
@@ -80,10 +80,10 @@ xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Deb
 
 ```bash
 VERSION=1.5.6 ./Scripts/build_release.sh
-./Scripts/make_dmg.sh dist/GSYCleanMac.app dist/GSYCleanMac-1.5.6.dmg
+./Scripts/make_dmg.sh dist/AmuxAIClean.app dist/AmuxAIClean-1.5.6.dmg
 ```
 
-[Scripts/build_release.sh](../Scripts/build_release.sh) 走 `xcodebuild -configuration Release` —— 签名由 [project.pbxproj](../GSYCleanMac.xcodeproj/project.pbxproj) 里的 `DEVELOPMENT_TEAM` 决定。如有 Developer ID（99/年），改成 `CODE_SIGN_STYLE = Manual` + `CODE_SIGN_IDENTITY = "Developer ID Application: ..."` 即可（这条路径暂未启用，留给将来）。
+[Scripts/build_release.sh](../Scripts/build_release.sh) 走 `xcodebuild -configuration Release` —— 签名由 [project.pbxproj](../GSYCleanMac.xcodeproj/project.pbxproj) 里的 Manual + Apple Distribution 企业证书配置决定。
 
 ---
 
@@ -188,7 +188,7 @@ GSYCleanMac/
 
 - 触发：**仅 `workflow_dispatch` 手动触发**（push tag 自动触发已暂时关掉省额度）
 - runner：macos-15
-- 步骤：inline `xcodebuild` + ad-hoc override（CI 没 Personal Team keychain）→ [Scripts/make_dmg.sh](../Scripts/make_dmg.sh) → `shasum -a 256` → upload-artifact + softprops/action-gh-release@v2 自动建 Release
+- 步骤：inline `xcodebuild`（CI 需要注入对应企业证书和 provisioning profile）→ [Scripts/make_dmg.sh](../Scripts/make_dmg.sh) → `shasum -a 256` → upload-artifact + softprops/action-gh-release@v2 自动建 Release
 
 ### 发版步骤
 

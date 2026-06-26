@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# GSYCleanMac 真实场景回归测试一键脚本
+# AmuxAIClean 真实场景回归测试一键脚本
 #
 # 设计目标：
 #   - 跑真实 App 进程，不是 swift test mock
@@ -31,12 +31,13 @@ PROJECT="${ROOT}/${SCHEME}.xcodeproj"
 # Step 5.6 番外：用 xcodebuild -showBuildSettings 动态查 BUILT_PRODUCTS_DIR，
 # 取代旧 ~/Library/Developer/Xcode/DerivedData/GSYCleanMac-<hash>/... 硬编码
 # （hash 由项目绝对路径派生，跨机器/移动目录后会变，硬编码不可移植）
-APP_PATH="$(
-    xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Debug \
-        -showBuildSettings 2>/dev/null \
-        | awk -F' = ' '/^[[:space:]]*BUILT_PRODUCTS_DIR =/{print $2; exit}'
-)/${SCHEME}.app"
-APP_BIN="${APP_PATH}/Contents/MacOS/${SCHEME}"
+BUILD_SETTINGS="$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Debug -showBuildSettings 2>/dev/null)"
+BUILT_PRODUCTS_DIR="$(printf '%s\n' "$BUILD_SETTINGS" | awk -F' = ' '/^[[:space:]]*BUILT_PRODUCTS_DIR =/{print $2; exit}')"
+FULL_PRODUCT_NAME="$(printf '%s\n' "$BUILD_SETTINGS" | awk -F' = ' '/^[[:space:]]*FULL_PRODUCT_NAME =/{print $2; exit}')"
+EXECUTABLE_NAME="$(printf '%s\n' "$BUILD_SETTINGS" | awk -F' = ' '/^[[:space:]]*EXECUTABLE_NAME =/{print $2; exit}')"
+APP_NAME="${FULL_PRODUCT_NAME%.app}"
+APP_PATH="${BUILT_PRODUCTS_DIR}/${FULL_PRODUCT_NAME}"
+APP_BIN="${APP_PATH}/Contents/MacOS/${EXECUTABLE_NAME}"
 LOG_DIR="${ROOT}/Tests/Regression/logs"
 RESULT_JSON="${ROOT}/Tests/Regression/last-run.json"
 
@@ -132,18 +133,18 @@ fi
 # 1) 杀掉所有残留进程
 # v1.6 Step 6.7：先用 pgrep 探测残留并提示，避免用户疑惑"为啥之前 log 出现 [REGR_BEGIN] 重复 N 次"。
 # 残留进程的常见来源：上一次脚本被 Ctrl-C / kill 时子进程没被回收（v1.6 之前 trap 没 cover INT/TERM）。
-step "杀掉所有残留 ${SCHEME} 进程"
+step "杀掉所有残留 ${APP_NAME} 进程"
 stale_pids="$(pgrep -f "${APP_BIN}" 2>/dev/null || true)"
 if [ -n "$stale_pids" ]; then
     stale_count="$(printf '%s\n' "$stale_pids" | wc -l | tr -d ' ')"
-    warn "检测到 ${stale_count} 个残留 ${SCHEME} 进程（可能是上次 Ctrl-C 留下的僵尸），清理中…"
+    warn "检测到 ${stale_count} 个残留 ${APP_NAME} 进程（可能是上次 Ctrl-C 留下的僵尸），清理中…"
 fi
 pkill -9 -f "${APP_BIN}" 2>/dev/null || true
 sleep 1
 
 # 2) Build（除非 --no-build）
 if [ "$DO_BUILD" -eq 1 ]; then
-    step "xcodebuild Debug 增量构建（签名走 .xcodeproj 里 Automatic + Personal Team）"
+    step "xcodebuild Debug 增量构建（签名走 .xcodeproj 里 Manual + Apple Distribution 企业证书）"
     if ! xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Debug \
             -destination 'platform=macOS' \
             -quiet build 2>&1 | tail -20; then
@@ -165,10 +166,10 @@ PASS_LIST=()
 FAIL_LIST=()
 TIMEOUT_LIST=()
 # bash 3 没有关联数组：用一个 tmp 目录存 elapsed/reason，键即文件名
-META_DIR="$(mktemp -d /tmp/gsyclean-regression.XXXXXX)"
+META_DIR="$(mktemp -d /tmp/amuxaiclean-regression.XXXXXX)"
 
 # v1.6 Step 6.7：异常退出兜底——脚本被 Ctrl-C / SIGTERM / SIGHUP 时，
-# 把当前 case 正在跑的 GSYCleanMac 子进程一并 kill，避免变僵尸污染下次运行。
+# 把当前 case 正在跑的 AmuxAIClean 子进程一并 kill，避免变僵尸污染下次运行。
 # CURRENT_PID 由 run_case 在启动后写入、wait 后清零；非空则 cleanup 时强杀。
 # 同时兜底再 pkill 一次，防止 RegressionRunner 内部 fork 的辅助进程 / 僵尸残留。
 CURRENT_PID=""

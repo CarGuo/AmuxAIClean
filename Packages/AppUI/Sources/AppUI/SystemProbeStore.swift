@@ -98,7 +98,7 @@ private struct SystemProbeRefreshSnapshot: Sendable {
 }
 
 private final class SystemProbeRefreshBridge: @unchecked Sendable {
-    static let queue = DispatchQueue(label: "com.guoshuyu.cleanmac.system-probe", qos: .utility)
+    static let queue = DispatchQueue(label: "com.amux.ai.Clean.system-probe", qos: .utility)
 
     weak var store: SystemProbeStore?
     private let tokenBag = NotificationTokenBag()

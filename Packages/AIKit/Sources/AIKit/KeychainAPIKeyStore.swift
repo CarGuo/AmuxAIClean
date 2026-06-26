@@ -7,7 +7,7 @@ import LogKit
 /// 设计要点：
 /// 1. **绝不入 UserDefaults / plist**——key 是敏感凭证；[AISettings](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/AISettings.swift)
 ///    刻意不持有 apiKey 字段，UI 单独从这里读写。
-/// 2. 用 `kSecClassGenericPassword`，service 名固定 `com.guoshuyu.cleanmac.ai.apiKey`；
+/// 2. 用 `kSecClassGenericPassword`，service 名固定 `com.amux.ai.Clean.ai.apiKey`；
 ///    account 字段固定 `default`——目前仅支持单 provider 单 key；未来要多 provider
 ///    把 account 换成 provider 名即可，无破坏性。
 /// 3. 所有 API 都 throws，让调用方决定"找不到 key"是错误还是空态——
@@ -20,7 +20,7 @@ public enum KeychainAPIKeyStoreError: Error, Equatable {
 
 public struct KeychainAPIKeyStore: Sendable {
 
-    public static let service = "com.guoshuyu.cleanmac.ai.apiKey"
+    public static let service = "com.amux.ai.Clean.ai.apiKey"
     public static let defaultAccount = "default"
 
     private let service: String

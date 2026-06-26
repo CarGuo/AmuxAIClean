@@ -33,21 +33,21 @@ GSYCleanMac 当前是纯前台 App：用户主动 `⌘O` 才会扫描。两个�
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  GSYCleanMac.app                                                      │
+│  AmuxAIClean.app                                                      │
 │                                                                       │
-│  Contents/MacOS/GSYCleanMac          ← 主 App 二进制 (SwiftUI)        │
-│  Contents/MacOS/gsycleanmac-sentinel ← Sentinel helper 二进制          │
+│  Contents/MacOS/AmuxAIClean          ← 主 App 二进制 (SwiftUI)        │
+│  Contents/MacOS/amuxaiclean-sentinel ← Sentinel helper 二进制          │
 │  Contents/Library/LaunchDaemons/                                      │
 │    com.guoshuyu.cleanmac.sentinel.plist  ← SMAppService 注册的 plist  │
 │  Contents/Info.plist                                                  │
-│    + CFBundleURLTypes: gsycleanmac://                                 │
+│    + CFBundleURLTypes: amuxaiclean://                                 │
 └──────────────────────────────────────────────────────────────────────┘
                             ↑                              ↓
                             │ launchctl bootstrap          │ /usr/bin/open -g
                             │ (SMAppService.daemon)        │ (avoid linking AppKit)
                             │                              │
 ┌──────────────────────────────────────────────────────────────────────┐
-│  gsycleanmac-sentinel daemon (常驻后台)                               │
+│  amuxaiclean-sentinel daemon (常驻后台)                               │
 │                                                                       │
 │  - FSEventStream 监听 ~/.Trash       (场景 1: 卸载发现)               │
 │  - FSEventStream 监听热点目录        (场景 2: 推荐清理)               │
@@ -56,10 +56,10 @@ GSYCleanMac 当前是纯前台 App：用户主动 `⌘O` 才会扫描。两个�
 │      ~/Library/Developer/Xcode/DerivedData                            │
 │      [glob 命中的 node_modules]                                       │
 │  - rolling top-100 ringbuffer 写到                                    │
-│      ~/Library/Application Support/GSYCleanMac/sentinel-pending.json  │
+│      ~/Library/Application Support/AmuxAIClean/sentinel-pending.json  │
 │  - 检测到事件后 /usr/bin/open -g 唤起主 App URL                        │
-│      gsycleanmac://uninstall?path=...    (场景 1)                     │
-│      gsycleanmac://action/scan/full       (场景 2)                    │
+│      amuxaiclean://uninstall?path=...    (场景 1)                     │
+│      amuxaiclean://action/scan/full       (场景 2)                    │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -72,10 +72,10 @@ GSYCleanMac 当前是纯前台 App：用户主动 `⌘O` 才会扫描。两个�
 | **运行仓运** | SMAppService.daemon (macOS 13+) | LaunchAgent plist 是上一代 API，SMAppService 是 Apple 官方推荐的现代替代，卸载 App 时自动清理 helper |
 | **场景** | 卸载 + 推荐双场景 (v1) | 不分两版本是因为 daemon 进程已经起来了，加一组 FSEventStream stream 几乎零成本 |
 | **Helper target 形式** | 独立 PBXNativeTarget Command Line Tool + 主 App 加 Embed Helper Tools build phase（Apple 官方 [Embedding a command-line tool in a sandboxed app](https://developer.apple.com/documentation/Xcode/embedding-a-helper-tool-in-a-sandboxed-app) 路径） | SwiftPM executable + Copy Phase 路径在 Apple Developer Forum 2026-02 thread 814686 archive 阶段会撞 "Multiple commands produce .o" 冲突；scheme pre-action 子项目独立 xcodebuild 路径与现有项目风格反 |
-| **URL Scheme** | 路由型 `gsycleanmac://uninstall + gsycleanmac://action/scan/full` | scheme 前缀 `gsycleanmac` 与 bundle id `com.guoshuyu.cleanmac` 后缀对齐；`gsyclean` 是原 spec 草案弃用 |
+| **URL Scheme** | 路由型 `amuxaiclean://uninstall + amuxaiclean://action/scan/full` | scheme 前缀 `amuxaiclean` 与品牌名对齐；`gsyclean` / `gsycleanmac` 是旧 spec 草案弃用 |
 | **发现策略** | 轻手版 FSEvents + rolling top-100 | 重量版定时全屏扫描太贵（30s CPU + IO）；混合版 v1 不上 |
 | **默认开关** | 默认 OFF | 避免存量用户升级后 "多了个守护进程" 反感；新用户首启不弹 onboarding 弹窗，把 Sentinel 藏在「设置 → 高级」里 |
-| **本地存储** | `~/Library/Application Support/GSYCleanMac/sentinel-pending.json` | ringbuffer top-100；主 App 启动时读取此文件展示「最近被 Sentinel 发现的候选」（场景 2 落地形式） |
+| **本地存储** | `~/Library/Application Support/AmuxAIClean/sentinel-pending.json` | ringbuffer top-100；主 App 启动时读取此文件展示「最近被 Sentinel 发现的候选」（场景 2 落地形式） |
 
 ---
 
@@ -86,8 +86,8 @@ GSYCleanMac 当前是纯前台 App：用户主动 `⌘O` 才会扫描。两个�
 落地路径（按 Apple 官方文档 [Embedding a command-line tool in a sandboxed app](https://developer.apple.com/documentation/Xcode/embedding-a-helper-tool-in-a-sandboxed-app) 实施）：
 
 - **独立 PBXNativeTarget**，类型 = `com.apple.product-type.tool`（Command Line Tool / macOS）
-- 二进制名：`gsycleanmac-sentinel`（`PRODUCT_NAME`，小写连字符与 LaunchDaemon plist label 对齐）
-- Bundle ID: `com.guoshuyu.cleanmac.sentinel`（`PRODUCT_BUNDLE_IDENTIFIER`，与 `OTHER_CODE_SIGN_FLAGS = $(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)` 联动确保 codesign identifier 一致）
+- 二进制名：`amuxaiclean-sentinel`（`PRODUCT_NAME`，小写连字符与 LaunchDaemon plist label 对齐）
+- Bundle ID: `com.amux.ai.Clean.sentinel`（`PRODUCT_BUNDLE_IDENTIFIER`，与 `OTHER_CODE_SIGN_FLAGS = $(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)` 联动确保 codesign identifier 一致）
 - 入口：[Tools/Sentinel/Sources/Sentinel/main.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/Sentinel/Sources/Sentinel/main.swift) —— top-level code（`main.swift` 文件名 Swift 默认走 top-level，不能再用 `@main`）
 - 仅依赖 Foundation + CoreServices（FSEvents 来自 CoreServices）
 - Entitlements：[Tools/Sentinel/Sentinel.entitlements](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/Sentinel/Sentinel.entitlements) —— 极简空 plist + Hardened Runtime ON。**不上 sandbox**（`com.apple.security.app-sandbox = false`）以跨 sandbox 边界监听 `~/.Trash`
@@ -96,13 +96,15 @@ GSYCleanMac 当前是纯前台 App：用户主动 `⌘O` 才会扫描。两个�
   - `CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO`（避免与 `com.apple.security.inherit` 冲突）
   - `OTHER_CODE_SIGN_FLAGS = $(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)`
   - `ENABLE_HARDENED_RUNTIME = YES`
-  - `DEVELOPMENT_TEAM = 39PK4PKRP3` / `CODE_SIGN_STYLE = Automatic`
+  - `DEVELOPMENT_TEAM = W6H34N9728` / `CODE_SIGN_STYLE = Manual` / `CODE_SIGN_IDENTITY = Apple Distribution`
 - 主 App target 接入：
   - 加 `PBXTargetDependency` → `GSYCleanMacSentinel`，确保 helper build 在前
   - 加 `PBXCopyFilesBuildPhase` 名为 `Embed Helper Tools`，`dstSubfolderSpec = 6`（Executables → `Contents/MacOS/`），引用 helper product 的 PBXBuildFile（`ATTRIBUTES = (CodeSignOnCopy, )` 在 copy 阶段重签）
-- 二进制路径（落地）：`GSYCleanMac.app/Contents/MacOS/gsycleanmac-sentinel`
+- 二进制路径（落地）：`AmuxAIClean.app/Contents/MacOS/amuxaiclean-sentinel`
 - 实测体积：~248 KB（无 SwiftUI / 无扫描数据库 / 无 AppUI 依赖，arm64 单架构 Debug build）
 - LaunchDaemon plist embed `Contents/Library/LaunchDaemons/com.guoshuyu.cleanmac.sentinel.plist`：留待 step6_main_app 阶段，在主 App target 加第二个 `Copy Files Build Phase`（`dstSubfolderSpec = 1` Wrapper + `dstPath = Contents/Library/LaunchDaemons`）
+
+> **结构兼容说明**：plist 文件名仍保留 `com.guoshuyu.cleanmac.sentinel.plist`，避免移动工程文件和 Copy Files 引用；plist 内部 `Label`、helper 二进制名、codesign identifier 与主 App bundle id 已切到 `com.amux.ai.Clean` 命名空间。
 
 > **历史失真说明**：原 spec v1 草案曾设想"主 App target 里插 Build Phase 生成 helper"或"SwiftPM executableTarget + .pbxproj copy phase embed binary"，落地时发现：（1）Build Phase 生成 helper 路径需要 Run Script 调用 swiftc 自治编译，与"原生 Xcode 路径"原则相违；（2）SwiftPM executable embed 路径在 [Apple Developer Forum thread 814686](https://developer.apple.com/forums/thread/814686)（2026-02）archive 阶段会撞 "Multiple commands produce .o" 冲突。最终回归 Apple 官方 PBXNativeTarget Command Line Tool 路径。
 
@@ -132,9 +134,9 @@ func registerSentinelIfEnabled() {
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.guoshuyu.cleanmac.sentinel</string>
+    <string>com.amux.ai.Clean.sentinel</string>
     <key>BundleProgram</key>
-    <string>Contents/MacOS/gsycleanmac-sentinel</string>
+    <string>Contents/MacOS/amuxaiclean-sentinel</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -190,12 +192,12 @@ CFRunLoopRun()
 .onOpenURL { url in
     switch url.host {
     case "uninstall":
-        // 场景 1: gsycleanmac://uninstall?path=/Applications/Foo.app
+        // 场景 1: amuxaiclean://uninstall?path=/Applications/Foo.app
         if let path = url.queryParameter("path") {
             navigationCoordinator.openUninstall(prefilling: path)
         }
     case "action":
-        // 场景 2: gsycleanmac://action/scan/full
+        // 场景 2: amuxaiclean://action/scan/full
         switch url.path {
         case "/scan/full":
             navigationCoordinator.startFullScan()
@@ -215,10 +217,10 @@ CFRunLoopRun()
 <array>
     <dict>
         <key>CFBundleURLName</key>
-        <string>com.guoshuyu.cleanmac.scheme</string>
+        <string>com.amux.ai.Clean.scheme</string>
         <key>CFBundleURLSchemes</key>
         <array>
-            <string>gsycleanmac</string>
+            <string>amuxaiclean</string>
         </array>
     </dict>
 </array>
@@ -243,11 +245,11 @@ CFRunLoopRun()
 ### 6.1 单元测试（新增）
 
 - [Packages/AppUI/Tests/AppUITests/SentinelURLSchemeTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/SentinelURLSchemeTests.swift)
-  - `test_uninstall合法url解析为UninstallIntent`：`gsycleanmac://uninstall?path=/Applications/Foo.app` → `UninstallIntent(path: "/Applications/Foo.app")`
-  - `test_action合法url解析为ScanIntent`：`gsycleanmac://action/scan/full` → `ScanIntent.fullScan`
+  - `test_uninstall合法url解析为UninstallIntent`：`amuxaiclean://uninstall?path=/Applications/Foo.app` → `UninstallIntent(path: "/Applications/Foo.app")`
+  - `test_action合法url解析为ScanIntent`：`amuxaiclean://action/scan/full` → `ScanIntent.fullScan`
   - `test_非法scheme返回nil`：`gsyclean://uninstall?path=...` （前缀不对）→ nil
-  - `test_非法host返回nil`：`gsycleanmac://hack?cmd=rm` → nil
-  - `test_注入payload被过滤`：`gsycleanmac://uninstall?path=../../etc/passwd` → 校验后 nil
+  - `test_非法host返回nil`：`amuxaiclean://hack?cmd=rm` → nil
+  - `test_注入payload被过滤`：`amuxaiclean://uninstall?path=../../etc/passwd` → 校验后 nil
 
 - [Packages/AppUI/Tests/AppUITests/SentinelTrashDetectionTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/SentinelTrashDetectionTests.swift)
   - `test_isInTrash用URLRelationship判定`：FixtureFS 在 `~/.Trash/Foo.app` 模拟，断言 isInTrash = true
@@ -259,7 +261,7 @@ CFRunLoopRun()
 ### 6.2 Regression case（新增）
 
 [Tests/Regression/cases/sentinel-register-unregister.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Tests/Regression/cases/sentinel-register-unregister.swift)：
-- 调 `SMAppService.daemon.register()` → 等 100ms → `launchctl list | grep cleanmac.sentinel` 应非空
+- 调 `SMAppService.daemon.register()` → 等 100ms → `launchctl list | grep com.amux.ai.Clean.sentinel` 应非空
 - 调 `unregister()` → 等 100ms → grep 应空
 - 超时 10s
 
@@ -267,8 +269,8 @@ CFRunLoopRun()
 
 1. **卸载场景**：复制 `/Applications/Calculator.app` → `/tmp/Foo.app` → 拖到废纸篓 → 验证主 App 自动唤醒并跳到 UninstallScreen 预填 `/tmp/Foo.app`
 2. **推荐场景**：往 `~/Downloads` 拖一个 5 GB 的 dmg → 等 30s（debounce） → 验证菜单栏托盘有红点（数字 1）
-3. **资源占用**：`top -pid $(pgrep GSYCleanMacSentinel)` → 验证 RSS < 5 MB / CPU 静默期 < 1%
-4. **稳定性**：跑 24h → 检查 `log show --predicate 'subsystem == "com.guoshuyu.cleanmac.sentinel"'` → 不应有 crash 或 EXC_BAD_ACCESS
+3. **资源占用**：`top -pid $(pgrep amuxaiclean-sentinel)` → 验证 RSS < 5 MB / CPU 静默期 < 1%
+4. **稳定性**：跑 24h → 检查 `log show --predicate 'subsystem == "com.amux.ai.Clean.sentinel"'` → 不应有 crash 或 EXC_BAD_ACCESS
 
 ---
 

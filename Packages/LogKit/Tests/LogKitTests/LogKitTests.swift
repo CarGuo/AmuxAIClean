@@ -31,7 +31,7 @@ final class LogFileSinkTests: XCTestCase {
         let sink = try LogFileSink(directory: dir)
         let url = sink.currentFileURL
         XCTAssertNotNil(url)
-        XCTAssertTrue(url?.lastPathComponent.hasPrefix("GSYCleanMac-") ?? false)
+        XCTAssertTrue(url?.lastPathComponent.hasPrefix("AmuxAIClean-") ?? false)
         XCTAssertEqual(url?.pathExtension, "log")
         sink.close()
     }
@@ -40,7 +40,7 @@ final class LogFileSinkTests: XCTestCase {
         let dir = try makeTempDir("purge")
         defer { try? FileManager.default.removeItem(at: dir) }
         // 制造一个 30 天前的旧 log 文件。
-        let oldURL = dir.appendingPathComponent("GSYCleanMac-2020-01-01.log")
+        let oldURL = dir.appendingPathComponent("AmuxAIClean-2020-01-01.log")
         FileManager.default.createFile(atPath: oldURL.path, contents: Data("ancient\n".utf8))
         let oldDate = Date().addingTimeInterval(-30 * 86_400)
         try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: oldURL.path)
@@ -54,7 +54,7 @@ final class LogFileSinkTests: XCTestCase {
     func test_purge_保留期内的旧文件保留() throws {
         let dir = try makeTempDir("retain")
         defer { try? FileManager.default.removeItem(at: dir) }
-        let recentURL = dir.appendingPathComponent("GSYCleanMac-2099-01-01.log")
+        let recentURL = dir.appendingPathComponent("AmuxAIClean-2099-01-01.log")
         FileManager.default.createFile(atPath: recentURL.path, contents: Data("recent\n".utf8))
         // mtime = 1 天前，应被保留。
         let recentMtime = Date().addingTimeInterval(-86_400)
@@ -73,7 +73,7 @@ final class LogFileSinkTests: XCTestCase {
                                               ofItemAtPath: alien.path)
         _ = try LogFileSink(directory: dir, retentionDays: 7)
         XCTAssertTrue(FileManager.default.fileExists(atPath: alien.path),
-                      "非 GSYCleanMac- 前缀的文件 sink 不应触碰")
+                      "非 AmuxAIClean- 前缀的文件 sink 不应触碰")
     }
 }
 

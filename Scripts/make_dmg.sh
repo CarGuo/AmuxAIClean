@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# make_dmg.sh —— GSYCleanMac alpha DMG 打包脚本（带美化）
+# make_dmg.sh —— AmuxAIClean alpha DMG 打包脚本（带美化）
 #
 # 用法：
 #   ./scripts/make_dmg.sh <path-to-.app> [output.dmg]
 # 例：
-#   ./scripts/make_dmg.sh build/Build/Products/Debug/GSYCleanMac.app dist/GSYCleanMac-0.7.0-alpha.dmg
+#   ./scripts/make_dmg.sh build/Build/Products/Debug/AmuxAIClean.app dist/AmuxAIClean-0.7.0-alpha.dmg
 #
 # 行为：
 #   1. 优先用系统自带 hdiutil（无外部依赖）+ AppleScript 美化挂载窗口
@@ -25,11 +25,11 @@ if [ $# -lt 1 ]; then
 用法: $0 <path-to-.app> [output.dmg]
 
 例:
-  $0 build/Build/Products/Debug/GSYCleanMac.app
-  $0 build/Build/Products/Debug/GSYCleanMac.app dist/GSYCleanMac-0.7.0-alpha.dmg
+  $0 build/Build/Products/Debug/AmuxAIClean.app
+  $0 build/Build/Products/Debug/AmuxAIClean.app dist/AmuxAIClean-0.7.0-alpha.dmg
 
 环境变量:
-  VOLUME_NAME      DMG 卷标，默认 "GSYCleanMac"
+  VOLUME_NAME      DMG 卷标，默认 "AmuxAIClean"
   USE_CREATE_DMG   设为 1 强制走 create-dmg fallback（跳过 hdiutil 主路径）
   DMG_BG_IMAGE     背景图路径（可选）。未显式提供时，若仓库存在
                    docs/assets/dmg-background.png 则自动启用为默认背景。
@@ -41,8 +41,8 @@ EOF
 fi
 
 APP_PATH="$1"
-DMG_PATH="${2:-dist/GSYCleanMac-alpha.dmg}"
-VOLUME_NAME="${VOLUME_NAME:-GSYCleanMac}"
+DMG_PATH="${2:-dist/AmuxAIClean-alpha.dmg}"
+VOLUME_NAME="${VOLUME_NAME:-AmuxAIClean}"
 USE_CREATE_DMG="${USE_CREATE_DMG:-0}"
 DMG_BG_IMAGE="${DMG_BG_IMAGE:-}"
 DMG_VOLUME_ICON="${DMG_VOLUME_ICON:-}"
@@ -82,8 +82,8 @@ if [ -f "$DMG_PATH" ]; then
 fi
 
 # ----- 准备暂存目录 -----
-STAGE_DIR="$(mktemp -d -t gsycleanmac_dmg_stage)"
-WORK_DIR="$(mktemp -d -t gsycleanmac_dmg_work)"
+STAGE_DIR="$(mktemp -d -t amuxaiclean_dmg_stage)"
+WORK_DIR="$(mktemp -d -t amuxaiclean_dmg_work)"
 cleanup() {
   # 兜底卸载（防止脚本中途失败留下挂载点）
   if [ -n "${MOUNT_DEV:-}" ] && [ -e "$MOUNT_DEV" ]; then

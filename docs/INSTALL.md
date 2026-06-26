@@ -70,19 +70,19 @@ GSYCleanMac 不使用 Sandbox，但 macOS TCC 仍会限制非系统 app 读取�
 授予完全磁盘访问后扫描数据才完整：
 
 1. 系统设置 -> 隐私与安全 -> 完全磁盘访问权限
-2. 点 + 按钮，定位 `/Applications/GSYCleanMac.app`，添加并打开开关
-3. 重启 GSYCleanMac
+2. 点 + 按钮，定位 `/Applications/AmuxAIClean.app`，添加并打开开关
+3. 重启 AmuxAIClean
 
 应用内首次扫描时若检测到 errno=1（Operation not permitted）超过阈值，会弹出引导按钮直接跳到上述系统设置页（依赖 [TCCProbe](../Packages/AppUI/Sources/AppUI/TCCProbe.swift)）。
 
 ---
 
-## 6. 卸载 GSYCleanMac 自身
+## 6. 卸载 AmuxAIClean 自身
 
-1. 把 `/Applications/GSYCleanMac.app` 拖进废纸篓
-2. 删除 `~/Library/Application Support/GSYCleanMac/`（包含 heuristic.json 启发式数据）
-3. 删除 `~/Library/Preferences/com.guoshuyu.cleanmac.plist`
-4. （可选）从系统设置 -> 隐私与安全 -> 完全磁盘访问 中移除 GSYCleanMac 条目
+1. 把 `/Applications/AmuxAIClean.app` 拖进废纸篓
+2. 删除 `~/Library/Application Support/AmuxAIClean/`（包含 heuristic.json 启发式数据）
+3. 删除 `~/Library/Preferences/com.amux.ai.Clean.plist`
+4. （可选）从系统设置 -> 隐私与安全 -> 完全磁盘访问 中移除 AmuxAIClean 条目
 
 ---
 

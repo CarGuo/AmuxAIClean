@@ -119,7 +119,7 @@ cd GSYCleanMac
 ./Scripts/setup_dev.sh
 ```
 
-> **fork 用户必读**：[GSYCleanMac.xcodeproj/project.pbxproj](GSYCleanMac.xcodeproj/project.pbxproj) 里写死了项目作者的 `DEVELOPMENT_TEAM = 39PK4PKRP3`，第一次 build 必须改成你自己的 Team ID（双击 `GSYCleanMac.xcodeproj` → `Signing & Capabilities` → 选 你的 Personal Team；或 `sed` 替换）。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) "Free Apple ID Run" 段。
+> **fork 用户必读**：[GSYCleanMac.xcodeproj/project.pbxproj](GSYCleanMac.xcodeproj/project.pbxproj) 当前按企业证书配置为 `DEVELOPMENT_TEAM = W6H34N9728` + `CODE_SIGN_STYLE = Manual` + `CODE_SIGN_IDENTITY = Apple Distribution`。第一次 build 必须改成你自己的 Team / signing 配置。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) "签名配置" 段。
 
 ```bash
 xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build

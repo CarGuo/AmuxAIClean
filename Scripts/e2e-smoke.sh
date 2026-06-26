@@ -4,11 +4,11 @@
 
 set -u
 
-APP_PATH="${1:-/tmp/gsy-e2e-dd/Build/Products/Release/GSYCleanMac.app}"
+APP_PATH="${1:-/tmp/gsy-e2e-dd/Build/Products/Release/AmuxAIClean.app}"
 LOG_DIR="${2:-/Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/logs}"
-APP_BIN="$APP_PATH/Contents/MacOS/GSYCleanMac"
-BUNDLE_ID="com.guoshuyu.cleanmac.GSYCleanMac"
-PROC_NAME="GSYCleanMac"
+APP_BIN="$APP_PATH/Contents/MacOS/AmuxAIClean"
+BUNDLE_ID="com.amux.ai.Clean"
+PROC_NAME="AmuxAIClean"
 
 OUT="$LOG_DIR/e2e-smoke.log"
 AX="$LOG_DIR/e2e-ax-dump.log"
@@ -20,7 +20,7 @@ mkdir -p "$LOG_DIR"
 log()  { echo "[E2E $(date +%H:%M:%S)] $*" | tee -a "$OUT" ; }
 
 # 清干净任何残留实例
-log "STEP 0: pkill 残留 GSYCleanMac 进程"
+log "STEP 0: pkill 残留 AmuxAIClean 进程"
 pkill -f "$APP_BIN" 2>/dev/null || true
 sleep 1
 
@@ -59,7 +59,7 @@ fi
 log "STEP 3: dump AX tree → e2e-ax-dump.log"
 osascript <<'OSA' > "$AX" 2>&1
 tell application "System Events"
-    tell process "GSYCleanMac"
+    tell process "AmuxAIClean"
         try
             set fe to value of attribute "AXFrontmost"
             log "frontmost=" & fe

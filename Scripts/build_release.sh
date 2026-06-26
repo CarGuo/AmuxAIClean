@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# build_release.sh —— GSYCleanMac Release 打包
+# build_release.sh —— AmuxAIClean Release 打包
 #
 # 用法:
 #   ./Scripts/build_release.sh                 # 默认：Release 配置 + .xcodeproj 里的签名设置
 #   VERSION=1.0.0 ./Scripts/build_release.sh   # 指定版本号写进 Info.plist 与 dmg 文件名
 #
 # 设计原则（Step 5.6 番外回归 Xcode 原生路径）：
-#   - 不再做签名身份决议；签名完全由 .xcodeproj 里的 Automatic + Personal Team 决定
+#   - 不再做签名身份决议；签名完全由 .xcodeproj 里的 Manual + Apple Distribution 企业证书 决定
 #   - 不再调用 xcodegen；.xcodeproj 已入仓
-#   - Personal Team 签出来的 Apple Development 证书签 .app 仅本机能跑；
-#     如要分发到其它机器需切 Developer ID 公证（见 Scripts/codesign.sh + docs/RELEASE.md）
+#   - 当前项目配置使用 Apple Distribution: SentenceEnd Inc (W6H34N9728)；
+#     若要公网分发仍需按目标渠道补齐公证 / stapling 流程。
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT_NAME="GSYCleanMac"
+APP_NAME="AmuxAIClean"
 SCHEME="GSYCleanMac"
 PROJECT="${ROOT}/${PROJECT_NAME}.xcodeproj"
 CONFIG="${CONFIG:-Release}"
@@ -37,10 +38,10 @@ step "检查 xcodebuild 与 .xcodeproj"
 command -v xcodebuild >/dev/null 2>&1 || fail "xcodebuild 未找到，请安装 Xcode 16+"
 [ -d "$PROJECT" ] || fail ".xcodeproj 不在：$PROJECT"
 
-step "清理旧 ${BUILD_DIR}/Build/Products/${CONFIG}/${PROJECT_NAME}.app 与 ${DIST_DIR}/${PROJECT_NAME}.app"
-rm -rf "$BUILD_DIR/Build/Products/${CONFIG}/${PROJECT_NAME}.app"
+step "清理旧 ${BUILD_DIR}/Build/Products/${CONFIG}/${APP_NAME}.app 与 ${DIST_DIR}/${APP_NAME}.app"
+rm -rf "$BUILD_DIR/Build/Products/${CONFIG}/${APP_NAME}.app"
 mkdir -p "$DIST_DIR"
-rm -rf "$DIST_DIR/${PROJECT_NAME}.app"
+rm -rf "$DIST_DIR/${APP_NAME}.app"
 
 step "xcodebuild -scheme ${SCHEME} -configuration ${CONFIG}"
 # v1.5.7：CFBundleVersion 用 commit count 单调递增，保证每次构建唯一且可追溯。
@@ -65,21 +66,21 @@ fi
 xcodebuild "${XCB_ARGS[@]}" | xcbeautify 2>/dev/null || \
   xcodebuild "${XCB_ARGS[@]}" 2>&1 | tail -100
 
-APP_PATH="$BUILD_DIR/Build/Products/${CONFIG}/${PROJECT_NAME}.app"
+APP_PATH="$BUILD_DIR/Build/Products/${CONFIG}/${APP_NAME}.app"
 [ -d "$APP_PATH" ] || fail "构建产物未生成：$APP_PATH"
 
-step "复制产物到 ${DIST_DIR}/${PROJECT_NAME}.app"
-ditto "$APP_PATH" "$DIST_DIR/${PROJECT_NAME}.app"
+step "复制产物到 ${DIST_DIR}/${APP_NAME}.app"
+ditto "$APP_PATH" "$DIST_DIR/${APP_NAME}.app"
 
 step "校验 codesign"
-codesign -dv --verbose=2 "$DIST_DIR/${PROJECT_NAME}.app" 2>&1 | head -8 || true
+codesign -dv --verbose=2 "$DIST_DIR/${APP_NAME}.app" 2>&1 | head -8 || true
 
 # v1.5.7：核对 Hardened Runtime 是否开启
 # 本地 Personal Team 走 .xcodeproj 里的 ENABLE_HARDENED_RUNTIME = YES；如果设置被改回 NO 这里会 warn
 # ad-hoc 签名: flags=0x10002(adhoc,runtime); Developer ID: flags=0x10000(runtime); Personal Team 又不同
 # 用正则匹配括号内出现 runtime, 兼容三种签名身份
 # 注意: 先缓存到变量再 grep, 不能 codesign | grep -q —— -q 提前 quit 在 pipefail 下让上游收 SIGPIPE 误报失败
-CS_OUT=$(codesign -d -vvv "$DIST_DIR/${PROJECT_NAME}.app" 2>&1 || true)
+CS_OUT=$(codesign -d -vvv "$DIST_DIR/${APP_NAME}.app" 2>&1 || true)
 if echo "$CS_OUT" | grep -Eq "flags=0x[0-9a-fA-F]+\([^)]*runtime"; then
     echo "  ✓ Hardened Runtime: enabled"
 else
@@ -87,7 +88,7 @@ else
 fi
 
 step "校验 Info.plist 版本一致性"
-PLIST="$DIST_DIR/${PROJECT_NAME}.app/Contents/Info.plist"
+PLIST="$DIST_DIR/${APP_NAME}.app/Contents/Info.plist"
 ACTUAL_SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST" 2>/dev/null || echo "?")
 ACTUAL_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST" 2>/dev/null || echo "?")
 echo "  CFBundleShortVersionString = ${ACTUAL_SHORT}"
@@ -102,11 +103,10 @@ ${GREEN}${BOLD}Release 构建完成${NC}
   配置:       ${CONFIG}
   版本:       ${VERSION:-${ACTUAL_SHORT}}
   Build:      ${BUILD_NUMBER} (git ${GIT_SHA})
-  产物:       ${DIST_DIR}/${PROJECT_NAME}.app
-  签名:       走 .xcodeproj 里 Xcode UI 配的 Personal Team Automatic
-              （要分发到其它机器需 Developer ID 公证，见 Scripts/codesign.sh）
+  产物:       ${DIST_DIR}/${APP_NAME}.app
+  签名:       走 .xcodeproj 里 Xcode UI 配的企业 Team Manual + Apple Distribution
 
 下一步：
-  ./Scripts/make_dmg.sh ${DIST_DIR}/${PROJECT_NAME}.app ${DIST_DIR}/${PROJECT_NAME}-${VERSION:-1.0.0}.dmg
+  ./Scripts/make_dmg.sh ${DIST_DIR}/${APP_NAME}.app ${DIST_DIR}/${APP_NAME}-${VERSION:-1.0.0}.dmg
 
 EOF

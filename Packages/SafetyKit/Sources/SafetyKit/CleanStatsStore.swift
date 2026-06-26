@@ -11,7 +11,7 @@ import LogKit
 ///   - **类别分布**：30 天内 / 全部，按 `category` 聚合 `[CategoryBucket]`
 ///   - **累计总量**：`totalBytesReclaimed()` —— 永不归零（除非 reset）
 ///
-/// 持久化：JSON 文件 `~/Library/Application Support/GSYCleanMac/clean_stats.json`，
+/// 持久化：JSON 文件 `~/Library/Application Support/AmuxAIClean/clean_stats.json`，
 /// 用户可手编。文件包含 events 数组 + version + 滚动 windows（避免无限增长，
 /// 保留最近 365 天 + 全量累计 totalBytes）。
 ///
@@ -54,13 +54,13 @@ public actor CleanStatsStore {
     /// 保留窗口：超出 retentionDays 的事件落档时丢弃，但 `lifetimeTotalBytes` 保留。
     public let retentionDays: Int
 
-    /// 默认 `~/Library/Application Support/GSYCleanMac/clean_stats.json`。
+    /// 默认 `~/Library/Application Support/AmuxAIClean/clean_stats.json`。
     public static let defaultStorageURL: URL? = {
         guard let appSupport = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first else { return nil }
         return appSupport
-            .appendingPathComponent("GSYCleanMac", isDirectory: true)
+            .appendingPathComponent("AmuxAIClean", isDirectory: true)
             .appendingPathComponent("clean_stats.json")
     }()
 

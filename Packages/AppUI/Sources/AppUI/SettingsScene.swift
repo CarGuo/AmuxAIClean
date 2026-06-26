@@ -720,7 +720,7 @@ extension SettingsScene {
 
     fileprivate func exportLogs() {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "GSYCleanMac-Logs.txt"
+        panel.nameFieldStringValue = "AmuxAIClean-Logs.txt"
         panel.allowedContentTypes = [.plainText]
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }

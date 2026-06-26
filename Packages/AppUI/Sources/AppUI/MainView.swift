@@ -8,7 +8,7 @@ import AIKit
 /// v1.3 review-fix B3：跨 target 的通知名常量。
 /// App 层在主窗口已被销毁的情况下 post 这个通知，MainView 监听并调 `openWindow(id:)` 重建。
 public extension Notification.Name {
-    static let gsyOpenMainWindowRequested = Notification.Name("GSYCleanMac.openMainWindowRequested")
+    static let gsyOpenMainWindowRequested = Notification.Name("AmuxAIClean.openMainWindowRequested")
 }
 
 /// 三栏主界面 —— 侧边类目 / 中间结果 / 右侧详情 + 删除按钮。
@@ -106,7 +106,7 @@ public struct MainView: View {
     /// Dynamic Type 缩放，避免大字号下能看到的行数减半。
     @ScaledMetric(relativeTo: .caption) private var multiRootProgressScrollMaxHeight: CGFloat = 120
 
-    /// v1.6 Sentinel：daemon 通过 `gsycleanmac://action/scan/full` 唤起主 App 时，
+    /// v1.6 Sentinel：daemon 通过 `amuxaiclean://action/scan/full` 唤起主 App 时，
     /// 不自动开扫（用户在 Step 6.4 决策中选了 C：避免突袭式 IO 抢占），而是弹一个引导 alert，
     /// 用户点「立即扫描」才走 ScanCoordinator.scanRecommended。
     @State private var sentinelScanInvitationVisible: Bool = false
@@ -391,13 +391,13 @@ public struct MainView: View {
             openWindow(id: "main")
         }
         .onReceive(NotificationCenter.default.publisher(for: .gsySentinelStartFullScan)) { _ in
-            // v1.6 Sentinel 场景 2：daemon 通过 `gsycleanmac://action/scan/full` 唤起。
+            // v1.6 Sentinel 场景 2：daemon 通过 `amuxaiclean://action/scan/full` 唤起。
             // 用户决策 C：不自动开扫，弹引导 alert，让用户主动确认。
             openWindow(id: "main")
             sentinelScanInvitationVisible = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .gsySentinelOpenUninstall)) { note in
-            // v1.6 Sentinel 场景 1：daemon 通过 `gsycleanmac://uninstall?path=...` 唤起卸载页。
+            // v1.6 Sentinel 场景 1：daemon 通过 `amuxaiclean://uninstall?path=...` 唤起卸载页。
             // path 已由 [SentinelURLRouter](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SentinelURLRouter.swift) 校验过；
             // 这里把侧栏定位到 uninstall sentinel row，让 UninstallScreen 显示。
             // 注：path 当前不直接 deep-link 到具体卸载条目（候选展示在 UninstallScreen 列表里），

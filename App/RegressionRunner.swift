@@ -58,7 +58,7 @@ final class RegressionRunner {
     /// 主入口：根据 caseID 路由到对应 method，捕获 throw 并统一打印结尾行后退出。
     ///
     /// **UserDefaults 隔离契约（v1.3.zz+）**：
-    /// 回归 runner 跑在真实 App 进程里，settings 改动会写到用户磁盘上的 `com.guoshuyu.cleanmac.GSYCleanMac`。
+    /// 回归 runner 跑在真实 App 进程里，settings 改动会写到用户磁盘上的 `com.amux.ai.Clean`。
     /// 为了不污染用户偏好，run() 进入时先把所有 `v1.*` key 全量 snapshot 到内存 + 落盘 backup 文件，
     /// 任何 case（不光 hud-toggle）跑完都自动 restore；进程被 kill / crash 时下次启动会消化残留 backup。
     /// 详见 [snapshotAndPersistDefaults](file:///Users/guoshuyu/workspace/GSYCleanMac/App/RegressionRunner.swift) 与 [restoreDefaultsFromSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/App/RegressionRunner.swift)。
@@ -742,9 +742,9 @@ final class RegressionRunner {
     /// 1. AppSettings.sentinelEnabled 默认 false（升级用户不会无声多出后台守护）；
     /// 2. AppSettings.sentinelLastEnabled 默认 nil；
     /// 3. SentinelURLRouter 三种核心 URL 形态返回正确 Outcome：
-    ///    - `gsycleanmac://action/scan/full` → `.startFullScan`
-    ///    - `gsycleanmac://uninstall?path=/Applications` → `.openUninstall(path: "/Applications")`
-    ///    - `gsycleanmac://uninstall?path=../../etc` → `.openUninstall(path: nil)`（防注入）
+    ///    - `amuxaiclean://action/scan/full` → `.startFullScan`
+    ///    - `amuxaiclean://uninstall?path=/Applications` → `.openUninstall(path: "/Applications")`
+    ///    - `amuxaiclean://uninstall?path=../../etc` → `.openUninstall(path: nil)`（防注入）
     /// 4. SentinelManager.currentStatus() 不崩溃，且对未授权时返回 .notRegistered/.notFound/.requiresApproval 之一；
     /// 5. SentinelManager.plistName 与 [com.guoshuyu.cleanmac.sentinel.plist](file:///Users/guoshuyu/workspace/GSYCleanMac/App/LaunchDaemons/com.guoshuyu.cleanmac.sentinel.plist) 一致。
     ///
@@ -758,7 +758,7 @@ final class RegressionRunner {
         // 备份），但 sentinelEnabled 默认契约是 OFF，正常用户不会显式开启。
         // 这条 case 确认：AppSettings 在没有任何 v1.6 sentinel key 写入的"全新装"语义下，
         // 必须默认 false。我们用一个独立 testSuite AppSettings 实例做白盒验证。
-        let suite = "GSYCleanMac.regression.SentinelDefault.\(UUID().uuidString)"
+        let suite = "AmuxAIClean.regression.SentinelDefault.\(UUID().uuidString)"
         UserDefaults().removePersistentDomain(forName: suite)
         let freshSettings = AppSettings(testSuite: suite)
         log("[REGR] case=\(caseID) default_sentinelEnabled=\(freshSettings.sentinelEnabled) default_lastEnabled=\(String(describing: freshSettings.sentinelLastEnabled))")
@@ -770,18 +770,18 @@ final class RegressionRunner {
         assertEqual(SentinelManager.plistName, "com.guoshuyu.cleanmac.sentinel.plist", "plistName")
 
         // (3) URL Scheme 路由：3 种核心形态
-        let outScan = SentinelURLRouter.handle(URL(string: "gsycleanmac://action/scan/full")!)
+        let outScan = SentinelURLRouter.handle(URL(string: "amuxaiclean://action/scan/full")!)
         log("[REGR] case=\(caseID) route_scanFull=\(outScan)")
-        assertEqual(outScan, .startFullScan, "route gsycleanmac://action/scan/full")
+        assertEqual(outScan, .startFullScan, "route amuxaiclean://action/scan/full")
 
         // 真实存在的路径（/Applications 在所有 macOS 上都有）走绿灯
         let appsExpected = ("/Applications" as NSString).standardizingPath
-        let outUninstall = SentinelURLRouter.handle(URL(string: "gsycleanmac://uninstall?path=/Applications")!)
+        let outUninstall = SentinelURLRouter.handle(URL(string: "amuxaiclean://uninstall?path=/Applications")!)
         log("[REGR] case=\(caseID) route_uninstall_apps=\(outUninstall) expectedPath=\(appsExpected)")
         assertEqual(outUninstall, .openUninstall(path: appsExpected), "uninstall /Applications")
 
         // 路径含 .. → 必须被防注入拦下
-        let outBad = SentinelURLRouter.handle(URL(string: "gsycleanmac://uninstall?path=/Applications/../etc")!)
+        let outBad = SentinelURLRouter.handle(URL(string: "amuxaiclean://uninstall?path=/Applications/../etc")!)
         log("[REGR] case=\(caseID) route_uninstall_traversal=\(outBad)")
         assertEqual(outBad, .openUninstall(path: nil), "uninstall path=../ 必须被防注入拒绝")
 
@@ -905,7 +905,7 @@ final class RegressionRunner {
     private static let backupURL: URL = {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return caches.appendingPathComponent("com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist")
+        return caches.appendingPathComponent("com.amux.ai.Clean/regression-defaults-backup.plist")
     }()
 
     /// 把 `UserDefaults.standard` 里所有 `v1.*` key snapshot 到内存 + 落盘 backup 文件。

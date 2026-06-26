@@ -3,7 +3,7 @@ import HeuristicKit
 
 /// HL 行为收集器 —— 把 UI 层 trash/keep 事件喂给 HeuristicEngine 并持久化到磁盘。
 ///
-/// **持久化路径**：`~/Library/Application Support/GSYCleanMac/heuristic.json`
+/// **持久化路径**：`~/Library/Application Support/AmuxAIClean/heuristic.json`
 ///
 /// 设计要点：
 /// - actor wrapper，对外只暴露三个 fire-and-forget 入口（trashed / kept / restored）
@@ -24,10 +24,10 @@ public actor HeuristicRecorder {
         let fm = FileManager.default
         let base: URL
         if let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            base = support.appendingPathComponent("GSYCleanMac", isDirectory: true)
+            base = support.appendingPathComponent("AmuxAIClean", isDirectory: true)
         } else {
             base = URL(fileURLWithPath: NSHomeDirectory())
-                .appendingPathComponent("Library/Application Support/GSYCleanMac",
+                .appendingPathComponent("Library/Application Support/AmuxAIClean",
                                         isDirectory: true)
         }
         try? fm.createDirectory(at: base, withIntermediateDirectories: true)

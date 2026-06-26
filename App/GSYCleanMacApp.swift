@@ -55,7 +55,7 @@ struct GSYCleanMacApp: App {
 
     init() {
         // v1.3.zzzz Phase 6：进程一启动就接通 GSYLog 文件 sink。
-        // 落盘位置 ~/Library/Logs/GSYCleanMac/，按天滚动保留 7 天；构造失败时降级到仅 OSLog。
+        // 落盘位置 ~/Library/Logs/AmuxAIClean/，按天滚动保留 7 天；构造失败时降级到仅 OSLog。
         // Debug 默认 .debug 阈值（最详细），Release 默认 .info；不再额外区分。
         do {
             let logDir = try LogFileSink.defaultDirectory()
@@ -67,7 +67,7 @@ struct GSYCleanMacApp: App {
             #endif
             GSYLog.notice(.app, "App 启动 logDir=\(sink.directory.path)")
         } catch {
-            NSLog("[GSYCleanMac] LogFileSink 初始化失败：\(error)（仅 OSLog 可用）")
+            NSLog("[AmuxAIClean] LogFileSink 初始化失败：\(error)（仅 OSLog 可用）")
         }
 
         let loadedVendors = Self.loadBundledVendors()
@@ -222,7 +222,7 @@ struct GSYCleanMacApp: App {
                 reconcileSentinel(initial: false)
             }
             .onOpenURL { url in
-                // v1.6：daemon 通过 `gsycleanmac://` 把候选传回主 App。
+                // v1.6：daemon 通过 `amuxaiclean://` 把候选传回主 App。
                 // 拉主窗口 + 路由分发由 SentinelURLRouter 完成（NotificationCenter 广播）。
                 Self.bringMainWindowToFront()
                 _ = SentinelURLRouter.handle(url)
@@ -432,7 +432,7 @@ struct GSYCleanMacApp: App {
         NSWorkspace.shared.open(bundleURL, configuration: config) { _, error in
             if let error {
                 // 兜底诊断日志（极罕见：只有 Bundle 被 ad-hoc 签或权限被剥夺时才会失败）。
-                NSLog("[GSYCleanMac] bringMainWindowToFront fallback open failed: \(error)")
+                NSLog("[AmuxAIClean] bringMainWindowToFront fallback open failed: \(error)")
             }
         }
     }
@@ -456,15 +456,15 @@ struct GSYCleanMacApp: App {
                                         subdirectory: "Rules")
             ?? Bundle.main.url(forResource: "vendors", withExtension: "yaml")
         else {
-            NSLog("[GSYCleanMac] vendors.yaml 未找到，跳过 vendor 规则加载")
+            NSLog("[AmuxAIClean] vendors.yaml 未找到，跳过 vendor 规则加载")
             return []
         }
         do {
             let rules = try RuleLoader.loadVendors(from: url)
-            NSLog("[GSYCleanMac] 已加载 \(rules.count) 条 vendor 规则")
+            NSLog("[AmuxAIClean] 已加载 \(rules.count) 条 vendor 规则")
             return rules
         } catch {
-            NSLog("[GSYCleanMac] vendor 规则加载失败：\(error)")
+            NSLog("[AmuxAIClean] vendor 规则加载失败：\(error)")
             return []
         }
     }
@@ -479,7 +479,7 @@ struct GSYCleanMacApp: App {
     fileprivate static func openExternal(_ urlString: String) {
         guard let url = URL(string: urlString),
               url.scheme == "https" else {
-            NSLog("[GSYCleanMac] openExternal 拒绝非 https URL: \(urlString)")
+            NSLog("[AmuxAIClean] openExternal 拒绝非 https URL: \(urlString)")
             return
         }
         NSWorkspace.shared.open(url)
@@ -496,9 +496,9 @@ struct GSYCleanMacApp: App {
         let fm = FileManager.default
         let logDir = fm.urls(for: .libraryDirectory, in: .userDomainMask)
             .first?
-            .appendingPathComponent("Logs/GSYCleanMac", isDirectory: true)
+            .appendingPathComponent("Logs/AmuxAIClean", isDirectory: true)
         guard let logDir else {
-            NSLog("[GSYCleanMac] revealLogsInFinder 找不到 ~/Library/Logs 目录")
+            NSLog("[AmuxAIClean] revealLogsInFinder 找不到 ~/Library/Logs 目录")
             return
         }
         if !fm.fileExists(atPath: logDir.path) {

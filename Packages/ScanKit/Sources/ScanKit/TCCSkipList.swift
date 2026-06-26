@@ -3,7 +3,7 @@ import Foundation
 /// macOS 15+ TCC（Transparency Consent and Control）雷区目录硬编码 skip list。
 ///
 /// 背景：从 macOS 15 (Sequoia) 起，系统把以下目录列为高敏区，扫描器只要 `open(2)`
-/// 命中，就会触发原生权限弹窗（"GSY 清理管家想要访问你的 Apple Music 媒体库"等）。
+/// 命中，就会触发原生权限弹窗（"AmuxAIClean想要访问你的 Apple Music 媒体库"等）。
 /// 即便用户一律点"不允许"，弹窗本身已经严重打断扫描流程；多 worker 并行下钻还会
 /// 一次弹好几个，体验极差。
 ///

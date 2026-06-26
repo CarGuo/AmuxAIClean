@@ -4,15 +4,15 @@
 set -euo pipefail
 
 APP="$1"
-IDENTITY="${IDENTITY:-Developer ID Application}"
+IDENTITY="${IDENTITY:-Apple Distribution}"
 
 if [ -z "${APP:-}" ]; then
-  echo "用法: IDENTITY='Developer ID Application: Your Name (TEAMID)' $0 path/to/GSYCleanMac.app"
+  echo "用法: IDENTITY='Apple Distribution: Your Organization (TEAMID)' $0 path/to/AmuxAIClean.app"
   exit 64
 fi
 
 echo "==> 签名 Helper"
-HELPER="$APP/Contents/Library/LaunchServices/com.guoshuyu.cleanmac.helper"
+HELPER="$APP/Contents/Library/LaunchServices/com.amux.ai.Clean.helper"
 if [ -f "$HELPER" ]; then
   codesign --force --options runtime --timestamp \
     --sign "$IDENTITY" "$HELPER"

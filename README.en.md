@@ -119,7 +119,7 @@ cd GSYCleanMac
 ./Scripts/setup_dev.sh
 ```
 
-> **Forks must read this**: [GSYCleanMac.xcodeproj/project.pbxproj](GSYCleanMac.xcodeproj/project.pbxproj) hard-codes the project author's `DEVELOPMENT_TEAM = 39PK4PKRP3`. Before the first build, you MUST change it to your own Team ID (double-click `GSYCleanMac.xcodeproj` → `Signing & Capabilities` → pick your Personal Team; or use `sed` to replace). See the "Free Apple ID Run" section in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+> **Forks must read this**: [GSYCleanMac.xcodeproj/project.pbxproj](GSYCleanMac.xcodeproj/project.pbxproj) is currently configured for enterprise signing with `DEVELOPMENT_TEAM = W6H34N9728`, `CODE_SIGN_STYLE = Manual`, and `CODE_SIGN_IDENTITY = Apple Distribution`. Before the first build, change it to your own Team/signing setup. See the "Signing Configuration" section in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ```bash
 xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build
