@@ -53,6 +53,16 @@ public final class ScanCoordinator: ObservableObject {
     @Published public private(set) var scanPhase: ScanPhase = .idle
     @Published public private(set) var lastError: String?
     @Published public private(set) var permissionDeniedPaths: [String] = []
+    /// v2026.07 修复：`pruneDeleted` 完成后的公共广播信号。
+    ///
+    /// **根因**：非 tree/list 走 `snapshot.rows` 的视图（如 [LargeFilesView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/LargeFilesView.swift)）
+    /// 用 `coordinator.largeFiles(...)` 读 `largeFileLeaves`；`pruneDeleted` 会正确剔掉叶子，
+    /// 但它只 bump 了 non-@Published 的 `structuralRevision`——SwiftUI 视图订阅不到，
+    /// 表现为"点了移到废纸篓成功，但列表还在"（用户反馈 Q2）。
+    /// 现在 `pruneDeleted` 尾部再 `storeRevision &+= 1`，任何依赖 store 派生数据的视图
+    /// `.onReceive(coordinator.$storeRevision)` 即可强同步。
+    /// 只在 `pruneDeleted` 里 bump（非"每次 snapshot 都推"），避免扫描期 UI churn。
+    @Published public private(set) var storeRevision: UInt64 = 0
     /// v1.1：因 TCC 雷区（Music / Photos / Mail 等）被主动 skip 的路径列表。
     /// 与 permissionDeniedPaths 合并展示在统一 banner，**不会触发系统弹窗**。
     @Published public private(set) var tccProtectedSkippedPaths: [String] = []
@@ -2510,6 +2520,13 @@ public final class ScanCoordinator: ObservableObject {
         // 一次性取走，走"只剔子树"的增量 patch，避免万级目录整树 rebuild。
         lastPrunedPaths = Array(normalized)
         bumpStructuralRevision()
+
+        // v2026.07：对**订阅 @Published 的视图**广播"store 已剪枝"，
+        // 让 [LargeFilesView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/LargeFilesView.swift)
+        // 等 non-tree/list 消费者能 `.onReceive($storeRevision)` 强同步。
+        // 不复用 snapshot：snapshot 的相等短路 (`snapshot == nextSnapshot { return }`)
+        // 会把"内容未变但 store 已剪枝"的信号吞掉；storeRevision 单调递增，不会被短路。
+        storeRevision &+= 1
 
         // 卷容量重新探测：清完反馈"空闲变多"。
         refreshVolumeCapacity()

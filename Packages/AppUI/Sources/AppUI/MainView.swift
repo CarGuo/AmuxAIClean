@@ -86,6 +86,14 @@ public struct MainView: View {
     /// v1.0 T4：大文件视图选中项。与 detail（RowItem）解耦，
     /// 因为大文件是叶子，没有聚合 RowItem 模型。
     @State private var largeFileSelection: LargeFileItem?
+    /// v2026.07 Q1：大文件视图的批量选择状态。
+    ///
+    /// **提升到 MainView 的原因**：底部 [footerBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1671-L1730)
+    /// 大文件分支必须与 LargeFilesView 头部三态 checkbox 共享**同一份 selection**，
+    /// 否则会出现"复选框勾了 3 项但底部按钮 disabled"的错觉（用户反馈 Q1 根因）。
+    /// `BatchSelection` 是 `@Observable class`，用 `@State` 持有引用，
+    /// SwiftUI Observation 自动追踪 `selected` 变更 → 头部 checkbox 与 footer 按钮双向响应。
+    @State private var largeFilesBatch = BatchSelection()
     /// 树形视图选中行。bug A：之前 TreeBrowserView 的 selectedPath 锁在自身内部，
     /// 外层 detailPane 永远拿不到，详情面板因此长期空白。现在通过 onSelect 回调
     /// 同步到这里，detailPane 优先用 treeSelection 渲染（语义上"看哪个就显哪个"）。
@@ -475,24 +483,20 @@ public struct MainView: View {
             // 而是分发到对应 trigger* helper（toolbar 同款）。
             Section {
                 batchScanRow(icon: "rectangle.3.group",
-                             titleKey: "batch.recommended.title",
-                             subtitleKey: "batch.recommended.subtitle")
+                             titleKey: "batch.recommended.title")
                     .tag(ScanCategory.batchRecommendedID)
 
                 batchScanRow(icon: "hammer",
                              titleKey: "batch.developer.title",
-                             subtitleKey: "batch.developer.subtitle",
                              helpKey: "batch.developer.help")
                     .tag(ScanCategory.batchDeveloperID)
 
                 batchScanRow(icon: "internaldrive",
-                             titleKey: "batch.fulldisk.title",
-                             subtitleKey: "batch.fulldisk.subtitle")
+                             titleKey: "batch.fulldisk.title")
                     .tag(ScanCategory.batchFullDiskID)
 
                 batchScanRow(icon: "sparkles",
-                             titleKey: "batch.common_app_cache.title",
-                             subtitleKey: "batch.common_app_cache.subtitle")
+                             titleKey: "batch.common_app_cache.title")
                     .tag(ScanCategory.batchCommonAppCacheID)
             } header: {
                 Text("sidebar.section.batch", bundle: .module)
@@ -705,26 +709,21 @@ public struct MainView: View {
     ]
 
     /// v1.5：sidebar Batch Scans section 的 row。结构与 sidebarRow / appFootprintSidebarRow
-    /// 对齐：图标 + 标题 + 副标题。row 自身不带 tap handler，selection 切换由
+    /// 对齐：图标 + 标题。row 自身不带 tap handler，selection 切换由
     /// onChange(selectedCategory) 统一调度到对应 trigger* helper。
+    ///
+    /// v2026.07 Q3：**副标题去除**（用户反馈"左侧操作台冗余，只显示栏目标题"）；
+    /// 同时把 dead 形参 `subtitleKey` 及配套 xcstrings key 一并清理，避免 i18n orphan。
     /// v1.5 review-fix #13：去掉 dead `id` 参数（外部 .tag(...) 使用，本函数不需要）。
     private func batchScanRow(icon: String,
                               titleKey: String,
-                              subtitleKey: String,
                               helpKey: String? = nil) -> some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(LocalizedStringKey(titleKey), bundle: .module)
-                    .font(.system(.body, design: .rounded))
-                Text(LocalizedStringKey(subtitleKey), bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text(LocalizedStringKey(titleKey), bundle: .module)
+                .font(.system(.body, design: .rounded))
         }
         .padding(.vertical, 2)
         .modifier(OptionalHelpModifier(helpText: helpText(helpKey)))
@@ -735,15 +734,8 @@ public struct MainView: View {
             Image(systemName: "chart.bar.fill")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("sidebar.row.app_footprint", bundle: .module)
-                    .font(.system(.body, design: .rounded))
-                Text("sidebar.subtitle.app_footprint", bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text("sidebar.row.app_footprint", bundle: .module)
+                .font(.system(.body, design: .rounded))
         }
         .padding(.vertical, 2)
     }
@@ -753,15 +745,8 @@ public struct MainView: View {
             Image(systemName: "play.square.fill")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("sidebar.row.launch_agents", bundle: .module)
-                    .font(.system(.body, design: .rounded))
-                Text("sidebar.subtitle.launch_agents", bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text("sidebar.row.launch_agents", bundle: .module)
+                .font(.system(.body, design: .rounded))
         }
         .padding(.vertical, 2)
     }
@@ -771,15 +756,8 @@ public struct MainView: View {
             Image(systemName: "network")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("sidebar.row.port_cleaner", bundle: .module)
-                    .font(.system(.body, design: .rounded))
-                Text("sidebar.subtitle.port_cleaner", bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text("sidebar.row.port_cleaner", bundle: .module)
+                .font(.system(.body, design: .rounded))
         }
         .padding(.vertical, 2)
     }
@@ -789,15 +767,8 @@ public struct MainView: View {
             Image(systemName: "trash.slash")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("sidebar.row.uninstall", bundle: .module)
-                    .font(.system(.body, design: .rounded))
-                Text("sidebar.subtitle.uninstall", bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text("sidebar.row.uninstall", bundle: .module)
+                .font(.system(.body, design: .rounded))
         }
         .padding(.vertical, 2)
     }
@@ -807,15 +778,8 @@ public struct MainView: View {
             Image(systemName: "doc.on.doc")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("sidebar.row.duplicate", bundle: .module)
-                    .font(.system(.body, design: .rounded))
-                Text("sidebar.subtitle.duplicate", bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text("sidebar.row.duplicate", bundle: .module)
+                .font(.system(.body, design: .rounded))
         }
         .padding(.vertical, 2)
     }
@@ -826,15 +790,8 @@ public struct MainView: View {
             Image(systemName: "arrow.uturn.backward.circle")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("sidebar.row.undo_history", bundle: .module)
-                    .font(.system(.body, design: .rounded))
-                Text("sidebar.subtitle.undo_history", bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text("sidebar.row.undo_history", bundle: .module)
+                .font(.system(.body, design: .rounded))
         }
         .padding(.vertical, 2)
     }
@@ -846,15 +803,8 @@ public struct MainView: View {
             Image(systemName: "wrench.and.screwdriver")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("sidebar.row.maintenance", bundle: .module)
-                    .font(.system(.body, design: .rounded))
-                Text("sidebar.subtitle.maintenance", bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text("sidebar.row.maintenance", bundle: .module)
+                .font(.system(.body, design: .rounded))
         }
         .padding(.vertical, 2)
     }
@@ -865,34 +815,20 @@ public struct MainView: View {
             Image(systemName: "mug")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("main.devtool.brew.title", bundle: .module)
-                    .font(.system(.body, design: .rounded))
-                Text("main.devtool.brew.subtitle", bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text("main.devtool.brew.title", bundle: .module)
+                .font(.system(.body, design: .rounded))
         }
         .padding(.vertical, 2)
     }
 
-    /// v1.7 M1 PR-5：「Apple 工作流」侧边 row —— apple.logo 图标，副标题点明覆盖范围。
+    /// v1.7 M1 PR-5：「Apple 工作流」侧边 row —— apple.logo 图标。
     private var workflowAppleSidebarRow: some View {
         HStack(spacing: 8) {
             Image(systemName: "applelogo")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("workflow.sidebar.apple.title", bundle: .module)
-                    .font(.system(.body, design: .rounded))
-                Text("workflow.sidebar.apple.subtitle", bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text("workflow.sidebar.apple.title", bundle: .module)
+                .font(.system(.body, design: .rounded))
         }
         .padding(.vertical, 2)
     }
@@ -904,15 +840,8 @@ public struct MainView: View {
             Image(systemName: "cube.box")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("workflow.sidebar.android.title", bundle: .module)
-                    .font(.system(.body, design: .rounded))
-                Text("workflow.sidebar.android.subtitle", bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text("workflow.sidebar.android.title", bundle: .module)
+                .font(.system(.body, design: .rounded))
         }
         .padding(.vertical, 2)
     }
@@ -923,15 +852,8 @@ public struct MainView: View {
             Image(systemName: "globe")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("workflow.sidebar.webnode.title", bundle: .module)
-                    .font(.system(.body, design: .rounded))
-                Text("workflow.sidebar.webnode.subtitle", bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text("workflow.sidebar.webnode.title", bundle: .module)
+                .font(.system(.body, design: .rounded))
         }
         .padding(.vertical, 2)
     }
@@ -943,15 +865,8 @@ public struct MainView: View {
             Image(systemName: "hammer")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("sidebar.row.dev_versioned", bundle: .module)
-                    .font(.system(.body, design: .rounded))
-                Text("sidebar.subtitle.dev_versioned", bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text("sidebar.row.dev_versioned", bundle: .module)
+                .font(.system(.body, design: .rounded))
         }
         .padding(.vertical, 2)
     }
@@ -962,15 +877,8 @@ public struct MainView: View {
             Image(systemName: iconOverride ?? iconName(for: cat.kind))
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(cat.displayTitle)
-                    .font(.system(.body, design: .rounded))
-                Text(cat.displaySubtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text(cat.displayTitle)
+                .font(.system(.body, design: .rounded))
         }
         .padding(.vertical, 2)
         .modifier(OptionalHelpModifier(helpText: cat.displayHelpIfConfigured))
@@ -1127,6 +1035,7 @@ public struct MainView: View {
                         coordinator: coordinator,
                         settings: settings,
                         selection: $largeFileSelection,
+                        batch: largeFilesBatch,
                         onTrash: { urls in
                             triggerLargeFileTrash(urls: urls)
                         },
@@ -1687,16 +1596,57 @@ public struct MainView: View {
         }()
         return HStack {
             if isLargeFilesMode {
-                Text(largeFileSelection.map {
-                    String(format: String(localized: "footer.selection.large_file %@ %@", bundle: .module), $0.title, formattedBytes($0.bytes))
-                } ?? String(localized: "selection.empty", bundle: .module))
+                // v2026.07 Q1：底部条改为**唯一**批量删除入口。
+                //
+                // 摘要文本口径：
+                //   - 有勾选 → "已选 N 项（合计 X）"（复用 selection.summary %lld %@）
+                //   - 无勾选但有单击行焦点 → 显示行摘要（footer.selection.large_file）
+                //   - 都没有 → selection.empty
+                //
+                // 删除按钮口径：
+                //   - 有勾选 → 走 batch，删掉所有勾选项（用户明确意图，即便被 kindFilter 隐藏也算）
+                //   - 无勾选但有 largeFileSelection → 退化为单行删（Cmd+Delete 沿用原有快捷键语义）
+                //   - 两者都无 → disabled
+                let pickedPaths = Array(largeFilesBatch.selected)
+                let pickedCount = pickedPaths.count
+                let hasPicked = pickedCount > 0
+                let pickedBytes: Int64 = {
+                    guard hasPicked else { return 0 }
+                    let source = coordinator.largeFiles(
+                        minSizeMB: 0,
+                        sortKey: .sizeDesc,
+                        limit: Int.max
+                    )
+                    var byPath: [String: Int64] = [:]
+                    byPath.reserveCapacity(source.count)
+                    for item in source { byPath[item.path] = item.bytes }
+                    var sum: Int64 = 0
+                    for p in pickedPaths { sum += byPath[p] ?? 0 }
+                    return sum
+                }()
+                let summary: String = {
+                    if hasPicked {
+                        return String(format: String(localized: "selection.summary %lld %@", bundle: .module),
+                                      pickedCount, formattedBytes(pickedBytes))
+                    }
+                    if let sel = largeFileSelection {
+                        return String(format: String(localized: "footer.selection.large_file %@ %@", bundle: .module),
+                                      sel.title, formattedBytes(sel.bytes))
+                    }
+                    return String(localized: "selection.empty", bundle: .module)
+                }()
+                Text(summary)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
                 Button {
-                    if let item = largeFileSelection {
+                    if hasPicked {
+                        let urls = pickedPaths.map { URL(fileURLWithPath: $0) }
+                        triggerLargeFileTrash(urls: urls)
+                        largeFilesBatch.clear()
+                    } else if let item = largeFileSelection {
                         triggerLargeFileTrash(urls: [item.url])
                     }
                 } label: {
@@ -1706,7 +1656,7 @@ public struct MainView: View {
                         Image(systemName: "trash")
                     }
                 }
-                .disabled(largeFileSelection == nil)
+                .disabled(!hasPicked && largeFileSelection == nil)
                 .keyboardShortcut(.delete, modifiers: .command)
             } else {
                 Text(summaryText)

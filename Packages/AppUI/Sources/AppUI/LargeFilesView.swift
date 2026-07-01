@@ -31,6 +31,19 @@ public struct LargeFilesView: View {
     /// Top N 截断。默认 200（ROADMAP）。可由调用方覆盖。
     let limit: Int
 
+    /// v2026.07 Q1：批量选择状态由 MainView 持有并注入。
+    ///
+    /// **历史**：以前 `@State private var batch = BatchSelection()`——LargeFilesView 自己 own。
+    /// 后果是 [MainView.footerBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1671-L1730)
+    /// 的底部"移到废纸篓"按钮读不到这份 selection，被迫另立一份 `largeFileSelection`
+    /// （单击行同步的单选项），造成"复选框勾了但底部按钮 disabled"的错觉，
+    /// 以及 LargeFilesView 头部要额外画一个"移到废纸篓(N)"按钮兜底 → **两个批量入口共存**。
+    ///
+    /// **现在**：`BatchSelection` 是 `@Observable class`，由 MainView 以 `@State` 持有
+    /// 单例引用；LargeFilesView 与 footerBar 共享同一实例。SwiftUI 通过 Observation 自动
+    /// 追踪 `selected` 变更 → 双端都能实时响应。删除入口统一到 footerBar 唯一按钮。
+    let batch: BatchSelection
+
     /// v1.5 P2 / Q1：当前列表排序键。
     ///
     /// **历史**：之前用 `@State private var sortKey: LargeFileSortKey = .sizeDesc`，
@@ -58,15 +71,13 @@ public struct LargeFilesView: View {
     /// 与 mtimeFilter 不同的是，类型筛选**不持久化**——它是查看行为而非偏好。
     @State private var kindFilter: FileKind? = nil
 
-    /// v1.2 P1-5：批量选择状态。@State 而非 @StateObject——@Observable 时代的写法。
-    /// 跨视图刷新（如 mtime/kind 切换）不会被重建，保留用户的勾选意图。
-    @State private var batch = BatchSelection()
     @State private var displayedItems: [LargeFileItem] = []
     @State private var displayedKindCounts: [(FileKind, Int)] = []
 
     public init(coordinator: ScanCoordinator,
                 settings: AppSettings,
                 selection: Binding<LargeFileItem?>,
+                batch: BatchSelection,
                 limit: Int = 200,
                 onTrash: @escaping ([URL]) -> Void,
                 onStash: @escaping (LargeFileItem) -> Void,
@@ -76,6 +87,7 @@ public struct LargeFilesView: View {
         self.coordinator = coordinator
         self.settings = settings
         self._selection = selection
+        self.batch = batch
         self.limit = limit
         self.onTrash = onTrash
         self.onStash = onStash
@@ -180,6 +192,13 @@ public struct LargeFilesView: View {
                 syncDisplayedLargeFiles(force: true)
             }
         }
+        // v2026.07 Q2 修复：`pruneDeleted` 会剔掉 `largeFileLeaves`，但只 bump 了
+        // non-@Published 的 `structuralRevision`——本视图订阅不到，导致"成功移到
+        // 废纸篓但列表还在"的用户反馈。订阅 [storeRevision](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+        // 后强同步一次，无需重扫。
+        .onReceive(coordinator.$storeRevision) { _ in
+            syncDisplayedLargeFiles(force: true)
+        }
         .onChange(of: settings.minFileSizeMB) { _, _ in syncDisplayedLargeFiles(force: true) }
         .onChange(of: settings.mtimeFilter) { _, _ in syncDisplayedLargeFiles(force: true) }
         .onChange(of: settings.mainListSortKey) { _, _ in syncDisplayedLargeFiles(force: true) }
@@ -236,21 +255,9 @@ public struct LargeFilesView: View {
                     .foregroundStyle(.orange)
             }
 
-            // v1.2 P1-5：批量删除按钮。仅"可见且勾选"的项参与，避免误删隐藏选区。
-            let visiblePaths = displayedItems.map { $0.path }
-            let pickedCount = batch.selectedCount(in: visiblePaths)
-            if pickedCount > 0 {
-                Button(role: .destructive) {
-                    let urls = batch.selectedItemsIntersecting(visible: visiblePaths)
-                        .map { URL(fileURLWithPath: $0) }
-                    onTrash(urls)
-                    batch.clear()
-                } label: {
-                    Label(String(format: String(localized: "largefiles.action.trash %lld", bundle: .module), pickedCount), systemImage: "trash")
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
+            // v2026.07 Q1：批量删除按钮已由 [MainView.footerBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1671-L1730)
+            // 唯一承载——本处不再画独立按钮，避免"多入口 + 状态不同步"的用户反馈。
+            // 头部依然提供三态全选 checkbox（勾选/取消可见项）与阈值展示。
 
             Text(String(format: String(localized: "largefiles.toolbar.count %lld", bundle: .module), displayedItems.count))
                 .font(.caption)
@@ -993,17 +1000,17 @@ private final class LargeFilesRowCanvas: NSView {
 
     private func drawActions() {
         drawSymbol("sparkles",
-                   in: actionRect(.ai).insetBy(dx: 8, dy: 7),
+                   in: symbolRect(in: actionRect(.ai), side: 16),
                    color: aiReady ? .controlAccentColor : .secondaryLabelColor.withAlphaComponent(0.45),
                    pointSize: 12,
                    weight: .semibold)
         drawSymbol(isStashed ? "tray.full.fill" : "tray.and.arrow.down",
-                   in: actionRect(.stash).insetBy(dx: 8, dy: 7),
+                   in: symbolRect(in: actionRect(.stash), side: 16),
                    color: isStashed ? .controlAccentColor : .secondaryLabelColor,
                    pointSize: 12,
                    weight: .semibold)
         drawSymbol("trash",
-                   in: actionRect(.trash).insetBy(dx: 8, dy: 7),
+                   in: symbolRect(in: actionRect(.trash), side: 16),
                    color: .systemRed,
                    pointSize: 12,
                    weight: .semibold)
@@ -1021,6 +1028,16 @@ private final class LargeFilesRowCanvas: NSView {
         case .trash: return trash
         case .none: return .zero
         }
+    }
+
+    private func symbolRect(in rect: CGRect, side: CGFloat? = nil) -> CGRect {
+        let resolvedSide = min(side ?? min(rect.width, rect.height), rect.width, rect.height)
+        return CGRect(
+            x: rect.midX - resolvedSide / 2,
+            y: rect.midY - resolvedSide / 2,
+            width: resolvedSide,
+            height: resolvedSide
+        )
     }
 
     private func drawText(_ text: String,
@@ -1051,15 +1068,30 @@ private final class LargeFilesRowCanvas: NSView {
                             weight: NSFont.Weight) {
         guard var image = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return }
         let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
+            .applying(NSImage.SymbolConfiguration(hierarchicalColor: color))
         image = image.withSymbolConfiguration(config) ?? image
-        guard let cgContext = NSGraphicsContext.current?.cgContext else { return }
-        cgContext.saveGState()
-        cgContext.beginTransparencyLayer(auxiliaryInfo: nil)
-        color.setFill()
-        NSBezierPath(rect: rect).fill()
-        image.draw(in: rect, from: .zero, operation: .destinationIn, fraction: 1)
-        cgContext.endTransparencyLayer()
-        cgContext.restoreGState()
+        image.draw(in: aspectFitRect(for: image, in: rect),
+                   from: .zero,
+                   operation: .sourceOver,
+                   fraction: 1,
+                   respectFlipped: true,
+                   hints: nil)
+    }
+
+    private func aspectFitRect(for image: NSImage, in rect: CGRect) -> CGRect {
+        let imageSize = image.size
+        guard imageSize.width > 0, imageSize.height > 0,
+              rect.width > 0, rect.height > 0
+        else { return rect }
+        let scale = min(rect.width / imageSize.width, rect.height / imageSize.height)
+        let width = imageSize.width * scale
+        let height = imageSize.height * scale
+        return CGRect(
+            x: rect.midX - width / 2,
+            y: rect.midY - height / 2,
+            width: width,
+            height: height
+        )
     }
 
     private static func copy(_ text: String) {
