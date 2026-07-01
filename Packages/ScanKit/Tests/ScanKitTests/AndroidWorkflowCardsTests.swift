@@ -87,7 +87,8 @@ final class AndroidWorkflowCardsTests: XCTestCase {
         // AVD 必须 confirm（删除前需用户确认）
         let avd = try XCTUnwrap(cards.first(where: { $0.id == "card.android.android-avd" }))
         XCTAssertEqual(avd.risk, .confirm, "AVD 删除不可逆，必须 confirm")
-        XCTAssertEqual(avd.title, "Android 模拟器（AVD）")
+        // 产品契约：DeveloperCard.title 存 xcstrings raw key，UI 层用 LocalizedStringKey 消费。
+        XCTAssertEqual(avd.title, "card.android.android-avd.title")
         XCTAssertFalse(avd.summary.isEmpty)
         if case .literal(let paths) = avd.source {
             XCTAssertEqual(paths, ["~/.android/avd"])

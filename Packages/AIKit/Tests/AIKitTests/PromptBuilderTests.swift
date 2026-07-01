@@ -57,7 +57,9 @@ final class PromptBuilderTests: XCTestCase {
                               sideEffects: [])
         let clamped = AIAdviceClamp.clamp(aiSays, against: inquiry)
         XCTAssertEqual(clamped.canDelete, .forbid)
-        XCTAssertTrue(clamped.reason.hasPrefix("[本地安全策略已拒绝]"))
+        // 产品契约：clamp 降级时贴 sentinel prefix，UI 层再替换为本地化文案。
+        XCTAssertTrue(clamped.reason.hasPrefix(AIAdviceClamp.localPolicyOverridePrefix),
+                      "实际=\(clamped.reason)")
     }
 
     func test_clamp_hard_forbid_prefix_overrides_ai_safe() {

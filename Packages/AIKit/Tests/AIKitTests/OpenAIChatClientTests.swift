@@ -110,7 +110,10 @@ final class OpenAIChatClientTests: XCTestCase {
         let inquiry = makeInquiry(verdict: .forbid)
         let advice = try await client.ask(inquiry)
         XCTAssertEqual(advice.canDelete, .forbid, "本地 forbid 必须强制覆盖")
-        XCTAssertTrue(advice.reason.contains("[本地安全策略已拒绝]"))
+        // 产品契约：AIKit 层降级时贴 sentinel prefix（见 AIAdviceClamp.localPolicyOverridePrefix），
+        // UI 层再替换为本地化文案。此处锁 sentinel，不锁翻译后字面量。
+        XCTAssertTrue(advice.reason.hasPrefix(AIAdviceClamp.localPolicyOverridePrefix),
+                      "实际=\(advice.reason)")
     }
 
     func test_ask_http_error_surfaces() async {

@@ -152,9 +152,12 @@ final class AppleWorkflowPR2CardsTests: XCTestCase {
                        "PITFALL：Simulator.app 运行时删 devices 会破坏正在运行的实例，必须 blocked")
         XCTAssertEqual(runtimes.risk, .blocked)
 
-        XCTAssertTrue(devices.summary.contains("⚠️"),
-                      "blocked 时 summary 必须给用户警告，避免用户疑惑为何无法点击")
-        XCTAssertTrue(runtimes.summary.contains("⚠️"))
+        // 产品契约：summary 存 xcstrings raw key（blocked 分支 → `.summary.blocked`），
+        // UI 层用 LocalizedStringKey 消费。此处锁 key 后缀，不锁翻译后字面量。
+        XCTAssertTrue(devices.summary.hasSuffix(".summary.blocked"),
+                      "blocked 时 summary 必须命中 blocked 分支 key，实际=\(devices.summary)")
+        XCTAssertTrue(runtimes.summary.hasSuffix(".summary.blocked"),
+                      "实际=\(runtimes.summary)")
     }
 
     func test_Simulator未运行_Devices_Runtimes_两卡_risk为_confirm() throws {

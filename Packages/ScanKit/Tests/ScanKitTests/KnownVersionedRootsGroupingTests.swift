@@ -108,9 +108,10 @@ final class KnownVersionedRootsGroupingTests: XCTestCase {
                        ["IntelliJIdea2024.1", "IntelliJIdea2024.2"])
         XCTAssertEqual(wsHits.first?.versionName, "WebStorm2024.1")
 
-        // displayName 应带 group key 后缀方便 UI 看到是哪个产品
-        XCTAssertTrue(ideaHits.allSatisfy { $0.displayName.contains("IntelliJIdea") })
-        XCTAssertTrue(wsHits.allSatisfy { $0.displayName.contains("WebStorm") })
+        // 产品契约：displayName 存 xcstrings raw key（如 versioned-root.jetbrains.caches.displayName），
+        // UI 层用 LocalizedStringKey 消费。原始 group key（"IntelliJIdea"/"WebStorm"）通过 Hit.groupKey 暴露。
+        XCTAssertTrue(ideaHits.allSatisfy { $0.groupKey == "IntelliJIdea" })
+        XCTAssertTrue(wsHits.allSatisfy { $0.groupKey == "WebStorm" })
     }
 
     func test_分组_未匹配子目录_隐藏文件_无版本号目录_全部被忽略() throws {
