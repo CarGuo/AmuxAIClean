@@ -1,6 +1,5 @@
 {
   "sourceLanguage": "zh-Hans",
-  "version": "1.0",
   "strings": {
     "ai.advice.local_policy_override.prefix": {
       "extractionState": "manual",
@@ -716,23 +715,6 @@
         }
       }
     },
-    "batch.common_app_cache.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "WeChat, browsers, Slack and app cache rules"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "微信、浏览器、Slack 等应用缓存规则"
-          }
-        }
-      }
-    },
     "batch.common_app_cache.title": {
       "extractionState": "manual",
       "localizations": {
@@ -746,23 +728,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "常见软件缓存"
-          }
-        }
-      }
-    },
-    "batch.developer.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Build caches that may be regenerated"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "可重建的构建缓存与依赖产物"
           }
         }
       }
@@ -801,23 +766,6 @@
         }
       }
     },
-    "batch.fulldisk.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Scan the whole disk (requires Full Disk Access)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "扫描整个磁盘（需完全磁盘访问权限）"
-          }
-        }
-      }
-    },
     "batch.fulldisk.title": {
       "extractionState": "manual",
       "localizations": {
@@ -831,23 +779,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "整盘扫描"
-          }
-        }
-      }
-    },
-    "batch.recommended.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Parallel scan of 5 common roots"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "一键并行扫 5 个常用根"
           }
         }
       }
@@ -1763,23 +1694,6 @@
         }
       }
     },
-    "category.xcode.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DerivedData caches that Xcode may recreate"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Xcode 可重建的 DerivedData 缓存"
-          }
-        }
-      }
-    },
     "category.xcode.help": {
       "extractionState": "manual",
       "localizations": {
@@ -1793,6 +1707,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "DerivedData 包含 CompilationCache.noindex、ModuleCache.noindex 等 Xcode 构建缓存。清理后 Xcode 或 SwiftBuild 可能重新创建它们；稀疏文件还会让显示的逻辑大小和实际释放空间不完全一致。"
+          }
+        }
+      }
+    },
+    "category.xcode.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DerivedData caches that Xcode may recreate"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Xcode 可重建的 DerivedData 缓存"
           }
         }
       }
@@ -4024,23 +3955,6 @@
         }
       }
     },
-    "largefiles.action.trash %lld": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Move to Trash (%lld)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "移到废纸篓（%lld）"
-          }
-        }
-      }
-    },
     "largefiles.banner.threshold_lowered": {
       "extractionState": "manual",
       "localizations": {
@@ -4836,23 +4750,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "[GREEN] 安全"
-          }
-        }
-      }
-    },
-    "main.devtool.brew.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Installed / outdated / cleanup"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已装 / 过期 / 清理缓存"
           }
         }
       }
@@ -9817,142 +9714,6 @@
         }
       }
     },
-    "sidebar.subtitle.app_footprint": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "See which apps are eating disk"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "查看哪些 App 在吃磁盘"
-          }
-        }
-      }
-    },
-    "sidebar.subtitle.dev_versioned": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Xcode DeviceSupport · JetBrains Toolbox"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Xcode 设备支持 · JetBrains Toolbox"
-          }
-        }
-      }
-    },
-    "sidebar.subtitle.duplicate": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Read-only view; clean up in Finder"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "只读视图，请用 Finder 自行处理"
-          }
-        }
-      }
-    },
-    "sidebar.subtitle.launch_agents": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Login & startup plists"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "查看登录/开机自启的 plist"
-          }
-        }
-      }
-    },
-    "sidebar.subtitle.maintenance": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "LaunchServices · QuickLook · DNS"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "启动服务 · 预览 · DNS 缓存"
-          }
-        }
-      }
-    },
-    "sidebar.subtitle.port_cleaner": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Quit apps occupying ports"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "结束端口占用进程"
-          }
-        }
-      }
-    },
-    "sidebar.subtitle.undo_history": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Recent trash batches"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "最近移到废纸篓的批次"
-          }
-        }
-      }
-    },
-    "sidebar.subtitle.uninstall": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pick an installed app and review related files"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "选择已安装 App，查看关联文件"
-          }
-        }
-      }
-    },
     "size.accounting.logical": {
       "extractionState": "manual",
       "localizations": {
@@ -13506,23 +13267,6 @@
         }
       }
     },
-    "workflow.sidebar.android.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "gradle / SDK / AVD / Android Studio"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "gradle / SDK / AVD / Android Studio"
-          }
-        }
-      }
-    },
     "workflow.sidebar.android.title": {
       "extractionState": "manual",
       "localizations": {
@@ -13536,23 +13280,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Android"
-          }
-        }
-      }
-    },
-    "workflow.sidebar.apple.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Xcode / Simulator / DeviceSupport"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Xcode / Simulator / DeviceSupport"
           }
         }
       }
@@ -13591,23 +13318,6 @@
         }
       }
     },
-    "workflow.sidebar.webnode.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "pnpm / yarn / npm / electron / node_modules"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "pnpm / yarn / npm / electron / node_modules"
-          }
-        }
-      }
-    },
     "workflow.sidebar.webnode.title": {
       "extractionState": "manual",
       "localizations": {
@@ -13625,5 +13335,6 @@
         }
       }
     }
-  }
+  },
+  "version": "1.0"
 }
