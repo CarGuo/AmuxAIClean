@@ -493,8 +493,13 @@ final class RegressionRunner {
         // 3 个 present 文件被允许；missing + homeForbid 都被 skip（一个 missing、一个 forbid）
         assertEqual(present, 3, "present count")
         assertEqual(skipped, 2, "skipped count")
-        assertTrue(err?.contains("拦截") == true || err?.contains("不存在") == true,
-                   "err message contains reason")
+        assertTrue(
+            err?.contains("拦截") == true
+                || err?.contains("不存在") == true
+                || err?.contains("blocked") == true
+                || err?.contains("missing") == true,
+            "err message contains reason (zh: 拦截/不存在, en: blocked/missing)"
+        )
         // 真实文件还在
         let fm = FileManager.default
         for p in real { assertTrue(fm.fileExists(atPath: p), "real file still exists (dryRun): \(p)") }
