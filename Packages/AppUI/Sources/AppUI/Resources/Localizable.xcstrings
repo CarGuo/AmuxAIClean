@@ -7340,13 +7340,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Enabled"
+            "value": "Running"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已启用"
+            "value": "运行中"
           }
         }
       }
@@ -7374,13 +7374,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Not registered"
+            "value": "Not enabled"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "尚未注册"
+            "value": "未启用"
           }
         }
       }
@@ -7391,13 +7391,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Requires approval"
+            "value": "Requires approval (System Settings → Login Items)"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "等待授权"
+            "value": "需要授权（前往系统设置 → 登录项）"
           }
         }
       }

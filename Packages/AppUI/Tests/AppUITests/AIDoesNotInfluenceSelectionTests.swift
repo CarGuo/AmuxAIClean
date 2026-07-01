@@ -53,8 +53,14 @@ final class AIDoesNotInfluenceSelectionTests: XCTestCase {
         let clamped = AIAdviceClamp.clamp(aiSays, against: inquiry)
         XCTAssertEqual(clamped.canDelete, .forbid,
                        "inquiry.verdict=.forbid 时，AI 即使说 safe 也必须降为 forbid")
-        XCTAssertTrue(clamped.reason.contains("本地安全策略"),
-                      "降级时必须在 reason 前缀贴本地安全策略标签")
+        // 产品契约：AIKit 层降级时会在 reason 前缀贴 sentinel
+        // `[ai.advice.local_policy_override] `（见
+        // [AIAdviceClamp.localPolicyOverridePrefix](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PromptBuilder.swift#L103)）。
+        // UI 层 [AIAdviceSheet.localizedReason](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift#L184-L190)
+        // 才把该 sentinel 替换为本地化字符串（zh: "[本地安全策略已覆盖] " / en: "[Overridden by local policy] "）。
+        // 因此本单测锁的是 clamp 层 sentinel 契约，而非 UI 本地化后字面量。
+        XCTAssertTrue(clamped.reason.hasPrefix(AIAdviceClamp.localPolicyOverridePrefix),
+                      "降级时必须在 reason 前缀贴本地安全策略 sentinel，实际=\(clamped.reason)")
     }
 
     func test_AIClamp_硬禁前缀_System_AI说confirm_仍被夹回forbid() {

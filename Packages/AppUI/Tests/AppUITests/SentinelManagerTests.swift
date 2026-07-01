@@ -37,10 +37,13 @@ final class SentinelManagerTests: XCTestCase {
         for s in cases {
             XCTAssertFalse(s.displayLabel.isEmpty, "\(s) displayLabel 不能空")
         }
-        XCTAssertEqual(SentinelManager.Status.notRegistered.displayLabel,    "未启用")
-        XCTAssertEqual(SentinelManager.Status.enabled.displayLabel,          "运行中")
-        XCTAssertEqual(SentinelManager.Status.requiresApproval.displayLabel, "需要授权（前往系统设置 → 登录项）")
-        XCTAssertEqual(SentinelManager.Status.notFound.displayLabel,         "未找到")
+        // 产品契约：`displayLabel` 走 xcstrings，SwiftPM XCTest 进程默认
+        // 不加载包本地化 lproj → 拿到的是 raw key。此处只锁契约稳定：
+        //   1. notRegistered / enabled / requiresApproval / notFound
+        //      各自返回一个稳定非空字符串（前几行 assertFalse isEmpty 已覆盖）
+        //   2. unknown(raw) 必须把 raw 值带出来方便诊断
+        // 具体本地化字面量校验交给 [I18nIntegrityTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/I18nIntegrityTests.swift)
+        // 与真机回归 [sentinel-default-off](file:///Users/guoshuyu/workspace/GSYCleanMac/App/RegressionRunner.swift) 覆盖。
         XCTAssertTrue(SentinelManager.Status.unknown(42).displayLabel.contains("42"),
                       "unknown 必须把 raw 值带出来方便诊断")
     }

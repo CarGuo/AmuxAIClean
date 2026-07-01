@@ -135,8 +135,18 @@ final class TrashPipelineDryRunTests: XCTestCase {
         XCTAssertEqual(present, 2, "只 safe1+safe2 被计入 present")
         XCTAssertEqual(skipped, 2, "/System 和 /etc 各计 skipped 一次")
         XCTAssertNotNil(err)
-        XCTAssertTrue(err?.contains("被安全策略拦截") == true,
-                      "error 文案需含拦截原因，实际=\(err ?? "nil")")
+        // 产品契约：dryRun 有 rejected 时，err 必须能定位到"安全策略拦截"这个语义。
+        // xcstrings 里对应 key = trash.err.dryrun.safety_blocked %lld，
+        // zh-Hans 值含"被安全策略拦截"，en 值含"blocked by safety policy"。
+        // SwiftPM XCTest 进程默认不加载包本地化 lproj → 会拿到 raw key 名，
+        // 因此此处三源都接受，锁的是"语义存在"而非"具体字面量"。
+        let e = err ?? ""
+        XCTAssertTrue(
+            e.contains("被安全策略拦截")
+                || e.contains("blocked by safety policy")
+                || e.contains("safety_blocked"),
+            "error 文案需含拦截语义（zh/en/raw-key 任一），实际=\(e)"
+        )
     }
 
     /// M4 闸门 正式模式：全部 forbid 时直接短路，不调 NSWorkspace.recycle，
