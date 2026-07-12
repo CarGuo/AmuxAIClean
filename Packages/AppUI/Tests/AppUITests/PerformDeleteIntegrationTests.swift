@@ -5,21 +5,19 @@ import SafetyKit
 /// Step 15：补 [MainView.performDelete L1473-L1527](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1473-L1527)
 /// 4 步联动死角集成测。
 ///
-/// 因 `performDelete` 是 MainView 的 SwiftUI private method，本测**复刻**它的 4 步顺序：
+/// 因 `performDelete` 是 MainView 的 SwiftUI private method，本测复刻它的 4 步顺序：
 ///   ① pipeline.setAccessDeniedPaths(deniedSet)
-///   ② await pipeline.moveToTrash(paths:dryRun:)
-///   ③ 成功且非 dryRun → UndoHistoryStore.addRecord(source: "clean", pairs)
-///   ④ 成功且非 dryRun → coordinator.pruneDeleted(paths:) + refreshVolumeCapacity
+///   ② await TrashActionCoordinator.run(...)
+///   ③ 非 dryRun 且 movedPairs 非空 → UndoHistoryStore.addRecord(source: "clean", pairs)
+///   ④ 非 dryRun 且 movedPairs 非空 → coordinator.pruneDeleted(succeededPaths)
 /// 用 FakeDeletionPipeline + 真 [ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
 /// + 临时文件 UndoHistoryStore 驱动，断言 4 步全部按规约发生 + dryRun 不写 store / 不 prune /
 /// 不写 UndoHistory。
 ///
 /// 决策：AUDIT §3.6 "accessDenied 路径不被 prune" 这条**当前实现没有**——
 /// [MainView L1521](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1521)
-/// 把全部候选 paths 都 prune（注释 L1517-L1520 明说"保守做法"）。pipeline 内部 partitionByForbid
-/// 把 accessDenied 跳过不真删，但 UI 层视觉上仍要剔除（"删它是个伪操作但 UI 不应留"）。
-/// 因此本测验证的是"**accessDenied 路径仍被 pipeline.setAccessDeniedPaths 注入到 pipeline**"
-/// 这条**已实现**的契约，而非未来重构的假设。
+/// v1.5.7 修复用户截图反馈后，本测锁定新契约：UI 删除状态更新只消费
+/// `movedPairs.map(\.original)`，不能再用 `err == nil` 或原始提交 paths 做粗粒度判断。
 @MainActor
 final class PerformDeleteIntegrationTests: XCTestCase {
 
@@ -36,10 +34,7 @@ final class PerformDeleteIntegrationTests: XCTestCase {
         func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)]) {
             movedPathsReceived = paths
             dryRunReceived = dryRun
-            if let err = returnError {
-                return (0, paths.count, err, [])
-            }
-            return (paths.count, 0, nil, returnPairs)
+            return (returnPairs.count, max(0, paths.count - returnPairs.count), returnError, returnPairs)
         }
 
         func setAccessDeniedPaths(_ paths: Set<String>) {
@@ -78,22 +73,17 @@ final class PerformDeleteIntegrationTests: XCTestCase {
         denied: Set<String>,
         dryRun: Bool
     ) async -> (moved: Int, skipped: Int, err: String?) {
-        // ① accessDenied 注入
-        pipeline.setAccessDeniedPaths(denied)
-        // ② 调 pipeline
-        let (moved, skipped, err, pairs) = await pipeline.moveToTrash(paths: paths, dryRun: dryRun)
-        // ③ Step 7：UndoHistory 仅在 !dryRun + err==nil + 非空 pairs 写
-        if !dryRun, err == nil, !pairs.isEmpty {
-            undo.addRecord(
-                source: "clean",
-                filePairs: pairs.map { UndoHistoryStore.Record.FilePair(original: $0.0, trashed: $0.1) }
-            )
+        let action = TrashActionCoordinator(pipeline: pipeline, undoHistoryStore: undo)
+        let result = await action.run(TrashActionCoordinator.Request(
+            paths: paths,
+            dryRun: dryRun,
+            source: "clean",
+            accessDeniedPaths: denied
+        ))
+        if !dryRun, !result.succeededPaths.isEmpty {
+            coordinator.pruneDeleted(paths: result.succeededPaths)
         }
-        // ④ pruneDeleted 仅在 !dryRun + err==nil 时调
-        if !dryRun, err == nil {
-            coordinator.pruneDeleted(paths: paths)
-        }
-        return (moved, skipped, err)
+        return (result.moved, result.skipped, result.err)
     }
 
     // MARK: - 用例 1：4 步全成（!dryRun + 无 error + 非空 pairs）
@@ -161,9 +151,36 @@ final class PerformDeleteIntegrationTests: XCTestCase {
             "dryRun 不应触发 pruneDeleted，UI 行仍在")
     }
 
-    // MARK: - 用例 3：pipeline 报错 → 不写 Undo / 不 prune（视觉行不消失，下次扫描重补）
+    // MARK: - 用例 3：部分成功且 err 非空 → 只写/只 prune 真成功项
 
-    func test_performDelete_pipeline报错则不Undo不Prune() async throws {
+    func test_performDelete_部分成功但err非空_只Undo和Prune成功项() async throws {
+        let coord = ScanCoordinator()
+        coord._seedForTesting(
+            snapshot: ScanSnapshot(categoryID: "t",
+                                   rows: [makeRow("/A/x"), makeRow("/A/y")],
+                                   totalBytes: 200, scannedFileCount: 2,
+                                   isFinished: true, elapsed: 0)
+        )
+        let pipe = FakePipeline()
+        pipe.returnPairs = [("/A/x", "/Trash/x")]
+        pipe.returnError = "partial recycle failed"
+        let (undo, undoURL) = try makeUndoStore()
+        defer { try? FileManager.default.removeItem(at: undoURL) }
+
+        let result = await runPerformDeleteLike(
+            coordinator: coord, pipeline: pipe, undo: undo,
+            paths: ["/A/x", "/A/y"], denied: [], dryRun: false
+        )
+
+        XCTAssertEqual(result.err, "partial recycle failed")
+        XCTAssertEqual(undo.history.count, 1,
+            "部分成功时 err 非空也必须写入真实 movedPairs，否则用户无法恢复已移动项")
+        XCTAssertEqual(undo.history.first?.filePairs.map(\.original), ["/A/x"])
+        XCTAssertEqual(coord.snapshot.rows.map(\.id), ["/A/y"],
+            "部分成功时只能 prune 真成功项，失败项继续留在 UI 中供重试")
+    }
+
+    func test_performDelete_全部失败则不Undo不Prune() async throws {
         let coord = ScanCoordinator()
         coord._seedForTesting(
             snapshot: ScanSnapshot(categoryID: "t",
@@ -183,9 +200,9 @@ final class PerformDeleteIntegrationTests: XCTestCase {
 
         XCTAssertEqual(result.err, "trash recycle failed")
         XCTAssertEqual(undo.history.count, 0,
-            "pipeline 失败时绝不写 UndoHistory（避免出现没真删却能恢复的鬼记录）")
-        XCTAssertEqual(coord.snapshot.rows.count, 1,
-            "pipeline 失败时不应 prune，UI 留行让用户下次扫描重判")
+            "全部失败时没有 movedPairs，绝不写 UndoHistory")
+        XCTAssertEqual(coord.snapshot.rows.map(\.id), ["/A/x"],
+            "全部失败时不应 prune，UI 留行让用户重试")
     }
 
     // MARK: - 用例 4：accessDenied snapshot 必须被注入到 pipeline

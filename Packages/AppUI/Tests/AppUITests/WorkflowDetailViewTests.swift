@@ -87,11 +87,16 @@ final class WorkflowDetailViewTests: XCTestCase {
         _ = WorkflowDetailViewModel.formatBytes(Int64.max)
     }
 
-    /// PR-5：MainView sentinel 3 个 ID 不能重名也不能与既有 sentinel 冲突。
+    /// PR-5：MainView workflow sentinel ID 不能重名也不能与既有 sentinel 冲突。
     /// 这是 sidebar 的硬约束——重名会让 List(selection:) 高亮串台。
-    func test_PR5_sentinel_workflow_三ID_全局唯一_v17() {
-        let workflowIDs: Set<String> = MainView.workflowSentinelIDs
-        XCTAssertEqual(workflowIDs.count, 3, "workflow sentinel 必须恰好 3 个")
+    func test_PR5_sentinel_workflow_ID_全局唯一_v17() {
+        let workflowIDs = MainView.workflowSentinelIDs
+        XCTAssertEqual(workflowIDs, [
+            MainView.workflowAppleSentinelID,
+            MainView.workflowAndroidSentinelID,
+            MainView.workflowWebNodeSentinelID,
+            MainView.workflowBackendSentinelID,
+        ], "workflow sentinel 必须覆盖当前四个工作流入口")
 
         let allSentinels: [String] = [
             MainView.appFootprintSentinelID,
@@ -105,6 +110,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             MainView.workflowAppleSentinelID,
             MainView.workflowAndroidSentinelID,
             MainView.workflowWebNodeSentinelID,
+            MainView.workflowBackendSentinelID,
         ]
         XCTAssertEqual(Set(allSentinels).count, allSentinels.count, "sentinel ID 必须全局唯一")
     }

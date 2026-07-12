@@ -1,0 +1,206 @@
+#include <metal_stdlib>
+using namespace metal;
+
+struct SmartCareBackgroundUniforms {
+    float2 resolution;
+    float time;
+    float flameOpacity;
+    float koiOpacity;
+    float sceneMix;
+    float2 padding;
+    float4 paletteBlue;
+    float4 paletteTeal;
+    float4 paletteAmber;
+};
+
+struct SmartCareFlameVertexOut {
+    float4 position [[position]];
+};
+
+vertex SmartCareFlameVertexOut smartCareFlameVertex(uint vertexID [[vertex_id]]) {
+    const float2 positions[3] = {
+        float2(-1.0, -1.0),
+        float2(3.0, -1.0),
+        float2(-1.0, 3.0)
+    };
+    SmartCareFlameVertexOut out;
+    out.position = float4(positions[vertexID], 0.0, 1.0);
+    return out;
+}
+
+fragment float4 smartCareFlameFragment(
+    SmartCareFlameVertexOut in [[stage_in]],
+    constant SmartCareBackgroundUniforms &uniforms [[buffer(0)]]
+) {
+    float2 fragCoord = in.position.xy;
+    float2 uv = (2.0 * fragCoord - uniforms.resolution) / uniforms.resolution.y;
+    float3 rayDirection = normalize(float3(uv, 2.0));
+    float4 accumulatedColor = float4(0.0);
+    float travel = 0.0;
+
+    for (int step = 0; step < 70; ++step) {
+        float3 point = travel * rayDirection;
+        point.z -= 5.0 + cos(uniforms.time);
+
+        float angle = uniforms.time + point.y * 0.25;
+        float sine = sin(angle);
+        float cosine = cos(angle);
+        float2 rotatedXZ = float2(
+            cosine * point.x - sine * point.z,
+            sine * point.x + cosine * point.z
+        );
+        point.x = rotatedXZ.x;
+        point.z = rotatedXZ.y;
+
+        float frequency = 2.0;
+        for (int octave = 0; octave < 6; ++octave) {
+            frequency /= 0.8;
+            point += cos(point.yzx * frequency + uniforms.time) / frequency;
+        }
+
+        float distanceToField = 0.01
+            + abs(length(point.xz) + point.y * 0.3 - 1.0) / 9.0;
+        travel += distanceToField;
+
+        float4 sourceSample = sin(
+            point.y * 0.5 - float4(1.0, 2.0, 4.0, 1.0)
+        ) + 1.1;
+        accumulatedColor += sourceSample * (0.015 / distanceToField);
+    }
+
+    float3 sourceColor = tanh(accumulatedColor.rgb / 15.0);
+    float sourcePeak = max(sourceColor.r, max(sourceColor.g, sourceColor.b));
+    float sourceFloor = min(sourceColor.r, min(sourceColor.g, sourceColor.b));
+    float sourceContrast = sourcePeak - sourceFloor;
+    float sourceMean = (sourceColor.r + sourceColor.g + sourceColor.b) / 3.0;
+    float sourceMedian = sourceColor.r + sourceColor.g + sourceColor.b
+        - sourcePeak
+        - sourceFloor;
+    float2 screenUV = fragCoord / uniforms.resolution;
+
+    // Let the palette phase bend with the source field so each colored ribbon
+    // moves with the fire instead of reading as three fixed horizontal bands.
+    float palettePhase = clamp(
+        screenUV.y
+            + (sourceColor.r - sourceColor.b) * 0.18
+            + (sourceColor.g - sourceMean) * 0.12,
+        0.0,
+        1.0
+    );
+    float3 coolColor = mix(
+        uniforms.paletteBlue.rgb,
+        uniforms.paletteTeal.rgb,
+        smoothstep(0.04, 0.54, palettePhase)
+    );
+    float3 warmColor = mix(
+        uniforms.paletteTeal.rgb,
+        uniforms.paletteAmber.rgb,
+        smoothstep(0.44, 0.96, palettePhase)
+    );
+    float3 paletteColor = mix(
+        coolColor,
+        warmColor,
+        smoothstep(0.42, 0.58, palettePhase)
+    );
+    float highlight = smoothstep(0.64, 0.98, sourceMean) * 0.20;
+    float3 color = clamp(
+        mix(paletteColor, float3(0.94, 0.985, 1.0), highlight)
+            * mix(0.78, 1.10, sourcePeak),
+        float3(0.0),
+        float3(1.0)
+    );
+
+    float edgeFade = smoothstep(0.0, 0.08, screenUV.x)
+        * smoothstep(0.0, 0.08, 1.0 - screenUV.x)
+        * smoothstep(0.0, 0.08, screenUV.y)
+        * smoothstep(0.0, 0.08, 1.0 - screenUV.y);
+    // The reference's dark blue field is negative space, not flame. Requiring
+    // energy in at least two channels keeps that field transparent on light UI.
+    float brightnessEnergy = smoothstep(0.34, 0.78, sourceMean);
+    float multiChannelEnergy = smoothstep(0.22, 0.72, sourceMedian);
+    float flameEnergy = pow(brightnessEnergy * multiChannelEnergy, 1.35);
+
+    float plumeAlpha = uniforms.flameOpacity
+        * flameEnergy
+        * edgeFade;
+    return float4(color * plumeAlpha, plumeAlpha);
+}
+
+struct SmartCareKoiVertexOut {
+    float4 position [[position]];
+    float pointSize [[point_size]];
+    float4 color;
+};
+
+vertex SmartCareKoiVertexOut smartCareKoiVertex(
+    uint vertexID [[vertex_id]],
+    constant SmartCareBackgroundUniforms &uniforms [[buffer(0)]]
+) {
+    int i = 10000 - int(vertexID);
+    float y = float(i) / 790.0;
+    float baseK;
+    if (y < 8.0) {
+        baseK = 9.0 + sin(float(int(y) ^ 9)) * 6.0;
+    } else {
+        baseK = 4.0 + cos(y);
+    }
+
+    float koiTime = uniforms.time * 2.0943951;
+    float parity = float(i & 1);
+    float k = baseK * cos(float(i) + koiTime / 4.0);
+    float e = y / 3.0 - 13.0;
+    float d = length(float2(k, e))
+        + cos(e + koiTime * 2.0 + parity * 4.0);
+    float q = y * k / 5.0
+        * (2.0 + sin(d * 2.0 + y - koiTime * 4.0))
+        + 80.0;
+    float c = d / 4.0 - koiTime / 2.0 + parity * 3.0;
+
+    float2 localPoint = float2(
+        q * cos(c),
+        q * sin(c) + d * 9.0
+    );
+    float travelTime = uniforms.time;
+    float2 center = uniforms.resolution * float2(
+        0.50 + 0.31 * sin(travelTime * 0.22),
+        0.43 + 0.18 * sin(travelTime * 0.17)
+    );
+    float canvasScale = min(uniforms.resolution.x, uniforms.resolution.y)
+        / 400.0
+        * 0.86;
+    float2 pixelPosition = center + localPoint * canvasScale;
+    float2 normalizedPosition = float2(
+        pixelPosition.x / uniforms.resolution.x * 2.0 - 1.0,
+        1.0 - pixelPosition.y / uniforms.resolution.y * 2.0
+    );
+
+    float bodyPosition = smoothstep(0.0, 12.7, y);
+    float3 firstKoi = mix(
+        uniforms.paletteBlue.rgb,
+        uniforms.paletteTeal.rgb,
+        bodyPosition
+    );
+    float3 secondKoi = mix(
+        uniforms.paletteTeal.rgb,
+        uniforms.paletteAmber.rgb,
+        bodyPosition
+    );
+
+    SmartCareKoiVertexOut out;
+    out.position = float4(normalizedPosition, 0.0, 1.0);
+    out.pointSize = 1.35;
+    out.color = float4(
+        mix(firstKoi, secondKoi, parity) * uniforms.koiOpacity,
+        uniforms.koiOpacity
+    );
+    return out;
+}
+
+fragment float4 smartCareKoiFragment(
+    SmartCareKoiVertexOut in [[stage_in]],
+    float2 pointCoordinate [[point_coord]]
+) {
+    float distanceFromCenter = length(pointCoordinate * 2.0 - 1.0);
+    float coverage = 1.0 - smoothstep(0.34, 1.0, distanceFromCenter);
+    return float4(in.color.rgb * coverage, in.color.a * coverage);
+}

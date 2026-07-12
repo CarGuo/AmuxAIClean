@@ -144,7 +144,7 @@ sleep 1
 
 # 2) Build（除非 --no-build）
 if [ "$DO_BUILD" -eq 1 ]; then
-    step "xcodebuild Debug 增量构建（签名走 .xcodeproj 里 Manual + Apple Distribution 企业证书）"
+    step "xcodebuild Debug 增量构建（签名走 .xcodeproj 里的 Automatic + Apple Development）"
     if ! xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Debug \
             -destination 'platform=macOS' \
             -quiet build 2>&1 | tail -20; then

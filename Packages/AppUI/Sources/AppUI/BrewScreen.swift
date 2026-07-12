@@ -1,5 +1,4 @@
 import SwiftUI
-import AppKit
 import BrewKit
 
 /// F-2-4 / 2026-06：Homebrew 包管理屏（sidebar 入口接入）。
@@ -380,27 +379,24 @@ public struct BrewScreen: View {
         guard !plan.isEmpty, !isCleaning else { return }
         isCleaning = true
         cleanupResult = nil
-        Task {
-            let result = await recycle(plan.stalePaths)
-            await MainActor.run {
-                isCleaning = false
-                if let error = result.error {
-                    cleanupResult = String(format: String(localized: "brew.cleanup.failed %@", bundle: .module), error)
-                } else {
-                    cleanupResult = String(format: String(localized: "brew.cleanup.moved %lld %@", bundle: .module),
-                                           result.moved,
-                                           byteString(plan.totalBytes))
-                    reloadCleanup()
-                }
+        Task { @MainActor in
+            let action = TrashActionCoordinator(pipeline: TrashPipeline())
+            let result = await action.run(TrashActionCoordinator.Request(
+                paths: plan.stalePaths.map(\.path),
+                dryRun: false,
+                source: "brew",
+                accessDeniedPaths: []
+            ))
+            isCleaning = false
+            if let error = result.err {
+                cleanupResult = String(format: String(localized: "brew.cleanup.failed %@", bundle: .module), error)
+            } else {
+                cleanupResult = String(format: String(localized: "brew.cleanup.moved %lld %@", bundle: .module),
+                                       result.succeededPaths.count,
+                                       byteString(plan.totalBytes))
             }
-        }
-    }
-
-    @MainActor
-    private func recycle(_ urls: [URL]) async -> (moved: Int, error: String?) {
-        await withCheckedContinuation { continuation in
-            NSWorkspace.shared.recycle(urls) { trashed, error in
-                continuation.resume(returning: (trashed.count, error?.localizedDescription))
+            if !result.succeededPaths.isEmpty {
+                reloadCleanup()
             }
         }
     }

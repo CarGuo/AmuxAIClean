@@ -5,6 +5,21 @@ import ScanKit
 import SafetyKit
 import AIKit
 
+private enum SidebarMetrics {
+    static let minWidth: CGFloat = 320
+    static let idealWidth: CGFloat = 360
+    static let maxWidth: CGFloat = 460
+}
+
+private struct SidebarTitleStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .font(.system(.body, design: .rounded))
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
+}
+
 /// v1.3 review-fix B3：跨 target 的通知名常量。
 /// App 层在主窗口已被销毁的情况下 post 这个通知，MainView 监听并调 `openWindow(id:)` 重建。
 public extension Notification.Name {
@@ -14,7 +29,12 @@ public extension Notification.Name {
 /// 三栏主界面 —— 侧边类目 / 中间结果 / 右侧详情 + 删除按钮。
 /// 见 PITFALLS §5.5/§5.6/§5.7：默认勾选只勾 .safe；先聚合不展平；删除走 preview sheet。
 public struct MainView: View {
+    public static let defaultInterfaceMode: SmartCareInterfaceMode = .normal
+
     @StateObject private var coordinator: ScanCoordinator
+    @State private var interfaceMode: SmartCareInterfaceMode = MainView.defaultInterfaceMode
+    @State private var smartCareSession: SmartCareSession
+    @State private var smartCareDeleteRequest: SmartCareCleanRequest?
     @State private var presetCategories: [ScanCategory] = ScanCategories.recommended()
     @State private var customCategories: [ScanCategory] = []
     @State private var selectedCategory: ScanCategory.ID?
@@ -55,10 +75,8 @@ public struct MainView: View {
     /// `pendingCategorySwitch` 只保存用户意图；确认通过后才真正写入 selectedCategory。
     @State private var pendingCategorySwitch: (old: String?, new: String?)?
     @State private var showSwitchCategoryConfirm: Bool = false
-    /// **v1.5.3 修订**：删除走乐观更新——前端 pruneDeleted 立即生效，
-    /// 后台 pipeline.moveToTrash 异步执行，仅在结束后用 deleteResult alert 报结果。
-    /// 这个 flag 仍保留（未来如有"批量删除大数据集"场景可重新挂 progress UI），
-    /// 当前版本仅用于内部 guard"删除中不要重复触发"。
+    /// 删除中的 UI guard。删除完成后仅按 TrashPipeline 返回的 movedPairs 更新 UI，
+    /// 防止部分失败时把未移动的项误移除。
     @State private var isDeleting: Bool = false
     @State private var deleteResult: String?
 
@@ -94,6 +112,7 @@ public struct MainView: View {
     /// `BatchSelection` 是 `@Observable class`，用 `@State` 持有引用，
     /// SwiftUI Observation 自动追踪 `selected` 变更 → 头部 checkbox 与 footer 按钮双向响应。
     @State private var largeFilesBatch = BatchSelection()
+    @State private var visibleLargeFilePaths: [String] = []
     /// 树形视图选中行。bug A：之前 TreeBrowserView 的 selectedPath 锁在自身内部，
     /// 外层 detailPane 永远拿不到，详情面板因此长期空白。现在通过 onSelect 回调
     /// 同步到这里，detailPane 优先用 treeSelection 渲染（语义上"看哪个就显哪个"）。
@@ -131,6 +150,7 @@ public struct MainView: View {
     private let recorder: HeuristicRecorder
     private let settings: AppSettings
     private let pathStore: UserPathStore
+    private let settingsNavigation: SettingsNavigation
     /// M5 / 2026-06：AI 模块配置。**必须由 App 层注入**与 [SettingsScene](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SettingsScene.swift)
     /// 共享同一份 @Observable 实例：用户在 ⌘, 切 AI Enabled → RowView contextMenu
     /// 的"问 AI"项要立刻刷新可见性。若各自 new 两份独立实例，虽然底层 UserDefaults
@@ -143,6 +163,10 @@ public struct MainView: View {
     /// v1.5 P2 / Q3：AI 未配置时点击"问 AI"会把这里置 true，弹 alert 引导用户前往设置。
     /// 旧实现是按钮直接隐藏 / disabled —— 用户根本不知道有这个能力。
     @State private var aiUnconfiguredAlert: Bool = false
+    /// 普通模式 AI 复核复用既有 StashAIQueue；仅覆盖当前首页实际展示的优先结果，
+    /// AI 建议不回写 SafetyVerdict，也不改变任何勾选状态。
+    @State private var smartCareAIStore: StashStore = StashStore()
+    @State private var smartCareAIQueue: StashAIQueue = StashAIQueue()
     /// macOS 14+：通过环境拿到打开"设置..."窗口的标准 action。
     /// Q3 alert 的"前往设置"按钮会调用它，免去手写 NSApp.sendAction 私有 selector。
     @Environment(\.openSettings) private var openSettings
@@ -168,7 +192,9 @@ public struct MainView: View {
                 settings: AppSettings? = nil,
                 pathStore: UserPathStore? = nil,
                 coordinator: ScanCoordinator? = nil,
-                aiSettings: AISettings? = nil) {
+                smartCareSession: SmartCareSession? = nil,
+                aiSettings: AISettings? = nil,
+                settingsNavigation: SettingsNavigation? = nil) {
         // v0 默认走 NSWorkspace.recycle（PITFALLS §5.9）：不需要 root，不需要 99 美元 Apple Developer Program
         // 用户撤销可以走 Finder → 显示废纸篓 → 放回原位
         // M4-P0 修复：把 vendors 透传到 TrashPipeline，让最后闸门启用 vendor 路径树判定
@@ -176,9 +202,13 @@ public struct MainView: View {
         self.recorder = recorder
         self.settings = settings ?? AppSettings()
         self.pathStore = pathStore ?? UserPathStore()
+        self.settingsNavigation = settingsNavigation ?? SettingsNavigation()
         // v1.3：coordinator 允许从 App 层注入，让 [FloatingScanHUD](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
         // 与主窗口共享同一个 ScanCoordinator 实例（订阅同一份 snapshot/isScanning），避免双扫。
         _coordinator = StateObject(wrappedValue: coordinator ?? ScanCoordinator(vendors: vendors))
+        _smartCareSession = State(initialValue: smartCareSession ?? SmartCareSession(
+            scanCoordinator: ScanCoordinator(vendors: vendors)
+        ))
         // M5 / Review fix #2：AISettings 必须 App 层注入。未注入时（老测试 / 预览）退回独立实例。
         _aiSettings = State(initialValue: aiSettings ?? AISettings())
     }
@@ -218,12 +248,19 @@ public struct MainView: View {
         // 的内部分栏里出现「外层 detail 列被挤剩极窄一条 + 旋转 90° 占位文字」的视觉灾难
         // （问题 4 的截图）；同时切 tab 时外层 detail 也容易残留上一屏的内容（问题 2）。
         // 现在外层只有 sidebar + content，细节区由各底层屏自己负责（清单/树形复用 results 内的 inline 详情区）。
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            results
+        Group {
+            switch interfaceMode {
+            case .normal:
+                smartCareHome
+            case .professional:
+                NavigationSplitView {
+                    sidebar
+                } detail: {
+                    results
+                }
+            }
         }
-        .navigationTitle(Text("main.nav.title", bundle: .module))
+        .navigationTitle("")
         .toolbar { toolbar }
         // v2026.06.21：切换扫描目标前确认。`titleVisibility: .visible` 让 message 不被吃掉。
         // 设计：role:.destructive 暗示"放弃当前结果"是有损操作；cancel 同时复位 selection
@@ -259,6 +296,22 @@ public struct MainView: View {
                 }
             )
         }
+        .sheet(item: $smartCareDeleteRequest) { request in
+            let rows = request.items.map(makePreviewRow)
+            DeleteSheet(
+                items: rows,
+                runningConflicts: runningAppConflicts(for: rows),
+                onCancel: {
+                    smartCareDeleteRequest = nil
+                },
+                onConfirm: { dryRun in
+                    smartCareDeleteRequest = nil
+                    Task { [request] in
+                        await performSmartCareDelete(request: request, dryRun: dryRun)
+                    }
+                }
+            )
+        }
         // M5 / 2026-06：AI 询问 sheet —— item-based 触发，aiAskingRow 非 nil 即弹。
         .sheet(item: $aiAskingRow) { row in
             AIAdviceSheet(row: row,
@@ -271,6 +324,7 @@ public struct MainView: View {
         .alert(String(localized: "ai.unconfigured.alert.title", bundle: .module),
                isPresented: $aiUnconfiguredAlert) {
             Button(String(localized: "ai.unconfigured.alert.open_settings", bundle: .module)) {
+                settingsNavigation.select(.ai)
                 openSettings()
             }
             Button(String(localized: "ai.unconfigured.alert.cancel", bundle: .module),
@@ -289,20 +343,22 @@ public struct MainView: View {
                 aiSettings: aiSettings,
                 onClose: { isStashScreenPresented = false },
                 onCleanOne: { entry in
-                    // 单独清理：复用 triggerLargeFileTrash（已含乐观更新 + 历史写入）。
-                    // 删除发起后再把对应 path 从待处理摘掉，避免 sheet 行残留。
+                    // 单独清理：复用 triggerLargeFileTrash（已含历史写入 + 成功项 prune）。
+                    // 删除完成后只把成功移动的 path 从待处理摘掉，失败项保留给用户重试。
                     // v2026.06.21 修复 #3：suppressSuccessSheet=true。stash 路径已经通过
                     // 「item 从列表消失」反馈成功，纯成功不再叠 OperationResultSheet——
                     // 否则用户关闭 stash sheet 后会被一个多余的"清理完成"弹窗困住。
                     // 失败 / 拦截项仍会弹（用户必须看见）。
                     triggerLargeFileTrash(urls: [URL(fileURLWithPath: entry.path)],
-                                          suppressSuccessSheet: true)
-                    stash.remove(entry.path)
+                                          suppressSuccessSheet: true) { result in
+                        stash.remove(paths: result.succeededPaths)
+                    }
                 },
                 onCleanAll: { entries in
                     let urls = entries.map { URL(fileURLWithPath: $0.path) }
-                    triggerLargeFileTrash(urls: urls, suppressSuccessSheet: true)
-                    stash.remove(paths: entries.map(\.path))
+                    triggerLargeFileTrash(urls: urls, suppressSuccessSheet: true) { result in
+                        stash.remove(paths: result.succeededPaths)
+                    }
                 },
                 onAskAIOne: { entry in
                     // 单独 AI：复用 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
@@ -325,13 +381,7 @@ public struct MainView: View {
                 }
             )
         }
-        // **v1.5.3 修订**：之前这里挂了一个 ProgressView sheet 拦在主页面前面，
-        // 视觉上变成"整页消失只剩 loading"，且 sheet dismiss 触发的重渲染会打断当前页面。
-        // 现在删除走"乐观更新"：
-        //   1. 点删 → 立即 pruneDeleted（snapshot.rows + childEdges + treeChildrenCache）
-        //   2. 用户视觉上节点立刻消失，无 modal sheet
-        //   3. 后台 pipeline.moveToTrash 异步执行，完成后只弹结果 alert（成功/失败）
-        // 真删失败时通过 deleteResult alert 提示，pruneDeleted 已扣除的 row 由下一次扫描重新补齐。
+        // 删除结果提示：真删完成后按 movedPairs 更新列表；失败 / 拦截项留在原处并通过结果弹窗说明。
         .alert(String(localized: "main.delete.result.title", bundle: .module), isPresented: .constant(deleteResult != nil)) {
             Button(String(localized: "main.delete.result.ok", bundle: .module)) { deleteResult = nil }
         } message: {
@@ -419,7 +469,8 @@ public struct MainView: View {
             isPresented: $sentinelScanInvitationVisible
         ) {
             Button(String(localized: "sentinel.alert.scan_invitation.action_scan", bundle: .module)) {
-                coordinator.scanRecommended(includeHidden: settings.showHidden)
+                interfaceMode = .normal
+                startSmartCareScan()
             }
             Button(String(localized: "sentinel.alert.scan_invitation.action_dismiss", bundle: .module), role: .cancel) {}
         } message: {
@@ -438,6 +489,194 @@ public struct MainView: View {
             coordinator.mainListSortKey = settings.mainListSortKey
             await refreshCustomPaths()
         }
+    }
+
+    // MARK: - Smart Care
+
+    private var smartCareHome: some View {
+        SmartCareHomeView(
+            coordinator: smartCareSession.care,
+            session: smartCareSession,
+            aiIsConfigured: aiSettings.isReadyForUI,
+            aiIsRunning: smartCareAIQueue.phase == .running,
+            aiProcessed: smartCareAIQueue.processed,
+            aiTotal: smartCareAIQueue.total,
+            aiError: smartCareAIErrorText,
+            aiItemStates: smartCareAIItemStates,
+            onPrimaryAction: handleSmartCarePrimaryAction,
+            onAIReview: runSmartCareAIReview
+        )
+    }
+
+    private var smartCareAIItemStates: [String: SmartCareAIItemState] {
+        var states: [String: SmartCareAIItemState] = [:]
+        states.reserveCapacity(smartCareAIStore.entries.count)
+        for entry in smartCareAIStore.entries {
+            switch entry.aiVerdict {
+            case .pending:
+                states[entry.path] = smartCareAIQueue.currentPath == entry.path
+                    ? .reviewing
+                    : .pending
+            case .done(let verdict, let summary):
+                states[entry.path] = .advice(verdict, summary: summary)
+            case .error(let message):
+                states[entry.path] = .failed(message)
+            }
+        }
+        return states
+    }
+
+    private var smartCareAIErrorText: String? {
+        guard let error = smartCareAIQueue.lastGlobalError, !error.isEmpty else { return nil }
+        if error.hasPrefix("ai.") {
+            return String(localized: String.LocalizationValue(error), bundle: .module)
+        }
+        return error
+    }
+
+    private var smartCareAIReviewItems: [SmartCareItem] {
+        let supported: [SmartCareBucketID] = [.systemJunk, .appCache, .developerCache]
+        var result: [SmartCareItem] = []
+        var seen: Set<String> = []
+        for bucketID in supported {
+            guard let bucket = smartCareSession.care.summary.buckets.first(where: { $0.id == bucketID }) else {
+                continue
+            }
+            for item in bucket.safeItems.prefix(4) where seen.insert(item.id).inserted {
+                result.append(item)
+            }
+        }
+        for item in smartCareSession.care.summary.confirmItems.prefix(6)
+        where seen.insert(item.id).inserted {
+            result.append(item)
+        }
+        return result
+    }
+
+    private func runSmartCareAIReview() {
+        guard aiSettings.isReadyForUI else {
+            aiUnconfiguredAlert = true
+            return
+        }
+        guard smartCareAIQueue.phase == .idle else { return }
+
+        smartCareAIStore.clear()
+        for item in smartCareAIReviewItems {
+            smartCareAIStore.add(
+                path: item.path,
+                title: item.title,
+                bytes: item.bytes,
+                isDirectory: item.isDirectory
+            )
+        }
+        smartCareAIQueue.start(stash: smartCareAIStore, aiSettings: aiSettings)
+    }
+
+    private func makePreviewRow(from item: SmartCareItem) -> RowItem {
+        RowItem(
+            id: item.id,
+            url: URL(fileURLWithPath: item.path),
+            title: item.title,
+            isDirectory: item.isDirectory,
+            bytes: item.bytes,
+            logicalBytes: item.logicalBytes,
+            fileCount: item.fileCount,
+            verdict: item.verdict,
+            rejection: .ok,
+            vendorNote: item.riskNote,
+            runningBundleIDPrefix: item.runningBundleIDPrefix
+        )
+    }
+
+    private func handleSmartCarePrimaryAction(_ action: SmartCarePrimaryAction) {
+        switch action {
+        case .startScan:
+            startSmartCareScan()
+        case .scanAgain, .retry, .continueScan:
+            smartCareSession.prepareForRescan()
+        case .stopScan:
+            smartCareSession.cancelScan()
+        case .cleanSafeItems, .confirmClean:
+            let request = smartCareSession.care.makeCleanRequest()
+            guard !request.items.isEmpty else { return }
+            smartCareDeleteRequest = request
+        case .cleaning:
+            break
+        }
+    }
+
+    private func startSmartCareScan() {
+        smartCareAIQueue.cancel()
+        smartCareAIStore.clear()
+        smartCareDeleteRequest = nil
+        smartCareSession.startScan(
+            includeHidden: settings.showHidden,
+            enabledDeveloperRuleIDs: settings.enabledDevArtifactRuleIDs
+        )
+    }
+
+    private func performSmartCareDelete(request: SmartCareCleanRequest, dryRun: Bool) async {
+        let rows = request.items.map(makePreviewRow)
+        if !dryRun, let message = runningAppBlockMessage(for: rows) {
+            deleteResult = message
+            return
+        }
+
+        if dryRun {
+            _ = await runTrash(paths: request.paths, dryRun: true, source: "smart-care")
+            return
+        }
+
+        guard !isDeleting else { return }
+        guard let confirmedRequest = smartCareSession.care.confirmClean() else { return }
+        isDeleting = true
+        defer { isDeleting = false }
+
+        let result = await runTrash(
+            paths: confirmedRequest.paths,
+            dryRun: false,
+            source: "smart-care"
+        )
+        let succeededPaths = result.succeededPaths
+        let succeededSet = Set(succeededPaths)
+
+        if !succeededPaths.isEmpty {
+            await recorder.recordTrashed(paths: succeededPaths)
+            selection.subtract(succeededSet)
+            coordinator.pruneDeleted(paths: succeededPaths)
+        }
+
+        let releasedBytes = confirmedRequest.items
+            .filter { succeededSet.contains($0.path) }
+            .reduce(Int64(0)) { $0 + $1.bytes }
+        if releasedBytes > 0 {
+            Task.detached { [releasedBytes] in
+                await CleanStatsStore.shared.record(
+                    bytesReclaimed: releasedBytes,
+                    category: "smart-care"
+                )
+            }
+        }
+
+        coordinator.refreshVolumeCapacity()
+
+        if succeededPaths.isEmpty, let error = result.err {
+            smartCareSession.care.fail(.cleanFailed(error))
+            return
+        }
+
+        let remaining = SmartCareSummaryBuilder.removing(
+            paths: succeededPaths,
+            from: smartCareSession.care.summary
+        )
+        smartCareSession.care.completeCleaning(
+            SmartCareResult(
+                movedCount: result.moved,
+                skippedCount: result.skipped,
+                releasedBytes: releasedBytes
+            ),
+            remainingSummary: remaining
+        )
     }
 
     // MARK: - Sidebar
@@ -467,7 +706,11 @@ public struct MainView: View {
                 onRetry: { coordinator.refreshVolumeCapacity() }
             )
         }
-        .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 320)
+        .navigationSplitViewColumnWidth(
+            min: SidebarMetrics.minWidth,
+            ideal: SidebarMetrics.idealWidth,
+            max: SidebarMetrics.maxWidth
+        )
         // v2：sidebar 整体套布局沙箱——切断 sidebarList 内部任何一行长 title 反推
         // 外层 NavigationSplitView，避免「sidebar 被压成 1px 竖线」复发。
         .layoutSandbox()
@@ -538,7 +781,7 @@ public struct MainView: View {
                     addCustomPathViaPanel()
                 } label: {
                     Label {
-                        Text("menu.path.add", bundle: .module)
+                        localizedSidebarTitle("menu.path.add")
                     } icon: {
                         Image(systemName: "plus")
                     }
@@ -637,6 +880,8 @@ public struct MainView: View {
                     .tag(MainView.workflowAndroidSentinelID)
                 workflowWebNodeSidebarRow
                     .tag(MainView.workflowWebNodeSentinelID)
+                workflowBackendSidebarRow
+                    .tag(MainView.workflowBackendSentinelID)
             } header: {
                 Text("workflow.sidebar.section", bundle: .module)
             }
@@ -701,11 +946,15 @@ public struct MainView: View {
     /// v1.7 M1 PR-5：「Web / Node 开发者工作流」侧边项。
     static let workflowWebNodeSentinelID: String = "workflow.webnode"
 
-    /// v1.7 M1 PR-5：三个工作流 sentinel 集合。onChange 命中其一即清空状态，不再走 startScan 路径。
+    /// v1.9：「后端开发者工作流」侧边项（JVM / Go / Rust / Zig / Bazel / CMake）。
+    static let workflowBackendSentinelID: String = "workflow.backend"
+
+    /// 工作流 sentinel 集合。onChange 命中其一即清空状态，不再走 startScan 路径。
     static let workflowSentinelIDs: Set<String> = [
         workflowAppleSentinelID,
         workflowAndroidSentinelID,
         workflowWebNodeSentinelID,
+        workflowBackendSentinelID,
     ]
 
     /// v1.5：sidebar Batch Scans section 的 row。结构与 sidebarRow / appFootprintSidebarRow
@@ -722,8 +971,7 @@ public struct MainView: View {
             Image(systemName: icon)
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            Text(LocalizedStringKey(titleKey), bundle: .module)
-                .font(.system(.body, design: .rounded))
+            localizedSidebarTitle(titleKey)
         }
         .padding(.vertical, 2)
         .modifier(OptionalHelpModifier(helpText: helpText(helpKey)))
@@ -734,8 +982,7 @@ public struct MainView: View {
             Image(systemName: "chart.bar.fill")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            Text("sidebar.row.app_footprint", bundle: .module)
-                .font(.system(.body, design: .rounded))
+            localizedSidebarTitle("sidebar.row.app_footprint")
         }
         .padding(.vertical, 2)
     }
@@ -745,8 +992,7 @@ public struct MainView: View {
             Image(systemName: "play.square.fill")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            Text("sidebar.row.launch_agents", bundle: .module)
-                .font(.system(.body, design: .rounded))
+            localizedSidebarTitle("sidebar.row.launch_agents")
         }
         .padding(.vertical, 2)
     }
@@ -756,8 +1002,7 @@ public struct MainView: View {
             Image(systemName: "network")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            Text("sidebar.row.port_cleaner", bundle: .module)
-                .font(.system(.body, design: .rounded))
+            localizedSidebarTitle("sidebar.row.port_cleaner")
         }
         .padding(.vertical, 2)
     }
@@ -767,8 +1012,7 @@ public struct MainView: View {
             Image(systemName: "trash.slash")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            Text("sidebar.row.uninstall", bundle: .module)
-                .font(.system(.body, design: .rounded))
+            localizedSidebarTitle("sidebar.row.uninstall")
         }
         .padding(.vertical, 2)
     }
@@ -778,8 +1022,7 @@ public struct MainView: View {
             Image(systemName: "doc.on.doc")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            Text("sidebar.row.duplicate", bundle: .module)
-                .font(.system(.body, design: .rounded))
+            localizedSidebarTitle("sidebar.row.duplicate")
         }
         .padding(.vertical, 2)
     }
@@ -790,8 +1033,7 @@ public struct MainView: View {
             Image(systemName: "arrow.uturn.backward.circle")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            Text("sidebar.row.undo_history", bundle: .module)
-                .font(.system(.body, design: .rounded))
+            localizedSidebarTitle("sidebar.row.undo_history")
         }
         .padding(.vertical, 2)
     }
@@ -803,8 +1045,7 @@ public struct MainView: View {
             Image(systemName: "wrench.and.screwdriver")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            Text("sidebar.row.maintenance", bundle: .module)
-                .font(.system(.body, design: .rounded))
+            localizedSidebarTitle("sidebar.row.maintenance")
         }
         .padding(.vertical, 2)
     }
@@ -815,8 +1056,7 @@ public struct MainView: View {
             Image(systemName: "mug")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            Text("main.devtool.brew.title", bundle: .module)
-                .font(.system(.body, design: .rounded))
+            localizedSidebarTitle("main.devtool.brew.title")
         }
         .padding(.vertical, 2)
     }
@@ -827,8 +1067,7 @@ public struct MainView: View {
             Image(systemName: "applelogo")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            Text("workflow.sidebar.apple.title", bundle: .module)
-                .font(.system(.body, design: .rounded))
+            localizedSidebarTitle("workflow.sidebar.apple.title")
         }
         .padding(.vertical, 2)
     }
@@ -840,8 +1079,7 @@ public struct MainView: View {
             Image(systemName: "cube.box")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            Text("workflow.sidebar.android.title", bundle: .module)
-                .font(.system(.body, design: .rounded))
+            localizedSidebarTitle("workflow.sidebar.android.title")
         }
         .padding(.vertical, 2)
     }
@@ -852,8 +1090,18 @@ public struct MainView: View {
             Image(systemName: "globe")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            Text("workflow.sidebar.webnode.title", bundle: .module)
-                .font(.system(.body, design: .rounded))
+            localizedSidebarTitle("workflow.sidebar.webnode.title")
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// v1.9：「Backend 工作流」侧边 row —— server.rack 表达后端/服务端工具链。
+    private var workflowBackendSidebarRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "server.rack")
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            localizedSidebarTitle("workflow.sidebar.backend.title")
         }
         .padding(.vertical, 2)
     }
@@ -865,8 +1113,7 @@ public struct MainView: View {
             Image(systemName: "hammer")
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            Text("sidebar.row.dev_versioned", bundle: .module)
-                .font(.system(.body, design: .rounded))
+            localizedSidebarTitle("sidebar.row.dev_versioned")
         }
         .padding(.vertical, 2)
     }
@@ -877,11 +1124,20 @@ public struct MainView: View {
             Image(systemName: iconOverride ?? iconName(for: cat.kind))
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            Text(cat.displayTitle)
-                .font(.system(.body, design: .rounded))
+            sidebarTitle(cat.displayTitle)
         }
         .padding(.vertical, 2)
         .modifier(OptionalHelpModifier(helpText: cat.displayHelpIfConfigured))
+    }
+
+    private func localizedSidebarTitle(_ key: String) -> some View {
+        Text(LocalizedStringKey(key), bundle: .module)
+            .modifier(SidebarTitleStyle())
+    }
+
+    private func sidebarTitle(_ title: String) -> some View {
+        Text(title)
+            .modifier(SidebarTitleStyle())
     }
 
     private func helpText(_ helpKey: String?) -> String? {
@@ -979,6 +1235,11 @@ public struct MainView: View {
         selectedCategory == MainView.workflowWebNodeSentinelID
     }
 
+    /// v1.9：当前是否在「Backend 工作流」模式。
+    private var isWorkflowBackendMode: Bool {
+        selectedCategory == MainView.workflowBackendSentinelID
+    }
+
     private var results: some View {
         VStack(spacing: 0) {
             if isAppFootprintMode {
@@ -1025,6 +1286,11 @@ public struct MainView: View {
                 WorkflowDetailView(workflow: WebNodeWorkflow(),
                                    pipeline: pipeline,
                                    accessDeniedPathsProvider: { accessDeniedPathsSnapshot() })
+            } else if isWorkflowBackendMode {
+                // v1.9：Backend 工作流（JVM / Go / Rust / Zig / Bazel / CMake）。
+                WorkflowDetailView(workflow: BackendWorkflow(),
+                                   pipeline: pipeline,
+                                   accessDeniedPathsProvider: { accessDeniedPathsSnapshot() })
             } else {
                 statusBar
                 Divider()
@@ -1038,6 +1304,9 @@ public struct MainView: View {
                         batch: largeFilesBatch,
                         onTrash: { urls in
                             triggerLargeFileTrash(urls: urls)
+                        },
+                        onVisiblePathsChange: { paths in
+                            visibleLargeFilePaths = paths
                         },
                         onStash: { item in
                             stash.add(path: item.path,
@@ -1088,6 +1357,9 @@ public struct MainView: View {
                                             // 避免两条选中态打架（detailPane 先看 treeSelection）。
                                             treeSelection = row
                                             detail = nil
+                                        },
+                                        onSelectionCleared: {
+                                            treeSelection = nil
                                         },
                                         onTrash: { url in
                                             // **v1.5.3**：行内 trash 按钮 / 右键菜单 / Delete 键
@@ -1607,7 +1879,7 @@ public struct MainView: View {
                 //   - 有勾选 → 走 batch，删掉所有勾选项（用户明确意图，即便被 kindFilter 隐藏也算）
                 //   - 无勾选但有 largeFileSelection → 退化为单行删（Cmd+Delete 沿用原有快捷键语义）
                 //   - 两者都无 → disabled
-                let pickedPaths = Array(largeFilesBatch.selected)
+                let pickedPaths = largeFilesBatch.selectedItemsIntersecting(visible: visibleLargeFilePaths)
                 let pickedCount = pickedPaths.count
                 let hasPicked = pickedCount > 0
                 let pickedBytes: Int64 = {
@@ -1644,8 +1916,9 @@ public struct MainView: View {
                 Button {
                     if hasPicked {
                         let urls = pickedPaths.map { URL(fileURLWithPath: $0) }
-                        triggerLargeFileTrash(urls: urls)
-                        largeFilesBatch.clear()
+                        triggerLargeFileTrash(urls: urls) { result in
+                            largeFilesBatch.remove(paths: result.succeededPaths)
+                        }
                     } else if let item = largeFileSelection {
                         triggerLargeFileTrash(urls: [item.url])
                     }
@@ -1754,11 +2027,30 @@ public struct MainView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            pathBar
+        ToolbarItemGroup(placement: .navigation) {
+            Text("main.nav.title", bundle: .module)
+                .font(.headline)
+                .lineLimit(1)
+            Picker(
+                String(localized: "smart_care.mode.label", bundle: .module),
+                selection: $interfaceMode
+            ) {
+                Text("smart_care.mode.normal", bundle: .module)
+                    .tag(SmartCareInterfaceMode.normal)
+                Text("smart_care.mode.professional", bundle: .module)
+                    .tag(SmartCareInterfaceMode.professional)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 220)
+            .help(Text("smart_care.mode.label", bundle: .module))
         }
-        ToolbarItem(placement: .primaryAction) {
-            sortMenu
+        if interfaceMode == .professional {
+            ToolbarItem(placement: .principal) {
+                pathBar
+            }
+            ToolbarItem(placement: .primaryAction) {
+                sortMenu
+            }
         }
         // v2026.06.21：原右上角「推荐 / 开发者 / 整盘」三个 logo 按钮直接移除——
         // 用户反馈这三个入口长期占位制造视觉噪音；功能可达性由 sidebar 的
@@ -1769,11 +2061,13 @@ public struct MainView: View {
         // v2026.06.18 购物车入口。count==0 时整项隐藏（避免 toolbar 永远多出
         // 一个"空购物车"按钮造成视觉噪音）。SwiftUI ToolbarItem 内 if 分支会让
         // 该 item 在 layout 阶段被剔除，无需特殊处理。
-        ToolbarItem(placement: .primaryAction) {
-            stashToolbarButton
-        }
-        ToolbarItem(placement: .primaryAction) {
-            scanControlButton
+        if interfaceMode == .professional {
+            ToolbarItem(placement: .primaryAction) {
+                stashToolbarButton
+            }
+            ToolbarItem(placement: .primaryAction) {
+                scanControlButton
+            }
         }
     }
 
@@ -2341,20 +2635,25 @@ public struct MainView: View {
         let skipped: Int
         let err: String?
         let pairs: [(String, String)]
+        let outcome: TrashOutcome?
+
+        var succeededPaths: [String] {
+            pairs.map { $0.0 }
+        }
     }
 
     /// v2026.06.17 (AUDIT A4)：抽出 `performDelete` 与 `triggerLargeFileTrash` 重复的
-    /// **pipeline 4 步握手** ——
-    /// (1) accessDenied 注入；(2) moveToTrashReturningOutcome；(3) UndoHistory 写入；(4) outcome → sheet/alert。
+    /// **统一删除入口** ——
+    /// (1) accessDenied 注入；(2) TrashActionCoordinator.run；(3) UndoHistory 写入；(4) outcome → sheet/alert。
     ///
     /// 抽这步是因为两条链路任何一处忘了 setAccessDeniedPaths 或忘了消费结构化 outcome
     /// 都会让"上层防护漏失 / 结构化 sheet 退化为文本 alert"的回归在 PR review 时几乎不可能被发现——
     /// 既然只剩一份真实现就把契约集中在一个方法里，强制单点维护。
     ///
     /// **不抽**的部分（特意保留在 callsite）：isDeleting sheet 控制、bytes 统计、
-    /// pruneDeleted（performDelete 在删后；triggerLargeFileTrash 在删前做乐观更新）、
+    /// pruneDeleted（主清单 / 大文件 / 强制删除都只消费 succeededPaths）、
     /// selection.removeAll / largeFileSelection=nil、refreshVolumeCapacity——
-    /// 这些是两条链路的语义差异点（dryRun vs 强制真删 / 阻塞 sheet vs 乐观更新 / 主清单 vs 大文件单点），
+    /// 这些是两条链路的语义差异点（dryRun vs 强制真删 / 阻塞 sheet vs 大文件单点），
     /// 强行融合会让 runTrash 变成"5 个回调参数"的胖方法，掩盖差异反而更危险。
     ///
     /// - Parameter source: UndoHistory 的 `source` 字段（"clean" / "large-file"），便于侧栏未来分类。
@@ -2364,21 +2663,20 @@ public struct MainView: View {
     ///   仍要弹（用户在 stash 里只看到 item 消失，看不到"被 vendor 拦"，必须有显式入口）。
     @MainActor
     private func runTrash(paths: [String], dryRun: Bool, source: String,
-                          suppressSuccessSheet: Bool = false) async -> TrashRunResult {
-        // ① accessDenied 注入（防止历史 cast 被悄悄改丢、重新引入"漏调=误拒"）。
-        // 见 [DeletionPipeline.setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift#L37)
-        // 自 v2026.06.17 (AUDIT A2) 起取消 protocol extension 默认 no-op，每个实现都必须显式提供。
-        pipeline.setAccessDeniedPaths(accessDeniedPathsSnapshot())
-        // ② 真正调 pipeline，并用返回值里的 outcome 作为本轮权威结果。
-        let result = await pipeline.moveToTrashReturningOutcome(paths: paths, dryRun: dryRun)
-        let (moved, skipped, err, pairs) = result.legacy
-        // ③ Step 7 UndoHistory：dryRun / 全 forbid / recycle err 时 pairs 都是空数组，addRecord 会 no-op 跳过。
-        if !dryRun, err == nil, !pairs.isEmpty {
-            UndoHistoryStore.shared.addRecord(
-                source: source,
-                filePairs: pairs.map { UndoHistoryStore.Record.FilePair(original: $0.0, trashed: $0.1) }
-            )
-        }
+                          suppressSuccessSheet: Bool = false,
+                          mode: TrashActionCoordinator.Mode = .normal) async -> TrashRunResult {
+        let action = TrashActionCoordinator(pipeline: pipeline)
+        let result = await action.run(TrashActionCoordinator.Request(
+            paths: paths,
+            dryRun: dryRun,
+            source: source,
+            accessDeniedPaths: accessDeniedPathsSnapshot(),
+            mode: mode
+        ))
+        let moved = result.moved
+        let skipped = result.skipped
+        let err = result.err
+        let pairs = result.pairs
         // ④ 结构化 sheet / 旧 alert 二选一（v2026.06.16 修复 #4）。
         //
         // v2026.06.21 修复 #3：stash 路径开 suppressSuccessSheet——纯成功时不再叠 sheet。
@@ -2392,7 +2690,7 @@ public struct MainView: View {
         if !shouldSuppress {
             presentTrashOutcome(moved: moved, skipped: skipped, err: err, dryRun: dryRun, outcome: result.outcome)
         }
-        return TrashRunResult(moved: moved, skipped: skipped, err: err, pairs: pairs)
+        return TrashRunResult(moved: moved, skipped: skipped, err: err, pairs: pairs, outcome: result.outcome)
     }
 
     /// v2026.06.17 (AUDIT A4)：runTrash 的"结果呈现"子步骤——
@@ -2438,15 +2736,14 @@ public struct MainView: View {
         // 与 [triggerLargeFileTrash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
         // 共用，避免两处独立维护"漏一步就放行"的脆弱契约。
         let result = await runTrash(paths: paths, dryRun: dryRun, source: "clean")
-        if result.err == nil {
-            if !dryRun {
-                // HL 行为采集：真删之后才上报，dryRun 不污染统计
-                await recorder.recordTrashed(paths: paths)
+        if !dryRun {
+            let succeededOnly = result.succeededPaths
+            if !succeededOnly.isEmpty {
+                // HL 行为采集：真删之后才上报，dryRun 不污染统计；只上报真实 moved pairs。
+                await recorder.recordTrashed(paths: succeededOnly)
                 // M4-T5：把这次成功移入废纸篓的字节数 / 类目记入 CleanStatsStore。
-                // bytes 取自 selectedRows 与 pairs 的交集（pairs 是 NSWorkspace.recycle 真正成功的项），
-                // 避免把"被 SafetyEngine 拦截"或"recycle 失败"的项也算进累计统计。
-                let succeededPaths = Set(result.pairs.map(\.0))
-                let movedBytes = selectedRows
+                let succeededPaths = Set(succeededOnly)
+                let movedBytes = rows
                     .filter { succeededPaths.contains($0.url.path) }
                     .reduce(Int64(0)) { $0 + $1.bytes }
                 if movedBytes > 0 {
@@ -2457,19 +2754,10 @@ public struct MainView: View {
                             category: categoryID.isEmpty ? "unknown" : categoryID)
                     }
                 }
-                selection.removeAll()
-                // **v2026.06.22 修复 #11**：把 `pruneDeleted` 从"删前/删后全候选"改成"删后只剔成功项"，
-                // 杜绝旧实现"删除失败（被 vendor 规则 / accessDenied / recycle 异常拦下）也从 item 消失"的 bug。
-                // 失败/拦截项保留在列表里，用户可在 [OperationResultSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/OperationResultSheet.swift)
-                // 看到原因，并点「强制删除」走 [performForceDelete](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)。
-                let succeededOnly = result.pairs.map { $0.0 }
-                if !succeededOnly.isEmpty {
-                    coordinator.pruneDeleted(paths: succeededOnly)
-                }
-                // v1.3：删除完成后立即重探卷容量，sidebar 容量条会跟随变化（"清理后空闲变多"反馈）。
-                // pruneDeleted 内部已调 refreshVolumeCapacity，这里保留 explicit 调用作为兜底。
-                coordinator.refreshVolumeCapacity()
+                selection.subtract(succeededPaths)
+                coordinator.pruneDeleted(paths: succeededOnly)
             }
+            coordinator.refreshVolumeCapacity()
         }
     }
 
@@ -2517,7 +2805,9 @@ public struct MainView: View {
     /// 大文件视图右键"移到废纸篓…"回调。
     /// 直接走 pipeline.moveToTrash + DeleteSheet 简化版（一次只对一个 url，
     /// 不复用主清单的 selection sheet——大文件场景没有 SafetyEngine 默认勾选语义）。
-    private func triggerLargeFileTrash(urls: [URL], suppressSuccessSheet: Bool = false) {
+    private func triggerLargeFileTrash(urls: [URL],
+                                       suppressSuccessSheet: Bool = false,
+                                       afterResult: ((TrashRunResult) -> Void)? = nil) {
         guard !urls.isEmpty else { return }
         guard !isDeleting else { return } // 防重入：删除中不接受新点击
         let paths = urls.map(\.path)
@@ -2539,15 +2829,19 @@ public struct MainView: View {
             let result = await runTrash(paths: paths, dryRun: false, source: "large-file",
                                         suppressSuccessSheet: suppressSuccessSheet)
             isDeleting = false
-            if result.err == nil {
-                await recorder.recordTrashed(paths: paths)
+            let succeededOnly = result.succeededPaths
+            if !succeededOnly.isEmpty {
+                await recorder.recordTrashed(paths: succeededOnly)
             }
             // v2026.06.22：删完后只剔真成功的 paths——失败/拦截项继续留在大文件列表里。
-            let succeededOnly = result.pairs.map { $0.0 }
             if !succeededOnly.isEmpty {
+                if let selected = largeFileSelection, succeededOnly.contains(selected.path) {
+                    largeFileSelection = nil
+                }
                 coordinator.pruneDeleted(paths: succeededOnly)
             }
             coordinator.refreshVolumeCapacity()
+            afterResult?(result)
         }
     }
 
@@ -2565,17 +2859,8 @@ public struct MainView: View {
     @MainActor
     private func performForceDelete(paths: [String]) async {
         guard !paths.isEmpty else { return }
-        pipeline.setAccessDeniedPaths(accessDeniedPathsSnapshot())
-        let result = await pipeline.moveToTrashForce(paths: paths, dryRun: false)
-        let (moved, skipped, err, pairs) = result.legacy
-        if err == nil, !pairs.isEmpty {
-            UndoHistoryStore.shared.addRecord(
-                source: "force",
-                filePairs: pairs.map { UndoHistoryStore.Record.FilePair(original: $0.0, trashed: $0.1) }
-            )
-        }
-        presentTrashOutcome(moved: moved, skipped: skipped, err: err, dryRun: false, outcome: result.outcome)
-        let succeededOnly = pairs.map { $0.0 }
+        let result = await runTrash(paths: paths, dryRun: false, source: "force", mode: .force)
+        let succeededOnly = result.succeededPaths
         if !succeededOnly.isEmpty {
             coordinator.pruneDeleted(paths: succeededOnly)
         }
@@ -2701,7 +2986,9 @@ public struct MainView: View {
 }
 
 private struct PermissionStatusBanner: View {
-    /// FDA（完全磁盘访问）受阻的路径——open(2) 失败。
+    /// 扫描器真实 open/readdir 失败的路径。显示前会再分成：
+    /// - FDA/TCC 仍可由隐私授权解决；
+    /// - FDA 已 granted 但 POSIX owner/mode 不允许当前用户进入。
     let fdaDeniedPaths: [String]
     /// TCC 雷区被主动 skip 的路径——根本没尝试 open，避免弹窗。
     let tccSkippedPaths: [String]
@@ -2718,24 +3005,44 @@ private struct PermissionStatusBanner: View {
     var onRescan: (() -> Void)? = nil
     @State private var expanded = false
 
-    private var fdaCount: Int { fdaDeniedPaths.count }
+    private var filesystemBlockedPaths: [String] {
+        PermissionDenialClassifier.filesystemBlockedPaths(in: fdaDeniedPaths,
+                                                          fdaStatus: fdaStatus)
+    }
+
+    private var privacyDeniedPaths: [String] {
+        let blocked = Set(filesystemBlockedPaths)
+        return fdaDeniedPaths.filter { !blocked.contains($0) }
+    }
+
+    private var fdaCount: Int { privacyDeniedPaths.count }
     private var tccCount: Int { tccSkippedPaths.count }
+    private var filesystemCount: Int { filesystemBlockedPaths.count }
 
     private var headlineText: String {
-        switch (fdaCount, tccCount) {
-        case (0, 0): return ""
-        case (let f, 0): return String(format: String(localized: "permission.banner.fda_only %lld", bundle: .module), f)
-        case (0, let t): return String(format: String(localized: "permission.banner.tcc_only %lld", bundle: .module), t)
-        case (let f, let t): return String(format: String(localized: "permission.banner.fda_and_tcc %lld %lld", bundle: .module), f, t)
+        let privacyCount = fdaCount + tccCount
+        switch (privacyCount, filesystemCount) {
+        case (0, 0):
+            return ""
+        case (0, let fs):
+            return String(format: String(localized: "permission.banner.filesystem_only %lld", bundle: .module), fs)
+        case (let p, let fs) where fs > 0:
+            return String(format: String(localized: "permission.banner.privacy_and_filesystem %lld %lld", bundle: .module), p, fs)
+        default:
+            switch (fdaCount, tccCount) {
+            case (let f, 0): return String(format: String(localized: "permission.banner.fda_only %lld", bundle: .module), f)
+            case (0, let t): return String(format: String(localized: "permission.banner.tcc_only %lld", bundle: .module), t)
+            case (let f, let t): return String(format: String(localized: "permission.banner.fda_and_tcc %lld %lld", bundle: .module), f, t)
+            }
         }
     }
 
     private var iconName: String {
-        fdaCount > 0 ? "lock.shield" : "hand.raised.circle"
+        fdaCount > 0 ? "lock.shield" : (filesystemCount > 0 ? "folder.badge.questionmark" : "hand.raised.circle")
     }
 
     private var tintColor: Color {
-        fdaCount > 0 ? .orange : .blue
+        fdaCount > 0 ? .orange : (filesystemCount > 0 ? .secondary : .blue)
     }
 
     /// 主行动按钮文案：FDA 受阻强调"打开权限"；纯 TCC 跳过强调"授权后重扫"。
@@ -2763,7 +3070,7 @@ private struct PermissionStatusBanner: View {
     /// - denied 列表里至少有一条命中独立 TCC 类目的目录。
     private var needsFilesAndFolders: Bool {
         guard fdaStatus != .denied else { return false }
-        return fdaDeniedPaths.contains(where: Self.isIndependentTCCCategory)
+        return privacyDeniedPaths.contains(where: Self.isIndependentTCCCategory)
     }
 
     /// v2026.06 用户反馈 #1：判断一个路径是否属于"独立 TCC 类目"——
@@ -2787,16 +3094,20 @@ private struct PermissionStatusBanner: View {
     }
 
     /// v1.3.zz：检测"明明 FDA 已开却仍 denied"——多半 = 用户授权的是 .app，
-    /// 但当前进程是 Debug build 或路径不一样的产物，TCC 按 codesign hash 索引匹不上。
+    /// 但当前进程是 Debug build / 另一个路径的产物，或 automatic signing 选到的
+    /// code requirement 与 TCC 记录不一致。
     /// 或者 = denied 路径里全是 ~/.Trash 之类**独立 TCC**项（不属于 FDA 范畴）。
     ///
     /// v2026.06 #1：新增 Files & Folders 提示——已开 FDA 但 denied 列表里有
     /// ~/Downloads / ~/Documents / ~/Desktop 这种"独立 TCC 类目"，必须单独授权。
     private var diagnosticHint: String? {
+        if fdaCount == 0, tccCount == 0, filesystemCount > 0 {
+            return String(localized: "permission.hint.filesystem_blocked", bundle: .module)
+        }
         if needsFilesAndFolders {
             return String(localized: "permission.hint.files_and_folders", bundle: .module)
         }
-        let trashDenied = fdaDeniedPaths.contains { $0.hasSuffix("/.Trash") }
+        let trashDenied = privacyDeniedPaths.contains { $0.hasSuffix("/.Trash") }
         if fdaStatus == .granted && trashDenied {
             return String(localized: "permission.hint.trash_not_fda", bundle: .module)
         }
@@ -2859,7 +3170,7 @@ private struct PermissionStatusBanner: View {
                     VStack(alignment: .leading, spacing: 4) {
                         if fdaCount > 0 {
                             Text(String(format: String(localized: "banner.fda.denied.title", bundle: .module), fdaCount)).font(.caption).foregroundStyle(.orange)
-                            ForEach(fdaDeniedPaths.prefix(50), id: \.self) { p in
+                            ForEach(privacyDeniedPaths.prefix(50), id: \.self) { p in
                                 Text(p).font(.caption2).foregroundStyle(.secondary)
                                     .lineLimit(1).truncationMode(.middle)
                             }
@@ -2881,6 +3192,17 @@ private struct PermissionStatusBanner: View {
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
                                 .padding(.top, 2)
+                        }
+                        if filesystemCount > 0 {
+                            if fdaCount > 0 || tccCount > 0 { Divider().padding(.vertical, 2) }
+                            Text(String(format: String(localized: "banner.filesystem.denied.title", bundle: .module), filesystemCount)).font(.caption).foregroundStyle(.secondary)
+                            ForEach(filesystemBlockedPaths.prefix(50), id: \.self) { p in
+                                Text(p).font(.caption2).foregroundStyle(.secondary)
+                                    .lineLimit(1).truncationMode(.middle)
+                            }
+                            if filesystemCount > 50 {
+                                Text(String(format: String(localized: "banner.filesystem.denied.more", bundle: .module), filesystemCount - 50)).font(.caption2).foregroundStyle(.tertiary)
+                            }
                         }
                     }
                 }

@@ -132,9 +132,9 @@ private final class SystemProbeRefreshBridge: @unchecked Sendable {
         ) { [weak self] _ in
             self?.scheduleVolumeRefresh()
         }
-        tokenBag.append(mountToken)
-        tokenBag.append(unmountToken)
-        tokenBag.append(appActiveToken)
+        tokenBag.append(mountToken, center: wsNC)
+        tokenBag.append(unmountToken, center: wsNC)
+        tokenBag.append(appActiveToken, center: .default)
 
         // 关键边界：timer handler 必须在非 MainActor 类型里创建。否则 Swift 6 会把
         // @MainActor store 方法中的闭包标成 MainActor executor，在后台 queue 入口 trap。
@@ -169,15 +169,20 @@ private final class SystemProbeRefreshBridge: @unchecked Sendable {
 /// `nonisolated` 的引用类型里，它自己的 `deinit` 在自己的隔离域里跑就合法了。
 /// NotificationCenter 的 `removeObserver` 是线程安全的，可以直接调。
 private final class NotificationTokenBag: @unchecked Sendable {
-    private var tokens: [NSObjectProtocol] = []
+    private struct Entry {
+        let center: NotificationCenter
+        let token: NSObjectProtocol
+    }
 
-    func append(_ token: NSObjectProtocol) {
-        tokens.append(token)
+    private var entries: [Entry] = []
+
+    func append(_ token: NSObjectProtocol, center: NotificationCenter) {
+        entries.append(Entry(center: center, token: token))
     }
 
     deinit {
-        for token in tokens {
-            NotificationCenter.default.removeObserver(token)
+        for entry in entries {
+            entry.center.removeObserver(entry.token)
         }
     }
 }

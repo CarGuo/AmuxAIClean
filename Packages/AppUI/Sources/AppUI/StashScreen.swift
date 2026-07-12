@@ -16,7 +16,7 @@ import SafetyKit
 /// 2. **删除走主链路**：通过 `onCleanOne / onCleanAll` 回调把 URL 交给
 ///    [MainView.triggerLargeFileTrash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L2144)，
 ///    复用 deletion pipeline（accessDenied 兜底 / UndoHistory / 结果 sheet），
-///    不在 StashScreen 自己造第二条删除链路；删除发起后调
+///    不在 StashScreen 自己造第二条删除链路；删除完成后只对成功 movedPairs 调
 ///    [StashStore.remove](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashStore.swift#L90)
 ///    联动摘掉对应条目。
 /// 3. **AI 入口同样复用** [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)

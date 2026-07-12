@@ -33,6 +33,8 @@ public struct DevArtifactRule: Identifiable, Hashable, Sendable {
         case go
         case python
         case jvm              // Maven / Gradle 缓存仓
+        case zig
+        case nativeBuild      // Bazel / CMake / Meson / Ninja 等本机构建系统
         case general          // 通用：.cache / .turbo
 
         public var id: String { rawValue }
@@ -53,6 +55,8 @@ public struct DevArtifactRule: Identifiable, Hashable, Sendable {
             case .go:             return "ecosystem.go.displayName"
             case .python:         return "ecosystem.python.displayName"
             case .jvm:            return "ecosystem.jvm.displayName"
+            case .zig:            return "ecosystem.zig.displayName"
+            case .nativeBuild:    return "ecosystem.nativeBuild.displayName"
             case .general:        return "ecosystem.general.displayName"
             }
         }
@@ -246,6 +250,26 @@ public enum DevArtifactRules {
               ecosystem: .rust, verdict: .safe,
               subtitle: "rule.rust.target.subtitle"),
 
+        // MARK: Zig
+        .init(id: "zig.local_cache_dot",
+              displayName: ".zig-cache",
+              directoryName: ".zig-cache",
+              siblingMarkers: ["build.zig", "build.zig.zon"],
+              ecosystem: .zig, verdict: .safe,
+              subtitle: "rule.zig.local_cache.subtitle"),
+        .init(id: "zig.local_cache_legacy",
+              displayName: "zig-cache",
+              directoryName: "zig-cache",
+              siblingMarkers: ["build.zig", "build.zig.zon"],
+              ecosystem: .zig, verdict: .safe,
+              subtitle: "rule.zig.local_cache.subtitle"),
+        .init(id: "zig.out",
+              displayName: "zig-out",
+              directoryName: "zig-out",
+              siblingMarkers: ["build.zig", "build.zig.zon"],
+              ecosystem: .zig, verdict: .confirm,
+              subtitle: "rule.zig.out.subtitle"),
+
         // MARK: Go
         .init(id: "go.vendor",
               displayName: "vendor",
@@ -253,6 +277,18 @@ public enum DevArtifactRules {
               siblingMarkers: ["go.mod"],
               ecosystem: .go, verdict: .confirm,
               subtitle: "rule.go.vendor.subtitle"),
+        .init(id: "go.bin",
+              displayName: "bin",
+              directoryName: "bin",
+              siblingMarkers: ["go.mod"],
+              ecosystem: .go, verdict: .confirm,
+              subtitle: "rule.go.bin.subtitle"),
+        .init(id: "go.coverage",
+              displayName: "coverage",
+              directoryName: "coverage",
+              siblingMarkers: ["go.mod"],
+              ecosystem: .go, verdict: .safe,
+              subtitle: "rule.go.coverage.subtitle"),
 
         // MARK: Python
         .init(id: "py.pycache",
@@ -292,6 +328,94 @@ public enum DevArtifactRules {
               siblingMarkers: ["tox.ini", "pyproject.toml"],
               ecosystem: .python, verdict: .safe,
               subtitle: "rule.py.tox.subtitle"),
+
+        // MARK: JVM / Backend
+        .init(id: "jvm.maven_target",
+              displayName: "target",
+              directoryName: "target",
+              siblingMarkers: ["pom.xml"],
+              ecosystem: .jvm, verdict: .safe,
+              subtitle: "rule.jvm.maven_target.subtitle"),
+        .init(id: "jvm.sbt_target",
+              displayName: "target",
+              directoryName: "target",
+              siblingMarkers: ["build.sbt"],
+              ecosystem: .jvm, verdict: .safe,
+              subtitle: "rule.jvm.sbt_target.subtitle"),
+        .init(id: "jvm.gradle_build",
+              displayName: "build",
+              directoryName: "build",
+              siblingMarkers: ["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"],
+              ecosystem: .jvm, verdict: .safe,
+              subtitle: "rule.jvm.gradle_build.subtitle"),
+        .init(id: "jvm.bloop",
+              displayName: ".bloop",
+              directoryName: ".bloop",
+              siblingMarkers: ["build.sbt", "scala-cli.project", "project"],
+              ecosystem: .jvm, verdict: .safe,
+              subtitle: "rule.jvm.bloop.subtitle"),
+        .init(id: "jvm.metals",
+              displayName: ".metals",
+              directoryName: ".metals",
+              siblingMarkers: ["build.sbt", "scala-cli.project", "project"],
+              ecosystem: .jvm, verdict: .confirm,
+              subtitle: "rule.jvm.metals.subtitle"),
+
+        // MARK: Native / Polyglot build systems
+        .init(id: "native.cmake_build_dir",
+              displayName: "build",
+              directoryName: "build",
+              siblingMarkers: ["CMakeLists.txt"],
+              ecosystem: .nativeBuild, verdict: .safe,
+              subtitle: "rule.native.cmake_build.subtitle"),
+        .init(id: "native.cmake_build",
+              displayName: "cmake-build-*",
+              directoryName: "cmake-build-debug",
+              siblingMarkers: ["CMakeLists.txt"],
+              ecosystem: .nativeBuild, verdict: .safe,
+              subtitle: "rule.native.cmake_build.subtitle"),
+        .init(id: "native.cmake_build_release",
+              displayName: "cmake-build-release",
+              directoryName: "cmake-build-release",
+              siblingMarkers: ["CMakeLists.txt"],
+              ecosystem: .nativeBuild, verdict: .safe,
+              subtitle: "rule.native.cmake_build.subtitle"),
+        .init(id: "native.cmake_files",
+              displayName: "CMakeFiles",
+              directoryName: "cmakefiles",
+              siblingMarkers: ["CMakeCache.txt"],
+              ecosystem: .nativeBuild, verdict: .safe,
+              subtitle: "rule.native.cmake_files.subtitle"),
+        .init(id: "native.bazel_bin",
+              displayName: "bazel-bin",
+              directoryName: "bazel-bin",
+              siblingMarkers: ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"],
+              ecosystem: .nativeBuild, verdict: .safe,
+              subtitle: "rule.native.bazel_output.subtitle"),
+        .init(id: "native.bazel_out",
+              displayName: "bazel-out",
+              directoryName: "bazel-out",
+              siblingMarkers: ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"],
+              ecosystem: .nativeBuild, verdict: .safe,
+              subtitle: "rule.native.bazel_output.subtitle"),
+        .init(id: "native.bazel_testlogs",
+              displayName: "bazel-testlogs",
+              directoryName: "bazel-testlogs",
+              siblingMarkers: ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"],
+              ecosystem: .nativeBuild, verdict: .safe,
+              subtitle: "rule.native.bazel_output.subtitle"),
+        .init(id: "native.meson_private",
+              displayName: "meson-private",
+              directoryName: "meson-private",
+              siblingMarkers: ["meson.build"],
+              ecosystem: .nativeBuild, verdict: .safe,
+              subtitle: "rule.native.meson_private.subtitle"),
+        .init(id: "native.meson_builddir",
+              displayName: "builddir",
+              directoryName: "builddir",
+              siblingMarkers: ["meson.build"],
+              ecosystem: .nativeBuild, verdict: .safe,
+              subtitle: "rule.native.meson_builddir.subtitle"),
 
         // MARK: 通用
         .init(id: "general.turbo",

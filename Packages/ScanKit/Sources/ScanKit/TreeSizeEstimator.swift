@@ -101,11 +101,13 @@ public enum TreeSizeEstimator {
         var iterations = 0
         // 软上限：估算不接受走太多目录（防御性，正常根 ~10k 目录以内）
         var anyEntry = false
+        var openedAnyDirectory = false
 
         while let dirPath = stack.popLast() {
             if Date() >= deadline { break }
             let fd = open(dirPath, O_RDONLY, 0)
             if fd < 0 { continue }
+            openedAnyDirectory = true
 
             BulkEnumerate.enumerate(fd: fd, dirPath: dirPath) { entry in
                 iterations += 1
@@ -131,7 +133,8 @@ public enum TreeSizeEstimator {
             close(fd)
         }
 
-        // root 完全没遍历到任何 entry 时返回 nil（保持与旧实现"完全失败"语义一致）
-        return anyEntry ? total : (total > 0 ? total : nil)
+        // 空目录是合法估算结果：stat/open 都成功但没有任何 entry，应返回 0。
+        // 只有根本没打开过任何目录（例如权限/类型问题）才表示没有估算数据。
+        return anyEntry ? total : (openedAnyDirectory ? 0 : nil)
     }
 }

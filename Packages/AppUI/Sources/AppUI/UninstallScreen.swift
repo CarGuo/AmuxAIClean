@@ -419,36 +419,41 @@ public struct UninstallScreen: View {
         // 可能跨视图复用 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)
         // 实例。若 MainView 上一轮扫描遗留了 accessDeniedPaths 没清，
         // 切到 UninstallScreen 走 trash 时就会"莫名 accessDenied 拒了某个 ~/Library/.. 路径"。
-        // 主动清空一次是 O(1) 锁开销，零误伤。
-        pipeline.setAccessDeniedPaths([])
-        let result = await pipeline.moveToTrashReturningOutcome(paths: paths, dryRun: dryRun)
-        let (moved, skipped, err, pairs) = result.legacy
-        // Step 7：UninstallScreen 真删成功后写 UndoHistory（dryRun / 失败 pair 为空 → no-op）。
-        if !dryRun, err == nil, !pairs.isEmpty {
-            await MainActor.run {
-                UndoHistoryStore.shared.addRecord(
-                    source: "uninstall",
-                    filePairs: pairs.map { UndoHistoryStore.Record.FilePair(original: $0.0, trashed: $0.1) }
-                )
-            }
-        }
+        // 主动清空一次是 O(1) 锁开销，零误伤；实际执行与 UndoHistory 写入走统一删除入口。
+        let action = TrashActionCoordinator(pipeline: pipeline)
+        let result = await action.run(TrashActionCoordinator.Request(
+            paths: paths,
+            dryRun: dryRun,
+            source: "uninstall",
+            accessDeniedPaths: []
+        ))
+        let moved = result.moved
+        let skipped = result.skipped
+        let err = result.err
         let mode = dryRun ? String(localized: "uninstall.result.mode.dryrun", bundle: .module) : ""
         await MainActor.run {
+            let succeeded = Set(result.succeededPaths)
             // **v2026.06.16 修复 #4**：真删走结构化 sheet；dryRun 仍走旧 alert（只看总数即可）。
             if !dryRun, let outcome = result.outcome {
                 self.lastResultPayload = OperationResultPayload(outcome: outcome)
-                if err == nil {
-                    self.checked.removeAll()
+                if !succeeded.isEmpty {
+                    self.checked.subtract(succeeded)
                     if let app = self.selectedApp {
                         Task { await self.reloadCandidates(for: app) }
                     }
                 }
             } else if let err {
                 self.lastResult = String(format: String(localized: "uninstall.result.failure", bundle: .module), mode, err, moved, skipped)
+                if !dryRun, !succeeded.isEmpty {
+                    self.checked.subtract(succeeded)
+                    if let app = self.selectedApp {
+                        Task { await self.reloadCandidates(for: app) }
+                    }
+                }
             } else {
                 self.lastResult = String(format: String(localized: "uninstall.result.success", bundle: .module), moved, mode, skipped)
-                if !dryRun {
-                    self.checked.removeAll()
+                if !dryRun, !succeeded.isEmpty {
+                    self.checked.subtract(succeeded)
                     if let app = self.selectedApp {
                         Task { await self.reloadCandidates(for: app) }
                     }

@@ -89,6 +89,34 @@ final class DevArtifactScannerTests: XCTestCase {
                        tempRoot.appendingPathComponent("androidApp/app/build").path)
     }
 
+    /// CMake 常见的 `build/` 必须由同级 CMakeLists.txt 兜底，不能误伤随机 build 目录。
+    func testCMakeBuildHitsOnlyWithCMakeListsSibling() async throws {
+        try mkdir("randomNative/build/output")
+        try mkdir("cmakeProject/build/CMakeFiles")
+        try touch("cmakeProject/CMakeLists.txt")
+
+        let scanner = DevArtifactScanner(options: .init(enabledRuleIDs: ["native.cmake_build_dir"]))
+        let hits = await scanner.discover(home: tempRoot)
+
+        XCTAssertEqual(hits.map(\.ruleID), ["native.cmake_build_dir"])
+        XCTAssertEqual(hits.first?.url.path,
+                       tempRoot.appendingPathComponent("cmakeProject/build").path)
+    }
+
+    /// Meson 默认 `builddir/` 必须由同级 meson.build 兜底。
+    func testMesonBuilddirHitsOnlyWithMesonBuildSibling() async throws {
+        try mkdir("randomMeson/builddir/meson-private")
+        try mkdir("mesonProject/builddir/meson-private")
+        try touch("mesonProject/meson.build")
+
+        let scanner = DevArtifactScanner(options: .init(enabledRuleIDs: ["native.meson_builddir"]))
+        let hits = await scanner.discover(home: tempRoot)
+
+        XCTAssertEqual(hits.map(\.ruleID), ["native.meson_builddir"])
+        XCTAssertEqual(hits.first?.url.path,
+                       tempRoot.appendingPathComponent("mesonProject/builddir").path)
+    }
+
     /// 启用规则集合为空 → 直接返回 0 命中（短路）。
     func testEmptyRuleSetReturnsZero() async throws {
         try mkdir("project/node_modules/foo")

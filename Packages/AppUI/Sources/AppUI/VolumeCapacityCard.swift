@@ -1,6 +1,10 @@
 import SwiftUI
 import ScanKit
 
+private enum CapacityCardMetrics {
+    static let valueMinWidth: CGFloat = 72
+}
+
 /// v1.3：sidebar 底部固定的"卷容量条"。
 ///
 /// 类似 macOS 系统设置 → 通用 → 储存空间 顶部那条彩色堆叠条。
@@ -63,11 +67,16 @@ public struct VolumeCapacityCard: View {
                         .foregroundStyle(.secondary)
                     Text(s.volumeName)
                         .font(.system(.callout, design: .rounded).weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                     Spacer()
                     Text("\(formatBytes(s.usedBytes)) / \(formatBytes(s.totalBytes))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .layoutPriority(1)
                 }
                 stackedBar(snapshot: s)
                 legend(snapshot: s)
@@ -99,6 +108,8 @@ public struct VolumeCapacityCard: View {
                 Text("capacity.unknown", bundle: .module)
                     .font(.system(.callout, design: .rounded).weight(.medium))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 Spacer()
                 if let onRetry {
                     Button(action: onRetry) {
@@ -128,9 +139,15 @@ public struct VolumeCapacityCard: View {
     private func placeholderLegendRow(label: String) -> some View {
         HStack(spacing: 6) {
             Circle().fill(Color.gray.opacity(0.3)).frame(width: 7, height: 7)
-            Text(label).foregroundStyle(.secondary)
+            Text(label)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
             Spacer()
-            Text("—").foregroundStyle(.secondary).monospacedDigit()
+            Text("—")
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .frame(minWidth: CapacityCardMetrics.valueMinWidth, alignment: .trailing)
         }
     }
 
@@ -250,12 +267,19 @@ public struct VolumeCapacityCard: View {
     ) -> some View {
         HStack(spacing: 6) {
             Circle().fill(color).frame(width: 7, height: 7)
-            Text(label).foregroundStyle(.secondary)
+            Text(label)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
             Spacer()
             Text(formatBytes(bytes))
                 .foregroundStyle(valueColor ?? .secondary)
                 .fontWeight(bold ? .semibold : .regular)
                 .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: CapacityCardMetrics.valueMinWidth, alignment: .trailing)
+                .layoutPriority(1)
         }
     }
 
@@ -296,12 +320,18 @@ public struct VolumeCapacityCard: View {
                 Text("capacity.virtual_memory.title", bundle: .module)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 Spacer()
                 Text(formatBytes(primaryBytes))
                     .font(.caption2)
                     .fontWeight(.semibold)
                     .monospacedDigit()
                     .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(minWidth: CapacityCardMetrics.valueMinWidth, alignment: .trailing)
+                    .layoutPriority(1)
             }
             // 详细分项：swap 已用 + swap 已分配 + sleepimage。
             // 已用与已分配可能不同：内核会预留 swap 文件位（"分配"），但只有真正写入 page 时才"使用"。
@@ -340,10 +370,16 @@ public struct VolumeCapacityCard: View {
                 .frame(width: 7, height: 7)
             Text(label)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
             Spacer()
             Text(formatBytes(bytes))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: CapacityCardMetrics.valueMinWidth, alignment: .trailing)
+                .layoutPriority(1)
         }
         .font(.caption2)
         .help(hint)

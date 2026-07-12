@@ -4,7 +4,7 @@
 #
 # 做了什么：
 #   1. 杀光所有正在跑的 AmuxAIClean 进程（避免老版本残留）
-#   2. xcodebuild Debug 增量 build（签名走 .xcodeproj 里 Xcode UI 配的 Manual + Apple Distribution 企业证书）
+#   2. xcodebuild Debug 增量 build（签名走 .xcodeproj 里的 Automatic + Apple Development）
 #   3. 用 xcodebuild -showBuildSettings 动态查 BUILT_PRODUCTS_DIR，从那里启动 .app
 #   4. activate 到前台
 #
@@ -61,7 +61,7 @@ if [ "$DO_BUILD" -eq 1 ]; then
         xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Debug clean 2>&1 | tail -3
     fi
 
-    step "3) xcodebuild Debug 构建（签名走 .xcodeproj 里 Manual + Apple Distribution 企业证书）"
+    step "3) xcodebuild Debug 构建（签名走 .xcodeproj 里的 Automatic + Apple Development）"
     xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Debug build 2>&1 | tail -5
 fi
 

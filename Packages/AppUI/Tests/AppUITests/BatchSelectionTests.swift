@@ -40,6 +40,16 @@ final class BatchSelectionTests: XCTestCase {
         XCTAssertEqual(b.selected, [])
     }
 
+    func test_remove_只移除成功删除项_保留失败项给重试() {
+        let b = BatchSelection()
+        b.selectAll(visible: ["/moved", "/failed", "/hidden"])
+
+        b.remove(paths: ["/moved"])
+
+        XCTAssertEqual(b.selected, ["/failed", "/hidden"],
+                       "批量删除部分成功时，只能取消成功项；失败/隐藏选中项必须保留")
+    }
+
     // MARK: - selectAll / deselectAll 与 visible 交互
 
     func test_selectAll_只动可见集() {

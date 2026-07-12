@@ -17,6 +17,7 @@ public struct SettingsScene: View {
     @Bindable private var settings: AppSettings
     private let pathStore: UserPathStore
     @Bindable private var updateChecker: UpdateChecker
+    @Bindable private var navigation: SettingsNavigation
     /// M5 / 2026-06：AI 模块配置。
     /// **必须**由 App 层（[GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)）
     /// 注入与 [MainView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
@@ -41,16 +42,19 @@ public struct SettingsScene: View {
     public init(settings: AppSettings,
                 pathStore: UserPathStore,
                 updateChecker: UpdateChecker,
-                aiSettings: AISettings? = nil) {
+                aiSettings: AISettings? = nil,
+                navigation: SettingsNavigation? = nil) {
         self.settings = settings
         self.pathStore = pathStore
         self.updateChecker = updateChecker
         self.aiSettings = aiSettings ?? AISettings()
+        self.navigation = navigation ?? SettingsNavigation()
     }
 
     public var body: some View {
-        TabView {
+        TabView(selection: $navigation.destination) {
             scanTab
+                .tag(SettingsNavigation.Destination.scan)
                 .tabItem {
                     Label {
                         Text("settings.tab.scan", bundle: .module)
@@ -59,6 +63,7 @@ public struct SettingsScene: View {
                     }
                 }
             largeFilesTab
+                .tag(SettingsNavigation.Destination.largeFiles)
                 .tabItem {
                     Label {
                         Text("settings.tab.large_files", bundle: .module)
@@ -67,6 +72,7 @@ public struct SettingsScene: View {
                     }
                 }
             pathsTab
+                .tag(SettingsNavigation.Destination.customPaths)
                 .tabItem {
                     Label {
                         Text("settings.tab.custom_paths", bundle: .module)
@@ -75,6 +81,7 @@ public struct SettingsScene: View {
                     }
                 }
             updateTab
+                .tag(SettingsNavigation.Destination.update)
                 .tabItem {
                     Label {
                         Text("settings.tab.update", bundle: .module)
@@ -83,6 +90,7 @@ public struct SettingsScene: View {
                     }
                 }
             developerArtifactsTab
+                .tag(SettingsNavigation.Destination.developerScan)
                 .tabItem {
                     Label {
                         Text("settings.tab.dev_scan", bundle: .module)
@@ -91,6 +99,7 @@ public struct SettingsScene: View {
                     }
                 }
             storageTab
+                .tag(SettingsNavigation.Destination.storageAndLogs)
                 .tabItem {
                     Label {
                         Text("settings.tab.storage", bundle: .module)
@@ -99,6 +108,7 @@ public struct SettingsScene: View {
                     }
                 }
             AISettingsTab(settings: aiSettings)
+                .tag(SettingsNavigation.Destination.ai)
                 .tabItem {
                     Label {
                         Text("settings.tab.ai", bundle: .module)
@@ -107,6 +117,7 @@ public struct SettingsScene: View {
                     }
                 }
             advancedTab
+                .tag(SettingsNavigation.Destination.advanced)
                 .tabItem {
                     Label {
                         Text("settings.tab.advanced", bundle: .module)

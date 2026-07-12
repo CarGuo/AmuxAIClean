@@ -13,8 +13,8 @@ import LogKit
 /// 与 MainView 的 selection（基于 RowItem.id）完全独立——结果用户在树里勾选 child，
 /// 主界面底部 delete 按钮永远 disabled。
 ///
-/// 新方案：**完全移除 checkbox 列与批量 toolbar**，每一行右侧直接挂一个红色
-/// trash 行内按钮，单击 = 立刻调 `onTrash(URL)` 走 NSWorkspace.recycle 单删。
+    /// 新方案：**完全移除 checkbox 列与批量 toolbar**，每一行右侧直接挂一个红色
+/// trash 行内按钮，单击 = 调 `onTrash(URL)` 交给上层统一删除链路。
 /// 所见即所删，与 Pearcleaner / DaisyDisk 行内删除手感一致；底部 delete 按钮
 /// 改为只服务"清单视图"场景，不再与树形耦合。
 ///
@@ -45,6 +45,7 @@ public struct TreeBrowserView: View {
     /// 设计 bug A：之前 selectedPath 只活在 TreeBrowserView 内部，
     /// 外层 detailPane 永远拿不到，导致"选中一行没有详情"。
     let onSelect: ((TreeRow) -> Void)?
+    let onSelectionCleared: (() -> Void)?
     /// 右键 / Delete / 行内 trash 按钮触发"移到废纸篓"时的回调。
     /// 走 NSWorkspace.recycle 通道（与大文件视图右键删共用 triggerLargeFileTrash）。
     /// 给 nil 时 TreeNodeView 的右键菜单与行内 trash 按钮都不会展示，便于在 readonly 场景复用。
@@ -179,6 +180,7 @@ public struct TreeBrowserView: View {
     public init(coordinator: ScanCoordinator,
                 rootPath: String,
                 onSelect: ((TreeRow) -> Void)? = nil,
+                onSelectionCleared: (() -> Void)? = nil,
                 onTrash: ((URL) -> Void)? = nil,
                 onRefreshSubtree: ((String) -> Void)? = nil,
                 onStash: ((TreeRow) -> Void)? = nil,
@@ -192,6 +194,7 @@ public struct TreeBrowserView: View {
         self.treeBrowser = coordinator.treeBrowser
         self.rootPath = rootPath
         self.onSelect = onSelect
+        self.onSelectionCleared = onSelectionCleared
         self.onTrash = onTrash
         self.onRefreshSubtree = onRefreshSubtree
         self.onStash = onStash
@@ -636,7 +639,15 @@ public struct TreeBrowserView: View {
         if !topLevel.isEmpty {
             maxBytes = topLevel.map(\.row.bytes).max() ?? 0
         }
-        // 选中态若指向已删 path，由 onChange(flatRows.first) 兜底拉回首行；这里不动。
+        if let cur = selectedPath, isUnderDeleted(cur) || !flatRows.contains(where: { $0.row.path == cur }) {
+            if let next = flatRows.first(where: { !$0.isLoadingPlaceholder }) {
+                selectedPath = next.row.path
+                onSelect?(next.row)
+            } else {
+                selectedPath = nil
+                onSelectionCleared?()
+            }
+        }
         _ = before
     }
 
@@ -1042,6 +1053,8 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
                 setExpansion(open: false); return true
             case 124:
                 setExpansion(open: true); return true
+            case 51:
+                trashSelected(); return true
             default:
                 break
             }
@@ -1095,6 +1108,15 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
         private func revealSelected() {
             guard let flat = selectedFlat() else { return }
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: flat.row.path)])
+        }
+
+        private func trashSelected() {
+            guard let flat = selectedFlat(), parent.onTrash != nil else { return }
+            guard flat.verdict != .forbid, flat.row.accessState == .normal else {
+                NSSound.beep()
+                return
+            }
+            parent.onTrash?(URL(fileURLWithPath: flat.row.path))
         }
 
         private func selectedFlat() -> FlatTreeRow? {

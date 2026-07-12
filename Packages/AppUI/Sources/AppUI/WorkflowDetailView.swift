@@ -573,7 +573,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
         fsPaths = Self.foldNestedPaths(fsPaths)
 
         // **v2026.06.22 (P0-1)**：与 [MainView.runTrash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
-        // 对齐 4 步握手：accessDenied 注入 → moveToTrashReturningOutcome → UndoHistory.addRecord
+        // 对齐统一删除入口：accessDenied 注入 → TrashActionCoordinator.run → UndoHistory.addRecord
         // → 用 outcome.movedPairs 而非全部请求路径来回写 selected。原实现漏了前 3 步
         // 且 `for path in fsPaths { selected.remove(path) }` 会把"被 SafetyEngine 拦截
         // / recycle 失败"的项也从 selected 移除——用户重试时找不到原条目。
@@ -581,27 +581,25 @@ public final class WorkflowDetailViewModel: ObservableObject {
         var failedPaths: [String] = []
         var safetyRejected: [(String, String)] = []
         if !fsPaths.isEmpty {
-            // ① 注入 accessDenied（无 provider 注入空 set，保持 protocol 契约——必须显式调）
             let denied = accessDeniedPathsProvider?() ?? []
-            pipeline.setAccessDeniedPaths(denied)
-
-            // ② 原子返回 outcome，避免依赖 side-channel 单槽位 snapshotLastOutcome()
-            let (_, outcome) = await pipeline.moveToTrashReturningOutcome(paths: fsPaths, dryRun: false)
-            if let outcome {
+            let action = TrashActionCoordinator(pipeline: pipeline, undoHistoryStore: undoHistoryStore)
+            let result = await action.run(TrashActionCoordinator.Request(
+                paths: fsPaths,
+                dryRun: false,
+                source: "workflow",
+                accessDeniedPaths: denied
+            ))
+            if let outcome = result.outcome {
                 movedPairs = outcome.movedPairs.map { ($0.originalPath, $0.trashedPath) }
                 failedPaths = outcome.failedPaths
                 safetyRejected = outcome.safetyRejected.map { ($0.path, $0.reason) }
+            } else {
+                movedPairs = result.pairs
+                let succeeded = Set(result.succeededPaths)
+                failedPaths = result.err == nil ? [] : fsPaths.filter { !succeeded.contains($0) }
             }
 
-            // ③ UndoHistory 写入（仅在真删 + 有 pair 时记录；与 MainView.runTrash 同款）
-            if !movedPairs.isEmpty {
-                undoHistoryStore.addRecord(
-                    source: "workflow",
-                    filePairs: movedPairs.map { UndoHistoryStore.Record.FilePair(original: $0.0, trashed: $0.1) }
-                )
-            }
-
-            // ④ selected 用真实成功的 originalPath 反查 hit.id 后剔除
+            // selected 用真实成功的 originalPath 反查 hit.id 后剔除
             //    （fsPaths 是 path，selected 是 hitID——必须通过 cardHits 反向映射）
             let successPathSet = Set(movedPairs.map { $0.0 })
             if !successPathSet.isEmpty {

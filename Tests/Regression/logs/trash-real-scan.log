@@ -1,16 +1,16 @@
-2026-06-11 19:24:46.044 GSYCleanMac[4131:5736858] [GSYCleanMac] 已加载 79 条 vendor 规则
-[REGR] case=trash-real-scan defaults_snapshot_keys=10 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+2026-07-06 15:46:51.138 AmuxAIClean[23179:23440751] [AmuxAIClean] 已加载 123 条 vendor 规则
+[REGR] case=trash-real-scan defaults_snapshot_keys=2 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
 [REGR_BEGIN] case=trash-real-scan
 [REGR] case=trash-real-scan trash_path=/Users/guoshuyu/.Trash
 [REGR] case=trash-real-scan fda_status=denied
 [REGR] case=trash-real-scan open_fd=-1 open_ok=false errno=1 strerror=Operation not permitted
-[REGR] case=trash-real-scan stat_ok=true mode=40700 size=128 nlink=4
+[REGR] case=trash-real-scan stat_ok=true mode=40700 size=160 nlink=5
 [REGR] case=trash-real-scan fm_ok=false error=Error Domain=NSCocoaErrorDomain Code=257 "The file “Trash” couldn’t be opened because you don’t have permission to view it." UserInfo={NSUserStringVariant=(
     Folder
-), NSURL=file:///Users/guoshuyu/.Trash, NSFilePath=/Users/guoshuyu/.Trash, NSUnderlyingError=0xba829bf60 {Error Domain=NSPOSIXErrorDomain Code=1 "Operation not permitted"}}
+), NSURL=file:///Users/guoshuyu/.Trash, NSFilePath=/Users/guoshuyu/.Trash, NSUnderlyingError=0xc2592f120 {Error Domain=NSPOSIXErrorDomain Code=1 "Operation not permitted"}}
 [REGR] case=trash-real-scan trash_root=/Users/guoshuyu/.Trash
 [REGR] case=trash-real-scan coord_files=0 coord_bytes=0 denied=1 tccSkip=0
 [REGR] case=trash-real-scan denied_sample=/Users/guoshuyu/.Trash
 [REGR_OK] case=trash-real-scan 至少 1 条诊断路径产出证据 (fm/coord/denied)=true
-[REGR] case=trash-real-scan defaults_restored_keys=10
-[REGR_PASS] case=trash-real-scan elapsed_ms=651
+[REGR] case=trash-real-scan defaults_restored_keys=2
+[REGR_PASS] case=trash-real-scan elapsed_ms=546

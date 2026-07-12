@@ -63,7 +63,7 @@ rm -f "$TMP_1024"
 
 echo ""
 echo "[icon] 全部 11 张已落到 AppIcon.appiconset。"
-echo "[icon] 接下来跑：xcodegen && xcodebuild ... 看 Contents/Resources/AppIcon.icns"
+echo "[icon] 接下来跑：xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac ... 看 Contents/Resources/AppIcon.icns"
 echo ""
 echo "[hint] 若系统设置「完全磁盘访问」列表里 GSYCleanMac 仍是灰方块，可执行："
 echo "       tccutil reset SystemPolicyAllFiles com.gsy.cleanmac"

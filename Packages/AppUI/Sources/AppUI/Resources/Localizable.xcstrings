@@ -715,6 +715,40 @@
         }
       }
     },
+    "banner.filesystem.denied.more": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "...%lld more not shown"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "...还有 %lld 条未显示"
+          }
+        }
+      }
+    },
+    "banner.filesystem.denied.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "File Ownership Blocked (%lld)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件归属权限阻塞 (%lld)"
+          }
+        }
+      }
+    },
     "batch.common_app_cache.title": {
       "extractionState": "manual",
       "localizations": {
@@ -3173,6 +3207,23 @@
         }
       }
     },
+    "ecosystem.nativeBuild": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Native Build"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机构建"
+          }
+        }
+      }
+    },
     "ecosystem.python": {
       "extractionState": "manual",
       "localizations": {
@@ -3220,6 +3271,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Web 前端"
+          }
+        }
+      }
+    },
+    "ecosystem.zig": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zig"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zig"
           }
         }
       }
@@ -3553,13 +3621,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Start the recommended scan now"
+            "value": "Start Smart Care now"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "立即开始推荐扫描"
+            "value": "立即开始智能呵护扫描"
           }
         }
       }
@@ -6246,6 +6314,23 @@
         }
       }
     },
+    "permission.banner.filesystem_only %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Directories not scanned because file ownership or POSIX permissions block this user (%lld)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 个目录因文件归属或 POSIX 权限阻塞当前用户，未被扫描"
+          }
+        }
+      }
+    },
     "permission.banner.fda_only %lld": {
       "extractionState": "manual",
       "localizations": {
@@ -6259,6 +6344,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld 个目录因权限受阻未扫描，结果可能偏小"
+          }
+        }
+      }
+    },
+    "permission.banner.privacy_and_filesystem %lld %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld privacy-protected and %2$lld filesystem-blocked directories not scanned"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld 个隐私目录与 %2$lld 个文件权限阻塞目录未扫描"
           }
         }
       }
@@ -6280,19 +6382,36 @@
         }
       }
     },
+    "permission.hint.filesystem_blocked": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tip: Full Disk Access is already usable, but these paths are blocked by file ownership or POSIX mode bits. The app will not request administrator privileges for cleanup scans."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "提示：完全磁盘访问已可用，但这些路径被文件归属或 POSIX mode 权限阻塞。本 App 不会为了清理扫描请求管理员权限。"
+          }
+        }
+      }
+    },
     "permission.hint.fda_denied": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tip: This process detected FDA = denied. If you just toggled AmuxAIClean on in System Settings, please try: ① fully quit and relaunch the app; ② confirm the .app you ticked is exactly the one running now (Debug builds and shipped .app have separate TCC grants)."
+            "value": "Tip: This process detected FDA = denied. If you just toggled AmuxAIClean on in System Settings, fully quit and relaunch the app, then confirm the .app you authorized is exactly the one running now. For Debug builds, compare the running path and code requirement with Scripts/diagnose_debug_tcc.sh."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "提示：当前进程探测到 FDA = 未授权。如果你刚刚在系统设置里给 AmuxAIClean 打了勾，请尝试：① 退出本 App 完全重启；② 确认你打勾的 .app 路径就是当前正在运行的这一个（开发版 Debug build 与正式 .app 的 TCC 授权是分开的）。"
+            "value": "提示：当前进程探测到 FDA = 未授权。如果你刚刚在系统设置里给 AmuxAIClean 打了勾，请完全退出并重启本 App，然后确认你授权的 .app 就是当前正在运行的这个。Debug 构建请用 Scripts/diagnose_debug_tcc.sh 对比运行路径和 code requirement。"
           }
         }
       }
@@ -7058,6 +7177,244 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在扫描中…"
+          }
+        }
+      }
+    },
+    "rule.zig.local_cache.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zig local build cache beside build.zig."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "build.zig 旁的 Zig 本地构建缓存。"
+          }
+        }
+      }
+    },
+    "rule.zig.out.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zig install output; confirm before removing generated binaries."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zig install 输出；删除生成二进制前需确认。"
+          }
+        }
+      }
+    },
+    "rule.go.bin.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Project-local Go binaries generated beside go.mod."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "go.mod 旁的项目本地 Go 二进制输出。"
+          }
+        }
+      }
+    },
+    "rule.go.coverage.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go coverage output generated by tests."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go 测试生成的覆盖率输出。"
+          }
+        }
+      }
+    },
+    "rule.jvm.maven_target.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maven target output beside pom.xml."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "pom.xml 旁的 Maven target 构建输出。"
+          }
+        }
+      }
+    },
+    "rule.jvm.sbt_target.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sbt target output beside build.sbt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "build.sbt 旁的 sbt target 构建输出。"
+          }
+        }
+      }
+    },
+    "rule.jvm.gradle_build.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gradle build output beside Gradle project files."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gradle 项目文件旁的 build 构建输出。"
+          }
+        }
+      }
+    },
+    "rule.jvm.bloop.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bloop build-server metadata for Scala/JVM projects."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scala/JVM 项目的 Bloop 构建服务元数据。"
+          }
+        }
+      }
+    },
+    "rule.jvm.metals.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metals IDE metadata; confirm before clearing workspace state."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metals IDE 元数据；清理工作区状态前需确认。"
+          }
+        }
+      }
+    },
+    "rule.native.cmake_build.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CMake build directory guarded by CMakeLists.txt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "由 CMakeLists.txt 限定的 CMake 构建目录。"
+          }
+        }
+      }
+    },
+    "rule.native.cmake_files.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CMake generated internals beside CMakeCache.txt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CMakeCache.txt 旁的 CMake 生成内部文件。"
+          }
+        }
+      }
+    },
+    "rule.native.bazel_output.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bazel workspace output symlink or directory."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bazel 工作区输出链接或目录。"
+          }
+        }
+      }
+    },
+    "rule.native.meson_private.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Meson private build metadata beside meson.build."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "meson.build 旁的 Meson 私有构建元数据。"
+          }
+        }
+      }
+    },
+    "rule.native.meson_builddir.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Meson build directory guarded by meson.build."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "由 meson.build 限定的 Meson 构建目录。"
           }
         }
       }
@@ -11046,13 +11403,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Start Recommended Scan"
+            "value": "Start Smart Care"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "开始推荐扫描"
+            "value": "开始智能呵护"
           }
         }
       }
@@ -11097,13 +11454,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Start Recommended Scan"
+            "value": "Start Smart Care"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "开始推荐扫描"
+            "value": "开始智能呵护"
           }
         }
       }
@@ -13265,6 +13622,1502 @@
             "value": "可放心清理：均为缓存或构建产物，下次构建会自动重新生成。"
           }
         }
+      }
+    },
+    "workflow.backend.displayName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Backend"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后端"
+          }
+        }
+      }
+    },
+    "workflow.backend.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "JVM, Go, Rust, Zig and native build caches"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "JVM、Go、Rust、Zig 与本机构建缓存"
+          }
+        }
+      }
+    },
+    "workflow.sidebar.backend.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Backend"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后端"
+          }
+        }
+      }
+    },
+    "card.backend.gradle-caches.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gradle caches"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gradle 缓存"
+          }
+        }
+      }
+    },
+    "card.backend.gradle-caches.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dependency, configuration and build-scan caches under ~/.gradle."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "~/.gradle 下的依赖、配置与 build-scan 缓存。"
+          }
+        }
+      }
+    },
+    "card.backend.gradle-wrapper-dists.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gradle wrapper dists"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gradle Wrapper 分发包"
+          }
+        }
+      }
+    },
+    "card.backend.gradle-wrapper-dists.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Downloaded Gradle distributions; rebuilds may need to download again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已下载的 Gradle 分发包；下次构建可能重新下载。"
+          }
+        }
+      }
+    },
+    "card.backend.maven-repository.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maven local repository"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maven 本地仓库"
+          }
+        }
+      }
+    },
+    "card.backend.maven-repository.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local Maven artifacts under ~/.m2/repository; dependency restore may be slow."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "~/.m2/repository 下的 Maven 依赖；恢复依赖可能较慢。"
+          }
+        }
+      }
+    },
+    "card.backend.maven-wrapper.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maven wrapper cache"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maven Wrapper 缓存"
+          }
+        }
+      }
+    },
+    "card.backend.maven-wrapper.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maven wrapper runtime files that projects can download again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maven Wrapper 运行文件，项目可按需重新下载。"
+          }
+        }
+      }
+    },
+    "card.backend.jvm-dependency-caches.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "JVM dependency caches"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "JVM 依赖缓存"
+          }
+        }
+      }
+    },
+    "card.backend.jvm-dependency-caches.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ivy and Coursier dependency caches used by Scala and JVM tools."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scala 与 JVM 工具使用的 Ivy / Coursier 依赖缓存。"
+          }
+        }
+      }
+    },
+    "card.backend.go-build-cache.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go build cache"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go 构建缓存"
+          }
+        }
+      }
+    },
+    "card.backend.go-build-cache.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compiled Go package cache under ~/Library/Caches/go-build."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "~/Library/Caches/go-build 下的 Go 编译缓存。"
+          }
+        }
+      }
+    },
+    "card.backend.go-module-cache.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go module cache"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go 模块缓存"
+          }
+        }
+      }
+    },
+    "card.backend.go-module-cache.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Downloaded Go modules; deleting may trigger network restore later."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已下载的 Go 模块；删除后后续可能联网恢复。"
+          }
+        }
+      }
+    },
+    "card.backend.cargo-caches.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cargo caches"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cargo 缓存"
+          }
+        }
+      }
+    },
+    "card.backend.cargo-caches.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Crate registry and git caches under ~/.cargo."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "~/.cargo 下的 crate registry 与 git 缓存。"
+          }
+        }
+      }
+    },
+    "card.backend.rustup-downloads.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rustup downloads"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rustup 下载缓存"
+          }
+        }
+      }
+    },
+    "card.backend.rustup-downloads.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Downloaded rustup archives that can be fetched again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "rustup 已下载归档，可按需重新获取。"
+          }
+        }
+      }
+    },
+    "card.backend.rustup-toolchains.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rustup toolchains"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rustup 工具链"
+          }
+        }
+      }
+    },
+    "card.backend.rustup-toolchains.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installed Rust toolchains; deleting removes compilers until reinstalled."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已安装的 Rust 工具链；删除后需重新安装编译器。"
+          }
+        }
+      }
+    },
+    "card.backend.zig-global-cache.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zig global cache"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zig 全局缓存"
+          }
+        }
+      }
+    },
+    "card.backend.zig-global-cache.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Global Zig compiler cache; rebuilding may repopulate it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zig 编译器全局缓存；重新构建会再次生成。"
+          }
+        }
+      }
+    },
+    "card.backend.bazel-cache.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bazel output cache"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bazel 输出缓存"
+          }
+        }
+      }
+    },
+    "card.backend.bazel-cache.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bazel output bases and action caches; clean builds may be slower."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bazel 输出根与 action cache；清理后构建可能变慢。"
+          }
+        }
+      }
+    },
+    "card.backend.compiler-caches.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compiler caches"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编译器缓存"
+          }
+        }
+      }
+    },
+    "card.backend.compiler-caches.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ccache and sccache data for native builds."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ccache 与 sccache 等本机构建缓存。"
+          }
+        }
+      }
+    },
+    "smart_care.action.cleaning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Moving to Trash"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在移到废纸篓"
+          }
+        }
+      }
+    },
+    "smart_care.action.continue_scan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue Scan"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "继续扫描"
+          }
+        }
+      }
+    },
+    "smart_care.action.retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试"
+          }
+        }
+      }
+    },
+    "smart_care.action.scan_again": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan Again"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "再次扫描"
+          }
+        }
+      }
+    },
+    "smart_care.action.start_scan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描"
+          }
+        }
+      }
+    },
+    "smart_care.action.stop_scan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止"
+          }
+        }
+      }
+    },
+    "smart_care.bucket.app_cache.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Temporary app data that can be rebuilt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用可重新生成的临时数据。"
+          }
+        }
+      }
+    },
+    "smart_care.bucket.app_cache.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App Cache"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App 缓存"
+          }
+        }
+      }
+    },
+    "smart_care.bucket.app_leftovers.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Files left after apps were removed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用卸载后残留的相关文件。"
+          }
+        }
+      }
+    },
+    "smart_care.bucket.app_leftovers.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App Leftovers"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App 残留"
+          }
+        }
+      }
+    },
+    "smart_care.bucket.developer_cache.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Build and package caches for developer tools."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开发工具产生的构建与包缓存。"
+          }
+        }
+      }
+    },
+    "smart_care.bucket.developer_cache.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Developer Cache"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开发缓存"
+          }
+        }
+      }
+    },
+    "smart_care.bucket.duplicates.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Same-content files grouped for review."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按内容聚合的重复文件候选。"
+          }
+        }
+      }
+    },
+    "smart_care.bucket.duplicates.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Duplicates"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重复文件"
+          }
+        }
+      }
+    },
+    "smart_care.bucket.toggle_safe": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select safe items in this category"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择此类别中的安全项"
+          }
+        }
+      }
+    },
+    "smart_care.bucket.large_files.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Large personal files that need your decision."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要你确认的大体积个人文件。"
+          }
+        }
+      }
+    },
+    "smart_care.bucket.large_files.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Large Files"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "大文件"
+          }
+        }
+      }
+    },
+    "smart_care.bucket.system_junk.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Application logs verified by local safety rules."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "经本地安全规则确认的应用日志。"
+          }
+        }
+      }
+    },
+    "smart_care.bucket.system_junk.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "System Logs"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统日志"
+          }
+        }
+      }
+    },
+    "smart_care.item.confirm": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需确认"
+          }
+        }
+      }
+    },
+    "smart_care.item.locked": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Protected"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保护"
+          }
+        }
+      }
+    },
+    "smart_care.item.safe": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Safe"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安全"
+          }
+        }
+      }
+    },
+    "smart_care.metric.confirm": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Needs Review"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要确认"
+          }
+        }
+      }
+    },
+    "smart_care.metric.protected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Protected"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保护"
+          }
+        }
+      }
+    },
+    "smart_care.metric.safe": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Safe to Clean"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安全可清理"
+          }
+        }
+      }
+    },
+    "smart_care.mode.label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Interface Mode"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "界面模式"
+          }
+        }
+      }
+    },
+    "smart_care.mode.normal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Normal"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "普通模式"
+          }
+        }
+      }
+    },
+    "smart_care.mode.professional": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Professional"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "专业模式"
+          }
+        }
+      }
+    },
+    "smart_care.phase.cancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan paused"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描已暂停"
+          }
+        }
+      }
+    },
+    "smart_care.phase.cleaning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Moving selected items to Trash"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在将已选项目移到废纸篓"
+          }
+        }
+      }
+    },
+    "smart_care.phase.completed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cleanup completed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理已完成"
+          }
+        }
+      }
+    },
+    "smart_care.phase.confirming": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review needed before cleaning"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理前需要确认"
+          }
+        }
+      }
+    },
+    "smart_care.phase.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Action failed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "操作失败"
+          }
+        }
+      }
+    },
+    "smart_care.phase.idle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ready to scan"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "准备扫描"
+          }
+        }
+      }
+    },
+    "smart_care.phase.reviewing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review scan results"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看扫描结果"
+          }
+        }
+      }
+    },
+    "smart_care.phase.scanning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scanning your Mac"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在扫描 Mac"
+          }
+        }
+      }
+    },
+    "smart_care.result.scan_complete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan Complete"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描完成"
+          }
+        }
+      }
+    },
+    "smart_care.risk.app_cache": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "May contain account, chat, or personal app data. Review before selecting."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可能包含账号、聊天记录或个人应用数据，请确认后再勾选。"
+          }
+        }
+      }
+    },
+    "smart_care.risk.app_leftovers": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This may include settings or user-created app data."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "其中可能包含应用设置或用户创建的数据。"
+          }
+        }
+      }
+    },
+    "smart_care.risk.developer_cache": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Builds, indexes, simulators, or packages may need to be regenerated."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "构建、索引、模拟器或依赖包可能需要重新生成。"
+          }
+        }
+      }
+    },
+    "smart_care.risk.duplicates": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review every group and choose which copy to keep."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请逐组确认并选择需要保留的副本。"
+          }
+        }
+      }
+    },
+    "smart_care.risk.large_files": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Personal files are never selected automatically."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "个人文件永远不会被自动勾选。"
+          }
+        }
+      }
+    },
+    "smart_care.risk.protected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Protected by safety rules and never included in cleanup."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已被安全规则保护，永远不会进入清理队列。"
+          }
+        }
+      }
+    },
+    "smart_care.risk.system_junk": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review personal files in Downloads or Trash before cleaning."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理前请确认下载目录或废纸篓中的个人文件。"
+          }
+        }
+      }
+    },
+    "smart_care.action.review_cleanup": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Review Cleanup" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "预览清理" } }
+      }
+    },
+    "smart_care.action.review_selected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Review Selected Items" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "复核已选项目" } }
+      }
+    },
+    "smart_care.activity.cleaning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Moving to Trash" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在移到废纸篓" } }
+      }
+    },
+    "smart_care.activity.finalizing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Final safety check" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "最终安全校验" } }
+      }
+    },
+    "smart_care.activity.organizing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Organizing results" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在整理结果" } }
+      }
+    },
+    "smart_care.activity.scan.app_cache": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scanning app caches" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在扫描应用缓存" } }
+      }
+    },
+    "smart_care.activity.scan.core": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scanning core locations" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在扫描核心位置" } }
+      }
+    },
+    "smart_care.activity.scan.developer_cache": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scanning developer caches" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在扫描开发缓存" } }
+      }
+    },
+    "smart_care.ai.help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Ask AI to review the priority results currently shown." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "让 AI 复核当前展示的优先结果。" } }
+      }
+    },
+    "smart_care.ai.help.not_configured": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Configure AI in Settings before running a review." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请先在设置中配置 AI，再执行判断。" } }
+      }
+    },
+    "smart_care.ai.item_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI review failed for this result" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此结果的 AI 判断失败" } }
+      }
+    },
+    "smart_care.ai.progress %lld %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI review %1$lld / %2$lld" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 判断 %1$lld / %2$lld" } }
+      }
+    },
+    "smart_care.ai.summary %lld %lld %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI: likely safe %1$lld · review %2$lld · avoid %3$lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI：建议安全 %1$lld · 建议复核 %2$lld · 建议避开 %3$lld"
+          }
+        }
+      }
+    },
+    "smart_care.ai.review": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI Review" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 判断" } }
+      }
+    },
+    "smart_care.ai.reviewing_item": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI is reviewing this result" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 正在判断此结果" } }
+      }
+    },
+    "smart_care.detail.cancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The scan stopped without changing any files." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描已停止，未改动任何文件。" } }
+      }
+    },
+    "smart_care.detail.completed %lld %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Moved to Trash: %1$lld · Reclaimed %2$@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已移到废纸篓 %1$lld 项 · 释放 %2$@" } }
+      }
+    },
+    "smart_care.detail.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Nothing was changed automatically. Review the error and retry." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未自动改动任何内容，请查看错误后重试。" } }
+      }
+    },
+    "smart_care.scope.apps.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Rebuildable app data" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "可重建的应用数据" } }
+      }
+    },
+    "smart_care.scope.apps.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "App Cache" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "应用缓存" } }
+      }
+    },
+    "smart_care.scope.developer.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Build and package caches" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "构建与依赖缓存" } }
+      }
+    },
+    "smart_care.scope.developer.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Developer Cache" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开发缓存" } }
+      }
+    },
+    "smart_care.scope.may_take_longer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Slower" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "较耗时" } }
+      }
+    },
+    "smart_care.scope.none_selected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Choose at least one area" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请至少选择一个范围" } }
+      }
+    },
+    "smart_care.scope.not_selected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Not selected" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未选择" } }
+      }
+    },
+    "smart_care.scope.selected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Selected" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已选择" } }
+      }
+    },
+    "smart_care.scope.selected_count %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%lld areas selected" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已选择 %lld 个扫描范围" } }
+      }
+    },
+    "smart_care.scope.system.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Logs and temporary data" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "日志与临时数据" } }
+      }
+    },
+    "smart_care.scope.system.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "System & Logs" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "系统与日志" } }
+      }
+    },
+    "smart_care.stage.final_check": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Safety Check" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "安全校验" } }
+      }
+    },
+    "smart_care.visual.moving_to_trash": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Moving to Trash" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在移到废纸篓" } }
+      }
+    },
+    "smart_care.visual.ready": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Ready to Scan" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "准备扫描" } }
+      }
+    },
+    "smart_care.visual.safe_so_far": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Safe found so far" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前发现的安全容量" } }
+      }
+    },
+    "smart_care.visual.safety_note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scanning never changes files" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描不会改动任何文件" } }
+      }
+    },
+    "smart_care.visual.scanning_badge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "LIVE SCAN" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在扫描" } }
       }
     },
     "workflow.sidebar.android.title": {

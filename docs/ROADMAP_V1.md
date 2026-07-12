@@ -30,10 +30,10 @@
 **改动文件**：
 - 新建 `Resources/Assets.xcassets/AppIcon.appiconset/Contents.json`
 - 新建 `Resources/Assets.xcassets/AppIcon.appiconset/icon_{16,32,64,128,256,512,1024}{,@2x}.png`（10 张）
-- [project.yml](../project.yml) 加 `Assets.xcassets` 资源 + `ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon`
+- 在原生 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 接入 `Assets.xcassets` 资源 + `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon`
 
 **验收**：
-1. `xcodegen generate` 不报错
+1. [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 可直接打开
 2. `xcodebuild` 成功
 3. `open build/.../GSYCleanMac.app` 后 Dock 图标 = 垃圾桶+扫帚
 4. Finder 看 .app 包预览图也是新 logo
@@ -139,7 +139,7 @@
 
 **步骤**：
 1. `swift test` × 6 包全过（≥113 + 新增测试）
-2. `xcodegen generate && xcodebuild -scheme GSYCleanMac` BUILD SUCCEEDED
+2. `xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac` BUILD SUCCEEDED
 3. `open build/.../GSYCleanMac.app` 启动
 4. 手工跑 [docs/V1_SMOKE.md](./V1_SMOKE.md)（T6 时同步建）冒烟脚本：
  - [Y] Dock 图标是新 logo
@@ -212,4 +212,3 @@
 
 - 30 条规则在 ScanKit / AppUI 双层有覆盖：ScanKit 117 条单测涵盖规则匹配、兄弟脚手架命中、整棵剪枝行为；AppUI 252 条单测涵盖 DevArtifacts 屏的分组渲染与批量勾选。
 - 总测试 **370+ 全绿**，xcodebuild Release **BUILD SUCCEEDED**。
-

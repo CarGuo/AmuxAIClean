@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 @testable import ScanKit
 
 /// v1.3：FDAProbe 行为测试。
@@ -30,5 +31,39 @@ final class FDAProbeTests: XCTestCase {
         let status = FDAProbe.probe(home: fakeHome)
         XCTAssertEqual(status, .granted,
                        "伪 home 下 Library/Mail 我们自己创建的，open 必成功")
+    }
+
+    func test_第一个探针被拒但后续探针可读_应返回granted避免误报() throws {
+        let fakeHome = NSTemporaryDirectory() + "fda-probe-mixed-\(UUID().uuidString)"
+        let mailPath = "\(fakeHome)/Library/Mail"
+        let safariPath = "\(fakeHome)/Library/Safari"
+        try FileManager.default.createDirectory(atPath: mailPath,
+                                                withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: safariPath,
+                                                withIntermediateDirectories: true)
+        XCTAssertEqual(Darwin.chmod(mailPath, 0), 0)
+        defer {
+            _ = Darwin.chmod(mailPath, S_IRWXU)
+            try? FileManager.default.removeItem(atPath: fakeHome)
+        }
+
+        let status = FDAProbe.probe(home: fakeHome)
+        XCTAssertEqual(status, .granted,
+                       "不能因为第一个存在的探针失败就直接判 FDA denied；后续 TCC 探针可读时应认为当前进程具备可用访问能力")
+    }
+
+    func test_所有存在探针都被拒_应返回denied() throws {
+        let fakeHome = NSTemporaryDirectory() + "fda-probe-denied-\(UUID().uuidString)"
+        let mailPath = "\(fakeHome)/Library/Mail"
+        try FileManager.default.createDirectory(atPath: mailPath,
+                                                withIntermediateDirectories: true)
+        XCTAssertEqual(Darwin.chmod(mailPath, 0), 0)
+        defer {
+            _ = Darwin.chmod(mailPath, S_IRWXU)
+            try? FileManager.default.removeItem(atPath: fakeHome)
+        }
+
+        let status = FDAProbe.probe(home: fakeHome)
+        XCTAssertEqual(status, .denied)
     }
 }

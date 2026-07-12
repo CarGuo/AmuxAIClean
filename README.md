@@ -95,7 +95,7 @@
 
 完整安装、TCC 授权、签名校验步骤见 [docs/INSTALL.md](docs/INSTALL.md)。
 
-> 因为这是开源项目，我们走 **ad-hoc 签名 + SHA256 校验**，不依赖 Apple Developer Program（99 美元/年）。每个 Release 都附带 `.sha256` 文件，你可以验证下载到的 .app 是不是发版那一刻打出来的原始产物。详见 [docs/RELEASE.md](docs/RELEASE.md)。
+> 维护者本地 release 走 **Developer ID Application 签名**，可按需执行 Apple Notary 公证；GitHub Actions 的公开 workflow 仍保留无私钥的 ad-hoc 产物路径。当前发布模式和校验边界见 [docs/RELEASE.md](docs/RELEASE.md)。
 
 ---
 
@@ -119,7 +119,7 @@ cd GSYCleanMac
 ./Scripts/setup_dev.sh
 ```
 
-> **fork 用户必读**：[GSYCleanMac.xcodeproj/project.pbxproj](GSYCleanMac.xcodeproj/project.pbxproj) 当前按企业证书配置为 `DEVELOPMENT_TEAM = W6H34N9728` + `CODE_SIGN_STYLE = Manual` + `CODE_SIGN_IDENTITY = Apple Distribution`。第一次 build 必须改成你自己的 Team / signing 配置。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) "签名配置" 段。
+> **fork 用户必读**：[GSYCleanMac.xcodeproj/project.pbxproj](GSYCleanMac.xcodeproj/project.pbxproj) 当前 Debug 走 `Automatic + Apple Development`，Release 走 `Manual + Developer ID Application: SentenceEnd Inc (W6H34N9728)`。第一次 build 必须改成你自己的 Team / signing 配置。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) "签名配置" 段。
 
 ```bash
 xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build
@@ -149,7 +149,7 @@ xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Deb
 | 文档 | 内容 |
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | 安装、Gatekeeper、TCC 完全磁盘访问授权 |
-| [docs/RELEASE.md](docs/RELEASE.md) | 发布流程、ad-hoc 签名、SHA256 校验、CI tag 触发 |
+| [docs/RELEASE.md](docs/RELEASE.md) | 发布流程、Developer ID、公证/不公证模式、CI tag 触发 |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 开发环境、构建脚本、本地调试 |
 | [docs/DEV_ARTIFACTS_RULES.md](docs/DEV_ARTIFACTS_RULES.md) | 开发者构建产物扫描规则与拓展 |
 | [docs/FEATURE_GAP.md](docs/FEATURE_GAP.md) | 与同类产品 23 维 × 8 家竞品对比 |

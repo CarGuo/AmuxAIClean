@@ -96,7 +96,7 @@ ${GREEN}${BOLD}环境就绪 OK${NC}
        - Team 下拉选 你的 Personal Team
        - Bundle Identifier 必要时改成你自己的（比如 com.<你的id>.cleanmac.GSYCleanMac）
   4. ⌘R 跑起来；首次运行会触发 TCC（Full Disk Access）授权引导
-       —— 此后只要 Personal Team 不变，cdhash 就稳定，TCC 一次授权终身有效
+       —— 此后只要 bundle id + signing requirement 稳定，TCC 授权应继续匹配
 
 跑测试（任选其一）：
   • 单包：       cd Packages/ScanKit && swift test

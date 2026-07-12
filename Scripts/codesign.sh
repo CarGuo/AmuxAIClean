@@ -3,11 +3,11 @@
 # 严格禁止 --deep；所有内嵌可执行必须独立签 hardened runtime。
 set -euo pipefail
 
-APP="$1"
-IDENTITY="${IDENTITY:-Apple Distribution}"
+APP="${1:-}"
+IDENTITY="${IDENTITY:-Developer ID Application: SentenceEnd Inc (W6H34N9728)}"
 
 if [ -z "${APP:-}" ]; then
-  echo "用法: IDENTITY='Apple Distribution: Your Organization (TEAMID)' $0 path/to/AmuxAIClean.app"
+  echo "用法: IDENTITY='Developer ID Application: Your Organization (TEAMID)' $0 path/to/AmuxAIClean.app"
   exit 64
 fi
 

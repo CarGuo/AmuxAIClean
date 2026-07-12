@@ -1,10 +1,14 @@
 {
-  "ranAt": "2026-06-11T11:26:50Z",
-  "total": 1,
-  "pass": 1,
+  "ranAt": "2026-07-12T09:09:49Z",
+  "total": 5,
+  "pass": 5,
   "fail": 0,
   "timeout": 0,
   "cases": [
-    { "id": "scan-custom-fixture", "status": "PASS", "elapsedMs": 728, "reason": "" }
+    { "id": "scan-recommended", "status": "PASS", "elapsedMs": 9032, "reason": "" },
+    { "id": "scan-cancel-restart", "status": "PASS", "elapsedMs": 423, "reason": "" },
+    { "id": "hud-toggle", "status": "PASS", "elapsedMs": 2202, "reason": "" },
+    { "id": "tree-drilldown", "status": "PASS", "elapsedMs": 425, "reason": "" },
+    { "id": "trash-pipeline-dryrun", "status": "PASS", "elapsedMs": 219, "reason": "" }
   ]
 }

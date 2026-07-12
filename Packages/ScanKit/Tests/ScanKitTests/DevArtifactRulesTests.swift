@@ -57,10 +57,39 @@ final class DevArtifactRulesTests: XCTestCase {
                       "node_modules 必须有以 package.json 为兜底的规则")
     }
 
-    func testTargetRequiresCargoToml() {
+    func testTargetRulesRequireProjectMarkers() {
         let rules = DevArtifactRules.rules(for: "target")
-        XCTAssertTrue(rules.contains { $0.siblingMarkers.contains("Cargo.toml") },
-                      "target 必须有 Cargo.toml 兜底（避免误伤通用 target/ 目录）")
+        XCTAssertFalse(rules.isEmpty, "应有 target 规则")
+        for rule in rules {
+            XCTAssertFalse(rule.siblingMarkers.isEmpty,
+                           "target 规则 \(rule.id) 必须有 siblingMarkers 兜底，否则误命中风险极高")
+        }
+        XCTAssertTrue(rules.contains { $0.id == "rust.target" && $0.siblingMarkers.contains("Cargo.toml") },
+                      "Rust target 必须有 Cargo.toml 兜底")
+        XCTAssertTrue(rules.contains { $0.id == "jvm.maven_target" && $0.siblingMarkers.contains("pom.xml") },
+                      "Maven target 必须有 pom.xml 兜底")
+        XCTAssertTrue(rules.contains { $0.id == "jvm.sbt_target" && $0.siblingMarkers.contains("build.sbt") },
+                      "sbt target 必须有 build.sbt 兜底")
+    }
+
+    func testBackendAndNativeRulesKeepMarkerGuards() {
+        for rule in DevArtifactRules.all where [.jvm, .go, .zig, .nativeBuild].contains(rule.ecosystem) {
+            XCTAssertFalse(rule.siblingMarkers.isEmpty,
+                           "\(rule.id) 覆盖后端/本机构建生态，必须用项目 marker 限定命中边界")
+        }
+
+        let zigRules = DevArtifactRules.all.filter { $0.ecosystem == .zig }
+        XCTAssertFalse(zigRules.isEmpty, "应覆盖 Zig 项目产物")
+        let zigMarkers = Set(["build.zig", "build.zig.zon"])
+        XCTAssertTrue(zigRules.allSatisfy { !Set($0.siblingMarkers).isDisjoint(with: zigMarkers) },
+                      "Zig 规则必须由 build.zig / build.zig.zon 证明项目边界")
+
+        let nativeRules = DevArtifactRules.all.filter { $0.ecosystem == .nativeBuild }
+        XCTAssertFalse(nativeRules.isEmpty, "应覆盖 Bazel / CMake / Meson 等本机构建产物")
+        XCTAssertTrue(nativeRules.contains { $0.id == "native.bazel_bin" })
+        XCTAssertTrue(nativeRules.contains { $0.id == "native.cmake_build" })
+        XCTAssertTrue(nativeRules.contains { $0.id == "native.cmake_build_dir" })
+        XCTAssertTrue(nativeRules.contains { $0.id == "native.meson_builddir" })
     }
 
     // MARK: - v1.3 P0-D 新增字段兜底

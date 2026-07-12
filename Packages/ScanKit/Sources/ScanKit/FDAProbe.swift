@@ -10,23 +10,24 @@ import Foundation
 /// 业界做法：CleanMyMac / DaisyDisk 启动时 silently 试读一个**只有 FDA 才能开**的
 /// 探针文件，成功 = 已授权，失败 = 未授权。我们采用同样思路。
 ///
-/// **探针选择**：`~/Library/Mail` 的 mode 是 `0o700`。仅 `open(path, O_RDONLY)`
-/// 拿一个目录 fd 在很多 macOS 版本下并不会真正触发 TCC 校验——这是 1.5.x 系列被
-/// 用户反馈"已授权 + 重启仍报 denied"的根因：进程拿到了 fd 但从未"实质性读取"，
-/// 系统也就没机会返回正确状态，老逻辑根据 fd 是否 >= 0 误判，反而在很多机器上稳定
-/// 返回 granted 或 denied 取决于内核版本。
+/// **探针选择**：`~/Library/Mail`、`~/Library/Safari`、`~/Library/Messages`
+/// 都是常见 TCC 守卫目录。不要只看第一个存在的目录：某个目录可能因为账户状态、
+/// 数据迁移或更细粒度 TCC 状态返回权限错误，但另一个探针能读通；此时把整个 FDA
+/// 判成 denied 会制造"我明明授权了，App 仍提示未授权"的误报。
 ///
 /// **修复（v1.5.3）**：改用 `FileManager.contentsOfDirectory(atPath:)`——这是
 /// CleanMyMac / DaisyDisk / OmniDS 都在用的"真探针"，会真正进 readdir 系统调用，
 /// TCC 守护必须在此时给出一个明确答复（granted 时返回条目数组；denied 时抛
-/// `NSCocoaErrorDomain 257 / fileReadNoPermissionError`）。
+/// `NSCocoaErrorDomain 257 / fileReadNoPermissionError`）。v1.7 起改为多探针：
+/// 任一探针读通即判 granted；只有没有任何探针读通且至少一个探针明确 denied 时，
+/// 才判 denied。
 ///
 /// **不要**用 `/Library/Application Support/com.apple.TCC/TCC.db` 当探针——
 /// 那个文件**任何 App 都读不动**（只有特殊 entitlement，不是 FDA），永远返回 false。
 public enum FDAProbe {
 
-    /// 探测结果。`unknown` 表示探针文件不存在（用户从没用过 Mail.app），
-    /// 此时**保持保守 skip 行为**最安全，banner 仍会显示。
+    /// 探测结果。`unknown` 表示没有可用探针或探针只返回非权限类 IO 错误，
+    /// 此时交给扫描期真实 errno/skip 事件决定是否展示 banner。
     public enum Status: String, Sendable, Equatable {
         case granted
         case denied
@@ -35,25 +36,30 @@ public enum FDAProbe {
 
     /// 同步探测当前进程的 FDA 状态。可在任意线程调用，开销 ~毫秒级（一次 readdir）。
     public static func probe(home: String = NSHomeDirectory()) -> Status {
-        // 探针 1：`~/Library/Mail`（绝大多数 Mac 用户都用过 Mail.app 至少一次，存在）
-        let mailPath = "\(home)/Library/Mail"
-        if FileManager.default.fileExists(atPath: mailPath) {
-            return tryRead(mailPath)
+        let probePaths = [
+            "\(home)/Library/Mail",
+            "\(home)/Library/Safari",
+            "\(home)/Library/Messages"
+        ]
+
+        var sawDenied = false
+
+        for path in probePaths where FileManager.default.fileExists(atPath: path) {
+            switch tryRead(path) {
+            case .granted:
+                // One real TCC-protected directory was readable by this process. Treat FDA as
+                // usable and let later scan errors surface as path-specific denials.
+                return .granted
+            case .denied:
+                sawDenied = true
+            case .unknown:
+                continue
+            }
         }
 
-        // 探针 2：`~/Library/Safari`（fallback，几乎所有 Mac 都有）
-        let safariPath = "\(home)/Library/Safari"
-        if FileManager.default.fileExists(atPath: safariPath) {
-            return tryRead(safariPath)
+        if sawDenied {
+            return .denied
         }
-
-        // 探针 3：`~/Library/Messages`（再 fallback）
-        let messagesPath = "\(home)/Library/Messages"
-        if FileManager.default.fileExists(atPath: messagesPath) {
-            return tryRead(messagesPath)
-        }
-
-        // 三个探针都不存在：用户从没用过 Mail/Safari/Messages，只能算未知。
         return .unknown
     }
 

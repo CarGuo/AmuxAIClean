@@ -14,8 +14,8 @@
 #   3. 复制 .app 走 ditto（保留 extended attributes / 资源 fork / 符号链接）
 #
 # 注意：
-#   - 本脚本不做公证（Notarization），alpha 阶段先出包
-#   - PITFALLS §4.4：公证后必须 xcrun stapler staple <dmg>，由 codesign.sh 后续流程负责
+#   - 本脚本只负责生成 DMG，不做公证（Notarization）
+#   - 完整发布请走 Scripts/build_release.sh --notarize
 
 set -euo pipefail
 
@@ -312,8 +312,5 @@ echo "    路径: $DMG_PATH"
 echo "    体积: $DMG_SIZE"
 echo "    卷标: $VOLUME_NAME"
 echo
-echo "下一步（公证流程，alpha 可跳过）："
-echo "  1. ./Scripts/codesign.sh $APP_PATH        # Developer ID 签名"
-echo "  2. xcrun notarytool submit $DMG_PATH ..."
-echo "  3. xcrun stapler staple $DMG_PATH        # 公证票据 staple"
-echo "  4. spctl -a -vv -t open --context context:primary-signature $DMG_PATH"
+echo "公证发布请使用："
+echo "  VERSION=<version> ./Scripts/build_release.sh --notarize"

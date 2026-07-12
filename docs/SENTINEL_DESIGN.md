@@ -96,7 +96,7 @@ GSYCleanMac 当前是纯前台 App：用户主动 `⌘O` 才会扫描。两个�
   - `CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO`（避免与 `com.apple.security.inherit` 冲突）
   - `OTHER_CODE_SIGN_FLAGS = $(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)`
   - `ENABLE_HARDENED_RUNTIME = YES`
-  - `DEVELOPMENT_TEAM = W6H34N9728` / `CODE_SIGN_STYLE = Manual` / `CODE_SIGN_IDENTITY = Apple Distribution`
+  - Release: `DEVELOPMENT_TEAM = W6H34N9728` / `CODE_SIGN_STYLE = Manual` / `CODE_SIGN_IDENTITY = Developer ID Application: SentenceEnd Inc (W6H34N9728)`
 - 主 App target 接入：
   - 加 `PBXTargetDependency` → `GSYCleanMacSentinel`，确保 helper build 在前
   - 加 `PBXCopyFilesBuildPhase` 名为 `Embed Helper Tools`，`dstSubfolderSpec = 6`（Executables → `Contents/MacOS/`），引用 helper product 的 PBXBuildFile（`ATTRIBUTES = (CodeSignOnCopy, )` 在 copy 阶段重签）

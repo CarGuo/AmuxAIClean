@@ -499,28 +499,29 @@ public struct DuplicateScreen: View {
     private func deleteDuplicatePaths(group: DuplicateGroup, paths: [String]) {
         guard DuplicateHandlingPlan.isValidDeleteTargets(paths, for: group), !isDeletingDuplicates else { return }
         isDeletingDuplicates = true
-        Task {
-            pipeline.setAccessDeniedPaths([])
-            let result = await pipeline.moveToTrashReturningOutcome(paths: paths, dryRun: false)
-            await MainActor.run {
-                isDeletingDuplicates = false
-                let movedPairs = result.outcome?.movedPairs.map { ($0.originalPath, $0.trashedPath) } ?? result.legacy.3
-                if !movedPairs.isEmpty {
-                    UndoHistoryStore.shared.addRecord(
-                        source: "duplicate",
-                        filePairs: movedPairs.map { UndoHistoryStore.Record.FilePair(original: $0.0, trashed: $0.1) }
-                    )
-                    pruneMovedDuplicatePaths(Set(movedPairs.map(\.0)))
-                }
-                if let outcome = result.outcome {
-                    activeSheet = .result(OperationResultPayload(outcome: outcome))
-                } else {
-                    activeSheet = .result(OperationResultPayload(
-                        movedPairs: movedPairs,
-                        failedPaths: result.legacy.2 == nil ? [] : paths,
-                        safetyRejected: []
-                    ))
-                }
+        Task { @MainActor in
+            let action = TrashActionCoordinator(pipeline: pipeline)
+            let result = await action.run(TrashActionCoordinator.Request(
+                paths: paths,
+                dryRun: false,
+                source: "duplicate",
+                accessDeniedPaths: []
+            ))
+            isDeletingDuplicates = false
+            let movedPairs = result.outcome?.movedPairs.map { ($0.originalPath, $0.trashedPath) } ?? result.pairs
+            let succeededPaths = result.succeededPaths
+            if !succeededPaths.isEmpty {
+                pruneMovedDuplicatePaths(Set(succeededPaths))
+            }
+            if let outcome = result.outcome {
+                activeSheet = .result(OperationResultPayload(outcome: outcome))
+            } else {
+                let succeeded = Set(succeededPaths)
+                activeSheet = .result(OperationResultPayload(
+                    movedPairs: movedPairs,
+                    failedPaths: result.err == nil ? [] : paths.filter { !succeeded.contains($0) },
+                    safetyRejected: []
+                ))
             }
         }
     }

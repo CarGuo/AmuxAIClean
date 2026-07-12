@@ -250,7 +250,7 @@ jobs:
             xattr -cr /Applications/GSYCleanMac.app
             ```
 
-            > 由于本项目当前使用 ad-hoc 临时签名（未购买 Apple Developer ID、未公证），Gatekeeper 提示是预期行为。如果你不接受任何形式的绕过，请等待后续 Developer ID + notarization 版本（参见 [docs/RELEASE.md](https://github.com/${{ github.repository }}/blob/main/docs/RELEASE.md) 路线图），或自行 fork 用你自己的 Developer ID 重新签名。
+            > 当前 GitHub Actions 产物使用无私钥的 ad-hoc 签名，因此 Gatekeeper 提示是预期行为。维护者本地可通过 `Scripts/build_release.sh --notarize` 生成 Developer ID + Apple Notary + stapled 产物；fork 用户也可以用自己的 Developer ID 和 notary profile 走同一脚本。
 
             ---
 
@@ -310,7 +310,7 @@ jobs:
 
             ### 💡 为什么不需要 GitHub Secrets
 
-            本项目使用 ad-hoc 签名（`codesign --sign -`），与 Rectangle / AltTab / Stats 等开源项目一致；签名身份是 GitHub runner 上即时生成的临时身份，不依赖任何 Apple Developer 证书或上传到 Secrets 的密钥。如需 Developer ID 公证签名版本，请 fork 后在 [Scripts/build_release.sh](https://github.com/${{ github.repository }}/blob/main/Scripts/build_release.sh) 设 `IDENTITY` 并配置自己的 keychain；完整说明见 [docs/RELEASE.md](https://github.com/${{ github.repository }}/blob/main/docs/RELEASE.md)。
+            GitHub Actions 产物使用 ad-hoc 签名（`codesign --sign -`），签名身份是 runner 上即时生成的临时身份，不依赖 Apple Developer 证书或上传到 Secrets 的密钥。Developer ID + Apple Notary 发布请在本地或自有 CI 配置证书和 notary profile 后运行 [Scripts/build_release.sh --notarize](https://github.com/${{ github.repository }}/blob/main/Scripts/build_release.sh)；完整说明见 [docs/RELEASE.md](https://github.com/${{ github.repository }}/blob/main/docs/RELEASE.md)。
 
             ---
 

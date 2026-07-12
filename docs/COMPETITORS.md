@@ -263,7 +263,7 @@
 | v0.5 | F/G/I/J | AppUninstaller strict prefix + vendor 真注入 + TestHarness + HeuristicKit |
 | v0.5.1 | K | vendor 真生效（[GSYCleanMacApp.swift](../App/GSYCleanMacApp.swift)） + HeuristicRecorder 接 UI |
 | v0.6 | L | ScanKit 测试补到 14 条（hidden / inode / 引擎一致性 / golden） |
-| v0.7 | M | xcodegen + Xcode 真首跑通过 + TCC 引导 + 空状态 + PerfBench（~/Library/Caches 32.8w 文件 9.5s / 18.1 GB） + 应用卸载侧边栏 |
+| v0.7 | M | Xcode 真首跑通过 + TCC 引导 + 空状态 + PerfBench（~/Library/Caches 32.8w 文件 9.5s / 18.1 GB） + 应用卸载侧边栏 |
 
 总测试数 **370+ 全绿**（ScanKit 117 / AppUI 252 / SafetyKit 30 / HeuristicKit 11 / TestHarness 8），xcodebuild Release **BUILD SUCCEEDED**。
 

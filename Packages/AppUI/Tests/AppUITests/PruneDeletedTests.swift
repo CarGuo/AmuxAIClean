@@ -5,7 +5,7 @@ import SafetyKit
 /// Step 15：补 [pruneDeleted](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1379-L1484)
 /// 测试死角。
 ///
-/// 该方法是"删除乐观更新核心"——同时清四份内存索引（buckets / dirIndex / fileLeaves
+/// 该方法是"删除成功后的状态同步核心"——同时清四份内存索引（buckets / dirIndex / fileLeaves
 /// / childEdges）+ snapshot.rows + treeChildrenCache，且要触发 structuralRevision bump。
 /// AUDIT §3.6 明确"零直接测试"。本套围绕 6 个不变量驱：
 ///
@@ -263,6 +263,152 @@ final class PruneDeletedTests: XCTestCase {
         let topLevel = coord.directChildren(of: ScanCoordinator.multiRootSentinelPath, sortedBy: .sizeDesc)
         XCTAssertEqual(topLevel.first?.bytes, 700)
         XCTAssertEqual(topLevel.first?.fileCount, 2)
+    }
+
+    func test_pruneDeleted_删除开发者构建产物顶层根时perRoot同步移除() {
+        let coord = ScanCoordinator()
+        let derivedData = "/Users/test/Library/Developer/Xcode/DerivedData"
+        let moduleCache = "/Users/test/Library/Developer/Xcode/ModuleCache.noindex"
+        coord._seedForTesting(
+            snapshot: ScanSnapshot(
+                categoryID: ScanCoordinator.developerCategoryID,
+                rows: [],
+                totalBytes: 1_100,
+                scannedFileCount: 8,
+                isFinished: true,
+                elapsed: 0
+            ),
+            currentRootPath: ScanCoordinator.developerSentinelPath,
+            perRootStaging: [
+                derivedData: ScanCoordinator.PerRootProgress(
+                    rootPath: derivedData,
+                    title: "DerivedData",
+                    bytes: 400,
+                    fileCount: 3,
+                    isFinished: true
+                ),
+                moduleCache: ScanCoordinator.PerRootProgress(
+                    rootPath: moduleCache,
+                    title: "ModuleCache",
+                    bytes: 700,
+                    fileCount: 5,
+                    isFinished: true
+                )
+            ]
+        )
+
+        coord.pruneDeleted(paths: [derivedData])
+
+        XCTAssertNil(coord.perRootProgress[derivedData],
+            "开发者构建产物顶层行来自 perRootProgress，删除根本身时必须同步移除")
+        XCTAssertEqual(coord.perRootProgress[moduleCache]?.bytes, 700)
+        XCTAssertEqual(coord.snapshot.totalBytes, 700,
+            "没有 dirIndex/snapshot row 的合成顶层根也要按 perRoot 贡献量扣总量")
+        let topLevel = coord.directChildren(of: ScanCoordinator.developerSentinelPath, sortedBy: .sizeDesc)
+        XCTAssertEqual(topLevel.map(\.path), [moduleCache],
+            "TreeBrowserView 读取的多根合成顶层不应再包含已移废纸篓成功的根")
+    }
+
+    func test_pruneDeleted_删除多根顶层后旧扫描同步不应复活该根() {
+        let coord = ScanCoordinator()
+        let derivedData = "/Users/test/Library/Developer/Xcode/DerivedData"
+        let caches = "/Users/test/Library/Caches"
+        coord._seedForTesting(
+            currentRootPath: ScanCoordinator.multiRootSentinelPath,
+            perRootStaging: [
+                derivedData: ScanCoordinator.PerRootProgress(
+                    rootPath: derivedData,
+                    title: "Xcode Build Artifacts",
+                    bytes: 400,
+                    fileCount: 3,
+                    isFinished: true
+                ),
+                caches: ScanCoordinator.PerRootProgress(
+                    rootPath: caches,
+                    title: "User Caches",
+                    bytes: 700,
+                    fileCount: 5,
+                    isFinished: true
+                )
+            ]
+        )
+
+        coord.pruneDeleted(paths: [derivedData])
+        coord._seedForTesting(
+            perRootStaging: [
+                derivedData: ScanCoordinator.PerRootProgress(
+                    rootPath: derivedData,
+                    title: "Xcode Build Artifacts",
+                    bytes: 400,
+                    fileCount: 3,
+                    isFinished: true
+                ),
+                caches: ScanCoordinator.PerRootProgress(
+                    rootPath: caches,
+                    title: "User Caches",
+                    bytes: 700,
+                    fileCount: 5,
+                    isFinished: true
+                )
+            ]
+        )
+
+        XCTAssertNil(coord.perRootProgress[derivedData],
+            "删除成功后的 tombstone 必须挡住旧扫描事件/节流同步把同一路径复活")
+        let topLevel = coord.directChildren(of: ScanCoordinator.multiRootSentinelPath, sortedBy: .sizeDesc)
+        XCTAssertEqual(topLevel.map(\.path), [caches])
+    }
+
+    func test_pruneDeleted_删除后异步子树fetch不应把tombstone路径写回cache() {
+        let coord = ScanCoordinator()
+        coord._seedForTesting(
+            treeChildrenCache: [
+                "/A|sizeDesc": [
+                    makeTreeRow("/A/drop"),
+                    makeTreeRow("/A/keep")
+                ]
+            ]
+        )
+
+        coord.pruneDeleted(paths: ["/A/drop"])
+        coord._storeFetchedChildrenForTesting(
+            path: "/A",
+            sortedBy: .sizeDesc,
+            rows: [
+                makeTreeRow("/A/drop"),
+                makeTreeRow("/A/keep")
+            ]
+        )
+
+        let cached = coord._treeChildrenCacheForTesting()["/A|sizeDesc"]?.map(\.path)
+        XCTAssertEqual(cached, ["/A/keep"],
+                       "删除后的后台 directChildren fetch 可能晚到，写 cache 前必须过滤 tombstone")
+    }
+
+    func test_pruneDeleted_根路径应匹配所有子孙() {
+        let coord = ScanCoordinator()
+        coord._seedForTesting(
+            snapshot: ScanSnapshot(
+                categoryID: "t",
+                rows: [makeRow("/Applications/X"), makeRow("/Users/me/Y")],
+                totalBytes: 2_000,
+                scannedFileCount: 2,
+                isFinished: true,
+                elapsed: 0
+            ),
+            treeChildrenCache: [
+                "/|sizeDesc": [
+                    makeTreeRow("/Applications"),
+                    makeTreeRow("/Users")
+                ]
+            ]
+        )
+
+        coord.pruneDeleted(paths: ["/"])
+
+        XCTAssertTrue(coord.snapshot.rows.isEmpty)
+        XCTAssertTrue(coord._treeChildrenCacheForTesting().isEmpty,
+                      "根路径删除语义必须覆盖所有子孙，不能因为 '/' + '/' 变成 '//' 而漏匹配")
     }
 
     // MARK: - 边界：尾斜杠归一化

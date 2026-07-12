@@ -23,6 +23,7 @@ public struct LargeFilesView: View {
 
     /// 移到废纸篓回调；由 MainView 注入，复用主界面的 DeleteSheet 流程。
     let onTrash: ([URL]) -> Void
+    let onVisiblePathsChange: ([String]) -> Void
     let onStash: (LargeFileItem) -> Void
     let isStashed: (String) -> Bool
     let aiSettings: AISettings?
@@ -80,6 +81,7 @@ public struct LargeFilesView: View {
                 batch: BatchSelection,
                 limit: Int = 200,
                 onTrash: @escaping ([URL]) -> Void,
+                onVisiblePathsChange: @escaping ([String]) -> Void = { _ in },
                 onStash: @escaping (LargeFileItem) -> Void,
                 isStashed: @escaping (String) -> Bool,
                 aiSettings: AISettings?,
@@ -90,6 +92,7 @@ public struct LargeFilesView: View {
         self.batch = batch
         self.limit = limit
         self.onTrash = onTrash
+        self.onVisiblePathsChange = onVisiblePathsChange
         self.onStash = onStash
         self.isStashed = isStashed
         self.aiSettings = aiSettings
@@ -159,6 +162,7 @@ public struct LargeFilesView: View {
         if displayedItems != items {
             displayedItems = items
         }
+        onVisiblePathsChange(items.map(\.path))
         if !Self.kindCountsEqual(displayedKindCounts, kindCounts) {
             displayedKindCounts = kindCounts
         }

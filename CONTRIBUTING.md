@@ -12,7 +12,7 @@
 
 - macOS 15 Sequoia 或更高
 - Xcode 16+
-- Homebrew + xcodegen（`brew install xcodegen`）
+- Homebrew（可选，只在装 `xcbeautify` 装饰输出或 `create-dmg` 打 DMG 时需要；**不再需要 xcodegen** —— v1.5.x 起原生 [GSYCleanMac.xcodeproj](GSYCleanMac.xcodeproj) 已入仓）
 
 ```bash
 git clone https://github.com/CarGuo/GSYCleanMac.git
@@ -27,10 +27,10 @@ cd GSYCleanMac
 1. 从 `main` fork & branch（命名：`fix/xxx`、`feat/xxx`、`chore/xxx`、`docs/xxx`）
 2. 每个 PR 只解决一件事，避免大 PR
 3. **写代码前先写测试**或同步增加测试（红线见下文）
-4. 本地跑通 6 个包的单测：
+4. 本地跑通全部 9 个包的单测（v1.5.x 起 XPCBridge 已下线，新增 BrewKit / FileSearchKit / AIKit）：
 
    ```bash
-   for pkg in ScanKit SafetyKit XPCBridge AppUI HeuristicKit TestHarness; do
+   for pkg in ScanKit SafetyKit AppUI HeuristicKit LogKit BrewKit FileSearchKit AIKit TestHarness; do
      (cd "Packages/$pkg" && swift test) || exit 1
    done
    ```

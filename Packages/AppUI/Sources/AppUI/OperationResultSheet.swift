@@ -12,7 +12,7 @@ import AppKit
 /// 4. **被拦明细**（可折叠）：列出被 SafetyEngine 拦的路径与原因
 /// 5. **Done** 关闭
 ///
-/// 接入点：调用方在 `pipeline.moveToTrash(...)` 后立即拉 `pipeline.snapshotLastOutcome()`，
+/// 接入点：调用方通过 `TrashActionCoordinator` 取得结构化结果，
 /// 把 [TrashOutcome](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift)
 /// 包装成 `OperationResultPayload` 喂给本 sheet。
 public struct OperationResultPayload: Identifiable {

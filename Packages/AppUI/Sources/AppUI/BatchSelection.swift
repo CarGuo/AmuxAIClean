@@ -44,6 +44,10 @@ public final class BatchSelection {
         selected.removeAll()
     }
 
+    public func remove(paths: [String]) {
+        selected.subtract(paths)
+    }
+
     // MARK: - 与可见列表的交互
 
     /// 全选当前可见集。**注意**：visible 通常是 mtime + kind 过滤后的列表，

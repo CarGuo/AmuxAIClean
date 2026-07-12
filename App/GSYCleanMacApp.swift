@@ -6,6 +6,13 @@ import SafetyKit
 import ScanKit
 import AIKit
 
+private enum MainWindowMetrics {
+    static let minWidth: CGFloat = 1280
+    static let minHeight: CGFloat = 760
+    static let defaultWidth: CGFloat = 1360
+    static let defaultHeight: CGFloat = 820
+}
+
 @main
 struct GSYCleanMacApp: App {
     private let vendors: [VendorRule]
@@ -23,6 +30,7 @@ struct GSYCleanMacApp: App {
     /// 用户在 ⌘, 改了 AI Enabled / baseURL 后，RowView contextMenu 不会立刻刷新
     /// （需重启 App 才生效）。详见 Review fix #2，2026-06-15。
     @State private var aiSettings = AISettings()
+    @State private var settingsNavigation = SettingsNavigation()
 
     @State private var showTCCGuide: Bool = false
 
@@ -32,6 +40,10 @@ struct GSYCleanMacApp: App {
     /// v1.3：把 ScanCoordinator 提升到 App 层，让主窗口与 [FloatingScanHUDController](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
     /// 共享同一个实例（同一份 snapshot / isScanning），HUD 实时刷新不需要双扫。
     @StateObject private var coordinator: ScanCoordinator
+
+    /// Smart Care 普通模式会话提升到 App 层，确保主窗口、HUD 和托盘入口共享
+    /// 同一份 phase / summary / selection，不会出现后台已扫描而首页仍显示 idle。
+    @State private var smartCareSession: SmartCareSession
 
     /// v1.3：扫描悬浮窗控制器。NSPanel 寄生在 App 上，跨 Space / 全屏 不被遮。
     @State private var hud = FloatingScanHUDController()
@@ -89,6 +101,12 @@ struct GSYCleanMacApp: App {
             wrappedValue: ScanCoordinator(vendors: loadedVendors,
                                           enableTreeDeepIndex: deepIndex)
         )
+        self._smartCareSession = State(initialValue: SmartCareSession(
+            scanCoordinator: ScanCoordinator(
+                vendors: loadedVendors,
+                enableTreeDeepIndex: false
+            )
+        ))
     }
 
     var body: some Scene {
@@ -97,8 +115,11 @@ struct GSYCleanMacApp: App {
                      settings: settings,
                      pathStore: pathStore,
                      coordinator: coordinator,
-                     aiSettings: aiSettings)
-            .frame(minWidth: 1080, minHeight: 640)
+                     smartCareSession: smartCareSession,
+                     aiSettings: aiSettings,
+                     settingsNavigation: settingsNavigation)
+            .frame(minWidth: MainWindowMetrics.minWidth,
+                   minHeight: MainWindowMetrics.minHeight)
             .environment(\.locale, settings.effectiveLocale)
             .task {
                 // v1.7：把用户在「设置 → 外观 → 界面语言」选定的覆盖值同步到 AppleLanguages，
@@ -109,25 +130,36 @@ struct GSYCleanMacApp: App {
                 // v1.1：尊重 settings.updateCheckEnabled 决定是否联网；用户可在设置里关
                 updateChecker.checkOnLaunch()
                 // v1.3：把 coordinator + settings 注入 HUD，订阅 isScanning 自动开关 panel
-                hud.attach(coordinator: coordinator, settings: settings)
+                hud.attach(
+                    coordinator: coordinator,
+                    settings: settings,
+                    smartCareSession: smartCareSession
+                )
                 // v1.3：HUD 上点击"打开主窗口"按钮 → 拉主窗口回前台
                 hud.onOpenMainWindow = { Self.bringMainWindowToFront() }
-                // v1.3：HUD 闲置态点击"立即扫描"→ 直接走推荐扫描，无需打开主窗口
-                hud.onStartScan = { [coordinator] in
-                    coordinator.scanRecommended(includeHidden: settings.showHidden)
+                // HUD / 托盘都走同一份 Smart Care 会话：即使主窗口关闭，扫描状态和
+                // 最终摘要也会保留，重新打开窗口后普通模式可直接继续展示。
+                hud.onStartScan = { [smartCareSession] in
+                    smartCareSession.startScan(
+                        includeHidden: settings.showHidden,
+                        enabledDeveloperRuleIDs: settings.enabledDevArtifactRuleIDs
+                    )
                 }
                 // v1.3：托盘菜单回调注入
                 statusItem.onOpenMainWindow = { Self.bringMainWindowToFront() }
-                statusItem.onStartRecommendedScan = { [coordinator] in
-                    coordinator.scanRecommended(includeHidden: settings.showHidden)
+                statusItem.onStartRecommendedScan = { [smartCareSession] in
+                    smartCareSession.startScan(
+                        includeHidden: settings.showHidden,
+                        enabledDeveloperRuleIDs: settings.enabledDevArtifactRuleIDs
+                    )
                 }
                 statusItem.onToggleHUD = { [hud] in
                     hud.toggleForceVisible()
                 }
                 // M5（交互更便捷）：弹菜单时同步查询扫描状态，
                 // 让"开始推荐扫描"在已经在扫时自动 disable + 标题转"扫描中…"。
-                statusItem.onQueryScanState = { [coordinator] in
-                    coordinator.isScanning
+                statusItem.onQueryScanState = { [coordinator, smartCareSession] in
+                    coordinator.isScanning || smartCareSession.isBusy
                 }
                 // v1.3：根据 settings.trayEnabled 注册 / 移除菜单栏图标
                 reconcileTray()
@@ -191,6 +223,9 @@ struct GSYCleanMacApp: App {
                 // v1.3：扫描开始 → HUD 弹出；扫描结束 → 非常驻模式下 0.8s 后渐隐
                 hud.reconcile()
             }
+            .onChange(of: smartCareSession.isBusy) { _, _ in
+                hud.reconcile()
+            }
             .onChange(of: settings.hudEnabled) { _, _ in
                 // 用户 toggle 设置里的 HUD 开关，立即生效
                 hud.reconcile()
@@ -251,6 +286,8 @@ struct GSYCleanMacApp: App {
                 UpdatePromptView(checker: updateChecker, release: wrapped.release)
             }
         }
+        .defaultSize(width: MainWindowMetrics.defaultWidth,
+                     height: MainWindowMetrics.defaultHeight)
         .commands {
             // v2026.06.22 perf：把 .commands 内容拆到独立 Commands struct。
             //
@@ -277,7 +314,8 @@ struct GSYCleanMacApp: App {
             SettingsScene(settings: settings,
                           pathStore: pathStore,
                           updateChecker: updateChecker,
-                          aiSettings: aiSettings)
+                          aiSettings: aiSettings,
+                          navigation: settingsNavigation)
                 .environment(\.locale, settings.effectiveLocale)
         }
     }
