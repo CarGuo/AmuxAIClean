@@ -101,16 +101,17 @@ public struct BackendWorkflow: DeveloperWorkflow {
         }
 
         let modCache = home.appendingPathComponent("go/pkg/mod", isDirectory: true)
-        let modDownloadCache = home.appendingPathComponent("go/pkg/mod/cache/download", isDirectory: true)
-        if Self.dirExists(modCache) || Self.dirExists(modDownloadCache) {
+        if Self.dirExists(modCache) {
             result.append(DeveloperCard(
                 id: "card.backend.go-module-cache",
                 title: "card.backend.go-module-cache.title",
                 summary: "card.backend.go-module-cache.summary",
-                source: .literal(paths: [
-                    "~/go/pkg/mod/cache/download",
-                    "~/go/pkg/mod",
-                ]),
+                // `cache/download` is a descendant of `pkg/mod`. Listing both roots makes
+                // the scanner recursively measure the same bytes twice and gives the UI a
+                // selection that differs from the folded deletion request. Keep the highest
+                // existing root so displayed bytes and the eventual Trash request share one
+                // canonical ownership boundary.
+                source: .literal(paths: ["~/go/pkg/mod"]),
                 recipe: .filesystem,
                 risk: .confirm))
         }

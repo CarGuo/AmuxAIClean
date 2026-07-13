@@ -86,7 +86,7 @@ public struct TreeBrowserView: View {
 
     /// SafetyEngine 静态共享：拦截 forbid 路径（家目录、`/`、SIP、`..` 等），
     /// 在弹菜单 / 行内 trash 按钮 hit-test 时就 disabled，并附 tooltip 解释为什么不能删。
-    static let safety = SafetyEngine()
+    nonisolated static let safety = SafetyEngine()
 
     /// v2026.06.22 perf：path → SafetyVerdict 进程内缓存（**Instruments Time Profiler 取证**）。
     ///
@@ -112,7 +112,7 @@ public struct TreeBrowserView: View {
     /// 超过 50k 直接 reset（不做 LRU 是因为 dev 工具单次会话规模可控，简洁优先）。
     private enum VerdictCache {
         nonisolated(unsafe) private static var cache: [String: SafetyVerdict] = [:]
-        nonisolated(unsafe) private static let lock = NSLock()
+        private static let lock = NSLock()
         private static let maxEntries = 50_000
 
         static func verdict(for path: String) -> SafetyVerdict {

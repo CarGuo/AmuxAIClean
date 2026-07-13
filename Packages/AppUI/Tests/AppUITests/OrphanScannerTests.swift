@@ -74,7 +74,6 @@ final class OrphanScannerTests: XCTestCase {
             fileManager: StubFM(entriesByRoot: [root: entries], bytes: 100, fileCount: 1),
             minAgeDays: 30
         )
-        let cands = scanner.scan().filter { _ in true }
         // 由于 searchRoots 不含我们的 root，scan() 不会扫到；这里直接验证 evaluate
         let cand = scanner.evaluate(
             entry: entries[0], root: root, now: Date())

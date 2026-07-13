@@ -21,6 +21,8 @@ public enum SafetyRejection: String, Sendable, Equatable {
     case vendorPathRule         // 命中 vendors.yaml 中显式声明 verdict=forbid 的 path 规则
     case accessDenied           // v1.3.zzzz：扫描期 BulkScanner 标记 permissionDenied / tccProtected，
                                 // 上层在 pre-flight 一票否决——这类路径里实质没有数据，"删它"是个伪操作
+    case userWhitelisted        // 用户明确标记“永不展示/永不清理”的路径或其祖先/后代
+    case batchContainsForbidden // 同批其它路径命中 forbid；按批级原子合同，本路径也不能单独执行
     case bundleSystemCritical   // 命中 protected_bundles.json system_critical（Finder/Dock/Settings 等）
     case bundleDataProtected    // 命中 protected_bundles.json data_protected（1Password/JetBrains/WeChat 等）
     case ok

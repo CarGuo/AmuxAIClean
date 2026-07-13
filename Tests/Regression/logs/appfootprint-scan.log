@@ -1,10 +1,10 @@
-2026-07-01 22:44:28.735 AmuxAIClean[27763:8149556] [AmuxAIClean] 已加载 123 条 vendor 规则
-[REGR] case=appfootprint-scan defaults_snapshot_keys=2 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
+2026-07-13 11:04:02.594 AmuxAIClean[19473:36018344] [AmuxAIClean] 已加载 123 条 vendor 规则
+[REGR] case=appfootprint-scan defaults_snapshot_keys=5 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
 [REGR_BEGIN] case=appfootprint-scan
 [REGR] case=appfootprint-scan bundleID=com.gsyclean.regression.fake appName=FakeRegression
 [REGR_OK] case=appfootprint-scan bundleID=com.gsyclean.regression.fake
 [REGR] case=appfootprint-scan bundleBytes=12777 bundleFiles=3
 [REGR_OK] case=appfootprint-scan bundle bytes > 0=12777 > 0
 [REGR_OK] case=appfootprint-scan bundle file count > 0=3 > 0
-[REGR] case=appfootprint-scan defaults_restored_keys=2
-[REGR_PASS] case=appfootprint-scan elapsed_ms=217
+[REGR] case=appfootprint-scan defaults_restored_keys=5
+[REGR_PASS] case=appfootprint-scan elapsed_ms=214

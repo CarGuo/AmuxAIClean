@@ -211,6 +211,118 @@ final class SmartCareSummaryBuilderTests: XCTestCase {
         XCTAssertLessThan(elapsed, isCI ? 2.5 : 1.0)
     }
 
+    func testIncrementalAggregationMatchesSinglePassAndReturnsCanonicalCheckpoint() throws {
+        let parent = "/Users/tester/Library/Caches/Example"
+        let existing = [
+            SmartCareCandidate(
+                source: .recommended,
+                bucketID: .appCache,
+                path: parent,
+                title: "Example",
+                bytes: 1_000,
+                verdict: .safe
+            )
+        ]
+        let rows = [
+            makeRow(path: "\(parent)/Child", bytes: 200, verdict: .confirm),
+            makeRow(path: "/Users/tester/Library/Caches/Other", bytes: 500)
+        ]
+
+        let incremental = try SmartCareSummaryBuilder.aggregateCheckingCancellation(
+            existingCandidates: existing,
+            rows: rows,
+            source: .commonAppCache,
+            home: "/Users/tester"
+        )
+        let singlePass = SmartCareSummaryBuilder.build(
+            candidates: existing + SmartCareSummaryBuilder.candidates(
+                from: rows,
+                source: .commonAppCache,
+                home: "/Users/tester"
+            )
+        )
+
+        XCTAssertEqual(incremental.summary, singlePass)
+        XCTAssertEqual(incremental.candidates.map(\.path), [
+            parent,
+            "/Users/tester/Library/Caches/Other"
+        ])
+        XCTAssertEqual(incremental.candidates.first?.verdict, .confirm)
+    }
+
+    func testStableSortCancelsDuringMergeWithoutTimingRace() {
+        let values = Array((0..<10_000).reversed())
+        var cancellationChecks = 0
+
+        let result = SmartCareCancellableAlgorithms.stableSorted(
+            values,
+            by: <,
+            shouldCancel: {
+                cancellationChecks += 1
+                return cancellationChecks == 4
+            }
+        )
+
+        XCTAssertNil(result)
+        XCTAssertEqual(cancellationChecks, 4)
+    }
+
+    func testStableSortPreservesEqualElementOrder() {
+        struct Entry: Equatable {
+            let key: Int
+            let originalIndex: Int
+        }
+        let values = [
+            Entry(key: 2, originalIndex: 0),
+            Entry(key: 1, originalIndex: 1),
+            Entry(key: 2, originalIndex: 2),
+            Entry(key: 1, originalIndex: 3)
+        ]
+
+        let result = SmartCareCancellableAlgorithms.stableSorted(
+            values,
+            by: { $0.key < $1.key },
+            shouldCancel: { false }
+        )
+
+        XCTAssertEqual(result, [
+            Entry(key: 1, originalIndex: 1),
+            Entry(key: 1, originalIndex: 3),
+            Entry(key: 2, originalIndex: 0),
+            Entry(key: 2, originalIndex: 2)
+        ])
+    }
+
+    func testFinalSummaryConstructionCancelsInsidePrioritySort() {
+        let items = (0..<4_096).map { index in
+            SmartCareItem(
+                id: "/tmp/confirm/\(index)",
+                bucketID: .systemJunk,
+                path: "/tmp/confirm/\(index)",
+                title: "\(index)",
+                bytes: Int64(index),
+                verdict: .confirm
+            )
+        }
+        let bucket = SmartCareBucketSummary(id: .systemJunk, items: items)
+        var cancellationChecks = 0
+        let flattenChecks = ((items.count - 1) / SmartCareAggregationCancellation.checkStride) + 1
+        let cancellationCheckInSort = flattenChecks + 4
+
+        let result = SmartCareSummary.make(
+            buckets: [bucket],
+            shouldCancel: {
+                cancellationChecks += 1
+                // flatten 完成后再经过 sort entry 和两个 merge checkpoint，
+                // 因此取消发生在优先级排序已实际处理数据之后。
+                return cancellationChecks == cancellationCheckInSort
+            }
+        )
+
+        XCTAssertNil(result)
+        XCTAssertEqual(cancellationChecks, cancellationCheckInSort)
+    }
+
     func testRemovingOnlyDropsMovedPaths() {
         let moved = "/Users/tester/Library/Caches/Moved"
         let kept = "/Users/tester/Library/Caches/Kept"
@@ -233,6 +345,74 @@ final class SmartCareSummaryBuilderTests: XCTestCase {
 
         XCTAssertEqual(remaining.items.map(\.path), [kept])
         XCTAssertEqual(remaining.buckets.map(\.id), SmartCareBucketID.allCases)
+    }
+
+    func testRemovingChildAlsoDropsStaleAncestorCandidateButNotSimilarPrefix() {
+        let parent = "/Users/tester/Library/Caches/App"
+        let sibling = "/Users/tester/Library/Caches/Application"
+        let summary = SmartCareSummaryBuilder.build(candidates: [
+            SmartCareCandidate(source: .commonAppCache,
+                               bucketID: .appCache,
+                               path: parent,
+                               title: "App",
+                               bytes: 100,
+                               verdict: .safe),
+            SmartCareCandidate(source: .commonAppCache,
+                               bucketID: .appCache,
+                               path: sibling,
+                               title: "Application",
+                               bytes: 200,
+                               verdict: .safe)
+        ])
+
+        let remaining = SmartCareSummaryBuilder.removing(
+            paths: [parent + "/child/cache.bin"],
+            from: summary
+        )
+
+        XCTAssertEqual(remaining.items.map(\.path), [sibling])
+    }
+
+    func testRemovingCandidates_20k批量路径保持线性对数级并保留前缀碰撞项() throws {
+        let count = 20_000
+        var candidates: [SmartCareCandidate] = []
+        var removedPaths: [String] = []
+        candidates.reserveCapacity(count + 1)
+        removedPaths.reserveCapacity(count)
+        for index in 0..<count {
+            let root = "/tmp/smart-care-removal/root-\(index)"
+            candidates.append(SmartCareCandidate(
+                source: .commonAppCache,
+                bucketID: .appCache,
+                path: root,
+                title: "root-\(index)",
+                bytes: 1,
+                verdict: .safe
+            ))
+            removedPaths.append(root + "/child.bin")
+        }
+        let prefixCollision = "/tmp/smart-care-removal/root-1-keep"
+        candidates.append(SmartCareCandidate(
+            source: .commonAppCache,
+            bucketID: .appCache,
+            path: prefixCollision,
+            title: "keep",
+            bytes: 1,
+            verdict: .safe
+        ))
+
+        let started = Date()
+        let result = try SmartCareSummaryBuilder.removingCandidatesCheckingCancellation(
+            paths: removedPaths,
+            from: candidates
+        )
+        let elapsed = Date().timeIntervalSince(started)
+        let isCI = ProcessInfo.processInfo.environment["CI"] == "true"
+            || ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true"
+
+        XCTAssertEqual(result.candidates.map(\.path), [prefixCollision])
+        XCTAssertLessThan(elapsed, isCI ? 4.0 : 2.0,
+                          "20k×20k overlap 必须走索引，不能退化成 Array.contains O(n²)")
     }
 
     private func makeRow(path: String,

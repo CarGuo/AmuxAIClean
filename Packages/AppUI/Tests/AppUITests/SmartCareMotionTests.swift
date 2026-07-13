@@ -26,6 +26,76 @@ final class SmartCareMotionTests: XCTestCase {
         XCTAssertEqual(animationCount, 0)
     }
 
+    func testSignalBeamRunsOnCoreAnimationLayers() {
+        let view = SmartCareSignalBeamHostView(frame: CGRect(x: 0, y: 0, width: 180, height: 3))
+        view.configure(isActive: true, reduceMotion: false)
+        view.layoutSubtreeIfNeeded()
+
+        let animationCount = view.layer?.sublayers?.reduce(into: 0) { count, layer in
+            count += layer.animationKeys()?.count ?? 0
+        } ?? 0
+        XCTAssertGreaterThan(animationCount, 0)
+    }
+
+    func testReduceMotionStopsSignalBeamAnimation() {
+        let view = SmartCareSignalBeamHostView(frame: CGRect(x: 0, y: 0, width: 180, height: 3))
+        view.configure(isActive: true, reduceMotion: true)
+        view.layoutSubtreeIfNeeded()
+
+        let animationCount = view.layer?.sublayers?.reduce(into: 0) { count, layer in
+            count += layer.animationKeys()?.count ?? 0
+        } ?? 0
+        XCTAssertEqual(animationCount, 0)
+    }
+
+    func testActivityTextItselfBouncesAndGlowsOnCoreAnimationLayers() {
+        let view = SmartCareAnimatedActivityTextHostView(
+            frame: CGRect(x: 0, y: 0, width: 320, height: 36)
+        )
+        view.configure(
+            text: "Scanning developer caches",
+            activity: .scanning(.developerCaches),
+            reduceMotion: false
+        )
+        view.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(view.displayedTextForTesting, "Scanning developer caches")
+        XCTAssertTrue(view.animationKeysForTesting.contains("smart-care-activity-bounce"))
+        XCTAssertTrue(view.animationKeysForTesting.contains("smart-care-activity-glow"))
+    }
+
+    func testReduceMotionStopsActivityTextContinuousAnimation() {
+        let view = SmartCareAnimatedActivityTextHostView(
+            frame: CGRect(x: 0, y: 0, width: 320, height: 36)
+        )
+        view.configure(
+            text: "Scanning developer caches",
+            activity: .scanning(.developerCaches),
+            reduceMotion: true
+        )
+        view.layoutSubtreeIfNeeded()
+
+        XCTAssertTrue(view.animationKeysForTesting.isEmpty)
+    }
+
+    func testActiveStageCirclePulsesAndOrbitsOnCoreAnimationLayers() {
+        let view = SmartCareStagePulseHostView(frame: CGRect(x: 0, y: 0, width: 40, height: 40))
+        view.configure(isActive: true, reduceMotion: false)
+        view.layoutSubtreeIfNeeded()
+
+        XCTAssertTrue(view.animationKeysForTesting.contains("smart-care-stage-pulse-scale"))
+        XCTAssertTrue(view.animationKeysForTesting.contains("smart-care-stage-pulse-fade"))
+        XCTAssertTrue(view.animationKeysForTesting.contains("smart-care-stage-orbit"))
+    }
+
+    func testReduceMotionStopsActiveStageCircleContinuousAnimation() {
+        let view = SmartCareStagePulseHostView(frame: CGRect(x: 0, y: 0, width: 40, height: 40))
+        view.configure(isActive: true, reduceMotion: true)
+        view.layoutSubtreeIfNeeded()
+
+        XCTAssertTrue(view.animationKeysForTesting.isEmpty)
+    }
+
     func testIdleKoiOwnsBackgroundMotionWithoutAmbientSweep() {
         let view = SmartCareAmbientHostView(frame: CGRect(x: 0, y: 0, width: 1_000, height: 700))
         view.layoutSubtreeIfNeeded()
@@ -217,6 +287,10 @@ final class SmartCareMotionTests: XCTestCase {
             XCTAssertFalse(
                 source.contains("TimelineView"),
                 "\(file) must not schedule frame-by-frame SwiftUI updates"
+            )
+            XCTAssertFalse(
+                source.contains("repeatForever"),
+                "\(file) must keep repeating motion on Core Animation or Metal"
             )
         }
     }

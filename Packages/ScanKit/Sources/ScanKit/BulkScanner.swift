@@ -445,8 +445,27 @@ struct BulkEntry {
 /// 注意 attribute 的"返回顺序"必须严格按 `attrgroup_t` bit 升序排列，
 /// 这一点没有任何 Swift wrapper 能帮你校验，错一位就全乱。
 enum BulkEnumerate {
-    /// 调用 callback 直到 `false` 或目录读完。
-    static func enumerate(fd: Int32, dirPath: String, _ body: (BulkEntry) -> Bool) {
+    /// 目录枚举是否真正读到了 EOF。调用方若用枚举结果决定“可删除”，必须区分
+    /// 完整结束、主动截断和底层读取失败；不能把三者都折叠成一个 Void 返回值。
+    enum Outcome: Sendable, Equatable {
+        case complete
+        case stoppedByConsumer
+        case failed
+    }
+
+    /// 调用 callback 直到 `false`、任务请求取消或目录读完。
+    ///
+    /// `getattrlistbulk` 本身是同步系统调用，无法在 syscall 执行途中抢占；这里在每次
+    /// syscall 前后、以及解析每个 entry 前检查取消，使调用方最多只需等待当前一次
+    /// 64KB batch 返回。取消与业务 callback 主动停止统一返回 `.stoppedByConsumer`，
+    /// 具体停止原因由持有取消上下文的调用方判定。
+    @discardableResult
+    static func enumerate(
+        fd: Int32,
+        dirPath: String,
+        shouldCancel: () -> Bool = { false },
+        _ body: (BulkEntry) -> Bool
+    ) -> Outcome {
         var attrList = attrlist()
         attrList.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
         attrList.commonattr = attrgroup_t(
@@ -469,24 +488,28 @@ enum BulkEnumerate {
         var emittedNames: Set<String> = []
 
         while true {
+            if shouldCancel() { return .stoppedByConsumer }
             let retcount = getattrlistbulk(fd, &attrList, buffer, bufSize, 0)
-            if retcount == 0 { break } // 0 = 真读完了
+            if shouldCancel() { return .stoppedByConsumer }
+            if retcount == 0 { return .complete } // 0 = 真读完了
             if retcount < 0 {
                 let err = errno
                 if err == EINTR {
                     continue
                 }
-                let fallbackCount = enumerateWithFileManagerFallback(
+                let fallback = enumerateWithFileManagerFallbackResult(
                     dirPath: dirPath,
                     skipping: emittedNames,
+                    shouldCancel: shouldCancel,
                     body
                 )
-                GSYLog.warning(.scan, "getattrlistbulk errno=\(err) dir=\(dirPath) fallbackEntries=\(fallbackCount)")
-                break
+                GSYLog.warning(.scan, "getattrlistbulk errno=\(err) dir=\(dirPath) fallbackEntries=\(fallback.count) outcome=\(String(describing: fallback.outcome))")
+                return fallback.outcome
             }
 
             var cursor = buffer
             for _ in 0..<retcount {
+                if shouldCancel() { return .stoppedByConsumer }
                 let entryStart = cursor
                 let entryLen = entryStart.loadUnaligned(as: UInt32.self)
                 guard entryLen > 0 else { break }
@@ -574,33 +597,66 @@ enum BulkEnumerate {
                     modificationDate: modDate
                 )
                 emittedNames.insert(name)
-                if !body(entry) { return }
+                if !body(entry) { return .stoppedByConsumer }
 
                 cursor = nextCursor
             }
         }
     }
 
+    private struct FallbackResult {
+        let count: Int
+        let outcome: Outcome
+    }
+
     @discardableResult
     static func enumerateWithFileManagerFallback(
         dirPath: String,
         skipping emittedNames: Set<String>,
+        shouldCancel: () -> Bool = { false },
         _ body: (BulkEntry) -> Bool
     ) -> Int {
+        enumerateWithFileManagerFallbackResult(
+            dirPath: dirPath,
+            skipping: emittedNames,
+            shouldCancel: shouldCancel,
+            body
+        ).count
+    }
+
+    private static func enumerateWithFileManagerFallbackResult(
+        dirPath: String,
+        skipping emittedNames: Set<String>,
+        shouldCancel: () -> Bool,
+        _ body: (BulkEntry) -> Bool
+    ) -> FallbackResult {
+        if shouldCancel() {
+            return FallbackResult(count: 0, outcome: .stoppedByConsumer)
+        }
         let names: [String]
         do {
             names = try FileManager.default.contentsOfDirectory(atPath: dirPath)
         } catch {
             GSYLog.warning(.scan, "FileManager fallback enumerate failed dir=\(dirPath) err=\(error.localizedDescription)")
-            return 0
+            return FallbackResult(count: 0, outcome: .failed)
+        }
+        if shouldCancel() {
+            return FallbackResult(count: 0, outcome: .stoppedByConsumer)
         }
 
         var emitted = 0
+        var metadataFailed = false
         for name in names where !emittedNames.contains(name) {
+            if shouldCancel() {
+                return FallbackResult(count: emitted, outcome: .stoppedByConsumer)
+            }
             if name == "." || name == ".." { continue }
             let path = "\(dirPath)/\(name)"
             var sb = stat()
-            guard lstat(path, &sb) == 0 else { continue }
+            guard lstat(path, &sb) == 0 else {
+                metadataFailed = true
+                continue
+            }
             let mode = sb.st_mode & S_IFMT
             let entry = BulkEntry(
                 name: name,
@@ -613,8 +669,13 @@ enum BulkEnumerate {
                 modificationDate: Date(timeIntervalSince1970: TimeInterval(sb.st_mtimespec.tv_sec) + TimeInterval(sb.st_mtimespec.tv_nsec) / 1e9)
             )
             emitted += 1
-            if !body(entry) { break }
+            if !body(entry) {
+                return FallbackResult(count: emitted, outcome: .stoppedByConsumer)
+            }
         }
-        return emitted
+        return FallbackResult(
+            count: emitted,
+            outcome: metadataFailed ? .failed : .complete
+        )
     }
 }

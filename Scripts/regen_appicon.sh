@@ -35,7 +35,6 @@ gen 256  icon_256x256.png
 gen 512  icon_256x256@2x.png
 gen 512  icon_512x512.png
 gen 1024 icon_512x512@2x.png
-gen 1024 icon_1024x1024.png
 
 # 3) 同步 docs/assets/logo.png（用 512 版）
 cp "$DST_DIR/icon_512x512.png" "$DOCS_LOGO"

@@ -71,6 +71,10 @@ public struct WorkflowDetailView: View {
             switch sheet {
             case .simctlConfirm:
                 simctlConfirmSheet
+                    // 两轮破坏性命令确认必须通过显式取消/继续按钮收口。
+                    // 禁止 Esc / 系统手势直接关闭，否则已完成的 filesystem 结果
+                    // 会失去展示机会，pending 状态也无法原子清理。
+                    .interactiveDismissDisabled()
             case .result(let payload):
                 OperationResultSheet(payload: payload) {
                     viewModel.activeSheet = nil
@@ -486,6 +490,10 @@ public final class WorkflowDetailViewModel: ObservableObject {
     /// **v2026.06.22 (P0-1)**：UndoHistory 写入入口。默认 `UndoHistoryStore.shared`，
     /// 测试可注入临时目录 store。
     private let undoHistoryStore: UndoHistoryStore
+    /// Filesystem cleanup is executed before the destructive simctl confirmation flow.
+    /// Keep that immutable result across both confirmation sheets so the final result
+    /// represents the complete user action instead of only the last subprocess phase.
+    private var pendingFilesystemResult: OperationResultPayload?
     private var didBootstrap: Bool = false
     private let maxConcurrentCardLoads = 2
 
@@ -558,6 +566,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
 
     public func performDelete(pipeline: any DeletionPipeline) async {
         guard !selected.isEmpty, !isDeleting else { return }
+        pendingFilesystemResult = nil
         isDeleting = true
         defer { isDeleting = false }
 
@@ -641,6 +650,15 @@ public final class WorkflowDetailViewModel: ObservableObject {
         // 会再次设置 activeSheet=.result(...) 把汇总展示出来。
         let hasAnything = !movedPairs.isEmpty || !failedPaths.isEmpty || !safetyRejected.isEmpty || commandLineSkipped > 0
         if willShowSimctlSheet {
+            let hasFilesystemResult = !movedPairs.isEmpty || !failedPaths.isEmpty || !safetyRejected.isEmpty
+            if hasFilesystemResult {
+                pendingFilesystemResult = OperationResultPayload(
+                    movedPairs: movedPairs,
+                    failedPaths: failedPaths,
+                    safetyRejected: safetyRejected,
+                    commandLineSkipped: commandLineSkipped
+                )
+            }
             activeSheet = .simctlConfirm
         } else if hasAnything {
             activeSheet = .result(OperationResultPayload(
@@ -662,7 +680,10 @@ public final class WorkflowDetailViewModel: ObservableObject {
     /// PR-9：取消 sheet（无论第一/第二轮），恢复 nil 即关闭。
     public func cancelSimctlConfirm() {
         pendingSimctlStage = nil
-        if case .simctlConfirm = activeSheet {
+        if let pendingFilesystemResult {
+            self.pendingFilesystemResult = nil
+            activeSheet = .result(pendingFilesystemResult)
+        } else if case .simctlConfirm = activeSheet {
             activeSheet = nil
         }
     }
@@ -680,27 +701,35 @@ public final class WorkflowDetailViewModel: ObservableObject {
         defer { isDeleting = false }
 
         let outcomes = await simulatorCoordinator.execute(items: items)
+        let filesystemResult = pendingFilesystemResult
+        pendingFilesystemResult = nil
         var success = 0
-        var failed: [String] = []
+        var commandFailures: [OperationResultPayload.CommandLineFailure] = []
         for outcome in outcomes {
             if outcome.isSuccess {
                 success &+= 1
                 selected.remove(outcome.item.hitID)
             } else {
-                failed.append("\(outcome.item.displayName) [exit=\(outcome.exitCode)]")
+                commandFailures.append(OperationResultPayload.CommandLineFailure(
+                    item: outcome.item.displayName,
+                    exitCode: outcome.exitCode,
+                    detail: outcome.truncatedOutput
+                ))
             }
         }
 
-        var summaryLines: [String] = []
-        summaryLines.append(String(format: String(localized: "workflow.detail.simctl.summary %lld %lld", bundle: .module),
-                                   success, failed.count))
-        if !failed.isEmpty {
-            summaryLines.append(failed.joined(separator: "\n"))
-        }
-        alertTitle = String(localized: "workflow.detail.alert.title", bundle: .module)
-        alertMessage = summaryLines.joined(separator: "\n")
-
         await refreshAll()
+
+        // Present one structured result after both phases. Command-line outcomes remain
+        // separate from filesystem paths because they were not moved to Trash, cannot be
+        // revealed in Finder, and are not undoable.
+        activeSheet = .result(OperationResultPayload(
+            movedPairs: filesystemResult?.movedPairs.map { ($0.originalPath, $0.trashedPath) } ?? [],
+            failedPaths: filesystemResult?.failedPaths ?? [],
+            safetyRejected: filesystemResult?.safetyRejected.map { ($0.path, $0.reason) } ?? [],
+            commandLineSucceeded: success,
+            commandLineFailures: commandFailures
+        ))
     }
 
     private func loadAllCards() async {

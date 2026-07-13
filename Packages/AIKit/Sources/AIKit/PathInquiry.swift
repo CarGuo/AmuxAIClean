@@ -100,15 +100,16 @@ public struct AIAdvice: Sendable, Equatable, Codable {
         self.sideEffects = sideEffects
     }
 
-    /// 安全 fallback：构造一个"无可奉告"的占位 advice，
-    /// 用于 AI 解析失败但又不想抛 hard error 的场景（让 UI 至少能展示一段说明）。
+    /// 安全 fallback：构造一个不携带 provider 原文的占位 advice。
+    /// provider 输出可能包含路径、token 或服务端内部信息；UI 只依据 sentinel
+    /// 展示本地化说明，批量复核层会把它提升为可重试的 decoding failure。
     ///
     /// `summary` 使用稳定的 sentinel key（`AIAdvice.unparsableSummaryKey`），
     /// UI 层检测到该 key 后会替换为本地化文案，避免在 AIKit 内引入 Bundle.module。
-    public static func unparsable(rawText: String) -> AIAdvice {
+    public static func unparsable(rawText _: String) -> AIAdvice {
         AIAdvice(summary: unparsableSummaryKey,
                  canDelete: .confirm,
-                 reason: rawText.prefix(200).description,
+                 reason: "",
                  sideEffects: [])
     }
 

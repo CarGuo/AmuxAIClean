@@ -11,7 +11,7 @@
 # 实现要点：
 #   1. 用 swift CoreGraphics 渲染一张 1024×1024 的"squircle 背景 + 居中 logo + 圆角裁切"
 #      —— 见 scripts/make_app_icon.swift（避免装 Pillow / ImageMagick）。
-#   2. 然后用 sips 切出 Apple HIG 要求的 10 张尺寸（16/32/128/256/512 + @2x + 1024@1x）。
+#   2. 然后用 sips 切出 Apple HIG 要求的 10 张尺寸（16/32/128/256/512，各含 1x/2x）。
 #   3. macOS Big Sur 以后规范：圆角 22.37%、四角留白 ~12%，详见 Apple HIG。
 #   4. 修复 TCC 列表灰方块：build 完后 tccutil reset SystemPolicyAllFiles + 重新授权一次。
 
@@ -55,14 +55,11 @@ for entry in "${SIZES[@]}"; do
   sips -z "$px" "$px" "$TMP_1024" --out "$APPICON_DIR/$name" >/dev/null
   echo "  ✓ $name (${px}×${px})"
 done
-# 1024@1x 直接拷贝
-cp "$TMP_1024" "$APPICON_DIR/icon_1024x1024.png"
-echo "  ✓ icon_1024x1024.png (1024×1024)"
 
 rm -f "$TMP_1024"
 
 echo ""
-echo "[icon] 全部 11 张已落到 AppIcon.appiconset。"
+echo "[icon] 全部 10 张已落到 AppIcon.appiconset。"
 echo "[icon] 接下来跑：xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac ... 看 Contents/Resources/AppIcon.icns"
 echo ""
 echo "[hint] 若系统设置「完全磁盘访问」列表里 GSYCleanMac 仍是灰方块，可执行："

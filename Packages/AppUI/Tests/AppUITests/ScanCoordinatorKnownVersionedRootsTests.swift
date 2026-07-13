@@ -1,4 +1,5 @@
 import XCTest
+import SafetyKit
 @testable import AppUI
 @testable import ScanKit
 
@@ -59,6 +60,36 @@ final class ScanCoordinatorKnownVersionedRootsTests: XCTestCase {
         XCTAssertEqual(coord.snapshot.rows.count, 0)
         XCTAssertEqual(coord.snapshot.isFinished, true)
         XCTAssertFalse(coord.isScanning)
+    }
+
+    func test_scanKnownVersionedRoots_加载白名单后不发布受保护旧版本() async throws {
+        let tmp = try makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
+        let support = tmp.appendingPathComponent(
+            "Library/Developer/Xcode/iOS DeviceSupport",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        for version in ["15.0", "16.0", "17.0", "18.0"] {
+            let directory = support.appendingPathComponent(version, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("payload".utf8).write(to: directory.appendingPathComponent("a.bin"))
+        }
+
+        let whitelist = WhitelistStore(storageURL: nil)
+        let protected = support.appendingPathComponent("15.0", isDirectory: true)
+        await whitelist.add(path: protected.path, reason: "test")
+        let coordinator = ScanCoordinator(
+            home: tmp.path,
+            whitelistStore: whitelist
+        )
+
+        coordinator.scanKnownVersionedRoots(home: tmp)
+        await waitScanFinished(coordinator)
+
+        XCTAssertEqual(coordinator.snapshot.rows.map(\.url.path), [
+            support.appendingPathComponent("16.0", isDirectory: true).path
+        ])
     }
 
     // MARK: - helpers

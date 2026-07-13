@@ -63,6 +63,31 @@ final class UndoHistoryStoreTests: XCTestCase {
         XCTAssertEqual(store.history.map { $0.source }, ["src4", "src3", "src2"])
     }
 
+    func testBackgroundWritesAreFIFOAndFlushIncludesNewestSnapshot() async throws {
+        let dir = tempDir()
+        let url = storeURL(in: dir)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: dir)) }
+        let store = UndoHistoryStore(
+            storeURL: url,
+            maxHistoryCount: 10,
+            saveStrategy: .background
+        )
+
+        for index in 0..<40 {
+            store.addRecord(source: "src\(index)", filePairs: [
+                .init(original: "/original/\(index)", trashed: "/trash/\(index)")
+            ])
+        }
+        await store.flushPendingWrites()
+
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let persisted = try decoder.decode([UndoHistoryStore.Record].self, from: data)
+        XCTAssertEqual(persisted.map(\.source), (30..<40).reversed().map { "src\($0)" },
+                       "flush 后磁盘必须是最后一次内存快照，不能被较旧后台写反向覆盖")
+    }
+
     func testReloadFromDiskAcrossInstances() throws {
         let dir = tempDir()
         let url = storeURL(in: dir)

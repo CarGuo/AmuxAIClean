@@ -11,6 +11,120 @@ private enum SidebarMetrics {
     static let maxWidth: CGFloat = 460
 }
 
+private struct MainDeletionAccounting: Sendable {
+    let succeededPaths: Set<String>
+    let remainingSelection: Set<String>
+    let movedBytes: Int64
+}
+
+/// Smart Care 自己的互斥 sheet 路由。
+/// AI 报告必须先 dismiss，才能进入既有清理预览，避免 macOS sheet 叠 sheet。
+private enum SmartCareSheetRoute: Identifiable {
+    case aiReview(SmartCareAIReviewReport)
+    case cleanup(SmartCareCleanRequest)
+
+    var id: String {
+        switch self {
+        case .aiReview(let report):
+            return "ai-\(report.runID.uuidString)-\(report.status.rawValue)-\(report.observedSummaryRevision)"
+        case .cleanup(let request): return "cleanup-\(request.id.uuidString)"
+        }
+    }
+}
+
+/// AI Review 终态报告的自动呈现策略。
+///
+/// 新鲜报告可以自动打开；summary 变化产生的过期报告只允许更新一个已经可见的
+/// AI Report，不能在清理成功后重新弹出。其它 modal 正在显示时保留报告，用户可从
+/// Dashboard 的“查看报告”显式打开，避免多组 `.sheet` 竞争呈现。
+enum SmartCareAIReviewAutoPresentationPolicy {
+    enum Action: Equatable {
+        case present
+        case queue
+        case dismiss
+        case ignore
+    }
+
+    static func action(
+        reportStatus: SmartCareAIReviewReportStatus?,
+        isNormalInterface: Bool,
+        isAIReportVisible: Bool,
+        isCleanupVisible: Bool,
+        hasOtherModalPresentation: Bool
+    ) -> Action {
+        guard let reportStatus else {
+            return isAIReportVisible ? .dismiss : .ignore
+        }
+        if reportStatus == .stale {
+            return isNormalInterface && isAIReportVisible ? .present : .ignore
+        }
+        guard !isCleanupVisible else { return .ignore }
+        guard isNormalInterface, !hasOtherModalPresentation else { return .queue }
+        return .present
+    }
+}
+
+enum SmartCareAIReviewCleanupLinkPolicy {
+    static func allowsPresentation(
+        expectedSummaryRevision: UInt64,
+        currentSummaryRevision: UInt64,
+        requestSummaryRevision: UInt64?
+    ) -> Bool {
+        expectedSummaryRevision == currentSummaryRevision
+            && requestSummaryRevision == expectedSummaryRevision
+    }
+}
+
+enum SmartCareAIReviewDeferredActionPolicy {
+    static func allows(
+        expectedRunID: UUID,
+        expectedSummaryRevision: UInt64,
+        latestReport: SmartCareAIReviewReport?,
+        currentSummaryRevision: UInt64,
+        aiIsRunning: Bool
+    ) -> Bool {
+        !aiIsRunning
+            && latestReport?.runID == expectedRunID
+            && currentSummaryRevision == expectedSummaryRevision
+    }
+}
+
+private struct SmartCareAIReportObserverModifier: ViewModifier {
+    let latestReport: SmartCareAIReviewReport?
+    let canPresentPendingReport: Bool
+    let onLatestReportChange: (SmartCareAIReviewReport?) -> Void
+    let onPendingAvailabilityChange: (Bool) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: latestReport) { _, report in
+                onLatestReportChange(report)
+            }
+            .onChange(of: canPresentPendingReport) { _, canPresent in
+                onPendingAvailabilityChange(canPresent)
+            }
+    }
+}
+
+private enum MainDeletionAccountingExecutor {
+    static func run(rows: [RowItem],
+                    succeededPaths: [String],
+                    selection: Set<String>) async -> MainDeletionAccounting {
+        await Task.detached(priority: .userInitiated) {
+            let succeeded = Set(succeededPaths)
+            var movedBytes: Int64 = 0
+            for row in rows where succeeded.contains(row.url.path) {
+                movedBytes &+= row.bytes
+            }
+            return MainDeletionAccounting(
+                succeededPaths: succeeded,
+                remainingSelection: selection.subtracting(succeeded),
+                movedBytes: movedBytes
+            )
+        }.value
+    }
+}
+
 private struct SidebarTitleStyle: ViewModifier {
     func body(content: Content) -> some View {
         content
@@ -34,7 +148,8 @@ public struct MainView: View {
     @StateObject private var coordinator: ScanCoordinator
     @State private var interfaceMode: SmartCareInterfaceMode = MainView.defaultInterfaceMode
     @State private var smartCareSession: SmartCareSession
-    @State private var smartCareDeleteRequest: SmartCareCleanRequest?
+    @State private var smartCareSheetRoute: SmartCareSheetRoute?
+    @State private var pendingSmartCareAIReport: SmartCareAIReviewReport? = nil
     @State private var presetCategories: [ScanCategory] = ScanCategories.recommended()
     @State private var customCategories: [ScanCategory] = []
     @State private var selectedCategory: ScanCategory.ID?
@@ -147,6 +262,11 @@ public struct MainView: View {
     }
 
     private let pipeline: any DeletionPipeline
+    /// 所有独立清理入口都必须使用与主删除链相同的 vendor 规则快照。
+    /// 各入口保留独立 pipeline，避免并发操作通过可变 denied-path 快照互相污染。
+    private let vendors: [VendorRule]
+    private let duplicatePipeline: any DeletionPipeline
+    private let brewPipeline: any DeletionPipeline
     private let recorder: HeuristicRecorder
     private let settings: AppSettings
     private let pathStore: UserPathStore
@@ -163,10 +283,9 @@ public struct MainView: View {
     /// v1.5 P2 / Q3：AI 未配置时点击"问 AI"会把这里置 true，弹 alert 引导用户前往设置。
     /// 旧实现是按钮直接隐藏 / disabled —— 用户根本不知道有这个能力。
     @State private var aiUnconfiguredAlert: Bool = false
-    /// 普通模式 AI 复核复用既有 StashAIQueue；仅覆盖当前首页实际展示的优先结果，
-    /// AI 建议不回写 SafetyVerdict，也不改变任何勾选状态。
-    @State private var smartCareAIStore: StashStore = StashStore()
-    @State private var smartCareAIQueue: StashAIQueue = StashAIQueue()
+    /// 普通模式 AI 复核拥有独立 session：保存完整建议、批次终态、取消与扫描世代。
+    /// 它只记录用户开始复核时的选择快照，绝不自动回写 SafetyVerdict 或选择。
+    @State private var smartCareAIReviewSession: SmartCareAIReviewSession
     /// macOS 14+：通过环境拿到打开"设置..."窗口的标准 action。
     /// Q3 alert 的"前往设置"按钮会调用它，免去手写 NSApp.sendAction 私有 selector。
     @Environment(\.openSettings) private var openSettings
@@ -187,18 +306,22 @@ public struct MainView: View {
     @State private var stashAIQueue: StashAIQueue = StashAIQueue()
 
     public init(pipeline: (any DeletionPipeline)? = nil,
-                vendors: [VendorRule] = [],
+                vendors: [VendorRule],
                 recorder: HeuristicRecorder = HeuristicRecorder(),
                 settings: AppSettings? = nil,
                 pathStore: UserPathStore? = nil,
                 coordinator: ScanCoordinator? = nil,
                 smartCareSession: SmartCareSession? = nil,
+                smartCareAIReviewSession: SmartCareAIReviewSession? = nil,
                 aiSettings: AISettings? = nil,
                 settingsNavigation: SettingsNavigation? = nil) {
         // v0 默认走 NSWorkspace.recycle（PITFALLS §5.9）：不需要 root，不需要 99 美元 Apple Developer Program
         // 用户撤销可以走 Finder → 显示废纸篓 → 放回原位
         // M4-P0 修复：把 vendors 透传到 TrashPipeline，让最后闸门启用 vendor 路径树判定
-        self.pipeline = pipeline ?? TrashPipeline(vendors: vendors)
+        self.vendors = vendors
+        self.pipeline = pipeline ?? TrashPipeline(vendors: vendors, whitelistStore: .shared)
+        self.duplicatePipeline = TrashPipeline(vendors: vendors, whitelistStore: .shared)
+        self.brewPipeline = TrashPipeline(vendors: vendors, whitelistStore: .shared)
         self.recorder = recorder
         self.settings = settings ?? AppSettings()
         self.pathStore = pathStore ?? UserPathStore()
@@ -209,6 +332,9 @@ public struct MainView: View {
         _smartCareSession = State(initialValue: smartCareSession ?? SmartCareSession(
             scanCoordinator: ScanCoordinator(vendors: vendors)
         ))
+        _smartCareAIReviewSession = State(
+            initialValue: smartCareAIReviewSession ?? SmartCareAIReviewSession()
+        )
         // M5 / Review fix #2：AISettings 必须 App 层注入。未注入时（老测试 / 预览）退回独立实例。
         _aiSettings = State(initialValue: aiSettings ?? AISettings())
     }
@@ -296,21 +422,33 @@ public struct MainView: View {
                 }
             )
         }
-        .sheet(item: $smartCareDeleteRequest) { request in
-            let rows = request.items.map(makePreviewRow)
-            DeleteSheet(
-                items: rows,
-                runningConflicts: runningAppConflicts(for: rows),
-                onCancel: {
-                    smartCareDeleteRequest = nil
-                },
-                onConfirm: { dryRun in
-                    smartCareDeleteRequest = nil
-                    Task { [request] in
-                        await performSmartCareDelete(request: request, dryRun: dryRun)
+        .sheet(item: $smartCareSheetRoute) { route in
+            switch route {
+            case .aiReview(let report):
+                SmartCareAIReviewResultSheet(
+                    report: report,
+                    currentSelectedItemIDs: smartCareSession.care.selection.selectedIDs,
+                    onClose: dismissSmartCareSheet,
+                    onRetryFailed: retryFailedSmartCareAIReview,
+                    onContinueRemaining: continueSmartCareAIReview,
+                    onApplySelectionChanges: applySmartCareAISelectionChanges,
+                    onReviewCleanup: transitionFromAIReportToCleanupPreview,
+                    onOpenSettings: openSmartCareAISettings,
+                    onRerun: rerunSmartCareAIReview
+                )
+            case .cleanup(let request):
+                DeleteSheet(
+                    items: request.previewRows,
+                    runningConflicts: runningAppConflicts(for: request.previewRows),
+                    onCancel: dismissSmartCareSheet,
+                    onConfirm: { dryRun in
+                        smartCareSheetRoute = nil
+                        Task { [request] in
+                            await performSmartCareDelete(request: request, dryRun: dryRun)
+                        }
                     }
-                }
-            )
+                )
+            }
         }
         // M5 / 2026-06：AI 询问 sheet —— item-based 触发，aiAskingRow 非 nil 即弹。
         .sheet(item: $aiAskingRow) { row in
@@ -387,19 +525,11 @@ public struct MainView: View {
         } message: {
             Text(deleteResult ?? "")
         }
-        // **v2026.06.16 修复 #4**：删除主路径 / 大文件 trash 结构化结果 sheet。
-        // **v2026.06.22 (#11)**：注入 `onForceDelete` 回调——当 sheet 列出 vendor 规则拦下的项时，
-        // 用户可点「强制删除」走 [performForceDelete](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
-        // 路径（绕 vendor trie 但保留所有 SafetyEngine 硬安全网）。
+        // 删除结果只展示真实成功 / 失败 / 安全拦截；`.forbid` 没有 UI 绕过入口。
         .sheet(item: $deleteResultPayload) { payload in
             OperationResultSheet(
                 payload: payload,
-                onDismiss: { deleteResultPayload = nil },
-                onForceDelete: { paths in
-                    Task { @MainActor in
-                        await performForceDelete(paths: paths)
-                    }
-                }
+                onDismiss: { deleteResultPayload = nil }
             )
         }
         .onChange(of: viewMode) { _, _ in
@@ -420,11 +550,18 @@ public struct MainView: View {
                 startScan(category: largeFilesCategory)
             }
         }
+        .modifier(SmartCareAIReportObserverModifier(
+            latestReport: smartCareAIReviewSession.latestReport,
+            canPresentPendingReport: canPresentPendingSmartCareAIReport,
+            onLatestReportChange: handleSmartCareAIReportChange,
+            onPendingAvailabilityChange: presentPendingSmartCareAIReportIfPossible
+        ))
         .onChange(of: settings.sizeAccountingMode) { _, newMode in
             // v1.3：用户在设置里切换字节口径（logical 系统设置口径 ↔ physical du 口径）。
             // 同步到 coordinator；如果当前有扫描结果，提示需要重扫才能让数字按新口径累计。
             // 不强制自动重扫——避免用户切错口径还要等 5 分钟，自己点"重新扫描"更可控。
             coordinator.accountingMode = newMode
+            smartCareSession.scanCoordinator.accountingMode = newMode
         }
         .onChange(of: settings.mainListSortKey) { _, newKey in
             // v1.3：主列表排序键切换 → 同步到 coordinator。
@@ -440,6 +577,7 @@ public struct MainView: View {
             // 修「我已经有了权限，为什么顶部还提示需要授权」的核心闭环——
             // 用户回来那一刻 banner 自动消失，不需要重新扫描或重启 App。
             coordinator.refreshFDAStatus()
+            smartCareSession.scanCoordinator.refreshFDAStatus()
         }
         .onReceive(NotificationCenter.default.publisher(for: .gsyOpenMainWindowRequested)) { _ in
             // v1.3 review-fix B3：托盘 / HUD 触发"打开主窗口"，但主窗口已被 ⌘W 销毁。
@@ -447,6 +585,15 @@ public struct MainView: View {
             // 比直接 NSApp.windows 遍历 makeKeyAndOrderFront 更稳。
             // 注意：window id 必须与 GSYCleanMacApp 中 WindowGroup(id:) 一致（"main"）。
             openWindow(id: "main")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .gsyTrashDidMove)) { notification in
+            guard let source = notification.userInfo?["source"] as? String,
+                  !["smart-care", "clean", "large-file"].contains(source),
+                  let paths = notification.userInfo?["paths"] as? [String],
+                  !paths.isEmpty else { return }
+            Task { @MainActor in
+                await synchronizeSuccessfulDeletion(paths: paths)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .gsySentinelStartFullScan)) { _ in
             // v1.6 Sentinel 场景 2：daemon 通过 `amuxaiclean://action/scan/full` 唤起。
@@ -485,6 +632,7 @@ public struct MainView: View {
             // v1.3：启动时把 settings 的字节口径同步到 coordinator，
             // 避免 ScanCoordinator 默认值与用户上次保存的偏好不一致。
             coordinator.accountingMode = settings.sizeAccountingMode
+            smartCareSession.scanCoordinator.accountingMode = settings.sizeAccountingMode
             // v1.3：主列表排序键同样在启动时同步，避免持久化值与 coordinator 默认值不一致。
             coordinator.mainListSortKey = settings.mainListSortKey
             await refreshCustomPaths()
@@ -498,40 +646,62 @@ public struct MainView: View {
             coordinator: smartCareSession.care,
             session: smartCareSession,
             aiIsConfigured: aiSettings.isReadyForUI,
-            aiIsRunning: smartCareAIQueue.phase == .running,
-            aiProcessed: smartCareAIQueue.processed,
-            aiTotal: smartCareAIQueue.total,
+            aiIsRunning: smartCareAIReviewSession.phase.isRunning,
+            aiProcessed: smartCareAIProgress?.processedCount ?? 0,
+            aiTotal: smartCareAIProgress?.totalCount ?? 0,
             aiError: smartCareAIErrorText,
             aiItemStates: smartCareAIItemStates,
+            aiReportAvailable: smartCareAIReviewSession.latestReport != nil,
             onPrimaryAction: handleSmartCarePrimaryAction,
-            onAIReview: runSmartCareAIReview
+            onAIReview: runSmartCareAIReview,
+            onAICancel: cancelSmartCareAIReview,
+            onAIShowReport: showLatestSmartCareAIReport
         )
+    }
+
+    private var smartCareAIProgress: SmartCareAIReviewProgress? {
+        guard case .running(let progress) = smartCareAIReviewSession.phase else { return nil }
+        return progress
     }
 
     private var smartCareAIItemStates: [String: SmartCareAIItemState] {
         var states: [String: SmartCareAIItemState] = [:]
-        states.reserveCapacity(smartCareAIStore.entries.count)
-        for entry in smartCareAIStore.entries {
-            switch entry.aiVerdict {
-            case .pending:
-                states[entry.path] = smartCareAIQueue.currentPath == entry.path
-                    ? .reviewing
-                    : .pending
-            case .done(let verdict, let summary):
-                states[entry.path] = .advice(verdict, summary: summary)
-            case .error(let message):
-                states[entry.path] = .failed(message)
+        let outcomes: [SmartCareAIReviewItemOutcome]
+        let currentItemID: SmartCareItem.ID?
+        switch smartCareAIReviewSession.phase {
+        case .idle:
+            return states
+        case .running(let progress):
+            outcomes = progress.items
+            currentItemID = progress.currentItemID
+        case .result(let report):
+            outcomes = report.items
+            currentItemID = nil
+        }
+        states.reserveCapacity(outcomes.count)
+        for outcome in outcomes {
+            switch outcome.result {
+            case .notReviewed:
+                states[outcome.path] = currentItemID == outcome.item.id ? .reviewing : .pending
+            case .advice(let advice):
+                states[outcome.path] = .advice(advice.canDelete, summary: advice.summary)
+            case .failure(let failure):
+                states[outcome.path] = .failed(failure.kind)
             }
         }
         return states
     }
 
     private var smartCareAIErrorText: String? {
-        guard let error = smartCareAIQueue.lastGlobalError, !error.isEmpty else { return nil }
-        if error.hasPrefix("ai.") {
-            return String(localized: String.LocalizationValue(error), bundle: .module)
+        guard let failure = smartCareAIReviewSession.latestReport?.globalFailure else {
+            return nil
         }
-        return error
+        return String(
+            localized: String.LocalizationValue(
+                SmartCarePresentation.aiFailureSummaryKey(for: failure.kind)
+            ),
+            bundle: .module
+        )
     }
 
     private var smartCareAIReviewItems: [SmartCareItem] {
@@ -554,101 +724,338 @@ public struct MainView: View {
     }
 
     private func runSmartCareAIReview() {
-        guard aiSettings.isReadyForUI else {
-            aiUnconfiguredAlert = true
+        guard !smartCareAIReviewSession.phase.isRunning else { return }
+        let items = smartCareAIReviewItems
+        let selectedItemIDs = smartCareSession.care.selection.selectedIDs
+        let revision = smartCareSession.care.summaryRevision
+        guard !items.isEmpty else {
+            _ = smartCareAIReviewSession.finishEmpty(summaryRevision: revision)
             return
         }
-        guard smartCareAIQueue.phase == .idle else { return }
-
-        smartCareAIStore.clear()
-        for item in smartCareAIReviewItems {
-            smartCareAIStore.add(
-                path: item.path,
-                title: item.title,
-                bytes: item.bytes,
-                isDirectory: item.isDirectory
+        do {
+            let worker = try SmartCareAIReviewWorker.makeOpenAI(settings: aiSettings)
+            _ = smartCareAIReviewSession.start(
+                items: items,
+                selectedItemIDs: selectedItemIDs,
+                summaryRevision: revision,
+                using: worker
+            )
+        } catch {
+            _ = smartCareAIReviewSession.failPreflight(
+                items: items,
+                selectedItemIDs: selectedItemIDs,
+                summaryRevision: revision,
+                failure: SmartCareAIReviewFailure(error: error)
             )
         }
-        smartCareAIQueue.start(stash: smartCareAIStore, aiSettings: aiSettings)
     }
 
-    private func makePreviewRow(from item: SmartCareItem) -> RowItem {
-        RowItem(
-            id: item.id,
-            url: URL(fileURLWithPath: item.path),
-            title: item.title,
-            isDirectory: item.isDirectory,
-            bytes: item.bytes,
-            logicalBytes: item.logicalBytes,
-            fileCount: item.fileCount,
-            verdict: item.verdict,
-            rejection: .ok,
-            vendorNote: item.riskNote,
-            runningBundleIDPrefix: item.runningBundleIDPrefix
+    private func cancelSmartCareAIReview() {
+        smartCareAIReviewSession.cancel()
+    }
+
+    private func showLatestSmartCareAIReport() {
+        guard let report = smartCareAIReviewSession.latestReport else { return }
+        pendingSmartCareAIReport = nil
+        smartCareSheetRoute = .aiReview(report)
+    }
+
+    private var hasConflictingMainModalPresentation: Bool {
+        showSheet
+            || aiAskingRow != nil
+            || isStashScreenPresented
+            || deleteResultPayload != nil
+            || aiUnconfiguredAlert
+            || deleteResult != nil
+            || sentinelScanInvitationVisible
+            || showSwitchCategoryConfirm
+    }
+
+    private var canPresentPendingSmartCareAIReport: Bool {
+        guard pendingSmartCareAIReport != nil,
+              interfaceMode == .normal,
+              !hasConflictingMainModalPresentation else {
+            return false
+        }
+        if case nil = smartCareSheetRoute { return true }
+        return false
+    }
+
+    private func handleSmartCareAIReportChange(_ report: SmartCareAIReviewReport?) {
+        let isAIReportVisible: Bool
+        let isCleanupVisible: Bool
+        switch smartCareSheetRoute {
+        case .aiReview:
+            isAIReportVisible = true
+            isCleanupVisible = false
+        case .cleanup:
+            isAIReportVisible = false
+            isCleanupVisible = true
+        case nil:
+            isAIReportVisible = false
+            isCleanupVisible = false
+        }
+        let action = SmartCareAIReviewAutoPresentationPolicy.action(
+            reportStatus: report?.status,
+            isNormalInterface: interfaceMode == .normal,
+            isAIReportVisible: isAIReportVisible,
+            isCleanupVisible: isCleanupVisible,
+            hasOtherModalPresentation: hasConflictingMainModalPresentation
         )
+        switch action {
+        case .present:
+            guard let report else { return }
+            pendingSmartCareAIReport = nil
+            smartCareSheetRoute = .aiReview(report)
+        case .queue:
+            pendingSmartCareAIReport = report
+        case .dismiss:
+            pendingSmartCareAIReport = nil
+            smartCareSheetRoute = nil
+        case .ignore:
+            if report == nil || report?.status == .stale {
+                pendingSmartCareAIReport = nil
+            }
+        }
+    }
+
+    private func presentPendingSmartCareAIReportIfPossible(canPresent: Bool) {
+        guard canPresent, let pendingSmartCareAIReport else { return }
+        guard let latestReport = smartCareAIReviewSession.latestReport,
+              latestReport.runID == pendingSmartCareAIReport.runID,
+              latestReport.status != .stale else {
+            self.pendingSmartCareAIReport = nil
+            return
+        }
+        self.pendingSmartCareAIReport = nil
+        smartCareSheetRoute = .aiReview(latestReport)
+    }
+
+    private func dismissSmartCareSheet() {
+        smartCareSheetRoute = nil
+    }
+
+    private func retryFailedSmartCareAIReview() {
+        startSmartCareAIContinuation { worker in
+            smartCareAIReviewSession.retryFailed(using: worker)
+        }
+    }
+
+    private func continueSmartCareAIReview() {
+        startSmartCareAIContinuation { worker in
+            smartCareAIReviewSession.continueUnreviewed(using: worker)
+        }
+    }
+
+    private func rerunSmartCareAIReview() {
+        guard case .aiReview(let report) = smartCareSheetRoute,
+              smartCareAIReviewSession.latestReport?.runID == report.runID else {
+            return
+        }
+        let expectedRunID = report.runID
+        // stale 报告的 source revision 本来就旧；“重新复核当前结果”应锁定点击
+        // 瞬间的当前 revision，防止 yield 后跨到 HUD/托盘刚启动的新扫描。
+        let expectedSummaryRevision = smartCareSession.care.summaryRevision
+        smartCareSheetRoute = nil
+        Task { @MainActor in
+            await Task.yield()
+            guard SmartCareAIReviewDeferredActionPolicy.allows(
+                expectedRunID: expectedRunID,
+                expectedSummaryRevision: expectedSummaryRevision,
+                latestReport: smartCareAIReviewSession.latestReport,
+                currentSummaryRevision: smartCareSession.care.summaryRevision,
+                aiIsRunning: smartCareAIReviewSession.phase.isRunning
+            ) else { return }
+            runSmartCareAIReview()
+        }
+    }
+
+    private func startSmartCareAIContinuation(
+        _ start: @escaping (SmartCareAIReviewWorker) -> UUID?
+    ) {
+        guard case .aiReview(let report) = smartCareSheetRoute,
+              report.isCurrent,
+              report.sourceSummaryRevision == smartCareSession.care.summaryRevision,
+              smartCareAIReviewSession.latestReport?.runID == report.runID else {
+            return
+        }
+        let expectedRunID = report.runID
+        let expectedSummaryRevision = report.sourceSummaryRevision
+        do {
+            let worker = try SmartCareAIReviewWorker.makeOpenAI(settings: aiSettings)
+            smartCareSheetRoute = nil
+            _ = start(worker)
+        } catch {
+            let failure = SmartCareAIReviewFailure(error: error)
+            smartCareSheetRoute = nil
+            Task { @MainActor in
+                await Task.yield()
+                guard SmartCareAIReviewDeferredActionPolicy.allows(
+                    expectedRunID: expectedRunID,
+                    expectedSummaryRevision: expectedSummaryRevision,
+                    latestReport: smartCareAIReviewSession.latestReport,
+                    currentSummaryRevision: smartCareSession.care.summaryRevision,
+                    aiIsRunning: smartCareAIReviewSession.phase.isRunning
+                ) else { return }
+                _ = smartCareAIReviewSession.failContinuationPreflight(failure: failure)
+            }
+        }
+    }
+
+    private func applySmartCareAISelectionChanges(_ changesByPath: [String: Bool]) {
+        guard case .aiReview(let report) = smartCareSheetRoute,
+              report.isCurrent,
+              report.sourceSummaryRevision == smartCareSession.care.summaryRevision else {
+            return
+        }
+
+        let changes = SmartCareAIReviewSelectionPolicy.validatedChanges(
+            report: report,
+            currentSummaryRevision: smartCareSession.care.summaryRevision,
+            currentItemIDs: smartCareSession.care.summary.itemIDs,
+            proposedByPath: changesByPath
+        )
+        for change in changes {
+            _ = smartCareSession.care.setSelected(change.selected, item: change.item)
+        }
+    }
+
+    private func transitionFromAIReportToCleanupPreview() {
+        guard case .aiReview(let report) = smartCareSheetRoute,
+              report.isCurrent,
+              report.sourceSummaryRevision == smartCareSession.care.summaryRevision else {
+            return
+        }
+        let expectedSummaryRevision = report.sourceSummaryRevision
+        smartCareSheetRoute = nil
+        Task { @MainActor in
+            await Task.yield()
+            await presentSmartCareDeleteRequest(
+                expectedSummaryRevision: expectedSummaryRevision
+            )
+        }
+    }
+
+    private func openSmartCareAISettings() {
+        smartCareSheetRoute = nil
+        settingsNavigation.select(.ai)
+        openSettings()
     }
 
     private func handleSmartCarePrimaryAction(_ action: SmartCarePrimaryAction) {
         switch action {
         case .startScan:
             startSmartCareScan()
-        case .scanAgain, .retry, .continueScan:
+        case .scanAgain, .retry:
             smartCareSession.prepareForRescan()
+            startSmartCareScan()
+        case .continueScan:
+            prepareSmartCareScannerConfiguration()
+            smartCareSession.continueScan(
+                includeHidden: settings.showHidden,
+                enabledDeveloperRuleIDs: settings.enabledDevArtifactRuleIDs
+            )
         case .stopScan:
             smartCareSession.cancelScan()
         case .cleanSafeItems, .confirmClean:
-            let request = smartCareSession.care.makeCleanRequest()
-            guard !request.items.isEmpty else { return }
-            smartCareDeleteRequest = request
+            Task { @MainActor in
+                await presentSmartCareDeleteRequest()
+            }
         case .cleaning:
             break
         }
     }
 
+    @MainActor
+    private func presentSmartCareDeleteRequest(expectedSummaryRevision: UInt64? = nil) async {
+        do {
+            if let expectedSummaryRevision,
+               smartCareSession.care.summaryRevision != expectedSummaryRevision {
+                return
+            }
+            let request = try await smartCareSession.care.makeCleanRequest()
+            if let expectedSummaryRevision,
+               !SmartCareAIReviewCleanupLinkPolicy.allowsPresentation(
+                   expectedSummaryRevision: expectedSummaryRevision,
+                   currentSummaryRevision: smartCareSession.care.summaryRevision,
+                   requestSummaryRevision: request.sourceSummaryRevision
+               ) {
+                return
+            }
+            guard !request.items.isEmpty else { return }
+            smartCareSheetRoute = .cleanup(request)
+        } catch is CancellationError {
+            return
+        } catch {
+            assertionFailure("Unexpected Smart Care request projection error: \(error)")
+        }
+    }
+
     private func startSmartCareScan() {
-        smartCareAIQueue.cancel()
-        smartCareAIStore.clear()
-        smartCareDeleteRequest = nil
+        smartCareAIReviewSession.reset()
+        pendingSmartCareAIReport = nil
+        smartCareSheetRoute = nil
+        prepareSmartCareScannerConfiguration()
         smartCareSession.startScan(
             includeHidden: settings.showHidden,
             enabledDeveloperRuleIDs: settings.enabledDevArtifactRuleIDs
         )
     }
 
+    private func prepareSmartCareScannerConfiguration() {
+        smartCareSession.scanCoordinator.accountingMode = settings.sizeAccountingMode
+        smartCareSession.scanCoordinator.refreshFDAStatus()
+    }
+
     private func performSmartCareDelete(request: SmartCareCleanRequest, dryRun: Bool) async {
-        let rows = request.items.map(makePreviewRow)
-        if !dryRun, let message = runningAppBlockMessage(for: rows) {
+        if !dryRun, let message = runningAppBlockMessage(for: request.previewRows) {
             deleteResult = message
             return
         }
 
         if dryRun {
-            _ = await runTrash(paths: request.paths, dryRun: true, source: "smart-care")
+            _ = await runTrash(
+                paths: request.paths,
+                dryRun: true,
+                source: "smart-care",
+                accessDeniedPaths: smartCareSession.deletionDeniedPaths
+            )
             return
         }
 
         guard !isDeleting else { return }
-        guard let confirmedRequest = smartCareSession.care.confirmClean() else { return }
+        guard smartCareSession.care.confirmClean(request) else {
+            // sheet 展示期间选择发生变化：旧请求不能静默扩张为最新选择。
+            // 先让上一张 item sheet 完成 dismiss，再用最新 revision 重建预览。
+            await Task.yield()
+            await presentSmartCareDeleteRequest()
+            return
+        }
+        let confirmedRequest = request
         isDeleting = true
         defer { isDeleting = false }
 
         let result = await runTrash(
             paths: confirmedRequest.paths,
             dryRun: false,
-            source: "smart-care"
+            source: "smart-care",
+            accessDeniedPaths: smartCareSession.deletionDeniedPaths
         )
         let succeededPaths = result.succeededPaths
-        let succeededSet = Set(succeededPaths)
+        let accounting = await SmartCareDeletionAccountingExecutor.run(
+            items: confirmedRequest.items,
+            succeededPaths: succeededPaths,
+            professionalSelection: selection
+        )
 
         if !succeededPaths.isEmpty {
             await recorder.recordTrashed(paths: succeededPaths)
-            selection.subtract(succeededSet)
-            coordinator.pruneDeleted(paths: succeededPaths)
+            // Set 差集已在 accounting worker 完成；MainActor 只替换 storage。
+            selection = accounting.remainingProfessionalSelection
+            await synchronizeSuccessfulDeletion(paths: succeededPaths)
         }
 
-        let releasedBytes = confirmedRequest.items
-            .filter { succeededSet.contains($0.path) }
-            .reduce(Int64(0)) { $0 + $1.bytes }
+        let releasedBytes = accounting.releasedBytes
         if releasedBytes > 0 {
             Task.detached { [releasedBytes] in
                 await CleanStatsStore.shared.record(
@@ -658,24 +1065,20 @@ public struct MainView: View {
             }
         }
 
-        coordinator.refreshVolumeCapacity()
-
         if succeededPaths.isEmpty, let error = result.err {
             smartCareSession.care.fail(.cleanFailed(error))
             return
         }
 
-        let remaining = SmartCareSummaryBuilder.removing(
-            paths: succeededPaths,
-            from: smartCareSession.care.summary
-        )
+        // synchronizeSuccessfulDeletion 已在 SmartCareSession 的后台事务中完成
+        // summary 移除 + selection reconcile + metrics；这里只做 O(1) 相位提交，
+        // 避免在 MainActor 对同一份 20k+ 结果再构建一遍。
         smartCareSession.care.completeCleaning(
             SmartCareResult(
                 movedCount: result.moved,
                 skippedCount: result.skipped,
                 releasedBytes: releasedBytes
-            ),
-            remainingSummary: remaining
+            )
         )
     }
 
@@ -1254,11 +1657,11 @@ public struct MainView: View {
             } else if isUninstallMode {
                 // 「卸载残留」整段独立：UninstallScreen 自带 SafetyEngine + dryRun + 二次确认，
                 // 外层不能再叠 statusBar / footerBar / 删除按钮，避免重复或绕过安全契约。
-                UninstallScreen(vendors: [])
+                UninstallScreen(vendors: vendors)
             } else if isDuplicateMode {
                 // 「重复文件」整段独立：只读视图，没有勾选 / 删除按钮，
                 // 也不复用 statusBar / footerBar（它有自己的 banner + 进度 + footer）。
-                DuplicateScreen()
+                DuplicateScreen(pipeline: duplicatePipeline)
             } else if isUndoHistoryMode {
                 // Step 7：「最近清理」整段独立 —— 只读+恢复按钮，不复用扫描状态栏。
                 UndoHistoryScreen()
@@ -1268,7 +1671,7 @@ public struct MainView: View {
                 MaintenanceScreen()
             } else if isBrewMode {
                 // F-2-4 / 2026-06：Homebrew 包管理 —— 直接读 Cellar / Caskroom，不执行 brew。
-                BrewScreen()
+                BrewScreen(pipeline: brewPipeline)
             } else if isWorkflowAppleMode {
                 // v1.7 M1 PR-5：Apple 工作流（Xcode / Simulator / DerivedData per-project / DeviceSupport）
                 // 复用 WorkflowDetailView 通用渲染壳，数据源 AppleWorkflow.cards + WorkflowRegistry.resolve。
@@ -2028,9 +2431,12 @@ public struct MainView: View {
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
-            Text("main.nav.title", bundle: .module)
-                .font(.headline)
-                .lineLimit(1)
+            HStack(spacing: 6) {
+                Text("main.nav.title", bundle: .module)
+                    .font(.headline)
+                    .lineLimit(1)
+                appVersionBadge
+            }
             Picker(
                 String(localized: "smart_care.mode.label", bundle: .module),
                 selection: $interfaceMode
@@ -2069,6 +2475,26 @@ public struct MainView: View {
                 scanControlButton
             }
         }
+    }
+
+    /// 主窗口始终展示最终 App Bundle 的真实营销版本，便于截图、反馈和发版验收时
+    /// 直接确认正在运行的二进制。版本来源与「设置 → 更新」共用
+    /// [UpdateChecker.currentVersion]，禁止在 UI 里写死发布版本。
+    private var appVersionBadge: some View {
+        let version = UpdateChecker.currentVersion
+        let accessibleLabel = String(
+            format: String(localized: "updater.prompt.current_version %@", bundle: .module),
+            version
+        )
+        return Text(verbatim: version)
+            .font(.caption2)
+            .monospacedDigit()
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(.quaternary.opacity(0.72), in: Capsule())
+            .accessibilityLabel(accessibleLabel)
+            .help(accessibleLabel)
     }
 
     /// v1.3：主列表排序选择器。
@@ -2636,22 +3062,19 @@ public struct MainView: View {
         let err: String?
         let pairs: [(String, String)]
         let outcome: TrashOutcome?
-
-        var succeededPaths: [String] {
-            pairs.map { $0.0 }
-        }
+        let succeededPaths: [String]
     }
 
     /// v2026.06.17 (AUDIT A4)：抽出 `performDelete` 与 `triggerLargeFileTrash` 重复的
     /// **统一删除入口** ——
-    /// (1) accessDenied 注入；(2) TrashActionCoordinator.run；(3) UndoHistory 写入；(4) outcome → sheet/alert。
+    /// (1) request-scoped accessDenied；(2) TrashActionCoordinator.run；(3) UndoHistory 写入；(4) outcome → sheet/alert。
     ///
-    /// 抽这步是因为两条链路任何一处忘了 setAccessDeniedPaths 或忘了消费结构化 outcome
+    /// 抽这步是因为两条链路任何一处忘了带安全上下文或忘了消费结构化 outcome
     /// 都会让"上层防护漏失 / 结构化 sheet 退化为文本 alert"的回归在 PR review 时几乎不可能被发现——
     /// 既然只剩一份真实现就把契约集中在一个方法里，强制单点维护。
     ///
     /// **不抽**的部分（特意保留在 callsite）：isDeleting sheet 控制、bytes 统计、
-    /// pruneDeleted（主清单 / 大文件 / 强制删除都只消费 succeededPaths）、
+    /// pruneDeleted（主清单 / 大文件都只消费 succeededPaths）、
     /// selection.removeAll / largeFileSelection=nil、refreshVolumeCapacity——
     /// 这些是两条链路的语义差异点（dryRun vs 强制真删 / 阻塞 sheet vs 大文件单点），
     /// 强行融合会让 runTrash 变成"5 个回调参数"的胖方法，掩盖差异反而更危险。
@@ -2664,14 +3087,13 @@ public struct MainView: View {
     @MainActor
     private func runTrash(paths: [String], dryRun: Bool, source: String,
                           suppressSuccessSheet: Bool = false,
-                          mode: TrashActionCoordinator.Mode = .normal) async -> TrashRunResult {
+                          accessDeniedPaths: Set<String>? = nil) async -> TrashRunResult {
         let action = TrashActionCoordinator(pipeline: pipeline)
         let result = await action.run(TrashActionCoordinator.Request(
             paths: paths,
             dryRun: dryRun,
             source: source,
-            accessDeniedPaths: accessDeniedPathsSnapshot(),
-            mode: mode
+            accessDeniedPaths: accessDeniedPaths ?? accessDeniedPathsSnapshot()
         ))
         let moved = result.moved
         let skipped = result.skipped
@@ -2690,7 +3112,27 @@ public struct MainView: View {
         if !shouldSuppress {
             presentTrashOutcome(moved: moved, skipped: skipped, err: err, dryRun: dryRun, outcome: result.outcome)
         }
-        return TrashRunResult(moved: moved, skipped: skipped, err: err, pairs: pairs, outcome: result.outcome)
+        return TrashRunResult(
+            moved: moved,
+            skipped: skipped,
+            err: err,
+            pairs: pairs,
+            outcome: result.outcome,
+            succeededPaths: result.succeededPaths
+        )
+    }
+
+    /// 所有真实删除入口的统一状态提交：专业扫描与 Smart Care scanner/summary
+    /// 同时失效并刷新容量，避免模式切换后重复展示已经移入废纸篓的路径。
+    @MainActor
+    private func synchronizeSuccessfulDeletion(paths: [String]) async {
+        guard !paths.isEmpty else { return }
+        await coordinator.pruneDeleted(paths: paths)
+        await smartCareSession.applySuccessfulDeletion(paths: paths)
+        smartCareAIReviewSession.synchronizeSummaryRevision(
+            smartCareSession.care.summaryRevision
+        )
+        coordinator.refreshVolumeCapacity()
     }
 
     /// v2026.06.17 (AUDIT A4)：runTrash 的"结果呈现"子步骤——
@@ -2739,13 +3181,15 @@ public struct MainView: View {
         if !dryRun {
             let succeededOnly = result.succeededPaths
             if !succeededOnly.isEmpty {
+                let accounting = await MainDeletionAccountingExecutor.run(
+                    rows: rows,
+                    succeededPaths: succeededOnly,
+                    selection: selection
+                )
                 // HL 行为采集：真删之后才上报，dryRun 不污染统计；只上报真实 moved pairs。
                 await recorder.recordTrashed(paths: succeededOnly)
                 // M4-T5：把这次成功移入废纸篓的字节数 / 类目记入 CleanStatsStore。
-                let succeededPaths = Set(succeededOnly)
-                let movedBytes = rows
-                    .filter { succeededPaths.contains($0.url.path) }
-                    .reduce(Int64(0)) { $0 + $1.bytes }
+                let movedBytes = accounting.movedBytes
                 if movedBytes > 0 {
                     let categoryID = coordinator.snapshot.categoryID
                     Task.detached { [movedBytes, categoryID] in
@@ -2754,10 +3198,9 @@ public struct MainView: View {
                             category: categoryID.isEmpty ? "unknown" : categoryID)
                     }
                 }
-                selection.subtract(succeededPaths)
-                coordinator.pruneDeleted(paths: succeededOnly)
+                selection = accounting.remainingSelection
+                await synchronizeSuccessfulDeletion(paths: succeededOnly)
             }
-            coordinator.refreshVolumeCapacity()
         }
     }
 
@@ -2813,7 +3256,7 @@ public struct MainView: View {
         let paths = urls.map(\.path)
         // **v2026.06.22 修复 #11/#12**：旧实现在删除「前」就 `pruneDeleted(paths)`（乐观更新），
         // 导致被 SafetyEngine / vendor 规则拦下的项也从大文件列表消失，用户看到"清理失败"但
-        // item 已不见，找不到入口再点「强制删除」。新逻辑：删完后只 prune `result.pairs.map { $0.0 }`
+        // item 已不见。新逻辑：删完后只 prune `result.pairs.map { $0.0 }`
         // （NSWorkspace.recycle 真成功的项），失败/拦截项继续留在列表里给用户重试。
         largeFileSelection = nil
         isDeleting = true
@@ -2838,33 +3281,10 @@ public struct MainView: View {
                 if let selected = largeFileSelection, succeededOnly.contains(selected.path) {
                     largeFileSelection = nil
                 }
-                coordinator.pruneDeleted(paths: succeededOnly)
+                await synchronizeSuccessfulDeletion(paths: succeededOnly)
             }
-            coordinator.refreshVolumeCapacity()
             afterResult?(result)
         }
-    }
-
-    /// **v2026.06.22 新增（修复 #11 强制删除入口）**：从 [OperationResultSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/OperationResultSheet.swift)
-    /// 「强制删除」按钮触发——把被 vendor 规则拦下的 paths 再次提交，走 [TrashPipeline.moveToTrashForce](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)
-    /// 路径绕过 vendor trie，但仍保留 SafetyEngine 所有硬安全网（hardForbidPrefixes / userRootForbidden /
-    /// sensitiveCredential / systemVolume / hardForbidSuffixes）与 `accessDeniedPaths` 一票否决——
-    /// 即真的"操作系统不允许"或"凭据 / 系统卷"绝不会被这条通道放行。
-    ///
-    /// 与 performDelete 不同的是：
-    /// - 不再次进入 selection / dryRun 流程，直接拿调用方传入的 paths 走真删；
-    /// - 不写 isDeleting sheet（用户已经在 OperationResultSheet 里，关闭后才看到结果）；
-    /// - pruneDeleted 同样只剔真成功的 pairs；
-    /// - 走独立 `source: "force"` 进 UndoHistory 便于侧栏识别。
-    @MainActor
-    private func performForceDelete(paths: [String]) async {
-        guard !paths.isEmpty else { return }
-        let result = await runTrash(paths: paths, dryRun: false, source: "force", mode: .force)
-        let succeededOnly = result.succeededPaths
-        if !succeededOnly.isEmpty {
-            coordinator.pruneDeleted(paths: succeededOnly)
-        }
-        coordinator.refreshVolumeCapacity()
     }
 
     // MARK: - 自定义路径（添加 / 删除 / 拖拽）

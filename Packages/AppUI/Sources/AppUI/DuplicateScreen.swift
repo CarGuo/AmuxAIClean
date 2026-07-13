@@ -61,8 +61,8 @@ public struct DuplicateScreen: View {
         }
     }
 
-    public init(pipeline: (any DeletionPipeline)? = nil) {
-        self.pipeline = pipeline ?? TrashPipeline()
+    public init(pipeline: any DeletionPipeline) {
+        self.pipeline = pipeline
     }
 
     public var body: some View {

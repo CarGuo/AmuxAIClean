@@ -13,8 +13,19 @@ private enum MainWindowMetrics {
     static let defaultHeight: CGFloat = 820
 }
 
+/// App 退出前排空 UndoHistory 的后台串行写队列，并把最新内存快照再原子落盘一次。
+/// 该同步只发生在进程终止阶段，不占用正常交互帧；避免最后一次清理刚完成就退出时丢失恢复记录。
+@MainActor
+private final class ApplicationLifecycleDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        UndoHistoryStore.shared.saveHistorySync()
+    }
+}
+
 @main
 struct GSYCleanMacApp: App {
+    @NSApplicationDelegateAdaptor(ApplicationLifecycleDelegate.self) private var lifecycleDelegate
+
     private let vendors: [VendorRule]
 
     /// v1.0：跨场景共享的设置 / 自定义路径状态（@MainActor @Observable + actor）。
@@ -44,6 +55,10 @@ struct GSYCleanMacApp: App {
     /// Smart Care 普通模式会话提升到 App 层，确保主窗口、HUD 和托盘入口共享
     /// 同一份 phase / summary / selection，不会出现后台已扫描而首页仍显示 idle。
     @State private var smartCareSession: SmartCareSession
+
+    /// Normal AI Review 与 Smart Care 扫描会话同样提升到 App 生命周期：
+    /// 主窗口关闭时请求继续，完成后不抢前台；重新打开可查看最新终态报告。
+    @State private var smartCareAIReviewSession: SmartCareAIReviewSession
 
     /// v1.3：扫描悬浮窗控制器。NSPanel 寄生在 App 上，跨 Space / 全屏 不被遮。
     @State private var hud = FloatingScanHUDController()
@@ -97,16 +112,21 @@ struct GSYCleanMacApp: App {
         // 深索引仍默认关闭：祖先字典维护是扫描期主线程卡顿的历史根因。开发者可用
         // GSY_DEEP_INDEX=1 做 A/B，但正式用户走无数据库、按需后台下钻方案。
         let deepIndex = (ProcessInfo.processInfo.environment["GSY_DEEP_INDEX"] ?? "0") != "0"
-        self._coordinator = StateObject(
-            wrappedValue: ScanCoordinator(vendors: loadedVendors,
-                                          enableTreeDeepIndex: deepIndex)
+        let professionalCoordinator = ScanCoordinator(
+            vendors: loadedVendors,
+            enableTreeDeepIndex: deepIndex
         )
+        professionalCoordinator.accountingMode = s.sizeAccountingMode
+        self._coordinator = StateObject(wrappedValue: professionalCoordinator)
+        let smartCareScanner = ScanCoordinator(
+            vendors: loadedVendors,
+            enableTreeDeepIndex: false
+        )
+        smartCareScanner.accountingMode = s.sizeAccountingMode
         self._smartCareSession = State(initialValue: SmartCareSession(
-            scanCoordinator: ScanCoordinator(
-                vendors: loadedVendors,
-                enableTreeDeepIndex: false
-            )
+            scanCoordinator: smartCareScanner
         ))
+        self._smartCareAIReviewSession = State(initialValue: SmartCareAIReviewSession())
     }
 
     var body: some Scene {
@@ -116,6 +136,7 @@ struct GSYCleanMacApp: App {
                      pathStore: pathStore,
                      coordinator: coordinator,
                      smartCareSession: smartCareSession,
+                     smartCareAIReviewSession: smartCareAIReviewSession,
                      aiSettings: aiSettings,
                      settingsNavigation: settingsNavigation)
             .frame(minWidth: MainWindowMetrics.minWidth,
@@ -139,7 +160,12 @@ struct GSYCleanMacApp: App {
                 hud.onOpenMainWindow = { Self.bringMainWindowToFront() }
                 // HUD / 托盘都走同一份 Smart Care 会话：即使主窗口关闭，扫描状态和
                 // 最终摘要也会保留，重新打开窗口后普通模式可直接继续展示。
-                hud.onStartScan = { [smartCareSession] in
+                hud.onStartScan = { [smartCareSession, smartCareAIReviewSession] in
+                    // 主窗口可能已经被 ⌘W 销毁；扫描配置必须在真正的 App 级入口
+                    // 重新同步，不能依赖 MainView.task/onChange 仍然存活。
+                    smartCareAIReviewSession.reset()
+                    smartCareSession.scanCoordinator.accountingMode = settings.sizeAccountingMode
+                    smartCareSession.scanCoordinator.refreshFDAStatus()
                     smartCareSession.startScan(
                         includeHidden: settings.showHidden,
                         enabledDeveloperRuleIDs: settings.enabledDevArtifactRuleIDs
@@ -147,7 +173,10 @@ struct GSYCleanMacApp: App {
                 }
                 // v1.3：托盘菜单回调注入
                 statusItem.onOpenMainWindow = { Self.bringMainWindowToFront() }
-                statusItem.onStartRecommendedScan = { [smartCareSession] in
+                statusItem.onStartRecommendedScan = { [smartCareSession, smartCareAIReviewSession] in
+                    smartCareAIReviewSession.reset()
+                    smartCareSession.scanCoordinator.accountingMode = settings.sizeAccountingMode
+                    smartCareSession.scanCoordinator.refreshFDAStatus()
                     smartCareSession.startScan(
                         includeHidden: settings.showHidden,
                         enabledDeveloperRuleIDs: settings.enabledDevArtifactRuleIDs

@@ -116,6 +116,35 @@ final class LargeFilesTests: XCTestCase {
         XCTAssertEqual(coord.largeFileCollectedCount, 2)
     }
 
+    func test_大文件only扫描删除叶子同步扣公开与内部计数() async throws {
+        let root = try makeFixture()
+        defer { cleanup(root) }
+        let coord = ScanCoordinator()
+        coord.scan(category: makeCategory(rootPath: root.path), largeFileMinBytes: 1)
+        await waitFinished(coord)
+        let target = try XCTUnwrap(
+            coord.largeFiles(minSizeMB: 0, sortKey: .sizeDesc)
+                .first(where: { $0.title == "medium.iso" })
+        )
+        let beforeBytes = coord.snapshot.totalBytes
+        let beforeFiles = coord.snapshot.scannedFileCount
+        XCTAssertTrue(coord.snapshot.rows.isEmpty)
+
+        await coord.pruneDeleted(paths: [target.path])
+
+        XCTAssertFalse(coord.largeFiles(minSizeMB: 0, sortKey: .sizeDesc)
+            .contains(where: { $0.path == target.path }))
+        XCTAssertEqual(coord.largeFileCollectedCount, 3)
+        XCTAssertEqual(coord.snapshot.totalBytes, beforeBytes - target.bytes)
+        XCTAssertEqual(coord.snapshot.scannedFileCount, beforeFiles - 1)
+
+        // 再从 coordinator 内部 totalBytes/scannedFiles 发布一次；若 planner 只改了
+        // snapshot 而没改内部计数，这一帧会把旧值写回来。
+        coord.forcePublishSnapshotForTesting(categoryID: "test.large")
+        XCTAssertEqual(coord.snapshot.totalBytes, beforeBytes - target.bytes)
+        XCTAssertEqual(coord.snapshot.scannedFileCount, beforeFiles - 1)
+    }
+
     func test_视图期阈值上调_可以二次过滤() async throws {
         let root = try makeFixture()
         defer { cleanup(root) }

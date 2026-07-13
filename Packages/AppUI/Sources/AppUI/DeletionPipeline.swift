@@ -60,11 +60,16 @@ public protocol DeletionPipeline: Sendable {
     /// 默认实现走旧 `moveToTrash` + `snapshotLastOutcome()`，保证已有 stub 不破。
     func moveToTrashReturningOutcome(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?)
 
-    /// **v2026.06.22**：用户从 [OperationResultSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/OperationResultSheet.swift)
-    /// 「强制删除」按钮触发的二次提交通道——**绕过 vendor 规则**，但保留所有 SafetyEngine 硬安全网。
-    /// 协议给默认 fallback 实现：回退到普通 `moveToTrashReturningOutcome`（即 stub / 不支持 force 的链路
-    /// 等价于普通删除）。真删除链路 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)
-    /// 会 override 走 `skipVendorRule=true` 路径。
+    /// request-scoped accessDenied 入口。生产实现必须让 denied 快照与 paths 同一次调用交接，
+    /// 避免并发请求通过共享 setter 覆盖彼此的安全上下文。
+    func moveToTrashReturningOutcome(
+        paths: [String],
+        dryRun: Bool,
+        accessDeniedPaths: Set<String>
+    ) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?)
+
+    /// 历史兼容入口。`.forbid` 是不可被任何模式越过的硬合同，因此实现只能等价于普通删除；
+    /// 新 UI 不应再暴露“强制删除被安全规则拦截项”的入口。
     func moveToTrashForce(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?)
 }
 
@@ -134,9 +139,17 @@ extension DeletionPipeline {
         return (legacy, outcome)
     }
 
-    /// **v2026.06.22 默认 fallback**：stub / 不支持 force 的链路直接退化到普通删除路径。
-    /// 真删除链路 [TrashPipeline.moveToTrashForce](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)
-    /// 会 override 此方法走 `skipVendorRule=true`。
+    /// 兼容实现先注入再调用旧接口；生产 TrashPipeline override 为真正的 request-scoped 原子入口。
+    public func moveToTrashReturningOutcome(
+        paths: [String],
+        dryRun: Bool,
+        accessDeniedPaths: Set<String>
+    ) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
+        setAccessDeniedPaths(accessDeniedPaths)
+        return await moveToTrashReturningOutcome(paths: paths, dryRun: dryRun)
+    }
+
+    /// 历史兼容：force 也必须完整执行普通安全判定。
     public func moveToTrashForce(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
         return await moveToTrashReturningOutcome(paths: paths, dryRun: dryRun)
     }

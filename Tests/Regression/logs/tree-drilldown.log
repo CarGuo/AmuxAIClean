@@ -1,8 +1,8 @@
-2026-07-12 17:09:44.204 AmuxAIClean[46675:34167131] [AmuxAIClean] 已加载 123 条 vendor 规则
+2026-07-13 11:03:49.285 AmuxAIClean[19096:36017461] [AmuxAIClean] 已加载 123 条 vendor 规则
 [REGR] case=tree-drilldown defaults_snapshot_keys=5 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
 [REGR_BEGIN] case=tree-drilldown
-[REGR] case=tree-drilldown parent=/var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrStd-58678F1E-1DFF-41F7-938C-68BE8142629A/nest1 bytes=25600 kids=2 dirRows=1 dirBytesSum=20480
+[REGR] case=tree-drilldown parent=/var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrStd-8193D1FC-9D52-4A2F-B83A-77C7121A2A44/nest1 bytes=25600 kids=2 dirRows=1 dirBytesSum=20480
 [REGR_OK] case=tree-drilldown kids count=2 > 0
-[REGR_OK] case=tree-drilldown dir row bytes must be subtree aggregate, got 20480 for /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrStd-58678F1E-1DFF-41F7-938C-68BE8142629A/nest1/nest2=20480 > 0
+[REGR_OK] case=tree-drilldown dir row bytes must be subtree aggregate, got 20480 for /var/folders/zr/49hlnh210v5bj9bcqbnw2_rc0000gn/T/RegrStd-8193D1FC-9D52-4A2F-B83A-77C7121A2A44/nest1/nest2=20480 > 0
 [REGR] case=tree-drilldown defaults_restored_keys=5
-[REGR_PASS] case=tree-drilldown elapsed_ms=425
+[REGR_PASS] case=tree-drilldown elapsed_ms=427

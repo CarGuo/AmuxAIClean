@@ -266,8 +266,180 @@ final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
 
         await vm.executeConfirmedSimctl()
         XCTAssertNil(vm.pendingSimctlStage, "execute 后 sheet 应关闭")
-        XCTAssertNotNil(vm.alertMessage, "应有 alert 文案兜底")
-        XCTAssertTrue(vm.alertMessage?.contains("1") ?? false, "alert 应汇总成功 1 项")
+        XCTAssertNil(vm.alertMessage, "simctl 完成后不应再用 alert 覆盖结构化结果")
+        XCTAssertEqual(vm.lastDeleteResult?.commandLineSucceeded, 1)
+        XCTAssertEqual(vm.lastDeleteResult?.commandLineSkipped, 0)
+        XCTAssertEqual(vm.lastDeleteResult?.status, .success)
+    }
+
+    /// Filesystem cleanup happens before the two simctl confirmations. Its partial
+    /// outcome must survive refreshes and be merged with the final subprocess result.
+    func test_mixedFilesystemAndSimctl_preservesOneCombinedOperationResult() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WFDVM-Mixed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+
+        let workflow = StubMixedWorkflow()
+        let coordinator = SimulatorDeleteCoordinator(
+            executor: SubprocessExecutor(timeout: 1, dryRun: true),
+            isSimulatorRunning: { false }
+        )
+        let vm = WorkflowDetailViewModel(workflow: workflow,
+                                         home: home,
+                                         simulatorCoordinator: coordinator)
+        let cards = workflow.cards(home: home)
+        let moved = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/mixed-moved"),
+                                    sizeBytes: 10, displayName: "moved", note: nil)
+        let failed = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/mixed-failed"),
+                                     sizeBytes: 20, displayName: "failed", note: nil)
+        let rejected = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/mixed-rejected"),
+                                       sizeBytes: 30, displayName: "rejected", note: nil)
+        let simulator = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/mixed-simulator"),
+                                        sizeBytes: 0,
+                                        displayName: "iPhone 16",
+                                        note: nil,
+                                        commandLineTailArg: uuid)
+        vm.setTestCards(cards)
+        vm.setTestHits([
+            "card.test.filesystem": [moved, failed, rejected],
+            "card.test.simctl": [simulator],
+        ])
+        vm.selected = [moved.id, failed.id, rejected.id, simulator.id]
+
+        let pipeline = StubMixedPipeline(outcome: TrashOutcome(
+            movedPairs: [(moved.url.path, "/Trash/mixed-moved")],
+            failedPaths: [failed.url.path],
+            safetyRejected: [(rejected.url.path, "accessDenied")],
+            missingPaths: []
+        ))
+        await vm.performDelete(pipeline: pipeline)
+        guard case .firstReview = vm.pendingSimctlStage else {
+            return XCTFail("mixed workflow should enter first simctl confirmation")
+        }
+
+        vm.advanceSimctlConfirm()
+        await vm.executeConfirmedSimctl()
+
+        let result = try XCTUnwrap(vm.lastDeleteResult)
+        XCTAssertEqual(result.movedPairs.map(\.originalPath), [moved.url.path])
+        XCTAssertEqual(result.failedPaths, [failed.url.path])
+        XCTAssertEqual(result.safetyRejected.map(\.path), [rejected.url.path])
+        XCTAssertEqual(result.commandLineSucceeded, 1)
+        XCTAssertEqual(result.commandLineSkipped, 0)
+        XCTAssertEqual(result.status, .partial)
+        XCTAssertNil(vm.alertMessage)
+    }
+
+    func test_commandLineOnlyCancel_closesWithoutFalseSuccessResult() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WFDVM-Cancel-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+
+        let workflow = StubCommandLineWorkflow()
+        let coordinator = SimulatorDeleteCoordinator(
+            executor: SubprocessExecutor(timeout: 1, dryRun: true),
+            isSimulatorRunning: { false }
+        )
+        let vm = WorkflowDetailViewModel(workflow: workflow,
+                                         home: home,
+                                         simulatorCoordinator: coordinator)
+        let simulator = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/cancel-simulator"),
+                                        sizeBytes: 0,
+                                        displayName: "iPhone 16",
+                                        note: nil,
+                                        commandLineTailArg: uuid)
+        vm.setTestCards(workflow.cards(home: home))
+        vm.setTestHits(["card.test.simctl": [simulator]])
+        vm.selected = [simulator.id]
+
+        await vm.performDelete(pipeline: StubPipelinePR9())
+        XCTAssertNotNil(vm.pendingSimctlStage)
+        vm.cancelSimctlConfirm()
+
+        XCTAssertNil(vm.pendingSimctlStage)
+        XCTAssertNil(vm.lastDeleteResult,
+                     "Cancelling a command-only confirmation must not report a 0/N success result")
+    }
+
+    func test_mixedCancel_preservesCompletedFilesystemResult() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WFDVM-MixedCancel-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+
+        let workflow = StubMixedWorkflow()
+        let coordinator = SimulatorDeleteCoordinator(
+            executor: SubprocessExecutor(timeout: 1, dryRun: true),
+            isSimulatorRunning: { false }
+        )
+        let vm = WorkflowDetailViewModel(workflow: workflow,
+                                         home: home,
+                                         simulatorCoordinator: coordinator)
+        let moved = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/mixed-cancel-moved"),
+                                    sizeBytes: 10, displayName: "moved", note: nil)
+        let simulator = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/mixed-cancel-simulator"),
+                                        sizeBytes: 0,
+                                        displayName: "iPhone 16",
+                                        note: nil,
+                                        commandLineTailArg: uuid)
+        vm.setTestCards(workflow.cards(home: home))
+        vm.setTestHits([
+            "card.test.filesystem": [moved],
+            "card.test.simctl": [simulator],
+        ])
+        vm.selected = [moved.id, simulator.id]
+
+        let pipeline = StubMixedPipeline(outcome: TrashOutcome(
+            movedPairs: [(moved.url.path, "/Trash/mixed-cancel-moved")],
+            failedPaths: [],
+            safetyRejected: [],
+            missingPaths: []
+        ))
+        await vm.performDelete(pipeline: pipeline)
+        vm.cancelSimctlConfirm()
+
+        let result = try XCTUnwrap(vm.lastDeleteResult)
+        XCTAssertEqual(result.movedPairs.map(\.originalPath), [moved.url.path])
+        XCTAssertEqual(result.commandLineSkipped, 1)
+        XCTAssertEqual(result.commandLineSucceeded, 0)
+        XCTAssertTrue(result.commandLineFailures.isEmpty)
+    }
+
+    func test_commandFailure_isNotMisreportedAsFilesystemPath() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WFDVM-CommandFailure-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+
+        let workflow = StubCommandLineWorkflow()
+        let coordinator = SimulatorDeleteCoordinator(
+            executor: SubprocessExecutor(allowlist: [], timeout: 1, dryRun: true),
+            isSimulatorRunning: { false }
+        )
+        let vm = WorkflowDetailViewModel(workflow: workflow,
+                                         home: home,
+                                         simulatorCoordinator: coordinator)
+        let simulator = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/failed-simulator"),
+                                        sizeBytes: 0,
+                                        displayName: "iPhone 16",
+                                        note: nil,
+                                        commandLineTailArg: uuid)
+        vm.setTestCards(workflow.cards(home: home))
+        vm.setTestHits(["card.test.simctl": [simulator]])
+        vm.selected = [simulator.id]
+
+        await vm.performDelete(pipeline: StubPipelinePR9())
+        vm.advanceSimctlConfirm()
+        await vm.executeConfirmedSimctl()
+
+        let result = try XCTUnwrap(vm.lastDeleteResult)
+        XCTAssertTrue(result.failedPaths.isEmpty)
+        XCTAssertEqual(result.commandLineFailures.count, 1)
+        XCTAssertEqual(result.commandLineFailures.first?.item, "iPhone 16")
+        XCTAssertEqual(result.commandLineFailures.first?.exitCode, -3)
+        XCTAssertEqual(result.status, .failed)
     }
 
     /// PR-9：Simulator 运行中 → performDelete 不开 sheet，只 alert。
@@ -325,12 +497,58 @@ private struct StubCommandLineWorkflow: DeveloperWorkflow {
     }
 }
 
+private struct StubMixedWorkflow: DeveloperWorkflow {
+    let id = "workflow.test.mixed"
+    let displayName = "Test Mixed Workflow"
+    let subtitle = "filesystem plus simctl"
+
+    func cards(home: URL) -> [DeveloperCard] {
+        [
+            DeveloperCard(
+                id: "card.test.filesystem",
+                title: "Test filesystem card",
+                summary: "test",
+                source: .literal(paths: []),
+                recipe: .filesystem,
+                risk: .confirm
+            ),
+            DeveloperCard(
+                id: "card.test.simctl",
+                title: "Test simctl card",
+                summary: "test",
+                source: .dynamicScanner(scannerID: "scanner.simctl-devices"),
+                recipe: .commandLine(executable: "/usr/bin/xcrun", args: ["simctl", "delete"]),
+                risk: .confirm
+            ),
+        ]
+    }
+}
+
 /// 不真删的 pipeline stub。
 private struct StubPipelinePR9: DeletionPipeline {
     func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)]) {
         return (0, 0, nil, [])
     }
     /// v2026.06.17 (AUDIT A2)：协议取消 no-op 默认实现后，测试 stub 必须显式 no-op。
+    func setAccessDeniedPaths(_ paths: Set<String>) { /* test stub: no-op */ }
+}
+
+private struct StubMixedPipeline: DeletionPipeline {
+    let outcome: TrashOutcome
+
+    func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)]) {
+        (outcome.movedPairs.count,
+         outcome.failedPaths.count + outcome.safetyRejected.count,
+         nil,
+         outcome.movedPairs.map { ($0.originalPath, $0.trashedPath) })
+    }
+
+    func moveToTrashReturningOutcome(paths: [String], dryRun: Bool) async
+        -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
+        let legacy = await moveToTrash(paths: paths, dryRun: dryRun)
+        return (legacy, outcome)
+    }
+
     func setAccessDeniedPaths(_ paths: Set<String>) { /* test stub: no-op */ }
 }
 

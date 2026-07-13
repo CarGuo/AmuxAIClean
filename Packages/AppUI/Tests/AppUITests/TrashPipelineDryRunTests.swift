@@ -116,9 +116,9 @@ final class TrashPipelineDryRunTests: XCTestCase {
         XCTAssertTrue(r.rejected.allSatisfy { $0.reason == .sensitiveCredential })
     }
 
-    /// M4 闸门 dryRun：混合 safe + forbid 时，forbid 路径不计入 present，只计 skipped；
-    /// error 文案带"被安全策略拦截"。
-    func test_dryRun混合forbid路径只统计allowed() async throws {
+    /// SECURITY.md 批级原子合同：dryRun 必须准确预演真删除语义。
+    /// 混合 safe + forbid 时整批拒绝，不能把 safe 项报告成将会执行。
+    func test_dryRun混合forbid路径整批原子拒绝() async throws {
         let dir = NSTemporaryDirectory() + "GSYCleanTrashSafety-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: dir) }
@@ -132,8 +132,8 @@ final class TrashPipelineDryRunTests: XCTestCase {
             paths: [safe1, "/System/Library/Frameworks", safe2, "/etc/hosts"],
             dryRun: true
         )
-        XCTAssertEqual(present, 2, "只 safe1+safe2 被计入 present")
-        XCTAssertEqual(skipped, 2, "/System 和 /etc 各计 skipped 一次")
+        XCTAssertEqual(present, 0, "任一 forbid 时整批不会执行")
+        XCTAssertEqual(skipped, 4, "整批所有路径都应计为未执行")
         XCTAssertNotNil(err)
         // 产品契约：dryRun 有 rejected 时，err 必须能定位到"安全策略拦截"这个语义。
         // xcstrings 里对应 key = trash.err.dryrun.safety_blocked %lld，
@@ -149,6 +149,138 @@ final class TrashPipelineDryRunTests: XCTestCase {
         )
     }
 
+    func test_正式模式混合forbid整批拒绝且safe文件保持原位() async throws {
+        let dir = NSTemporaryDirectory() + "GSYCleanTrashAtomic-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(atPath: dir)) }
+        let safe = dir + "/safe.txt"
+        try "keep".write(toFile: safe, atomically: true, encoding: .utf8)
+
+        let pipe = TrashPipeline()
+        let result = await pipe.moveToTrashReturningOutcome(
+            paths: [safe, "/System/Library/Frameworks"],
+            dryRun: false
+        )
+
+        XCTAssertEqual(result.legacy.0, 0)
+        XCTAssertEqual(result.legacy.1, 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: safe),
+                      "批内出现 forbid 后不得先移动其余安全路径")
+        XCTAssertEqual(result.outcome?.movedPairs.count, 0)
+        XCTAssertEqual(result.outcome?.safetyRejected.count, 2)
+        XCTAssertTrue(result.outcome?.safetyRejected.contains {
+            $0.path == safe && $0.reason == SafetyRejection.batchContainsForbidden.rawValue
+        } == true)
+    }
+
+    func test_生产白名单子项保护父目录且不读取真实用户store() async throws {
+        let dir = NSTemporaryDirectory() + "GSYCleanTrashWhitelist-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(atPath: dir)) }
+        let protectedChild = dir + "/keep/private.db"
+        try FileManager.default.createDirectory(
+            atPath: (protectedChild as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try "keep".write(toFile: protectedChild, atomically: true, encoding: .utf8)
+
+        let whitelist = WhitelistStore(storageURL: nil)
+        await whitelist.add(path: protectedChild, reason: "test")
+        let pipe = TrashPipeline(whitelistStore: whitelist)
+        let result = await pipe.moveToTrashReturningOutcome(paths: [dir], dryRun: false)
+
+        XCTAssertEqual(result.legacy.0, 0)
+        XCTAssertEqual(result.legacy.1, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: protectedChild))
+        XCTAssertEqual(result.outcome?.safetyRejected.first?.reason,
+                       SafetyRejection.userWhitelisted.rawValue)
+    }
+
+    /// 白名单是真实文件系统子树的保护合同，不只是一个 raw 字符串。
+    /// 请求 leaf 本身不是 symlink，但它的中间父路径 alias 指向已加白目录；
+    /// 没有 resolved 身份索引时，NSWorkspace 会把真实 protected/child 移入废纸篓。
+    func test_生产白名单不能被中间symlink别名绕过() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GSYCleanTrashWhitelistSymlink-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: root)) }
+
+        let protectedRoot = root.appendingPathComponent("protected", isDirectory: true)
+        let protectedChild = protectedRoot.appendingPathComponent("child", isDirectory: true)
+        let payload = protectedChild.appendingPathComponent("keep.bin")
+        try FileManager.default.createDirectory(at: protectedChild, withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: payload)
+
+        let alias = root.appendingPathComponent("cache-alias", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: protectedRoot)
+        let aliasedChild = alias.appendingPathComponent("child", isDirectory: true)
+        XCTAssertEqual(
+            aliasedChild.resolvingSymlinksInPath().standardizedFileURL.path,
+            protectedChild.standardizedFileURL.path,
+            "fixture 必须真的通过中间 symlink 解析到加白子树"
+        )
+
+        let whitelist = WhitelistStore(storageURL: nil)
+        await whitelist.add(path: protectedRoot.path, reason: "symlink-contract")
+        let pipe = TrashPipeline(whitelistStore: whitelist)
+        let result = await pipe.moveToTrashReturningOutcome(
+            paths: [aliasedChild.path],
+            dryRun: true
+        )
+
+        XCTAssertEqual(result.legacy.0, 0)
+        XCTAssertEqual(result.legacy.1, 1)
+        XCTAssertEqual(result.outcome?.safetyRejected.first?.path, aliasedChild.path)
+        XCTAssertEqual(result.outcome?.safetyRejected.first?.reason,
+                       SafetyRejection.userWhitelisted.rawValue)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: payload.path))
+    }
+
+    /// 反向重叠同样必须拦截：加白的是真实目录下的子项，
+    /// 删除请求却是指向其父目录的 alias。放行 alias 父目录会连带移走加白子项。
+    func test_生产白名单resolved子项会拒绝symlink父目录请求() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GSYCleanTrashWhitelistSymlinkParent-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: root)) }
+
+        let protectedRoot = root.appendingPathComponent("protected", isDirectory: true)
+        let protectedChild = protectedRoot.appendingPathComponent("keep", isDirectory: true)
+        try FileManager.default.createDirectory(at: protectedChild, withIntermediateDirectories: true)
+        let alias = root.appendingPathComponent("cache-alias", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: protectedRoot)
+
+        let whitelist = WhitelistStore(storageURL: nil)
+        await whitelist.add(path: protectedChild.path, reason: "descendant-contract")
+        let pipe = TrashPipeline(whitelistStore: whitelist)
+        let result = await pipe.moveToTrashReturningOutcome(paths: [alias.path], dryRun: true)
+
+        XCTAssertEqual(result.legacy.0, 0)
+        XCTAssertEqual(result.legacy.1, 1)
+        XCTAssertEqual(result.outcome?.safetyRejected.first?.reason,
+                       SafetyRejection.userWhitelisted.rawValue)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: protectedChild.path))
+    }
+
+    /// resolved 保护仍必须遵守路径组件边界；`MyApp` 不能误伤
+    /// 同级 `MyApplication`。这条防止 symlink 修复退化成字符串 hasPrefix 补丁。
+    func test_partitionByForbid_白名单resolved索引保持路径组件边界() {
+        let home = "/Users/foo"
+        let protected = home + "/Library/Caches/MyApp"
+        let sibling = home + "/Library/Caches/MyApplication"
+        let result = TrashPipeline.partitionByForbid(
+            paths: [sibling],
+            safety: SafetyEngine(),
+            whitelistPaths: [protected],
+            home: home
+        )
+
+        XCTAssertEqual(result.allowed, [sibling])
+        XCTAssertTrue(result.rejected.isEmpty)
+    }
+
     /// M4 闸门 正式模式：全部 forbid 时直接短路，不调 NSWorkspace.recycle，
     /// 也不会改变 movedCount=0、skipped=N 的语义。
     func test_正式模式全forbid时短路不调recycle() async throws {
@@ -160,8 +292,12 @@ final class TrashPipelineDryRunTests: XCTestCase {
         XCTAssertEqual(moved, 0)
         XCTAssertEqual(skipped, 3)
         XCTAssertNotNil(err)
-        XCTAssertTrue(err?.contains("safety-blocked") == true,
-                      "error 应以 safety-blocked 起头，实际=\(err ?? "nil")")
+        XCTAssertTrue(
+            err?.contains("safety-blocked") == true
+                || err?.contains("safety_blocked_only") == true
+                || err?.contains("安全") == true,
+            "error 应表达 safety-blocked 语义，实际=\(err ?? "nil")"
+        )
         XCTAssertTrue(err?.contains("hardForbidPrefix") == true,
                       "应附带机器可读首条原因 hardForbidPrefix")
     }
@@ -196,6 +332,54 @@ final class TrashPipelineDryRunTests: XCTestCase {
                        "accessDenied 应以新增的 .accessDenied 原因区分，便于审计/日志")
     }
 
+    /// denied 是请求的后代时，删除请求的父目录会连带删除未扫描子树，必须整体拒绝。
+    func test_partitionByForbid_accessDenied后代与请求父目录重叠时拒绝() {
+        let home = "/Users/foo"
+        let request = home + "/Library/Caches/MyApp"
+        let deniedChild = request + "/locked/private"
+        let result = TrashPipeline.partitionByForbid(
+            paths: [request],
+            safety: SafetyEngine(),
+            accessDeniedPaths: [deniedChild],
+            home: home
+        )
+
+        XCTAssertTrue(result.allowed.isEmpty)
+        XCTAssertEqual(result.rejected.first?.reason, .accessDenied)
+    }
+
+    /// 请求位于 denied 目录内部时同样不可删除；权限拒绝覆盖整棵子树而不是一个节点。
+    func test_partitionByForbid_请求是accessDenied后代时拒绝() {
+        let home = "/Users/foo"
+        let deniedParent = home + "/Library/Caches/MyApp/locked"
+        let request = deniedParent + "/child/cache.db"
+        let result = TrashPipeline.partitionByForbid(
+            paths: [request],
+            safety: SafetyEngine(),
+            accessDeniedPaths: [deniedParent],
+            home: home
+        )
+
+        XCTAssertTrue(result.allowed.isEmpty)
+        XCTAssertEqual(result.rejected.first?.reason, .accessDenied)
+    }
+
+    /// 字符串前缀不是路径祖先关系；`MyApp` 不能误伤同级的 `MyApplication`。
+    func test_partitionByForbid_accessDenied使用路径组件边界避免相似前缀误拒() {
+        let home = "/Users/foo"
+        let denied = home + "/Library/Caches/MyApp"
+        let sibling = home + "/Library/Caches/MyApplication"
+        let result = TrashPipeline.partitionByForbid(
+            paths: [sibling],
+            safety: SafetyEngine(),
+            accessDeniedPaths: [denied],
+            home: home
+        )
+
+        XCTAssertEqual(result.allowed, [sibling])
+        XCTAssertTrue(result.rejected.isEmpty)
+    }
+
     /// 同一路径既在 accessDeniedPaths 也命中 SafetyEngine forbid（hardForbidPrefix）时，
     /// **优先级**：accessDenied 高于 forbid，reason 必须是 .accessDenied 而非 .hardForbidPrefix。
     /// 这是为了避免日志里把"上层一票否决"误归为 SafetyEngine 拦截。
@@ -213,7 +397,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
                        "accessDenied 优先；不应被覆盖为 .hardForbidPrefix")
     }
 
-    /// dryRun：accessDenied 路径不会进 present 计数，只进 skipped；error 文案附带 accessDenied 首因。
+    /// dryRun 必须预演批级原子合同：一条 accessDenied 会让整批都不进入 present。
     func test_dryRun_accessDenied路径不计入present() async throws {
         let dir = NSTemporaryDirectory() + "GSYCleanTrashAcc-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -229,8 +413,8 @@ final class TrashPipelineDryRunTests: XCTestCase {
             paths: [safe1, denied1],
             dryRun: true
         )
-        XCTAssertEqual(present, 1, "只 safe1 应进 present；denied1 即使存在也算 skipped")
-        XCTAssertEqual(skipped, 1)
+        XCTAssertEqual(present, 0, "accessDenied 是 forbid，整批都不会执行")
+        XCTAssertEqual(skipped, 2)
         XCTAssertNotNil(err)
         XCTAssertTrue(err?.contains("accessDenied") == true,
                       "error 应附带首条原因 accessDenied，实际=\(err ?? "nil")")
@@ -247,8 +431,12 @@ final class TrashPipelineDryRunTests: XCTestCase {
         XCTAssertEqual(moved, 0)
         XCTAssertEqual(skipped, denied.count)
         XCTAssertNotNil(err)
-        XCTAssertTrue(err?.contains("safety-blocked") == true,
-                      "error 应以 safety-blocked 起头，实际=\(err ?? "nil")")
+        XCTAssertTrue(
+            err?.contains("safety-blocked") == true
+                || err?.contains("safety_blocked_only") == true
+                || err?.contains("安全") == true,
+            "error 应表达 safety-blocked 语义，实际=\(err ?? "nil")"
+        )
         XCTAssertTrue(err?.contains("accessDenied") == true,
                       "应附带机器可读首条原因 accessDenied")
     }
@@ -320,6 +508,58 @@ final class TrashPipelineDryRunTests: XCTestCase {
                       "非 firmlink 路径应原样保留")
     }
 
+    /// request-scoped 参数必须覆盖旧共享槽，而不是先 set 再 await 导致并发请求串值。
+    func test_moveToTrashReturningOutcome_requestScopedDenied不读取共享槽() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TrashAtomicDenied-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: dir)) }
+
+        let sharedDenied = dir.appendingPathComponent("shared.txt")
+        let requestDenied = dir.appendingPathComponent("request.txt")
+        try Data("shared".utf8).write(to: sharedDenied)
+        try Data("request".utf8).write(to: requestDenied)
+
+        let pipe = TrashPipeline()
+        pipe.setAccessDeniedPaths([sharedDenied.path])
+        let result = await pipe.moveToTrashReturningOutcome(
+            paths: [sharedDenied.path, requestDenied.path],
+            dryRun: true,
+            accessDeniedPaths: [requestDenied.path]
+        )
+
+        XCTAssertEqual(result.legacy.0, 0, "request-scoped denied 触发整批原子拒绝")
+        XCTAssertEqual(result.legacy.1, 2)
+        let reasons = Dictionary(uniqueKeysWithValues:
+            (result.outcome?.safetyRejected ?? []).map { ($0.path, $0.reason) })
+        XCTAssertEqual(reasons[requestDenied.path], SafetyRejection.accessDenied.rawValue)
+        XCTAssertEqual(reasons[sharedDenied.path], SafetyRejection.batchContainsForbidden.rawValue,
+                       "共享槽不得串入本请求；该路径只能因批级原子性被拒")
+    }
+
+    /// 历史 force 符号即使仍被旧调用方触发，也必须保留 vendor `.forbid`。
+    func test_moveToTrashForce_不能绕过vendorForbid() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TrashVendorForbid-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: dir)) }
+
+        let protected = dir.appendingPathComponent("protected-cache")
+        try Data("protected".utf8).write(to: protected)
+        let vendor = VendorRule(
+            name: "SafetyContract",
+            paths: [PathRule(path: protected.path, verdict: .forbid)]
+        )
+        let pipe = TrashPipeline(vendors: [vendor], home: dir.path)
+
+        let result = await pipe.moveToTrashForce(paths: [protected.path], dryRun: true)
+
+        XCTAssertEqual(result.legacy.0, 0)
+        XCTAssertEqual(result.legacy.1, 1)
+        XCTAssertEqual(result.outcome?.safetyRejected.first?.reason,
+                       SafetyRejection.vendorPathRule.rawValue)
+    }
+
     // MARK: - v2026.06.17 (AUDIT A2)：DeletionPipeline 协议层 setAccessDeniedPaths
     //
     // 历史背景：v1.3.zzzz Phase 3-A 协议化时给 setAccessDeniedPaths 留了 protocol extension
@@ -365,4 +605,3 @@ final class TrashPipelineDryRunTests: XCTestCase {
                        "走 protocol 类型调用时仍应命中 TrashPipeline 真实现 + firmlink 折叠；snap=\(snap)")
     }
 }
-

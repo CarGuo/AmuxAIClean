@@ -11,8 +11,11 @@ struct SmartCareDashboardView: View {
     let aiTotal: Int
     let aiError: String?
     let aiItemStates: [String: SmartCareAIItemState]
+    let aiReportAvailable: Bool
     let onPrimaryAction: (SmartCarePrimaryAction) -> Void
     let onAIReview: () -> Void
+    let onAICancel: () -> Void
+    let onAIShowReport: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var resultExpansion: SmartCareResultExpansion?
@@ -98,24 +101,12 @@ struct SmartCareDashboardView: View {
             )
             .frame(width: 270, height: 270)
 
-            Text(
-                LocalizedStringKey(SmartCarePresentation.activityTitleKey(for: progress.activity)),
-                bundle: .module
+            SmartCareActivityBadge(
+                activity: progress.activity,
+                reduceMotion: reduceMotion
             )
-            .font(.system(.title2, design: .rounded).weight(.bold))
-            .contentTransition(.opacity)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .background(
-                Color(nsColor: .windowBackgroundColor).opacity(0.78),
-                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-            }
 
-            SmartCareStageStrip(progress: progress)
+            SmartCareStageStrip(progress: progress, reduceMotion: reduceMotion)
                 .frame(maxWidth: 700)
 
             Button {
@@ -145,11 +136,11 @@ struct SmartCareDashboardView: View {
     }
 
     private var resultExperience: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 16) {
             resultHeader
 
             ScrollView {
-                VStack(spacing: 12) {
+                VStack(spacing: 10) {
                     if !resultBuckets.isEmpty {
                         categorySelectionList
                     }
@@ -183,8 +174,8 @@ struct SmartCareDashboardView: View {
                 .padding(.vertical, 2)
             }
             .scrollIndicators(.automatic)
-            .frame(maxWidth: 900)
-            .frame(maxHeight: resultExpansion == nil ? 356 : .infinity)
+            .frame(maxWidth: 940)
+            .frame(maxHeight: resultExpansion == nil ? 382 : .infinity)
 
             resultActions
         }
@@ -195,7 +186,7 @@ struct SmartCareDashboardView: View {
     }
 
     private var resultHeader: some View {
-        HStack(spacing: 26) {
+        HStack(spacing: 24) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.circle.fill")
@@ -203,13 +194,28 @@ struct SmartCareDashboardView: View {
                     Text("smart_care.result.scan_complete", bundle: .module)
                         .font(.system(.title3, design: .rounded).weight(.bold))
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    SmartCarePresentation.tint(for: .safe).opacity(0.1),
+                    in: Capsule()
+                )
 
-                Text(verbatim: formattedSmartCareBytes(coordinator.selectedBytes))
-                    .font(.system(size: resultExpansion == nil ? 42 : 34, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
+                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    Text(verbatim: formattedSmartCareBytes(coordinator.selectedBytes))
+                        .font(.system(
+                            size: resultExpansion == nil ? 44 : 35,
+                            weight: .bold,
+                            design: .rounded
+                        ))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                    Text("smart_care.metric.selected", bundle: .module)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
 
-                HStack(spacing: 14) {
+                HStack(spacing: 8) {
                     SmartCareMetricLabel(
                         icon: "checkmark.shield.fill",
                         value: coordinator.summary.safeBytes,
@@ -244,42 +250,25 @@ struct SmartCareDashboardView: View {
             )
             .frame(width: resultExpansion == nil ? 146 : 106, height: resultExpansion == nil ? 146 : 106)
 
-            Button {
+            SmartCareScanAgainButton(reduceMotion: reduceMotion) {
                 onPrimaryAction(.scanAgain)
-            } label: {
-                Label {
-                    Text("smart_care.action.scan_again", bundle: .module)
-                } icon: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .font(.callout.weight(.medium))
             }
-            .buttonStyle(.bordered)
-            .help(Text("smart_care.action.scan_again", bundle: .module))
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, resultExpansion == nil ? 16 : 10)
-        .frame(maxWidth: 900)
-        .frame(height: resultExpansion == nil ? 184 : 126)
-        .background(
-            Color(nsColor: .windowBackgroundColor).opacity(0.9),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .padding(.horizontal, 24)
+        .padding(.vertical, resultExpansion == nil ? 17 : 11)
+        .frame(maxWidth: 940)
+        .frame(height: resultExpansion == nil ? 188 : 138)
+        .smartCareTechSurface(
+            tint: SmartCareMotionPalette.blueColor,
+            cornerRadius: 18,
+            elevated: true
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-        }
         .animation(.smooth(duration: reduceMotion ? 0.1 : 0.24), value: resultExpansion)
     }
 
     private var categorySelectionList: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(resultBuckets.enumerated()), id: \.element.id) { index, bucket in
-                if index > 0 {
-                    Divider()
-                        .padding(.leading, 48)
-                }
-
+        VStack(spacing: 10) {
+            ForEach(resultBuckets, id: \.id) { bucket in
                 let selectedStats = coordinator.selectedSafeBucketStats[bucket.id]
                     ?? SmartCareBucketSelectionStats()
                 SmartCareCategorySection(
@@ -289,7 +278,9 @@ struct SmartCareDashboardView: View {
                     aiItemStates: aiItemStates,
                     isExpanded: expansionBinding(for: .bucket(bucket.id)),
                     onToggleAll: { selected in
-                        coordinator.setSafeItemsSelected(selected, bucketID: bucket.id)
+                        Task { @MainActor in
+                            await coordinator.setSafeItemsSelected(selected, bucketID: bucket.id)
+                        }
                     },
                     onToggleItem: { selected, item in
                         _ = coordinator.setSelected(selected, item: item)
@@ -297,33 +288,22 @@ struct SmartCareDashboardView: View {
                 )
             }
         }
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
-        }
     }
 
     private var riskSelectionList: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 10) {
             if !coordinator.summary.confirmItems.isEmpty {
                 SmartCareRiskSection(
                     kind: .confirm,
                     bytes: coordinator.summary.confirmBytes,
                     items: coordinator.summary.confirmItems,
                     selectedIDs: coordinator.selection.selectedIDs,
+                    aiItemStates: aiItemStates,
                     isExpanded: expansionBinding(for: .needsReview),
                     onToggleItem: { selected, item in
                         _ = coordinator.setSelected(selected, item: item)
                     }
                 )
-            }
-
-            if !coordinator.summary.confirmItems.isEmpty
-                && !coordinator.summary.forbidItems.isEmpty {
-                Divider()
-                    .padding(.leading, 48)
             }
 
             if !coordinator.summary.forbidItems.isEmpty {
@@ -332,18 +312,11 @@ struct SmartCareDashboardView: View {
                     bytes: coordinator.summary.forbidBytes,
                     items: coordinator.summary.forbidItems,
                     selectedIDs: [],
+                    aiItemStates: aiItemStates,
                     isExpanded: expansionBinding(for: .protectedItems),
                     onToggleItem: { _, _ in }
                 )
             }
-        }
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(
-                    SmartCarePresentation.tint(for: .confirm).opacity(0.18),
-                    lineWidth: 1
-                )
         }
     }
 
@@ -361,14 +334,19 @@ struct SmartCareDashboardView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(!coordinator.hasSelection)
+            .disabled(!coordinator.hasSelection || aiIsRunning)
 
-            Button(action: onAIReview) {
+            Button(action: aiIsRunning ? onAICancel : onAIReview) {
                 if aiIsRunning {
-                    HStack(spacing: 7) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text(verbatim: aiProgressText)
+                    Label {
+                        HStack(spacing: 6) {
+                            Text("smart_care.ai.cancel", bundle: .module)
+                            Text(verbatim: aiProgressText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "stop.circle.fill")
                     }
                 } else {
                     Label {
@@ -380,15 +358,47 @@ struct SmartCareDashboardView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.large)
-            .disabled(aiIsRunning)
             .help(Text(
-                aiIsConfigured
-                    ? "smart_care.ai.help"
-                    : "smart_care.ai.help.not_configured",
+                aiIsRunning
+                    ? "smart_care.ai.cancel_help"
+                    : (aiIsConfigured
+                        ? "smart_care.ai.help"
+                        : "smart_care.ai.help.not_configured"),
                 bundle: .module
             ))
+
+            if aiReportAvailable {
+                Button(action: onAIShowReport) {
+                    Label {
+                        Text("smart_care.ai.view_report", bundle: .module)
+                    } icon: {
+                        Image(systemName: "sparkles.rectangle.stack.fill")
+                            .symbolRenderingMode(.hierarchical)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .tint(SmartCarePresentation.tint(for: .safe))
+                .help(Text("smart_care.ai.view_report_help", bundle: .module))
+            }
         }
-        .frame(maxWidth: 900)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .windowBackgroundColor).opacity(0.72),
+                    SmartCareMotionPalette.blueColor.opacity(0.07),
+                    SmartCareMotionPalette.tealColor.opacity(0.05)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: Capsule()
+        )
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+        .shadow(color: SmartCareMotionPalette.blueColor.opacity(0.08), radius: 12, y: 4)
+        .frame(maxWidth: 940)
     }
 
     private func cleaningExperience(_: SmartCareCleanProgress) -> some View {
@@ -964,6 +974,73 @@ private struct SmartCareWorkingVisual: View {
     }
 }
 
+private struct SmartCareTechSurfaceModifier: ViewModifier {
+    let tint: Color
+    let cornerRadius: CGFloat
+    let elevated: Bool
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        content
+            .background {
+                ZStack {
+                    shape.fill(.ultraThinMaterial)
+                    shape.fill(
+                        LinearGradient(
+                            colors: [
+                                Color(nsColor: .windowBackgroundColor).opacity(0.66),
+                                tint.opacity(0.065),
+                                SmartCareMotionPalette.tealColor.opacity(0.025)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                }
+            }
+            .clipShape(shape)
+            .overlay {
+                ZStack {
+                    shape.strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.28),
+                                tint.opacity(0.32),
+                                Color.primary.opacity(0.07)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
+                    shape
+                        .trim(from: 0.015, to: 0.22)
+                        .stroke(
+                            tint.opacity(0.6),
+                            style: StrokeStyle(lineWidth: 1.8, lineCap: .round)
+                        )
+                }
+            }
+            .shadow(
+                color: tint.opacity(elevated ? 0.12 : 0.055),
+                radius: elevated ? 18 : 8,
+                y: elevated ? 8 : 3
+            )
+    }
+}
+
+private extension View {
+    func smartCareTechSurface(tint: Color,
+                              cornerRadius: CGFloat,
+                              elevated: Bool) -> some View {
+        modifier(SmartCareTechSurfaceModifier(
+            tint: tint,
+            cornerRadius: cornerRadius,
+            elevated: elevated
+        ))
+    }
+}
+
 private struct SmartCareMetricLabel: View {
     let icon: String
     let value: Int64
@@ -975,6 +1052,8 @@ private struct SmartCareMetricLabel: View {
             Image(systemName: icon)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(tint)
+                .frame(width: 22, height: 22)
+                .background(tint.opacity(0.11), in: RoundedRectangle(cornerRadius: 6))
             VStack(alignment: .leading, spacing: 0) {
                 Text(verbatim: formattedSmartCareBytes(value))
                     .font(.caption.monospacedDigit().weight(.semibold))
@@ -982,6 +1061,13 @@ private struct SmartCareMetricLabel: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(tint.opacity(0.055), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(tint.opacity(0.14), lineWidth: 1)
         }
     }
 }
@@ -999,6 +1085,21 @@ private struct SmartCareResultRing: View {
             ZStack {
                 Circle()
                     .stroke(Color.primary.opacity(0.075), lineWidth: lineWidth)
+
+                Circle()
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                SmartCareMotionPalette.blueColor.opacity(0.42),
+                                SmartCareMotionPalette.tealColor.opacity(0.2),
+                                Color.clear
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
+                    .padding(lineWidth * -0.72)
 
                 Circle()
                     .trim(from: 0, to: safeFraction)
@@ -1032,7 +1133,7 @@ private struct SmartCareResultRing: View {
                         .contentTransition(.numericText())
                         .lineLimit(1)
                         .minimumScaleFactor(0.68)
-                    Text("smart_care.metric.safe", bundle: .module)
+                    Text("smart_care.metric.selected", bundle: .module)
                         .font(size >= 120 ? .caption : .caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -1053,47 +1154,228 @@ private struct SmartCareResultRing: View {
     }
 }
 
+private struct SmartCareScanAgainButton: View {
+    let reduceMotion: Bool
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(SmartCareMotionPalette.blueColor)
+                    .frame(width: 28, height: 28)
+                    .background(
+                        SmartCareMotionPalette.blueColor.opacity(hovered ? 0.16 : 0.1),
+                        in: Circle()
+                    )
+                    .rotationEffect(.degrees(hovered && !reduceMotion ? -22 : 0))
+
+                Text("smart_care.action.scan_again", bundle: .module)
+                    .font(.callout.weight(.semibold))
+            }
+            .foregroundStyle(hovered ? SmartCareMotionPalette.blueColor : Color.primary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background {
+                ZStack {
+                    Capsule().fill(.ultraThinMaterial)
+                    Capsule().fill(
+                        LinearGradient(
+                            colors: [
+                                SmartCareMotionPalette.blueColor.opacity(hovered ? 0.15 : 0.09),
+                                SmartCareMotionPalette.tealColor.opacity(hovered ? 0.11 : 0.055),
+                                Color(nsColor: .windowBackgroundColor).opacity(0.36)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                }
+            }
+            .overlay {
+                Capsule().strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            SmartCareMotionPalette.blueColor.opacity(hovered ? 0.68 : 0.36),
+                            SmartCareMotionPalette.tealColor.opacity(hovered ? 0.42 : 0.2),
+                            Color.primary.opacity(0.06)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+            }
+            .shadow(
+                color: SmartCareMotionPalette.blueColor.opacity(hovered ? 0.18 : 0.08),
+                radius: hovered ? 12 : 7,
+                y: hovered ? 5 : 3
+            )
+            .scaleEffect(hovered && !reduceMotion ? 1.025 : 1)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .animation(.smooth(duration: reduceMotion ? 0.1 : 0.18), value: hovered)
+        .help(Text("smart_care.action.scan_again", bundle: .module))
+    }
+}
+
+private struct SmartCareActivityBadge: View {
+    let activity: SmartCareScanActivity
+    let reduceMotion: Bool
+
+    var body: some View {
+        let titleKey = SmartCarePresentation.activityTitleKey(for: activity)
+        let localizedTitle = String(
+            localized: String.LocalizationValue(titleKey),
+            bundle: .module
+        )
+        let activityTint = activity.stage.map(SmartCarePresentation.tint(for:))
+            ?? SmartCarePresentation.tint(for: SafetyVerdict.safe)
+        HStack(spacing: 9) {
+            Image(systemName: SmartCarePresentation.activityIconName(for: activity))
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(activityTint)
+                .frame(width: 28, height: 28)
+                .background(activityTint.opacity(0.1), in: Circle())
+                .contentTransition(.symbolEffect(.replace))
+                .symbolEffect(.bounce, value: activity)
+                .accessibilityHidden(true)
+
+            SmartCareAnimatedActivityTextView(
+                text: localizedTitle,
+                activity: activity,
+                reduceMotion: reduceMotion
+            )
+            .fixedSize()
+            .accessibilityHidden(true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .windowBackgroundColor).opacity(0.86),
+                    SmartCareMotionPalette.blueColor.opacity(0.08),
+                    SmartCareMotionPalette.tealColor.opacity(0.055)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(activityTint.opacity(0.2), lineWidth: 1)
+        }
+        .shadow(color: activityTint.opacity(0.07), radius: 9, y: 4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(LocalizedStringKey(titleKey), bundle: .module))
+    }
+}
+
+enum SmartCareStageVisualStatus: Equatable {
+    case pending
+    case active
+    case complete
+}
+
+enum SmartCareStageProgressPresentation {
+    static func status(for stage: SmartCareScanStage,
+                       in progress: SmartCareProgress) -> SmartCareStageVisualStatus {
+        if progress.completedStages.contains(stage) { return .complete }
+        if progress.activity.stage == stage { return .active }
+        return .pending
+    }
+
+    static func connectorStatus(after stage: SmartCareScanStage,
+                                in progress: SmartCareProgress) -> SmartCareStageVisualStatus {
+        if progress.completedStages.contains(stage) { return .complete }
+        if progress.activity.stage == stage { return .active }
+        return .pending
+    }
+
+    static func finalStatus(in progress: SmartCareProgress) -> SmartCareStageVisualStatus {
+        progress.activity == .finalizing ? .active : .pending
+    }
+}
+
 private struct SmartCareStageStrip: View {
     let progress: SmartCareProgress
+    let reduceMotion: Bool
 
     var body: some View {
         HStack(spacing: 7) {
             ForEach(Array(progress.plannedStages.enumerated()), id: \.element) { index, stage in
                 stageNode(stage)
                 if index < progress.plannedStages.count - 1 {
-                    connector(completed: progress.completedStages.contains(stage))
+                    connector(status: SmartCareStageProgressPresentation.connectorStatus(
+                        after: stage,
+                        in: progress
+                    ))
                 }
             }
-            connector(completed: progress.completedStages.count == progress.plannedStages.count)
+            if let finalPlannedStage = progress.plannedStages.last {
+                connector(status: SmartCareStageProgressPresentation.connectorStatus(
+                    after: finalPlannedStage,
+                    in: progress
+                ))
+            }
             finalNode
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
-        .background(
-            Color(nsColor: .windowBackgroundColor).opacity(0.92),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .smartCareTechSurface(
+            tint: SmartCareMotionPalette.blueColor,
+            cornerRadius: 14,
+            elevated: false
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
-        }
     }
 
-    private func connector(completed: Bool) -> some View {
-        Rectangle()
-            .fill(completed
-                  ? SmartCarePresentation.tint(for: .safe).opacity(0.48)
-                  : Color.secondary.opacity(0.18))
-            .frame(minWidth: 28, maxWidth: 72)
-            .frame(height: 1)
+    private func connector(status: SmartCareStageVisualStatus) -> some View {
+        ZStack(alignment: .leading) {
+            Capsule()
+                .fill(status == .active
+                      ? SmartCareMotionPalette.blueColor.opacity(0.16)
+                      : Color.secondary.opacity(0.16))
+
+            Capsule()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            SmartCarePresentation.tint(for: .safe).opacity(0.58),
+                            SmartCareMotionPalette.tealColor.opacity(0.72)
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .scaleEffect(x: status == .complete ? 1 : 0, anchor: .leading)
+
+            SmartCareSignalBeamView(
+                isActive: status == .active,
+                reduceMotion: reduceMotion
+            )
+            .opacity(status == .active ? 1 : 0)
+        }
+        .frame(minWidth: 28, maxWidth: 72)
+        .frame(height: 3)
+        .animation(
+            .smooth(duration: reduceMotion ? 0.1 : 0.42),
+            value: status
+        )
+        .accessibilityHidden(true)
     }
 
     private func stageNode(_ stage: SmartCareScanStage) -> some View {
-        let status = status(for: stage)
-        return VStack(spacing: 5) {
+        let status = SmartCareStageProgressPresentation.status(for: stage, in: progress)
+        return VStack(spacing: 6) {
             stageDot(status: status, icon: SmartCarePresentation.iconName(for: stage))
             Text(LocalizedStringKey(SmartCarePresentation.titleKey(for: stage)), bundle: .module)
-                .font(.caption2)
+                .font(.caption2.weight(status == .active ? .semibold : .regular))
                 .foregroundStyle(status == .pending ? .secondary : .primary)
                 .lineLimit(1)
         }
@@ -1101,11 +1383,11 @@ private struct SmartCareStageStrip: View {
     }
 
     private var finalNode: some View {
-        let status: StageStatus = progress.activity == .finalizing ? .active : .pending
-        return VStack(spacing: 5) {
+        let status = SmartCareStageProgressPresentation.finalStatus(in: progress)
+        return VStack(spacing: 6) {
             stageDot(status: status, icon: "checkmark.shield")
             Text("smart_care.stage.final_check", bundle: .module)
-                .font(.caption2)
+                .font(.caption2.weight(status == .active ? .semibold : .regular))
                 .foregroundStyle(status == .pending ? .secondary : .primary)
                 .lineLimit(1)
         }
@@ -1113,46 +1395,55 @@ private struct SmartCareStageStrip: View {
     }
 
     @ViewBuilder
-    private func stageDot(status: StageStatus, icon: String) -> some View {
+    private func stageDot(status: SmartCareStageVisualStatus, icon: String) -> some View {
         ZStack {
+            SmartCareStagePulseView(
+                isActive: status == .active,
+                reduceMotion: reduceMotion
+            )
+            .frame(width: 40, height: 40)
+            .accessibilityHidden(true)
+
             Circle()
-                .fill(status.tint.opacity(status == .pending ? 0.07 : 0.13))
-                .frame(width: 28, height: 28)
+                .fill(tint(for: status).opacity(status == .pending ? 0.07 : 0.13))
+                .frame(width: 30, height: 30)
+            Circle()
+                .strokeBorder(
+                    tint(for: status).opacity(status == .active ? 0.34 : 0.08),
+                    lineWidth: status == .active ? 2 : 1
+                )
+                .frame(width: 30, height: 30)
             switch status {
             case .active:
-                Circle()
-                    .fill(status.tint)
-                    .frame(width: 8, height: 8)
-                    .overlay(Circle().stroke(status.tint.opacity(0.24), lineWidth: 5))
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(tint(for: status))
             case .complete:
                 Image(systemName: "checkmark")
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(status.tint)
+                    .foregroundStyle(tint(for: status))
+                    .symbolEffect(.bounce, value: status)
             case .pending:
                 Image(systemName: icon)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.tertiary)
             }
         }
+        .frame(width: 40, height: 40)
+        .scaleEffect(status == .active && !reduceMotion ? 1.03 : 1)
+        .animation(
+            reduceMotion
+                ? .easeOut(duration: 0.1)
+                : .spring(response: 0.34, dampingFraction: 0.72),
+            value: status
+        )
     }
 
-    private func status(for stage: SmartCareScanStage) -> StageStatus {
-        if progress.completedStages.contains(stage) { return .complete }
-        if progress.activity.stage == stage { return .active }
-        return .pending
-    }
-
-    private enum StageStatus: Equatable {
-        case pending
-        case active
-        case complete
-
-        var tint: Color {
-            switch self {
-            case .pending: return .secondary
-            case .active: return .accentColor
-            case .complete: return SmartCarePresentation.tint(for: .safe)
-            }
+    private func tint(for status: SmartCareStageVisualStatus) -> Color {
+        switch status {
+        case .pending: return .secondary
+        case .active: return .accentColor
+        case .complete: return SmartCarePresentation.tint(for: .safe)
         }
     }
 }
@@ -1168,6 +1459,36 @@ private enum SmartCareSelectionState {
         case .mixed: return "minus.square.fill"
         case .all: return "checkmark.square.fill"
         }
+    }
+}
+
+private struct SmartCareSelectionRail: View {
+    let fraction: Double
+    let tint: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.primary.opacity(0.065))
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [tint.opacity(0.72), SmartCareMotionPalette.tealColor],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: proxy.size.width * CGFloat(min(1, max(0, fraction))))
+            }
+        }
+        .frame(height: 3)
+        .animation(
+            .smooth(duration: reduceMotion ? 0.1 : 0.3),
+            value: fraction
+        )
+        .accessibilityHidden(true)
     }
 }
 
@@ -1188,8 +1509,12 @@ private struct SmartCareCategorySection: View {
                 } label: {
                     Image(systemName: selectionState.iconName)
                         .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(selectionState == .none ? Color.secondary : Color.accentColor)
-                        .frame(width: 24, height: 24)
+                        .foregroundStyle(selectionState == .none ? Color.secondary : tint)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            tint.opacity(selectionState == .none ? 0.035 : 0.1),
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        )
                 }
                 .buttonStyle(.plain)
                 .help(Text("smart_care.bucket.toggle_safe", bundle: .module))
@@ -1202,25 +1527,38 @@ private struct SmartCareCategorySection: View {
                     HStack(spacing: 10) {
                         Image(systemName: SmartCarePresentation.iconName(for: bucket.id))
                             .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(SmartCarePresentation.tint(for: bucket.id))
-                            .frame(width: 26, height: 26)
+                            .foregroundStyle(tint)
+                            .frame(width: 34, height: 34)
                             .background(
-                                SmartCarePresentation.tint(for: bucket.id).opacity(0.09),
-                                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                tint.opacity(0.1),
+                                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
                             )
 
-                        Text(
-                            LocalizedStringKey(SmartCarePresentation.titleKey(for: bucket.id)),
-                            bundle: .module
-                        )
-                        .font(.body.weight(.medium))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(
+                                LocalizedStringKey(SmartCarePresentation.titleKey(for: bucket.id)),
+                                bundle: .module
+                            )
+                            .font(.body.weight(.semibold))
+
+                            Text(
+                                LocalizedStringKey(SmartCarePresentation.subtitleKey(for: bucket.id)),
+                                bundle: .module
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        }
 
                         Spacer(minLength: 14)
 
                         Text(verbatim: selectionSizeText)
-                            .font(.body.monospacedDigit().weight(.semibold))
+                            .font(.callout.monospacedDigit().weight(.semibold))
                             .foregroundStyle(selectionState == .none ? .secondary : .primary)
                             .contentTransition(.numericText())
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 4)
+                            .background(tint.opacity(0.07), in: Capsule())
 
                         Image(systemName: "chevron.right")
                             .font(.caption.weight(.semibold))
@@ -1231,12 +1569,16 @@ private struct SmartCareCategorySection: View {
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal, 14)
-            .frame(minHeight: 52)
+            .padding(.horizontal, 16)
+            .frame(minHeight: 62)
+
+            SmartCareSelectionRail(fraction: selectionFraction, tint: tint)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 9)
 
             if isExpanded {
                 Divider()
-                    .padding(.leading, 48)
+                    .padding(.leading, 58)
 
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -1244,7 +1586,7 @@ private struct SmartCareCategorySection: View {
                             SmartCareSelectableItemRow(
                                 item: item,
                                 selected: selectedIDs.contains(item.id),
-                                aiState: aiItemStates[item.id],
+                                aiState: aiItemStates[item.path],
                                 showsRisk: false,
                                 onToggle: { onToggleItem($0, item) }
                             )
@@ -1256,10 +1598,11 @@ private struct SmartCareCategorySection: View {
                     }
                 }
                 .frame(height: expandedHeight)
-                .background(Color(nsColor: .textBackgroundColor).opacity(0.34))
+                .background(tint.opacity(0.035))
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .smartCareTechSurface(tint: tint, cornerRadius: 14, elevated: false)
     }
 
     private var selectedCount: Int {
@@ -1277,6 +1620,15 @@ private struct SmartCareCategorySection: View {
             return formattedSmartCareBytes(bucket.safeBytes)
         }
         return "\(formattedSmartCareBytes(selectedBytes)) / \(formattedSmartCareBytes(bucket.safeBytes))"
+    }
+
+    private var selectionFraction: Double {
+        guard bucket.safeCount > 0 else { return 0 }
+        return Double(selectedCount) / Double(bucket.safeCount)
+    }
+
+    private var tint: Color {
+        SmartCarePresentation.tint(for: bucket.id)
     }
 
     private var expandedHeight: CGFloat {
@@ -1316,6 +1668,7 @@ private struct SmartCareRiskSection: View {
     let bytes: Int64
     let items: [SmartCareItem]
     let selectedIDs: Set<SmartCareItem.ID>
+    let aiItemStates: [String: SmartCareAIItemState]
     @Binding var isExpanded: Bool
     let onToggleItem: (Bool, SmartCareItem) -> Void
 
@@ -1328,15 +1681,22 @@ private struct SmartCareRiskSection: View {
                     Image(systemName: kind.iconName)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(tint)
-                        .frame(width: 24)
+                        .frame(width: 34, height: 34)
+                        .background(
+                            tint.opacity(0.1),
+                            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        )
 
                     Text(LocalizedStringKey(kind.titleKey), bundle: .module)
-                        .font(.body.weight(.medium))
+                        .font(.body.weight(.semibold))
 
                     Spacer(minLength: 12)
 
                     Text(verbatim: formattedSmartCareBytes(bytes))
-                        .font(.body.monospacedDigit().weight(.semibold))
+                        .font(.callout.monospacedDigit().weight(.semibold))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background(tint.opacity(0.075), in: Capsule())
 
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
@@ -1346,12 +1706,12 @@ private struct SmartCareRiskSection: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 14)
-            .frame(minHeight: 48)
+            .padding(.horizontal, 16)
+            .frame(minHeight: 58)
 
             if isExpanded {
                 Divider()
-                    .padding(.leading, 48)
+                    .padding(.leading, 58)
 
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -1359,7 +1719,7 @@ private struct SmartCareRiskSection: View {
                             SmartCareSelectableItemRow(
                                 item: item,
                                 selected: selectedIDs.contains(item.id),
-                                aiState: nil,
+                                aiState: aiItemStates[item.path],
                                 showsRisk: true,
                                 selectionEnabled: kind == .confirm,
                                 onToggle: { onToggleItem($0, item) }
@@ -1372,10 +1732,11 @@ private struct SmartCareRiskSection: View {
                     }
                 }
                 .frame(height: riskExpandedHeight)
-                .background(Color(nsColor: .textBackgroundColor).opacity(0.3))
+                .background(tint.opacity(0.035))
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .smartCareTechSurface(tint: tint, cornerRadius: 14, elevated: false)
     }
 
     private var tint: Color {
@@ -1399,10 +1760,12 @@ private struct SmartCareSelectableItemRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             if selectionEnabled {
-                Toggle("", isOn: Binding(
+                Toggle(isOn: Binding(
                     get: { selected },
                     set: { onToggle($0) }
-                ))
+                )) {
+                    Text(verbatim: item.title)
+                }
                 .labelsHidden()
                 .toggleStyle(.checkbox)
             } else {
@@ -1473,11 +1836,25 @@ private struct SmartCareAIAdviceBadge: View {
             .font(.caption2)
             .foregroundStyle(SmartCarePresentation.tint(for: verdict))
             .help(Text(verbatim: summary))
-        case .failed:
-            Image(systemName: "exclamationmark.circle")
-                .font(.caption)
-                .foregroundStyle(SmartCarePresentation.tint(for: .confirm))
-                .help(Text("smart_care.ai.item_failed", bundle: .module))
+        case .failed(let kind):
+            Label {
+                Text(
+                    LocalizedStringKey(SmartCarePresentation.aiFailureSummaryKey(for: kind)),
+                    bundle: .module
+                )
+                .lineLimit(1)
+                .truncationMode(.tail)
+            } icon: {
+                Image(systemName: "exclamationmark.circle")
+            }
+            .font(.caption2)
+            .foregroundStyle(SmartCarePresentation.tint(for: .confirm))
+            .help(
+                Text(
+                    LocalizedStringKey(SmartCarePresentation.aiFailureSummaryKey(for: kind)),
+                    bundle: .module
+                )
+            )
         case .pending, nil:
             EmptyView()
         }

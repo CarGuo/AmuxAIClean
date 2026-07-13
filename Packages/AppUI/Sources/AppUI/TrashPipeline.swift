@@ -22,7 +22,8 @@ import SafetyKit
 /// 3. 用户硬塞 `..` 或绝对路径以外的形式
 ///
 /// **并发与可变性契约（v1.5.7 显式化）**：
-/// - `safety` / `trie` 一旦 init 完成即 immutable；`@unchecked Sendable` 是基于这一前提
+/// - `safety` / `trie` / `whitelistStore` 一旦 init 完成即 immutable；白名单 actor 自身
+///   Sendable；`@unchecked Sendable` 是基于这些前提
 ///   外加 `_accessDeniedPaths` 用 `accessDeniedLock` 保护的可变状态。
 /// - 调用 `setAccessDeniedPaths(_:)` 是更新可变状态的**唯一**入口，其它任何字段都不
 ///   可在 init 后改写；如新增字段必须重审 Sendable 假设。
@@ -39,6 +40,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     /// 在 pipeline 这道最后闸门也能被拦住——而不是仅靠 SafetyEngine 的硬编码列表。
     /// nil 时退回 base evaluate，与历史行为一致（仅供未注入 vendors 的测试 / 旧入口使用）。
     private let trie: VendorTrieNode?
+    /// 生产删除入口显式注入共享白名单；测试默认 nil，避免读取真实用户数据。
+    /// actor 自身 Sendable，perform 时取一次不可变快照并参与最终原子预检。
+    private let whitelistStore: WhitelistStore?
 
     /// v1.3.zzzz：上层一票否决集合（`permissionDenied` / `tccProtected` 路径），
     /// `moveToTrash` 内部用 NSLock 保护读写，调用方通过 [setAccessDeniedPaths](#) 注入最新快照。
@@ -57,9 +61,11 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
     public init(safety: SafetyEngine = SafetyEngine(),
                 vendors: [VendorRule] = [],
-                home: String = NSHomeDirectory()) {
+                home: String = NSHomeDirectory(),
+                whitelistStore: WhitelistStore? = nil) {
         self.safety = safety
         self.trie = vendors.isEmpty ? nil : VendorTrie.build(vendors: vendors, home: home)
+        self.whitelistStore = whitelistStore
     }
 
     /// 替换上层注入的 accessDenied 集合。每次扫描完成后由 UI 层调一次。
@@ -137,9 +143,10 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     /// 命中即拒、reason=`.vendorPathRule`。这是修复"vendor-only forbid 路径在最后闸门漏拦"的硬伤。
     ///
     /// `accessDeniedPaths`（v1.3.zzzz）是上层一票否决集合：BulkScanner 期间被标记
-    /// `permissionDenied` / `tccProtected` 的路径里实质没有数据，"对它 trash"是个伪操作；
-    /// 命中即直接拒、reason=`.accessDenied`，**不再走 SafetyEngine**——优先级最高，
-    /// 避免在审计/日志里把这类路径误归到 SafetyEngine 的 hardForbid 等原因。
+    /// `permissionDenied` / `tccProtected` 的路径里实质没有数据，"对它 trash"是个伪操作。
+    /// 请求路径与 denied 路径只要存在祖先 / 后代重叠就直接拒绝，reason=`.accessDenied`，
+    /// **不再走 SafetyEngine**——优先级最高。这样既不会删除一个包含未扫描子树的父目录，
+    /// 也不会从一个未获权限的目录内部挑路径删除。
     ///
     /// **路径口径（v1.3.zzzz Phase 2-F-A）**：循环内对每个待判路径 p 做
     /// [normalizePath](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L80)
@@ -153,26 +160,35 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         safety: SafetyEngine,
         trie: VendorTrieNode? = nil,
         accessDeniedPaths: Set<String> = [],
+        whitelistPaths: Set<String> = [],
         home: String = NSHomeDirectory()
     ) -> (allowed: [String], rejected: [(path: String, reason: SafetyRejection)]) {
         var allowed: [String] = []
         var rejected: [(String, SafetyRejection)] = []
         allowed.reserveCapacity(paths.count)
-        // accessDeniedPaths 容量小（几十~几千），对它做一次性 normalize 比每个 p 都拿临时 Set 划算。
-        // 当 set 已经经 setAccessDeniedPaths 注入时，normalize 是幂等空操作。
-        let normalizedDenied: Set<String> = accessDeniedPaths.isEmpty
-            ? []
-            : Set(accessDeniedPaths.map(normalizePath))
+        // accessDeniedPaths 容量小（几十~几千），对它做一次性 normalize。
+        // 这里不能只做 Set.contains：若 denied=/A/locked、request=/A，删除父目录仍会把
+        // 未扫描子树一起移入废纸篓。反向的 request=/A/locked/child 也必须拒绝。
+        let deniedIndex = ProtectedPathIndex(paths: accessDeniedPaths)
+        let whitelistIndex = ProtectedPathIndex(paths: whitelistPaths)
         for p in paths {
-            // 优先级 1：accessDenied 一票否决（最高优先，不走 SafetyEngine）
-            // 用 normalize(p) 与 normalizedDenied 比，确保 /private/var ↔ /var firmlink 互通。
-            if !normalizedDenied.isEmpty,
-               normalizedDenied.contains(normalizePath(p))
-            {
+            let normalizedPath = normalizePath(p)
+            // 优先级 1：用户白名单是跨扫描、跨功能入口的“永不清理”合同。
+            // 子项被加白时，删除其父目录同样必须拒绝。raw 与
+            // resolved-symlink 身份都要命中：否则 `/cache/alias/child`
+            // 通过中间 symlink 指向已加白真实目录时，内核会移动真实
+            // child，但纯字符串索引看不出这层身份关系。
+            if whitelistIndex.overlapsAnyIdentity(of: normalizedPath) {
+                rejected.append((p, .userWhitelisted))
+                continue
+            }
+            // 优先级 2：accessDenied 一票否决（不走 SafetyEngine）
+            // 用组件边界安全的祖先 / 后代重叠判断，避免 /A 与 /AB 发生字符串前缀误判。
+            if deniedIndex.overlapsAnyIdentity(of: normalizedPath) {
                 rejected.append((p, .accessDenied))
                 continue
             }
-            // 优先级 2：原有 SafetyEngine.evaluate（内部已自带 standardizedFileURL）
+            // 优先级 3：原有 SafetyEngine.evaluate（内部已自带 standardizedFileURL）
             let verdict: SafetyVerdict
             let reason: SafetyRejection
             if let trie {
@@ -191,6 +207,71 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         return (allowed, rejected)
     }
 
+    /// 删除保护路径的祖先 / 后代索引。祖先用 Set 按组件逐级查询，后代用排序数组
+    /// lower-bound 查询第一个可能命中的前缀，避免大批量删除时笛卡尔扫描。
+    ///
+    /// 每条保护路径同时保留两种身份：
+    /// - raw standardized：保护用户实际加白 / scanner 实际上报的命名空间；
+    /// - resolved symlink：保护内核最终会触及的真实子树。
+    ///
+    /// resolved 只会**扩大拒绝集**，不会替换 raw 或产生放行决策；即使 symlink
+    /// 在扫描后被重定向，原 alias 与当前 target 也都会保守拒绝。
+    private struct ProtectedPathIndex {
+        let pathSet: Set<String>
+        let sortedPaths: [String]
+
+        init<S: Sequence>(paths: S) where S.Element == String {
+            var identities: Set<String> = []
+            for path in paths {
+                identities.formUnion(Self.identities(of: path))
+            }
+            self.pathSet = identities
+            self.sortedPaths = identities.sorted()
+        }
+
+        func overlapsAnyIdentity(of path: String) -> Bool {
+            // 正常删除批次通常没有 denied，用户也可能没配白名单。
+            // 空索引先短路，避免为每个待删路径做无意义的 symlink IO。
+            guard !pathSet.isEmpty else { return false }
+            return Self.identities(of: path).contains(where: overlaps)
+        }
+
+        private func overlaps(_ path: String) -> Bool {
+            guard !pathSet.isEmpty else { return false }
+
+            // denied == request，或 denied 是 request 的祖先。
+            var cursor = path
+            while true {
+                if pathSet.contains(cursor) { return true }
+                guard cursor != "/", let slash = cursor.lastIndex(of: "/") else { break }
+                cursor = slash == cursor.startIndex ? "/" : String(cursor[..<slash])
+            }
+
+            // request 是 denied 的祖先。`/` 组件边界保证 /A 不会匹配 /AB。
+            let descendantPrefix = path == "/" ? "/" : path + "/"
+            var lower = 0
+            var upper = sortedPaths.count
+            while lower < upper {
+                let middle = lower + (upper - lower) / 2
+                if sortedPaths[middle] < descendantPrefix {
+                    lower = middle + 1
+                } else {
+                    upper = middle
+                }
+            }
+            return lower < sortedPaths.count && sortedPaths[lower].hasPrefix(descendantPrefix)
+        }
+
+        private static func identities(of path: String) -> Set<String> {
+            let raw = TrashPipeline.normalizePath(path)
+            let resolved = TrashPipeline.normalizePath(
+                URL(fileURLWithPath: raw).resolvingSymlinksInPath().path
+            )
+            if resolved == raw { return [raw] }
+            return [raw, resolved]
+        }
+    }
+
     public func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)]) {
         let result = await performMoveToTrash(paths: paths, dryRun: dryRun)
         return result.legacy
@@ -202,28 +283,36 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         return await performMoveToTrash(paths: paths, dryRun: dryRun)
     }
 
-    /// **v2026.06.22**：用户从 [OperationResultSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/OperationResultSheet.swift) "强制删除"
-    /// 按钮触发的二次提交通道——**绕过 vendor 规则**（vendors.yaml 中
-    /// `paths: [{verdict: forbid}]` 整段不再生效），但**保留** SafetyEngine 的所有
-    /// 硬安全网（[hardForbidPrefixes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L185)
-    /// / [userRootForbidden](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L155)
-    /// / sensitive credentials / system volumes / hard 后缀）以及 `accessDeniedPaths`
-    /// 一票否决——这两类是物理安全底线，无论用户多坚持都不允许越过。
-    ///
-    /// 实现：内部走与 `moveToTrash` 同一份 `performMoveToTrash`，但临时把 `trie` 置 nil
-    /// 让 `partitionByForbid` 退化到无 vendor 规则的判定路径。
-    ///
-    /// 用户契约：UI 必须先弹一次「二次确认」对话框（建议命名"我已知风险，仍然删除"），
-    /// 把"vendor 规则曾经拦下"的原因写明，避免误触。
+    /// request-scoped 的 accessDenied 入口。denied 快照与本次 paths 在同一个调用参数里
+    /// 原子交接，避免两个并发删除请求通过 `setAccessDeniedPaths` 互相覆盖共享状态。
+    public func moveToTrashReturningOutcome(
+        paths: [String],
+        dryRun: Bool,
+        accessDeniedPaths: Set<String>
+    ) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
+        await performMoveToTrash(
+            paths: paths,
+            dryRun: dryRun,
+            requestAccessDeniedPaths: accessDeniedPaths
+        )
+    }
+
+    /// 历史兼容入口。安全合同规定 `.forbid` 永远不可被 UI 或操作模式越过，因此本方法
+    /// 与普通删除走完全相同的 vendor trie。保留符号只为旧调用方源码兼容；新代码不应提供
+    /// “强制越过安全规则”的产品入口。
     public func moveToTrashForce(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
-        return await performMoveToTrash(paths: paths, dryRun: dryRun, skipVendorRule: true)
+        return await performMoveToTrash(paths: paths, dryRun: dryRun)
     }
 
     /// 共享实现：一次计算 legacy 4 元组 + 结构化 outcome，**返回值**即权威结果，
     /// 同时 `recordOutcome` 写入 lastOutcome 槽位仅为兼容旧 `snapshotLastOutcome()` 读取方。
-    /// `skipVendorRule=true` 时把 trie 置 nil 让 [partitionByForbid](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L151)
-    /// 走"无 vendor 规则"路径——仅供 `moveToTrashForce` 内部使用。
-    private func performMoveToTrash(paths: [String], dryRun: Bool, skipVendorRule: Bool = false) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
+    /// `requestAccessDeniedPaths` 非 nil 时是本次请求自己的不可变快照；nil 仅为旧入口读取
+    /// 兼容共享集合。生产统一协调器使用前者，避免并发请求串值。
+    private func performMoveToTrash(
+        paths: [String],
+        dryRun: Bool,
+        requestAccessDeniedPaths: Set<String>? = nil
+    ) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
         guard !paths.isEmpty else {
             let outcome = TrashOutcome(movedPairs: [], failedPaths: [], safetyRejected: [], missingPaths: [])
             recordOutcome(outcome)
@@ -235,20 +324,64 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         // 计数、也不真 recycle），统一计入 skipped。
         // v1.3.zzzz：把上层注入的 accessDeniedPaths 一并带上，让 partitionByForbid 一次切净
         // accessDenied + forbid 两类。
-        let accessDenied = snapshotAccessDeniedPaths()
+        let accessDenied = requestAccessDeniedPaths ?? snapshotAccessDeniedPaths()
+        let whitelist = if let whitelistStore {
+            await whitelistStore.snapshotPaths()
+        } else {
+            Set<String>()
+        }
         let (allowed, rejected) = Self.partitionByForbid(
             paths: paths,
             safety: safety,
-            trie: skipVendorRule ? nil : trie,
-            accessDeniedPaths: accessDenied
+            trie: trie,
+            accessDeniedPaths: accessDenied,
+            whitelistPaths: whitelist
         )
-        if skipVendorRule {
-            GSYLog.warning(.trash, "moveToTrashForce 启用 skipVendorRule=true vendor 规则被绕过，仅保留 SafetyEngine 硬安全网 + accessDenied")
-        }
         if !rejected.isEmpty {
             GSYLog.warning(.trash, "moveToTrash 被 SafetyEngine 拦截 \(rejected.count)/\(paths.count) firstReason=\(rejected[0].reason.rawValue) firstPath=\(rejected[0].path)")
         }
-        let safetyRejectedTuples: [(String, String)] = rejected.map { ($0.path, $0.reason.rawValue) }
+        let directSafetyRejectedTuples: [(String, String)] = rejected.map {
+            ($0.path, $0.reason.rawValue)
+        }
+
+        // SECURITY.md 的批级原子合同：任一 path 命中 forbid，整批在触碰文件系统前拒绝。
+        // 其余原本 allowed 的路径不是 SafetyEngine 自身判成 forbid，而是被本次批次的
+        // 原子性约束拒绝；用独立 reason 保留真实审计语义，不能伪装成 recycle 失败。
+        if !rejected.isEmpty {
+            let atomicSafetyRejectedTuples = directSafetyRejectedTuples + allowed.map {
+                ($0, SafetyRejection.batchContainsForbidden.rawValue)
+            }
+            let firstReason = rejected[0].reason.rawValue
+            let outcome = TrashOutcome(
+                movedPairs: [],
+                failedPaths: [],
+                safetyRejected: atomicSafetyRejectedTuples,
+                missingPaths: []
+            )
+            recordOutcome(outcome)
+
+            let err: String
+            if dryRun {
+                err = String(
+                    format: String(localized: "trash.err.dryrun.safety_blocked %lld", bundle: .module),
+                    paths.count
+                ) + String(
+                    format: String(localized: "trash.err.first_reason_suffix %@", bundle: .module),
+                    firstReason
+                )
+            } else {
+                err = String(
+                    format: String(localized: "trash.err.safety_blocked_only %lld %@", bundle: .module),
+                    paths.count,
+                    firstReason
+                )
+            }
+            GSYLog.warning(
+                .trash,
+                "moveToTrash 批级原子拒绝 submitted=\(paths.count) directRejected=\(rejected.count) firstReason=\(firstReason)"
+            )
+            return ((0, paths.count, err, []), outcome)
+        }
 
         if dryRun {
             var present = 0
@@ -262,16 +395,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 }
             }
             let missing = missingPaths.count
-            let skipped = missing + rejected.count
+            let skipped = missing
             let err: String?
-            if !rejected.isEmpty {
-                var s = String(format: String(localized: "trash.err.dryrun.safety_blocked %lld", bundle: .module), rejected.count)
-                if missing > 0 {
-                    s += String(format: String(localized: "trash.err.dryrun.missing_suffix %lld", bundle: .module), missing)
-                }
-                s += String(format: String(localized: "trash.err.first_reason_suffix %@", bundle: .module), rejected[0].reason.rawValue)
-                err = s
-            } else if missing > 0 {
+            if missing > 0 {
                 err = String(format: String(localized: "trash.err.dryrun.missing %lld", bundle: .module), missing)
             } else {
                 err = nil
@@ -279,26 +405,10 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             GSYLog.info(.trash, "moveToTrash dryRun 完成 present=\(present) skipped=\(skipped) missing=\(missing)")
             let outcome = TrashOutcome(movedPairs: [],
                                        failedPaths: [],
-                                       safetyRejected: safetyRejectedTuples,
+                                       safetyRejected: [],
                                        missingPaths: missingPaths)
             recordOutcome(outcome)
             return ((present, skipped, err, []), outcome)
-        }
-
-        // 全部都被 forbid：直接返回，不打扰 NSWorkspace
-        if allowed.isEmpty {
-            GSYLog.warning(.trash, "moveToTrash 全量拦截 rejected=\(rejected.count) firstReason=\(rejected.first?.reason.rawValue ?? "unknown")")
-            let outcome = TrashOutcome(movedPairs: [],
-                                       failedPaths: [],
-                                       safetyRejected: safetyRejectedTuples,
-                                       missingPaths: [])
-            recordOutcome(outcome)
-            return ((
-                0,
-                rejected.count,
-                "safety-blocked: \(rejected.count) 路径被安全策略拦截；首条原因=\(rejected.first?.reason.rawValue ?? "unknown")",
-                []
-            ), outcome)
         }
 
         // **v2026.06.16 修复 #2（system-images 删除拒绝）**：
@@ -316,13 +426,12 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
         let outcome = TrashOutcome(movedPairs: movedPairs,
                                    failedPaths: failedPaths,
-                                   safetyRejected: safetyRejectedTuples,
+                                   safetyRejected: [],
                                    missingPaths: [])
         recordOutcome(outcome)
 
         let movedCount = movedPairs.count
-        let totalSkipped = failedPaths.count + rejected.count
-        let firstReason = rejected.first?.reason.rawValue
+        let totalSkipped = failedPaths.count
         let err: String?
         if !failedPaths.isEmpty {
             let partialNote = movedCount > 0
@@ -331,18 +440,8 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             let firstFail = failedPaths.first.map {
                 String(format: String(localized: "trash.err.first_fail_path %@", bundle: .module), $0)
             } ?? ""
-            if !rejected.isEmpty {
-                err = String(format: String(localized: "trash.err.recycle_failed %lld %@ %@", bundle: .module),
-                             failedPaths.count, partialNote, firstFail)
-                    + String(format: String(localized: "trash.err.also_safety_blocked %lld %@", bundle: .module),
-                             rejected.count, firstReason ?? "unknown")
-            } else {
-                err = String(format: String(localized: "trash.err.recycle_failed %lld %@ %@", bundle: .module),
-                             failedPaths.count, partialNote, firstFail)
-            }
-        } else if !rejected.isEmpty {
-            err = String(format: String(localized: "trash.err.safety_blocked_only %lld %@", bundle: .module),
-                         rejected.count, firstReason ?? "unknown")
+            err = String(format: String(localized: "trash.err.recycle_failed %lld %@ %@", bundle: .module),
+                         failedPaths.count, partialNote, firstFail)
         } else {
             err = nil
         }
@@ -442,4 +541,3 @@ private final class RecycleOnceGate: @unchecked Sendable {
         cc.resume(returning: value)
     }
 }
-

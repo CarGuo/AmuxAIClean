@@ -81,7 +81,7 @@ final class PerformDeleteIntegrationTests: XCTestCase {
             accessDeniedPaths: denied
         ))
         if !dryRun, !result.succeededPaths.isEmpty {
-            coordinator.pruneDeleted(paths: result.succeededPaths)
+            await coordinator.pruneDeleted(paths: result.succeededPaths)
         }
         return (result.moved, result.skipped, result.err)
     }

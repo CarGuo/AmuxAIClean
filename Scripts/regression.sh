@@ -11,7 +11,7 @@
 #   - 所有 case log 写到 Tests/Regression/logs/<case>.log，结果汇总写 Tests/Regression/last-run.json
 #
 # 用法：
-#   ./Scripts/regression.sh                      # 跑所有 case（当前 21 条）
+#   ./Scripts/regression.sh                      # 跑所有 case（当前 22 条）
 #   ./Scripts/regression.sh --no-build           # 不重新 build，直接跑（适合反复调试单 case）
 #   ./Scripts/regression.sh --only scan-custom-fixture,hud-toggle   # 只跑指定 case
 #   ./Scripts/regression.sh --timeout 180        # 自定义单 case 超时秒数（默认 90）

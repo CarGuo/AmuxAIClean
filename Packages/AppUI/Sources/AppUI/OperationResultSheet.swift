@@ -16,6 +16,18 @@ import AppKit
 /// 把 [TrashOutcome](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift)
 /// 包装成 `OperationResultPayload` 喂给本 sheet。
 public struct OperationResultPayload: Identifiable {
+    public struct CommandLineFailure: Equatable {
+        public let item: String
+        public let exitCode: Int32
+        public let detail: String
+
+        public init(item: String, exitCode: Int32, detail: String) {
+            self.item = item
+            self.exitCode = exitCode
+            self.detail = detail
+        }
+    }
+
     public let id = UUID()
     /// 成功移入废纸篓的 (原路径, 废纸篓路径) 对
     public let movedPairs: [(originalPath: String, trashedPath: String)]
@@ -25,15 +37,23 @@ public struct OperationResultPayload: Identifiable {
     public let safetyRejected: [(path: String, reason: String)]
     /// 命令行（simctl 等）还没接入 UI 而跳过的项数——仅 WorkflowDetailView 会用
     public let commandLineSkipped: Int
+    /// 已经成功执行的命令行清理项数。命令行操作不经过废纸篓，不能伪装成 movedPairs。
+    public let commandLineSucceeded: Int
+    /// 命令行清理的失败结果。单独建模，避免把 simctl 失败伪装成可在 Finder 中定位的文件路径。
+    public let commandLineFailures: [CommandLineFailure]
 
     public init(movedPairs: [(String, String)] = [],
                 failedPaths: [String] = [],
                 safetyRejected: [(String, String)] = [],
-                commandLineSkipped: Int = 0) {
+                commandLineSkipped: Int = 0,
+                commandLineSucceeded: Int = 0,
+                commandLineFailures: [CommandLineFailure] = []) {
         self.movedPairs = movedPairs.map { (originalPath: $0.0, trashedPath: $0.1) }
         self.failedPaths = failedPaths
         self.safetyRejected = safetyRejected.map { (path: $0.0, reason: $0.1) }
         self.commandLineSkipped = commandLineSkipped
+        self.commandLineSucceeded = commandLineSucceeded
+        self.commandLineFailures = commandLineFailures
     }
 
     /// 把 TrashPipeline 的 TrashOutcome 转成 payload。让 ViewModel 一行代码接入。
@@ -42,6 +62,8 @@ public struct OperationResultPayload: Identifiable {
         self.failedPaths = outcome.failedPaths
         self.safetyRejected = outcome.safetyRejected
         self.commandLineSkipped = commandLineSkipped
+        self.commandLineSucceeded = 0
+        self.commandLineFailures = []
     }
 
     /// 状态判定优先级：有失败 / 有拦截 > 部分；纯成功 → success；全失败/全拦截 → failed。
@@ -49,22 +71,22 @@ public struct OperationResultPayload: Identifiable {
     /// **v2026.06.22 (P0-1)**：`commandLineSkipped` 表示"已弹 simctl 确认 sheet 等用户继续"，
     /// 它是**待执行**而非**失败**——把它计入 failedCount 会导致 OperationResultSheet 把
     /// simctl 待确认的 commandLine 项一律渲染成红色 failed 状态。改为：failedCount 只统计
-    /// `failedPaths + safetyRejected`；`commandLineSkipped` 不影响状态判定，仅在
+    /// `failedPaths + safetyRejected + commandLineFailures`；`commandLineSkipped` 不影响状态判定，仅在
     /// [commandLineHint](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/OperationResultSheet.swift)
     /// 段落里独立展示。
     public var status: Status {
-        let movedCount = movedPairs.count
-        let failedCount = failedPaths.count + safetyRejected.count
+        let succeededCount = movedPairs.count + commandLineSucceeded
+        let failedCount = failedPaths.count + safetyRejected.count + commandLineFailures.count
         if failedCount == 0 {
             // 没有真失败 → success；如果同时 moved=0 但 commandLineSkipped>0，仍算 success
             // （因为后续 simctl 二次确认 sheet 会自己再弹 OperationResultPayload 汇总）。
             return .success
         }
-        if movedCount == 0 { return .failed }
+        if succeededCount == 0 { return .failed }
         return .partial
     }
 
-    public enum Status {
+    public enum Status: Equatable {
         case success
         case partial
         case failed
@@ -75,22 +97,18 @@ public struct OperationResultPayload: Identifiable {
 public struct OperationResultSheet: View {
     public let payload: OperationResultPayload
     public let onDismiss: () -> Void
-    /// **v2026.06.22 新增**：用户点击 blockedSection 的「强制删除」按钮触发。
-    /// 仅当宿主调用方愿意提供 force 通道时才注入；为 nil 时按钮整体隐藏。
-    /// 参数是 reason 含 "vendor" 的可 force 路径子集（硬安全网类 / accessDenied 类不传入）。
-    public let onForceDelete: (([String]) -> Void)?
 
     @State private var failedExpanded = true
     @State private var blockedExpanded = true
-    /// 二次确认弹窗状态——避免用户误触跨过 vendor 规则。
-    @State private var showForceConfirm = false
 
     public init(payload: OperationResultPayload,
                 onDismiss: @escaping () -> Void,
                 onForceDelete: (([String]) -> Void)? = nil) {
         self.payload = payload
         self.onDismiss = onDismiss
-        self.onForceDelete = onForceDelete
+        // 参数暂留一版源码兼容，避免现有宿主必须与安全修复同步改动。回调不会被展示或执行：
+        // SafetyEngine / vendor `.forbid` 是不可越过的产品合同。
+        _ = onForceDelete
     }
 
     public var body: some View {
@@ -100,11 +118,17 @@ public struct OperationResultSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     statsRow
-                    if payload.status == .success {
+                    if payload.status == .success, !payload.movedPairs.isEmpty {
                         successSummary
+                    }
+                    if payload.commandLineSucceeded > 0 {
+                        commandLineSuccessSummary
                     }
                     if !payload.failedPaths.isEmpty {
                         failedSection
+                    }
+                    if !payload.commandLineFailures.isEmpty {
+                        commandLineFailureSection
                     }
                     if !payload.safetyRejected.isEmpty {
                         blockedSection
@@ -119,46 +143,6 @@ public struct OperationResultSheet: View {
             footer
         }
         .frame(width: 560, height: 480)
-        // v2026.06.21 修复：原来这里 title / button 都直接传字符串字面量，Swift 会推断
-        // 成 `LocalizedStringKey`，但**未显式提供 bundle**，SwiftUI 默认从 `Bundle.main`
-        // 查表。AppUI 是 SPM 子模块，字符串只在 `Bundle.module` 的 Localizable.xcstrings
-        // 里，于是 alert 会直接渲染 raw key（"op.result.force_delete.confirm.title" 等）。
-        // 改成用 `String(localized: ... , bundle: .module)` 显式取出本地化文案再传入。
-        .alert(
-            String(localized: "op.result.force_delete.confirm.title", bundle: .module),
-            isPresented: $showForceConfirm
-        ) {
-            Button(
-                String(localized: "op.result.force_delete.confirm.cancel", bundle: .module),
-                role: .cancel
-            ) { }
-            Button(
-                String(localized: "op.result.force_delete.confirm.ok", bundle: .module),
-                role: .destructive
-            ) {
-                let targets = forceDeletablePaths
-                guard !targets.isEmpty else { return }
-                onForceDelete?(targets)
-                onDismiss()
-            }
-        } message: {
-            Text(String(format: String(localized: "op.result.force_delete.confirm.message %lld", bundle: .module),
-                        forceDeletablePaths.count))
-        }
-    }
-
-    /// **v2026.06.22**：从 `safetyRejected` 中筛出"可被 force 通道处理"的路径——
-    /// 仅 vendorPathRule（reason 含 "vendor"）允许 force；硬安全网（hardForbid* /
-    /// userRoot* / sensitiveCredential / systemVolume）与 accessDenied 类一律不允许。
-    /// 这是 UI 层的最后一道 gate——即便 TrashPipeline 内部也会再次 enforce 硬安全网，
-    /// 这里仍然预过滤，避免用户点了「强制删除」却看到"全部还是被拦"的体验问题。
-    private var forceDeletablePaths: [String] {
-        payload.safetyRejected.compactMap { item in
-            let r = item.reason.lowercased()
-            // 含 vendor 关键字（vendorPathRule / vendor-rule 等）→ 可 force
-            if r.contains("vendor") { return item.path }
-            return nil
-        }
     }
 
     // MARK: - Header
@@ -206,9 +190,13 @@ public struct OperationResultSheet: View {
     }
 
     private var statusSubtitle: String {
-        let moved = payload.movedPairs.count
-        let total = moved + payload.failedPaths.count + payload.safetyRejected.count + payload.commandLineSkipped
-        return "\(moved) / \(total)"
+        let succeeded = payload.movedPairs.count + payload.commandLineSucceeded
+        let total = succeeded
+            + payload.failedPaths.count
+            + payload.safetyRejected.count
+            + payload.commandLineFailures.count
+            + payload.commandLineSkipped
+        return "\(succeeded) / \(total)"
     }
 
     // MARK: - Stats Row（三栏统计）
@@ -225,7 +213,7 @@ public struct OperationResultSheet: View {
                 icon: "xmark.circle.fill",
                 color: .red,
                 titleKey: "op.result.stat.failed",
-                count: payload.failedPaths.count
+                count: payload.failedPaths.count + payload.commandLineFailures.count
             )
             statTile(
                 icon: "shield.lefthalf.filled",
@@ -275,6 +263,64 @@ public struct OperationResultSheet: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.green.opacity(0.08))
         )
+    }
+
+    private var commandLineSuccessSummary: some View {
+        Label {
+            Text(String(format: String(localized: "op.result.cmdline.succeeded %lld", bundle: .module),
+                        payload.commandLineSucceeded))
+                .font(.callout)
+        } icon: {
+            Image(systemName: "terminal.fill").foregroundStyle(.green)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.green.opacity(0.08))
+        )
+    }
+
+    private var commandLineFailureSection: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("op.result.hint.cmdline_failed", bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(payload.commandLineFailures.enumerated()), id: \.offset) { _, failure in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(failure.item)
+                                .font(.system(.caption, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text(String(
+                                format: String(localized: "op.result.cmdline.failure.detail %lld %@", bundle: .module),
+                                Int64(failure.exitCode),
+                                failure.detail
+                            ))
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.red.opacity(0.06))
+                )
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "terminal.fill").foregroundStyle(.red)
+                Text("op.result.section.cmdline_failed", bundle: .module).bold()
+                Text("(\(payload.commandLineFailures.count))")
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+            }
+        }
     }
 
     // MARK: - Failed Section（可折叠 + Reveal / Copy）
@@ -357,8 +403,6 @@ public struct OperationResultSheet: View {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(Color.orange.opacity(0.06))
                 )
-                // **v2026.06.21**：force 通道按钮按用户反馈搬到 footer（更显眼 + 离 Done 远）
-                // 这里 blockedSection 内部不再放按钮。
             }
             .padding(.top, 8)
         } label: {
@@ -413,27 +457,9 @@ public struct OperationResultSheet: View {
 
     // MARK: - Footer
 
-    /// v2026.06.21 修复：用户要求强制删除按钮"应该是红色，然后放在完成栏里"。
-    /// - 仅当存在 vendor 规则拦下的项 + 宿主提供 onForceDelete 时才显示
-    /// - 用 BorderedProminent + .tint(.red) 让"危险动作"在 footer 一眼可辨
-    /// - 与 Done 按钮分两侧，避免误触
-    /// - 点击触发 `showForceConfirm` 二次确认 alert（原逻辑保留）
+    /// 结果页只展示完成入口。被安全规则拒绝的路径没有 UI 绕过通道。
     private var footer: some View {
         HStack(spacing: 12) {
-            if onForceDelete != nil, !forceDeletablePaths.isEmpty {
-                Button(role: .destructive) {
-                    showForceConfirm = true
-                } label: {
-                    Label(
-                        String(format: String(localized: "op.result.force_delete.button %lld", bundle: .module),
-                               forceDeletablePaths.count),
-                        systemImage: "exclamationmark.shield.fill"
-                    )
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
-                .controlSize(.regular)
-            }
             Spacer()
             Button {
                 onDismiss()
@@ -478,6 +504,10 @@ public struct OperationResultSheet: View {
             key = "op.result.reason.system_volume"
         } else if lower.contains("accessdenied") || lower.contains("access_denied") || lower.contains("permission") {
             key = "op.result.reason.access_denied"
+        } else if lower.contains("userwhitelisted") || lower.contains("user_whitelist") {
+            key = "op.result.reason.user_whitelist"
+        } else if lower.contains("batchcontainsforbidden") || lower.contains("batch_atomic") {
+            key = "op.result.reason.batch_atomic"
         } else {
             // 未识别 → 走通用文案，附上 raw token 方便后续日志反查
             let generic = String(localized: "op.result.reason.generic", bundle: .module)

@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import ScanKit
 
@@ -33,5 +34,30 @@ final class BulkEnumerateFallbackTests: XCTestCase {
         XCTAssertEqual(entries.first?.isDirectory, false)
         XCTAssertEqual(entries.first?.isSymlink, false)
         XCTAssertGreaterThan(entries.first?.inode ?? 0, 0)
+    }
+
+    func test_bulkEnumeration_取消后不再读取或回调entry() throws {
+        let dir = try tempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: dir)) }
+        try Data(repeating: 3, count: 64)
+            .write(to: dir.appendingPathComponent("never-emitted.bin"))
+
+        let fd = Darwin.open(dir.path, O_RDONLY)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        defer { if fd >= 0 { Darwin.close(fd) } }
+
+        var callbackCount = 0
+        let outcome = BulkEnumerate.enumerate(
+            fd: fd,
+            dirPath: dir.path,
+            shouldCancel: { true }
+        ) { _ in
+            callbackCount += 1
+            return true
+        }
+
+        XCTAssertEqual(outcome, .stoppedByConsumer)
+        XCTAssertEqual(callbackCount, 0,
+                       "取消必须在读取/解析 batch 前生效，不能继续向上层发送旧 entry")
     }
 }

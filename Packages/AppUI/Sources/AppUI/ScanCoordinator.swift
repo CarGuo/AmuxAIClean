@@ -79,6 +79,34 @@ public final class ScanCoordinator: ObservableObject {
     /// 命中判定与 WhitelistStore.isWhitelisted 一致：完全相等 或 entry+"/" 作为 path prefix。
     private var whitelistSnapshot: Set<String> = []
 
+    /// 白名单是用户显式表达的“永不展示/永不清理”边界，优先级高于 SafetyEngine。
+    /// 这里保持与 `WhitelistStore.isWhitelisted` 完全相同的目录边界语义，供扫描热路径
+    /// 使用一次性快照同步判断，避免逐 node 跨 actor。
+    private nonisolated static func isWhitelisted(_ path: String,
+                                                   in snapshot: Set<String>) -> Bool {
+        var normalized = path
+        while normalized.count > 1, normalized.hasSuffix("/") {
+            normalized.removeLast()
+        }
+        if snapshot.contains(normalized) { return true }
+        for entry in snapshot where normalized.hasPrefix(entry + "/") {
+            return true
+        }
+        return false
+    }
+
+    private func isWhitelisted(_ path: String) -> Bool {
+        Self.isWhitelisted(path, in: whitelistSnapshot)
+    }
+
+    private nonisolated static func pathsOverlap(_ lhs: String, _ rhs: String) -> Bool {
+        let left = lhs.count > 1 && lhs.hasSuffix("/") ? String(lhs.dropLast()) : lhs
+        let right = rhs.count > 1 && rhs.hasSuffix("/") ? String(rhs.dropLast()) : rhs
+        if left == right { return true }
+        if left == "/" || right == "/" { return true }
+        return left.hasPrefix(right + "/") || right.hasPrefix(left + "/")
+    }
+
     /// v1.3：主列表（推荐清理 / 自定义路径）排序键。默认 `.sizeDesc`（按大小从大到小）。
     ///
     /// - 切换时立刻重发当前 snapshot，UI 列表实时按新排序刷新（不需要重扫）。
@@ -209,6 +237,7 @@ public final class ScanCoordinator: ObservableObject {
         if perRootProgressSorted != nextSorted {
             perRootProgressSorted = nextSorted
         }
+        notePruneSourceMutation()
     }
 
     /// v1.5 P1-B：完整重置三份 @Published（用于 cancel / 重新预填）。
@@ -217,6 +246,7 @@ public final class ScanCoordinator: ObservableObject {
         if !perRootFinishedSlim.isEmpty { perRootFinishedSlim = [:] }
         if perRootFinishedCount != 0 { perRootFinishedCount = 0 }
         if !perRootProgressSorted.isEmpty { perRootProgressSorted = [] }
+        notePruneSourceMutation()
     }
 
     /// 单根的实时进度快照。
@@ -244,6 +274,10 @@ public final class ScanCoordinator: ObservableObject {
     /// runScan 的 activeCategoryID 校验沿用此值；UI 不应依赖它做业务判断（用 perRootProgress 判更可靠）。
     public static let multiRootCategoryID: String = "recommended.multi"
 
+    /// Smart Care “系统与日志”专用多根扫描。它刻意不包含应用缓存与开发缓存，
+    /// 防止普通模式三个范围在真实文件系统根上互相重叠。
+    public static let smartCareCoreCategoryID: String = "smart_care.core.multi"
+
     /// v1.4：开发者构建产物多根并行扫描的 categoryID 哨兵。与 multiRootCategoryID 区分，
     /// 让 UI 可以渲染不同标题（"开发者构建产物" vs "全部推荐扫描"），但底层 runMultiRootScan 共用。
     public static let developerCategoryID: String = "developer.multi"
@@ -266,11 +300,13 @@ public final class ScanCoordinator: ObservableObject {
     /// 不会与任何真实文件路径冲突），UI 侧检测到 sentinel 后走 `path.sentinel.*`
     /// xcstrings key 走本地化显示。
     public static let multiRootSentinelPath: String = "__sentinel_multi_root__"
+    public static let smartCareCoreSentinelPath: String = "__sentinel_smart_care_core__"
     public static let developerSentinelPath: String = "__sentinel_dev_artifact__"
     public static let versionedRootSentinelPath: String = "__sentinel_versioned_root__"
     public static let commonAppCacheSentinelPath: String = "__sentinel_common_app_cache__"
     public static let multiRootSentinelPaths: Set<String> = [
         multiRootSentinelPath,
+        smartCareCoreSentinelPath,
         developerSentinelPath,
         versionedRootSentinelPath,
         commonAppCacheSentinelPath
@@ -283,6 +319,7 @@ public final class ScanCoordinator: ObservableObject {
     private let engine = SafetyEngine()
     private let vendors: [VendorRule]
     private let home: String
+    private let whitelistStore: WhitelistStore
     /// 预构建的 VendorTrie —— 性能关键：
     /// `publishSnapshot` 每帧（≥150ms）会对 N 个 bucket 调 `engine.evaluate`。
     /// 朴素 `evaluate(path:vendors:home:)` 内部**每次都重建 trie**（含 ~42 条 path-rule
@@ -293,6 +330,23 @@ public final class ScanCoordinator: ObservableObject {
     /// vendors 在 init 时就锁定，扫描期不会动；用 lazy + `let` 等价的 stored property 即可。
     private let trie: VendorTrieNode
     private var scanTask: Task<Void, Never>?
+
+    /// Common Cache 是同步 detector 包在 detached task 中执行。categoryID 只能区分类别，
+    /// 无法区分“取消后继续扫描”的前后两轮（两轮 ID 都是 common_app_cache），所以每次
+    /// cancel 都刷新不可复用的代际 token；只有仍持有当前 token 的任务拥有最终提交权。
+    private var commonAppCacheGeneration = UUID()
+
+    /// 同步 detector 的依赖边界。生产默认实现直接调用 ScanKit；internal 可替换性用于
+    /// 构造“旧 detector 不协作取消且晚返回”的确定性并发测试，验证 generation 本身，
+    /// 而不是依赖文件系统规模或时序碰运气。
+    typealias CommonAppCacheDetector = @Sendable (
+        _ vendors: [VendorRule],
+        _ home: URL,
+        _ options: CommonAppCacheScanner.Options
+    ) -> CommonAppCacheScanner.ScanResult
+    var commonAppCacheDetector: CommonAppCacheDetector = { vendors, home, options in
+        CommonAppCacheScanner.detect(vendors: vendors, home: home, options: options)
+    }
 
     /// 树形后台展开的代际 token。每次新扫描 / 取消都会刷新，防止旧展开任务写回新扫描缓存。
     private var treeFetchGeneration = UUID()
@@ -306,7 +360,7 @@ public final class ScanCoordinator: ObservableObject {
     public private(set) var activeCategoryID: String?
 
     /// 一级子目录 -> 累计统计；用 path 作 key 保证稳定。
-    private struct Bucket {
+    private struct Bucket: Sendable {
         var url: URL
         var bytes: Int64 = 0
         var logicalBytes: Int64 = 0
@@ -394,7 +448,7 @@ public final class ScanCoordinator: ObservableObject {
     /// v1.5.4：新增 `modificationDate` —— 仅在该目录"作为节点本身被 ingest"时写入，
     /// 即来自 [BulkScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift) 的目录条目自身的 inode mtime（Finder 风格）。
     /// 不做 max(子孙) 聚合，避免每个文件叶子都要回写所有祖先字段；nil 表示尚未拿到（极早期 publish 帧）。
-    private struct DirAgg {
+    private struct DirAgg: Sendable {
         var bytes: Int64 = 0
         var logicalBytes: Int64 = 0
         var fileCount: Int = 0
@@ -461,7 +515,7 @@ public final class ScanCoordinator: ObservableObject {
     ///
     /// 缓存 key 是绝对路径；生命周期与扫描会话绑定，[startScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
     /// 在切换 root 时一并 removeAll，避免跨扫描泄漏陈旧 mtime。
-    private enum MtimeFallbackResult {
+    private enum MtimeFallbackResult: Sendable {
         case found(Date)
         case failure
     }
@@ -495,6 +549,7 @@ public final class ScanCoordinator: ObservableObject {
     private func bumpChildrenCacheVersion() {
         childrenCacheVersion &+= 1
         treeBrowser.bumpChildrenCacheVersion()
+        notePruneSourceMutation()
     }
 
     /// v1.5.4：树形视图扁平化重算的"统一脏标"。
@@ -541,7 +596,31 @@ public final class ScanCoordinator: ObservableObject {
     /// 删除成功后的本轮扫描 tombstone。扫描事件和异步树缓存可能在删除完成后
     /// 继续回调；这些路径必须在当前扫描会话内持续屏蔽，直到下一次新扫描从文件系统
     /// 真实状态重新建立数据源。
-    private var deletedPathTombstones: Set<String> = []
+    /// 不可变删除路径索引。父子最小化、排序与 Set rehash 全部由 prune worker 在
+    /// generic executor 完成；MainActor 只替换这一条引用。查询沿候选祖先链命中 Set，
+    /// 不再随 tombstone root 数量线性退化。
+    private var deletedPathTombstones = DeletedPathIndex.empty
+
+    /// 后台 prune transaction 的扫描会话代际。任何 cancel / 新扫描都会刷新，
+    /// 因而旧会话基于 COW 快照算出的 plan 永远不能覆盖新扫描状态。
+    private var pruneStateGeneration = UUID()
+
+    /// prune 读取的数据源 revision。扫描 ingest、节流发布、树缓存写回以及另一个
+    /// prune commit 都会推进它；后台 plan 回来时 revision 不一致就重新取快照计算。
+    /// 这条计数器不参与 UI 发布，只是 transaction 的 compare-and-swap 版本号。
+    private var pruneSourceRevision: UInt64 = 0
+
+    /// 后台 prune plan 计算期间的短事务栅栏。扫描事件在写入索引前会协作式让出，
+    /// 避免 planner 基于 COW 快照计算时又不断产生新写入而饥饿重试；UI 主线程本身
+    /// 不被阻塞，仍可正常渲染与处理手势。
+    private var activePruneTransactionCount = 0
+
+    /// 仅供聚焦测试确认 production planner 的真实执行线程与耗时；不参与 UI。
+    private var lastPrunePlanRanOnMainThread: Bool?
+    private var lastPrunePlanDurationNanoseconds: UInt64?
+    private var lastPruneTombstoneMergeRanOnMainThread: Bool?
+    private var lastPruneRetirementRanOnMainThread: Bool?
+    private var lastPruneRetirementDurationNanoseconds: UInt64?
 
     /// 一次性消费 v1.5.7 prune hint：取走当前值并立刻清 nil。
     /// 设计目的：避免 TreeBrowserView onChange 闭包跨 runloop tick 读到陈旧值。
@@ -551,22 +630,38 @@ public final class ScanCoordinator: ObservableObject {
         return v
     }
 
-    private func normalizePrunedPath(_ path: String) -> String {
-        if path.count > 1, path.hasSuffix("/") { return String(path.dropLast()) }
-        return path
-    }
-
     private func isDeletedTombstoned(_ candidate: String) -> Bool {
-        for path in deletedPathTombstones {
-            if path == "/" { return candidate.hasPrefix("/") }
-            if candidate == path { return true }
-            if candidate.hasPrefix(path + "/") { return true }
-        }
-        return false
+        deletedPathTombstones.matcher.contains(candidate)
     }
 
-    private func clearDeletedTombstonesForNewScan() {
-        deletedPathTombstones.removeAll(keepingCapacity: true)
+    /// 每个扫描入口统一调用的删除会话重置。旧索引通过 detached task 保留到后台，
+    /// 避免大型 roots/Set 的最后一次释放落在 MainActor。
+    private func resetDeletionStateForNewScanSession() {
+        guard !deletedPathTombstones.matcher.roots.isEmpty else { return }
+        // retirementWorker 在 swap 前先取得强引用；即使 MainActor 当前栈随即结束，旧
+        // matcher 也不会成为本地变量的最后引用。下一 MainActor turn 再让 worker actor
+        // 于 generic executor 清空，形成可证明的 ownership handoff。
+        let retirementWorker = DeletedPathRetirementWorker(index: deletedPathTombstones)
+        deletedPathTombstones = .empty
+        Task { @MainActor in
+            await Task.yield()
+            await retirementWorker.retire()
+        }
+    }
+
+    @inline(__always)
+    private func notePruneSourceMutation() {
+        pruneSourceRevision &+= 1
+    }
+
+    /// 扫描消费者在每个事件写入前经过该协作式栅栏。prune 的 O(N) 工作在 detached
+    /// executor 上执行，这里只 yield，不占用 MainActor 帧预算。
+    private func waitForPruneTransactionBarrier() async -> Bool {
+        while activePruneTransactionCount > 0 {
+            if Task.isCancelled { return false }
+            await Task.yield()
+        }
+        return !Task.isCancelled
     }
 
     /// Step 2 P0-2 / 2026-06：treeRevision 拆分 —— 数值脏标（非结构性）。
@@ -592,6 +687,7 @@ public final class ScanCoordinator: ObservableObject {
         tickRevision &+= 1
         treeRevision &+= 1
         treeBrowser.bumpStructuralRevision()
+        notePruneSourceMutation()
     }
 
     /// 单点收敛：推进数值脏标。
@@ -611,6 +707,7 @@ public final class ScanCoordinator: ObservableObject {
         // 会判 coord.treeRevision 落后 store.treeRevision 一个 tick。
         treeRevision &+= 1
         treeBrowser.bumpTickRevision()
+        notePruneSourceMutation()
     }
 
     /// Step 3 P0-3 / 2026-06：bucket cachedVerdict 命中率计数器。
@@ -756,10 +853,12 @@ public final class ScanCoordinator: ObservableObject {
     private let fullDiskFirmlinkRules: [(dataPrefix: String, publicPrefix: String)]
 
     public init(vendors: [VendorRule] = [], home: String = NSHomeDirectory(),
-                enableTreeDeepIndex: Bool = false) {
+                enableTreeDeepIndex: Bool = false,
+                whitelistStore: WhitelistStore = .shared) {
         self.vendors = vendors
         self.home = home
         self.enableTreeDeepIndex = enableTreeDeepIndex
+        self.whitelistStore = whitelistStore
         self.fullDiskFirmlinkRules = Self.makeFullDiskFirmlinkRules()
         // 性能关键：vendors 在 init 时已确定，扫描期不会变。
         // 一次构建 trie 复用整个生命周期，避免 publishSnapshot 每帧 N 次重建。
@@ -805,6 +904,7 @@ public final class ScanCoordinator: ObservableObject {
         }
         scanTask?.cancel()
         scanTask = nil
+        commonAppCacheGeneration = UUID()
         isScanning = false
         scanPhase = .idle
         // v1.3：cancel 同时清 activeCategoryID，让旧 stream 残留事件能被自检识别为"过期"并丢弃。
@@ -826,6 +926,8 @@ public final class ScanCoordinator: ObservableObject {
         // v1.3：标记本次状态为"用户主动停止"，让 statusBar 显示"已停止"而非"还未扫描"。
         wasCancelled = true
         treeFetchGeneration = UUID()
+        pruneStateGeneration = UUID()
+        notePruneSourceMutation()
     }
 
     public func scan(category: ScanCategory, includeHidden: Bool = true,
@@ -833,7 +935,7 @@ public final class ScanCoordinator: ObservableObject {
         cancel()
         // v1.3：cancel() 在上面把 wasCancelled 置 true，但本次是新扫描入口而非"停止"，立刻清回 false
         wasCancelled = false
-        clearDeletedTombstonesForNewScan()
+        resetDeletionStateForNewScanSession()
         buckets.removeAll(keepingCapacity: true)
         // Step 3 P0-3：buckets 整轮清空 → bucket 上的 cachedVerdict 也跟着消失。
         // 但独立维护的命中率计数器需要显式归零，否则跨会话累计无意义。
@@ -881,18 +983,9 @@ public final class ScanCoordinator: ObservableObject {
         // runScan 内每个事件先校验 `categoryID == activeCategoryID`，过期 stream 残留事件会被自动丢弃。
         activeCategoryID = category.id
 
-        // M4-T1：本轮扫描前异步预拉一份 whitelist 快照。
-        // 异步拉完才能命中过滤——首帧 publishSnapshot 时 snapshot 可能仍是空 Set，
-        // 这是可接受的：首帧用户也基本看不到几个 bucket，且后续帧都会命中。
+        // 白名单是最高优先级边界：必须先拿到完整快照，再让 scanner 产生第一个 node。
+        // 旧实现把快照加载与扫描并发启动，首帧可能短暂暴露甚至选中已加白路径。
         whitelistSnapshot = []
-        Task { [weak self] in
-            let snap = await WhitelistStore.shared.snapshotPaths()
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                guard self.activeCategoryID == category.id else { return }
-                self.whitelistSnapshot = snap
-            }
-        }
 
         let rootURL = category.rootURL
         let categoryID = category.id
@@ -924,10 +1017,14 @@ public final class ScanCoordinator: ObservableObject {
             GSYLog.info(.scan, "ScanCoordinator 整盘扫描强制关闭 enableTreeDeepIndex（防止 MainActor ingest burst）")
             enableTreeDeepIndex = false
         }
+        let whitelistStore = self.whitelistStore
         scanTask = Task { [weak self] in
-            await self?.runScan(rootURL: rootURL, categoryID: categoryID,
-                                includeHidden: includeHidden, staySingleVolume: isFullDisk,
-                                largeFileTopNOnly: topNOnlyLargeFileScan)
+            let whitelist = await whitelistStore.snapshotPaths()
+            guard let self, self.activeCategoryID == categoryID else { return }
+            self.whitelistSnapshot = whitelist
+            await self.runScan(rootURL: rootURL, categoryID: categoryID,
+                               includeHidden: includeHidden, staySingleVolume: isFullDisk,
+                               largeFileTopNOnly: topNOnlyLargeFileScan)
         }
     }
 
@@ -955,6 +1052,7 @@ public final class ScanCoordinator: ObservableObject {
     public func scanKnownVersionedRoots(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
         cancel()
         wasCancelled = false
+        resetDeletionStateForNewScanSession()
         buckets.removeAll(keepingCapacity: true)
         dirIndex.removeAll(keepingCapacity: true)
         childEdges.removeAll(keepingCapacity: true)
@@ -975,13 +1073,16 @@ public final class ScanCoordinator: ObservableObject {
         // [synthesizeVersionedTopLevel] 把 snapshot.rows 合成树形顶层；
         // 否则 directChildren(of: home.path) 在 childEdges/store 都找不到子项，
         // 树形视图永远空（用户反馈"清单 28 文件，树形为空"）。
+        let categoryID = "developer.versioned"
         currentRootPath = ScanCoordinator.versionedRootSentinelPath
+        snapshot = ScanSnapshot(categoryID: categoryID, rows: [], totalBytes: 0,
+                                scannedFileCount: 0, isFinished: false, elapsed: 0)
         isScanning = true
         scanPhase = .scanning
         lastError = nil
         permissionDeniedPaths = []
         tccProtectedSkippedPaths = []
-        let categoryID = "developer.versioned"
+        whitelistSnapshot = []
         activeCategoryID = categoryID
         GSYLog.notice(.flow, "scan.versioned.start home=\(home.path)")
 
@@ -995,8 +1096,13 @@ public final class ScanCoordinator: ObservableObject {
         let trieRef = trie
         let homeStr = self.home
         let startedAtCopy = startedAt
+        let whitelistStore = self.whitelistStore
         scanTask = Task.detached { [weak self] in
-            let hits = KnownVersionedRoots.scanAll(home: home)
+            let whitelist = await whitelistStore.snapshotPaths()
+            if Task.isCancelled { return }
+            let hits = KnownVersionedRoots.scanAll(home: home).filter {
+                !Self.isWhitelisted($0.url.path, in: whitelist)
+            }
             var rows: [RowItem] = []
             rows.reserveCapacity(hits.count)
             var totalAccum: Int64 = 0
@@ -1037,6 +1143,7 @@ public final class ScanCoordinator: ObservableObject {
                 // 防过期：用户在后台扫描期间切到别的分类入口时，activeCategoryID 已被
                 // 后续 scan() 改写；本次结果直接丢弃，不污染新分类的 snapshot。
                 guard self.activeCategoryID == categoryID else { return }
+                self.whitelistSnapshot = whitelist
                 self.snapshot = ScanSnapshot(
                     categoryID: categoryID,
                     rows: sortedRows,
@@ -1070,9 +1177,13 @@ public final class ScanCoordinator: ObservableObject {
     /// - IO 和目录计量全部在后台 executor 完成；
     /// - 主线程只在开始/结束各发布一次状态，不产生扫描中列表抖动；
     /// - 发布前仍走 SafetyEngine，保证硬禁区不会被规则误写绕过。
-    public func scanCommonAppCaches(includeConfirm: Bool = true) {
+    public func scanCommonAppCaches(
+        includeConfirm: Bool = true,
+        scannerOptions: CommonAppCacheScanner.Options? = nil
+    ) {
         cancel()
         wasCancelled = false
+        resetDeletionStateForNewScanSession()
         buckets.removeAll(keepingCapacity: true)
         verdictCacheHits = 0
         verdictCacheMisses = 0
@@ -1116,6 +1227,7 @@ public final class ScanCoordinator: ObservableObject {
         activeCategoryID = ScanCoordinator.commonAppCacheCategoryID
         whitelistSnapshot = []
         treeFetchGeneration = UUID()
+        let generation = commonAppCacheGeneration
 
         let categoryID = ScanCoordinator.commonAppCacheCategoryID
         let activeStartedAt = startedAt
@@ -1125,15 +1237,21 @@ public final class ScanCoordinator: ObservableObject {
         let homeStr = home
         let homeURL = URL(fileURLWithPath: homeStr, isDirectory: true)
         let included: Set<SafetyVerdict> = includeConfirm ? [.safe, .confirm] : [.safe]
-        let options = CommonAppCacheScanner.Options(includedVerdicts: included)
+        var options = scannerOptions ?? CommonAppCacheScanner.Options()
+        options.includedVerdicts = included
+        let whitelistStore = self.whitelistStore
+        let detector = commonAppCacheDetector
         GSYLog.notice(.flow,
                       "scan.common_app_cache.start rules=\(vendorsCopy.filter { $0.category == "common_app_cache" }.count) includeConfirm=\(includeConfirm)")
 
         scanTask = Task.detached { [weak self] in
+            let whitelist = await whitelistStore.snapshotPaths()
+            if Task.isCancelled { return }
             let standardRules = Self.standardInstalledAppCacheRules()
-            let hits = CommonAppCacheScanner.detect(vendors: vendorsCopy + standardRules,
-                                                    home: homeURL,
-                                                    options: options)
+            let scanResult = detector(vendorsCopy + standardRules, homeURL, options)
+            if scanResult.wasCancelled { return }
+            let hits = scanResult.hits
+            let incompletePaths = scanResult.deletionProtectedPaths
             var rows: [RowItem] = []
             rows.reserveCapacity(hits.count)
             var totalAccum: Int64 = 0
@@ -1142,10 +1260,15 @@ public final class ScanCoordinator: ObservableObject {
 
             for hit in hits {
                 if Task.isCancelled { return }
-                guard seenPaths.insert(hit.url.standardizedFileURL.path).inserted else { continue }
+                let normalizedPath = hit.url.standardizedFileURL.path
+                guard !Self.isWhitelisted(normalizedPath, in: whitelist) else { continue }
+                guard seenPaths.insert(normalizedPath).inserted else { continue }
                 let (evaluatedVerdict, rejection, vendor) = engineCopy.evaluate(path: hit.url.path,
                                                                                 trie: trieRef,
                                                                                 home: homeStr)
+                let isIncomplete = incompletePaths.contains {
+                    Self.pathsOverlap(normalizedPath, $0)
+                }
                 let rowBytes = hit.sizeBytes
                 totalAccum &+= rowBytes
                 countAccum &+= hit.entryCount
@@ -1157,8 +1280,8 @@ public final class ScanCoordinator: ObservableObject {
                     bytes: rowBytes,
                     logicalBytes: rowBytes,
                     fileCount: hit.entryCount,
-                    verdict: evaluatedVerdict,
-                    rejection: rejection,
+                    verdict: isIncomplete ? .forbid : evaluatedVerdict,
+                    rejection: isIncomplete ? .accessDenied : rejection,
                     vendorName: vendor?.name ?? hit.ruleName,
                     vendorNote: hit.reason ?? hit.source,
                     runningBundleIDPrefix: hit.bundleIDPrefix,
@@ -1176,7 +1299,18 @@ public final class ScanCoordinator: ObservableObject {
             let fileCountCaptured = countAccum
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                guard self.activeCategoryID == categoryID else { return }
+                guard self.activeCategoryID == categoryID,
+                      self.commonAppCacheGeneration == generation else { return }
+                self.whitelistSnapshot = whitelist
+                // CommonAppCacheScanner 的 partial bytes 只用于展示，不能作为“可删”证明。
+                // 将 open/deadline/maxEntries 等所有不完整路径并入现有 request-scoped
+                // 删除硬拒绝集合；TrashPipeline 的祖先/后代重叠检查会同时拦住父根。
+                for issue in scanResult.incompletePaths
+                    where !self.permissionDeniedPaths.contains(issue.path) {
+                    self.permissionDeniedPaths.append(issue.path)
+                    GSYLog.warning(.scan,
+                                   "scan.common_app_cache.incomplete path=\(issue.path) reason=\(issue.reason.rawValue)")
+                }
                 self.snapshot = ScanSnapshot(
                     categoryID: categoryID,
                     rows: sortedRows,
@@ -1192,7 +1326,7 @@ public final class ScanCoordinator: ObservableObject {
                 self.invalidateTreeCacheAfterScan()
                 self.refreshVolumeCapacity()
                 GSYLog.notice(.flow,
-                              "scan.common_app_cache.finish rows=\(rowsCount) totalBytes=\(totalCaptured) entries=\(fileCountCaptured) elapsed=\(String(format: "%.2f", Date().timeIntervalSince(activeStartedAt)))")
+                              "scan.common_app_cache.finish rows=\(rowsCount) totalBytes=\(totalCaptured) entries=\(fileCountCaptured) complete=\(scanResult.isComplete) incompletePaths=\(scanResult.incompletePaths.count) elapsed=\(String(format: "%.2f", Date().timeIntervalSince(activeStartedAt)))")
             }
         }
     }
@@ -1205,6 +1339,7 @@ public final class ScanCoordinator: ObservableObject {
         var rules: [VendorRule] = []
         rules.reserveCapacity(names.count)
         for name in names where name.hasSuffix(".app") {
+            if Task.isCancelled { return [] }
             let appURL = URL(fileURLWithPath: appsPath).appendingPathComponent(name)
             guard let meta = try? AppMetadata.read(appURL: appURL) else { continue }
             let bundleID = meta.bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1271,9 +1406,42 @@ public final class ScanCoordinator: ObservableObject {
     /// - bucket key 形如 "{rootPath}/{firstSegment}"：现有 ingest 走的是 rootPath 前缀切割，
     ///   多根时不同根不会撞 key（路径前缀不同），现有逻辑无需改。
     public func scanRecommended(includeHidden: Bool = true) {
+        scanMultiRootCategories(
+            ScanCategories.recommended(home: home),
+            includeHidden: includeHidden,
+            categoryID: ScanCoordinator.multiRootCategoryID,
+            sentinelPath: ScanCoordinator.multiRootSentinelPath,
+            logName: "recommended"
+        )
+    }
+
+    /// Smart Care 的“系统与日志”真实扫描入口。
+    ///
+    /// 普通模式的应用缓存与开发缓存各自有独立 scanner；这里仅扫描
+    /// [ScanCategories.smartCareCore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCategory.swift)
+    /// 声明的非重叠根，不能复用包含 `~/Library/Caches` 与 DerivedData 的完整推荐计划。
+    public func scanSmartCareCore(includeHidden: Bool = true) {
+        scanMultiRootCategories(
+            ScanCategories.smartCareCore(home: home),
+            includeHidden: includeHidden,
+            categoryID: ScanCoordinator.smartCareCoreCategoryID,
+            sentinelPath: ScanCoordinator.smartCareCoreSentinelPath,
+            logName: "smart_care.core"
+        )
+    }
+
+    /// 推荐扫描与 Smart Care core 的共享多根启动器。
+    ///
+    /// 白名单必须在真正创建 `MultiRootScanner` 之前完成加载；这样从第一个 node 开始，
+    /// 本轮 `publishSnapshot` 使用的就是同一份不可变快照，不存在首帧暴露已加白路径的窗口。
+    private func scanMultiRootCategories(_ categories: [ScanCategory],
+                                         includeHidden: Bool,
+                                         categoryID: String,
+                                         sentinelPath: String,
+                                         logName: String) {
         cancel()
         wasCancelled = false
-        clearDeletedTombstonesForNewScan()
+        resetDeletionStateForNewScanSession()
         buckets.removeAll(keepingCapacity: true)
         // Step 3 P0-3：buckets 整轮清空 → bucket 上的 cachedVerdict 也跟着消失。
         // 但独立维护的命中率计数器需要显式归零，否则跨会话累计无意义。
@@ -1311,34 +1479,34 @@ public final class ScanCoordinator: ObservableObject {
         // 真正用 expectedTotalBytes 判断会在 publishSnapshot 里做，这里只是开闸。
         etaEligible = true
         expectedTotalBytes = nil  // 还没估算出来
-        currentRootPath = ScanCoordinator.multiRootSentinelPath
-        snapshot = ScanSnapshot(categoryID: ScanCoordinator.multiRootCategoryID, rows: [],
+        currentRootPath = sentinelPath
+        snapshot = ScanSnapshot(categoryID: categoryID, rows: [],
                                 totalBytes: 0, scannedFileCount: 0, isFinished: false, elapsed: 0)
         isScanning = true
         scanPhase = .scanning
         lastError = nil
         permissionDeniedPaths = []
         tccProtectedSkippedPaths = []
-        activeCategoryID = ScanCoordinator.multiRootCategoryID
+        activeCategoryID = categoryID
+        whitelistSnapshot = []
 
         treeFetchGeneration = UUID()
 
-        let cats = ScanCategories.recommended(home: home)
         // 预填 perRootProgress，UI 立刻能看到 5 行"扫描中…"行；
         // 后续 .node / .finished 事件再原地累加 / 翻 isFinished。
         var initial: [String: PerRootProgress] = [:]
-        for c in cats {
+        for c in categories {
             initial[c.rootPath] = PerRootProgress(rootPath: c.rootPath, title: c.displayTitle)
         }
         syncPerRootPublished(from: initial)
         // v1.3.zz 性能修复：staging 同步初始化，让 .node 事件累计的目标存在
         perRootStaging = initial
 
-        let roots = cats.map { $0.rootURL }
-        GSYLog.notice(.flow, "scan.recommended.start roots=\(roots.map(\.path).joined(separator: ",")) includeHidden=\(includeHidden)")
+        let roots = categories.map(\.rootURL)
+        GSYLog.notice(.flow, "scan.\(logName).start roots=\(roots.map(\.path).joined(separator: ",")) includeHidden=\(includeHidden)")
         // v1.3.x：异步估算总字节数，用作 ETA 分母。
         // 4s 软超时 + 后台 detached → 完全不阻塞正式扫描的启动。
-        let activeID = ScanCoordinator.multiRootCategoryID
+        let activeID = categoryID
         Task { [weak self] in
             let estimated = await TreeSizeEstimator.estimate(roots: roots, timeout: 4.0)
             await MainActor.run { [weak self] in
@@ -1356,13 +1524,17 @@ public final class ScanCoordinator: ObservableObject {
         let options = ScanOptions(includeHidden: includeHidden,
                                   staySingleVolume: false,
                                   respectTCCSkipList: respectTCC)
+        let whitelistStore = self.whitelistStore
         scanTask = Task { [weak self] in
+            let whitelist = await whitelistStore.snapshotPaths()
+            guard let self, self.activeCategoryID == activeID else { return }
+            self.whitelistSnapshot = whitelist
             // v1.5 性能修复：推荐扫描 5 根固定，但常见命中 ~/Library/Caches、
             // ~/Library/Logs、~/Library/Application Support 等大根；并发上限 3 足够
             // 让吞吐拉满又不会让整机 IO 子系统拥塞（详见 MultiRootScanner.scan 注释）。
-            await self?.runMultiRootScan(roots: roots, options: options,
-                                         categoryID: ScanCoordinator.multiRootCategoryID,
-                                         maxConcurrentRoots: 3)
+            await self.runMultiRootScan(roots: roots, options: options,
+                                        categoryID: activeID,
+                                        maxConcurrentRoots: 3)
         }
     }
 
@@ -1383,7 +1555,7 @@ public final class ScanCoordinator: ObservableObject {
                               enabledRuleIDs: Set<String> = DevArtifactRules.allIDs) {
         cancel()
         wasCancelled = false
-        clearDeletedTombstonesForNewScan()
+        resetDeletionStateForNewScanSession()
         // v1.3 P0-C：开发者构建产物扫描典型命中 30+ 根 × 每根上万 node，
         // 若 enableTreeDeepIndex 开着，MainActor ingest 会被祖先回溯 + index 写入打挂。
         // 强制关闭，让 TreeBrowser 走按需子树扫描路径（与全盘扫一致策略）。
@@ -1430,6 +1602,7 @@ public final class ScanCoordinator: ObservableObject {
         devArtifactDidTruncate = false
         devArtifactDidTimeout = false
         activeCategoryID = ScanCoordinator.developerCategoryID
+        whitelistSnapshot = []
 
         treeFetchGeneration = UUID()
 
@@ -1439,9 +1612,15 @@ public final class ScanCoordinator: ObservableObject {
                                   respectTCCSkipList: respectTCC)
         let activeID = ScanCoordinator.developerCategoryID
         let activeStartedAt = startedAt
+        let whitelistStore = self.whitelistStore
 
         // 异步勘察 + 启动扫描；勘察自身有 60s 超时和 GSYLog 埋点
         scanTask = Task { [weak self] in
+            let whitelist = await whitelistStore.snapshotPaths()
+            guard !Task.isCancelled,
+                  let owner = self,
+                  owner.activeCategoryID == activeID else { return }
+            owner.whitelistSnapshot = whitelist
             // v2026.06.21 总体方针修订：用户明确要求"不能进入截断/超时状态"——
             // 因此 maxHits 走 DevArtifactScanner 默认值 (.max)，命中再多也不截断；
             // timeoutSeconds 保留 60s 作为最后安全网（实际正常家目录几秒~十几秒走完）。
@@ -1450,7 +1629,7 @@ public final class ScanCoordinator: ObservableObject {
             // 还没完成时就能看到 sidebar 不断长出新的"待扫根"行——视觉上不再"卡死"。
             let opts = DevArtifactScanner.Options(enabledRuleIDs: enabledRuleIDs)
             let scanner = DevArtifactScanner(options: opts)
-            let homeStr = self?.home ?? NSHomeDirectory()
+            let homeStr = owner.home
             // partial 回调在 detached 线程，必须跳回主 actor 写 @MainActor 隔离的字段
             // v2026.06.21 性能：原本每个 batch（每 20 hit）都立刻调一次 syncPerRootPublished，
             // discover 命中几百条时 partial 阶段触发 10+ 次同步——每次都让 MainView 整 body
@@ -1462,10 +1641,12 @@ public final class ScanCoordinator: ObservableObject {
             let onPartial: @Sendable ([DevArtifactScanner.Hit]) -> Void = { [weak self] batch in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    guard await self.waitForPruneTransactionBarrier() else { return }
                     guard self.activeCategoryID == activeID else { return }
                     // 把这一批 hit 预填进 perRootStaging（不动 @Published，等下次 throttle 同步）
                     for hit in batch {
                         let path = hit.url.path
+                        if Self.isWhitelisted(path, in: whitelist) { continue }
                         if self.isDeletedTombstoned(path) { continue }
                         if self.perRootStaging[path] != nil { continue }
                         let shortPath = self.shortenPath(path, home: homeStr)
@@ -1487,7 +1668,9 @@ public final class ScanCoordinator: ObservableObject {
                 flushEvery: 20,
                 onPartial: onPartial
             )
-            let hits = result.hits
+            let hits = result.hits.filter {
+                !Self.isWhitelisted($0.url.path, in: whitelist)
+            }
             // 防过期：勘察期间用户可能切走或重新点击其他扫描入口
             await MainActor.run { [weak self] in
                 guard let self else { return }
@@ -1592,6 +1775,7 @@ public final class ScanCoordinator: ObservableObject {
 
         for await event in scanner.scan(root: rootURL) {
             if Task.isCancelled { break }
+            guard await waitForPruneTransactionBarrier() else { break }
             // v1.3 防 [坑 1]：旧 stream 残留事件污染新 snapshot。
             // activeCategoryID 在 cancel() 里被清空、在新 scan 入口被重新打上；只要本次 stream 已被
             // 新一轮 scan 取代，下面这一行就会让旧 for-await 立刻跳出循环，不再写 buckets/dirIndex。
@@ -1702,6 +1886,7 @@ public final class ScanCoordinator: ObservableObject {
 
         for await wrapped in await scanner.scan(roots: roots, maxConcurrentRoots: maxConcurrentRoots) {
             if Task.isCancelled { break }
+            guard await waitForPruneTransactionBarrier() else { break }
             // 与 runScan 同款过期事件保护：activeCategoryID 被覆盖即旧 stream 残留事件，丢弃。
             guard activeCategoryID == categoryID else { break }
             let rootPath = wrapped.rootPath
@@ -1720,27 +1905,9 @@ public final class ScanCoordinator: ObservableObject {
             var consumedThisEvent = 1
             switch wrapped.event {
             case .node(let node):
-                ingest(node: node, rootPath: rootPath)
-                if !node.isDirectory, var p = perRootStaging[rootPath] {
-                    p.bytes += displayBytes(of: node)
-                    p.fileCount += 1
-                    perRootStaging[rootPath] = p
-                }
+                ingestMultiRootNode(node, rootPath: rootPath)
             case .nodes(let arr):
-                // Step 13B micro-batch：批量 ingest，per-root staging 累计也批量更新
-                var stagingDelta: (bytes: Int64, files: Int) = (0, 0)
-                for node in arr {
-                    ingest(node: node, rootPath: rootPath)
-                    if !node.isDirectory {
-                        stagingDelta.bytes += displayBytes(of: node)
-                        stagingDelta.files += 1
-                    }
-                }
-                if stagingDelta.files > 0, var p = perRootStaging[rootPath] {
-                    p.bytes += stagingDelta.bytes
-                    p.fileCount += stagingDelta.files
-                    perRootStaging[rootPath] = p
-                }
+                ingestMultiRootNodes(arr, rootPath: rootPath)
                 consumedThisEvent = max(1, arr.count)
             case .progress:
                 break
@@ -1820,6 +1987,28 @@ public final class ScanCoordinator: ObservableObject {
         refreshVolumeCapacity()
     }
 
+    private func ingestMultiRootNode(_ node: FSNode, rootPath: String) {
+        guard ingest(node: node, rootPath: rootPath), !node.isDirectory,
+              var progress = perRootStaging[rootPath] else { return }
+        progress.bytes += displayBytes(of: node)
+        progress.fileCount += 1
+        perRootStaging[rootPath] = progress
+    }
+
+    private func ingestMultiRootNodes(_ nodes: [FSNode], rootPath: String) {
+        // Step 13B micro-batch：只累计真正被全局 ingest 接受的 node。
+        // tombstone / 越界 node 返回 false，不能再进入 per-root staging。
+        var stagingDelta: (bytes: Int64, files: Int) = (0, 0)
+        for node in nodes where ingest(node: node, rootPath: rootPath) && !node.isDirectory {
+            stagingDelta.bytes += displayBytes(of: node)
+            stagingDelta.files += 1
+        }
+        guard stagingDelta.files > 0, var progress = perRootStaging[rootPath] else { return }
+        progress.bytes += stagingDelta.bytes
+        progress.fileCount += stagingDelta.files
+        perRootStaging[rootPath] = progress
+    }
+
     #if DEBUG
     /// 测试专用注入：模拟 BulkScanner yield 的 .permissionDenied 路径，
     /// 走的是和 runScan 同一条去重逻辑。仅 @testable 可见。
@@ -1835,16 +2024,25 @@ public final class ScanCoordinator: ObservableObject {
             tccProtectedSkippedPaths.append(path)
         }
     }
+
+    internal func _testIngestMultiRootNodes(rootPath: String, nodes: [FSNode]) {
+        ingestMultiRootNodes(nodes, rootPath: rootPath)
+        syncPerRootPublished(from: perRootStaging)
+    }
     #endif
 
-    private func ingest(node: FSNode, rootPath: String) {
+    /// 将 node 写入全局聚合，并返回它是否通过本轮 tombstone/投影边界。
+    /// 多根扫描必须只对返回 `true` 的 node 累加 per-root 进度，否则已删除子树的
+    /// 晚到事件虽然不会复活 bucket，却仍会把父根 bytes/fileCount 加回来。
+    @discardableResult
+    private func ingest(node: FSNode, rootPath: String) -> Bool {
         // 把 node 归到"根的第一级子目录"——这是聚合行，不展平
         let nodePath = displayPathForScanNode(node.path, rootPath: rootPath)
-        guard !isDeletedTombstoned(nodePath) else { return }
-        guard let projection = Self.bucketProjection(nodePath: nodePath, rootPath: rootPath) else { return }
+        guard !isDeletedTombstoned(nodePath) else { return false }
+        guard let projection = Self.bucketProjection(nodePath: nodePath, rootPath: rootPath) else { return false }
         let tail = projection.tail
         let firstSegment = tail.split(separator: "/", maxSplits: 1).first.map(String.init) ?? tail
-        guard !firstSegment.isEmpty else { return }
+        guard !firstSegment.isEmpty else { return false }
         let bucketPath = projection.bucketPath
 
         // v1.3：刷新该 bucket 的"最近 ingest 时间"，作为 active 判定的活跃度信号。
@@ -1944,6 +2142,8 @@ public final class ScanCoordinator: ObservableObject {
                 }
             }
         }
+        notePruneSourceMutation()
+        return true
     }
 
     private func ingestLargeFileNode(_ node: FSNode, rootPath: String) {
@@ -1960,6 +2160,7 @@ public final class ScanCoordinator: ObservableObject {
                 modificationDate: node.modificationDate
             ))
         }
+        notePruneSourceMutation()
     }
 
     private static func makeFullDiskFirmlinkRules() -> [(dataPrefix: String, publicPrefix: String)] {
@@ -2288,307 +2489,680 @@ public final class ScanCoordinator: ObservableObject {
         bumpStructuralRevision()
     }
 
-    /// **v1.5.3**：把"已成功移入废纸篓的路径"从所有 UI 数据源里剔除——这是修复用户反馈
-    /// "删除后没对应更新 item"的核心入口。
-    ///
-    /// 老实现的 [performDelete](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
-    /// 真删成功后只 `selection.removeAll()` + `refreshVolumeCapacity()`，
-    /// **从未告知 ScanCoordinator** 把已删 path 从 [snapshot.rows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L268)
-    /// 与 [treeChildrenCache](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L248)
-    /// 移除——所以列表与树形继续显示已删行。
-    ///
-    /// 本方法处理三件事（按 UI 数据源分）：
-    /// 1. **snapshot.rows**：基于 path 前缀过滤——删了 `/A/B` 时 `/A/B/C` 也算被删；
-    ///    重新构造 [ScanSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L268)
-    ///    时只动 rows / totalBytes / scannedFileCount，其他字段保持。
-    /// 2. **buckets / dirIndex / childEdges / fileLeaves**：内存索引同步剔除，保证
-    ///    [directChildren(of:sortedBy:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1048)
-    ///    下次走 memory 分支也拿不到已删项；childEdges 受影响的"父"边集要去掉孩子。
-    /// 3. **treeChildrenCache**：受影响的父目录条目失效。cacheKey 是 `"\(path)|\(sortKey)"`，
-    ///    必须按 path 前缀匹配清掉所有该父目录的排序变体。
-    ///
-    /// 注：这里只改当前内存快照。下次扫描会重新以文件系统真实状态为准。
-    @MainActor
-    public func pruneDeleted(paths: [String]) {
-        guard !paths.isEmpty else { return }
+    private struct PruneContribution: Sendable {
+        let path: String
+        var bytes: Int64
+        var logicalBytes: Int64
+        var fileCount: Int
 
-        // 用前缀匹配 helper：直接相等或者 path 是 prefix + "/"。
-        // 不能用纯 hasPrefix("/A/B")——会误中 "/A/Bbb"。
-        let normalized: [String] = paths.map { p in
-            normalizePrunedPath(p)
+        mutating func add(_ other: PruneContribution) {
+            bytes &+= other.bytes
+            logicalBytes &+= other.logicalBytes
+            fileCount &+= other.fileCount
         }
-        deletedPathTombstones.formUnion(normalized)
-        func isUnderDeleted(_ candidate: String) -> Bool {
-            for p in normalized {
-                if p == "/" { return candidate.hasPrefix("/") }
-                if candidate == p { return true }
-                if candidate.hasPrefix(p + "/") { return true }
+    }
+
+    /// 目录边界匹配器。把父子重复的删除路径压成最小根集合，再用 ancestor Set
+    /// 查询代替“每个候选 × 每个删除路径”的嵌套扫描。
+    private struct PrunedPathMatcher: Sendable {
+        let roots: [String]
+        private let rootSet: Set<String>
+
+        init<S: Sequence>(paths: S) where S.Element == String {
+            let unique = Set(paths.lazy.map(Self.normalize).filter { !$0.isEmpty })
+            let sorted = unique.sorted()
+            var minimal: [String] = []
+            var minimalSet: Set<String> = []
+            minimal.reserveCapacity(sorted.count)
+            minimalSet.reserveCapacity(sorted.count)
+            for path in sorted {
+                if Self.hasAncestor(of: path, in: minimalSet) {
+                    continue
+                }
+                minimal.append(path)
+                minimalSet.insert(path)
             }
-            return false
+            roots = minimal
+            rootSet = minimalSet
         }
 
-        func isAncestor(_ ancestor: String, of child: String) -> Bool {
-            child.hasPrefix(ancestor + "/")
+        func contains(_ candidate: String) -> Bool {
+            matchingRoot(for: candidate) != nil
         }
 
-        let deletedRoots = Array(Set(normalized)).filter { path in
-            !normalized.contains { other in other != path && isAncestor(other, of: path) }
-        }
-        let sourcePerRootForPrune = perRootStaging.isEmpty ? perRootProgress : perRootStaging
-
-        func contribution(for path: String) -> (bytes: Int64, logicalBytes: Int64, fileCount: Int)? {
-            if let leaf = fileLeaves[path] {
-                return (leaf.bytes, leaf.bytes, 1)
-            }
-            if let agg = dirIndex[path] {
-                return (agg.bytes, agg.logicalBytes, agg.fileCount)
-            }
-            if let bucket = buckets[path] {
-                return (bucket.bytes, bucket.logicalBytes, bucket.fileCount)
-            }
-            if let row = snapshot.rows.first(where: { $0.id == path }) {
-                return (row.bytes, row.logicalBytes, row.fileCount)
+        func matchingRoot(for candidate: String) -> String? {
+            guard !candidate.isEmpty else { return nil }
+            if rootSet.contains("/"), candidate.hasPrefix("/") { return "/" }
+            var cursor = Self.normalize(candidate)
+            while !cursor.isEmpty {
+                if rootSet.contains(cursor) { return cursor }
+                if cursor == "/" { break }
+                let parent = String._gsyParentPath(of: cursor)
+                if parent == cursor { break }
+                cursor = parent
             }
             return nil
         }
 
-        let indexedDeletedContributions: [(path: String, bytes: Int64, logicalBytes: Int64, fileCount: Int)] =
-            deletedRoots.compactMap { path in
-                guard let c = contribution(for: path) else { return nil }
-                return (path, c.bytes, c.logicalBytes, c.fileCount)
+        private static func normalize(_ path: String) -> String {
+            var value = path
+            while value.count > 1, value.hasSuffix("/") {
+                value.removeLast()
             }
-        let indexedContributionPaths = indexedDeletedContributions.map(\.path)
-        let perRootDeletedContributions: [(path: String, bytes: Int64, logicalBytes: Int64, fileCount: Int)] =
-            sourcePerRootForPrune.values.compactMap { progress in
-                let rootPath = progress.rootPath
-                guard deletedRoots.contains(where: { deletedRoot in
-                    rootPath == deletedRoot || isAncestor(deletedRoot, of: rootPath)
-                }) else { return nil }
-                guard !indexedContributionPaths.contains(where: { indexedPath in
-                    rootPath == indexedPath || isAncestor(indexedPath, of: rootPath)
-                }) else { return nil }
-                return (rootPath, progress.bytes, progress.bytes, progress.fileCount)
-            }
-        let deletedContributions = indexedDeletedContributions + perRootDeletedContributions
-        let totalDeletedBytes = deletedContributions.reduce(Int64(0)) { $0 + $1.bytes }
-        let totalDeletedFiles = deletedContributions.reduce(0) { $0 + $1.fileCount }
-
-        // ① snapshot.rows：保持 categoryID / isFinished / elapsed 等。
-        // 删除子项时，祖先 row 是值快照；必须用同一份 deletedContributions 同步扣减，
-        // 否则树/列表父级会继续显示旧聚合。
-        let oldSnap = self.snapshot
-        var newRows: [RowItem] = []
-        newRows.reserveCapacity(oldSnap.rows.count)
-        var removedRowBytes: Int64 = 0
-        for row in oldSnap.rows {
-            if isUnderDeleted(row.id) {
-                removedRowBytes += row.bytes
-                continue
-            }
-            let dec = deletedContributions.reduce((bytes: Int64(0), logicalBytes: Int64(0), fileCount: 0)) { acc, item in
-                guard isAncestor(row.id, of: item.path) else { return acc }
-                return (
-                    acc.bytes + item.bytes,
-                    acc.logicalBytes + item.logicalBytes,
-                    acc.fileCount + item.fileCount
-                )
-            }
-            if dec.bytes > 0 || dec.logicalBytes > 0 || dec.fileCount > 0 {
-                newRows.append(RowItem(
-                    id: row.id,
-                    url: row.url,
-                    title: row.title,
-                    isDirectory: row.isDirectory,
-                    bytes: max(0, row.bytes - dec.bytes),
-                    logicalBytes: max(0, row.logicalBytes - dec.logicalBytes),
-                    fileCount: max(0, row.fileCount - dec.fileCount),
-                    verdict: row.verdict,
-                    rejection: row.rejection,
-                    vendorName: row.vendorName,
-                    vendorNote: row.vendorNote,
-                    runningBundleIDPrefix: row.runningBundleIDPrefix,
-                    isActive: row.isActive,
-                    modificationDate: row.modificationDate
-                ))
-            } else {
-                newRows.append(row)
-            }
+            return value
         }
-        let snapshotBytesToSubtract = totalDeletedBytes > 0 ? totalDeletedBytes : removedRowBytes
-        if newRows != oldSnap.rows || snapshotBytesToSubtract > 0 {
-            self.snapshot = ScanSnapshot(
-                categoryID: oldSnap.categoryID,
-                rows: newRows,
-                totalBytes: max(0, oldSnap.totalBytes - snapshotBytesToSubtract),
-                scannedFileCount: oldSnap.scannedFileCount, // 不动：scannedFile 是历史扫描指标
-                isFinished: oldSnap.isFinished,
-                elapsed: oldSnap.elapsed,
-                bytesPerSecond: oldSnap.bytesPerSecond,
-                estimatedRemaining: oldSnap.estimatedRemaining
+
+        private static func hasAncestor(of candidate: String, in roots: Set<String>) -> Bool {
+            if roots.contains("/"), candidate.hasPrefix("/") { return true }
+            var cursor = candidate
+            while !cursor.isEmpty {
+                if roots.contains(cursor) { return true }
+                if cursor == "/" { break }
+                let parent = String._gsyParentPath(of: cursor)
+                if parent == cursor { break }
+                cursor = parent
+            }
+            return false
+        }
+    }
+
+    /// tombstone matcher 的不可变引用壳。引用替换是 O(1)，并让旧 Set/Array storage
+    /// 能被 prune worker 持有到 MainActor commit 之后再于后台显式释放。
+    private final class DeletedPathIndex: Sendable {
+        static let empty = DeletedPathIndex(matcher: PrunedPathMatcher(paths: EmptyCollection<String>()))
+
+        let matcher: PrunedPathMatcher
+
+        init(matcher: PrunedPathMatcher) {
+            self.matcher = matcher
+        }
+    }
+
+    private actor DeletedPathRetirementWorker {
+        private var retainedIndex: DeletedPathIndex?
+
+        init(index: DeletedPathIndex) {
+            retainedIndex = index
+        }
+
+        func retire() {
+            retainedIndex = nil
+        }
+    }
+
+    private actor PruneRequestPathRetirementWorker {
+        private var retainedPaths: [String]?
+
+        init(paths: [String]) {
+            retainedPaths = paths
+        }
+
+        func retire() {
+            retainedPaths = nil
+        }
+    }
+
+    /// deep-index 关闭时，按需树缓存是删除前仍可用的权威子树统计来源。
+    /// 同一路径会因不同排序键出现在多个 cache entry；这里先按 path 取最大完整值去重，
+    /// 再为“完整 direct-children cache”聚合父目录贡献，避免父行 + 子行重复累计。
+    private struct TreeCacheContributionIndex: Sendable {
+        private let exactByPath: [String: PruneContribution]
+        private let aggregateByParent: [String: PruneContribution]
+
+        init(cache: [String: [TreeRow]]) {
+            var exact: [String: PruneContribution] = [:]
+            var completeChildrenByParent: [String: [String: PruneContribution]] = [:]
+
+            for (cacheKey, rows) in cache {
+                let parentPath: String
+                if let pipe = cacheKey.lastIndex(of: "|") {
+                    parentPath = String(cacheKey[..<pipe])
+                } else {
+                    parentPath = cacheKey
+                }
+
+                let isCompleteEntry = rows.allSatisfy {
+                    !$0.isSizePending && $0.accessState == .normal
+                }
+                if isCompleteEntry, completeChildrenByParent[parentPath] == nil {
+                    // 空数组同样是“已完整枚举且贡献为 0”，不能与 cache miss 混淆。
+                    completeChildrenByParent[parentPath] = [:]
+                }
+
+                for row in rows where !row.isSizePending && row.accessState == .normal {
+                    let item = PruneContribution(
+                        path: row.path,
+                        bytes: row.bytes,
+                        logicalBytes: row.bytes,
+                        fileCount: row.fileCount
+                    )
+                    exact[row.path] = Self.preferred(exact[row.path], item)
+                    if isCompleteEntry {
+                        let current = completeChildrenByParent[parentPath]?[row.path]
+                        completeChildrenByParent[parentPath]?[row.path] = Self.preferred(current, item)
+                    }
+                }
+            }
+
+            var aggregate: [String: PruneContribution] = [:]
+            aggregate.reserveCapacity(completeChildrenByParent.count)
+            for (parent, children) in completeChildrenByParent {
+                var value = PruneContribution(path: parent, bytes: 0, logicalBytes: 0, fileCount: 0)
+                for child in children.values {
+                    value.add(child)
+                }
+                aggregate[parent] = value
+            }
+            exactByPath = exact
+            aggregateByParent = aggregate
+        }
+
+        func contribution(for path: String) -> PruneContribution? {
+            exactByPath[path] ?? aggregateByParent[path]
+        }
+
+        private static func preferred(_ current: PruneContribution?,
+                                      _ candidate: PruneContribution) -> PruneContribution {
+            guard let current else { return candidate }
+            return PruneContribution(
+                path: candidate.path,
+                bytes: max(current.bytes, candidate.bytes),
+                logicalBytes: max(current.logicalBytes, candidate.logicalBytes),
+                fileCount: max(current.fileCount, candidate.fileCount)
             )
         }
-        if snapshotBytesToSubtract > 0 {
-            totalBytes = max(0, totalBytes - snapshotBytesToSubtract)
-            scannedFiles = max(0, scannedFiles - totalDeletedFiles)
+    }
+
+    /// MainActor 上只取得这些 COW storage 的不可变快照；真正触发 copy/mutate 的第一笔
+    /// 写发生在 `PruneStateWorker` actor 中，不在 UI executor 上做全表遍历。
+    private struct PruneStateSnapshot: Sendable {
+        let snapshot: ScanSnapshot
+        let totalBytes: Int64
+        let scannedFiles: Int
+        let buckets: [String: Bucket]
+        let dirIndex: [String: DirAgg]
+        let childEdges: [String: Set<String>]
+        let fileLeaves: [String: (bytes: Int64, isDir: Bool, modificationDate: Date?)]
+        let treeChildrenCache: [String: [TreeRow]]
+        let largeFileLeaves: LargeFileLeafTopNHeap
+        let compactedLargeFileTopN: [LargeFileLeaf]?
+        let perRootStaging: [String: PerRootProgress]
+        let perRootActive: [String: PerRootProgress]
+        let perRootFinished: [String: PerRootProgress]
+        /// commit 会替换的其余 COW storage 也必须由 worker 跨过 MainActor swap 强持有。
+        let perRootSorted: [PerRootProgress]
+        let previousPrunedPaths: [String]?
+    }
+
+    private struct PrunePlan: Sendable {
+        let prunedRoots: [String]
+        let snapshot: ScanSnapshot
+        let totalBytes: Int64
+        let scannedFiles: Int
+        let buckets: [String: Bucket]
+        let dirIndex: [String: DirAgg]
+        let childEdges: [String: Set<String>]
+        let fileLeaves: [String: (bytes: Int64, isDir: Bool, modificationDate: Date?)]
+        let treeChildrenCache: [String: [TreeRow]]
+        let largeFileLeaves: LargeFileLeafTopNHeap
+        let compactedLargeFileTopN: [LargeFileLeaf]?
+        let perRootStaging: [String: PerRootProgress]
+        let perRootActive: [String: PerRootProgress]
+        let perRootFinished: [String: PerRootProgress]
+        let perRootFinishedCount: Int
+        let perRootSorted: [PerRootProgress]
+        let largeRemoved: Int
+        let compactedLargeRemoved: Int
+        let ranOnMainThread: Bool
+        var durationNanoseconds: UInt64 = 0
+    }
+
+    private struct PreparedPrune: Sendable {
+        let tombstones: DeletedPathIndex
+        let plan: PrunePlan
+        let mergeRanOnMainThread: Bool
+    }
+
+    private struct PruneRetirementDiagnostics: Sendable {
+        let ranOnMainThread: Bool
+        let durationNanoseconds: UInt64
+    }
+
+    /// 持有删除前全部 COW storage 与旧 tombstone index，直到 MainActor 完成 O(1) commit。
+    /// `retire` 在本 actor 的 generic executor 上把最后引用置 nil，避免 Dictionary/Array
+    /// 大量元素析构占用 UI 帧。actor 本身是 Sendable，不需要 unchecked 逃逸并发检查。
+    private actor PruneStateWorker {
+        private var retainedState: PruneStateSnapshot?
+        private var retainedTombstones: DeletedPathIndex?
+        private var requestedPaths: [String]?
+
+        init(state: PruneStateSnapshot,
+             tombstones: DeletedPathIndex,
+             requestedPaths: [String]) {
+            retainedState = state
+            retainedTombstones = tombstones
+            self.requestedPaths = requestedPaths
         }
 
-        // ② 内存索引：buckets/dirIndex/childEdges/fileLeaves
-        let bucketKeys = buckets.keys.filter { isUnderDeleted($0) }
-        for k in bucketKeys { buckets.removeValue(forKey: k) }
+        func prepare() -> PreparedPrune? {
+            guard let state = retainedState,
+                  let previous = retainedTombstones,
+                  let requestedPaths else { return nil }
 
-        // **v1.5.7 修订**：删除前先把每个被删项的贡献量从所有**祖先目录**的
-        // [dirIndex](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L265-L265)
-        // 减出去（这是与 [ingest L1219-L1231](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1219-L1231)
-        // 严格对称的反操作）。否则祖先 `agg.bytes / agg.fileCount` 保留旧总和，
-        // [materializeFromMemory L1593-L1602](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1593-L1602)
-        // 取出来给 TreeBrowserView 的就是脏值——表现为"删完了子目录，祖先 size 没变"
-        // （用户截图 gsy_flutter_demo 1.12 GB 不动）。
-        //
-        // 减法策略：
-        // - **叶子文件**（fileLeaves 命中）：bytes、logicalBytes 用 leaf 自身值；fileCount 减 1
-        // - **目录**（dirIndex 命中）：bytes/logicalBytes/fileCount 全部用 dirIndex 自身的聚合值
-        //   （它已经包含子孙的累计 —— 因为 ingest 时祖先就把它整段累加上去）
-        // - 沿路径回溯到 `/`（不限 rootPath，因为 prune 可能跨根；越界父节点 dict miss 直接跳过）
-        //
-        // 注意：被删项若有 *未被删的兄弟祖先链分支*，那条分支不受影响（按 path 上溯，分支天然隔离）。
-        // 多次删同一棵子树的去重：被删项的祖先链如果本身也在 `paths` 里，对应父节点会在
-        // 下面整段 removeValue 时一并清掉，减出来的值会消失（无副作用）。
-        var pendingDecrements: [String: (bytes: Int64, logicalBytes: Int64, fileCount: Int)] = [:]
-        @inline(__always)
-        func accumulate(into ancestor: String, bytes: Int64, logicalBytes: Int64, fileCount: Int) {
-            var cur = pendingDecrements[ancestor] ?? (0, 0, 0)
-            cur.bytes &+= bytes
-            cur.logicalBytes &+= logicalBytes
-            cur.fileCount &+= fileCount
-            pendingDecrements[ancestor] = cur
+            var mergedPaths = previous.matcher.roots
+            mergedPaths.reserveCapacity(mergedPaths.count + requestedPaths.count)
+            mergedPaths.append(contentsOf: requestedPaths)
+            let matcher = PrunedPathMatcher(paths: mergedPaths)
+            let mergeRanOnMainThread = Thread.isMainThread
+
+            let started = DispatchTime.now().uptimeNanoseconds
+            var plan = ScanCoordinator.makePrunePlan(from: state, matcher: matcher)
+            plan.durationNanoseconds = DispatchTime.now().uptimeNanoseconds - started
+            return PreparedPrune(
+                tombstones: DeletedPathIndex(matcher: matcher),
+                plan: plan,
+                mergeRanOnMainThread: mergeRanOnMainThread
+            )
         }
+
+        func retire(beforeRelease: (@Sendable () async -> Void)? = nil) async
+            -> PruneRetirementDiagnostics {
+            if let beforeRelease {
+                await beforeRelease()
+            }
+            let ranOnMainThread = ScanCoordinator.currentThreadIsMainForDiagnostics()
+            let started = DispatchTime.now().uptimeNanoseconds
+            retainedState = nil
+            retainedTombstones = nil
+            requestedPaths = nil
+            return PruneRetirementDiagnostics(
+                ranOnMainThread: ranOnMainThread,
+                durationNanoseconds: DispatchTime.now().uptimeNanoseconds - started
+            )
+        }
+    }
+
+    /// Foundation 把 `Thread.isMainThread` 标成 async-unavailable；诊断只读线程标签，
+    /// 经同步 nonisolated helper 读取，不把任何业务隔离建立在线程身份之上。
+    private nonisolated static func currentThreadIsMainForDiagnostics() -> Bool {
+        Thread.isMainThread
+    }
+
+    /// 把已成功移入废纸篓的路径从 ScanCoordinator 的全部派生数据源中原子剔除。
+    ///
+    /// O(N) 路径过滤、祖先聚合扣减、边集和树缓存重建全部由 worker actor 完成；
+    /// MainActor 只做 COW 快照、generation/revision compare-and-swap 与最终 storage 提交。
+    /// 若新扫描已开始，旧 plan 直接丢弃；同一会话若后台树缓存等状态有变化，则重取
+    /// 最新快照重算，绝不让旧 plan 覆盖新状态。
+    public func pruneDeleted(paths: [String]) async {
+        await performPruneTransaction(paths: paths, beforeCommitForTesting: nil)
+    }
+
+    /// 测试专用确定性竞态注入：plan 已算完但 CAS 尚未执行时切换扫描代际，验证旧 plan
+    /// 会被拒绝。生产调用永远传 nil，不引入延迟或分支依赖。
+    func _pruneDeletedForTesting(
+        paths: [String],
+        beforeCommit: @escaping @MainActor @Sendable () -> Void,
+        beforeRetire: (@Sendable () async -> Void)? = nil
+    ) async {
+        await performPruneTransaction(
+            paths: paths,
+            beforeCommitForTesting: beforeCommit,
+            beforeRetireForTesting: beforeRetire
+        )
+    }
+
+    /// `paths` 可能是上万条临时数组。必须在 perform 返回前先交给 actor 强持有，
+    /// 下一 MainActor turn 才允许 generic executor 清空；否则函数参数会在 UI executor
+    /// 成为最后一份 Array storage 引用并逐项析构。
+    private func handOffPruneRequestPathsForRetirement(_ paths: [String]) {
+        let retirementWorker = PruneRequestPathRetirementWorker(paths: paths)
+        Task { @MainActor in
+            await Task.yield()
+            await retirementWorker.retire()
+        }
+    }
+
+    private func performPruneTransaction(
+        paths: [String],
+        beforeCommitForTesting: (@MainActor @Sendable () -> Void)?,
+        beforeRetireForTesting: (@Sendable () async -> Void)? = nil
+    ) async {
+        guard !paths.isEmpty else { return }
+
+        let requestGeneration = pruneStateGeneration
+        activePruneTransactionCount += 1
+        defer { activePruneTransactionCount = max(0, activePruneTransactionCount - 1) }
+
+        var pendingTestHook = beforeCommitForTesting
+
+        while requestGeneration == pruneStateGeneration {
+            let sourceRevision = pruneSourceRevision
+            let worker = PruneStateWorker(
+                state: capturePruneStateSnapshot(),
+                tombstones: deletedPathTombstones,
+                requestedPaths: paths
+            )
+            guard let prepared = await worker.prepare(),
+                  !prepared.tombstones.matcher.roots.isEmpty else {
+                _ = await worker.retire()
+                handOffPruneRequestPathsForRetirement(paths)
+                return
+            }
+
+            if let hook = pendingTestHook {
+                pendingTestHook = nil
+                hook()
+            }
+            guard requestGeneration == pruneStateGeneration else {
+                _ = await worker.retire()
+                handOffPruneRequestPathsForRetirement(paths)
+                return
+            }
+            guard sourceRevision == pruneSourceRevision else {
+                _ = await worker.retire()
+                await Task.yield()
+                continue
+            }
+
+            // 两个大状态都只做引用/storage swap；旧索引与旧 COW storage 仍由 worker
+            // 强持有，因此下面的 MainActor 赋值不会触发其最后一次析构。
+            deletedPathTombstones = prepared.tombstones
+            lastPruneTombstoneMergeRanOnMainThread = prepared.mergeRanOnMainThread
+            commitPrunePlan(prepared.plan)
+            let retirement = await worker.retire(beforeRelease: beforeRetireForTesting)
+            lastPruneRetirementRanOnMainThread = retirement.ranOnMainThread
+            lastPruneRetirementDurationNanoseconds = retirement.durationNanoseconds
+            handOffPruneRequestPathsForRetirement(paths)
+            return
+        }
+        handOffPruneRequestPathsForRetirement(paths)
+    }
+
+    private func capturePruneStateSnapshot() -> PruneStateSnapshot {
+        PruneStateSnapshot(
+            snapshot: snapshot,
+            totalBytes: totalBytes,
+            scannedFiles: scannedFiles,
+            buckets: buckets,
+            dirIndex: dirIndex,
+            childEdges: childEdges,
+            fileLeaves: fileLeaves,
+            treeChildrenCache: treeChildrenCache,
+            largeFileLeaves: largeFileLeaves,
+            compactedLargeFileTopN: compactedLargeFileTopN,
+            perRootStaging: perRootStaging,
+            perRootActive: perRootProgressActive,
+            perRootFinished: perRootFinishedSlim,
+            perRootSorted: perRootProgressSorted,
+            previousPrunedPaths: lastPrunedPaths
+        )
+    }
+
+    private nonisolated static func makePrunePlan(
+        from state: PruneStateSnapshot,
+        matcher: PrunedPathMatcher
+    ) -> PrunePlan {
+        var sourcePerRoot = state.perRootStaging
+        if sourcePerRoot.isEmpty {
+            sourcePerRoot = state.perRootFinished
+            for (path, progress) in state.perRootActive {
+                sourcePerRoot[path] = progress
+            }
+        }
+
+        let rowsByID = Dictionary(uniqueKeysWithValues: state.snapshot.rows.map { ($0.id, $0) })
+        let treeCacheContributions = TreeCacheContributionIndex(cache: state.treeChildrenCache)
+        // large-file-only 会话不构建 rows/fileLeaves/dirIndex；Top-N heap 是用户可删
+        // 文件唯一的精确贡献来源。主 heap 与 compact cache 可能在过渡态同时存在，
+        // 按 path 去重并取较大字节，绝不能把同一叶子累计两次。
+        var largeFileContributions: [String: PruneContribution] = [:]
+        let largeFileCandidates = state.largeFileLeaves.snapshot()
+            + (state.compactedLargeFileTopN ?? [])
+        largeFileContributions.reserveCapacity(largeFileCandidates.count)
+        for leaf in largeFileCandidates {
+            let candidate = PruneContribution(
+                path: leaf.path,
+                bytes: leaf.bytes,
+                logicalBytes: leaf.bytes,
+                fileCount: 1
+            )
+            if let current = largeFileContributions[leaf.path], current.bytes >= candidate.bytes {
+                continue
+            }
+            largeFileContributions[leaf.path] = candidate
+        }
+        func contribution(for path: String) -> PruneContribution? {
+            if let leaf = state.fileLeaves[path] {
+                return PruneContribution(path: path, bytes: leaf.bytes,
+                                         logicalBytes: leaf.bytes, fileCount: 1)
+            }
+            if let agg = state.dirIndex[path] {
+                return PruneContribution(path: path, bytes: agg.bytes,
+                                         logicalBytes: agg.logicalBytes, fileCount: agg.fileCount)
+            }
+            if let bucket = state.buckets[path] {
+                return PruneContribution(path: path, bytes: bucket.bytes,
+                                         logicalBytes: bucket.logicalBytes, fileCount: bucket.fileCount)
+            }
+            if let row = rowsByID[path] {
+                return PruneContribution(path: path, bytes: row.bytes,
+                                         logicalBytes: row.logicalBytes, fileCount: row.fileCount)
+            }
+            if let progress = sourcePerRoot[path] {
+                return PruneContribution(path: path, bytes: progress.bytes,
+                                         logicalBytes: progress.bytes, fileCount: progress.fileCount)
+            }
+            if let largeFile = largeFileContributions[path] {
+                return largeFile
+            }
+            // deep-index=off 时深层目录不会进入 dirIndex/fileLeaves/buckets；用户展开树后，
+            // 完整按需 cache 是文件移入废纸篓前最后一份精确子树贡献。
+            return treeCacheContributions.contribution(for: path)
+        }
+
+        let indexedContributions = matcher.roots.compactMap(contribution(for:))
+        let indexedMatcher = PrunedPathMatcher(paths: indexedContributions.map(\.path))
+        let perRootContributions = sourcePerRoot.values.compactMap { progress -> PruneContribution? in
+            guard matcher.contains(progress.rootPath),
+                  !indexedMatcher.contains(progress.rootPath) else { return nil }
+            return PruneContribution(path: progress.rootPath, bytes: progress.bytes,
+                                     logicalBytes: progress.bytes, fileCount: progress.fileCount)
+        }
+        let deletedContributions = indexedContributions + perRootContributions
+        let totalDeletedBytes = deletedContributions.reduce(Int64(0)) { $0 &+ $1.bytes }
+        let totalDeletedFiles = deletedContributions.reduce(0) { $0 &+ $1.fileCount }
+
+        // 一次构建“祖先 -> 总扣减量”，snapshot rows / dirIndex / perRoot 后续均 O(1) 查表。
+        var ancestorDecrements: [String: PruneContribution] = [:]
+        ancestorDecrements.reserveCapacity(deletedContributions.count * 4)
         for item in deletedContributions {
-            let delPath = item.path
-            // 沿路径回溯到顶层 "/"
-            var cursor = (delPath as NSString).deletingLastPathComponent
+            var cursor = String._gsyParentPath(of: item.path)
             while !cursor.isEmpty, cursor != "/" {
-                // 该祖先若本身在删除范围里，下面整段会 removeValue 掉，回溯无意义；早跳。
-                if isUnderDeleted(cursor) { break }
-                accumulate(into: cursor, bytes: item.bytes, logicalBytes: item.logicalBytes, fileCount: item.fileCount)
-                let parent = (cursor as NSString).deletingLastPathComponent
+                if matcher.contains(cursor) { break }
+                let delta = PruneContribution(path: cursor, bytes: item.bytes,
+                                              logicalBytes: item.logicalBytes,
+                                              fileCount: item.fileCount)
+                if var current = ancestorDecrements[cursor] {
+                    current.add(delta)
+                    ancestorDecrements[cursor] = current
+                } else {
+                    ancestorDecrements[cursor] = delta
+                }
+                let parent = String._gsyParentPath(of: cursor)
                 if parent == cursor { break }
                 cursor = parent
             }
         }
-        for (ancestor, dec) in pendingDecrements {
-            guard var agg = dirIndex[ancestor] else { continue }
+
+        var newRows: [RowItem] = []
+        newRows.reserveCapacity(state.snapshot.rows.count)
+        var removedRowBytes: Int64 = 0
+        for row in state.snapshot.rows {
+            if matcher.contains(row.id) {
+                removedRowBytes &+= row.bytes
+                continue
+            }
+            guard let dec = ancestorDecrements[row.id],
+                  dec.bytes > 0 || dec.logicalBytes > 0 || dec.fileCount > 0 else {
+                newRows.append(row)
+                continue
+            }
+            newRows.append(RowItem(
+                id: row.id,
+                url: row.url,
+                title: row.title,
+                isDirectory: row.isDirectory,
+                bytes: max(0, row.bytes - dec.bytes),
+                logicalBytes: max(0, row.logicalBytes - dec.logicalBytes),
+                fileCount: max(0, row.fileCount - dec.fileCount),
+                verdict: row.verdict,
+                rejection: row.rejection,
+                vendorName: row.vendorName,
+                vendorNote: row.vendorNote,
+                runningBundleIDPrefix: row.runningBundleIDPrefix,
+                isActive: row.isActive,
+                modificationDate: row.modificationDate
+            ))
+        }
+        let snapshotBytesToSubtract = totalDeletedBytes > 0 ? totalDeletedBytes : removedRowBytes
+        let nextSnapshot = ScanSnapshot(
+            categoryID: state.snapshot.categoryID,
+            rows: newRows,
+            totalBytes: max(0, state.snapshot.totalBytes - snapshotBytesToSubtract),
+            scannedFileCount: max(0, state.snapshot.scannedFileCount - totalDeletedFiles),
+            isFinished: state.snapshot.isFinished,
+            elapsed: state.snapshot.elapsed,
+            bytesPerSecond: state.snapshot.bytesPerSecond,
+            estimatedRemaining: state.snapshot.estimatedRemaining
+        )
+
+        var nextDirIndex = state.dirIndex
+        for (ancestor, dec) in ancestorDecrements {
+            guard var agg = nextDirIndex[ancestor] else { continue }
             agg.bytes = max(0, agg.bytes - dec.bytes)
             agg.logicalBytes = max(0, agg.logicalBytes - dec.logicalBytes)
             agg.fileCount = max(0, agg.fileCount - dec.fileCount)
-            dirIndex[ancestor] = agg
+            nextDirIndex[ancestor] = agg
         }
+        nextDirIndex = nextDirIndex.filter { !matcher.contains($0.key) }
 
-        // 多根扫描的顶层行（推荐清理 / 开发者构建产物）来自 perRootProgress，
-        // 不读 dirIndex。删除根本身时可能没有 snapshot/dirIndex 贡献量，仍必须
-        // 直接从 perRoot 集合移除；删除根下子项时则同步扣减父级。
-        if !sourcePerRootForPrune.isEmpty {
-            var nextPerRoot: [String: PerRootProgress] = [:]
-            nextPerRoot.reserveCapacity(sourcePerRootForPrune.count)
-            for (rootPath, progress) in sourcePerRootForPrune {
-                if isUnderDeleted(rootPath) { continue }
-                let dec = deletedContributions.reduce((bytes: Int64(0), fileCount: 0)) { acc, item in
-                    guard isAncestor(rootPath, of: item.path) else { return acc }
-                    return (acc.bytes + item.bytes, acc.fileCount + item.fileCount)
-                }
-                if dec.bytes > 0 || dec.fileCount > 0 {
-                    var updated = progress
-                    updated.bytes = max(0, updated.bytes - dec.bytes)
-                    updated.fileCount = max(0, updated.fileCount - dec.fileCount)
-                    nextPerRoot[rootPath] = updated
-                } else {
-                    nextPerRoot[rootPath] = progress
-                }
-            }
-            perRootStaging = nextPerRoot
-            syncPerRootPublished(from: nextPerRoot)
-        }
-
-        let dirKeys = dirIndex.keys.filter { isUnderDeleted($0) }
-        for k in dirKeys { dirIndex.removeValue(forKey: k) }
-        let leafKeys = fileLeaves.keys.filter { isUnderDeleted($0) }
-        for k in leafKeys { fileLeaves.removeValue(forKey: k) }
-
-        // **v2026.06.22**：把 LargeFilesView 的数据源 `largeFileLeaves` 一并清理。
-        // 修复用户反馈"大文件列表删除后内容还在"——这条链路过去**完全独立**于 dirIndex/childEdges，
-        // 历史 pruneDeleted 只动后两者，已删大文件永远残留 heap 直到下次 startScan 重置。
-        // compactedLargeFileTopN（M3 内存优化后的二级缓存）同样需要清理，否则 compact
-        // 之后大文件视图回退到该缓存时还会显示已删项。
-        let largeRemoved = largeFileLeaves.removeAll(where: { isUnderDeleted($0.path) })
-        if largeRemoved > 0 {
-            GSYLog.info(.scan, "pruneDeleted largeFileLeaves 剔除 \(largeRemoved)")
-        }
-        if var cache = compactedLargeFileTopN {
-            let beforeCache = cache.count
-            cache.removeAll(where: { isUnderDeleted($0.path) })
-            if cache.count != beforeCache {
-                compactedLargeFileTopN = cache
-                GSYLog.info(.scan, "pruneDeleted compactedLargeFileTopN 剔除 \(beforeCache - cache.count)")
+        var nextPerRoot: [String: PerRootProgress] = [:]
+        nextPerRoot.reserveCapacity(sourcePerRoot.count)
+        for (rootPath, progress) in sourcePerRoot where !matcher.contains(rootPath) {
+            if let dec = ancestorDecrements[rootPath], dec.bytes > 0 || dec.fileCount > 0 {
+                var updated = progress
+                updated.bytes = max(0, updated.bytes - dec.bytes)
+                updated.fileCount = max(0, updated.fileCount - dec.fileCount)
+                nextPerRoot[rootPath] = updated
+            } else {
+                nextPerRoot[rootPath] = progress
             }
         }
-
-        // childEdges 双向：把 key 命中的整段去掉；同时把别的父节点 children set 里的命中项剔除。
-        let edgeKeysToDrop = childEdges.keys.filter { isUnderDeleted($0) }
-        for k in edgeKeysToDrop { childEdges.removeValue(forKey: k) }
-        for (parent, kids) in childEdges {
-            let pruned = kids.filter { !isUnderDeleted($0) }
-            if pruned.count != kids.count {
-                childEdges[parent] = pruned
+        var nextActive: [String: PerRootProgress] = [:]
+        var nextFinished: [String: PerRootProgress] = [:]
+        nextActive.reserveCapacity(nextPerRoot.count)
+        nextFinished.reserveCapacity(nextPerRoot.count)
+        for (path, progress) in nextPerRoot {
+            if progress.isFinished {
+                nextFinished[path] = progress
+            } else {
+                nextActive[path] = progress
             }
         }
+        let nextSorted = nextPerRoot.values.sorted { $0.rootPath < $1.rootPath }
 
-        // ③ **v1.5.3 修订**：原先这里粗暴 `treeChildrenCache.removeAll()`，
-        // 后果是连"根目录"那条 cache 也被一起干掉，view 重渲拉根目录 → cache miss
-        // → 异步 fetch → 整页 "Loading children…"（用户截图：空白页）。
-        //
-        // 正确做法是**静默 patch**：
-        //   a) cacheKey 的 path 部分本身是被删项或其子孙 → removeValue（这条 cache 已经无意义）
-        //   b) cacheKey 的 path 不在被删范围内 → 行内 `rows.filter` 剔掉已删孩子
-        //      （即便它不是真正的"父"，filter 也是 O(n) 安全 no-op）
-        // 这样根目录 cache 与所有未受影响的祖先 cache 都保留同步路径，
-        // view 重渲走 directChildren 时直接命中 cache，根本不触发 fetch。
-        var newCache: [String: [TreeRow]] = [:]
-        newCache.reserveCapacity(treeChildrenCache.count)
-        for (cacheKey, rows) in treeChildrenCache {
-            // cacheKey 形如 "path|sortKey.rawValue"，按最后一个 `|` 分割。
-            // 任何 sortKey 都用 alphanumeric raw，不会出现在 path 里，简单 split 即可。
-            let parentPath: String = {
-                if let pipeIdx = cacheKey.lastIndex(of: "|") {
-                    return String(cacheKey[..<pipeIdx])
-                }
-                return cacheKey
-            }()
-            // a) 这条 cache 自己就在被删范围内 → 整段丢
-            if isUnderDeleted(parentPath) { continue }
-            // b) 行内剔除已删孩子；filter 不命中时直接复用旧数组
-            let pruned = rows.filter { !isUnderDeleted($0.path) }
-            newCache[cacheKey] = (pruned.count == rows.count) ? rows : pruned
+        var nextLargeFileLeaves = state.largeFileLeaves
+        let largeRemoved = nextLargeFileLeaves.removeAll { matcher.contains($0.path) }
+        var nextCompacted = state.compactedLargeFileTopN
+        let compactedLargeRemoved: Int
+        if var cache = nextCompacted {
+            let before = cache.count
+            cache.removeAll { matcher.contains($0.path) }
+            compactedLargeRemoved = before - cache.count
+            nextCompacted = cache
+        } else {
+            compactedLargeRemoved = 0
         }
-        treeChildrenCache = newCache
+
+        var nextChildEdges: [String: Set<String>] = [:]
+        nextChildEdges.reserveCapacity(state.childEdges.count)
+        for (parent, children) in state.childEdges where !matcher.contains(parent) {
+            nextChildEdges[parent] = Set(children.lazy.filter { !matcher.contains($0) })
+        }
+
+        var nextTreeCache: [String: [TreeRow]] = [:]
+        nextTreeCache.reserveCapacity(state.treeChildrenCache.count)
+        for (cacheKey, rows) in state.treeChildrenCache {
+            let parentPath: String
+            if let pipe = cacheKey.lastIndex(of: "|") {
+                parentPath = String(cacheKey[..<pipe])
+            } else {
+                parentPath = cacheKey
+            }
+            if matcher.contains(parentPath) { continue }
+            nextTreeCache[cacheKey] = rows.filter { !matcher.contains($0.path) }
+        }
+
+        return PrunePlan(
+            prunedRoots: matcher.roots,
+            snapshot: nextSnapshot,
+            totalBytes: snapshotBytesToSubtract > 0
+                ? max(0, state.totalBytes - snapshotBytesToSubtract)
+                : state.totalBytes,
+            scannedFiles: totalDeletedFiles > 0
+                ? max(0, state.scannedFiles - totalDeletedFiles)
+                : state.scannedFiles,
+            buckets: state.buckets.filter { !matcher.contains($0.key) },
+            dirIndex: nextDirIndex,
+            childEdges: nextChildEdges,
+            fileLeaves: state.fileLeaves.filter { !matcher.contains($0.key) },
+            treeChildrenCache: nextTreeCache,
+            largeFileLeaves: nextLargeFileLeaves,
+            compactedLargeFileTopN: nextCompacted,
+            perRootStaging: nextPerRoot,
+            perRootActive: nextActive,
+            perRootFinished: nextFinished,
+            perRootFinishedCount: nextFinished.count,
+            perRootSorted: nextSorted,
+            largeRemoved: largeRemoved,
+            compactedLargeRemoved: compactedLargeRemoved,
+            ranOnMainThread: Thread.isMainThread
+        )
+    }
+
+    /// Compare-and-swap 已在调用方完成。这里不再做任何 keys.filter / sort / reduce；
+    /// Dictionary/Array storage 赋值是 O(1) COW 提交，随后只发布必要 revision。
+    private func commitPrunePlan(_ plan: PrunePlan) {
+        snapshot = plan.snapshot
+        totalBytes = plan.totalBytes
+        scannedFiles = plan.scannedFiles
+        buckets = plan.buckets
+        dirIndex = plan.dirIndex
+        childEdges = plan.childEdges
+        fileLeaves = plan.fileLeaves
+        treeChildrenCache = plan.treeChildrenCache
+        largeFileLeaves = plan.largeFileLeaves
+        compactedLargeFileTopN = plan.compactedLargeFileTopN
+        perRootStaging = plan.perRootStaging
+        perRootProgressActive = plan.perRootActive
+        perRootFinishedSlim = plan.perRootFinished
+        perRootFinishedCount = plan.perRootFinishedCount
+        perRootProgressSorted = plan.perRootSorted
+
+        lastPrunedPaths = plan.prunedRoots
+        lastPrunePlanRanOnMainThread = plan.ranOnMainThread
+        lastPrunePlanDurationNanoseconds = plan.durationNanoseconds
         bumpChildrenCacheVersion()
-
-        // v1.5.4：删除完毕 → 让 TreeBrowserView 立刻重建扁平 flatRows（移除已删行）。
-        // v1.5.7：把"本次升 structuralRevision 的根因是这些 path 被删"以 hint 传出，
-        // [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L190)
-        // 在 onChange 闭包里通过 [consumeLastPrunedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L351)
-        // 一次性取走，走"只剔子树"的增量 patch，避免万级目录整树 rebuild。
-        lastPrunedPaths = Array(normalized)
         bumpStructuralRevision()
-
-        // v2026.07：对**订阅 @Published 的视图**广播"store 已剪枝"，
-        // 让 [LargeFilesView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/LargeFilesView.swift)
-        // 等 non-tree/list 消费者能 `.onReceive($storeRevision)` 强同步。
-        // 不复用 snapshot：snapshot 的相等短路 (`snapshot == nextSnapshot { return }`)
-        // 会把"内容未变但 store 已剪枝"的信号吞掉；storeRevision 单调递增，不会被短路。
         storeRevision &+= 1
 
-        // 卷容量重新探测：清完反馈"空闲变多"。
-        refreshVolumeCapacity()
-
+        if plan.largeRemoved > 0 {
+            GSYLog.info(.scan, "pruneDeleted largeFileLeaves 剔除 \(plan.largeRemoved)")
+        }
+        if plan.compactedLargeRemoved > 0 {
+            GSYLog.info(.scan, "pruneDeleted compactedLargeFileTopN 剔除 \(plan.compactedLargeRemoved)")
+        }
     }
 
     /// v1.3.zz：暴露给 [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
@@ -3287,13 +3861,8 @@ public final class ScanCoordinator: ObservableObject {
         if whitelistSnapshot.isEmpty {
             filtered = unsorted
         } else {
-            filtered = unsorted.filter { row in
-                let p = row.url.path
-                if whitelistSnapshot.contains(p) { return false }
-                for entry in whitelistSnapshot where p.hasPrefix(entry + "/") {
-                    return false
-                }
-                return true
+            filtered = unsorted.filter {
+                !Self.isWhitelisted($0.url.path, in: whitelistSnapshot)
             }
         }
         if finished {
@@ -3425,7 +3994,9 @@ public final class ScanCoordinator: ObservableObject {
         fileLeavesFull: [String: Int64]? = nil,
         childEdges: [String: Set<String>]? = nil,
         treeChildrenCache: [String: [TreeRow]]? = nil,
-        perRootStaging: [String: PerRootProgress]? = nil
+        perRootStaging: [String: PerRootProgress]? = nil,
+        totalBytes: Int64? = nil,
+        scannedFiles: Int? = nil
     ) {
         if let snap = snapshot {
             self.snapshot = snap
@@ -3483,6 +4054,13 @@ public final class ScanCoordinator: ObservableObject {
             self.perRootStaging = perRootStaging
             syncPerRootPublished(from: perRootStaging)
         }
+        if let totalBytes {
+            self.totalBytes = totalBytes
+        }
+        if let scannedFiles {
+            self.scannedFiles = scannedFiles
+        }
+        notePruneSourceMutation()
     }
 
     func _bucketsKeysForTesting() -> [String] { Array(buckets.keys) }
@@ -3495,6 +4073,29 @@ public final class ScanCoordinator: ObservableObject {
     func _fileLeavesKeysForTesting() -> [String] { Array(fileLeaves.keys) }
     func _childEdgesForTesting() -> [String: Set<String>] { childEdges }
     func _treeChildrenCacheForTesting() -> [String: [TreeRow]] { treeChildrenCache }
+    func _prunePlanDiagnosticsForTesting() -> (ranOnMainThread: Bool?, durationNanoseconds: UInt64?) {
+        (lastPrunePlanRanOnMainThread, lastPrunePlanDurationNanoseconds)
+    }
+    func _pruneLifecycleDiagnosticsForTesting() -> (
+        mergeRanOnMainThread: Bool?,
+        retirementRanOnMainThread: Bool?,
+        retirementDurationNanoseconds: UInt64?
+    ) {
+        (
+            lastPruneTombstoneMergeRanOnMainThread,
+            lastPruneRetirementRanOnMainThread,
+            lastPruneRetirementDurationNanoseconds
+        )
+    }
+    func _deletedTombstoneRootsForTesting() -> [String] {
+        deletedPathTombstones.matcher.roots
+    }
+    func _isDeletedTombstonedForTesting(_ path: String) -> Bool {
+        isDeletedTombstoned(path)
+    }
+    func _aggregateTotalsForTesting() -> (bytes: Int64, files: Int) {
+        (totalBytes, scannedFiles)
+    }
     func _treeChildrenInFlightForTesting() -> Set<String> { treeChildrenInFlight }
     func _storeFetchedChildrenForTesting(path: String, sortedBy key: TreeSortKey, rows: [TreeRow]) {
         storeFetchedChildren(path: path, sortedBy: key, rows: rows)

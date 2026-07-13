@@ -472,7 +472,8 @@ final class RegressionRunner {
 
     // MARK: - 安全 / 删除 / Helper
 
-    /// TrashPipeline dryRun：3 个 fixture 文件 + 1 个不存在 + 1 个 vendor 路径（应被 veto）。
+    /// TrashPipeline dryRun：3 个 fixture 文件 + 1 个不存在 + 1 个 forbid 路径。
+    /// SECURITY.md 要求批级原子安全：任一项被 veto，整批都不得进入 filesystem 预演。
     private func trashPipelineDryRun() async throws {
         let scen = ScenarioBuilder.build(prefix: "RegrTrash") { root in
             root.file("a.txt", contents: Data("a".utf8))
@@ -490,15 +491,13 @@ final class RegressionRunner {
         )
         let errStr = err ?? "-"
         log("[REGR] case=\(caseID) present=\(present) skipped=\(skipped) err=\(errStr)")
-        // 3 个 present 文件被允许；missing + homeForbid 都被 skip（一个 missing、一个 forbid）
-        assertEqual(present, 3, "present count")
-        assertEqual(skipped, 2, "skipped count")
+        // homeForbid 触发批级原子拒绝；3 个真实文件和 missing 都随整批 blocked。
+        assertEqual(present, 0, "atomic safety rejection has no present paths")
+        assertEqual(skipped, 5, "entire batch skipped after one forbid")
         assertTrue(
             err?.contains("拦截") == true
-                || err?.contains("不存在") == true
-                || err?.contains("blocked") == true
-                || err?.contains("missing") == true,
-            "err message contains reason (zh: 拦截/不存在, en: blocked/missing)"
+                || err?.contains("blocked") == true,
+            "err message contains atomic safety reason (zh: 拦截, en: blocked)"
         )
         // 真实文件还在
         let fm = FileManager.default

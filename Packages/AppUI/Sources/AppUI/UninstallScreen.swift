@@ -104,7 +104,7 @@ public struct UninstallScreen: View {
     public init(
         store: UninstallStore? = nil,
         pipeline: (any DeletionPipeline)? = nil,
-        vendors: [VendorRule] = []
+        vendors: [VendorRule]
     ) {
         // 若没传 store，用注入的 vendors 现场装一个 AppUninstaller
         if let store {
@@ -113,7 +113,7 @@ public struct UninstallScreen: View {
             let unins = AppUninstaller(vendorRules: vendors)
             self.store = UninstallStore(uninstaller: unins)
         }
-        self.pipeline = pipeline ?? TrashPipeline(vendors: vendors)
+        self.pipeline = pipeline ?? TrashPipeline(vendors: vendors, whitelistStore: .shared)
     }
 
     public var body: some View {

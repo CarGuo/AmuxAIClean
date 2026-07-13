@@ -85,8 +85,11 @@ xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Deb
 # Release（默认 Developer ID 签名 + DMG，不公证）
 VERSION=1.5.6 ./Scripts/build_release.sh --no-notarize
 
-# 公证发布（Developer ID 签名 + App/DMG Notary + staple + Gatekeeper 校验）
+# 公证发布（Developer ID 签 App/DMG，只公证并 staple/校验最终 DMG）
 VERSION=1.5.6 AMUX_CLEAN_NOTARY_KEYCHAIN_PROFILE=amux-notary ./Scripts/build_release.sh --notarize
+
+# 不构建、不联网：锁定 DMG-only 公证命令顺序与相对路径合同
+./Scripts/test_release_contract.sh
 ```
 
 ### 测试（`swift test` 是**唯一**入口，不允许 agent 直接 `xcodebuild test`）

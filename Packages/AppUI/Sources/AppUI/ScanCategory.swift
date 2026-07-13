@@ -189,4 +189,19 @@ public enum ScanCategories {
             )
         ]
     }
+
+    /// Smart Care 的“系统与日志”范围。
+    ///
+    /// 普通模式的三个范围必须映射到互不重叠的真实扫描计划：
+    /// - core：日志；
+    /// - appCaches：由 CommonAppCacheScanner 扫应用缓存；
+    /// - developerCaches：由 DevArtifactScanner 扫开发者构建产物。
+    ///
+    /// 因此这里不能直接复用 `recommended` 的全部 5 根：`~/Library/Caches`
+    /// 与 DerivedData 会分别和后两个范围重复，Downloads / .Trash 又会被从整个
+    /// home 勘察开发者产物的 scanner 二次遍历。个人文件与废纸篓仍保留在专业模式。
+    public static func smartCareCore(home: String = NSHomeDirectory()) -> [ScanCategory] {
+        let coreIDs: Set<String> = ["user.logs"]
+        return recommended(home: home).filter { coreIDs.contains($0.id) }
+    }
 }

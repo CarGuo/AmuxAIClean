@@ -197,7 +197,7 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
         if let parsed = Self.tryDecodeAdvice(cleaned) {
             advice = parsed
         } else {
-            GSYLog.warning(.settings, "[AIKit] advice decode fallback, raw=\(raw.prefix(120))")
+            GSYLog.warning(.settings, "[AIKit] advice decode fallback, raw=\(raw.utf8.count)B")
             advice = .unparsable(rawText: raw)
         }
 

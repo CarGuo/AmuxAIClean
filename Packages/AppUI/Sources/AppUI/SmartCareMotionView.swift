@@ -71,6 +71,64 @@ struct SmartCareCoreMotionView: NSViewRepresentable {
     }
 }
 
+/// A narrow Core Animation beam used by scan status surfaces and active stage
+/// connectors. Keeping the repeating movement in CALayer avoids scheduling
+/// frame-by-frame SwiftUI body updates while a large scan is running.
+struct SmartCareSignalBeamView: NSViewRepresentable {
+    let isActive: Bool
+    let reduceMotion: Bool
+
+    func makeNSView(context: Context) -> SmartCareSignalBeamHostView {
+        let view = SmartCareSignalBeamHostView()
+        view.configure(isActive: isActive, reduceMotion: reduceMotion)
+        return view
+    }
+
+    func updateNSView(_ nsView: SmartCareSignalBeamHostView, context: Context) {
+        nsView.configure(isActive: isActive, reduceMotion: reduceMotion)
+    }
+}
+
+/// The activity copy itself moves and glows on Core Animation layers. The
+/// surrounding SwiftUI badge remains static so motion communicates scan work,
+/// rather than looking like a decorative loading border.
+struct SmartCareAnimatedActivityTextView: NSViewRepresentable {
+    let text: String
+    let activity: SmartCareScanActivity
+    let reduceMotion: Bool
+
+    func makeNSView(context: Context) -> SmartCareAnimatedActivityTextHostView {
+        let view = SmartCareAnimatedActivityTextHostView()
+        view.configure(text: text, activity: activity, reduceMotion: reduceMotion)
+        return view
+    }
+
+    func updateNSView(_ nsView: SmartCareAnimatedActivityTextHostView, context: Context) {
+        nsView.configure(text: text, activity: activity, reduceMotion: reduceMotion)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize,
+                      nsView: SmartCareAnimatedActivityTextHostView,
+                      context: Context) -> CGSize? {
+        nsView.intrinsicContentSize
+    }
+}
+
+struct SmartCareStagePulseView: NSViewRepresentable {
+    let isActive: Bool
+    let reduceMotion: Bool
+
+    func makeNSView(context: Context) -> SmartCareStagePulseHostView {
+        let view = SmartCareStagePulseHostView()
+        view.configure(isActive: isActive, reduceMotion: reduceMotion)
+        return view
+    }
+
+    func updateNSView(_ nsView: SmartCareStagePulseHostView, context: Context) {
+        nsView.configure(isActive: isActive, reduceMotion: reduceMotion)
+    }
+}
+
 final class SmartCareAmbientHostView: NSView {
     private let colorField = CAGradientLayer()
     private let grid = CAShapeLayer()
@@ -214,6 +272,312 @@ final class SmartCareAmbientHostView: NSView {
             )
         }
         return path
+    }
+}
+
+final class SmartCareSignalBeamHostView: NSView {
+    private let beam = CAGradientLayer()
+    private var isActive = false
+    private var reduceMotion = false
+    private var isConfigured = false
+    private var lastSize: CGSize = .zero
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        layer?.addSublayer(beam)
+        beam.startPoint = CGPoint(x: 0, y: 0.5)
+        beam.endPoint = CGPoint(x: 1, y: 0.5)
+        beam.locations = [0, 0.26, 0.72, 1]
+        updateColors()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        guard bounds.size != lastSize else { return }
+        lastSize = bounds.size
+        layer?.cornerRadius = bounds.height / 2
+        let beamWidth = max(22, bounds.width * 0.42)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        beam.frame = CGRect(x: -beamWidth, y: 0, width: beamWidth, height: bounds.height)
+        CATransaction.commit()
+        restartAnimation()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateColors()
+    }
+
+    func configure(isActive: Bool, reduceMotion: Bool) {
+        let changed = self.isActive != isActive || self.reduceMotion != reduceMotion
+        guard !isConfigured || changed else { return }
+        isConfigured = true
+        self.isActive = isActive
+        self.reduceMotion = reduceMotion
+        restartAnimation()
+    }
+
+    private func updateColors() {
+        beam.colors = [
+            NSColor.clear.cgColor,
+            SmartCareMotionPalette.blue.withAlphaComponent(0.95).cgColor,
+            SmartCareMotionPalette.teal.withAlphaComponent(0.88).cgColor,
+            NSColor.clear.cgColor
+        ]
+    }
+
+    private func restartAnimation() {
+        beam.removeAllAnimations()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        beam.opacity = isActive ? (reduceMotion ? 0.48 : 1) : 0
+        beam.position.x = reduceMotion ? bounds.midX : -beam.bounds.width / 2
+        CATransaction.commit()
+
+        guard isActive, !reduceMotion, bounds.width > 0 else { return }
+        let animation = CABasicAnimation(keyPath: "position.x")
+        animation.fromValue = -beam.bounds.width / 2
+        animation.toValue = bounds.width + beam.bounds.width / 2
+        animation.duration = 1.25
+        animation.repeatCount = .infinity
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        beam.add(animation, forKey: "smart-care-signal-beam")
+    }
+}
+
+final class SmartCareAnimatedActivityTextHostView: NSView {
+    private let label = NSTextField(labelWithString: "")
+    private var activity: SmartCareScanActivity = .finalizing
+    private var reduceMotion = false
+    private var isConfigured = false
+
+    var animationKeysForTesting: [String] {
+        label.layer?.animationKeys() ?? []
+    }
+
+    var displayedTextForTesting: String {
+        label.stringValue
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        let baseFont = NSFont.systemFont(ofSize: 22, weight: .bold)
+        let roundedDescriptor = baseFont.fontDescriptor.withDesign(.rounded)
+            ?? baseFont.fontDescriptor
+        label.font = NSFont(descriptor: roundedDescriptor, size: 22)
+        label.textColor = .labelColor
+        label.alignment = .center
+        label.lineBreakMode = .byClipping
+        label.maximumNumberOfLines = 1
+        label.wantsLayer = true
+        label.layer?.masksToBounds = false
+        label.setAccessibilityElement(false)
+        addSubview(label)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let size = label.intrinsicContentSize
+        return NSSize(width: size.width, height: size.height + 7)
+    }
+
+    override func layout() {
+        super.layout()
+        label.frame = bounds.insetBy(dx: 0, dy: 3.5)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        label.textColor = .labelColor
+        updateGlowColor()
+    }
+
+    func configure(text: String,
+                   activity: SmartCareScanActivity,
+                   reduceMotion: Bool) {
+        let textChanged = label.stringValue != text
+        let motionChanged = self.activity != activity || self.reduceMotion != reduceMotion
+        guard !isConfigured || textChanged || motionChanged else { return }
+        isConfigured = true
+
+        if textChanged, !label.stringValue.isEmpty, !reduceMotion {
+            let transition = CATransition()
+            transition.type = .push
+            transition.subtype = .fromTop
+            transition.duration = 0.28
+            transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            label.layer?.add(transition, forKey: "smart-care-activity-transition")
+        }
+
+        label.stringValue = text
+        self.activity = activity
+        self.reduceMotion = reduceMotion
+        invalidateIntrinsicContentSize()
+        needsLayout = true
+        updateGlowColor()
+        restartAnimations()
+    }
+
+    private func updateGlowColor() {
+        let color: NSColor
+        switch activity.stage {
+        case .core:
+            color = SmartCareMotionPalette.blue
+        case .appCaches:
+            color = SmartCareMotionPalette.teal
+        case .developerCaches:
+            color = SmartCareMotionPalette.amber
+        case nil:
+            color = SmartCareMotionPalette.teal
+        }
+        label.layer?.shadowColor = color.cgColor
+        label.layer?.shadowOffset = .zero
+        label.layer?.shadowRadius = 6
+    }
+
+    private func restartAnimations() {
+        label.layer?.removeAnimation(forKey: "smart-care-activity-bounce")
+        label.layer?.removeAnimation(forKey: "smart-care-activity-glow")
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        label.layer?.shadowOpacity = reduceMotion ? 0.1 : 0.14
+        label.layer?.transform = CATransform3DIdentity
+        CATransaction.commit()
+        guard !reduceMotion else { return }
+
+        let bounce = CABasicAnimation(keyPath: "transform.translation.y")
+        bounce.fromValue = 0
+        bounce.toValue = 2.6
+        bounce.duration = 0.78
+        bounce.autoreverses = true
+        bounce.repeatCount = .infinity
+        bounce.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        label.layer?.add(bounce, forKey: "smart-care-activity-bounce")
+
+        let glow = CABasicAnimation(keyPath: "shadowOpacity")
+        glow.fromValue = 0.1
+        glow.toValue = 0.42
+        glow.duration = 1.08
+        glow.autoreverses = true
+        glow.repeatCount = .infinity
+        glow.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        label.layer?.add(glow, forKey: "smart-care-activity-glow")
+    }
+}
+
+final class SmartCareStagePulseHostView: NSView {
+    private let pulseRing = CAShapeLayer()
+    private let orbitRing = CAShapeLayer()
+    private var isActive = false
+    private var reduceMotion = false
+    private var isConfigured = false
+    private var lastSize: CGSize = .zero
+
+    var animationKeysForTesting: [String] {
+        (pulseRing.animationKeys() ?? []) + (orbitRing.animationKeys() ?? [])
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        for ring in [pulseRing, orbitRing] {
+            ring.fillColor = nil
+            ring.lineCap = .round
+            layer?.addSublayer(ring)
+        }
+        orbitRing.strokeStart = 0.02
+        orbitRing.strokeEnd = 0.34
+        updateColors()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        guard bounds.size != lastSize else { return }
+        lastSize = bounds.size
+        let path = CGPath(ellipseIn: bounds.insetBy(dx: 3, dy: 3), transform: nil)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for ring in [pulseRing, orbitRing] {
+            ring.frame = bounds
+            ring.path = path
+        }
+        CATransaction.commit()
+        restartAnimations()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateColors()
+    }
+
+    func configure(isActive: Bool, reduceMotion: Bool) {
+        let changed = self.isActive != isActive || self.reduceMotion != reduceMotion
+        guard !isConfigured || changed else { return }
+        isConfigured = true
+        self.isActive = isActive
+        self.reduceMotion = reduceMotion
+        restartAnimations()
+    }
+
+    private func updateColors() {
+        pulseRing.strokeColor = SmartCareMotionPalette.blue.withAlphaComponent(0.5).cgColor
+        pulseRing.lineWidth = 1.6
+        orbitRing.strokeColor = SmartCareMotionPalette.teal.cgColor
+        orbitRing.lineWidth = 2.2
+    }
+
+    private func restartAnimations() {
+        pulseRing.removeAllAnimations()
+        orbitRing.removeAllAnimations()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pulseRing.opacity = isActive ? (reduceMotion ? 0.24 : 0.62) : 0
+        orbitRing.opacity = isActive ? 0.92 : 0
+        pulseRing.transform = CATransform3DIdentity
+        CATransaction.commit()
+        guard isActive, !reduceMotion, bounds.width > 0 else { return }
+
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = 0.9
+        scale.toValue = 1.18
+        scale.duration = 1.2
+        scale.repeatCount = .infinity
+        scale.timingFunction = CAMediaTimingFunction(name: .easeOut)
+
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.62
+        fade.toValue = 0.04
+        fade.duration = 1.2
+        fade.repeatCount = .infinity
+        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        pulseRing.add(scale, forKey: "smart-care-stage-pulse-scale")
+        pulseRing.add(fade, forKey: "smart-care-stage-pulse-fade")
+
+        let orbit = CABasicAnimation(keyPath: "transform.rotation.z")
+        orbit.fromValue = 0
+        orbit.toValue = Double.pi * 2
+        orbit.duration = 1.05
+        orbit.repeatCount = .infinity
+        orbit.timingFunction = CAMediaTimingFunction(name: .linear)
+        orbitRing.add(orbit, forKey: "smart-care-stage-orbit")
     }
 }
 

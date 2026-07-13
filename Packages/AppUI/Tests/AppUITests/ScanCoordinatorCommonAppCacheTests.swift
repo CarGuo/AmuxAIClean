@@ -1,4 +1,6 @@
+import Dispatch
 import SafetyKit
+import ScanKit
 import XCTest
 @testable import AppUI
 
@@ -154,6 +156,125 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         XCTAssertEqual(coord.snapshot.rows.map(\.title), ["Safe Cache"])
         XCTAssertEqual(coord.snapshot.totalBytes, 11)
         XCTAssertEqual(coord.snapshot.confirmBytes, 0)
+    }
+
+    func test_scanCommonAppCaches_incompleteRootFlowsIntoParentDeletionHardDeny() async throws {
+        let home = try makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+
+        let cachesRoot = home.appendingPathComponent("Library/Caches", isDirectory: true)
+        let cache = cachesRoot.appendingPathComponent("com.example.Partial", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try Data(repeating: 0xAA, count: 19).write(to: cache.appendingPathComponent("a.bin"))
+        try Data(repeating: 0xBB, count: 23).write(to: cache.appendingPathComponent("b.bin"))
+
+        let vendors = [VendorRule(
+            name: "Partial Cache",
+            category: "common_app_cache",
+            paths: [PathRule(path: "~/Library/Caches/com.example.Partial", verdict: .safe)]
+        )]
+        let coord = ScanCoordinator(vendors: vendors, home: home.path)
+        coord.scanCommonAppCaches(
+            scannerOptions: CommonAppCacheScanner.Options(maxEntriesPerPath: 1)
+        )
+        await waitScanFinished(coord)
+
+        XCTAssertEqual(coord.snapshot.rows.map(\.url.standardizedFileURL.path),
+                       [cache.standardizedFileURL.path],
+                       "partial bytes 可以展示，但必须同时携带删除保护上下文")
+        XCTAssertEqual(coord.permissionDeniedPaths, [cache.standardizedFileURL.path])
+        XCTAssertEqual(coord.snapshot.rows.first?.verdict, .forbid,
+                       "不完整统计只能展示为不可选项，不能先作为 safe 再等删除时失败")
+        XCTAssertEqual(coord.snapshot.rows.first?.rejection, .accessDenied)
+
+        let partition = TrashPipeline.partitionByForbid(
+            paths: [cachesRoot.path],
+            safety: SafetyEngine(),
+            accessDeniedPaths: Set(coord.permissionDeniedPaths),
+            home: home.path
+        )
+        XCTAssertTrue(partition.allowed.isEmpty)
+        XCTAssertEqual(partition.rejected.first?.reason, .accessDenied,
+                       "不完整子树必须阻止 Smart Care/统一删除入口移除其父根")
+    }
+
+    func test_scanCommonAppCaches_旧轮晚返回不能覆盖同类别继续扫描() async throws {
+        let home = try makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let cache = home.appendingPathComponent("Library/Caches/com.example.Generation",
+                                                isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try Data(repeating: 0x5A, count: 73)
+            .write(to: cache.appendingPathComponent("current.bin"))
+
+        let vendors = [VendorRule(
+            name: "Current Generation",
+            category: "common_app_cache",
+            paths: [PathRule(path: "~/Library/Caches/com.example.Generation", verdict: .safe)]
+        )]
+        let oldStarted = DispatchSemaphore(value: 0)
+        let releaseOld = DispatchSemaphore(value: 0)
+        let newStarted = DispatchSemaphore(value: 0)
+        let releaseNew = DispatchSemaphore(value: 0)
+        var releasedOld = false
+        var releasedNew = false
+        defer {
+            if !releasedOld { releaseOld.signal() }
+            if !releasedNew { releaseNew.signal() }
+        }
+
+        let coord = ScanCoordinator(vendors: vendors, home: home.path)
+        coord.commonAppCacheDetector = { _, _, options in
+            if options.timeoutSeconds == 101 {
+                oldStarted.signal()
+                releaseOld.wait()
+                // 故意模拟不协作 Task cancellation 的同步旧 detector：空结果若能提交，
+                // 会把正在运行的新一轮覆盖成“扫描完成但无结果”。
+                return CommonAppCacheScanner.ScanResult(hits: [], incompletePaths: [])
+            }
+            newStarted.signal()
+            releaseNew.wait()
+            return CommonAppCacheScanner.ScanResult(
+                hits: [CommonAppCacheScanner.Hit(
+                    ruleName: "Current Generation",
+                    bundleIDPrefix: nil,
+                    source: "generation-test",
+                    url: cache,
+                    isDirectory: true,
+                    verdict: .safe,
+                    reason: "current",
+                    sizeBytes: 73,
+                    entryCount: 1
+                )],
+                incompletePaths: []
+            )
+        }
+
+        coord.scanCommonAppCaches(
+            scannerOptions: CommonAppCacheScanner.Options(timeoutSeconds: 101)
+        )
+        XCTAssertEqual(oldStarted.wait(timeout: .now() + 2), .success)
+
+        coord.scanCommonAppCaches(
+            scannerOptions: CommonAppCacheScanner.Options(timeoutSeconds: 202)
+        )
+        XCTAssertEqual(newStarted.wait(timeout: .now() + 2), .success)
+
+        releaseOld.signal()
+        releasedOld = true
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(coord.isScanning,
+                      "旧轮返回时，新 generation 仍必须保有扫描状态与最终提交权")
+        XCTAssertFalse(coord.snapshot.isFinished)
+        XCTAssertEqual(coord.activeCategoryID, ScanCoordinator.commonAppCacheCategoryID)
+
+        releaseNew.signal()
+        releasedNew = true
+        await waitScanFinished(coord)
+
+        XCTAssertTrue(coord.snapshot.isFinished)
+        XCTAssertEqual(coord.snapshot.rows.map(\.title), ["Current Generation"])
+        XCTAssertEqual(coord.snapshot.totalBytes, 73)
     }
 
     private func makeTempHome() throws -> URL {

@@ -15,6 +15,7 @@ import BrewKit
 public struct BrewScreen: View {
     private let controller: BrewController?
     private let cleanup: BrewCleanup?
+    private let pipeline: any DeletionPipeline
 
     @State private var packages: [BrewPackage] = []
     @State private var outdated: [BrewOutdated] = []
@@ -45,9 +46,11 @@ public struct BrewScreen: View {
     }
 
     public init(controller: BrewController? = BrewController.detectDefault(),
-                cleanup: BrewCleanup? = BrewCleanup.detectDefault()) {
+                cleanup: BrewCleanup? = BrewCleanup.detectDefault(),
+                pipeline: any DeletionPipeline) {
         self.controller = controller
         self.cleanup = cleanup
+        self.pipeline = pipeline
     }
 
     public var body: some View {
@@ -380,7 +383,7 @@ public struct BrewScreen: View {
         isCleaning = true
         cleanupResult = nil
         Task { @MainActor in
-            let action = TrashActionCoordinator(pipeline: TrashPipeline())
+            let action = TrashActionCoordinator(pipeline: pipeline)
             let result = await action.run(TrashActionCoordinator.Request(
                 paths: plan.stalePaths.map(\.path),
                 dryRun: false,

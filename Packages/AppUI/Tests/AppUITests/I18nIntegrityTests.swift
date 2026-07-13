@@ -363,9 +363,9 @@ final class I18nIntegrityTests: XCTestCase {
     ///
     /// **治理史**：
     ///   - 2026-06-21：本契约引入，warn-only，backlog 6 条，上限 8；
-    ///   - 2026-06-23（P1 收尾）：完成 4 条 (s) 真迁移（capacity.swap.allocated.hint.real /
-    ///     op.result.force_delete.button / op.result.force_delete.confirm.message /
-    ///     op.result.summary.success），剩下 2 条 workflow.detail.* 在 i18n 删除 stale
+    ///   - 2026-06-23（P1 收尾）：完成 capacity.swap.allocated.hint.real /
+    ///     op.result.summary.success 等 (s) 真迁移；已移除的 force-delete 与 workflow
+    ///     结果文案则随无引用 key 清理，剩下 2 条 workflow.detail.* 在 i18n 删除 stale
     ///     时已被一并清掉（属于 stale），实际 backlog → 0；升级为**硬上限 0**。
     ///
     /// **范围**：

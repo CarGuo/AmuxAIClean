@@ -7,6 +7,7 @@ final class TrashActionCoordinatorTests: XCTestCase {
     private final class StubPipeline: DeletionPipeline, @unchecked Sendable {
         var deniedReceived: Set<String> = []
         var normalCalls: [(paths: [String], dryRun: Bool)] = []
+        var atomicCalls: [(paths: [String], dryRun: Bool, denied: Set<String>)] = []
         var forceCalls: [(paths: [String], dryRun: Bool)] = []
 
         var normalReturn: (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?)
@@ -25,6 +26,15 @@ final class TrashActionCoordinatorTests: XCTestCase {
 
         func moveToTrashReturningOutcome(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
             normalCalls.append((paths, dryRun))
+            return normalReturn
+        }
+
+        func moveToTrashReturningOutcome(
+            paths: [String],
+            dryRun: Bool,
+            accessDeniedPaths: Set<String>
+        ) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
+            atomicCalls.append((paths, dryRun, accessDeniedPaths))
             return normalReturn
         }
 
@@ -67,10 +77,12 @@ final class TrashActionCoordinatorTests: XCTestCase {
             accessDeniedPaths: ["/tmp/denied"]
         ))
 
-        XCTAssertEqual(pipe.deniedReceived, ["/tmp/denied"])
-        XCTAssertEqual(pipe.normalCalls.count, 1)
-        XCTAssertEqual(pipe.normalCalls.first?.paths, ["/tmp/moved", "/tmp/failed"])
-        XCTAssertFalse(pipe.normalCalls.first?.dryRun ?? true)
+        XCTAssertTrue(pipe.deniedReceived.isEmpty, "统一协调器不应再通过共享 setter 交接 denied")
+        XCTAssertEqual(pipe.normalCalls.count, 0)
+        XCTAssertEqual(pipe.atomicCalls.count, 1)
+        XCTAssertEqual(pipe.atomicCalls.first?.paths, ["/tmp/moved", "/tmp/failed"])
+        XCTAssertEqual(pipe.atomicCalls.first?.denied, ["/tmp/denied"])
+        XCTAssertFalse(pipe.atomicCalls.first?.dryRun ?? true)
         XCTAssertEqual(result.err, "partial failure")
         XCTAssertEqual(result.succeededPaths, ["/tmp/moved"])
         XCTAssertEqual(undo.history.count, 1,
@@ -100,9 +112,9 @@ final class TrashActionCoordinatorTests: XCTestCase {
                        "dryRun 即使 stub 错返 pairs，也不能污染恢复历史")
     }
 
-    func test_run_force模式走moveToTrashForce() async throws {
+    func test_run_force模式也走完整安全上下文而不调用绕过入口() async throws {
         let pipe = StubPipeline()
-        pipe.forceReturn = (
+        pipe.normalReturn = (
             legacy: (1, 0, nil, [("/tmp/forced", "/Users/me/.Trash/forced")]),
             outcome: nil
         )
@@ -118,8 +130,8 @@ final class TrashActionCoordinatorTests: XCTestCase {
             mode: .force
         ))
 
-        XCTAssertEqual(pipe.normalCalls.count, 0)
-        XCTAssertEqual(pipe.forceCalls.count, 1)
+        XCTAssertEqual(pipe.atomicCalls.count, 1)
+        XCTAssertEqual(pipe.forceCalls.count, 0)
         XCTAssertEqual(result.succeededPaths, ["/tmp/forced"])
         XCTAssertEqual(undo.history.first?.source, "force")
     }

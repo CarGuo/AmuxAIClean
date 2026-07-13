@@ -1,3 +1,4 @@
+import AIKit
 import SafetyKit
 import SwiftUI
 
@@ -141,6 +142,15 @@ enum SmartCarePresentation {
         }
     }
 
+    static func activityIconName(for activity: SmartCareScanActivity) -> String {
+        switch activity {
+        case .scanning(let stage), .organizing(let stage):
+            return iconName(for: stage)
+        case .finalizing:
+            return "checkmark.shield"
+        }
+    }
+
     static func verdictTitleKey(for verdict: SafetyVerdict) -> String {
         switch verdict {
         case .safe: return "smart_care.item.safe"
@@ -171,6 +181,18 @@ enum SmartCarePresentation {
         case .duplicates: return "smart_care.risk.duplicates"
         }
     }
+
+    static func aiFailureSummaryKey(for kind: SmartCareAIReviewFailure.Kind) -> String {
+        switch kind {
+        case .configuration: return "smart_care.ai.report.failure.configuration"
+        case .authentication: return "smart_care.ai.report.failure.authentication"
+        case .rateLimit: return "smart_care.ai.report.failure.rate_limit"
+        case .network: return "smart_care.ai.report.failure.network"
+        case .server: return "smart_care.ai.report.failure.server"
+        case .decoding: return "smart_care.ai.report.failure.decoding"
+        case .unknown: return "smart_care.ai.report.failure.unknown"
+        }
+    }
 }
 
 public struct SmartCareHomeView: View {
@@ -183,8 +205,11 @@ public struct SmartCareHomeView: View {
     private let aiTotal: Int
     private let aiError: String?
     private let aiItemStates: [String: SmartCareAIItemState]
+    private let aiReportAvailable: Bool
     private let onPrimaryAction: (SmartCarePrimaryAction) -> Void
     private let onAIReview: () -> Void
+    private let onAICancel: () -> Void
+    private let onAIShowReport: () -> Void
 
     public init(coordinator: SmartCareCoordinator,
                 session: SmartCareSession? = nil,
@@ -194,8 +219,11 @@ public struct SmartCareHomeView: View {
                 aiTotal: Int = 0,
                 aiError: String? = nil,
                 aiItemStates: [String: SmartCareAIItemState] = [:],
+                aiReportAvailable: Bool = false,
                 onPrimaryAction: @escaping (SmartCarePrimaryAction) -> Void = { _ in },
-                onAIReview: @escaping () -> Void = {}) {
+                onAIReview: @escaping () -> Void = {},
+                onAICancel: @escaping () -> Void = {},
+                onAIShowReport: @escaping () -> Void = {}) {
         self.coordinator = coordinator
         self.session = session
         self.aiIsConfigured = aiIsConfigured
@@ -204,8 +232,11 @@ public struct SmartCareHomeView: View {
         self.aiTotal = aiTotal
         self.aiError = aiError
         self.aiItemStates = aiItemStates
+        self.aiReportAvailable = aiReportAvailable
         self.onPrimaryAction = onPrimaryAction
         self.onAIReview = onAIReview
+        self.onAICancel = onAICancel
+        self.onAIShowReport = onAIShowReport
     }
 
     public var body: some View {
@@ -218,8 +249,11 @@ public struct SmartCareHomeView: View {
             aiTotal: aiTotal,
             aiError: aiError,
             aiItemStates: aiItemStates,
+            aiReportAvailable: aiReportAvailable,
             onPrimaryAction: onPrimaryAction,
-            onAIReview: onAIReview
+            onAIReview: onAIReview,
+            onAICancel: onAICancel,
+            onAIShowReport: onAIShowReport
         )
     }
 }

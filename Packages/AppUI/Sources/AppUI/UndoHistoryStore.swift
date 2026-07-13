@@ -1,4 +1,5 @@
 import AppKit
+import Dispatch
 import Foundation
 import LogKit
 
@@ -22,7 +23,7 @@ import LogKit
 public final class UndoHistoryStore: ObservableObject {
 
     /// 单条 trash 批次记录。`Identifiable` 让 SwiftUI List 能直接 ForEach。
-    public struct Record: Codable, Identifiable, Equatable {
+    public struct Record: Codable, Identifiable, Equatable, Sendable {
         public let id: UUID
         public let timestamp: Date
         /// 来源标签，如 `"clean"` / `"uninstall"` / `"large-file"`。仅用于侧栏显示分类，不参与恢复逻辑。
@@ -32,7 +33,7 @@ public final class UndoHistoryStore: ObservableObject {
         /// (originalPath, trashedPath) pair 列表。pair 顺序保留 NSWorkspace.recycle 回调顺序。
         public let filePairs: [FilePair]
 
-        public struct FilePair: Codable, Equatable {
+        public struct FilePair: Codable, Equatable, Sendable {
             public let original: String
             public let trashed: String
             public init(original: String, trashed: String) {
@@ -60,7 +61,10 @@ public final class UndoHistoryStore: ObservableObject {
     private let maxHistoryCount: Int
     private let storeURL: URL
     private let fm: FileManager
-    /// v1.5.7：落盘策略。生产单例用 `.background`（detached Task 卸主 actor），
+    /// 所有后台落盘都进入同一 FIFO 队列，保证较旧的 snapshot 不会在较新的 snapshot
+    /// 之后完成并覆盖磁盘。队列不承载 UI 状态，只做不可变 Data 的文件 IO。
+    private let persistenceQueue: DispatchQueue
+    /// v1.5.7：落盘策略。生产单例用 `.background`（串行队列卸主 actor），
     /// 测试用 `.synchronous` 保证 `addRecord` 返回后 `XCTAssertTrue(fileExists)` 立刻成立。
     private let saveStrategy: SaveStrategy
 
@@ -87,6 +91,10 @@ public final class UndoHistoryStore: ObservableObject {
         self.maxHistoryCount = maxHistoryCount
         self.fm = fm
         self.saveStrategy = saveStrategy
+        self.persistenceQueue = DispatchQueue(
+            label: "com.amux.ai.clean.undo-history.\(UUID().uuidString)",
+            qos: .utility
+        )
         loadHistory()
     }
 
@@ -249,28 +257,45 @@ public final class UndoHistoryStore: ObservableObject {
     /// 之前 `data.write(to:options:.atomic)` 同步在 MainActor 跑，删除大批量文件后历史可能 ≈ 几 MB，
     /// FileManager 的 atomic write 会做"写临时文件 → fsync → rename"三段 IO，
     /// 在机械硬盘 / 慢 SSD 上能让 UI 卡 100~300ms。这里：
-    /// 1. 在主 actor 立刻 encode 成 Data（snapshot 主 actor 状态 → 不可变 byte buffer）
-    /// 2. detached Task 只做 write，data 已是值语义可安全跨 actor
+    /// 1. 在主 actor 只复制 `Record` 数组的值语义 snapshot
+    /// 2. 单一 serial queue 按 FIFO 做 JSON encode + atomic write
     /// 3. 失败只打日志（写失败不应回滚 in-memory state）
     ///
-    /// 测试场景如需"写完立刻断言落盘"，调用 `saveHistorySync()`。
+    /// 测试或进程退出前如需确认所有 snapshot 已落盘，await `flushPendingWrites()`。
     private func saveHistory() {
         let url = storeURL
         switch saveStrategy {
         case .synchronous:
             Self.writeHistory(history, to: url)
         case .background:
-            // 在主 actor 完成 encode（无并发风险），把不可变 Data 交给后台 IO
-            guard let data = Self.encodeHistory(history) else { return }
-            Task.detached(priority: .utility) {
-                Self.writeData(data, to: url)
+            // Record/FilePair 都是 Sendable 值类型；主 actor 只截取 snapshot，
+            // 可能达到 MB 级的 JSON encode 与文件 IO 全部留给 utility queue。
+            let records = history
+            persistenceQueue.async {
+                Self.writeHistory(records, to: url)
             }
         }
     }
 
-    /// 测试用的同步落盘入口；生产代码不要直接调。
+    /// 等待调用前已经提交的所有后台写完成。serial queue 上的 barrier token 只有在前面
+    /// 的写全部退出后才执行；不阻塞 MainActor。
+    public func flushPendingWrites() async {
+        let queue = persistenceQueue
+        await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume()
+            }
+        }
+    }
+
+    /// 测试用同步落盘入口；serial queue 的 sync 会先排空较旧 snapshot，再写当前状态。
+    /// 生产 UI 不应调用，退出收尾使用 `flushPendingWrites()`。
     public func saveHistorySync() {
-        Self.writeHistory(history, to: storeURL)
+        let records = history
+        let url = storeURL
+        persistenceQueue.sync {
+            Self.writeHistory(records, to: url)
+        }
     }
 
     nonisolated private static func writeHistory(_ records: [Record], to url: URL) {
@@ -294,7 +319,7 @@ public final class UndoHistoryStore: ObservableObject {
         do {
             let fm = FileManager.default
             let parent = url.deletingLastPathComponent()
-            try? fm.createDirectory(at: parent, withIntermediateDirectories: true)
+            try fm.createDirectory(at: parent, withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)
         } catch {
             GSYLog.error(.trash, "UndoHistory write 失败 err=\(error.localizedDescription)")

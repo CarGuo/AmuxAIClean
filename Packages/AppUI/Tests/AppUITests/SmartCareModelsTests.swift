@@ -1,3 +1,5 @@
+import Dispatch
+import Foundation
 import XCTest
 @testable import AppUI
 import SafetyKit
@@ -179,4 +181,61 @@ final class SmartCareModelsTests: XCTestCase {
         XCTAssertFalse(item.isDirectory)
         XCTAssertEqual(item.runningBundleIDPrefix, "com.example.app")
     }
+
+    @MainActor
+    func test_deletionAccounting_keepsMainActorHeartbeatResponsive() async {
+        let workerStarted = DispatchSemaphore(value: 0)
+        let releaseWorker = DispatchSemaphore(value: 0)
+        let removed = item("removed", bytes: 120, verdict: .safe)
+        let retained = item("retained", bytes: 300, verdict: .safe)
+        var accountingFinished = false
+        let accounting = Task { @MainActor in
+            let result = await SmartCareDeletionAccountingExecutor.run(
+                items: [removed, retained],
+                succeededPaths: [removed.path],
+                professionalSelection: [removed.path, retained.path],
+                operation: { items, paths, selection in
+                    workerStarted.signal()
+                    guard releaseWorker.wait(timeout: .now() + 2) == .success else {
+                        return SmartCareDeletionAccounting(
+                            succeededPaths: [],
+                            remainingProfessionalSelection: selection,
+                            releasedBytes: -1
+                        )
+                    }
+                    return SmartCareDeletionAccountingExecutor.compute(
+                        items: items,
+                        succeededPaths: paths,
+                        professionalSelection: selection
+                    )
+                }
+            )
+            accountingFinished = true
+            return result
+        }
+
+        let started = await Task.detached {
+            waitForSmartCareAccountingSemaphore(workerStarted, timeout: .now() + 2)
+        }.value
+        XCTAssertEqual(started, .success)
+        let heartbeatObservedPendingAccounting = await Task { @MainActor in
+            let wasPending = !accountingFinished
+            releaseWorker.signal()
+            return wasPending
+        }.value
+        XCTAssertTrue(heartbeatObservedPendingAccounting)
+
+        let result = await accounting.value
+        XCTAssertTrue(accountingFinished)
+        XCTAssertEqual(result.succeededPaths, [removed.path])
+        XCTAssertEqual(result.remainingProfessionalSelection, [retained.path])
+        XCTAssertEqual(result.releasedBytes, 120)
+    }
+}
+
+private func waitForSmartCareAccountingSemaphore(
+    _ semaphore: DispatchSemaphore,
+    timeout: DispatchTime
+) -> DispatchTimeoutResult {
+    semaphore.wait(timeout: timeout)
 }

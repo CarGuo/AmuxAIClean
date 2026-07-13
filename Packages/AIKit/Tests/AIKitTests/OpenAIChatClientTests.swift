@@ -116,6 +116,22 @@ final class OpenAIChatClientTests: XCTestCase {
                       "实际=\(advice.reason)")
     }
 
+    func test_ask_unparsable_response_不保留provider原文() async throws {
+        let raw = "secret-provider-payload /Users/alice/Library sk-sensitive-token"
+        let payload = """
+        {"choices":[{"message":{"role":"assistant","content":"\(raw)"}}]}
+        """
+        StubURLProtocol.nextResponse = .success(status: 200, data: Data(payload.utf8))
+
+        let advice = try await makeClient().ask(makeInquiry())
+
+        XCTAssertEqual(advice.summary, AIAdvice.unparsableSummaryKey)
+        XCTAssertTrue(advice.reason.isEmpty)
+        let storedDescription = String(describing: advice)
+        XCTAssertFalse(storedDescription.contains("secret-provider-payload"))
+        XCTAssertFalse(storedDescription.contains("/Users/alice"))
+    }
+
     func test_ask_http_error_surfaces() async {
         StubURLProtocol.nextResponse = .success(status: 401, data: Data("unauthorized".utf8))
         let client = makeClient()

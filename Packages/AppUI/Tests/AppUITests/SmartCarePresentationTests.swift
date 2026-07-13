@@ -75,6 +75,78 @@ final class SmartCarePresentationTests: XCTestCase {
         XCTAssertEqual(SmartCareScopeCardSilhouette(stage: .developerCaches), .trailingCut)
     }
 
+    func test_scanActivityPresentation_覆盖真实扫描与整理状态() {
+        let cases: [(SmartCareScanActivity, String, String)] = [
+            (.scanning(.core), "smart_care.activity.scan.core", "doc.text.magnifyingglass"),
+            (.scanning(.appCaches), "smart_care.activity.scan.app_cache", "shippingbox"),
+            (.scanning(.developerCaches), "smart_care.activity.scan.developer_cache", "hammer"),
+            (.organizing(.core), "smart_care.activity.organizing", "doc.text.magnifyingglass"),
+            (.organizing(.appCaches), "smart_care.activity.organizing", "shippingbox"),
+            (.organizing(.developerCaches), "smart_care.activity.organizing", "hammer"),
+            (.finalizing, "smart_care.activity.finalizing", "checkmark.shield")
+        ]
+
+        for (activity, expectedKey, expectedIcon) in cases {
+            XCTAssertEqual(SmartCarePresentation.activityTitleKey(for: activity), expectedKey)
+            XCTAssertEqual(SmartCarePresentation.activityIconName(for: activity), expectedIcon)
+        }
+    }
+
+    func test_stageProgressPresentation_由真实阶段状态驱动() {
+        let progress = SmartCareProgress(
+            activity: .organizing(.appCaches),
+            completedStages: [.core],
+            plannedStages: [.core, .appCaches, .developerCaches]
+        )
+
+        XCTAssertEqual(
+            SmartCareStageProgressPresentation.status(for: .core, in: progress),
+            .complete
+        )
+        XCTAssertEqual(
+            SmartCareStageProgressPresentation.status(for: .appCaches, in: progress),
+            .active
+        )
+        XCTAssertEqual(
+            SmartCareStageProgressPresentation.status(for: .developerCaches, in: progress),
+            .pending
+        )
+        XCTAssertEqual(
+            SmartCareStageProgressPresentation.connectorStatus(after: .core, in: progress),
+            .complete
+        )
+        XCTAssertEqual(
+            SmartCareStageProgressPresentation.connectorStatus(after: .appCaches, in: progress),
+            .active
+        )
+        XCTAssertEqual(SmartCareStageProgressPresentation.finalStatus(in: progress), .pending)
+    }
+
+    func test_stageProgressPresentation_选择性范围不会被数量碰撞误判完成() {
+        let progress = SmartCareProgress(
+            activity: .scanning(.core),
+            completedStages: [.appCaches],
+            plannedStages: [.core]
+        )
+
+        XCTAssertEqual(
+            SmartCareStageProgressPresentation.connectorStatus(after: .core, in: progress),
+            .active
+        )
+        XCTAssertEqual(SmartCareStageProgressPresentation.finalStatus(in: progress), .pending)
+
+        let finalizing = SmartCareProgress(
+            activity: .finalizing,
+            completedStages: [.core],
+            plannedStages: [.core]
+        )
+        XCTAssertEqual(
+            SmartCareStageProgressPresentation.connectorStatus(after: .core, in: finalizing),
+            .complete
+        )
+        XCTAssertEqual(SmartCareStageProgressPresentation.finalStatus(in: finalizing), .active)
+    }
+
     func test_phasePresentation_覆盖全部SmartCare阶段() {
         let phases: [SmartCarePhase] = [
             .idle,
@@ -142,5 +214,20 @@ final class SmartCarePresentationTests: XCTestCase {
             SmartCarePresentation.defaultRiskKey(for: item),
             "smart_care.risk.app_cache"
         )
+    }
+
+    func test_aiFailurePresentation_覆盖全部类型化错误() {
+        let kinds: [SmartCareAIReviewFailure.Kind] = [
+            .configuration,
+            .authentication,
+            .rateLimit,
+            .network,
+            .server,
+            .decoding,
+            .unknown
+        ]
+        let keys = kinds.map(SmartCarePresentation.aiFailureSummaryKey(for:))
+        XCTAssertEqual(Set(keys).count, kinds.count)
+        XCTAssertTrue(keys.allSatisfy { !$0.isEmpty })
     }
 }

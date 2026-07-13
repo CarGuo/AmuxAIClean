@@ -20,7 +20,7 @@ import Foundation
 /// **不参与 @Published**：单一会话内的纯存储型容器，写入时机由 ScanCoordinator
 /// 的 ingest path 控制；UI 不直接订阅它，而是通过 `bumpStructuralRevision()` /
 /// `bumpTickRevision()` 间接刷新。
-struct LargeFileLeafTopNHeap {
+struct LargeFileLeafTopNHeap: Sendable {
 
     /// Top-N 容量。`0` 表示禁用（不收集任何叶子）。
     let capacity: Int

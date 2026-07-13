@@ -1,6 +1,10 @@
 import Foundation
 import SafetyKit
 
+enum SmartCareAggregationCancellation {
+    static let checkStride = 256
+}
+
 /// Smart Care 普通模式的分桶。普通模式只消费这些桶级摘要；
 /// 具体路径、命中规则和专业操作仍留在专业模式视图里。
 public enum SmartCareBucketID: String, CaseIterable, Sendable, Hashable, Codable {
@@ -83,8 +87,43 @@ public struct SmartCareBucketSummary: Identifiable, Sendable, Hashable {
     public let forbidCount: Int
 
     public init(id: SmartCareBucketID, items: [SmartCareItem]) {
+        guard let partition = Self.partition(items: items, shouldCancel: { false }) else {
+            preconditionFailure("Non-cancellable Smart Care bucket partition was cancelled")
+        }
+        self.init(id: id, items: items, partition: partition)
+    }
+
+    static func make(
+        id: SmartCareBucketID,
+        items: [SmartCareItem],
+        shouldCancel: () -> Bool
+    ) -> SmartCareBucketSummary? {
+        guard let partition = partition(items: items, shouldCancel: shouldCancel) else {
+            return nil
+        }
+        return SmartCareBucketSummary(id: id, items: items, partition: partition)
+    }
+
+    private init(id: SmartCareBucketID, items: [SmartCareItem], partition: Partition) {
         self.id = id
         self.items = items
+        self.safeItems = partition.safeItems
+        self.confirmItems = partition.confirmItems
+        self.forbidItems = partition.forbidItems
+        self.safeItemIDs = partition.safeItemIDs
+        self.safeBytes = partition.safeBytes
+        self.confirmBytes = partition.confirmBytes
+        self.forbidBytes = partition.forbidBytes
+        self.totalBytes = partition.safeBytes + partition.confirmBytes + partition.forbidBytes
+        self.safeCount = partition.safeCount
+        self.confirmCount = partition.confirmCount
+        self.forbidCount = partition.forbidCount
+    }
+
+    private static func partition(
+        items: [SmartCareItem],
+        shouldCancel: () -> Bool
+    ) -> Partition? {
         var safeItems: [SmartCareItem] = []
         var confirmItems: [SmartCareItem] = []
         var forbidItems: [SmartCareItem] = []
@@ -99,7 +138,11 @@ public struct SmartCareBucketSummary: Identifiable, Sendable, Hashable {
         var safeCount = 0
         var confirmCount = 0
         var forbidCount = 0
-        for item in items {
+        for (index, item) in items.enumerated() {
+            if index.isMultiple(of: SmartCareAggregationCancellation.checkStride),
+               shouldCancel() {
+                return nil
+            }
             switch item.verdict {
             case .safe:
                 safeItems.append(item)
@@ -116,17 +159,32 @@ public struct SmartCareBucketSummary: Identifiable, Sendable, Hashable {
                 forbidCount &+= 1
             }
         }
-        self.safeItems = safeItems
-        self.confirmItems = confirmItems
-        self.forbidItems = forbidItems
-        self.safeItemIDs = safeIDs
-        self.safeBytes = safeBytes
-        self.confirmBytes = confirmBytes
-        self.forbidBytes = forbidBytes
-        self.totalBytes = safeBytes + confirmBytes + forbidBytes
-        self.safeCount = safeCount
-        self.confirmCount = confirmCount
-        self.forbidCount = forbidCount
+        guard !shouldCancel() else { return nil }
+        return Partition(
+            safeItems: safeItems,
+            confirmItems: confirmItems,
+            forbidItems: forbidItems,
+            safeItemIDs: safeIDs,
+            safeBytes: safeBytes,
+            confirmBytes: confirmBytes,
+            forbidBytes: forbidBytes,
+            safeCount: safeCount,
+            confirmCount: confirmCount,
+            forbidCount: forbidCount
+        )
+    }
+
+    private struct Partition {
+        let safeItems: [SmartCareItem]
+        let confirmItems: [SmartCareItem]
+        let forbidItems: [SmartCareItem]
+        let safeItemIDs: Set<SmartCareItem.ID>
+        let safeBytes: Int64
+        let confirmBytes: Int64
+        let forbidBytes: Int64
+        let safeCount: Int
+        let confirmCount: Int
+        let forbidCount: Int
     }
 }
 
@@ -154,20 +212,121 @@ public struct SmartCareSummary: Sendable, Hashable {
     public let forbiddenCount: Int
 
     public init(buckets: [SmartCareBucketSummary]) {
+        guard let components = Self.components(buckets: buckets, shouldCancel: { false }) else {
+            preconditionFailure("Non-cancellable Smart Care summary construction was cancelled")
+        }
+        self.init(buckets: buckets, components: components)
+    }
+
+    static func make(
+        buckets: [SmartCareBucketSummary],
+        shouldCancel: () -> Bool
+    ) -> SmartCareSummary? {
+        guard let components = components(buckets: buckets, shouldCancel: shouldCancel) else {
+            return nil
+        }
+        return SmartCareSummary(buckets: buckets, components: components)
+    }
+
+    private init(buckets: [SmartCareBucketSummary], components: Components) {
         self.buckets = buckets
-        self.items = buckets.flatMap(\.items)
-        self.safeItems = buckets.flatMap(\.safeItems)
-        self.confirmItems = buckets.flatMap(\.confirmItems).sorted(by: Self.priorityOrder)
-        self.forbidItems = buckets.flatMap(\.forbidItems).sorted(by: Self.priorityOrder)
-        self.itemIDs = Set(items.map(\.id))
-        self.safeBytes = buckets.reduce(0) { $0 + $1.safeBytes }
-        self.confirmBytes = buckets.reduce(0) { $0 + $1.confirmBytes }
-        self.forbidBytes = buckets.reduce(0) { $0 + $1.forbidBytes }
-        self.totalBytes = buckets.reduce(0) { $0 + $1.totalBytes }
-        self.forbiddenCount = buckets.reduce(0) { $0 + $1.forbidCount }
+        self.items = components.items
+        self.safeItems = components.safeItems
+        self.confirmItems = components.confirmItems
+        self.forbidItems = components.forbidItems
+        self.itemIDs = components.itemIDs
+        self.safeBytes = components.safeBytes
+        self.confirmBytes = components.confirmBytes
+        self.forbidBytes = components.forbidBytes
+        self.totalBytes = components.totalBytes
+        self.forbiddenCount = components.forbiddenCount
     }
 
     public static let empty = SmartCareSummary(buckets: [])
+
+    private static func components(
+        buckets: [SmartCareBucketSummary],
+        shouldCancel: () -> Bool
+    ) -> Components? {
+        var itemCapacity = 0
+        var safeCapacity = 0
+        var confirmCapacity = 0
+        var forbidCapacity = 0
+        for bucket in buckets {
+            itemCapacity += bucket.items.count
+            safeCapacity += bucket.safeCount
+            confirmCapacity += bucket.confirmCount
+            forbidCapacity += bucket.forbidCount
+        }
+
+        var items: [SmartCareItem] = []
+        var safeItems: [SmartCareItem] = []
+        var confirmItems: [SmartCareItem] = []
+        var forbidItems: [SmartCareItem] = []
+        var itemIDs: Set<SmartCareItem.ID> = []
+        items.reserveCapacity(itemCapacity)
+        safeItems.reserveCapacity(safeCapacity)
+        confirmItems.reserveCapacity(confirmCapacity)
+        forbidItems.reserveCapacity(forbidCapacity)
+        itemIDs.reserveCapacity(itemCapacity)
+
+        var processed = 0
+        for bucket in buckets {
+            for item in bucket.items {
+                if processed.isMultiple(of: SmartCareAggregationCancellation.checkStride),
+                   shouldCancel() {
+                    return nil
+                }
+                processed &+= 1
+                items.append(item)
+                itemIDs.insert(item.id)
+                switch item.verdict {
+                case .safe: safeItems.append(item)
+                case .confirm: confirmItems.append(item)
+                case .forbid: forbidItems.append(item)
+                }
+            }
+        }
+
+        guard let sortedConfirmItems = SmartCareCancellableAlgorithms.stableSorted(
+            confirmItems,
+            by: priorityOrder,
+            shouldCancel: shouldCancel
+        ), let sortedForbidItems = SmartCareCancellableAlgorithms.stableSorted(
+            forbidItems,
+            by: priorityOrder,
+            shouldCancel: shouldCancel
+        ) else {
+            return nil
+        }
+
+        guard !shouldCancel() else { return nil }
+        return Components(
+            items: items,
+            safeItems: safeItems,
+            confirmItems: sortedConfirmItems,
+            forbidItems: sortedForbidItems,
+            itemIDs: itemIDs,
+            safeBytes: buckets.reduce(0) { $0 + $1.safeBytes },
+            confirmBytes: buckets.reduce(0) { $0 + $1.confirmBytes },
+            forbidBytes: buckets.reduce(0) { $0 + $1.forbidBytes },
+            totalBytes: buckets.reduce(0) { $0 + $1.totalBytes },
+            forbiddenCount: buckets.reduce(0) { $0 + $1.forbidCount }
+        )
+    }
+
+    private struct Components {
+        let items: [SmartCareItem]
+        let safeItems: [SmartCareItem]
+        let confirmItems: [SmartCareItem]
+        let forbidItems: [SmartCareItem]
+        let itemIDs: Set<SmartCareItem.ID>
+        let safeBytes: Int64
+        let confirmBytes: Int64
+        let forbidBytes: Int64
+        let totalBytes: Int64
+        let forbiddenCount: Int
+    }
 
     private static func priorityOrder(_ lhs: SmartCareItem, _ rhs: SmartCareItem) -> Bool {
         if lhs.bytes != rhs.bytes { return lhs.bytes > rhs.bytes }
@@ -213,12 +372,41 @@ public struct SmartCareSelection: Sendable, Hashable {
     }
 
     public mutating func reconcile(with items: [SmartCareItem]) {
-        let currentIDs = Set(items.map(\.id))
+        guard reconcile(items: items, shouldCancel: { false }) else {
+            preconditionFailure("Non-cancellable Smart Care selection reconcile was cancelled")
+        }
+    }
+
+    /// checkpoint 发布时的大集合版本。调用方应在后台 worker 内执行，
+    /// 以便新一轮扫描取消时不必等待旧 selection 全量重建。
+    mutating func reconcileCheckingCancellation(with items: [SmartCareItem]) throws {
+        guard reconcile(items: items, shouldCancel: { Task.isCancelled }) else {
+            throw CancellationError()
+        }
+    }
+
+    private mutating func reconcile(items: [SmartCareItem],
+                                    shouldCancel: () -> Bool) -> Bool {
+        var currentIDs: Set<SmartCareItem.ID> = []
+        currentIDs.reserveCapacity(items.count)
+        for (index, item) in items.enumerated() {
+            if index.isMultiple(of: SmartCareAggregationCancellation.checkStride),
+               shouldCancel() {
+                return false
+            }
+            currentIDs.insert(item.id)
+        }
+
+        guard !shouldCancel() else { return false }
 
         selectedIDs = selectedIDs.intersection(currentIDs)
         userOverriddenIDs = userOverriddenIDs.intersection(currentIDs)
 
-        for item in items {
+        for (index, item) in items.enumerated() {
+            if index.isMultiple(of: SmartCareAggregationCancellation.checkStride),
+               shouldCancel() {
+                return false
+            }
             if !item.isSelectable {
                 selectedIDs.remove(item.id)
                 userOverriddenIDs.remove(item.id)
@@ -231,6 +419,7 @@ public struct SmartCareSelection: Sendable, Hashable {
                 selectedIDs.remove(item.id)
             }
         }
+        return !shouldCancel()
     }
 
     public mutating func setSafeItemIDsSelected(_ selected: Bool,
@@ -352,12 +541,65 @@ public struct SmartCareResult: Sendable, Hashable {
     }
 }
 
+struct SmartCareDeletionAccounting: Sendable, Hashable {
+    let succeededPaths: Set<String>
+    let remainingProfessionalSelection: Set<String>
+    let releasedBytes: Int64
+}
+
+typealias SmartCareDeletionAccountingOperation = @Sendable (
+    _ items: [SmartCareItem],
+    _ succeededPaths: [String],
+    _ professionalSelection: Set<String>
+) -> SmartCareDeletionAccounting
+
+/// 真删完成后的纯 CPU 统计 worker。成功路径建 Set、从 20k+ items
+/// 累加已释放容量、专业模式 selection subtract 都不在 MainActor 执行。
+enum SmartCareDeletionAccountingExecutor {
+    static func run(items: [SmartCareItem],
+                    succeededPaths: [String],
+                    professionalSelection: Set<String>) async -> SmartCareDeletionAccounting {
+        await run(
+            items: items,
+            succeededPaths: succeededPaths,
+            professionalSelection: professionalSelection,
+            operation: compute
+        )
+    }
+
+    static func run(items: [SmartCareItem],
+                    succeededPaths: [String],
+                    professionalSelection: Set<String>,
+                    operation: @escaping SmartCareDeletionAccountingOperation) async
+        -> SmartCareDeletionAccounting {
+        await Task.detached(priority: .userInitiated) {
+            operation(items, succeededPaths, professionalSelection)
+        }.value
+    }
+
+    nonisolated static func compute(items: [SmartCareItem],
+                                    succeededPaths: [String],
+                                    professionalSelection: Set<String>)
+        -> SmartCareDeletionAccounting {
+        let succeeded = Set(succeededPaths)
+        var releasedBytes: Int64 = 0
+        for item in items where succeeded.contains(item.path) {
+            releasedBytes &+= item.bytes
+        }
+        return SmartCareDeletionAccounting(
+            succeededPaths: succeeded,
+            remainingProfessionalSelection: professionalSelection.subtracting(succeeded),
+            releasedBytes: releasedBytes
+        )
+    }
+}
+
 /// AI 只提供附加建议，不改写本地 SafetyVerdict，也不自动改变勾选状态。
 public enum SmartCareAIItemState: Sendable, Hashable {
     case pending
     case reviewing
     case advice(SafetyVerdict, summary: String)
-    case failed(String)
+    case failed(SmartCareAIReviewFailure.Kind)
 }
 
 public enum SmartCareError: Sendable, Hashable {
@@ -380,23 +622,86 @@ public struct SmartCareCleanRequest: Identifiable, Sendable, Hashable {
     public let id: UUID
     public let items: [SmartCareItem]
     public let requiresConfirmation: Bool
+    public let paths: [String]
+    public let totalBytes: Int64
+    public let confirmCount: Int
+    public let previewRows: [RowItem]
+    let sourceSummaryRevision: UInt64?
+    let sourceSelectionRevision: UInt64?
 
     public init(items: [SmartCareItem]) {
-        self.id = UUID()
-        self.items = items.filter(\.isSelectable)
-        self.requiresConfirmation = self.items.contains { $0.verdict == .confirm }
+        var selectedItems: [SmartCareItem] = []
+        var selectedPaths: [String] = []
+        var rows: [RowItem] = []
+        var bytes: Int64 = 0
+        var confirmations = 0
+        selectedItems.reserveCapacity(items.count)
+        selectedPaths.reserveCapacity(items.count)
+        rows.reserveCapacity(items.count)
+        for item in items where item.isSelectable {
+            selectedItems.append(item)
+            selectedPaths.append(item.path)
+            rows.append(RowItem(
+                id: item.id,
+                url: URL(fileURLWithPath: item.path),
+                title: item.title,
+                isDirectory: item.isDirectory,
+                bytes: item.bytes,
+                logicalBytes: item.logicalBytes,
+                fileCount: item.fileCount,
+                verdict: item.verdict,
+                rejection: .ok,
+                vendorNote: item.riskNote,
+                runningBundleIDPrefix: item.runningBundleIDPrefix
+            ))
+            bytes &+= item.bytes
+            if item.verdict == .confirm { confirmations &+= 1 }
+        }
+        self.init(
+            id: UUID(),
+            items: selectedItems,
+            requiresConfirmation: confirmations > 0,
+            paths: selectedPaths,
+            totalBytes: bytes,
+            confirmCount: confirmations,
+            previewRows: rows,
+            sourceSummaryRevision: nil,
+            sourceSelectionRevision: nil
+        )
     }
 
-    public var paths: [String] {
-        items.map(\.path)
+    func stamped(summaryRevision: UInt64, selectionRevision: UInt64) -> Self {
+        Self(
+            id: id,
+            items: items,
+            requiresConfirmation: requiresConfirmation,
+            paths: paths,
+            totalBytes: totalBytes,
+            confirmCount: confirmCount,
+            previewRows: previewRows,
+            sourceSummaryRevision: summaryRevision,
+            sourceSelectionRevision: selectionRevision
+        )
     }
 
-    public var totalBytes: Int64 {
-        items.reduce(0) { $0 + $1.bytes }
-    }
-
-    public var confirmCount: Int {
-        items.filter { $0.verdict == .confirm }.count
+    private init(id: UUID,
+                 items: [SmartCareItem],
+                 requiresConfirmation: Bool,
+                 paths: [String],
+                 totalBytes: Int64,
+                 confirmCount: Int,
+                 previewRows: [RowItem],
+                 sourceSummaryRevision: UInt64?,
+                 sourceSelectionRevision: UInt64?) {
+        self.id = id
+        self.items = items
+        self.requiresConfirmation = requiresConfirmation
+        self.paths = paths
+        self.totalBytes = totalBytes
+        self.confirmCount = confirmCount
+        self.previewRows = previewRows
+        self.sourceSummaryRevision = sourceSummaryRevision
+        self.sourceSelectionRevision = sourceSelectionRevision
     }
 }
 

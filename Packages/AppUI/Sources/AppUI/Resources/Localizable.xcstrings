@@ -5576,186 +5576,47 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld command-line items still pending — please use the simulator panel to delete them."
+            "value": "%lld command-line cleanup items were not run."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "另有 %lld 项命令行删除任务待处理，请在模拟器面板继续操作。"
+            "value": "%lld 项命令行清理任务未执行。"
           }
         }
       }
     },
-    "op.result.force_delete.button %lld": {
+    "op.result.cmdline.failure.detail %lld %@": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%#@count@"
-          },
-          "substitutions": {
-            "count": {
-              "argNum": 1,
-              "formatSpecifier": "lld",
-              "variations": {
-                "plural": {
-                  "one": {
-                    "stringUnit": {
-                      "state": "translated",
-                      "value": "Force Delete %lld vendor-blocked item"
-                    }
-                  },
-                  "other": {
-                    "stringUnit": {
-                      "state": "translated",
-                      "value": "Force Delete %lld vendor-blocked items"
-                    }
-                  }
-                }
-              }
-            }
+            "value": "Exit code %1$lld: %2$@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%#@count@"
-          },
-          "substitutions": {
-            "count": {
-              "argNum": 1,
-              "formatSpecifier": "lld",
-              "variations": {
-                "plural": {
-                  "one": {
-                    "stringUnit": {
-                      "state": "translated",
-                      "value": "强制删除被 vendor 规则拦下的 %lld 项"
-                    }
-                  },
-                  "other": {
-                    "stringUnit": {
-                      "state": "translated",
-                      "value": "强制删除被 vendor 规则拦下的 %lld 项"
-                    }
-                  }
-                }
-              }
-            }
+            "value": "退出码 %1$lld：%2$@"
           }
         }
       }
     },
-    "op.result.force_delete.confirm.cancel": {
+    "op.result.cmdline.succeeded %lld": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cancel"
+            "value": "%lld simulator cleanup commands completed successfully."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "取消"
-          }
-        }
-      }
-    },
-    "op.result.force_delete.confirm.message %lld": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%#@count@"
-          },
-          "substitutions": {
-            "count": {
-              "argNum": 1,
-              "formatSpecifier": "lld",
-              "variations": {
-                "plural": {
-                  "one": {
-                    "stringUnit": {
-                      "state": "translated",
-                      "value": "This %lld item was blocked by vendor rules (e.g., Android SDK system-images). Force delete bypasses vendor rules but still keeps system-level safety nets (system volumes, credentials, hard-forbidden paths). The item will be moved to Trash and can be restored."
-                    }
-                  },
-                  "other": {
-                    "stringUnit": {
-                      "state": "translated",
-                      "value": "These %lld items were blocked by vendor rules (e.g., Android SDK system-images). Force delete bypasses vendor rules but still keeps system-level safety nets (system volumes, credentials, hard-forbidden paths). Items will be moved to Trash and can be restored."
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%#@count@"
-          },
-          "substitutions": {
-            "count": {
-              "argNum": 1,
-              "formatSpecifier": "lld",
-              "variations": {
-                "plural": {
-                  "one": {
-                    "stringUnit": {
-                      "state": "translated",
-                      "value": "这 %lld 项被 vendor 规则（如 Android SDK system-images）拦下。强制删除会绕过 vendor 规则，但仍然保留系统级安全网（系统卷、凭据、硬禁路径）。文件会移入废纸篓，可随时恢复。"
-                    }
-                  },
-                  "other": {
-                    "stringUnit": {
-                      "state": "translated",
-                      "value": "这 %lld 项被 vendor 规则（如 Android SDK system-images）拦下。强制删除会绕过 vendor 规则，但仍然保留系统级安全网（系统卷、凭据、硬禁路径）。文件会移入废纸篓，可随时恢复。"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "op.result.force_delete.confirm.ok": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "I understand, delete anyway"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "我已知风险，仍然删除"
-          }
-        }
-      }
-    },
-    "op.result.force_delete.confirm.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Force delete vendor-blocked items?"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "确认强制删除被 vendor 规则拦下的项？"
+            "value": "已成功完成 %lld 项模拟器清理命令。"
           }
         }
       }
@@ -5773,6 +5634,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "这些路径被内置安全规则保护，避免误删系统或其他应用。"
+          }
+        }
+      }
+    },
+    "op.result.hint.cmdline_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "These simulator cleanup commands did not complete. The affected items were not reported as moved to Trash."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这些模拟器清理命令未完成，相关项不会被误报为已移入废纸篓。"
           }
         }
       }
@@ -5807,6 +5685,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "没有删除权限（请在系统设置中授予完全磁盘访问）"
+          }
+        }
+      }
+    },
+    "op.result.reason.batch_atomic": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The batch contains a protected path, so no item was changed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同一批次包含受保护路径，因此本项也未执行任何更改"
           }
         }
       }
@@ -5879,6 +5774,23 @@
         }
       }
     },
+    "op.result.reason.user_whitelist": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Protected by your cleanup whitelist."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已受你的清理白名单保护"
+          }
+        }
+      }
+    },
     "op.result.reason.user_root": {
       "extractionState": "manual",
       "localizations": {
@@ -5926,6 +5838,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "被安全规则拦截的项"
+          }
+        }
+      }
+    },
+    "op.result.section.cmdline_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Command-line cleanup failures"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "命令行清理失败"
           }
         }
       }
@@ -11210,23 +11139,6 @@
         }
       }
     },
-    "trash.err.also_safety_blocked %lld %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "; also %1$lld paths blocked by safety policy (first reason=%2$@)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "；另有 %1$lld 路径被安全策略拦截（首条原因=%2$@）"
-          }
-        }
-      }
-    },
     "trash.err.dryrun.missing %lld": {
       "extractionState": "manual",
       "localizations": {
@@ -11240,23 +11152,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "预演：%lld 个路径不存在或无权限"
-          }
-        }
-      }
-    },
-    "trash.err.dryrun.missing_suffix %lld": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": ", %lld paths missing or no access"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "，%lld 个路径不存在或无权限"
           }
         }
       }
@@ -13335,23 +13230,6 @@
         }
       }
     },
-    "workflow.detail.alert.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Workflow Cleanup Result"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "工作流清理结果"
-          }
-        }
-      }
-    },
     "workflow.detail.empty_card": {
       "extractionState": "manual",
       "localizations": {
@@ -13552,23 +13430,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "确认要删除的 simctl 项"
-          }
-        }
-      }
-    },
-    "workflow.detail.simctl.summary %lld %lld": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "simctl: %1$lld succeeded / %2$lld failed"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "simctl 删除：成功 %1$lld / 失败 %2$lld"
           }
         }
       }
@@ -14542,6 +14403,23 @@
         }
       }
     },
+    "smart_care.metric.selected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Selected"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选择"
+          }
+        }
+      }
+    },
     "smart_care.mode.label": {
       "extractionState": "manual",
       "localizations": {
@@ -14935,11 +14813,18 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "请先在设置中配置 AI，再执行判断。" } }
       }
     },
-    "smart_care.ai.item_failed": {
+    "smart_care.ai.cancel": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "AI review failed for this result" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此结果的 AI 判断失败" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Cancel AI Review" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "取消 AI 复核" } }
+      }
+    },
+    "smart_care.ai.cancel_help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Stop the current AI review and keep completed results." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "停止当前 AI 复核，并保留已经完成的结果。" } }
       }
     },
     "smart_care.ai.progress %lld %lld": {
@@ -14978,6 +14863,349 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "AI is reviewing this result" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 正在判断此结果" } }
+      }
+    },
+    "smart_care.ai.view_report": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "View AI Report" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "查看 AI 报告" } }
+      }
+    },
+    "smart_care.ai.view_report_help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Reopen the latest AI review report for this scan." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "重新打开本次扫描最近一次 AI 复核报告。" } }
+      }
+    },
+    "smart_care.ai.report.title.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No Priority Items to Review" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "没有需要复核的优先项" } }
+      }
+    },
+    "smart_care.ai.report.title.success": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI Review Complete" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 复核完成" } }
+      }
+    },
+    "smart_care.ai.report.title.partial": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI Review Partially Complete" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 复核部分完成" } }
+      }
+    },
+    "smart_care.ai.report.title.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI Review Failed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 复核失败" } }
+      }
+    },
+    "smart_care.ai.report.title.cancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI Review Cancelled" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 复核已取消" } }
+      }
+    },
+    "smart_care.ai.report.title.stale": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI Report Is Out of Date" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 报告已过期" } }
+      }
+    },
+    "smart_care.ai.report.subtitle.format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Processed %1$lld of %2$lld priority items" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已处理 %1$lld / %2$lld 个优先项" } }
+      }
+    },
+    "smart_care.ai.report.badge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "NORMAL · AI REPORT" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "普通模式 · AI 报告" } }
+      }
+    },
+    "smart_care.ai.report.scope.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Review Scope" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "复核范围" } }
+      }
+    },
+    "smart_care.ai.report.scope.description.format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This run reviewed %lld priority items shown in Normal mode, not every file found on disk." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本次仅复核普通模式中的 %lld 个优先项，并非磁盘上扫描到的全部文件。" } }
+      }
+    },
+    "smart_care.ai.report.stat.safe": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI: Likely Safe" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI：建议安全" } }
+      }
+    },
+    "smart_care.ai.report.stat.review": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI: Review" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI：继续复核" } }
+      }
+    },
+    "smart_care.ai.report.stat.avoid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI: Avoid" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI：建议避开" } }
+      }
+    },
+    "smart_care.ai.report.stat.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Failed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "失败" } }
+      }
+    },
+    "smart_care.ai.report.global_failure.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The review request could not proceed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本次复核请求无法继续" } }
+      }
+    },
+    "smart_care.ai.report.failure.configuration": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The AI endpoint or configuration is incomplete or invalid." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 服务地址或配置不完整、无效。" } }
+      }
+    },
+    "smart_care.ai.report.failure.authentication": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI authentication failed. Check the API key and provider settings." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 身份验证失败，请检查 API Key 和服务商设置。" } }
+      }
+    },
+    "smart_care.ai.report.failure.rate_limit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The AI service is rate-limiting requests. Wait briefly and retry." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 服务触发了频率限制，请稍后重试。" } }
+      }
+    },
+    "smart_care.ai.report.failure.network": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The AI service could not be reached. Check the connection and retry." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法连接 AI 服务，请检查网络后重试。" } }
+      }
+    },
+    "smart_care.ai.report.failure.server": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The AI service returned an error." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 服务返回了错误。" } }
+      }
+    },
+    "smart_care.ai.report.failure.decoding": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The AI response could not be understood. Retry the item." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法解析 AI 返回内容，请重试此项目。" } }
+      }
+    },
+    "smart_care.ai.report.failure.unknown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "An unexpected AI review error occurred." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 复核发生了意外错误。" } }
+      }
+    },
+    "smart_care.ai.report.section.reviewed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Reviewed Items" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已复核项目" } }
+      }
+    },
+    "smart_care.ai.report.section.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Failed Items" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "失败项目" } }
+      }
+    },
+    "smart_care.ai.report.section.remaining": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Not Yet Reviewed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "尚未复核" } }
+      }
+    },
+    "smart_care.ai.report.item.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI Summary" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 摘要" } }
+      }
+    },
+    "smart_care.ai.report.item.failure": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Failure Details" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "失败详情" } }
+      }
+    },
+    "smart_care.ai.report.item.pending": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This item was not reviewed." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此项目尚未复核。" } }
+      }
+    },
+    "smart_care.ai.report.verdict.local": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Local safety" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本地安全判定" } }
+      }
+    },
+    "smart_care.ai.report.verdict.ai": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI suggestion" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 建议" } }
+      }
+    },
+    "smart_care.ai.report.selection.locked": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Protected by local safety rules and cannot be selected." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "受本地安全规则保护，无法选择。" } }
+      }
+    },
+    "smart_care.ai.report.selection.stale": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This report is out of date and cannot change the current selection." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此报告已过期，不能修改当前选择。" } }
+      }
+    },
+    "smart_care.ai.report.selection.proposal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Include in cleanup selection" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "加入清理选择" } }
+      }
+    },
+    "smart_care.ai.report.selection.proposal.help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The selection changes only after you apply it; AI never selects items automatically." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "只有点击应用后才会改变选择；AI 永远不会自动勾选。" } }
+      }
+    },
+    "smart_care.ai.report.selection.unchanged": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Selection remains unchanged" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "保持当前选择不变" } }
+      }
+    },
+    "smart_care.ai.report.selection.unchanged.help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No safe AI suggestion is available. Review this item in the main list." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前没有 AI 安全建议，请回到主列表继续审阅。" } }
+      }
+    },
+    "smart_care.ai.report.empty.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Nothing needs an AI review" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前没有需要 AI 复核的项目" } }
+      }
+    },
+    "smart_care.ai.report.empty.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "You can still review the current cleanup selection before making any changes." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "你仍可在执行任何改动前检查当前清理选择。" } }
+      }
+    },
+    "smart_care.ai.report.safety_notice": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI suggestions are informational. Local safety rules and the cleanup preview remain authoritative." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 仅提供建议；本地安全规则与清理预览始终是最终依据。" } }
+      }
+    },
+    "smart_care.ai.report.action.apply.format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Apply %lld Selection Changes" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "应用 %lld 项选择变更" } }
+      }
+    },
+    "smart_care.ai.report.action.close": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Close" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "关闭" } }
+      }
+    },
+    "smart_care.ai.report.action.continue": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Continue Remaining" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "继续复核剩余项目" } }
+      }
+    },
+    "smart_care.ai.report.action.open_settings": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Open AI Settings" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "打开 AI 设置" } }
+      }
+    },
+    "smart_care.ai.report.action.rerun": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Review Current Results Again" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "重新复核当前结果" } }
+      }
+    },
+    "smart_care.ai.report.action.retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Retry" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "重试" } }
+      }
+    },
+    "smart_care.ai.report.action.retry_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Retry Failed Items" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "重试失败项目" } }
+      }
+    },
+    "smart_care.ai.report.action.review_cleanup": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Review Cleanup" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "检查清理内容" } }
       }
     },
     "smart_care.detail.cancelled": {

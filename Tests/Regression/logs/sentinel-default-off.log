@@ -1,5 +1,5 @@
-2026-06-11 19:25:29.807 GSYCleanMac[7635:5741642] [GSYCleanMac] 已加载 79 条 vendor 规则
-[REGR] case=sentinel-default-off defaults_snapshot_keys=10 backup=/Users/guoshuyu/Library/Caches/com.guoshuyu.cleanmac.GSYCleanMac/regression-defaults-backup.plist
+2026-07-13 11:04:57.843 AmuxAIClean[24320:36025473] [AmuxAIClean] 已加载 123 条 vendor 规则
+[REGR] case=sentinel-default-off defaults_snapshot_keys=5 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
 [REGR_BEGIN] case=sentinel-default-off
 [REGR] case=sentinel-default-off default_sentinelEnabled=false default_lastEnabled=nil
 [REGR_OK] case=sentinel-default-off Sentinel 默认必须 OFF=false
@@ -7,14 +7,14 @@
 [REGR] case=sentinel-default-off plistName=com.guoshuyu.cleanmac.sentinel.plist
 [REGR_OK] case=sentinel-default-off plistName=com.guoshuyu.cleanmac.sentinel.plist
 [REGR] case=sentinel-default-off route_scanFull=startFullScan
-[REGR_OK] case=sentinel-default-off route gsycleanmac://action/scan/full=startFullScan
+[REGR_OK] case=sentinel-default-off route amuxaiclean://action/scan/full=startFullScan
 [REGR] case=sentinel-default-off route_uninstall_apps=openUninstall(path: Optional("/Applications")) expectedPath=/Applications
 [REGR_OK] case=sentinel-default-off uninstall /Applications=openUninstall(path: Optional("/Applications"))
 [REGR] case=sentinel-default-off route_uninstall_traversal=openUninstall(path: nil)
 [REGR_OK] case=sentinel-default-off uninstall path=../ 必须被防注入拒绝=openUninstall(path: nil)
 [REGR] case=sentinel-default-off route_bad_scheme=ignored(reason: "bad-scheme")
 [REGR_OK] case=sentinel-default-off bad scheme 应被忽略=ignored(reason: "bad-scheme")
-[REGR] case=sentinel-default-off currentStatus=notFound label=未找到
+[REGR] case=sentinel-default-off currentStatus=notFound label=Not found
 [REGR_OK] case=sentinel-default-off status.displayLabel 必须非空=true
-[REGR] case=sentinel-default-off defaults_restored_keys=10
-[REGR_PASS] case=sentinel-default-off elapsed_ms=1832
+[REGR] case=sentinel-default-off defaults_restored_keys=5
+[REGR_PASS] case=sentinel-default-off elapsed_ms=917

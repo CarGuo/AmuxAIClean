@@ -1,3 +1,4 @@
+import Darwin
 import SafetyKit
 import XCTest
 @testable import ScanKit
@@ -56,7 +57,9 @@ final class CommonAppCacheScannerTests: XCTestCase {
             )
         ]
 
-        let hits = CommonAppCacheScanner.detect(vendors: vendors, home: home)
+        let result = CommonAppCacheScanner.detect(vendors: vendors, home: home)
+        let hits = result.hits
+        XCTAssertTrue(result.isComplete)
         XCTAssertEqual(hits.count, 1)
         XCTAssertEqual(hits[0].ruleName, "WeChat Cache")
         XCTAssertEqual(hits[0].bundleIDPrefix, "com.tencent.xinWeChat")
@@ -86,7 +89,9 @@ final class CommonAppCacheScannerTests: XCTestCase {
             )
         ]
 
-        let hits = CommonAppCacheScanner.detect(vendors: vendors, home: home)
+        let result = CommonAppCacheScanner.detect(vendors: vendors, home: home)
+        let hits = result.hits
+        XCTAssertTrue(result.isComplete)
         XCTAssertEqual(hits.count, 1)
         XCTAssertEqual(hits[0].url.lastPathComponent, "com.example.App")
         XCTAssertEqual(hits[0].sizeBytes, 256)
@@ -115,7 +120,9 @@ final class CommonAppCacheScannerTests: XCTestCase {
         ]
 
         let options = CommonAppCacheScanner.Options(includedVerdicts: [.safe])
-        let hits = CommonAppCacheScanner.detect(vendors: vendors, home: home, options: options)
+        let result = CommonAppCacheScanner.detect(vendors: vendors, home: home, options: options)
+        let hits = result.hits
+        XCTAssertTrue(result.isComplete)
         XCTAssertEqual(hits.count, 1)
         XCTAssertEqual(hits[0].url.lastPathComponent, "safe")
     }
@@ -159,6 +166,139 @@ final class CommonAppCacheScannerTests: XCTestCase {
         )
 
         XCTAssertEqual(candidates.map(\.rule.name), ["Browser Cache", "Chat Review"])
+    }
+
+    func testDetect_entryLimitReturnsPartialHitAndProtectsItsRootFromDeletion() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+
+        let cache = home.appendingPathComponent("Library/Caches/com.example.Large",
+                                                isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try writeFile(in: cache, name: "a.bin", bytes: 31)
+        try writeFile(in: cache, name: "b.bin", bytes: 47)
+
+        let vendors = [VendorRule(
+            name: "Large Cache",
+            category: "common_app_cache",
+            paths: [PathRule(path: "~/Library/Caches/com.example.Large",
+                             verdict: .safe,
+                             reason: "fixture")]
+        )]
+        let options = CommonAppCacheScanner.Options(maxEntriesPerPath: 1)
+
+        let result = CommonAppCacheScanner.detect(vendors: vendors, home: home, options: options)
+
+        XCTAssertEqual(result.hits.count, 1, "部分统计仍可用于展示，但绝不能被当成完整证明")
+        XCTAssertFalse(result.isComplete)
+        XCTAssertTrue(result.incompletePaths.contains(
+            .init(path: cache.path, reason: .entryLimitReached)
+        ))
+        XCTAssertTrue(result.deletionProtectedPaths.contains(cache.standardizedFileURL.path))
+    }
+
+    func testDetect_expiredDeadlineProtectsEveryUnscannedCandidate() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+
+        let cache = home.appendingPathComponent("Library/Caches/com.example.Timeout",
+                                                isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try writeFile(in: cache, name: "cache.bin", bytes: 16)
+        let vendors = [VendorRule(
+            name: "Timeout Cache",
+            category: "common_app_cache",
+            paths: [PathRule(path: "~/Library/Caches/com.example.Timeout", verdict: .safe)]
+        )]
+        let options = CommonAppCacheScanner.Options(timeoutSeconds: -1)
+
+        let result = CommonAppCacheScanner.detect(vendors: vendors, home: home, options: options)
+
+        XCTAssertTrue(result.hits.isEmpty)
+        XCTAssertEqual(result.incompletePaths, [
+            .init(path: cache.path, reason: .deadlineExceeded)
+        ])
+    }
+
+    func testSizeOfPath_openFailureIsExplicitAndNeverLooksComplete() throws {
+        let root = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: root)) }
+        try writeFile(in: root, name: "cache.bin", bytes: 8)
+
+        let stat = CommonAppCacheScanner.sizeOfPath(
+            root.path,
+            isDirectory: true,
+            deadline: Date().addingTimeInterval(5),
+            maxEntries: 100,
+            openDirectory: { _ in
+                errno = EACCES
+                return -1
+            }
+        )
+
+        XCTAssertEqual(stat.bytes, 0)
+        XCTAssertEqual(stat.entryCount, 0)
+        XCTAssertEqual(stat.incompletePaths, [
+            .init(path: root.path, reason: .directoryOpenFailed)
+        ])
+        XCTAssertFalse(stat.wasCancelled)
+    }
+
+    func testDetect_取消是独立终态且不会伪装成空扫描完成() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let cache = home.appendingPathComponent("Library/Caches/com.example.Cancelled",
+                                                isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try writeFile(in: cache, name: "cache.bin", bytes: 32)
+        let vendors = [VendorRule(
+            name: "Cancelled Cache",
+            category: "common_app_cache",
+            paths: [PathRule(path: "~/Library/Caches/com.example.Cancelled", verdict: .safe)]
+        )]
+
+        let result = CommonAppCacheScanner.detect(
+            vendors: vendors,
+            home: home,
+            shouldCancel: { true }
+        )
+
+        XCTAssertTrue(result.wasCancelled)
+        XCTAssertFalse(result.isComplete,
+                       "取消后的空 hits 不能被上层解释成真实的空扫描完成态")
+        XCTAssertTrue(result.hits.isEmpty)
+        XCTAssertTrue(result.incompletePaths.isEmpty,
+                      "取消不是权限/枚举失败，不应污染删除保护错误语义")
+    }
+
+    func testSizeOfPath_bulk枚举途中取消会丢弃部分计量() throws {
+        let root = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: root)) }
+        for index in 0..<64 {
+            try writeFile(in: root, name: "entry-\(index).bin", bytes: 8)
+        }
+
+        var cancellationChecks = 0
+        var cancellationRequested = false
+        let stat = CommonAppCacheScanner.sizeOfPath(
+            root.path,
+            isDirectory: true,
+            deadline: Date().addingTimeInterval(5),
+            maxEntries: 1_000,
+            shouldCancel: {
+                if cancellationRequested { return true }
+                cancellationChecks += 1
+                if cancellationChecks >= 12 { cancellationRequested = true }
+                return cancellationRequested
+            }
+        )
+
+        XCTAssertTrue(stat.wasCancelled)
+        XCTAssertEqual(stat.bytes, 0,
+                       "取消后的局部字节数不能泄漏成可提交的完整计量")
+        XCTAssertEqual(stat.entryCount, 0)
+        XCTAssertTrue(stat.incompletePaths.isEmpty,
+                      "协作取消不能被 BulkEnumerate 的 stoppedByConsumer 误报为 enumerationFailed")
     }
 
     private func makeTempDir() throws -> URL {

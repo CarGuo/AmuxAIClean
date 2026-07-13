@@ -40,6 +40,21 @@ final class BackendWorkflowCardsTests: XCTestCase {
         XCTAssertEqual(card(cards, "card.backend.go-module-cache")?.risk, .confirm)
     }
 
+    func test_goModuleCache_usesOnlyCanonicalParentRoot() throws {
+        let home = try makeTmpHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        try makeDir("go/pkg/mod/cache/download", in: home)
+
+        let moduleCard = try XCTUnwrap(card(BackendWorkflow().cards(home: home),
+                                            "card.backend.go-module-cache"))
+        guard case let .literal(paths) = moduleCard.source else {
+            return XCTFail("Go module cache should use literal filesystem roots")
+        }
+
+        XCTAssertEqual(paths, ["~/go/pkg/mod"],
+                       "A parent and its download-cache descendant must not be scanned or selected twice")
+    }
+
     func test_rustZigRoots_createCargoRustupAndZigCards() throws {
         let home = try makeTmpHome()
         defer { try? FileManager.default.removeItem(at: home) }
