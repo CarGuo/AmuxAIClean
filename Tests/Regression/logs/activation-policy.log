@@ -1,9 +1,9 @@
-2026-07-13 11:04:18.026 AmuxAIClean[20702:36020305] [AmuxAIClean] 已加载 123 条 vendor 规则
-[REGR] case=activation-policy defaults_snapshot_keys=5 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
+2026-07-15 17:10:48.663 AmuxAIClean[93043:193045] [AmuxAIClean] 已加载 123 条 vendor 规则
+[REGR] case=activation-policy defaults_snapshot_keys=7 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
 [REGR_BEGIN] case=activation-policy
 [REGR] case=activation-policy policy_after_hide_off=0
 [REGR_OK] case=activation-policy regular when hide=off=0
 [REGR] case=activation-policy policy_after_hide_on=1
 [REGR_OK] case=activation-policy accessory when hide=on & no window=1
-[REGR] case=activation-policy defaults_restored_keys=5
-[REGR_PASS] case=activation-policy elapsed_ms=463
+[REGR] case=activation-policy defaults_restored_keys=7
+[REGR_PASS] case=activation-policy elapsed_ms=529

@@ -30,11 +30,14 @@ final class ScannerEdgeCaseTests: XCTestCase {
 
         let scanner = BulkScanner()
         var sawPermissionDenied = false
+        var incompleteIssues: Set<ScanIncompleteIssue> = []
         var sawSummary: ScanSummary?
         for await event in scanner.scan(root: tmp) {
             switch event {
             case .permissionDenied(let path):
                 if path == denied.path { sawPermissionDenied = true }
+            case .incomplete(let issue):
+                incompleteIssues.insert(issue)
             case .finished(let s):
                 sawSummary = s
             default:
@@ -42,7 +45,15 @@ final class ScannerEdgeCaseTests: XCTestCase {
             }
         }
         XCTAssertTrue(sawPermissionDenied, "应当至少 yield 一条 .permissionDenied 事件")
-        XCTAssertNotNil(sawSummary)
+        let expectedIssue = ScanIncompleteIssue(
+            path: denied.path,
+            reason: .permissionDenied,
+            stage: .open,
+            posixErrorCode: EACCES
+        )
+        XCTAssertTrue(incompleteIssues.contains(expectedIssue))
+        XCTAssertEqual(sawSummary?.completionStatus, .partial)
+        XCTAssertTrue(sawSummary?.incompleteIssues.contains(expectedIssue) == true)
     }
 
     /// summary.permissionDeniedCount 必须等于流里 .permissionDenied 的次数
@@ -72,11 +83,14 @@ final class ScannerEdgeCaseTests: XCTestCase {
 
         let scanner = BulkScanner()
         var deniedYieldCount = 0
+        var incompleteIssues: Set<ScanIncompleteIssue> = []
         var summary: ScanSummary?
         for await event in scanner.scan(root: tmp) {
             switch event {
             case .permissionDenied:
                 deniedYieldCount += 1
+            case .incomplete(let issue):
+                incompleteIssues.insert(issue)
             case .finished(let s):
                 summary = s
             default:
@@ -87,6 +101,17 @@ final class ScannerEdgeCaseTests: XCTestCase {
         XCTAssertEqual(summary?.permissionDeniedCount, deniedYieldCount,
                        "summary.permissionDeniedCount 必须与 yield 次数完全一致")
         XCTAssertGreaterThanOrEqual(deniedYieldCount, 3)
+        let expectedIssues = Set(deniedPaths.map {
+            ScanIncompleteIssue(
+                path: $0,
+                reason: .permissionDenied,
+                stage: .open,
+                posixErrorCode: EACCES
+            )
+        })
+        XCTAssertTrue(expectedIssues.isSubset(of: incompleteIssues))
+        XCTAssertEqual(summary?.completionStatus, .partial)
+        XCTAssertTrue(expectedIssues.isSubset(of: Set(summary?.incompleteIssues ?? [])))
     }
 
     /// 制造 1000 文件 fixture，AsyncStream 不读直接 cancel，断言不死锁（在合理时间内任务能终止）

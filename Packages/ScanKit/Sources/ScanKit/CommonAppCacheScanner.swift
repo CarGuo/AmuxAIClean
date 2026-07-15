@@ -43,7 +43,10 @@ public actor CommonAppCacheScanner {
         public let isDirectory: Bool
         public let verdict: SafetyVerdict
         public let reason: String?
+        /// 与 System Settings「储存空间」一致的磁盘分配量；清理列表主值使用它。
         public let sizeBytes: Int64
+        /// Finder 式详情副值；sparse 文件的虚拟容量可能远大于 `sizeBytes`。
+        public let logicalSizeBytes: Int64
         public let entryCount: Int
 
         public var id: String { "\(ruleName)|\(url.path)" }
@@ -57,6 +60,7 @@ public actor CommonAppCacheScanner {
             verdict: SafetyVerdict,
             reason: String?,
             sizeBytes: Int64,
+            logicalSizeBytes: Int64? = nil,
             entryCount: Int
         ) {
             self.ruleName = ruleName
@@ -67,6 +71,7 @@ public actor CommonAppCacheScanner {
             self.verdict = verdict
             self.reason = reason
             self.sizeBytes = sizeBytes
+            self.logicalSizeBytes = logicalSizeBytes ?? sizeBytes
             self.entryCount = entryCount
         }
     }
@@ -206,6 +211,7 @@ public actor CommonAppCacheScanner {
                 verdict: candidate.pathRule.verdict,
                 reason: candidate.pathRule.reason,
                 sizeBytes: bytes,
+                logicalSizeBytes: size.logicalBytes,
                 entryCount: size.entryCount
             ))
         }
@@ -530,10 +536,24 @@ public actor CommonAppCacheScanner {
     }
 
     struct SizeStat {
+        /// on-disk allocated bytes；`bytes` 保留现有调用名，但语义固定为磁盘占用。
         let bytes: Int64
+        let logicalBytes: Int64
         let entryCount: Int
         let incompletePaths: [IncompletePath]
         let wasCancelled: Bool
+
+        init(bytes: Int64,
+             logicalBytes: Int64? = nil,
+             entryCount: Int,
+             incompletePaths: [IncompletePath],
+             wasCancelled: Bool) {
+            self.bytes = bytes
+            self.logicalBytes = logicalBytes ?? bytes
+            self.entryCount = entryCount
+            self.incompletePaths = incompletePaths
+            self.wasCancelled = wasCancelled
+        }
     }
 
     static func sizeOfPath(
@@ -574,7 +594,8 @@ public actor CommonAppCacheScanner {
                 )
             }
             return SizeStat(
-                bytes: Int64(st.st_size),
+                bytes: Int64(st.st_blocks) * 512,
+                logicalBytes: Int64(st.st_size),
                 entryCount: 1,
                 incompletePaths: [],
                 wasCancelled: false
@@ -627,8 +648,12 @@ public actor CommonAppCacheScanner {
         let rootDevice = UInt64(bitPattern: Int64(rootStat.st_dev))
 
         var stack = [rootPath]
-        var total: Int64 = 0
+        var allocatedTotal: Int64 = 0
+        var logicalTotal: Int64 = 0
         var entries = 0
+        // 单个候选目录就是一个独立计量会话：与 `du <directory>` 相同，目录内
+        // hardlink 只计一次；不跨候选共享，避免并发扫描时结果取决于完成顺序。
+        let inodes = InodeSet()
         var incompletePaths: [IncompletePath] = []
         var wasCancelled = false
 
@@ -675,7 +700,14 @@ public actor CommonAppCacheScanner {
                 if entry.isDirectory {
                     stack.append("\(dir)/\(entry.name)")
                 } else {
-                    total += entry.logicalSize
+                    let isFirstLink = inodes.insertIfFirstSeen(
+                        device: entry.device,
+                        inode: entry.inode
+                    )
+                    if isFirstLink {
+                        allocatedTotal &+= entry.allocatedSize
+                        logicalTotal &+= entry.logicalSize
+                    }
                 }
                 return true
             }
@@ -689,6 +721,10 @@ public actor CommonAppCacheScanner {
             switch outcome {
             case .complete:
                 break
+            case .completeWithIssues(let issues):
+                incompletePaths.append(contentsOf: issues.map {
+                    IncompletePath(path: $0.path, reason: .enumerationFailed)
+                })
             case .stoppedByConsumer:
                 incompletePaths.append(IncompletePath(
                     path: rootPath,
@@ -700,7 +736,8 @@ public actor CommonAppCacheScanner {
             if consumerStopReason != nil { break }
         }
         return SizeStat(
-            bytes: wasCancelled ? 0 : total,
+            bytes: wasCancelled ? 0 : allocatedTotal,
+            logicalBytes: wasCancelled ? 0 : logicalTotal,
             entryCount: wasCancelled ? 0 : entries,
             incompletePaths: wasCancelled ? [] : deduplicatedIncompletePaths(incompletePaths),
             wasCancelled: wasCancelled

@@ -37,16 +37,58 @@ public enum BundleProtection {
         do {
             return try BundleProtectionMatcher.loadFromBundle()
         } catch {
-            // 加载失败：返回一个**永远不命中**的空 matcher，保证 SafetyEngine
-            // 安全降级（不破坏现有规则），同时把错误打到日志。
-            return BundleProtectionMatcher(data: BundleProtectionData.empty,
-                                           loadError: error)
+            // 普通扫描判定保持历史兼容：加载失败时 matcher 不产生额外命中。
+            // 但失败状态必须被保留下来，删除能力层会据此拒绝铸造 vendor override，
+            // 不能把“资源不可用”误当成“已确认没有受保护 bundle”。
+            return BundleProtectionMatcher.unavailable(
+                failure: BundleProtectionLoadFailure.classify(error),
+                loadError: error
+            )
         }
     }()
 
     /// 便捷入口。命中返回 Match，未命中返回 nil。
     public static func match(bundleID: String) -> Match? {
         shared.match(bundleID: bundleID)
+    }
+}
+
+/// `protected_bundles.json` 的结构化加载失败原因。
+///
+/// 删除能力层只关心规则证据是否完整，不应解析不稳定的 NSError 文案；因此把底层错误
+/// 归一化成可比较、可测试的有限状态。底层 `loadError` 仍保留给诊断日志使用。
+public enum BundleProtectionLoadFailure: String, Sendable, Equatable {
+    case resourceMissing
+    case resourceUnreadable
+    case invalidResource
+    case unknown
+
+    static func classify(_ error: Error) -> Self {
+        if let bundleError = error as? BundleProtectionError,
+           bundleError == .resourceMissing {
+            return .resourceMissing
+        }
+        if error is DecodingError {
+            return .invalidResource
+        }
+        if error is CocoaError {
+            return .resourceUnreadable
+        }
+        return .unknown
+    }
+}
+
+/// Bundle protection 规则证据的可用状态。
+///
+/// `.unavailable` 不会把普通扫描结果一刀切扩大为 forbid；它只表示安全能力层不能证明
+/// “候选路径不属于受保护 bundle”，因此不得签发任何破坏性 override。
+public enum BundleProtectionLoadState: Sendable, Equatable {
+    case loaded
+    case unavailable(BundleProtectionLoadFailure)
+
+    public var hasCompleteEvidence: Bool {
+        if case .loaded = self { return true }
+        return false
     }
 }
 
@@ -97,6 +139,7 @@ public struct BundleProtectionData: Sendable, Decodable, Equatable {
 public final class BundleProtectionMatcher: @unchecked Sendable {
     public let data: BundleProtectionData
     public let loadError: Error?
+    public let loadState: BundleProtectionLoadState
 
     // 三个 Kind 各自的三个桶（exact / prefix / contains）
     private let systemExact: Set<String>
@@ -111,9 +154,12 @@ public final class BundleProtectionMatcher: @unchecked Sendable {
     private let dataPrefix: [String]
     private let dataContains: [String]
 
-    public init(data: BundleProtectionData, loadError: Error? = nil) {
+    private init(data: BundleProtectionData,
+                 loadError: Error?,
+                 loadState: BundleProtectionLoadState) {
         self.data = data
         self.loadError = loadError
+        self.loadState = loadState
 
         let s = Self.partition(data.systemCritical)
         self.systemExact = s.exact
@@ -129,6 +175,35 @@ public final class BundleProtectionMatcher: @unchecked Sendable {
         self.dataExact = d.exact
         self.dataPrefix = d.prefix
         self.dataContains = d.contains
+    }
+
+    /// 构造已成功加载的不可变 matcher。保留 `loadError` 参数兼容已有调用；一旦传入
+    /// 错误，状态会结构化为 unavailable，避免“空数据 + 有错误”被能力层当成完整证据。
+    public convenience init(data: BundleProtectionData, loadError: Error? = nil) {
+        let state = loadError.map {
+            BundleProtectionLoadState.unavailable(BundleProtectionLoadFailure.classify($0))
+        } ?? .loaded
+        self.init(data: data, loadError: loadError, loadState: state)
+    }
+
+    /// 显式构造资源不可用的 matcher，用于启动失败路径与依赖注入测试。
+    /// 该实例仍可安全调用 `match`（恒不命中），但 `loadState` 会让 destructive
+    /// authorization fail closed。
+    public static func unavailable(
+        failure: BundleProtectionLoadFailure
+    ) -> BundleProtectionMatcher {
+        unavailable(failure: failure, loadError: nil)
+    }
+
+    static func unavailable(
+        failure: BundleProtectionLoadFailure,
+        loadError: Error?
+    ) -> BundleProtectionMatcher {
+        BundleProtectionMatcher(
+            data: .empty,
+            loadError: loadError,
+            loadState: .unavailable(failure)
+        )
     }
 
     /// 从 SafetyKit 资源 bundle 加载 protected_bundles.json。

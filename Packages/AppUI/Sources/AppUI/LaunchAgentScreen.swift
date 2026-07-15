@@ -34,9 +34,6 @@ public struct LaunchAgentScreen: View {
             footer
         }
         .task { await reload() }
-        // v2：套布局沙箱——LaunchAgent plist 路径很长，
-        // 不让 list 行内 ideal width 反推外层 NavigationSplitView。
-        .layoutSandbox()
     }
 
     // MARK: - Header / Footer

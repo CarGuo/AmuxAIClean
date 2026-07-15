@@ -36,7 +36,7 @@ final class BulkScannerMicroBatchTests: XCTestCase {
     /// AUDIT line 451 的精神：195k mock fixture yield 次数 ≤ 4000；这里取等比例尺度的 200。
     func test_5000文件场景_数据型yield次数应远低于文件数() async throws {
         let root = try makeFixture(fileCount: 5000, dirCount: 50)
-        defer { try? FileManager.default.removeItem(at: root) }
+        defer { removeFixture(root) }
 
         let opts = ScanOptions(includeHidden: false, concurrency: 4, maxConcurrency: 4, mediaAware: false)
         let scanner = BulkScanner(options: opts)
@@ -88,7 +88,7 @@ final class BulkScannerMicroBatchTests: XCTestCase {
     /// BulkScanner 必须保证：把 .nodes 数组逐项当作 .node 处理后的 entry 总数与 .nodes 累计 entry 数一致。
     func test_兼容旧消费方_node与nodes累计entry一致() async throws {
         let root = try makeFixture(fileCount: 1000, dirCount: 10)
-        defer { try? FileManager.default.removeItem(at: root) }
+        defer { removeFixture(root) }
 
         let opts = ScanOptions(includeHidden: false, concurrency: 2, maxConcurrency: 2, mediaAware: false)
         let scanner = BulkScanner(options: opts)
@@ -116,7 +116,7 @@ final class BulkScannerMicroBatchTests: XCTestCase {
     /// 防"未来某次重构把多目录 entry 混入同一 batch"破坏 UI 展示假设。
     func test_nodes_batch内元素应来自同一父目录() async throws {
         let root = try makeFixture(fileCount: 600, dirCount: 6)
-        defer { try? FileManager.default.removeItem(at: root) }
+        defer { removeFixture(root) }
 
         let opts = ScanOptions(includeHidden: false, concurrency: 2, maxConcurrency: 2, mediaAware: false)
         let scanner = BulkScanner(options: opts)
@@ -130,5 +130,48 @@ final class BulkScannerMicroBatchTests: XCTestCase {
             }
         }
         XCTAssertTrue(sawAtLeastOneBatch, "fixture 至少应触发一次 size>=2 的 .nodes batch")
+    }
+
+    /// 单个超宽目录不能再被包装成一个无限大的 `.nodes` 事件。
+    /// ScanCoordinator 在 MainActor 上逐项消费 batch；固定上限确保一个事件最多只占用
+    /// 有限的主线程时间，同时仍保持同一父目录内的枚举顺序与数据完整性。
+    func test_超宽单目录_nodes批次有固定上限() async throws {
+        let fileCount = BulkScanner.nodeBatchLimit * 4 + 17
+        let root = try makeFixture(fileCount: fileCount, dirCount: 1)
+        defer { removeFixture(root) }
+
+        let options = ScanOptions(includeHidden: false, concurrency: 1, maxConcurrency: 1, mediaAware: false)
+        var flattened: [String] = []
+        var batchCount = 0
+        var maximumBatchSize = 0
+
+        for await event in BulkScanner(options: options).scan(root: root) {
+            switch event {
+            case .node(let node):
+                if !node.isDirectory { flattened.append(node.path) }
+            case .nodes(let nodes):
+                batchCount += 1
+                maximumBatchSize = max(maximumBatchSize, nodes.count)
+                flattened.append(contentsOf: nodes.lazy.filter { !$0.isDirectory }.map { $0.path })
+            default:
+                break
+            }
+        }
+
+        XCTAssertEqual(flattened.count, fileCount)
+        XCTAssertEqual(Set(flattened).count, fileCount, "分块不能丢失或重复任何目录项")
+        XCTAssertGreaterThan(batchCount, 1, "超宽目录必须被拆成多个数据事件")
+        XCTAssertLessThanOrEqual(maximumBatchSize, BulkScanner.nodeBatchLimit,
+                                 "单个 `.nodes` 不得把数万节点一次投递给 MainActor")
+    }
+
+    private func removeFixture(_ url: URL,
+                               file: StaticString = #filePath,
+                               line: UInt = #line) {
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            XCTFail("Failed to remove scan fixture \(url.path): \(error)", file: file, line: line)
+        }
     }
 }

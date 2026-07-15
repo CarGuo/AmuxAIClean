@@ -66,7 +66,7 @@ final class MailDownloadsTests: XCTestCase {
             let usec = suseconds_t((ts - Double(sec)) * 1_000_000)
             return timeval(tv_sec: sec, tv_usec: usec)
         }
-        var times = [toTimeval(atime), toTimeval(mtime)]
+        let times = [toTimeval(atime), toTimeval(mtime)]
         let res = url.withUnsafeFileSystemRepresentation { ptr -> Int32 in
             guard let ptr else { return -1 }
             return times.withUnsafeBufferPointer { buf in
@@ -84,17 +84,17 @@ final class MailDownloadsTests: XCTestCase {
 
     func test_old_attachment_with_both_mtime_atime_older_than_30d_is_hit() throws {
         let container = tempRoot.appendingPathComponent("Mail Downloads", isDirectory: true)
-        try makeAttachment(container: container,
-                           uuid: "ABC-123", name: "report.pdf",
-                           sizeBytes: 2048,
-                           mtimeDaysAgo: 60, atimeDaysAgo: 60)
+        let attachment = try makeAttachment(container: container,
+                                            uuid: "ABC-123", name: "report.pdf",
+                                            sizeBytes: 2048,
+                                            mtimeDaysAgo: 60, atimeDaysAgo: 60)
         let hits = MailDownloadsScanner.detect(
             containerRoots: [container],
             options: MailDownloadsScanner.Options(ageDays: 30, now: Date())
         )
         XCTAssertEqual(hits.count, 1)
         XCTAssertEqual(hits.first?.url.lastPathComponent, "report.pdf")
-        XCTAssertEqual(hits.first?.sizeBytes, 2048)
+        XCTAssertEqual(hits.first?.sizeBytes, allocatedSize(of: attachment))
     }
 
     // MARK: - 2. 30d 边界两侧：< 阈值排除，> 阈值命中
@@ -242,7 +242,7 @@ final class MailDownloadsTests: XCTestCase {
                        url.standardizedFileURL.resolvingSymlinksInPath())
         XCTAssertEqual(h.url.lastPathComponent, "meta.pdf")
         XCTAssertEqual(h.id, h.url.path)
-        XCTAssertEqual(h.sizeBytes, 4096)
+        XCTAssertEqual(h.sizeBytes, allocatedSize(of: url))
         XCTAssertEqual(h.ageDays, 90, accuracy: 1.0)
         XCTAssertNotNil(h.modificationDate)
         XCTAssertNotNil(h.accessDate)
@@ -265,5 +265,37 @@ final class MailDownloadsTests: XCTestCase {
         )
         XCTAssertEqual(hits.count, 1)
         XCTAssertEqual(hits.first?.url.lastPathComponent, "ninety.pdf")
+    }
+
+    func test_sparse_attachment_uses_system_storage_usage() throws {
+        let container = tempRoot.appendingPathComponent("Mail Downloads", isDirectory: true)
+        let now = Date()
+        let url = try makeAttachment(
+            container: container,
+            uuid: "SPARSE",
+            name: "disk-image.raw",
+            sizeBytes: 1,
+            mtimeDaysAgo: 90,
+            atimeDaysAgo: 90,
+            referenceNow: now
+        )
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: 2 * 1_024 * 1_024 * 1_024)
+        try handle.close()
+        let old = now.addingTimeInterval(-90 * 86400)
+        try setTimes(url: url, atime: old, mtime: old)
+
+        let hit = try XCTUnwrap(MailDownloadsScanner.detect(
+            containerRoots: [container],
+            options: MailDownloadsScanner.Options(ageDays: 30, now: now)
+        ).first)
+        XCTAssertEqual(hit.sizeBytes, allocatedSize(of: url))
+        XCTAssertLessThan(hit.sizeBytes, 64 * 1_024 * 1_024)
+    }
+
+    private func allocatedSize(of url: URL) -> UInt64 {
+        var metadata = stat()
+        guard lstat(url.path, &metadata) == 0 else { return .max }
+        return UInt64(max(0, Int64(metadata.st_blocks) * 512))
     }
 }

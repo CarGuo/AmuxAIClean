@@ -8,9 +8,7 @@ import XCTest
 /// 2. loadHistory 跨实例读取（验 Codable + atomic write）
 /// 3. cleanupStaleEntries：所有 pair 的 trashedPath 都不存在 → 整条剔除；部分存在 → 保留
 /// 4. restoreRecord happy path：把 trashed 文件 mv 回 original，record 自动从 history 删除
-///
-/// **不测**：与 NSWorkspace.recycle 相关的冲突解决路径——系统 Trash 在沙箱化测试环境不稳定，
-/// 真实验证留给 RegressionRunner 的 undo-history-restore case 跑真实 .app。
+/// 5. 同名冲突先形成显式 plan；skip / restore-with-new-name 都不触碰现有文件
 @MainActor
 final class UndoHistoryStoreTests: XCTestCase {
 
@@ -166,10 +164,11 @@ final class UndoHistoryStoreTests: XCTestCase {
         XCTAssertEqual(store.history.count, 1)
         let record = store.history[0]
 
-        let (restored, skipped, err) = await store.restoreRecord(record)
-        XCTAssertEqual(restored, 1)
-        XCTAssertEqual(skipped, 0)
-        XCTAssertNil(err)
+        let result = await store.restoreRecord(record, conflictPolicy: .skipExisting)
+        XCTAssertEqual(result.restoredCount, 1)
+        XCTAssertEqual(result.skippedCount, 0)
+        XCTAssertEqual(result.renamedCount, 0)
+        XCTAssertNil(result.firstError)
         // 文件已 mv 回 original，trashed 不应再存在
         XCTAssertTrue(FileManager.default.fileExists(atPath: originalFile.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: trashedFile.path))
@@ -203,16 +202,110 @@ final class UndoHistoryStoreTests: XCTestCase {
         ])
         let record = try XCTUnwrap(store.history.first)
 
-        let (restored, skipped, err) = await store.restoreRecord(record)
+        let result = await store.restoreRecord(record, conflictPolicy: .skipExisting)
 
-        XCTAssertEqual(restored, 1)
-        XCTAssertEqual(skipped, 1)
-        XCTAssertNotNil(err)
+        XCTAssertEqual(result.restoredCount, 1)
+        XCTAssertEqual(result.skippedCount, 1)
+        XCTAssertNotNil(result.firstError)
         XCTAssertTrue(FileManager.default.fileExists(atPath: okOriginal.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: blockedTrashed.path))
         XCTAssertEqual(store.history.count, 1, "partial 失败后不能整条移除，否则剩余文件失去恢复入口")
         XCTAssertEqual(store.history[0].filePairs, [
             .init(original: blockedOriginal.path, trashed: blockedTrashed.path)
         ])
+    }
+
+    func testPrepareRestoreReportsConflictWithoutChangingEitherFile() async throws {
+        let dir = tempDir()
+        let url = storeURL(in: dir)
+        let store = UndoHistoryStore(storeURL: url, maxHistoryCount: 10)
+        let trashDir = dir.appendingPathComponent("trash", isDirectory: true)
+        let originalDir = dir.appendingPathComponent("original", isDirectory: true)
+        try FileManager.default.createDirectory(at: trashDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: originalDir, withIntermediateDirectories: true)
+
+        let trashed = trashDir.appendingPathComponent("settings.json")
+        let original = originalDir.appendingPathComponent("settings.json")
+        try Data("older".utf8).write(to: trashed)
+        try Data("current".utf8).write(to: original)
+        store.addRecord(source: "clean", filePairs: [
+            .init(original: original.path, trashed: trashed.path)
+        ])
+        let record = try XCTUnwrap(store.history.first)
+
+        let plan = await store.prepareRestore(record)
+
+        XCTAssertTrue(plan.requiresConflictChoice)
+        XCTAssertEqual(plan.readyCount, 0)
+        XCTAssertEqual(plan.conflictPaths, [original.path])
+        XCTAssertEqual(try String(contentsOf: original, encoding: .utf8), "current")
+        XCTAssertEqual(try String(contentsOf: trashed, encoding: .utf8), "older")
+    }
+
+    func testSkipExistingLeavesCurrentAndTrashedFilesUntouched() async throws {
+        let dir = tempDir()
+        let url = storeURL(in: dir)
+        let store = UndoHistoryStore(storeURL: url, maxHistoryCount: 10)
+        let trashDir = dir.appendingPathComponent("trash", isDirectory: true)
+        let originalDir = dir.appendingPathComponent("original", isDirectory: true)
+        try FileManager.default.createDirectory(at: trashDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: originalDir, withIntermediateDirectories: true)
+
+        let trashed = trashDir.appendingPathComponent("settings.json")
+        let original = originalDir.appendingPathComponent("settings.json")
+        try Data("older".utf8).write(to: trashed)
+        try Data("current".utf8).write(to: original)
+        store.addRecord(source: "clean", filePairs: [
+            .init(original: original.path, trashed: trashed.path)
+        ])
+        let record = try XCTUnwrap(store.history.first)
+
+        let result = await store.restoreRecord(record, conflictPolicy: .skipExisting)
+
+        XCTAssertEqual(result.restoredCount, 0)
+        XCTAssertEqual(result.skippedCount, 1)
+        XCTAssertEqual(result.renamedCount, 0)
+        XCTAssertNotNil(result.firstError, "跳过冲突必须给用户可见原因")
+        XCTAssertEqual(try String(contentsOf: original, encoding: .utf8), "current")
+        XCTAssertEqual(try String(contentsOf: trashed, encoding: .utf8), "older")
+        XCTAssertEqual(store.history.first?.filePairs, record.filePairs,
+                       "跳过后必须保留恢复记录，用户可以稍后改用新名称恢复")
+    }
+
+    func testRestoreWithUniqueNamePreservesCurrentFileAndRestoresOlderCopy() async throws {
+        let dir = tempDir()
+        let url = storeURL(in: dir)
+        let store = UndoHistoryStore(storeURL: url, maxHistoryCount: 10)
+        let trashDir = dir.appendingPathComponent("trash", isDirectory: true)
+        let originalDir = dir.appendingPathComponent("original", isDirectory: true)
+        try FileManager.default.createDirectory(at: trashDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: originalDir, withIntermediateDirectories: true)
+
+        let trashed = trashDir.appendingPathComponent("settings.json")
+        let original = originalDir.appendingPathComponent("settings.json")
+        try Data("older".utf8).write(to: trashed)
+        try Data("current".utf8).write(to: original)
+        store.addRecord(source: "clean", filePairs: [
+            .init(original: original.path, trashed: trashed.path)
+        ])
+        let record = try XCTUnwrap(store.history.first)
+
+        let result = await store.restoreRecord(record, conflictPolicy: .restoreWithUniqueName)
+
+        XCTAssertEqual(result.restoredCount, 1)
+        XCTAssertEqual(result.skippedCount, 0)
+        XCTAssertEqual(result.renamedCount, 1)
+        XCTAssertNil(result.firstError)
+        XCTAssertEqual(try String(contentsOf: original, encoding: .utf8), "current",
+                       "恢复冲突绝不能覆盖或移动用户后来创建的文件")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: trashed.path))
+
+        let restoredCopies = try FileManager.default.contentsOfDirectory(
+            at: originalDir,
+            includingPropertiesForKeys: nil
+        ).filter { $0.standardizedFileURL.path != original.standardizedFileURL.path }
+        XCTAssertEqual(restoredCopies.count, 1)
+        XCTAssertEqual(try String(contentsOf: restoredCopies[0], encoding: .utf8), "older")
+        XCTAssertTrue(store.history.isEmpty)
     }
 }

@@ -120,19 +120,29 @@ final class RegressionRunner {
     // MARK: - 扫描核心
 
     /// 用 ScenarioBuilder 搭一棵已知确定数字的树（10 文件 / 100KB / 嵌套 5 层），
-    /// 走 ScanCoordinator.scan 真实扫描，断言 totalBytes / scannedFileCount 精确等于。
+    /// 走 ScanCoordinator.scan 真实扫描，分别验证逻辑大小与 Finder 磁盘占用口径。
+    ///
+    /// v1.6.1：`snapshot.totalBytes` 已统一为 `st_blocks * 512` 的物理占用，不能再拿
+    /// 固定逻辑字节作等号断言；5,120B 文件在 APFS 上通常占 8,192B，块大小也可能因卷而异。
+    /// 这里用独立 POSIX `lstat` 从 fixture 计算期望物理值，同时保留逻辑字节精确断言，
+    /// 防止以后为了某台机器的块大小再次写死回归期望。
     private func scanCustomFixture() async throws {
         let scen = makeStandardFixture()
         let url = scen.root
+        let expectedUsage = try fixtureFileUsage(at: url)
         let category = ScanCategory.makeCustom(url: url)
         coordinator.scan(category: category, includeHidden: true)
         try await waitFinished(timeout: 30)
         let snap = coordinator.snapshot
         // standard fixture：10 个 102_400 字节文件 + 5 层嵌套每层 1 个 5_120 字节文件
         // = 共 15 个文件，bytes = 10 * 102_400 + 5 * 5_120 = 1_024_000 + 25_600 = 1_049_600
-        log("[REGR] case=\(caseID) files=\(snap.scannedFileCount) bytes=\(snap.totalBytes) rows=\(snap.rows.count)")
-        assertEqual(snap.scannedFileCount, 15, "scannedFileCount")
-        assertEqual(Int(snap.totalBytes), 1_049_600, "totalBytes")
+        let visibleLogicalBytes = snap.rows.reduce(Int64(0)) { $0 + $1.logicalBytes }
+        log("[REGR] case=\(caseID) files=\(snap.scannedFileCount) allocated=\(snap.totalBytes) logical=\(visibleLogicalBytes) rows=\(snap.rows.count)")
+        assertEqual(expectedUsage.fileCount, 15, "fixtureFileCount")
+        assertEqual(expectedUsage.logicalBytes, 1_049_600, "fixtureLogicalBytes")
+        assertEqual(snap.scannedFileCount, expectedUsage.fileCount, "scannedFileCount")
+        assertEqual(snap.totalBytes, expectedUsage.allocatedBytes, "totalAllocatedBytes")
+        assertEqual(visibleLogicalBytes, expectedUsage.logicalBytes, "visibleLogicalBytes")
         assertTrue(snap.isFinished, "isFinished")
         assertGreater(snap.rows.count, 0, "rows count")
     }
@@ -259,8 +269,10 @@ final class RegressionRunner {
         let scanner = DuplicateScanner(roots: [scen.root], minBytes: 100_000)
         let groups = await scanner.scanToCompletion()
         let groupCount = groups.count
-        let totalRedundancy = groups.reduce(Int64(0)) { acc, g in
-            acc + g.bytes * Int64(max(0, g.paths.count - 1))
+        var totalRedundancy: Int64 = 0
+        for group in groups {
+            let sum = totalRedundancy.addingReportingOverflow(group.reclaimableBytes)
+            totalRedundancy = sum.overflow ? .max : sum.partialValue
         }
         log("[REGR] case=\(caseID) groups=\(groupCount) redundancy_bytes=\(totalRedundancy)")
         assertEqual(groupCount, 3, "group count")
@@ -567,11 +579,11 @@ final class RegressionRunner {
         assertEqual(record.fileCount, 1, "fileCount 字段")
 
         // 3) restoreRecord：把 trashed mv 回 original，record 自动从 history 移除
-        let (restored, skipped, err) = await s2.restoreRecord(record)
-        log("[REGR] case=\(caseID) restored=\(restored) skipped=\(skipped) err=\(err ?? "-")")
-        assertEqual(restored, 1, "restored count")
-        assertEqual(skipped, 0, "skipped count")
-        assertTrue(err == nil, "no error")
+        let restoreResult = await s2.restoreRecord(record, conflictPolicy: .skipExisting)
+        log("[REGR] case=\(caseID) restored=\(restoreResult.restoredCount) skipped=\(restoreResult.skippedCount) err=\(restoreResult.firstError ?? "-")")
+        assertEqual(restoreResult.restoredCount, 1, "restored count")
+        assertEqual(restoreResult.skippedCount, 0, "skipped count")
+        assertTrue(restoreResult.firstError == nil, "no error")
         assertTrue(FileManager.default.fileExists(atPath: originalFile.path),
                    "文件已 mv 回原路径")
         assertTrue(!FileManager.default.fileExists(atPath: trashedFile.path),
@@ -828,6 +840,46 @@ final class RegressionRunner {
         }
         retainScenario(scen)
         return scen
+    }
+
+    /// 独立于 ScanKit 的 fixture 计量器。只统计 regular file，语义与 Finder 的
+    /// “on disk” 主值一致；目录元数据不混入文件清理容量。
+    private func fixtureFileUsage(at directory: URL) throws -> (
+        allocatedBytes: Int64,
+        logicalBytes: Int64,
+        fileCount: Int
+    ) {
+        var allocatedBytes: Int64 = 0
+        var logicalBytes: Int64 = 0
+        var fileCount = 0
+
+        let children = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: []
+        )
+        for child in children {
+            var metadata = stat()
+            guard lstat(child.path, &metadata) == 0 else {
+                throw NSError(
+                    domain: NSPOSIXErrorDomain,
+                    code: Int(errno),
+                    userInfo: [NSFilePathErrorKey: child.path]
+                )
+            }
+            let fileType = metadata.st_mode & S_IFMT
+            if fileType == S_IFDIR {
+                let nested = try fixtureFileUsage(at: child)
+                allocatedBytes += nested.allocatedBytes
+                logicalBytes += nested.logicalBytes
+                fileCount += nested.fileCount
+            } else if fileType == S_IFREG {
+                allocatedBytes += Int64(metadata.st_blocks) * 512
+                logicalBytes += Int64(metadata.st_size)
+                fileCount += 1
+            }
+        }
+        return (allocatedBytes, logicalBytes, fileCount)
     }
 
     /// 伪 .app bundle：构造 Contents/Info.plist + Contents/MacOS/ 可执行占位，

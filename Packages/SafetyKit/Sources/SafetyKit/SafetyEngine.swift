@@ -5,7 +5,7 @@ import LogKit
 public enum SafetyVerdict: String, Sendable, Codable, Hashable {
     case safe       // 缓存、日志、DerivedData
     case confirm    // 需用户确认
-    case forbid     // SIP / 用户文档 / 共享厂商 / 硬编码黑名单
+    case forbid     // 不得走普通删除；具体能力边界继续由 SafetyRejection 区分
 }
 
 /// 拒绝原因（机器可读，便于审计 / 单测断言）。
@@ -13,6 +13,8 @@ public enum SafetyRejection: String, Sendable, Equatable {
     case relativePath           // 不是绝对路径
     case dotDotInPath           // 含 .. 段（路径穿越）
     case rootOrAboveHome        // / 或用户家目录本身
+    case outsideUserDeletionScope // 不在当前用户 HOME / 系统返回的当前用户临时目录内
+    case preflightCancelled      // 删除预检任务被取消；整批不得继续
     case hardForbidPrefix       // 命中硬编码黑名单
     case userDocumentsRoot      // 用户文档/桌面/下载的根
     case systemVolume           // 系统卷
@@ -36,7 +38,23 @@ public enum SafetyRejection: String, Sendable, Equatable {
 /// 3. 用户家目录本身、桌面、文档、下载的**根目录**禁删（只能删它们的*子节点*）
 /// 4. 命中黑名单一律 forbid（不留 confirm 余地）
 public struct SafetyEngine: Sendable {
-    public init() {}
+    /// Bundle protection matcher 在构造后不可变，可由测试注入“资源不可用”状态；生产默认
+    /// 使用 Bundle.module 的共享加载结果。普通 evaluate 仍沿用历史降级语义，只有需要
+    /// 铸造 destructive override 的能力层查询 `hasCompleteBundleProtectionEvidence`。
+    private let bundleProtectionMatcher: BundleProtectionMatcher
+
+    public init(bundleProtectionMatcher: BundleProtectionMatcher = BundleProtection.shared) {
+        self.bundleProtectionMatcher = bundleProtectionMatcher
+    }
+
+    public var bundleProtectionLoadState: BundleProtectionLoadState {
+        bundleProtectionMatcher.loadState
+    }
+
+    /// 只有资源存在且完整解码后，调用方才可以证明某路径没有被 bundle 规则保护。
+    public var hasCompleteBundleProtectionEvidence: Bool {
+        bundleProtectionLoadState.hasCompleteEvidence
+    }
 
     /// 写死的"绝对禁删"路径前缀（与 PITFALLS §3.5 黑名单一致）。
     /// 注意：所有前缀都是 standardizedFileURL **之后**的形式
@@ -347,7 +365,7 @@ public struct SafetyEngine: Sendable {
             if standardized.hasPrefix(safePrefix) {
                 // 8.1 bundle 保护叠加：safe 路径若属于 data_protected app
                 //     （例：~/Library/Caches/com.1password.7/Logs），升级为 confirm。
-                if let bm = Self.bundleMatch(standardized: standardized, home: home),
+                if let bm = bundleMatch(standardized: standardized, home: home),
                    bm.kind == .dataProtected {
                     return (.confirm, .bundleDataProtected)
                 }
@@ -362,7 +380,7 @@ public struct SafetyEngine: Sendable {
         //    用户数据容器（如 Mail Downloads），强 forbid 会与 vendors.yaml 的 confirm 规则
         //    冲突（RuleLoader 在 load-time 会把 vendor 整条丢弃）。
         //    appleUninstallable 仅供 uninstall 流程使用，cleanup 评估忽略。
-        if let bm = Self.bundleMatch(standardized: standardized, home: home) {
+        if let bm = bundleMatch(standardized: standardized, home: home) {
             switch bm.kind {
             case .systemCritical:
                 return (.confirm, .bundleSystemCritical)
@@ -378,7 +396,8 @@ public struct SafetyEngine: Sendable {
 
     // MARK: - Bundle Protection 接入（Mole `app_protection_data.sh` 对齐）
 
-    /// 从已 standardize 的路径中提取 bundle ID，并查询 [BundleProtection.shared](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/BundleProtection.swift)。
+    /// 从已 standardize 的路径中提取 bundle ID，并查询构造时注入的
+    /// [BundleProtectionMatcher](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/BundleProtection.swift)。
     ///
     /// **设计原则：保守解析，永不误升级**。仅识别下列**确定性**路径模式：
     /// - `~/Library/Caches/<bundleID>[/...]`
@@ -396,7 +415,7 @@ public struct SafetyEngine: Sendable {
     /// - 5000 次评估必须 < 200ms（本地）/ 350ms（CI）
     /// - 因此本函数零分配：用 Substring 切片 + Index 步进，不用 split / String(...) 构造
     /// - 非 `~/Library` 路径 1 步 hasPrefix 短路退出
-    static func bundleMatch(standardized: String, home: String) -> BundleProtection.Match? {
+    func bundleMatch(standardized: String, home: String) -> BundleProtection.Match? {
         // 1. 必须是 home/Library/ 子路径 —— 一次 hasPrefix 短路
         let libraryRoot = home + "/Library/"
         guard standardized.hasPrefix(libraryRoot) else { return nil }
@@ -436,7 +455,31 @@ public struct SafetyEngine: Sendable {
         //    这类无点 ID），其他 dir 退出避免对随机目录名做 set 查询
         if !candidate.contains(".") && !isContainerDir { return nil }
 
-        return BundleProtection.match(bundleID: String(candidate))
+        return bundleProtectionMatcher.match(bundleID: String(candidate))
+    }
+
+    /// 删除能力层查询“路径是否属于任何 protected_bundles 规则”。
+    ///
+    /// Vendor path override 不能只看 trie 最终返回的 `.vendorPathRule`：vendor 规则比
+    /// base bundle 标记更具体，可能覆盖 `.bundleDataProtected`，而 appleUninstallable
+    /// 本身甚至不会升级 verdict。这个只读 API 复用同一套零 IO 路径解析，并同时检查
+    /// symlink 最终身份，让删除边界可以明确排除全部三类受保护 bundle。
+    public static func isBundleProtected(path: String,
+                                         home: String = NSHomeDirectory()) -> Bool {
+        SafetyEngine().isPathBundleProtected(path: path, home: home)
+    }
+
+    /// 与静态兼容入口语义相同，但使用本 SafetyEngine 注入的 matcher/load state。
+    /// 删除能力层必须走这个入口，避免测试或启动失败时查询了另一个全局 matcher。
+    public func isPathBundleProtected(path: String,
+                                      home: String = NSHomeDirectory()) -> Bool {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        if bundleMatch(standardized: standardized, home: home) != nil {
+            return true
+        }
+        let resolved = Self.resolvedSymlinkPath(forStandardizedPath: standardized)
+        return resolved != standardized
+            && bundleMatch(standardized: resolved, home: home) != nil
     }
 
     /// 简单语义包装：是否被禁。

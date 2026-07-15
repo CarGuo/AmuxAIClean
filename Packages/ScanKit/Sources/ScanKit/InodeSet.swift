@@ -1,6 +1,6 @@
 import Foundation
 
-/// 跨卷的硬链接 / APFS clone 去重表。
+/// 跨卷的 hardlink inode 去重表。
 ///
 /// 见 [PITFALLS §2.3](../../../../PITFALLS.md)：Time Machine 的 `Backups.backupdb` 全是硬链接，
 /// 朴素 `du` 算出 5TB 实际只有 500GB。我们必须按 (dev_t, ino_t) 去重。
@@ -17,6 +17,9 @@ public final class InodeSet: @unchecked Sendable {
 
     /// 返回 true 表示是首次出现（应该计入大小），false 表示已经计过。
     public func insertIfFirstSeen(device: UInt64, inode: UInt64) -> Bool {
+        // 0 表示底层 metadata 没有提供稳定 inode。把多个 (0, 0) 当同一文件会让
+        // fallback/权限异常下除第一项之外全部归零；未知身份只能保守地各自计入。
+        guard inode != 0 else { return true }
         let key = Key(device: device, inode: inode)
         lock.lock()
         defer { lock.unlock() }
@@ -28,10 +31,8 @@ public final class InodeSet: @unchecked Sendable {
         return seen.count
     }
 
-    /// v1.3 P0 修复：跨次扫描必须显式 reset。
-    /// `BulkScanner` 单例的 `inodeSet` 属性生命周期等于 actor，
-    /// 同一个 BulkScanner 跑第二次 scan 时若不清空，几乎所有文件都会被判 "isFirst==false"
-    /// → 字节累加到 dedupedBytes 而非 totalAllocated，体积归零（计数仍正常）。
+    /// 仅供明确拥有单次 transaction 的调用方复用；Scanner/BulkScanner 为每个 stream
+    /// 创建独立集合，不通过 reset 协调并发扫描。
     public func reset() {
         lock.lock(); defer { lock.unlock() }
         seen.removeAll(keepingCapacity: true)

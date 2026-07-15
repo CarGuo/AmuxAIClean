@@ -1,5 +1,5 @@
-2026-07-13 11:04:28.373 AmuxAIClean[22307:36022424] [AmuxAIClean] 已加载 123 条 vendor 规则
-[REGR] case=undo-history-restore defaults_snapshot_keys=5 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
+2026-07-15 17:10:58.998 AmuxAIClean[94521:194787] [AmuxAIClean] 已加载 123 条 vendor 规则
+[REGR] case=undo-history-restore defaults_snapshot_keys=7 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
 [REGR_BEGIN] case=undo-history-restore
 [REGR] case=undo-history-restore addRecord_count=1
 [REGR_OK] case=undo-history-restore addRecord 后 history 数量=1
@@ -15,5 +15,5 @@
 [REGR_OK] case=undo-history-restore 文件已 mv 回原路径=true
 [REGR_OK] case=undo-history-restore trashed 路径已被掏空=true
 [REGR_OK] case=undo-history-restore restore 后 history 被清空=0
-[REGR] case=undo-history-restore defaults_restored_keys=5
-[REGR_PASS] case=undo-history-restore elapsed_ms=200
+[REGR] case=undo-history-restore defaults_restored_keys=7
+[REGR_PASS] case=undo-history-restore elapsed_ms=322

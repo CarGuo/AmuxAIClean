@@ -64,6 +64,25 @@ final class SmartCareCoordinatorTests: XCTestCase {
                        "新一轮扫描应重置为默认 safe 选择；保留用户意图只用于同一结果重聚合")
     }
 
+    func test_finalPreSubmitRejectionReturnsToExistingReviewWithoutInventingResult() async throws {
+        let safe = item("safe", verdict: .safe)
+        let existingSummary = summary([safe])
+        let coordinator = SmartCareCoordinator(summary: existingSummary)
+        let request = try await coordinator.makeCleanRequest()
+        XCTAssertTrue(coordinator.confirmClean(request))
+        guard case .cleaning = coordinator.phase else {
+            return XCTFail("Confirmed request should enter cleaning before final revalidation")
+        }
+
+        coordinator.resumeReviewAfterUnsubmittedClean()
+
+        guard case .reviewing(let restoredSummary) = coordinator.phase else {
+            return XCTFail("Unsubmitted rejection must restore review, not emit completion/failure")
+        }
+        XCTAssertEqual(restoredSummary, existingSummary)
+        XCTAssertEqual(coordinator.selectedItems, [safe])
+    }
+
     func test_replaceSummaryPreservingSelection_保留用户取消safe和勾选confirm() {
         let safeV1 = item("safe", bytes: 100, verdict: .safe)
         let confirmV1 = item("confirm", bytes: 200, verdict: .confirm)

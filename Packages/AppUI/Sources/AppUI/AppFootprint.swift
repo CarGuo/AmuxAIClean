@@ -104,13 +104,18 @@ public actor AppFootprintScanner {
     ///
     /// 如果 `progress` 非 nil，每完成一个 app 都会回调一次（已完成数 / 总数）。
     ///
+    /// 进度 sink 是 async，且每次发布都会等待前一次 sink 处理完毕。这是有意的
+    /// 顺序边界：actor / UI 消费方可以直接 `await` 写入自己的状态，无需再开
+    /// 一个无结构 `Task`，从而避免 `(1, total)` 与 `(2, total)` 被调度成倒序。
+    /// sink 仍在扫描任务的 executor 上执行，不会把磁盘扫描或进度组装移到 MainActor。
+    ///
     /// **同步语义**：所有 app 扫完后才返回。如果 app 数量大（数百个），UI 会等到全扫
     /// 完才能看到第一条；这种情况建议改用 [scanAllStream(apps:)](x-source-tag://scanAllStream)，
     /// 它会在每个 app 扫完时立即 yield，让 UI 走"流式两阶段加载"——先填占位 + 已完成项，
     /// 后续 item 边算边 append。
     public func scanAll(
         apps: [InstalledApp],
-        progress: (@Sendable (Int, Int) -> Void)? = nil
+        progress: (@Sendable (Int, Int) async -> Void)? = nil
     ) async -> [AppFootprintItem] {
         var out: [AppFootprintItem] = []
         out.reserveCapacity(apps.count)
@@ -118,7 +123,7 @@ public actor AppFootprintScanner {
         for (idx, app) in apps.enumerated() {
             let item = await scanOne(app: app)
             out.append(item)
-            progress?(idx + 1, apps.count)
+            await progress?(idx + 1, apps.count)
         }
 
         out.sort { $0.totalBytes > $1.totalBytes }

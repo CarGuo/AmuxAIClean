@@ -18,7 +18,7 @@ final class DevArtifactScannerTests: XCTestCase {
 
     override func tearDownWithError() throws {
         if let tempRoot, FileManager.default.fileExists(atPath: tempRoot.path) {
-            try? FileManager.default.removeItem(at: tempRoot)
+            try FileManager.default.removeItem(at: tempRoot)
         }
     }
 
@@ -152,5 +152,75 @@ final class DevArtifactScannerTests: XCTestCase {
         XCTAssertTrue(hits.contains { $0.url.lastPathComponent == "node_modules" })
         XCTAssertFalse(hits.contains { $0.url.lastPathComponent == "target" },
                        "target 规则被关闭，不应命中：\(hits.map(\.url.path))")
+    }
+
+    func testDefaultDiscoveryHasNoArbitraryTimeout() {
+        XCTAssertNil(
+            DevArtifactScanner.Options.default.timeoutSeconds,
+            "默认勘察必须以完整结果或用户取消收敛，不能在固定秒数后把 partial 当成功"
+        )
+    }
+
+    func testDetachedWalkReceivesCallerCancellation() async {
+        let started = DispatchSemaphore(value: 0)
+        let caller = Task {
+            await DevArtifactScanner.runCancellableDetached {
+                started.signal()
+                while !Task.isCancelled {
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                return Task.isCancelled
+            }
+        }
+
+        XCTAssertEqual(started.wait(timeout: .now() + 2), .success)
+        caller.cancel()
+
+        let callerWasCancelled = await caller.value
+        XCTAssertTrue(
+            callerWasCancelled,
+            "取消 discover 调用方必须取消 detached 文件遍历，不能让后台继续占用 IO"
+        )
+    }
+
+    func testDiscoveryEnumerationFailureProducesIncompleteEvidence() async {
+        let missingRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DevArtifactMissing-\(UUID().uuidString)", isDirectory: true)
+        let scanner = DevArtifactScanner(options: .init(staySingleVolume: false))
+
+        let result = await scanner.discoverWithMetadata(home: missingRoot)
+
+        XCTAssertTrue(result.hits.isEmpty)
+        XCTAssertFalse(result.didTimeout)
+        XCTAssertFalse(result.didTruncate)
+        XCTAssertEqual(
+            result.incompleteIssues,
+            [ScanIncompleteIssue(path: missingRoot.path, reason: .enumerationFailed)]
+        )
+        XCTAssertFalse(result.isComplete, "I/O 后的空结果不能伪装成完整的 0 命中")
+    }
+
+    func testIncompleteReasonRecognizesFoundationAndPOSIXPermissionErrors() {
+        XCTAssertEqual(
+            DevArtifactScanner.incompleteReason(
+                for: CocoaError(.fileReadNoPermission),
+                fallback: .enumerationFailed
+            ),
+            .permissionDenied
+        )
+        XCTAssertEqual(
+            DevArtifactScanner.incompleteReason(
+                for: NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES)),
+                fallback: .metadataUnavailable
+            ),
+            .permissionDenied
+        )
+        XCTAssertEqual(
+            DevArtifactScanner.incompleteReason(
+                for: NSError(domain: NSPOSIXErrorDomain, code: Int(EIO)),
+                fallback: .metadataUnavailable
+            ),
+            .metadataUnavailable
+        )
     }
 }

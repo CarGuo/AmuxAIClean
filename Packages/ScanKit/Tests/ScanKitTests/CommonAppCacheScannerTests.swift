@@ -7,7 +7,7 @@ final class CommonAppCacheScannerTests: XCTestCase {
 
     func testDetectReturnsOnlyExistingNonEmptyIncludedRules() throws {
         let home = try makeTempDir()
-        defer { try? FileManager.default.removeItem(at: home) }
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
 
         let wechat = home.appendingPathComponent("Library/Caches/com.tencent.xinWeChat", isDirectory: true)
         try FileManager.default.createDirectory(at: wechat, withIntermediateDirectories: true)
@@ -64,14 +64,15 @@ final class CommonAppCacheScannerTests: XCTestCase {
         XCTAssertEqual(hits[0].ruleName, "WeChat Cache")
         XCTAssertEqual(hits[0].bundleIDPrefix, "com.tencent.xinWeChat")
         XCTAssertEqual(hits[0].verdict, .safe)
-        XCTAssertEqual(hits[0].sizeBytes, 128)
+        XCTAssertEqual(hits[0].sizeBytes, allocatedSize(of: wechat.appendingPathComponent("cache.bin")))
+        XCTAssertEqual(hits[0].logicalSizeBytes, 128)
         XCTAssertEqual(hits[0].entryCount, 1)
         XCTAssertTrue(hits[0].isDirectory)
     }
 
     func testDetectExpandsBoundedGlobRules() throws {
         let home = try makeTempDir()
-        defer { try? FileManager.default.removeItem(at: home) }
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
 
         let cache = home.appendingPathComponent("Library/Caches/com.example.App", isDirectory: true)
         try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
@@ -94,12 +95,13 @@ final class CommonAppCacheScannerTests: XCTestCase {
         XCTAssertTrue(result.isComplete)
         XCTAssertEqual(hits.count, 1)
         XCTAssertEqual(hits[0].url.lastPathComponent, "com.example.App")
-        XCTAssertEqual(hits[0].sizeBytes, 256)
+        XCTAssertEqual(hits[0].sizeBytes, allocatedSize(of: cache.appendingPathComponent("cache.bin")))
+        XCTAssertEqual(hits[0].logicalSizeBytes, 256)
     }
 
     func testDetectCanIncludeOnlySafeVerdicts() throws {
         let home = try makeTempDir()
-        defer { try? FileManager.default.removeItem(at: home) }
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
 
         let safe = home.appendingPathComponent("Library/Caches/safe", isDirectory: true)
         let confirm = home.appendingPathComponent("Library/Caches/confirm", isDirectory: true)
@@ -127,9 +129,56 @@ final class CommonAppCacheScannerTests: XCTestCase {
         XCTAssertEqual(hits[0].url.lastPathComponent, "safe")
     }
 
+    func testDetect_sparseCacheUsesSystemStorageUsageAndKeepsLogicalDetail() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+
+        let cache = home.appendingPathComponent("Library/Caches/com.example.Docker", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let sparse = cache.appendingPathComponent("Docker.raw")
+        XCTAssertTrue(FileManager.default.createFile(atPath: sparse.path, contents: Data([0x1])))
+        let handle = try FileHandle(forWritingTo: sparse)
+        try handle.truncate(atOffset: 2 * 1_024 * 1_024 * 1_024)
+        try handle.close()
+
+        let vendors = [VendorRule(
+            name: "Docker Cache",
+            category: "common_app_cache",
+            paths: [PathRule(path: "~/Library/Caches/com.example.Docker", verdict: .safe)]
+        )]
+
+        let hit = try XCTUnwrap(CommonAppCacheScanner.detect(vendors: vendors, home: home).hits.first)
+        XCTAssertEqual(hit.sizeBytes, allocatedSize(of: sparse))
+        XCTAssertLessThan(hit.sizeBytes, 64 * 1_024 * 1_024)
+        XCTAssertGreaterThan(hit.logicalSizeBytes, 1 * 1_024 * 1_024 * 1_024)
+    }
+
+    func testDetect_hardlinkCacheCountsAllocatedAndLogicalBytesOnce() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+
+        let cache = home.appendingPathComponent("Library/Caches/com.example.Hardlink", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let original = cache.appendingPathComponent("original.bin")
+        let linked = cache.appendingPathComponent("linked.bin")
+        try Data(repeating: 0x5A, count: 32 * 1_024).write(to: original)
+        try FileManager.default.linkItem(at: original, to: linked)
+
+        let vendors = [VendorRule(
+            name: "Hardlink Cache",
+            category: "common_app_cache",
+            paths: [PathRule(path: "~/Library/Caches/com.example.Hardlink", verdict: .safe)]
+        )]
+
+        let hit = try XCTUnwrap(CommonAppCacheScanner.detect(vendors: vendors, home: home).hits.first)
+        XCTAssertEqual(hit.sizeBytes, allocatedSize(of: original))
+        XCTAssertEqual(hit.logicalSizeBytes, 32 * 1_024)
+        XCTAssertEqual(hit.entryCount, 2, "目录项统计不应因字节去重而消失")
+    }
+
     func testPrioritizedCandidates_scanSafeCachesBeforeConfirmReviewPaths() throws {
         let home = try makeTempDir()
-        defer { try? FileManager.default.removeItem(at: home) }
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
 
         let review = home.appendingPathComponent("Library/Application Support/ChatApp", isDirectory: true)
         let cache = home.appendingPathComponent("Library/Caches/Browser", isDirectory: true)
@@ -311,5 +360,11 @@ final class CommonAppCacheScannerTests: XCTestCase {
     private func writeFile(in dir: URL, name: String, bytes: Int) throws {
         let data = Data(repeating: 0xAB, count: bytes)
         try data.write(to: dir.appendingPathComponent(name))
+    }
+
+    private func allocatedSize(of url: URL) -> Int64 {
+        var metadata = stat()
+        guard lstat(url.path, &metadata) == 0 else { return -1 }
+        return Int64(metadata.st_blocks) * 512
     }
 }

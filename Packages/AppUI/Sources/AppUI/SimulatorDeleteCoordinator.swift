@@ -66,6 +66,35 @@ public struct SimulatorDeleteCoordinator: Sendable {
         public var isSuccess: Bool { exitCode == 0 }
     }
 
+    /// Independent receipt for destructive command execution. It deliberately
+    /// does not reuse `DeletionSubmissionReceipt`: simctl does not call
+    /// `NSWorkspace.recycle` and must never masquerade as a Trash submission.
+    public struct SubmissionReceipt: Identifiable, Sendable, Equatable {
+        public let id: UUID
+        public let submittedItemIDs: [String]
+        public let submittedAt: Date
+
+        fileprivate init(id: UUID, submittedItemIDs: [String], submittedAt: Date) {
+            self.id = id
+            self.submittedItemIDs = submittedItemIDs
+            self.submittedAt = submittedAt
+        }
+    }
+
+    /// Opaque command completion. Only `executeSubmitted(items:)` can create it,
+    /// so result presentation cannot be built from arbitrary outcome arrays.
+    public struct CompletedSubmission: Identifiable, Sendable {
+        public let receipt: SubmissionReceipt
+        public let outcomes: [Outcome]
+
+        public var id: UUID { receipt.id }
+
+        fileprivate init(receipt: SubmissionReceipt, outcomes: [Outcome]) {
+            self.receipt = receipt
+            self.outcomes = outcomes
+        }
+    }
+
     /// 注入式 Simulator 运行检测——单测中可注入 `{ false }` / `{ true }` stub。
     public typealias SimulatorRunningProbe = @Sendable () -> Bool
 
@@ -128,6 +157,20 @@ public struct SimulatorDeleteCoordinator: Sendable {
         return .ready(items: items)
     }
 
+    /// Revalidate an immutable command plan without consulting workflow cards or hits.
+    ///
+    /// The UI freezes [Item] values before it presents destructive confirmation. The
+    /// Simulator process can still start while either confirmation sheet is open, so
+    /// execution must probe that volatile condition again while continuing to consume
+    /// only the frozen item list.
+    public func revalidate(items: [Item]) -> Plan {
+        guard !items.isEmpty else { return .empty }
+        if isSimulatorRunning() {
+            return .blockedSimulatorRunning(displayNames: items.map(\.displayName))
+        }
+        return .ready(items: items)
+    }
+
     /// 执行——对 plan 中每条 item 串行调 SubprocessExecutor。
     ///
     /// 串行而非并发的理由：simctl 自身对并发 delete 的健壮性未知，
@@ -151,6 +194,25 @@ public struct SimulatorDeleteCoordinator: Sendable {
             outcomes.append(outcome)
         }
         return outcomes
+    }
+
+    /// Typed production submission boundary for command-only cleanup.
+    /// The receipt is returned only after every requested command reached a
+    /// terminal outcome; an empty plan is a caller invariant violation and has
+    /// no result-bearing representation.
+    public func executeSubmitted(items: [Item]) async -> CompletedSubmission {
+        precondition(!items.isEmpty, "A command completion requires submitted items")
+        let submissionID = UUID()
+        let submittedAt = Date()
+        let outcomes = await execute(items: items)
+        return CompletedSubmission(
+            receipt: SubmissionReceipt(
+                id: submissionID,
+                submittedItemIDs: items.map(\.hitID),
+                submittedAt: submittedAt
+            ),
+            outcomes: outcomes
+        )
     }
 
     /// stdout/stderr 文案截断——避免 alert 列出几 KB 的输出撑爆 UI。

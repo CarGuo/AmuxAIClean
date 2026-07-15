@@ -220,10 +220,9 @@ struct AIAdviceSheet: View {
             state = .failure(String(describing: error))
             return
         }
-        let store = KeychainAPIKeyStore()
         let apiKey: String
         do {
-            let raw = try store.load() ?? ""
+            let raw = try await KeychainAPIKeyStore.shared.load() ?? ""
             guard !raw.isEmpty || authOptional else {
                 state = .failure(String(localized: "ai.sheet.error.no_api_key", bundle: .module))
                 return
@@ -233,8 +232,7 @@ struct AIAdviceSheet: View {
             if authOptional {
                 apiKey = ""
             } else {
-                state = .failure(String(format: String(localized: "ai.sheet.error.keychain.format", bundle: .module),
-                                        String(describing: error)))
+                state = .failure(KeychainUserFacingError.message(for: error))
                 return
             }
         }

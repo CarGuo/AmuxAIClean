@@ -14,7 +14,7 @@ import SafetyKit
 ///    一维数组（非真正的目录树），用 `List` 渲染最直观；
 ///    "tree 模式"在购物车这个语义下其实退化为"按 path 罗列"，无需展开子项。
 /// 2. **删除走主链路**：通过 `onCleanOne / onCleanAll` 回调把 URL 交给
-///    [MainView.triggerLargeFileTrash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L2144)，
+///    MainView 的已确认 Stash 执行入口，
 ///    复用 deletion pipeline（accessDenied 兜底 / UndoHistory / 结果 sheet），
 ///    不在 StashScreen 自己造第二条删除链路；删除完成后只对成功 movedPairs 调
 ///    [StashStore.remove](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashStore.swift#L90)
@@ -24,9 +24,8 @@ import SafetyKit
 ///    **v2026.06.19 更新**：一键 AI 已通过 [StashAIQueue](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)
 ///    落地（footer 三态：idle / running / 错误 + 重试），节流与并发由 queue 引擎内部串行化处理；
 ///    UI 上仍在 stash 为空 / aiSettings 未就绪 / 已 running 时 disable，配合 tooltip 解释。
-/// 4. **危险操作二次确认**：清空购物车 / 一键废纸篓 都走 `.confirmationDialog`，
-///    与 [MainView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
-///    主页面"删前确认"风格一致。
+/// 4. **危险操作二次确认**：真正删除统一交给 MainView 的 DeleteSheet；这里只为
+///    “清空购物车但不删文件”保留本地 confirmationDialog，避免同一动作弹两次确认。
 struct StashScreen: View {
 
     /// 共享购物车 store。@Bindable 让 entries 变化自动驱动 List。
@@ -51,7 +50,6 @@ struct StashScreen: View {
     let onRunAIBatch: () -> Void
 
     @State private var isConfirmClearAllPresented: Bool = false
-    @State private var isConfirmTrashAllPresented: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -303,29 +301,13 @@ struct StashScreen: View {
 
             // 一键全部移到废纸篓。
             Button(role: .destructive) {
-                isConfirmTrashAllPresented = true
+                onCleanAll(stash.entries)
             } label: {
                 Label(String(localized: "stash.action.trash_all", bundle: .module),
                       systemImage: "trash.fill")
             }
             .keyboardShortcut(.defaultAction)
             .disabled(stash.entries.isEmpty || aiQueue.phase == .running)
-            .confirmationDialog(
-                String(localized: "stash.confirm.trash_all.title", bundle: .module),
-                isPresented: $isConfirmTrashAllPresented,
-                titleVisibility: .visible
-            ) {
-                Button(String(localized: "stash.confirm.trash_all.confirm", bundle: .module),
-                       role: .destructive) {
-                    onCleanAll(stash.entries)
-                }
-                Button(String(localized: "stash.confirm.cancel", bundle: .module),
-                       role: .cancel) {}
-            } message: {
-                Text(String(format: String(localized: "stash.confirm.trash_all.message", bundle: .module),
-                            stash.count,
-                            ByteCountFormatter.string(fromByteCount: stash.totalBytes, countStyle: .file)))
-            }
         }
         .padding(.horizontal)
         .padding(.vertical, 10)

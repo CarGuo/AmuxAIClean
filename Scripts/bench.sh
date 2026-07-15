@@ -23,7 +23,7 @@ echo "==> 我们的扫描器 (默认: 隐藏文件 + 物理占用 + inode 去重
 time "$BENCH" "$TARGET"
 
 echo
-echo "==> 系统 du -sh (含隐藏，逻辑大小)"
+echo "==> 系统 du -sh (含隐藏，磁盘分配量)"
 time du -sh "$TARGET" 2>/dev/null || true
 
 echo

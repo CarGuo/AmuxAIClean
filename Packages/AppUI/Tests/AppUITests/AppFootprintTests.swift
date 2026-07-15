@@ -195,17 +195,25 @@ final class AppFootprintTests: XCTestCase {
         // 用 actor 收集回调
         actor Progress {
             var calls: [(Int, Int)] = []
-            func append(_ d: Int, _ t: Int) { calls.append((d, t)) }
+            func append(_ d: Int, _ t: Int) async {
+                // 故意让第一次回调发生重入机会。如果生产代码把进度发布成
+                // 无结构 Task，第二次回调就可以趁这些 yield 抢先写入。
+                // scanAll 必须 await 完整 sink，才能保证单调顺序。
+                if d == 1 {
+                    for _ in 0..<100 {
+                        await Task.yield()
+                    }
+                }
+                calls.append((d, t))
+            }
             func snapshot() -> [(Int, Int)] { calls }
         }
         let p = Progress()
 
         _ = await scanner.scanAll(apps: apps) { d, t in
-            Task { await p.append(d, t) }
+            await p.append(d, t)
         }
 
-        // 等一拍让 Task 落定
-        try? await Task.sleep(nanoseconds: 100_000_000)
         let calls = await p.snapshot()
         XCTAssertEqual(calls.count, 2)
         XCTAssertEqual(calls[0].0, 1)

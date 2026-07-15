@@ -3,6 +3,7 @@ import Foundation
 import Darwin
 import ScanKit
 import LogKit
+import SafetyKit
 
 /// v1.7 M1 PR-5：开发者工作流详情视图（Apple / Android / WebNode 共用）。
 ///
@@ -28,14 +29,12 @@ public struct WorkflowDetailView: View {
 
     public init(workflow: any DeveloperWorkflow,
                 pipeline: any DeletionPipeline,
-                home: URL = FileManager.default.homeDirectoryForCurrentUser,
-                accessDeniedPathsProvider: (@MainActor () -> Set<String>)? = nil) {
+                home: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.workflow = workflow
         self.pipeline = pipeline
         _viewModel = StateObject(wrappedValue: WorkflowDetailViewModel(
             workflow: workflow,
-            home: home,
-            accessDeniedPathsProvider: accessDeniedPathsProvider
+            home: home
         ))
     }
 
@@ -67,16 +66,36 @@ public struct WorkflowDetailView: View {
         // SwiftUI 同一 view 上多个 .sheet 互斥，只显示**第一个**，导致 simctl 弹完后
         // OperationResultSheet 永远不弹。改为单一 ActiveSheet enum + `.sheet(item:)`，
         // 让两种 sheet 在 ViewModel 层就先选好"当前展示哪一个"，避免渲染层互踩。
-        .sheet(item: $viewModel.activeSheet) { sheet in
+        .sheet(
+            item: $viewModel.activeSheet,
+            onDismiss: runPendingDeleteAfterSheetDismissal
+        ) { sheet in
             switch sheet {
+            case .deleteConfirm(let confirmation):
+                WorkflowDeleteConfirmSheetContent(
+                    confirmation: confirmation,
+                    onCancel: { viewModel.cancelDeleteConfirmation() },
+                    onConfirm: { executionPlan in
+                        viewModel.confirmDelete(
+                            confirmation,
+                            executionPlan: executionPlan
+                        )
+                    }
+                )
+            case .preflightNotice(let id, let rejections):
+                DeletionPreflightNoticeSheet(
+                    notice: DeletionPreflightNotice(id: id, rejections: rejections)
+                ) {
+                    viewModel.activeSheet = nil
+                }
             case .simctlConfirm:
                 simctlConfirmSheet
                     // 两轮破坏性命令确认必须通过显式取消/继续按钮收口。
                     // 禁止 Esc / 系统手势直接关闭，否则已完成的 filesystem 结果
                     // 会失去展示机会，pending 状态也无法原子清理。
                     .interactiveDismissDisabled()
-            case .result(let payload):
-                OperationResultSheet(payload: payload) {
+            case .result(let completion):
+                OperationResultSheet(completion: completion) {
                     viewModel.activeSheet = nil
                 }
             }
@@ -232,7 +251,7 @@ public struct WorkflowDetailView: View {
             }
             .toggleStyle(.checkbox)
             .labelsHidden()
-            .disabled(card.risk == .blocked)
+            .disabled(card.risk == .blocked || viewModel.isDeletionTransactionActive)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(verbatim: hit.displayName)
@@ -277,10 +296,10 @@ public struct WorkflowDetailView: View {
                     Image(systemName: "arrow.clockwise")
                 }
             }
-            .disabled(viewModel.isAnyLoading)
+            .disabled(viewModel.isAnyLoading || viewModel.isDeletionTransactionActive)
 
             Button(role: .destructive) {
-                Task { await viewModel.performDelete(pipeline: pipeline) }
+                Task { await viewModel.requestDeleteConfirmation(pipeline: pipeline) }
             } label: {
                 Label {
                     Text("workflow.detail.action.trash", bundle: .module)
@@ -289,10 +308,19 @@ public struct WorkflowDetailView: View {
                 }
             }
             .keyboardShortcut(.delete, modifiers: [])
-            .disabled(viewModel.selected.isEmpty || viewModel.isDeleting)
+            .disabled(
+                viewModel.selected.isEmpty
+                    || viewModel.isAnyLoading
+                    || viewModel.isDeletionTransactionActive
+            )
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    private func runPendingDeleteAfterSheetDismissal() {
+        guard let intent = viewModel.takePendingConfirmedDeleteIntent() else { return }
+        Task { await viewModel.performDelete(pipeline: pipeline, intent: intent) }
     }
 
     private func iconName(for risk: DeveloperCard.Risk) -> String {
@@ -322,6 +350,239 @@ public struct WorkflowDetailView: View {
         case .confirm: return "workflow.risk.tooltip.confirm"
         case .blocked: return "workflow.risk.tooltip.blocked"
         }
+    }
+}
+
+/// Completeness evidence owned by one Workflow scan session.
+///
+/// `permissionDeniedPaths` and `partialPaths` remain UI projections. Deletion consumes
+/// `incompleteIssues`, which preserves the typed reason and is scoped to selected targets;
+/// one incomplete sibling must never become a global access-denied switch.
+public struct WorkflowScanEvidence: Sendable, Equatable {
+    public let revision: UInt64
+    public let sessionID: UUID
+    public let permissionDeniedPaths: Set<String>
+    public let partialPaths: Set<String>
+    public let incompleteIssues: [ScanIncompleteIssue]
+
+    public init(revision: UInt64,
+                sessionID: UUID = UUID(),
+                permissionDeniedPaths: Set<String> = [],
+                partialPaths: Set<String> = []) {
+        self.revision = revision
+        self.sessionID = sessionID
+        let permission = Set(permissionDeniedPaths.map(Self.normalizePath))
+        let partial = Set(partialPaths.map(Self.normalizePath)).union(permission)
+        self.permissionDeniedPaths = permission
+        self.partialPaths = partial
+        self.incompleteIssues = permission.sorted().map {
+            ScanIncompleteIssue(path: $0, reason: .permissionDenied)
+        } + partial.subtracting(permission).sorted().map {
+            ScanIncompleteIssue(path: $0, reason: .enumerationFailed)
+        }
+    }
+
+    init(revision: UInt64,
+         sessionID: UUID = UUID(),
+         incompleteIssues: [ScanIncompleteIssue]) {
+        self.revision = revision
+        self.sessionID = sessionID
+        var seen = Set<ScanIncompleteIssue>()
+        self.incompleteIssues = incompleteIssues.compactMap { issue in
+            let normalized = ScanIncompleteIssue(
+                path: Self.normalizePath(issue.path),
+                reason: issue.reason,
+                stage: issue.stage,
+                posixErrorCode: issue.posixErrorCode
+            )
+            return seen.insert(normalized).inserted ? normalized : nil
+        }
+        self.permissionDeniedPaths = Set(self.incompleteIssues.compactMap { issue in
+            switch issue.reason {
+            case .permissionDenied, .tccProtectedSkipped: issue.path
+            case .enumerationFailed, .metadataUnavailable: nil
+            }
+        })
+        self.partialPaths = Set(self.incompleteIssues.map(\.path))
+    }
+
+    func issues(overlappingAny paths: [String]) -> [ScanIncompleteIssue] {
+        var seen = Set<ScanIncompleteIssue>()
+        return paths.flatMap { path in
+            DeletionTargetRevalidator.relevantIssues(for: path, from: incompleteIssues)
+        }.filter { seen.insert($0).inserted }
+    }
+
+    func accessEvidence(for path: String) -> DeletionAccessEvidence {
+        guard let issue = DeletionTargetRevalidator.relevantIssues(
+            for: path,
+            from: incompleteIssues
+        ).first else {
+            return .complete
+        }
+        return .incomplete(DeletionIncompleteReason(scanIncompleteReason: issue.reason))
+    }
+
+    private static func normalizePath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+}
+
+/// Immutable destructive intent produced from one Workflow scan revision.
+///
+/// Confirmation and execution consume this value instead of re-reading mutable
+/// `cards`, `cardHits`, or `selected` state. The filesystem hit map is frozen so
+/// successful recycle outcomes can be projected back to row IDs without consulting a
+/// newer scan. `commandPlan` similarly owns concrete validated simctl items.
+public struct WorkflowDeletionIntent: Identifiable, Sendable, Equatable {
+    public let id: UUID
+    public let scanRevision: UInt64
+    public let scanSessionID: UUID
+    public let selectedHitIDs: Set<String>
+    public let filesystemPaths: [String]
+    public let filesystemHitIDsByPath: [String: Set<String>]
+    public let filesystemCandidates: [RunningAppGuard.Candidate]
+    public let accessDeniedPaths: Set<String>
+    public let commandPlan: SimulatorDeleteCoordinator.Plan
+    public let vendorOverrideRequest: VendorPathOverrideRequest?
+    let preparedInteraction: DeletionPreparedInteraction?
+    let authorizedInteraction: DeletionAuthorizedInteraction?
+    public let runningAppSkipped: [OperationResultPayload.RunningAppSkippedItem]
+    public let itemCount: Int
+    public let totalBytes: Int64
+
+    public init(id: UUID = UUID(),
+                scanRevision: UInt64,
+                scanSessionID: UUID = UUID(),
+                selectedHitIDs: Set<String>,
+                filesystemPaths: [String],
+                filesystemHitIDsByPath: [String: Set<String>],
+                filesystemCandidates: [RunningAppGuard.Candidate],
+                accessDeniedPaths: Set<String>,
+                commandPlan: SimulatorDeleteCoordinator.Plan,
+                vendorOverrideRequest: VendorPathOverrideRequest? = nil,
+                runningAppSkipped: [OperationResultPayload.RunningAppSkippedItem] = [],
+                itemCount: Int,
+                totalBytes: Int64) {
+        self.id = id
+        self.scanRevision = scanRevision
+        self.scanSessionID = scanSessionID
+        self.selectedHitIDs = selectedHitIDs
+        self.filesystemPaths = filesystemPaths
+        self.filesystemHitIDsByPath = filesystemHitIDsByPath
+        self.filesystemCandidates = filesystemCandidates
+        self.accessDeniedPaths = accessDeniedPaths
+        self.commandPlan = commandPlan
+        self.vendorOverrideRequest = vendorOverrideRequest
+        self.preparedInteraction = nil
+        self.authorizedInteraction = nil
+        self.runningAppSkipped = runningAppSkipped
+        self.itemCount = itemCount
+        self.totalBytes = totalBytes
+    }
+
+    init(id: UUID = UUID(),
+         scanRevision: UInt64,
+         scanSessionID: UUID,
+         selectedHitIDs: Set<String>,
+         filesystemPaths: [String],
+         filesystemHitIDsByPath: [String: Set<String>],
+         filesystemCandidates: [RunningAppGuard.Candidate],
+         accessDeniedPaths: Set<String>,
+         commandPlan: SimulatorDeleteCoordinator.Plan,
+         preparedInteraction: DeletionPreparedInteraction?,
+         authorizedInteraction: DeletionAuthorizedInteraction?,
+         runningAppSkipped: [OperationResultPayload.RunningAppSkippedItem] = [],
+         itemCount: Int,
+         totalBytes: Int64) {
+        self.id = id
+        self.scanRevision = scanRevision
+        self.scanSessionID = scanSessionID
+        self.selectedHitIDs = selectedHitIDs
+        self.filesystemPaths = filesystemPaths
+        self.filesystemHitIDsByPath = filesystemHitIDsByPath
+        self.filesystemCandidates = filesystemCandidates
+        self.accessDeniedPaths = accessDeniedPaths
+        self.commandPlan = commandPlan
+        self.vendorOverrideRequest = preparedInteraction?.vendorOverrideRequest
+        self.preparedInteraction = preparedInteraction
+        self.authorizedInteraction = authorizedInteraction
+        self.runningAppSkipped = runningAppSkipped
+        self.itemCount = itemCount
+        self.totalBytes = totalBytes
+    }
+}
+
+public struct WorkflowDeleteConfirmation: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let intent: WorkflowDeletionIntent
+
+    public var selectedIDs: Set<String> { intent.selectedHitIDs }
+    public var itemCount: Int { intent.itemCount }
+    public var totalBytes: Int64 { intent.totalBytes }
+
+    public init(id: UUID = UUID(), intent: WorkflowDeletionIntent) {
+        self.id = id
+        self.intent = intent
+    }
+}
+
+private struct WorkflowDeleteConfirmSheetContent: View {
+    let confirmation: WorkflowDeleteConfirmation
+    let onCancel: () -> Void
+    let onConfirm: (ToolTrashExecutionPlan) -> Bool
+
+    @ViewBuilder
+    var body: some View {
+        if confirmation.intent.filesystemPaths.isEmpty {
+            commandOnlyConfirmation
+        } else {
+            ToolTrashConfirmationSheet(
+                items: confirmation.intent.filesystemCandidates,
+                totalBytes: confirmation.totalBytes,
+                vendorOverrideRequest: confirmation.intent.preparedInteraction?.vendorOverrideRequest
+                    ?? confirmation.intent.vendorOverrideRequest,
+                scanIncompleteOverrideRequest: confirmation.intent.preparedInteraction?.scanIncompleteOverrideRequest,
+                onCancel: onCancel,
+                onConfirm: onConfirm
+            )
+        }
+    }
+
+    private var commandOnlyConfirmation: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label {
+                Text("workflow.detail.delete_confirm.title", bundle: .module)
+                    .font(.title3.bold())
+            } icon: {
+                Image(systemName: "trash")
+                    .foregroundStyle(.orange)
+            }
+            Text(String(
+                format: String(localized: "workflow.detail.delete_confirm.message %lld %@", bundle: .module),
+                confirmation.itemCount,
+                WorkflowDetailViewModel.formatBytes(confirmation.totalBytes)
+            ))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button(String(localized: "delete.action.cancel", bundle: .module), role: .cancel) {
+                    onCancel()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button(String(localized: "workflow.detail.delete_confirm.action", bundle: .module), role: .destructive) {
+                    _ = onConfirm(ToolTrashExecutionPlan(
+                        paths: confirmation.intent.filesystemPaths,
+                        runningAppSkipped: [],
+                        vendorOverrideRequest: confirmation.intent.vendorOverrideRequest
+                    ))
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 460, idealWidth: 520)
     }
 }
 
@@ -420,8 +681,10 @@ public final class WorkflowDetailViewModel: ObservableObject {
     @Published public private(set) var cardTotalBytes: [String: Int64] = [:]
     @Published public private(set) var cardLoading: Set<String> = []
     @Published public var expanded: Set<String> = []
-    @Published public var selected: Set<String> = []
+    @Published public private(set) var selected: Set<String> = []
+    @Published public private(set) var scanEvidence = WorkflowScanEvidence(revision: 0)
     @Published public private(set) var isDeleting: Bool = false
+    @Published public private(set) var isPreparingDeletion: Bool = false
     @Published public private(set) var alertTitle: String?
     @Published public private(set) var alertMessage: String?
 
@@ -429,17 +692,23 @@ public final class WorkflowDetailViewModel: ObservableObject {
     /// 独立 sheet 状态——SwiftUI 同一 view 多 `.sheet` 互斥导致 simctl 关闭后
     /// OperationResultSheet 永远不弹。改为单一 ActiveSheet enum，View 侧只挂一个
     /// `.sheet(item:)`，由 ViewModel 决定当前展示哪一种。
-    @Published public var activeSheet: ActiveSheet?
+    @Published var activeSheet: ActiveSheet?
 
     /// 当前正在显示的 sheet 类型。
     /// - `.simctlConfirm`：simctl 两轮确认 sheet（具体阶段由 `pendingSimctlStage` 决定）
     /// - `.result(payload)`：OperationResultSheet（trash 完成后展示结构化结果）
-    public enum ActiveSheet: Identifiable, Equatable {
+    enum ActiveSheet: Identifiable, Equatable {
+        case deleteConfirm(WorkflowDeleteConfirmation)
+        case preflightNotice(id: UUID, rejections: [DeletionPreflight.Rejection])
         case simctlConfirm
-        case result(OperationResultPayload)
+        case result(OperationResultCompletion)
 
         public var id: String {
             switch self {
+            case .deleteConfirm(let confirmation):
+                return "deleteConfirm-\(confirmation.id.uuidString)"
+            case .preflightNotice(let id, _):
+                return "preflightNotice-\(id.uuidString)"
             case .simctlConfirm: return "simctlConfirm"
             case .result(let p): return "result-\(p.id.uuidString)"
             }
@@ -460,19 +729,10 @@ public final class WorkflowDetailViewModel: ObservableObject {
     @Published public private(set) var pendingSimctlStage: SimctlConfirmStage?
 
     /// 兼容旧调用方读取 lastDeleteResult 的入口（已弃用）。
-    /// 新代码请监听 [activeSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)。
+    /// 这里故意只读；结果只能由本 ViewModel 在执行层返回后产生。
     public var lastDeleteResult: OperationResultPayload? {
-        get {
-            if case let .result(p) = activeSheet { return p }
-            return nil
-        }
-        set {
-            if let value = newValue {
-                activeSheet = .result(value)
-            } else if case .result = activeSheet {
-                activeSheet = nil
-            }
-        }
+        if case let .result(completion) = activeSheet { return completion.resultPayload }
+        return nil
     }
 
     public enum SimctlConfirmStage: Equatable {
@@ -483,25 +743,43 @@ public final class WorkflowDetailViewModel: ObservableObject {
     private let workflow: any DeveloperWorkflow
     private let home: URL
     private let simulatorCoordinator: SimulatorDeleteCoordinator
-    /// **v2026.06.22 (P0-1)**：accessDenied 注入回调。生产由 MainView/Container
-    /// 拿 `ScanCoordinator.permissionDeniedPaths ∪ tccProtectedSkippedPaths` 喂入；
-    /// 测试可注入空 Set。nil 表示未注入（兼容旧 init 路径）——会按"无 accessDenied"处理。
-    private let accessDeniedPathsProvider: (@MainActor () -> Set<String>)?
     /// **v2026.06.22 (P0-1)**：UndoHistory 写入入口。默认 `UndoHistoryStore.shared`，
     /// 测试可注入临时目录 store。
     private let undoHistoryStore: UndoHistoryStore
+    /// One immutable discovery result per Workflow scan revision. Tests inject this
+    /// boundary to prove an empty hit list is not confused with an unreadable root.
+    private let versionedRootDiscovery: @Sendable (URL) async -> KnownVersionedRoots.ScanResult
+    /// Dynamic scanner hits and completeness evidence are likewise inseparable. Keeping
+    /// the provider injectable lets tests prove AppUI does not project back to hits-only.
+    private let dynamicDiscovery: @Sendable (
+        String,
+        URL,
+        Bool
+    ) async throws -> DiscoveryEvidence<WorkflowScanHit>
     /// Filesystem cleanup is executed before the destructive simctl confirmation flow.
     /// Keep that immutable result across both confirmation sheets so the final result
     /// represents the complete user action instead of only the last subprocess phase.
-    private var pendingFilesystemResult: OperationResultPayload?
+    private var pendingFilesystemResult: DeletionCompletedInteraction?
+    /// Running-app skips are confirmation metadata, not proof that anything was submitted.
+    /// Keep them outside `OperationResultPayload` until simctl actually executes; cancelling
+    /// the command confirmation must simply discard them.
+    private var pendingRunningAppSkipped: [OperationResultPayload.RunningAppSkippedItem] = []
+    private var pendingConfirmedDeleteIntent: WorkflowDeletionIntent?
+    private var deletionInteractionCoordinator: DeletionInteractionCoordinator?
     private var didBootstrap: Bool = false
+    private var scanRevision: UInt64 = 0
     private let maxConcurrentCardLoads = 2
 
     public init(workflow: any DeveloperWorkflow,
                 home: URL,
                 simulatorCoordinator: SimulatorDeleteCoordinator? = nil,
-                accessDeniedPathsProvider: (@MainActor () -> Set<String>)? = nil,
-                undoHistoryStore: UndoHistoryStore = .shared) {
+                undoHistoryStore: UndoHistoryStore = .shared,
+                versionedRootDiscovery: (@Sendable (URL) async -> KnownVersionedRoots.ScanResult)? = nil,
+                dynamicDiscovery: (@Sendable (
+                    String,
+                    URL,
+                    Bool
+                ) async throws -> DiscoveryEvidence<WorkflowScanHit>)? = nil) {
         self.workflow = workflow
         self.home = home
         // 默认协调器：用 SubprocessExecutor 默认 allowlist + 60s timeout（simctl runtime delete 可能慢）+ 非 dryRun。
@@ -510,36 +788,144 @@ public final class WorkflowDetailViewModel: ObservableObject {
             executor: SubprocessExecutor(timeout: 60, dryRun: false),
             isSimulatorRunning: SimulatorDeleteCoordinator.defaultSimulatorRunning
         )
-        self.accessDeniedPathsProvider = accessDeniedPathsProvider
         self.undoHistoryStore = undoHistoryStore
+        self.versionedRootDiscovery = versionedRootDiscovery ?? { home in
+            await Task.detached(priority: .userInitiated) {
+                KnownVersionedRoots.scanAllWithEvidence(home: home)
+            }.value
+        }
+        self.dynamicDiscovery = dynamicDiscovery ?? { scannerID, home, includeFilesystemSizes in
+            try await WorkflowRegistry.resolveWithEvidence(
+                scannerID: scannerID,
+                home: home,
+                includeFilesystemSizes: includeFilesystemSizes
+            )
+        }
     }
 
     public var isAnyLoading: Bool { !cardLoading.isEmpty }
 
+    public var isDeletionTransactionActive: Bool {
+        if isPreparingDeletion || isDeleting || pendingConfirmedDeleteIntent != nil {
+            return true
+        }
+        switch activeSheet {
+        case .deleteConfirm, .preflightNotice, .simctlConfirm:
+            return true
+        case .result, .none:
+            return false
+        }
+    }
+
     public var totalSelectedBytes: Int64 {
+        Self.totalBytes(for: selected, cards: cards, cardHits: cardHits)
+    }
+
+    public func totalBytes(for selection: Set<String>) -> Int64 {
+        Self.totalBytes(for: selection, cards: cards, cardHits: cardHits)
+    }
+
+    private static func totalBytes(for selection: Set<String>,
+                                   cards: [DeveloperCard],
+                                   cardHits: [String: [WorkflowScanHit]]) -> Int64 {
         var sum: Int64 = 0
-        for hit in foldedSelectedHitsForDisplay() {
+        for hit in foldedSelectedHitsForDisplay(
+            selection: selection,
+            cards: cards,
+            cardHits: cardHits
+        ) {
             sum &+= hit.sizeBytes ?? 0
         }
         return sum
     }
 
+    private static func filesystemProjection(
+        for selection: Set<String>,
+        cards: [DeveloperCard],
+        cardHits: [String: [WorkflowScanHit]]
+    ) -> (
+        paths: [String],
+        hitIDsByPath: [String: Set<String>],
+        candidates: [RunningAppGuard.Candidate],
+        bytesByPath: [String: Int64]
+    ) {
+        var paths: [String] = []
+        var hitIDsByPath: [String: Set<String>] = [:]
+        var candidateByPath: [String: RunningAppGuard.Candidate] = [:]
+        var bytesByPath: [String: Int64] = [:]
+        for card in cards {
+            guard case .filesystem = card.recipe,
+                  let hits = cardHits[card.id] else { continue }
+            for hit in hits where selection.contains(hit.id) {
+                let path = hit.url.standardizedFileURL.path
+                paths.append(path)
+                hitIDsByPath[path, default: []].insert(hit.id)
+                bytesByPath[path] = max(0, hit.sizeBytes ?? 0)
+                if candidateByPath[path] == nil {
+                    candidateByPath[path] = RunningAppGuard.Candidate(
+                        path: path,
+                        title: hit.displayName,
+                        bundleIDPrefix: card.runningBundleIDPrefix
+                    )
+                }
+            }
+        }
+        let folded = foldNestedPaths(paths)
+        let kept = Set(folded)
+        return (
+            paths: folded,
+            hitIDsByPath: hitIDsByPath.filter { kept.contains($0.key) },
+            candidates: folded.compactMap { candidateByPath[$0] },
+            bytesByPath: bytesByPath.filter { kept.contains($0.key) }
+        )
+    }
+
+    private static func deletionRows(
+        candidates: [RunningAppGuard.Candidate],
+        bytesByPath: [String: Int64]
+    ) -> [RowItem] {
+        candidates.map { candidate in
+            let bytes = max(0, bytesByPath[candidate.path] ?? 0)
+            return RowItem(
+                id: candidate.path,
+                url: URL(fileURLWithPath: candidate.path),
+                title: candidate.title,
+                isDirectory: true,
+                bytes: bytes,
+                logicalBytes: bytes,
+                fileCount: 1,
+                verdict: .safe,
+                rejection: .ok,
+                runningBundleIDPrefix: candidate.bundleIDPrefix
+            )
+        }
+    }
+
+    private static func incompleteEvidencePaths(
+        _ prepared: DeletionPreparedInteraction
+    ) -> Set<String> {
+        Set(prepared.scanIncompleteOverrideRequest?.entries
+            .flatMap(\.incompleteIssues)
+            .map(\.path) ?? [])
+    }
+
+    private static func incompleteEvidencePaths(
+        _ authorized: DeletionAuthorizedInteraction
+    ) -> Set<String> {
+        Set(authorized.scanIncompleteOverrideRequest?.entries
+            .flatMap(\.incompleteIssues)
+            .map(\.path) ?? [])
+    }
+
     public func bootstrap() async {
         guard !didBootstrap else { return }
         didBootstrap = true
-        cards = workflow.cards(home: home)
-        for card in cards where card.risk == .safe {
-            expanded.insert(card.id)
-        }
-        await loadAllCards()
+        await runScan()
     }
 
     public func refreshAll() async {
-        cardHits.removeAll()
-        cardTotalBytes.removeAll()
-        selected.removeAll()
-        cards = workflow.cards(home: home)
-        await loadAllCards()
+        guard !isDeletionTransactionActive else { return }
+        await runScan()
     }
 
     public func toggleExpanded(cardID: String, open: Bool) {
@@ -551,6 +937,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
     }
 
     public func toggleSelection(hitID: String, on: Bool) {
+        guard !isDeletionTransactionActive else { return }
         if on {
             selected.insert(hitID)
             collapseNestedFilesystemSelections()
@@ -564,22 +951,290 @@ public final class WorkflowDetailViewModel: ObservableObject {
         alertMessage = nil
     }
 
-    public func performDelete(pipeline: any DeletionPipeline) async {
-        guard !selected.isEmpty, !isDeleting else { return }
+    /// 工作流删除的唯一确认入口：先冻结 selection，再用实际 pipeline 做完整只读
+    /// 预检。普通安全路径进入统一确认；vendorPathRule 与“所选目标相关的 typed
+    /// incomplete”经目标级重验后进入严格覆盖确认；hard-forbid 等能力边界仍直接拒绝。
+    public func requestDeleteConfirmation(pipeline: any DeletionPipeline) async {
+        guard !selected.isEmpty,
+              !isAnyLoading,
+              !isDeleting,
+              !isPreparingDeletion,
+              pendingConfirmedDeleteIntent == nil,
+              activeSheet == nil else { return }
+        let selectionSnapshot = selected
+        let cardsSnapshot = cards
+        let cardHitsSnapshot = cardHits
+        let evidenceSnapshot = scanEvidence
+        let filesystem = Self.filesystemProjection(
+            for: selectionSnapshot,
+            cards: cardsSnapshot,
+            cardHits: cardHitsSnapshot
+        )
+        let relevantIssues = evidenceSnapshot.issues(overlappingAny: filesystem.paths)
+        let commandPlan = simulatorCoordinator.prepare(
+            cards: cardsSnapshot,
+            cardHits: cardHitsSnapshot,
+            selected: selectionSnapshot
+        )
+        let totalBytes = Self.totalBytes(
+            for: selectionSnapshot,
+            cards: cardsSnapshot,
+            cardHits: cardHitsSnapshot
+        )
+
+        isPreparingDeletion = true
+        defer { isPreparingDeletion = false }
+        let preparedInteraction: DeletionPreparedInteraction?
+        if filesystem.paths.isEmpty {
+            preparedInteraction = nil
+            deletionInteractionCoordinator = nil
+        } else {
+            let identity = DeletionSnapshotIdentity(
+                sessionID: evidenceSnapshot.sessionID,
+                revision: evidenceSnapshot.revision,
+                categoryID: "workflow"
+            )
+            let coordinator = DeletionInteractionCoordinator(
+                pipeline: pipeline,
+                undoHistoryStore: undoHistoryStore
+            )
+            do {
+                let intent = try coordinator.makeIntent(
+                    origin: .workflowFilesystem,
+                    mode: .professional,
+                    snapshotIdentity: identity,
+                    candidates: filesystem.candidates.map { candidate in
+                        DeletionInteractionCandidateSnapshot(
+                            path: candidate.path,
+                            title: candidate.title,
+                            isDirectory: true,
+                            bytes: filesystem.bytesByPath[candidate.path] ?? 0,
+                            fileCount: 1,
+                            runningBundleIDPrefix: candidate.bundleIDPrefix,
+                            accessEvidence: evidenceSnapshot.accessEvidence(
+                                for: candidate.path
+                            )
+                        )
+                    }
+                )
+                let preparation: DeletionInteractionPreparation
+                if relevantIssues.isEmpty {
+                    preparation = await coordinator.prepare(
+                        intent: intent,
+                        currentSnapshotIdentity: identity,
+                        accessDeniedPaths: evidenceSnapshot.permissionDeniedPaths
+                    )
+                } else {
+                    let rows = Self.deletionRows(
+                        candidates: filesystem.candidates,
+                        bytesByPath: filesystem.bytesByPath
+                    )
+                    let targetPreparation = await pipeline.prepareScanIncompleteOverride(
+                        rows: rows,
+                        scanIssues: relevantIssues,
+                        scanSessionID: evidenceSnapshot.sessionID
+                    )
+                    preparation = coordinator.prepareRevalidatedScanIncomplete(
+                        intent: intent,
+                        currentSnapshotIdentity: identity,
+                        preparation: targetPreparation
+                    )
+                }
+                switch preparation {
+                case .confirmation(let prepared):
+                    preparedInteraction = prepared
+                    deletionInteractionCoordinator = coordinator
+                case .blocked(let block):
+                    activeSheet = .preflightNotice(id: UUID(), rejections: block.rejections)
+                    return
+                case .cancelled:
+                    return
+                }
+            } catch {
+                activeSheet = .preflightNotice(
+                    id: UUID(),
+                    rejections: filesystem.paths.map {
+                        .init(path: $0, reason: SafetyRejection.preflightCancelled.rawValue)
+                    }
+                )
+                return
+            }
+        }
+        guard activeSheet == nil,
+              pendingConfirmedDeleteIntent == nil,
+              scanEvidence.revision == evidenceSnapshot.revision,
+              scanEvidence.sessionID == evidenceSnapshot.sessionID,
+              selected == selectionSnapshot else {
+            GSYLog.notice(.trash, "Workflow 删除预检完成时扫描或选择已变化，丢弃旧意图")
+            return
+        }
+
+        let approvedPaths = preparedInteraction?.paths ?? []
+
+        let allowedSet = Set(approvedPaths)
+        let strictAccessEvidencePaths = preparedInteraction.map(
+            Self.incompleteEvidencePaths
+        ) ?? []
+        let frozenAccessEvidencePaths = strictAccessEvidencePaths.isEmpty
+            ? evidenceSnapshot.permissionDeniedPaths
+            : strictAccessEvidencePaths
+        let intent = WorkflowDeletionIntent(
+            scanRevision: evidenceSnapshot.revision,
+            scanSessionID: evidenceSnapshot.sessionID,
+            selectedHitIDs: selectionSnapshot,
+            filesystemPaths: approvedPaths,
+            filesystemHitIDsByPath: filesystem.hitIDsByPath.filter {
+                allowedSet.contains($0.key)
+            },
+            filesystemCandidates: filesystem.candidates.filter {
+                allowedSet.contains($0.path)
+            },
+            accessDeniedPaths: frozenAccessEvidencePaths,
+            commandPlan: commandPlan,
+            preparedInteraction: preparedInteraction,
+            authorizedInteraction: nil,
+            itemCount: selectionSnapshot.count,
+            totalBytes: totalBytes
+        )
+        activeSheet = .deleteConfirm(WorkflowDeleteConfirmation(
+            intent: intent
+        ))
+    }
+
+    @discardableResult
+    public func confirmDelete(
+        _ confirmation: WorkflowDeleteConfirmation,
+        executionPlan: ToolTrashExecutionPlan
+    ) -> Bool {
+        guard case let .deleteConfirm(current) = activeSheet,
+              current.id == confirmation.id,
+              current.intent.scanRevision == scanEvidence.revision,
+              current.intent.scanSessionID == scanEvidence.sessionID,
+              pendingConfirmedDeleteIntent == nil else { return false }
+
+        let originalIntent = confirmation.intent
+        let authorizedInteraction: DeletionAuthorizedInteraction?
+        if originalIntent.filesystemPaths.isEmpty {
+            authorizedInteraction = nil
+        } else {
+            guard let prepared = originalIntent.preparedInteraction,
+                  let coordinator = deletionInteractionCoordinator else {
+                GSYLog.error(.trash, "Workflow 删除确认缺少统一协调器快照")
+                return false
+            }
+            switch coordinator.authorize(
+                prepared: prepared,
+                executionPlan: executionPlan
+            ) {
+            case .authorized(let authorized):
+                authorizedInteraction = authorized
+            case .cancelled:
+                // Skipping every running filesystem candidate cancels only the Trash subset.
+                // A frozen command plan is an independent destructive operation and must still
+                // reach its own two-step confirmation. Pure-filesystem all-skip remains a no-op
+                // with no receipt and no result.
+                guard originalIntent.commandPlan != .empty else {
+                    deletionInteractionCoordinator = nil
+                    activeSheet = nil
+                    return true
+                }
+                authorizedInteraction = nil
+            case .blocked(let block):
+                activeSheet = .preflightNotice(id: UUID(), rejections: block.rejections)
+                return false
+            }
+        }
+        let originalPaths = Set(originalIntent.filesystemPaths)
+        let submittedPaths = Set(executionPlan.paths)
+        let skippedPaths = Set(executionPlan.runningAppSkipped.map(\.path))
+        guard submittedPaths.count == executionPlan.paths.count,
+              skippedPaths.count == executionPlan.runningAppSkipped.count,
+              submittedPaths.isSubset(of: originalPaths),
+              skippedPaths.isSubset(of: originalPaths),
+              submittedPaths.isDisjoint(with: skippedPaths),
+              submittedPaths.union(skippedPaths) == originalPaths else {
+            GSYLog.error(.trash, "Workflow 删除确认计划未完整覆盖冻结路径，拒绝执行")
+            return false
+        }
+        let strictAccessEvidencePaths = authorizedInteraction.map(
+            Self.incompleteEvidencePaths
+        ) ?? []
+        let frozenAccessEvidencePaths: Set<String>
+        if executionPlan.paths.isEmpty {
+            frozenAccessEvidencePaths = []
+        } else {
+            frozenAccessEvidencePaths = strictAccessEvidencePaths.isEmpty
+                ? originalIntent.accessDeniedPaths
+                : strictAccessEvidencePaths
+        }
+        guard frozenAccessEvidencePaths.isSubset(of: originalIntent.accessDeniedPaths) else {
+            GSYLog.error(.trash, "Workflow 删除确认丢失冻结的 typed incomplete evidence")
+            activeSheet = .preflightNotice(
+                id: UUID(),
+                rejections: executionPlan.paths.map {
+                    .init(
+                        path: $0,
+                        reason: ScanIncompleteTargetRejectionReason.missingTypedEvidence.rawValue
+                    )
+                }
+            )
+            return false
+        }
+
+        pendingConfirmedDeleteIntent = WorkflowDeletionIntent(
+            id: originalIntent.id,
+            scanRevision: originalIntent.scanRevision,
+            scanSessionID: originalIntent.scanSessionID,
+            selectedHitIDs: originalIntent.selectedHitIDs,
+            filesystemPaths: executionPlan.paths,
+            filesystemHitIDsByPath: originalIntent.filesystemHitIDsByPath.filter {
+                submittedPaths.contains($0.key)
+            },
+            filesystemCandidates: originalIntent.filesystemCandidates.filter {
+                submittedPaths.contains($0.path)
+            },
+            accessDeniedPaths: frozenAccessEvidencePaths,
+            commandPlan: originalIntent.commandPlan,
+            preparedInteraction: authorizedInteraction == nil
+                ? nil
+                : originalIntent.preparedInteraction,
+            authorizedInteraction: authorizedInteraction,
+            runningAppSkipped: authorizedInteraction?.runningAppSkipped
+                ?? executionPlan.runningAppSkipped,
+            itemCount: originalIntent.itemCount,
+            totalBytes: originalIntent.totalBytes
+        )
+        deletionInteractionCoordinator = nil
+        activeSheet = nil
+        return true
+    }
+
+    public func cancelDeleteConfirmation() {
+        guard case .deleteConfirm = activeSheet else { return }
+        deletionInteractionCoordinator = nil
+        activeSheet = nil
+    }
+
+    public func takePendingConfirmedDeleteIntent() -> WorkflowDeletionIntent? {
+        defer { pendingConfirmedDeleteIntent = nil }
+        return pendingConfirmedDeleteIntent
+    }
+
+    public func performDelete(pipeline: any DeletionPipeline,
+                              intent: WorkflowDeletionIntent) async {
+        guard !intent.selectedHitIDs.isEmpty,
+              !isDeleting,
+              intent.scanRevision == scanEvidence.revision,
+              intent.scanSessionID == scanEvidence.sessionID else {
+            GSYLog.notice(.trash, "Workflow 拒绝执行过期删除意图 revision=\(intent.scanRevision) current=\(scanEvidence.revision)")
+            return
+        }
         pendingFilesystemResult = nil
+        pendingRunningAppSkipped = []
         isDeleting = true
         defer { isDeleting = false }
 
-        var fsPaths: [String] = []
-        for card in cards {
-            guard let hits = cardHits[card.id] else { continue }
-            let selectedHits = hits.filter { selected.contains($0.id) }
-            guard !selectedHits.isEmpty else { continue }
-            if case .filesystem = card.recipe {
-                fsPaths.append(contentsOf: selectedHits.map { $0.url.path })
-            }
-        }
-        fsPaths = Self.foldNestedPaths(fsPaths)
+        let fsPaths = intent.filesystemPaths
 
         // **v2026.06.22 (P0-1)**：与 [MainView.runTrash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
         // 对齐统一删除入口：accessDenied 注入 → TrashActionCoordinator.run → UndoHistory.addRecord
@@ -587,43 +1242,109 @@ public final class WorkflowDetailViewModel: ObservableObject {
         // 且 `for path in fsPaths { selected.remove(path) }` 会把"被 SafetyEngine 拦截
         // / recycle 失败"的项也从 selected 移除——用户重试时找不到原条目。
         var movedPairs: [(String, String)] = []
-        var failedPaths: [String] = []
         var safetyRejected: [(String, String)] = []
+        var succeededFilesystemHitIDs: Set<String> = []
+        var filesystemCompletion: DeletionCompletedInteraction?
         if !fsPaths.isEmpty {
-            let denied = accessDeniedPathsProvider?() ?? []
-            let action = TrashActionCoordinator(pipeline: pipeline, undoHistoryStore: undoHistoryStore)
-            let result = await action.run(TrashActionCoordinator.Request(
-                paths: fsPaths,
-                dryRun: false,
-                source: "workflow",
-                accessDeniedPaths: denied
-            ))
+            guard let authorized = intent.authorizedInteraction else {
+                GSYLog.error(.trash, "Workflow 文件删除缺少统一授权")
+                activeSheet = .preflightNotice(
+                    id: UUID(),
+                    rejections: fsPaths.map {
+                        .init(path: $0, reason: SafetyRejection.preflightCancelled.rawValue)
+                    }
+                )
+                return
+            }
+            let coordinator = DeletionInteractionCoordinator(
+                pipeline: pipeline,
+                undoHistoryStore: undoHistoryStore
+            )
+            let disposition = await coordinator.submit(
+                authorized,
+                accessDeniedPaths: intent.accessDeniedPaths
+            )
+            let completed: DeletionCompletedInteraction
+            switch disposition {
+            case .completed(let value):
+                completed = value
+                filesystemCompletion = value
+
+            case .requiresConfirmation(let prepared):
+                // Final revalidation discovered a vendor-only risk after the simple
+                // confirmation. Reopen a strict sheet from this immutable intent; never
+                // consult newer cards/selection and never manufacture a cleanup result.
+                let strictIntent = WorkflowDeletionIntent(
+                    id: intent.id,
+                    scanRevision: intent.scanRevision,
+                    scanSessionID: intent.scanSessionID,
+                    selectedHitIDs: intent.selectedHitIDs,
+                    filesystemPaths: prepared.paths,
+                    filesystemHitIDsByPath: intent.filesystemHitIDsByPath.filter {
+                        Set(prepared.paths).contains($0.key)
+                    },
+                    filesystemCandidates: prepared.confirmationCandidates,
+                    accessDeniedPaths: intent.accessDeniedPaths,
+                    commandPlan: intent.commandPlan,
+                    preparedInteraction: prepared,
+                    authorizedInteraction: nil,
+                    runningAppSkipped: intent.runningAppSkipped,
+                    itemCount: intent.itemCount,
+                    totalBytes: intent.totalBytes
+                )
+                deletionInteractionCoordinator = coordinator
+                activeSheet = .deleteConfirm(WorkflowDeleteConfirmation(intent: strictIntent))
+                return
+
+            case .blocked(let block):
+                activeSheet = .preflightNotice(id: UUID(), rejections: block.rejections)
+                return
+            }
+            let result = completed.result
             if let outcome = result.outcome {
                 movedPairs = outcome.movedPairs.map { ($0.originalPath, $0.trashedPath) }
-                failedPaths = outcome.failedPaths
                 safetyRejected = outcome.safetyRejected.map { ($0.path, $0.reason) }
             } else {
                 movedPairs = result.pairs
-                let succeeded = Set(result.succeededPaths)
-                failedPaths = result.err == nil ? [] : fsPaths.filter { !succeeded.contains($0) }
             }
 
-            // selected 用真实成功的 originalPath 反查 hit.id 后剔除
-            //    （fsPaths 是 path，selected 是 hitID——必须通过 cardHits 反向映射）
-            let successPathSet = Set(movedPairs.map { $0.0 })
-            if !successPathSet.isEmpty {
-                for (_, hits) in cardHits {
-                    for hit in hits where successPathSet.contains(hit.url.path) {
-                        selected.remove(hit.id)
-                    }
-                }
+            // 只消费确认前冻结的 path → hit 映射；执行阶段不能回读新一轮 cardHits。
+            for path in movedPairs.map({ $0.0 }) {
+                succeededFilesystemHitIDs.formUnion(intent.filesystemHitIDsByPath[path] ?? [])
             }
+            selected.subtract(succeededFilesystemHitIDs)
+        }
+
+        // SafetyEngine / access-denied 的拒绝是整次复合动作的一票否决。即使同一
+        // intent 还冻结了 simctl items，也不能在 filesystem 安全闸门拒绝后继续
+        // 执行不可恢复的命令行删除。
+        if !safetyRejected.isEmpty {
+            guard let filesystemCompletion else {
+                presentCommandPreSubmissionBlock(
+                    detail: safetyRejected.map { "\($0.0):\($0.1)" }.joined(separator: ", ")
+                )
+                return
+            }
+            activeSheet = .result(.deletion(filesystemCompletion))
+            return
         }
 
         // v1.7 M1 PR-9：commandLine（simctl）真删走两轮确认 sheet。
         // prepare 阶段如发现"无选中 commandLine 项"则跳过；如 Simulator 运行中则在 payload 里记一条 blocked。
-        var commandLineSkipped = 0
-        let plan = simulatorCoordinator.prepare(cards: cards, cardHits: cardHits, selected: selected)
+        let plan: SimulatorDeleteCoordinator.Plan
+        switch intent.commandPlan {
+        case .ready(let frozenItems):
+            let remainingItems = frozenItems.filter {
+                !succeededFilesystemHitIDs.contains($0.hitID)
+            }
+            plan = simulatorCoordinator.revalidate(items: remainingItems)
+        case .empty:
+            plan = .empty
+        case .invalid(let reason):
+            plan = .invalid(reason: reason)
+        case .blockedSimulatorRunning(let names):
+            plan = .blockedSimulatorRunning(displayNames: names)
+        }
         var willShowSimctlSheet = false
         switch plan {
         case .empty:
@@ -637,36 +1358,28 @@ public final class WorkflowDetailViewModel: ObservableObject {
         case .ready(let items):
             // 真删流程交给 sheet——这里只起 sheet，不直接执行
             pendingSimctlStage = .firstReview(items: items)
-            commandLineSkipped = items.count
             willShowSimctlSheet = true
         }
 
         if !fsPaths.isEmpty {
-            await refreshAll()
+            await runScan()
         }
 
         // **v2026.06.22 (P0-1)**：同帧不能同时设两个 sheet——SwiftUI 只显示先到的那个。
         // 优先级：simctl 确认 sheet > OperationResultSheet。simctl 走完后 executeConfirmedSimctl
         // 会再次设置 activeSheet=.result(...) 把汇总展示出来。
-        let hasAnything = !movedPairs.isEmpty || !failedPaths.isEmpty || !safetyRejected.isEmpty || commandLineSkipped > 0
         if willShowSimctlSheet {
-            let hasFilesystemResult = !movedPairs.isEmpty || !failedPaths.isEmpty || !safetyRejected.isEmpty
-            if hasFilesystemResult {
-                pendingFilesystemResult = OperationResultPayload(
-                    movedPairs: movedPairs,
-                    failedPaths: failedPaths,
-                    safetyRejected: safetyRejected,
-                    commandLineSkipped: commandLineSkipped
-                )
-            }
+            // A pending result exists only when the filesystem pipeline was really called.
+            // Running-app skips alone remain metadata until the command phase executes.
+            pendingFilesystemResult = filesystemCompletion
+            pendingRunningAppSkipped = intent.runningAppSkipped
             activeSheet = .simctlConfirm
-        } else if hasAnything {
-            activeSheet = .result(OperationResultPayload(
-                movedPairs: movedPairs,
-                failedPaths: failedPaths,
-                safetyRejected: safetyRejected,
-                commandLineSkipped: commandLineSkipped
-            ))
+        } else if let filesystemCompletion {
+            activeSheet = .result(.deletion(filesystemCompletion))
+        } else if !safetyRejected.isEmpty {
+            presentCommandPreSubmissionBlock(
+                detail: safetyRejected.map { "\($0.0):\($0.1)" }.joined(separator: ", ")
+            )
         }
     }
 
@@ -679,10 +1392,25 @@ public final class WorkflowDetailViewModel: ObservableObject {
 
     /// PR-9：取消 sheet（无论第一/第二轮），恢复 nil 即关闭。
     public func cancelSimctlConfirm() {
+        let skippedCommands: [SimulatorDeleteCoordinator.Item]
+        switch pendingSimctlStage {
+        case .firstReview(let items), .secondConfirm(let items):
+            skippedCommands = items
+        case .none:
+            skippedCommands = []
+        }
         pendingSimctlStage = nil
+        pendingRunningAppSkipped = []
         if let pendingFilesystemResult {
             self.pendingFilesystemResult = nil
-            activeSheet = .result(pendingFilesystemResult)
+            if skippedCommands.isEmpty {
+                activeSheet = .result(.deletion(pendingFilesystemResult))
+            } else {
+                activeSheet = .result(.deletionWithSkippedCommands(
+                    deletion: pendingFilesystemResult,
+                    skippedCommands: skippedCommands
+                ))
+            }
         } else if case .simctlConfirm = activeSheet {
             activeSheet = nil
         }
@@ -700,44 +1428,140 @@ public final class WorkflowDetailViewModel: ObservableObject {
         isDeleting = true
         defer { isDeleting = false }
 
-        let outcomes = await simulatorCoordinator.execute(items: items)
         let filesystemResult = pendingFilesystemResult
         pendingFilesystemResult = nil
-        var success = 0
-        var commandFailures: [OperationResultPayload.CommandLineFailure] = []
-        for outcome in outcomes {
-            if outcome.isSuccess {
-                success &+= 1
-                selected.remove(outcome.item.hitID)
+        let runningAppSkipped = filesystemResult?.runningAppSkipped ?? pendingRunningAppSkipped
+        pendingRunningAppSkipped = []
+        let validatedItems: [SimulatorDeleteCoordinator.Item]
+        switch simulatorCoordinator.revalidate(items: items) {
+        case .ready(let currentItems):
+            validatedItems = currentItems
+        case .blockedSimulatorRunning(let names):
+            if let filesystemResult {
+                recordCommandPreSubmissionBlock(
+                    detail: "simulator-running:\(names.joined(separator: ", "))"
+                )
+                activeSheet = .result(.deletion(filesystemResult))
             } else {
-                commandFailures.append(OperationResultPayload.CommandLineFailure(
-                    item: outcome.item.displayName,
-                    exitCode: outcome.exitCode,
-                    detail: outcome.truncatedOutput
-                ))
+                presentCommandPreSubmissionBlock(
+                    detail: "simulator-running:\(names.joined(separator: ", "))"
+                )
+            }
+            return
+        case .invalid(let reason):
+            if let filesystemResult {
+                recordCommandPreSubmissionBlock(detail: "simctl-invalid:\(reason)")
+                activeSheet = .result(.deletion(filesystemResult))
+            } else {
+                presentCommandPreSubmissionBlock(detail: "simctl-invalid:\(reason)")
+            }
+            return
+        case .empty:
+            if let filesystemResult {
+                activeSheet = .result(.deletion(filesystemResult))
+            } else {
+                activeSheet = nil
+                GSYLog.notice(.trash, "Workflow simctl 重验后没有可提交项，不展示执行结果")
+            }
+            return
+        }
+
+        let commandSubmission = await simulatorCoordinator.executeSubmitted(items: validatedItems)
+        for outcome in commandSubmission.outcomes {
+            if outcome.isSuccess {
+                selected.remove(outcome.item.hitID)
             }
         }
 
-        await refreshAll()
+        await runScan()
 
         // Present one structured result after both phases. Command-line outcomes remain
         // separate from filesystem paths because they were not moved to Trash, cannot be
         // revealed in Finder, and are not undoable.
-        activeSheet = .result(OperationResultPayload(
-            movedPairs: filesystemResult?.movedPairs.map { ($0.originalPath, $0.trashedPath) } ?? [],
-            failedPaths: filesystemResult?.failedPaths ?? [],
-            safetyRejected: filesystemResult?.safetyRejected.map { ($0.path, $0.reason) } ?? [],
-            commandLineSucceeded: success,
-            commandLineFailures: commandFailures
-        ))
+        if let filesystemResult {
+            activeSheet = .result(.combined(
+                deletion: filesystemResult,
+                command: commandSubmission
+            ))
+        } else {
+            activeSheet = .result(.command(
+                commandSubmission,
+                runningAppSkipped: runningAppSkipped
+            ))
+        }
     }
 
-    private func loadAllCards() async {
+    /// A command that becomes blocked before `SimulatorDeleteCoordinator.execute` has no
+    /// operation receipt. Surface a localized warning, while keeping machine details in logs.
+    private func presentCommandPreSubmissionBlock(detail: String) {
+        recordCommandPreSubmissionBlock(detail: detail)
+        activeSheet = nil
+    }
+
+    private func recordCommandPreSubmissionBlock(detail: String) {
+        GSYLog.notice(.trash, "Workflow 命令删除在提交前被阻止: \(detail)")
+        alertTitle = String(localized: "op.result.section.blocked", bundle: .module)
+        alertMessage = String(localized: "op.result.reason.generic", bundle: .module)
+    }
+
+    private struct CardScanResult: Sendable {
+        var hits: [WorkflowScanHit]
+        var incompleteIssues: [ScanIncompleteIssue] = []
+
+        mutating func merge(incompleteIssues: [ScanIncompleteIssue]) {
+            self.incompleteIssues.append(contentsOf: incompleteIssues)
+        }
+    }
+
+    private struct FilesystemScanResult: Sendable {
+        let sizeBytes: Int64?
+        let incompleteIssues: [ScanIncompleteIssue]
+    }
+
+    private struct PathExpansionResult: Sendable {
+        let paths: [String]
+        let incompleteIssues: [ScanIncompleteIssue]
+    }
+
+    private func runScan() async {
+        scanRevision &+= 1
+        let revision = scanRevision
+        let sessionID = UUID()
+        cardHits.removeAll()
+        cardTotalBytes.removeAll()
+        cardLoading.removeAll()
+        selected.removeAll()
+        pendingConfirmedDeleteIntent = nil
+        scanEvidence = WorkflowScanEvidence(revision: revision, sessionID: sessionID)
+        cards = workflow.cards(home: home)
+        for card in cards where card.risk == .safe {
+            expanded.insert(card.id)
+        }
+        await loadAllCards(revision: revision, sessionID: sessionID)
+    }
+
+    private func loadAllCards(revision: UInt64, sessionID: UUID) async {
         let cardsSnapshot = cards
-        let versionedHits = cardsSnapshot.contains { card in
+        let needsVersionedRoots = cardsSnapshot.contains { card in
             if case .versionedRoot = card.source { return true }
             return false
-        } ? KnownVersionedRoots.scanAll(home: home) : []
+        }
+        let versionedDiscovery: KnownVersionedRoots.ScanResult?
+        if needsVersionedRoots {
+            versionedDiscovery = await versionedRootDiscovery(home)
+        } else {
+            versionedDiscovery = nil
+        }
+        guard revision == scanRevision, scanEvidence.sessionID == sessionID else { return }
+
+        if let versionedDiscovery {
+            scanEvidence = WorkflowScanEvidence(
+                revision: revision,
+                sessionID: sessionID,
+                incompleteIssues: scanEvidence.incompleteIssues
+                    + versionedDiscovery.incompleteIssues
+            )
+        }
 
         var startIndex = 0
         while startIndex < cardsSnapshot.count {
@@ -749,17 +1573,21 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 cardLoading.insert(card.id)
             }
 
-            let results = await withTaskGroup(of: (String, [WorkflowScanHit]).self,
-                                              returning: [(String, [WorkflowScanHit])].self) { group in
+            let results = await withTaskGroup(of: (String, CardScanResult).self,
+                                              returning: [(String, CardScanResult)].self) { group in
                 for card in batch {
                     let cardID = card.id
-                    let source = card.source
-                    group.addTask { [home, versionedHits] in
-                        let hits = await Self.resolveCard(source: source, home: home, versionedHits: versionedHits)
-                        return (cardID, hits)
+                    group.addTask { [home, versionedDiscovery, dynamicDiscovery] in
+                        let result = await Self.resolveCard(
+                            card: card,
+                            home: home,
+                            versionedDiscovery: versionedDiscovery,
+                            dynamicDiscovery: dynamicDiscovery
+                        )
+                        return (cardID, result)
                     }
                 }
-                var collected: [(String, [WorkflowScanHit])] = []
+                var collected: [(String, CardScanResult)] = []
                 collected.reserveCapacity(batch.count)
                 for await result in group {
                     collected.append(result)
@@ -767,26 +1595,38 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 return collected
             }
 
-            for (cardID, hits) in results {
-                cardHits[cardID] = hits
-                cardTotalBytes[cardID] = hits.reduce(0) { $0 &+ ($1.sizeBytes ?? 0) }
+            guard revision == scanRevision, scanEvidence.sessionID == sessionID else { return }
+            var incompleteIssues = scanEvidence.incompleteIssues
+            for (cardID, result) in results {
+                cardHits[cardID] = result.hits
+                cardTotalBytes[cardID] = result.hits.reduce(0) { $0 &+ ($1.sizeBytes ?? 0) }
                 cardLoading.remove(cardID)
+                incompleteIssues.append(contentsOf: result.incompleteIssues)
                 if let card = cards.first(where: { $0.id == cardID }), card.risk == .safe {
-                    for hit in hits {
+                    for hit in result.hits {
                         selected.insert(hit.id)
                     }
                 }
             }
+            scanEvidence = WorkflowScanEvidence(
+                revision: revision,
+                sessionID: sessionID,
+                incompleteIssues: incompleteIssues
+            )
         }
         collapseNestedFilesystemSelections()
     }
 
-    private func foldedSelectedHitsForDisplay() -> [WorkflowScanHit] {
+    private static func foldedSelectedHitsForDisplay(
+        selection: Set<String>,
+        cards: [DeveloperCard],
+        cardHits: [String: [WorkflowScanHit]]
+    ) -> [WorkflowScanHit] {
         var filesystemHits: [WorkflowScanHit] = []
         var otherHits: [WorkflowScanHit] = []
         for card in cards {
             guard let hits = cardHits[card.id] else { continue }
-            let chosen = hits.filter { selected.contains($0.id) }
+            let chosen = hits.filter { selection.contains($0.id) }
             if case .filesystem = card.recipe {
                 filesystemHits.append(contentsOf: chosen)
             } else {
@@ -796,8 +1636,9 @@ public final class WorkflowDetailViewModel: ObservableObject {
         let foldedPaths = Set(Self.foldNestedPaths(filesystemHits.map { $0.url.path }))
         var seenFilesystemPaths: Set<String> = []
         let uniqueFilesystemHits = filesystemHits.filter { hit in
-            guard foldedPaths.contains(hit.url.path) else { return false }
-            return seenFilesystemPaths.insert(hit.url.path).inserted
+            let path = hit.url.standardizedFileURL.path
+            guard foldedPaths.contains(path) else { return false }
+            return seenFilesystemPaths.insert(path).inserted
         }
         return uniqueFilesystemHits + otherHits
     }
@@ -810,7 +1651,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
             selectedFilesystemHits.append(contentsOf: hits.filter { selected.contains($0.id) })
         }
         let kept = Set(Self.foldNestedPaths(selectedFilesystemHits.map { $0.url.path }))
-        for hit in selectedFilesystemHits where !kept.contains(hit.url.path) {
+        for hit in selectedFilesystemHits
+            where !kept.contains(hit.url.standardizedFileURL.path) {
             selected.remove(hit.id)
         }
     }
@@ -835,30 +1677,52 @@ public final class WorkflowDetailViewModel: ObservableObject {
         child == ancestor || child.hasPrefix(ancestor.hasSuffix("/") ? ancestor : ancestor + "/")
     }
 
-    private static func resolveCard(source: DeveloperCard.PathSource,
+    private static func resolveCard(card: DeveloperCard,
                                     home: URL,
-                                    versionedHits: [KnownVersionedRoots.Hit] = []) async -> [WorkflowScanHit] {
-        switch source {
+                                    versionedDiscovery: KnownVersionedRoots.ScanResult?,
+                                    dynamicDiscovery: @Sendable (
+                                        String,
+                                        URL,
+                                        Bool
+                                    ) async throws -> DiscoveryEvidence<WorkflowScanHit>) async -> CardScanResult {
+        switch card.source {
         case .literal(let paths):
             // **v2026.06.22 (P0-5)**：`.literal` 分支历史只走 `FileManager.fileExists`，不展开 glob。
             // 但 [AndroidWorkflow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/AndroidWorkflow.swift) 等卡片实际声明了带 `*` 的路径
             // （如 `~/Library/Caches/Google/AndroidStudio*`），未展开就 `fileExists` 会全部落空，
             // 导致 JetBrains / AndroidStudio 整卡 0 命中。改为：含 `*` 走 parent + fnmatch 枚举。
-            var results: [WorkflowScanHit] = []
+            var result = CardScanResult(hits: [])
             for raw in paths {
                 let expandedRaw = (raw as NSString).expandingTildeInPath
-                for matchedPath in Self.expandGlob(expandedRaw) {
+                let expansion = Self.expandGlob(expandedRaw)
+                result.merge(incompleteIssues: expansion.incompleteIssues)
+                for matchedPath in expansion.paths {
                     let url = URL(fileURLWithPath: matchedPath)
-                    let size = Self.directorySize(at: url)
-                    results.append(WorkflowScanHit(url: url, sizeBytes: size, displayName: url.lastPathComponent, note: url.path))
+                    let filesystem = await scanFilesystemIfNeeded(url: url, recipe: card.recipe)
+                    result.merge(incompleteIssues: filesystem.incompleteIssues)
+                    result.hits.append(WorkflowScanHit(
+                        url: url,
+                        sizeBytes: filesystem.sizeBytes,
+                        displayName: url.lastPathComponent,
+                        note: url.path
+                    ))
                 }
             }
-            return results
+            return result
         case .versionedRoot(let ruleID):
-            let allHits = versionedHits.isEmpty ? KnownVersionedRoots.scanAll(home: home) : versionedHits
-            let hits = allHits.filter { $0.ruleID == ruleID }
-            return hits.map { hit in
-                let size = Self.directorySize(at: hit.url)
+            guard let versionedDiscovery else {
+                assertionFailure("versionedRoot card resolved without its scan-session discovery result")
+                // There is no trustworthy filesystem scope when the shared discovery result is
+                // missing. Inventing HOME as a fallback would make one card's invariant failure
+                // look like every selected sibling was incompletely scanned. Keep the failure in
+                // diagnostics and fail this card closed as an empty result instead.
+                return CardScanResult(hits: [])
+            }
+            let hits = versionedDiscovery.hits.filter { $0.ruleID == ruleID }
+            var result = CardScanResult(hits: [])
+            for hit in hits {
+                let filesystem = await scanFilesystemIfNeeded(url: hit.url, recipe: card.recipe)
+                result.merge(incompleteIssues: filesystem.incompleteIssues)
                 let localizedName = String(localized: String.LocalizationValue(hit.displayName), bundle: .module)
                 let composedName: String
                 if let groupKey = hit.groupKey, !groupKey.isEmpty {
@@ -866,14 +1730,186 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 } else {
                     composedName = localizedName
                 }
-                return WorkflowScanHit(url: hit.url, sizeBytes: size, displayName: composedName, note: hit.versionName)
+                result.hits.append(WorkflowScanHit(
+                    url: hit.url,
+                    sizeBytes: filesystem.sizeBytes,
+                    displayName: composedName,
+                    note: hit.versionName
+                ))
             }
+            return result
         case .vendor:
             // PR-5 阶段不接 vendor 源——卡片侧目前没人用，留位避免编译警告。
-            return []
+            return CardScanResult(hits: [])
         case .dynamicScanner(let scannerID):
-            return await WorkflowRegistry.resolve(scannerID: scannerID, home: home)
+            let isFilesystemRecipe: Bool
+            if case .filesystem = card.recipe {
+                isFilesystemRecipe = true
+            } else {
+                isFilesystemRecipe = false
+            }
+            let discovery: DiscoveryEvidence<WorkflowScanHit>
+            do {
+                discovery = try await dynamicDiscovery(
+                    scannerID,
+                    home,
+                    !isFilesystemRecipe
+                )
+            } catch is CancellationError {
+                return CardScanResult(hits: [])
+            } catch {
+                GSYLog.error(.scan, "Workflow 动态发现异常 scannerID=\(scannerID) error=\(error)")
+                // `WorkflowRegistry.resolveWithEvidence` returns filesystem failures as scoped
+                // ScanIncompleteIssue values and throws only for cancellation/unexpected provider
+                // failures. A generic Error has no trustworthy path scope, so fabricating HOME
+                // here would contaminate every sibling deletion. Preserve only typed evidence.
+                return CardScanResult(hits: [])
+            }
+            let resolved = discovery.hits
+            guard isFilesystemRecipe else {
+                return CardScanResult(
+                    hits: resolved,
+                    incompleteIssues: discovery.incompleteIssues
+                )
+            }
+            var result = CardScanResult(
+                hits: [],
+                incompleteIssues: discovery.incompleteIssues
+            )
+            result.hits.reserveCapacity(resolved.count)
+            for hit in resolved {
+                let filesystem = await scanFilesystemIfNeeded(url: hit.url, recipe: card.recipe)
+                result.merge(incompleteIssues: filesystem.incompleteIssues)
+                result.hits.append(WorkflowScanHit(
+                    url: hit.url,
+                    sizeBytes: filesystem.sizeBytes,
+                    displayName: hit.displayName,
+                    note: hit.note,
+                    commandLineTailArg: hit.commandLineTailArg
+                ))
+            }
+            return result
         }
+    }
+
+    private static func scanFilesystemIfNeeded(
+        url: URL,
+        recipe: DeletionRecipe
+    ) async -> FilesystemScanResult {
+        guard case .filesystem = recipe else {
+            return FilesystemScanResult(
+                sizeBytes: nil,
+                incompleteIssues: []
+            )
+        }
+        return await scanFilesystem(at: url)
+    }
+
+    /// Workflow-owned filesystem scan. BulkScanner supplies physical allocated size and
+    /// explicit permission/TCC/partial events in one pass, so deletion safety no longer
+    /// borrows evidence from MainView's unrelated ScanCoordinator session.
+    private static func scanFilesystem(at url: URL) async -> FilesystemScanResult {
+        let resourceKeys: Set<URLResourceKey> = [
+            .isDirectoryKey,
+            .totalFileAllocatedSizeKey,
+            .fileAllocatedSizeKey,
+        ]
+        do {
+            let values = try url.resourceValues(forKeys: resourceKeys)
+            if values.isDirectory != true {
+                return FilesystemScanResult(
+                    sizeBytes: Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0),
+                    incompleteIssues: []
+                )
+            }
+        } catch {
+            let issue = scanIncompleteIssue(
+                path: url.path,
+                stage: .metadata,
+                posixErrorCode: posixErrorCode(from: error)
+            )
+            GSYLog.warning(.scan, "Workflow 根路径 metadata 读取失败 path=\(url.path) error=\(error)")
+            return FilesystemScanResult(
+                sizeBytes: nil,
+                incompleteIssues: [issue]
+            )
+        }
+
+        let scanner = BulkScanner(options: .default)
+        var sizeBytes: Int64?
+        var incompleteIssues: [ScanIncompleteIssue] = []
+        var didFinish = false
+        for await event in scanner.scan(root: url) {
+            switch event {
+            case .permissionDenied(let path):
+                incompleteIssues.append(ScanIncompleteIssue(
+                    path: path,
+                    reason: .permissionDenied,
+                    stage: .open
+                ))
+            case .tccProtectedSkipped(let path):
+                incompleteIssues.append(ScanIncompleteIssue(
+                    path: path,
+                    reason: .tccProtectedSkipped,
+                    stage: .open
+                ))
+            case .failed(let error):
+                let issue: ScanIncompleteIssue
+                switch error {
+                case .cannotEnumerate(let path, let stage, let posixErrorCode):
+                    issue = scanIncompleteIssue(
+                        path: path,
+                        stage: stage,
+                        posixErrorCode: posixErrorCode
+                    )
+                }
+                incompleteIssues.append(issue)
+                GSYLog.warning(.scan, "Workflow BulkScanner 失败 root=\(url.path) error=\(error)")
+            case .incomplete(let issue):
+                incompleteIssues.append(issue)
+            case .finished(let summary):
+                didFinish = true
+                sizeBytes = summary.totalAllocatedBytes
+                incompleteIssues.append(contentsOf: summary.incompleteIssues)
+                if summary.completionStatus == .partial,
+                   summary.incompleteIssues.isEmpty {
+                    incompleteIssues.append(ScanIncompleteIssue(
+                        path: url.path,
+                        reason: .enumerationFailed,
+                        stage: .enumerate
+                    ))
+                }
+                if summary.permissionDeniedCount > 0,
+                   !incompleteIssues.contains(where: { $0.reason == .permissionDenied }) {
+                    incompleteIssues.append(ScanIncompleteIssue(
+                        path: url.path,
+                        reason: .permissionDenied,
+                        stage: .open
+                    ))
+                }
+                if summary.tccProtectedSkippedCount > 0,
+                   !incompleteIssues.contains(where: { $0.reason == .tccProtectedSkipped }) {
+                    incompleteIssues.append(ScanIncompleteIssue(
+                        path: url.path,
+                        reason: .tccProtectedSkipped,
+                        stage: .open
+                    ))
+                }
+            case .node, .nodes, .progress, .cacheDirTagged:
+                break
+            }
+        }
+        if !didFinish {
+            incompleteIssues.append(ScanIncompleteIssue(
+                path: url.path,
+                reason: .enumerationFailed,
+                stage: .enumerate
+            ))
+        }
+        return FilesystemScanResult(
+            sizeBytes: sizeBytes,
+            incompleteIssues: incompleteIssues
+        )
     }
 
     /// **v2026.06.22 (P0-5)**：展开 `.literal` 路径中的 `*` 通配符（仅展开最末段，不递归）。
@@ -885,18 +1921,32 @@ public final class WorkflowDetailViewModel: ObservableObject {
     ///   [WebNodeWorkflow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/WebNodeWorkflow.swift)
     ///   声明的 glob 全是末段形态，扩大支持面会增加误命中风险，按需再加；
     /// - 不含 `*` 时退化为单条 `fileExists` 判断，与历史行为完全等价。
-    private static func expandGlob(_ pattern: String) -> [String] {
+    private static func expandGlob(_ pattern: String) -> PathExpansionResult {
         guard pattern.contains("*") else {
-            return FileManager.default.fileExists(atPath: pattern) ? [pattern] : []
+            return PathExpansionResult(
+                paths: FileManager.default.fileExists(atPath: pattern) ? [pattern] : [],
+                incompleteIssues: []
+            )
         }
         let url = URL(fileURLWithPath: pattern)
         let parent = url.deletingLastPathComponent().path
         let lastComponent = url.lastPathComponent
         let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(atPath: parent) else {
-            return []
+        let entries: [String]
+        do {
+            entries = try fm.contentsOfDirectory(atPath: parent)
+        } catch {
+            GSYLog.warning(.scan, "Workflow glob 展开失败 parent=\(parent) error=\(error)")
+            return PathExpansionResult(
+                paths: [],
+                incompleteIssues: [scanIncompleteIssue(
+                    path: parent,
+                    stage: .enumerate,
+                    posixErrorCode: posixErrorCode(from: error)
+                )]
+            )
         }
-        return entries.compactMap { name -> String? in
+        let paths = entries.compactMap { name -> String? in
             let matched = name.withCString { nameCStr in
                 lastComponent.withCString { patternCStr in
                     fnmatch(patternCStr, nameCStr, 0) == 0
@@ -905,19 +1955,47 @@ public final class WorkflowDetailViewModel: ObservableObject {
             guard matched else { return nil }
             return (parent as NSString).appendingPathComponent(name)
         }
+        return PathExpansionResult(
+            paths: paths,
+            incompleteIssues: []
+        )
     }
 
-    private static func directorySize(at url: URL) -> Int64 {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey], options: [], errorHandler: nil) else {
-            return 0
+    private static func scanIncompleteIssue(
+        path: String,
+        stage: ScanIssueStage,
+        posixErrorCode: Int32?
+    ) -> ScanIncompleteIssue {
+        let reason: ScanIncompleteReason
+        if let posixErrorCode,
+           posixErrorCode == EACCES || posixErrorCode == EPERM {
+            reason = .permissionDenied
+        } else if stage == .metadata {
+            reason = .metadataUnavailable
+        } else {
+            reason = .enumerationFailed
         }
-        var sum: Int64 = 0
-        for case let fileURL as URL in enumerator {
-            let values = try? fileURL.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey])
-            sum &+= Int64(values?.totalFileAllocatedSize ?? values?.fileAllocatedSize ?? 0)
+        return ScanIncompleteIssue(
+            path: path,
+            reason: reason,
+            stage: stage,
+            posixErrorCode: posixErrorCode
+        )
+    }
+
+    private static func posixErrorCode(from error: Error) -> Int32? {
+        let nsError = error as NSError
+        if nsError.domain == NSPOSIXErrorDomain {
+            return Int32(exactly: nsError.code)
         }
-        return sum
+        if nsError.domain == NSCocoaErrorDomain,
+           nsError.code == CocoaError.Code.fileReadNoPermission.rawValue {
+            return EACCES
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return posixErrorCode(from: underlying)
+        }
+        return nil
     }
 
     public static func formatBytes(_ bytes: Int64) -> String {
@@ -939,9 +2017,19 @@ public final class WorkflowDetailViewModel: ObservableObject {
         self.cards = cards
     }
 
+    internal func setTestSelection(_ selection: Set<String>) {
+        self.selected = selection
+        collapseNestedFilesystemSelections()
+    }
+
+    internal func setTestScanEvidence(_ evidence: WorkflowScanEvidence) {
+        scanRevision = evidence.revision
+        scanEvidence = evidence
+    }
+
     /// **v2026.06.22 (P0-5) 测试 hook**：把 private static [expandGlob](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)
     /// 暴露给同模块测试，覆盖 fnmatch 末段 `*` 展开行为。生产路径不应调用。
     internal static func _testing_expandGlob(_ pattern: String) -> [String] {
-        return expandGlob(pattern)
+        return expandGlob(pattern).paths
     }
 }

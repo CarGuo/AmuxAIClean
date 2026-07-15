@@ -397,6 +397,19 @@ public final class SmartCareCoordinator {
         phase = .cleaning(progress: progress)
     }
 
+    /// A confirmed request may still be rejected by the final safety check
+    /// before `NSWorkspace.recycle` is called.  No cleanup result exists in
+    /// that state, so restore the existing review instead of leaving the UI in
+    /// an endless cleaning phase or manufacturing a failed operation.
+    public func resumeReviewAfterUnsubmittedClean() {
+        switch phase {
+        case .confirming, .cleaning:
+            phase = summary.items.isEmpty ? .idle : .reviewing(summary: summary)
+        case .idle, .scanning, .reviewing, .completed, .failed, .cancelled:
+            break
+        }
+    }
+
     public func completeCleaning(_ result: SmartCareResult) {
         phase = .completed(result: result)
     }

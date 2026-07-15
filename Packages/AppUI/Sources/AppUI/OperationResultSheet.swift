@@ -1,6 +1,69 @@
 import SwiftUI
 import AppKit
 
+/// Result presentation accepts only opaque completions minted by the execution
+/// coordinators. There is intentionally no case for a raw `TrashOutcome`, a
+/// preflight rejection, or an optional receipt.
+enum OperationResultCompletion: Identifiable, Sendable {
+    /// Full deletion interaction: typed intent, authorization and Trash receipt.
+    case deletion(DeletionCompletedInteraction)
+    /// A mixed Workflow already completed its Trash phase, then the user cancelled
+    /// the still-pending command phase. The result remains anchored to the real Trash
+    /// receipt while preserving the frozen command items that were explicitly not run.
+    case deletionWithSkippedCommands(
+        deletion: DeletionCompletedInteraction,
+        skippedCommands: [SimulatorDeleteCoordinator.Item]
+    )
+    /// Main/Smart Care currently submit through the shared Trash coordinator
+    /// directly; its completion is an equivalent unforgeable recycle receipt.
+    case trash(
+        TrashActionCoordinator.CompletedSubmission,
+        runningAppSkipped: [OperationResultPayload.RunningAppSkippedItem]
+    )
+    /// simctl is a destructive command, not a Trash operation, and therefore
+    /// carries its own independent command receipt.
+    case command(
+        SimulatorDeleteCoordinator.CompletedSubmission,
+        runningAppSkipped: [OperationResultPayload.RunningAppSkippedItem]
+    )
+    case combined(
+        deletion: DeletionCompletedInteraction,
+        command: SimulatorDeleteCoordinator.CompletedSubmission
+    )
+
+    var id: UUID {
+        switch self {
+        case .deletion(let completed): return completed.receipt.id
+        case .deletionWithSkippedCommands(let deletion, _): return deletion.receipt.id
+        case .trash(let completed, _): return completed.receipt.id
+        case .command(let completed, _): return completed.receipt.id
+        case .combined(_, let command): return command.receipt.id
+        }
+    }
+
+    var resultPayload: OperationResultPayload {
+        switch self {
+        case .deletion(let completed):
+            return .trash(
+                completed.trashSubmission,
+                runningAppSkipped: completed.runningAppSkipped
+            )
+        case .deletionWithSkippedCommands(let deletion, let skippedCommands):
+            return .trash(
+                deletion.trashSubmission,
+                runningAppSkipped: deletion.runningAppSkipped,
+                commandLineSkipped: skippedCommands.count
+            )
+        case .trash(let completed, let runningAppSkipped):
+            return .trash(completed, runningAppSkipped: runningAppSkipped)
+        case .command(let completed, let runningAppSkipped):
+            return .command(completed, runningAppSkipped: runningAppSkipped)
+        case .combined(let deletion, let command):
+            return .combined(deletion: deletion, command: command)
+        }
+    }
+}
+
 /// **v2026.06.16 修复 #4（删除结果弹窗 UX 重做）**
 ///
 /// 旧 `.alert` 把"成功 X / 跳过 Y / 错误描述 / 命令行待办"四段文案拼接到一个 Text 里，
@@ -12,10 +75,22 @@ import AppKit
 /// 4. **被拦明细**（可折叠）：列出被 SafetyEngine 拦的路径与原因
 /// 5. **Done** 关闭
 ///
-/// 接入点：调用方通过 `TrashActionCoordinator` 取得结构化结果，
-/// 把 [TrashOutcome](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift)
-/// 包装成 `OperationResultPayload` 喂给本 sheet。
+/// 接入点：调用方只能把执行协调器签发的强类型 completion 交给本 sheet；
+/// raw `TrashOutcome`、预检拒绝和未执行的授权状态都无法构造结果页。
 public struct OperationResultPayload: Identifiable {
+    public struct RunningAppSkippedItem: Identifiable, Sendable, Equatable {
+        public var id: String { path }
+        public let path: String
+        public let itemTitle: String
+        public let appName: String
+
+        public init(path: String, itemTitle: String, appName: String) {
+            self.path = path
+            self.itemTitle = itemTitle
+            self.appName = appName
+        }
+    }
+
     public struct CommandLineFailure: Equatable {
         public let item: String
         public let exitCode: Int32
@@ -28,68 +103,156 @@ public struct OperationResultPayload: Identifiable {
         }
     }
 
-    public let id = UUID()
+    public let id: UUID
     /// 成功移入废纸篓的 (原路径, 废纸篓路径) 对
     public let movedPairs: [(originalPath: String, trashedPath: String)]
     /// NSWorkspace.recycle 真正失败的路径
     public let failedPaths: [String]
+    /// 每条 recycle 失败路径对应的系统错误原因。
+    public let failureReasons: [String: String]
     /// 被 SafetyEngine / accessDenied 拦的 (path, reason) 对
     public let safetyRejected: [(path: String, reason: String)]
-    /// 命令行（simctl 等）还没接入 UI 而跳过的项数——仅 WorkflowDetailView 会用
+    /// 复合 Workflow 中，用户在文件阶段已经完成后明确取消、因而未执行的命令项数。
     public let commandLineSkipped: Int
     /// 已经成功执行的命令行清理项数。命令行操作不经过废纸篓，不能伪装成 movedPairs。
     public let commandLineSucceeded: Int
     /// 命令行清理的失败结果。单独建模，避免把 simctl 失败伪装成可在 Finder 中定位的文件路径。
     public let commandLineFailures: [CommandLineFailure]
-
-    public init(movedPairs: [(String, String)] = [],
-                failedPaths: [String] = [],
-                safetyRejected: [(String, String)] = [],
-                commandLineSkipped: Int = 0,
-                commandLineSucceeded: Int = 0,
-                commandLineFailures: [CommandLineFailure] = []) {
+    /// 用户明确选择跳过的运行中 App 相关项；它不是系统失败，也不是 SafetyEngine 拦截。
+    public let runningAppSkipped: [RunningAppSkippedItem]
+    fileprivate init(id: UUID,
+                     movedPairs: [(String, String)] = [],
+                     failedPaths: [String] = [],
+                     failureReasons: [String: String] = [:],
+                     safetyRejected: [(String, String)] = [],
+                     commandLineSkipped: Int = 0,
+                     commandLineSucceeded: Int = 0,
+                     commandLineFailures: [CommandLineFailure] = [],
+                     runningAppSkipped: [RunningAppSkippedItem] = []) {
+        self.id = id
         self.movedPairs = movedPairs.map { (originalPath: $0.0, trashedPath: $0.1) }
         self.failedPaths = failedPaths
+        self.failureReasons = failureReasons
         self.safetyRejected = safetyRejected.map { (path: $0.0, reason: $0.1) }
         self.commandLineSkipped = commandLineSkipped
         self.commandLineSucceeded = commandLineSucceeded
         self.commandLineFailures = commandLineFailures
+        self.runningAppSkipped = runningAppSkipped
     }
 
-    /// 把 TrashPipeline 的 TrashOutcome 转成 payload。让 ViewModel 一行代码接入。
-    public init(outcome: TrashOutcome, commandLineSkipped: Int = 0) {
-        self.movedPairs = outcome.movedPairs
-        self.failedPaths = outcome.failedPaths
-        self.safetyRejected = outcome.safetyRejected
-        self.commandLineSkipped = commandLineSkipped
-        self.commandLineSucceeded = 0
-        self.commandLineFailures = []
+    fileprivate static func trash(
+        _ completed: TrashActionCoordinator.CompletedSubmission,
+        runningAppSkipped: [RunningAppSkippedItem],
+        commandLineSkipped: Int = 0
+    ) -> OperationResultPayload {
+        if let outcome = completed.outcome {
+            return OperationResultPayload(
+                id: completed.receipt.id,
+                movedPairs: outcome.movedPairs,
+                failedPaths: outcome.failedPaths,
+                failureReasons: outcome.failureReasons,
+                safetyRejected: outcome.safetyRejected,
+                commandLineSkipped: commandLineSkipped,
+                runningAppSkipped: runningAppSkipped
+            )
+        }
+        let succeeded = Set(completed.succeededPaths)
+        let failedPaths = completed.err != nil || completed.skipped > 0
+            ? completed.attemptedPaths.filter { !succeeded.contains($0) }
+            : []
+        let failureReasons = completed.err.map { error in
+            Dictionary(uniqueKeysWithValues: failedPaths.map { ($0, error) })
+        } ?? [:]
+        return OperationResultPayload(
+            id: completed.receipt.id,
+            movedPairs: completed.pairs,
+            failedPaths: failedPaths,
+            failureReasons: failureReasons,
+            commandLineSkipped: commandLineSkipped,
+            runningAppSkipped: runningAppSkipped
+        )
+    }
+
+    fileprivate static func command(
+        _ completed: SimulatorDeleteCoordinator.CompletedSubmission,
+        runningAppSkipped: [RunningAppSkippedItem]
+    ) -> OperationResultPayload {
+        let failures = completed.outcomes.compactMap { outcome -> CommandLineFailure? in
+            guard !outcome.isSuccess else { return nil }
+            return CommandLineFailure(
+                item: outcome.item.displayName,
+                exitCode: outcome.exitCode,
+                detail: outcome.truncatedOutput
+            )
+        }
+        return OperationResultPayload(
+            id: completed.receipt.id,
+            commandLineSucceeded: completed.outcomes.count - failures.count,
+            commandLineFailures: failures,
+            runningAppSkipped: runningAppSkipped
+        )
+    }
+
+    fileprivate static func combined(
+        deletion: DeletionCompletedInteraction,
+        command: SimulatorDeleteCoordinator.CompletedSubmission
+    ) -> OperationResultPayload {
+        let trash = OperationResultPayload.trash(
+            deletion.trashSubmission,
+            runningAppSkipped: deletion.runningAppSkipped
+        )
+        let commandResult = OperationResultPayload.command(
+            command,
+            runningAppSkipped: []
+        )
+        return OperationResultPayload(
+            id: command.receipt.id,
+            movedPairs: trash.movedPairs.map { ($0.originalPath, $0.trashedPath) },
+            failedPaths: trash.failedPaths,
+            failureReasons: trash.failureReasons,
+            safetyRejected: trash.safetyRejected.map { ($0.path, $0.reason) },
+            commandLineSucceeded: commandResult.commandLineSucceeded,
+            commandLineFailures: commandResult.commandLineFailures,
+            runningAppSkipped: trash.runningAppSkipped
+        )
     }
 
     /// 状态判定优先级：有失败 / 有拦截 > 部分；纯成功 → success；全失败/全拦截 → failed。
     ///
-    /// **v2026.06.22 (P0-1)**：`commandLineSkipped` 表示"已弹 simctl 确认 sheet 等用户继续"，
-    /// 它是**待执行**而非**失败**——把它计入 failedCount 会导致 OperationResultSheet 把
-    /// simctl 待确认的 commandLine 项一律渲染成红色 failed 状态。改为：failedCount 只统计
-    /// `failedPaths + safetyRejected + commandLineFailures`；`commandLineSkipped` 不影响状态判定，仅在
-    /// [commandLineHint](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/OperationResultSheet.swift)
-    /// 段落里独立展示。
+    /// `commandLineSkipped` 不是执行失败，不能计入红色 failed；但它表示复合动作没有全部完成，
+    /// 所以与运行中 App 跳过项一样让已经有成功结果的操作呈现为 partial。
     public var status: Status {
         let succeededCount = movedPairs.count + commandLineSucceeded
         let failedCount = failedPaths.count + safetyRejected.count + commandLineFailures.count
-        if failedCount == 0 {
-            // 没有真失败 → success；如果同时 moved=0 但 commandLineSkipped>0，仍算 success
-            // （因为后续 simctl 二次确认 sheet 会自己再弹 OperationResultPayload 汇总）。
-            return .success
-        }
-        if succeededCount == 0 { return .failed }
-        return .partial
+        return OperationResultStatusPolicy.status(
+            succeededCount: succeededCount,
+            failedCount: failedCount,
+            runningAppSkippedCount: runningAppSkipped.count,
+            commandLineSkippedCount: commandLineSkipped
+        )
     }
 
     public enum Status: Equatable {
         case success
         case partial
         case failed
+    }
+}
+
+enum OperationResultStatusPolicy {
+    static func status(
+        succeededCount: Int,
+        failedCount: Int,
+        runningAppSkippedCount: Int,
+        commandLineSkippedCount: Int = 0
+    ) -> OperationResultPayload.Status {
+        if failedCount == 0 {
+            return runningAppSkippedCount == 0 && commandLineSkippedCount == 0
+                ? .success
+                : .partial
+        }
+        if succeededCount == 0 { return .failed }
+        return .partial
     }
 }
 
@@ -100,15 +263,12 @@ public struct OperationResultSheet: View {
 
     @State private var failedExpanded = true
     @State private var blockedExpanded = true
+    @State private var runningAppSkippedExpanded = true
 
-    public init(payload: OperationResultPayload,
-                onDismiss: @escaping () -> Void,
-                onForceDelete: (([String]) -> Void)? = nil) {
-        self.payload = payload
+    init(completion: OperationResultCompletion,
+         onDismiss: @escaping () -> Void) {
+        self.payload = completion.resultPayload
         self.onDismiss = onDismiss
-        // 参数暂留一版源码兼容，避免现有宿主必须与安全修复同步改动。回调不会被展示或执行：
-        // SafetyEngine / vendor `.forbid` 是不可越过的产品合同。
-        _ = onForceDelete
     }
 
     public var body: some View {
@@ -132,6 +292,9 @@ public struct OperationResultSheet: View {
                     }
                     if !payload.safetyRejected.isEmpty {
                         blockedSection
+                    }
+                    if !payload.runningAppSkipped.isEmpty {
+                        runningAppSkippedSection
                     }
                     if payload.commandLineSkipped > 0 {
                         commandLineHint
@@ -196,6 +359,7 @@ public struct OperationResultSheet: View {
             + payload.safetyRejected.count
             + payload.commandLineFailures.count
             + payload.commandLineSkipped
+            + payload.runningAppSkipped.count
         return "\(succeeded) / \(total)"
     }
 
@@ -220,6 +384,12 @@ public struct OperationResultSheet: View {
                 color: .orange,
                 titleKey: "op.result.stat.blocked",
                 count: payload.safetyRejected.count
+            )
+            statTile(
+                icon: "pause.circle.fill",
+                color: .blue,
+                titleKey: "op.result.stat.running_skipped",
+                count: payload.runningAppSkipped.count
             )
         }
     }
@@ -331,7 +501,7 @@ public struct OperationResultSheet: View {
                 Text("op.result.hint.failed", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                pathListView(paths: payload.failedPaths, color: .red)
+                failedPathListView
                 HStack(spacing: 8) {
                     Button {
                         copyToPasteboard(payload.failedPaths.joined(separator: "\n"))
@@ -382,17 +552,17 @@ public struct OperationResultSheet: View {
                                 .font(.system(.caption, design: .monospaced))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
-                            // v2026.06.21 修复：原来直接显示 `reason: \(item.reason)`，
-                            // raw 字符串例如 "vendorPathRule" 用户根本看不懂，也没多语言。
-                            // 改为通过 humanReadableReason() 映射到本地化文案。
-                            Text(humanReadableReason(item.reason))
+                            Text(DeletionSafetyReasonPresentation.text(for: item.reason))
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
                         }
                         .padding(.vertical, 2)
                     }
                     if payload.safetyRejected.count > 20 {
-                        Text("… +\(payload.safetyRejected.count - 20)")
+                        Text(String(
+                            format: String(localized: "op.result.more %lld", bundle: .module),
+                            payload.safetyRejected.count - 20
+                        ))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -410,6 +580,57 @@ public struct OperationResultSheet: View {
                 Image(systemName: "shield.lefthalf.filled").foregroundStyle(.orange)
                 Text("op.result.section.blocked", bundle: .module).bold()
                 Text("(\(payload.safetyRejected.count))").foregroundStyle(.secondary).font(.callout)
+            }
+        }
+    }
+
+    // MARK: - Running App Skipped Section
+
+    private var runningAppSkippedSection: some View {
+        DisclosureGroup(isExpanded: $runningAppSkippedExpanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("op.result.hint.running_skipped", bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(payload.runningAppSkipped.prefix(20)) { item in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.itemTitle)
+                                .font(.caption.weight(.medium))
+                            Text(item.path)
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text(item.appName)
+                                .font(.caption2)
+                                .foregroundStyle(.blue)
+                        }
+                    }
+                    if payload.runningAppSkipped.count > 20 {
+                        Text(String(
+                            format: String(localized: "op.result.more %lld", bundle: .module),
+                            payload.runningAppSkipped.count - 20
+                        ))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.blue.opacity(0.06))
+                )
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "pause.circle").foregroundStyle(.blue)
+                Text("op.result.section.running_skipped", bundle: .module).bold()
+                Text("(\(payload.runningAppSkipped.count))")
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
             }
         }
     }
@@ -432,6 +653,39 @@ public struct OperationResultSheet: View {
 
     // MARK: - 路径列表通用渲染
 
+    private var failedPathListView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(payload.failedPaths.prefix(20), id: \.self) { path in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(path)
+                        .font(.system(.caption, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let reason = payload.failureReasons[path], !reason.isEmpty {
+                        Text(reason)
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if payload.failedPaths.count > 20 {
+                Text(String(
+                    format: String(localized: "op.result.more %lld", bundle: .module),
+                    payload.failedPaths.count - 20
+                ))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.red.opacity(0.06))
+        )
+    }
+
     @ViewBuilder
     private func pathListView(paths: [String], color: Color) -> some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -443,7 +697,10 @@ public struct OperationResultSheet: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             if paths.count > 20 {
-                Text("… +\(paths.count - 20)")
+                Text(String(
+                    format: String(localized: "op.result.more %lld", bundle: .module),
+                    paths.count - 20
+                ))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -457,7 +714,6 @@ public struct OperationResultSheet: View {
 
     // MARK: - Footer
 
-    /// 结果页只展示完成入口。被安全规则拒绝的路径没有 UI 绕过通道。
     private var footer: some View {
         HStack(spacing: 12) {
             Spacer()
@@ -484,35 +740,4 @@ public struct OperationResultSheet: View {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
-    /// v2026.06.21 修复：把 SafetyEngine / TrashPipeline 抛上来的 raw reason 字符串
-    /// （vendorPathRule / hardForbid* / userRootEssential / sensitiveCredential /
-    /// systemVolumeReadOnly / accessDenied …）映射成用户能看懂、且已多语言的本地化文案。
-    /// 任何未识别的 reason 退化为「命中内置安全规则」+ 把原 raw reason 拼到末尾，
-    /// 既不会让用户对着 raw token 发呆，也方便我们排查时一眼看出是哪条规则。
-    private func humanReadableReason(_ raw: String) -> String {
-        let lower = raw.lowercased()
-        let key: String
-        if lower.contains("vendor") {
-            key = "op.result.reason.vendor_path_rule"
-        } else if lower.contains("hardforbid") || lower.contains("hard_forbid") || lower.contains("hard-forbid") {
-            key = "op.result.reason.hard_forbid"
-        } else if lower.contains("userroot") || lower.contains("user_root") || lower.contains("user-root") {
-            key = "op.result.reason.user_root"
-        } else if lower.contains("credential") || lower.contains("keychain") {
-            key = "op.result.reason.sensitive_credential"
-        } else if lower.contains("systemvolume") || lower.contains("system_volume") || lower.contains("readonly") || lower.contains("sealed") {
-            key = "op.result.reason.system_volume"
-        } else if lower.contains("accessdenied") || lower.contains("access_denied") || lower.contains("permission") {
-            key = "op.result.reason.access_denied"
-        } else if lower.contains("userwhitelisted") || lower.contains("user_whitelist") {
-            key = "op.result.reason.user_whitelist"
-        } else if lower.contains("batchcontainsforbidden") || lower.contains("batch_atomic") {
-            key = "op.result.reason.batch_atomic"
-        } else {
-            // 未识别 → 走通用文案，附上 raw token 方便后续日志反查
-            let generic = String(localized: "op.result.reason.generic", bundle: .module)
-            return "\(generic) [\(raw)]"
-        }
-        return String(localized: String.LocalizationValue(key), bundle: .module)
-    }
 }

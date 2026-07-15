@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import LogKit
 import Observation
 import ScanKit
 
@@ -49,6 +50,59 @@ typealias SmartCareCandidateDeletionAggregator = @Sendable (
     _ candidates: [SmartCareCandidate]
 ) async -> SmartCareAggregationResult
 
+/// Smart Care 对 ScanCoordinator 终态的解释必须区分两类事实：
+/// - `isFinished && !isComplete`：扫描器已产生可用的部分结果，并给出了精确的
+///   incomplete paths；这些路径会进入删除硬拒绝，但其它结果仍应继续展示。
+/// - `!isFinished && !isScanning` 或完整终态携带真实错误：没有可信终态，才是 fatal。
+///
+/// 把这条合同抽成纯策略，避免 Session 再把“软失败证据”误升级成整轮失败。
+enum SmartCareSnapshotTerminalDecision: Sendable, Equatable {
+    case wait
+    case accept(isComplete: Bool)
+    case fail(String)
+}
+
+enum SmartCareSnapshotCompletionPolicy {
+    static func decision(
+        snapshot: ScanSnapshot,
+        isScanning: Bool,
+        terminalFailure: ScanCoordinator.TerminalFailure?,
+        hasDeletionDeniedEvidence: Bool,
+        fallbackError: String?
+    ) -> SmartCareSnapshotTerminalDecision {
+        guard snapshot.isFinished else {
+            if isScanning { return .wait }
+            return .fail(
+                terminalFailure?.message
+                    ?? fallbackError
+                    ?? String(localized: "main.scan.incomplete", bundle: .module)
+            )
+        }
+
+        // Scanner 的显式 `.failed` 优先于 partial 外观；该阶段不得写入 completedStages，
+        // 否则 Retry 会永久跳过真正失败的阶段。
+        if let terminalFailure {
+            return .fail(terminalFailure.message)
+        }
+
+        // Partial 只有在同时携带精确删除拒绝证据时才是可用终态。缺少证据意味着
+        // producer 破坏了 fail-closed 合同，必须失败，不能把未知子树当可清理结果。
+        guard snapshot.isComplete else {
+            guard hasDeletionDeniedEvidence else {
+                return .fail(
+                    fallbackError ?? String(localized: "main.scan.incomplete", bundle: .module)
+                )
+            }
+            return .accept(isComplete: false)
+        }
+
+        if snapshot.rows.isEmpty, let fallbackError {
+            return .fail(fallbackError)
+        }
+        return .accept(isComplete: true)
+    }
+}
+
 private struct SmartCareScanCompletion: Sendable {
     let summary: SmartCareSummary
     let summaryRevision: UInt64
@@ -77,6 +131,8 @@ public final class SmartCareSession {
     /// 本轮所有已启动阶段累计的 permissionDenied / TCC 路径。
     /// 删除请求必须使用它，而不是 Professional scanner 的状态。
     public private(set) var deletionDeniedPaths: Set<String> = []
+    /// 由后台从 `deletionDeniedPaths` 生成的有界展示投影。View 不得重新排序完整集合。
+    private(set) var scanLimitationProjection: SmartCareScanLimitationProjection = .empty
 
     public var isBusy: Bool {
         switch care.phase {
@@ -91,6 +147,7 @@ public final class SmartCareSession {
     @ObservationIgnored private var scanGeneration = UUID()
     @ObservationIgnored private var checkpoint: SmartCareScanCheckpoint?
     @ObservationIgnored private var checkpointRevision: UInt64 = 0
+    @ObservationIgnored private var limitationProjectionGeneration = UUID()
     @ObservationIgnored private let deletionAggregator: SmartCareCandidateDeletionAggregator
 
     public convenience init(care: SmartCareCoordinator = SmartCareCoordinator(),
@@ -137,6 +194,7 @@ public final class SmartCareSession {
         finishedAt = nil
         setCheckpoint(nil)
         deletionDeniedPaths = []
+        resetScanLimitationProjection()
         care.reset()
     }
 
@@ -155,6 +213,7 @@ public final class SmartCareSession {
         startedAt = Date()
         finishedAt = nil
         deletionDeniedPaths = []
+        resetScanLimitationProjection()
         setCheckpoint(SmartCareScanCheckpoint(plannedStages: plannedStages))
         care.beginScan()
 
@@ -206,6 +265,43 @@ public final class SmartCareSession {
         )
     }
 
+    /// 真正的扫描失败从最后一个完整 checkpoint 继续，不把已经完成的阶段和选择清空。
+    /// Partial snapshot 不会进入这里；它会作为受限结果正常完成。
+    public func retryFailedScan(includeHidden: Bool,
+                                enabledDeveloperRuleIDs: Set<String>,
+                                home: String = NSHomeDirectory()) {
+        guard case .failed(.scanFailed(_)) = care.phase else { return }
+        guard let checkpoint else {
+            startScan(
+                includeHidden: includeHidden,
+                enabledDeveloperRuleIDs: enabledDeveloperRuleIDs,
+                home: home
+            )
+            return
+        }
+
+        let remainingStages = checkpoint.remainingStages
+        guard let nextStage = remainingStages.first else {
+            startScan(
+                includeHidden: includeHidden,
+                enabledDeveloperRuleIDs: enabledDeveloperRuleIDs,
+                home: home
+            )
+            return
+        }
+
+        cancelActiveWork()
+        if startedAt == nil { startedAt = Date() }
+        finishedAt = nil
+        care.resumeScan(progress(for: nextStage, checkpoint: checkpoint))
+        launchScan(
+            stagesToRun: remainingStages,
+            includeHidden: includeHidden,
+            enabledDeveloperRuleIDs: enabledDeveloperRuleIDs,
+            home: home
+        )
+    }
+
     private func launchScan(stagesToRun: [SmartCareScanStage],
                             includeHidden: Bool,
                             enabledDeveloperRuleIDs: Set<String>,
@@ -249,6 +345,7 @@ public final class SmartCareSession {
             } catch {
                 guard self.scanGeneration == generation else { return }
                 self.finishedAt = Date()
+                GSYLog.error(.scan, "Smart Care scan failed: \(error.localizedDescription)")
                 self.care.fail(.scanFailed(error.localizedDescription))
             }
 
@@ -386,6 +483,7 @@ public final class SmartCareSession {
 
     private func captureCurrentDeniedPaths() {
         var denied = Set(scanCoordinator.permissionDeniedPaths)
+        denied.formUnion(scanCoordinator.incompleteScanPaths)
         denied.formUnion(scanCoordinator.tccProtectedSkippedPaths)
         recordDeniedPaths(denied)
     }
@@ -400,6 +498,7 @@ public final class SmartCareSession {
         guard !missing.isEmpty else { return }
         revised.deniedPaths.formUnion(missing)
         setCheckpoint(revised)
+        scheduleScanLimitationProjection(for: deletionDeniedPaths)
     }
 
     private func runScan(using scanCoordinator: ScanCoordinator,
@@ -456,7 +555,16 @@ public final class SmartCareSession {
             )
 
             var denied = Set(scanCoordinator.permissionDeniedPaths)
+            denied.formUnion(scanCoordinator.incompleteScanPaths)
             denied.formUnion(scanCoordinator.tccProtectedSkippedPaths)
+            let projectedDeniedPaths = checkpoint.deniedPaths.union(denied)
+            let limitationProjection = try await SmartCareAggregationExecutor.run {
+                SmartCareScanLimitationProjection(paths: projectedDeniedPaths)
+            }
+            try validateScanTransaction(
+                generation: generation,
+                checkpointRevision: committedCheckpointRevision
+            )
             checkpoint.record(
                 stage: stage,
                 snapshot: snapshot,
@@ -501,6 +609,7 @@ public final class SmartCareSession {
                 break
             }
             deletionDeniedPaths = checkpoint.deniedPaths
+            commitScanLimitationProjection(limitationProjection)
         }
 
         try validateScanTransaction(
@@ -587,7 +696,10 @@ public final class SmartCareSession {
                                          completedFileCount: Int,
                                          completedSummary: SmartCareSummary,
                                          completedStages: Set<SmartCareScanStage>) async throws -> ScanSnapshot {
-        for await snapshot in scanCoordinator.$snapshot.values {
+        let stateStream = scanCoordinator.$snapshot
+            .combineLatest(scanCoordinator.$isScanning)
+            .values
+        for await (snapshot, isScanning) in stateStream {
             try Task.checkCancellation()
             guard snapshot.categoryID == expectedCategoryID else { continue }
 
@@ -603,11 +715,28 @@ public final class SmartCareSession {
                 )
             )
 
-            guard snapshot.isFinished else { continue }
-            if snapshot.rows.isEmpty, let error = scanCoordinator.lastError {
-                throw SmartCareScanFailure.message(error)
+            switch SmartCareSnapshotCompletionPolicy.decision(
+                snapshot: snapshot,
+                isScanning: isScanning,
+                terminalFailure: scanCoordinator.terminalFailure,
+                hasDeletionDeniedEvidence: !scanCoordinator.permissionDeniedPaths.isEmpty
+                    || !scanCoordinator.incompleteScanPaths.isEmpty
+                    || !scanCoordinator.tccProtectedSkippedPaths.isEmpty,
+                fallbackError: scanCoordinator.lastError
+            ) {
+            case .wait:
+                continue
+            case .accept(let isComplete):
+                if !isComplete {
+                    GSYLog.notice(
+                        .scan,
+                        "Smart Care accepts partial stage category=\(snapshot.categoryID) incompletePaths=\(scanCoordinator.incompleteScanPaths.count)"
+                    )
+                }
+                return snapshot
+            case .fail(let message):
+                throw SmartCareScanFailure.message(message)
             }
-            return snapshot
         }
         throw CancellationError()
     }
@@ -673,6 +802,31 @@ public final class SmartCareSession {
 
     private static func bucketSafeBytes(from summary: SmartCareSummary) -> [SmartCareBucketID: Int64] {
         Dictionary(uniqueKeysWithValues: summary.buckets.map { ($0.id, $0.safeBytes) })
+    }
+
+    private func resetScanLimitationProjection() {
+        limitationProjectionGeneration = UUID()
+        scanLimitationProjection = .empty
+    }
+
+    private func commitScanLimitationProjection(_ projection: SmartCareScanLimitationProjection) {
+        limitationProjectionGeneration = UUID()
+        scanLimitationProjection = projection
+    }
+
+    /// 取消边沿可能在最后一个阶段 checkpoint 之后补到新的 denied 证据。排序仍放后台，
+    /// generation 只做 O(1) 提交校验，避免旧 worker 覆盖更新后的投影。
+    private func scheduleScanLimitationProjection(for paths: Set<String>) {
+        let generation = UUID()
+        limitationProjectionGeneration = generation
+        Task { @MainActor [weak self] in
+            let projection = await Task.detached(priority: .userInitiated) {
+                SmartCareScanLimitationProjection(paths: paths)
+            }.value
+            guard let self,
+                  self.limitationProjectionGeneration == generation else { return }
+            self.scanLimitationProjection = projection
+        }
     }
 }
 

@@ -442,6 +442,49 @@ public enum SmartCareAIReviewPhase: Sendable, Equatable {
     }
 }
 
+/// Smart Care 在真正进入逐项 AI 复核前，需要异步读取一次 Keychain。
+///
+/// 这个 gate 把“准备凭证”也纳入单次运行互斥和取消语义，避免用户快速连点时并发
+/// 读取 Keychain / 启动两批复核。token 防止旧任务在取消后迟到完成，误清掉新任务状态。
+@MainActor
+@Observable
+final class SmartCareAIReviewPreparationGate {
+    private(set) var isPreparing = false
+
+    @ObservationIgnored private var task: Task<Void, Never>?
+    @ObservationIgnored private var activeToken: UUID?
+
+    @discardableResult
+    func start(
+        _ operation: @escaping @MainActor @Sendable () async -> Void
+    ) -> Bool {
+        guard activeToken == nil else { return false }
+
+        let token = UUID()
+        activeToken = token
+        isPreparing = true
+        task = Task { @MainActor [weak self] in
+            await operation()
+            self?.finish(token: token)
+        }
+        return true
+    }
+
+    func cancel() {
+        activeToken = nil
+        isPreparing = false
+        task?.cancel()
+        task = nil
+    }
+
+    private func finish(token: UUID) {
+        guard activeToken == token else { return }
+        activeToken = nil
+        isPreparing = false
+        task = nil
+    }
+}
+
 public struct SmartCareAIReviewProgress: Sendable, Equatable {
     public let runID: UUID
     public let sourceSummaryRevision: UInt64
@@ -583,6 +626,7 @@ public struct SmartCareAIReviewFailure: Sendable, Equatable {
     public enum Kind: String, Sendable, Equatable, Codable {
         case configuration
         case authentication
+        case credentialStorage
         case rateLimit
         case network
         case server
@@ -604,7 +648,7 @@ public struct SmartCareAIReviewFailure: Sendable, Equatable {
     /// 重复失败或加重限流。单项解析、未知和普通 transport 错误仍继续收集部分结果。
     var stopsBatch: Bool {
         switch kind {
-        case .configuration, .authentication, .rateLimit: true
+        case .configuration, .authentication, .credentialStorage, .rateLimit: true
         case .network, .server, .decoding, .unknown: false
         }
     }
@@ -632,6 +676,12 @@ public struct SmartCareAIReviewFailure: Sendable, Equatable {
         case OpenAIChatClient.Error.missingAPIKey:
             self.init(
                 kind: .authentication,
+                canRetry: false,
+                shouldOpenSettings: true
+            )
+        case is KeychainAPIKeyStoreError:
+            self.init(
+                kind: .credentialStorage,
                 canRetry: false,
                 shouldOpenSettings: true
             )
@@ -777,10 +827,25 @@ public struct SmartCareAIReviewWorker: Sendable {
         }
     }
 
-    /// 在主 actor 一次性读取用户配置与 Keychain，构造不可变客户端快照。
-    /// 构造失败应交给 `SmartCareAIReviewSession.failPreflight` 形成正式失败报告。
+    /// 在主 actor 冻结用户配置，再通过 Keychain actor 为本次批处理只读取一次凭证。
+    ///
+    /// 远程端点在这里完成“凭证存储可访问 + 非空”预检，失败必须由
+    /// `SmartCareAIReviewSession.failPreflight` 记录为 0 项已处理；不能等到第一条
+    /// `ask` 才失败。loopback 端点允许没有凭证，仍保持 Ollama / vLLM 免鉴权兼容。
     @MainActor
-    public static func makeOpenAI(settings: AISettings) throws -> Self {
+    public static func makeOpenAI(settings: AISettings) async throws -> Self {
+        try await makeOpenAI(
+            settings: settings,
+            credentialLoader: { try await KeychainAPIKeyStore.shared.load() }
+        )
+    }
+
+    /// 测试注入点：验证凭证只在批处理预检阶段读取一次，不触发真实 Keychain。
+    @MainActor
+    static func makeOpenAI(
+        settings: AISettings,
+        credentialLoader: @escaping @Sendable () async throws -> String?
+    ) async throws -> Self {
         guard settings.isReadyForUI else {
             throw SmartCareAIReviewPreflightError.notConfigured
         }
@@ -790,14 +855,25 @@ public struct SmartCareAIReviewWorker: Sendable {
             temperature: settings.temperature,
             redactPaths: settings.redactPaths
         )
-        let allowsMissingKey = try OpenAIChatClient.allowsMissingAPIKey(baseURL: snapshot.baseURL)
-        let apiKey = try KeychainAPIKeyStore().load() ?? ""
-        guard !apiKey.isEmpty || allowsMissingKey else {
+        let allowsMissingCredential = try OpenAIChatClient.allowsMissingAPIKey(
+            baseURL: snapshot.baseURL
+        )
+        let apiKey: String
+        do {
+            apiKey = try await credentialLoader() ?? ""
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            guard allowsMissingCredential else { throw error }
+            apiKey = ""
+        }
+        try Task.checkCancellation()
+        guard !apiKey.isEmpty || allowsMissingCredential else {
             throw OpenAIChatClient.Error.missingAPIKey
         }
         return .openAI(client: OpenAIChatClient(
             settings: snapshot,
-            apiKeyProvider: { apiKey }
+            apiKey: apiKey
         ))
     }
 }

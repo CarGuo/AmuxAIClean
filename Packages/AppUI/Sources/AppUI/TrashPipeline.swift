@@ -1,6 +1,8 @@
 import AppKit
+import Darwin
 import Foundation
 import LogKit
+import ScanKit
 import SafetyKit
 
 /// v0 主链路：把文件移到废纸篓，不需要 root，不需要 Helper，不需要 Apple Developer Program。
@@ -31,6 +33,30 @@ import SafetyKit
 ///   `trie` / `safety` 的并发读由 SafetyKit 保证（参见 [VendorTrieNode](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/VendorTrie.swift#L29) 的生命周期契约）。
 public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
+    /// 一次系统回收调用的不可变结果。抽成值类型后，批处理算法可以用无破坏的
+    /// scripted operation 验证，不必在测试里真的触碰废纸篓。
+    struct RecycleAttempt: Sendable {
+        let moved: [(String, String)]
+        let errorDescription: String?
+    }
+
+    struct RecycleBatchResult: Sendable {
+        let moved: [(String, String)]
+        let failureReasons: [String: String]
+    }
+
+    private typealias MovePayload = (
+        legacy: (Int, Int, String?, [(String, String)]),
+        outcome: TrashOutcome?
+    )
+
+    /// Compatibility callers still consume `payload`; Professional execution consumes the
+    /// independently typed boundary. A nil disposition is reserved for diagnostic dry-run.
+    private struct PerformedMove: Sendable {
+        let payload: MovePayload
+        let submissionDisposition: TrashSubmissionDisposition?
+    }
+
     private let safety: SafetyEngine
     /// 预建的 vendor 路径树（M4-P0 修复）。
     /// **生命周期**：init 注入，全程只读；read 阶段并发安全详见 [VendorTrieNode](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/VendorTrie.swift#L29) 契约。
@@ -43,6 +69,11 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     /// 生产删除入口显式注入共享白名单；测试默认 nil，避免读取真实用户数据。
     /// actor 自身 Sendable，perform 时取一次不可变快照并参与最终原子预检。
     private let whitelistStore: WhitelistStore?
+    private let home: String
+    /// SECURITY.md 的能力边界：默认只允许 `$HOME` 的严格子路径。Darwin 把当前用户
+    /// 的 T/C 目录放在 `/var/folders`，因此只额外接受 `confstr(3)` 返回的当前用户
+    /// 精确根，绝不接受 `/var/folders` 总根或其它用户/外置卷。
+    private let externalDeletionRoots: [String]
 
     /// v1.3.zzzz：上层一票否决集合（`permissionDenied` / `tccProtected` 路径），
     /// `moveToTrash` 内部用 NSLock 保护读写，调用方通过 [setAccessDeniedPaths](#) 注入最新快照。
@@ -62,10 +93,236 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     public init(safety: SafetyEngine = SafetyEngine(),
                 vendors: [VendorRule] = [],
                 home: String = NSHomeDirectory(),
-                whitelistStore: WhitelistStore? = nil) {
+                whitelistStore: WhitelistStore? = nil,
+                externalDeletionRoots: [String]? = nil) {
         self.safety = safety
         self.trie = vendors.isEmpty ? nil : VendorTrie.build(vendors: vendors, home: home)
         self.whitelistStore = whitelistStore
+        self.home = home
+        let usesCurrentUserHome = Self.scopeNormalize(home) == Self.scopeNormalize(NSHomeDirectory())
+        self.externalDeletionRoots = externalDeletionRoots
+            ?? (usesCurrentUserHome ? Self.currentUserDarwinDeletionRoots() : [])
+    }
+
+    public func preflight(
+        paths: [String],
+        accessDeniedPaths: Set<String>
+    ) async -> DeletionPreflight {
+        let uniquePaths = Self.stableUniquePaths(paths)
+        guard !uniquePaths.isEmpty else {
+            return DeletionPreflight(allowedPaths: [], rejections: [])
+        }
+        let whitelist = if let whitelistStore {
+            await whitelistStore.snapshotPaths()
+        } else {
+            Set<String>()
+        }
+        let safety = self.safety
+        let trie = self.trie
+        let home = self.home
+        let externalDeletionRoots = self.externalDeletionRoots
+        let worker = Task.detached(priority: .userInitiated) {
+            Self.partitionByForbid(
+                paths: uniquePaths,
+                safety: safety,
+                trie: trie,
+                accessDeniedPaths: accessDeniedPaths,
+                whitelistPaths: whitelist,
+                home: home,
+                externalDeletionRoots: externalDeletionRoots
+            )
+        }
+        let partition = await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+        guard partition.rejected.isEmpty else {
+            let direct = partition.rejected.map {
+                DeletionPreflight.Rejection(path: $0.path, reason: $0.reason.rawValue)
+            }
+            let atomic = partition.allowed.map {
+                DeletionPreflight.Rejection(
+                    path: $0,
+                    reason: SafetyRejection.batchContainsForbidden.rawValue
+                )
+            }
+            let overrideEligiblePaths = Self.vendorOverrideEligiblePaths(
+                paths: uniquePaths,
+                partition: partition,
+                safety: safety,
+                trie: trie,
+                home: home,
+                externalDeletionRoots: externalDeletionRoots
+            )
+            return DeletionPreflight(
+                allowedPaths: [],
+                rejections: direct + atomic,
+                vendorOverrideEligiblePaths: overrideEligiblePaths
+            )
+        }
+        return DeletionPreflight(allowedPaths: partition.allowed, rejections: [])
+    }
+
+    public func prepareScanIncompleteOverride(
+        rows: [RowItem],
+        scanIssues: [ScanIncompleteIssue],
+        scanSessionID: UUID
+    ) async -> ScanIncompleteOverridePreparation {
+        let whitelist = if let whitelistStore {
+            await whitelistStore.snapshotPaths()
+        } else {
+            Set<String>()
+        }
+        let safety = self.safety
+        let trie = self.trie
+        let home = self.home
+        let externalDeletionRoots = self.externalDeletionRoots
+        let worker = Task.detached(priority: .userInitiated) {
+            DeletionTargetRevalidator.prepare(
+                rows: rows,
+                scanIssues: scanIssues,
+                scanSessionID: scanSessionID,
+                safety: safety,
+                trie: trie,
+                whitelistPaths: whitelist,
+                home: home,
+                externalDeletionRoots: externalDeletionRoots
+            )
+        }
+        return await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+    }
+
+    private func finalScanIncompleteRejections(
+        request: ScanIncompleteOverrideRequest,
+        paths: [String],
+        accessDeniedPaths: Set<String>
+    ) async -> [DeletionPreflight.Rejection] {
+        let whitelist = if let whitelistStore {
+            await whitelistStore.snapshotPaths()
+        } else {
+            Set<String>()
+        }
+        let safety = self.safety
+        let trie = self.trie
+        let home = self.home
+        let externalDeletionRoots = self.externalDeletionRoots
+        let worker = Task.detached(priority: .userInitiated) {
+            DeletionTargetRevalidator.validateFinal(
+                request: request,
+                paths: paths,
+                accessDeniedPaths: accessDeniedPaths,
+                safety: safety,
+                trie: trie,
+                whitelistPaths: whitelist,
+                home: home,
+                externalDeletionRoots: externalDeletionRoots
+            )
+        }
+        return await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+    }
+
+    private func scanIncompletePreSubmitFailure(
+        paths: [String],
+        rejections: [DeletionPreflight.Rejection],
+        dryRun: Bool
+    ) -> PerformedMove {
+        let outcome = TrashOutcome(
+            movedPairs: [],
+            failedPaths: [],
+            safetyRejected: rejections.map { ($0.path, $0.reason) },
+            missingPaths: []
+        )
+        recordOutcome(outcome)
+        let firstReason = rejections.first?.reason
+            ?? ScanIncompleteTargetRejectionReason.invalidStrictRequest.rawValue
+        let err = String(
+            format: String(localized: "trash.err.safety_blocked_only %lld %@", bundle: .module),
+            paths.count,
+            firstReason
+        )
+        return PerformedMove(
+            payload: ((0, paths.count, err, []), outcome),
+            submissionDisposition: dryRun ? nil : .preSubmitRejected(
+                .invalidScanIncompleteOverride(rejections)
+            )
+        )
+    }
+
+    /// 删除批次统一按首次出现顺序去重。重复 URL 既不应让确认页计数膨胀，也不能被
+    /// NSWorkspace.recycle 提交两次；vendor override 最终的路径顺序身份也以此为准。
+    private static func stableUniquePaths(_ paths: [String]) -> [String] {
+        var seen = Set<String>()
+        var unique: [String] = []
+        unique.reserveCapacity(paths.count)
+        for path in paths where seen.insert(path).inserted {
+            unique.append(path)
+        }
+        return unique
+    }
+
+    /// 只为“至少一项直接命中 vendorPathRule，其余项原本安全”
+    /// 的原子批铸造 override 能力。
+    ///
+    /// 不能直接把 `partition.rejected.allSatisfy(.vendorPathRule)` 当作充分条件：
+    /// vendor trie 的最终 verdict 可能覆盖 base bundle protection，而且 vendor forbid
+    /// 发生在 deletion-scope 检查之前。这里显式重验 base Safety、全部 bundle protection、
+    /// vendor 命中与能力范围；whitelist/accessDenied/非 vendor 安全拒绝
+    /// 已经由 partition reason 排除。原本可放行项只会产生合成的
+    /// `batchContainsForbidden`，它们会与 vendor 项一起进入严格二次验证。
+    static func vendorOverrideEligiblePaths(
+        paths: [String],
+        partition: (allowed: [String], rejected: [(path: String, reason: SafetyRejection)]),
+        safety: SafetyEngine,
+        trie: VendorTrieNode?,
+        home: String,
+        externalDeletionRoots: [String]
+    ) -> [String] {
+        guard !paths.isEmpty,
+              !partition.rejected.isEmpty,
+              partition.rejected.allSatisfy({ $0.reason == .vendorPathRule }),
+              partition.allowed.count + partition.rejected.count == paths.count,
+              Set(partition.allowed).union(partition.rejected.map(\.path)) == Set(paths),
+              // protected_bundles 资源不可用时不能把“没有匹配结果”解释为“确定未受保护”。
+              // 普通扫描仍可按原语义继续，但破坏性的 vendor override 必须 fail closed。
+              safety.hasCompleteBundleProtectionEvidence,
+              let trie else {
+            return []
+        }
+        let deletionScope = DeletionScope(home: home, externalRoots: externalDeletionRoots)
+        let directlyVendorRejected = Set(partition.rejected.map(\.path))
+        for path in paths {
+            if Task.isCancelled { return [] }
+            let (baseVerdict, baseReason) = safety.evaluate(path: path, home: home)
+            guard baseVerdict != .forbid,
+                  baseReason != .bundleSystemCritical,
+                  baseReason != .bundleDataProtected,
+                  !safety.isPathBundleProtected(path: path, home: home),
+                  deletionScope.contains(rawPath: path) else {
+                return []
+            }
+            let (vendorVerdict, vendorReason, _) = safety.evaluate(
+                path: path,
+                trie: trie,
+                home: home
+            )
+            if directlyVendorRejected.contains(path) {
+                guard vendorVerdict == .forbid, vendorReason == .vendorPathRule else {
+                    return []
+                }
+            } else if vendorVerdict == .forbid {
+                return []
+            }
+        }
+        return paths
     }
 
     /// 替换上层注入的 accessDenied 集合。每次扫描完成后由 UI 层调一次。
@@ -161,7 +418,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         trie: VendorTrieNode? = nil,
         accessDeniedPaths: Set<String> = [],
         whitelistPaths: Set<String> = [],
-        home: String = NSHomeDirectory()
+        home: String = NSHomeDirectory(),
+        externalDeletionRoots: [String] = [],
+        deviceIdentityProvider: @escaping @Sendable (String) -> PathDeviceIdentity = TrashPipeline.pathDeviceIdentity
     ) -> (allowed: [String], rejected: [(path: String, reason: SafetyRejection)]) {
         var allowed: [String] = []
         var rejected: [(String, SafetyRejection)] = []
@@ -171,7 +430,17 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         // 未扫描子树一起移入废纸篓。反向的 request=/A/locked/child 也必须拒绝。
         let deniedIndex = ProtectedPathIndex(paths: accessDeniedPaths)
         let whitelistIndex = ProtectedPathIndex(paths: whitelistPaths)
-        for p in paths {
+        let deletionScope = DeletionScope(
+            home: home,
+            externalRoots: externalDeletionRoots,
+            deviceIdentityProvider: deviceIdentityProvider
+        )
+        for (index, p) in paths.enumerated() {
+            // 解析 symlink 属于潜在慢 IO；每个候选之间都允许协作取消，大批量时
+            // 另按固定步长检查，取消后整批显式拒绝，绝不返回部分 allowed。
+            if index.isMultiple(of: 32), Task.isCancelled {
+                return cancelledPartition(paths: paths)
+            }
             let normalizedPath = normalizePath(p)
             // 优先级 1：用户白名单是跨扫描、跨功能入口的“永不清理”合同。
             // 子项被加白时，删除其父目录同样必须拒绝。raw 与
@@ -188,7 +457,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 rejected.append((p, .accessDenied))
                 continue
             }
-            // 优先级 3：原有 SafetyEngine.evaluate（内部已自带 standardizedFileURL）
+            // 优先级 3：原有 SafetyEngine.evaluate（内部已自带 standardizedFileURL）。
+            // 先保留 relative/dot-dot/SIP/凭证等更具体的拒绝原因；只有通过语义
+            // 安全判定的路径才继续检查“当前进程究竟有没有删除该范围的能力”。
             let verdict: SafetyVerdict
             let reason: SafetyRejection
             if let trie {
@@ -200,11 +471,154 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             }
             if verdict == .forbid {
                 rejected.append((p, reason))
-            } else {
-                allowed.append(p)
+                continue
             }
+            // 优先级 4：删除能力只覆盖当前用户数据。扫描可以浏览外置卷/其它路径，
+            // 但它们永远不能因此自动获得删除能力。raw 与 resolved 任一身份逃出范围
+            // 都拒绝，封住“HOME 内 symlink 指向外部卷”的路径穿越。
+            guard deletionScope.contains(rawPath: p) else {
+                rejected.append((p, .outsideUserDeletionScope))
+                continue
+            }
+            allowed.append(p)
+        }
+        if Task.isCancelled {
+            return cancelledPartition(paths: paths)
         }
         return (allowed, rejected)
+    }
+
+    private static func cancelledPartition(
+        paths: [String]
+    ) -> (allowed: [String], rejected: [(path: String, reason: SafetyRejection)]) {
+        ([], paths.map { ($0, .preflightCancelled) })
+    }
+
+    /// `lstat(2)` 的设备身份结果。missing 继续交给 dry-run / recycle 的缺失路径逻辑；
+    /// unavailable 表示路径存在性或 metadata 无法可信判断，必须拒绝。
+    enum PathDeviceIdentity: Sendable, Equatable {
+        case device(UInt64)
+        case missing
+        case unavailable
+    }
+
+    nonisolated static func pathDeviceIdentity(at path: String) -> PathDeviceIdentity {
+        var info = stat()
+        guard lstat(path, &info) == 0 else {
+            return errno == ENOENT || errno == ENOTDIR ? .missing : .unavailable
+        }
+        return .device(UInt64(info.st_dev))
+    }
+
+    /// 最终删除能力范围。所有根都使用“严格子路径 + 同设备”语义：不能回收 HOME 本身，
+    /// 也不能回收整个 Darwin T/C 根；直接挂载在 HOME 子目录的外置卷 / DMG 即使字符串
+    /// 前缀仍在 HOME 下，也会因 `st_dev` 不同被拒绝。SafetyEngine 仍会做更细语义判定。
+    private struct DeletionScope {
+        struct AllowedRoot {
+            let path: String
+            let deviceID: UInt64?
+        }
+
+        let allowedRoots: [AllowedRoot]
+        let deviceIdentityProvider: @Sendable (String) -> PathDeviceIdentity
+
+        init(
+            home: String,
+            externalRoots: [String],
+            deviceIdentityProvider: @escaping @Sendable (String) -> PathDeviceIdentity = TrashPipeline.pathDeviceIdentity
+        ) {
+            var rootPaths = Set(Self.rootIdentities(home))
+            for root in externalRoots {
+                rootPaths.formUnion(Self.rootIdentities(root))
+            }
+            self.deviceIdentityProvider = deviceIdentityProvider
+            self.allowedRoots = rootPaths.sorted().compactMap { rootPath in
+                switch deviceIdentityProvider(rootPath) {
+                case .device(let deviceID):
+                    return AllowedRoot(path: rootPath, deviceID: deviceID)
+                case .missing:
+                    // 自定义测试 HOME 可以是纯字符串；候选同样 missing 时仍保留历史
+                    // path-only 语义。生产 HOME / Darwin T-C 根必然存在并会绑定设备。
+                    return AllowedRoot(path: rootPath, deviceID: nil)
+                case .unavailable:
+                    return nil
+                }
+            }
+        }
+
+        func contains(rawPath: String) -> Bool {
+            guard rawPath.hasPrefix("/") else { return false }
+            let identities = Self.pathIdentities(rawPath)
+            guard !identities.isEmpty else { return false }
+            let matchingRoots: (String) -> [AllowedRoot] = { candidate in
+                allowedRoots.filter { root in
+                    candidate.hasPrefix(root.path == "/" ? "/" : root.path + "/")
+                }
+            }
+            guard identities.allSatisfy({ !matchingRoots($0).isEmpty }) else { return false }
+
+            switch deviceIdentityProvider(rawPath) {
+            case .missing:
+                // 保留 dry-run 对不存在路径的独立 missing 结果；真实存在的挂载点一定
+                // 会走 .device，因此不能借此绕过跨卷检查。
+                return true
+            case .unavailable:
+                return false
+            case .device(let candidateDeviceID):
+                return identities.allSatisfy { candidate in
+                    matchingRoots(candidate).contains { root in
+                        root.deviceID == candidateDeviceID
+                    }
+                }
+            }
+        }
+
+        private static func rootIdentities(_ path: String) -> Set<String> {
+            pathIdentities(path)
+        }
+
+        private static func pathIdentities(_ path: String) -> Set<String> {
+            let raw = TrashPipeline.scopeNormalize(path)
+            let resolved = TrashPipeline.scopeNormalize(
+                URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+            )
+            return raw == resolved ? [raw] : [raw, resolved]
+        }
+    }
+
+    /// 删除范围比较专用的 canonical form。除标准 firmlink 外，把 Data 卷镜像
+    /// `/System/Volumes/Data/Users/...` 折回 `/Users/...`，与 Finder/用户看到的 HOME
+    /// 身份对齐；这只用于“是否在能力范围”判断，不改变最终提交给 recycle 的路径。
+    private static func scopeNormalize(_ raw: String) -> String {
+        let normalized = normalizePath(raw)
+        let dataPrefix = "/System/Volumes/Data"
+        if normalized == dataPrefix { return "/" }
+        if normalized.hasPrefix(dataPrefix + "/") {
+            return String(normalized.dropFirst(dataPrefix.count))
+        }
+        return normalized
+    }
+
+    /// `confstr(3)` 是 Darwin 对当前登录用户 T/C 根的权威来源。只在生产 HOME 与
+    /// `NSHomeDirectory()` 一致时作为默认例外；自定义 test home 不会意外继承真实根。
+    private static func currentUserDarwinDeletionRoots() -> [String] {
+        let names: [Int32] = [_CS_DARWIN_USER_TEMP_DIR, _CS_DARWIN_USER_CACHE_DIR]
+        var roots: Set<String> = []
+        for name in names {
+            guard let path = confstrPath(name) else { continue }
+            roots.insert(scopeNormalize(path))
+        }
+        return roots.sorted()
+    }
+
+    private static func confstrPath(_ name: Int32) -> String? {
+        let length = confstr(name, nil, 0)
+        guard length > 1 else { return nil }
+        var buffer = [CChar](repeating: 0, count: length)
+        guard confstr(name, &buffer, length) > 0 else { return nil }
+        let terminator = buffer.firstIndex(of: 0) ?? buffer.endIndex
+        let bytes = buffer[..<terminator].map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     /// 删除保护路径的祖先 / 后代索引。祖先用 Set 按组件逐级查询，后代用排序数组
@@ -274,13 +688,13 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
     public func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)]) {
         let result = await performMoveToTrash(paths: paths, dryRun: dryRun)
-        return result.legacy
+        return result.payload.legacy
     }
 
     /// **v2026.06.17 (P0-3)**：原子返回结构化 outcome，避免 side-channel 单槽位被并发覆盖。
     /// 同时也会同步写入 `_lastOutcome`，保持老 callsite 通过 `snapshotLastOutcome()` 读取的兼容。
     public func moveToTrashReturningOutcome(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
-        return await performMoveToTrash(paths: paths, dryRun: dryRun)
+        return await performMoveToTrash(paths: paths, dryRun: dryRun).payload
     }
 
     /// request-scoped 的 accessDenied 入口。denied 快照与本次 paths 在同一个调用参数里
@@ -294,14 +708,63 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             paths: paths,
             dryRun: dryRun,
             requestAccessDeniedPaths: accessDeniedPaths
+        ).payload
+    }
+
+    public func moveToTrashVendorPathOverride(
+        request: VendorPathOverrideRequest,
+        dryRun: Bool,
+        accessDeniedPaths: Set<String>
+    ) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
+        await performMoveToTrash(
+            paths: request.paths,
+            dryRun: dryRun,
+            requestAccessDeniedPaths: accessDeniedPaths,
+            vendorOverrideRequest: request
+        ).payload
+    }
+
+    public func submitToTrashReturningDisposition(
+        paths: [String],
+        accessDeniedPaths: Set<String>,
+        vendorOverrideRequest: VendorPathOverrideRequest?
+    ) async -> TrashSubmissionDisposition {
+        await submitToTrashReturningDisposition(
+            paths: paths,
+            accessDeniedPaths: accessDeniedPaths,
+            vendorOverrideRequest: vendorOverrideRequest,
+            scanIncompleteOverrideRequest: nil
         )
     }
 
-    /// 历史兼容入口。安全合同规定 `.forbid` 永远不可被 UI 或操作模式越过，因此本方法
-    /// 与普通删除走完全相同的 vendor trie。保留符号只为旧调用方源码兼容；新代码不应提供
-    /// “强制越过安全规则”的产品入口。
+    public func submitToTrashReturningDisposition(
+        paths: [String],
+        accessDeniedPaths: Set<String>,
+        vendorOverrideRequest: VendorPathOverrideRequest?,
+        scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest?
+    ) async -> TrashSubmissionDisposition {
+        let performed = await performMoveToTrash(
+            paths: paths,
+            dryRun: false,
+            requestAccessDeniedPaths: accessDeniedPaths,
+            vendorOverrideRequest: vendorOverrideRequest,
+            scanIncompleteOverrideRequest: scanIncompleteOverrideRequest
+        )
+        // `dryRun=false` makes every return path explicit: either final revalidation rejected
+        // before recycle, or recycle completed. Keep this fail-closed assertion so a future
+        // branch cannot silently create an untyped Professional result.
+        guard let disposition = performed.submissionDisposition else {
+            assertionFailure("Real trash submission finished without a typed boundary")
+            return .preSubmitRejected(.unsupportedPipeline)
+        }
+        return disposition
+    }
+
+    /// 历史兼容入口。本方法不能泛化绕过 `.forbid`，与普通删除走完全相同的 vendor trie；
+    /// vendorPathRule 的专业模式能力只能走类型化 override 请求与最终重验。保留符号只为
+    /// 旧调用方源码兼容，不能作为“强制越过任意安全规则”的产品入口。
     public func moveToTrashForce(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
-        return await performMoveToTrash(paths: paths, dryRun: dryRun)
+        return await performMoveToTrash(paths: paths, dryRun: dryRun).payload
     }
 
     /// 共享实现：一次计算 legacy 4 元组 + 结构化 outcome，**返回值**即权威结果，
@@ -311,12 +774,18 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     private func performMoveToTrash(
         paths: [String],
         dryRun: Bool,
-        requestAccessDeniedPaths: Set<String>? = nil
-    ) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
+        requestAccessDeniedPaths: Set<String>? = nil,
+        vendorOverrideRequest: VendorPathOverrideRequest? = nil,
+        scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest? = nil
+    ) async -> PerformedMove {
         guard !paths.isEmpty else {
             let outcome = TrashOutcome(movedPairs: [], failedPaths: [], safetyRejected: [], missingPaths: [])
             recordOutcome(outcome)
-            return ((0, 0, nil, []), outcome)
+            let payload: MovePayload = ((0, 0, nil, []), outcome)
+            return PerformedMove(
+                payload: payload,
+                submissionDisposition: dryRun ? nil : .preSubmitRejected(.emptyRequest)
+            )
         }
         GSYLog.info(.trash, "moveToTrash 开始 dryRun=\(dryRun) paths=\(paths.count)")
 
@@ -325,38 +794,70 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         // v1.3.zzzz：把上层注入的 accessDeniedPaths 一并带上，让 partitionByForbid 一次切净
         // accessDenied + forbid 两类。
         let accessDenied = requestAccessDeniedPaths ?? snapshotAccessDeniedPaths()
-        let whitelist = if let whitelistStore {
-            await whitelistStore.snapshotPaths()
-        } else {
-            Set<String>()
+        if let scanIncompleteOverrideRequest {
+            let finalRejections = await finalScanIncompleteRejections(
+                request: scanIncompleteOverrideRequest,
+                paths: paths,
+                accessDeniedPaths: accessDenied
+            )
+            guard finalRejections.isEmpty else {
+                return scanIncompletePreSubmitFailure(
+                    paths: paths,
+                    rejections: finalRejections,
+                    dryRun: dryRun
+                )
+            }
         }
-        let (allowed, rejected) = Self.partitionByForbid(
+        let preflight = await preflight(
             paths: paths,
-            safety: safety,
-            trie: trie,
-            accessDeniedPaths: accessDenied,
-            whitelistPaths: whitelist
+            // A typed scan-incomplete request does not erase the denied set. The exact
+            // overlapping paths were proven above against the frozen typed issues; this second
+            // pass therefore evaluates the independent Safety/vendor/whitelist/scope layers.
+            accessDeniedPaths: scanIncompleteOverrideRequest == nil ? accessDenied : []
         )
-        if !rejected.isEmpty {
-            GSYLog.warning(.trash, "moveToTrash 被 SafetyEngine 拦截 \(rejected.count)/\(paths.count) firstReason=\(rejected[0].reason.rawValue) firstPath=\(rejected[0].path)")
+        let allowed: [String]
+        let rejected: [DeletionPreflight.Rejection]
+        if let vendorOverrideRequest {
+            let finalAuthorization = VendorPathOverrideRequest(preflight: preflight)
+            if vendorOverrideRequest.paths == paths,
+               finalAuthorization == vendorOverrideRequest {
+                // 只越过本次重新预检确认的纯 vendorPathRule。其它所有安全层已经在
+                // `vendorOverrideEligiblePaths` 铸造阶段重验，且这里没有复用 UI 旧快照。
+                allowed = paths
+                rejected = []
+                GSYLog.warning(.trash, "vendorPathRule override 最终预检通过 paths=\(paths.count)")
+            } else {
+                allowed = []
+                rejected = preflight.rejections.isEmpty
+                    ? paths.map {
+                        DeletionPreflight.Rejection(
+                            path: $0,
+                            reason: "vendorOverrideNotEligible"
+                        )
+                    }
+                    : preflight.rejections
+                GSYLog.warning(.trash, "vendorPathRule override 最终预检拒绝 paths=\(paths.count)")
+            }
+        } else {
+            allowed = preflight.allowedPaths
+            rejected = preflight.rejections
         }
-        let directSafetyRejectedTuples: [(String, String)] = rejected.map {
-            ($0.path, $0.reason.rawValue)
+        if !rejected.isEmpty {
+            GSYLog.warning(.trash, "moveToTrash 被安全预检拦截 \(rejected.count)/\(paths.count) firstReason=\(rejected[0].reason) firstPath=\(rejected[0].path)")
         }
 
         // SECURITY.md 的批级原子合同：任一 path 命中 forbid，整批在触碰文件系统前拒绝。
-        // 其余原本 allowed 的路径不是 SafetyEngine 自身判成 forbid，而是被本次批次的
-        // 原子性约束拒绝；用独立 reason 保留真实审计语义，不能伪装成 recycle 失败。
+        // preflight 已把其余原本 allowed 的路径标成 batchContainsForbidden，UI 与执行
+        // 共用同一批结果，不再各自拼装。
         if !rejected.isEmpty {
-            let atomicSafetyRejectedTuples = directSafetyRejectedTuples + allowed.map {
-                ($0, SafetyRejection.batchContainsForbidden.rawValue)
-            }
-            let firstReason = rejected[0].reason.rawValue
+            let atomicSafetyRejectedTuples = rejected.map { ($0.path, $0.reason) }
+            let firstReason = rejected[0].reason
             let outcome = TrashOutcome(
                 movedPairs: [],
                 failedPaths: [],
                 safetyRejected: atomicSafetyRejectedTuples,
-                missingPaths: []
+                missingPaths: [],
+                vendorOverrideEligiblePaths: preflight.vendorOverrideEligiblePaths
             )
             recordOutcome(outcome)
 
@@ -380,7 +881,41 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 .trash,
                 "moveToTrash 批级原子拒绝 submitted=\(paths.count) directRejected=\(rejected.count) firstReason=\(firstReason)"
             )
-            return ((0, paths.count, err, []), outcome)
+            let payload: MovePayload = ((0, paths.count, err, []), outcome)
+            let rejectedPreflight = DeletionPreflight(
+                allowedPaths: [],
+                rejections: rejected,
+                vendorOverrideEligiblePaths: vendorOverrideRequest == nil
+                    ? preflight.vendorOverrideEligiblePaths
+                    : []
+            )
+            let preSubmitRejection: TrashPreSubmitRejection = if vendorOverrideRequest == nil {
+                .safety(rejectedPreflight)
+            } else {
+                .invalidVendorOverride(rejectedPreflight)
+            }
+            return PerformedMove(
+                payload: payload,
+                submissionDisposition: dryRun ? nil : .preSubmitRejected(preSubmitRejection)
+            )
+        }
+
+        // The safety/vendor pass above may perform filesystem resolution. Recheck the stable
+        // target identity once more after that work and immediately before constructing the
+        // recycle input, so a replacement during preflight cannot inherit the old confirmation.
+        if let scanIncompleteOverrideRequest {
+            let immediateRejections = await finalScanIncompleteRejections(
+                request: scanIncompleteOverrideRequest,
+                paths: paths,
+                accessDeniedPaths: accessDenied
+            )
+            guard immediateRejections.isEmpty else {
+                return scanIncompletePreSubmitFailure(
+                    paths: paths,
+                    rejections: immediateRejections,
+                    dryRun: dryRun
+                )
+            }
         }
 
         if dryRun {
@@ -408,7 +943,10 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                                        safetyRejected: [],
                                        missingPaths: missingPaths)
             recordOutcome(outcome)
-            return ((present, skipped, err, []), outcome)
+            return PerformedMove(
+                payload: ((present, skipped, err, []), outcome),
+                submissionDisposition: nil
+            )
         }
 
         // **v2026.06.16 修复 #2（system-images 删除拒绝）**：
@@ -420,14 +958,21 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         //
         // 新实现：分批 → 批失败回退到单 URL 隔离重试，能精确捕获哪条 path 失败、不让一条坏路径拖垮整批。
         let allowedURLs = allowed.map { URL(fileURLWithPath: $0) }
-        let movedPairs = await recycleInBatches(urls: allowedURLs)
+        let recycleResult = await recycleInBatches(urls: allowedURLs)
+        let movedPairs = recycleResult.moved
         let movedSet = Set(movedPairs.map { $0.0 })
         let failedPaths = allowed.filter { !movedSet.contains($0) }
+        var failureReasons = recycleResult.failureReasons
+        let unknownFailure = String(localized: "trash.recycle.failure.unknown", bundle: .module)
+        for path in failedPaths where failureReasons[path] == nil {
+            failureReasons[path] = unknownFailure
+        }
 
         let outcome = TrashOutcome(movedPairs: movedPairs,
                                    failedPaths: failedPaths,
                                    safetyRejected: [],
-                                   missingPaths: [])
+                                   missingPaths: [],
+                                   failureReasons: failureReasons)
         recordOutcome(outcome)
 
         let movedCount = movedPairs.count
@@ -446,7 +991,15 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             err = nil
         }
         GSYLog.info(.trash, "moveToTrash 完成 moved=\(movedCount) failed=\(failedPaths.count) safetyRejected=\(rejected.count) totalSkipped=\(totalSkipped) pairs=\(movedPairs.count)")
-        return ((movedCount, totalSkipped, err, movedPairs), outcome)
+        let payload: MovePayload = ((movedCount, totalSkipped, err, movedPairs), outcome)
+        return PerformedMove(
+            payload: payload,
+            submissionDisposition: .recycleCompleted(TrashRecycleCompletion(
+                attemptedPaths: allowed,
+                legacy: payload.legacy,
+                outcome: payload.outcome
+            ))
+        )
     }
 
     /// **v2026.06.16 修复 #2**：分批 recycle + 单 URL 隔离重试。
@@ -456,9 +1009,29 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     ///
     /// **批大小 32**：经验值——既能利用 recycle 批处理优势降低系统开销，又能让单批失败时
     /// 隔离重试的代价（最多 32 次单 URL recycle）可控。可改 `batchSize` 调优。
-    private func recycleInBatches(urls: [URL], batchSize: Int = 32) async -> [(String, String)] {
+    private func recycleInBatches(
+        urls: [URL],
+        batchSize: Int = 32
+    ) async -> RecycleBatchResult {
+        await Self.executeRecycleBatches(
+            urls: urls,
+            batchSize: batchSize,
+            recycle: { urls in await Self.recycleOnce(urls: urls) }
+        )
+    }
+
+    /// 批处理核心只依赖一个 Sendable 异步操作：生产环境传 `NSWorkspace.recycle` 适配器，
+    /// 单测传 actor-backed script。这样能精确验证部分成功与单项隔离重试，同时保证
+    /// 测试不会移动任何真实文件。
+    static func executeRecycleBatches(
+        urls: [URL],
+        batchSize: Int = 32,
+        recycle: @Sendable ([URL]) async -> RecycleAttempt
+    ) async -> RecycleBatchResult {
+        precondition(batchSize > 0, "batchSize must be positive")
         var allMoved: [(String, String)] = []
         allMoved.reserveCapacity(urls.count)
+        var failureReasons: [String: String] = [:]
 
         var idx = 0
         while idx < urls.count {
@@ -466,31 +1039,34 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             let batch = Array(urls[idx..<end])
             idx = end
 
-            let (batchMoved, batchHadError) = await Self.recycleOnce(urls: batch)
-            allMoved.append(contentsOf: batchMoved)
+            let batchAttempt = await recycle(batch)
+            allMoved.append(contentsOf: batchAttempt.moved)
 
-            if batchHadError {
-                // 批失败：对未成功项逐条隔离 recycle，精确定位失败路径
-                let movedSet = Set(batchMoved.map { $0.0 })
-                let unmoved = batch.filter { !movedSet.contains($0.path) }
-                if !unmoved.isEmpty {
-                    GSYLog.warning(.trash, "moveToTrash 批失败，回退到单 URL 隔离重试 batch=\(batch.count) unmoved=\(unmoved.count)")
-                }
-                for url in unmoved {
-                    let (singleMoved, _) = await Self.recycleOnce(urls: [url])
-                    allMoved.append(contentsOf: singleMoved)
-                    // 单条仍失败：什么都不做——上层会通过 `allowed - allMoved` 反推 failedPaths
+            // 不只依赖 error：系统偶尔会返回部分 trashed、但不给 NSError。只要存在未移动项，
+            // 都逐条隔离重试，最终把每条失败原因带回 UI。
+            let movedSet = Set(batchAttempt.moved.map { $0.0 })
+            let unmoved = batch.filter { !movedSet.contains($0.path) }
+            if !unmoved.isEmpty {
+                GSYLog.warning(.trash, "moveToTrash 批次存在未移动项，回退到单 URL 隔离重试 batch=\(batch.count) unmoved=\(unmoved.count)")
+            }
+            for url in unmoved {
+                let singleAttempt = await recycle([url])
+                allMoved.append(contentsOf: singleAttempt.moved)
+                if singleAttempt.moved.isEmpty {
+                    failureReasons[url.path] = singleAttempt.errorDescription
+                        ?? batchAttempt.errorDescription
+                        ?? String(localized: "trash.recycle.failure.unknown", bundle: .module)
                 }
             }
         }
-        return allMoved
+        return RecycleBatchResult(moved: allMoved, failureReasons: failureReasons)
     }
 
     /// 单次 recycle 调用——把 NSWorkspace 的回调 async 化。
-    /// 返回：(成功 pair 列表, 是否触发 error 回调)。
+    /// 返回：(成功 pair 列表, 系统错误原因)。
     /// 注意：error≠nil 不代表全失败，trashed 可能有部分项。
-    private static func recycleOnce(urls: [URL]) async -> (moved: [(String, String)], hadError: Bool) {
-        await withCheckedContinuation { (cc: CheckedContinuation<([(String, String)], Bool), Never>) in
+    private static func recycleOnce(urls: [URL]) async -> RecycleAttempt {
+        await withCheckedContinuation { (cc: CheckedContinuation<RecycleAttempt, Never>) in
             let gate = RecycleOnceGate(cc: cc)
             NSWorkspace.shared.recycle(urls) { trashed, error in
                 let pairs: [(String, String)] = trashed.map { (orig, trashedURL) in
@@ -499,7 +1075,10 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 if let error {
                     GSYLog.warning(.trash, "NSWorkspace.recycle 单批失败 batchSize=\(urls.count) moved=\(pairs.count) err=\(error.localizedDescription)")
                 }
-                gate.fire((pairs, error != nil))
+                gate.fire(RecycleAttempt(
+                    moved: pairs,
+                    errorDescription: error?.localizedDescription
+                ))
             }
         }
     }
@@ -527,13 +1106,13 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 private final class RecycleOnceGate: @unchecked Sendable {
     private let lock = NSLock()
     private var fired = false
-    private let cc: CheckedContinuation<([(String, String)], Bool), Never>
+    private let cc: CheckedContinuation<TrashPipeline.RecycleAttempt, Never>
 
-    init(cc: CheckedContinuation<([(String, String)], Bool), Never>) {
+    init(cc: CheckedContinuation<TrashPipeline.RecycleAttempt, Never>) {
         self.cc = cc
     }
 
-    func fire(_ value: ([(String, String)], Bool)) {
+    func fire(_ value: TrashPipeline.RecycleAttempt) {
         lock.lock()
         guard !fired else { lock.unlock(); return }
         fired = true

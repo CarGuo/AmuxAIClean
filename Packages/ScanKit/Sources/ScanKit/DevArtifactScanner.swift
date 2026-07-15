@@ -53,7 +53,11 @@ public actor DevArtifactScanner {
     /// 勘察配置。
     public struct Options: Sendable {
         public var enabledRuleIDs: Set<String>
-        public var timeoutSeconds: TimeInterval
+        /// 勘察超时。`nil` 表示不做任意截断，由调用方取消任务来停止扫描。
+        ///
+        /// 开发者目录规模无法用固定秒数推断完整性；默认 60 秒会把大型 home 的
+        /// partial 结果伪装成完整结果。需要预算的诊断/测试调用方仍可显式传值。
+        public var timeoutSeconds: TimeInterval?
         public var skipLibrary: Bool
         public var staySingleVolume: Bool
         /// v2026.06.21：命中硬上限。
@@ -66,7 +70,7 @@ public actor DevArtifactScanner {
         public var maxHits: Int
 
         public init(enabledRuleIDs: Set<String> = DevArtifactRules.allIDs,
-                    timeoutSeconds: TimeInterval = 60,
+                    timeoutSeconds: TimeInterval? = nil,
                     skipLibrary: Bool = true,
                     staySingleVolume: Bool = true,
                     maxHits: Int = .max) {
@@ -88,11 +92,24 @@ public actor DevArtifactScanner {
         public let didTimeout: Bool
         /// 命中是否触达硬上限被截断（与 didTimeout 解耦，便于 UI 显示更精准文案）。
         public let didTruncate: Bool
+        /// 发现阶段没有完整覆盖的路径。目录枚举、节点 metadata 和 marker 读取错误都必须
+        /// 保留下来，调用方不能把“发生 I/O 错误后的空结果”解释为完整扫描。
+        public let incompleteIssues: [ScanIncompleteIssue]
 
-        public init(hits: [Hit], didTimeout: Bool, didTruncate: Bool) {
+        public var isComplete: Bool {
+            !didTimeout && !didTruncate && incompleteIssues.isEmpty
+        }
+
+        public init(
+            hits: [Hit],
+            didTimeout: Bool,
+            didTruncate: Bool,
+            incompleteIssues: [ScanIncompleteIssue] = []
+        ) {
             self.hits = hits
             self.didTimeout = didTimeout
             self.didTruncate = didTruncate
+            self.incompleteIssues = incompleteIssues
         }
     }
 
@@ -112,12 +129,13 @@ public actor DevArtifactScanner {
     public func discoverWithMetadata(home: URL = URL(fileURLWithPath: NSHomeDirectory())) async -> DiscoverResult {
         let opts = options
         let homePath = home.standardizedFileURL.path
-        GSYLog.info(.scan, "DevArtifact 勘察启动 home=\(homePath) rules=\(opts.enabledRuleIDs.count) timeout=\(opts.timeoutSeconds)s maxHits=\(opts.maxHits)")
+        let timeoutDescription = opts.timeoutSeconds.map { "\($0)s" } ?? "disabled"
+        GSYLog.info(.scan, "DevArtifact 勘察启动 home=\(homePath) rules=\(opts.enabledRuleIDs.count) timeout=\(timeoutDescription) maxHits=\(opts.maxHits)")
 
         // 跨 actor 边界跑一个 detached：FileManager.enumerator 是同步阻塞的，不能占 actor。
-        return await Task.detached(priority: .userInitiated) { () -> DiscoverResult in
+        return await Self.runCancellableDetached { () -> DiscoverResult in
             Self.runWalk(home: home, options: opts, onPartial: nil)
-        }.value
+        }
     }
 
     /// v2026.06.21：带"边走边喂"回调的勘察入口。
@@ -142,14 +160,31 @@ public actor DevArtifactScanner {
     ) async -> DiscoverResult {
         let opts = options
         let homePath = home.standardizedFileURL.path
-        GSYLog.info(.scan, "DevArtifact 勘察(stream) home=\(homePath) rules=\(opts.enabledRuleIDs.count) timeout=\(opts.timeoutSeconds)s maxHits=\(opts.maxHits) flushEvery=\(flushEvery)")
+        let timeoutDescription = opts.timeoutSeconds.map { "\($0)s" } ?? "disabled"
+        GSYLog.info(.scan, "DevArtifact 勘察(stream) home=\(homePath) rules=\(opts.enabledRuleIDs.count) timeout=\(timeoutDescription) maxHits=\(opts.maxHits) flushEvery=\(flushEvery)")
 
-        return await Task.detached(priority: .userInitiated) { () -> DiscoverResult in
+        return await Self.runCancellableDetached { () -> DiscoverResult in
             Self.runWalk(home: home, options: opts, onPartial: onPartial.map { cb in
                 // 把回调包成 (delta) -> Void，在 runWalk 内部决定何时调
                 return PartialFlush(every: max(1, flushEvery), callback: cb)
             })
-        }.value
+        }
+    }
+
+    /// detached 同步遍历必须显式继承调用方的取消。
+    ///
+    /// `await worker.value` 本身不会在父任务取消时自动取消 unstructured task；统一在
+    /// 这里建立 ownership relay，避免每个入口各自遗漏。标为 internal 便于用一个
+    /// 阻塞型 fake worker 精确测试取消传播，不需要在真实文件系统里制造超大目录。
+    static func runCancellableDetached<Result: Sendable>(
+        _ operation: @escaping @Sendable () -> Result
+    ) async -> Result {
+        let worker = Task.detached(priority: .userInitiated, operation: operation)
+        return await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     /// 同步 walk 主体。放静态以便 detached 内部直调，避免 actor 隔离。
@@ -157,7 +192,7 @@ public actor DevArtifactScanner {
     /// - parameter onPartial: 流式增量回调。每命中 `every` 条 hit 就把"自上次回调以来新增"
     ///   的 hits 数组传给 callback；callback 在当前 detached 线程同步执行。nil 时为旧行为。
     private static func runWalk(home: URL, options: Options, onPartial: PartialFlush?) -> DiscoverResult {
-        let deadline = Date().addingTimeInterval(options.timeoutSeconds)
+        let deadline = options.timeoutSeconds.map { Date().addingTimeInterval($0) }
         let fm = FileManager.default
         let homeStd = home.standardizedFileURL
         let libraryPath = homeStd.appendingPathComponent("Library").standardizedFileURL.path
@@ -173,15 +208,59 @@ public actor DevArtifactScanner {
             return DiscoverResult(hits: [], didTimeout: false, didTruncate: false)
         }
 
-        let rootDevice = (try? homeStd.resourceValues(forKeys: [.volumeIdentifierKey]))?.volumeIdentifier
+        var incompleteIssues = Set<ScanIncompleteIssue>()
+        let rootDevice: Any?
+        if options.staySingleVolume {
+            do {
+                let values = try homeStd.resourceValues(forKeys: [.volumeIdentifierKey])
+                guard let volumeIdentifier = values.volumeIdentifier else {
+                    let issue = ScanIncompleteIssue(path: homeStd.path, reason: .metadataUnavailable)
+                    GSYLog.warning(.scan, "DevArtifact 根卷标识不可用 path=\(homeStd.path)")
+                    return DiscoverResult(
+                        hits: [],
+                        didTimeout: false,
+                        didTruncate: false,
+                        incompleteIssues: [issue]
+                    )
+                }
+                rootDevice = volumeIdentifier
+            } catch {
+                let issue = ScanIncompleteIssue(
+                    path: homeStd.path,
+                    reason: incompleteReason(for: error, fallback: .metadataUnavailable)
+                )
+                GSYLog.warning(.scan, "DevArtifact 根 metadata 读取失败 path=\(homeStd.path) error=\(error)")
+                return DiscoverResult(
+                    hits: [],
+                    didTimeout: false,
+                    didTruncate: false,
+                    incompleteIssues: [issue]
+                )
+            }
+        } else {
+            rootDevice = nil
+        }
         guard let enumerator = fm.enumerator(
             at: homeStd,
             includingPropertiesForKeys: [.isDirectoryKey, .volumeIdentifierKey],
             options: [],
-            errorHandler: { _, _ in true } // 任何 IO 错误吞掉，继续扫
+            errorHandler: { url, error in
+                let issue = ScanIncompleteIssue(
+                    path: url.standardizedFileURL.path,
+                    reason: incompleteReason(for: error, fallback: .enumerationFailed)
+                )
+                incompleteIssues.insert(issue)
+                GSYLog.warning(.scan, "DevArtifact 目录枚举不完整 path=\(issue.path) reason=\(issue.reason.rawValue) error=\(error)")
+                return true
+            }
         ) else {
             GSYLog.error(.scan, "DevArtifact 勘察 enumerator 构造失败 home=\(homeStd.path)")
-            return DiscoverResult(hits: [], didTimeout: false, didTruncate: false)
+            return DiscoverResult(
+                hits: [],
+                didTimeout: false,
+                didTruncate: false,
+                incompleteIssues: [ScanIncompleteIssue(path: homeStd.path, reason: .enumerationFailed)]
+            )
         }
 
         var hits: [Hit] = []
@@ -201,7 +280,9 @@ public actor DevArtifactScanner {
                 break
             }
             // 每 256 个条目检查一次超时
-            if iterations & 0xFF == 0, Date() >= deadline {
+            if iterations & 0xFF == 0,
+               let deadline,
+               Date() >= deadline {
                 timedOut = true
                 break
             }
@@ -212,12 +293,24 @@ public actor DevArtifactScanner {
             }
 
             // 仅处理目录
-            let values = try? item.resourceValues(forKeys: [.isDirectoryKey, .volumeIdentifierKey])
-            guard values?.isDirectory == true else { continue }
+            let values: URLResourceValues
+            do {
+                values = try item.resourceValues(forKeys: [.isDirectoryKey, .volumeIdentifierKey])
+            } catch {
+                let issue = ScanIncompleteIssue(
+                    path: item.standardizedFileURL.path,
+                    reason: incompleteReason(for: error, fallback: .metadataUnavailable)
+                )
+                incompleteIssues.insert(issue)
+                GSYLog.warning(.scan, "DevArtifact 节点 metadata 读取失败 path=\(issue.path) reason=\(issue.reason.rawValue) error=\(error)")
+                enumerator.skipDescendants()
+                continue
+            }
+            guard values.isDirectory == true else { continue }
 
             // 跨卷停：碰到挂载点（外接盘 / 网络盘）直接整棵剪枝
             if options.staySingleVolume,
-               let dev = values?.volumeIdentifier, let rdev = rootDevice,
+               let dev = values.volumeIdentifier, let rdev = rootDevice,
                !areVolumeIdentifiersEqual(dev, rdev) {
                 enumerator.skipDescendants()
                 continue
@@ -243,10 +336,25 @@ public actor DevArtifactScanner {
             let parentPath = parent.path
             let parentPathLower = parentPath.lowercased()
             let siblings: Set<String>
-            if let cached = siblingsCache[parentPath] {
+            let needsSiblingListing = candidates.contains {
+                !$0.siblingMarkers.isEmpty || !$0.siblingExtensionMarkers.isEmpty
+            }
+            if !needsSiblingListing {
+                siblings = []
+            } else if let cached = siblingsCache[parentPath] {
                 siblings = cached
             } else {
-                siblings = (try? fm.contentsOfDirectory(atPath: parentPath)).map { Set($0) } ?? []
+                do {
+                    siblings = Set(try fm.contentsOfDirectory(atPath: parentPath))
+                } catch {
+                    let issue = ScanIncompleteIssue(
+                        path: parentPath,
+                        reason: incompleteReason(for: error, fallback: .enumerationFailed)
+                    )
+                    incompleteIssues.insert(issue)
+                    GSYLog.warning(.scan, "DevArtifact marker 目录读取失败 path=\(parentPath) reason=\(issue.reason.rawValue) error=\(error)")
+                    siblings = []
+                }
                 if siblingsCache.count >= siblingsCacheCap {
                     siblingsCache.removeAll(keepingCapacity: true)
                 }
@@ -327,9 +435,36 @@ public actor DevArtifactScanner {
         } else if truncated {
             GSYLog.warning(.scan, "DevArtifact 勘察命中达上限 \(options.maxHits) entries=\(iterations) → 截断")
         } else {
-            GSYLog.info(.scan, "DevArtifact 勘察完成 entries=\(iterations) hits=\(hits.count)")
+            GSYLog.info(.scan, "DevArtifact 勘察完成 entries=\(iterations) hits=\(hits.count) incomplete=\(incompleteIssues.count)")
         }
-        return DiscoverResult(hits: hits, didTimeout: timedOut, didTruncate: truncated)
+        let normalizedIssues = incompleteIssues.sorted {
+            if $0.path != $1.path { return $0.path < $1.path }
+            return $0.reason.rawValue < $1.reason.rawValue
+        }
+        return DiscoverResult(
+            hits: hits,
+            didTimeout: timedOut,
+            didTruncate: truncated,
+            incompleteIssues: normalizedIssues
+        )
+    }
+
+    /// Foundation 与 POSIX 的权限错误统一映射到删除链路认识的结构化原因；其它 I/O
+    /// 错误由调用位置决定是枚举失败还是 metadata 缺失。
+    nonisolated static func incompleteReason(
+        for error: Error,
+        fallback: ScanIncompleteReason
+    ) -> ScanIncompleteReason {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain,
+           nsError.code == CocoaError.fileReadNoPermission.rawValue {
+            return .permissionDenied
+        }
+        if nsError.domain == NSPOSIXErrorDomain,
+           nsError.code == Int(EACCES) || nsError.code == Int(EPERM) {
+            return .permissionDenied
+        }
+        return fallback
     }
 
     private static func areVolumeIdentifiersEqual(_ a: Any, _ b: Any) -> Bool {

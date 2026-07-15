@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 import ScanKit
 import SafetyKit
 import AIKit
+import LogKit
 
 private enum SidebarMetrics {
     static let minWidth: CGFloat = 320
@@ -141,17 +142,24 @@ public extension Notification.Name {
 }
 
 /// 三栏主界面 —— 侧边类目 / 中间结果 / 右侧详情 + 删除按钮。
-/// 见 PITFALLS §5.5/§5.6/§5.7：默认勾选只勾 .safe；先聚合不展平；删除走 preview sheet。
+/// 见 PITFALLS §5.5/§5.6/§5.7：默认勾选只勾 .safe；先聚合不展平；删除走统一模式化确认。
 public struct MainView: View {
     public static let defaultInterfaceMode: SmartCareInterfaceMode = .normal
 
+    @Environment(\.locale) private var locale
     @StateObject private var coordinator: ScanCoordinator
     @State private var interfaceMode: SmartCareInterfaceMode = MainView.defaultInterfaceMode
     @State private var smartCareSession: SmartCareSession
     @State private var smartCareSheetRoute: SmartCareSheetRoute?
     @State private var pendingSmartCareAIReport: SmartCareAIReviewReport? = nil
+    /// Smart Care 删除 preview 的跨 await 单事务门。快速双击只能拿到一个 token；
+    /// summary/selection 或 modal occupancy 变化后，旧投影绝不能覆盖新界面。
+    @State private var smartCareDeletePreviewGate = SmartCareDeletePreviewGate()
     @State private var presetCategories: [ScanCategory] = ScanCategories.recommended()
     @State private var customCategories: [ScanCategory] = []
+    @State private var isCustomPathImporterPresented = false
+    @State private var customPathImportMessage: String?
+    @State private var professionalColumnVisibility: NavigationSplitViewVisibility = .all
     @State private var selectedCategory: ScanCategory.ID?
     @State private var selection: Set<String> = []   // 勾选的 row.id
     /// v2026.06.21 perf：默认勾选已扫描过的 rows.count 上限，避免每次 publish
@@ -182,23 +190,32 @@ public struct MainView: View {
     /// snapshot 高频 publish 时（点 Preferences 这种条目几千的目录）对每行做 `==` 比较 + diff，
     /// 主线程被刷爆 → 鼠标彩虹球。改为只押 row.id（String），detail 渲染时再反查。
     @State private var detail: String?
-    @State private var showSheet: Bool = false
+    @State private var deleteSheetRequest: DeleteSheetRequest?
+    @State private var deleteSubmissionHandoff = DeleteSubmissionHandoff()
     /// v2026.06.21：切换 category 前若已有扫描结果，弹确认对话框。
     /// v2026.06.22 修订：确认必须发生在写入 `selectedCategory` 之前。
     /// SwiftUI `List(selection:)` 的默认 binding 会先切屏、后触发 `.onChange`，用户看到的就是
     /// "已经切到大文件了才问是否切换"。现在 sidebar 走自定义 binding setter，
     /// `pendingCategorySwitch` 只保存用户意图；确认通过后才真正写入 selectedCategory。
     @State private var pendingCategorySwitch: (old: String?, new: String?)?
+    /// Add Path 后 AsyncStream 会异步把新类目投递到 `customCategories`。用户如果要求
+    /// 立即扫描，确认切换期间需要冻结这份类目本身，不能依赖稍后才更新的列表。
+    @State private var pendingCategoryFallback: ScanCategory?
     @State private var showSwitchCategoryConfirm: Bool = false
     /// 删除中的 UI guard。删除完成后仅按 TrashPipeline 返回的 movedPairs 更新 UI，
     /// 防止部分失败时把未移动的项误移除。
     @State private var isDeleting: Bool = false
+    @State private var isPreparingDeletion: Bool = false
+    /// Stash 本身是 sheet；删除意图先冻结，待 Stash 真正 dismiss 后再呈现统一
+    /// DeleteSheet，避免 sibling sheet 竞争导致失败结果不可见。
+    @State private var pendingStashDeletion: [StashStore.StashEntry]?
     @State private var deleteResult: String?
 
     /// **v2026.06.16 修复 #4**：删除主路径 + 大文件 trash 的结构化结果 sheet。
     /// 取代旧 alert 拼接 `delete.result.success/failure %@ %lld %lld` 的纯文字弹窗。
     /// `deleteResult` 仍保留——`delete.result.path_invalid` 等纯路径校验提示仍走旧 alert。
-    @State private var deleteResultPayload: OperationResultPayload?
+    @State private var deleteResultCompletion: OperationResultCompletion?
+    @State private var deletePreflightNotice: DeletionPreflightNotice?
     @State private var isDropTargeted: Bool = false
     /// v1.0 T3：结果区视图模式（清单 vs 多层树）。
     ///
@@ -227,7 +244,7 @@ public struct MainView: View {
     /// `BatchSelection` 是 `@Observable class`，用 `@State` 持有引用，
     /// SwiftUI Observation 自动追踪 `selected` 变更 → 头部 checkbox 与 footer 按钮双向响应。
     @State private var largeFilesBatch = BatchSelection()
-    @State private var visibleLargeFilePaths: [String] = []
+    @State private var visibleLargeFileItems: [LargeFileItem] = []
     /// 树形视图选中行。bug A：之前 TreeBrowserView 的 selectedPath 锁在自身内部，
     /// 外层 detailPane 永远拿不到，详情面板因此长期空白。现在通过 onSelect 回调
     /// 同步到这里，detailPane 优先用 treeSelection 渲染（语义上"看哪个就显哪个"）。
@@ -252,6 +269,9 @@ public struct MainView: View {
     /// 不自动开扫（用户在 Step 6.4 决策中选了 C：避免突袭式 IO 抢占），而是弹一个引导 alert，
     /// 用户点「立即扫描」才走 ScanCoordinator.scanRecommended。
     @State private var sentinelScanInvitationVisible: Bool = false
+    /// Sentinel 深链接可能在其它 sheet / alert / fileImporter 占用窗口时到达。
+    /// 只冻结意图并 FIFO 延后，不能抢 presentation，也不能静默丢失。
+    @State private var sentinelPresentationQueue = SentinelPresentationQueue()
 
     /// 结果区两种视图模式。
     public enum ResultsViewMode: String, CaseIterable, Identifiable {
@@ -286,6 +306,9 @@ public struct MainView: View {
     /// 普通模式 AI 复核拥有独立 session：保存完整建议、批次终态、取消与扫描世代。
     /// 它只记录用户开始复核时的选择快照，绝不自动回写 SafetyVerdict 或选择。
     @State private var smartCareAIReviewSession: SmartCareAIReviewSession
+    /// Keychain 是同步系统 API 的 actor 包装；读取期间同样属于一次 AI 运行。
+    /// 独立 gate 防止快速连点创建两批任务，并让取消能覆盖“尚未发出首个请求”的阶段。
+    @State private var smartCareAIPreparationGate = SmartCareAIReviewPreparationGate()
     /// macOS 14+：通过环境拿到打开"设置..."窗口的标准 action。
     /// Q3 alert 的"前往设置"按钮会调用它，免去手写 NSApp.sendAction 私有 selector。
     @Environment(\.openSettings) private var openSettings
@@ -379,7 +402,7 @@ public struct MainView: View {
             case .normal:
                 smartCareHome
             case .professional:
-                NavigationSplitView {
+                NavigationSplitView(columnVisibility: $professionalColumnVisibility) {
                     sidebar
                 } detail: {
                     results
@@ -398,31 +421,47 @@ public struct MainView: View {
         ) {
             Button(role: .destructive) {
                 guard let pending = pendingCategorySwitch else { return }
+                let fallback = pendingCategoryFallback
                 pendingCategorySwitch = nil
-                applyCategorySwitch(from: pending.old, to: pending.new)
+                pendingCategoryFallback = nil
+                applyCategorySwitch(from: pending.old, to: pending.new, fallbackCategory: fallback)
             } label: {
                 Text("mainview.switch_category.confirm.proceed", bundle: .module)
             }
             Button(role: .cancel) {
                 pendingCategorySwitch = nil
+                pendingCategoryFallback = nil
             } label: {
                 Text("mainview.switch_category.confirm.cancel", bundle: .module)
             }
         } message: {
             Text("mainview.switch_category.confirm.message", bundle: .module)
         }
-        .sheet(isPresented: $showSheet) {
-            DeleteSheet(
-                items: selectedRows,
-                runningConflicts: runningAppConflicts(for: selectedRows),
-                onCancel: { showSheet = false },
-                onConfirm: { dryRun in
-                    showSheet = false
-                    Task { await performDelete(dryRun: dryRun) }
+        .sheet(
+            item: $deleteSheetRequest,
+            onDismiss: runPendingDeleteSubmissionAfterSheetDismissal
+        ) { request in
+            ToolTrashConfirmationSheet(
+                items: request.preparedInteraction.confirmationCandidates,
+                totalBytes: request.totalBytes,
+                vendorOverrideRequest: request.preparedInteraction.vendorOverrideRequest,
+                scanIncompleteOverrideRequest: request.preparedInteraction.scanIncompleteOverrideRequest,
+                onCancel: {
+                    deleteSheetRequest = nil
+                },
+                onConfirm: { executionPlan in
+                    guard deleteSubmissionHandoff.schedule(
+                        .professional(request: request, executionPlan: executionPlan)
+                    ) else { return false }
+                    deleteSheetRequest = nil
+                    return true
                 }
             )
         }
-        .sheet(item: $smartCareSheetRoute) { route in
+        .sheet(
+            item: $smartCareSheetRoute,
+            onDismiss: runPendingDeleteSubmissionAfterSheetDismissal
+        ) { route in
             switch route {
             case .aiReview(let report):
                 SmartCareAIReviewResultSheet(
@@ -439,13 +478,16 @@ public struct MainView: View {
             case .cleanup(let request):
                 DeleteSheet(
                     items: request.previewRows,
-                    runningConflicts: runningAppConflicts(for: request.previewRows),
                     onCancel: dismissSmartCareSheet,
-                    onConfirm: { dryRun in
+                    onConfirm: { action in
+                        guard deleteSubmissionHandoff.schedule(
+                            .smartCare(
+                                request: request,
+                                action: action,
+                                accessDeniedPaths: smartCareSession.deletionDeniedPaths
+                            )
+                        ) else { return }
                         smartCareSheetRoute = nil
-                        Task { [request] in
-                            await performSmartCareDelete(request: request, dryRun: dryRun)
-                        }
                     }
                 )
             }
@@ -474,29 +516,20 @@ public struct MainView: View {
         // v2026.06.18 **稍后处理 sheet**。点 toolbar 的 `tray.full.fill` 按钮触发；
         // 在 sheet 内做"一键清理 / 一键 AI / 单独清理 / 单独 AI / 剔除"集中操作。
         // 复用现有 trigger / aiAskingRow 通道，不引入第二条删除/AI 链路。
-        .sheet(isPresented: $isStashScreenPresented) {
+        .sheet(
+            isPresented: $isStashScreenPresented,
+            onDismiss: presentPendingStashDeletionAfterDismissal
+        ) {
             StashScreen(
                 stash: stash,
                 aiQueue: stashAIQueue,
                 aiSettings: aiSettings,
                 onClose: { isStashScreenPresented = false },
                 onCleanOne: { entry in
-                    // 单独清理：复用 triggerLargeFileTrash（已含历史写入 + 成功项 prune）。
-                    // 删除完成后只把成功移动的 path 从待处理摘掉，失败项保留给用户重试。
-                    // v2026.06.21 修复 #3：suppressSuccessSheet=true。stash 路径已经通过
-                    // 「item 从列表消失」反馈成功，纯成功不再叠 OperationResultSheet——
-                    // 否则用户关闭 stash sheet 后会被一个多余的"清理完成"弹窗困住。
-                    // 失败 / 拦截项仍会弹（用户必须看见）。
-                    triggerLargeFileTrash(urls: [URL(fileURLWithPath: entry.path)],
-                                          suppressSuccessSheet: true) { result in
-                        stash.remove(paths: result.succeededPaths)
-                    }
+                    scheduleStashDeletion([entry])
                 },
                 onCleanAll: { entries in
-                    let urls = entries.map { URL(fileURLWithPath: $0.path) }
-                    triggerLargeFileTrash(urls: urls, suppressSuccessSheet: true) { result in
-                        stash.remove(paths: result.succeededPaths)
-                    }
+                    scheduleStashDeletion(entries)
                 },
                 onAskAIOne: { entry in
                     // 单独 AI：复用 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
@@ -525,11 +558,31 @@ public struct MainView: View {
         } message: {
             Text(deleteResult ?? "")
         }
-        // 删除结果只展示真实成功 / 失败 / 安全拦截；`.forbid` 没有 UI 绕过入口。
-        .sheet(item: $deleteResultPayload) { payload in
+        .alert(
+            String(localized: "custom_path.import.notice.title", bundle: .module),
+            isPresented: Binding(
+                get: { customPathImportMessage != nil },
+                set: { if !$0 { customPathImportMessage = nil } }
+            )
+        ) {
+            Button(String(localized: "main.delete.result.ok", bundle: .module)) {
+                customPathImportMessage = nil
+            }
+        } message: {
+            Text(customPathImportMessage ?? "")
+        }
+        // 删除结果只展示已经跨过 NSWorkspace.recycle 提交边界的真实尝试。
+        // 最终重验发现的新风险会回到严格确认或 typed explanation，不会先进结果页。
+        .sheet(item: $deleteResultCompletion) { completion in
             OperationResultSheet(
-                payload: payload,
-                onDismiss: { deleteResultPayload = nil }
+                completion: completion,
+                onDismiss: { deleteResultCompletion = nil }
+            )
+        }
+        .sheet(item: $deletePreflightNotice) { notice in
+            DeletionPreflightNoticeSheet(
+                notice: notice,
+                onDismiss: { deletePreflightNotice = nil }
             )
         }
         .onChange(of: viewMode) { _, _ in
@@ -556,13 +609,6 @@ public struct MainView: View {
             onLatestReportChange: handleSmartCareAIReportChange,
             onPendingAvailabilityChange: presentPendingSmartCareAIReportIfPossible
         ))
-        .onChange(of: settings.sizeAccountingMode) { _, newMode in
-            // v1.3：用户在设置里切换字节口径（logical 系统设置口径 ↔ physical du 口径）。
-            // 同步到 coordinator；如果当前有扫描结果，提示需要重扫才能让数字按新口径累计。
-            // 不强制自动重扫——避免用户切错口径还要等 5 分钟，自己点"重新扫描"更可控。
-            coordinator.accountingMode = newMode
-            smartCareSession.scanCoordinator.accountingMode = newMode
-        }
         .onChange(of: settings.mainListSortKey) { _, newKey in
             // v1.3：主列表排序键切换 → 同步到 coordinator。
             // coordinator 内部 didSet 会判断仅 finished 态 republish snapshot，
@@ -572,6 +618,12 @@ public struct MainView: View {
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             handleDrop(providers: providers)
         }
+        .fileImporter(
+            isPresented: $isCustomPathImporterPresented,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: true,
+            onCompletion: handleCustomPathImport
+        )
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             // v1.3：从系统设置勾完 FDA 切回本 App，立即重探权限状态 + 容量。
             // 修「我已经有了权限，为什么顶部还提示需要授权」的核心闭环——
@@ -588,7 +640,7 @@ public struct MainView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .gsyTrashDidMove)) { notification in
             guard let source = notification.userInfo?["source"] as? String,
-                  !["smart-care", "clean", "large-file"].contains(source),
+                  !["smart-care", "clean", "tree", "large-file", "stash"].contains(source),
                   let paths = notification.userInfo?["paths"] as? [String],
                   !paths.isEmpty else { return }
             Task { @MainActor in
@@ -598,8 +650,7 @@ public struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: .gsySentinelStartFullScan)) { _ in
             // v1.6 Sentinel 场景 2：daemon 通过 `amuxaiclean://action/scan/full` 唤起。
             // 用户决策 C：不自动开扫，弹引导 alert，让用户主动确认。
-            openWindow(id: "main")
-            sentinelScanInvitationVisible = true
+            enqueueSentinelPresentation(.inviteFullScan)
         }
         .onReceive(NotificationCenter.default.publisher(for: .gsySentinelOpenUninstall)) { note in
             // v1.6 Sentinel 场景 1：daemon 通过 `amuxaiclean://uninstall?path=...` 唤起卸载页。
@@ -607,9 +658,16 @@ public struct MainView: View {
             // 这里把侧栏定位到 uninstall sentinel row，让 UninstallScreen 显示。
             // 注：path 当前不直接 deep-link 到具体卸载条目（候选展示在 UninstallScreen 列表里），
             // 后续可通过 NotificationCenter 二次广播由 UninstallScreen 自己消费 path 实现高亮。
-            openWindow(id: "main")
-            requestCategorySwitch(to: MainView.uninstallSentinelID)
-            _ = note
+            enqueueSentinelPresentation(.openUninstall(
+                path: note.userInfo?[SentinelURLRouter.uninstallPathKey] as? String
+            ))
+        }
+        .onChange(of: hasConflictingMainModalPresentation) { _, isBusy in
+            // 所有 modal 共用 occupancy 边沿；当前 presentation 真正消失后再继续消费
+            // Sentinel FIFO。调度器内部还会 yield 一轮，避免和 AppKit dismiss 动画竞争。
+            if !isBusy {
+                schedulePendingSentinelPresentationIfPossible()
+            }
         }
         .alert(
             String(localized: "sentinel.alert.scan_invitation.title", bundle: .module),
@@ -629,13 +687,13 @@ public struct MainView: View {
             }
         }
         .task {
-            // v1.3：启动时把 settings 的字节口径同步到 coordinator，
-            // 避免 ScanCoordinator 默认值与用户上次保存的偏好不一致。
-            coordinator.accountingMode = settings.sizeAccountingMode
-            smartCareSession.scanCoordinator.accountingMode = settings.sizeAccountingMode
             // v1.3：主列表排序键同样在启动时同步，避免持久化值与 coordinator 默认值不一致。
             coordinator.mainListSortKey = settings.mainListSortKey
-            await refreshCustomPaths()
+            let snapshots = await pathStore.snapshots()
+            for await urls in snapshots {
+                guard !Task.isCancelled else { return }
+                customCategories = urls.map { ScanCategory.makeCustom(url: $0) }
+            }
         }
     }
 
@@ -646,7 +704,7 @@ public struct MainView: View {
             coordinator: smartCareSession.care,
             session: smartCareSession,
             aiIsConfigured: aiSettings.isReadyForUI,
-            aiIsRunning: smartCareAIReviewSession.phase.isRunning,
+            aiIsRunning: smartCareAIIsRunning,
             aiProcessed: smartCareAIProgress?.processedCount ?? 0,
             aiTotal: smartCareAIProgress?.totalCount ?? 0,
             aiError: smartCareAIErrorText,
@@ -657,6 +715,10 @@ public struct MainView: View {
             onAICancel: cancelSmartCareAIReview,
             onAIShowReport: showLatestSmartCareAIReport
         )
+    }
+
+    private var smartCareAIIsRunning: Bool {
+        smartCareAIPreparationGate.isPreparing || smartCareAIReviewSession.phase.isRunning
     }
 
     private var smartCareAIProgress: SmartCareAIReviewProgress? {
@@ -724,7 +786,7 @@ public struct MainView: View {
     }
 
     private func runSmartCareAIReview() {
-        guard !smartCareAIReviewSession.phase.isRunning else { return }
+        guard !smartCareAIIsRunning else { return }
         let items = smartCareAIReviewItems
         let selectedItemIDs = smartCareSession.care.selection.selectedIDs
         let revision = smartCareSession.care.summaryRevision
@@ -732,25 +794,40 @@ public struct MainView: View {
             _ = smartCareAIReviewSession.finishEmpty(summaryRevision: revision)
             return
         }
-        do {
-            let worker = try SmartCareAIReviewWorker.makeOpenAI(settings: aiSettings)
-            _ = smartCareAIReviewSession.start(
-                items: items,
-                selectedItemIDs: selectedItemIDs,
-                summaryRevision: revision,
-                using: worker
-            )
-        } catch {
-            _ = smartCareAIReviewSession.failPreflight(
-                items: items,
-                selectedItemIDs: selectedItemIDs,
-                summaryRevision: revision,
-                failure: SmartCareAIReviewFailure(error: error)
-            )
+        _ = smartCareAIPreparationGate.start { @MainActor in
+            do {
+                let worker = try await SmartCareAIReviewWorker.makeOpenAI(settings: aiSettings)
+                try Task.checkCancellation()
+                guard smartCareSession.care.summaryRevision == revision,
+                      !smartCareAIReviewSession.phase.isRunning else {
+                    return
+                }
+                _ = smartCareAIReviewSession.start(
+                    items: items,
+                    selectedItemIDs: selectedItemIDs,
+                    summaryRevision: revision,
+                    using: worker
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled,
+                      smartCareSession.care.summaryRevision == revision,
+                      !smartCareAIReviewSession.phase.isRunning else {
+                    return
+                }
+                _ = smartCareAIReviewSession.failPreflight(
+                    items: items,
+                    selectedItemIDs: selectedItemIDs,
+                    summaryRevision: revision,
+                    failure: SmartCareAIReviewFailure(error: error)
+                )
+            }
         }
     }
 
     private func cancelSmartCareAIReview() {
+        smartCareAIPreparationGate.cancel()
         smartCareAIReviewSession.cancel()
     }
 
@@ -761,14 +838,75 @@ public struct MainView: View {
     }
 
     private var hasConflictingMainModalPresentation: Bool {
-        showSheet
+        hasOtherMainModalPresentation
+            || deleteSheetRequest != nil
+            || deleteSubmissionHandoff.hasPending
+            || smartCareDeletePreviewGate.isInFlight
+            || isPreparingDeletion
+            || isDeleting
+            || pendingStashDeletion != nil
+    }
+
+    /// Main 的所有系统 presentation 共享这一道互斥判定。异步 Safety preflight
+    /// 返回时如果 fileImporter / AI / Stash / Smart Care 已占用窗口，就不能再竞争
+    /// 同一个 presentation slot。
+    private var hasOtherMainModalPresentation: Bool {
+        let smartCareIsPresented: Bool
+        if case nil = smartCareSheetRoute {
+            smartCareIsPresented = false
+        } else {
+            smartCareIsPresented = true
+        }
+        return smartCareIsPresented
             || aiAskingRow != nil
             || isStashScreenPresented
-            || deleteResultPayload != nil
+            || deleteResultCompletion != nil
+            || deletePreflightNotice != nil
             || aiUnconfiguredAlert
             || deleteResult != nil
+            || customPathImportMessage != nil
+            || isCustomPathImporterPresented
             || sentinelScanInvitationVisible
             || showSwitchCategoryConfirm
+    }
+
+    /// Sentinel 事件只入队，并在窗口真正空闲后的下一次 MainActor 调度机会消费。这样既不会在
+    /// SwiftUI presentation dismiss 动画尚未结束时抢占同一个 slot，也不会丢掉事件。
+    private func enqueueSentinelPresentation(_ intent: SentinelPresentationIntent) {
+        sentinelPresentationQueue.enqueue(intent)
+        schedulePendingSentinelPresentationIfPossible()
+    }
+
+    private func schedulePendingSentinelPresentationIfPossible() {
+        guard sentinelPresentationQueue.requestDrainIfPossible(
+            isModalBusy: hasConflictingMainModalPresentation
+        ) else { return }
+
+        Task { @MainActor in
+            // 即使 occupancy 已经变成 false，AppKit 的 sheet dismiss 动画也可能尚未
+            // 释放 presentation slot；至少跨过当前 SwiftUI update transaction。
+            await Task.yield()
+            guard let intent = sentinelPresentationQueue.takeScheduledIfPossible(
+                isModalBusy: hasConflictingMainModalPresentation
+            ) else { return }
+
+            switch intent {
+            case .inviteFullScan:
+                openWindow(id: "main")
+                sentinelScanInvitationVisible = true
+
+            case .openUninstall(let path):
+                openWindow(id: "main")
+                interfaceMode = .professional
+                requestCategorySwitch(to: MainView.uninstallSentinelID)
+                // 当前 UninstallScreen 还没有按路径高亮的输入口；路径仍被完整排队，
+                // 后续接通高亮时无需改变 Sentinel 的可靠投递契约。
+                _ = path
+            }
+
+            // openUninstall 在无需切换确认时不占 modal；继续按一事件/一次调度排空。
+            schedulePendingSentinelPresentationIfPossible()
+        }
     }
 
     private var canPresentPendingSmartCareAIReport: Bool {
@@ -836,15 +974,11 @@ public struct MainView: View {
     }
 
     private func retryFailedSmartCareAIReview() {
-        startSmartCareAIContinuation { worker in
-            smartCareAIReviewSession.retryFailed(using: worker)
-        }
+        startSmartCareAIContinuation(.retryFailed)
     }
 
     private func continueSmartCareAIReview() {
-        startSmartCareAIContinuation { worker in
-            smartCareAIReviewSession.continueUnreviewed(using: worker)
-        }
+        startSmartCareAIContinuation(.continueUnreviewed)
     }
 
     private func rerunSmartCareAIReview() {
@@ -870,26 +1004,43 @@ public struct MainView: View {
         }
     }
 
-    private func startSmartCareAIContinuation(
-        _ start: @escaping (SmartCareAIReviewWorker) -> UUID?
-    ) {
+    private enum SmartCareAIContinuationKind: Sendable {
+        case retryFailed
+        case continueUnreviewed
+    }
+
+    private func startSmartCareAIContinuation(_ kind: SmartCareAIContinuationKind) {
         guard case .aiReview(let report) = smartCareSheetRoute,
               report.isCurrent,
               report.sourceSummaryRevision == smartCareSession.care.summaryRevision,
-              smartCareAIReviewSession.latestReport?.runID == report.runID else {
+              smartCareAIReviewSession.latestReport?.runID == report.runID,
+              !smartCareAIIsRunning else {
             return
         }
         let expectedRunID = report.runID
         let expectedSummaryRevision = report.sourceSummaryRevision
-        do {
-            let worker = try SmartCareAIReviewWorker.makeOpenAI(settings: aiSettings)
-            smartCareSheetRoute = nil
-            _ = start(worker)
-        } catch {
-            let failure = SmartCareAIReviewFailure(error: error)
-            smartCareSheetRoute = nil
-            Task { @MainActor in
-                await Task.yield()
+        let didStart = smartCareAIPreparationGate.start { @MainActor in
+            do {
+                let worker = try await SmartCareAIReviewWorker.makeOpenAI(settings: aiSettings)
+                try Task.checkCancellation()
+                guard SmartCareAIReviewDeferredActionPolicy.allows(
+                    expectedRunID: expectedRunID,
+                    expectedSummaryRevision: expectedSummaryRevision,
+                    latestReport: smartCareAIReviewSession.latestReport,
+                    currentSummaryRevision: smartCareSession.care.summaryRevision,
+                    aiIsRunning: smartCareAIReviewSession.phase.isRunning
+                ) else { return }
+                switch kind {
+                case .retryFailed:
+                    _ = smartCareAIReviewSession.retryFailed(using: worker)
+                case .continueUnreviewed:
+                    _ = smartCareAIReviewSession.continueUnreviewed(using: worker)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                let failure = SmartCareAIReviewFailure(error: error)
                 guard SmartCareAIReviewDeferredActionPolicy.allows(
                     expectedRunID: expectedRunID,
                     expectedSummaryRevision: expectedSummaryRevision,
@@ -899,6 +1050,9 @@ public struct MainView: View {
                 ) else { return }
                 _ = smartCareAIReviewSession.failContinuationPreflight(failure: failure)
             }
+        }
+        if didStart {
+            smartCareSheetRoute = nil
         }
     }
 
@@ -946,9 +1100,11 @@ public struct MainView: View {
         switch action {
         case .startScan:
             startSmartCareScan()
-        case .scanAgain, .retry:
+        case .scanAgain:
             smartCareSession.prepareForRescan()
             startSmartCareScan()
+        case .retry:
+            retrySmartCareFailure()
         case .continueScan:
             prepareSmartCareScannerConfiguration()
             smartCareSession.continueScan(
@@ -966,23 +1122,64 @@ public struct MainView: View {
         }
     }
 
+    private func retrySmartCareFailure() {
+        guard case .failed(let failure) = smartCareSession.care.phase else { return }
+        switch failure.recovery {
+        case .retryScan:
+            smartCareAIReviewSession.reset()
+            pendingSmartCareAIReport = nil
+            smartCareSheetRoute = nil
+            prepareSmartCareScannerConfiguration()
+            smartCareSession.retryFailedScan(
+                includeHidden: settings.showHidden,
+                enabledDeveloperRuleIDs: settings.enabledDevArtifactRuleIDs
+            )
+        case .reviewCleanup:
+            Task { @MainActor in
+                await presentSmartCareDeleteRequest()
+            }
+        }
+    }
+
     @MainActor
     private func presentSmartCareDeleteRequest(expectedSummaryRevision: UInt64? = nil) async {
+        guard interfaceMode == .normal,
+              !hasConflictingMainModalPresentation else { return }
+
+        let frozenSummaryRevision = smartCareSession.care.summaryRevision
+        let frozenSelectionRevision = smartCareSession.care.selectionRevision
+        if let expectedSummaryRevision,
+           expectedSummaryRevision != frozenSummaryRevision {
+            return
+        }
+        guard let token = smartCareDeletePreviewGate.begin(
+            summaryRevision: frozenSummaryRevision,
+            selectionRevision: frozenSelectionRevision
+        ) else { return }
+        defer {
+            if smartCareDeletePreviewGate.finish(token) {
+                schedulePendingSentinelPresentationIfPossible()
+            }
+        }
+
         do {
-            if let expectedSummaryRevision,
-               smartCareSession.care.summaryRevision != expectedSummaryRevision {
-                return
-            }
             let request = try await smartCareSession.care.makeCleanRequest()
-            if let expectedSummaryRevision,
-               !SmartCareAIReviewCleanupLinkPolicy.allowsPresentation(
-                   expectedSummaryRevision: expectedSummaryRevision,
-                   currentSummaryRevision: smartCareSession.care.summaryRevision,
-                   requestSummaryRevision: request.sourceSummaryRevision
-               ) {
-                return
-            }
             guard !request.items.isEmpty else { return }
+            let modalAvailable = interfaceMode == .normal
+                && !hasOtherMainModalPresentation
+                && deleteSheetRequest == nil
+                && !deleteSubmissionHandoff.hasPending
+                && !isPreparingDeletion
+                && !isDeleting
+                && pendingStashDeletion == nil
+            guard smartCareDeletePreviewGate.allowsCompletion(
+                token: token,
+                currentSummaryRevision: smartCareSession.care.summaryRevision,
+                currentSelectionRevision: smartCareSession.care.selectionRevision,
+                requestSummaryRevision: request.sourceSummaryRevision,
+                requestSelectionRevision: request.sourceSelectionRevision,
+                modalAvailable: modalAvailable
+            ) else { return }
             smartCareSheetRoute = .cleanup(request)
         } catch is CancellationError {
             return
@@ -1003,27 +1200,54 @@ public struct MainView: View {
     }
 
     private func prepareSmartCareScannerConfiguration() {
-        smartCareSession.scanCoordinator.accountingMode = settings.sizeAccountingMode
         smartCareSession.scanCoordinator.refreshFDAStatus()
     }
 
-    private func performSmartCareDelete(request: SmartCareCleanRequest, dryRun: Bool) async {
-        if !dryRun, let message = runningAppBlockMessage(for: request.previewRows) {
-            deleteResult = message
-            return
-        }
-
-        if dryRun {
-            _ = await runTrash(
-                paths: request.paths,
-                dryRun: true,
-                source: "smart-care",
-                accessDeniedPaths: smartCareSession.deletionDeniedPaths
-            )
-            return
-        }
-
+    private func performSmartCareDelete(request: SmartCareCleanRequest,
+                                        action: DeleteSheetAction,
+                                        accessDeniedPaths: Set<String>) async {
+        // 从提交开始而不是从真正 recycle 才加锁：后台投影也是同一删除事务的一部分，
+        // 快速重复确认不能让两份相同 frozen request 同时越过第一个 await。
         guard !isDeleting else { return }
+        isDeleting = true
+        defer { isDeleting = false }
+
+        let projection: DeleteExecutionPlanner.SmartCarePlan
+        do {
+            projection = try await DeleteExecutionPlanner.makeSmartCarePlanAsync(
+                request: request,
+                action: action
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            assertionFailure("Unexpected Smart Care deletion projection error: \(error)")
+            return
+        }
+        let execution = projection.execution
+        let finalDeniedPaths = DeletionDeniedPathPolicy.final(
+            frozen: accessDeniedPaths,
+            current: smartCareSession.deletionDeniedPaths
+        )
+
+        if execution.dryRun {
+#if DEBUG
+            let result = await runTrashPreview(
+                paths: request.paths,
+                source: "smart-care",
+                accessDeniedPaths: finalDeniedPaths
+            )
+            presentTrashPreviewOutcome(
+                moved: result.moved,
+                skipped: result.skipped,
+                err: result.err
+            )
+#else
+            assertionFailure("Release Smart Care cannot submit a preview action")
+#endif
+            return
+        }
+
         guard smartCareSession.care.confirmClean(request) else {
             // sheet 展示期间选择发生变化：旧请求不能静默扩张为最新选择。
             // 先让上一张 item sheet 完成 dismiss，再用最新 revision 重建预览。
@@ -1031,19 +1255,70 @@ public struct MainView: View {
             await presentSmartCareDeleteRequest()
             return
         }
-        let confirmedRequest = request
-        isDeleting = true
-        defer { isDeleting = false }
 
-        let result = await runTrash(
-            paths: confirmedRequest.paths,
-            dryRun: false,
+        let runningAppSkippedCount = execution.runningAppSkippedResultItems.count
+        smartCareSession.care.updateCleaningProgress(SmartCareCleanProgress(
+            completedCount: 0,
+            totalCount: execution.rows.count
+        ))
+        guard !execution.rows.isEmpty else {
+            smartCareSession.care.completeCleaning(SmartCareResult(
+                movedCount: 0,
+                skippedCount: runningAppSkippedCount,
+                releasedBytes: 0
+            ))
+            // 用户选择跳过全部运行中项目时没有提交文件系统操作；确认流程已经
+            // 给出反馈，这里不能再伪造一张 OperationResultSheet。
+            return
+        }
+
+        let submission = await TrashActionCoordinator(pipeline: pipeline).submitConfirmed(
+            paths: execution.paths,
             source: "smart-care",
-            accessDeniedPaths: smartCareSession.deletionDeniedPaths
+            accessDeniedPaths: finalDeniedPaths
         )
+        let result: TrashRunResult
+        let completedSubmission: TrashActionCoordinator.CompletedSubmission
+        switch submission {
+        case .recycleCompleted(let submitted):
+            completedSubmission = submitted
+            result = TrashRunResult(
+                moved: submitted.moved,
+                skipped: submitted.skipped,
+                err: submitted.err,
+                pairs: submitted.pairs,
+                outcome: submitted.outcome,
+                succeededPaths: submitted.succeededPaths
+            )
+
+        case .preSubmitRejected(.emptyRequest):
+            smartCareSession.care.resumeReviewAfterUnsubmittedClean()
+            return
+
+        case .preSubmitRejected(.safety(let preflight)),
+             .preSubmitRejected(.invalidVendorOverride(let preflight)):
+            smartCareSession.care.resumeReviewAfterUnsubmittedClean()
+            deletePreflightNotice = DeletionPreflightNotice(rejections: preflight.rejections)
+            return
+
+        case .preSubmitRejected(.invalidScanIncompleteOverride(let rejections)):
+            smartCareSession.care.resumeReviewAfterUnsubmittedClean()
+            deletePreflightNotice = DeletionPreflightNotice(rejections: rejections)
+            return
+
+        case .preSubmitRejected(.unsupportedPipeline):
+            assertionFailure("Smart Care deletion requires the typed recycle boundary")
+            smartCareSession.care.resumeReviewAfterUnsubmittedClean()
+            deletePreflightNotice = DeletionPreflightNotice(
+                rejections: execution.paths.map {
+                    .init(path: $0, reason: "unsupportedPipeline")
+                }
+            )
+            return
+        }
         let succeededPaths = result.succeededPaths
         let accounting = await SmartCareDeletionAccountingExecutor.run(
-            items: confirmedRequest.items,
+            items: projection.submittedItems,
             succeededPaths: succeededPaths,
             professionalSelection: selection
         )
@@ -1067,6 +1342,10 @@ public struct MainView: View {
 
         if succeededPaths.isEmpty, let error = result.err {
             smartCareSession.care.fail(.cleanFailed(error))
+            deleteResultCompletion = .trash(
+                completedSubmission,
+                runningAppSkipped: execution.runningAppSkippedResultItems
+            )
             return
         }
 
@@ -1076,10 +1355,37 @@ public struct MainView: View {
         smartCareSession.care.completeCleaning(
             SmartCareResult(
                 movedCount: result.moved,
-                skippedCount: result.skipped,
+                skippedCount: result.skipped + runningAppSkippedCount,
                 releasedBytes: releasedBytes
             )
         )
+        deleteResultCompletion = .trash(
+            completedSubmission,
+            runningAppSkipped: execution.runningAppSkippedResultItems
+        )
+    }
+
+    /// macOS 不保证一张 sheet 的 state 置 nil 后立刻允许另一张 sheet 呈现。
+    /// 统一从 onDismiss 取出事务，确保瞬时的“全部跳过”结果也不会和关闭动画竞争。
+    private func runPendingDeleteSubmissionAfterSheetDismissal() {
+        guard let submission = deleteSubmissionHandoff.takeAfterSheetDismissal() else { return }
+        switch submission {
+        case .professional(let request, let executionPlan):
+            Task { [request, executionPlan] in
+                await performProfessionalDelete(
+                    request: request,
+                    executionPlan: executionPlan
+                )
+            }
+        case .smartCare(let request, let action, let accessDeniedPaths):
+            Task { [request, action, accessDeniedPaths] in
+                await performSmartCareDelete(
+                    request: request,
+                    action: action,
+                    accessDeniedPaths: accessDeniedPaths
+                )
+            }
+        }
     }
 
     // MARK: - Sidebar
@@ -1114,9 +1420,9 @@ public struct MainView: View {
             ideal: SidebarMetrics.idealWidth,
             max: SidebarMetrics.maxWidth
         )
-        // v2：sidebar 整体套布局沙箱——切断 sidebarList 内部任何一行长 title 反推
-        // 外层 NavigationSplitView，避免「sidebar 被压成 1px 竖线」复发。
-        .layoutSandbox()
+        // 侧栏本身就是 NavigationSplitView 的列根，不能再用 GeometryReader 沙箱包裹。
+        // 否则列宽 preference 会藏在 flexible child 内，首次切到 Professional 时
+        // 分栏无法稳定拿到明确宽度。长标题由 SidebarTitleStyle 自己截断。
     }
 
     private var sidebarList: some View {
@@ -1169,19 +1475,20 @@ public struct MainView: View {
                     sidebarRow(cat)
                         .tag(cat.id)
                         .contextMenu {
-                            Button(role: .destructive) {
+                            Button {
                                 Task { await removeCustomPath(cat) }
                             } label: {
                                 Label {
                                     Text("menu.path.remove", bundle: .module)
                                 } icon: {
-                                    Image(systemName: "trash")
+                                    Image(systemName: "minus.circle")
                                 }
                             }
                         }
                 }
                 Button {
-                    addCustomPathViaPanel()
+                    guard !hasConflictingMainModalPresentation else { return }
+                    isCustomPathImporterPresented = true
                 } label: {
                     Label {
                         localizedSidebarTitle("menu.path.add")
@@ -1192,6 +1499,7 @@ public struct MainView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.vertical, 2)
+                .disabled(hasConflictingMainModalPresentation)
             } header: {
                 HStack {
                     Text("sidebar.section.custom", bundle: .module)
@@ -1677,23 +1985,19 @@ public struct MainView: View {
                 // 复用 WorkflowDetailView 通用渲染壳，数据源 AppleWorkflow.cards + WorkflowRegistry.resolve。
                 // pipeline 透传 MainView 持有的 TrashPipeline 实例，删除走 NSWorkspace.recycle。
                 WorkflowDetailView(workflow: AppleWorkflow(),
-                                   pipeline: pipeline,
-                                   accessDeniedPathsProvider: { accessDeniedPathsSnapshot() })
+                                   pipeline: pipeline)
             } else if isWorkflowAndroidMode {
                 // v1.7 M1 PR-5：Android 工作流（gradle / .android / AVD / SDK / Android Studio）。
                 WorkflowDetailView(workflow: AndroidWorkflow(),
-                                   pipeline: pipeline,
-                                   accessDeniedPathsProvider: { accessDeniedPathsSnapshot() })
+                                   pipeline: pipeline)
             } else if isWorkflowWebNodeMode {
                 // v1.7 M1 PR-5：Web / Node 工作流（pnpm-store / yarn / npm / electron / node-gyp / scattered node_modules）。
                 WorkflowDetailView(workflow: WebNodeWorkflow(),
-                                   pipeline: pipeline,
-                                   accessDeniedPathsProvider: { accessDeniedPathsSnapshot() })
+                                   pipeline: pipeline)
             } else if isWorkflowBackendMode {
                 // v1.9：Backend 工作流（JVM / Go / Rust / Zig / Bazel / CMake）。
                 WorkflowDetailView(workflow: BackendWorkflow(),
-                                   pipeline: pipeline,
-                                   accessDeniedPathsProvider: { accessDeniedPathsSnapshot() })
+                                   pipeline: pipeline)
             } else {
                 statusBar
                 Divider()
@@ -1705,32 +2009,41 @@ public struct MainView: View {
                         settings: settings,
                         selection: $largeFileSelection,
                         batch: largeFilesBatch,
-                        onTrash: { urls in
-                            triggerLargeFileTrash(urls: urls)
+                        onTrash: { items in
+                            presentDeleteConfirmation(
+                                rows: items.map(makeDeletionRow),
+                                origin: .largeFiles
+                            )
                         },
-                        onVisiblePathsChange: { paths in
-                            visibleLargeFilePaths = paths
+                        onVisibleItemsChange: { items in
+                            visibleLargeFileItems = items
                         },
                         onStash: { item in
-                            stash.add(path: item.path,
-                                      title: item.title,
-                                      bytes: item.bytes,
-                                      isDirectory: false)
+                            addToStash(
+                                path: item.path,
+                                title: item.title,
+                                bytes: item.bytes,
+                                isDirectory: false,
+                                fileCount: 1
+                            )
                         },
                         isStashed: { path in stash.contains(path) },
                         aiSettings: aiSettings,
                         onAskAI: { item in
-                            let (v, rj) = TreeBrowserView.safety.evaluate(path: item.path)
+                            let evaluation = coordinator.deletionSafetyEvaluation(for: item.path)
                             requestAI(row: RowItem(
                                 id: item.path,
                                 url: item.url,
                                 title: item.title,
                                 isDirectory: false,
                                 bytes: item.bytes,
-                                logicalBytes: item.bytes,
+                                logicalBytes: item.logicalBytes,
                                 fileCount: 1,
-                                verdict: v,
-                                rejection: rj,
+                                verdict: evaluation.verdict,
+                                rejection: evaluation.rejection,
+                                vendorName: evaluation.vendor?.name,
+                                vendorNote: evaluation.vendor?.note,
+                                runningBundleIDPrefix: evaluation.vendor?.bundleIDPrefix,
                                 modificationDate: item.modificationDate
                             ))
                         }
@@ -1764,11 +2077,20 @@ public struct MainView: View {
                                         onSelectionCleared: {
                                             treeSelection = nil
                                         },
-                                        onTrash: { url in
-                                            // **v1.5.3**：行内 trash 按钮 / 右键菜单 / Delete 键
-                                            // 都走这一条单删通道（取代 v1.3.zzzz Phase 4-B 的批量入口）。
-                                            triggerLargeFileTrash(urls: [url])
+                                        onTrash: { treeRow in
+                                            // Tree 直接冻结用户看到的那一行。不能退化成 URL 后再去
+                                            // coordinator 的可选 index 回查，否则按需展开行会丢失
+                                            // size/count/isDirectory，确认页就会错误显示 Zero KB。
+                                            guard let deletionRow = makeDeletionRow(treeRow) else {
+                                                NSSound.beep()
+                                                return
+                                            }
+                                            presentDeleteConfirmation(
+                                                rows: [deletionRow],
+                                                origin: .tree
+                                            )
                                         },
+                                        allowsVendorPathOverride: true,
                                         onRefreshSubtree: { path in
                                             // v2026.06 #1：右键"刷新此目录"。仅清按需子树缓存，
                                             // 不重启 BulkScanner（成本太高），详见 ScanCoordinator.rescanSubtree。
@@ -1777,10 +2099,13 @@ public struct MainView: View {
                                         onStash: { row in
                                             // v2026.06.18：把 TreeRow 装进购物车。
                                             // 入口在 tree row contextMenu / "加入待处理"。
-                                            stash.add(path: row.path,
-                                                      title: row.title,
-                                                      bytes: row.bytes,
-                                                      isDirectory: row.isDirectory)
+                                            addToStash(
+                                                path: row.path,
+                                                title: row.title,
+                                                bytes: row.bytes,
+                                                isDirectory: row.isDirectory,
+                                                fileCount: row.fileCount
+                                            )
                                         },
                                         isStashed: { path in stash.contains(path) },
                                         aiSettings: aiSettings,
@@ -1792,17 +2117,20 @@ public struct MainView: View {
                                             // 看到同样的 verdict / rejection 上下文。
                                             //
                                             // v1.5 P2 / Q3：走 requestAI 收敛 —— 未配置时弹 alert。
-                                            let (v, rj) = TreeBrowserView.safety.evaluate(path: row.path)
+                                            let evaluation = coordinator.deletionSafetyEvaluation(for: row.path)
                                             requestAI(row: RowItem(
                                                 id: row.path,
                                                 url: URL(fileURLWithPath: row.path),
                                                 title: row.title,
                                                 isDirectory: row.isDirectory,
                                                 bytes: row.bytes,
-                                                logicalBytes: row.bytes,
+                                                logicalBytes: row.logicalBytes,
                                                 fileCount: row.fileCount,
-                                                verdict: v,
-                                                rejection: rj,
+                                                verdict: evaluation.verdict,
+                                                rejection: evaluation.rejection,
+                                                vendorName: evaluation.vendor?.name,
+                                                vendorNote: evaluation.vendor?.note,
+                                                runningBundleIDPrefix: evaluation.vendor?.bundleIDPrefix,
                                                 modificationDate: row.modificationDate
                                             ))
                                         },
@@ -1844,15 +2172,11 @@ public struct MainView: View {
                 footerBar
             }
         }
-        .navigationSplitViewColumnWidth(min: 560, ideal: 760)
-        // v2：detail 列整体套布局沙箱——这是修「Library 一来数据 sidebar 变成竖线」、
-        // 「重复文件左右栏掉到窗外」、「卸载残留把外层 sidebar 挤掉」一系列灾难的根因。
-        //
-        // GeometryReader 把外层 NavigationSplitView detail 列分给 results 的
-        // proposed width 物理钉死成 results 内容的 frame width，
-        // 内部 List/HStack/HSplitView 任何子视图的 ideal width 都不再向外反推，
-        // 反挤 sidebar 的链条被切断。
+        // Professional detail 入口只允许这一层 WidthSandbox。各子屏不得再嵌套
+        // GeometryReader，否则会触发 AppKit 约束多轮更新；列宽 preference 放在
+        // sandbox 外面，确保 NavigationSplitView 可以稳定读取。
         .layoutSandbox()
+        .navigationSplitViewColumnWidth(min: 560, ideal: 760)
         .onChange(of: coordinator.snapshot.rows.count) { _, newCount in
             guard !coordinator.isScanning else { return }
             // 默认勾选：仅勾 .safe（PITFALLS §5.5）
@@ -1998,6 +2322,7 @@ public struct MainView: View {
                 )
                 RowView(row: row, selected: isOn,
                         maxBytes: maxBytes,
+                        allowsVendorPathOverride: true,
                         aiSettings: aiSettings,
                         // v1.5 P2 / Q3：走 requestAI 收敛 —— 未配置时弹 alert 引导设置。
                         onAskAI: { picked in requestAI(row: picked) })
@@ -2026,31 +2351,35 @@ public struct MainView: View {
         return Int64(1) << bits
     }
 
-    /// v1.3：是否应显示顶部权限 banner。
-    ///
-    /// 旧逻辑只看"是否有任意 skipped 或 denied 路径"——但 [TCCSkipList](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift)
-    /// 是硬编码列表，**用户已授予 FDA 后这些路径本来就该被正常下钻**，banner 此时是误报。
-    ///
-    /// 现在分两档：
-    /// - **FDA 已授权**：ScanCoordinator 把 `respectTCCSkipList` 关掉，BulkScanner 不再 yield
-    ///   `.tccProtectedSkipped`，所以 `tccProtectedSkippedPaths` 应当为空；只在
-    ///   `permissionDeniedPaths` 真的非空时显示（root 自身 EACCES 等罕见情况）
-    /// - **FDA 未授权 / 未知**：保持原行为，任一非空都显示
-    private var shouldShowPermissionBanner: Bool {
-        if coordinator.fdaStatus == .granted {
-            return !coordinator.permissionDeniedPaths.isEmpty
-        }
-        return !coordinator.permissionDeniedPaths.isEmpty
-            || !coordinator.tccProtectedSkippedPaths.isEmpty
+    /// 扫描问题只能投影成一个互斥主状态，避免 permission banner、partial 文案和
+    /// raw lastError 同时抢占页面。兼容数组先在模型层去重；UI 不再直接渲染错误对象。
+    private var scanIssuePresentation: ScanIssuePresentation {
+        ScanIssuePresentation.make(
+            hasTerminalFailure: coordinator.terminalFailure != nil,
+            permissionDeniedPaths: coordinator.permissionDeniedPaths,
+            tccSkippedPaths: coordinator.tccProtectedSkippedPaths,
+            incompletePaths: coordinator.incompleteScanPaths
+        )
     }
 
     private var statusBar: some View {
-        VStack(spacing: 0) {
-            // v1.3 修 banner 误报：FDA 已授权时，硬 skip 已被 ScanCoordinator 关闭，
-            if shouldShowPermissionBanner {
+        let issuePresentation = scanIssuePresentation
+        return VStack(spacing: 0) {
+            if issuePresentation.kind == .fatal {
+                ScanFailureBanner(
+                    onRetry: {
+                        guard let id = selectedCategory,
+                              let category = allCategories.first(where: { $0.id == id }) else { return }
+                        startScan(category: category)
+                    }
+                )
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            } else if issuePresentation.kind == .limitations {
                 PermissionStatusBanner(
-                    fdaDeniedPaths: coordinator.permissionDeniedPaths,
-                    tccSkippedPaths: coordinator.tccProtectedSkippedPaths,
+                    fdaDeniedPaths: issuePresentation.permissionDeniedPaths,
+                    tccSkippedPaths: issuePresentation.tccSkippedPaths,
+                    otherIncompletePaths: issuePresentation.otherIncompletePaths,
                     fdaStatus: coordinator.fdaStatus,
                     onOpenSettings: {
                         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
@@ -2100,9 +2429,11 @@ public struct MainView: View {
                             LazyVStack(alignment: .leading, spacing: 2) {
                                 ForEach(rows, id: \.rootPath) { p in
                                     HStack(spacing: 4) {
-                                        Text(p.isFinished ? "✓" : "●")
+                                        let statusSymbol = p.isPartial ? "!" : (p.isFinished ? "✓" : "●")
+                                        let statusColor: Color = p.isPartial ? .orange : (p.isFinished ? .green : .accentColor)
+                                        Text(statusSymbol)
                                             .font(.caption.bold())
-                                            .foregroundStyle(p.isFinished ? Color.green : Color.accentColor)
+                                            .foregroundStyle(statusColor)
                                         let bytesText: String = (p.bytes <= 0 && p.fileCount <= 0)
                                             ? String(localized: "progress.size.placeholder", bundle: .module)
                                             : formattedBytes(p.bytes)
@@ -2117,8 +2448,19 @@ public struct MainView: View {
                         .frame(maxHeight: multiRootProgressScrollMaxHeight)
                     }
                 } else if coordinator.snapshot.isFinished {
-                    Text(String(format: String(localized: "main.scan.finished", bundle: .module), coordinator.snapshot.scannedFileCount, formattedBytes(coordinator.snapshot.totalBytes), String(format: "%.2fs", coordinator.snapshot.elapsed)))
-                        .font(.callout)
+                    if coordinator.snapshot.isComplete {
+                        Text(String(format: String(localized: "main.scan.finished", bundle: .module), coordinator.snapshot.scannedFileCount, formattedBytes(coordinator.snapshot.totalBytes), String(format: "%.2fs", coordinator.snapshot.elapsed)))
+                            .font(.callout)
+                    } else {
+                        Text(String(
+                            format: String(localized: "main.scan.incomplete.summary %lld %@ %@", bundle: .module),
+                            Int64(coordinator.snapshot.scannedFileCount),
+                            formattedBytes(coordinator.snapshot.totalBytes),
+                            String(format: "%.2fs", coordinator.snapshot.elapsed)
+                        ))
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                    }
                 } else if coordinator.wasCancelled {
                     // v1.3：cancel 后区分"已停止"与"还未扫描"两态，避免用户以为停止键失灵
                     Text("main.scan.cancelled", bundle: .module)
@@ -2138,9 +2480,6 @@ public struct MainView: View {
                     }
                 }
                 Spacer()
-                if let err = coordinator.lastError {
-                    Text(err).font(.caption).foregroundStyle(.red)
-                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
@@ -2282,21 +2621,17 @@ public struct MainView: View {
                 //   - 有勾选 → 走 batch，删掉所有勾选项（用户明确意图，即便被 kindFilter 隐藏也算）
                 //   - 无勾选但有 largeFileSelection → 退化为单行删（Cmd+Delete 沿用原有快捷键语义）
                 //   - 两者都无 → disabled
+                let visibleLargeFilePaths = visibleLargeFileItems.map(\.path)
                 let pickedPaths = largeFilesBatch.selectedItemsIntersecting(visible: visibleLargeFilePaths)
                 let pickedCount = pickedPaths.count
                 let hasPicked = pickedCount > 0
                 let pickedBytes: Int64 = {
                     guard hasPicked else { return 0 }
-                    let source = coordinator.largeFiles(
-                        minSizeMB: 0,
-                        sortKey: .sizeDesc,
-                        limit: Int.max
-                    )
-                    var byPath: [String: Int64] = [:]
-                    byPath.reserveCapacity(source.count)
-                    for item in source { byPath[item.path] = item.bytes }
+                    let pickedSet = Set(pickedPaths)
                     var sum: Int64 = 0
-                    for p in pickedPaths { sum += byPath[p] ?? 0 }
+                    for item in visibleLargeFileItems where pickedSet.contains(item.path) {
+                        sum &+= item.bytes
+                    }
                     return sum
                 }()
                 let summary: String = {
@@ -2318,12 +2653,16 @@ public struct MainView: View {
                 Spacer()
                 Button {
                     if hasPicked {
-                        let urls = pickedPaths.map { URL(fileURLWithPath: $0) }
-                        triggerLargeFileTrash(urls: urls) { result in
-                            largeFilesBatch.remove(paths: result.succeededPaths)
-                        }
+                        let pickedSet = Set(pickedPaths)
+                        let rows = visibleLargeFileItems
+                            .filter { pickedSet.contains($0.path) }
+                            .map(makeDeletionRow)
+                        presentDeleteConfirmation(rows: rows, origin: .largeFiles)
                     } else if let item = largeFileSelection {
-                        triggerLargeFileTrash(urls: [item.url])
+                        presentDeleteConfirmation(
+                            rows: [makeDeletionRow(item)],
+                            origin: .largeFiles
+                        )
                     }
                 } label: {
                     Label {
@@ -2332,7 +2671,13 @@ public struct MainView: View {
                         Image(systemName: "trash")
                     }
                 }
-                .disabled(!hasPicked && largeFileSelection == nil)
+                .disabled(
+                    (!hasPicked && largeFileSelection == nil)
+                        || isDeleting
+                        || isPreparingDeletion
+                        || coordinator.isScanning
+                        || !coordinator.snapshot.isFinished
+                )
                 .keyboardShortcut(.delete, modifiers: .command)
             } else {
                 Text(summaryText)
@@ -2340,7 +2685,9 @@ public struct MainView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button {
-                    showSheet = !selectedRowsEmpty
+                    if !selectedRowsEmpty {
+                        presentDeleteConfirmation(rows: rows, origin: .scanSelection)
+                    }
                 } label: {
                     Label {
                         Text("toolbar.delete.move_to_trash", bundle: .module)
@@ -2348,7 +2695,13 @@ public struct MainView: View {
                         Image(systemName: "trash")
                     }
                 }
-                .disabled(selectedRowsEmpty)
+                .disabled(
+                    selectedRowsEmpty
+                        || isDeleting
+                        || isPreparingDeletion
+                        || coordinator.isScanning
+                        || !coordinator.snapshot.isFinished
+                )
                 .keyboardShortcut(.delete, modifiers: .command)
             }
         }
@@ -2395,6 +2748,7 @@ public struct MainView: View {
             // v2：统一详情面板样式（padding + maxWidth.infinity + leading 对齐）。
             .detailPaneStyle()
         } else if let row = treeSelection {
+            let metrics = TreeMetricPresentation(row: row, locale: locale)
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Image(systemName: row.isDirectory ? "folder.fill" : "doc")
@@ -2410,8 +2764,24 @@ public struct MainView: View {
                     .textSelection(.enabled)
                     .longPathStyle()
                 Divider()
-                LabeledContent(String(localized: "detail.size", bundle: .module), value: formattedBytes(row.bytes))
-                LabeledContent(String(localized: "detail.file.count", bundle: .module), value: "\(row.fileCount)")
+                if let partialStatus = metrics.partialStatusText {
+                    Label(partialStatus, systemImage: "exclamationmark.circle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .help(metrics.helpText ?? partialStatus)
+                }
+                LabeledContent(
+                    String(localized: "detail.size.physical", bundle: .module),
+                    value: metrics.size.detailText
+                )
+                LabeledContent(
+                    String(localized: "detail.size.logical", bundle: .module),
+                    value: metrics.logicalSize.detailText
+                )
+                LabeledContent(
+                    String(localized: "detail.file.count", bundle: .module),
+                    value: metrics.count.detailText
+                )
                 LabeledContent(String(localized: "detail.is.directory", bundle: .module), value: row.isDirectory ? String(localized: "detail.bool.yes", bundle: .module) : String(localized: "detail.bool.no", bundle: .module))
                 if row.isDirectory && row.hasChildren {
                     LabeledContent(String(localized: "detail.expandable", bundle: .module), value: String(localized: "detail.bool.yes", bundle: .module))
@@ -2430,25 +2800,20 @@ public struct MainView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            HStack(spacing: 6) {
-                Text("main.nav.title", bundle: .module)
-                    .font(.headline)
-                    .lineLimit(1)
-                appVersionBadge
+        // macOS 26 会自动给 ToolbarItemGroup 添加共享 Liquid Glass 背景。品牌标题不是
+        // 操作控件，不应被画成可点击胶囊；使用系统提供的 modifier 明确关闭该背景。
+        if #available(macOS 26.0, *) {
+            ToolbarItem(placement: .navigation) {
+                mainToolbarBrand
             }
-            Picker(
-                String(localized: "smart_care.mode.label", bundle: .module),
-                selection: $interfaceMode
-            ) {
-                Text("smart_care.mode.normal", bundle: .module)
-                    .tag(SmartCareInterfaceMode.normal)
-                Text("smart_care.mode.professional", bundle: .module)
-                    .tag(SmartCareInterfaceMode.professional)
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .navigation) {
+                mainToolbarBrand
             }
-            .pickerStyle(.segmented)
-            .frame(width: 220)
-            .help(Text("smart_care.mode.label", bundle: .module))
+        }
+        ToolbarItem(placement: .navigation) {
+            interfaceModePicker
         }
         if interfaceMode == .professional {
             ToolbarItem(placement: .principal) {
@@ -2477,6 +2842,30 @@ public struct MainView: View {
         }
     }
 
+    private var mainToolbarBrand: some View {
+        HStack(spacing: 6) {
+            Text("main.nav.title", bundle: .module)
+                .font(.headline)
+                .lineLimit(1)
+            appVersionBadge
+        }
+    }
+
+    private var interfaceModePicker: some View {
+        Picker(
+            String(localized: "smart_care.mode.label", bundle: .module),
+            selection: $interfaceMode
+        ) {
+            Text("smart_care.mode.normal", bundle: .module)
+                .tag(SmartCareInterfaceMode.normal)
+            Text("smart_care.mode.professional", bundle: .module)
+                .tag(SmartCareInterfaceMode.professional)
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 220)
+        .help(Text("smart_care.mode.label", bundle: .module))
+    }
+
     /// 主窗口始终展示最终 App Bundle 的真实营销版本，便于截图、反馈和发版验收时
     /// 直接确认正在运行的二进制。版本来源与「设置 → 更新」共用
     /// [UpdateChecker.currentVersion]，禁止在 UI 里写死发布版本。
@@ -2490,9 +2879,6 @@ public struct MainView: View {
             .font(.caption2)
             .monospacedDigit()
             .foregroundStyle(.tertiary)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(.quaternary.opacity(0.72), in: Capsule())
             .accessibilityLabel(accessibleLabel)
             .help(accessibleLabel)
     }
@@ -2544,21 +2930,34 @@ public struct MainView: View {
         )
     }
 
-    private func requestCategorySwitch(to new: String?) {
+    private func requestCategorySwitch(to new: String?, fallbackCategory: ScanCategory? = nil) {
+        guard !isPreparingDeletion, !isDeleting else { return }
         let old = selectedCategory
-        guard old != new else { return }
+        guard old != new else {
+            // 重复添加当前正在查看的路径仍然是一个明确的“扫描这里”意图。
+            // 直接使用冻结类目，不等待跨 Scene 的 AsyncStream 镜像刷新。
+            if let fallbackCategory, fallbackCategory.id == new {
+                startScan(category: fallbackCategory)
+            }
+            return
+        }
         if shouldConfirmCategorySwitch {
             pendingCategorySwitch = (old, new)
+            pendingCategoryFallback = fallbackCategory
             showSwitchCategoryConfirm = true
             return
         }
-        applyCategorySwitch(from: old, to: new)
+        applyCategorySwitch(from: old, to: new, fallbackCategory: fallbackCategory)
     }
 
     /// v2026.06.21：原 onChange(selectedCategory) 的 body 抽出来，供"无须确认"与
     /// "已确认" 两条路径共用，避免把"分发到 trigger* / runHeavyAfterCommit"逻辑
     /// 复制到 confirmationDialog 的回调里去（一旦后续加 sentinel 又得改两处）。
-    private func applyCategorySwitch(from old: String?, to new: String?) {
+    private func applyCategorySwitch(
+        from old: String?,
+        to new: String?,
+        fallbackCategory: ScanCategory? = nil
+    ) {
         guard old != new else { return }
         if let id = new, ScanCategory.batchScanIDs.contains(id) {
             switch id {
@@ -2589,7 +2988,10 @@ public struct MainView: View {
             }
             return
         }
-        guard let id = new, let cat = allCategories.first(where: { $0.id == id }) else { return }
+        guard let id = new else { return }
+        let category = allCategories.first(where: { $0.id == id })
+            ?? fallbackCategory.flatMap { $0.id == id ? $0 : nil }
+        guard let cat = category else { return }
         // v2：统一走 [runHeavyAfterCommit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HeavyTask.swift)
         // 模板（detached + sleep 16ms + MainActor.run），让 SwiftUI 先把
         // 「sidebar 高亮 / 旧 detail 清空 / loading 状态」这一帧 commit 出去再开始扫。
@@ -2680,6 +3082,7 @@ public struct MainView: View {
     private var stashToolbarButton: some View {
         if stash.count > 0 {
             Button {
+                guard !hasConflictingMainModalPresentation else { return }
                 isStashScreenPresented = true
             } label: {
                 Label {
@@ -2695,6 +3098,7 @@ public struct MainView: View {
             }
             .help(String(format: String(localized: "toolbar.stash.help_with_count", bundle: .module),
                          stash.count))
+            .disabled(hasConflictingMainModalPresentation)
         }
     }
 
@@ -2814,10 +3218,9 @@ public struct MainView: View {
         }
         Task {
             _ = await pathStore.add(url)
-            await refreshCustomPaths()
             await MainActor.run {
                 let cat = ScanCategory.makeCustom(url: url)
-                requestCategorySwitch(to: cat.id)
+                requestCategorySwitch(to: cat.id, fallbackCategory: cat)
                 pathBarInput = ""
             }
         }
@@ -2857,6 +3260,7 @@ public struct MainView: View {
     /// 这是 Q3 修复的核心收敛点：所有 onAskAI callsite（List / Tree / Stash）
     /// 都走这里，避免散落判断 isReadyForUI 又散落 alert，将来语义有变只改一处。
     private func requestAI(row: RowItem) {
+        guard !hasConflictingMainModalPresentation else { return }
         if aiSettings.isReadyForUI {
             aiAskingRow = row
         } else {
@@ -2906,7 +3310,14 @@ public struct MainView: View {
     }
 
     private var selectedRows: [RowItem] {
-        coordinator.snapshot.rows.filter { selection.contains($0.id) && $0.isSelectable }
+        coordinator.snapshot.rows.filter {
+            selection.contains($0.id)
+                && DeletionEntryPolicy.canInitiate(
+                    verdict: $0.verdict,
+                    rejection: $0.rejection,
+                    allowsVendorPathOverride: true
+                )
+        }
     }
 
     private var selectionSummary: String {
@@ -2919,10 +3330,12 @@ public struct MainView: View {
     /// v1.3.zzzz：从 ScanCoordinator 拉一份"上层一票否决"路径快照。
     /// 合并 [permissionDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L18)
     /// 与 [tccProtectedSkippedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L21)
-    /// —— 这两类路径里实质没有数据，扔给 NSWorkspace.recycle 也无意义。
+    /// 及扫描器明确报告的 incomplete 路径。三类路径都缺少完整可删证据，不能交给
+    /// NSWorkspace.recycle。
     private func accessDeniedPathsSnapshot() -> Set<String> {
         var s = Set<String>()
         s.formUnion(coordinator.permissionDeniedPaths)
+        s.formUnion(coordinator.incompleteScanPaths)
         s.formUnion(coordinator.tccProtectedSkippedPaths)
         return s
     }
@@ -3053,7 +3466,7 @@ public struct MainView: View {
         }
     }
 
-    /// v2026.06.17 (AUDIT A4)：`performDelete` 与 `triggerLargeFileTrash` 共用的
+    /// v2026.06.17 (AUDIT A4)：专业模式与已确认 Stash 操作共用的
     /// pipeline 调用结果，callsite 自行处理 pruneDeleted / bytes 统计 / 关 sheet 等场景化逻辑。
     @MainActor
     private struct TrashRunResult {
@@ -3065,53 +3478,28 @@ public struct MainView: View {
         let succeededPaths: [String]
     }
 
-    /// v2026.06.17 (AUDIT A4)：抽出 `performDelete` 与 `triggerLargeFileTrash` 重复的
-    /// **统一删除入口** ——
-    /// (1) request-scoped accessDenied；(2) TrashActionCoordinator.run；(3) UndoHistory 写入；(4) outcome → sheet/alert。
-    ///
-    /// 抽这步是因为两条链路任何一处忘了带安全上下文或忘了消费结构化 outcome
-    /// 都会让"上层防护漏失 / 结构化 sheet 退化为文本 alert"的回归在 PR review 时几乎不可能被发现——
-    /// 既然只剩一份真实现就把契约集中在一个方法里，强制单点维护。
-    ///
-    /// **不抽**的部分（特意保留在 callsite）：isDeleting sheet 控制、bytes 统计、
-    /// pruneDeleted（主清单 / 大文件都只消费 succeededPaths）、
-    /// selection.removeAll / largeFileSelection=nil、refreshVolumeCapacity——
-    /// 这些是两条链路的语义差异点（dryRun vs 强制真删 / 阻塞 sheet vs 大文件单点），
-    /// 强行融合会让 runTrash 变成"5 个回调参数"的胖方法，掩盖差异反而更危险。
-    ///
-    /// - Parameter source: UndoHistory 的 `source` 字段（"clean" / "large-file"），便于侧栏未来分类。
-    /// - Parameter suppressSuccessSheet: 仅当 outcome 完全成功（无 failed/blocked/commandLine）时
-    ///   抑制 OperationResultSheet 弹出。专为 stash 路径设计——见 v2026.06.21 修复 #3：
-    ///   stash sheet 已经通过"item 消失"反馈成功，叠加一个全屏 sheet 体验割裂；但失败 / 拦截
-    ///   仍要弹（用户在 stash 里只看到 item 消失，看不到"被 vendor 拦"，必须有显式入口）。
+    /// Debug-only preview adapter.  It intentionally has no `dryRun` argument:
+    /// every real confirmation must use `submitConfirmed`, whose typed return
+    /// proves whether `NSWorkspace.recycle` was actually attempted.
+#if DEBUG
     @MainActor
-    private func runTrash(paths: [String], dryRun: Bool, source: String,
-                          suppressSuccessSheet: Bool = false,
-                          accessDeniedPaths: Set<String>? = nil) async -> TrashRunResult {
+    private func runTrashPreview(
+        paths: [String],
+        source: String,
+        accessDeniedPaths: Set<String>
+    ) async -> TrashRunResult {
         let action = TrashActionCoordinator(pipeline: pipeline)
         let result = await action.run(TrashActionCoordinator.Request(
             paths: paths,
-            dryRun: dryRun,
+            dryRun: true,
             source: source,
-            accessDeniedPaths: accessDeniedPaths ?? accessDeniedPathsSnapshot()
+            accessDeniedPaths: accessDeniedPaths,
+            mode: .normal
         ))
         let moved = result.moved
         let skipped = result.skipped
         let err = result.err
         let pairs = result.pairs
-        // ④ 结构化 sheet / 旧 alert 二选一（v2026.06.16 修复 #4）。
-        //
-        // v2026.06.21 修复 #3：stash 路径开 suppressSuccessSheet——纯成功时不再叠 sheet。
-        // 仅当 outcome 有 failed/blocked/commandLineSkipped 时才弹（用户需要看到非成功项）。
-        let shouldSuppress: Bool = {
-            guard suppressSuccessSheet, let outcome = result.outcome else { return false }
-            let hasIssue = !outcome.failedPaths.isEmpty
-                || !outcome.safetyRejected.isEmpty
-            return !hasIssue
-        }()
-        if !shouldSuppress {
-            presentTrashOutcome(moved: moved, skipped: skipped, err: err, dryRun: dryRun, outcome: result.outcome)
-        }
         return TrashRunResult(
             moved: moved,
             skipped: skipped,
@@ -3121,6 +3509,7 @@ public struct MainView: View {
             succeededPaths: result.succeededPaths
         )
     }
+#endif
 
     /// 所有真实删除入口的统一状态提交：专业扫描与 Smart Care scanner/summary
     /// 同时失效并刷新容量，避免模式切换后重复展示已经移入废纸篓的路径。
@@ -3135,91 +3524,310 @@ public struct MainView: View {
         coordinator.refreshVolumeCapacity()
     }
 
-    /// v2026.06.17 (AUDIT A4)：runTrash 的"结果呈现"子步骤——
-    /// 真删（!dryRun）走结构化 sheet（`OperationResultPayload`），dryRun 仍走旧 alert
-    /// （dryRun 不报失败明细，只看总数即可）。
+    /// Debug preview never crosses the recycle boundary and therefore remains a
+    /// lightweight diagnostic alert. Real cleanup results are assigned from an
+    /// opaque `CompletedSubmission` at their call sites.
     @MainActor
-    private func presentTrashOutcome(moved: Int, skipped: Int, err: String?, dryRun: Bool, outcome: TrashOutcome?) {
-        if !dryRun {
-            if let outcome {
-                deleteResultPayload = OperationResultPayload(outcome: outcome)
-            } else if let err {
-                // pipeline 没暴露结构化结果（如 stub 实现）→ 回退到旧 alert
-                deleteResult = String(format: String(localized: "delete.result.failure %@ %lld %lld", bundle: .module), err, moved, skipped)
-            } else {
-                deleteResult = String(format: String(localized: "delete.result.success %lld %lld", bundle: .module), moved, skipped)
-            }
-        } else if let err {
+    private func presentTrashPreviewOutcome(moved: Int,
+                                            skipped: Int,
+                                            err: String?) {
+        if let err {
             deleteResult = String(format: String(localized: "delete.result.failure.dryrun %@ %lld %lld", bundle: .module), err, moved, skipped)
         } else {
             deleteResult = String(format: String(localized: "delete.result.success.dryrun %lld %lld", bundle: .module), moved, skipped)
         }
     }
 
-    private func performDelete(dryRun: Bool) async {
-        let rows = selectedRows
-        let paths = rows.map(\.url.path)
-        if !dryRun, let message = runningAppBlockMessage(for: rows) {
-            deleteResult = message
+    private func performProfessionalDelete(
+        request: DeleteSheetRequest,
+        executionPlan: ToolTrashExecutionPlan
+    ) async {
+        guard !isDeleting else { return }
+        guard !coordinator.isScanning,
+              coordinator.snapshot.isFinished,
+              coordinator.snapshot.categoryID == request.sourceCategoryID,
+              coordinator.currentScanSessionID == request.scanSessionID,
+              coordinator.storeRevision == request.preparedInteraction.plan.intent.snapshotIdentity.revision else {
+            deleteResult = String(localized: "delete.preflight.scan_changed", bundle: .module)
             return
         }
-        // **v1.5.3**：真删（!dryRun）期间立刻拉起 ProgressView sheet。
-        // dryRun 不动 isDeleting——预览不需要"正在删除"动画。
-        if !dryRun {
-            isDeleting = true
+        isDeleting = true
+        defer { isDeleting = false }
+
+        let interactionCoordinator = DeletionInteractionCoordinator(pipeline: pipeline)
+        let authorization: DeletionAuthorizedInteraction
+        switch interactionCoordinator.authorize(
+            prepared: request.preparedInteraction,
+            executionPlan: executionPlan
+        ) {
+        case .authorized(let value):
+            authorization = value
+        case .cancelled:
+            // 用户跳过了全部运行中项：未跨过 recycle 提交边界，不生成结果页。
+            return
+        case .blocked(let block):
+            deletePreflightNotice = DeletionPreflightNotice(rejections: block.rejections)
+            return
         }
-        defer {
-            if !dryRun {
-                isDeleting = false
-            }
+
+        let finalDeniedPaths = DeletionDeniedPathPolicy.final(
+            frozen: request.accessDeniedPaths,
+            current: accessDeniedPathsSnapshot()
+        )
+        let disposition = await interactionCoordinator.submit(
+            authorization,
+            accessDeniedPaths: finalDeniedPaths
+        )
+        switch disposition {
+        case .requiresConfirmation(let prepared):
+            // 最终重验发现新的专业风险时，回到同一张严格确认页；不伪装成执行失败。
+            deleteSheetRequest = DeleteSheetRequest(
+                items: request.items,
+                accessDeniedPaths: finalDeniedPaths,
+                preparedInteraction: prepared
+            )
+            return
+
+        case .blocked(let block):
+            deletePreflightNotice = DeletionPreflightNotice(rejections: block.rejections)
+            return
+
+        case .completed(let completed):
+            let result = completed.result
+            let submittedPaths = Set(completed.receipt.submittedPaths)
+            await applyProfessionalDeletionSuccess(
+                request: request,
+                rows: request.items.filter { submittedPaths.contains($0.url.path) },
+                succeededPaths: result.succeededPaths
+            )
+
+            // Only after the model/prune commit has reached its terminal state may a
+            // result sheet be presented. Otherwise a fast recycle can say "complete"
+            // while the Tree still renders the deleted row.
+            deleteResultCompletion = .deletion(completed)
         }
-        // v2026.06.17 (AUDIT A4)：pipeline 4 步握手（accessDenied 注入 / moveToTrash / UndoHistory
-        // 写入 / snapshotLastOutcome → sheet）统一收口到 [runTrash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)，
-        // 与 [triggerLargeFileTrash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
-        // 共用，避免两处独立维护"漏一步就放行"的脆弱契约。
-        let result = await runTrash(paths: paths, dryRun: dryRun, source: "clean")
-        if !dryRun {
-            let succeededOnly = result.succeededPaths
-            if !succeededOnly.isEmpty {
-                let accounting = await MainDeletionAccountingExecutor.run(
-                    rows: rows,
-                    succeededPaths: succeededOnly,
-                    selection: selection
+    }
+
+    private func applyProfessionalDeletionSuccess(
+        request: DeleteSheetRequest,
+        rows: [RowItem],
+        succeededPaths: [String]
+    ) async {
+        guard !succeededPaths.isEmpty else { return }
+        let accounting = await MainDeletionAccountingExecutor.run(
+            rows: rows,
+            succeededPaths: succeededPaths,
+            selection: selection
+        )
+        await recorder.recordTrashed(paths: succeededPaths)
+        let movedBytes = accounting.movedBytes
+        if movedBytes > 0 {
+            let categoryID = request.sourceCategoryID
+            Task.detached { [movedBytes, categoryID] in
+                await CleanStatsStore.shared.record(
+                    bytesReclaimed: movedBytes,
+                    category: categoryID.isEmpty ? "unknown" : categoryID
                 )
-                // HL 行为采集：真删之后才上报，dryRun 不污染统计；只上报真实 moved pairs。
-                await recorder.recordTrashed(paths: succeededOnly)
-                // M4-T5：把这次成功移入废纸篓的字节数 / 类目记入 CleanStatsStore。
-                let movedBytes = accounting.movedBytes
-                if movedBytes > 0 {
-                    let categoryID = coordinator.snapshot.categoryID
-                    Task.detached { [movedBytes, categoryID] in
-                        await CleanStatsStore.shared.record(
-                            bytesReclaimed: movedBytes,
-                            category: categoryID.isEmpty ? "unknown" : categoryID)
+            }
+        }
+        selection = accounting.remainingSelection
+        largeFilesBatch.remove(paths: succeededPaths)
+        if let selected = largeFileSelection,
+           succeededPaths.contains(selected.path) {
+            largeFileSelection = nil
+        }
+        if request.origin == .stash {
+            stash.remove(paths: succeededPaths)
+        }
+        await synchronizeSuccessfulDeletion(paths: succeededPaths)
+        treeSelection = TreeSelectionReconciler.afterSuccessfulDeletion(
+            selected: treeSelection,
+            succeededPaths: succeededPaths,
+            refreshedRow: { coordinator.refreshedTreeRow(for: $0) }
+        )
+    }
+
+    /// 专业模式真实文件删除的统一入口。所有页面先冻结相同的 RowItem + Safety
+    /// 快照，再呈现同一张专业模式简单/严格确认页；普通硬 `.forbid` 在用户点击后立即解释，
+    /// vendorPathRule 则明确转入专业模式严格确认，不会伪装成普通可删项。
+    private func presentDeleteConfirmation(
+        rows: [RowItem],
+        origin: DeleteRequestOrigin,
+        accessDeniedPaths suppliedDeniedPaths: Set<String>? = nil
+    ) {
+        guard !coordinator.isScanning, coordinator.snapshot.isFinished else {
+            deleteResult = String(localized: "delete.preflight.scan_in_progress", bundle: .module)
+            return
+        }
+        guard !rows.isEmpty,
+              !isDeleting,
+              !isPreparingDeletion,
+              !deleteSubmissionHandoff.hasPending,
+              deleteSheetRequest == nil,
+              deleteResultCompletion == nil,
+              deletePreflightNotice == nil,
+              !hasOtherMainModalPresentation else { return }
+        let deniedSnapshot = suppliedDeniedPaths ?? accessDeniedPathsSnapshot()
+        let categoryID = coordinator.snapshot.categoryID
+        let scanSessionID = coordinator.currentScanSessionID
+        let targetPaths = rows.map(\.url.path)
+        let typedIncompleteIssues = coordinator.incompleteIssues(overlappingAny: targetPaths)
+        let snapshotIdentity = DeletionSnapshotIdentity(
+            sessionID: scanSessionID,
+            revision: coordinator.storeRevision,
+            categoryID: categoryID
+        )
+        isPreparingDeletion = true
+        Task { @MainActor in
+            defer { isPreparingDeletion = false }
+            let interactionCoordinator = DeletionInteractionCoordinator(pipeline: pipeline)
+            let intent: DeletionIntent
+            do {
+                intent = try interactionCoordinator.makeIntent(
+                    origin: origin,
+                    mode: .professional,
+                    snapshotIdentity: snapshotIdentity,
+                    candidates: rows.map { row in
+                        DeletionInteractionCandidateSnapshot(
+                            path: row.url.path,
+                            title: row.title,
+                            isDirectory: row.isDirectory,
+                            bytes: row.bytes,
+                            fileCount: row.fileCount,
+                            runningBundleIDPrefix: row.runningBundleIDPrefix,
+                            accessEvidence: deletionAccessEvidence(
+                                for: row.url.path,
+                                issues: typedIncompleteIssues
+                            )
+                        )
                     }
-                }
-                selection = accounting.remainingSelection
-                await synchronizeSuccessfulDeletion(paths: succeededOnly)
+                )
+            } catch {
+                deletePreflightNotice = DeletionPreflightNotice(
+                    rejections: targetPaths.map {
+                        .init(path: $0, reason: SafetyRejection.preflightCancelled.rawValue)
+                    }
+                )
+                return
+            }
+
+            let decision: DeletionInteractionPreparation
+            if typedIncompleteIssues.isEmpty {
+                decision = await interactionCoordinator.prepare(
+                    intent: intent,
+                    currentSnapshotIdentity: snapshotIdentity,
+                    accessDeniedPaths: deniedSnapshot
+                )
+            } else {
+                let targetPreparation = await pipeline.prepareScanIncompleteOverride(
+                    rows: rows,
+                    scanIssues: typedIncompleteIssues,
+                    scanSessionID: scanSessionID
+                )
+                decision = interactionCoordinator.prepareRevalidatedScanIncomplete(
+                    intent: intent,
+                    currentSnapshotIdentity: snapshotIdentity,
+                    preparation: targetPreparation
+                )
+            }
+            guard !coordinator.isScanning,
+                  coordinator.snapshot.isFinished,
+                  coordinator.snapshot.categoryID == categoryID,
+                  coordinator.currentScanSessionID == scanSessionID,
+                  coordinator.storeRevision == snapshotIdentity.revision else {
+                deleteResult = String(localized: "delete.preflight.scan_changed", bundle: .module)
+                return
+            }
+            guard deleteSheetRequest == nil,
+                  !deleteSubmissionHandoff.hasPending,
+                  deleteResultCompletion == nil,
+                  deletePreflightNotice == nil,
+                  !hasOtherMainModalPresentation else { return }
+            switch decision {
+            case .confirmation(let prepared):
+                deleteSheetRequest = DeleteSheetRequest(
+                    items: rows,
+                    accessDeniedPaths: deniedSnapshot,
+                    preparedInteraction: prepared
+                )
+            case .blocked(let block):
+                deletePreflightNotice = DeletionPreflightNotice(rejections: block.rejections)
+            case .cancelled:
+                return
             }
         }
     }
 
-    private func runningAppBlockMessage(for rows: [RowItem]) -> String? {
-        let conflicts = runningAppConflicts(for: rows)
-        guard !conflicts.isEmpty else { return nil }
-        var seen = Set<String>()
-        var names: [String] = []
-        for conflict in conflicts where seen.insert(conflict.title).inserted {
-            names.append(conflict.title)
-            if names.count >= 5 { break }
+    private func deletionAccessEvidence(
+        for path: String,
+        issues: [ScanIncompleteIssue]
+    ) -> DeletionAccessEvidence {
+        guard let issue = issues.first(where: { deletionPathsOverlap(path, $0.path) }) else {
+            return .complete
         }
-        return String(format: String(localized: "delete.running_app.blocked %@", bundle: .module),
-                      names.joined(separator: ", "))
+        return .incomplete(DeletionIncompleteReason(scanIncompleteReason: issue.reason))
     }
 
-    private func runningAppConflicts(for rows: [RowItem]) -> [RunningAppGuard.Conflict] {
-        RunningAppGuard.conflicts(rows: rows,
-                                  runningBundleIDs: RunningAppGuard.currentRunningBundleIDs())
+    private func deletionPathsOverlap(_ lhs: String, _ rhs: String) -> Bool {
+        let left = URL(fileURLWithPath: lhs).standardizedFileURL.path
+        let right = URL(fileURLWithPath: rhs).standardizedFileURL.path
+        if left == right { return true }
+        if left == "/" || right == "/" { return true }
+        return left.hasPrefix(right + "/") || right.hasPrefix(left + "/")
+    }
+
+    /// Tree 选中行转成删除确认快照。用户点击时必须直接冻结这份行数据；按需展开行
+    /// 不保证存在于 coordinator 的全局 index，退化为 URL 再回查会丢失真实大小与类型。
+    /// Safety/vendor 仍在意图创建时重新评估，执行前 TrashPipeline 还会最终重验。
+    private func makeDeletionRow(_ treeRow: TreeRow) -> RowItem? {
+        let evaluation = coordinator.deletionSafetyEvaluation(for: treeRow.path)
+        return DeletionRowSnapshotFactory.tree(
+            treeRow,
+            verdict: evaluation.verdict,
+            rejection: evaluation.rejection,
+            vendorName: evaluation.vendor?.name,
+            vendorNote: evaluation.vendor?.note,
+            runningBundleIDPrefix: evaluation.vendor?.bundleIDPrefix
+        )
+    }
+
+    /// Large Files 已经在扫描期冻结了大小与 mtime；这里只补齐相同的删除安全上下文，
+    /// 不重新 stat/遍历文件系统，因此批量确认不会卡 UI。
+    private func makeDeletionRow(_ item: LargeFileItem) -> RowItem {
+        let evaluation = coordinator.deletionSafetyEvaluation(for: item.path)
+        return RowItem(
+            id: item.path,
+            url: item.url,
+            title: item.title,
+            isDirectory: false,
+            bytes: item.bytes,
+            logicalBytes: item.logicalBytes,
+            fileCount: 1,
+            verdict: evaluation.verdict,
+            rejection: evaluation.rejection,
+            vendorName: evaluation.vendor?.name,
+            vendorNote: evaluation.vendor?.note,
+            runningBundleIDPrefix: evaluation.vendor?.bundleIDPrefix,
+            modificationDate: item.modificationDate
+        )
+    }
+
+    private func makeDeletionRow(_ entry: StashStore.StashEntry) -> RowItem {
+        let evaluation = coordinator.deletionSafetyEvaluation(for: entry.path)
+        return RowItem(
+            id: entry.path,
+            url: URL(fileURLWithPath: entry.path),
+            title: entry.title,
+            isDirectory: entry.isDirectory,
+            bytes: entry.bytes,
+            logicalBytes: entry.bytes,
+            fileCount: entry.fileCount,
+            verdict: evaluation.verdict,
+            rejection: evaluation.rejection,
+            vendorName: evaluation.vendor?.name,
+            vendorNote: evaluation.vendor?.note,
+            runningBundleIDPrefix: evaluation.vendor?.bundleIDPrefix
+        )
     }
 
     // MARK: - v1.0 T4 大文件辅助
@@ -3245,109 +3853,83 @@ public struct MainView: View {
         }
     }
 
-    /// 大文件视图右键"移到废纸篓…"回调。
-    /// 直接走 pipeline.moveToTrash + DeleteSheet 简化版（一次只对一个 url，
-    /// 不复用主清单的 selection sheet——大文件场景没有 SafetyEngine 默认勾选语义）。
-    private func triggerLargeFileTrash(urls: [URL],
-                                       suppressSuccessSheet: Bool = false,
-                                       afterResult: ((TrashRunResult) -> Void)? = nil) {
-        guard !urls.isEmpty else { return }
-        guard !isDeleting else { return } // 防重入：删除中不接受新点击
-        let paths = urls.map(\.path)
-        // **v2026.06.22 修复 #11/#12**：旧实现在删除「前」就 `pruneDeleted(paths)`（乐观更新），
-        // 导致被 SafetyEngine / vendor 规则拦下的项也从大文件列表消失，用户看到"清理失败"但
-        // item 已不见。新逻辑：删完后只 prune `result.pairs.map { $0.0 }`
-        // （NSWorkspace.recycle 真成功的项），失败/拦截项继续留在列表里给用户重试。
-        largeFileSelection = nil
-        isDeleting = true
-        Task { @MainActor in
-            // v2026.06.17 (AUDIT A4)：与 performDelete 共享 [runTrash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
-            // 的 pipeline 4 步握手：accessDenied 注入 / moveToTrash / UndoHistory 写入 /
-            // snapshotLastOutcome → sheet。任何一步漏掉都会让"上层防护漏失 / 结构化 sheet
-            // 退化为文本 alert"成为静默回归——统一收口后从语言层杜绝。
-            //
-            // v2026.06.21 修复 #3：把 stash 路径传入的 suppressSuccessSheet 透传——
-            // 纯成功时不弹 OperationResultSheet，仅当真有失败 / 拦截才弹（避免 stash sheet
-            // 关闭后用户被"多余的成功弹窗"困扰）。
-            let result = await runTrash(paths: paths, dryRun: false, source: "large-file",
-                                        suppressSuccessSheet: suppressSuccessSheet)
-            isDeleting = false
-            let succeededOnly = result.succeededPaths
-            if !succeededOnly.isEmpty {
-                await recorder.recordTrashed(paths: succeededOnly)
-            }
-            // v2026.06.22：删完后只剔真成功的 paths——失败/拦截项继续留在大文件列表里。
-            if !succeededOnly.isEmpty {
-                if let selected = largeFileSelection, succeededOnly.contains(selected.path) {
-                    largeFileSelection = nil
-                }
-                await synchronizeSuccessfulDeletion(paths: succeededOnly)
-            }
-            afterResult?(result)
+    private func scheduleStashDeletion(_ entries: [StashStore.StashEntry]) {
+        guard !entries.isEmpty, pendingStashDeletion == nil, !isDeleting else { return }
+        pendingStashDeletion = entries
+        isStashScreenPresented = false
+    }
+
+    private func presentPendingStashDeletionAfterDismissal() {
+        guard let entries = pendingStashDeletion else { return }
+        pendingStashDeletion = nil
+        let deniedSnapshot = entries.reduce(into: Set<String>()) { partial, entry in
+            partial.formUnion(entry.accessDeniedPaths)
         }
+        presentDeleteConfirmation(
+            rows: entries.map(makeDeletionRow),
+            origin: .stash,
+            accessDeniedPaths: deniedSnapshot
+        )
+    }
+
+    /// Stash 只能接收完整扫描结果。每条目录项同时冻结本轮扫描的 denied 证据，
+    /// 稍后清理不会借用另一个 category 的权限快照。
+    private func addToStash(
+        path: String,
+        title: String,
+        bytes: Int64,
+        isDirectory: Bool,
+        fileCount: Int
+    ) {
+        guard !coordinator.isScanning, coordinator.snapshot.isFinished else {
+            deleteResult = String(localized: "delete.preflight.scan_in_progress", bundle: .module)
+            return
+        }
+        stash.add(
+            path: path,
+            title: title,
+            bytes: bytes,
+            isDirectory: isDirectory,
+            fileCount: fileCount,
+            accessDeniedPaths: accessDeniedPathsSnapshot()
+        )
     }
 
     // MARK: - 自定义路径（添加 / 删除 / 拖拽）
 
-    /// NSOpenPanel 选目录添加到 UserPathStore。
-    /// 见 PITFALLS §5.6：默认 canChooseFiles=false 防误选单文件；多选避免反复弹窗。
-    ///
-    /// v2026.06 用户反馈 #2：原实现用 `panel.begin { ... }` modeless 弹窗，在某些场景下
-    /// 会"卡死"——根因：SwiftUI menu/popover 收起时主窗口可能短暂失去 keyWindow 状态，
-    /// `panel.begin` 内部 attach 不到 owner window，AppKit 转 fallback 走 modal mainloop
-    /// 但 SwiftUI 同时还持有事件焦点 → 两边互等 → UI 假死。
-    ///
-    /// **修复**：优先 `beginSheetModal(for:)` 走 sheet（必有 owner），找不到主窗口才退回
-    /// `runModal()`（同步阻塞但 NSOpenPanel 自己有事件循环，能正常返回）。
-    /// 关键差异：`begin` 是 modeless（无 owner），后两者都有明确 owner 或独立 modal loop。
-    private func addCustomPathViaPanel() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = true
-        panel.title = String(localized: "panel.choose_dir.title", bundle: .module)
-        panel.prompt = String(localized: "panel.add", bundle: .module)
-
-        let handleURLs: ([URL]) -> Void = { urls in
+    /// 场景绑定的 SwiftUI 目录导入器回调。选择器由当前 MainView 自己呈现，
+    /// 不再猜 `keyWindow/mainWindow/windows.first`，也绝不进入同步 `runModal()`。
+    private func handleCustomPathImport(_ result: Result<[URL], any Error>) {
+        switch result {
+        case .success(let urls):
             guard !urls.isEmpty else { return }
-            Task {
+            Task { @MainActor in
+                var duplicateCount = 0
                 for url in urls {
-                    _ = await pathStore.add(url)
+                    if !(await pathStore.add(url.standardizedFileURL)) {
+                        duplicateCount &+= 1
+                    }
                 }
-                await refreshCustomPaths()
+                if duplicateCount == urls.count {
+                    customPathImportMessage = String(
+                        format: String(localized: "custom_path.import.duplicate %lld", bundle: .module),
+                        duplicateCount
+                    )
+                }
             }
+        case .failure(let error):
+            guard (error as? CocoaError)?.code != .userCancelled else { return }
+            GSYLog.error(.settings, "main directory importer failed: \(error.localizedDescription)")
+            customPathImportMessage = String(
+                format: String(localized: "custom_path.import.failed %@", bundle: .module),
+                error.localizedDescription
+            )
         }
-
-        // 优先 sheet：找一个仍在场上的 window 作为 owner。
-        // NSApp.keyWindow 失活时 fallback 到 mainWindow / windows.first。
-        let owner = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible })
-        if let owner {
-            panel.beginSheetModal(for: owner) { response in
-                guard response == .OK else { return }
-                handleURLs(panel.urls)
-            }
-            return
-        }
-
-        // 无任何可用 window：退到独立 modal loop。runModal 是同步的，
-        // 但 NSOpenPanel 自带 event loop，不会让主线程死锁——只会阻塞 ~人选完目录的时间。
-        let response = panel.runModal()
-        guard response == .OK else { return }
-        handleURLs(panel.urls)
     }
 
     /// 侧边自定义路径行的 contextMenu「移除」。
     private func removeCustomPath(_ cat: ScanCategory) async {
         _ = await pathStore.remove(URL(fileURLWithPath: cat.rootPath))
-        await refreshCustomPaths()
-    }
-
-    /// 把 actor 里的路径列表镜像到 SwiftUI 的 customCategories（@State 在主线程）。
-    private func refreshCustomPaths() async {
-        let urls = await pathStore.list()
-        await MainActor.run {
-            customCategories = urls.map { ScanCategory.makeCustom(url: $0) }
-        }
     }
 
     /// onDrop 回调：从拖入的 NSItemProvider 解 fileURL，目录才入库。
@@ -3371,16 +3953,11 @@ public struct MainView: View {
                 guard exists, isDir.boolValue else { return }
                 Task { @MainActor in
                     _ = await pathStore.add(url)
-                    await refreshCustomPaths()
                     // 自动选中该自定义类目并触发扫描；
                     // 已存在的路径 cat.id 相同，requestCategorySwitch 内部
                     // 会因 "old==new" 直接 return —— 此时主动再起一次扫描。
                     let cat = ScanCategory.makeCustom(url: url)
-                    if selectedCategory == cat.id {
-                        startScan(category: cat)
-                    } else {
-                        requestCategorySwitch(to: cat.id)
-                    }
+                    requestCategorySwitch(to: cat.id, fallbackCategory: cat)
                 }
             }
             // 多文件夹拖入：仅对第一个 provider 触发扫描，其余只入库，
@@ -3397,7 +3974,6 @@ public struct MainView: View {
                 guard exists, isDir.boolValue else { return }
                 Task { @MainActor in
                     _ = await pathStore.add(url)
-                    await refreshCustomPaths()
                 }
             }
         }
@@ -3412,6 +3988,9 @@ private struct PermissionStatusBanner: View {
     let fdaDeniedPaths: [String]
     /// TCC 雷区被主动 skip 的路径——根本没尝试 open，避免弹窗。
     let tccSkippedPaths: [String]
+    /// 非 permission/TCC 的扫描完整性缺口，例如目录在扫描期间被移动、metadata
+    /// 读取失败或枚举无法完整到 EOF。它们只表示结果受限，不等同 FDA。
+    let otherIncompletePaths: [String]
     /// 当前进程的 FDA 探测状态。`.granted` 仍出现 denied 路径 = 多半是
     /// `~/.Trash` 之类**独立 TCC**项（不属于 FDA），需要单独引导用户。
     let fdaStatus: FDAProbe.Status
@@ -3438,8 +4017,18 @@ private struct PermissionStatusBanner: View {
     private var fdaCount: Int { privacyDeniedPaths.count }
     private var tccCount: Int { tccSkippedPaths.count }
     private var filesystemCount: Int { filesystemBlockedPaths.count }
+    private var incompleteCount: Int { otherIncompletePaths.count }
+    private var totalLimitedCount: Int {
+        Set(fdaDeniedPaths + tccSkippedPaths + otherIncompletePaths).count
+    }
 
     private var headlineText: String {
+        if incompleteCount > 0 {
+            return String(
+                format: String(localized: "scan.limitations.title %lld", bundle: .module),
+                Int64(totalLimitedCount)
+            )
+        }
         let privacyCount = fdaCount + tccCount
         switch (privacyCount, filesystemCount) {
         case (0, 0):
@@ -3458,11 +4047,13 @@ private struct PermissionStatusBanner: View {
     }
 
     private var iconName: String {
-        fdaCount > 0 ? "lock.shield" : (filesystemCount > 0 ? "folder.badge.questionmark" : "hand.raised.circle")
+        if incompleteCount > 0 { return "exclamationmark.shield" }
+        return fdaCount > 0 ? "lock.shield" : (filesystemCount > 0 ? "folder.badge.questionmark" : "hand.raised.circle")
     }
 
     private var tintColor: Color {
-        fdaCount > 0 ? .orange : (filesystemCount > 0 ? .secondary : .blue)
+        if incompleteCount > 0 { return .orange }
+        return fdaCount > 0 ? .orange : (filesystemCount > 0 ? .secondary : .blue)
     }
 
     /// 主行动按钮文案：FDA 受阻强调"打开权限"；纯 TCC 跳过强调"授权后重扫"。
@@ -3521,6 +4112,9 @@ private struct PermissionStatusBanner: View {
     /// v2026.06 #1：新增 Files & Folders 提示——已开 FDA 但 denied 列表里有
     /// ~/Downloads / ~/Documents / ~/Desktop 这种"独立 TCC 类目"，必须单独授权。
     private var diagnosticHint: String? {
+        if incompleteCount > 0 {
+            return String(localized: "scan.limitations.detail", bundle: .module)
+        }
         if fdaCount == 0, tccCount == 0, filesystemCount > 0 {
             return String(localized: "permission.hint.filesystem_blocked", bundle: .module)
         }
@@ -3591,7 +4185,7 @@ private struct PermissionStatusBanner: View {
                         if fdaCount > 0 {
                             Text(String(format: String(localized: "banner.fda.denied.title", bundle: .module), fdaCount)).font(.caption).foregroundStyle(.orange)
                             ForEach(privacyDeniedPaths.prefix(50), id: \.self) { p in
-                                Text(p).font(.caption2).foregroundStyle(.secondary)
+                                Text(verbatim: p).font(.caption2).foregroundStyle(.secondary)
                                     .lineLimit(1).truncationMode(.middle)
                             }
                             if fdaCount > 50 {
@@ -3602,7 +4196,7 @@ private struct PermissionStatusBanner: View {
                             if fdaCount > 0 { Divider().padding(.vertical, 2) }
                             Text(String(format: String(localized: "banner.fda.tcc.title", bundle: .module), tccCount)).font(.caption).foregroundStyle(.blue)
                             ForEach(tccSkippedPaths.prefix(50), id: \.self) { p in
-                                Text(p).font(.caption2).foregroundStyle(.secondary)
+                                Text(verbatim: p).font(.caption2).foregroundStyle(.secondary)
                                     .lineLimit(1).truncationMode(.middle)
                             }
                             if tccCount > 50 {
@@ -3617,11 +4211,37 @@ private struct PermissionStatusBanner: View {
                             if fdaCount > 0 || tccCount > 0 { Divider().padding(.vertical, 2) }
                             Text(String(format: String(localized: "banner.filesystem.denied.title", bundle: .module), filesystemCount)).font(.caption).foregroundStyle(.secondary)
                             ForEach(filesystemBlockedPaths.prefix(50), id: \.self) { p in
-                                Text(p).font(.caption2).foregroundStyle(.secondary)
+                                Text(verbatim: p).font(.caption2).foregroundStyle(.secondary)
                                     .lineLimit(1).truncationMode(.middle)
                             }
                             if filesystemCount > 50 {
                                 Text(String(format: String(localized: "banner.filesystem.denied.more", bundle: .module), filesystemCount - 50)).font(.caption2).foregroundStyle(.tertiary)
+                            }
+                        }
+                        if incompleteCount > 0 {
+                            if fdaCount > 0 || tccCount > 0 || filesystemCount > 0 {
+                                Divider().padding(.vertical, 2)
+                            }
+                            Text(String(
+                                format: String(localized: "scan.limitations.other.title %lld", bundle: .module),
+                                Int64(incompleteCount)
+                            ))
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            ForEach(otherIncompletePaths.prefix(50), id: \.self) { path in
+                                Text(verbatim: path)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                            if incompleteCount > 50 {
+                                Text(String(
+                                    format: String(localized: "banner.filesystem.denied.more", bundle: .module),
+                                    incompleteCount - 50
+                                ))
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
                             }
                         }
                     }
@@ -3632,6 +4252,36 @@ private struct PermissionStatusBanner: View {
         .padding(10)
         .background(tintColor.opacity(0.08))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(tintColor.opacity(0.3)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// 真正根级失败的唯一主呈现。技术错误只进日志；主界面使用稳定本地化文案，
+/// 避免 `cannotEnumerate(file:///...)`、errno 或 Swift enum 名泄漏给用户。
+private struct ScanFailureBanner: View {
+    let onRetry: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "xmark.octagon.fill")
+                .foregroundStyle(.red)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("scan.failure.title", bundle: .module)
+                    .font(.callout.weight(.semibold))
+                Text("scan.failure.detail", bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Button(action: onRetry) {
+                Text("scan.failure.retry", bundle: .module)
+            }
+            .controlSize(.small)
+        }
+        .padding(10)
+        .background(Color.red.opacity(0.07))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.red.opacity(0.25)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

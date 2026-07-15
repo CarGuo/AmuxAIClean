@@ -106,6 +106,32 @@ final class FlatTreeRowVerdictCacheTests: XCTestCase {
                        "重绘 1000 次后 evaluator 调用次数仍必须等于行数")
     }
 
+    func testComputeDeletionEvaluationsStoresVendorReasonWithoutHotPathReevaluation() {
+        let row = TreeRow(
+            path: "/tmp/cleanmac-step1-fixture/vendor-sdk",
+            title: "vendor-sdk",
+            bytes: 1,
+            fileCount: 1,
+            isDirectory: true,
+            hasChildren: false
+        )
+        var calls = 0
+        let flats = TreeBrowserView.computeDeletionEvaluations(for: [(row, 0)]) { _ in
+            calls += 1
+            return (verdict: .forbid, rejection: .vendorPathRule)
+        }
+
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(flats.first?.verdict, .forbid)
+        XCTAssertEqual(flats.first?.rejection, .vendorPathRule)
+        XCTAssertTrue(DeletionEntryPolicy.canInitiate(
+            verdict: flats[0].verdict,
+            rejection: flats[0].rejection,
+            allowsVendorPathOverride: true
+        ))
+        XCTAssertEqual(calls, 1, "UI policy reads frozen fields and must not re-evaluate SafetyEngine")
+    }
+
     /// 把"forbid 路径不可 trash"这个语义从 evaluator 解耦到 verdict 字段：
     /// TreeNodeRow.isTrashable 应当只读 `flat.verdict != .forbid`，不再直接调 evaluate。
     func testFlatTreeRowVerdictDrivesIsTrashableSemantics() {

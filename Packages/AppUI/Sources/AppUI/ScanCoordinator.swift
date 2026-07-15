@@ -1,7 +1,117 @@
+import Darwin
 import Foundation
 import LogKit
 import ScanKit
 import SafetyKit
+
+/// 扫描完整性证据到 Tree UI 的唯一投影。
+///
+/// Tree 有两个不能合并的维度：
+/// - issue 与当前行相等，或 issue 是当前行的祖先：当前节点自身不可完整读取，画锁；
+/// - 当前行是 issue 的严格祖先：当前节点仍可浏览，只标记“子树含未完整后代”。
+///
+/// 删除父目录时的安全预检仍需要祖先/后代双向重叠，但那是删除覆盖关系，不能反过来
+/// 污染 Tree 的视觉访问状态。所有 TreeRow 合成入口都必须复用这个双轴投影。
+private struct TreeScanEvidenceProjection: Sendable {
+    struct ProjectedState: Sendable, Equatable {
+        let accessState: TreeRow.AccessState
+        let subtreeCompleteness: TreeRow.SubtreeCompleteness
+    }
+
+    private let permissionDeniedPaths: [String]
+    private let tccProtectedPaths: [String]
+    private let incompletePaths: [String]
+
+    init(issues: [ScanIncompleteIssue] = []) {
+        var permissionDenied = Set<String>()
+        var tccProtected = Set<String>()
+        var incomplete = Set<String>()
+        for issue in issues {
+            let path = Self.normalize(issue.path)
+            guard !path.isEmpty else { continue }
+            switch issue.reason {
+            case .permissionDenied:
+                permissionDenied.insert(path)
+            case .tccProtectedSkipped:
+                tccProtected.insert(path)
+            case .enumerationFailed, .metadataUnavailable:
+                incomplete.insert(path)
+            }
+        }
+        permissionDeniedPaths = permissionDenied.sorted()
+        tccProtectedPaths = tccProtected.sorted()
+        incompletePaths = incomplete.sorted()
+    }
+
+    func projectedState(
+        for path: String,
+        fallbackAccessState: TreeRow.AccessState = .normal,
+        fallbackSubtreeCompleteness: TreeRow.SubtreeCompleteness = .complete
+    ) -> ProjectedState {
+        let normalized = Self.normalize(path)
+        let accessState: TreeRow.AccessState
+        if tccProtectedPaths.contains(where: { Self.isSameOrAncestor($0, of: normalized) }) {
+            accessState = .tccProtected
+        } else if permissionDeniedPaths.contains(where: { Self.isSameOrAncestor($0, of: normalized) }) {
+            accessState = .permissionDenied
+        } else if incompletePaths.contains(where: { Self.isSameOrAncestor($0, of: normalized) }) {
+            accessState = .incomplete
+        } else {
+            accessState = fallbackAccessState
+        }
+
+        let containsIncompleteDescendant = tccProtectedPaths.contains(where: {
+            Self.isStrictAncestor(normalized, of: $0)
+        }) || permissionDeniedPaths.contains(where: {
+            Self.isStrictAncestor(normalized, of: $0)
+        }) || incompletePaths.contains(where: {
+            Self.isStrictAncestor(normalized, of: $0)
+        })
+
+        return ProjectedState(
+            accessState: accessState,
+            subtreeCompleteness: containsIncompleteDescendant
+                ? .containsIncompleteDescendant
+                : fallbackSubtreeCompleteness
+        )
+    }
+
+    private static func normalize(_ path: String) -> String {
+        guard !path.isEmpty else { return "" }
+        var normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        while normalized.count > 1, normalized.hasSuffix("/") {
+            normalized.removeLast()
+        }
+        return normalized
+    }
+
+    private static func isSameOrAncestor(_ ancestor: String, of candidate: String) -> Bool {
+        guard !ancestor.isEmpty, !candidate.isEmpty else { return false }
+        if ancestor == candidate { return true }
+        if ancestor == "/" { return candidate.hasPrefix("/") }
+        return candidate.hasPrefix(ancestor + "/")
+    }
+
+    private static func isStrictAncestor(_ ancestor: String, of candidate: String) -> Bool {
+        ancestor != candidate && isSameOrAncestor(ancestor, of: candidate)
+    }
+}
+
+/// “旧版本残留”每个候选目录的一次完整扫描会话结果。
+///
+/// 大小、文件数和删除拒绝证据必须来自同一次 BulkScanner 遍历；否则 UI 可能展示
+/// 一个不完整大小，却把整个父目录交给删除管线。`deletionDeniedPaths` 包含权限拒绝、
+/// TCC 跳过和任何未完整结束的根，供 TrashPipeline 做祖先/后代一票否决。
+private struct VersionedRootScanMeasurement: Sendable {
+    let allocatedBytes: Int64
+    let logicalBytes: Int64
+    let fileCount: Int
+    let incompleteIssues: Set<ScanIncompleteIssue>
+
+    var deletionDeniedPaths: Set<String> {
+        Set(incompleteIssues.map(\.path))
+    }
+}
 
 /// 扫描协调器 —— UI 与 BulkScanner 之间的"减压阀"。
 ///
@@ -48,11 +158,29 @@ public final class ScanCoordinator: ObservableObject {
         case scanning
     }
 
+    /// 扫描器明确发出的致命终态。它与权限拒绝、TCC 跳过、deadline/max-entry
+    /// 等“带精确拒绝路径的受限结果”分开保存，消费者不得通过比较本地化错误文案
+    /// 来猜测终态类型。
+    public struct TerminalFailure: Sendable, Equatable {
+        public let message: String
+
+        public init(message: String) {
+            self.message = message
+        }
+    }
+
     @Published public private(set) var snapshot: ScanSnapshot = .empty
     @Published public private(set) var isScanning: Bool = false
     @Published public private(set) var scanPhase: ScanPhase = .idle
     @Published public private(set) var lastError: String?
+    public private(set) var terminalFailure: TerminalFailure?
+    /// 当前扫描会话的权威完整性证据。路径、原因、失败阶段和 errno 必须在这里保留；
+    /// 下面三个 path 数组仅用于兼容现有 UI / 删除调用方，统一由本数组投影，禁止单独写入。
+    @Published public private(set) var incompleteScanIssues: [ScanIncompleteIssue] = []
     @Published public private(set) var permissionDeniedPaths: [String] = []
+    /// 扫描器明确报告“未完整遍历”的路径。它与权限拒绝/TCC 跳过分开保存，
+    /// 避免把通用枚举错误误导成 FDA 问题；删除预检仍会把三类证据取并集，一票否决。
+    @Published public private(set) var incompleteScanPaths: [String] = []
     /// v2026.07 修复：`pruneDeleted` 完成后的公共广播信号。
     ///
     /// **根因**：非 tree/list 走 `snapshot.rows` 的视图（如 [LargeFilesView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/LargeFilesView.swift)）
@@ -66,6 +194,7 @@ public final class ScanCoordinator: ObservableObject {
     /// v1.1：因 TCC 雷区（Music / Photos / Mail 等）被主动 skip 的路径列表。
     /// 与 permissionDeniedPaths 合并展示在统一 banner，**不会触发系统弹窗**。
     @Published public private(set) var tccProtectedSkippedPaths: [String] = []
+    private var treeScanEvidenceProjection = TreeScanEvidenceProjection()
 
     /// v1.3 P0-D：开发者构建产物勘察是否触发了截断（命中数达上限 或 walk 超时）。
     /// UI 在 dev 扫描结果区可读此标志展示 banner："命中过多，仅展示前 N 项"。
@@ -107,6 +236,190 @@ public final class ScanCoordinator: ObservableObject {
         return left.hasPrefix(right + "/") || right.hasPrefix(left + "/")
     }
 
+    /// 当前完成会话中与删除目标存在祖先/后代关系的 typed incomplete evidence。
+    /// Professional target revalidator 只接受本结果；旧的聚合 path Set 不能反推 reason。
+    public func incompleteIssues(overlappingAny paths: [String]) -> [ScanIncompleteIssue] {
+        let normalizedTargets = paths.map {
+            URL(fileURLWithPath: $0).standardizedFileURL.path
+        }
+        guard !normalizedTargets.isEmpty else { return [] }
+        return incompleteScanIssues.filter { issue in
+            normalizedTargets.contains { Self.pathsOverlap($0, issue.path) }
+        }
+    }
+
+    /// `incompleteScanIssues` 是唯一写源；旧 path 数组和 Tree 投影都在这里一次性同步。
+    /// 每个字段只在值真的变化时写入，避免同一 ScanKit issue 的兼容事件
+    /// (`permissionDenied` + `incomplete`) 造成多轮无意义 SwiftUI invalidation。
+    private func synchronizeIncompleteEvidenceProjections() {
+        let permissionPaths = Self.stableUniquePaths(
+            incompleteScanIssues.lazy
+                .filter { $0.reason == .permissionDenied }
+                .map(\.path)
+        )
+        let tccPaths = Self.stableUniquePaths(
+            incompleteScanIssues.lazy
+                .filter { $0.reason == .tccProtectedSkipped }
+                .map(\.path)
+        )
+        let allPaths = Self.stableUniquePaths(incompleteScanIssues.lazy.map(\.path))
+
+        if permissionDeniedPaths != permissionPaths {
+            permissionDeniedPaths = permissionPaths
+        }
+        if tccProtectedSkippedPaths != tccPaths {
+            tccProtectedSkippedPaths = tccPaths
+        }
+        if incompleteScanPaths != allPaths {
+            incompleteScanPaths = allPaths
+        }
+        treeScanEvidenceProjection = TreeScanEvidenceProjection(issues: incompleteScanIssues)
+    }
+
+    private nonisolated static func stableUniquePaths<S: Sequence>(_ paths: S) -> [String]
+    where S.Element == String {
+        var seen = Set<String>()
+        var result: [String] = []
+        for path in paths {
+            let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+            guard seen.insert(normalized).inserted else { continue }
+            result.append(normalized)
+        }
+        return result
+    }
+
+    private func resetIncompleteEvidence() {
+        if !incompleteScanIssues.isEmpty {
+            incompleteScanIssues = []
+        }
+        synchronizeIncompleteEvidenceProjections()
+    }
+
+    private func replaceIncompleteEvidence(with issues: [ScanIncompleteIssue]) {
+        var seen = Set<ScanIncompleteIssue>()
+        let unique = issues.filter { seen.insert($0).inserted }
+        if incompleteScanIssues != unique {
+            incompleteScanIssues = unique
+        }
+        synchronizeIncompleteEvidenceProjections()
+    }
+
+    private func recordIncompleteIssue(_ issue: ScanIncompleteIssue) {
+        let normalized = URL(fileURLWithPath: issue.path).standardizedFileURL.path
+        let normalizedIssue = ScanIncompleteIssue(
+            path: normalized,
+            reason: issue.reason,
+            stage: issue.stage,
+            posixErrorCode: issue.posixErrorCode
+        )
+
+        // Legacy companion events do not carry stage/errno. If the richer `.incomplete`
+        // arrives afterwards, replace the generic evidence rather than keeping two copies.
+        if let genericIndex = incompleteScanIssues.firstIndex(where: {
+            $0.path == normalized
+                && $0.reason == normalizedIssue.reason
+                && $0.stage == nil
+        }), normalizedIssue.stage != nil {
+            incompleteScanIssues[genericIndex] = normalizedIssue
+            synchronizeIncompleteEvidenceProjections()
+            return
+        }
+        if normalizedIssue.stage == nil,
+           incompleteScanIssues.contains(where: {
+               $0.path == normalized && $0.reason == normalizedIssue.reason
+           }) {
+            return
+        }
+        guard !incompleteScanIssues.contains(normalizedIssue) else { return }
+        incompleteScanIssues.append(normalizedIssue)
+        synchronizeIncompleteEvidenceProjections()
+    }
+
+    private func projectedTreeState(
+        for path: String,
+        fallbackAccessState: TreeRow.AccessState = .normal,
+        fallbackSubtreeCompleteness: TreeRow.SubtreeCompleteness = .complete
+    ) -> TreeScanEvidenceProjection.ProjectedState {
+        treeScanEvidenceProjection.projectedState(
+            for: path,
+            fallbackAccessState: fallbackAccessState,
+            fallbackSubtreeCompleteness: fallbackSubtreeCompleteness
+        )
+    }
+
+    private enum ScanFailureScope {
+        case root(ScanIncompleteIssue)
+        case descendant(ScanIncompleteIssue)
+    }
+
+    /// 兼容旧 ScanKit 生产者可能把 descendant failure 发成 `.failed` 的情况；新合同下
+    /// `.failed` 只应指向 root。消费者仍根据 error 自带 path 校验 scope，避免一次生产者
+    /// 回归再次把精确 child 缺口扩大成整个扫描根失败。
+    private nonisolated static func scanFailureScope(
+        _ error: any Error,
+        rootPath: String
+    ) -> ScanFailureScope {
+        let standardizedRoot = URL(fileURLWithPath: rootPath).standardizedFileURL.path
+        guard let scanError = error as? ScanError else {
+            return .root(ScanIncompleteIssue(
+                path: standardizedRoot,
+                reason: .enumerationFailed,
+                stage: .enumerate
+            ))
+        }
+
+        let failedPath: String
+        let stage: ScanIssueStage
+        let posixErrorCode: Int32?
+        switch scanError {
+        case .cannotEnumerate(let path, let errorStage, let errorCode):
+            failedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+            stage = errorStage
+            posixErrorCode = errorCode
+        }
+        let reason: ScanIncompleteReason
+        if posixErrorCode == EACCES || posixErrorCode == EPERM {
+            reason = .permissionDenied
+        } else if stage == .metadata {
+            reason = .metadataUnavailable
+        } else {
+            reason = .enumerationFailed
+        }
+        let issue = ScanIncompleteIssue(
+            path: failedPath,
+            reason: reason,
+            stage: stage,
+            posixErrorCode: posixErrorCode
+        )
+        if failedPath != standardizedRoot,
+           failedPath.hasPrefix(standardizedRoot == "/" ? "/" : standardizedRoot + "/") {
+            return .descendant(issue)
+        }
+        return .root(issue)
+    }
+
+    /// 记录 `.failed` 并返回它是否真的是 root 级致命失败。descendant 只进入结构化
+    /// incomplete evidence，绝不写 terminalFailure / lastError。
+    @discardableResult
+    private func consumeScanFailure(
+        _ error: any Error,
+        rootPath: String,
+        messagePrefix: String? = nil
+    ) -> Bool {
+        switch Self.scanFailureScope(error, rootPath: rootPath) {
+        case .descendant(let issue):
+            recordIncompleteIssue(issue)
+            return false
+        case .root(let issue):
+            recordIncompleteIssue(issue)
+            let rawMessage = String(describing: error)
+            let message = messagePrefix.map { "[\($0)] \(rawMessage)" } ?? rawMessage
+            terminalFailure = TerminalFailure(message: message)
+            lastError = message
+            return true
+        }
+    }
+
     /// v1.3：主列表（推荐清理 / 自定义路径）排序键。默认 `.sizeDesc`（按大小从大到小）。
     ///
     /// - 切换时立刻重发当前 snapshot，UI 列表实时按新排序刷新（不需要重扫）。
@@ -118,11 +431,21 @@ public final class ScanCoordinator: ObservableObject {
     @Published public var mainListSortKey: MainListSortKey = .sizeDesc {
         didSet {
             guard oldValue != mainListSortKey else { return }
-            // 切换排序键即重发 snapshot，让 List 立刻按新顺序排
-            // 仅当扫描已结束（finished=true）时才让排序生效；扫描中保持 path 字典序
-            guard let categoryID = activeCategoryID ?? lastFinishedCategoryID,
-                  snapshot.isFinished else { return }
-            publishSnapshot(categoryID: categoryID, finished: true)
+            // 排序只投影当前已发布 rows，不能重新从 buckets 物化。versioned/common
+            // 等专用入口没有 buckets，旧做法会在切换排序时把真实结果清空；同时
+            // partial 的可信度也必须原样保留，绝不能被 UI 重排提升成完整成功。
+            guard snapshot.isFinished else { return }
+            snapshot = ScanSnapshot(
+                categoryID: snapshot.categoryID,
+                rows: snapshot.rows.sorted { mainListSortKey.lessThan($0, $1) },
+                totalBytes: snapshot.totalBytes,
+                scannedFileCount: snapshot.scannedFileCount,
+                isFinished: snapshot.isFinished,
+                elapsed: snapshot.elapsed,
+                isComplete: snapshot.isComplete,
+                bytesPerSecond: snapshot.bytesPerSecond,
+                estimatedRemaining: snapshot.estimatedRemaining
+            )
         }
     }
     private var lastFinishedCategoryID: String?
@@ -258,15 +581,22 @@ public final class ScanCoordinator: ObservableObject {
         public let rootPath: String
         public let title: String
         public var bytes: Int64
+        public var logicalBytes: Int64
         public var fileCount: Int
         public var isFinished: Bool
+        /// 根扫描已终止但未完整遍历（例如 per-root timeout / no-progress watchdog）。
+        /// 这种终态可以展示已观察结果，但 UI 不能画成绿色完成勾。
+        public var isPartial: Bool
         public init(rootPath: String, title: String,
-                    bytes: Int64 = 0, fileCount: Int = 0, isFinished: Bool = false) {
+                    bytes: Int64 = 0, logicalBytes: Int64? = nil, fileCount: Int = 0,
+                    isFinished: Bool = false, isPartial: Bool = false) {
             self.rootPath = rootPath
             self.title = title
             self.bytes = bytes
+            self.logicalBytes = logicalBytes ?? bytes
             self.fileCount = fileCount
             self.isFinished = isFinished
+            self.isPartial = isPartial
         }
     }
 
@@ -312,8 +642,8 @@ public final class ScanCoordinator: ObservableObject {
         commonAppCacheSentinelPath
     ]
 
-    /// 便利属性 —— 转发自 `snapshot.isFinished`，
-    /// 让 UI 可以直接 `coordinator.isFinished` 判断三态，不必每处都写 `coordinator.snapshot.isFinished`。
+    /// 便利属性 —— 转发自 `snapshot.isFinished`，表示事件流已进入终态；成功与否再看
+    /// `snapshot.isComplete`。这样部分结果可以展示并按精确证据预检，不会伪装成成功。
     public var isFinished: Bool { snapshot.isFinished }
 
     private let engine = SafetyEngine()
@@ -331,10 +661,16 @@ public final class ScanCoordinator: ObservableObject {
     private let trie: VendorTrieNode
     private var scanTask: Task<Void, Never>?
 
-    /// Common Cache 是同步 detector 包在 detached task 中执行。categoryID 只能区分类别，
-    /// 无法区分“取消后继续扫描”的前后两轮（两轮 ID 都是 common_app_cache），所以每次
-    /// cancel 都刷新不可复用的代际 token；只有仍持有当前 token 的任务拥有最终提交权。
-    private var commonAppCacheGeneration = UUID()
+    /// 每次扫描会话的不可复用代际 token。
+    ///
+    /// categoryID 只能区分“扫什么”，不能区分“同一分类的前后两次扫描”。旧任务的
+    /// cooperative cancellation 可能晚于新任务启动；若只比较 categoryID，旧任务仍能
+    /// 发布收尾结果。所有异步回写必须同时持有 categoryID 与本 token。
+    private var scanGeneration = UUID()
+
+    /// 当前扫描会话的稳定身份。Professional 删除确认会冻结它，并在真正提交前复核，
+    /// 避免同一 category 取消后重扫时把上一轮 rows 提交到下一轮状态。
+    public var currentScanSessionID: UUID { scanGeneration }
 
     /// 同步 detector 的依赖边界。生产默认实现直接调用 ScanKit；internal 可替换性用于
     /// 构造“旧 detector 不协作取消且晚返回”的确定性并发测试，验证 generation 本身，
@@ -358,6 +694,10 @@ public final class ScanCoordinator: ObservableObject {
     /// runScan 的每次事件处理之前先校验 `myCategoryID == activeCategoryID`，不一致直接 break。
     /// v1.3 P0-D：暴露 read-only 给 UI 用于判断 banner 上下文（仍是内部更新）。
     public private(set) var activeCategoryID: String?
+
+    private func ownsScan(categoryID: String, generation: UUID) -> Bool {
+        activeCategoryID == categoryID && scanGeneration == generation
+    }
 
     /// 一级子目录 -> 累计统计；用 path 作 key 保证稳定。
     private struct Bucket: Sendable {
@@ -457,9 +797,9 @@ public final class ScanCoordinator: ObservableObject {
     private var dirIndex: [String: DirAgg] = [:]
     /// 父目录 -> 直接子项集合（含目录与文件路径）。文件叶子也存进来方便单层展示。
     private var childEdges: [String: Set<String>] = [:]
-    /// 叶子文件 path -> (size, isDir, mtime?)；展示时区分文件与目录。
+    /// 叶子文件 path -> (allocated size, logical size, isDir, mtime?)；展示时区分文件与目录。
     /// v1.5.4 加 modificationDate：来源同 dirIndex —— 直接拿 [FSNode.modificationDate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/FSNode.swift#L14)。
-    private var fileLeaves: [String: (bytes: Int64, isDir: Bool, modificationDate: Date?)] = [:]
+    private var fileLeaves: [String: (bytes: Int64, logicalBytes: Int64, isDir: Bool, modificationDate: Date?)] = [:]
 
     /// TreeBrowserView 的按需子树扫描缓存。
     ///
@@ -760,7 +1100,18 @@ public final class ScanCoordinator: ObservableObject {
     public struct LargeFileLeaf: Sendable, Hashable {
         public let path: String
         public let bytes: Int64
+        public let logicalBytes: Int64
         public let modificationDate: Date?
+
+        public init(path: String,
+                    bytes: Int64,
+                    logicalBytes: Int64? = nil,
+                    modificationDate: Date?) {
+            self.path = path
+            self.bytes = bytes
+            self.logicalBytes = logicalBytes ?? bytes
+            self.modificationDate = modificationDate
+        }
     }
     private var largeFileLeaves: LargeFileLeafTopNHeap = LargeFileLeafTopNHeap(capacity: ScanCoordinator.largeFileTopNCapacity)
     /// **Step 9c / 2026-06**：Top-N 容量上限（绝对硬顶）。
@@ -807,26 +1158,14 @@ public final class ScanCoordinator: ObservableObject {
     /// nil = 还在估算 / 无法估算（沙盒挡住），UI 显示"估算中…"。
     @Published public private(set) var expectedTotalBytes: Int64? = nil
 
-    /// v1.3：字节口径（logical / physical）。
+    /// 清理页主值固定使用 macOS 的 on-disk allocated size。
     ///
-    /// 默认 `.logical`，与系统设置 / Finder / "信息"面板对齐。
-    /// - logical：`node.logicalSize`（ATTR_FILE_TOTALSIZE），文件 fork 完整字节数；
-    ///   APFS clone / hardlink 不去重，每个文件按完整 size 算。
-    /// - physical：`node.allocatedSize`（ATTR_FILE_ALLOCSIZE），实际占用磁盘 block 字节；
-    ///   sparse 文件按真实占用算（更小），与 `du` 口径一致。
-    ///
-    /// 通过 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/GSYCleanMacApp.swift)
-    /// 在启动时与 onChange 时从 [AppSettings.sizeAccountingMode](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
-    /// 同步过来。切换需要重新扫描才能生效（已扫的 ingest 数据按当时口径累计）。
-    public var accountingMode: AppSettings.SizeAccountingMode = .logical
-
-    /// 根据当前口径取该节点应该计入"显示总量"的字节数。
+    /// 这是 System Settings「储存空间」以及 `du` 的清理语义；不能让用户把整页切到
+    /// sparse 文件的虚拟长度，否则 Docker.raw 会再次显示出超过磁盘容量的“可清理”总量。
+    /// `logicalSize` 仍随 RowItem 保留，只在详情中像 Finder「显示简介」一样作为副值展示。
     @inline(__always)
     private func displayBytes(of node: FSNode) -> Int64 {
-        switch accountingMode {
-        case .logical:  return node.logicalSize
-        case .physical: return node.allocatedSize
-        }
+        node.allocatedSize
     }
 
     /// v1.3.z 性能开关：是否在 ingest 时构建多层下钻索引（dirIndex / childEdges / fileLeaves）。
@@ -904,7 +1243,7 @@ public final class ScanCoordinator: ObservableObject {
         }
         scanTask?.cancel()
         scanTask = nil
-        commonAppCacheGeneration = UUID()
+        scanGeneration = UUID()
         isScanning = false
         scanPhase = .idle
         // v1.3：cancel 同时清 activeCategoryID，让旧 stream 残留事件能被自检识别为"过期"并丢弃。
@@ -916,9 +1255,9 @@ public final class ScanCoordinator: ObservableObject {
         // 避免上一轮 banner 漂到下一类目。
         snapshot = .empty
         currentRootPath = nil
-        permissionDeniedPaths = []
-        tccProtectedSkippedPaths = []
+        resetIncompleteEvidence()
         lastError = nil
+        terminalFailure = nil
         largeFileTopNOnlyScan = false
         // v1.3：cancel 时同时清掉多根扫描进度，避免 statusBar 上残留旧根的"扫描中"行。
         resetPerRootPublished()
@@ -977,8 +1316,8 @@ public final class ScanCoordinator: ObservableObject {
         isScanning = true
         scanPhase = .scanning
         lastError = nil
-        permissionDeniedPaths = []
-        tccProtectedSkippedPaths = []
+        terminalFailure = nil
+        resetIncompleteEvidence()
         // v1.3：cancel() 把 activeCategoryID 清空了，本次 scan 入口重新打上当前 token；
         // runScan 内每个事件先校验 `categoryID == activeCategoryID`，过期 stream 残留事件会被自动丢弃。
         activeCategoryID = category.id
@@ -989,6 +1328,7 @@ public final class ScanCoordinator: ObservableObject {
 
         let rootURL = category.rootURL
         let categoryID = category.id
+        let generation = scanGeneration
         GSYLog.notice(.flow, "scan.start category=\(category.id) root=\(rootURL.path) includeHidden=\(includeHidden) largeFileMinBytes=\(largeFileMinBytes)")
 
         treeFetchGeneration = UUID()
@@ -1000,7 +1340,7 @@ public final class ScanCoordinator: ObservableObject {
                 let estimated = await TreeSizeEstimator.estimate(roots: [rootURL], timeout: 4.0)
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    guard self.activeCategoryID == categoryID else { return }
+                    guard self.ownsScan(categoryID: categoryID, generation: generation) else { return }
                     self.expectedTotalBytes = estimated
                 }
             }
@@ -1020,9 +1360,10 @@ public final class ScanCoordinator: ObservableObject {
         let whitelistStore = self.whitelistStore
         scanTask = Task { [weak self] in
             let whitelist = await whitelistStore.snapshotPaths()
-            guard let self, self.activeCategoryID == categoryID else { return }
+            guard let self,
+                  self.ownsScan(categoryID: categoryID, generation: generation) else { return }
             self.whitelistSnapshot = whitelist
-            await self.runScan(rootURL: rootURL, categoryID: categoryID,
+            await self.runScan(rootURL: rootURL, categoryID: categoryID, generation: generation,
                                includeHidden: includeHidden, staySingleVolume: isFullDisk,
                                largeFileTopNOnly: topNOnlyLargeFileScan)
         }
@@ -1036,15 +1377,16 @@ public final class ScanCoordinator: ObservableObject {
 
     /// M4-T2：版本化收集根扫描入口。
     ///
-    /// 直接调 [KnownVersionedRoots.scanAll(home:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift#L111-L139)
+    /// 调用 [KnownVersionedRoots.scanAllWithEvidence(home:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift)
     /// 拿到所有可回收的旧版本子目录（Xcode DeviceSupport / JetBrains Toolbox 等），
     /// 直接构造 [RowItem](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift)
-    /// 发布一个 finished snapshot 给 UI——**不走** BulkScanner / 不走流式 ingest，
-    /// 因为命中数极少（DeviceSupport ≤ 10，Toolbox ≤ 30），同步遍历总耗时 < 100ms。
+    /// 发布一个 finished snapshot 给 UI。每个候选仍使用独立 BulkScanner 会话计量，
+    /// 但不把海量 node materialize 到主列表；主线程只接收最终 rows 和完整性证据。
     ///
     /// categoryID 固定 `"developer.versioned"`，方便上层按 id 区分。
-    /// 每条 Hit 用 [FileManager.directorySizeBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppUninstaller.swift)
-    /// 取真实 size；失败回退到 0（UI 仍能渲染条目，让用户决定是否删除）。
+    /// 每条 Hit 的物理/逻辑大小、文件数、permissionDenied/TCC/partial 都来自同一
+    /// BulkScanner 扫描会话。任何不完整候选仍可展示，但会以 `.accessDenied` 锁定，
+    /// 且其证据同步进入最终 TrashPipeline 预检，绝不能移动未完整扫描的父目录。
     ///
     /// 与 [SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift)
     /// 的关系：每条命中仍然走 `engine.evaluate(path:trie:home:)`，让 forbid 路径
@@ -1080,10 +1422,11 @@ public final class ScanCoordinator: ObservableObject {
         isScanning = true
         scanPhase = .scanning
         lastError = nil
-        permissionDeniedPaths = []
-        tccProtectedSkippedPaths = []
+        terminalFailure = nil
+        resetIncompleteEvidence()
         whitelistSnapshot = []
         activeCategoryID = categoryID
+        let generation = scanGeneration
         GSYLog.notice(.flow, "scan.versioned.start home=\(home.path)")
 
         // v2026.06.21 P0：原本 KnownVersionedRoots.scanAll + 逐 hit directorySize 的全
@@ -1097,21 +1440,45 @@ public final class ScanCoordinator: ObservableObject {
         let homeStr = self.home
         let startedAtCopy = startedAt
         let whitelistStore = self.whitelistStore
+        let scanOptions = ScanOptions(
+            includeHidden: true,
+            includePackageContents: true,
+            followSymlinks: false,
+            followFirmlinks: false,
+            dedupByInode: true,
+            staySingleVolume: true,
+            mediaAware: true,
+            respectTCCSkipList: fdaStatus == .denied
+        )
         scanTask = Task.detached { [weak self] in
             let whitelist = await whitelistStore.snapshotPaths()
             if Task.isCancelled { return }
-            let hits = KnownVersionedRoots.scanAll(home: home).filter {
+            let discovery = KnownVersionedRoots.scanAllWithEvidence(home: home)
+            let hits = discovery.hits.filter {
                 !Self.isWhitelisted($0.url.path, in: whitelist)
             }
             var rows: [RowItem] = []
             rows.reserveCapacity(hits.count)
             var totalAccum: Int64 = 0
+            var fileCountAccum = 0
+            // 发现阶段也是删除正确性证据的一部分：若某个版本集无法枚举或读取
+            // metadata，不能把兼容 API 的空 hits 解释为“已完整扫描且没有旧版本”。
+            // 这里保留精确 issue.path：分组发现只会锁住失败产品组，不会把其它
+            // 已完整计量的兄弟组扩大成不可删。
+            var incompleteIssues = Set(discovery.incompleteIssues)
             for hit in hits {
                 if Task.isCancelled { return }
                 let (verdict, rejection, vendor) = engineCopy.evaluate(path: hit.url.path,
                                                                        trie: trieRef, home: homeStr)
-                let size = Self.directorySize(at: hit.url)
-                totalAccum &+= size
+                guard let measurement = await Self.measureVersionedRoot(
+                    at: hit.url,
+                    options: scanOptions
+                ) else {
+                    return
+                }
+                incompleteIssues.formUnion(measurement.incompleteIssues)
+                totalAccum &+= measurement.allocatedBytes
+                fileCountAccum &+= measurement.fileCount
                 let localizedDisplay = String(localized: String.LocalizationValue(hit.displayName), bundle: .module)
                 let composedTitle: String
                 if let groupKey = hit.groupKey, !groupKey.isEmpty {
@@ -1119,16 +1486,23 @@ public final class ScanCoordinator: ObservableObject {
                 } else {
                     composedTitle = "\(localizedDisplay) · \(hit.versionName)"
                 }
+                let scanWasIncomplete = !measurement.deletionDeniedPaths.isEmpty
+                let effectiveVerdict: SafetyVerdict = scanWasIncomplete && verdict != .forbid
+                    ? .forbid
+                    : verdict
+                let effectiveRejection: SafetyRejection = scanWasIncomplete && verdict != .forbid
+                    ? .accessDenied
+                    : rejection
                 rows.append(RowItem(
                     id: hit.url.path,
                     url: hit.url,
                     title: composedTitle,
                     isDirectory: true,
-                    bytes: size,
-                    logicalBytes: size,
-                    fileCount: 0,
-                    verdict: verdict,
-                    rejection: rejection,
+                    bytes: measurement.allocatedBytes,
+                    logicalBytes: measurement.logicalBytes,
+                    fileCount: measurement.fileCount,
+                    verdict: effectiveVerdict,
+                    rejection: effectiveRejection,
                     vendorName: vendor?.name,
                     vendorNote: "retain: \(hit.retainedLatest)",
                     isActive: false,
@@ -1138,23 +1512,35 @@ public final class ScanCoordinator: ObservableObject {
             let sortedRows = rows.sorted { $0.bytes > $1.bytes }
             let rowsCount = rows.count
             let totalCaptured = totalAccum
+            let fileCountCaptured = fileCountAccum
+            let incompleteIssuesCaptured = incompleteIssues.sorted {
+                if $0.path != $1.path { return $0.path < $1.path }
+                if $0.reason != $1.reason { return $0.reason.rawValue < $1.reason.rawValue }
+                return ($0.stage?.rawValue ?? "") < ($1.stage?.rawValue ?? "")
+            }
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 // 防过期：用户在后台扫描期间切到别的分类入口时，activeCategoryID 已被
                 // 后续 scan() 改写；本次结果直接丢弃，不污染新分类的 snapshot。
-                guard self.activeCategoryID == categoryID else { return }
+                guard self.ownsScan(categoryID: categoryID, generation: generation) else { return }
                 self.whitelistSnapshot = whitelist
+                self.replaceIncompleteEvidence(with: incompleteIssuesCaptured)
+                self.totalBytes = totalCaptured
+                self.scannedFiles = fileCountCaptured
                 self.snapshot = ScanSnapshot(
                     categoryID: categoryID,
                     rows: sortedRows,
                     totalBytes: totalCaptured,
-                    scannedFileCount: rowsCount,
+                    scannedFileCount: fileCountCaptured,
                     isFinished: true,
-                    elapsed: Date().timeIntervalSince(startedAtCopy)
+                    elapsed: Date().timeIntervalSince(startedAtCopy),
+                    isComplete: incompleteIssuesCaptured.isEmpty
                 )
                 self.lastFinishedCategoryID = categoryID
                 self.isScanning = false
                 self.scanPhase = .idle
+                self.scanTask = nil
+                self.activeCategoryID = nil
                 // **Review fix-soon #3，2026-06-15**：scanKnownVersionedRoots 会改变 snapshot
                 // 里 "developer.versioned" 的行集合（特别是 PR 新增的 Android SDK / JetBrains
                 // 分组规则上线后，老 cache 里同路径的子项可能与新分组结果不一致）。
@@ -1164,8 +1550,9 @@ public final class ScanCoordinator: ObservableObject {
                 // 让 TreeBrowserView 不会用旧扫描的展开缓存误展示已被
                 // 新规则重新分组的版本子目录。
                 self.invalidateTreeCacheAfterScan()
+                self.refreshVolumeCapacity()
                 GSYLog.notice(.flow,
-                              "scan.versioned.finish rows=\(rowsCount) totalBytes=\(totalCaptured) elapsed=\(String(format: "%.2f", Date().timeIntervalSince(startedAtCopy)))")
+                              "scan.versioned.finish rows=\(rowsCount) files=\(fileCountCaptured) totalBytes=\(totalCaptured) complete=\(self.snapshot.isComplete) discoveryIssues=\(discovery.incompleteIssues.count) elapsed=\(String(format: "%.2f", Date().timeIntervalSince(startedAtCopy)))")
             }
         }
     }
@@ -1220,14 +1607,14 @@ public final class ScanCoordinator: ObservableObject {
         isScanning = true
         scanPhase = .scanning
         lastError = nil
-        permissionDeniedPaths = []
-        tccProtectedSkippedPaths = []
+        terminalFailure = nil
+        resetIncompleteEvidence()
         devArtifactDidTruncate = false
         devArtifactDidTimeout = false
         activeCategoryID = ScanCoordinator.commonAppCacheCategoryID
         whitelistSnapshot = []
         treeFetchGeneration = UUID()
-        let generation = commonAppCacheGeneration
+        let generation = scanGeneration
 
         let categoryID = ScanCoordinator.commonAppCacheCategoryID
         let activeStartedAt = startedAt
@@ -1278,7 +1665,7 @@ public final class ScanCoordinator: ObservableObject {
                     title: hit.ruleName,
                     isDirectory: hit.isDirectory,
                     bytes: rowBytes,
-                    logicalBytes: rowBytes,
+                    logicalBytes: hit.logicalSizeBytes,
                     fileCount: hit.entryCount,
                     verdict: isIncomplete ? .forbid : evaluatedVerdict,
                     rejection: isIncomplete ? .accessDenied : rejection,
@@ -1299,29 +1686,36 @@ public final class ScanCoordinator: ObservableObject {
             let fileCountCaptured = countAccum
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                guard self.activeCategoryID == categoryID,
-                      self.commonAppCacheGeneration == generation else { return }
+                guard self.ownsScan(categoryID: categoryID, generation: generation) else { return }
                 self.whitelistSnapshot = whitelist
                 // CommonAppCacheScanner 的 partial bytes 只用于展示，不能作为“可删”证明。
                 // 将 open/deadline/maxEntries 等所有不完整路径并入现有 request-scoped
                 // 删除硬拒绝集合；TrashPipeline 的祖先/后代重叠检查会同时拦住父根。
-                for issue in scanResult.incompletePaths
-                    where !self.permissionDeniedPaths.contains(issue.path) {
-                    self.permissionDeniedPaths.append(issue.path)
+                let structuredIssues = scanResult.incompletePaths.map(
+                    Self.commonAppCacheIncompleteIssue
+                )
+                self.replaceIncompleteEvidence(with: structuredIssues)
+                for issue in scanResult.incompletePaths {
                     GSYLog.warning(.scan,
                                    "scan.common_app_cache.incomplete path=\(issue.path) reason=\(issue.reason.rawValue)")
                 }
+                self.totalBytes = totalCaptured
+                self.scannedFiles = fileCountCaptured
                 self.snapshot = ScanSnapshot(
                     categoryID: categoryID,
                     rows: sortedRows,
                     totalBytes: totalCaptured,
                     scannedFileCount: fileCountCaptured,
                     isFinished: true,
-                    elapsed: Date().timeIntervalSince(activeStartedAt)
+                    elapsed: Date().timeIntervalSince(activeStartedAt),
+                    isComplete: scanResult.isComplete
                 )
+                // partial 也是可展示、可排序的终态；可信度由 snapshot.isComplete 单独表达。
+                // 这样排序重发布会命中同一终态，同时必须原样保留 partial 语义。
                 self.lastFinishedCategoryID = categoryID
                 self.isScanning = false
                 self.scanPhase = .idle
+                self.scanTask = nil
                 self.activeCategoryID = nil
                 self.invalidateTreeCacheAfterScan()
                 self.refreshVolumeCapacity()
@@ -1366,25 +1760,112 @@ public final class ScanCoordinator: ObservableObject {
         return rules
     }
 
-    /// 单层递归 size 估算。仅用于 [scanKnownVersionedRoots](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
-    /// 这种小目录场景；大目录会走 BulkScanner 的并发实现。
-    ///
-    /// v2026.06.21 P0：标 `nonisolated` 让 P0 修复后的 `Task.detached` 能在默认 executor
-    /// 上直接调用，否则会被 ScanCoordinator 的 @MainActor 隔离拉回主线程，前面把 IO
-    /// 派后台的努力全部作废。函数体只读 FileManager.enumerator，本来就线程安全。
-    nonisolated private static func directorySize(at url: URL) -> Int64 {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(at: url,
-                                             includingPropertiesForKeys: [.fileSizeKey],
-                                             options: [.skipsHiddenFiles],
-                                             errorHandler: nil) else { return 0 }
-        var total: Int64 = 0
-        for case let fileURL as URL in enumerator {
-            if let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
-                total &+= Int64(size)
+    nonisolated private static func commonAppCacheIncompleteIssue(
+        _ issue: CommonAppCacheScanner.IncompletePath
+    ) -> ScanIncompleteIssue {
+        switch issue.reason {
+        case .metadataUnavailable:
+            return ScanIncompleteIssue(
+                path: issue.path,
+                reason: .metadataUnavailable,
+                stage: .metadata
+            )
+        case .directoryOpenFailed:
+            return ScanIncompleteIssue(
+                path: issue.path,
+                reason: .enumerationFailed,
+                stage: .open
+            )
+        case .enumerationFailed,
+             .deadlineExceeded,
+             .entryLimitReached,
+             .globExpansionLimitReached:
+            return ScanIncompleteIssue(
+                path: issue.path,
+                reason: .enumerationFailed,
+                stage: .enumerate
+            )
+        }
+    }
+
+    /// 旧版本候选的唯一计量入口。完整性证据和大小来自同一 BulkScanner 会话，
+    /// 不再用 `FileManager.enumerator(errorHandler:nil)` 静默跳过失败子树。
+    nonisolated private static func measureVersionedRoot(
+        at url: URL,
+        options: ScanOptions
+    ) async -> VersionedRootScanMeasurement? {
+        let scanner = BulkScanner(options: options)
+        var summary: ScanSummary?
+        var incompleteIssues = Set<ScanIncompleteIssue>()
+
+        for await event in scanner.scan(root: url) {
+            if Task.isCancelled { return nil }
+            switch event {
+            case .permissionDenied(let path):
+                incompleteIssues.insert(ScanIncompleteIssue(path: path, reason: .permissionDenied))
+            case .tccProtectedSkipped(let path):
+                incompleteIssues.insert(ScanIncompleteIssue(path: path, reason: .tccProtectedSkipped))
+            case .failed(let error):
+                let issue: ScanIncompleteIssue
+                switch scanFailureScope(error, rootPath: url.path) {
+                case .root(let value), .descendant(let value):
+                    issue = value
+                }
+                incompleteIssues.insert(issue)
+                GSYLog.warning(.scan,
+                               "KnownVersionedRoots BulkScanner failed root=\(url.path) error=\(error)")
+            case .incomplete(let issue):
+                incompleteIssues.insert(issue)
+            case .finished(let value):
+                summary = value
+                incompleteIssues.formUnion(value.incompleteIssues)
+                if value.completionStatus == .partial,
+                   value.incompleteIssues.isEmpty {
+                    incompleteIssues.insert(ScanIncompleteIssue(
+                        path: url.path,
+                        reason: .enumerationFailed,
+                        stage: .enumerate
+                    ))
+                }
+                if value.permissionDeniedCount > 0,
+                   !incompleteIssues.contains(where: { $0.reason == .permissionDenied }) {
+                    incompleteIssues.insert(ScanIncompleteIssue(
+                        path: url.path,
+                        reason: .permissionDenied
+                    ))
+                }
+                if value.tccProtectedSkippedCount > 0,
+                   !incompleteIssues.contains(where: { $0.reason == .tccProtectedSkipped }) {
+                    incompleteIssues.insert(ScanIncompleteIssue(
+                        path: url.path,
+                        reason: .tccProtectedSkipped
+                    ))
+                }
+            case .node, .nodes, .progress, .cacheDirTagged:
+                break
             }
         }
-        return total
+
+        guard !Task.isCancelled else { return nil }
+        guard let summary else {
+            incompleteIssues.insert(ScanIncompleteIssue(
+                path: url.path,
+                reason: .enumerationFailed,
+                stage: .enumerate
+            ))
+            return VersionedRootScanMeasurement(
+                allocatedBytes: 0,
+                logicalBytes: 0,
+                fileCount: 0,
+                incompleteIssues: incompleteIssues
+            )
+        }
+        return VersionedRootScanMeasurement(
+            allocatedBytes: summary.totalAllocatedBytes,
+            logicalBytes: summary.totalLogicalBytes,
+            fileCount: summary.fileCount,
+            incompleteIssues: incompleteIssues
+        )
     }
 
     nonisolated private static func modificationDate(at url: URL) -> Date? {
@@ -1485,9 +1966,10 @@ public final class ScanCoordinator: ObservableObject {
         isScanning = true
         scanPhase = .scanning
         lastError = nil
-        permissionDeniedPaths = []
-        tccProtectedSkippedPaths = []
+        terminalFailure = nil
+        resetIncompleteEvidence()
         activeCategoryID = categoryID
+        let generation = scanGeneration
         whitelistSnapshot = []
 
         treeFetchGeneration = UUID()
@@ -1512,7 +1994,7 @@ public final class ScanCoordinator: ObservableObject {
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 // 防止过期估算覆盖新一轮扫描
-                guard self.activeCategoryID == activeID else { return }
+                guard self.ownsScan(categoryID: activeID, generation: generation) else { return }
                 self.expectedTotalBytes = estimated
             }
         }
@@ -1527,12 +2009,14 @@ public final class ScanCoordinator: ObservableObject {
         let whitelistStore = self.whitelistStore
         scanTask = Task { [weak self] in
             let whitelist = await whitelistStore.snapshotPaths()
-            guard let self, self.activeCategoryID == activeID else { return }
+            guard let self,
+                  self.ownsScan(categoryID: activeID, generation: generation) else { return }
             self.whitelistSnapshot = whitelist
             // v1.5 性能修复：推荐扫描 5 根固定，但常见命中 ~/Library/Caches、
             // ~/Library/Logs、~/Library/Application Support 等大根；并发上限 3 足够
             // 让吞吐拉满又不会让整机 IO 子系统拥塞（详见 MultiRootScanner.scan 注释）。
             await self.runMultiRootScan(roots: roots, options: options,
+                                        generation: generation,
                                         categoryID: activeID,
                                         maxConcurrentRoots: 3)
         }
@@ -1596,12 +2080,13 @@ public final class ScanCoordinator: ObservableObject {
         isScanning = true
         scanPhase = .scanning
         lastError = nil
-        permissionDeniedPaths = []
-        tccProtectedSkippedPaths = []
+        terminalFailure = nil
+        resetIncompleteEvidence()
         // v1.3 P0-D：dev 扫描入口归零截断标志，避免上次的状态污染本次 banner。
         devArtifactDidTruncate = false
         devArtifactDidTimeout = false
         activeCategoryID = ScanCoordinator.developerCategoryID
+        let generation = scanGeneration
         whitelistSnapshot = []
 
         treeFetchGeneration = UUID()
@@ -1613,13 +2098,19 @@ public final class ScanCoordinator: ObservableObject {
         let activeID = ScanCoordinator.developerCategoryID
         let activeStartedAt = startedAt
         let whitelistStore = self.whitelistStore
+        let knownDeveloperRoots = ScanCategories.developerCacheRoots(home: home).filter { category in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: category.rootPath, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        }
 
-        // 异步勘察 + 启动扫描；勘察自身有 60s 超时和 GSYLog 埋点
+        // 异步勘察 + 启动扫描。勘察默认不做任意秒数截断，用户取消会显式
+        // 传播到 detached 文件遍历；避免大型开发机把 partial 结果伪装成完成。
         scanTask = Task { [weak self] in
             let whitelist = await whitelistStore.snapshotPaths()
             guard !Task.isCancelled,
                   let owner = self,
-                  owner.activeCategoryID == activeID else { return }
+                  owner.ownsScan(categoryID: activeID, generation: generation) else { return }
             owner.whitelistSnapshot = whitelist
             // v2026.06.21 总体方针修订：用户明确要求"不能进入截断/超时状态"——
             // 因此 maxHits 走 DevArtifactScanner 默认值 (.max)，命中再多也不截断；
@@ -1642,7 +2133,7 @@ public final class ScanCoordinator: ObservableObject {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     guard await self.waitForPruneTransactionBarrier() else { return }
-                    guard self.activeCategoryID == activeID else { return }
+                    guard self.ownsScan(categoryID: activeID, generation: generation) else { return }
                     // 把这一批 hit 预填进 perRootStaging（不动 @Published，等下次 throttle 同步）
                     for hit in batch {
                         let path = hit.url.path
@@ -1668,53 +2159,86 @@ public final class ScanCoordinator: ObservableObject {
                 flushEvery: 20,
                 onPartial: onPartial
             )
+            guard !Task.isCancelled else { return }
             let hits = result.hits.filter {
                 !Self.isWhitelisted($0.url.path, in: whitelist)
+            }
+            let supplementalRoots = knownDeveloperRoots.filter {
+                !Self.isWhitelisted($0.rootPath, in: whitelist)
             }
             // 防过期：勘察期间用户可能切走或重新点击其他扫描入口
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                guard self.activeCategoryID == activeID else { return }
-                // v2026.06.21：banner 状态字段保留（内部诊断用，UI 已不读），
-                // 但 maxHits=.max 后实际永远不会进 truncated 路径。
-                self.devArtifactDidTruncate = false
-                self.devArtifactDidTimeout = false
-                if hits.isEmpty {
+                guard self.ownsScan(categoryID: activeID, generation: generation) else { return }
+                self.devArtifactDidTruncate = result.didTruncate
+                self.devArtifactDidTimeout = result.didTimeout
+                // DevArtifactScanner 的发现 walk 与后续每根 BulkScanner 都是删除证据链。
+                // 发现阶段的 I/O 缺口必须保留精确路径，不能只用一个全局 partial bool；
+                // 这样 TrashPipeline 会锁住与缺口重叠的候选，同时不误伤其它完整根。
+                self.replaceIncompleteEvidence(with: result.incompleteIssues)
+                let discoveryWasIncomplete = !Self.developerDiscoveryIsComplete(
+                    didTimeout: result.didTimeout,
+                    didTruncate: result.didTruncate,
+                    hasIncompleteEvidence: !result.incompleteIssues.isEmpty
+                )
+                // v2026.06.21：partial 阶段已经把 hits 增量预填进 perRootStaging 了；
+                // 这里只补齐 partial 没收到的尾巴（理论上 onPartial 在末尾会 flush 残余，
+                // 但仍按"以最终结果为准"做一次最终对账）。
+                var finalStaging = self.perRootStaging
+                var finalRoots: [URL] = []
+                finalRoots.reserveCapacity(hits.count + supplementalRoots.count)
+                var seenPaths = Set<String>()
+                for hit in hits {
+                    let path = hit.url.path
+                    if self.isDeletedTombstoned(path) { continue }
+                    guard seenPaths.insert(path).inserted else { continue }
+                    finalRoots.append(hit.url)
+                    if finalStaging[path] == nil {
+                        let shortPath = self.shortenPath(path, home: self.home)
+                        let localizedDisplay = String(localized: String.LocalizationValue(hit.displayName), bundle: .module)
+                        let title = "\(localizedDisplay) · \(shortPath)"
+                        finalStaging[path] = PerRootProgress(rootPath: path, title: title)
+                    }
+                }
+                for category in supplementalRoots {
+                    let path = category.rootPath
+                    if self.isDeletedTombstoned(path) { continue }
+                    guard seenPaths.insert(path).inserted else { continue }
+                    finalRoots.append(category.rootURL)
+                    if finalStaging[path] == nil {
+                        let shortPath = self.shortenPath(path, home: self.home)
+                        let title = "\(category.displayTitle) · \(shortPath)"
+                        finalStaging[path] = PerRootProgress(rootPath: path, title: title)
+                    }
+                }
+                if finalRoots.isEmpty {
                     // 0 命中：直接 publish 一个 finished snapshot，让 UI 不再卡在"扫描中…"
                     self.resetPerRootPublished()
                     self.perRootStaging = [:]
                     self.snapshot = ScanSnapshot(categoryID: activeID, rows: [],
                                                  totalBytes: 0, scannedFileCount: 0,
                                                  isFinished: true,
-                                                 elapsed: Date().timeIntervalSince(activeStartedAt))
+                                                 elapsed: Date().timeIntervalSince(activeStartedAt),
+                                                 isComplete: !discoveryWasIncomplete)
                     self.isScanning = false
                     self.scanPhase = .idle
+                    self.lastFinishedCategoryID = activeID
+                    self.scanTask = nil
+                    self.activeCategoryID = nil
+                    self.refreshVolumeCapacity()
                     GSYLog.info(.scan, "DevArtifact 勘察 0 命中 直接结束扫描")
                     return
                 }
-                // v2026.06.21：partial 阶段已经把 hits 增量预填进 perRootStaging 了；
-                // 这里只补齐 partial 没收到的尾巴（理论上 onPartial 在末尾会 flush 残余，
-                // 但仍按"以最终结果为准"做一次最终对账）。
-                var finalStaging = self.perRootStaging
-                for hit in hits {
-                    let path = hit.url.path
-                    if self.isDeletedTombstoned(path) { continue }
-                    if finalStaging[path] != nil { continue }
-                    let shortPath = self.shortenPath(path, home: self.home)
-                    let localizedDisplay = String(localized: String.LocalizationValue(hit.displayName), bundle: .module)
-                    let title = "\(localizedDisplay) · \(shortPath)"
-                    finalStaging[path] = PerRootProgress(rootPath: path, title: title)
-                }
                 self.perRootStaging = finalStaging
                 self.syncPerRootPublished(from: finalStaging)
+                let rootsToScan = finalRoots
 
-                let roots = hits.map { $0.url }
                 // 估算总字节，给 ETA 用
                 Task { [weak self] in
-                    let estimated = await TreeSizeEstimator.estimate(roots: roots, timeout: 4.0)
+                    let estimated = await TreeSizeEstimator.estimate(roots: rootsToScan, timeout: 4.0)
                     await MainActor.run { [weak self] in
                         guard let self else { return }
-                        guard self.activeCategoryID == activeID else { return }
+                        guard self.ownsScan(categoryID: activeID, generation: generation) else { return }
                         self.expectedTotalBytes = estimated
                     }
                 }
@@ -1724,9 +2248,11 @@ public final class ScanCoordinator: ObservableObject {
                 // 命中数可能上千；fan-out 时 3 并发仍然每秒产生大量 .nodes 事件
                 // 打主 actor。再降一档到 2，让 UI 有更多空档期 layout / 响应手势。
                 self.scanTask = Task { [weak self] in
-                    await self?.runMultiRootScan(roots: roots, options: options,
+                    await self?.runMultiRootScan(roots: rootsToScan, options: options,
+                                                 generation: generation,
                                                  categoryID: activeID,
-                                                 maxConcurrentRoots: 2)
+                                                 maxConcurrentRoots: 2,
+                                                 upstreamWasIncomplete: discoveryWasIncomplete)
                 }
             }
         }
@@ -1743,6 +2269,7 @@ public final class ScanCoordinator: ObservableObject {
 
     private func runScan(rootURL: URL,
                          categoryID: String,
+                         generation: UUID,
                          includeHidden: Bool,
                          staySingleVolume: Bool = false,
                          largeFileTopNOnly: Bool = false) async {
@@ -1772,6 +2299,8 @@ public final class ScanCoordinator: ObservableObject {
         // 占住太久。这里改为按实际 node 数计数，让 SwiftUI / RunLoop 有稳定空档。
         let yieldEvery = 256
         var consumedSinceYield = 0
+        var finishedSummary: ScanSummary?
+        var sawRootFailure = false
 
         for await event in scanner.scan(root: rootURL) {
             if Task.isCancelled { break }
@@ -1779,7 +2308,7 @@ public final class ScanCoordinator: ObservableObject {
             // v1.3 防 [坑 1]：旧 stream 残留事件污染新 snapshot。
             // activeCategoryID 在 cancel() 里被清空、在新 scan 入口被重新打上；只要本次 stream 已被
             // 新一轮 scan 取代，下面这一行就会让旧 for-await 立刻跳出循环，不再写 buckets/dirIndex。
-            guard activeCategoryID == categoryID else { break }
+            guard ownsScan(categoryID: categoryID, generation: generation) else { break }
             var consumedThisEvent = 1
             switch event {
             case .node(let node):
@@ -1803,21 +2332,35 @@ public final class ScanCoordinator: ObservableObject {
                 // BulkScanner 自带的 progress 我们也用上，但首选 node 累计
                 _ = bytes
                 _ = count
-            case .finished:
-                break
+            case .finished(let summary):
+                finishedSummary = summary
+                for issue in summary.incompleteIssues {
+                    recordIncompleteIssue(issue)
+                }
+                if summary.completionStatus == .partial,
+                   summary.incompleteIssues.isEmpty {
+                    recordIncompleteIssue(ScanIncompleteIssue(
+                        path: rootPath,
+                        reason: .enumerationFailed,
+                        stage: .enumerate
+                    ))
+                }
             case .failed(let error):
-                lastError = "\(error)"
+                if consumeScanFailure(error, rootPath: rootPath) {
+                    sawRootFailure = true
+                }
+            case .incomplete(let issue):
+                recordIncompleteIssue(issue)
             case .permissionDenied(let path):
-                // 权限被拒目录上报 UI：去重 + 保序累加到 permissionDeniedPaths
-                // 不再覆盖 lastError，避免抹掉真正的 .failed 错误
-                if !permissionDeniedPaths.contains(path) {
-                    permissionDeniedPaths.append(path)
-                }
+                recordIncompleteIssue(ScanIncompleteIssue(
+                    path: path,
+                    reason: .permissionDenied
+                ))
             case .tccProtectedSkipped(let path):
-                // v1.1：TCC 雷区目录被主动跳过，去重累加到 banner 列表
-                if !tccProtectedSkippedPaths.contains(path) {
-                    tccProtectedSkippedPaths.append(path)
-                }
+                recordIncompleteIssue(ScanIncompleteIssue(
+                    path: path,
+                    reason: .tccProtectedSkipped
+                ))
             case .cacheDirTagged:
                 // v1.5 Step 8：CACHEDIR.TAG 命中——单根扫描忽略；
                 // safe 候选由后续 SafetyEngine 路径级 verdict 兜底，这里不重复 banner。
@@ -1841,8 +2384,36 @@ public final class ScanCoordinator: ObservableObject {
         // v1.3 防 [坑 1] 收尾：只有当本次 runScan 仍是当前活跃 scan 时才标记 finished。
         // 若已被新 scan 取代，本次"完成"事件不应该覆盖新的 in-progress snapshot；
         // isScanning / scanTask 由新 scan 自己管理，这里也不要重置。
-        guard activeCategoryID == categoryID else { return }
-        publishSnapshot(categoryID: categoryID, finished: true)
+        guard ownsScan(categoryID: categoryID, generation: generation) else { return }
+        let completedSuccessfully = !Task.isCancelled
+            && !sawRootFailure
+            && finishedSummary?.completionStatus == .complete
+        if Self.singleRootNeedsTerminalFallback(
+            sawFailure: sawRootFailure,
+            summary: finishedSummary
+        ) {
+            // 流关闭/失败却没有完整 summary 时，不能只把 UI 画成 partial；删除预检
+            // 还必须得到根级证据，否则父根仍可能被当成完整结果移入废纸篓。
+            recordIncompleteIssue(ScanIncompleteIssue(
+                path: rootPath,
+                reason: .enumerationFailed,
+                stage: .enumerate
+            ))
+        }
+        // 精确 child issue 由结构化 banner/Tree lock 表达，绝不能再塞进 lastError
+        // 变成一条看似整轮崩溃的红字。只有根事件流没有可信 summary，或 summary
+        // 自己只给出 opaque partial，才需要根级通用错误。
+        let hasOpaqueRootFailure = finishedSummary == nil
+            || (finishedSummary?.completionStatus == .partial
+                && finishedSummary?.incompleteIssues.isEmpty == true)
+        if !completedSuccessfully, hasOpaqueRootFailure, lastError == nil {
+            let message = String(localized: "main.scan.incomplete", bundle: .module)
+            lastError = message
+            if finishedSummary == nil {
+                terminalFailure = TerminalFailure(message: message)
+            }
+        }
+        publishSnapshot(categoryID: categoryID, finished: true, complete: completedSuccessfully)
         isScanning = false
         scanPhase = .idle
         scanTask = nil
@@ -1865,10 +2436,19 @@ public final class ScanCoordinator: ObservableObject {
     ///   带 `rootPath` 信封，`ingest(node:rootPath:)` 直接拿到正确根；
     /// - 每个 .node 同时累加全局 totalBytes / scannedFiles **和** 该根的 perRootProgress；
     /// - 每个 .finished 翻该根的 isFinished=true；所有根 finish 后 stream 自然关闭。
-    private func runMultiRootScan(roots: [URL], options: ScanOptions, categoryID: String, maxConcurrentRoots: Int = 4) async {
+    private func runMultiRootScan(roots: [URL], options: ScanOptions,
+                                  generation: UUID,
+                                  categoryID: String,
+                                  maxConcurrentRoots: Int = 4,
+                                  upstreamWasIncomplete: Bool = false) async {
         let scanner = MultiRootScanner(options: options)
         let expectedRootPaths = Set(roots.map(\.path))
         var finishedRootPaths = Set<String>()
+        var failedRootPaths = Set<String>()
+        // Developer discovery may time out/truncate before the per-root scanners start.
+        // Discovered roots can still be measured precisely, but the overall session must remain partial.
+        var sawPartialRoot = upstreamWasIncomplete
+        var sawRootFailure = false
         var lastEmit = Date(timeIntervalSince1970: 0)
         // v1.3.z 性能修复：见 runScan 同名注释。多根模式 throttle 同步抬到 0.40。
         let throttle: TimeInterval = 0.40
@@ -1888,11 +2468,25 @@ public final class ScanCoordinator: ObservableObject {
             if Task.isCancelled { break }
             guard await waitForPruneTransactionBarrier() else { break }
             // 与 runScan 同款过期事件保护：activeCategoryID 被覆盖即旧 stream 残留事件，丢弃。
-            guard activeCategoryID == categoryID else { break }
+            guard ownsScan(categoryID: categoryID, generation: generation) else { break }
             let rootPath = wrapped.rootPath
             if isDeletedTombstoned(rootPath) {
-                if case .finished = wrapped.event {
+                if case .finished(let summary) = wrapped.event {
                     finishedRootPaths.insert(rootPath)
+                    for issue in summary.incompleteIssues {
+                        recordIncompleteIssue(issue)
+                    }
+                    if summary.completionStatus == .partial,
+                       summary.incompleteIssues.isEmpty {
+                        recordIncompleteIssue(ScanIncompleteIssue(
+                            path: rootPath,
+                            reason: .enumerationFailed,
+                            stage: .enumerate
+                        ))
+                    }
+                    if summary.completionStatus == .partial {
+                        sawPartialRoot = true
+                    }
                 }
                 if !expectedRootPaths.isEmpty,
                    expectedRootPaths.isSubset(of: finishedRootPaths) {
@@ -1911,10 +2505,25 @@ public final class ScanCoordinator: ObservableObject {
                 consumedThisEvent = max(1, arr.count)
             case .progress:
                 break
-            case .finished:
+            case .finished(let summary):
                 finishedRootPaths.insert(rootPath)
+                for issue in summary.incompleteIssues {
+                    recordIncompleteIssue(issue)
+                }
+                let isPartial = summary.completionStatus == .partial
+                if isPartial {
+                    sawPartialRoot = true
+                    if summary.incompleteIssues.isEmpty {
+                        recordIncompleteIssue(ScanIncompleteIssue(
+                            path: rootPath,
+                            reason: .enumerationFailed,
+                            stage: .enumerate
+                        ))
+                    }
+                }
                 if var p = perRootStaging[rootPath] {
                     p.isFinished = true
+                    p.isPartial = isPartial
                     perRootStaging[rootPath] = p
                 }
                 // v1.3：原本 .finished 是低频事件，立刻同步到 @Published 让 UI 看到"该根已完成"。
@@ -1933,18 +2542,35 @@ public final class ScanCoordinator: ObservableObject {
                     lastEmit = Date()
                 }
             case .failed(let error):
-                // v1.3 review-fix P1-7：多根模式下错误必须带 rootPath 前缀，
-                // 否则 5 根并发时同时 .failed 互相覆盖，用户看不到是哪根失败。
                 let title = perRootStaging[rootPath]?.title ?? rootPath
-                lastError = "[\(title)] \(error)"
+                let isRootFailure = consumeScanFailure(
+                    error,
+                    rootPath: rootPath,
+                    messagePrefix: title
+                )
+                if isRootFailure {
+                    sawRootFailure = true
+                    failedRootPaths.insert(rootPath)
+                } else {
+                    sawPartialRoot = true
+                }
+                if var progress = perRootStaging[rootPath] {
+                    progress.isPartial = true
+                    perRootStaging[rootPath] = progress
+                }
+            case .incomplete(let issue):
+                sawPartialRoot = true
+                recordIncompleteIssue(issue)
             case .permissionDenied(let path):
-                if !permissionDeniedPaths.contains(path) {
-                    permissionDeniedPaths.append(path)
-                }
+                recordIncompleteIssue(ScanIncompleteIssue(
+                    path: path,
+                    reason: .permissionDenied
+                ))
             case .tccProtectedSkipped(let path):
-                if !tccProtectedSkippedPaths.contains(path) {
-                    tccProtectedSkippedPaths.append(path)
-                }
+                recordIncompleteIssue(ScanIncompleteIssue(
+                    path: path,
+                    reason: .tccProtectedSkipped
+                ))
             case .cacheDirTagged:
                 // v1.5 Step 8：多根模式下命中 CACHEDIR.TAG 同样静默——SafetyEngine 兜底。
                 break
@@ -1974,10 +2600,40 @@ public final class ScanCoordinator: ObservableObject {
                 break
             }
         }
-        guard activeCategoryID == categoryID else { return }
+        guard ownsScan(categoryID: categoryID, generation: generation) else { return }
+        let completedSuccessfully = Self.multiRootCompletionIsSuccessful(
+            expectedRootPaths: expectedRootPaths,
+            finishedRootPaths: finishedRootPaths,
+            sawPartialRoot: sawPartialRoot,
+            sawFailure: sawRootFailure,
+            consumerCancelled: Task.isCancelled
+        )
+        let fallbackRoots = Self.multiRootTerminalFallbackPaths(
+            expectedRootPaths: expectedRootPaths,
+            finishedRootPaths: finishedRootPaths,
+            failedRootPaths: failedRootPaths
+        )
+        for rootPath in fallbackRoots.sorted() {
+            recordIncompleteIssue(ScanIncompleteIssue(
+                path: rootPath,
+                reason: .enumerationFailed,
+                stage: .enumerate
+            ))
+            if var progress = perRootStaging[rootPath] {
+                // 终态未收到完整 summary 的根不能继续显示旋转中的状态，也不能保持 normal。
+                progress.isFinished = true
+                progress.isPartial = true
+                perRootStaging[rootPath] = progress
+            }
+        }
+        if !fallbackRoots.isEmpty, lastError == nil {
+            let message = String(localized: "main.scan.incomplete", bundle: .module)
+            lastError = message
+            terminalFailure = TerminalFailure(message: message)
+        }
         // v1.3.zz 性能修复：收尾把 staging 最后状态同步到 @Published，让 UI 看到完整最终值
         syncPerRootPublished(from: perRootStaging)
-        publishSnapshot(categoryID: categoryID, finished: true)
+        publishSnapshot(categoryID: categoryID, finished: true, complete: completedSuccessfully)
         isScanning = false
         scanPhase = .idle
         scanTask = nil
@@ -1987,10 +2643,58 @@ public final class ScanCoordinator: ObservableObject {
         refreshVolumeCapacity()
     }
 
+    /// 事件流关闭只代表生产者停止，不代表所有根完整成功。
+    ///
+    /// 终态必须同时满足：任务未取消、没有 `.failed`、没有 synthetic partial summary，
+    /// 且每个预期根都明确发出 `.finished`。这样 total deadline、未来 watchdog 或意外闭流
+    /// 都不会再被包装成成功。
+    nonisolated static func multiRootCompletionIsSuccessful(
+        expectedRootPaths: Set<String>,
+        finishedRootPaths: Set<String>,
+        sawPartialRoot: Bool,
+        sawFailure: Bool,
+        consumerCancelled: Bool
+    ) -> Bool {
+        !consumerCancelled
+            && !sawPartialRoot
+            && !sawFailure
+            && expectedRootPaths.isSubset(of: finishedRootPaths)
+    }
+
+    nonisolated static func developerDiscoveryIsComplete(
+        didTimeout: Bool,
+        didTruncate: Bool,
+        hasIncompleteEvidence: Bool
+    ) -> Bool {
+        !didTimeout && !didTruncate && !hasIncompleteEvidence
+    }
+
+    /// 单根事件流在没有完整、可信 summary 时必须补一条根级 incomplete 证据。
+    /// 精确 issues 非空的 partial summary 已能锁住受影响祖先，无需扩大到整根。
+    nonisolated static func singleRootNeedsTerminalFallback(
+        sawFailure: Bool,
+        summary: ScanSummary?
+    ) -> Bool {
+        if sawFailure || summary == nil { return true }
+        return summary?.completionStatus == .partial
+            && summary?.incompleteIssues.isEmpty == true
+    }
+
+    /// 多根流的事件通道关闭不等于每根成功。未发出 finished 的根和明确 failed 的根
+    /// 都必须进入最终删除拒绝集合；调用方再把它们同步成 partial 终态行。
+    nonisolated static func multiRootTerminalFallbackPaths(
+        expectedRootPaths: Set<String>,
+        finishedRootPaths: Set<String>,
+        failedRootPaths: Set<String>
+    ) -> Set<String> {
+        expectedRootPaths.subtracting(finishedRootPaths).union(failedRootPaths)
+    }
+
     private func ingestMultiRootNode(_ node: FSNode, rootPath: String) {
         guard ingest(node: node, rootPath: rootPath), !node.isDirectory,
               var progress = perRootStaging[rootPath] else { return }
         progress.bytes += displayBytes(of: node)
+        progress.logicalBytes += node.logicalSize
         progress.fileCount += 1
         perRootStaging[rootPath] = progress
     }
@@ -1998,38 +2702,53 @@ public final class ScanCoordinator: ObservableObject {
     private func ingestMultiRootNodes(_ nodes: [FSNode], rootPath: String) {
         // Step 13B micro-batch：只累计真正被全局 ingest 接受的 node。
         // tombstone / 越界 node 返回 false，不能再进入 per-root staging。
-        var stagingDelta: (bytes: Int64, files: Int) = (0, 0)
+        var stagingDelta: (bytes: Int64, logicalBytes: Int64, files: Int) = (0, 0, 0)
         for node in nodes where ingest(node: node, rootPath: rootPath) && !node.isDirectory {
             stagingDelta.bytes += displayBytes(of: node)
+            stagingDelta.logicalBytes += node.logicalSize
             stagingDelta.files += 1
         }
         guard stagingDelta.files > 0, var progress = perRootStaging[rootPath] else { return }
         progress.bytes += stagingDelta.bytes
+        progress.logicalBytes += stagingDelta.logicalBytes
         progress.fileCount += stagingDelta.files
         perRootStaging[rootPath] = progress
     }
 
-    #if DEBUG
     /// 测试专用注入：模拟 BulkScanner yield 的 .permissionDenied 路径，
-    /// 走的是和 runScan 同一条去重逻辑。仅 @testable 可见。
+    /// 走的是和 runScan 同一条去重逻辑。仅 `@testable` 可见。
+    ///
+    /// SwiftPM 的 Release 测试 target 也会编译同一组测试源；若用 `#if DEBUG`
+    /// 删除这些 internal symbol，`swift test -c release` 会在编译阶段失败。
     internal func _testInjectPermissionDenied(path: String) {
-        if !permissionDeniedPaths.contains(path) {
-            permissionDeniedPaths.append(path)
-        }
+        recordIncompleteIssue(ScanIncompleteIssue(path: path, reason: .permissionDenied))
     }
 
     /// 测试专用注入：模拟 BulkScanner yield 的 .tccProtectedSkipped 路径。
     internal func _testInjectTCCSkipped(path: String) {
-        if !tccProtectedSkippedPaths.contains(path) {
-            tccProtectedSkippedPaths.append(path)
-        }
+        recordIncompleteIssue(ScanIncompleteIssue(path: path, reason: .tccProtectedSkipped))
+    }
+
+    internal func _testReplaceIncompleteEvidence(_ issues: [ScanIncompleteIssue]) {
+        replaceIncompleteEvidence(with: issues)
+    }
+
+    internal func _testConsumeScanFailure(_ error: any Error, rootPath: String) -> Bool {
+        consumeScanFailure(error, rootPath: rootPath)
+    }
+
+    internal func _testAccessState(for path: String) -> TreeRow.AccessState {
+        projectedTreeState(for: path).accessState
+    }
+
+    internal func _testSubtreeCompleteness(for path: String) -> TreeRow.SubtreeCompleteness {
+        projectedTreeState(for: path).subtreeCompleteness
     }
 
     internal func _testIngestMultiRootNodes(rootPath: String, nodes: [FSNode]) {
         ingestMultiRootNodes(nodes, rootPath: rootPath)
         syncPerRootPublished(from: perRootStaging)
     }
-    #endif
 
     /// 将 node 写入全局聚合，并返回它是否通过本轮 tombstone/投影边界。
     /// 多根扫描必须只对返回 `true` 的 node 累加 per-root 进度，否则已删除子树的
@@ -2060,8 +2779,7 @@ public final class ScanCoordinator: ObservableObject {
             lastIngestAt[bucketPath] = nowTI
         }
 
-        // v1.3：根据当前 accountingMode 选 logical / physical 字节作为"显示总量"。
-        // logicalBytes 副字段始终维护 ATTR_FILE_TOTALSIZE，方便后续 UI 切口径无需重扫的优化。
+        // 主值固定累计 allocated bytes；logicalBytes 只作为 Finder 式详情副值保留。
         let bytes = displayBytes(of: node)
 
         // 文件累计
@@ -2099,11 +2817,17 @@ public final class ScanCoordinator: ObservableObject {
                 largeFileLeaves.consider(LargeFileLeaf(
                     path: nodePath,
                     bytes: bytes,
+                    logicalBytes: node.logicalSize,
                     modificationDate: node.modificationDate
                 ))
             }
             if enableTreeDeepIndex {
-                fileLeaves[nodePath] = (bytes: bytes, isDir: false, modificationDate: node.modificationDate)
+                fileLeaves[nodePath] = (
+                    bytes: bytes,
+                    logicalBytes: node.logicalSize,
+                    isDir: false,
+                    modificationDate: node.modificationDate
+                )
                 // v1.5.7 perf：沿路径回溯到 rootPath，把 size 加到所有祖先。
                 // 旧实现：每步 `(cursor as NSString).deletingLastPathComponent` 触发一次
                 // NSString 桥接 + 路径拷贝；大目录（>5w 文件）下 instrument 显示
@@ -2157,6 +2881,7 @@ public final class ScanCoordinator: ObservableObject {
             largeFileLeaves.consider(LargeFileLeaf(
                 path: nodePath,
                 bytes: bytes,
+                logicalBytes: node.logicalSize,
                 modificationDate: node.modificationDate
             ))
         }
@@ -2276,9 +3001,7 @@ public final class ScanCoordinator: ObservableObject {
         treeChildrenInFlight.insert(cacheKey)
         GSYLog.info(.flow, "tree.children.fetch.start path=\(path) sort=\(key.rawValue)")
         let dispatchedGeneration = treeFetchGeneration
-        let deniedSet = Set(permissionDeniedPaths)
-        let tccSet = Set(tccProtectedSkippedPaths)
-        let useLogicalBytes = accountingMode == .logical
+        let accessProjection = treeScanEvidenceProjection
 
         Task { [weak self] in
             guard let self else { return }
@@ -2287,9 +3010,7 @@ public final class ScanCoordinator: ObservableObject {
                 Self.scanDirectChildrenShallow(
                     rootPath: path,
                     sortedBy: key,
-                    useLogicalBytes: useLogicalBytes,
-                    deniedSet: deniedSet,
-                    tccSet: tccSet
+                    accessProjection: accessProjection
                 )
             }.value
             let shallowElapsedMs = Double(DispatchTime.now().uptimeNanoseconds - shallowStarted) / 1_000_000
@@ -2369,6 +3090,7 @@ public final class ScanCoordinator: ObservableObject {
     private func reconcileCachedParentRows(parentPath: String, children: [TreeRow]) {
         guard !children.isEmpty else { return }
         let childBytes = children.reduce(Int64(0)) { $0 + $1.bytes }
+        let childLogicalBytes = children.reduce(Int64(0)) { $0 + $1.logicalBytes }
         let childFileCount = children.reduce(0) { $0 + $1.fileCount }
         var updates: [(String, [TreeRow])] = []
         updates.reserveCapacity(2)
@@ -2377,14 +3099,21 @@ public final class ScanCoordinator: ObservableObject {
             guard let idx = rows.firstIndex(where: { $0.path == parentPath }) else { continue }
             var updated = rows
             let old = rows[idx]
+            let projectedState = projectedTreeState(
+                for: old.path,
+                fallbackAccessState: old.accessState,
+                fallbackSubtreeCompleteness: old.subtreeCompleteness
+            )
             updated[idx] = TreeRow(
                 path: old.path,
                 title: old.title,
                 bytes: max(old.bytes, childBytes),
+                logicalBytes: max(old.logicalBytes, childLogicalBytes),
                 fileCount: max(old.fileCount, childFileCount),
                 isDirectory: old.isDirectory,
                 hasChildren: old.hasChildren || !children.isEmpty,
-                accessState: old.accessState,
+                accessState: projectedState.accessState,
+                subtreeCompleteness: projectedState.subtreeCompleteness,
                 modificationDate: old.modificationDate,
                 isSizePending: children.contains(where: \.isSizePending)
             )
@@ -2622,18 +3351,18 @@ public final class ScanCoordinator: ObservableObject {
                 }
 
                 let isCompleteEntry = rows.allSatisfy {
-                    !$0.isSizePending && $0.accessState == .normal
+                    !$0.isSizePending && $0.hasCompleteAccessEvidence
                 }
                 if isCompleteEntry, completeChildrenByParent[parentPath] == nil {
                     // 空数组同样是“已完整枚举且贡献为 0”，不能与 cache miss 混淆。
                     completeChildrenByParent[parentPath] = [:]
                 }
 
-                for row in rows where !row.isSizePending && row.accessState == .normal {
+                for row in rows where !row.isSizePending && row.hasCompleteAccessEvidence {
                     let item = PruneContribution(
                         path: row.path,
                         bytes: row.bytes,
-                        logicalBytes: row.bytes,
+                        logicalBytes: row.logicalBytes,
                         fileCount: row.fileCount
                     )
                     exact[row.path] = Self.preferred(exact[row.path], item)
@@ -2682,7 +3411,7 @@ public final class ScanCoordinator: ObservableObject {
         let buckets: [String: Bucket]
         let dirIndex: [String: DirAgg]
         let childEdges: [String: Set<String>]
-        let fileLeaves: [String: (bytes: Int64, isDir: Bool, modificationDate: Date?)]
+        let fileLeaves: [String: (bytes: Int64, logicalBytes: Int64, isDir: Bool, modificationDate: Date?)]
         let treeChildrenCache: [String: [TreeRow]]
         let largeFileLeaves: LargeFileLeafTopNHeap
         let compactedLargeFileTopN: [LargeFileLeaf]?
@@ -2702,7 +3431,7 @@ public final class ScanCoordinator: ObservableObject {
         let buckets: [String: Bucket]
         let dirIndex: [String: DirAgg]
         let childEdges: [String: Set<String>]
-        let fileLeaves: [String: (bytes: Int64, isDir: Bool, modificationDate: Date?)]
+        let fileLeaves: [String: (bytes: Int64, logicalBytes: Int64, isDir: Bool, modificationDate: Date?)]
         let treeChildrenCache: [String: [TreeRow]]
         let largeFileLeaves: LargeFileLeafTopNHeap
         let compactedLargeFileTopN: [LargeFileLeaf]?
@@ -2924,7 +3653,7 @@ public final class ScanCoordinator: ObservableObject {
             let candidate = PruneContribution(
                 path: leaf.path,
                 bytes: leaf.bytes,
-                logicalBytes: leaf.bytes,
+                logicalBytes: leaf.logicalBytes,
                 fileCount: 1
             )
             if let current = largeFileContributions[leaf.path], current.bytes >= candidate.bytes {
@@ -2935,7 +3664,7 @@ public final class ScanCoordinator: ObservableObject {
         func contribution(for path: String) -> PruneContribution? {
             if let leaf = state.fileLeaves[path] {
                 return PruneContribution(path: path, bytes: leaf.bytes,
-                                         logicalBytes: leaf.bytes, fileCount: 1)
+                                         logicalBytes: leaf.logicalBytes, fileCount: 1)
             }
             if let agg = state.dirIndex[path] {
                 return PruneContribution(path: path, bytes: agg.bytes,
@@ -2951,7 +3680,7 @@ public final class ScanCoordinator: ObservableObject {
             }
             if let progress = sourcePerRoot[path] {
                 return PruneContribution(path: path, bytes: progress.bytes,
-                                         logicalBytes: progress.bytes, fileCount: progress.fileCount)
+                                         logicalBytes: progress.logicalBytes, fileCount: progress.fileCount)
             }
             if let largeFile = largeFileContributions[path] {
                 return largeFile
@@ -2967,7 +3696,7 @@ public final class ScanCoordinator: ObservableObject {
             guard matcher.contains(progress.rootPath),
                   !indexedMatcher.contains(progress.rootPath) else { return nil }
             return PruneContribution(path: progress.rootPath, bytes: progress.bytes,
-                                     logicalBytes: progress.bytes, fileCount: progress.fileCount)
+                                     logicalBytes: progress.logicalBytes, fileCount: progress.fileCount)
         }
         let deletedContributions = indexedContributions + perRootContributions
         let totalDeletedBytes = deletedContributions.reduce(Int64(0)) { $0 &+ $1.bytes }
@@ -3033,6 +3762,7 @@ public final class ScanCoordinator: ObservableObject {
             scannedFileCount: max(0, state.snapshot.scannedFileCount - totalDeletedFiles),
             isFinished: state.snapshot.isFinished,
             elapsed: state.snapshot.elapsed,
+            isComplete: state.snapshot.isComplete,
             bytesPerSecond: state.snapshot.bytesPerSecond,
             estimatedRemaining: state.snapshot.estimatedRemaining
         )
@@ -3050,9 +3780,11 @@ public final class ScanCoordinator: ObservableObject {
         var nextPerRoot: [String: PerRootProgress] = [:]
         nextPerRoot.reserveCapacity(sourcePerRoot.count)
         for (rootPath, progress) in sourcePerRoot where !matcher.contains(rootPath) {
-            if let dec = ancestorDecrements[rootPath], dec.bytes > 0 || dec.fileCount > 0 {
+            if let dec = ancestorDecrements[rootPath],
+               dec.bytes > 0 || dec.logicalBytes > 0 || dec.fileCount > 0 {
                 var updated = progress
                 updated.bytes = max(0, updated.bytes - dec.bytes)
+                updated.logicalBytes = max(0, updated.logicalBytes - dec.logicalBytes)
                 updated.fileCount = max(0, updated.fileCount - dec.fileCount)
                 nextPerRoot[rootPath] = updated
             } else {
@@ -3093,6 +3825,26 @@ public final class ScanCoordinator: ObservableObject {
 
         var nextTreeCache: [String: [TreeRow]] = [:]
         nextTreeCache.reserveCapacity(state.treeChildrenCache.count)
+
+        // A cached parent row owns its disclosure state, while the actual direct children live in
+        // a separate `parent|sort` entry. Resolve the post-delete child state once across all sort
+        // variants so deleting the last child removes the stale empty chevron immediately. When no
+        // cache exists for a path we preserve the row's prior value instead of guessing.
+        var cachedParentHasSurvivingChildren: [String: Bool] = [:]
+        cachedParentHasSurvivingChildren.reserveCapacity(state.treeChildrenCache.count)
+        for (cacheKey, rows) in state.treeChildrenCache {
+            let parentPath: String
+            if let pipe = cacheKey.lastIndex(of: "|") {
+                parentPath = String(cacheKey[..<pipe])
+            } else {
+                parentPath = cacheKey
+            }
+            guard !matcher.contains(parentPath) else { continue }
+            let hasSurvivingChild = rows.contains { !matcher.contains($0.path) }
+            cachedParentHasSurvivingChildren[parentPath] =
+                (cachedParentHasSurvivingChildren[parentPath] ?? false) || hasSurvivingChild
+        }
+
         for (cacheKey, rows) in state.treeChildrenCache {
             let parentPath: String
             if let pipe = cacheKey.lastIndex(of: "|") {
@@ -3101,7 +3853,40 @@ public final class ScanCoordinator: ObservableObject {
                 parentPath = cacheKey
             }
             if matcher.contains(parentPath) { continue }
-            nextTreeCache[cacheKey] = rows.filter { !matcher.contains($0.path) }
+
+            var nextRows: [TreeRow] = []
+            nextRows.reserveCapacity(rows.count)
+            for row in rows where !matcher.contains(row.path) {
+                let decrement = ancestorDecrements[row.path]
+                let hasAggregateChange = decrement.map {
+                    $0.bytes > 0 || $0.logicalBytes > 0 || $0.fileCount > 0
+                } ?? false
+                let updatedHasChildren = cachedParentHasSurvivingChildren[row.path]
+                    ?? row.hasChildren
+                guard hasAggregateChange || updatedHasChildren != row.hasChildren else {
+                    nextRows.append(row)
+                    continue
+                }
+
+                // deep-index 关闭时，已展开目录只存在于按需 cache。删除其后代后，
+                // 必须与 snapshot/dirIndex/perRoot 在同一个 prune plan 内扣减祖先行；
+                // 否则磁盘已删除但 Tree 会一直显示旧大小，直到用户重扫或重新展开。
+                // 这里只更新聚合字段，其余访问证据、展开能力和元数据必须原样保留。
+                nextRows.append(TreeRow(
+                    path: row.path,
+                    title: row.title,
+                    bytes: max(0, row.bytes - (decrement?.bytes ?? 0)),
+                    logicalBytes: max(0, row.logicalBytes - (decrement?.logicalBytes ?? 0)),
+                    fileCount: max(0, row.fileCount - (decrement?.fileCount ?? 0)),
+                    isDirectory: row.isDirectory,
+                    hasChildren: updatedHasChildren,
+                    accessState: row.accessState,
+                    subtreeCompleteness: row.subtreeCompleteness,
+                    modificationDate: row.modificationDate,
+                    isSizePending: row.isSizePending
+                ))
+            }
+            nextTreeCache[cacheKey] = nextRows
         }
 
         return PrunePlan(
@@ -3204,14 +3989,24 @@ public final class ScanCoordinator: ObservableObject {
         }
         let rows: [TreeRow] = source.values.compactMap { p in
             guard !isDeletedTombstoned(p.rootPath) else { return nil }
+            let fallbackSubtreeCompleteness: TreeRow.SubtreeCompleteness =
+                p.isPartial || (!isScanning && !p.isFinished)
+                ? .containsIncompleteDescendant
+                : .complete
+            let projectedState = projectedTreeState(
+                for: p.rootPath,
+                fallbackSubtreeCompleteness: fallbackSubtreeCompleteness
+            )
             return TreeRow(
                 path: p.rootPath,
                 title: p.title,
                 bytes: p.bytes,
+                logicalBytes: p.logicalBytes,
                 fileCount: p.fileCount,
                 isDirectory: true,
                 hasChildren: p.fileCount > 0,
-                accessState: .normal
+                accessState: projectedState.accessState,
+                subtreeCompleteness: projectedState.subtreeCompleteness
             )
         }
         return sortTreeRows(rows, by: key)
@@ -3226,14 +4021,17 @@ public final class ScanCoordinator: ObservableObject {
     /// 三角；用户要看具体子文件可在 Finder 里展开（与多根 1-tier 风格一致）。
     private func synthesizeVersionedTopLevel(sortedBy key: TreeSortKey) -> [TreeRow] {
         let rows: [TreeRow] = snapshot.rows.map { row in
-            TreeRow(
+            let projectedState = projectedTreeState(for: row.url.path)
+            return TreeRow(
                 path: row.url.path,
                 title: row.title,
                 bytes: row.bytes,
+                logicalBytes: row.logicalBytes,
                 fileCount: row.fileCount,
                 isDirectory: row.isDirectory,
                 hasChildren: false,
-                accessState: .normal,
+                accessState: projectedState.accessState,
+                subtreeCompleteness: projectedState.subtreeCompleteness,
                 modificationDate: row.modificationDate
             )
         }
@@ -3297,6 +4095,7 @@ public final class ScanCoordinator: ObservableObject {
     /// 内存索引命中时的"老路径"渲染——抽出来给同步 directChildren 与 directChildrenAsync 复用。
     private func materializeFromMemory(kids: Set<String>, sortedBy key: TreeSortKey) -> [TreeRow] {
         let rows: [TreeRow] = kids.map { childPath in
+            let projectedState = projectedTreeState(for: childPath)
             if let agg = dirIndex[childPath] {
                 // 目录
                 // v2026.06.20：agg.modificationDate 在"中间层 ancestor 目录"上经常为 nil
@@ -3309,9 +4108,12 @@ public final class ScanCoordinator: ObservableObject {
                     path: childPath,
                     title: (childPath as NSString).lastPathComponent,
                     bytes: agg.bytes,
+                    logicalBytes: agg.logicalBytes,
                     fileCount: agg.fileCount,
                     isDirectory: true,
                     hasChildren: !(childEdges[childPath]?.isEmpty ?? true),
+                    accessState: projectedState.accessState,
+                    subtreeCompleteness: projectedState.subtreeCompleteness,
                     modificationDate: mtime
                 )
             } else if let leaf = fileLeaves[childPath] {
@@ -3320,9 +4122,12 @@ public final class ScanCoordinator: ObservableObject {
                     path: childPath,
                     title: (childPath as NSString).lastPathComponent,
                     bytes: leaf.bytes,
+                    logicalBytes: leaf.logicalBytes,
                     fileCount: 1,
                     isDirectory: leaf.isDir,
                     hasChildren: false,
+                    accessState: projectedState.accessState,
+                    subtreeCompleteness: projectedState.subtreeCompleteness,
                     modificationDate: leaf.modificationDate
                 )
             } else {
@@ -3332,7 +4137,9 @@ public final class ScanCoordinator: ObservableObject {
                     bytes: 0,
                     fileCount: 0,
                     isDirectory: false,
-                    hasChildren: false
+                    hasChildren: false,
+                    accessState: projectedState.accessState,
+                    subtreeCompleteness: projectedState.subtreeCompleteness
                 )
             }
         }
@@ -3347,13 +4154,17 @@ public final class ScanCoordinator: ObservableObject {
             let exists = FileManager.default.fileExists(atPath: row.url.path, isDirectory: &isDirValue)
             let isDirectory = exists ? isDirValue.boolValue : row.isDirectory
             let hasChildren = isDirectory && row.fileCount > 0
+            let projectedState = projectedTreeState(for: row.url.path)
             return TreeRow(
                 path: row.url.path,
                 title: row.title,
                 bytes: row.bytes,
+                logicalBytes: row.logicalBytes,
                 fileCount: row.fileCount,
                 isDirectory: isDirectory,
                 hasChildren: hasChildren,
+                accessState: projectedState.accessState,
+                subtreeCompleteness: projectedState.subtreeCompleteness,
                 modificationDate: row.modificationDate
             )
         }
@@ -3394,19 +4205,19 @@ public final class ScanCoordinator: ObservableObject {
         var path: String
         var title: String
         var bytes: Int64 = 0
+        var logicalBytes: Int64 = 0
         var fileCount: Int = 0
         var directChildSeen: Bool = false
         var isDirectory: Bool = true
         var hasChildren: Bool = false
         var modificationDate: Date?
         var accessState: TreeRow.AccessState = .normal
+        var subtreeCompleteness: TreeRow.SubtreeCompleteness = .complete
     }
 
     nonisolated private static func scanDirectChildrenShallow(rootPath: String,
                                                               sortedBy key: TreeSortKey,
-                                                              useLogicalBytes: Bool,
-                                                              deniedSet: Set<String>,
-                                                              tccSet: Set<String>) -> [TreeRow] {
+                                                              accessProjection: TreeScanEvidenceProjection) -> [TreeRow] {
         var isRootDirectory = ObjCBool(false)
         guard FileManager.default.fileExists(atPath: rootPath, isDirectory: &isRootDirectory),
               isRootDirectory.boolValue
@@ -3433,24 +4244,24 @@ public final class ScanCoordinator: ObservableObject {
             let values = try? url.resourceValues(forKeys: keys)
             let isSymlink = values?.isSymbolicLink ?? false
             let isDirectory = (values?.isDirectory ?? false) && !isSymlink
-            let accessState: TreeRow.AccessState
-            if tccSet.contains(path) {
-                accessState = .tccProtected
-            } else if deniedSet.contains(path) {
-                accessState = .permissionDenied
-            } else {
-                accessState = .normal
-            }
+            let projectedState = accessProjection.projectedState(for: path)
+            let accessState = projectedState.accessState
 
             let bytes: Int64
+            let logicalBytes: Int64
             let fileCount: Int
             if isDirectory {
                 bytes = 0
+                logicalBytes = 0
                 fileCount = 0
             } else {
                 let allocated = values?.totalFileAllocatedSize ?? values?.fileAllocatedSize
                 let logical = values?.totalFileSize ?? values?.fileSize
-                bytes = Int64(max(0, useLogicalBytes ? (logical ?? allocated ?? 0) : (allocated ?? logical ?? 0)))
+                // 不得回退到 logical size：那会把 sparse 虚拟容量混入磁盘占用主值。
+                // 本地文件系统未提供 allocated 值时先展示 0；完整后台阶段仍由
+                // BulkScanner 的 `st_blocks` 结果覆盖，而不是用另一种语义伪造一个数。
+                bytes = Int64(max(0, allocated ?? 0))
+                logicalBytes = Int64(max(0, logical ?? 0))
                 fileCount = 1
             }
 
@@ -3458,10 +4269,12 @@ public final class ScanCoordinator: ObservableObject {
                 path: path,
                 title: url.lastPathComponent,
                 bytes: bytes,
+                logicalBytes: logicalBytes,
                 fileCount: fileCount,
                 isDirectory: isDirectory,
                 hasChildren: isDirectory && accessState == .normal,
                 accessState: accessState,
+                subtreeCompleteness: projectedState.subtreeCompleteness,
                 modificationDate: values?.contentModificationDate,
                 isSizePending: isDirectory && accessState == .normal
             )
@@ -3472,10 +4285,8 @@ public final class ScanCoordinator: ObservableObject {
 
     nonisolated private static func scanDirectChildrenOnDemand(rootPath: String,
                                                                sortedBy key: TreeSortKey,
-                                                               useLogicalBytes: Bool,
                                                                respectTCCSkipList: Bool,
-                                                               deniedSet: Set<String>,
-                                                               tccSet: Set<String>) async -> [TreeRow] {
+                                                               accessProjection: TreeScanEvidenceProjection) async -> [TreeRow] {
         guard FileManager.default.fileExists(atPath: rootPath) else { return [] }
 
         var aggregates: [String: OnDemandChildAggregate] = [:]
@@ -3486,7 +4297,6 @@ public final class ScanCoordinator: ObservableObject {
             followSymlinks: false,
             followFirmlinks: false,
             dedupByInode: true,
-            useAllocatedSize: !useLogicalBytes,
             staySingleVolume: true,
             respectTCCSkipList: respectTCCSkipList
         ))
@@ -3496,13 +4306,11 @@ public final class ScanCoordinator: ObservableObject {
             case .node(let node):
                 mergeOnDemandNode(node,
                                   rootPath: rootPath,
-                                  useLogicalBytes: useLogicalBytes,
                                   into: &aggregates)
             case .nodes(let nodes):
                 for node in nodes {
                     mergeOnDemandNode(node,
                                       rootPath: rootPath,
-                                      useLogicalBytes: useLogicalBytes,
                                       into: &aggregates)
                 }
             case .permissionDenied(let path):
@@ -3515,28 +4323,41 @@ public final class ScanCoordinator: ObservableObject {
                                    rootPath: rootPath,
                                    accessState: .tccProtected,
                                    into: &aggregates)
+            case .incomplete(let issue):
+                let accessState: TreeRow.AccessState
+                switch issue.reason {
+                case .permissionDenied:
+                    accessState = .permissionDenied
+                case .tccProtectedSkipped:
+                    accessState = .tccProtected
+                case .enumerationFailed, .metadataUnavailable:
+                    accessState = .incomplete
+                }
+                markOnDemandAccess(issue.path,
+                                   rootPath: rootPath,
+                                   accessState: accessState,
+                                   into: &aggregates)
             case .progress, .finished, .failed, .cacheDirTagged:
                 continue
             }
         }
 
         let rows = aggregates.values.map { agg in
-            let accessState: TreeRow.AccessState
-            if tccSet.contains(agg.path) {
-                accessState = .tccProtected
-            } else if deniedSet.contains(agg.path) {
-                accessState = .permissionDenied
-            } else {
-                accessState = agg.accessState
-            }
+            let projectedState = accessProjection.projectedState(
+                for: agg.path,
+                fallbackAccessState: agg.accessState,
+                fallbackSubtreeCompleteness: agg.subtreeCompleteness
+            )
             return TreeRow(
                 path: agg.path,
                 title: agg.title,
                 bytes: agg.bytes,
+                logicalBytes: agg.logicalBytes,
                 fileCount: max(agg.fileCount, agg.isDirectory ? 1 : agg.fileCount),
                 isDirectory: agg.isDirectory,
                 hasChildren: agg.isDirectory && agg.hasChildren,
-                accessState: accessState,
+                accessState: projectedState.accessState,
+                subtreeCompleteness: projectedState.subtreeCompleteness,
                 modificationDate: agg.modificationDate
             )
         }
@@ -3545,15 +4366,15 @@ public final class ScanCoordinator: ObservableObject {
 
     nonisolated private static func mergeOnDemandNode(_ node: FSNode,
                                                       rootPath: String,
-                                                      useLogicalBytes: Bool,
                                                       into aggregates: inout [String: OnDemandChildAggregate]) {
         guard let projection = directChildProjection(rootPath: rootPath, nodePath: node.path) else { return }
-        let displayBytes = useLogicalBytes ? node.logicalSize : node.allocatedSize
+        let displayBytes = node.allocatedSize
         var aggregate = aggregates[projection.childPath] ?? OnDemandChildAggregate(
             path: projection.childPath,
             title: projection.segment
         )
         aggregate.bytes += displayBytes
+        aggregate.logicalBytes += node.logicalSize
         if !node.isDirectory {
             aggregate.fileCount += 1
         }
@@ -3575,20 +4396,20 @@ public final class ScanCoordinator: ObservableObject {
                                                        accessState: TreeRow.AccessState,
                                                        into aggregates: inout [String: OnDemandChildAggregate]) {
         guard let projection = directChildProjection(rootPath: rootPath, nodePath: path) else { return }
-        // 只把"直接子项本身不可访问"画成锁。
-        //
-        // 如果 /Users/guoshuyu/Library/Mail 被 TCC 拒绝，直接子项是 /Users/guoshuyu；
-        // 这个父目录本身已经成功列出且可展开，不能因为更深层后代被拒而把父行灰掉。
-        // 更深层的权限问题仍由 scanner 的 permissionDenied/tccProtectedSkipped 事件
-        // 进入全局 banner 与日志，但不污染当前层级的可交互状态。
-        guard projection.isDirectChild else { return }
         var aggregate = aggregates[projection.childPath] ?? OnDemandChildAggregate(
             path: projection.childPath,
             title: projection.segment
         )
-        aggregate.isDirectory = true
-        aggregate.hasChildren = false
-        aggregate.accessState = accessState
+        if projection.isDirectChild {
+            // 只有真实直接子项本身不可访问时才画锁；不能把深层问题升级到父行。
+            aggregate.isDirectory = true
+            aggregate.hasChildren = false
+            aggregate.accessState = accessState
+        } else {
+            // 深层问题只降低子树完整性，父行仍保持可展开，供用户继续定位真实目录。
+            aggregate.hasChildren = true
+            aggregate.subtreeCompleteness = .containsIncompleteDescendant
+        }
         aggregates[projection.childPath] = aggregate
     }
 
@@ -3614,19 +4435,15 @@ public final class ScanCoordinator: ObservableObject {
         if childEdges[path] != nil {
             return directChildren(of: path, sortedBy: key)
         }
-        let deniedSet = Set(permissionDeniedPaths)
-        let tccSet = Set(tccProtectedSkippedPaths)
-        let useLogicalBytes = accountingMode == .logical
+        let accessProjection = treeScanEvidenceProjection
         let respectTCC = fdaStatus != .granted
 
         let rows = await Task.detached(priority: .utility) {
             await Self.scanDirectChildrenOnDemand(
                 rootPath: path,
                 sortedBy: key,
-                useLogicalBytes: useLogicalBytes,
                 respectTCCSkipList: respectTCC,
-                deniedSet: deniedSet,
-                tccSet: tccSet
+                accessProjection: accessProjection
             )
         }.value
 
@@ -3642,28 +4459,76 @@ public final class ScanCoordinator: ObservableObject {
             // v2026.06.20：与 [materializeFromMemory](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
             // 同款 mtime 兜底，保证 onSelect → detail 面板与 tree 列里"修改时间"显示一致。
             let mtime = agg.modificationDate ?? resolveDirMtimeFallback(forPath: path)
+            let projectedState = projectedTreeState(for: path)
             return TreeRow(
                 path: path,
                 title: (path as NSString).lastPathComponent,
                 bytes: agg.bytes,
+                logicalBytes: agg.logicalBytes,
                 fileCount: agg.fileCount,
                 isDirectory: true,
                 hasChildren: !(childEdges[path]?.isEmpty ?? true),
+                accessState: projectedState.accessState,
+                subtreeCompleteness: projectedState.subtreeCompleteness,
                 modificationDate: mtime
             )
         }
         if let leaf = fileLeaves[path] {
+            let projectedState = projectedTreeState(for: path)
             return TreeRow(
                 path: path,
                 title: (path as NSString).lastPathComponent,
                 bytes: leaf.bytes,
+                logicalBytes: leaf.logicalBytes,
                 fileCount: 1,
                 isDirectory: leaf.isDir,
                 hasChildren: false,
+                accessState: projectedState.accessState,
+                subtreeCompleteness: projectedState.subtreeCompleteness,
                 modificationDate: leaf.modificationDate
             )
         }
         return nil
+    }
+
+    /// Post-prune refresh for MainView's value-type Tree selection. Indexed rows stay O(1); lazy
+    /// deep-index-off rows use direct-parent cache keys, and top-level snapshot rows are rebuilt
+    /// from the just-committed aggregate. This path runs once per successful delete, not per frame.
+    public func refreshedTreeRow(for path: String) -> TreeRow? {
+        if let indexed = row(for: path) { return indexed }
+
+        let parentPath = String._gsyParentPath(of: path)
+        for sortKey in TreeSortKey.allCases {
+            let cacheKey = "\(parentPath)|\(sortKey.rawValue)"
+            if let cached = treeChildrenCache[cacheKey]?.first(where: { $0.path == path }) {
+                return cached
+            }
+        }
+
+        guard let item = snapshot.rows.first(where: { $0.id == path }) else { return nil }
+        let projectedState = projectedTreeState(for: path)
+        return TreeRow(
+            path: path,
+            title: item.title,
+            bytes: item.bytes,
+            logicalBytes: item.logicalBytes,
+            fileCount: item.fileCount,
+            isDirectory: item.isDirectory,
+            hasChildren: item.isDirectory && item.fileCount > 0,
+            accessState: projectedState.accessState,
+            subtreeCompleteness: projectedState.subtreeCompleteness,
+            modificationDate: item.modificationDate
+        )
+    }
+
+    /// 删除 UI 的唯一预检入口。Tree / Large Files 等页面必须通过当前扫描会话持有的
+    /// engine + vendor trie + home 评估，不能再各自 new 一个裸 SafetyEngine；否则 UI
+    /// 可能显示可删，而 TrashPipeline 最终按完整 vendor 规则拒绝。
+    public func deletionSafetyEvaluation(
+        for path: String
+    ) -> (verdict: SafetyVerdict, rejection: SafetyRejection, vendor: VendorRule?) {
+        let result = engine.evaluate(path: path, trie: trie, home: home)
+        return (result.0, result.1, result.2)
     }
 
     // MARK: - T4 大文件 API
@@ -3698,7 +4563,14 @@ public final class ScanCoordinator: ObservableObject {
         let filtered = source
             .filter { $0.bytes >= minBytes }
             .filter { mtimeFilter.passes($0.modificationDate, now: now) }
-            .map { LargeFileItem(path: $0.path, bytes: $0.bytes, modificationDate: $0.modificationDate) }
+            .map {
+                LargeFileItem(
+                    path: $0.path,
+                    bytes: $0.bytes,
+                    logicalBytes: $0.logicalBytes,
+                    modificationDate: $0.modificationDate
+                )
+            }
         let sorted = filtered.sorted { (a, b) in
             switch sortKey {
             case .sizeDesc:
@@ -3751,7 +4623,8 @@ public final class ScanCoordinator: ObservableObject {
         return nowDate.timeIntervalSince(startedAt)
     }
 
-    private func publishSnapshot(categoryID: String, finished: Bool) {
+    private func publishSnapshot(categoryID: String, finished: Bool, complete: Bool? = nil) {
+        let isComplete = complete ?? finished
         if largeFileTopNOnlyScan {
             let elapsedTotal = sampleScanRate()
             let nextSnapshot = ScanSnapshot(
@@ -3761,6 +4634,7 @@ public final class ScanCoordinator: ObservableObject {
                 scannedFileCount: scannedFiles,
                 isFinished: finished,
                 elapsed: elapsedTotal,
+                isComplete: isComplete,
                 bytesPerSecond: bytesPerSecondEMA,
                 estimatedRemaining: nil
             )
@@ -3925,6 +4799,7 @@ public final class ScanCoordinator: ObservableObject {
             scannedFileCount: scannedFiles,
             isFinished: finished,
             elapsed: elapsedTotal,
+            isComplete: isComplete,
             bytesPerSecond: bytesPerSecondEMA,
             estimatedRemaining: finished ? nil : eta
         )
@@ -4035,13 +4910,13 @@ public final class ScanCoordinator: ObservableObject {
         if let fileLeaves {
             self.fileLeaves.removeAll()
             for path in fileLeaves {
-                self.fileLeaves[path] = (bytes: 1, isDir: false, modificationDate: nil)
+                self.fileLeaves[path] = (bytes: 1, logicalBytes: 1, isDir: false, modificationDate: nil)
             }
         }
         if let fileLeavesFull {
             self.fileLeaves.removeAll()
             for (path, b) in fileLeavesFull {
-                self.fileLeaves[path] = (bytes: b, isDir: false, modificationDate: nil)
+                self.fileLeaves[path] = (bytes: b, logicalBytes: b, isDir: false, modificationDate: nil)
             }
         }
         if let childEdges {

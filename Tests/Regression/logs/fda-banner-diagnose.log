@@ -1,5 +1,5 @@
-2026-07-13 11:04:33.481 AmuxAIClean[23110:36023426] [AmuxAIClean] 已加载 123 条 vendor 规则
-[REGR] case=fda-banner-diagnose defaults_snapshot_keys=5 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
+2026-07-15 17:11:04.154 AmuxAIClean[95276:195777] [AmuxAIClean] 已加载 123 条 vendor 规则
+[REGR] case=fda-banner-diagnose defaults_snapshot_keys=7 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
 [REGR_BEGIN] case=fda-banner-diagnose
 [REGR] case=fda-banner-diagnose fda_status=denied
 [REGR] case=fda-banner-diagnose denied_count=12 tcc_skip_count=0
@@ -16,5 +16,5 @@
 [REGR] case=fda-banner-diagnose denied[10]=/Users/guoshuyu/Library/Caches/com.apple.HomeKit
 [REGR] case=fda-banner-diagnose denied[11]=/Users/guoshuyu/Library/Caches/familycircled
 [REGR_OK] case=fda-banner-diagnose scan finished=true
-[REGR] case=fda-banner-diagnose defaults_restored_keys=5
-[REGR_PASS] case=fda-banner-diagnose elapsed_ms=9860
+[REGR] case=fda-banner-diagnose defaults_restored_keys=7
+[REGR_PASS] case=fda-banner-diagnose elapsed_ms=8757

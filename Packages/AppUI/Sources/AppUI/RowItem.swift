@@ -139,18 +139,31 @@ public enum MainListSortKey: String, CaseIterable, Sendable, Hashable, Identifia
 }
 
 /// v1.0 T3：树视图行模型 —— 给 OutlineGroup / TreeBrowserView 用。
-/// 故意比 RowItem 简一档：树视图只展示 size 与层级，不参与勾选清理决策。
+/// 故意比 RowItem 简一档：它不参与推荐扫描的勾选模型，但必须携带 Tree 单项删除所需的
+/// 访问与完整性证据；View 只能提交删除意图，不能根据视觉 lock 自行推导授权。
 public struct TreeRow: Identifiable, Hashable, Sendable {
     public let path: String
     public let title: String
+    /// System Settings / `du` 语义的 on-disk allocated bytes。
     public let bytes: Int64
+    /// Finder「显示简介」语义的文件逻辑长度；仅用于详情副值。
+    public let logicalBytes: Int64
     public let fileCount: Int
     public let isDirectory: Bool
     /// 是否还有 direct children 可展开 —— 用于 OutlineGroup 决定要不要画披露三角。
     public let hasChildren: Bool
-    /// v1.3.zzzz：访问状态——区分"真的 0KB"和"被 sandbox/TCC/permission denied 拦掉看不到"。
-    /// UI 据此渲染锁定徽章 + tooltip + 不可勾选；不打 banner 误导用户以为是 bug。
+    /// 当前节点自身的访问状态。
+    ///
+    /// 这个字段只回答“这一行代表的节点能否被读取”，不能用来表达“某个更深后代
+    /// 未完整扫描”。具体后代的问题如果向祖先传播成这里的非 normal 状态，Tree 会把
+    /// 可正常浏览的祖先错误画锁并禁止下钻。后代完整性必须写入
+    /// `subtreeCompleteness`，删除资格则统一读取 `hasCompleteAccessEvidence`。
     public let accessState: AccessState
+    /// 当前节点之下是否存在未完整扫描的后代。
+    ///
+    /// 它与 `accessState` 正交：祖先可以正常读取和展开，同时其子树统计仍只是部分证据。
+    /// UI 不得把本字段渲染成访问锁；删除入口也不得因为父行可浏览就忽略本字段。
+    public let subtreeCompleteness: SubtreeCompleteness
     /// v1.5.4：节点 inode 自身的最近修改时间。
     ///
     /// 与 [RowItem.modificationDate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L33)
@@ -172,22 +185,39 @@ public struct TreeRow: Identifiable, Hashable, Sendable {
         /// 被 TCC 雷区硬 skip（[respectTCCSkipList](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L210)），
         /// 通常是用户没给 Full Disk Access
         case tccProtected
+        /// 目录可打开，但枚举或节点 metadata 没有完整读完。它不是 FDA/TCC 问题，
+        /// 仍必须锁定，避免把部分大小当成完整可删证据。
+        case incomplete
+    }
+
+    public enum SubtreeCompleteness: String, Sendable, Hashable, Codable {
+        case complete
+        case containsIncompleteDescendant
+    }
+
+    /// 删除入口使用的组合证据。可浏览只取决于 `accessState`，完整删除证据则必须同时
+    /// 满足节点自身可访问、且没有已知的未完整后代。
+    public var hasCompleteAccessEvidence: Bool {
+        accessState == .normal && subtreeCompleteness == .complete
     }
 
     public var id: String { path }
 
-    public init(path: String, title: String, bytes: Int64, fileCount: Int,
+    public init(path: String, title: String, bytes: Int64, logicalBytes: Int64? = nil, fileCount: Int,
                 isDirectory: Bool, hasChildren: Bool,
                 accessState: AccessState = .normal,
+                subtreeCompleteness: SubtreeCompleteness = .complete,
                 modificationDate: Date? = nil,
                 isSizePending: Bool = false) {
         self.path = path
         self.title = title
         self.bytes = bytes
+        self.logicalBytes = logicalBytes ?? bytes
         self.fileCount = fileCount
         self.isDirectory = isDirectory
         self.hasChildren = hasChildren
         self.accessState = accessState
+        self.subtreeCompleteness = subtreeCompleteness
         self.modificationDate = modificationDate
         self.isSizePending = isSizePending
     }
@@ -293,7 +323,10 @@ public enum TreeSortKey: String, CaseIterable, Sendable, Hashable {
 ///   字段最少：path / bytes / mtime + 类型图标用的扩展名。
 public struct LargeFileItem: Identifiable, Hashable, Sendable {
     public let path: String
+    /// 清理列表主值：文件在磁盘上的 allocated bytes。
     public let bytes: Int64
+    /// 文件逻辑长度，仅供详情展示；不能用于“可清理空间”主值。
+    public let logicalBytes: Int64
     public let modificationDate: Date?
 
     public var id: String { path }
@@ -304,9 +337,13 @@ public struct LargeFileItem: Identifiable, Hashable, Sendable {
         (path as NSString).pathExtension.lowercased()
     }
 
-    public init(path: String, bytes: Int64, modificationDate: Date?) {
+    public init(path: String,
+                bytes: Int64,
+                logicalBytes: Int64? = nil,
+                modificationDate: Date?) {
         self.path = path
         self.bytes = bytes
+        self.logicalBytes = logicalBytes ?? bytes
         self.modificationDate = modificationDate
     }
 }
@@ -393,7 +430,13 @@ public struct ScanSnapshot: Sendable, Equatable {
     public let rows: [RowItem]
     public let totalBytes: Int64
     public let scannedFileCount: Int
+    /// 事件流已经进入终态（成功或部分完成）。终态结果可以展示，删除仍需按精确
+    /// incomplete/access evidence 逐路径预检。
     public let isFinished: Bool
+    /// 本轮是否完整覆盖。`isFinished == true && isComplete == false` 表示部分结果：
+    /// UI 必须画“完成但受限”而非完整成功；Smart Care 可以提交已完成结果，但必须把
+    /// 精确 incomplete/access evidence 同事务写入删除拒绝集合，不能把受限路径变成可清理项。
+    public let isComplete: Bool
     public let elapsed: TimeInterval
     /// v1.3：实时扫描吞吐（bytes/s），EWMA 平滑后的速率。0 表示尚未估出。
     /// 用法：HUD 显示 "MB/s"；估算 ETA 时 / bytesPerSecond。
@@ -430,12 +473,14 @@ public struct ScanSnapshot: Sendable, Equatable {
 
     public init(categoryID: String, rows: [RowItem], totalBytes: Int64,
                 scannedFileCount: Int, isFinished: Bool, elapsed: TimeInterval,
+                isComplete: Bool? = nil,
                 bytesPerSecond: Double = 0, estimatedRemaining: TimeInterval? = nil) {
         self.categoryID = categoryID
         self.rows = rows
         self.totalBytes = totalBytes
         self.scannedFileCount = scannedFileCount
         self.isFinished = isFinished
+        self.isComplete = isComplete ?? isFinished
         self.elapsed = elapsed
         self.bytesPerSecond = bytesPerSecond
         self.estimatedRemaining = estimatedRemaining

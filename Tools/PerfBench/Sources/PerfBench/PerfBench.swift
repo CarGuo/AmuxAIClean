@@ -71,7 +71,13 @@ struct PerfBench {
             case .failed(let err):
                 FileHandle.standardError.write(Data("PerfBench failed: \(err)\n".utf8))
                 exit(1)
-            case .node, .nodes, .progress, .permissionDenied, .tccProtectedSkipped, .cacheDirTagged:
+            case .incomplete(let issue):
+                FileHandle.standardError.write(Data(
+                    "PerfBench incomplete: \(issue.path) [\(issue.reason.rawValue)]\n".utf8
+                ))
+                exit(1)
+            case .node, .nodes, .progress, .permissionDenied, .tccProtectedSkipped,
+                 .cacheDirTagged:
                 continue
             }
         }
@@ -185,7 +191,13 @@ struct PerfBench {
             case .failed(let error):
                 FileHandle.standardError.write(Data("PerfBench: direct children scan failed: \(error)\n".utf8))
                 exit(1)
-            case .finished, .progress, .permissionDenied, .tccProtectedSkipped, .cacheDirTagged:
+            case .incomplete(let issue):
+                FileHandle.standardError.write(Data(
+                    "PerfBench: direct children incomplete: \(issue.path) [\(issue.reason.rawValue)]\n".utf8
+                ))
+                exit(1)
+            case .finished, .progress, .permissionDenied, .tccProtectedSkipped,
+                 .cacheDirTagged:
                 continue
             }
         }

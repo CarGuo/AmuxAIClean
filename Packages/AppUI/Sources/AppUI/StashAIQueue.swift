@@ -93,31 +93,26 @@ public final class StashAIQueue {
             redactPaths: aiSettings.redactPaths
         )
 
-        // 构造 client 失败 → 写 lastGlobalError 后退出。
-        let client: OpenAIChatClient
-        do {
-            client = try Self.makeClient(snapshot: snapshot, factory: clientFactory)
-        } catch OpenAIChatClient.Error.invalidBaseURL {
-            lastGlobalError = "ai.sheet.error.invalid_base_url"
-            return
-        } catch OpenAIChatClient.Error.insecureBaseURL(let scheme, let host) {
-            lastGlobalError = "[insecure] \(scheme)://\(host)"
-            return
-        } catch OpenAIChatClient.Error.missingAPIKey {
-            lastGlobalError = "ai.sheet.error.no_api_key"
-            return
-        } catch {
-            lastGlobalError = String(describing: error)
-            return
-        }
-
-        // 进入 running 态
+        // 先进入 running，再在任务内异步读取 Keychain。这样同步 SecItem I/O 永远不会
+        // 卡住点击事件所在的 MainActor，同时也用 phase 锁住重复启动。
         phase = .running
         processed = 0
         total = snapshotPaths.count
         currentPath = nil
 
         runTask = Task { [stash] in
+            let client: OpenAIChatClient
+            do {
+                client = try await Self.makeClient(snapshot: snapshot, factory: clientFactory)
+                try Task.checkCancellation()
+            } catch is CancellationError {
+                self.finishRun()
+                return
+            } catch {
+                self.finishPreparationFailure(error)
+                return
+            }
+
             // 串行循环
             for path in snapshotPaths {
                 if Task.isCancelled { break }
@@ -171,9 +166,7 @@ public final class StashAIQueue {
             }
 
             // 结束（无论 finish / cancel）—— 清状态、回到 idle
-            self.currentPath = nil
-            self.phase = .idle
-            self.runTask = nil
+            self.finishRun()
         }
     }
 
@@ -195,16 +188,46 @@ public final class StashAIQueue {
     private static func makeClient(
         snapshot: OpenAIChatClient.SettingsSnapshot,
         factory: (() throws -> OpenAIChatClient)?
-    ) throws -> OpenAIChatClient {
+    ) async throws -> OpenAIChatClient {
         if let factory { return try factory() }
         // 先校验 baseURL & scheme
         let authOptional = try OpenAIChatClient.allowsMissingAPIKey(baseURL: snapshot.baseURL)
-        let store = KeychainAPIKeyStore()
-        let raw = (try? store.load()) ?? ""
+        let raw: String
+        do {
+            raw = try await KeychainAPIKeyStore.shared.load() ?? ""
+        } catch {
+            if authOptional {
+                raw = ""
+            } else {
+                throw error
+            }
+        }
         if raw.isEmpty && !authOptional {
             throw OpenAIChatClient.Error.missingAPIKey
         }
         return OpenAIChatClient(settings: snapshot, apiKey: raw)
+    }
+
+    private func finishPreparationFailure(_ error: any Error) {
+        switch error {
+        case OpenAIChatClient.Error.invalidBaseURL:
+            lastGlobalError = "ai.sheet.error.invalid_base_url"
+        case OpenAIChatClient.Error.insecureBaseURL(let scheme, let host):
+            lastGlobalError = "[insecure] \(scheme)://\(host)"
+        case OpenAIChatClient.Error.missingAPIKey:
+            lastGlobalError = "ai.sheet.error.no_api_key"
+        case is KeychainAPIKeyStoreError:
+            lastGlobalError = KeychainUserFacingError.message(for: error)
+        default:
+            lastGlobalError = KeychainUserFacingError.message(for: error)
+        }
+        finishRun()
+    }
+
+    private func finishRun() {
+        currentPath = nil
+        phase = .idle
+        runTask = nil
     }
 
     /// 把任意 Error 压成"一句话错误"——UI 行内 tooltip 用，避免堆栈/巨长 body 撑爆 tooltip。

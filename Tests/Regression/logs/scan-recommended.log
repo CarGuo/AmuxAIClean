@@ -1,10 +1,10 @@
-2026-07-13 11:03:36.988 AmuxAIClean[18634:36016727] [AmuxAIClean] 已加载 123 条 vendor 规则
-[REGR] case=scan-recommended defaults_snapshot_keys=5 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
+2026-07-15 17:10:08.618 AmuxAIClean[88420:187076] [AmuxAIClean] 已加载 123 条 vendor 规则
+[REGR] case=scan-recommended defaults_snapshot_keys=7 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
 [REGR_BEGIN] case=scan-recommended
-[REGR] case=scan-recommended files=413357 bytes=51803022032 roots=5
+[REGR] case=scan-recommended files=397194 bytes=20939632640 roots=5
 [REGR_OK] case=scan-recommended isFinished=true
 [REGR_OK] case=scan-recommended perRootProgress count=5 > 0
-[REGR_OK] case=scan-recommended scannedFileCount nonneg=413358 > 0
+[REGR_OK] case=scan-recommended scannedFileCount nonneg=397195 > 0
 [REGR_OK] case=scan-recommended lastError=nil
-[REGR] case=scan-recommended defaults_restored_keys=5
-[REGR_PASS] case=scan-recommended elapsed_ms=10248
+[REGR] case=scan-recommended defaults_restored_keys=7
+[REGR_PASS] case=scan-recommended elapsed_ms=8804

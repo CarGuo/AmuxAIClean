@@ -31,6 +31,10 @@ final class PerformDeleteIntegrationTests: XCTestCase {
         var returnPairs: [(String, String)] = []
         var returnError: String?
 
+        func preflight(paths: [String], accessDeniedPaths: Set<String>) async -> DeletionPreflight {
+            DeletionPreflight(allowedPaths: paths, rejections: [])
+        }
+
         func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)]) {
             movedPathsReceived = paths
             dryRunReceived = dryRun

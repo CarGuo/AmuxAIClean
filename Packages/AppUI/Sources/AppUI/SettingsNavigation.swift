@@ -3,7 +3,9 @@ import Observation
 @MainActor
 @Observable
 public final class SettingsNavigation {
-    public enum Destination: Hashable, Sendable {
+    /// 设置导航的完整、稳定顺序。使用 CaseIterable 锁住所有入口，避免新增页面后
+    /// 只塞进固定宽度 toolbar，最终掉进不可点击的 overflow 菜单。
+    public enum Destination: String, CaseIterable, Identifiable, Hashable, Sendable {
         case scan
         case largeFiles
         case customPaths
@@ -12,6 +14,8 @@ public final class SettingsNavigation {
         case storageAndLogs
         case ai
         case advanced
+
+        public var id: String { rawValue }
     }
 
     public var destination: Destination

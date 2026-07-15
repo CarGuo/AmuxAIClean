@@ -10,7 +10,7 @@ struct ScanKitBench {
             ScanKit Benchmark
             -----------------
             用法:
-              scankit-bench <path> [--no-hidden] [--no-dedup] [--logical]
+              scankit-bench <path> [--no-hidden] [--no-dedup]
 
             示例:
               scankit-bench ~/Downloads
@@ -31,7 +31,6 @@ struct ScanKitBench {
             switch arg {
             case "--no-hidden": options.includeHidden = false
             case "--no-dedup": options.dedupByInode = false
-            case "--logical": options.useAllocatedSize = false
             case "--legacy": useLegacy = true
             default: break
             }
@@ -41,7 +40,7 @@ struct ScanKitBench {
         let engine = useLegacy ? "Scanner (FileManager.enumerator)" : "BulkScanner (getattrlistbulk)"
         print("→ scanning \(url.path) ...")
         print("  engine:  \(engine)")
-        print("  options: hidden=\(options.includeHidden) dedup=\(options.dedupByInode) allocated=\(options.useAllocatedSize)")
+        print("  options: hidden=\(options.includeHidden) dedup=\(options.dedupByInode)")
 
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
@@ -78,7 +77,7 @@ struct ScanKitBench {
                 }
                 print("─────────────────────────────────────────────")
                 print("→ 用以下命令对比:")
-                print("    du -sh \"\(url.path)\"        # 默认逻辑大小（macOS du 计 1024 块）")
+                print("    du -sh \"\(url.path)\"        # on-disk allocated size")
                 print("    du -sh -A \"\(url.path)\"     # apparent size")
             case .failed(let err):
                 fputs("✗ failed: \(err)\n", stderr)
@@ -87,8 +86,10 @@ struct ScanKitBench {
                 fputs("WARN permission denied: \(path)\n", stderr)
             case .tccProtectedSkipped(let path):
                 fputs("⊘ TCC protected (skipped): \(path)\n", stderr)
+            case .incomplete(let issue):
+                fputs("WARN incomplete [\(issue.reason.rawValue)]: \(issue.path)\n", stderr)
             case .cacheDirTagged(let path):
-                fputs("⊘ CACHEDIR.TAG (subtree skipped): \(path)\n", stderr)
+                fputs("ⓘ CACHEDIR.TAG (classified as cache; size still scanned): \(path)\n", stderr)
             }
         }
     }

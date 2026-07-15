@@ -22,8 +22,8 @@ public struct LargeFilesView: View {
     @Binding var selection: LargeFileItem?
 
     /// 移到废纸篓回调；由 MainView 注入，复用主界面的 DeleteSheet 流程。
-    let onTrash: ([URL]) -> Void
-    let onVisiblePathsChange: ([String]) -> Void
+    let onTrash: ([LargeFileItem]) -> Void
+    let onVisibleItemsChange: ([LargeFileItem]) -> Void
     let onStash: (LargeFileItem) -> Void
     let isStashed: (String) -> Bool
     let aiSettings: AISettings?
@@ -80,8 +80,8 @@ public struct LargeFilesView: View {
                 selection: Binding<LargeFileItem?>,
                 batch: BatchSelection,
                 limit: Int = 200,
-                onTrash: @escaping ([URL]) -> Void,
-                onVisiblePathsChange: @escaping ([String]) -> Void = { _ in },
+                onTrash: @escaping ([LargeFileItem]) -> Void,
+                onVisibleItemsChange: @escaping ([LargeFileItem]) -> Void = { _ in },
                 onStash: @escaping (LargeFileItem) -> Void,
                 isStashed: @escaping (String) -> Bool,
                 aiSettings: AISettings?,
@@ -92,7 +92,7 @@ public struct LargeFilesView: View {
         self.batch = batch
         self.limit = limit
         self.onTrash = onTrash
-        self.onVisiblePathsChange = onVisiblePathsChange
+        self.onVisibleItemsChange = onVisibleItemsChange
         self.onStash = onStash
         self.isStashed = isStashed
         self.aiSettings = aiSettings
@@ -162,7 +162,7 @@ public struct LargeFilesView: View {
         if displayedItems != items {
             displayedItems = items
         }
-        onVisiblePathsChange(items.map(\.path))
+        onVisibleItemsChange(items)
         if !Self.kindCountsEqual(displayedKindCounts, kindCounts) {
             displayedKindCounts = kindCounts
         }
@@ -457,7 +457,7 @@ public struct LargeFilesView: View {
                         guard !isStashed(item.path) else { NSSound.beep(); return }
                         onStash(item)
                     },
-                    onTrash: { item in onTrash([item.url]) }
+                    onTrash: { item in onTrash([item]) }
                 )
             }
         }
@@ -471,6 +471,9 @@ public struct LargeFilesView: View {
             if coordinator.isScanning {
                 Text("largefiles.empty.scanning", bundle: .module)
                     .foregroundStyle(.secondary)
+            } else if coordinator.isFinished && !coordinator.snapshot.isComplete {
+                Text("main.scan.incomplete", bundle: .module)
+                    .foregroundStyle(.orange)
             } else if coordinator.isFinished {
                 Text(String(format: String(localized: "largefiles.empty.no_results %lld", bundle: .module), settings.minFileSizeMB))
                     .foregroundStyle(.secondary)

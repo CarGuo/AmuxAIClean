@@ -408,7 +408,7 @@ Cancelled：
 
 - 主窗口是完整状态的唯一主界面。
 - HUD 只做 companion：主窗口不可见、失去前台或用户明确启用常驻时出现。
-- HUD 必须显示与所属会话完全相同的 phase、activity 和 safe bytes。
+- HUD 展开态显示与所属会话完全相同的 phase、activity 和 safe bytes；收起态只显示本地化的单词状态（Scanning / Cleaning），不显示阶段长文案、耗时或容量。
 - HUD 不再有第二套“底部状态”；点击 HUD 只打开所属模式当前页面。
 - HUD 可以观察 Normal 或 Professional 当前正在运行的任务，但不得把结果写进另一模式。
 - 如果两个模式都请求磁盘重任务，资源调度器串行执行；HUD 标记当前任务来源，但不合并结果。

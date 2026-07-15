@@ -31,8 +31,32 @@ import LogKit
 /// - 只识别**目录**版本（软链 / 文件全跳过）；
 /// - 版本号比较器可注入（语义化 / 字典序 / mtime 倒排）；
 /// - 子目录数 ≤ keepLatest → 返回空（永不让用户在「只剩 N 个」时删任何一个）；
-/// - 根不存在 / 不可读 → 返回空（保守）。
+/// - 根不存在 → 完整空结果；根不可读 → 结构化 incomplete evidence（兼容入口仍返回空 hits）。
 public actor VersionedRetainScanner {
+
+    /// 一次版本集合识别的完整结果。
+    ///
+    /// `hits` 只包含建立在完整候选集合上的旧版本；如果集合目录无法枚举，或任一可能
+    /// 参与排序的子目录 metadata 不可用，该集合不会产出 hit，具体缺口由
+    /// `incompleteIssues` 暴露给上层。这样“没有旧版本”和“扫描失败”不再共用空数组语义。
+    public struct DetectionResult: Sendable, Equatable {
+        public let hits: [Hit]
+        public let incompleteIssues: [ScanIncompleteIssue]
+
+        public var isComplete: Bool { incompleteIssues.isEmpty }
+
+        public init(hits: [Hit], incompleteIssues: [ScanIncompleteIssue]) {
+            self.hits = hits
+            self.incompleteIssues = Self.normalized(incompleteIssues)
+        }
+
+        private static func normalized(_ issues: [ScanIncompleteIssue]) -> [ScanIncompleteIssue] {
+            Set(issues).sorted {
+                if $0.path == $1.path { return $0.reason.rawValue < $1.reason.rawValue }
+                return $0.path < $1.path
+            }
+        }
+    }
 
     /// 一条命中：某个旧版本目录。
     public struct Hit: Sendable, Hashable, Identifiable {
@@ -100,9 +124,14 @@ public actor VersionedRetainScanner {
 
     /// 异步入口。
     public func discover(collectionRoot: URL) async -> [Hit] {
+        await discoverWithEvidence(collectionRoot: collectionRoot).hits
+    }
+
+    /// 异步结构化入口。与 [discover] 相比，它会区分“没有旧版本”和“发现阶段不完整”。
+    public func discoverWithEvidence(collectionRoot: URL) async -> DetectionResult {
         let opts = options
         return await Task.detached(priority: .userInitiated) {
-            VersionedRetainScanner.detect(collectionRoot: collectionRoot, options: opts)
+            VersionedRetainScanner.detectWithEvidence(collectionRoot: collectionRoot, options: opts)
         }.value
     }
 
@@ -111,36 +140,136 @@ public actor VersionedRetainScanner {
         collectionRoot: URL,
         options: Options = .default
     ) -> [Hit] {
-        let fm = FileManager.default
+        detectWithEvidence(collectionRoot: collectionRoot, options: options).hits
+    }
+
+    /// 同步结构化识别入口。
+    ///
+    /// 旧 [detect] API 保持不变并返回这里的 `hits`；需要安全删除证据的调用方应消费本入口，
+    /// 不能再把空 `hits` 直接解释为“扫描完整且没有旧版本”。
+    public nonisolated static func detectWithEvidence(
+        collectionRoot: URL,
+        options: Options = .default
+    ) -> DetectionResult {
+        detectWithEvidence(
+            collectionRoot: collectionRoot,
+            options: options,
+            fileSystem: FileManager.default
+        )
+    }
+
+    /// 注入文件系统仅供同模块聚合器与确定性测试使用；产品入口始终走 FileManager。
+    nonisolated static func detectWithEvidence(
+        collectionRoot: URL,
+        options: Options,
+        fileSystem: any VersionedRootFileSystem
+    ) -> DetectionResult {
         let rootPath = collectionRoot.path
 
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: rootPath, isDirectory: &isDir), isDir.boolValue else {
-            return []
+        let rootAttributes: [FileAttributeKey: Any]
+        do {
+            rootAttributes = try fileSystem.attributesOfItem(atPath: rootPath)
+        } catch {
+            if isFileNotFound(error) {
+                return DetectionResult(hits: [], incompleteIssues: [])
+            }
+            return incompleteResult(path: rootPath, error: error, metadataOperation: true)
         }
 
-        guard let entries = try? fm.contentsOfDirectory(atPath: rootPath) else { return [] }
+        guard let rootType = rootAttributes[.type] as? FileAttributeType else {
+            return incompleteResult(path: rootPath, reason: .metadataUnavailable)
+        }
+        guard rootType == .typeDirectory || rootType == .typeSymbolicLink else {
+            return DetectionResult(hits: [], incompleteIssues: [])
+        }
 
-        var candidates: [(name: String, url: URL)] = []
+        let entries: [String]
+        do {
+            entries = try fileSystem.contentsOfDirectory(atPath: rootPath)
+        } catch {
+            return incompleteResult(path: rootPath, error: error, metadataOperation: false)
+        }
+
+        var candidates: [Candidate] = []
+        var incompleteIssues: [ScanIncompleteIssue] = []
         for name in entries {
             if options.skipHiddenDirectories && name.hasPrefix(".") { continue }
             let child = collectionRoot.appendingPathComponent(name)
-            var childIsDir: ObjCBool = false
-            guard fm.fileExists(atPath: child.path, isDirectory: &childIsDir),
-                  childIsDir.boolValue
-            else { continue }
-            if options.skipSymlinks,
-               let attrs = try? fm.attributesOfItem(atPath: child.path),
-               let t = attrs[.type] as? FileAttributeType,
-               t == .typeSymbolicLink {
+
+            var attributes: [FileAttributeKey: Any]
+            do {
+                attributes = try fileSystem.attributesOfItem(atPath: child.path)
+            } catch {
+                incompleteIssues.append(ScanIncompleteIssue(
+                    path: child.path,
+                    reason: VersionedRootErrorClassifier.isPermissionDenied(error)
+                        ? .permissionDenied
+                        : .metadataUnavailable
+                ))
                 continue
             }
-            candidates.append((name, child))
+
+            guard let type = attributes[.type] as? FileAttributeType else {
+                incompleteIssues.append(ScanIncompleteIssue(
+                    path: child.path,
+                    reason: .metadataUnavailable
+                ))
+                continue
+            }
+            if type == .typeSymbolicLink {
+                if options.skipSymlinks { continue }
+
+                do {
+                    let destination = try fileSystem.destinationOfSymbolicLink(atPath: child.path)
+                    let targetURL: URL
+                    if destination.hasPrefix("/") {
+                        targetURL = URL(fileURLWithPath: destination)
+                    } else {
+                        targetURL = child.deletingLastPathComponent()
+                            .appendingPathComponent(destination)
+                            .standardizedFileURL
+                    }
+                    attributes = try fileSystem.attributesOfItem(atPath: targetURL.path)
+                } catch {
+                    incompleteIssues.append(ScanIncompleteIssue(
+                        path: child.path,
+                        reason: VersionedRootErrorClassifier.isPermissionDenied(error)
+                            ? .permissionDenied
+                            : .metadataUnavailable
+                    ))
+                    continue
+                }
+                guard attributes[.type] as? FileAttributeType == .typeDirectory else { continue }
+            } else if type != .typeDirectory {
+                continue
+            }
+
+            let modificationDate = attributes[.modificationDate] as? Date
+            if case .modificationDateDescending = options.ordering,
+               modificationDate == nil {
+                incompleteIssues.append(ScanIncompleteIssue(
+                    path: child.path,
+                    reason: .metadataUnavailable
+                ))
+                continue
+            }
+            candidates.append(Candidate(
+                name: name,
+                url: child,
+                modificationDate: modificationDate
+            ))
+        }
+
+        // 版本排序的正确性依赖完整候选集。任一候选 metadata 缺口都会让“最新 N 个”失去
+        // 可证明性，因此保留证据但不从这个集合返回任何可删除项。
+        if !incompleteIssues.isEmpty {
+            logIncomplete(rootPath: rootPath, issues: incompleteIssues)
+            return DetectionResult(hits: [], incompleteIssues: incompleteIssues)
         }
 
         // 版本数 ≤ keepLatest → 安全起见整个集合不识别
         guard candidates.count > options.keepLatest else {
-            return []
+            return DetectionResult(hits: [], incompleteIssues: [])
         }
 
         // 排序：升序排列后，尾 N 个为保留版本，前面的都是旧版本
@@ -167,21 +296,27 @@ public actor VersionedRetainScanner {
                 "VersionedRetainScanner root=\(rootPath) keep=\(retainCount) old=\(hits.count) latest=\(retainedLatest)"
             )
         }
-        return hits
+        return DetectionResult(hits: hits, incompleteIssues: [])
+    }
+
+    struct Candidate: Sendable {
+        let name: String
+        let url: URL
+        let modificationDate: Date?
     }
 
     /// 升序排序（最旧→最新）。**internal** 暴露用于测试。
     nonisolated static func sort(
-        candidates: [(name: String, url: URL)],
+        candidates: [Candidate],
         ordering: Ordering
-    ) -> [(name: String, url: URL)] {
+    ) -> [Candidate] {
         switch ordering {
         case .lexicographic:
             return candidates.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         case .modificationDateDescending:
             return candidates.sorted { lhs, rhs in
-                let lDate = modificationDate(of: lhs.url) ?? .distantPast
-                let rDate = modificationDate(of: rhs.url) ?? .distantPast
+                let lDate = lhs.modificationDate ?? .distantPast
+                let rDate = rhs.modificationDate ?? .distantPast
                 return lDate < rDate  // 升序：最旧在前
             }
         case .semverPreferred:
@@ -220,8 +355,81 @@ public actor VersionedRetainScanner {
         return buf
     }
 
-    nonisolated private static func modificationDate(of url: URL) -> Date? {
-        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
-        return attrs?[.modificationDate] as? Date
+    nonisolated private static func incompleteResult(
+        path: String,
+        error: Error,
+        metadataOperation: Bool
+    ) -> DetectionResult {
+        let reason: ScanIncompleteReason
+        if VersionedRootErrorClassifier.isPermissionDenied(error) {
+            reason = .permissionDenied
+        } else {
+            reason = metadataOperation ? .metadataUnavailable : .enumerationFailed
+        }
+        return incompleteResult(path: path, reason: reason)
+    }
+
+    nonisolated private static func incompleteResult(
+        path: String,
+        reason: ScanIncompleteReason
+    ) -> DetectionResult {
+        let issue = ScanIncompleteIssue(path: path, reason: reason)
+        logIncomplete(rootPath: path, issues: [issue])
+        return DetectionResult(hits: [], incompleteIssues: [issue])
+    }
+
+    nonisolated private static func logIncomplete(
+        rootPath: String,
+        issues: [ScanIncompleteIssue]
+    ) {
+        let evidence = issues
+            .map { "\($0.path):\($0.reason.rawValue)" }
+            .joined(separator: ",")
+        GSYLog.warning(
+            .scan,
+            "VersionedRetainScanner incomplete root=\(rootPath) evidence=\(evidence)"
+        )
+    }
+
+    nonisolated private static func isFileNotFound(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain,
+           nsError.code == CocoaError.fileNoSuchFile.rawValue {
+            return true
+        }
+        if nsError.domain == NSPOSIXErrorDomain, nsError.code == Int(ENOENT) {
+            return true
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isFileNotFound(underlying)
+        }
+        return false
+    }
+}
+
+/// 版本化根发现所需的最小文件系统表面。协议保持模块内可见，避免把测试注入细节变成产品 API。
+protocol VersionedRootFileSystem {
+    func attributesOfItem(atPath path: String) throws -> [FileAttributeKey: Any]
+    func contentsOfDirectory(atPath path: String) throws -> [String]
+    func destinationOfSymbolicLink(atPath path: String) throws -> String
+}
+
+extension FileManager: VersionedRootFileSystem {}
+
+enum VersionedRootErrorClassifier {
+    static func isPermissionDenied(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain,
+           nsError.code == CocoaError.fileReadNoPermission.rawValue {
+            return true
+        }
+        if nsError.domain == NSPOSIXErrorDomain,
+           nsError.code == Int(EACCES) || nsError.code == Int(EPERM) {
+            return true
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isPermissionDenied(underlying)
+        }
+        return false
     }
 }

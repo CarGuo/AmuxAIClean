@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import AppUI
 import SafetyKit
@@ -45,7 +46,7 @@ final class AppUninstallerTests: XCTestCase {
 
     func test_DefaultFileManagerSnapshot_大目录应受文件数预算限制() throws {
         let tmp = try makeTempDir("bounded-snapshot")
-        defer { try? FileManager.default.removeItem(at: tmp) }
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
 
         for idx in 0..<8 {
             try Data(repeating: UInt8(idx), count: 4)
@@ -57,11 +58,47 @@ final class AppUninstallerTests: XCTestCase {
         XCTAssertLessThanOrEqual(snapshot.fileCount, 3, "真实磁盘 snapshot 需要有预算，避免大型容器把 UI 等死")
     }
 
+    func test_DefaultFileManagerSnapshot_稀疏文件主值应对齐系统磁盘占用() throws {
+        let tmp = try makeTempDir("sparse-snapshot")
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
+        let sparse = tmp.appendingPathComponent("Docker.raw")
+        XCTAssertTrue(FileManager.default.createFile(atPath: sparse.path, contents: Data([0x1])))
+        let handle = try FileHandle(forWritingTo: sparse)
+        try handle.truncate(atOffset: 2 * 1_024 * 1_024 * 1_024)
+        try handle.close()
+
+        let snapshot = DefaultFileManagerSnapshot().snapshot(at: tmp.path)
+
+        XCTAssertLessThan(snapshot.bytes, 64 * 1_024 * 1_024,
+                          "应用占用/卸载残留不能把 sparse 虚拟容量当成磁盘占用")
+        XCTAssertGreaterThan(snapshot.logicalBytes, 1 * 1_024 * 1_024 * 1_024,
+                             "共享快照仍需保留 Finder 式逻辑容量供详情诊断")
+    }
+
+    func test_DefaultFileManagerSnapshot_hardlink只计一次磁盘占用与逻辑大小() throws {
+        let tmp = try makeTempDir("hardlink-snapshot")
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
+        let original = tmp.appendingPathComponent("original.bin")
+        let linked = tmp.appendingPathComponent("linked.bin")
+        try Data(repeating: 0xA5, count: 32 * 1_024).write(to: original)
+        try FileManager.default.linkItem(at: original, to: linked)
+
+        var metadata = stat()
+        XCTAssertEqual(lstat(original.path, &metadata), 0)
+        XCTAssertGreaterThanOrEqual(metadata.st_nlink, 2)
+
+        let snapshot = DefaultFileManagerSnapshot().snapshot(at: tmp.path)
+
+        XCTAssertEqual(snapshot.bytes, Int64(metadata.st_blocks) * 512)
+        XCTAssertEqual(snapshot.logicalBytes, Int64(metadata.st_size))
+        XCTAssertEqual(snapshot.fileCount, 2, "文件数仍表示两个目录项，只有字节需要 inode 去重")
+    }
+
     // MARK: - 1. Info.plist 解析
 
     func test_AppMetadata_readsInfoPlist() throws {
         let tmp = try makeTempDir("plist-parse")
-        defer { try? FileManager.default.removeItem(at: tmp) }
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
 
         let appURL = try makeFixtureApp(
             parent: tmp,
@@ -80,7 +117,7 @@ final class AppUninstallerTests: XCTestCase {
 
     func test_AppMetadata_throwsOnMissingBundleID() throws {
         let tmp = try makeTempDir("plist-missing-id")
-        defer { try? FileManager.default.removeItem(at: tmp) }
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
 
         let appURL = tmp.appendingPathComponent("Bad.app", isDirectory: true)
         let contents = appURL.appendingPathComponent("Contents")
@@ -96,7 +133,7 @@ final class AppUninstallerTests: XCTestCase {
 
     func test_AppMetadata_fallsBackToFilenameStem() throws {
         let tmp = try makeTempDir("plist-fallback-name")
-        defer { try? FileManager.default.removeItem(at: tmp) }
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
 
         // 不写 CFBundleName/Executable，只写 bundleID
         let appURL = try makeFixtureApp(parent: tmp, name: "MyTool", bundleID: "io.tool.my")
@@ -173,7 +210,7 @@ final class AppUninstallerTests: XCTestCase {
     func test_candidates_endToEnd_withFakeHome() throws {
         // 构造伪 home：H/Library/<11 dirs>，再单独构造 fakeSystem/Library/LaunchDaemons
         let root = try makeTempDir("e2e")
-        defer { try? FileManager.default.removeItem(at: root) }
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: root)) }
         let home = root.appendingPathComponent("home")
         let sysLibrary = root.appendingPathComponent("sys/Library")
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
@@ -218,8 +255,10 @@ final class AppUninstallerTests: XCTestCase {
         let asDir = home.appendingPathComponent("Library/Application Support/com.acme.demo", isDirectory: true)
         try FileManager.default.createDirectory(at: asDir, withIntermediateDirectories: true)
         let payload = Data(repeating: 0xAB, count: 1024)
-        try payload.write(to: asDir.appendingPathComponent("data.bin"))
-        try payload.write(to: asDir.appendingPathComponent("more.bin"))
+        let dataFile = asDir.appendingPathComponent("data.bin")
+        let moreFile = asDir.appendingPathComponent("more.bin")
+        try payload.write(to: dataFile)
+        try payload.write(to: moreFile)
 
         // b) Preferences/com.acme.demo.plist (应命中 .bundleID)
         try Data("a".utf8).write(
@@ -277,10 +316,11 @@ final class AppUninstallerTests: XCTestCase {
         XCTAssertFalse(paths.contains(dirSpotify.path))
         XCTAssertFalse(paths.contains(dirVendorOnly.path), "user scope 不应启用 vendor 级匹配")
 
-        // bytes/fileCount —— Application Support/com.acme.demo 是目录，含 2 个 1024 字节文件
+        // bytes/fileCount —— 主值按系统磁盘分配量统计，不把 2 KB logical 当作占用。
         let appSupportCand = candidates.first { $0.path == asDir.path }
         XCTAssertEqual(appSupportCand?.fileCount, 2)
-        XCTAssertEqual(appSupportCand?.bytes, 2048)
+        XCTAssertEqual(appSupportCand?.bytes,
+                       try allocatedBytes(of: dataFile) + allocatedBytes(of: moreFile))
 
         // matchReason 类型分类
         let reasons = Set(candidates.map(\.matchReason))
@@ -641,6 +681,14 @@ final class AppUninstallerTests: XCTestCase {
         private var paths: [String] = []
         func append(_ p: String) { lock.lock(); paths.append(p); lock.unlock() }
         var snapshot: [String] { lock.lock(); defer { lock.unlock() }; return paths }
+    }
+
+    private func allocatedBytes(of url: URL) throws -> Int64 {
+        var metadata = stat()
+        guard lstat(url.path, &metadata) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        return Int64(metadata.st_blocks) * 512
     }
 
     /// chmod 000 的目录调 firstLevelEntries 应触发 permissionDenied handler

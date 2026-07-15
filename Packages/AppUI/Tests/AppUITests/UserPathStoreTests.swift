@@ -87,4 +87,71 @@ final class UserPathStoreTests: XCTestCase {
         let list2 = await s2.list()
         XCTAssertTrue(list2.isEmpty)
     }
+
+    func test_snapshots_跨场景订阅会收到初始值及后续变更() async throws {
+        let store = UserPathStore(testSuite: freshSuite())
+        let snapshots = await store.snapshots()
+        var iterator = snapshots.makeAsyncIterator()
+
+        let initial = await iterator.next()
+        XCTAssertEqual(initial?.map(\.path), [])
+
+        _ = await store.add(URL(fileURLWithPath: "/tmp/shared"))
+        let added = await iterator.next()
+        XCTAssertEqual(added?.map(\.path), ["/tmp/shared"])
+
+        _ = await store.remove(URL(fileURLWithPath: "/tmp/shared"))
+        let removed = await iterator.next()
+        XCTAssertEqual(removed?.map(\.path), [])
+    }
+
+    func test_snapshots_两个场景订阅者都收到同一最终状态() async {
+        let store = UserPathStore(testSuite: freshSuite())
+        let mainStream = await store.snapshots()
+        let settingsStream = await store.snapshots()
+        var main = mainStream.makeAsyncIterator()
+        var settings = settingsStream.makeAsyncIterator()
+
+        let mainInitial = await main.next()
+        let settingsInitial = await settings.next()
+        XCTAssertEqual(mainInitial?.map(\.path), [])
+        XCTAssertEqual(settingsInitial?.map(\.path), [])
+
+        _ = await store.add(URL(fileURLWithPath: "/tmp/shared-a"))
+        let mainAdded = await main.next()
+        let settingsAdded = await settings.next()
+        XCTAssertEqual(mainAdded?.map(\.path), ["/tmp/shared-a"])
+        XCTAssertEqual(settingsAdded?.map(\.path), ["/tmp/shared-a"])
+    }
+
+    func test_snapshots_burst只积压最新完整快照() async {
+        let store = UserPathStore(testSuite: freshSuite())
+        let stream = await store.snapshots()
+        var iterator = stream.makeAsyncIterator()
+
+        _ = await store.add(URL(fileURLWithPath: "/tmp/old-a"))
+        _ = await store.add(URL(fileURLWithPath: "/tmp/keep"))
+        _ = await store.remove(URL(fileURLWithPath: "/tmp/old-a"))
+
+        let latest = await iterator.next()
+        XCTAssertEqual(latest?.map(\.path), ["/tmp/keep"])
+    }
+
+    func test_snapshots_旧订阅取消后新订阅仍从当前完整状态开始() async {
+        let store = UserPathStore(testSuite: freshSuite())
+        let oldStream = await store.snapshots()
+        let consumer = Task {
+            for await _ in oldStream {
+                if Task.isCancelled { return }
+            }
+        }
+        consumer.cancel()
+        _ = await consumer.result
+
+        _ = await store.add(URL(fileURLWithPath: "/tmp/current"))
+        let newStream = await store.snapshots()
+        var iterator = newStream.makeAsyncIterator()
+        let current = await iterator.next()
+        XCTAssertEqual(current?.map(\.path), ["/tmp/current"])
+    }
 }

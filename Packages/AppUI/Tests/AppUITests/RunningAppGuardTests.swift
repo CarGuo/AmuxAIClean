@@ -51,6 +51,138 @@ final class RunningAppGuardTests: XCTestCase {
         XCTAssertTrue(conflicts.isEmpty)
     }
 
+    func test_conflictsExposeLocalizedRunningAppName() {
+        let row = makeRow(title: "Chrome Cache",
+                          path: "/Users/me/Library/Caches/Google/Chrome",
+                          bundlePrefix: "com.google.Chrome")
+
+        let conflicts = RunningAppGuard.conflicts(
+            rows: [row],
+            runningApplications: [
+                .init(bundleID: "com.google.Chrome", localizedName: "Google Chrome")
+            ]
+        )
+
+        XCTAssertEqual(conflicts.map(\.runningAppName), ["Google Chrome"])
+    }
+
+    func test_conflictsPreferExactMainAppOverEarlierHelperProcess() {
+        let row = makeRow(title: "Chrome Cache",
+                          path: "/Users/me/Library/Caches/Google/Chrome",
+                          bundlePrefix: "com.google.Chrome")
+
+        let conflicts = RunningAppGuard.conflicts(
+            rows: [row],
+            runningApplications: [
+                .init(bundleID: "com.google.Chrome.helper", localizedName: "Google Chrome Helper"),
+                .init(bundleID: "com.google.Chrome", localizedName: "Google Chrome")
+            ]
+        )
+
+        XCTAssertEqual(conflicts.map(\.runningAppName), ["Google Chrome"])
+    }
+
+    func test_conflictsRejectSimilarSiblingPrefix() {
+        let row = makeRow(title: "Foo Cache",
+                          path: "/Users/me/Library/Caches/com.foo",
+                          bundlePrefix: "com.foo")
+
+        let conflicts = RunningAppGuard.conflicts(
+            rows: [row],
+            runningBundleIDs: ["com.foobar"]
+        )
+
+        XCTAssertTrue(conflicts.isEmpty)
+    }
+
+    func test_skipPlanFiltersOnlyConflictingRows() {
+        let running = makeRow(title: "WeChat Cache",
+                              path: "/Users/me/Library/Caches/com.tencent.xinWeChat",
+                              bundlePrefix: "com.tencent.xinWeChat")
+        let idle = makeRow(title: "Plain Cache",
+                           path: "/Users/me/Library/Caches/plain",
+                           bundlePrefix: nil)
+
+        let plan = RunningAppGuard.makePlan(
+            rows: [running, idle],
+            runningApplications: [
+                .init(bundleID: "com.tencent.xinWeChat", localizedName: "WeChat")
+            ],
+            resolution: .skipConflictingItems
+        )
+
+        XCTAssertEqual(plan.rows.map(\.id), [idle.id])
+        XCTAssertEqual(plan.skippedConflicts.map(\.path), [running.url.path])
+    }
+
+    func test_moveAllPlanKeepsEveryRowWithoutPretendingAnythingWasSkipped() {
+        let row = makeRow(title: "WeChat Cache",
+                          path: "/Users/me/Library/Caches/com.tencent.xinWeChat",
+                          bundlePrefix: "com.tencent.xinWeChat")
+
+        let plan = RunningAppGuard.makePlan(
+            rows: [row],
+            runningApplications: [
+                .init(bundleID: "com.tencent.xinWeChat", localizedName: "WeChat")
+            ],
+            resolution: .moveAllToTrash
+        )
+
+        XCTAssertEqual(plan.rows, [row])
+        XCTAssertTrue(plan.skippedConflicts.isEmpty)
+    }
+
+    func test_skipPlanKeepsDialogConfirmedPathSkippedAfterAppQuits() {
+        let row = makeRow(title: "WeChat Cache",
+                          path: "/Users/me/Library/Caches/com.tencent.xinWeChat",
+                          bundlePrefix: "com.tencent.xinWeChat")
+        let confirmed = RunningAppGuard.Conflict(
+            path: row.url.path,
+            title: row.title,
+            bundleIDPrefix: "com.tencent.xinWeChat",
+            runningBundleID: "com.tencent.xinWeChat",
+            runningAppName: "WeChat"
+        )
+
+        let plan = RunningAppGuard.makePlan(
+            rows: [row],
+            runningApplications: [],
+            resolution: .skipConflictingItems,
+            confirmedConflicts: [confirmed]
+        )
+
+        XCTAssertTrue(plan.rows.isEmpty)
+        XCTAssertEqual(plan.skippedConflicts, [confirmed])
+    }
+
+    func test_skipPlanUnionsDialogConflictsWithNewlyRunningApps() {
+        let weChat = makeRow(title: "WeChat Cache",
+                             path: "/Users/me/Library/Caches/com.tencent.xinWeChat",
+                             bundlePrefix: "com.tencent.xinWeChat")
+        let chrome = makeRow(title: "Chrome Cache",
+                             path: "/Users/me/Library/Caches/Google/Chrome",
+                             bundlePrefix: "com.google.Chrome")
+        let confirmedWeChat = RunningAppGuard.Conflict(
+            path: weChat.url.path,
+            title: weChat.title,
+            bundleIDPrefix: "com.tencent.xinWeChat",
+            runningBundleID: "com.tencent.xinWeChat",
+            runningAppName: "WeChat"
+        )
+
+        let plan = RunningAppGuard.makePlan(
+            rows: [weChat, chrome],
+            runningApplications: [
+                .init(bundleID: "com.google.Chrome", localizedName: "Google Chrome")
+            ],
+            resolution: .skipConflictingItems,
+            confirmedConflicts: [confirmedWeChat]
+        )
+
+        XCTAssertTrue(plan.rows.isEmpty)
+        XCTAssertEqual(Set(plan.skippedConflicts.map(\.path)), Set([weChat.url.path, chrome.url.path]))
+    }
+
     private func makeRow(title: String, path: String, bundlePrefix: String?) -> RowItem {
         RowItem(id: path,
                 url: URL(fileURLWithPath: path),

@@ -20,6 +20,7 @@ import Foundation
 ///
 /// 删除通道统一为 `.filesystem`（回收站），不引入 `.commandLine`，因此所有卡片均无 allowlist 校验风险。
 public struct AndroidWorkflow: DeveloperWorkflow {
+    public static let studioBundleIDPrefix = "com.google.android.studio"
     public let id: String = "workflow.android"
     /// i18n key —— UI 层用 `Text(LocalizedStringKey(...), bundle: .module)` 渲染。
     public let displayName: String = "workflow.android.displayName"
@@ -58,7 +59,8 @@ public struct AndroidWorkflow: DeveloperWorkflow {
                 summary: "card.android.gradle-caches.summary",
                 source: .literal(paths: ["~/.gradle/caches"]),
                 recipe: .filesystem,
-                risk: .safe))
+                risk: .safe,
+                runningBundleIDPrefix: Self.studioBundleIDPrefix))
 
             // 2. card.android.gradle-daemon —— Gradle 守护进程日志与 jvm 状态，安全可删
             result.append(DeveloperCard(
@@ -67,7 +69,8 @@ public struct AndroidWorkflow: DeveloperWorkflow {
                 summary: "card.android.gradle-daemon.summary",
                 source: .literal(paths: ["~/.gradle/daemon"]),
                 recipe: .filesystem,
-                risk: .safe))
+                risk: .safe,
+                runningBundleIDPrefix: Self.studioBundleIDPrefix))
         }
 
         // 3-5. ~/.android 系（build-cache / cache / avd）—— 需父目录预检
@@ -83,7 +86,8 @@ public struct AndroidWorkflow: DeveloperWorkflow {
                     summary: "card.android.android-build-cache.summary",
                     source: .literal(paths: ["~/.android/build-cache"]),
                     recipe: .filesystem,
-                    risk: .safe))
+                    risk: .safe,
+                    runningBundleIDPrefix: Self.studioBundleIDPrefix))
             }
 
             // 4. card.android.android-cache —— ~/.android/cache 不强制预检子目录存在性
@@ -94,7 +98,8 @@ public struct AndroidWorkflow: DeveloperWorkflow {
                 summary: "card.android.android-cache.summary",
                 source: .literal(paths: ["~/.android/cache"]),
                 recipe: .filesystem,
-                risk: .safe))
+                risk: .safe,
+                runningBundleIDPrefix: Self.studioBundleIDPrefix))
 
             // 5. card.android.android-avd —— AVD 必须做子目录预检
             //    AVD 实例数据包含用户应用 sandbox / SD 卡镜像，丢失不可恢复，强制 confirm
@@ -106,7 +111,8 @@ public struct AndroidWorkflow: DeveloperWorkflow {
                     summary: "card.android.android-avd.summary",
                     source: .literal(paths: ["~/.android/avd"]),
                     recipe: .filesystem,
-                    risk: .confirm))
+                    risk: .confirm,
+                    runningBundleIDPrefix: Self.studioBundleIDPrefix))
             }
         }
 
@@ -119,7 +125,8 @@ public struct AndroidWorkflow: DeveloperWorkflow {
             summary: "card.android.sdk-build-tools.summary",
             source: .versionedRoot(ruleID: "android.sdk-build-tools.versioned"),
             recipe: .filesystem,
-            risk: .safe))
+            risk: .safe,
+            runningBundleIDPrefix: Self.studioBundleIDPrefix))
 
         result.append(DeveloperCard(
             id: "card.android.sdk-platforms",
@@ -127,7 +134,8 @@ public struct AndroidWorkflow: DeveloperWorkflow {
             summary: "card.android.sdk-platforms.summary",
             source: .versionedRoot(ruleID: "android.sdk-platforms.versioned"),
             recipe: .filesystem,
-            risk: .safe))
+            risk: .safe,
+            runningBundleIDPrefix: Self.studioBundleIDPrefix))
 
         // System Images 单镜像 1~3 GB，删除不可逆且重下耗时较长 → confirm
         result.append(DeveloperCard(
@@ -136,7 +144,8 @@ public struct AndroidWorkflow: DeveloperWorkflow {
             summary: "card.android.sdk-system-images.summary",
             source: .versionedRoot(ruleID: "android.sdk-system-images.versioned"),
             recipe: .filesystem,
-            risk: .confirm))
+            risk: .confirm,
+            runningBundleIDPrefix: Self.studioBundleIDPrefix))
 
         // 9-10. Android Studio（JetBrains）缓存与日志 —— 路径含 glob *
         //       多版本（如 AndroidStudio2024.1 / 2024.2）按设计文档约定保留 glob 原样下发，
@@ -147,7 +156,8 @@ public struct AndroidWorkflow: DeveloperWorkflow {
             summary: "card.android.jetbrains-androidstudio-caches.summary",
             source: .literal(paths: ["~/Library/Caches/Google/AndroidStudio*"]),
             recipe: .filesystem,
-            risk: .safe))
+            risk: .safe,
+            runningBundleIDPrefix: Self.studioBundleIDPrefix))
 
         result.append(DeveloperCard(
             id: "card.android.jetbrains-androidstudio-logs",
@@ -155,7 +165,8 @@ public struct AndroidWorkflow: DeveloperWorkflow {
             summary: "card.android.jetbrains-androidstudio-logs.summary",
             source: .literal(paths: ["~/Library/Logs/Google/AndroidStudio*"]),
             recipe: .filesystem,
-            risk: .safe))
+            risk: .safe,
+            runningBundleIDPrefix: Self.studioBundleIDPrefix))
 
         return result
     }

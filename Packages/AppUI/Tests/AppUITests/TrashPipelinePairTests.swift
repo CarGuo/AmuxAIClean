@@ -48,11 +48,40 @@ final class TrashPipelinePairTests: XCTestCase {
         XCTAssertTrue(pairs.isEmpty)
     }
 
+    func test_typedSubmission_安全拒绝明确停在recycle之前() async {
+        let pipe = TrashPipeline()
+        let disposition = await pipe.submitToTrashReturningDisposition(
+            paths: ["/System"],
+            accessDeniedPaths: [],
+            vendorOverrideRequest: nil
+        )
+
+        guard case .preSubmitRejected(.safety(let preflight)) = disposition else {
+            return XCTFail("A hard safety boundary must not be represented as a recycle result")
+        }
+        XCTAssertEqual(preflight.rejections.map(\.path), ["/System"])
+        XCTAssertTrue(preflight.vendorOverrideEligiblePaths.isEmpty)
+    }
+
+    func test_typedSubmission_空请求明确停在recycle之前() async {
+        let pipe = TrashPipeline()
+        let disposition = await pipe.submitToTrashReturningDisposition(
+            paths: [],
+            accessDeniedPaths: [],
+            vendorOverrideRequest: nil
+        )
+
+        guard case .preSubmitRejected(.emptyRequest) = disposition else {
+            return XCTFail("An empty request cannot produce a recycle completion")
+        }
+    }
+
     // MARK: - v2026.06.16 修复 #2：lastOutcome 快照 + 分批/失败隔离
 
     /// 快照契约 #1：moveToTrash 返回后立刻能拿到 TrashOutcome；
     /// 全 forbid 场景 → safetyRejected 计满、movedPairs/failedPaths 空。
-    /// 验证"OperationResultSheet 能精确读到被拦的具体路径与原因"这一接口契约。
+    /// 验证旧接口仍保留可审计的拒绝明细；Professional UI 必须消费上面的 typed
+    /// pre-submit disposition，不能把该 outcome 包装成 OperationResultSheet。
     func test_lastOutcome_全forbid_safetyRejected聚合() async throws {
         let pipe = TrashPipeline()
         let blocked = ["/System", "/usr", "/etc"]
@@ -71,8 +100,9 @@ final class TrashPipelinePairTests: XCTestCase {
     /// 验证 dryRun 也能给 UI 一个可消费的结构化结果。
     func test_lastOutcome_dryRun_missingPaths聚合() async throws {
         let pipe = TrashPipeline()
-        let missing = ["/tmp/gsyclean-not-exist-1-\(UUID().uuidString)",
-                       "/tmp/gsyclean-not-exist-2-\(UUID().uuidString)"]
+        let tempRoot = URL(fileURLWithPath: NSTemporaryDirectory()).standardizedFileURL.path
+        let missing = ["\(tempRoot)/gsyclean-not-exist-1-\(UUID().uuidString)",
+                       "\(tempRoot)/gsyclean-not-exist-2-\(UUID().uuidString)"]
         _ = await pipe.moveToTrash(paths: missing, dryRun: true)
 
         let outcome = pipe.snapshotLastOutcome()

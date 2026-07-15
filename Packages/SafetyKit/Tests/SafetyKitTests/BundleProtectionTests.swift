@@ -9,9 +9,47 @@ final class BundleProtectionTests: XCTestCase {
     func testProtectedBundlesJSONLoads() throws {
         let matcher = try BundleProtectionMatcher.loadFromBundle()
         XCTAssertNil(matcher.loadError, "loadError should be nil after successful load")
+        XCTAssertEqual(matcher.loadState, .loaded)
+        XCTAssertTrue(matcher.loadState.hasCompleteEvidence)
         XCTAssertEqual(matcher.data.version, 1)
         XCTAssertEqual(matcher.data.source, "tw93/Mole@app_protection_data.sh")
         XCTAssertFalse(matcher.data.updatedAt.isEmpty)
+    }
+
+    /// 加载失败是能力状态，不等价于“规则集合为空且已完整验证”。普通 evaluate 保持
+    /// 历史兼容，不扩大成 forbid；destructive override 则能读取状态并 fail closed。
+    func testUnavailableMatcherPreservesOrdinaryEvaluationButMarksEvidenceIncomplete() {
+        let matcher = BundleProtectionMatcher.unavailable(failure: .resourceMissing)
+        let engine = SafetyEngine(bundleProtectionMatcher: matcher)
+
+        XCTAssertEqual(matcher.loadState, .unavailable(.resourceMissing))
+        XCTAssertFalse(matcher.loadState.hasCompleteEvidence)
+        XCTAssertFalse(engine.hasCompleteBundleProtectionEvidence)
+        XCTAssertEqual(engine.bundleProtectionLoadState, .unavailable(.resourceMissing))
+
+        let result = engine.evaluate(
+            path: "/Users/testuser/Library/Caches/com.1password.7/rebuildable.tmp",
+            home: "/Users/testuser"
+        )
+        XCTAssertEqual(result.0, .safe,
+                       "资源失败不应把普通扫描结果全局扩大为 forbid")
+        XCTAssertEqual(result.1, .ok)
+    }
+
+    func testLoadFailuresAreClassifiedWithoutParsingErrorDescriptions() {
+        XCTAssertEqual(
+            BundleProtectionLoadFailure.classify(BundleProtectionError.resourceMissing),
+            .resourceMissing
+        )
+
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(
+                BundleProtectionData.self,
+                from: Data("{not-json".utf8)
+            )
+        ) { error in
+            XCTAssertEqual(BundleProtectionLoadFailure.classify(error), .invalidResource)
+        }
     }
 
     /// 三类规则数量都应远大于零（防止误删除数据资产）。

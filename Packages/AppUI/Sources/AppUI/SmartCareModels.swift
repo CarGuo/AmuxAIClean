@@ -529,6 +529,11 @@ public struct SmartCareCleanProgress: Sendable, Hashable {
     }
 }
 
+public enum SmartCareResultCompletion: Sendable, Hashable {
+    case complete
+    case partial
+}
+
 public struct SmartCareResult: Sendable, Hashable {
     public let movedCount: Int
     public let skippedCount: Int
@@ -538,6 +543,11 @@ public struct SmartCareResult: Sendable, Hashable {
         self.movedCount = movedCount
         self.skippedCount = skippedCount
         self.releasedBytes = releasedBytes
+    }
+
+    /// “完成”只表示删除事务已经结束；只要仍有跳过项，就不能向用户呈现为完整成功。
+    public var completion: SmartCareResultCompletion {
+        skippedCount > 0 ? .partial : .complete
     }
 }
 
@@ -602,9 +612,56 @@ public enum SmartCareAIItemState: Sendable, Hashable {
     case failed(SmartCareAIReviewFailure.Kind)
 }
 
+/// 扫描受限路径的不可变展示投影。构造包含去重/排序，必须在后台完成；SwiftUI
+/// 只读取 `totalCount` 与已截断的稳定路径，不能在 body 热路径重排完整集合。
+struct SmartCareScanLimitationProjection: Equatable, Sendable {
+    static let defaultDisplayLimit = 20
+    static let empty = SmartCareScanLimitationProjection(
+        totalCount: 0,
+        displayedPaths: []
+    )
+
+    let totalCount: Int
+    let displayedPaths: [String]
+
+    init(paths: Set<String>, displayLimit: Int = defaultDisplayLimit) {
+        let sortedPaths = paths.sorted()
+        let boundedLimit = max(0, displayLimit)
+        totalCount = sortedPaths.count
+        displayedPaths = Array(sortedPaths.prefix(boundedLimit))
+    }
+
+    private init(totalCount: Int, displayedPaths: [String]) {
+        self.totalCount = totalCount
+        self.displayedPaths = displayedPaths
+    }
+
+    var remainingCount: Int {
+        max(0, totalCount - displayedPaths.count)
+    }
+
+    var isEmpty: Bool { totalCount == 0 }
+}
+
 public enum SmartCareError: Sendable, Hashable {
     case scanFailed(String)
     case cleanFailed(String)
+
+    var recovery: SmartCareFailureRecovery {
+        switch self {
+        case .scanFailed:
+            return .retryScan
+        case .cleanFailed:
+            return .reviewCleanup
+        }
+    }
+}
+
+enum SmartCareFailureRecovery: Sendable, Hashable {
+    /// 从最后一个完整扫描 checkpoint 重试失败阶段，不清空已完成结果。
+    case retryScan
+    /// 清理失败时回到同一份选择的清理预览，不把它错误地变成一次全量重扫。
+    case reviewCleanup
 }
 
 public enum SmartCarePrimaryAction: Sendable, Hashable {
@@ -727,8 +784,8 @@ public enum SmartCarePhase: Sendable, Hashable {
             return .confirmClean
         case .cleaning:
             return .cleaning
-        case .completed:
-            return .scanAgain
+        case .completed(let result):
+            return result.completion == .partial ? .cleanSafeItems : .scanAgain
         case .failed:
             return .retry
         case .cancelled:

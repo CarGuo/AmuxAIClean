@@ -158,6 +158,11 @@ final class AndroidWorkflowCardsTests: XCTestCase {
             XCTAssertFalse(card.title.isEmpty, "title 不能为空：\(card.id)")
             XCTAssertFalse(card.summary.isEmpty, "summary 不能为空：\(card.id)")
             XCTAssertLessThanOrEqual(card.summary.count, 80, "summary 应 ≤ 80 字：\(card.id)")
+            XCTAssertEqual(
+                card.runningBundleIDPrefix,
+                AndroidWorkflow.studioBundleIDPrefix,
+                "Android 清理卡必须把运行中 Studio 关联元数据带到最终确认页：\(card.id)"
+            )
         }
     }
 

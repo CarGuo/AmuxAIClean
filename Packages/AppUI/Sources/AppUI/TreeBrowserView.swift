@@ -14,7 +14,7 @@ import LogKit
 /// 主界面底部 delete 按钮永远 disabled。
 ///
     /// 新方案：**完全移除 checkbox 列与批量 toolbar**，每一行右侧直接挂一个红色
-/// trash 行内按钮，单击 = 调 `onTrash(URL)` 交给上层统一删除链路。
+/// trash 行内按钮，单击 = 调 `onTrash(TreeRow)` 交给上层统一删除链路。
 /// 所见即所删，与 Pearcleaner / DaisyDisk 行内删除手感一致；底部 delete 按钮
 /// 改为只服务"清单视图"场景，不再与树形耦合。
 ///
@@ -47,9 +47,12 @@ public struct TreeBrowserView: View {
     let onSelect: ((TreeRow) -> Void)?
     let onSelectionCleared: (() -> Void)?
     /// 右键 / Delete / 行内 trash 按钮触发"移到废纸篓"时的回调。
-    /// 走 NSWorkspace.recycle 通道（与大文件视图右键删共用 triggerLargeFileTrash）。
+    /// 上层必须先进入统一 DeleteSheet，再由 TrashPipeline 走 NSWorkspace.recycle。
     /// 给 nil 时 TreeNodeView 的右键菜单与行内 trash 按钮都不会展示，便于在 readonly 场景复用。
-    let onTrash: ((URL) -> Void)?
+    let onTrash: ((TreeRow) -> Void)?
+    /// 专业模式只允许 vendorPathRule 风险项发起严格 override 预检；默认 false 让其它复用场景
+    /// 继续把所有 forbid 当作不可操作。
+    let allowsVendorPathOverride: Bool
     /// v2026.06 用户反馈 #1：右键"刷新此目录"。点击时传 path 给上层，
     /// 上层调 [ScanCoordinator.rescanSubtree(at:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1529-L1545)
     /// 清掉按需子树缓存并 bump structuralRevision，本视图下一帧自动重拉。
@@ -84,11 +87,43 @@ public struct TreeBrowserView: View {
     /// - nil（测试桩 / 其它复用场景）→ fallback 走本地 @State，保持向后兼容
     let globalSortKey: Binding<MainListSortKey>?
 
-    /// SafetyEngine 静态共享：拦截 forbid 路径（家目录、`/`、SIP、`..` 等），
-    /// 在弹菜单 / 行内 trash 按钮 hit-test 时就 disabled，并附 tooltip 解释为什么不能删。
+    /// SafetyEngine 静态共享：为测试用的普通模式 sanitize 提供硬边界过滤。
     nonisolated static let safety = SafetyEngine()
 
-    /// v2026.06.22 perf：path → SafetyVerdict 进程内缓存（**Instruments Time Profiler 取证**）。
+    /// Tree 的唯一展开资格合同。子树存在未完整后代不影响下钻；只有当前节点自身
+    /// 不可访问时才停止展开。AppKit、SwiftUI、全量重建和增量 patch 必须共用本方法，
+    /// 避免再次出现“父行被锁但旧子项仍显示”的分裂状态。
+    static func canExpand(_ row: TreeRow) -> Bool {
+        row.isDirectory && row.hasChildren && row.accessState == .normal
+    }
+
+    /// Tree deletion eligibility shared by keyboard, context menu, AppKit canvas and SwiftUI row.
+    /// A lazy pending row is not a zero-byte row: its metrics are unknown until measurement ends,
+    /// so no entry point may form a deletion intent from it.
+    static func canInitiateDeletion(
+        _ row: TreeRow,
+        verdict: SafetyVerdict,
+        rejection: SafetyRejection,
+        allowsVendorPathOverride: Bool
+    ) -> Bool {
+        !row.isSizePending && DeletionEntryPolicy.canInitiate(
+            verdict: verdict,
+            rejection: rejection,
+            hasCompleteAccessEvidence: row.hasCompleteAccessEvidence,
+            // This Tree instance is the Professional surface. An incomplete row may only
+            // initiate the typed target-revalidation path; MainView still cannot submit it
+            // without a `ScanIncompleteOverrideRequest` minted by TrashPipeline.
+            allowsTargetRevalidation: allowsVendorPathOverride,
+            allowsVendorPathOverride: allowsVendorPathOverride
+        )
+    }
+
+    static func shouldTraverseDescendants(of row: TreeRow, expanded: Bool) -> Bool {
+        expanded && canExpand(row)
+    }
+
+    /// v2026.06.22 perf：path → (SafetyVerdict, SafetyRejection) 进程内缓存
+    /// （**Instruments Time Profiler 取证**）。
     ///
     /// 33334.md（commit 5fe7e91 后第二刀取证）显示 [rebuildFlatRows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L411-L451)
     /// 一次跑 139ms 中 124ms（89%）全部在 [SafetyEngine.evaluate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L212)：
@@ -111,40 +146,53 @@ public struct TreeBrowserView: View {
     /// 容量上限 50k：dev 扫几百根 + 上万节点，按目录数估算 5w 上限足够覆盖；
     /// 超过 50k 直接 reset（不做 LRU 是因为 dev 工具单次会话规模可控，简洁优先）。
     private enum VerdictCache {
-        nonisolated(unsafe) private static var cache: [String: SafetyVerdict] = [:]
+        private struct Key: Hashable {
+            let coordinatorID: ObjectIdentifier
+            let path: String
+        }
+
+        private struct Value: Sendable {
+            let verdict: SafetyVerdict
+            let rejection: SafetyRejection
+        }
+
+        nonisolated(unsafe) private static var cache: [Key: Value] = [:]
         private static let lock = NSLock()
         private static let maxEntries = 50_000
 
-        static func verdict(for path: String) -> SafetyVerdict {
+        @MainActor
+        static func evaluation(
+            for path: String,
+            coordinator: ScanCoordinator
+        ) -> (verdict: SafetyVerdict, rejection: SafetyRejection) {
+            let key = Key(coordinatorID: ObjectIdentifier(coordinator), path: path)
             lock.lock()
-            if let hit = cache[path] {
+            if let hit = cache[key] {
                 lock.unlock()
-                return hit
+                return (hit.verdict, hit.rejection)
             }
             lock.unlock()
             // 真算放在锁外：SafetyEngine.evaluate 可能 100us+，
             // 锁内只做 dict 读写，避免阻塞并发评估。
-            let v = safety.evaluate(path: path).0
+            let current = coordinator.deletionSafetyEvaluation(for: path)
+            let value = Value(verdict: current.verdict, rejection: current.rejection)
             lock.lock()
             if cache.count >= maxEntries { cache.removeAll(keepingCapacity: true) }
-            cache[path] = v
+            cache[key] = value
             lock.unlock()
-            return v
+            return (value.verdict, value.rejection)
         }
     }
 
     /// v1.5 P2 / Q1：本地 fallback @State —— 仅在 `globalSortKey == nil` 时生效。
     /// 有 globalSortKey 时通过 `effectiveSortKey` 的 getter 优先读外部 binding，
     /// 这个 @State 完全不参与 body 渲染（也就不会触发额外 invalidation）。
+    @Environment(\.locale) private var locale
     @State private var sortKey: TreeSortKey = .sizeDesc
     @State private var selectedPath: String?
     /// 各节点是否展开（path -> Bool）；放在父视图集中管理，
     /// 才能让 h/l 键盘事件去操控"当前选中节点"的展开状态。
     @State private var expanded: [String: Bool] = [:]
-    /// **v1.5.3**：行内 trash 按钮 / 键盘 Delete 触发时不立即调外部 onTrash，
-    /// 而是把 url 暂存在这里弹 [confirmationDialog](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)；
-    /// 用户点"移到废纸篓"才真正调上层 onTrash → triggerLargeFileTrash → 真删。
-    @State private var pendingTrashURL: URL?
     @FocusState private var focused: Bool
 
     /// **v1.5.4 性能修复**：扁平化的可见行数组（包含 root 直接孩子 + 所有展开节点的子项）。
@@ -181,7 +229,8 @@ public struct TreeBrowserView: View {
                 rootPath: String,
                 onSelect: ((TreeRow) -> Void)? = nil,
                 onSelectionCleared: (() -> Void)? = nil,
-                onTrash: ((URL) -> Void)? = nil,
+                onTrash: ((TreeRow) -> Void)? = nil,
+                allowsVendorPathOverride: Bool = false,
                 onRefreshSubtree: ((String) -> Void)? = nil,
                 onStash: ((TreeRow) -> Void)? = nil,
                 isStashed: ((String) -> Bool)? = nil,
@@ -196,6 +245,7 @@ public struct TreeBrowserView: View {
         self.onSelect = onSelect
         self.onSelectionCleared = onSelectionCleared
         self.onTrash = onTrash
+        self.allowsVendorPathOverride = allowsVendorPathOverride
         self.onRefreshSubtree = onRefreshSubtree
         self.onStash = onStash
         self.isStashed = isStashed
@@ -267,10 +317,12 @@ public struct TreeBrowserView: View {
                 AppKitFlatTreeTable(
                     rows: flatRows,
                     maxBytes: maxBytes,
+                    locale: locale,
                     selectedPath: $selectedPath,
                     expanded: expanded,
                     onToggleExpand: { path in toggleExpansionFor(path: path) },
                     onTrash: onTrash.map { _ in requestTrash(_:) },
+                    allowsVendorPathOverride: allowsVendorPathOverride,
                     onRefreshSubtree: onRefreshSubtree,
                     onStash: onStash,
                     isStashed: { path in isStashed?(path) ?? false },
@@ -389,45 +441,37 @@ public struct TreeBrowserView: View {
             // v2026.06 Step 1：键盘 Delete 也走 verdict 缓存。如果当前选中行
             // 在 flatRows 里能找到（应当总是能），直接读 verdict；找不到才 fallback
             // 调一次 evaluate 兜底（极少数 race：选中态滞后于 flatRows 重建）。
-            let verdict: SafetyVerdict
+            let evaluation: (verdict: SafetyVerdict, rejection: SafetyRejection)
+            let deletionRow: TreeRow?
             if let flat = flatRows.first(where: { $0.row.path == cur }) {
-                verdict = flat.verdict
+                evaluation = (flat.verdict, flat.rejection)
+                deletionRow = flat.row
             } else {
-                verdict = Self.VerdictCache.verdict(for: cur)
+                evaluation = Self.VerdictCache.evaluation(for: cur, coordinator: coordinator)
+                deletionRow = coordinator.row(for: cur)
             }
-            guard verdict != .forbid else {
+            guard let deletionRow else {
                 NSSound.beep()
                 return .handled
             }
-            requestTrash(URL(fileURLWithPath: cur))
+            guard Self.canInitiateDeletion(
+                deletionRow,
+                verdict: evaluation.verdict,
+                rejection: evaluation.rejection,
+                allowsVendorPathOverride: allowsVendorPathOverride
+            ) else {
+                NSSound.beep()
+                return .handled
+            }
+            requestTrash(deletionRow)
             return .handled
-        }
-        .confirmationDialog(
-            String(localized: "tree.confirm.trash.title", bundle: .module),
-            isPresented: Binding(
-                get: { pendingTrashURL != nil },
-                set: { if !$0 { pendingTrashURL = nil } }
-            ),
-            titleVisibility: .visible,
-            presenting: pendingTrashURL
-        ) { url in
-            Button(String(localized: "tree.confirm.trash.confirm", bundle: .module), role: .destructive) {
-                pendingTrashURL = nil
-                onTrash?(url)
-            }
-            Button(String(localized: "tree.confirm.trash.cancel", bundle: .module), role: .cancel) {
-                pendingTrashURL = nil
-            }
-        } message: { url in
-            Text(String(format: String(localized: "tree.confirm.trash.message %@", bundle: .module), url.lastPathComponent))
         }
     }
 
-    /// **v1.5.3**：行内 trash 按钮 / Delete 键的二次确认入口。
-    /// 不直接调上层 onTrash，先把 url 暂存到 pendingTrashURL → confirmationDialog 弹出，
-    /// 用户确认后才真正调 onTrash。
-    private func requestTrash(_ url: URL) {
-        pendingTrashURL = url
+    /// Tree 只产生删除意图；确认、运行中 App 决策和最终执行统一由 MainView 的
+    /// DeleteSheet 路由负责，避免 Tree 自己先弹一次、Large Files 又完全不弹。
+    private func requestTrash(_ row: TreeRow) {
+        onTrash?(row)
     }
 
     // MARK: - flatRows 重建（v1.5.4 性能修复）
@@ -444,11 +488,16 @@ public struct TreeBrowserView: View {
         pairs.reserveCapacity(topLevel.count * 2)
         for kid in topLevel {
             pairs.append((kid, 0))
-            if kid.isDirectory && (expanded[kid.path] ?? false) {
+            if Self.shouldTraverseDescendants(
+                of: kid,
+                expanded: expanded[kid.path] == true
+            ) {
                 appendDescendantPairs(parent: kid.path, depth: 1, into: &pairs)
             }
         }
-        let base = Self.computeVerdicts(for: pairs) { Self.VerdictCache.verdict(for: $0) }
+        let base = Self.computeDeletionEvaluations(for: pairs) {
+            Self.VerdictCache.evaluation(for: $0, coordinator: coordinator)
+        }
         // v2026.06.23：把"已展开且孩子仍在异步补齐"的目录标成 inline loading，
         // AppKit 行会在名字后面画一个 mini spinner，不再插整行占位。
         let newFlatRows = markLoadingChildren(in: base)
@@ -488,7 +537,10 @@ public struct TreeBrowserView: View {
         let kids = coordinator.directChildren(of: parent, sortedBy: effectiveSortKey)
         for k in kids {
             out.append((k, depth))
-            if k.isDirectory && (expanded[k.path] ?? false) {
+            if Self.shouldTraverseDescendants(
+                of: k,
+                expanded: expanded[k.path] == true
+            ) {
                 appendDescendantPairs(parent: k.path, depth: depth + 1, into: &out)
             }
         }
@@ -512,9 +564,10 @@ public struct TreeBrowserView: View {
         for item in base {
             var nextItem = item
             // 仅对"可展开 + 已展开 + 实际可访问"的目录考虑插占位
-            guard item.row.isDirectory,
-                  expanded[item.row.path] == true,
-                  item.row.accessState == .normal,
+            guard Self.shouldTraverseDescendants(
+                      of: item.row,
+                      expanded: expanded[item.row.path] == true
+                  ),
                   coordinator.isFetchingChildren(of: item.row.path, sortedBy: effectiveSortKey)
             else {
                 out.append(nextItem)
@@ -570,13 +623,19 @@ public struct TreeBrowserView: View {
         guard let idx = flatRows.firstIndex(where: { $0.row.path == path }) else {
             rebuildFlatRows(); return
         }
+        guard Self.canExpand(flatRows[idx].row) else {
+            rebuildFlatRows()
+            return
+        }
         flatRows[idx].isLoadingChildren = false
         let parentDepth = flatRows[idx].depth
         var pairs: [(TreeRow, Int)] = []
         appendDescendantPairs(parent: path, depth: parentDepth + 1, into: &pairs)
-        let inserted = Self.computeVerdicts(for: pairs) { Self.VerdictCache.verdict(for: $0) }
+        let inserted = Self.computeDeletionEvaluations(for: pairs) {
+            Self.VerdictCache.evaluation(for: $0, coordinator: coordinator)
+        }
         let parentRow = flatRows[idx].row
-        let isFetchingChildren = parentRow.accessState == .normal
+        let isFetchingChildren = Self.canExpand(parentRow)
             && coordinator.isFetchingChildren(of: path, sortedBy: effectiveSortKey)
         flatRows[idx].isLoadingChildren = isFetchingChildren
         if !inserted.isEmpty {
@@ -680,6 +739,7 @@ public struct TreeBrowserView: View {
         }
         let parentDepth = old[idx].depth
         if isExpanding {
+            guard Self.canExpand(old[idx].row) else { return old }
             var pairs: [(TreeRow, Int)] = []
             collectDescendantPairs(
                 parent: togglePath, depth: parentDepth + 1,
@@ -711,7 +771,7 @@ public struct TreeBrowserView: View {
         let kids = childrenProvider(parent, sortKey)
         for k in kids {
             out.append((k, depth))
-            if k.isDirectory && (expanded[k.path] ?? false) {
+            if shouldTraverseDescendants(of: k, expanded: expanded[k.path] == true) {
                 collectDescendantPairs(
                     parent: k.path, depth: depth + 1,
                     sortKey: sortKey, expanded: expanded,
@@ -736,10 +796,28 @@ public struct TreeBrowserView: View {
         for pairs: [(TreeRow, Int)],
         using evaluator: (String) -> SafetyVerdict
     ) -> [FlatTreeRow] {
+        computeDeletionEvaluations(for: pairs) {
+            (evaluator($0), SafetyRejection.ok)
+        }
+    }
+
+    /// 生产树行同时冻结 verdict + rejection。只存 verdict 会让 UI 无法区分
+    /// “专业模式可严格确认的 vendorPathRule”与系统/凭据等真正硬禁区，最终在预检前
+    /// 把两者一并锁死。
+    static func computeDeletionEvaluations(
+        for pairs: [(TreeRow, Int)],
+        using evaluator: (String) -> (verdict: SafetyVerdict, rejection: SafetyRejection)
+    ) -> [FlatTreeRow] {
         var out: [FlatTreeRow] = []
         out.reserveCapacity(pairs.count)
         for (row, depth) in pairs {
-            out.append(FlatTreeRow(row: row, depth: depth, verdict: evaluator(row.path)))
+            let evaluation = evaluator(row.path)
+            out.append(FlatTreeRow(
+                row: row,
+                depth: depth,
+                verdict: evaluation.verdict,
+                rejection: evaluation.rejection
+            ))
         }
         return out
     }
@@ -801,9 +879,7 @@ public struct TreeBrowserView: View {
         let candidates = flatRows
             .filter {
                 $0.depth == 0
-                    && $0.row.isDirectory
-                    && $0.row.hasChildren
-                    && $0.row.accessState == .normal
+                    && Self.canExpand($0.row)
             }
             .prefix(4)
         var paths: [String] = []
@@ -906,10 +982,12 @@ public struct TreeBrowserView: View {
 private struct AppKitFlatTreeTable: NSViewRepresentable {
     let rows: [FlatTreeRow]
     let maxBytes: Int64
+    let locale: Locale
     @Binding var selectedPath: String?
     let expanded: [String: Bool]
     let onToggleExpand: (String) -> Void
-    let onTrash: ((URL) -> Void)?
+    let onTrash: ((TreeRow) -> Void)?
+    let allowsVendorPathOverride: Bool
     let onRefreshSubtree: ((String) -> Void)?
     let onStash: ((TreeRow) -> Void)?
     let isStashed: (String) -> Bool
@@ -984,17 +1062,19 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
             cell.configure(
                 flat: flat,
                 maxBytes: parent.maxBytes,
+                locale: parent.locale,
                 isExpanded: parent.expanded[flat.row.path] ?? false,
                 isSelected: !flat.isLoadingPlaceholder && parent.selectedPath == flat.row.path,
                 isStashed: parent.isStashed(flat.row.path),
                 hasTrash: parent.onTrash != nil,
+                allowsVendorPathOverride: parent.allowsVendorPathOverride,
                 hasStash: parent.onStash != nil,
                 hasAI: parent.onAskAI != nil,
                 aiReady: parent.aiSettings?.isReadyForUI == true,
                 actions: TreeTableRowActions(
                     select: { [weak self] in self?.select(flat.row.path, in: tableView) },
                     toggle: { [weak self] in self?.parent.onToggleExpand(flat.row.path) },
-                    trash: { [weak self] in self?.parent.onTrash?(URL(fileURLWithPath: flat.row.path)) },
+                    trash: { [weak self] in self?.parent.onTrash?(flat.row) },
                     stash: { [weak self] in self?.parent.onStash?(flat.row) },
                     askAI: { [weak self] in self?.parent.onAskAI?(flat.row) },
                     refresh: { [weak self] in self?.parent.onRefreshSubtree?(flat.row.path) }
@@ -1089,9 +1169,7 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
 
         private func setExpansion(open: Bool) {
             guard let flat = selectedFlat(),
-                  flat.row.isDirectory,
-                  flat.row.hasChildren,
-                  flat.row.accessState == .normal else { return }
+                  TreeBrowserView.canExpand(flat.row) else { return }
             let isOpen = parent.expanded[flat.row.path] ?? false
             guard isOpen != open else { return }
             parent.onToggleExpand(flat.row.path)
@@ -1099,9 +1177,7 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
 
         private func toggleSelectedExpansion() {
             guard let flat = selectedFlat(),
-                  flat.row.isDirectory,
-                  flat.row.hasChildren,
-                  flat.row.accessState == .normal else { return }
+                  TreeBrowserView.canExpand(flat.row) else { return }
             parent.onToggleExpand(flat.row.path)
         }
 
@@ -1112,11 +1188,16 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
 
         private func trashSelected() {
             guard let flat = selectedFlat(), parent.onTrash != nil else { return }
-            guard flat.verdict != .forbid, flat.row.accessState == .normal else {
+            guard TreeBrowserView.canInitiateDeletion(
+                flat.row,
+                verdict: flat.verdict,
+                rejection: flat.rejection,
+                allowsVendorPathOverride: parent.allowsVendorPathOverride
+            ) else {
                 NSSound.beep()
                 return
             }
-            parent.onTrash?(URL(fileURLWithPath: flat.row.path))
+            parent.onTrash?(flat.row)
         }
 
         private func selectedFlat() -> FlatTreeRow? {
@@ -1189,10 +1270,12 @@ private final class TreeTableCellView: NSTableCellView {
 
     func configure(flat: FlatTreeRow,
                    maxBytes: Int64,
+                   locale: Locale,
                    isExpanded: Bool,
                    isSelected: Bool,
                    isStashed: Bool,
                    hasTrash: Bool,
+                   allowsVendorPathOverride: Bool,
                    hasStash: Bool,
                    hasAI: Bool,
                    aiReady: Bool,
@@ -1200,10 +1283,12 @@ private final class TreeTableCellView: NSTableCellView {
         canvas.configure(
             flat: flat,
             maxBytes: maxBytes,
+            locale: locale,
             isExpanded: isExpanded,
             isSelected: isSelected,
             isStashed: isStashed,
             hasTrash: hasTrash,
+            allowsVendorPathOverride: allowsVendorPathOverride,
             hasStash: hasStash,
             hasAI: hasAI,
             aiReady: aiReady,
@@ -1216,10 +1301,12 @@ private final class TreeTableRowCanvas: NSView {
     private let inlineProgress = NSProgressIndicator()
     private var flat: FlatTreeRow?
     private var maxBytes: Int64 = 0
+    private var locale = Locale.current
     private var isExpanded = false
     private var isSelected = false
     private var isStashed = false
     private var hasTrash = false
+    private var allowsVendorPathOverride = false
     private var hasStash = false
     private var hasAI = false
     private var aiReady = false
@@ -1249,25 +1336,34 @@ private final class TreeTableRowCanvas: NSView {
 
     func configure(flat: FlatTreeRow,
                    maxBytes: Int64,
+                   locale: Locale,
                    isExpanded: Bool,
                    isSelected: Bool,
                    isStashed: Bool,
                    hasTrash: Bool,
+                   allowsVendorPathOverride: Bool,
                    hasStash: Bool,
                    hasAI: Bool,
                    aiReady: Bool,
                    actions: TreeTableRowActions) {
         self.flat = flat
         self.maxBytes = maxBytes
+        self.locale = locale
         self.isExpanded = isExpanded
         self.isSelected = isSelected
         self.isStashed = isStashed
         self.hasTrash = hasTrash
+        self.allowsVendorPathOverride = allowsVendorPathOverride
         self.hasStash = hasStash
         self.hasAI = hasAI
         self.aiReady = aiReady
         self.actions = actions
-        toolTip = flat.row.path
+        let metrics = TreeMetricPresentation(row: flat.row, locale: locale)
+        if let helpText = metrics.helpText {
+            toolTip = flat.row.path + "\n\n" + helpText
+        } else {
+            toolTip = flat.row.path
+        }
         updateInlineProgress()
         needsDisplay = true
     }
@@ -1323,8 +1419,15 @@ private final class TreeTableRowCanvas: NSView {
         let row = flat.row
         let menu = NSMenu()
         if hasTrash {
+            let requiresOverride = DeletionEntryPolicy.requiresVendorPathOverride(
+                verdict: flat.verdict,
+                rejection: flat.rejection,
+                allowsVendorPathOverride: allowsVendorPathOverride
+            )
             let item = ClosureMenuItem(
-                title: String(localized: flat.verdict == .forbid ? "tree.menu.trash_forbidden" : "tree.menu.trash",
+                title: String(localized: requiresOverride
+                              ? "delete.vendor_override.action"
+                              : (isTrashable(flat) ? "tree.menu.trash" : "tree.menu.trash_forbidden"),
                               bundle: .module),
                 action: { if self.isTrashable(flat) { actions.trash() } }
             )
@@ -1415,6 +1518,7 @@ private final class TreeTableRowCanvas: NSView {
 
     private func drawRow(_ flat: FlatTreeRow) {
         let row = flat.row
+        let metrics = TreeMetricPresentation(row: row, locale: locale)
         let denied = row.accessState != .normal
         let chevronRect = disclosureRect(for: flat)
         if canExpand(flat) {
@@ -1434,6 +1538,12 @@ private final class TreeTableRowCanvas: NSView {
         if denied {
             drawSymbol("lock.fill",
                        in: CGRect(x: iconRect.maxX - 5, y: iconRect.maxY - 7, width: 8, height: 8),
+                       color: .systemOrange)
+        } else if metrics.state == .lowerBound {
+            // Partial 与“当前目录不可访问”是正交状态，使用信息徽章而不是 lock。
+            // 数值列保持纯数字，完整的 lower-bound 语义放在共享 tooltip / detail 文本中。
+            drawSymbol("exclamationmark.circle.fill",
+                       in: CGRect(x: iconRect.maxX - 6, y: iconRect.maxY - 8, width: 10, height: 10),
                        color: .systemOrange)
         }
         let nameX = iconRect.maxX + TreeTableMetrics.horizontalGap
@@ -1456,14 +1566,13 @@ private final class TreeTableRowCanvas: NSView {
         drawBar(row: row,
                 denied: denied,
                 rect: CGRect(x: nameX, y: 24, width: nameWidth, height: 2))
-        let pendingSize = row.isSizePending && !denied
-        let size = (denied || pendingSize) ? "—" : ByteCountFormatter.string(fromByteCount: row.bytes, countStyle: .file)
-        drawText(size,
+        let pendingSize = metrics.state == .pending
+        drawText(metrics.size.compactText,
                  in: CGRect(x: sizeX, y: 6, width: TreeTableMetrics.sizeWidth - 8, height: 17),
                  font: .monospacedSystemFont(ofSize: 13.5, weight: .regular),
                  color: (denied || pendingSize) ? .tertiaryLabelColor : .secondaryLabelColor,
                  alignment: .right)
-        drawText((denied || pendingSize) ? "—" : "\(row.fileCount)",
+        drawText(metrics.count.compactText,
                  in: CGRect(x: countX, y: 6, width: TreeTableMetrics.countWidth - 8, height: 17),
                  font: .monospacedSystemFont(ofSize: 13.5, weight: .regular),
                  color: .tertiaryLabelColor,
@@ -1625,11 +1734,16 @@ private final class TreeTableRowCanvas: NSView {
     }
 
     private func canExpand(_ flat: FlatTreeRow) -> Bool {
-        flat.row.isDirectory && flat.row.hasChildren && flat.row.accessState == .normal
+        TreeBrowserView.canExpand(flat.row)
     }
 
     private func isTrashable(_ flat: FlatTreeRow) -> Bool {
-        hasTrash && flat.row.accessState == .normal && flat.verdict != .forbid
+        hasTrash && TreeBrowserView.canInitiateDeletion(
+            flat.row,
+            verdict: flat.verdict,
+            rejection: flat.rejection,
+            allowsVendorPathOverride: allowsVendorPathOverride
+        )
     }
 
     private func drawText(_ text: String,
@@ -1791,6 +1905,9 @@ struct FlatTreeRow: Identifiable, Hashable {
     let row: TreeRow
     let depth: Int
     let verdict: SafetyVerdict
+    /// 与 verdict 在同一次 SafetyEngine 评估中冻结，供专业模式只识别 vendorPathRule。
+    /// 默认 `.ok` 保持测试 fixture / 普通模式构造兼容。
+    let rejection: SafetyRejection
     /// v2026.06.20 当本行是"加载占位行"时为 true。占位行 id 用父路径 + "::__loading__"
     /// 后缀，避免与真实 path 冲突；UI 端只渲染一个 ProgressView + "加载中…" 文案，
     /// 不响应点击 / 不算入选中态 / 不进入键盘导航候选集。
@@ -1798,6 +1915,23 @@ struct FlatTreeRow: Identifiable, Hashable {
     /// 已展开目录的子节点深度聚合还在后台进行时为 true。
     /// AppKit 行会在名称后显示一个 mini spinner；不影响 selection / path identity。
     var isLoadingChildren: Bool = false
+
+    init(
+        row: TreeRow,
+        depth: Int,
+        verdict: SafetyVerdict,
+        rejection: SafetyRejection = .ok,
+        isLoadingPlaceholder: Bool = false,
+        isLoadingChildren: Bool = false
+    ) {
+        self.row = row
+        self.depth = depth
+        self.verdict = verdict
+        self.rejection = rejection
+        self.isLoadingPlaceholder = isLoadingPlaceholder
+        self.isLoadingChildren = isLoadingChildren
+    }
+
     /// v2026.06.20：占位行的 id 不能用 `row.path`（会与真实 path 冲突 / 影响 selectedPath
     /// 等键盘导航逻辑），改用 `row.path + "::__loading__"`。普通行保持原行为。
     var id: String {
@@ -1818,7 +1952,9 @@ struct TreeNodeRow: View {
     let onToggleExpand: () -> Void
     let onSelect: () -> Void
     /// 上层透传的"移到废纸篓"通道（已包含二次确认 wrapper）。nil 时菜单项与行内 trash 按钮都不展示。
-    let onTrash: ((URL) -> Void)?
+    let onTrash: ((TreeRow) -> Void)?
+    /// 普通复用默认锁住所有 forbid；Professional callsite 才会显式开放 vendorPathRule。
+    let allowsVendorPathOverride: Bool = false
     /// v2026.06 #1：右键"刷新此目录"回调。nil 或本行非 directory 时菜单不展示。
     let onRefreshSubtree: ((String) -> Void)?
     /// v2026.06.18 **加入待处理**回调（购物车）。nil 时 contextMenu 不展示该项。
@@ -1834,7 +1970,7 @@ struct TreeNodeRow: View {
     private var indent: CGFloat { CGFloat(flat.depth) * 16 }
     /// v1.3.zzzz：accessDenied 目录不允许展开（即便 hasChildren=true 也只是 SQL 边角）。
     private var canExpand: Bool {
-        row.isDirectory && row.hasChildren && row.accessState == .normal
+        TreeBrowserView.canExpand(row)
     }
     /// **v1.5.3**：本行能否被行内 trash 按钮删除。
     ///
@@ -1844,8 +1980,12 @@ struct TreeNodeRow: View {
     /// 这里仅做 O(1) 字段读取，让 SwiftUI 重绘 hot path 完全不碰 SafetyEngine。
     private var isTrashable: Bool {
         guard onTrash != nil else { return false }
-        if row.accessState != .normal { return false }
-        return flat.verdict != .forbid
+        return TreeBrowserView.canInitiateDeletion(
+            row,
+            verdict: flat.verdict,
+            rejection: flat.rejection,
+            allowsVendorPathOverride: allowsVendorPathOverride
+        )
     }
 
     var body: some View {
@@ -1917,7 +2057,7 @@ struct TreeNodeRow: View {
                 Button {
                     guard isTrashable else { NSSound.beep(); return }
                     onSelect()
-                    onTrash(URL(fileURLWithPath: row.path))
+                    onTrash(row)
                 } label: {
                     Image(systemName: "trash")
                         .font(.system(size: 12, weight: .semibold))
@@ -1971,22 +2111,32 @@ struct TreeNodeRow: View {
                 // v2026.06 Step 1：contextMenu 也走 verdict 缓存。
                 // contextMenu 在右键弹出时才求值（不算最 hot path），但既然已经算好就一起复用，
                 // 一致性比微优化重要：后续维护者看到一处就知道全局都不再调 evaluate。
-                let isForbidden = (flat.verdict == .forbid)
+                let canInitiate = TreeBrowserView.canInitiateDeletion(
+                    row,
+                    verdict: flat.verdict,
+                    rejection: flat.rejection,
+                    allowsVendorPathOverride: allowsVendorPathOverride
+                )
+                let requiresOverride = DeletionEntryPolicy.requiresVendorPathOverride(
+                    verdict: flat.verdict,
+                    rejection: flat.rejection,
+                    allowsVendorPathOverride: allowsVendorPathOverride
+                )
                 Button(role: .destructive) {
-                    guard !isForbidden else { return }
+                    guard canInitiate else { return }
                     onSelect()
-                    onTrash(URL(fileURLWithPath: row.path))
+                    onTrash(row)
                 } label: {
                     Label {
-                        Text(isForbidden
-                             ? "tree.menu.trash_forbidden"
-                             : "tree.menu.trash",
+                        Text(requiresOverride
+                             ? "delete.vendor_override.action"
+                             : (canInitiate ? "tree.menu.trash" : "tree.menu.trash_forbidden"),
                              bundle: .module)
                     } icon: {
                         Image(systemName: "trash")
                     }
                 }
-                .disabled(isForbidden)
+                .disabled(!canInitiate)
                 .keyboardShortcut(.delete, modifiers: [])
                 // v2026.06.18 **加入待处理**入口紧邻"移到废纸篓"，与"清空-vs-囤起来"
                 // 是同一动作面的两种处置方式，放在一起手感更对。
@@ -2165,6 +2315,7 @@ struct TreeNodeRow: View {
 struct TreeBrowserRow: View {
     let row: TreeRow
     let maxBytes: Int64
+    @Environment(\.locale) private var locale
 
     private var ratio: CGFloat {
         guard maxBytes > 0 else { return 0 }
@@ -2183,10 +2334,19 @@ struct TreeBrowserRow: View {
             return String(format: String(localized: "tree.access.permission_denied", bundle: .module), row.path)
         case .tccProtected:
             return String(format: String(localized: "tree.access.tcc_protected", bundle: .module), row.path)
+        case .incomplete:
+            return String(format: String(localized: "tree.access.incomplete", bundle: .module), row.path)
         }
     }
 
+    private func rowHelp(for metrics: TreeMetricPresentation) -> String {
+        if isAccessDenied { return deniedHelp }
+        guard let helpText = metrics.helpText else { return row.path }
+        return row.path + "\n\n" + helpText
+    }
+
     var body: some View {
+        let metrics = TreeMetricPresentation(row: row, locale: locale)
         HStack(spacing: 10) {
             // 图标 + 锁定叠加徽章（仅 accessDenied 时显示）
             ZStack(alignment: .bottomTrailing) {
@@ -2205,6 +2365,12 @@ struct TreeBrowserRow: View {
                         .padding(2)
                         .background(Circle().fill(Color.orange))
                         .offset(x: 4, y: 3)
+                } else if metrics.state == .lowerBound {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .offset(x: 4, y: 3)
+                        .accessibilityLabel(Text(metrics.partialStatusText ?? ""))
                 }
             }
             VStack(alignment: .leading, spacing: 4) {
@@ -2231,15 +2397,15 @@ struct TreeBrowserRow: View {
                 .frame(height: 3)
             }
             // accessDenied 时把 size 改成"—"，避免"0 KB"的误导性显示
-            Text(isAccessDenied
-                 ? "—"
-                 : ByteCountFormatter.string(fromByteCount: row.bytes, countStyle: .file))
+            Text(metrics.size.compactText)
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(isAccessDenied ? .tertiary : .secondary)
+                .lineLimit(1)
                 .frame(width: 90, alignment: .trailing)
-            Text(isAccessDenied ? "—" : "\(row.fileCount)")
+            Text(metrics.count.compactText)
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.tertiary)
+                .lineLimit(1)
                 .frame(width: 56, alignment: .trailing)
             // v1.5.4：mtime 列——与 LargeFilesView 文案风格一致，省"x天前"等本地化偏差。
             // accessDenied 行直接画"—"避免误导；mtime 缺失（极早期 publish 帧或 root 顶层）也画"—"。
@@ -2251,7 +2417,7 @@ struct TreeBrowserRow: View {
         }
         .padding(.vertical, 2)
         .opacity(isAccessDenied ? 0.7 : 1.0)
-        .help(deniedHelp)
+        .help(rowHelp(for: metrics))
     }
 
     /// v1.5.4：列内 mtime 短文案。

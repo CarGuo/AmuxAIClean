@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// 文件系统节点（文件 / 目录）。
 ///
@@ -21,9 +22,11 @@ public struct FSNode: Sendable, Hashable {
     public let path: String
     public let isDirectory: Bool
     public let isSymlink: Bool
-    /// 物理占用（字节）。
+    /// 本次扫描中应累计的物理占用（字节）。目录及重复 hardlink 为 0。
+    /// 对普通文件来自 `ATTR_FILE_ALLOCSIZE`；它不是 APFS clone 的 exclusive extent 大小。
     public let allocatedSize: Int64
-    /// 逻辑大小（字节）；与 allocatedSize 不同时常意味着 iCloud 占位 / 稀疏文件。
+    /// 本次扫描中应累计的逻辑大小（字节）。目录及重复 hardlink 为 0；与
+    /// allocatedSize 不同时常意味着 iCloud 占位或稀疏文件。
     public let logicalSize: Int64
     public let inode: UInt64
     public let device: UInt64
@@ -83,6 +86,121 @@ public struct FSNode: Sendable, Hashable {
     }
 }
 
+/// 扫描汇总的完整性状态。
+///
+/// `.partial` 表示根目录未被穷尽：可能来自权限/TCC/枚举缺口，也可能是超时或无进展
+/// watchdog 合成的阶段性汇总。它可以展示已观察结果，但绝不能作为安全删除的完整证据。
+public enum ScanCompletionStatus: Sendable, Equatable {
+    case complete
+    case partial
+}
+
+/// 扫描未能完整覆盖某条路径的结构化原因。
+///
+/// 这与“任务被用户取消”严格分离：取消不会生成 issue；只有扫描仍打算完成、但文件系统
+/// 明确拒绝或无法完整枚举时才记录。删除链路可据此把祖先候选锁住，而 UI 仍能展示已经
+/// 观察到的部分大小。
+public enum ScanIncompleteReason: String, Sendable, Equatable, Hashable {
+    /// `open(2)` / FileManager 明确返回无权限。
+    case permissionDenied
+    /// 为避免 TCC 弹窗而主动跳过受保护目录。
+    case tccProtectedSkipped
+    /// 目录已经打开，但 bulk 枚举与 FileManager fallback 都未完整读到 EOF。
+    case enumerationFailed
+    /// 枚举拿到了路径，但读取该节点 metadata 失败。
+    case metadataUnavailable
+}
+
+/// 扫描缺口发生在哪个文件系统阶段。它是诊断字段，不承担用户文案职责；UI 应根据
+/// `reason` 展示可操作说明，把 stage/errno 留给日志和“技术详情”。
+public enum ScanIssueStage: String, Sendable, Equatable, Hashable {
+    /// `open(2)` 无法取得目录描述符。
+    case open
+    /// 目录描述符已取得，但目录项没有完整读到 EOF。
+    case enumerate
+    /// 已拿到目录项名称，但读取该项 metadata 失败。
+    case metadata
+}
+
+/// 一条扫描完整性缺口。path 始终为绝对 POSIX 路径。
+public struct ScanIncompleteIssue: Sendable, Equatable, Hashable {
+    public let path: String
+    public let reason: ScanIncompleteReason
+    /// 失败阶段；旧调用方未提供时为 nil，以保持来源不明确的证据仍可表达。
+    public let stage: ScanIssueStage?
+    /// 原始 POSIX errno。只保存数值，避免把平台错误字符串当用户文案跨层传递。
+    public let posixErrorCode: Int32?
+
+    public init(
+        path: String,
+        reason: ScanIncompleteReason,
+        stage: ScanIssueStage? = nil,
+        posixErrorCode: Int32? = nil
+    ) {
+        self.path = path
+        self.reason = reason
+        self.stage = stage
+        self.posixErrorCode = posixErrorCode
+    }
+}
+
+/// 只有扫描根本身无法建立可用结果时才允许进入 `ScanEvent.failed`。
+/// 后代目录的失败必须留在 `ScanIncompleteIssue`，从而保留已扫描结果而不误报整轮失败。
+public enum ScanError: Error, Sendable, Equatable {
+    case cannotEnumerate(path: String, stage: ScanIssueStage, posixErrorCode: Int32?)
+}
+
+extension ScanError: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .cannotEnumerate(let path, let stage, let posixErrorCode):
+            let errnoText = posixErrorCode.map(String.init) ?? "nil"
+            return "cannotEnumerate(path=\(path), stage=\(stage.rawValue), errno=\(errnoText))"
+        }
+    }
+}
+
+/// FileManager/Cocoa 与 POSIX 两条扫描路径共用同一错误分类，避免同一目录在 fallback
+/// 前后从 permissionDenied 漂移成 generic enumerationFailed。
+enum ScanFailureClassifier {
+    static func issue(
+        path: String,
+        stage: ScanIssueStage,
+        posixErrorCode: Int32?
+    ) -> ScanIncompleteIssue {
+        let reason: ScanIncompleteReason
+        if let posixErrorCode,
+           posixErrorCode == EACCES || posixErrorCode == EPERM {
+            reason = .permissionDenied
+        } else if stage == .metadata {
+            reason = .metadataUnavailable
+        } else {
+            reason = .enumerationFailed
+        }
+        return ScanIncompleteIssue(
+            path: path,
+            reason: reason,
+            stage: stage,
+            posixErrorCode: posixErrorCode
+        )
+    }
+
+    static func posixErrorCode(from error: Error) -> Int32? {
+        let nsError = error as NSError
+        if nsError.domain == NSPOSIXErrorDomain {
+            return Int32(exactly: nsError.code)
+        }
+        if nsError.domain == NSCocoaErrorDomain,
+           nsError.code == CocoaError.fileReadNoPermission.rawValue {
+            return EACCES
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return posixErrorCode(from: underlying)
+        }
+        return nil
+    }
+}
+
 /// 扫描汇总。
 public struct ScanSummary: Sendable {
     public let root: URL
@@ -95,6 +213,10 @@ public struct ScanSummary: Sendable {
     public let permissionDeniedCount: Int
     /// 因 TCC 雷区（Music/Photos/Mail 等）主动 skip 的目录数（v1.1 加入）。
     public let tccProtectedSkippedCount: Int
+    /// `.complete` 只用于扫描器自然遍历完根目录的汇总；超时合成汇总必须为 `.partial`。
+    public let completionStatus: ScanCompletionStatus
+    /// 本次扫描未完整覆盖的路径。非空时 completionStatus 强制为 `.partial`。
+    public let incompleteIssues: [ScanIncompleteIssue]
 
     public init(
         root: URL,
@@ -105,7 +227,9 @@ public struct ScanSummary: Sendable {
         dedupedHardlinkBytes: Int64,
         elapsed: TimeInterval,
         permissionDeniedCount: Int = 0,
-        tccProtectedSkippedCount: Int = 0
+        tccProtectedSkippedCount: Int = 0,
+        completionStatus: ScanCompletionStatus = .complete,
+        incompleteIssues: [ScanIncompleteIssue] = []
     ) {
         self.root = root
         self.totalAllocatedBytes = totalAllocatedBytes
@@ -116,6 +240,8 @@ public struct ScanSummary: Sendable {
         self.elapsed = elapsed
         self.permissionDeniedCount = permissionDeniedCount
         self.tccProtectedSkippedCount = tccProtectedSkippedCount
+        self.incompleteIssues = incompleteIssues
+        self.completionStatus = incompleteIssues.isEmpty ? completionStatus : .partial
     }
 }
 
@@ -123,16 +249,19 @@ public struct ScanSummary: Sendable {
 public enum ScanEvent: Sendable {
     case progress(scannedBytes: Int64, fileCount: Int)
     case node(FSNode)
-    /// Step 13B micro-batch：把"逐 entry yield .node"折叠成"按目录批量 yield 数组"。
-    /// 一个 .nodes 批次的所有元素来自**同一父目录**（worker 在 processDirectory 末尾一次性 yield）。
+    /// Step 13B micro-batch：把"逐 entry yield .node"折叠成"按目录、有界批量 yield 数组"。
+    /// 一个 .nodes 批次的所有元素来自**同一父目录**，数量不超过
+    /// `BulkScanner.nodeBatchLimit`。
     /// 消费方处理：逐项 ingest（与 .node 等价），减少跨 actor / continuation hop 频次。
     case nodes([FSNode])
     case finished(ScanSummary)
-    case failed(Error)
+    /// 扫描根级致命失败。后代目录读取失败不得进入此 case。
+    case failed(ScanError)
     case permissionDenied(path: String)
     /// TCC 雷区（Apple Music/Photos/Mail 等）被主动跳过；UI 用此事件统一展示而非弹窗。
     case tccProtectedSkipped(path: String)
-    /// 命中 CACHEDIR.TAG 标记，整棵子目录被视为「纯缓存」跳过下钻；
-    /// UI 可把命中目录作为 safe 候选高亮。
+    /// 目录/节点未被完整枚举。取消不会产生此事件。
+    case incomplete(ScanIncompleteIssue)
+    /// 命中 CACHEDIR.TAG 标记。该事件是分类提示；扫描仍会下钻并统计真实大小。
     case cacheDirTagged(path: String)
 }

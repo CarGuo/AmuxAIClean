@@ -1,5 +1,7 @@
 import Dispatch
 import Foundation
+import SafetyKit
+import ScanKit
 import XCTest
 @testable import AppUI
 
@@ -14,6 +16,181 @@ final class SmartCareSessionTests: XCTestCase {
             SmartCareSession.defaultStages,
             [.core, .appCaches, .developerCaches]
         )
+    }
+
+    func testPartialTerminalSnapshotIsAcceptedInsteadOfEscalatedToFatal() {
+        let partial = ScanSnapshot(
+            categoryID: ScanCoordinator.commonAppCacheCategoryID,
+            rows: [],
+            totalBytes: 0,
+            scannedFileCount: 0,
+            isFinished: true,
+            elapsed: 12,
+            isComplete: false
+        )
+
+        XCTAssertEqual(
+            SmartCareSnapshotCompletionPolicy.decision(
+                snapshot: partial,
+                isScanning: false,
+                terminalFailure: nil,
+                hasDeletionDeniedEvidence: true,
+                fallbackError: "14 locations were incomplete"
+            ),
+            .accept(isComplete: false),
+            "部分扫描有独立删除拒绝证据，不能把整轮结果升级成 Action failed"
+        )
+    }
+
+    func testPartialTerminalWithoutDeniedEvidenceFailsClosed() {
+        let partial = ScanSnapshot(
+            categoryID: ScanCoordinator.commonAppCacheCategoryID,
+            rows: [],
+            totalBytes: 0,
+            scannedFileCount: 0,
+            isFinished: true,
+            elapsed: 1,
+            isComplete: false
+        )
+
+        XCTAssertEqual(
+            SmartCareSnapshotCompletionPolicy.decision(
+                snapshot: partial,
+                isScanning: false,
+                terminalFailure: nil,
+                hasDeletionDeniedEvidence: false,
+                fallbackError: "producer omitted incomplete-path evidence"
+            ),
+            .fail("producer omitted incomplete-path evidence")
+        )
+    }
+
+    func testScannerFatalFailureWinsOverPartialAppearance() {
+        let partial = ScanSnapshot(
+            categoryID: ScanCoordinator.developerCategoryID,
+            rows: [],
+            totalBytes: 0,
+            scannedFileCount: 0,
+            isFinished: true,
+            elapsed: 1,
+            isComplete: false
+        )
+        let failure = ScanCoordinator.TerminalFailure(message: "stream failed")
+
+        XCTAssertEqual(
+            SmartCareSnapshotCompletionPolicy.decision(
+                snapshot: partial,
+                isScanning: false,
+                terminalFailure: failure,
+                hasDeletionDeniedEvidence: true,
+                fallbackError: "incomplete"
+            ),
+            .fail("stream failed"),
+            "真实 scanner failure 不能把该阶段写入 completedStages"
+        )
+    }
+
+    func testStoppedNonTerminalSnapshotRemainsFatal() {
+        let unfinished = ScanSnapshot(
+            categoryID: ScanCoordinator.commonAppCacheCategoryID,
+            rows: [],
+            totalBytes: 0,
+            scannedFileCount: 0,
+            isFinished: false,
+            elapsed: 1
+        )
+
+        XCTAssertEqual(
+            SmartCareSnapshotCompletionPolicy.decision(
+                snapshot: unfinished,
+                isScanning: false,
+                terminalFailure: nil,
+                hasDeletionDeniedEvidence: false,
+                fallbackError: "scanner stopped unexpectedly"
+            ),
+            .fail("scanner stopped unexpectedly")
+        )
+    }
+
+    func testCompleteEmptySnapshotWithRealErrorRemainsFatal() {
+        let failed = ScanSnapshot(
+            categoryID: ScanCoordinator.commonAppCacheCategoryID,
+            rows: [],
+            totalBytes: 0,
+            scannedFileCount: 0,
+            isFinished: true,
+            elapsed: 1,
+            isComplete: true
+        )
+
+        XCTAssertEqual(
+            SmartCareSnapshotCompletionPolicy.decision(
+                snapshot: failed,
+                isScanning: false,
+                terminalFailure: nil,
+                hasDeletionDeniedEvidence: false,
+                fallbackError: "I/O failed"
+            ),
+            .fail("I/O failed")
+        )
+    }
+
+    func testPartialCommonCacheFlowsThroughSessionAndRemainsDeletionDenied() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("smart-care-partial-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let cache = home.appendingPathComponent("Library/Caches/com.example.Partial", isDirectory: true)
+
+        let scanner = ScanCoordinator(vendors: [], home: home.path)
+        scanner.commonAppCacheDetector = { _, _, _ in
+            CommonAppCacheScanner.ScanResult(
+                hits: [CommonAppCacheScanner.Hit(
+                    ruleName: "Partial Cache",
+                    bundleIDPrefix: "com.example.Partial",
+                    source: "fixture",
+                    url: cache,
+                    isDirectory: true,
+                    verdict: .safe,
+                    reason: "cache",
+                    sizeBytes: 4_096,
+                    logicalSizeBytes: 128,
+                    entryCount: 1
+                )],
+                incompletePaths: [CommonAppCacheScanner.IncompletePath(
+                    path: cache.path,
+                    reason: .deadlineExceeded
+                )]
+            )
+        }
+        let session = SmartCareSession(scanCoordinator: scanner)
+        session.setStage(.core, selected: false)
+        session.setStage(.developerCaches, selected: false)
+
+        session.startScan(
+            includeHidden: false,
+            enabledDeveloperRuleIDs: [],
+            home: home.path
+        )
+        try await waitForSmartCareTerminal(session)
+
+        guard case .reviewing = session.care.phase else {
+            return XCTFail("带精确拒绝证据的 partial 应进入结果页，而不是 Action failed")
+        }
+        XCTAssertEqual(session.deletionDeniedPaths, [cache.standardizedFileURL.path])
+        XCTAssertEqual(session.scanLimitationProjection.totalCount, 1)
+        XCTAssertEqual(session.scanLimitationProjection.displayedPaths, [cache.standardizedFileURL.path])
+        XCTAssertEqual(session.care.summary.items.map(\.path), [cache.standardizedFileURL.path])
+        XCTAssertEqual(session.care.summary.items.first?.verdict, .forbid)
+
+        let partition = TrashPipeline.partitionByForbid(
+            paths: [cache.path],
+            safety: SafetyEngine(),
+            accessDeniedPaths: session.deletionDeniedPaths,
+            home: home.path
+        )
+        XCTAssertTrue(partition.allowed.isEmpty)
+        XCTAssertEqual(partition.rejected.first?.reason, .accessDenied)
     }
 
     func testScanScopesAreSelectableBeforeScanning() {
@@ -118,6 +295,90 @@ final class SmartCareSessionTests: XCTestCase {
         XCTAssertEqual(checkpoint.completedFileCount, 3)
         XCTAssertEqual(checkpoint.deniedPaths, ["/tmp/logs/locked"])
         XCTAssertEqual(checkpoint.completedSummary.items.map(\.path), ["/tmp/logs"])
+    }
+
+    func testRetryFailedScanUsesRemainingCheckpointWithoutResurrectingDeletedCandidate() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("smart-care-retry-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+
+        let deletedPath = home.appendingPathComponent("Library/Logs/old.log").path
+        let retryPath = home.appendingPathComponent("Library/Caches/com.example.Retry", isDirectory: true)
+        let oldCandidate = SmartCareCandidate(
+            source: .recommended,
+            bucketID: .systemJunk,
+            path: deletedPath,
+            title: "Old Log",
+            bytes: 512,
+            fileCount: 1,
+            verdict: .safe
+        )
+        let oldSummary = SmartCareSummaryBuilder.build(candidates: [oldCandidate])
+        var checkpoint = SmartCareScanCheckpoint(plannedStages: [.core, .appCaches])
+        checkpoint.record(
+            stage: .core,
+            snapshot: ScanSnapshot(
+                categoryID: ScanCoordinator.smartCareCoreCategoryID,
+                rows: [],
+                totalBytes: 512,
+                scannedFileCount: 1,
+                isFinished: true,
+                elapsed: 0
+            ),
+            aggregation: SmartCareAggregationResult(
+                candidates: [oldCandidate],
+                summary: oldSummary
+            ),
+            deniedPaths: []
+        )
+
+        let care = SmartCareCoordinator(summary: oldSummary)
+        let scanner = ScanCoordinator(vendors: [], home: home.path)
+        scanner.commonAppCacheDetector = { _, _, _ in
+            CommonAppCacheScanner.ScanResult(
+                hits: [CommonAppCacheScanner.Hit(
+                    ruleName: "Retry Cache",
+                    bundleIDPrefix: "com.example.Retry",
+                    source: "fixture",
+                    url: retryPath,
+                    isDirectory: true,
+                    verdict: .safe,
+                    reason: "cache",
+                    sizeBytes: 2_048,
+                    logicalSizeBytes: 64,
+                    entryCount: 1
+                )],
+                incompletePaths: []
+            )
+        }
+        let session = SmartCareSession(
+            care: care,
+            scanCoordinator: scanner,
+            checkpoint: checkpoint,
+            deletionAggregator: { paths, candidates in
+                await Task.detached(priority: .userInitiated) {
+                    SmartCareSummaryBuilder.removingCandidates(paths: paths, from: candidates)
+                }.value
+            }
+        )
+
+        await session.applySuccessfulDeletion(paths: [deletedPath])
+        XCTAssertTrue(care.summary.items.isEmpty)
+        care.fail(.scanFailed("previous app-cache attempt failed"))
+
+        session.retryFailedScan(
+            includeHidden: false,
+            enabledDeveloperRuleIDs: [],
+            home: home.path
+        )
+        try await waitForSmartCareTerminal(session)
+
+        guard case .reviewing = care.phase else {
+            return XCTFail("Retry 应从剩余 app-cache 阶段恢复到结果页")
+        }
+        XCTAssertEqual(care.summary.items.map(\.path), [retryPath.standardizedFileURL.path])
+        XCTAssertFalse(care.summary.items.contains { $0.path == deletedPath })
     }
 
     func testCoordinatorCancelUsesPublishedCheckpointAsPartial() {
@@ -482,6 +743,19 @@ private enum SmartCareCancellationTestError: Error {
 
 private enum SmartCareDeletionHeartbeatError: Error {
     case workerReleaseTimedOut
+}
+
+private enum SmartCareSessionIntegrationError: Error {
+    case terminalStateTimedOut
+}
+
+@MainActor
+private func waitForSmartCareTerminal(_ session: SmartCareSession) async throws {
+    for _ in 0..<300 {
+        if !session.isBusy { return }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    throw SmartCareSessionIntegrationError.terminalStateTimedOut
 }
 
 private func waitForSmartCareDeletionSemaphore(

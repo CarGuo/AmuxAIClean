@@ -42,6 +42,39 @@ final class CacheDirTagTests: XCTestCase {
                       "合法 tag 必须命中：前 43 字节为标准签名")
     }
 
+    /// CACHEDIR.TAG 是分类信号，不是“可以跳过大小统计”的许可。
+    /// 清理工具仍需遍历 tagged root，才能向用户展示真实可释放空间。
+    func testBulkScannerTaggedRootStillScansPayload() async throws {
+        let dir = tempRoot.appendingPathComponent("scanned_cache_dir", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let payload = dir.appendingPathComponent("payload.bin")
+        try Data(repeating: 0x5A, count: 32_768).write(to: payload)
+        try writeTag(in: dir, content: CacheDirTag.signature + "\n# cache payload\n")
+
+        let scanner = BulkScanner(options: ScanOptions(mediaAware: false))
+        var sawTagEvent = false
+        var sawPayload = false
+        var summary: ScanSummary?
+        for await event in scanner.scan(root: dir) {
+            switch event {
+            case .cacheDirTagged(let path):
+                sawTagEvent = (path == dir.path)
+            case .node(let node):
+                sawPayload = sawPayload || node.path == payload.path
+            case .nodes(let nodes):
+                sawPayload = sawPayload || nodes.contains { $0.path == payload.path }
+            case .finished(let value):
+                summary = value
+            default:
+                break
+            }
+        }
+
+        XCTAssertTrue(sawTagEvent)
+        XCTAssertTrue(sawPayload, "Tagged cache payload must still reach size aggregation")
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(summary).totalLogicalBytes, 32_768)
+    }
+
     /// 2) 非法 tag：签名首字节被改动 → 不命中。
     func testInvalidSignatureNotDetected() throws {
         let dir = tempRoot.appendingPathComponent("fake_cache_dir")

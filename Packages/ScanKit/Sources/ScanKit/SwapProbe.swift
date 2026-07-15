@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import LogKit
 
 /// v1.3.x：探测 macOS 用了多少**硬盘空间**作为虚拟内存（swap）+ 休眠镜像（sleepimage）。
 ///
@@ -7,7 +8,7 @@ import Darwin
 /// 这个 Probe 把问题拆成两个口径，避免误导：
 /// - **swap 内核口径**：`sysctl vm.swapusage` 返回的 total/used/free（内核视角，
 ///   含已分配但暂未写满的预留位）
-/// - **swap 物理占盘**：遍历 `/private/var/vm/swapfile*` 的真实 fileSize 之和
+/// - **swap 物理占盘**：遍历 `/private/var/vm/swapfile*` 的 allocated size 之和
 ///   （这才是用户磁盘上"被占走"的字节数）
 /// - **sleepimage**：`/private/var/vm/sleepimage`（休眠镜像；存在则等同物理内存大小，
 ///   即便从不休眠也会被预占一份）
@@ -18,7 +19,7 @@ import Darwin
 ///
 /// 权限要求：**零特权**。
 /// - `sysctlbyname("vm.swapusage")` 任何用户态进程都能调
-/// - `/private/var/vm/` 目录条目用 `URLResourceKey.fileSizeKey` 拿元数据，无需 FDA、无需 root
+/// - `/private/var/vm/` 目录条目用 `URLResourceKey.totalFileAllocatedSizeKey` 拿元数据，无需 FDA、无需 root
 ///   （即便沙盒环境读不到也只会得到 0，本 Probe 会回退到 sysctl-only 模式，UI 仍可显示内核口径）
 public enum SwapProbe {
 
@@ -213,7 +214,9 @@ public enum SwapProbe {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
             at: url,
-            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+            includingPropertiesForKeys: [
+                .fileAllocatedSizeKey, .totalFileAllocatedSizeKey, .isRegularFileKey,
+            ],
             options: [.skipsHiddenFiles]
         ) else {
             return (0, 0)
@@ -223,11 +226,19 @@ public enum SwapProbe {
         for entry in entries {
             let name = entry.lastPathComponent
             guard name.hasPrefix("swapfile") else { continue }
-            let values = try? entry.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-            guard values?.isRegularFile == true else { continue }
-            if let size = values?.fileSize {
-                total += Int64(size)
-                count += 1
+            do {
+                let values = try entry.resourceValues(forKeys: [
+                    .fileAllocatedSizeKey, .totalFileAllocatedSizeKey, .isRegularFileKey,
+                ])
+                guard values.isRegularFile == true else { continue }
+                if let size = values.totalFileAllocatedSize ?? values.fileAllocatedSize {
+                    total += Int64(size)
+                    count += 1
+                }
+            } catch {
+                // Probe 是只读的 best-effort 系统指标；单个受保护 swapfile 不应让整张
+                // 快照失败，但失败必须留诊断证据，不能静默吞掉。
+                GSYLog.debug(.scan, "SwapProbe 无法读取 swapfile metadata path=\(entry.path) error=\(error)")
             }
         }
         return (total, count)
@@ -237,11 +248,19 @@ public enum SwapProbe {
     static func sleepImageSize(in vmDirectory: String) -> Int64 {
         let path = "\(vmDirectory)/sleepimage"
         let url = URL(fileURLWithPath: path)
-        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
-              values.isRegularFile == true,
-              let size = values.fileSize else {
+        let values: URLResourceValues
+        do {
+            values = try url.resourceValues(forKeys: [
+                .fileAllocatedSizeKey, .totalFileAllocatedSizeKey, .isRegularFileKey,
+            ])
+        } catch {
+            // sleepimage 在现代 macOS 上经常不存在或不可见；记录后按 0 回退是这个
+            // best-effort probe 的公开契约。
+            GSYLog.debug(.scan, "SwapProbe 无法读取 sleepimage metadata path=\(path) error=\(error)")
             return 0
         }
+        guard values.isRegularFile == true,
+              let size = values.totalFileAllocatedSize ?? values.fileAllocatedSize else { return 0 }
         return Int64(size)
     }
 }

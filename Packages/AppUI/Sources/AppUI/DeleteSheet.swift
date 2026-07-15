@@ -1,36 +1,68 @@
 import SwiftUI
 import SafetyKit
+import Foundation
 
-/// 删除前的预览 sheet —— Pearcleaner 模式：让用户看清楚要删什么、可改 dryRun。
-/// 见 PITFALLS §5.7。
+/// 删除前的不可变预览 sheet。Release 中确认动作始终表示“移到废纸篓”；
+/// Debug 才保留 dry-run 诊断入口。运行中 App 是可选择的风险提示，不再硬中断整批操作。
 public struct DeleteSheet: View {
     public let items: [RowItem]
-    public let runningConflicts: [RunningAppGuard.Conflict]
     public let onCancel: () -> Void
-    public let onConfirm: (_ dryRun: Bool) -> Void
+    public let onConfirm: (DeleteSheetAction) -> Void
 
-    @State private var dryRun: Bool = true
+    @Environment(\.locale) private var locale
+    @State private var dryRun = DeletionPreviewPolicy.isEnabledInCurrentBuild
+    @State private var displayedConflictAppNames: [String]
+    @State private var decisionConflicts: [RunningAppGuard.Conflict] = []
+    @State private var decisionAppNames: [String] = []
+    @State private var decisionConflictCount = 0
+    @State private var showRunningAppDecision = false
+    @State private var isResolvingRunningApps = false
+    @State private var hasSubmittedAction = false
+    @State private var conflictResolutionTask: Task<Void, Never>?
 
     public init(items: [RowItem],
                 runningConflicts: [RunningAppGuard.Conflict] = [],
                 onCancel: @escaping () -> Void,
-                onConfirm: @escaping (Bool) -> Void) {
+                onConfirm: @escaping (DeleteSheetAction) -> Void) {
         self.items = items
-        self.runningConflicts = runningConflicts
         self.onCancel = onCancel
         self.onConfirm = onConfirm
+        // 兼容旧调用方传入的初始提示，但初始化最多只接触五项；task 会立即用后台投影刷新。
+        _displayedConflictAppNames = State(
+            initialValue: runningConflicts.prefix(5).map(\.runningAppName)
+        )
     }
 
     private var totalBytes: Int64 { items.reduce(0) { $0 + $1.bytes } }
     private var totalFiles: Int { items.reduce(0) { $0 + $1.fileCount } }
-    private var conflictTitles: [String] {
-        var seen = Set<String>()
-        var titles: [String] = []
-        for conflict in runningConflicts where seen.insert(conflict.title).inserted {
-            titles.append(conflict.title)
-            if titles.count >= 5 { break }
+    private var nonConflictingItemCount: Int {
+        max(0, items.count - decisionConflictCount)
+    }
+    private var skipActionTitle: String {
+        if nonConflictingItemCount == 0 {
+            return String(
+                format: String(
+                    localized: "delete.running_app.choice.skip_all %lld",
+                    bundle: .module,
+                    locale: locale
+                ),
+                locale: locale,
+                decisionConflictCount
+            )
         }
-        return titles
+        return String(
+            format: String(
+                localized: "delete.running_app.choice.skip %lld %lld",
+                bundle: .module,
+                locale: locale
+            ),
+            locale: locale,
+            decisionConflictCount,
+            nonConflictingItemCount
+        )
+    }
+    private var isPreviewAction: Bool {
+        DeletionPreviewPolicy.isEnabledInCurrentBuild && dryRun
     }
 
     public var body: some View {
@@ -46,7 +78,7 @@ public struct DeleteSheet: View {
 
             Divider()
 
-            if !conflictTitles.isEmpty {
+            if !displayedConflictAppNames.isEmpty {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
@@ -54,8 +86,11 @@ public struct DeleteSheet: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("delete.running_app.warning.title", bundle: .module)
                             .font(.callout.weight(.semibold))
-                        Text(String(format: String(localized: "delete.running_app.warning.detail %@", bundle: .module),
-                                    conflictTitles.joined(separator: ", ")))
+                        Text(RunningAppNoticeFormatter.text(
+                            localizationKey: "delete.running_app.warning.detail %@",
+                            appNames: displayedConflictAppNames,
+                            locale: locale
+                        ))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -105,32 +140,154 @@ public struct DeleteSheet: View {
             Divider()
 
             HStack {
-                Toggle(isOn: $dryRun) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("delete.summary.preview_only", bundle: .module)
-                            .font(.callout)
-                        Text("delete.summary.preview_only.desc", bundle: .module)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                if DeletionPreviewPolicy.isEnabledInCurrentBuild {
+                    Toggle(isOn: $dryRun) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("delete.summary.preview_only", bundle: .module)
+                                .font(.callout)
+                            Text("delete.summary.preview_only.desc", bundle: .module)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .toggleStyle(.switch)
                 }
-                .toggleStyle(.switch)
                 Spacer()
-                Button(String(localized: "delete.action.cancel", bundle: .module), role: .cancel) { onCancel() }
+                if isResolvingRunningApps {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Button(String(localized: "delete.action.cancel", bundle: .module), role: .cancel) {
+                    cancelAndClose()
+                }
                     .keyboardShortcut(.cancelAction)
                 Button(
-                    dryRun
+                    isPreviewAction
                         ? String(localized: "delete.action.preview", bundle: .module)
                         : String(localized: "delete.action.confirm", bundle: .module),
-                    role: dryRun ? nil : .destructive
+                    role: isPreviewAction ? nil : .destructive
                 ) {
-                    onConfirm(dryRun)
+                    confirmCurrentAction()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!dryRun && !conflictTitles.isEmpty)
+                .disabled(isResolvingRunningApps)
             }
             .padding(20)
         }
         .frame(minWidth: 560, minHeight: 480)
+        .confirmationDialog(
+            String(
+                localized: "delete.running_app.choice.title",
+                bundle: .module,
+                locale: locale
+            ),
+            isPresented: $showRunningAppDecision,
+            titleVisibility: .visible
+        ) {
+            Button(skipActionTitle) {
+                submitFinalAction(.skipConflictingItems)
+            }
+            Button(role: .destructive) {
+                submitFinalAction(.moveAllToTrash)
+            } label: {
+                Text("delete.running_app.choice.move_all", bundle: .module)
+            }
+            Button(role: .cancel) {} label: {
+                Text("delete.action.cancel", bundle: .module)
+            }
+        } message: {
+            Text(RunningAppNoticeFormatter.text(
+                localizationKey: "delete.running_app.choice.message %@",
+                appNames: decisionAppNames,
+                locale: locale
+            ))
+        }
+        .task {
+            await refreshDisplayedConflicts()
+        }
+        .onDisappear {
+            conflictResolutionTask?.cancel()
+        }
+    }
+
+    private func confirmCurrentAction() {
+        if isPreviewAction {
+            submitActionOnce(.preview)
+            return
+        }
+
+        resolveCurrentConflicts()
+    }
+
+    private func resolveCurrentConflicts() {
+        conflictResolutionTask?.cancel()
+        let runningApplications = RunningAppGuard.currentRunningApplications()
+        isResolvingRunningApps = true
+        conflictResolutionTask = Task { @MainActor in
+            do {
+                let projection = try await DeleteExecutionPlanner.runningConflictProjectionAsync(
+                    rows: items,
+                    runningApplications: runningApplications
+                )
+                try Task.checkCancellation()
+                isResolvingRunningApps = false
+                conflictResolutionTask = nil
+                guard !projection.conflicts.isEmpty else {
+                    submitActionOnce(.moveToTrash(
+                        resolution: .moveAllToTrash,
+                        runningApplications: runningApplications,
+                        confirmedConflicts: []
+                    ))
+                    return
+                }
+                decisionConflicts = projection.conflicts
+                decisionAppNames = projection.appNames
+                decisionConflictCount = projection.uniquePathCount
+                showRunningAppDecision = true
+            } catch is CancellationError {
+                isResolvingRunningApps = false
+            } catch {
+                isResolvingRunningApps = false
+                assertionFailure("Unexpected running-app projection error: \(error)")
+            }
+        }
+    }
+
+    private func submitFinalAction(_ resolution: RunningAppGuard.Resolution) {
+        let runningApplications = RunningAppGuard.currentRunningApplications()
+        submitActionOnce(.moveToTrash(
+            resolution: resolution,
+            runningApplications: runningApplications,
+            confirmedConflicts: resolution == .skipConflictingItems ? decisionConflicts : []
+        ))
+    }
+
+    private func submitActionOnce(_ action: DeleteSheetAction) {
+        guard !hasSubmittedAction else { return }
+        hasSubmittedAction = true
+        conflictResolutionTask?.cancel()
+        onConfirm(action)
+    }
+
+    @MainActor
+    private func refreshDisplayedConflicts() async {
+        let runningApplications = RunningAppGuard.currentRunningApplications()
+        do {
+            let projection = try await DeleteExecutionPlanner.runningConflictProjectionAsync(
+                rows: items,
+                runningApplications: runningApplications
+            )
+            try Task.checkCancellation()
+            displayedConflictAppNames = projection.appNames
+        } catch is CancellationError {
+            return
+        } catch {
+            assertionFailure("Unexpected running-app banner projection error: \(error)")
+        }
+    }
+
+    private func cancelAndClose() {
+        conflictResolutionTask?.cancel()
+        onCancel()
     }
 }

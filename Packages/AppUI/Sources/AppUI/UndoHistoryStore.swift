@@ -1,4 +1,3 @@
-import AppKit
 import Dispatch
 import Foundation
 import LogKit
@@ -8,8 +7,9 @@ import LogKit
 /// **职责**：
 /// - 记录最近 N 次 trash 操作（默认 10），每次记录一个"批次"，含原路径 → 废纸篓路径 pair。
 /// - 把记录持久化到 `~/Library/Application Support/GSYCleanMac/UndoHistory.json`（atomic write）。
-/// - 支持单条恢复：把 `trashedPath` mv 回 `originalPath`；若 `originalPath` 已存在同名文件，
-///   先把同名文件挪入用户废纸篓（"safe by default"），再 mv 回去。
+/// - 支持单条恢复：把 `trashedPath` mv 回 `originalPath`。
+/// - 若 `originalPath` 已存在，先生成显式冲突计划；只有用户选择“跳过”或“恢复为新名称”后才执行。
+///   恢复链路本身永远不会移动、覆盖或删除用户后来创建的同名文件。
 /// - cleanupStaleEntries：用户清空了系统废纸篓后，若 trashedPath 已不存在则该批次自动从历史里剔除。
 ///
 /// **设计参考**：[Pearcleaner UndoHistoryManager](file:///Users/guoshuyu/workspace/GSYCleanMac/tmp/competitors/Pearcleaner/Pearcleaner/Logic/UndoHistoryManager.swift)。
@@ -22,6 +22,36 @@ import LogKit
 @MainActor
 public final class UndoHistoryStore: ObservableObject {
 
+    /// 原路径重新出现时的显式冲突策略。刻意不提供“替换现有文件”：恢复不应暗中变成删除入口。
+    public enum RestoreConflictPolicy: Sendable, Equatable {
+        /// 保留原路径上的现有项目，并把废纸篓中的对应项目留给以后再次恢复。
+        case skipExisting
+        /// 保留原路径上的现有项目，把待恢复项目恢复为同目录下不冲突的新名称。
+        case restoreWithUniqueName
+    }
+
+    /// 恢复按钮触发后先生成的只读计划。UI 看到冲突后必须让用户明确选择策略。
+    public struct RestorePlan: Sendable, Equatable {
+        public let readyCount: Int
+        public let conflictPaths: [String]
+        public let missingTrashPaths: [String]
+
+        public var requiresConflictChoice: Bool { !conflictPaths.isEmpty }
+    }
+
+    /// 一次恢复的结构化结果。`firstError` 会直接进入用户可见的结果弹窗。
+    public struct RestoreResult: Sendable, Equatable {
+        public let restoredCount: Int
+        public let skippedCount: Int
+        public let renamedCount: Int
+        public let firstError: String?
+    }
+
+    private struct RestoreExecution: Sendable {
+        let result: RestoreResult
+        let remainingPairs: [Record.FilePair]
+    }
+
     /// 单条 trash 批次记录。`Identifiable` 让 SwiftUI List 能直接 ForEach。
     public struct Record: Codable, Identifiable, Equatable, Sendable {
         public let id: UUID
@@ -30,7 +60,7 @@ public final class UndoHistoryStore: ObservableObject {
         public let source: String
         /// 该批次共多少条 path（== filePairs.count，但单独存一份避免 decode 后再算）。
         public let fileCount: Int
-        /// (originalPath, trashedPath) pair 列表。pair 顺序保留 NSWorkspace.recycle 回调顺序。
+        /// (originalPath, trashedPath) pair 列表。pair 顺序保留统一删除管道的成功回调顺序。
         public let filePairs: [FilePair]
 
         public struct FilePair: Codable, Equatable, Sendable {
@@ -111,7 +141,11 @@ public final class UndoHistoryStore: ObservableObject {
                 .appendingPathComponent("Library/Application Support/GSYCleanMac",
                                         isDirectory: true)
         }
-        try? fm.createDirectory(at: base, withIntermediateDirectories: true)
+        do {
+            try fm.createDirectory(at: base, withIntermediateDirectories: true)
+        } catch {
+            GSYLog.error(.trash, "UndoHistory 默认目录创建失败 path=\(base.path) err=\(error.localizedDescription)")
+        }
         return base.appendingPathComponent("UndoHistory.json")
     }
 
@@ -152,66 +186,26 @@ public final class UndoHistoryStore: ObservableObject {
         }
     }
 
-    /// 恢复一条记录。把所有 pair 的 trashedPath mv 回 originalPath。
-    ///
-    /// **冲突策略（"safe by default"）**：若 originalPath 已有同名文件 / 目录，
-    /// 先把同名挪入用户废纸篓（NSWorkspace.recycle），再做 mv。这样不会丢用户当前文件。
-    ///
-    /// **返回**：(restoredCount, skippedCount, errorMessage?)
-    /// - restoredCount：成功 mv 回原路径的 pair 数
-    /// - skippedCount：trashedPath 不存在 / mv 失败的 pair 数
-    /// - errorMessage：聚合的失败原因（仅 skipped > 0 时非 nil）
-    ///
-    /// 成功后该 record 自动从 history 移除。
+    /// 后台检查一条记录，冻结恢复前的冲突 / 缺失快照。执行时仍会重新检查目标路径，
+    /// 因而计划生成后出现的新文件也绝不会被覆盖。
+    public func prepareRestore(_ record: Record) async -> RestorePlan {
+        await Task.detached(priority: .userInitiated) {
+            Self.buildRestorePlan(record)
+        }.value
+    }
+
+    /// 恢复一条记录。调用方必须显式传入冲突策略；API 不再存在会暗中处理现有文件的默认分支。
+    /// 文件系统 IO 在后台执行，MainActor 只更新 history 和持久化快照。
     @discardableResult
-    public func restoreRecord(_ record: Record) async -> (Int, Int, String?) {
-        var restored = 0
-        var skipped = 0
-        var firstError: String?
-        var remainingPairs: [Record.FilePair] = []
+    public func restoreRecord(
+        _ record: Record,
+        conflictPolicy: RestoreConflictPolicy
+    ) async -> RestoreResult {
+        let execution = await Task.detached(priority: .userInitiated) {
+            Self.executeRestore(record, conflictPolicy: conflictPolicy)
+        }.value
 
-        for pair in record.filePairs {
-            let trashedURL = URL(fileURLWithPath: pair.trashed)
-            let originalURL = URL(fileURLWithPath: pair.original)
-
-            guard fm.fileExists(atPath: pair.trashed) else {
-                skipped += 1
-                if firstError == nil {
-                    firstError = String(format: String(localized: "undo.err.trashed_missing %@", bundle: .module), pair.trashed)
-                }
-                continue
-            }
-
-            // 冲突解决：originalPath 已存在 → 先把同名挪到废纸篓
-            if fm.fileExists(atPath: pair.original) {
-                let conflictResult = await Self.recycleConflict(at: originalURL)
-                if let conflictErr = conflictResult {
-                    skipped += 1
-                    remainingPairs.append(pair)
-                    if firstError == nil {
-                        firstError = String(format: String(localized: "undo.err.conflict_resolution_failed %@", bundle: .module), conflictErr)
-                    }
-                    continue
-                }
-            }
-
-            // 父目录可能在用户清理后被删了，先确保它存在
-            let parentDir = originalURL.deletingLastPathComponent()
-            try? fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
-
-            do {
-                try fm.moveItem(at: trashedURL, to: originalURL)
-                restored += 1
-            } catch {
-                skipped += 1
-                remainingPairs.append(pair)
-                if firstError == nil {
-                    firstError = String(format: String(localized: "undo.err.move_item_failed %@", bundle: .module), error.localizedDescription)
-                }
-                GSYLog.error(.trash, "UndoHistory restoreRecord mv 失败 \(pair.trashed) → \(pair.original) err=\(error.localizedDescription)")
-            }
-        }
-
+        let remainingPairs = execution.remainingPairs
         if let idx = history.firstIndex(where: { $0.id == record.id }) {
             if remainingPairs.isEmpty {
                 history.remove(at: idx)
@@ -226,24 +220,165 @@ public final class UndoHistoryStore: ObservableObject {
             saveHistory()
         }
 
-        GSYLog.info(.trash, "UndoHistory restoreRecord 完成 restored=\(restored) skipped=\(skipped) err=\(firstError ?? "nil")")
-        return (restored, skipped, firstError)
+        let result = execution.result
+        GSYLog.info(
+            .trash,
+            "UndoHistory restoreRecord 完成 restored=\(result.restoredCount) renamed=\(result.renamedCount) skipped=\(result.skippedCount) err=\(result.firstError ?? "nil")"
+        )
+        return result
     }
 
-    /// 用 NSWorkspace.recycle 把单个冲突文件丢到用户废纸篓。返回 nil = 成功，非 nil = 错误描述。
-    /// 这是 restoreRecord 的子例程，独立 static 方便测试时替换。
-    private static func recycleConflict(at url: URL) async -> String? {
-        await withCheckedContinuation { (cc: CheckedContinuation<String?, Never>) in
-            let gate = ConflictGate(cc: cc)
-            NSWorkspace.shared.recycle([url]) { trashed, error in
-                if let error {
-                    gate.fire("recycle conflict failed: \(error.localizedDescription)")
-                } else if trashed.isEmpty {
-                    gate.fire("recycle returned empty trashed for \(url.path)")
-                } else {
-                    gate.fire(nil)
+    nonisolated private static func buildRestorePlan(_ record: Record) -> RestorePlan {
+        let fm = FileManager.default
+        var readyCount = 0
+        var conflictPaths: [String] = []
+        var missingTrashPaths: [String] = []
+        var reservedDestinations: Set<String> = []
+
+        for pair in record.filePairs {
+            guard fm.fileExists(atPath: pair.trashed) else {
+                missingTrashPaths.append(pair.trashed)
+                continue
+            }
+
+            let normalizedDestination = URL(fileURLWithPath: pair.original)
+                .standardizedFileURL.path
+            let firstUse = reservedDestinations.insert(normalizedDestination).inserted
+            if !firstUse || fm.fileExists(atPath: pair.original) {
+                conflictPaths.append(pair.original)
+            } else {
+                readyCount += 1
+            }
+        }
+
+        return RestorePlan(
+            readyCount: readyCount,
+            conflictPaths: conflictPaths,
+            missingTrashPaths: missingTrashPaths
+        )
+    }
+
+    nonisolated private static func executeRestore(
+        _ record: Record,
+        conflictPolicy: RestoreConflictPolicy
+    ) -> RestoreExecution {
+        let fm = FileManager.default
+        var restored = 0
+        var skipped = 0
+        var renamed = 0
+        var firstError: String?
+        var remainingPairs: [Record.FilePair] = []
+        var reservedDestinations = Set(record.filePairs.map { pair in
+            URL(fileURLWithPath: pair.original).standardizedFileURL.path
+        })
+
+        for pair in record.filePairs {
+            let trashedURL = URL(fileURLWithPath: pair.trashed)
+            let originalURL = URL(fileURLWithPath: pair.original)
+
+            guard fm.fileExists(atPath: pair.trashed) else {
+                skipped += 1
+                if firstError == nil {
+                    firstError = String(format: String(localized: "undo.err.trashed_missing %@", bundle: .module), pair.trashed)
+                }
+                continue
+            }
+
+            var destinationURL = originalURL
+            if fm.fileExists(atPath: pair.original) {
+                switch conflictPolicy {
+                case .skipExisting:
+                    skipped += 1
+                    remainingPairs.append(pair)
+                    if firstError == nil {
+                        firstError = String(
+                            format: String(localized: "undo.err.original_exists %@", bundle: .module),
+                            pair.original
+                        )
+                    }
+                    continue
+                case .restoreWithUniqueName:
+                    destinationURL = availableRecoveryDestination(
+                        for: originalURL,
+                        fileManager: fm,
+                        reservedDestinations: reservedDestinations
+                    )
+                    reservedDestinations.insert(destinationURL.standardizedFileURL.path)
                 }
             }
+
+            // 父目录可能在用户清理后被删了，先确保它存在
+            let parentDir = destinationURL.deletingLastPathComponent()
+            do {
+                try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
+            } catch {
+                skipped += 1
+                remainingPairs.append(pair)
+                if firstError == nil {
+                    firstError = String(
+                        format: String(localized: "undo.err.create_parent_failed %@", bundle: .module),
+                        error.localizedDescription
+                    )
+                }
+                GSYLog.error(
+                    .trash,
+                    "UndoHistory restoreRecord 父目录创建失败 path=\(parentDir.path) err=\(error.localizedDescription)"
+                )
+                continue
+            }
+
+            do {
+                try fm.moveItem(at: trashedURL, to: destinationURL)
+                restored += 1
+                if destinationURL != originalURL {
+                    renamed += 1
+                }
+            } catch {
+                skipped += 1
+                remainingPairs.append(pair)
+                if firstError == nil {
+                    firstError = String(format: String(localized: "undo.err.move_item_failed %@", bundle: .module), error.localizedDescription)
+                }
+                GSYLog.error(.trash, "UndoHistory restoreRecord mv 失败 \(pair.trashed) → \(destinationURL.path) err=\(error.localizedDescription)")
+            }
+        }
+
+        return RestoreExecution(
+            result: RestoreResult(
+                restoredCount: restored,
+                skippedCount: skipped,
+                renamedCount: renamed,
+                firstError: firstError
+            ),
+            remainingPairs: remainingPairs
+        )
+    }
+
+    /// 为冲突恢复分配同目录下的唯一名称；只检查候选路径，不移动现有项目。
+    nonisolated private static func availableRecoveryDestination(
+        for originalURL: URL,
+        fileManager fm: FileManager,
+        reservedDestinations: Set<String>
+    ) -> URL {
+        let parent = originalURL.deletingLastPathComponent()
+        let pathExtension = originalURL.pathExtension
+        let stem = pathExtension.isEmpty
+            ? originalURL.lastPathComponent
+            : originalURL.deletingPathExtension().lastPathComponent
+        let recovered = String(localized: "undo.restore.recovered_suffix", bundle: .module)
+        var sequence = 1
+
+        while true {
+            let marker = sequence == 1 ? recovered : "\(recovered) \(sequence)"
+            let name = pathExtension.isEmpty
+                ? "\(stem) (\(marker))"
+                : "\(stem) (\(marker)).\(pathExtension)"
+            let candidate = parent.appendingPathComponent(name)
+            if !reservedDestinations.contains(candidate.standardizedFileURL.path),
+               !fm.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+            sequence += 1
         }
     }
 
@@ -342,29 +477,5 @@ public final class UndoHistoryStore: ObservableObject {
         } catch {
             GSYLog.error(.trash, "UndoHistory loadHistory 失败 err=\(error.localizedDescription) path=\(storeURL.path)")
         }
-    }
-}
-
-/// recycle 回调可能在任意线程；用 OneShot 保证 cc 只 resume 一次。
-private final class ConflictGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var fired = false
-    private let cc: CheckedContinuation<String?, Never>
-
-    init(cc: CheckedContinuation<String?, Never>) {
-        self.cc = cc
-    }
-
-    @discardableResult
-    func fire(_ value: String?) -> Bool {
-        lock.lock()
-        if fired {
-            lock.unlock()
-            return false
-        }
-        fired = true
-        lock.unlock()
-        cc.resume(returning: value)
-        return true
     }
 }

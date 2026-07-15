@@ -33,8 +33,6 @@ public final class AppSettings {
         public static let skippedUpdateTag = "v1.skipped_update_tag"
         /// 大文件 / 树视图修改日期过滤（v1.2 P1-4）。
         public static let mtimeFilter = "v1.mtime_filter"
-        /// v1.3：字节口径（logical / physical），默认 logical 与系统设置/Finder 对齐。
-        public static let sizeAccountingMode = "v1.size_accounting_mode"
         /// v1.3：主列表（推荐清理 / 自定义路径）排序键，默认 sizeDesc
         public static let mainListSortKey = "v1.main_list_sort_key"
         /// v1.3：扫描悬浮窗（HUD）开关，默认 ON
@@ -172,39 +170,6 @@ public final class AppSettings {
         }
     }
 
-    /// v1.3：字节计算口径。
-    ///
-    /// 根本问题：用户报告"扫出来 67 GB，系统设置说 121 GB"，差 ~45%。
-    /// 调查后发现是**两种合法但口径不同的统计方式**：
-    ///
-    /// - **logical（系统设置 / Finder / "信息"）口径**：
-    ///   `ATTR_FILE_TOTALSIZE`，文件 fork 的逻辑字节数；
-    ///   APFS clone / hardlink **不去重**，每个文件按完整 size 算。
-    ///   **优势**：与系统所有内置工具读数一致，用户第一直觉。
-    ///   **劣势**：删了一个 hardlink/clone 不能等量释放磁盘——预期可能落空。
-    ///
-    /// - **physical（du / df）口径**：
-    ///   `ATTR_FILE_ALLOCSIZE`，文件实际占用磁盘 block 字节；
-    ///   APFS sparse 文件按真实占用算（更小）；可选叠加 inode 去重让 hardlink 只算一次。
-    ///   **优势**：删了真能释放这么多——清理工具该用的口径。
-    ///   **劣势**：与系统设置数字对不上，用户会困惑。
-    ///
-    /// **默认 logical**：与系统设置对齐，避免用户每次扫描都怀疑漏算了。
-    /// 高阶用户可在设置里切到 physical 看"删后能真正释放多少"。
-    public enum SizeAccountingMode: String, CaseIterable, Sendable, Hashable {
-        /// 逻辑大小（系统设置 / Finder 口径）
-        case logical
-        /// 物理占用（du / df 口径）
-        case physical
-
-        public var label: String {
-            switch self {
-            case .logical:  return String(localized: "size.accounting.logical", bundle: .module)
-            case .physical: return String(localized: "size.accounting.physical", bundle: .module)
-            }
-        }
-    }
-
     /// v1.7：UI 语言覆盖。
     ///
     /// 设计要点：
@@ -328,11 +293,6 @@ public final class AppSettings {
     /// 大文件 / 树视图按修改日期过滤（v1.2 P1-4）。默认 `.all`。
     public var mtimeFilter: MtimeFilter {
         didSet { defaults.set(mtimeFilter.rawValue, forKey: Keys.mtimeFilter) }
-    }
-
-    /// v1.3：字节口径（logical / physical），默认 `.logical` 与系统设置/Finder 对齐。
-    public var sizeAccountingMode: SizeAccountingMode {
-        didSet { defaults.set(sizeAccountingMode.rawValue, forKey: Keys.sizeAccountingMode) }
     }
 
     /// v1.3：主列表排序键，默认 `.sizeDesc`（按字节大小从大到小）。
@@ -529,12 +489,6 @@ public final class AppSettings {
         } else {
             self.mtimeFilter = .all
         }
-        if let raw = defaults.string(forKey: Keys.sizeAccountingMode),
-           let parsed = SizeAccountingMode(rawValue: raw) {
-            self.sizeAccountingMode = parsed
-        } else {
-            self.sizeAccountingMode = .logical
-        }
         if let raw = defaults.string(forKey: Keys.mainListSortKey),
            let parsed = MainListSortKey(rawValue: raw) {
             self.mainListSortKey = parsed
@@ -625,7 +579,6 @@ public final class AppSettings {
         defaults.removeObject(forKey: Keys.updateCheckEnabled)
         defaults.removeObject(forKey: Keys.skippedUpdateTag)
         defaults.removeObject(forKey: Keys.mtimeFilter)
-        defaults.removeObject(forKey: Keys.sizeAccountingMode)
         defaults.removeObject(forKey: Keys.mainListSortKey)
         defaults.removeObject(forKey: Keys.hudEnabled)
         defaults.removeObject(forKey: Keys.trayEnabled)

@@ -1,6 +1,96 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import ScanKit
+import LogKit
+import SafetyKit
+
+/// Pure routing boundary for Duplicate deletion. Keeping target-scope selection outside the
+/// SwiftUI state machine makes the sibling-vs-selected incomplete contract behavior-testable.
+enum DuplicateDeletionPreparationPolicy {
+    static func relevantIssues(
+        overlappingAny paths: [String],
+        in issues: [ScanIncompleteIssue]
+    ) -> [ScanIncompleteIssue] {
+        var seen = Set<ScanIncompleteIssue>()
+        return paths.flatMap { path in
+            DeletionTargetRevalidator.relevantIssues(for: path, from: issues)
+        }.filter { seen.insert($0).inserted }
+    }
+
+    static func accessEvidence(
+        for path: String,
+        issues: [ScanIncompleteIssue]
+    ) -> DeletionAccessEvidence {
+        guard let issue = DeletionTargetRevalidator.relevantIssues(
+            for: path,
+            from: issues
+        ).first else {
+            return .complete
+        }
+        return .incomplete(DeletionIncompleteReason(scanIncompleteReason: issue.reason))
+    }
+
+    @MainActor
+    static func prepare(
+        pipeline: any DeletionPipeline,
+        coordinator: DeletionInteractionCoordinator,
+        intent: DeletionIntent,
+        currentSnapshotIdentity: DeletionSnapshotIdentity,
+        rows: [RowItem],
+        relevantIssues: [ScanIncompleteIssue]
+    ) async -> DeletionInteractionPreparation {
+        guard !relevantIssues.isEmpty else {
+            return await coordinator.prepare(
+                intent: intent,
+                currentSnapshotIdentity: currentSnapshotIdentity
+            )
+        }
+        let targetPreparation = await pipeline.prepareScanIncompleteOverride(
+            rows: rows,
+            scanIssues: relevantIssues,
+            scanSessionID: currentSnapshotIdentity.sessionID
+        )
+        return coordinator.prepareRevalidatedScanIncomplete(
+            intent: intent,
+            currentSnapshotIdentity: currentSnapshotIdentity,
+            preparation: targetPreparation
+        )
+    }
+}
+
+/// Final Duplicate authorization is valid only for the exact scan snapshot that produced it.
+/// The View evaluates this boundary both after sheet dismissal and immediately before submit,
+/// so a newer scan can never reuse an older confirmation even when the path text is unchanged.
+enum DuplicateDeletionSubmissionGate {
+    enum Decision: Sendable, Equatable {
+        case current
+        case cancelled([DeletionPreflight.Rejection])
+    }
+
+    static func evaluate(
+        requestSessionID: UUID,
+        requestRevision: UInt64,
+        boundSnapshotIdentity: DeletionSnapshotIdentity,
+        currentSessionID: UUID,
+        currentRevision: UInt64,
+        paths: [String]
+    ) -> Decision {
+        let requestIdentity = DeletionSnapshotIdentity(
+            sessionID: requestSessionID,
+            revision: requestRevision,
+            categoryID: "duplicate"
+        )
+        guard boundSnapshotIdentity == requestIdentity,
+              currentSessionID == requestSessionID,
+              currentRevision == requestRevision else {
+            return .cancelled(paths.map {
+                .init(path: $0, reason: SafetyRejection.preflightCancelled.rawValue)
+            })
+        }
+        return .current
+    }
+}
 
 /// v1.2 P2-1 重复文件去重屏。
 ///
@@ -44,18 +134,57 @@ public struct DuplicateScreen: View {
     @State private var sizingFiles: Int = 0
     @State private var scanTask: Task<Void, Never>?
     @State private var tccSkippedRoots: [String] = []
+    /// Typed completeness evidence belongs to one DuplicateScanner session. It is kept
+    /// separately from the footer projection so an unrelated unreadable sibling cannot
+    /// disable every deletion action in the screen.
+    @State private var scanIncompleteIssues: [ScanIncompleteIssue] = []
+    @State private var scanSessionID = UUID()
+    @State private var scanRevision: UInt64 = 0
     @State private var activeSheet: ActiveSheet?
     @State private var isDeletingDuplicates: Bool = false
+    @State private var isRootImporterPresented = false
+    @State private var duplicateDeletionHandoff = ToolDeletionHandoff<DuplicateConfirmedDeletion>()
+    @State private var duplicatePreflightTask: Task<Void, Never>?
+    @State private var duplicatePreflightGate = ToolDeletionPreflightRequestGate<DuplicatePreflightContext>()
 
     private let pipeline: any DeletionPipeline
 
+    private struct DuplicateDeleteRequest: Identifiable, Sendable {
+        let id = UUID()
+        let scanSessionID: UUID
+        let scanRevision: UInt64
+        let items: [RunningAppGuard.Candidate]
+        let totalBytes: Int64
+        let bytesByPath: [String: Int64]
+        let accessEvidencePaths: Set<String>
+        let prepared: DeletionPreparedInteraction
+
+        var paths: [String] { items.map(\.path) }
+    }
+
+    private struct DuplicateConfirmedDeletion: Sendable {
+        let request: DuplicateDeleteRequest
+        let executionPlan: ToolTrashExecutionPlan
+    }
+
+    private struct DuplicatePreflightContext: Sendable, Equatable {
+        let groupID: String
+        let paths: [String]
+        let scanSessionID: UUID
+        let scanRevision: UInt64
+    }
+
     private enum ActiveSheet: Identifiable {
         case handle(DuplicateGroup)
-        case result(OperationResultPayload)
+        case confirm(DuplicateDeleteRequest)
+        case preflightNotice(DeletionPreflightNotice)
+        case result(OperationResultCompletion)
 
         var id: String {
             switch self {
             case .handle(let group): return "handle-\(group.id)"
+            case .confirm(let request): return "confirm-\(request.id)"
+            case .preflightNotice(let notice): return "preflightNotice-\(notice.id)"
             case .result(let payload): return "result-\(payload.id)"
             }
         }
@@ -94,26 +223,76 @@ public struct DuplicateScreen: View {
         // v1.3.ab：整个 VStack 也强制 maxWidth: .infinity，
         // 让 banner / topBar 内的 chip / 滑杆 即使 ideal width 较大也不会反推外层。
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onDisappear { scanTask?.cancel() }
-        .sheet(item: $activeSheet) { sheet in
-            switch sheet {
-            case .handle(let group):
-                DuplicateHandleSheet(
-                    group: group,
-                    isDeleting: isDeletingDuplicates,
-                    onCancel: { activeSheet = nil },
-                    onDefault: { deleteDuplicatePaths(group: group, paths: DuplicateHandlingPlan.defaultDeleteTargets(for: group)) },
-                    onManual: { paths in deleteDuplicatePaths(group: group, paths: paths) }
-                )
-            case .result(let payload):
-                OperationResultSheet(payload: payload) {
-                    activeSheet = nil
+        .onDisappear {
+            scanTask?.cancel()
+            cancelDuplicatePreflight()
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { activeSheet != nil },
+                set: {
+                    if !$0 {
+                        cancelDuplicatePreflight()
+                        activeSheet = nil
+                    }
+                }
+            ),
+            onDismiss: completeDuplicateSheetDismissal
+        ) {
+            if let sheet = activeSheet {
+                switch sheet {
+                case .handle(let group):
+                    DuplicateHandleSheet(
+                        group: group,
+                        isDeleting: isDeletingDuplicates,
+                        onCancel: {
+                            cancelDuplicatePreflight()
+                            activeSheet = nil
+                        },
+                        onDefault: {
+                            prepareDuplicateDeletion(
+                                group: group,
+                                paths: DuplicateHandlingPlan.defaultDeleteTargets(for: group)
+                            )
+                        },
+                        onManual: { paths in
+                            prepareDuplicateDeletion(group: group, paths: paths)
+                        }
+                    )
+                case .confirm(let request):
+                    ToolTrashConfirmationSheet(
+                        items: request.items,
+                        totalBytes: request.totalBytes,
+                        vendorOverrideRequest: request.prepared.vendorOverrideRequest,
+                        scanIncompleteOverrideRequest: request.prepared.scanIncompleteOverrideRequest,
+                        onCancel: { activeSheet = nil },
+                        onConfirm: { executionPlan in
+                            guard requireCurrentDuplicateRequest(request) else { return false }
+                            guard duplicateDeletionHandoff.schedule(DuplicateConfirmedDeletion(
+                                request: request,
+                                executionPlan: executionPlan
+                            )) else { return false }
+                            activeSheet = nil
+                            return true
+                        }
+                    )
+                case .preflightNotice(let notice):
+                    DeletionPreflightNoticeSheet(notice: notice) {
+                        activeSheet = nil
+                    }
+                case .result(let completion):
+                    OperationResultSheet(completion: completion) {
+                        activeSheet = nil
+                    }
                 }
             }
         }
-        // v2：套布局沙箱——切断左右两栏（leftList / rightDetail）任何一行 path
-        // 反向把 detail 列宽推大、再反挤外层 NavigationSplitView sidebar 的链条。
-        .layoutSandbox()
+        .fileImporter(
+            isPresented: $isRootImporterPresented,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: true,
+            onCompletion: handleRootImport
+        )
     }
 
     // MARK: - Banner
@@ -157,12 +336,12 @@ public struct DuplicateScreen: View {
                                 .frame(maxWidth: 220)
                         }
                         Button {
-                            addRootViaPanel()
+                            isRootImporterPresented = true
                         } label: {
                             Image(systemName: "plus")
                         }
                         .buttonStyle(.borderless)
-                        .disabled(isScanning)
+                        .disabled(isScanning || isDeletionTransactionActive)
                     }
                 }
             }
@@ -182,7 +361,7 @@ public struct DuplicateScreen: View {
                 // v1.3.ab：原本 `.frame(width: 280)` 死宽度，窗口窄时会反推父级。
                 // 改成 minWidth/idealWidth/maxWidth，给 SwiftUI 空间在窄窗口下压缩。
                 .frame(minWidth: 200, idealWidth: 280, maxWidth: 320)
-                .disabled(isScanning)
+                .disabled(isScanning || isDeletionTransactionActive)
             }
             .layoutPriority(1)
             // 开始 / 停止
@@ -207,7 +386,7 @@ public struct DuplicateScreen: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(roots.isEmpty)
+                .disabled(roots.isEmpty || isDeletionTransactionActive)
             }
         }
         .padding(.horizontal, 14)
@@ -233,7 +412,7 @@ public struct DuplicateScreen: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .disabled(isScanning)
+            .disabled(isScanning || isDeletionTransactionActive)
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
@@ -280,7 +459,7 @@ public struct DuplicateScreen: View {
                 Image(systemName: g.reliability == .full ? "checkmark.seal.fill" : "questionmark.circle.fill")
                     .foregroundStyle(g.reliability == .full ? .green : .orange)
                     .font(.caption)
-                Text(String(format: String(localized: "duplicate.group.copies", bundle: .module), g.paths.count))
+                Text(String(format: String(localized: "duplicate.group.copies", bundle: .module), g.files.count))
                     .font(.callout.bold())
                 Spacer()
                 Text(byteString(g.totalBytes))
@@ -296,10 +475,10 @@ public struct DuplicateScreen: View {
                 .help(String(localized: "duplicate.action.handle", bundle: .module))
                 .disabled(isDeletingDuplicates)
             }
-            Text(String(format: String(localized: "duplicate.group.reclaim_per", bundle: .module), byteString(g.reclaimableBytes), byteString(g.bytes)))
+            Text(String(format: String(localized: "duplicate.group.reclaim_per", bundle: .module), byteString(g.reclaimableBytes), byteString(g.logicalBytes)))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text(g.paths.first.map { (URL(fileURLWithPath: $0)).lastPathComponent } ?? "")
+            Text(g.files.first.map { URL(fileURLWithPath: $0.path).lastPathComponent } ?? "")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
@@ -316,16 +495,16 @@ public struct DuplicateScreen: View {
                 detailHeader(g)
                 Divider()
                 List {
-                    ForEach(g.paths, id: \.self) { p in
-                        pathRow(p)
+                    ForEach(g.files, id: \.path) { file in
+                        pathRow(file)
                             .contextMenu {
                                 Button {
-                                    revealInFinder(path: p)
+                                    revealInFinder(path: file.path)
                                 } label: {
                                     Text("duplicate.menu.reveal_in_finder", bundle: .module)
                                 }
                                 Button {
-                                    copyToPasteboard(p)
+                                    copyToPasteboard(file.path)
                                 } label: {
                                     Text("duplicate.menu.copy_path", bundle: .module)
                                 }
@@ -348,7 +527,7 @@ public struct DuplicateScreen: View {
                     .font(.callout.bold())
                     .foregroundStyle(g.reliability == .full ? .green : .orange)
                 Spacer()
-                Text(String(format: String(localized: "duplicate.detail.copies_size", bundle: .module), g.paths.count, byteString(g.bytes)))
+                Text(String(format: String(localized: "duplicate.detail.copies_size", bundle: .module), g.files.count, byteString(g.logicalBytes)))
                     .font(.callout.monospacedDigit())
                 Button {
                     activeSheet = .handle(g)
@@ -370,17 +549,20 @@ public struct DuplicateScreen: View {
         .padding(.vertical, 10)
     }
 
-    private func pathRow(_ path: String) -> some View {
+    private func pathRow(_ file: DuplicateFile) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "doc")
                 .foregroundStyle(.tint)
                 .font(.caption)
-            Text(path)
+            Text(file.path)
                 .font(.system(.callout, design: .monospaced))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
             Spacer()
+            Text(byteString(file.allocatedBytes))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
     }
@@ -411,6 +593,12 @@ public struct DuplicateScreen: View {
                     .font(.caption)
                     .foregroundStyle(.blue)
             }
+            if !scanIncompleteIssues.isEmpty {
+                Text("main.scan.incomplete", bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
             Spacer()
             Text("duplicate.footer.delete_hint", bundle: .module)
                 .font(.caption2)
@@ -425,6 +613,24 @@ public struct DuplicateScreen: View {
     private var selectedGroup: DuplicateGroup? {
         guard let id = selectedGroupID else { return nil }
         return groups.first { $0.id == id }
+    }
+
+    /// A scan revision must remain immutable from deletion preflight through final submit.
+    /// The visible scan controls use this projection, while `startScan()` repeats the guard so
+    /// programmatic or future entry points cannot bypass the UI-disabled state.
+    private var isDeletionTransactionActive: Bool {
+        if isDeletingDuplicates
+            || duplicatePreflightTask != nil
+            || duplicatePreflightGate.hasCurrentRequest
+            || duplicateDeletionHandoff.hasPending {
+            return true
+        }
+        switch activeSheet {
+        case .handle, .confirm, .preflightNotice:
+            return true
+        case .result, .none:
+            return false
+        }
     }
 
     private static func defaultRoots() -> [URL] {
@@ -462,27 +668,18 @@ public struct DuplicateScreen: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func addRootViaPanel() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = true
-        panel.title = String(localized: "duplicate.panel.title", bundle: .module)
-        panel.prompt = String(localized: "duplicate.panel.prompt", bundle: .module)
-        panel.begin { response in
-            // panel.begin 回调线程契约未保证；显式跳回 MainActor 修改 @State，
-            // 避免 Swift 6 严格并发告警 + SwiftUI 跨线程更新警告。
-            // 同时把每个 url 归一化（standardizedFileURL）后再判重，
-            // 避免 trailing slash / file:// scheme 差异导致同一目录被加两次。
-            Task { @MainActor in
-                guard response == .OK else { return }
-                for raw in panel.urls {
-                    let url = raw.standardizedFileURL
-                    if !roots.contains(url) {
-                        roots.append(url)
-                    }
+    private func handleRootImport(_ result: Result<[URL], any Error>) {
+        switch result {
+        case .success(let urls):
+            for raw in urls {
+                let url = raw.standardizedFileURL
+                if !roots.contains(url) {
+                    roots.append(url)
                 }
             }
+        case .failure(let error):
+            guard (error as? CocoaError)?.code != .userCancelled else { return }
+            GSYLog.error(.settings, "duplicate root importer failed: \(error.localizedDescription)")
         }
     }
 
@@ -496,58 +693,329 @@ public struct DuplicateScreen: View {
         NSPasteboard.general.setString(s, forType: .string)
     }
 
-    private func deleteDuplicatePaths(group: DuplicateGroup, paths: [String]) {
-        guard DuplicateHandlingPlan.isValidDeleteTargets(paths, for: group), !isDeletingDuplicates else { return }
+    private func prepareDuplicateDeletion(group: DuplicateGroup, paths: [String]) {
+        guard DuplicateHandlingPlan.isValidDeleteTargets(paths, for: group),
+              !isDeletingDuplicates,
+              !duplicateDeletionHandoff.hasPending else { return }
+        let sessionID = scanSessionID
+        let revision = scanRevision
+        let relevantIssues = incompleteIssues(overlappingAny: paths)
+        let context = DuplicatePreflightContext(
+            groupID: group.id,
+            paths: paths,
+            scanSessionID: sessionID,
+            scanRevision: revision
+        )
+        duplicatePreflightTask?.cancel()
+        let token = duplicatePreflightGate.begin(context: context)
         isDeletingDuplicates = true
-        Task { @MainActor in
-            let action = TrashActionCoordinator(pipeline: pipeline)
-            let result = await action.run(TrashActionCoordinator.Request(
-                paths: paths,
-                dryRun: false,
-                source: "duplicate",
-                accessDeniedPaths: []
-            ))
-            isDeletingDuplicates = false
-            let movedPairs = result.outcome?.movedPairs.map { ($0.originalPath, $0.trashedPath) } ?? result.pairs
-            let succeededPaths = result.succeededPaths
-            if !succeededPaths.isEmpty {
-                pruneMovedDuplicatePaths(Set(succeededPaths))
-            }
-            if let outcome = result.outcome {
-                activeSheet = .result(OperationResultPayload(outcome: outcome))
-            } else {
-                let succeeded = Set(succeededPaths)
-                activeSheet = .result(OperationResultPayload(
-                    movedPairs: movedPairs,
-                    failedPaths: result.err == nil ? [] : paths.filter { !succeeded.contains($0) },
-                    safetyRejected: []
+        duplicatePreflightTask = Task { @MainActor in
+            let identity = DeletionSnapshotIdentity(
+                sessionID: sessionID,
+                revision: revision,
+                categoryID: "duplicate"
+            )
+            let coordinator = DeletionInteractionCoordinator(pipeline: pipeline)
+            let decision: DeletionInteractionPreparation
+            do {
+                let bytesByPath = duplicateBytesByPath(paths: paths, in: group)
+                let rows = duplicateDeletionRows(
+                    paths: paths,
+                    bytesByPath: bytesByPath
+                )
+                let intent = try coordinator.makeIntent(
+                    origin: .duplicate,
+                    mode: .professional,
+                    snapshotIdentity: identity,
+                    candidates: paths.map { path in
+                        DeletionInteractionCandidateSnapshot(
+                            path: path,
+                            title: URL(fileURLWithPath: path).lastPathComponent,
+                            isDirectory: false,
+                            bytes: bytesByPath[path] ?? 0,
+                            fileCount: 1,
+                            accessEvidence: deletionAccessEvidence(
+                                for: path,
+                                issues: relevantIssues
+                            )
+                        )
+                    }
+                )
+                decision = await DuplicateDeletionPreparationPolicy.prepare(
+                    pipeline: pipeline,
+                    coordinator: coordinator,
+                    intent: intent,
+                    currentSnapshotIdentity: identity,
+                    rows: rows,
+                    relevantIssues: relevantIssues
+                )
+            } catch {
+                decision = .blocked(DeletionInteractionBlock(
+                    intentID: UUID(),
+                    rejections: paths.map {
+                        .init(path: $0, reason: SafetyRejection.preflightCancelled.rawValue)
+                    }
                 ))
+            }
+            guard duplicatePreflightGate.finishIfCurrent(token, context: context) else { return }
+            duplicatePreflightTask = nil
+            isDeletingDuplicates = false
+            guard !Task.isCancelled,
+                  scanSessionID == sessionID,
+                  scanRevision == revision,
+                  !duplicateDeletionHandoff.hasPending else { return }
+            switch decision {
+            case .confirmation(let prepared):
+                activeSheet = .confirm(DuplicateDeleteRequest(
+                    scanSessionID: sessionID,
+                    scanRevision: revision,
+                    items: prepared.confirmationCandidates,
+                    totalBytes: selectedBytes(paths: prepared.paths, in: group),
+                    bytesByPath: duplicateBytesByPath(paths: prepared.paths, in: group),
+                    accessEvidencePaths: incompleteEvidencePaths(in: prepared),
+                    prepared: prepared
+                ))
+            case .blocked(let block):
+                activeSheet = .preflightNotice(DeletionPreflightNotice(rejections: block.rejections))
+            case .cancelled:
+                return
             }
         }
     }
 
-    private func pruneMovedDuplicatePaths(_ moved: Set<String>) {
-        guard !moved.isEmpty else { return }
-        groups = groups.compactMap { group in
-            let remaining = group.paths.filter { !moved.contains($0) }
-            guard remaining.count >= 2 else { return nil }
-            return DuplicateGroup(hashKey: group.hashKey,
-                                  bytes: group.bytes,
-                                  paths: remaining,
-                                  reliability: group.reliability)
+    private func completeDuplicateSheetDismissal() {
+        guard let submission = duplicateDeletionHandoff.takeAfterSheetDismissal() else { return }
+        guard requireCurrentDuplicateRequest(submission.request) else { return }
+        executeDuplicateDeletion(submission)
+    }
+
+    @discardableResult
+    private func requireCurrentDuplicateRequest(
+        _ request: DuplicateDeleteRequest,
+        boundSnapshotIdentity: DeletionSnapshotIdentity? = nil
+    ) -> Bool {
+        let identity = boundSnapshotIdentity
+            ?? request.prepared.plan.intent.snapshotIdentity
+        switch DuplicateDeletionSubmissionGate.evaluate(
+            requestSessionID: request.scanSessionID,
+            requestRevision: request.scanRevision,
+            boundSnapshotIdentity: identity,
+            currentSessionID: scanSessionID,
+            currentRevision: scanRevision,
+            paths: request.paths
+        ) {
+        case .current:
+            return true
+        case .cancelled(let rejections):
+            GSYLog.notice(
+                .trash,
+                "Duplicate rejected stale deletion intent revision=\(request.scanRevision) current=\(scanRevision)"
+            )
+            activeSheet = .preflightNotice(DeletionPreflightNotice(rejections: rejections))
+            return false
         }
-        if let selectedGroupID, !groups.contains(where: { $0.id == selectedGroupID }) {
-            self.selectedGroupID = groups.first?.id
+    }
+
+    private func cancelDuplicatePreflight() {
+        duplicatePreflightTask?.cancel()
+        duplicatePreflightTask = nil
+        if duplicatePreflightGate.cancel() {
+            isDeletingDuplicates = false
+        }
+    }
+
+    private func executeDuplicateDeletion(_ submission: DuplicateConfirmedDeletion) {
+        guard !isDeletingDuplicates,
+              requireCurrentDuplicateRequest(submission.request) else { return }
+        isDeletingDuplicates = true
+        Task { @MainActor in
+            defer { isDeletingDuplicates = false }
+            guard requireCurrentDuplicateRequest(submission.request) else { return }
+            let executionPlan = submission.executionPlan
+            let coordinator = DeletionInteractionCoordinator(pipeline: pipeline)
+            let authorization: DeletionAuthorizedInteraction
+            switch coordinator.authorize(
+                prepared: submission.request.prepared,
+                executionPlan: executionPlan
+            ) {
+            case .authorized(let value):
+                authorization = value
+            case .cancelled:
+                return
+            case .blocked(let block):
+                activeSheet = .preflightNotice(DeletionPreflightNotice(
+                    rejections: block.rejections
+                ))
+                return
+            }
+            guard requireCurrentDuplicateRequest(
+                submission.request,
+                boundSnapshotIdentity: authorization.authorization.snapshotIdentity
+            ) else { return }
+            let frozenEvidencePaths = incompleteEvidencePaths(in: authorization)
+            guard frozenEvidencePaths.isSubset(of: submission.request.accessEvidencePaths) else {
+                activeSheet = .preflightNotice(DeletionPreflightNotice(
+                    rejections: authorization.authorization.paths.map {
+                        .init(
+                            path: $0,
+                            reason: ScanIncompleteTargetRejectionReason
+                                .missingTypedEvidence.rawValue
+                        )
+                    }
+                ))
+                return
+            }
+            let disposition = await coordinator.submit(
+                authorization,
+                accessDeniedPaths: frozenEvidencePaths
+            )
+            let completed: DeletionCompletedInteraction
+            switch disposition {
+            case .completed(let value):
+                completed = value
+
+            case .requiresConfirmation(let prepared):
+                let strictPaths = Set(prepared.paths)
+                let totalBytes = prepared.paths.reduce(Int64(0)) { partial, path in
+                    let value = max(0, submission.request.bytesByPath[path] ?? 0)
+                    let sum = partial.addingReportingOverflow(value)
+                    return sum.overflow ? .max : sum.partialValue
+                }
+                activeSheet = .confirm(DuplicateDeleteRequest(
+                    scanSessionID: submission.request.scanSessionID,
+                    scanRevision: submission.request.scanRevision,
+                    items: prepared.confirmationCandidates,
+                    totalBytes: totalBytes,
+                    bytesByPath: submission.request.bytesByPath.filter {
+                        strictPaths.contains($0.key)
+                    },
+                    accessEvidencePaths: incompleteEvidencePaths(in: prepared),
+                    prepared: prepared
+                ))
+                return
+
+            case .blocked(let block):
+                activeSheet = .preflightNotice(DeletionPreflightNotice(rejections: block.rejections))
+                return
+            }
+            let result = completed.result
+            let succeededPaths = result.succeededPaths
+            if !succeededPaths.isEmpty {
+                await pruneMovedDuplicatePaths(Set(succeededPaths))
+            }
+            activeSheet = .result(.deletion(completed))
+        }
+    }
+
+    private func selectedBytes(paths: [String], in group: DuplicateGroup) -> Int64 {
+        let selected = Set(paths)
+        var total: Int64 = 0
+        for file in group.files where selected.contains(file.path) {
+            let sum = total.addingReportingOverflow(file.allocatedBytes)
+            total = sum.overflow ? .max : sum.partialValue
+        }
+        return total
+    }
+
+    private func duplicateBytesByPath(
+        paths: [String],
+        in group: DuplicateGroup
+    ) -> [String: Int64] {
+        let selected = Set(paths)
+        return Dictionary(uniqueKeysWithValues: group.files.lazy
+            .filter { selected.contains($0.path) }
+            .map { ($0.path, max(0, $0.allocatedBytes)) })
+    }
+
+    private func duplicateDeletionRows(
+        paths: [String],
+        bytesByPath: [String: Int64]
+    ) -> [RowItem] {
+        paths.map { path in
+            RowItem(
+                id: path,
+                url: URL(fileURLWithPath: path),
+                title: URL(fileURLWithPath: path).lastPathComponent,
+                isDirectory: false,
+                bytes: max(0, bytesByPath[path] ?? 0),
+                logicalBytes: max(0, bytesByPath[path] ?? 0),
+                fileCount: 1,
+                verdict: .safe,
+                rejection: .ok
+            )
+        }
+    }
+
+    private func incompleteIssues(overlappingAny paths: [String]) -> [ScanIncompleteIssue] {
+        DuplicateDeletionPreparationPolicy.relevantIssues(
+            overlappingAny: paths,
+            in: scanIncompleteIssues
+        )
+    }
+
+    private func deletionAccessEvidence(
+        for path: String,
+        issues: [ScanIncompleteIssue]
+    ) -> DeletionAccessEvidence {
+        DuplicateDeletionPreparationPolicy.accessEvidence(for: path, issues: issues)
+    }
+
+    private func incompleteEvidencePaths(
+        in prepared: DeletionPreparedInteraction
+    ) -> Set<String> {
+        Set(prepared.scanIncompleteOverrideRequest?.entries
+            .flatMap(\.incompleteIssues)
+            .map(\.path) ?? [])
+    }
+
+    private func incompleteEvidencePaths(
+        in authorized: DeletionAuthorizedInteraction
+    ) -> Set<String> {
+        Set(authorized.scanIncompleteOverrideRequest?.entries
+            .flatMap(\.incompleteIssues)
+            .map(\.path) ?? [])
+    }
+
+    private func recordIncompleteIssue(_ issue: ScanIncompleteIssue) {
+        let normalized = ScanIncompleteIssue(
+            path: URL(fileURLWithPath: issue.path).standardizedFileURL.path,
+            reason: issue.reason,
+            stage: issue.stage,
+            posixErrorCode: issue.posixErrorCode
+        )
+        guard !scanIncompleteIssues.contains(normalized) else { return }
+        scanIncompleteIssues.append(normalized)
+    }
+
+    @MainActor
+    private func pruneMovedDuplicatePaths(_ moved: Set<String>) async {
+        guard !moved.isEmpty else { return }
+        let sourceGroups = groups
+        let prunedGroups = await Task.detached(priority: .utility) {
+            DuplicateHandlingPlan.pruning(sourceGroups, movedPaths: moved)
+        }.value
+        guard !Task.isCancelled else { return }
+        groups = prunedGroups
+        if let selectedGroupID, !prunedGroups.contains(where: { $0.id == selectedGroupID }) {
+            self.selectedGroupID = prunedGroups.first?.id
         }
     }
 
     // MARK: - Scan driver
 
     private func startScan() {
+        guard !isScanning,
+              !roots.isEmpty,
+              !isDeletionTransactionActive else { return }
         scanTask?.cancel()
         groups = []
         selectedGroupID = nil
         tccSkippedRoots = []
+        scanIncompleteIssues = []
+        scanRevision &+= 1
+        let revision = scanRevision
+        let sessionID = UUID()
+        scanSessionID = sessionID
         bucketsDone = 0
         bucketsTotal = 0
         sizingFiles = 0
@@ -558,6 +1026,7 @@ public struct DuplicateScreen: View {
         scanTask = Task { @MainActor in
             for await event in scanner.scan() {
                 if Task.isCancelled { break }
+                guard scanSessionID == sessionID, scanRevision == revision else { break }
                 switch event {
                 case .sizingProgress(let n):
                     phaseLabel = String(localized: "duplicate.phase.enumerate", bundle: .module)
@@ -577,16 +1046,26 @@ public struct DuplicateScreen: View {
                     // 与「停止仅终止扫描、保留已有结果」UX 一致。
                     break
                 case .tccProtectedSkipped(let path):
-                    tccSkippedRoots.append(path)
+                    if !tccSkippedRoots.contains(path) {
+                        tccSkippedRoots.append(path)
+                    }
+                    recordIncompleteIssue(ScanIncompleteIssue(
+                        path: path,
+                        reason: .tccProtectedSkipped
+                    ))
+                case .incomplete(let issue):
+                    recordIncompleteIssue(issue)
                 }
             }
             // 无论正常 finished 还是 cancel，退出循环时一并复位进度计数与标签，
             // 避免下次启动前 footer 闪显旧进度数字。
-            isScanning = false
-            phaseLabel = ""
-            bucketsDone = 0
-            bucketsTotal = 0
-            sizingFiles = 0
+            if scanSessionID == sessionID, scanRevision == revision {
+                isScanning = false
+                phaseLabel = ""
+                bucketsDone = 0
+                bucketsTotal = 0
+                sizingFiles = 0
+            }
         }
     }
 }
@@ -599,6 +1078,8 @@ private struct DuplicateHandleSheet: View {
     let onManual: ([String]) -> Void
 
     @State private var manualTargets: Set<String>
+    @State private var manualSelectedBytes: Int64
+    private let allocatedBytesByPath: [String: Int64]
 
     init(group: DuplicateGroup,
          isDeleting: Bool,
@@ -610,7 +1091,15 @@ private struct DuplicateHandleSheet: View {
         self.onCancel = onCancel
         self.onDefault = onDefault
         self.onManual = onManual
-        _manualTargets = State(initialValue: Set(DuplicateHandlingPlan.defaultDeleteTargets(for: group)))
+        let defaultTargets = DuplicateHandlingPlan.defaultDeleteTargets(for: group)
+        _manualTargets = State(initialValue: Set(defaultTargets))
+        _manualSelectedBytes = State(initialValue: group.reclaimableBytes)
+        var bytesByPath: [String: Int64] = [:]
+        bytesByPath.reserveCapacity(group.files.count)
+        for file in group.files {
+            bytesByPath[file.path] = file.allocatedBytes
+        }
+        allocatedBytesByPath = bytesByPath
     }
 
     var body: some View {
@@ -638,7 +1127,7 @@ private struct DuplicateHandleSheet: View {
                 Text("duplicate.handle.title", bundle: .module)
                     .font(.title2.bold())
                 Text(String(format: String(localized: "duplicate.handle.subtitle %lld %@", bundle: .module),
-                            group.paths.count,
+                            group.files.count,
                             ByteCountFormatter.string(fromByteCount: group.reclaimableBytes, countStyle: .file)))
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -656,7 +1145,7 @@ private struct DuplicateHandleSheet: View {
                 Text("duplicate.handle.default.title", bundle: .module)
                     .font(.headline)
                 Text(String(format: String(localized: "duplicate.handle.default.detail %@", bundle: .module),
-                            URL(fileURLWithPath: group.paths.first ?? "").lastPathComponent))
+                            URL(fileURLWithPath: group.files.first?.path ?? "").lastPathComponent))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -677,7 +1166,7 @@ private struct DuplicateHandleSheet: View {
                 }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(isDeleting || group.paths.count < 2)
+            .disabled(isDeleting || group.files.count < 2)
         }
     }
 
@@ -689,14 +1178,14 @@ private struct DuplicateHandleSheet: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             List {
-                ForEach(group.paths, id: \.self) { path in
-                    Toggle(isOn: binding(for: path)) {
+                ForEach(group.files, id: \.path) { file in
+                    Toggle(isOn: binding(for: file.path)) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(URL(fileURLWithPath: path).lastPathComponent)
+                            Text(URL(fileURLWithPath: file.path).lastPathComponent)
                                 .font(.callout)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
-                            Text(path)
+                            Text(file.path)
                                 .font(.caption2.monospaced())
                                 .foregroundStyle(.tertiary)
                                 .lineLimit(1)
@@ -716,7 +1205,10 @@ private struct DuplicateHandleSheet: View {
         HStack {
             Text(String(format: String(localized: "duplicate.handle.selected %lld %@", bundle: .module),
                         manualTargets.count,
-                        ByteCountFormatter.string(fromByteCount: group.bytes * Int64(manualTargets.count), countStyle: .file)))
+                        ByteCountFormatter.string(
+                            fromByteCount: manualSelectedBytes,
+                            countStyle: .file
+                        )))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
             Spacer()
@@ -727,7 +1219,7 @@ private struct DuplicateHandleSheet: View {
             Button(String(localized: "duplicate.handle.manual.button", bundle: .module), role: .destructive) {
                 onManual(Array(manualTargets))
             }
-            .disabled(isDeleting || !DuplicateHandlingPlan.isValidDeleteTargets(Array(manualTargets), for: group))
+            .disabled(isDeleting || manualTargets.isEmpty || manualTargets.count >= group.files.count)
             .keyboardShortcut(.defaultAction)
         }
         .padding(20)
@@ -738,9 +1230,13 @@ private struct DuplicateHandleSheet: View {
             get: { manualTargets.contains(path) },
             set: { newValue in
                 if newValue {
-                    manualTargets.insert(path)
-                } else {
-                    manualTargets.remove(path)
+                    if manualTargets.insert(path).inserted {
+                        let bytes = allocatedBytesByPath[path] ?? 0
+                        let sum = manualSelectedBytes.addingReportingOverflow(bytes)
+                        manualSelectedBytes = sum.overflow ? .max : sum.partialValue
+                    }
+                } else if manualTargets.remove(path) != nil {
+                    manualSelectedBytes = max(0, manualSelectedBytes - (allocatedBytesByPath[path] ?? 0))
                 }
             }
         )
@@ -749,17 +1245,23 @@ private struct DuplicateHandleSheet: View {
 
 enum DuplicateHandlingPlan {
     static func defaultDeleteTargets(for group: DuplicateGroup) -> [String] {
-        Array(group.paths.dropFirst())
+        group.files.dropFirst().map(\.path)
     }
 
     static func isValidDeleteTargets(_ paths: [String], for group: DuplicateGroup) -> Bool {
         let uniqueTargets = Set(paths)
         guard !uniqueTargets.isEmpty,
               uniqueTargets.count == paths.count,
-              uniqueTargets.count < group.paths.count else {
+              uniqueTargets.count < group.files.count else {
             return false
         }
-        let allPaths = Set(group.paths)
+        let allPaths = Set(group.files.map(\.path))
         return uniqueTargets.isSubset(of: allPaths)
+    }
+
+    /// 纯数据投影，调用方可安全放到 detached utility task，避免大重复集在主线程重聚合。
+    static func pruning(_ groups: [DuplicateGroup], movedPaths: Set<String>) -> [DuplicateGroup] {
+        guard !movedPaths.isEmpty else { return groups }
+        return groups.compactMap { $0.removing(paths: movedPaths) }
     }
 }

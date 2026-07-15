@@ -32,10 +32,14 @@ import LogKit
 /// 失败回退：如果根目录无法 `open(O_RDONLY)`（典型于 TCC / Full Disk Access），
 /// 调用方应回退到 `Scanner` 的 FileManager 路径。
 public actor BulkScanner {
+    /// Maximum number of entries carried by one `.nodes` event.
+    ///
+    /// The consumer currently ingests each batch on MainActor. Keeping this
+    /// bound in ScanKit prevents a single very wide directory from becoming a
+    /// tens-of-thousands-node main-thread transaction.
+    public static let nodeBatchLimit = 256
+
     private let options: ScanOptions
-    private let inodeSet = InodeSet()
-    /// v1.3 P0-A：与 `inodeSet`（文件字节去重）分离的目录入队去重表。详见 DirInodeSet。
-    private let dirInodeSet = DirInodeSet()
 
     public init(options: ScanOptions = .default) {
         self.options = options
@@ -45,12 +49,13 @@ public actor BulkScanner {
         // v1.3 P0 修复：原 `.bufferingNewest(8192)` 在 195k+ 文件场景会静默丢事件
         //（消费者主线程慢于 worker yield 速度时，最旧的 .node 事件被 AsyncStream 主动丢弃，
         // 直接导致 Finder 18.86 GB / 195,979 items → 应用 552.6 MB / 1,209 items 的灾难性少算）。
-        // 改为 .unbounded：worker 永远可以 yield，消费方背压由 actor await 自然形成；不会丢事件。
-        // 同时显式 reset inodeSet，防止 BulkScanner 实例被复用时跨次污染（dedupe 把字节归零）。
-        inodeSet.reset()
-        // v1.3 P0-A：目录入队去重表也必须跨次清空，否则第二次扫描时所有目录都被判"已访问"
-        // → 整棵树被跳过，summary 直接 fileCount=0。
-        dirInodeSet.reset()
+        // 改为 .unbounded：worker 永远可以 yield，因此不会静默丢事件。AsyncStream 本身不提供
+        // 背压；下方 `nodeBatchLimit` 只限制单事件大小，整体缓冲上限仍需另行设计无损握手机制。
+        // 去重身份属于一次 scan transaction，不能挂在 BulkScanner 实例上再 reset：
+        // `scan` 是 nonisolated，同一实例可能并发产生两个 stream；共享+reset 会让两轮互相
+        // 清空或吞掉 inode。每轮独立集合同时解决复用污染与并发数据竞争。
+        let inodeSet = InodeSet()
+        let dirInodeSet = DirInodeSet()
         return AsyncStream(bufferingPolicy: .unbounded) { continuation in
             let opts = options
             let inodes = inodeSet
@@ -59,10 +64,19 @@ public actor BulkScanner {
                 let start = Date()
                 let stats = ScanStats()
                 let queue = DirQueue()
+                guard !Task.isCancelled else {
+                    continuation.finish()
+                    return
+                }
                 // v1.1：根目录本身就是 TCC 雷区时直接退出（防御性，正常 UI 不会传入）
-                if TCCSkipList.shouldSkip(root.path) {
+                if opts.respectTCCSkipList && TCCSkipList.shouldSkip(root.path) {
                     GSYLog.notice(.scan, "scan 根目录命中 TCC skip-list path=\(root.path)")
+                    let issue = ScanIncompleteIssue(
+                        path: root.path,
+                        reason: .tccProtectedSkipped
+                    )
                     continuation.yield(.tccProtectedSkipped(path: root.path))
+                    continuation.yield(.incomplete(issue))
                     let summary = ScanSummary(
                         root: root,
                         totalAllocatedBytes: 0, totalLogicalBytes: 0,
@@ -70,7 +84,8 @@ public actor BulkScanner {
                         dedupedHardlinkBytes: 0,
                         elapsed: Date().timeIntervalSince(start),
                         permissionDeniedCount: 0,
-                        tccProtectedSkippedCount: 1
+                        tccProtectedSkippedCount: 1,
+                        incompleteIssues: [issue]
                     )
                     continuation.yield(.finished(summary))
                     continuation.finish()
@@ -110,6 +125,7 @@ public actor BulkScanner {
                     for _ in 0..<workerCount {
                         group.addTask {
                             await BulkScanner.workerLoop(
+                                rootPath: root.path,
                                 queue: queue,
                                 stats: stats,
                                 inodes: inodes,
@@ -122,6 +138,14 @@ public actor BulkScanner {
                     }
                 }
 
+                // 取消是独立终态：consumer 已明确不要本轮结果，不得再伪造 partial issue
+                // 或 finished summary。MultiRootScanner 若需要阶段性展示，会在它自己的
+                // timeout/watchdog 边界合成 `.partial` summary。
+                guard !Task.isCancelled else {
+                    continuation.finish()
+                    return
+                }
+
                 let s = await stats.snapshot()
                 let summary = ScanSummary(
                     root: root,
@@ -132,7 +156,8 @@ public actor BulkScanner {
                     dedupedHardlinkBytes: s.dedupedBytes,
                     elapsed: Date().timeIntervalSince(start),
                     permissionDeniedCount: s.permissionDenied,
-                    tccProtectedSkippedCount: s.tccProtectedSkipped
+                    tccProtectedSkippedCount: s.tccProtectedSkipped,
+                    incompleteIssues: s.incompleteIssues
                 )
                 GSYLog.info(.scan, "scan 完成 root=\(root.path) files=\(summary.fileCount) dirs=\(summary.directoryCount) bytes=\(summary.totalAllocatedBytes) elapsed=\(String(format: "%.2f", summary.elapsed))s permissionDenied=\(summary.permissionDeniedCount) tccSkipped=\(summary.tccProtectedSkippedCount)")
                 continuation.yield(.finished(summary))
@@ -146,6 +171,7 @@ public actor BulkScanner {
     /// 单个 worker 的循环：popOrFinish → enumerate → 把子目录推回 queue → 直到 .done。
     /// `nonisolated static` 是为了 worker 内部不需要 actor self（避免 self 重入）。
     private static func workerLoop(
+        rootPath: String,
         queue: DirQueue,
         stats: ScanStats,
         inodes: InodeSet,
@@ -161,6 +187,7 @@ public actor BulkScanner {
                 return
             case .work(let dirPath):
                 await processDirectory(
+                    rootPath: rootPath,
                     dirPath: dirPath,
                     queue: queue,
                     stats: stats,
@@ -180,6 +207,7 @@ public actor BulkScanner {
     /// 处理一个目录：getattrlistbulk → 累计本地 → push 子目录 → merge stats。
     /// 改成 async：让"push 子目录"在 markCompleted **之前**真正完成（关键并发正确性）。
     private static func processDirectory(
+        rootPath: String,
         dirPath: String,
         queue: DirQueue,
         stats: ScanStats,
@@ -189,26 +217,56 @@ public actor BulkScanner {
         rootDev: UInt64,
         continuation: AsyncStream<ScanEvent>.Continuation
     ) async {
-        let fd = open(dirPath, O_RDONLY, 0)
-        guard fd >= 0 else {
-            await stats.incPermissionDenied()
-            continuation.yield(.permissionDenied(path: dirPath))
+        guard !Task.isCancelled else { return }
+        let openOutcome = BulkDirectoryOpener.open(
+            path: dirPath,
+            shouldCancel: { Task.isCancelled }
+        )
+        let fd: Int32
+        switch openOutcome {
+        case .opened(let openedFileDescriptor):
+            // Cancellation can race with a successful open. Close the descriptor here
+            // instead of entering enumeration, and do not manufacture incomplete evidence.
+            guard !Task.isCancelled else {
+                close(openedFileDescriptor)
+                return
+            }
+            fd = openedFileDescriptor
+        case .cancelled:
+            return
+        case .failed(let openError):
+            let issue = ScanFailureClassifier.issue(
+                path: dirPath,
+                stage: .open,
+                posixErrorCode: openError
+            )
+            await publishIncomplete(issue, stats: stats, continuation: continuation)
+            let isRootFailure = shouldEmitTerminalFailure(
+                rootPath: rootPath,
+                directoryPath: dirPath,
+                issue: issue
+            )
+            GSYLog.warning(
+                .scan,
+                "scan.directory.open.failed path=\(dirPath) stage=\(ScanIssueStage.open.rawValue) errno=\(openError) root=\(isRootFailure)"
+            )
+            if isRootFailure {
+                continuation.yield(.failed(.cannotEnumerate(
+                    path: rootPath,
+                    stage: .open,
+                    posixErrorCode: openError
+                )))
+            }
             return
         }
         defer { close(fd) }
 
-        // CACHEDIR.TAG（cache-directory-tagging.com 标准）：进入目录的实际枚举前先做一次
-        // 极轻 stat+read 探测，命中即不下钻。理由：
-        // 1. 标准明确允许「整棵子树视为纯缓存」，省下 cargo target / build 这种典型几万到
-        //    几十万 entry 的子树；
-        // 2. 检测代价仅 1 次 open + 43 字节 read，相对一次目录 enumerate 是几十倍便宜；
-        // 3. 业界备份工具（restic / Time Machine / borg）都默认尊重此 tag，对齐用户预期；
-        // 4. 命中点本身**不**作为 .node yield —— 我们只 yield 一条 .cacheDirTagged 让 UI
-        //    按 safe 候选展示；具体大小由 TreeSizeEstimator 异步算（如有需要）。
+        // CACHEDIR.TAG（cache-directory-tagging.com 标准）是“内容可视为缓存”的分类信号，
+        // 不是“清理工具可以不统计大小”的许可。备份工具可以据此跳过内容，但本应用必须继续
+        // 下钻，才能给出真实的可释放字节数。事件仍保留给上层做 safe 分类提示。
         if CacheDirTag.isCacheDirectory(at: dirPath) {
             continuation.yield(.cacheDirTagged(path: dirPath))
-            GSYLog.info(.scan, "BulkScanner 命中 CACHEDIR.TAG，整棵子目录跳过下钻 dir=\(dirPath)")
-            return
+            GSYLog.info(.scan, "BulkScanner 命中 CACHEDIR.TAG，保留缓存分类并继续统计 dir=\(dirPath)")
         }
 
         // 本地累计，最后一次性合并到 actor stats，减少跨 actor 次数（性能优化）。
@@ -218,15 +276,19 @@ public actor BulkScanner {
         var localLogical: Int64 = 0
         var localDeduped: Int64 = 0
         var localTCCSkipped = 0
+        var localIncompleteIssues: [ScanIncompleteIssue] = []
         var newDirs: [String] = []
-        // Step 13B micro-batch：把当前目录的 entry 全部攒到 localNodes，结尾一次性 yield。
-        // 这样把"逐 entry 跨 continuation hop"折成"每目录一次"，在 195k+ 文件场景下 yield
-        // 次数从 ~195k 直降到 ~目录数（典型 < 4000）。AUDIT line 449-451。
+        // Step 13B micro-batch：同一父目录内按固定上限分块。
+        // 逐 entry yield 会造成过多 continuation hop；整目录一次 yield 又会让超宽目录在
+        // MainActor 上形成无界事务。256 是两者之间的固定内存/帧预算边界。
         var localNodes: [FSNode] = []
-        // Reserve：典型目录 100~300 entry，先给 64 起步避免反复 realloc。
-        localNodes.reserveCapacity(64)
+        localNodes.reserveCapacity(Self.nodeBatchLimit)
 
-        BulkEnumerate.enumerate(fd: fd, dirPath: dirPath) { entry in
+        let enumerationOutcome = BulkEnumerate.enumerate(
+            fd: fd,
+            dirPath: dirPath,
+            shouldCancel: { Task.isCancelled }
+        ) { entry in
             if Task.isCancelled { return false }
 
             let absPath = "\(dirPath)/\(entry.name)"
@@ -236,8 +298,9 @@ public actor BulkScanner {
                 return true
             }
 
-            // inode 去重（actor 内部 unfair-lock 同步，可在 sync 上下文调）
-            let isFirst = !options.dedupByInode
+            // inode 去重只属于文件字节语义；目录回环由独立的 DirInodeSet 处理。
+            let isFirstFile = entry.isDirectory
+                || !options.dedupByInode
                 || inodes.insertIfFirstSeen(device: entry.device, inode: entry.inode)
 
             if entry.isDirectory {
@@ -249,7 +312,13 @@ public actor BulkScanner {
                     // 同时不再 yield .tccProtectedSkipped → 修 banner 误报。
                     if options.respectTCCSkipList && TCCSkipList.shouldSkip(absPath) {
                         localTCCSkipped += 1
+                        let issue = ScanIncompleteIssue(
+                            path: absPath,
+                            reason: .tccProtectedSkipped
+                        )
+                        localIncompleteIssues.append(issue)
                         continuation.yield(.tccProtectedSkipped(path: absPath))
+                        continuation.yield(.incomplete(issue))
                     } else if options.staySingleVolume && !options.followFirmlinks && rootDev != 0 && entry.device != rootDev {
                         // 跨卷停下钻：dev 不一致就不入队。followFirmlinks=true 时允许 macOS firmlink 跨 dev 下钻。
                     } else if entry.isSymlink && !options.followSymlinks {
@@ -265,13 +334,21 @@ public actor BulkScanner {
                 }
             } else {
                 localFileCount += 1
-                if isFirst {
+                if isFirstFile {
                     localAllocated += entry.allocatedSize
                     localLogical += entry.logicalSize
                 } else {
                     localDeduped += entry.allocatedSize
                 }
             }
+
+            // FSNode 是给增量消费者的“可累计”事件，而不是原始 stat dump：
+            // - 目录的 subtree bytes 由后代文件聚合，目录 inode 本身不能再加一次；
+            // - 同 inode 的后续 hardlink 仍保留路径/fileCount，但字节归零。
+            // 这样展平 node stream 的和与 ScanSummary 保持严格一致。
+            let contributesBytes = !entry.isDirectory && isFirstFile
+            let nodeAllocated = contributesBytes ? entry.allocatedSize : 0
+            let nodeLogical = contributesBytes ? entry.logicalSize : 0
 
             // P0：直接 path 主路径，省掉 URL(fileURLWithPath:) 的 147 ms（trace 4.83s）。
             // 旧实现：每个 entry 都 URL.init → RFC3986Parser.parse + percentEncodePath
@@ -282,21 +359,61 @@ public actor BulkScanner {
                 path: absPath,
                 isDirectory: entry.isDirectory,
                 isSymlink: entry.isSymlink,
-                allocatedSize: entry.allocatedSize,
-                logicalSize: entry.logicalSize,
+                allocatedSize: nodeAllocated,
+                logicalSize: nodeLogical,
                 inode: entry.inode,
                 device: entry.device,
                 modificationDate: entry.modificationDate
             )
-            // 累积到 batch；不在 entry 回调里直接 yield。
+            // 同一父目录内保持原枚举顺序；达到固定上限立即 flush，避免宽目录无界 batch。
             localNodes.append(node)
+            if localNodes.count == Self.nodeBatchLimit {
+                continuation.yield(.nodes(localNodes))
+                localNodes.removeAll(keepingCapacity: true)
+            }
             return true
         }
 
-        // 一次性 yield 当前目录所有 entry：
-        // - 0 个：不发（极端情况：全是隐藏 + 取消等）
-        // - 1 个：发 .node 单 case 兼容旧路径，避免 array 包装的开销
-        // - ≥2 个：发 .nodes 批量 case，micro-batch 主张所在
+        switch enumerationOutcome {
+        case .complete:
+            break
+        case .completeWithIssues(let issues):
+            for issue in issues {
+                await publishIncomplete(issue, stats: stats, continuation: continuation)
+            }
+        case .stoppedByConsumer:
+            // 当前 callback 唯一的主动停止条件就是 Task cancellation。取消不属于
+            // 文件系统不完整，不能污染下一轮删除证据或权限 banner。
+            if Task.isCancelled { return }
+            let issue = ScanIncompleteIssue(
+                path: dirPath,
+                reason: .enumerationFailed,
+                stage: .enumerate
+            )
+            await publishIncomplete(issue, stats: stats, continuation: continuation)
+        case .failed(let issue):
+            await publishIncomplete(issue, stats: stats, continuation: continuation)
+            let isRootFailure = shouldEmitTerminalFailure(
+                rootPath: rootPath,
+                directoryPath: dirPath,
+                issue: issue
+            )
+            GSYLog.warning(
+                .scan,
+                "scan.directory.enumerate.failed path=\(issue.path) stage=\(issue.stage?.rawValue ?? "unknown") errno=\(issue.posixErrorCode.map(String.init) ?? "nil") root=\(isRootFailure)"
+            )
+            if isRootFailure {
+                continuation.yield(.failed(.cannotEnumerate(
+                    path: rootPath,
+                    stage: issue.stage ?? .enumerate,
+                    posixErrorCode: issue.posixErrorCode
+                )))
+            }
+        }
+
+        guard !Task.isCancelled else { return }
+
+        // Flush 尾批；单 entry 仍保留 `.node` 兼容路径。
         // AsyncStream.continuation.yield 是 thread-safe（Apple 文档保证）
         if localNodes.count == 1 {
             continuation.yield(.node(localNodes[0]))
@@ -312,15 +429,105 @@ public actor BulkScanner {
             allocated: localAllocated,
             logical: localLogical,
             deduped: localDeduped,
-            tccSkipped: localTCCSkipped
+            tccSkipped: localTCCSkipped,
+            incompleteIssues: localIncompleteIssues
         )
         if let prog = await stats.progressIfDue() {
             continuation.yield(.progress(scannedBytes: prog.bytes, fileCount: prog.files))
         }
     }
+
+    /// 单一 incomplete 发布入口：保证 reason、专用 permission event、summary 计数和
+    /// 结构化 issue 始终同步。是否升级为根级 `.failed` 由调用点根据 rootPath 决定。
+    private static func publishIncomplete(
+        _ issue: ScanIncompleteIssue,
+        stats: ScanStats,
+        continuation: AsyncStream<ScanEvent>.Continuation
+    ) async {
+        if issue.reason == .permissionDenied {
+            await stats.recordPermissionDenied(issue: issue)
+            continuation.yield(.permissionDenied(path: issue.path))
+        } else {
+            await stats.recordIncomplete(issue)
+        }
+        continuation.yield(.incomplete(issue))
+    }
+
+    /// `.failed` 是“本轮无法建立根结果”的终态，不是任意路径错误的别名。
+    /// 权限拒绝即使发生在根也走 typed incomplete/permission 交互；后代路径无论 errno
+    /// 是 EACCES、ENOENT 还是 ESTALE，都只能让 summary 变为 partial。
+    static func shouldEmitTerminalFailure(
+        rootPath: String,
+        directoryPath: String,
+        issue: ScanIncompleteIssue
+    ) -> Bool {
+        directoryPath == rootPath && issue.reason != .permissionDenied
+    }
 }
 
 // MARK: - 并发支持类型
+
+/// `open(2)` directory acquisition with POSIX interruption semantics.
+///
+/// Signals may make `open` fail with `EINTR` before a descriptor is created. That is not
+/// filesystem evidence and must never become a permission/incomplete event. The retry loop
+/// is isolated here so production and deterministic tests share exactly the same behavior;
+/// tests inject attempts instead of relying on signal timing.
+enum BulkDirectoryOpener {
+    enum Attempt: Equatable {
+        case opened(Int32)
+        case failed(Int32)
+    }
+
+    enum Outcome: Equatable {
+        case opened(Int32)
+        case failed(Int32)
+        case cancelled
+    }
+
+    static func open(
+        path: String,
+        shouldCancel: () -> Bool
+    ) -> Outcome {
+        open(
+            path: path,
+            shouldCancel: shouldCancel,
+            attempt: systemOpenAttempt
+        )
+    }
+
+    static func open(
+        path: String,
+        shouldCancel: () -> Bool,
+        attempt: (String) -> Attempt
+    ) -> Outcome {
+        while true {
+            guard !shouldCancel() else { return .cancelled }
+
+            switch attempt(path) {
+            case .opened(let fileDescriptor):
+                return .opened(fileDescriptor)
+            case .failed(let errorCode):
+                // Cancellation wins even when the syscall returned an error concurrently.
+                // This keeps user cancellation distinct from filesystem incompleteness.
+                guard !shouldCancel() else { return .cancelled }
+                if errorCode == EINTR {
+                    continue
+                }
+                return .failed(errorCode)
+            }
+        }
+    }
+
+    private static func systemOpenAttempt(path: String) -> Attempt {
+        let fileDescriptor = Darwin.open(path, O_RDONLY, 0)
+        guard fileDescriptor >= 0 else {
+            // Capture errno immediately; any later Swift/Foundation work may overwrite it.
+            return .failed(errno)
+        }
+        return .opened(fileDescriptor)
+    }
+}
 
 /// 多 worker 共享的目录队列。
 /// 关键设计：用 `inFlight` 计数 + `stack` 一起判定终止 —— 当 stack 空 **且** inFlight==0
@@ -377,6 +584,7 @@ actor ScanStats {
     private var dedupedBytes: Int64 = 0
     private var permissionDenied: Int = 0
     private var tccProtectedSkipped: Int = 0
+    private var incompleteIssues: Set<ScanIncompleteIssue> = []
     private var lastProgressEmit: Date = .distantPast
 
     struct Snapshot {
@@ -387,19 +595,34 @@ actor ScanStats {
         let dedupedBytes: Int64
         let permissionDenied: Int
         let tccProtectedSkipped: Int
+        let incompleteIssues: [ScanIncompleteIssue]
     }
 
-    func merge(files: Int, dirs: Int, allocated: Int64, logical: Int64, deduped: Int64, tccSkipped: Int = 0) {
+    func merge(
+        files: Int,
+        dirs: Int,
+        allocated: Int64,
+        logical: Int64,
+        deduped: Int64,
+        tccSkipped: Int = 0,
+        incompleteIssues: [ScanIncompleteIssue] = []
+    ) {
         fileCount += files
         dirCount += dirs
         totalAllocated += allocated
         totalLogical += logical
         dedupedBytes += deduped
         tccProtectedSkipped += tccSkipped
+        self.incompleteIssues.formUnion(incompleteIssues)
     }
 
-    func incPermissionDenied() {
+    func recordPermissionDenied(issue: ScanIncompleteIssue) {
         permissionDenied += 1
+        incompleteIssues.insert(issue)
+    }
+
+    func recordIncomplete(_ issue: ScanIncompleteIssue) {
+        incompleteIssues.insert(issue)
     }
 
     func snapshot() -> Snapshot {
@@ -410,7 +633,11 @@ actor ScanStats {
             totalLogical: totalLogical,
             dedupedBytes: dedupedBytes,
             permissionDenied: permissionDenied,
-            tccProtectedSkipped: tccProtectedSkipped
+            tccProtectedSkipped: tccProtectedSkipped,
+            incompleteIssues: incompleteIssues.sorted {
+                if $0.path == $1.path { return $0.reason.rawValue < $1.reason.rawValue }
+                return $0.path < $1.path
+            }
         )
     }
 
@@ -449,8 +676,11 @@ enum BulkEnumerate {
     /// 完整结束、主动截断和底层读取失败；不能把三者都折叠成一个 Void 返回值。
     enum Outcome: Sendable, Equatable {
         case complete
+        /// 目录项读到了 EOF，但一个或多个 entry 的 metadata 无法读取。
+        case completeWithIssues([ScanIncompleteIssue])
         case stoppedByConsumer
-        case failed
+        /// 目录本身没有完整枚举。是否为根级致命失败由 BulkScanner 决定。
+        case failed(ScanIncompleteIssue)
     }
 
     /// 调用 callback 直到 `false`、任务请求取消或目录读完。
@@ -500,6 +730,7 @@ enum BulkEnumerate {
                 let fallback = enumerateWithFileManagerFallbackResult(
                     dirPath: dirPath,
                     skipping: emittedNames,
+                    upstreamErrno: err,
                     shouldCancel: shouldCancel,
                     body
                 )
@@ -619,6 +850,7 @@ enum BulkEnumerate {
         enumerateWithFileManagerFallbackResult(
             dirPath: dirPath,
             skipping: emittedNames,
+            upstreamErrno: nil,
             shouldCancel: shouldCancel,
             body
         ).count
@@ -627,6 +859,7 @@ enum BulkEnumerate {
     private static func enumerateWithFileManagerFallbackResult(
         dirPath: String,
         skipping emittedNames: Set<String>,
+        upstreamErrno: Int32?,
         shouldCancel: () -> Bool,
         _ body: (BulkEntry) -> Bool
     ) -> FallbackResult {
@@ -637,15 +870,24 @@ enum BulkEnumerate {
         do {
             names = try FileManager.default.contentsOfDirectory(atPath: dirPath)
         } catch {
-            GSYLog.warning(.scan, "FileManager fallback enumerate failed dir=\(dirPath) err=\(error.localizedDescription)")
-            return FallbackResult(count: 0, outcome: .failed)
+            let errorCode = ScanFailureClassifier.posixErrorCode(from: error) ?? upstreamErrno
+            let issue = ScanFailureClassifier.issue(
+                path: dirPath,
+                stage: .enumerate,
+                posixErrorCode: errorCode
+            )
+            GSYLog.warning(
+                .scan,
+                "FileManager fallback enumerate failed path=\(dirPath) stage=\(ScanIssueStage.enumerate.rawValue) errno=\(errorCode.map(String.init) ?? "nil") err=\(error.localizedDescription)"
+            )
+            return FallbackResult(count: 0, outcome: .failed(issue))
         }
         if shouldCancel() {
             return FallbackResult(count: 0, outcome: .stoppedByConsumer)
         }
 
         var emitted = 0
-        var metadataFailed = false
+        var metadataIssues: [ScanIncompleteIssue] = []
         for name in names where !emittedNames.contains(name) {
             if shouldCancel() {
                 return FallbackResult(count: emitted, outcome: .stoppedByConsumer)
@@ -654,7 +896,16 @@ enum BulkEnumerate {
             let path = "\(dirPath)/\(name)"
             var sb = stat()
             guard lstat(path, &sb) == 0 else {
-                metadataFailed = true
+                let metadataError = errno
+                metadataIssues.append(ScanFailureClassifier.issue(
+                    path: path,
+                    stage: .metadata,
+                    posixErrorCode: metadataError
+                ))
+                GSYLog.warning(
+                    .scan,
+                    "FileManager fallback metadata failed path=\(path) stage=\(ScanIssueStage.metadata.rawValue) errno=\(metadataError)"
+                )
                 continue
             }
             let mode = sb.st_mode & S_IFMT
@@ -675,7 +926,7 @@ enum BulkEnumerate {
         }
         return FallbackResult(
             count: emitted,
-            outcome: metadataFailed ? .failed : .complete
+            outcome: metadataIssues.isEmpty ? .complete : .completeWithIssues(metadataIssues)
         )
     }
 }

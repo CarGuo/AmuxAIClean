@@ -87,7 +87,6 @@ public struct PortCleanerScreen: View {
         } message: {
             Text(resultMessage ?? "")
         }
-        .layoutSandbox()
     }
 
     private var header: some View {

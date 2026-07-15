@@ -69,6 +69,32 @@ final class WorkflowRegistryTests: XCTestCase {
                        "note 应带 hash 后缀，UI 据此 disambiguate 同名工程")
     }
 
+    func test_resolve_filesystemMetadataMode_发现hit但不重复估算size() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WRTests-Metadata-\(UUID().uuidString)", isDirectory: true)
+        let project = home
+            .appendingPathComponent("Library/Developer/Xcode/DerivedData", isDirectory: true)
+            .appendingPathComponent("MyApp-abc", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        defer {
+            do {
+                try FileManager.default.removeItem(at: home)
+            } catch {
+                XCTFail("fixture cleanup failed: \(error)")
+            }
+        }
+
+        let hits = await WorkflowRegistry.resolve(
+            scannerID: "scanner.derived-data-per-project",
+            home: home,
+            includeFilesystemSizes: false
+        )
+
+        XCTAssertEqual(hits.map(\.url), [project])
+        XCTAssertNil(hits.first?.sizeBytes,
+                     "AppUI Workflow 会在同一 BulkScanner 会话统计大小与完整性，registry 不应重复遍历")
+    }
+
     // MARK: - case 3: simctl-devices 路由（dryRun executor）
 
     func test_resolve_simctlDevices_dryRunExecutor_返回空不崩() async {

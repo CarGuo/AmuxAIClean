@@ -16,6 +16,7 @@ import XCTest
 /// 10. 安全契约：DuplicateScanner / DuplicateGroup 公开 API 不含删除入口
 /// 11. 三份相同文件 → 1 组 3 份，reclaimableBytes = 2×size
 /// 12. 同 size + 同 64KB 前缀但后段不同（小文件） → 不分组（全文件 hash 把它们区分开）
+/// 13. TB 级稀疏文件仍按 logical size 分组，但占用 / 可释放按 allocated bytes 展示
 final class DuplicateScannerTests: XCTestCase {
 
     // MARK: - 公共脚手架
@@ -46,13 +47,21 @@ final class DuplicateScannerTests: XCTestCase {
         return url
     }
 
+    private func allocatedBytes(of url: URL) throws -> Int64 {
+        var metadata = stat()
+        guard lstat(url.path, &metadata) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        return Int64(metadata.st_blocks) * 512
+    }
+
     // MARK: - 1. 两份完全相同 → 1 组 2 份
 
     func testTwoIdenticalFilesProduceOneGroup() async throws {
         let root = try makeTempRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        try writeFile(root.appendingPathComponent("a.bin"), size: 2 * 1024 * 1024, fillByte: 0xAB)
-        try writeFile(root.appendingPathComponent("b.bin"), size: 2 * 1024 * 1024, fillByte: 0xAB)
+        let a = try writeFile(root.appendingPathComponent("a.bin"), size: 2 * 1024 * 1024, fillByte: 0xAB)
+        let b = try writeFile(root.appendingPathComponent("b.bin"), size: 2 * 1024 * 1024, fillByte: 0xAB)
 
         let scanner = DuplicateScanner(roots: [root], minBytes: 1024 * 1024)
         let groups = await scanner.scanToCompletion()
@@ -60,8 +69,9 @@ final class DuplicateScannerTests: XCTestCase {
         XCTAssertEqual(groups.count, 1, "应当恰好检测到 1 组重复")
         XCTAssertEqual(groups.first?.paths.count, 2)
         XCTAssertEqual(groups.first?.reliability, .full)
-        XCTAssertEqual(groups.first?.bytes, 2 * 1024 * 1024)
-        XCTAssertEqual(groups.first?.reclaimableBytes, 2 * 1024 * 1024)
+        XCTAssertEqual(groups.first?.logicalBytes, 2 * 1024 * 1024)
+        XCTAssertEqual(groups.first?.totalBytes, try allocatedBytes(of: a) + allocatedBytes(of: b))
+        XCTAssertEqual(groups.first?.reclaimableBytes, try allocatedBytes(of: b))
     }
 
     // MARK: - 2. 同 size 不同内容 → 不分组
@@ -198,8 +208,8 @@ final class DuplicateScannerTests: XCTestCase {
         XCTAssertEqual(groups.count, 2)
         XCTAssertGreaterThan(groups[0].totalBytes, groups[1].totalBytes,
                              "应按 totalBytes 倒序")
-        XCTAssertEqual(groups[0].bytes, 5 * 1024 * 1024)
-        XCTAssertEqual(groups[1].bytes, 1_500_000)
+        XCTAssertEqual(groups[0].logicalBytes, 5 * 1024 * 1024)
+        XCTAssertEqual(groups[1].logicalBytes, 1_500_000)
     }
 
     // MARK: - 9. TCC 路径跳过
@@ -212,15 +222,21 @@ final class DuplicateScannerTests: XCTestCase {
 
         let scanner = DuplicateScanner(roots: [root], minBytes: 1024 * 1024)
         var sawTCCEvent = false
+        var incompleteIssues: [ScanIncompleteIssue] = []
         var groups: [DuplicateGroup] = []
         for await event in scanner.scan() {
             switch event {
             case .tccProtectedSkipped: sawTCCEvent = true
+            case .incomplete(let issue): incompleteIssues.append(issue)
             case .finished(let g): groups = g
             default: continue
             }
         }
         XCTAssertTrue(sawTCCEvent, "TCC 雷区 root 应触发 tccProtectedSkipped 事件")
+        XCTAssertEqual(
+            incompleteIssues,
+            [ScanIncompleteIssue(path: root.path, reason: .tccProtectedSkipped)]
+        )
         XCTAssertTrue(groups.isEmpty, "TCC 雷区 root 不能产生任何重复组")
     }
 
@@ -231,7 +247,15 @@ final class DuplicateScannerTests: XCTestCase {
         // 任何 trash / unlink / removeItem / NSWorkspace.recycle 都不应在该类型出现。
         // 用反射逐个枚举 Mirror children 检查：DuplicateGroup 与 DuplicateScanner 都不能含
         // "trash" / "delete" / "remove" / "recycle" / "unlink" 命名的可见字段。
-        let group = DuplicateGroup(hashKey: "k", bytes: 1, paths: ["/x", "/y"], reliability: .full)
+        let group = DuplicateGroup(
+            hashKey: "k",
+            logicalBytes: 1,
+            files: [
+                DuplicateFile(path: "/x", allocatedBytes: 1),
+                DuplicateFile(path: "/y", allocatedBytes: 1)
+            ],
+            reliability: .full
+        )
         let mirror = Mirror(reflecting: group)
         for child in mirror.children {
             let name = (child.label ?? "").lowercased()
@@ -261,15 +285,15 @@ final class DuplicateScannerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let payload = 2 * 1024 * 1024
         try writeFile(root.appendingPathComponent("a.bin"), size: payload, fillByte: 0x99)
-        try writeFile(root.appendingPathComponent("b.bin"), size: payload, fillByte: 0x99)
-        try writeFile(root.appendingPathComponent("c.bin"), size: payload, fillByte: 0x99)
+        let b = try writeFile(root.appendingPathComponent("b.bin"), size: payload, fillByte: 0x99)
+        let c = try writeFile(root.appendingPathComponent("c.bin"), size: payload, fillByte: 0x99)
 
         let scanner = DuplicateScanner(roots: [root], minBytes: 1024 * 1024)
         let groups = await scanner.scanToCompletion()
         XCTAssertEqual(groups.count, 1)
         XCTAssertEqual(groups.first?.paths.count, 3)
-        XCTAssertEqual(groups.first?.reclaimableBytes, Int64(payload) * 2,
-                       "3 份重复 → 可释放 = 2 × size")
+        XCTAssertEqual(groups.first?.reclaimableBytes, try allocatedBytes(of: b) + allocatedBytes(of: c),
+                       "3 份重复的可释放主值应是默认移走两份的 allocated bytes")
     }
 
     // MARK: - 12. 同 size + 同 64KB 前缀但后段不同 → 全文件 hash 区分
@@ -294,5 +318,42 @@ final class DuplicateScannerTests: XCTestCase {
         let groups = await scanner.scanToCompletion()
         XCTAssertTrue(groups.isEmpty,
             "前缀一致但后段不同的小文件，应被全文件 hash 区分开，不视为重复")
+    }
+
+    // MARK: - 13. 稀疏文件：logical 分组 + allocated 占用
+
+    func testSparseFilesUseLogicalSizeForIdentityButAllocatedBytesForDiskUsage() async throws {
+        let root = try makeTempRoot()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: root)) }
+
+        let logicalSize: Int64 = 2 * 1_024 * 1_024 * 1_024 * 1_024
+        let a = root.appendingPathComponent("Docker-a.raw")
+        let b = root.appendingPathComponent("Docker-b.raw")
+        for url in [a, b] {
+            let fd = open(url.path, O_CREAT | O_WRONLY | O_TRUNC, S_IRUSR | S_IWUSR)
+            XCTAssertGreaterThanOrEqual(fd, 0)
+            guard fd >= 0 else { continue }
+            XCTAssertEqual(ftruncate(fd, off_t(logicalSize)), 0)
+            let prefix = [UInt8](repeating: 0xD0, count: DuplicateScanner.prefixHashBytes)
+            prefix.withUnsafeBufferPointer { buffer in
+                XCTAssertEqual(write(fd, buffer.baseAddress, buffer.count), buffer.count)
+            }
+            XCTAssertEqual(close(fd), 0)
+        }
+
+        let allocatedA = try allocatedBytes(of: a)
+        let allocatedB = try allocatedBytes(of: b)
+        XCTAssertLessThan(allocatedA + allocatedB, 64 * 1_024 * 1_024,
+                          "测试前置：两个 2 TiB logical 文件必须是低物理占用的 sparse 文件")
+
+        let groups = await DuplicateScanner(roots: [root], minBytes: 1).scanToCompletion()
+
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups.first?.logicalBytes, logicalSize,
+                       "内容分组仍必须使用 logical size")
+        XCTAssertEqual(groups.first?.totalBytes, allocatedA + allocatedB,
+                       "重复组占用不能把 4 TiB logical 容量当成磁盘占用")
+        XCTAssertEqual(groups.first?.reclaimableBytes, allocatedB,
+                       "默认保留第一份时，可释放应是第二份的 allocated bytes")
     }
 }

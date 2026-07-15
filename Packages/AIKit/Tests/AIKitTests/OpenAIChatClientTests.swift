@@ -1,3 +1,4 @@
+import CoreServices
 import XCTest
 import SafetyKit
 @testable import AIKit
@@ -218,6 +219,53 @@ final class OpenAIChatClientTests: XCTestCase {
             XCTAssertEqual(counter.value, 1, "ask() 调用一次 apiKeyProvider")
         } catch {
             XCTFail("意外: \(error)")
+        }
+    }
+
+    func test_asyncAPIKeyProvider_保留Keychain错误而不是伪装成缺少Key() async {
+        let expected = KeychainAPIKeyStoreError.staleFileBasedReference(
+            OSStatus(kPOSIXErrorENOENT)
+        )
+        let client = OpenAIChatClient(
+            settings: OpenAIChatClient.SettingsSnapshot(
+                baseURL: "https://api.openai.com",
+                model: "gpt-4o-mini",
+                temperature: 0.2,
+                redactPaths: true
+            ),
+            asyncAPIKeyProvider: { throw expected },
+            session: stubSession()
+        )
+
+        do {
+            _ = try await client.ask(makeInquiry())
+            XCTFail("Keychain 错误不能被压成空 Key")
+        } catch let error as KeychainAPIKeyStoreError {
+            XCTAssertEqual(error, expected)
+        } catch {
+            XCTFail("意外错误：\(error)")
+        }
+    }
+
+    func test_loopback免鉴权也不能吞掉provider取消() async {
+        let client = OpenAIChatClient(
+            settings: OpenAIChatClient.SettingsSnapshot(
+                baseURL: "http://127.0.0.1:11434",
+                model: "local-model",
+                temperature: 0.2,
+                redactPaths: true
+            ),
+            asyncAPIKeyProvider: { throw CancellationError() },
+            session: stubSession()
+        )
+
+        do {
+            _ = try await client.ask(makeInquiry())
+            XCTFail("本地免鉴权不能把取消降级成空 API Key 后继续请求")
+        } catch is CancellationError {
+            // expected
+        } catch {
+            XCTFail("意外错误：\(error)")
         }
     }
 

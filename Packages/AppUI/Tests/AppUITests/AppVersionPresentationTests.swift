@@ -19,6 +19,14 @@ final class AppVersionPresentationTests: XCTestCase {
         XCTAssertTrue(source.contains(".help(accessibleLabel)"))
     }
 
+    func test_mainToolbar_品牌与版本号不绘制本地或系统胶囊背景() throws {
+        let source = try mainViewSource()
+
+        XCTAssertFalse(source.contains(".background(.quaternary.opacity(0.72), in: Capsule())"))
+        XCTAssertTrue(source.contains(".sharedBackgroundVisibility(.hidden)"))
+        XCTAssertTrue(source.contains("if #available(macOS 26.0, *)"))
+    }
+
     private func mainViewSource() throws -> String {
         let testFile = URL(fileURLWithPath: #filePath)
         let packageRoot = testFile

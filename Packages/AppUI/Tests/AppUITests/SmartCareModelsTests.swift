@@ -144,8 +144,19 @@ final class SmartCareModelsTests: XCTestCase {
         XCTAssertEqual(SmartCarePhase.confirming(selection: SmartCareSelection()).primaryAction, .confirmClean)
         XCTAssertEqual(SmartCarePhase.cleaning(progress: SmartCareCleanProgress(completedCount: 0, totalCount: 1)).primaryAction, .cleaning)
         XCTAssertEqual(SmartCarePhase.completed(result: SmartCareResult(movedCount: 1, skippedCount: 0, releasedBytes: 100)).primaryAction, .scanAgain)
+        XCTAssertEqual(SmartCarePhase.completed(result: SmartCareResult(movedCount: 1, skippedCount: 1, releasedBytes: 100)).primaryAction, .cleanSafeItems)
         XCTAssertEqual(SmartCarePhase.failed(.scanFailed("x")).primaryAction, .retry)
         XCTAssertEqual(SmartCarePhase.cancelled(partial: nil).primaryAction, .continueScan)
+    }
+
+    func test_result_跳过项使完成事务具有部分完成语义() {
+        let complete = SmartCareResult(movedCount: 2, skippedCount: 0, releasedBytes: 200)
+        let partial = SmartCareResult(movedCount: 1, skippedCount: 1, releasedBytes: 100)
+        let allSkipped = SmartCareResult(movedCount: 0, skippedCount: 2, releasedBytes: 0)
+
+        XCTAssertEqual(complete.completion, .complete)
+        XCTAssertEqual(partial.completion, .partial)
+        XCTAssertEqual(allSkipped.completion, .partial)
     }
 
     func test_progress保留本轮实际扫描范围() {

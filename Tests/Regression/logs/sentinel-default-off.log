@@ -1,5 +1,5 @@
-2026-07-13 11:04:57.843 AmuxAIClean[24320:36025473] [AmuxAIClean] 已加载 123 条 vendor 规则
-[REGR] case=sentinel-default-off defaults_snapshot_keys=5 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
+2026-07-15 17:11:26.570 AmuxAIClean[96355:197543] [AmuxAIClean] 已加载 123 条 vendor 规则
+[REGR] case=sentinel-default-off defaults_snapshot_keys=7 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
 [REGR_BEGIN] case=sentinel-default-off
 [REGR] case=sentinel-default-off default_sentinelEnabled=false default_lastEnabled=nil
 [REGR_OK] case=sentinel-default-off Sentinel 默认必须 OFF=false
@@ -16,5 +16,5 @@
 [REGR_OK] case=sentinel-default-off bad scheme 应被忽略=ignored(reason: "bad-scheme")
 [REGR] case=sentinel-default-off currentStatus=notFound label=Not found
 [REGR_OK] case=sentinel-default-off status.displayLabel 必须非空=true
-[REGR] case=sentinel-default-off defaults_restored_keys=5
-[REGR_PASS] case=sentinel-default-off elapsed_ms=917
+[REGR] case=sentinel-default-off defaults_restored_keys=7
+[REGR_PASS] case=sentinel-default-off elapsed_ms=307

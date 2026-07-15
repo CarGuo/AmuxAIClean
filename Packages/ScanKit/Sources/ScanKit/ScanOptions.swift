@@ -17,12 +17,9 @@ public struct ScanOptions: Sendable {
     /// 默认 false，扫描根选用 `/System/Volumes/Data` 时也无需跟随。详见 PITFALLS §2.1。
     public var followFirmlinks: Bool
 
-    /// 是否按 (dev_t, ino_t) 去重——硬链接 / APFS clones 必须开启。
+    /// 是否按 (dev_t, ino_t) 去重 hardlink。APFS clone 具有不同 inode，且公开的
+    /// `ATTR_FILE_ALLOCSIZE` 不提供 exclusive extent 信息，不能靠此开关去重。
     public var dedupByInode: Bool
-
-    /// 使用物理占用 (`totalFileAllocatedSize`) 而非逻辑大小 (`fileSize`)。
-    /// 默认 true，避免 iCloud 占位文件、稀疏文件造成"幽灵 GB"。
-    public var useAllocatedSize: Bool
 
     /// 并发度，默认随核心数（v1.0：BulkScanner 多 worker 并行下钻使用，cap 见下）。
     public var concurrency: Int
@@ -59,7 +56,6 @@ public struct ScanOptions: Sendable {
         followSymlinks: Bool = false,
         followFirmlinks: Bool = false,
         dedupByInode: Bool = true,
-        useAllocatedSize: Bool = true,
         concurrency: Int = ProcessInfo.processInfo.activeProcessorCount,
         maxConcurrency: Int = 8,
         staySingleVolume: Bool = true,
@@ -71,7 +67,6 @@ public struct ScanOptions: Sendable {
         self.followSymlinks = followSymlinks
         self.followFirmlinks = followFirmlinks
         self.dedupByInode = dedupByInode
-        self.useAllocatedSize = useAllocatedSize
         self.concurrency = concurrency
         self.maxConcurrency = maxConcurrency
         self.staySingleVolume = staySingleVolume

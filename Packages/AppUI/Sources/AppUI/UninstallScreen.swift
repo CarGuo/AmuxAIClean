@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import LogKit
 import SafetyKit
 
 // MARK: - 数据模型
@@ -13,6 +14,53 @@ public struct InstalledApp: Hashable, Sendable, Identifiable {
     public init(appURL: URL, metadata: AppMetadata) {
         self.appURL = appURL
         self.metadata = metadata
+    }
+}
+
+struct UninstallCandidateTerminalState: Equatable, Sendable {
+    let candidates: [UninstallCandidate]
+    let checked: Set<String>
+}
+
+enum UninstallCandidateTerminalProjection {
+    static func applying(
+        succeededPaths: Set<String>,
+        to state: UninstallCandidateTerminalState
+    ) -> UninstallCandidateTerminalState {
+        UninstallCandidateTerminalState(
+            candidates: state.candidates.filter { !succeededPaths.contains($0.path) },
+            checked: state.checked.subtracting(succeededPaths)
+        )
+    }
+}
+
+/// A confirmed uninstall request is valid only for the exact app selection that produced it.
+/// The View checks this boundary when the user confirms, after the sheet has dismissed, and
+/// immediately before the typed authorization reaches the recycle submit boundary.
+enum UninstallDeletionSubmissionGate {
+    enum Decision: Sendable, Equatable {
+        case current
+        case cancelled([DeletionPreflight.Rejection])
+    }
+
+    static func evaluate(
+        requestAppID: String,
+        requestSelectionRevision: UInt64,
+        boundSnapshotIdentity: DeletionSnapshotIdentity,
+        currentAppID: String?,
+        currentSelectionRevision: UInt64,
+        paths: [String]
+    ) -> Decision {
+        guard !requestAppID.isEmpty,
+              boundSnapshotIdentity.categoryID == requestAppID,
+              boundSnapshotIdentity.revision == requestSelectionRevision,
+              currentAppID == requestAppID,
+              currentSelectionRevision == requestSelectionRevision else {
+            return .cancelled(paths.map {
+                .init(path: $0, reason: SafetyRejection.preflightCancelled.rawValue)
+            })
+        }
+        return .current
     }
 }
 
@@ -79,8 +127,8 @@ public actor UninstallStore {
 /// 卸载残留扫描的独立屏幕：左 App 列表 / 右候选项 + 删除按钮。
 ///
 /// 安全契约：
-/// - dryRun **默认 true**，按下"删除到废纸篓"先走预览
-/// - 实删需要二次确认 sheet 才会调 `dryRun = false`
+/// - Professional 只展示不可变候选 + 删除确认，不提供 Preview/dry-run 分支
+/// - 用户确认后的执行固定为 `dryRun = false`
 public struct UninstallScreen: View {
     private let store: UninstallStore
     private let pipeline: any DeletionPipeline
@@ -91,15 +139,59 @@ public struct UninstallScreen: View {
     @State private var checked: Set<String> = []
     @State private var isLoadingApps: Bool = false
     @State private var isLoadingCandidates: Bool = false
-    @State private var showRealDeleteConfirm: Bool = false
-    @State private var lastResult: String?
     @State private var isDeleting: Bool = false
     @State private var candidateTask: Task<Void, Never>?
+    @State private var activeSheet: ActiveSheet?
+    @State private var uninstallDeletionHandoff = ToolDeletionHandoff<UninstallExecutionRequest>()
+    @State private var uninstallPreflightTask: Task<Void, Never>?
+    @State private var uninstallPreflightGate = ToolDeletionPreflightRequestGate<UninstallPreflightContext>()
+    @State private var selectedAppRevision: UInt64 = 0
 
-    /// **v2026.06.16 修复 #4**：App 卸载结构化删除结果 sheet。
-    /// 取代旧 alert 拼接 `uninstall.result.success/failure` 的纯文字弹窗。
-    /// `lastResult` 仍保留——若 pipeline 没暴露 snapshotLastOutcome 则回退旧 alert。
-    @State private var lastResultPayload: OperationResultPayload?
+    private var isDeletionTransactionActive: Bool {
+        isDeleting
+            || uninstallPreflightGate.hasCurrentRequest
+            || uninstallDeletionHandoff.hasPending
+            || activeSheet != nil
+    }
+
+    private struct UninstallDeleteRequest: Identifiable, Sendable {
+        let id = UUID()
+        let items: [RunningAppGuard.Candidate]
+        let totalBytes: Int64
+        let bytesByPath: [String: Int64]
+        let prepared: DeletionPreparedInteraction
+        let appID: String
+        let selectionRevision: UInt64
+
+        var paths: [String] { items.map(\.path) }
+    }
+
+    private struct UninstallExecutionRequest: Sendable {
+        let plan: ToolTrashExecutionPlan
+        let request: UninstallDeleteRequest
+        let appID: String
+        let selectionRevision: UInt64
+    }
+
+    private struct UninstallPreflightContext: Sendable, Equatable {
+        let appID: String
+        let selectionRevision: UInt64
+        let paths: [String]
+    }
+
+    private enum ActiveSheet: Identifiable {
+        case confirm(UninstallDeleteRequest)
+        case preflightNotice(DeletionPreflightNotice)
+        case result(OperationResultCompletion)
+
+        var id: String {
+            switch self {
+            case .confirm(let request): return "confirm-\(request.id)"
+            case .preflightNotice(let notice): return "preflightNotice-\(notice.id)"
+            case .result(let payload): return "result-\(payload.id)"
+            }
+        }
+    }
 
     public init(
         store: UninstallStore? = nil,
@@ -131,30 +223,43 @@ public struct UninstallScreen: View {
                 .frame(maxWidth: .infinity)
         }
         .task { await reloadApps() }
-        .alert(String(localized: "uninstall.delete.result.title", bundle: .module),
-               isPresented: Binding<Bool>(
-                get: { lastResult != nil },
-                set: { if !$0 { lastResult = nil } }
-               )) {
-            Button(String(localized: "uninstall.delete.result.ok", bundle: .module)) { lastResult = nil }
-        } message: {
-            Text(lastResult ?? "")
-        }
-        .sheet(isPresented: $showRealDeleteConfirm) {
-            confirmRealDeleteSheet
-        }
-        // **v2026.06.16 修复 #4**：卸载残留结构化删除结果 sheet。
-        .sheet(item: $lastResultPayload) { payload in
-            OperationResultSheet(payload: payload) {
-                lastResultPayload = nil
+        // 确认与结果共用一个 ActiveSheet。真删只在确认 sheet 的 onDismiss
+        // 之后从 handoff 取出，避免两张 sibling sheet 争抢呈现。
+        .sheet(item: $activeSheet, onDismiss: completeUninstallSheetDismissal) { sheet in
+            switch sheet {
+            case .confirm(let request):
+                ToolTrashConfirmationSheet(
+                    items: request.items,
+                    totalBytes: request.totalBytes,
+                    vendorOverrideRequest: request.prepared.vendorOverrideRequest,
+                    scanIncompleteOverrideRequest: request.prepared.scanIncompleteOverrideRequest,
+                    onCancel: { activeSheet = nil },
+                    onConfirm: { executionPlan in
+                        guard requireCurrentUninstallRequest(request) else { return false }
+                        guard uninstallDeletionHandoff.schedule(UninstallExecutionRequest(
+                            plan: executionPlan,
+                            request: request,
+                            appID: request.appID,
+                            selectionRevision: request.selectionRevision
+                        )) else { return false }
+                        activeSheet = nil
+                        return true
+                    }
+                )
+            case .preflightNotice(let notice):
+                DeletionPreflightNoticeSheet(notice: notice) {
+                    activeSheet = nil
+                }
+            case .result(let completion):
+                OperationResultSheet(completion: completion) {
+                    activeSheet = nil
+                }
             }
         }
-        // v2：套布局沙箱——把 candidatesPane（卸载残留候选列表）内的长路径
-        // ideal width 隔离在沙箱内，禁止反推外层 NavigationSplitView 的列宽。
-        .layoutSandbox()
         .onDisappear {
             candidateTask?.cancel()
             candidateTask = nil
+            cancelUninstallPreflight()
         }
     }
 
@@ -172,6 +277,7 @@ public struct UninstallScreen: View {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.borderless)
+                .disabled(isDeletionTransactionActive)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -191,7 +297,10 @@ public struct UninstallScreen: View {
                 }
             }
             .listStyle(.inset)
+            .disabled(isDeletionTransactionActive)
             .onChange(of: selectedApp) { _, new in
+                selectedAppRevision &+= 1
+                cancelUninstallPreflight()
                 candidateTask?.cancel()
                 guard let app = new else {
                     candidates = []
@@ -259,6 +368,7 @@ public struct UninstallScreen: View {
         return HStack(alignment: .top, spacing: 10) {
             Toggle(isOn: isOn) { EmptyView() }
                 .labelsHidden()
+                .disabled(isDeletionTransactionActive)
             VStack(alignment: .leading, spacing: 2) {
                 Text(cand.path)
                     .font(.system(.callout, design: .monospaced))
@@ -285,7 +395,7 @@ public struct UninstallScreen: View {
             Button(allChecked ? String(localized: "uninstall.toggle.deselect.all", bundle: .module) : String(localized: "uninstall.toggle.select.all", bundle: .module)) {
                 toggleAll()
             }
-            .disabled(candidates.isEmpty || isDeleting)
+            .disabled(candidates.isEmpty || isDeletionTransactionActive)
 
             Spacer()
 
@@ -293,69 +403,14 @@ public struct UninstallScreen: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
-            Button {
-                Task { await performDelete(dryRun: true) }
-            } label: {
-                Label(String(localized: "uninstall.button.preview", bundle: .module), systemImage: "eye")
-            }
-            .disabled(checked.isEmpty || isDeleting)
-
             Button(role: .destructive) {
-                showRealDeleteConfirm = true
+                prepareRealDelete()
             } label: {
                 Label(String(localized: "uninstall.button.trash", bundle: .module), systemImage: "trash")
             }
-            .disabled(checked.isEmpty || isDeleting)
+            .disabled(checked.isEmpty || isDeletionTransactionActive)
         }
         .padding(16)
-    }
-
-    // MARK: - 确认 sheet（实删二次确认）
-
-    private var confirmRealDeleteSheet: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                    .font(.title2)
-                Text("uninstall.confirm.title", bundle: .module)
-                    .font(.title3.bold())
-            }
-            Text(String(format: String(localized: "uninstall.confirm.body", bundle: .module), checked.count, formattedBytes(totalCheckedBytes)))
-                .font(.callout)
-                .foregroundStyle(.secondary)
-
-            Divider()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(checkedPaths, id: \.self) { p in
-                        Text(p)
-                            .font(.system(.caption, design: .monospaced))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxHeight: 180)
-
-            HStack {
-                Spacer()
-                Button(String(localized: "uninstall.confirm.cancel", bundle: .module)) {
-                    showRealDeleteConfirm = false
-                }
-                Button(role: .destructive) {
-                    showRealDeleteConfirm = false
-                    Task { await performDelete(dryRun: false) }
-                } label: {
-                    Text("uninstall.confirm.delete", bundle: .module)
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
-        .frame(minWidth: 480)
     }
 
     // MARK: - Helpers
@@ -383,6 +438,7 @@ public struct UninstallScreen: View {
     }
 
     private func reloadApps() async {
+        guard !isDeletionTransactionActive else { return }
         isLoadingApps = true
         let list = await store.listInstalledApps()
         await MainActor.run {
@@ -407,12 +463,165 @@ public struct UninstallScreen: View {
         }
     }
 
-    /// dryRun 默认 true；实删需走 `showRealDeleteConfirm` 二次确认。
-    private func performDelete(dryRun: Bool) async {
-        let paths = checkedPaths
-        guard !paths.isEmpty, !isDeleting else { return }
+    /// 冻结当前选择，先走与最终执行相同的 Safety / vendor / whitelist 预检。
+    /// 只有完整通过才展示可执行确认；任意拒绝直接显示结构化结果，绝不调用 move。
+    private func prepareRealDelete() {
+        let selectedPaths = checkedPaths
+        guard let selectedApp,
+              !selectedPaths.isEmpty,
+              !isDeleting,
+              !uninstallDeletionHandoff.hasPending,
+              activeSheet == nil else { return }
+        let context = UninstallPreflightContext(
+            appID: selectedApp.id,
+            selectionRevision: selectedAppRevision,
+            paths: selectedPaths
+        )
+        let selectedPathSet = Set(selectedPaths)
+        let selectedCandidates = candidates.filter { selectedPathSet.contains($0.path) }
+        let selectedBytes = selectedCandidates.reduce(Int64(0)) { partial, candidate in
+            let sum = partial.addingReportingOverflow(candidate.bytes)
+            return sum.overflow ? .max : sum.partialValue
+        }
+        let bytesByPath = Dictionary(uniqueKeysWithValues: selectedCandidates.map {
+            ($0.path, max(0, $0.bytes))
+        })
+        uninstallPreflightTask?.cancel()
+        let token = uninstallPreflightGate.begin(context: context)
+        isDeleting = true
+        uninstallPreflightTask = Task { @MainActor in
+            let identity = DeletionSnapshotIdentity(
+                sessionID: UUID(),
+                revision: selectedAppRevision,
+                categoryID: selectedApp.id
+            )
+            let coordinator = DeletionInteractionCoordinator(pipeline: pipeline)
+            let decision: DeletionInteractionPreparation
+            do {
+                let intent = try coordinator.makeIntent(
+                    origin: .uninstall,
+                    mode: .professional,
+                    snapshotIdentity: identity,
+                    candidates: selectedCandidates.map { candidate in
+                        DeletionInteractionCandidateSnapshot(
+                            path: candidate.path,
+                            title: URL(fileURLWithPath: candidate.path).lastPathComponent,
+                            isDirectory: candidate.fileCount != 1,
+                            bytes: candidate.bytes,
+                            fileCount: candidate.fileCount,
+                            runningBundleIDPrefix: selectedApp.metadata.bundleID
+                        )
+                    }
+                )
+                decision = await coordinator.prepare(
+                    intent: intent,
+                    currentSnapshotIdentity: identity
+                )
+            } catch {
+                decision = .blocked(DeletionInteractionBlock(
+                    intentID: UUID(),
+                    rejections: selectedPaths.map {
+                        .init(path: $0, reason: SafetyRejection.preflightCancelled.rawValue)
+                    }
+                ))
+            }
+            let currentContext = UninstallPreflightContext(
+                appID: self.selectedApp?.id ?? "",
+                selectionRevision: selectedAppRevision,
+                paths: selectedPaths
+            )
+            guard uninstallPreflightGate.finishIfCurrent(token, context: currentContext) else { return }
+            uninstallPreflightTask = nil
+            isDeleting = false
+            guard !Task.isCancelled,
+                  !uninstallDeletionHandoff.hasPending,
+                  activeSheet == nil else { return }
+            switch decision {
+            case .confirmation(let prepared):
+                activeSheet = .confirm(UninstallDeleteRequest(
+                    items: prepared.confirmationCandidates,
+                    totalBytes: selectedBytes,
+                    bytesByPath: bytesByPath,
+                    prepared: prepared,
+                    appID: selectedApp.id,
+                    selectionRevision: selectedAppRevision
+                ))
+            case .blocked(let block):
+                activeSheet = .preflightNotice(DeletionPreflightNotice(rejections: block.rejections))
+            case .cancelled:
+                return
+            }
+        }
+    }
+
+    private func completeUninstallSheetDismissal() {
+        guard let request = uninstallDeletionHandoff.takeAfterSheetDismissal() else { return }
+        guard requireCurrentUninstallExecutionRequest(request) else { return }
+        Task { await performDelete(request: request) }
+    }
+
+    @discardableResult
+    private func requireCurrentUninstallRequest(
+        _ request: UninstallDeleteRequest,
+        boundSnapshotIdentity: DeletionSnapshotIdentity? = nil
+    ) -> Bool {
+        let identity = boundSnapshotIdentity
+            ?? request.prepared.plan.intent.snapshotIdentity
+        switch UninstallDeletionSubmissionGate.evaluate(
+            requestAppID: request.appID,
+            requestSelectionRevision: request.selectionRevision,
+            boundSnapshotIdentity: identity,
+            currentAppID: selectedApp?.id,
+            currentSelectionRevision: selectedAppRevision,
+            paths: request.paths
+        ) {
+        case .current:
+            return true
+        case .cancelled(let rejections):
+            GSYLog.notice(
+                .trash,
+                "Uninstall rejected stale deletion intent app=\(request.appID) revision=\(request.selectionRevision) currentApp=\(selectedApp?.id ?? "nil") currentRevision=\(selectedAppRevision)"
+            )
+            activeSheet = .preflightNotice(DeletionPreflightNotice(rejections: rejections))
+            return false
+        }
+    }
+
+    @discardableResult
+    private func requireCurrentUninstallExecutionRequest(
+        _ execution: UninstallExecutionRequest,
+        boundSnapshotIdentity: DeletionSnapshotIdentity? = nil
+    ) -> Bool {
+        guard execution.appID == execution.request.appID,
+              execution.selectionRevision == execution.request.selectionRevision else {
+            activeSheet = .preflightNotice(DeletionPreflightNotice(
+                rejections: execution.request.paths.map {
+                    .init(path: $0, reason: SafetyRejection.preflightCancelled.rawValue)
+                }
+            ))
+            return false
+        }
+        return requireCurrentUninstallRequest(
+            execution.request,
+            boundSnapshotIdentity: boundSnapshotIdentity
+        )
+    }
+
+    private func cancelUninstallPreflight() {
+        uninstallPreflightTask?.cancel()
+        uninstallPreflightTask = nil
+        if uninstallPreflightGate.cancel() {
+            isDeleting = false
+        }
+    }
+
+    /// 只由确认 sheet 的确定性交接触发；Professional 不提供 dry-run 执行分支。
+    private func performDelete(request: UninstallExecutionRequest) async {
+        guard !isDeleting,
+              requireCurrentUninstallExecutionRequest(request) else { return }
         isDeleting = true
         defer { isDeleting = false }
+        let executionPlan = request.plan
         // v1.3.zzzz Phase 3-A 对称防御：UninstallScreen 没接 BulkScanner 的
         // permissionDenied 数据源（候选来自 [UninstallStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UninstallStore.swift)
         // 的 NSMetadataQuery + AppCandidate），但 pipeline 是注入进来的、
@@ -420,46 +629,72 @@ public struct UninstallScreen: View {
         // 实例。若 MainView 上一轮扫描遗留了 accessDeniedPaths 没清，
         // 切到 UninstallScreen 走 trash 时就会"莫名 accessDenied 拒了某个 ~/Library/.. 路径"。
         // 主动清空一次是 O(1) 锁开销，零误伤；实际执行与 UndoHistory 写入走统一删除入口。
-        let action = TrashActionCoordinator(pipeline: pipeline)
-        let result = await action.run(TrashActionCoordinator.Request(
-            paths: paths,
-            dryRun: dryRun,
-            source: "uninstall",
-            accessDeniedPaths: []
-        ))
-        let moved = result.moved
-        let skipped = result.skipped
-        let err = result.err
-        let mode = dryRun ? String(localized: "uninstall.result.mode.dryrun", bundle: .module) : ""
-        await MainActor.run {
-            let succeeded = Set(result.succeededPaths)
-            // **v2026.06.16 修复 #4**：真删走结构化 sheet；dryRun 仍走旧 alert（只看总数即可）。
-            if !dryRun, let outcome = result.outcome {
-                self.lastResultPayload = OperationResultPayload(outcome: outcome)
-                if !succeeded.isEmpty {
-                    self.checked.subtract(succeeded)
-                    if let app = self.selectedApp {
-                        Task { await self.reloadCandidates(for: app) }
-                    }
-                }
-            } else if let err {
-                self.lastResult = String(format: String(localized: "uninstall.result.failure", bundle: .module), mode, err, moved, skipped)
-                if !dryRun, !succeeded.isEmpty {
-                    self.checked.subtract(succeeded)
-                    if let app = self.selectedApp {
-                        Task { await self.reloadCandidates(for: app) }
-                    }
-                }
-            } else {
-                self.lastResult = String(format: String(localized: "uninstall.result.success", bundle: .module), moved, mode, skipped)
-                if !dryRun, !succeeded.isEmpty {
-                    self.checked.subtract(succeeded)
-                    if let app = self.selectedApp {
-                        Task { await self.reloadCandidates(for: app) }
-                    }
-                }
-            }
+        let coordinator = DeletionInteractionCoordinator(pipeline: pipeline)
+        let authorization: DeletionAuthorizedInteraction
+        switch coordinator.authorize(
+            prepared: request.request.prepared,
+            executionPlan: executionPlan
+        ) {
+        case .authorized(let value):
+            authorization = value
+        case .cancelled:
+            return
+        case .blocked(let block):
+            activeSheet = .preflightNotice(DeletionPreflightNotice(
+                rejections: block.rejections
+            ))
+            return
         }
+        guard requireCurrentUninstallExecutionRequest(
+            request,
+            boundSnapshotIdentity: authorization.authorization.snapshotIdentity
+        ) else { return }
+        let disposition = await coordinator.submit(authorization, accessDeniedPaths: [])
+        let completed: DeletionCompletedInteraction
+        switch disposition {
+        case .completed(let value):
+            completed = value
+        case .requiresConfirmation(let prepared):
+            guard requireCurrentUninstallExecutionRequest(request) else { return }
+            let totalBytes = prepared.paths.reduce(Int64(0)) { partial, path in
+                let value = request.request.bytesByPath[path] ?? 0
+                let sum = partial.addingReportingOverflow(value)
+                return sum.overflow ? .max : sum.partialValue
+            }
+            activeSheet = .confirm(UninstallDeleteRequest(
+                items: prepared.confirmationCandidates,
+                totalBytes: totalBytes,
+                bytesByPath: request.request.bytesByPath,
+                prepared: prepared,
+                appID: request.appID,
+                selectionRevision: request.selectionRevision
+            ))
+            return
+        case .blocked(let block):
+            activeSheet = .preflightNotice(DeletionPreflightNotice(rejections: block.rejections))
+            return
+        }
+        let result = completed.result
+        await ToolDeletionResultOrdering.finish(
+            updateModelToTerminalState: {
+                // Submit succeeded for these exact paths. Project them out even if a future
+                // non-UI state change advanced the selection during the await; silently
+                // keeping a path that has actually moved would leave the visible model false.
+                let terminal = UninstallCandidateTerminalProjection.applying(
+                    succeededPaths: Set(result.succeededPaths),
+                    to: UninstallCandidateTerminalState(
+                        candidates: self.candidates,
+                        checked: self.checked
+                    )
+                )
+                self.candidates = terminal.candidates
+                self.checked = terminal.checked
+            },
+            makePayload: { OperationResultCompletion.deletion(completed) },
+            present: { completion in
+                self.activeSheet = .result(completion)
+            }
+        )
     }
 
     private func formattedBytes(_ b: Int64) -> String {

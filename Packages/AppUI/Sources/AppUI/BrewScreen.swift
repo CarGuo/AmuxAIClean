@@ -1,5 +1,61 @@
 import SwiftUI
 import BrewKit
+import SafetyKit
+
+/// Orders the post-submission UI transition for Professional file tools.
+///
+/// The terminal projection is deliberately synchronous and MainActor-isolated:
+/// it can only reconcile the already-known submission outcome into the visible
+/// model, so presenting a result never waits on a fresh filesystem scan.  A
+/// later user refresh may discover unrelated changes, but it cannot be used as
+/// a prerequisite for acknowledging the completed submission.
+@MainActor
+enum ToolDeletionResultOrdering {
+    static func finish<Payload>(
+        updateModelToTerminalState: () -> Void,
+        makePayload: () -> Payload,
+        present: (Payload) -> Void
+    ) async {
+        updateModelToTerminalState()
+        present(makePayload())
+    }
+}
+
+struct BrewCleanupTerminalState: Equatable, Sendable {
+    let plan: BrewCleanupPlan
+    let bytesByPath: [String: Int64]
+}
+
+enum BrewCleanupTerminalProjection {
+    static func applying(
+        succeededPaths: Set<String>,
+        to state: BrewCleanupTerminalState
+    ) -> BrewCleanupTerminalState {
+        let currentPaths = Set(state.plan.stalePaths.map(\.path))
+        let removedPaths = succeededPaths.intersection(currentPaths)
+        let remaining = state.plan.stalePaths.filter { !removedPaths.contains($0.path) }
+        let remainingBytes = state.bytesByPath.filter { !removedPaths.contains($0.key) }
+
+        let totalBytes: Int64
+        if remaining.isEmpty {
+            totalBytes = 0
+        } else {
+            let removedBytes = removedPaths.reduce(Int64(0)) { partial, path in
+                let value = max(0, state.bytesByPath[path] ?? 0)
+                let sum = partial.addingReportingOverflow(value)
+                return sum.overflow ? .max : sum.partialValue
+            }
+            totalBytes = removedBytes >= state.plan.totalBytes
+                ? 0
+                : state.plan.totalBytes - removedBytes
+        }
+
+        return BrewCleanupTerminalState(
+            plan: BrewCleanupPlan(stalePaths: remaining, totalBytes: totalBytes),
+            bytesByPath: remainingBytes
+        )
+    }
+}
 
 /// F-2-4 / 2026-06：Homebrew 包管理屏（sidebar 入口接入）。
 ///
@@ -20,11 +76,43 @@ public struct BrewScreen: View {
     @State private var packages: [BrewPackage] = []
     @State private var outdated: [BrewOutdated] = []
     @State private var cleanupPlan: BrewCleanupPlan?
+    @State private var cleanupBytesByPath: [String: Int64] = [:]
     @State private var selectedTab: Tab = .installed
     @State private var isLoading: Bool = false
     @State private var isCleaning: Bool = false
     @State private var lastError: String?
-    @State private var cleanupResult: String?
+    @State private var activeSheet: ActiveSheet?
+    @State private var cleanupDeletionHandoff = ToolDeletionHandoff<CleanupConfirmedDeletion>()
+    @State private var cleanupPreflightTask: Task<Void, Never>?
+    @State private var cleanupPreflightGate = ToolDeletionPreflightRequestGate<[String]>()
+
+    private struct CleanupDeleteRequest: Identifiable, Sendable {
+        let id = UUID()
+        let items: [RunningAppGuard.Candidate]
+        let totalBytes: Int64
+        let prepared: DeletionPreparedInteraction
+
+        var paths: [String] { items.map(\.path) }
+    }
+
+    private struct CleanupConfirmedDeletion: Sendable {
+        let request: CleanupDeleteRequest
+        let executionPlan: ToolTrashExecutionPlan
+    }
+
+    private enum ActiveSheet: Identifiable {
+        case confirm(CleanupDeleteRequest)
+        case preflightNotice(DeletionPreflightNotice)
+        case result(OperationResultCompletion)
+
+        var id: String {
+            switch self {
+            case .confirm(let request): return "confirm-\(request.id)"
+            case .preflightNotice(let notice): return "preflightNotice-\(notice.id)"
+            case .result(let payload): return "result-\(payload.id)"
+            }
+        }
+    }
 
     enum Tab: String, CaseIterable, Identifiable {
         case installed, outdated, cleanup
@@ -68,6 +156,37 @@ public struct BrewScreen: View {
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task { reloadInstalled() }
+        .sheet(item: $activeSheet, onDismiss: completeCleanupSheetDismissal) { sheet in
+            switch sheet {
+            case .confirm(let request):
+                ToolTrashConfirmationSheet(
+                    items: request.items,
+                    totalBytes: request.totalBytes,
+                    vendorOverrideRequest: request.prepared.vendorOverrideRequest,
+                    scanIncompleteOverrideRequest: request.prepared.scanIncompleteOverrideRequest,
+                    onCancel: { activeSheet = nil },
+                    onConfirm: { executionPlan in
+                        guard cleanupDeletionHandoff.schedule(CleanupConfirmedDeletion(
+                            request: request,
+                            executionPlan: executionPlan
+                        )) else { return false }
+                        activeSheet = nil
+                        return true
+                    }
+                )
+            case .preflightNotice(let notice):
+                DeletionPreflightNoticeSheet(notice: notice) {
+                    activeSheet = nil
+                }
+            case .result(let completion):
+                OperationResultSheet(completion: completion) {
+                    activeSheet = nil
+                }
+            }
+        }
+        .onDisappear {
+            cancelCleanupPreflight()
+        }
     }
 
     private var header: some View {
@@ -127,6 +246,7 @@ public struct BrewScreen: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .onChange(of: selectedTab) { _, new in
+            cancelCleanupPreflight()
             switch new {
             case .installed: reloadInstalled()
             case .outdated:  reloadOutdated()
@@ -274,21 +394,16 @@ public struct BrewScreen: View {
                         ProgressView().controlSize(.small)
                     }
                     Button {
-                        moveCleanupToTrash(plan)
+                        prepareCleanupForTrash(plan)
                     } label: {
                         Label(String(localized: "brew.cleanup.move_to_trash", bundle: .module),
                               systemImage: "trash")
                     }
                     .disabled(plan.isEmpty || isCleaning)
                 }
-                Text("brew.cleanup.dry_run_note", bundle: .module)
+                Text("brew.cleanup.review_note", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
-                if let cleanupResult {
-                    Text(verbatim: cleanupResult)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
                         ForEach(plan.stalePaths, id: \.self) { url in
@@ -365,42 +480,174 @@ public struct BrewScreen: View {
     private func reloadCleanup() {
         guard let c = cleanup else {
             cleanupPlan = nil
+            cleanupBytesByPath = [:]
             return
         }
         isLoading = true
         lastError = nil
         Task.detached {
             let plan = c.dryRun()
+            let bytesByPath = Dictionary(uniqueKeysWithValues: plan.stalePaths.map { url in
+                let bytes: Int64
+                do {
+                    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                    bytes = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+                } catch {
+                    // Per-item bytes are presentation metadata only.  The aggregate from
+                    // BrewCleanup remains authoritative when a file disappears between
+                    // enumeration and this snapshot, so a missing value is not a cleanup
+                    // failure and must not abort the refresh.
+                    bytes = 0
+                }
+                return (url.path, max(0, bytes))
+            })
             await MainActor.run {
                 cleanupPlan = plan
+                cleanupBytesByPath = bytesByPath
                 isLoading = false
             }
         }
     }
 
-    private func moveCleanupToTrash(_ plan: BrewCleanupPlan) {
-        guard !plan.isEmpty, !isCleaning else { return }
+    private func prepareCleanupForTrash(_ plan: BrewCleanupPlan) {
+        guard !plan.isEmpty,
+              !isCleaning,
+              !cleanupDeletionHandoff.hasPending,
+              activeSheet == nil else { return }
+        let paths = plan.stalePaths.map(\.path)
+        cleanupPreflightTask?.cancel()
+        let token = cleanupPreflightGate.begin(context: paths)
         isCleaning = true
-        cleanupResult = nil
-        Task { @MainActor in
-            let action = TrashActionCoordinator(pipeline: pipeline)
-            let result = await action.run(TrashActionCoordinator.Request(
-                paths: plan.stalePaths.map(\.path),
-                dryRun: false,
-                source: "brew",
-                accessDeniedPaths: []
-            ))
+        cleanupPreflightTask = Task { @MainActor in
+            let identity = DeletionSnapshotIdentity(sessionID: UUID(), revision: 0)
+            let coordinator = DeletionInteractionCoordinator(pipeline: pipeline)
+            let decision: DeletionInteractionPreparation
+            do {
+                let intent = try coordinator.makeIntent(
+                    origin: .brew,
+                    mode: .professional,
+                    snapshotIdentity: identity,
+                    candidates: plan.stalePaths.map { url in
+                        DeletionInteractionCandidateSnapshot(
+                            path: url.path,
+                            title: url.lastPathComponent,
+                            isDirectory: url.hasDirectoryPath,
+                            bytes: cleanupBytesByPath[url.path] ?? 0,
+                            fileCount: 1
+                        )
+                    }
+                )
+                decision = await coordinator.prepare(
+                    intent: intent,
+                    currentSnapshotIdentity: identity
+                )
+            } catch {
+                decision = .blocked(DeletionInteractionBlock(
+                    intentID: UUID(),
+                    rejections: paths.map {
+                        .init(path: $0, reason: SafetyRejection.preflightCancelled.rawValue)
+                    }
+                ))
+            }
+            guard cleanupPreflightGate.finishIfCurrent(token, context: paths) else { return }
+            cleanupPreflightTask = nil
             isCleaning = false
-            if let error = result.err {
-                cleanupResult = String(format: String(localized: "brew.cleanup.failed %@", bundle: .module), error)
-            } else {
-                cleanupResult = String(format: String(localized: "brew.cleanup.moved %lld %@", bundle: .module),
-                                       result.succeededPaths.count,
-                                       byteString(plan.totalBytes))
+            guard !Task.isCancelled,
+                  !cleanupDeletionHandoff.hasPending,
+                  activeSheet == nil else { return }
+            switch decision {
+            case .confirmation(let prepared):
+                activeSheet = .confirm(CleanupDeleteRequest(
+                    items: prepared.confirmationCandidates,
+                    totalBytes: cleanupTotalBytes(for: prepared.paths),
+                    prepared: prepared
+                ))
+            case .blocked(let block):
+                activeSheet = .preflightNotice(DeletionPreflightNotice(rejections: block.rejections))
+            case .cancelled:
+                return
             }
-            if !result.succeededPaths.isEmpty {
-                reloadCleanup()
+        }
+    }
+
+    private func completeCleanupSheetDismissal() {
+        guard let confirmed = cleanupDeletionHandoff.takeAfterSheetDismissal() else { return }
+        moveCleanupToTrash(confirmed)
+    }
+
+    private func cancelCleanupPreflight() {
+        cleanupPreflightTask?.cancel()
+        cleanupPreflightTask = nil
+        if cleanupPreflightGate.cancel() {
+            isCleaning = false
+        }
+    }
+
+    private func moveCleanupToTrash(_ confirmed: CleanupConfirmedDeletion) {
+        guard !isCleaning else { return }
+        isCleaning = true
+        Task { @MainActor in
+            defer { isCleaning = false }
+            let coordinator = DeletionInteractionCoordinator(pipeline: pipeline)
+            let authorization: DeletionAuthorizedInteraction
+            switch coordinator.authorize(
+                prepared: confirmed.request.prepared,
+                executionPlan: confirmed.executionPlan
+            ) {
+            case .authorized(let value):
+                authorization = value
+            case .cancelled:
+                return
+            case .blocked(let block):
+                activeSheet = .preflightNotice(DeletionPreflightNotice(
+                    rejections: block.rejections
+                ))
+                return
             }
+            let submission = await coordinator.submit(authorization, accessDeniedPaths: [])
+            let completed: DeletionCompletedInteraction
+            switch submission {
+            case .completed(let value):
+                completed = value
+            case .requiresConfirmation(let prepared):
+                activeSheet = .confirm(CleanupDeleteRequest(
+                    items: prepared.confirmationCandidates,
+                    totalBytes: cleanupTotalBytes(for: prepared.paths),
+                    prepared: prepared
+                ))
+                return
+            case .blocked(let block):
+                activeSheet = .preflightNotice(DeletionPreflightNotice(rejections: block.rejections))
+                return
+            }
+            let result = completed.result
+            let succeeded = Set(result.succeededPaths)
+            await ToolDeletionResultOrdering.finish(
+                updateModelToTerminalState: {
+                    guard let cleanupPlan else { return }
+                    let terminal = BrewCleanupTerminalProjection.applying(
+                        succeededPaths: succeeded,
+                        to: BrewCleanupTerminalState(
+                            plan: cleanupPlan,
+                            bytesByPath: cleanupBytesByPath
+                        )
+                    )
+                    self.cleanupPlan = terminal.plan
+                    self.cleanupBytesByPath = terminal.bytesByPath
+                },
+                makePayload: { OperationResultCompletion.deletion(completed) },
+                present: { completion in
+                    activeSheet = .result(completion)
+                }
+            )
+        }
+    }
+
+    private func cleanupTotalBytes(for paths: [String]) -> Int64 {
+        paths.reduce(Int64(0)) { partial, path in
+            let value = max(0, cleanupBytesByPath[path] ?? 0)
+            let sum = partial.addingReportingOverflow(value)
+            return sum.overflow ? .max : sum.partialValue
         }
     }
 

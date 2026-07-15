@@ -9,8 +9,8 @@ import Foundation
 ///    —— 当 /Applications（在测试里替换为临时空目录）里没有任何 .app 时返回空数组
 /// 2. `test_selectApp返回非空候选()`
 ///    —— 给定一个 fixture .app + 伪 home 里撒残留，selectApp 应返回非空候选
-/// 3. `test_删除走dryRun不会真动文件()`
-///    —— 通过 TrashPipeline.dryRun 走完一次"删除候选"链路，磁盘文件原封不动
+/// 3. `test_TrashPipeline诊断dryRun不会真动文件()`
+///    —— 只验证底层诊断能力；UninstallScreen 生产交互不暴露或调用 dry-run
 final class UninstallStoreTests: XCTestCase {
 
     // MARK: - Helpers
@@ -239,9 +239,9 @@ final class UninstallStoreTests: XCTestCase {
         XCTAssertLessThan(elapsed, 0.15, "UninstallStore.selectApp 首屏必须只走主路径快速候选")
     }
 
-    // MARK: - 3. 删除走 dryRun 不会真动文件
+    // MARK: - 3. 底层诊断 dryRun 不会真动文件
 
-    func test_删除走dryRun不会真动文件() async throws {
+    func test_TrashPipeline诊断dryRun不会真动文件() async throws {
         let root = try makeTempDir("dry-run")
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -270,7 +270,7 @@ final class UninstallStoreTests: XCTestCase {
         let cands = await store.selectApp(dryFoo)
         XCTAssertFalse(cands.isEmpty, "前置：应有候选项")
 
-        // 走 TrashPipeline 的 dryRun 路径 —— 这是 UninstallScreen 默认按钮链路
+        // 直接验证 TrashPipeline 的诊断 dryRun；这不是 UninstallScreen 的按钮链路。
         let pipeline = TrashPipeline()
         let paths = cands.map(\.path)
         let (moved, skipped, err, _) = await pipeline.moveToTrash(paths: paths, dryRun: true)

@@ -40,10 +40,26 @@ public struct MultiRootEvent: Sendable {
 }
 
 public actor MultiRootScanner {
+    typealias RootScanOperation = @Sendable (
+        _ root: URL,
+        _ options: ScanOptions,
+        _ perRootTimeout: TimeInterval,
+        _ noProgressTimeout: TimeInterval,
+        _ continuation: AsyncStream<MultiRootEvent>.Continuation
+    ) async -> Void
+
     private let options: ScanOptions
+    private let rootScanOperation: RootScanOperation
 
     public init(options: ScanOptions = .default) {
         self.options = options
+        self.rootScanOperation = Self.scanOne
+    }
+
+    init(options: ScanOptions = .default,
+         rootScanOperation: @escaping RootScanOperation) {
+        self.options = options
+        self.rootScanOperation = rootScanOperation
     }
 
     /// v1.3 P0-B：per-root 硬超时，超过即强制 cancel + 合成 partial .finished 让上游收敛。
@@ -80,61 +96,83 @@ public actor MultiRootScanner {
         totalDeadline: TimeInterval = MultiRootScanner.defaultTotalDeadline
     ) -> AsyncStream<MultiRootEvent> {
         let opts = self.options
+        let rootScanOperation = self.rootScanOperation
         let cap = max(1, maxConcurrentRoots)
         return AsyncStream(bufferingPolicy: .unbounded) { continuation in
             let parent = Task.detached(priority: .userInitiated) {
-                // 总扫描 deadline 哨兵：到点直接 cancel parent → onTermination 链式 cancel 所有 root。
-                let deadlineSentinel = Task.detached { [totalDeadline] in
-                    try? await Task.sleep(nanoseconds: UInt64(totalDeadline * 1_000_000_000))
-                    if !Task.isCancelled {
+                await withTaskGroup(of: ParentRaceResult.self) { race in
+                    // 结构化的扫描 child：deadline child 完成时 cancelAll 会真正向这里及
+                    // 其内部 root task group 传播取消，不依赖读取另一个 Task 的状态。
+                    race.addTask {
+                        guard !Task.isCancelled else { return .scansFinished }
+                        await withTaskGroup(of: Void.self) { group in
+                            // Sliding window 调度：先放出前 cap 个 root，每完成一个再补一个；
+                            // group.next() 会等到任意一个子任务完成再返回，这样并发度永远 ≤ cap。
+                            var i = 0
+                            let n = roots.count
+                            while i < min(cap, n), !Task.isCancelled {
+                                let root = roots[i]
+                                group.addTask {
+                                    await rootScanOperation(
+                                        root,
+                                        opts,
+                                        perRootTimeout,
+                                        noProgressTimeout,
+                                        continuation
+                                    )
+                                }
+                                i += 1
+                            }
+                            while i < n, !Task.isCancelled {
+                                await group.next()
+                                guard !Task.isCancelled else { break }
+                                let root = roots[i]
+                                group.addTask {
+                                    await rootScanOperation(
+                                        root,
+                                        opts,
+                                        perRootTimeout,
+                                        noProgressTimeout,
+                                        continuation
+                                    )
+                                }
+                                i += 1
+                            }
+                            await group.waitForAll()
+                        }
+                        return .scansFinished
+                    }
+
+                    race.addTask { [totalDeadline] in
+                        guard totalDeadline > 0 else { return .deadlineReached }
+                        do {
+                            try await Task.sleep(
+                                nanoseconds: UInt64(totalDeadline * 1_000_000_000)
+                            )
+                            return .deadlineReached
+                        } catch is CancellationError {
+                            return .scansFinished
+                        } catch {
+                            GSYLog.error(.scan, "MultiRootScanner deadline sleep 失败: \(error)")
+                            return .deadlineReached
+                        }
+                    }
+
+                    if let first = await race.next(), first == .deadlineReached {
                         GSYLog.warning(.scan, "MultiRootScanner 命中总扫描 deadline \(Int(totalDeadline))s，强制结束所有 root")
                     }
+                    race.cancelAll()
+                    await race.waitForAll()
                 }
-                await withTaskGroup(of: Void.self) { group in
-                    // Sliding window 调度：先放出前 cap 个 root，每完成一个再补一个；
-                    // group.next() 会等到任意一个子任务完成再返回，这样并发度永远 ≤ cap。
-                    var i = 0
-                    let n = roots.count
-                    while i < min(cap, n) {
-                        let root = roots[i]
-                        group.addTask {
-                            await Self.scanOne(
-                                root: root,
-                                opts: opts,
-                                perRootTimeout: perRootTimeout,
-                                noProgressTimeout: noProgressTimeout,
-                                into: continuation
-                            )
-                        }
-                        i += 1
-                    }
-                    while i < n, !Task.isCancelled, !deadlineSentinel.isCancelled {
-                        // 等任意一个 root 完成
-                        await group.next()
-                        if deadlineSentinel.isCancelled == false,
-                           Task.isCancelled == false {
-                            let root = roots[i]
-                            group.addTask {
-                                await Self.scanOne(
-                                    root: root,
-                                    opts: opts,
-                                    perRootTimeout: perRootTimeout,
-                                    noProgressTimeout: noProgressTimeout,
-                                    into: continuation
-                                )
-                            }
-                            i += 1
-                        } else {
-                            break
-                        }
-                    }
-                    await group.waitForAll()
-                }
-                deadlineSentinel.cancel()
                 continuation.finish()
             }
             continuation.onTermination = { _ in parent.cancel() }
         }
+    }
+
+    private enum ParentRaceResult: Sendable, Equatable {
+        case scansFinished
+        case deadlineReached
     }
 
     /// v1.5：抽出"扫单根"，给 sliding window 调度复用。
@@ -175,6 +213,8 @@ public actor MultiRootScanner {
                         await progressClock.recordPermissionDenied()
                     case .tccProtectedSkipped:
                         await progressClock.recordTCCProtectedSkipped()
+                    case .incomplete(let issue):
+                        await progressClock.recordIncomplete(issue)
                     case .cacheDirTagged:
                         await progressClock.touch()
                     case .finished:
@@ -235,6 +275,7 @@ actor MultiRootProgressClock {
     private var observedDirectoryCount: Int = 0
     private var permissionDeniedCount: Int = 0
     private var tccProtectedSkippedCount: Int = 0
+    private var incompleteIssues: Set<ScanIncompleteIssue> = []
 
     func touch() {
         lastTouch = Date()
@@ -273,6 +314,11 @@ actor MultiRootProgressClock {
         tccProtectedSkippedCount += 1
     }
 
+    func recordIncomplete(_ issue: ScanIncompleteIssue) {
+        touch()
+        incompleteIssues.insert(issue)
+    }
+
     func markFinished() {
         didReceiveFinished = true
     }
@@ -282,7 +328,11 @@ actor MultiRootProgressClock {
     }
 
     func syntheticSummary(root: URL, elapsed: TimeInterval) -> ScanSummary {
-        ScanSummary(
+        let sortedIssues = incompleteIssues.sorted {
+            if $0.path == $1.path { return $0.reason.rawValue < $1.reason.rawValue }
+            return $0.path < $1.path
+        }
+        return ScanSummary(
             root: root,
             totalAllocatedBytes: max(latestProgressBytes, observedAllocatedBytes),
             totalLogicalBytes: observedLogicalBytes,
@@ -291,7 +341,9 @@ actor MultiRootProgressClock {
             dedupedHardlinkBytes: 0,
             elapsed: elapsed,
             permissionDeniedCount: permissionDeniedCount,
-            tccProtectedSkippedCount: tccProtectedSkippedCount
+            tccProtectedSkippedCount: tccProtectedSkippedCount,
+            completionStatus: .partial,
+            incompleteIssues: sortedIssues
         )
     }
 }

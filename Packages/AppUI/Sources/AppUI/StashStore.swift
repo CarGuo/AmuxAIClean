@@ -39,7 +39,11 @@ public final class StashStore {
         public let title: String     // lastPathComponent，缓存避免每次重算
         public let bytes: Int64
         public let isDirectory: Bool
+        public let fileCount: Int
         public let addedAt: Date
+        /// 加入待处理时所属完整扫描会话的不可读路径快照。稍后清理不能借用另一个
+        /// category 的 ScanCoordinator 状态，否则目录项会丢失“存在未扫描子树”的证据。
+        public let accessDeniedPaths: Set<String>
         /// v2026.06.19 **一键 AI 队列**结果缓存。
         /// `.pending` 是初值；由 [StashAIQueue.start](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)
         /// 在每条询问完成后调 [setAIVerdict](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashStore.swift)
@@ -48,14 +52,18 @@ public final class StashStore {
         public var aiVerdict: AIVerdictCache
 
         public init(path: String, title: String, bytes: Int64, isDirectory: Bool,
+                    fileCount: Int = 1,
                     addedAt: Date = Date(),
+                    accessDeniedPaths: Set<String> = [],
                     aiVerdict: AIVerdictCache = .pending) {
             self.id = path
             self.path = path
             self.title = title
             self.bytes = bytes
             self.isDirectory = isDirectory
+            self.fileCount = max(1, fileCount)
             self.addedAt = addedAt
+            self.accessDeniedPaths = accessDeniedPaths
             self.aiVerdict = aiVerdict
         }
     }
@@ -105,13 +113,31 @@ public final class StashStore {
         entries.reduce(0) { $0 + $1.bytes }
     }
 
-    /// 加入待处理。已存在（同 path）则**忽略**（即语义为 set 而非 multiset）。
+    /// 加入待处理。已存在（同 path）时不重复插入，但会合并更严格的扫描证据
+    /// （denied union、fileCount/bytes 取较大值），语义仍是 set 而非 multiset。
     /// 返回值：是否真的新增了一条；false 表示已存在被去重。
     /// 这个返回值给 UI 用——加入时可顺手 toast / 蜂鸣区分"成功 vs 重复加入"。
     @discardableResult
     public func add(_ entry: StashEntry) -> Bool {
         // v2026.06.23 perf：先查 O(1) pathIndex 而不是 O(N) entries.contains。
-        if pathIndex.contains(entry.id) { return false }
+        if pathIndex.contains(entry.id) {
+            // 同一路径可能在稍后的完整扫描里发现更多 denied 子树。去重不能把
+            // 新的安全证据丢掉；只保持原顺序/AI 状态，并让上下文单调变严格。
+            if let index = entries.firstIndex(where: { $0.id == entry.id }) {
+                let existing = entries[index]
+                entries[index] = StashEntry(
+                    path: existing.path,
+                    title: existing.title,
+                    bytes: max(existing.bytes, entry.bytes),
+                    isDirectory: existing.isDirectory || entry.isDirectory,
+                    fileCount: max(existing.fileCount, entry.fileCount),
+                    addedAt: existing.addedAt,
+                    accessDeniedPaths: existing.accessDeniedPaths.union(entry.accessDeniedPaths),
+                    aiVerdict: existing.aiVerdict
+                )
+            }
+            return false
+        }
         entries.append(entry)
         pathIndex.insert(entry.id)
         return true
@@ -119,8 +145,20 @@ public final class StashStore {
 
     /// 便捷重载：从原始字段构造再 add。tree row contextMenu 调它最方便。
     @discardableResult
-    public func add(path: String, title: String, bytes: Int64, isDirectory: Bool) -> Bool {
-        add(StashEntry(path: path, title: title, bytes: bytes, isDirectory: isDirectory))
+    public func add(path: String,
+                    title: String,
+                    bytes: Int64,
+                    isDirectory: Bool,
+                    fileCount: Int = 1,
+                    accessDeniedPaths: Set<String> = []) -> Bool {
+        add(StashEntry(
+            path: path,
+            title: title,
+            bytes: bytes,
+            isDirectory: isDirectory,
+            fileCount: fileCount,
+            accessDeniedPaths: accessDeniedPaths
+        ))
     }
 
     /// 是否已加入待处理。tree row contextMenu 用它来"已加入则禁用按钮 + 改文案"。

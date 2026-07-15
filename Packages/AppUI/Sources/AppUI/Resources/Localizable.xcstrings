@@ -35,6 +35,57 @@
         }
       }
     },
+    "ai.keychain.error.stale_file_reference": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The saved API key is tied to an older app build and macOS can no longer access it. Open Settings → AI and save the key again. If saving still fails, remove the old AmuxAIClean API key item in Keychain Access, then save again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存的 API Key 仍绑定旧版 App，macOS 现在无法访问。请打开「设置 → AI」重新保存；若保存仍失败，请先在「钥匙串访问」中删除旧的 AmuxAIClean API Key 项目，再重新保存。"
+          }
+        }
+      }
+    },
+    "ai.keychain.error.system.format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS Keychain could not be accessed (%@). Open Settings → AI and save the API key again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法访问 macOS 钥匙串（%@）。请打开「设置 → AI」重新保存 API Key。"
+          }
+        }
+      }
+    },
+    "ai.keychain.error.unknown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The API key could not be accessed. Open Settings → AI and save it again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法访问 API Key。请打开「设置 → AI」重新保存。"
+          }
+        }
+      }
+    },
     "ai.sheet.close": {
       "extractionState": "manual",
       "localizations": {
@@ -116,23 +167,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Base URL 不是有效的端点。"
-          }
-        }
-      }
-    },
-    "ai.sheet.error.keychain.format": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Could not read Keychain: %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "读取钥匙串失败：%@"
           }
         }
       }
@@ -432,13 +466,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Size %@"
+            "value": "Disk usage %@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "大小 %@"
+            "value": "磁盘占用 %@"
           }
         }
       }
@@ -500,13 +534,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Total %@"
+            "value": "Total disk usage %@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "总计 %@"
+            "value": "磁盘占用总计 %@"
           }
         }
       }
@@ -885,36 +919,19 @@
         }
       }
     },
-    "brew.cleanup.dry_run_note": {
+    "brew.cleanup.review_note": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Dry-run preview, nothing deleted."
+            "value": "Review the items below before moving them to Trash."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "预演模式，未删除任何文件。"
-          }
-        }
-      }
-    },
-    "brew.cleanup.failed %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Move failed: %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "移动失败：%@"
+            "value": "请先检查下方项目，再确认移到废纸篓。"
           }
         }
       }
@@ -925,13 +942,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Click Cleanup to start a dry-run."
+            "value": "Click Cleanup to review cache items."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "点击「清理」开始预演。"
+            "value": "点击「清理」查看可清理的缓存项目。"
           }
         }
       }
@@ -949,23 +966,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "移到废纸篓"
-          }
-        }
-      }
-    },
-    "brew.cleanup.moved %lld %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Moved %lld items to Trash, about %@."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已移动 %lld 项到废纸篓，约 %@。"
           }
         }
       }
@@ -1966,19 +1966,36 @@
         }
       }
     },
-    "delete.result.failure %@ %lld %lld": {
+    "delete.preflight.scan_changed": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Failed: %1$@\nProcessed %2$lld, skipped %3$lld"
+            "value": "The scan results changed while the cleanup was being prepared. Review the current results and confirm again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "失败：%1$@\n已处理 %2$lld 项，跳过 %3$lld 项"
+            "value": "准备清理期间扫描结果已变化，请检查当前结果后重新确认。"
+          }
+        }
+      }
+    },
+    "delete.preflight.scan_in_progress": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wait for the scan to finish before adding or moving items to Trash. Partial results may not include unreadable subfolders."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请等待扫描完整结束后再加入待处理或移到废纸篓；中间结果可能尚未包含不可读子目录。"
           }
         }
       }
@@ -2017,23 +2034,6 @@
         }
       }
     },
-    "delete.result.success %lld %lld": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Processed %1$lld items, skipped %2$lld"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已处理 %1$lld 项，跳过 %2$lld 项"
-          }
-        }
-      }
-    },
     "delete.result.success.dryrun %lld %lld": {
       "extractionState": "manual",
       "localizations": {
@@ -2051,19 +2051,87 @@
         }
       }
     },
-    "delete.running_app.blocked %@": {
+    "delete.running_app.choice.message %@": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The related app is still running: %@.\nQuit it and try again to avoid deleting cache files while the app is writing them."
+            "value": "Running: %@. You can skip their related items or still try to move every selected item to Trash. Protected paths remain blocked by the safety rules."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "相关应用仍在运行：%@。\n请先退出应用再重试，避免在应用写入缓存时删除文件。"
+            "value": "正在运行：%@。你可以跳过相关项目，或仍尝试将全部所选项目移到废纸篓；受保护路径仍会被安全规则拦截。"
+          }
+        }
+      }
+    },
+    "delete.running_app.choice.move_all": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Try Moving All to Trash"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仍尝试将全部移到废纸篓"
+          }
+        }
+      }
+    },
+    "delete.running_app.choice.skip %lld %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skip affected items (%1$lld) and continue (%2$lld)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "跳过 %1$lld 个运行中相关项，继续处理其余 %2$lld 项"
+          }
+        }
+      }
+    },
+    "delete.running_app.choice.skip_all %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skip all affected items (%lld)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "跳过全部 %lld 个运行中相关项"
+          }
+        }
+      }
+    },
+    "delete.running_app.choice.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Related Apps Are Still Running"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相关应用仍在运行"
           }
         }
       }
@@ -2074,13 +2142,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Running app: %@. Preview is still available, but true deletion is disabled until the app quits."
+            "value": "Running: %@. When you continue, choose whether to skip their related items or still try to move all selected items to Trash."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在运行：%@。仍可执行预览，但真正移到废纸篓前需要先退出应用。"
+            "value": "正在运行：%@。继续时可选择跳过相关项目，或仍尝试将全部所选项目移到废纸篓。"
           }
         }
       }
@@ -2102,6 +2170,40 @@
         }
       }
     },
+    "delete.professional.confirm.message %lld %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Selected: %1$lld · %2$@ total. Move to Trash?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选择 %1$lld 项 · 共 %2$@。要移到废纸篓吗？"
+          }
+        }
+      }
+    },
+    "delete.professional.confirm.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move to Trash?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移到废纸篓？"
+          }
+        }
+      }
+    },
     "delete.summary.detail %lld %lld %@": {
       "extractionState": "manual",
       "localizations": {
@@ -2117,6 +2219,103 @@
             "value": "%1$lld 项 · %2$lld 个文件 · %3$@"
           }
         }
+      }
+    },
+    "delete.vendor_override.action": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move to Trash Anyway"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仍然移到废纸篓"
+          }
+        }
+      }
+    },
+    "delete.vendor_override.body %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld paths are protected only by vendor SDK/toolchain rules. Removing them may break dependent apps or development environments."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 个路径仅被厂商 SDK/工具链规则保护。移除后可能导致依赖它们的 App 或开发环境损坏。"
+          }
+        }
+      }
+    },
+    "delete.vendor_override.field": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Confirmation text" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "确认文本" } }
+      }
+    },
+    "delete.vendor_override.risk": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "High-risk vendor protection override" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "高风险厂商保护覆盖" } }
+      }
+    },
+    "delete.scan_incomplete_override.risk": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scan evidence is incomplete; the exact target will be rechecked before moving" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描证据不完整；移入废纸篓前将再次核验具体目标" } }
+      }
+    },
+    "delete.scan_incomplete_override.action": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Recheck and Move to Trash" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "重新核验并移到废纸篓" } }
+      }
+    },
+    "delete.scan_incomplete_override.body %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The scan could not fully inspect %lld selected targets. Their identity, safety boundaries, and parent-directory move capability were checked and will be checked again immediately before moving." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描未能完整检查所选的 %lld 个目标。已核验其身份、安全边界和父目录移动能力，并将在实际移动前再次核验。" } }
+      }
+    },
+    "delete.scan_incomplete_override.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Confirm Incomplete Scan Target" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "确认扫描不完整目标" } }
+      }
+    },
+    "delete.vendor_override.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Override Vendor Protection" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "覆盖厂商保护" } }
+      }
+    },
+    "delete.vendor_override.token": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "DELETE" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "DELETE" } }
+      }
+    },
+    "delete.vendor_override.type_prompt %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Type %@ exactly to confirm this override." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请输入 %@ 以确认本次覆盖。" } }
       }
     },
     "delete.summary.more %lld": {
@@ -2159,13 +2358,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "When on: Helper takes no action and only logs what would be deleted."
+            "value": "When on: no files are moved; the app only checks and reports what would happen."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "勾上：Helper 不动手，只在日志里记录会删什么。"
+            "value": "开启后不会移动文件，只检查并报告将会发生的操作。"
           }
         }
       }
@@ -2465,13 +2664,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld copies · %@"
+            "value": "%lld copies · logical size per copy %@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld 份 · %@"
+            "value": "%lld 份 · 单份逻辑大小 %@"
           }
         }
       }
@@ -2652,13 +2851,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Reclaimable %@ · per copy %@"
+            "value": "Reclaimable %@ · logical size per copy %@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "可释放 %@ · 单份 %@"
+            "value": "可释放 %@ · 单份逻辑大小 %@"
           }
         }
       }
@@ -2880,40 +3079,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "在 Finder 中显示"
-          }
-        }
-      }
-    },
-    "duplicate.panel.prompt": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "添加"
-          }
-        }
-      }
-    },
-    "duplicate.panel.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Choose directories to scan"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "选择要扫描的目录"
           }
         }
       }
@@ -3849,6 +4014,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "顶部居中（刘海下方）"
+          }
+        }
+      }
+    },
+    "hud.cleaning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cleaning"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理中"
           }
         }
       }
@@ -4924,6 +5106,142 @@
         }
       }
     },
+    "main.scan.incomplete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The scan ended before every location was fully checked. Partial results are shown; scan again to retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描在所有位置完整检查前结束。当前显示部分结果，请重新扫描后重试。"
+          }
+        }
+      }
+    },
+    "main.scan.incomplete.summary %lld %@ %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Partial · %1$lld files · %2$@ · %3$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分完成 · %1$lld 文件 · %2$@ · %3$@"
+          }
+        }
+      }
+    },
+    "scan.failure.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The selected location could not be scanned reliably. No cleanup will use this incomplete scan."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法可靠扫描所选位置。本次不完整扫描不会用于清理。"
+          }
+        }
+      }
+    },
+    "scan.failure.retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan Again"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新扫描"
+          }
+        }
+      }
+    },
+    "scan.failure.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t finish scanning"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法完成扫描"
+          }
+        }
+      }
+    },
+    "scan.limitations.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Partial results are available. Expand the details to see which locations were not fully checked; these locations remain excluded from normal cleanup."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前可查看部分结果。展开详情可查看未完整检查的位置；普通清理仍会排除这些位置。"
+          }
+        }
+      }
+    },
+    "scan.limitations.other.title %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Other locations not fully scanned (%lld)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "其它未完整扫描的位置（%lld）"
+          }
+        }
+      }
+    },
+    "scan.limitations.title %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan completed with %lld locations not fully checked"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描已完成，但有 %lld 个位置未被完整检查"
+          }
+        }
+      }
+    },
     "main.scan.first.hint": {
       "extractionState": "manual",
       "localizations": {
@@ -5672,6 +5990,40 @@
         }
       }
     },
+    "op.result.hint.running_skipped": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You chose to leave these items untouched because their related apps are running. They remain selected so you can retry after quitting those apps."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你选择了不处理这些运行中应用的相关项目。它们会保持选中，退出相关应用后可再次尝试。"
+          }
+        }
+      }
+    },
+    "op.result.more %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "…and %lld more"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "…另有 %lld 项"
+          }
+        }
+      }
+    },
     "op.result.reason.access_denied": {
       "extractionState": "manual",
       "localizations": {
@@ -5723,6 +6075,41 @@
         }
       }
     },
+    "op.result.reason.target_evidence_missing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The scan did not provide target-specific evidence, so this item was not changed." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本轮扫描没有提供该目标的精确证据，因此未执行更改" } }
+      }
+    },
+    "op.result.reason.target_identity_changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The target changed after confirmation. Review it and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "确认后目标已发生变化，请重新检查后再试" } }
+      }
+    },
+    "op.result.reason.target_move_unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The target cannot currently be moved from its parent directory. No files were changed." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前无法从父目录移动该目标，未更改任何文件" } }
+      }
+    },
+    "op.result.reason.target_immutable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The target or its parent is marked immutable and cannot be moved." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "目标或其父目录被标记为不可变，无法移动" } }
+      }
+    },
+    "op.result.reason.target_read_only_volume": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The target is on a read-only volume and cannot be moved." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "目标位于只读卷，无法移动" } }
+      }
+    },
     "op.result.reason.hard_forbid": {
       "extractionState": "manual",
       "localizations": {
@@ -5736,6 +6123,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "硬保护路径（系统核心或关键 bundle）"
+          }
+        }
+      }
+    },
+    "op.result.reason.outside_user_scope": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Outside the current user's cleanup scope. External volumes and other users' files are scan-only."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "超出当前用户的清理范围；外置卷和其他用户的文件仅允许扫描。"
+          }
+        }
+      }
+    },
+    "op.result.reason.preflight_cancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The safety check was cancelled before it completed. No item was changed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安全检查尚未完成便已取消，未更改任何项目。"
           }
         }
       }
@@ -5876,6 +6297,23 @@
         }
       }
     },
+    "op.result.section.running_skipped": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Items skipped for running apps"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "因应用运行而跳过的项"
+          }
+        }
+      }
+    },
     "op.result.stat.blocked": {
       "extractionState": "manual",
       "localizations": {
@@ -5923,6 +6361,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "已移入废纸篓"
+          }
+        }
+      }
+    },
+    "op.result.stat.running_skipped": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skipped"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已跳过"
           }
         }
       }
@@ -6035,40 +6490,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "清理完成"
-          }
-        }
-      }
-    },
-    "panel.add": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "添加"
-          }
-        }
-      }
-    },
-    "panel.choose_dir.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Choose a folder to add to scan"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "选择要加入扫描的目录"
           }
         }
       }
@@ -7875,23 +8296,6 @@
         }
       }
     },
-    "settings.ai.api_key.save_failed.format": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Keychain operation failed: %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "钥匙串操作失败：%@"
-          }
-        }
-      }
-    },
     "settings.ai.api_key.saved": {
       "extractionState": "manual",
       "localizations": {
@@ -8572,6 +8976,57 @@
         }
       }
     },
+    "custom_path.import.duplicate %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Already in the list: %lld."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选中的 %lld 个路径已在列表中。"
+          }
+        }
+      }
+    },
+    "custom_path.import.failed %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The folder could not be added: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法添加文件夹：%@"
+          }
+        }
+      }
+    },
+    "custom_path.import.notice.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Path"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加路径"
+          }
+        }
+      }
+    },
     "settings.paths.add": {
       "extractionState": "manual",
       "localizations": {
@@ -8619,40 +9074,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "还没有自定义路径"
-          }
-        }
-      }
-    },
-    "settings.paths.panel.prompt": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "添加"
-          }
-        }
-      }
-    },
-    "settings.paths.panel.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Choose directories to include in the scan"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "选择要加入扫描的目录"
           }
         }
       }
@@ -8844,23 +9265,6 @@
         }
       }
     },
-    "settings.scan.section.size_mode": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Size accounting mode"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "体积统计口径"
-          }
-        }
-      }
-    },
     "settings.scan.show_hidden.detail": {
       "extractionState": "manual",
       "localizations": {
@@ -8891,40 +9295,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "显示隐藏文件 / 文件夹"
-          }
-        }
-      }
-    },
-    "settings.scan.size_mode.detail": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "logical (default): matches System Settings / Finder / Get Info; APFS clones / hardlinks are not deduplicated and every file counts its full size.\\nphysical: matches du / df; counts actual disk blocks, so sparse / hardlinked files are smaller and reflect what you would actually reclaim.\\nA rescan is required after switching for totals to recompute under the new mode."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "logical（默认）：与系统设置 / Finder / 「显示简介」完全一致；APFS clone / hardlink 不去重，每个文件按完整 size 算。\\nphysical：与 du / df 一致；按实际占用磁盘 block 算，sparse / hardlink 文件更小，反映「删了真能释放多少」。\\n切换后需要重新扫描才能让总数按新口径累计。"
-          }
-        }
-      }
-    },
-    "settings.scan.size_mode.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Byte accounting"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "字节口径"
           }
         }
       }
@@ -10000,40 +10370,6 @@
         }
       }
     },
-    "size.accounting.logical": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Logical size (System Settings)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "逻辑大小（系统设置口径）"
-          }
-        }
-      }
-    },
-    "size.accounting.physical": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Physical usage (du)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "物理占用（du 口径）"
-          }
-        }
-      }
-    },
     "sort.filecount.asc": {
       "extractionState": "manual",
       "localizations": {
@@ -10557,57 +10893,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "清空待处理列表？"
-          }
-        }
-      }
-    },
-    "stash.confirm.trash_all.confirm": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Move to Trash"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "移到废纸篓"
-          }
-        }
-      }
-    },
-    "stash.confirm.trash_all.message": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$lld items (%2$@) will be moved to Trash. You can restore them from the Trash before emptying it."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "将把 %1$lld 项（共 %2$@）移到废纸篓。清空废纸篓前可随时还原。"
-          }
-        }
-      }
-    },
-    "stash.confirm.trash_all.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Move All Stashed Items to Trash?"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "将待处理项全部移到废纸篓？"
           }
         }
       }
@@ -11139,6 +11424,23 @@
         }
       }
     },
+    "trash.recycle.failure.unknown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS did not report a specific reason. The item may be in use, locked, or unavailable."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 未返回具体原因；项目可能正在使用、已锁定或当前不可访问。"
+          }
+        }
+      }
+    },
     "trash.err.dryrun.missing %lld": {
       "extractionState": "manual",
       "localizations": {
@@ -11356,6 +11658,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "开始智能呵护"
+          }
+        }
+      }
+    },
+    "tree.metric.lower_bound": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "At least %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "至少 %@"
+          }
+        }
+      }
+    },
+    "tree.subtree.partial.badge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Partial"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分"
+          }
+        }
+      }
+    },
+    "tree.subtree.partial.help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Partial scan: at least %1$@ is known on disk; the known file count is at least %2$@. Expand this row to locate locations that were not fully checked."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描不完整：当前至少已统计 %1$@ 磁盘占用，已知文件数至少为 %2$@。展开此行可定位未完整检查的位置。"
+          }
+        }
+      }
+    },
+    "tree.access.incomplete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@\n\nIncomplete scan: this directory could not be fully enumerated. Rescan before attempting to remove it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@\n\n扫描不完整：此目录未能完整枚举。请重新扫描后再尝试移除。"
           }
         }
       }
@@ -11645,74 +12015,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "按 %@ 排序（再次点击切换升降序）"
-          }
-        }
-      }
-    },
-    "tree.confirm.trash.cancel": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cancel"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "取消"
-          }
-        }
-      }
-    },
-    "tree.confirm.trash.confirm": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Move to Trash"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "移到废纸篓"
-          }
-        }
-      }
-    },
-    "tree.confirm.trash.message %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "“%@” will be moved to the Trash. You can restore it from there if needed."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "“%@” 将被移到废纸篓，需要时可从废纸篓恢复。"
-          }
-        }
-      }
-    },
-    "tree.confirm.trash.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Move to Trash?"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "移到废纸篓？"
           }
         }
       }
@@ -12091,19 +12393,19 @@
         }
       }
     },
-    "undo.err.conflict_resolution_failed %@": {
+    "undo.err.create_parent_failed %@": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Conflict resolution failed: %@"
+            "value": "Could not create the destination folder: %@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "冲突解决失败：%@"
+            "value": "无法创建目标文件夹：%@"
           }
         }
       }
@@ -12125,6 +12427,23 @@
         }
       }
     },
+    "undo.err.original_exists %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skipped because an item already exists at: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已跳过，因为原位置已有项目：%@"
+          }
+        }
+      }
+    },
     "undo.err.trashed_missing %@": {
       "extractionState": "manual",
       "localizations": {
@@ -12138,6 +12457,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "废纸篓路径不存在：%@"
+          }
+        }
+      }
+    },
+    "undo.restore.recovered_suffix": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recovered"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已恢复"
           }
         }
       }
@@ -12182,13 +12518,118 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Restored %lld items successfully."
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "Restored %lld item successfully."
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "Restored %lld items successfully."
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "成功恢复 %lld 项。"
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "成功恢复 %lld 项。"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "成功恢复 %lld 项。"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "undo_history.alert.renamed_detail %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld conflicting item was restored with a new name; the existing item was unchanged."
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld conflicting items were restored with new names; existing items were unchanged."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld 个冲突项目已使用新名称；现有项目未被改动。"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld 个冲突项目已使用新名称；现有项目未被改动。"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -12223,6 +12664,118 @@
           "stringUnit": {
             "state": "translated",
             "value": "恢复"
+          }
+        }
+      }
+    },
+    "undo_history.conflict.message %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld original location already contains an item. The existing item will not be changed. Restore the older item with a new name, or skip this conflict."
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld original locations already contain an item. Existing items will not be changed. Restore the older items with new names, or skip those conflicts."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld 个原位置已有项目。现有项目不会被改动。你可以把旧项目恢复为新名称，或跳过该冲突。"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%lld 个原位置已有项目。现有项目不会被改动。你可以把旧项目恢复为新名称，或跳过这些冲突。"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "undo_history.conflict.restore_new_name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restore with New Names"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "以新名称恢复"
+          }
+        }
+      }
+    },
+    "undo_history.conflict.skip_existing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skip Existing Items"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "跳过已有项目"
+          }
+        }
+      }
+    },
+    "undo_history.conflict.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some Original Locations Are Occupied"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分原位置已有项目"
           }
         }
       }
@@ -12329,23 +12882,6 @@
         }
       }
     },
-    "uninstall.button.preview": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Preview"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "预览删除"
-          }
-        }
-      }
-    },
     "uninstall.button.trash": {
       "extractionState": "manual",
       "localizations": {
@@ -12393,108 +12929,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "候选项"
-          }
-        }
-      }
-    },
-    "uninstall.confirm.body": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld items (%@ total) will be moved to Trash.\\nYou can still restore them from Finder's Trash."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "将把 %lld 项（合计 %@）移动到废纸篓。\\n你仍然可以在 Finder 的废纸篓中撤销。"
-          }
-        }
-      }
-    },
-    "uninstall.confirm.cancel": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cancel"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "取消"
-          }
-        }
-      }
-    },
-    "uninstall.confirm.delete": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Delete"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "确认删除"
-          }
-        }
-      }
-    },
-    "uninstall.confirm.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Move to Trash?"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "确认删除到废纸篓？"
-          }
-        }
-      }
-    },
-    "uninstall.delete.result.ok": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "OK"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "好"
-          }
-        }
-      }
-    },
-    "uninstall.delete.result.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Deletion Result"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "删除结果"
           }
         }
       }
@@ -12597,57 +13031,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "厂商规则 · %@"
-          }
-        }
-      }
-    },
-    "uninstall.result.failure": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Failed%@: %@\\nProcessed %lld items, skipped %lld"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "失败%@：%@\\n已处理 %lld 项，跳过 %lld 项"
-          }
-        }
-      }
-    },
-    "uninstall.result.mode.dryrun": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "(preview)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "（预览）"
-          }
-        }
-      }
-    },
-    "uninstall.result.success": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Processed %lld items%@, skipped %lld"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已处理 %lld 项%@，跳过 %lld 项"
           }
         }
       }
@@ -13277,6 +13660,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "已选 %1$lld 项 · 共 %2$@"
+          }
+        }
+      }
+    },
+    "workflow.detail.delete_confirm.action": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "继续"
+          }
+        }
+      }
+    },
+    "workflow.detail.delete_confirm.message %lld %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review complete: %1$lld selected items, %2$@ total. Filesystem items will move to Trash; command-line items may require an additional confirmation."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已核对 %1$lld 个选中项，共 %2$@。文件项目将移到废纸篓；命令行项目可能还需要下一步确认。"
+          }
+        }
+      }
+    },
+    "workflow.detail.delete_confirm.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review Cleanup Action"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认清理操作"
           }
         }
       }
@@ -14029,6 +14463,57 @@
         }
       }
     },
+    "smart_care.action.retry_scan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry Scan"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试扫描"
+          }
+        }
+      }
+    },
+    "smart_care.action.review_cleanup_again": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review Cleanup Again"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新检查清理内容"
+          }
+        }
+      }
+    },
+    "smart_care.action.retry_remaining": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry Remaining"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试剩余项"
+          }
+        }
+      }
+    },
     "smart_care.action.scan_again": {
       "extractionState": "manual",
       "localizations": {
@@ -14042,6 +14527,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "再次扫描"
+          }
+        }
+      }
+    },
+    "smart_care.action.start_over": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start Over"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新开始"
           }
         }
       }
@@ -14522,6 +15024,23 @@
         }
       }
     },
+    "smart_care.phase.partial": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cleanup partially completed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理已部分完成"
+          }
+        }
+      }
+    },
     "smart_care.phase.confirming": {
       "extractionState": "manual",
       "localizations": {
@@ -14622,6 +15141,54 @@
             "value": "扫描完成"
           }
         }
+      }
+    },
+    "smart_care.result.scan_limited": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan Complete with Limits"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描完成（部分受限）"
+          }
+        }
+      }
+    },
+    "smart_care.scan_limitations.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Results from completed locations are shown. Limited locations are excluded from cleanup."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已展示完整扫描位置的结果；受限位置不会进入清理。"
+          }
+        }
+      }
+    },
+    "smart_care.scan_limitations.remaining %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%1$lld more locations" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "还有 %1$lld 个位置" } }
+      }
+    },
+    "smart_care.scan_limitations.title %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%1$lld locations were not fully scanned" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%1$lld 个位置未完整扫描" } }
       }
     },
     "smart_care.risk.app_cache": {
@@ -14998,6 +15565,13 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI 身份验证失败，请检查 API Key 和服务商设置。" } }
       }
     },
+    "smart_care.ai.report.failure.credential_storage": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The saved API key could not be read from macOS Keychain. Open Settings → AI and save it again. If saving still fails, remove the old AmuxAIClean API key item in Keychain Access, then save again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法从 macOS 钥匙串读取已保存的 API Key。请打开「设置 → AI」重新保存；若仍失败，请先在「钥匙串访问」中删除旧的 AmuxAIClean API Key 项目，再重新保存。" } }
+      }
+    },
     "smart_care.ai.report.failure.rate_limit": {
       "extractionState": "manual",
       "localizations": {
@@ -15222,11 +15796,46 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "已移到废纸篓 %1$lld 项 · 释放 %2$@" } }
       }
     },
+    "smart_care.detail.partial %lld %lld %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Moved to Trash: %1$lld · Skipped: %2$lld · Reclaimed %3$@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已移到废纸篓 %1$lld 项 · 跳过 %2$lld 项 · 释放 %3$@" } }
+      }
+    },
     "smart_care.detail.failed": {
       "extractionState": "manual",
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Nothing was changed automatically. Review the error and retry." } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "未自动改动任何内容，请查看错误后重试。" } }
+      }
+    },
+    "smart_care.failure.clean.detail %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Cleanup could not finish: %1$@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "清理未能完成：%1$@" } }
+      }
+    },
+    "smart_care.failure.clean.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Cleanup Could Not Finish" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "清理未能完成" } }
+      }
+    },
+    "smart_care.failure.scan.detail %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The scan could not finish: %1$@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描未能完成：%1$@" } }
+      }
+    },
+    "smart_care.failure.scan.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scan Could Not Finish" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描未能完成" } }
       }
     },
     "smart_care.scope.apps.subtitle": {

@@ -53,10 +53,10 @@ public struct WorkflowScanHit: Sendable, Hashable, Identifiable {
 /// - 但 AppUI 侧渲染时需要"按 ID 找到扫描器并要数据"的能力，因此引入本路由表。
 /// - 路由表本身**不持有状态**（纯 `enum` + `static func`），保证每次 resolve 都是确定性查询。
 ///
-/// 容错红线（与 [SimctlDevicesScanner] / [SimctlRuntimeScanner] 一致）：
-/// - 未知 `scannerID` → 返回 `[]` 并打 warning，**不抛**；
-///   防止 UI 侧因为某张卡的 ID 拼错就把整个工作流卡死。
-/// - 扫描器自身失败（simctl 不可用 / JSON 非法）→ 内部已兜底为 `[]`，本路由表只透传。
+/// 完整性红线：
+/// - 未知 `scannerID` → 兼容入口返回 `[]` 并打 warning；
+/// - 文件系统扫描器的空 hits 必须和 `incompleteIssues` 一起消费，不能把 I/O 失败当作完整空结果；
+/// - 任务取消由 evidence API 独立抛出 `CancellationError`，不伪装成磁盘扫描故障。
 ///
 /// 与 AppUI 的边界：
 /// - 本类型**只允许依赖 ScanKit 内部 + Foundation + LogKit**；
@@ -71,17 +71,65 @@ public enum WorkflowRegistry {
     ///   - home: 用户 home URL；仅 FS 类扫描器（如 derived-data-per-project）会用到。
     ///   - executor: 子进程执行器；为 `nil` 时按各扫描器约定使用默认实例。
     ///     测试侧可注入 `SubprocessExecutor(dryRun: true)` 避免真起 simctl。
-    /// - Returns: 统一产物列表；未知 ID / 扫描器失败一律为 `[]`，**不抛**。
+    /// - Returns: 统一产物列表；保留旧 hits-only 行为。
     public static func resolve(scannerID: String,
                                home: URL,
-                               executor: SubprocessExecutor? = nil) async -> [WorkflowScanHit] {
+                               executor: SubprocessExecutor? = nil,
+                               includeFilesystemSizes: Bool = true) async -> [WorkflowScanHit] {
+        do {
+            return try await resolveWithEvidence(
+                scannerID: scannerID,
+                home: home,
+                executor: executor,
+                includeFilesystemSizes: includeFilesystemSizes
+            ).hits
+        } catch is CancellationError {
+            return []
+        } catch {
+            GSYLog.error(.scan, "WorkflowRegistry unexpected discovery error scannerID=\(scannerID): \(error)")
+            return []
+        }
+    }
+
+    /// 结构化动态发现入口。文件系统缺口写入 evidence，任务取消独立抛出。
+    public static func resolveWithEvidence(
+        scannerID: String,
+        home: URL,
+        executor: SubprocessExecutor? = nil,
+        includeFilesystemSizes: Bool = true
+    ) async throws -> DiscoveryEvidence<WorkflowScanHit> {
+        try await resolveWithEvidence(
+            scannerID: scannerID,
+            home: home,
+            executor: executor,
+            includeFilesystemSizes: includeFilesystemSizes,
+            fileSystem: FileManager.default,
+            cancellationCheck: { try Task.checkCancellation() }
+        )
+    }
+
+    /// 模块内注入入口，供确定性故障测试复用与产品入口相同的路由逻辑。
+    static func resolveWithEvidence(
+        scannerID: String,
+        home: URL,
+        executor: SubprocessExecutor?,
+        includeFilesystemSizes: Bool,
+        fileSystem: any DynamicDiscoveryFileSystem,
+        cancellationCheck: () throws -> Void
+    ) async throws -> DiscoveryEvidence<WorkflowScanHit> {
+        try cancellationCheck()
         switch scannerID {
         case "scanner.derived-data-per-project":
             // v1.7 M1 PR-4：实接 DerivedDataPerProjectScanner.detect。
             // 选 detect 而非 discover 是因为该扫描器无 subprocess、纯 FS 遍历，
             // 不需要 actor 串行化，同步入口可避免一次 Task 切换开销。
-            let projects = DerivedDataPerProjectScanner.detect(home: home)
-            return projects.map { project in
+            let projects = try DerivedDataPerProjectScanner.detectWithEvidence(
+                home: home,
+                includeSizes: includeFilesystemSizes,
+                fileSystem: fileSystem,
+                cancellationCheck: cancellationCheck
+            )
+            return projects.mapHits { project in
                 WorkflowScanHit(
                     url: project.url,
                     sizeBytes: project.sizeBytes,
@@ -95,12 +143,17 @@ public enum WorkflowRegistry {
             let devices: [SimctlDevice]
             do {
                 devices = try await scanner.discover()
+                try cancellationCheck()
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 // discover 内部已兜底为 []，理论上不会抛；保留 catch 是为契约稳健性
                 GSYLog.warning(.app, "WorkflowRegistry simctl-devices discover 抛错: \(error)")
-                return []
+                return DiscoveryEvidence(hits: [], incompleteIssues: [
+                    ScanIncompleteIssue(path: "/usr/bin/xcrun", reason: .enumerationFailed)
+                ])
             }
-            return devices.map { device in
+            return DiscoveryEvidence(hits: devices.map { device in
                 WorkflowScanHit(
                     url: URL(fileURLWithPath: device.dataPath),
                     sizeBytes: device.dataPathSize,
@@ -108,18 +161,23 @@ public enum WorkflowRegistry {
                     note: "\(device.state) · \(device.runtimeIdentifier)",
                     commandLineTailArg: device.udid
                 )
-            }
+            })
 
         case "scanner.simctl-runtimes":
             let scanner = SimctlRuntimeScanner(executor: executor ?? SubprocessExecutor())
             let runtimes: [SimctlRuntime]
             do {
                 runtimes = try await scanner.discover()
+                try cancellationCheck()
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 GSYLog.warning(.app, "WorkflowRegistry simctl-runtimes discover 抛错: \(error)")
-                return []
+                return DiscoveryEvidence(hits: [], incompleteIssues: [
+                    ScanIncompleteIssue(path: "/usr/bin/xcrun", reason: .enumerationFailed)
+                ])
             }
-            return runtimes.map { runtime in
+            return DiscoveryEvidence(hits: runtimes.map { runtime in
                 let buildSuffix = runtime.buildversion.map { " (\($0))" } ?? ""
                 return WorkflowScanHit(
                     url: URL(fileURLWithPath: runtime.runtimeRoot),
@@ -128,7 +186,7 @@ public enum WorkflowRegistry {
                     note: runtime.isAvailable ? runtime.identifier : "\(runtime.identifier) · unavailable",
                     commandLineTailArg: runtime.identifier
                 )
-            }
+            })
 
         case "scanner.node-modules-scattered":
             // WebNode 工作流：扫描 5 个常见 dev 根下的所有 node_modules。
@@ -138,8 +196,14 @@ public enum WorkflowRegistry {
             // 字段映射：
             // - displayName = projectName（父目录名），UI 优先展示工程名而非冗长路径；
             // - note = url.path，UI 用完整路径 disambiguate 跨根同名工程（如 ~/Code/foo vs ~/Projects/foo）。
-            let hits = NodeModulesScanner.detect(home: home)
-            return hits.map { hit in
+            let hits = try NodeModulesScanner.detectWithEvidence(
+                home: home,
+                maxDepth: 4,
+                includeSizes: includeFilesystemSizes,
+                fileSystem: fileSystem,
+                cancellationCheck: cancellationCheck
+            )
+            return hits.mapHits { hit in
                 WorkflowScanHit(
                     url: hit.url,
                     sizeBytes: hit.sizeBytes,
@@ -150,7 +214,7 @@ public enum WorkflowRegistry {
 
         default:
             GSYLog.warning(.app, "WorkflowRegistry 收到未知 scannerID=\(scannerID)，返回空列表")
-            return []
+            return DiscoveryEvidence(hits: [])
         }
     }
 }

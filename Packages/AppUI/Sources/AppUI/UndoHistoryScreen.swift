@@ -7,13 +7,17 @@ import SwiftUI
 /// - 仅消费 [UndoHistoryStore.shared](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UndoHistoryStore.swift#L64)，
 ///   避免每屏自己开 store 实例造成数据不一致。
 /// - 列表 + 详情双栏（master-detail）：左侧批次时间轴，右侧展开看 pair。
-/// - 恢复操作走 [restoreRecord](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UndoHistoryStore.swift#L116)
+/// - 恢复操作走 [restoreRecord](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UndoHistoryStore.swift#L200)
 ///   —— 失败时弹 alert 不静默。
 struct UndoHistoryScreen: View {
     @ObservedObject private var store = UndoHistoryStore.shared
     @State private var selectedRecordID: UUID?
     @State private var alertMessage: String?
     @State private var isRestoring = false
+    @State private var isPreparingRestore = false
+    @State private var pendingConflictRecord: UndoHistoryStore.Record?
+    @State private var pendingConflictCount = 0
+    @State private var showConflictDecision = false
 
     private var selectedRecord: UndoHistoryStore.Record? {
         guard let id = selectedRecordID else { return nil }
@@ -45,6 +49,30 @@ struct UndoHistoryScreen: View {
         }, message: {
             Text(alertMessage ?? "")
         })
+        .confirmationDialog(
+            String(localized: "undo_history.conflict.title", bundle: .module),
+            isPresented: $showConflictDecision,
+            titleVisibility: .visible
+        ) {
+            Button(String(localized: "undo_history.conflict.restore_new_name", bundle: .module)) {
+                resolvePendingConflict(with: .restoreWithUniqueName)
+            }
+            Button(String(localized: "undo_history.conflict.skip_existing", bundle: .module)) {
+                resolvePendingConflict(with: .skipExisting)
+            }
+            Button(String(localized: "common.button.cancel", bundle: .module), role: .cancel) {
+                pendingConflictRecord = nil
+                pendingConflictCount = 0
+                showConflictDecision = false
+            }
+        } message: {
+            Text(
+                String(
+                    format: String(localized: "undo_history.conflict.message %lld", bundle: .module),
+                    pendingConflictCount
+                )
+            )
+        }
     }
 
     private var emptyState: some View {
@@ -105,7 +133,7 @@ struct UndoHistoryScreen: View {
                     }
                     Spacer()
                     Button {
-                        Task { await performRestore(record) }
+                        Task { await requestRestore(record) }
                     } label: {
                         Label {
                             Text("undo_history.button.restore", bundle: .module)
@@ -114,7 +142,7 @@ struct UndoHistoryScreen: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(isRestoring)
+                    .disabled(isRestoring || isPreparingRestore)
                 }
                 Divider()
                 List(record.filePairs, id: \.original) { pair in
@@ -147,14 +175,59 @@ struct UndoHistoryScreen: View {
         }
     }
 
-    private func performRestore(_ record: UndoHistoryStore.Record) async {
+    private func requestRestore(_ record: UndoHistoryStore.Record) async {
+        guard !isRestoring, !isPreparingRestore else { return }
+        isPreparingRestore = true
+        let plan = await store.prepareRestore(record)
+        isPreparingRestore = false
+
+        guard store.history.contains(where: { $0.id == record.id }) else { return }
+        if plan.requiresConflictChoice {
+            pendingConflictRecord = record
+            pendingConflictCount = plan.conflictPaths.count
+            showConflictDecision = true
+        } else {
+            await performRestore(record, conflictPolicy: .skipExisting)
+        }
+    }
+
+    private func resolvePendingConflict(with policy: UndoHistoryStore.RestoreConflictPolicy) {
+        guard let record = pendingConflictRecord else { return }
+        pendingConflictRecord = nil
+        pendingConflictCount = 0
+        showConflictDecision = false
+        Task { await performRestore(record, conflictPolicy: policy) }
+    }
+
+    private func performRestore(
+        _ record: UndoHistoryStore.Record,
+        conflictPolicy: UndoHistoryStore.RestoreConflictPolicy
+    ) async {
         isRestoring = true
         defer { isRestoring = false }
-        let (restored, skipped, err) = await store.restoreRecord(record)
-        if let err {
-            alertMessage = String(format: String(localized: "undo_history.alert.partial %lld %lld %@", bundle: .module), restored, skipped, err)
+        let result = await store.restoreRecord(record, conflictPolicy: conflictPolicy)
+        if let err = result.firstError {
+            alertMessage = String(
+                format: String(localized: "undo_history.alert.partial %lld %lld %@", bundle: .module),
+                result.restoredCount,
+                result.skippedCount,
+                err
+            )
+        } else if result.renamedCount > 0 {
+            let successSummary = String(
+                format: String(localized: "undo_history.alert.success %lld", bundle: .module),
+                result.restoredCount
+            )
+            let renamedDetail = String(
+                format: String(localized: "undo_history.alert.renamed_detail %lld", bundle: .module),
+                result.renamedCount
+            )
+            alertMessage = "\(successSummary) \(renamedDetail)"
         } else {
-            alertMessage = String(format: String(localized: "undo_history.alert.success %lld", bundle: .module), restored)
+            alertMessage = String(
+                format: String(localized: "undo_history.alert.success %lld", bundle: .module),
+                result.restoredCount
+            )
         }
         // 恢复后选中态可能已无效（record 被从 history 删了）
         if !store.history.contains(where: { $0.id == record.id }) {

@@ -60,12 +60,14 @@ final class PruneDeletedTests: XCTestCase {
 
     private func makeTreeRow(_ path: String,
                              bytes: Int64 = 1,
+                             logicalBytes: Int64? = nil,
                              fileCount: Int = 1,
                              isSizePending: Bool = false) -> TreeRow {
         TreeRow(
             path: path,
             title: (path as NSString).lastPathComponent,
             bytes: bytes,
+            logicalBytes: logicalBytes,
             fileCount: fileCount,
             isDirectory: true,
             hasChildren: false,
@@ -231,7 +233,7 @@ final class PruneDeletedTests: XCTestCase {
             title: "A",
             isDirectory: true,
             bytes: 1_000,
-            logicalBytes: 1_000,
+            logicalBytes: 5_000,
             fileCount: 5,
             verdict: .safe,
             rejection: .ok
@@ -759,7 +761,7 @@ final class PruneDeletedTests: XCTestCase {
             title: "top",
             isDirectory: true,
             bytes: 1_000,
-            logicalBytes: 1_000,
+            logicalBytes: 5_000,
             fileCount: 10,
             verdict: .safe,
             rejection: .ok
@@ -768,12 +770,13 @@ final class PruneDeletedTests: XCTestCase {
             rootPath: "/R",
             title: "R",
             bytes: 1_000,
+            logicalBytes: 5_000,
             fileCount: 10,
             isFinished: true
         )
         let cachedChildren = [
-            makeTreeRow("/R/top/drop/a.bin", bytes: 100, fileCount: 1),
-            makeTreeRow("/R/top/drop/b.bin", bytes: 200, fileCount: 2)
+            makeTreeRow("/R/top/drop/a.bin", bytes: 100, logicalBytes: 1_000, fileCount: 1),
+            makeTreeRow("/R/top/drop/b.bin", bytes: 200, logicalBytes: 2_000, fileCount: 2)
         ]
         coord._seedForTesting(
             snapshot: ScanSnapshot(
@@ -802,12 +805,160 @@ final class PruneDeletedTests: XCTestCase {
         XCTAssertEqual(coord.snapshot.totalBytes, 700)
         XCTAssertEqual(coord.snapshot.scannedFileCount, 7)
         XCTAssertEqual(coord.snapshot.rows.first?.bytes, 700)
+        XCTAssertEqual(coord.snapshot.rows.first?.logicalBytes, 2_000)
         XCTAssertEqual(coord.snapshot.rows.first?.fileCount, 7)
         XCTAssertEqual(coord.perRootProgress["/R"]?.bytes, 700)
+        XCTAssertEqual(coord.perRootProgress["/R"]?.logicalBytes, 2_000)
         XCTAssertEqual(coord.perRootProgress["/R"]?.fileCount, 7)
         XCTAssertEqual(coord._aggregateTotalsForTesting().bytes, 700)
         XCTAssertEqual(coord._aggregateTotalsForTesting().files, 7)
         XCTAssertTrue(coord._treeChildrenCacheForTesting().isEmpty)
+    }
+
+    func test_pruneDeleted_deepIndex关闭时按需缓存子项删除后已缓存祖先立即扣减() async {
+        let coord = ScanCoordinator(enableTreeDeepIndex: false)
+        let modified = Date(timeIntervalSince1970: 1_720_000_000)
+        let top = TreeRow(
+            path: "/R/top",
+            title: "top",
+            bytes: 1_000,
+            logicalBytes: 5_000,
+            fileCount: 10,
+            isDirectory: true,
+            hasChildren: true,
+            accessState: .normal,
+            subtreeCompleteness: .containsIncompleteDescendant,
+            modificationDate: modified
+        )
+        let drop = TreeRow(
+            path: "/R/top/drop",
+            title: "drop",
+            bytes: 300,
+            logicalBytes: 3_000,
+            fileCount: 3,
+            isDirectory: true,
+            hasChildren: true,
+            modificationDate: modified
+        )
+        let keep = TreeRow(
+            path: "/R/top/keep",
+            title: "keep",
+            bytes: 700,
+            logicalBytes: 2_000,
+            fileCount: 7,
+            isDirectory: true,
+            hasChildren: false,
+            accessState: .permissionDenied,
+            modificationDate: modified
+        )
+        let removedLeaf = TreeRow(
+            path: "/R/top/drop/a.bin",
+            title: "a.bin",
+            bytes: 100,
+            logicalBytes: 1_000,
+            fileCount: 1,
+            isDirectory: false,
+            hasChildren: false,
+            modificationDate: modified
+        )
+        let retainedLeaf = TreeRow(
+            path: "/R/top/drop/b.bin",
+            title: "b.bin",
+            bytes: 200,
+            logicalBytes: 2_000,
+            fileCount: 2,
+            isDirectory: false,
+            hasChildren: false,
+            modificationDate: modified
+        )
+        coord._seedForTesting(
+            treeChildrenCache: [
+                "/R|sizeDesc": [top],
+                "/R/top|sizeDesc": [drop, keep],
+                "/R/top|nameAsc": [drop, keep],
+                "/R/top/drop|sizeDesc": [removedLeaf, retainedLeaf]
+            ],
+            totalBytes: 1_000,
+            scannedFiles: 10
+        )
+        XCTAssertTrue(coord._dirIndexKeysForTesting().isEmpty,
+                      "本用例必须只依赖 deep-index off 的按需 cache")
+
+        await coord.pruneDeleted(paths: [removedLeaf.path])
+
+        let cache = coord._treeChildrenCacheForTesting()
+        let updatedTop = try? XCTUnwrap(cache["/R|sizeDesc"]?.first)
+        XCTAssertEqual(updatedTop?.bytes, 900)
+        XCTAssertEqual(updatedTop?.logicalBytes, 4_000)
+        XCTAssertEqual(updatedTop?.fileCount, 9)
+        XCTAssertEqual(updatedTop?.title, top.title)
+        XCTAssertEqual(updatedTop?.isDirectory, top.isDirectory)
+        XCTAssertEqual(updatedTop?.hasChildren, top.hasChildren)
+        XCTAssertEqual(updatedTop?.accessState, top.accessState)
+        XCTAssertEqual(updatedTop?.subtreeCompleteness, top.subtreeCompleteness)
+        XCTAssertEqual(updatedTop?.modificationDate, top.modificationDate)
+        XCTAssertEqual(updatedTop?.isSizePending, top.isSizePending)
+
+        for key in ["/R/top|sizeDesc", "/R/top|nameAsc"] {
+            let rows = cache[key] ?? []
+            let updatedDrop = rows.first { $0.path == drop.path }
+            XCTAssertEqual(updatedDrop?.bytes, 200, "cache=\(key)")
+            XCTAssertEqual(updatedDrop?.logicalBytes, 2_000, "cache=\(key)")
+            XCTAssertEqual(updatedDrop?.fileCount, 2, "cache=\(key)")
+            XCTAssertEqual(updatedDrop?.title, drop.title, "cache=\(key)")
+            XCTAssertEqual(updatedDrop?.isDirectory, drop.isDirectory, "cache=\(key)")
+            XCTAssertEqual(updatedDrop?.hasChildren, drop.hasChildren, "cache=\(key)")
+            XCTAssertEqual(updatedDrop?.accessState, drop.accessState, "cache=\(key)")
+            XCTAssertEqual(updatedDrop?.subtreeCompleteness, drop.subtreeCompleteness, "cache=\(key)")
+            XCTAssertEqual(updatedDrop?.modificationDate, drop.modificationDate, "cache=\(key)")
+            XCTAssertEqual(rows.first { $0.path == keep.path }, keep,
+                           "无关行必须保持原样 cache=\(key)")
+        }
+        XCTAssertEqual(cache["/R/top/drop|sizeDesc"], [retainedLeaf],
+                       "已删子项要移除，同级未删行不得变化")
+    }
+
+    func test_pruneDeleted_deepIndex关闭时删掉最后子项同步清除祖先展开标记() async throws {
+        let coord = ScanCoordinator(enableTreeDeepIndex: false)
+        let parent = TreeRow(
+            path: "/R/top",
+            title: "top",
+            bytes: 100,
+            logicalBytes: 200,
+            fileCount: 1,
+            isDirectory: true,
+            hasChildren: true
+        )
+        let onlyChild = TreeRow(
+            path: "/R/top/only.bin",
+            title: "only.bin",
+            bytes: 100,
+            logicalBytes: 200,
+            fileCount: 1,
+            isDirectory: false,
+            hasChildren: false
+        )
+        coord._seedForTesting(
+            treeChildrenCache: [
+                "/R|sizeDesc": [parent],
+                "/R/top|sizeDesc": [onlyChild]
+            ],
+            totalBytes: 100,
+            scannedFiles: 1
+        )
+
+        await coord.pruneDeleted(paths: [onlyChild.path])
+
+        let cache = coord._treeChildrenCacheForTesting()
+        let updatedParent = try XCTUnwrap(cache["/R|sizeDesc"]?.first)
+        XCTAssertEqual(updatedParent.bytes, 0)
+        XCTAssertEqual(updatedParent.logicalBytes, 0)
+        XCTAssertEqual(updatedParent.fileCount, 0)
+        XCTAssertFalse(updatedParent.hasChildren,
+                       "最后一个已缓存子项删除后不得留下空的披露三角")
+        XCTAssertEqual(cache["/R/top|sizeDesc"], [])
+        XCTAssertEqual(coord.refreshedTreeRow(for: parent.path), updatedParent,
+                       "删除后详情面板必须能重取 prune 后的祖先聚合")
     }
 
     func test_pruneDeleted_deepIndex关闭时不把shallow待计量缓存冒充权威贡献() async {

@@ -2,12 +2,15 @@ import SwiftUI
 import SafetyKit
 import AIKit
 
-/// 列表行 —— 颜色徽章 + 体积条 + 勾选框（forbid 不可勾）。
-/// 见 PITFALLS §5.5：默认勾选只勾 .safe，confirm 不勾，forbid 锁定。
+/// 列表行 —— 颜色徽章 + 体积条 + 勾选框。
+/// 默认勾选仍只有 `.safe`；专业模式可显式开放 vendorPathRule 风险项进入严格确认，
+/// 其它 `.forbid` 始终锁定。
 struct RowView: View {
     let row: RowItem
     @Binding var selected: Bool
     let maxBytes: Int64
+    /// 只控制是否允许 vendorPathRule 项发起预检；最终权限仍由 TrashPipeline 重验。
+    var allowsVendorPathOverride: Bool = false
     /// M5 / 2026-06：AI 入口配置。
     /// - nil 或 `!isReadyForUI`：contextMenu 不显示"问 AI"按钮（功能未启用）
     /// - 非 nil：点击触发 `onAskAI(row)` 由父视图弹 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
@@ -18,10 +21,13 @@ struct RowView: View {
         HStack(spacing: 12) {
             // 勾选框
             Group {
-                if row.isSelectable {
+                if isDeletionSelectable {
                     Toggle("", isOn: $selected)
                         .toggleStyle(.checkbox)
                         .labelsHidden()
+                        .help(requiresVendorPathOverride
+                              ? Text("delete.vendor_override.risk", bundle: .module)
+                              : Text(row.url.path))
                 } else {
                     Image(systemName: "lock.fill")
                         .foregroundStyle(.secondary)
@@ -73,6 +79,22 @@ struct RowView: View {
                 }
             }
         }
+    }
+
+    private var isDeletionSelectable: Bool {
+        DeletionEntryPolicy.canInitiate(
+            verdict: row.verdict,
+            rejection: row.rejection,
+            allowsVendorPathOverride: allowsVendorPathOverride
+        )
+    }
+
+    private var requiresVendorPathOverride: Bool {
+        DeletionEntryPolicy.requiresVendorPathOverride(
+            verdict: row.verdict,
+            rejection: row.rejection,
+            allowsVendorPathOverride: allowsVendorPathOverride
+        )
     }
 
     /// 列内 mtime 短文案：当年 MM-dd / 跨年 yyyy-MM-dd / nil → "—"。

@@ -116,6 +116,31 @@ final class ScanCoordinatorVendorTests: XCTestCase {
                        "降级后 UI 默认不勾选")
     }
 
+    /// Tree / Large Files 的删除按钮必须读取 ScanCoordinator 当前会话的完整 vendor trie，
+    /// 不能只用裸 SafetyEngine 后到执行阶段才被 TrashPipeline 打回。
+    func testDeletionSafetyEvaluationUsesSessionVendorTrieForDescendants() {
+        let home = "/Users/tester"
+        let androidRule = VendorRule(
+            name: "Android SDK",
+            paths: [
+                PathRule(
+                    path: "~/Library/Android/sdk",
+                    verdict: .forbid,
+                    reason: "SDK toolchain root"
+                )
+            ]
+        )
+        let coordinator = ScanCoordinator(vendors: [androidRule], home: home)
+
+        let evaluation = coordinator.deletionSafetyEvaluation(
+            for: "\(home)/Library/Android/sdk/system-images"
+        )
+
+        XCTAssertEqual(evaluation.verdict, .forbid)
+        XCTAssertEqual(evaluation.rejection, .vendorPathRule)
+        XCTAssertEqual(evaluation.vendor?.name, "Android SDK")
+    }
+
     // MARK: - permissionDeniedPaths（列表收集，不再覆盖 lastError）
 
     /// 制造两个 chmod 0000 的一级子目录跑扫描，断言：
@@ -157,8 +182,20 @@ final class ScanCoordinatorVendorTests: XCTestCase {
                        "两个 chmod 0000 的子目录应分别累加，得到 2 条；当前=\(coord.permissionDeniedPaths)")
         XCTAssertTrue(coord.permissionDeniedPaths.contains(denied1.path))
         XCTAssertTrue(coord.permissionDeniedPaths.contains(denied2.path))
+        XCTAssertFalse(coord.snapshot.isComplete,
+                       "权限被拒必须发布部分终态，不能伪装成完整成功")
         XCTAssertNil(coord.lastError,
-                     "权限被拒不再覆盖 lastError，避免抹掉真正的 .failed 错误")
+                     "精确权限缺口必须走统一 limitations presentation，不能重新画 fatal 红字")
+        XCTAssertNil(coord.terminalFailure)
+        XCTAssertEqual(
+            ScanIssuePresentation.make(
+                hasTerminalFailure: coord.terminalFailure != nil,
+                permissionDeniedPaths: coord.permissionDeniedPaths,
+                tccSkippedPaths: coord.tccProtectedSkippedPaths,
+                incompletePaths: coord.incompleteScanPaths
+            ).kind,
+            .limitations
+        )
     }
 
     /// 多次推入同一 path 不应重复累加（去重 + 保序）。

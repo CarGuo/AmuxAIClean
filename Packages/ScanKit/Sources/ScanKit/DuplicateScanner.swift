@@ -13,41 +13,107 @@ public enum DuplicateReliability: String, Sendable, Codable {
     case full
 }
 
+/// 重复组中的单条文件记录。
+public struct DuplicateFile: Sendable, Hashable {
+    public let path: String
+    /// 该路径当前在磁盘上的 allocated bytes。它来自枚举阶段同一个 `FSNode`，
+    /// 不为展示大小额外 `stat`，也不参与内容相等判定。
+    public let allocatedBytes: Int64
+
+    public init(path: String, allocatedBytes: Int64) {
+        self.path = path
+        self.allocatedBytes = max(0, allocatedBytes)
+    }
+}
+
 /// 一组检测出来的重复文件。
 public struct DuplicateGroup: Sendable, Hashable, Identifiable {
     /// `(size, prefixSHA256)` 或 `(size, prefixSHA256, fullSHA256)` 的字符串拼接，
     /// 用作 SwiftUI `Identifiable` 的 stable id。
     public let hashKey: String
-    /// 单文件大小（组内每份都是这个 size）。
-    public let bytes: Int64
-    /// 重复路径列表，至少 2 个。顺序按字符串字典序，方便 UI 稳定渲染。
-    public let paths: [String]
+    /// 单份内容的逻辑大小。只用于 size 分桶、hash 边界和详情说明，不能当作磁盘占用。
+    public let logicalBytes: Int64
+    /// 重复文件列表，至少 2 个。按路径字典序稳定排序，并保留每条路径各自的物理占用。
+    public let files: [DuplicateFile]
+    /// 该组当前磁盘占用：逐路径 allocated bytes 求和。
+    public let totalBytes: Int64
+    /// 默认处理（保留稳定排序后的第一份）预计可释放的 allocated bytes。
+    public let reclaimableBytes: Int64
     /// 可靠度。
     public let reliability: DuplicateReliability
 
     public var id: String { hashKey }
+    public var paths: [String] { files.map(\.path) }
 
-    /// 该组占用空间总和（bytes × paths.count）。
-    /// 用 `multipliedReportingOverflow` 显式饱和到 `Int64.max`，
-    /// 避免 `&*` 静默裹回得到负数（实际场景几乎不可达，但 UI 不应展示 -XXX MB）。
-    public var totalBytes: Int64 { DuplicateGroup.saturatingMultiply(bytes, Int64(paths.count)) }
-
-    /// 「可释放」字节数：保留 1 份、删除其余 N-1 份。
-    public var reclaimableBytes: Int64 {
-        DuplicateGroup.saturatingMultiply(bytes, Int64(max(0, paths.count - 1)))
+    /// 手动选择路径对应的预计可释放空间。未知路径不计入。
+    public func allocatedBytes(for paths: [String]) -> Int64 {
+        let selected = Set(paths)
+        return DuplicateGroup.saturatingSum(
+            files.lazy.filter { selected.contains($0.path) }.map(\.allocatedBytes)
+        )
     }
 
-    /// Int64 饱和乘法：溢出时返回 `Int64.max` 而不是裹回。
-    private static func saturatingMultiply(_ a: Int64, _ b: Int64) -> Int64 {
-        let r = a.multipliedReportingOverflow(by: b)
-        return r.overflow ? .max : r.partialValue
+    private static func saturatingSum<S: Sequence>(_ values: S) -> Int64 where S.Element == Int64 {
+        values.reduce(into: 0) { total, value in
+            let result = total.addingReportingOverflow(value)
+            total = result.overflow ? .max : result.partialValue
+        }
     }
 
-    public init(hashKey: String, bytes: Int64, paths: [String], reliability: DuplicateReliability) {
+    /// 删除成功后生成剩余重复组。`files` 在构造时已经按路径排序，过滤会保持相对顺序，
+    /// 因此这里不能再调用公开 initializer 重排整个数组。未命中的组直接复用原值。
+    public func removing(paths: Set<String>) -> DuplicateGroup? {
+        guard !paths.isEmpty else { return self }
+        var removedAny = false
+        var remaining: [DuplicateFile] = []
+        remaining.reserveCapacity(files.count)
+        for file in files {
+            if paths.contains(file.path) {
+                removedAny = true
+            } else {
+                remaining.append(file)
+            }
+        }
+        guard removedAny else { return self }
+        guard remaining.count >= 2 else { return nil }
+        return DuplicateGroup(
+            hashKey: hashKey,
+            logicalBytes: logicalBytes,
+            sortedFiles: remaining,
+            reliability: reliability
+        )
+    }
+
+    public init(hashKey: String, logicalBytes: Int64, files: [DuplicateFile], reliability: DuplicateReliability) {
+        self.init(
+            hashKey: hashKey,
+            logicalBytes: logicalBytes,
+            sortedFiles: files.sorted { $0.path < $1.path },
+            reliability: reliability
+        )
+    }
+
+    private init(
+        hashKey: String,
+        logicalBytes: Int64,
+        sortedFiles: [DuplicateFile],
+        reliability: DuplicateReliability
+    ) {
         self.hashKey = hashKey
-        self.bytes = bytes
-        self.paths = paths
+        self.logicalBytes = max(0, logicalBytes)
+        self.files = sortedFiles
+        self.totalBytes = DuplicateGroup.saturatingSum(sortedFiles.lazy.map(\.allocatedBytes))
+        self.reclaimableBytes = DuplicateGroup.saturatingSum(sortedFiles.dropFirst().lazy.map(\.allocatedBytes))
         self.reliability = reliability
+    }
+}
+
+private struct DuplicateCandidate: Sendable {
+    let path: String
+    let allocatedBytes: Int64
+
+    var publicValue: DuplicateFile {
+        DuplicateFile(path: path, allocatedBytes: allocatedBytes)
     }
 }
 
@@ -66,6 +132,9 @@ public enum DuplicateScanEvent: Sendable {
     case cancelled
     /// 扫描根因 TCC 雷区被整体跳过。
     case tccProtectedSkipped(path: String)
+    /// 扫描仍然完成了可展示的部分结果，但该路径没有被完整覆盖。
+    /// 调用方不得把本轮重复文件结果当作完整磁盘视图。
+    case incomplete(ScanIncompleteIssue)
 }
 
 /// 重复文件扫描器（**只读**，无任何删除/移动 API）。
@@ -150,14 +219,20 @@ public actor DuplicateScanner {
     ) async {
         // ===== 阶段 1：枚举所有文件，按 size 分桶 =====
         let inodes = InodeSet()
-        var sizeBuckets: [Int64: [String]] = [:]
+        // logical size 仍是内容分桶键；allocated 只随候选元数据同行，不触发二次 stat。
+        var sizeBuckets: [Int64: [DuplicateCandidate]] = [:]
         var fileScannedCount = 0
         var lastEmit = Date.distantPast
 
         for root in roots {
             if Task.isCancelled { break }
-            if TCCSkipList.shouldSkip(root.path) {
+            if scanOptions.respectTCCSkipList && TCCSkipList.shouldSkip(root.path) {
+                let issue = ScanIncompleteIssue(
+                    path: root.path,
+                    reason: .tccProtectedSkipped
+                )
                 continuation.yield(.tccProtectedSkipped(path: root.path))
+                continuation.yield(.incomplete(issue))
                 continue
             }
             let scanner = BulkScanner(options: scanOptions)
@@ -172,12 +247,15 @@ public actor DuplicateScanner {
                     // 物理占用（allocatedSize）会受 APFS clone / 块对齐影响。
                     let size = node.logicalSize
                     if size < minBytes { return }
-                    // hardlink / clone 同 inode 跳过——它们「内容相同」是文件系统层面
-                    // 已经做了去重，再列出来反而误导用户「我有 2 份」。
+                    // hardlink 同 inode 跳过——它们已是文件系统层的同一份数据，
+                    // 再列出来会误导用户。APFS clone 是不同 inode，仍作为独立候选。
                     if !inodes.insertIfFirstSeen(device: node.device, inode: node.inode) {
                         return
                     }
-                    sizeBuckets[size, default: []].append(node.path)
+                    sizeBuckets[size, default: []].append(DuplicateCandidate(
+                        path: node.path,
+                        allocatedBytes: node.allocatedSize
+                    ))
                     fileScannedCount += 1
                 }
                 switch event {
@@ -198,6 +276,8 @@ public actor DuplicateScanner {
                     }
                 case .tccProtectedSkipped(let path):
                     continuation.yield(.tccProtectedSkipped(path: path))
+                case .incomplete(let issue):
+                    continuation.yield(.incomplete(issue))
                 case .progress, .permissionDenied, .finished, .failed, .cacheDirTagged:
                     continue
                 }
@@ -205,9 +285,9 @@ public actor DuplicateScanner {
         }
 
         // 淘汰只有 1 个的 size 桶
-        let candidateSizeBuckets: [(size: Int64, paths: [String])] = sizeBuckets
+        let candidateSizeBuckets: [(size: Int64, files: [DuplicateCandidate])] = sizeBuckets
             .filter { $0.value.count >= 2 }
-            .map { (size: $0.key, paths: $0.value) }
+            .map { (size: $0.key, files: $0.value) }
 
         if Task.isCancelled {
             // 不发 .finished(groups: [])——那会让 UI 把已展示的旧结果清空。
@@ -218,25 +298,25 @@ public actor DuplicateScanner {
         }
 
         // ===== 阶段 2：每个 size 桶内做前缀 hash =====
-        var prefixGroups: [(size: Int64, prefixHex: String, paths: [String])] = []
+        var prefixGroups: [(size: Int64, prefixHex: String, files: [DuplicateCandidate])] = []
         let totalBuckets = candidateSizeBuckets.count
         var bucketsDone = 0
         continuation.yield(.hashingProgress(bucketsDone: 0, bucketsTotal: totalBuckets))
 
         for bucket in candidateSizeBuckets {
             if Task.isCancelled { break }
-            let hashed = await hashPathsConcurrently(
-                paths: bucket.paths,
+            let hashed = await hashCandidatesConcurrently(
+                candidates: bucket.files,
                 fullFile: false
             )
             // 按 prefixHex 分组
-            var byHash: [String: [String]] = [:]
-            for (path, hex) in hashed {
+            var byHash: [String: [DuplicateCandidate]] = [:]
+            for (candidate, hex) in hashed {
                 guard let hex else { continue }
-                byHash[hex, default: []].append(path)
+                byHash[hex, default: []].append(candidate)
             }
-            for (hex, paths) in byHash where paths.count >= 2 {
-                prefixGroups.append((size: bucket.size, prefixHex: hex, paths: paths))
+            for (hex, files) in byHash where files.count >= 2 {
+                prefixGroups.append((size: bucket.size, prefixHex: hex, files: files))
             }
             bucketsDone += 1
             continuation.yield(.hashingProgress(bucketsDone: bucketsDone, bucketsTotal: totalBuckets))
@@ -258,8 +338,8 @@ public actor DuplicateScanner {
         for b in largeFileBuckets {
             let group = DuplicateGroup(
                 hashKey: "size=\(b.size)|prefix=\(b.prefixHex)",
-                bytes: b.size,
-                paths: b.paths.sorted(),
+                logicalBytes: b.size,
+                files: b.files.map(\.publicValue),
                 reliability: .prefixOnly
             )
             finalGroups.append(group)
@@ -275,20 +355,20 @@ public actor DuplicateScanner {
 
         for bucket in smallFileBuckets {
             if Task.isCancelled { break }
-            let hashed = await hashPathsConcurrently(
-                paths: bucket.paths,
+            let hashed = await hashCandidatesConcurrently(
+                candidates: bucket.files,
                 fullFile: true
             )
-            var byHash: [String: [String]] = [:]
-            for (path, hex) in hashed {
+            var byHash: [String: [DuplicateCandidate]] = [:]
+            for (candidate, hex) in hashed {
                 guard let hex else { continue }
-                byHash[hex, default: []].append(path)
+                byHash[hex, default: []].append(candidate)
             }
-            for (fullHex, paths) in byHash where paths.count >= 2 {
+            for (fullHex, files) in byHash where files.count >= 2 {
                 let group = DuplicateGroup(
                     hashKey: "size=\(bucket.size)|prefix=\(bucket.prefixHex)|full=\(fullHex)",
-                    bytes: bucket.size,
-                    paths: paths.sorted(),
+                    logicalBytes: bucket.size,
+                    files: files.map(\.publicValue),
                     reliability: .full
                 )
                 finalGroups.append(group)
@@ -315,45 +395,45 @@ public actor DuplicateScanner {
     // MARK: - Hashing
 
     /// 桶内并发 hash：用 TaskGroup + 滑动窗口控制 in-flight 数量。
-    /// 返回 `(path, hexOrNil)` 数组——hex 为 nil 表示该文件读失败（权限 / 已删除），
+    /// 返回 `(candidate, hexOrNil)` 数组——hex 为 nil 表示该文件读失败（权限 / 已删除），
     /// 调用方应直接忽略该文件，**不要**让它误入任何 hash 桶。
     ///
-    /// 注意：调用方按 hex 重新分桶（见 runScan），**不依赖 paths 输入顺序**，
+    /// 注意：调用方按 hex 重新分桶（见 runScan），**不依赖 candidates 输入顺序**，
     /// 因此这里直接收集任务完成顺序即可，无需按 index 还原。
-    private static func hashPathsConcurrently(
-        paths: [String],
+    private static func hashCandidatesConcurrently(
+        candidates: [DuplicateCandidate],
         fullFile: Bool
-    ) async -> [(String, String?)] {
-        if paths.isEmpty { return [] }
+    ) async -> [(DuplicateCandidate, String?)] {
+        if candidates.isEmpty { return [] }
         let limit = DuplicateScanner.inBucketConcurrency
 
-        return await withTaskGroup(of: (String, String?).self) { group in
+        return await withTaskGroup(of: (DuplicateCandidate, String?).self) { group in
             var nextIndex = 0
 
             // 启动初始窗口
-            while nextIndex < paths.count && nextIndex < limit {
-                let p = paths[nextIndex]
+            while nextIndex < candidates.count && nextIndex < limit {
+                let candidate = candidates[nextIndex]
                 group.addTask {
                     let hex = fullFile
-                        ? DuplicateScanner.fullSHA256Hex(path: p)
-                        : DuplicateScanner.prefixSHA256Hex(path: p, maxBytes: DuplicateScanner.prefixHashBytes)
-                    return (p, hex)
+                        ? DuplicateScanner.fullSHA256Hex(path: candidate.path)
+                        : DuplicateScanner.prefixSHA256Hex(path: candidate.path, maxBytes: DuplicateScanner.prefixHashBytes)
+                    return (candidate, hex)
                 }
                 nextIndex += 1
             }
 
             // 收一个 → 发一个，保持窗口
-            var collected: [(String, String?)] = []
-            collected.reserveCapacity(paths.count)
+            var collected: [(DuplicateCandidate, String?)] = []
+            collected.reserveCapacity(candidates.count)
             while let r = await group.next() {
                 collected.append(r)
-                if nextIndex < paths.count {
-                    let p = paths[nextIndex]
+                if nextIndex < candidates.count {
+                    let candidate = candidates[nextIndex]
                     group.addTask {
                         let hex = fullFile
-                            ? DuplicateScanner.fullSHA256Hex(path: p)
-                            : DuplicateScanner.prefixSHA256Hex(path: p, maxBytes: DuplicateScanner.prefixHashBytes)
-                        return (p, hex)
+                            ? DuplicateScanner.fullSHA256Hex(path: candidate.path)
+                            : DuplicateScanner.prefixSHA256Hex(path: candidate.path, maxBytes: DuplicateScanner.prefixHashBytes)
+                        return (candidate, hex)
                     }
                     nextIndex += 1
                 }

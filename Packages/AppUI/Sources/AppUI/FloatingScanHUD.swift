@@ -3,6 +3,35 @@ import AppKit
 import Combine
 import ScanKit
 
+/// 把同一轮 SwiftUI/AppKit 更新中产生的多次 HUD 几何刷新合并到下一次主线程
+/// runloop。这个类型刻意独立出来，既让 Controller 的所有运行期尺寸变更只能走
+/// 一条路径，也让“不允许同步执行 + 必须合并”成为可单测的契约。
+@MainActor
+final class FloatingPanelGeometryRefreshCoalescer {
+    typealias Action = @MainActor @Sendable () -> Void
+
+    private let scheduler: (@escaping Action) -> Void
+    private var isScheduled = false
+
+    init(scheduler: @escaping (@escaping Action) -> Void = { action in
+        DispatchQueue.main.async {
+            action()
+        }
+    }) {
+        self.scheduler = scheduler
+    }
+
+    func schedule(_ action: @escaping Action) {
+        guard !isScheduled else { return }
+        isScheduled = true
+        scheduler { [weak self] in
+            guard let self else { return }
+            self.isScheduled = false
+            action()
+        }
+    }
+}
+
 /// v1.3：扫描悬浮窗（HUD），可作"扫描态浮窗" / "桌面挂件" / "灵动岛"。
 ///
 /// 产品需求（用户原话）：
@@ -77,15 +106,15 @@ public final class FloatingScanHUDController {
     }
 
     public init() {
-        // SwiftUI 视图测量出新 size 后回写 islandState → Combine 触发 panel frame + hit-rect 重算。
-        // panel 永远是展开尺寸（vibe-island 模式），所以这里只需重算 hit-rect 与 mouse-pass-through。
-        islandStateSubs.append(islandState.$leftPillSize.sink { [weak self] _ in self?.refreshIslandHitRects() })
-        islandStateSubs.append(islandState.$rightPillSize.sink { [weak self] _ in self?.refreshIslandHitRects() })
-        islandStateSubs.append(islandState.$expandedSize.sink { [weak self] _ in self?.refreshIslandHitRects() })
+        // SwiftUI 视图测量出新 size 后回写 islandState。测量发生在布局周期内，所以这里只
+        // 安排下一 runloop 合并更新，绝不能同步 setFrame。
+        islandStateSubs.append(islandState.$leftPillSize.sink { [weak self] _ in self?.scheduleIslandGeometryRefresh() })
+        islandStateSubs.append(islandState.$rightPillSize.sink { [weak self] _ in self?.scheduleIslandGeometryRefresh() })
+        islandStateSubs.append(islandState.$expandedSize.sink { [weak self] _ in self?.scheduleIslandGeometryRefresh() })
         islandStateSubs.append(islandState.$expanded.sink { [weak self] expanded in
             // expanded 翻转 → 切 mouse-pass-through：收起态 panel 鼠标穿透，展开态可交互
             DispatchQueue.main.async {
-                self?.refreshIslandHitRects()
+                self?.scheduleIslandGeometryRefresh()
                 self?.applyIslandInteractive(expanded)
             }
         })
@@ -102,16 +131,33 @@ public final class FloatingScanHUDController {
     /// Combine 订阅持有；@MainActor class 不会泄漏。
     private var islandStateSubs: [AnyCancellable] = []
 
-    /// SwiftUI 测量回调触发：**同时重画 panel frame 和 hit-rect**——
-    /// panel 现在只占当前显示态实际区域（收起=strip 大小、展开=expanded 大小）。
-    private func refreshIslandHitRects() {
+    /// SwiftUI 的 Preference 回调发生在当前布局周期内，不能从回调链同步修改承载它的
+    /// NSPanel frame，否则会形成「SwiftUI 测量 → AppKit 改窗 → SwiftUI 再测量」的
+    /// Update Constraints 反馈环。这里把同一 runloop 的多次尺寸发布合并为下一轮一次更新。
+    private let islandGeometryRefreshCoalescer = FloatingPanelGeometryRefreshCoalescer()
+
+    /// 灵动岛 panel 是透明的最大包络，内部 SwiftUI 自己在收起/展开尺寸间做动画。
+    /// 包络只允许随测量结果增长（屏幕变化时仍会受可用区域钳制），避免扫描文案变化时
+    /// panel 在相邻尺寸之间来回收缩并反复触发布局。
+    private var dynamicIslandEnvelopeSize: NSSize?
+
+    private func scheduleIslandGeometryRefresh() {
+        islandGeometryRefreshCoalescer.schedule { [weak self] in
+            guard let self else { return }
+            self.refreshIslandPanelGeometry()
+        }
+    }
+
+    /// 只在当前 AppKit 布局周期结束后更新 panel 包络和命中区域。
+    private func refreshIslandPanelGeometry() {
         guard settings?.hudPlacement == .dynamicIsland,
               let panel,
               let screen = resolveTargetScreen(for: .dynamicIsland) else { return }
         let newSize = panelSize(for: .dynamicIsland)
         let newFrame = panelFrame(size: newSize, on: screen, placement: .dynamicIsland)
-        if panel.frame != newFrame {
-            panel.setFrame(newFrame, display: true)
+        if IslandPanelGeometry.requiresFrameUpdate(current: panel.frame, proposed: newFrame) {
+            // display:false 避免在尺寸提交时强制嵌套一次 display/layout pass；下一帧会自然重绘。
+            panel.setFrame(newFrame, display: false)
         }
         updateIslandHitRects(panelFrame: newFrame, placement: .dynamicIsland, screen: screen)
     }
@@ -154,14 +200,10 @@ public final class FloatingScanHUDController {
             // 灵动岛模式：每次 reconcile 都重新对齐到当前刘海屏，
             // 处理多屏插拔 / 屏分辨率变化 / 用户把 Mac 合上换外接屏 等场景。
             if settings.hudPlacement == .dynamicIsland, let panel = self.panel {
-                if let screen = resolveTargetScreen(for: .dynamicIsland) {
-                    let size = panelSize(for: .dynamicIsland)
-                    let frame = panelFrame(size: size, on: screen, placement: .dynamicIsland)
-                    if panel.frame != frame {
-                        panel.setFrame(frame, display: false)
-                    }
-                    updateIslandHitRects(panelFrame: frame, placement: .dynamicIsland, screen: screen)
-                }
+                // reconcile 由 SwiftUI `.onChange` 调用；即使不是 Preference 回调，也仍处在
+                // SwiftUI 更新事务里。运行期绝不能在这里同步 setFrame，统一延后并合并。
+                // 只有 ensurePanel 的“尚未展示”创建期允许同步设置初始 frame。
+                scheduleIslandGeometryRefresh()
                 // 二次保险：再设一次 level，防止 SwiftUI host 创建过程中被某些路径打回 .floating
                 panel.level = .statusBar
             }
@@ -225,7 +267,10 @@ public final class FloatingScanHUDController {
             }
         )
         let host = NSHostingView(rootView: view)
-        host.translatesAutoresizingMaskIntoConstraints = false
+        let contentContainer = FloatingPanelHostingPolicy.makeContainer(
+            hosting: host,
+            frameSize: panelSize
+        )
 
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: panelSize),
@@ -244,7 +289,7 @@ public final class FloatingScanHUDController {
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.hidesOnDeactivate = false
-        panel.contentView = host
+        panel.contentView = contentContainer
 
         // 根据 placement 决定 level / collectionBehavior。
         if placement.isDesktopLevel {
@@ -287,7 +332,7 @@ public final class FloatingScanHUDController {
         return NSScreen.main ?? NSScreen.screens.first
     }
 
-    /// panel 尺寸——灵动岛 panel **永远等于展开态最大尺寸**（vibe-island 同款做法）。
+    /// panel 尺寸——灵动岛 panel 永远是能容纳收起/展开两态的透明包络。
     /// 关键：panel 不跟随 isExpanded 变 → SwiftUI 内部 spring 期间 panel 不会"先到位裁掉视图"，
     /// 形变看起来才是连续的"一团黑色呼吸"，而不是两块 view 在不同尺寸 panel 里硬切。
     /// 收起态视觉小胶囊靠**内容形状自己**收成 strip 大小，panel 多出来的区域由透明 host 接住，
@@ -296,13 +341,35 @@ public final class FloatingScanHUDController {
         switch placement {
         case .dynamicIsland:
             let screen = resolveTargetScreen(for: .dynamicIsland) ?? NSScreen.main
-            let notchH = (screen?.notchSize.height ?? 32)
-            // panel 永远是展开态尺寸（含一些 margin 容纳 shadow）
+            let notchSize = screen?.notchSize ?? CGSize(width: 190, height: 32)
+            let stripSize = islandState.leftPillSize
             let expSize = islandState.expandedSize
-            let w: CGFloat = expSize.width > 0 ? expSize.width : 540
-            let h: CGFloat = expSize.height > 0 ? expSize.height : (notchH + 260)
-            // 横向 +24 留 shadow 余量，纵向 +12 同理
-            return NSSize(width: w + 24, height: h + 12)
+            // 宽度由有界的大卡片合同决定，绝不让用户可见字符串或 compact 测量值
+            // 扩大透明 NSPanel；动态高度仍由真实展开内容驱动。
+            let contentWidth = IslandPanelGeometry.expandedContentWidth
+            let contentHeight = max(
+                IslandPanelGeometry.expandedFallbackHeight,
+                expSize.height,
+                stripSize.height,
+                notchSize.height
+            )
+            let required = NSSize(
+                width: contentWidth + IslandPanelGeometry.horizontalShadowMargin,
+                height: contentHeight + IslandPanelGeometry.verticalShadowMargin
+            )
+            let availableFrame = screen?.frame ?? NSRect(
+                x: 0,
+                y: 0,
+                width: required.width + IslandPanelGeometry.screenEdgeMargin * 2,
+                height: required.height + IslandPanelGeometry.screenEdgeMargin * 2
+            )
+            let envelope = IslandPanelGeometry.nextEnvelope(
+                previous: dynamicIslandEnvelopeSize,
+                required: required,
+                availableFrame: availableFrame
+            )
+            dynamicIslandEnvelopeSize = envelope
+            return envelope
         default:
             return NSSize(width: 320, height: 112)
         }
@@ -359,7 +426,10 @@ public final class FloatingScanHUDController {
 
         // 收起 strip 实际占用的区域
         let stripSize = islandState.leftPillSize
-        let stripW: CGFloat = stripSize.width > 0 ? stripSize.width : (notchW + 280)
+        let stripW = IslandPanelGeometry.compactContentWidth(
+            measured: stripSize.width,
+            fallback: notchW + 280
+        )
         let stripH: CGFloat = max(stripSize.height, max(notchH, 28))
         closedStripHitRect = NSRect(
             x: screen.frame.midX - stripW / 2,
@@ -370,7 +440,7 @@ public final class FloatingScanHUDController {
 
         // 展开 island 实际占用的区域
         let expSize = islandState.expandedSize
-        let expW: CGFloat = expSize.width > 0 ? expSize.width : 540
+        let expW = IslandPanelGeometry.expandedContentWidth
         let expH: CGFloat = expSize.height > 0 ? expSize.height : (notchH + 260)
         expandedHitRect = NSRect(
             x: screen.frame.midX - expW / 2,
@@ -467,6 +537,99 @@ public final class FloatingScanHUDController {
 
 }
 
+/// AppKit/SwiftUI 混合窗口的尺寸边界：NSPanel 是 frame 的唯一权威，SwiftUI 只上报
+/// 内容所需尺寸。所有尺寸更新都通过 Controller 延迟合并，不能从 Preference 回调同步改窗。
+enum IslandPanelGeometry {
+    static let expandedContentWidth: CGFloat = 540
+    static let expandedFallbackHeight: CGFloat = 220
+    static let stripSafetyMargin: CGFloat = 8
+    static let horizontalShadowMargin: CGFloat = 24
+    static let verticalShadowMargin: CGFloat = 12
+    static let screenEdgeMargin: CGFloat = 8
+    static let comparisonTolerance: CGFloat = 0.5
+
+    static func compactContentWidth(measured: CGFloat, fallback: CGFloat) -> CGFloat {
+        let naturalWidth = measured > 0 ? measured : fallback
+        return min(expandedContentWidth, max(1, naturalWidth + stripSafetyMargin))
+    }
+
+    static func requiresFrameUpdate(current: NSRect, proposed: NSRect) -> Bool {
+        abs(current.origin.x - proposed.origin.x) > comparisonTolerance
+            || abs(current.origin.y - proposed.origin.y) > comparisonTolerance
+            || abs(current.size.width - proposed.size.width) > comparisonTolerance
+            || abs(current.size.height - proposed.size.height) > comparisonTolerance
+    }
+
+    /// 包络在同一屏幕上只增不减；若换到更小屏幕，仍会被屏幕边缘安全区钳制。
+    static func nextEnvelope(previous: NSSize?,
+                             required: NSSize,
+                             availableFrame: NSRect) -> NSSize {
+        let maximumWidth = max(1, availableFrame.width - screenEdgeMargin * 2)
+        let maximumHeight = max(1, availableFrame.height - screenEdgeMargin * 2)
+        return NSSize(
+            width: min(maximumWidth, max(previous?.width ?? 0, required.width)),
+            height: min(maximumHeight, max(previous?.height ?? 0, required.height))
+        )
+    }
+}
+
+/// 灵动岛两种尺寸使用不同的信息密度。收起态是状态提示，不是扫描详情面板；
+/// 扫描时只允许一个短状态词，阶段、耗时和容量留给展开态，避免动态内容反向撑大窗口。
+struct FloatingHUDHeroContent: Equatable, Sendable {
+    let title: String
+    let subtitle: String?
+    let value: String?
+    let percent: String?
+}
+
+enum FloatingHUDCompactActivity: Equatable, Sendable {
+    case inactive
+    case scanning
+    case cleaning
+}
+
+enum FloatingHUDContentPolicy {
+    static func compact(activity: FloatingHUDCompactActivity,
+                        scanningTitle: String,
+                        cleaningTitle: String,
+                        regular: FloatingHUDHeroContent) -> FloatingHUDHeroContent {
+        let title: String
+        switch activity {
+        case .inactive:
+            return regular
+        case .scanning:
+            title = scanningTitle
+        case .cleaning:
+            title = cleaningTitle
+        }
+        return FloatingHUDHeroContent(
+            title: title,
+            subtitle: nil,
+            value: nil,
+            percent: nil
+        )
+    }
+}
+
+/// `NSHostingView.sizingOptions` 默认会把 SwiftUI 的最小、理想和最大尺寸反写为
+/// AppKit 约束；当 hosting view 本身就是 NSWindow.contentView 时，还会更新窗口尺寸边界。
+/// HUD 的窗口 frame 由 Controller 管理，因此关闭这条反向约束通道，让 host 始终服从 panel。
+@MainActor
+enum FloatingPanelHostingPolicy {
+    static func makeContainer<Content: View>(hosting host: NSHostingView<Content>,
+                                             frameSize: NSSize) -> NSView {
+        // 用没有 intrinsicContentSize 的普通 NSView 隔开 NSWindow 与 NSHostingView，
+        // 从结构上禁止 SwiftUI 内容尺寸成为窗口 contentMin/MaxSize 的来源。
+        let container = NSView(frame: NSRect(origin: .zero, size: frameSize))
+        host.sizingOptions = []
+        host.translatesAutoresizingMaskIntoConstraints = true
+        host.autoresizingMask = [.width, .height]
+        host.frame = container.bounds
+        container.addSubview(host)
+        return container
+    }
+}
+
 // MARK: - IslandHoverState
 
 /// 调试开关——慢动作 + 自动循环 + 帧抓取触发。
@@ -495,6 +658,30 @@ final class IslandHoverState: ObservableObject {
     /// `closedStripLayout` 把短簇 frame 到这个宽度，让左右严格对称且整体宽度随长簇 ×2 动态变化。
     /// 0 时表示尚未测量到，layout 退回 `.fixedSize` 自然布局，避免首帧塌缩。
     @Published var clusterMaxWidth: CGFloat = 0
+
+    /// PreferenceKey 可能在连续布局周期上报完全相同或亚像素抖动的值。直接给 @Published
+    /// 赋值会无条件发通知，使 panel 重走尺寸链；这里只接受有效且有视觉意义的变化。
+    func updateMeasuredSizes(strip: CGSize?, expanded: CGSize?) {
+        if let strip,
+           Self.isValid(strip),
+           Self.differs(strip, from: leftPillSize) {
+            leftPillSize = strip
+        }
+        if let expanded,
+           Self.isValid(expanded),
+           Self.differs(expanded, from: expandedSize) {
+            expandedSize = expanded
+        }
+    }
+
+    private static func isValid(_ size: CGSize) -> Bool {
+        size.width.isFinite && size.height.isFinite && size.width > 0 && size.height > 0
+    }
+
+    private static func differs(_ lhs: CGSize, from rhs: CGSize) -> Bool {
+        abs(lhs.width - rhs.width) > IslandPanelGeometry.comparisonTolerance
+            || abs(lhs.height - rhs.height) > IslandPanelGeometry.comparisonTolerance
+    }
 }
 
 /// SwiftUI PreferenceKey：把子视图实际渲染出的 size 报到父级。
@@ -833,7 +1020,7 @@ struct FloatingScanHUDView: View {
         // 用户原话：「没任务和不用操作，应该回归常态默认那个显示」——
         // 不再显示"无需清理"这种 finished 文案，整体退化成 idle，
         // 与 App 启动未扫描时的初始磁盘状态显示一致（左：磁盘紧张/空闲；右：可用空间）。
-        if coordinator.snapshot.isFinished {
+        if coordinator.snapshot.isComplete {
             if CleanableSeverity.forCleanableBytes(cleanableBytes) == .idle {
                 return .idle
             }
@@ -933,9 +1120,12 @@ struct FloatingScanHUDView: View {
 
         // 当前态目标尺寸：用 islandState 测量值；首帧兜底
         // 收起态宽度 = probe 测出的自然宽度 + 8pt 余量（防止 phase 切换瞬间内容长出而宽度还没追上导致裁切）
-        let stripW = (islandState.leftPillSize.width > 0 ? islandState.leftPillSize.width : (notchSize.width + 280)) + 8
+        let stripW = IslandPanelGeometry.compactContentWidth(
+            measured: islandState.leftPillSize.width,
+            fallback: notchSize.width + 280
+        )
         let stripH = max(islandState.leftPillSize.height, pillH)
-        let expW = islandState.expandedSize.width > 0 ? islandState.expandedSize.width : 540
+        let expW = IslandPanelGeometry.expandedContentWidth
         let expH = islandState.expandedSize.height > 0 ? islandState.expandedSize.height : 220
         let targetW: CGFloat = isExpanded ? expW : stripW
         let targetH: CGFloat = isExpanded ? expH : stripH
@@ -988,8 +1178,10 @@ struct FloatingScanHUDView: View {
         // **独立测量层**：不参与 spring，永远渲染两种态测自然尺寸
         .background(islandSizeProbe(pillH: pillH, notchWidth: notchSize.width).hidden())
         .onPreferenceChange(IslandSizePreferenceKey.self) { sizes in
-            if let s = sizes["strip"] { islandState.leftPillSize = s }
-            if let e = sizes["expanded"] { islandState.expandedSize = e }
+            islandState.updateMeasuredSizes(
+                strip: sizes["strip"],
+                expanded: sizes["expanded"]
+            )
         }
         .onPreferenceChange(IslandClusterWidthPreferenceKey.self) { width in
             // v1.3 review-fix（对称化）：左右两簇较长那侧的自然宽度。
@@ -1036,17 +1228,17 @@ struct FloatingScanHUDView: View {
         }
     }
 
-    /// **收起态布局**——胶囊 strip：左侧图标+主标题贴刘海左边、右侧数字贴刘海右边、中央留刘海占位。
+    /// **收起态布局**——胶囊 strip：扫描时左侧只显示一个短状态词，右侧保留等宽空位；
+    /// 非扫描态继续显示左侧状态与右侧容量。中央始终留出刘海占位。
     /// `isSource` 控制 matchedGeometryEffect 是否以本布局的 frame 为锚点：
     /// - 当本布局可见时（收起态），isSource=true，提供真实的胶囊位置 frame
     /// - 当不可见时（展开态），isSource=false，元素的视觉 frame 跟随展开布局
     ///
-    /// **v1.3 review-fix（对称化 + 安全距离）**：
+    /// **对称化 + 安全距离**：
     /// 1. 左右内侧 padding 从 10 → 16pt：用户实测右侧"已 5..."字符贴脸物理刘海被截断；
     ///    16pt 与外侧 padding 对齐，左右内外四角余量一致，视觉对称。
     /// 2. 左右簇上报自然宽度到 IslandClusterWidthPreferenceKey；外层取 max 写回 islandState；
-    ///    本函数把两簇都 frame 到 max 宽度（短侧 alignment 朝向胶囊外缘 leading/trailing），
-    ///    让"扫描中" vs "已 5,432 项" 这种长度差被填齐为对称形态——左右一起变大变小。
+    ///    本函数把两簇都 frame 到 max 宽度，扫描态的右侧空簇仍保持几何对称，但不再展示容量。
     /// 3. 整体宽度 = clusterMaxWidth × 2 + bridgeWidth + outerPadding × 2，由内容长侧驱动。
     @ViewBuilder
     private func closedStripLayout(pillH: CGFloat, notchWidth: CGFloat, isSource: Bool, namespace: Namespace.ID) -> some View {
@@ -1105,10 +1297,12 @@ struct FloatingScanHUDView: View {
     private func expandedHeroLayout(pillH: CGFloat, isSource: Bool, namespace: Namespace.ID) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             // hero 行——同 ID 的元素从胶囊位置飞到这里，同时字号自动插值
-            HStack(spacing: 0) {
+            HStack(spacing: 12) {
                 heroLeftCluster(isExpanded: true, isSource: isSource, namespace: namespace)
-                Spacer(minLength: 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
                 heroRightCluster(isExpanded: true, isSource: isSource, namespace: namespace)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .frame(height: pillH)
 
@@ -1133,6 +1327,7 @@ struct FloatingScanHUDView: View {
     /// `isSource` 决定本元素是否提供真实 frame：可见侧 true，隐藏侧 false（跟随对侧 frame）。
     @ViewBuilder
     private func heroLeftCluster(isExpanded: Bool, isSource: Bool, namespace: Namespace.ID) -> some View {
+        let content = isExpanded ? expandedHeroContent : compactHeroContent
         let mainSize: CGFloat = isExpanded ? 16 : islandClosedMainFontSize
         let subSize: CGFloat = isExpanded ? 12 : islandClosedSecondaryFontSize
         let iconSize: CGFloat = isExpanded ? 18 : islandClosedSecondaryFontSize + 2
@@ -1159,27 +1354,30 @@ struct FloatingScanHUDView: View {
             }
             .matchedGeometryEffect(id: "leadingMark", in: namespace, properties: .frame, anchor: .leading, isSource: isSource)
 
-            // === 主标题（hero ID: "mainTitle"）===
-            // .fixedSize(horizontal:) 让 Text 永远按自然宽度渲染——
-            // 否则 spring 期间父容器宽度插值会导致文本被截断成 "..."（动画过程中出现省略号）
-            // anchor: .leading——主标题左对齐飞越（字号变大时左边缘锚定）
-            Text(heroMainTitle)
-                .font(mainFont)
-                .foregroundStyle(.white.opacity(0.92))
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                .matchedGeometryEffect(id: "mainTitle", in: namespace, properties: .frame, anchor: .leading, isSource: isSource)
-
-            // === 副标（hero ID: "subTitle"，可能不存在则不挂）===
-            if let sub = heroLeftSub {
-                Text(sub)
-                    .font(subFont)
-                    .foregroundStyle(.white.opacity(0.55))
+            VStack(alignment: .leading, spacing: isExpanded ? 1 : 0) {
+                // 收起态只按短文案自然宽度布局；展开态必须服从卡片剩余宽度，
+                // 长阶段名在边界内截断，不能通过 fixedSize 把 hero 行撑出窗口。
+                Text(content.title)
+                    .font(mainFont)
+                    .foregroundStyle(.white.opacity(0.92))
                     .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .matchedGeometryEffect(id: "subTitle", in: namespace, properties: .frame, anchor: .leading, isSource: isSource)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: !isExpanded, vertical: false)
+                    .matchedGeometryEffect(id: "mainTitle", in: namespace, properties: .frame, anchor: .leading, isSource: isSource)
+
+                if let sub = content.subtitle {
+                    Text(sub)
+                        .font(subFont)
+                        .foregroundStyle(.white.opacity(0.55))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .fixedSize(horizontal: !isExpanded, vertical: false)
+                        .matchedGeometryEffect(id: "subTitle", in: namespace, properties: .frame, anchor: .leading, isSource: isSource)
+                }
             }
+            .frame(maxWidth: isExpanded ? .infinity : nil, alignment: .leading)
         }
+        .frame(maxWidth: isExpanded ? .infinity : nil, alignment: .leading)
         // 重影修复：仅 hero 簇可见性瞬间切换（mirror 侧不画），avoid 小字 + 大字叠影
         // matchedGeometryEffect 的 frame 测量与 opacity 无关——飞越照常进行
         .opacity(isSource ? 1 : 0)
@@ -1189,6 +1387,7 @@ struct FloatingScanHUDView: View {
     /// hero 右侧簇——关键数字 + 百分比。同样每个元素带独立 hero ID。
     @ViewBuilder
     private func heroRightCluster(isExpanded: Bool, isSource: Bool, namespace: Namespace.ID) -> some View {
+        let content = isExpanded ? expandedHeroContent : compactHeroContent
         let valueSize: CGFloat = isExpanded ? 22 : islandClosedMainFontSize
         let subSize: CGFloat = isExpanded ? 13 : islandClosedSecondaryFontSize
         let valueFont = Font.system(size: valueSize, weight: .bold, design: .rounded)
@@ -1198,7 +1397,7 @@ struct FloatingScanHUDView: View {
             // anchor: .trailing——右侧文字右对齐飞越：
             // 字号变大时右边缘贴原位置不动、左边缘往左扩展，
             // 视觉上是"在原位置朝左放大"（而不是"从右侧滑入"）
-            Text(heroRightValueText)
+            Text(content.value ?? "")
                 .font(valueFont)
                 .monospacedDigit()
                 .foregroundStyle(heroRightValueColor)
@@ -1206,7 +1405,7 @@ struct FloatingScanHUDView: View {
                 .fixedSize(horizontal: true, vertical: false)
                 .matchedGeometryEffect(id: "primaryValue", in: namespace, properties: .frame, anchor: .trailing, isSource: isSource)
 
-            if let percent = heroRightPercentText {
+            if let percent = content.percent {
                 Text(percent)
                     .font(subFont)
                     .foregroundStyle(.white.opacity(0.5))
@@ -1222,7 +1421,31 @@ struct FloatingScanHUDView: View {
 
     // MARK: - hero 文本/颜色派生
 
-    private var heroMainTitle: String {
+    private var compactActivity: FloatingHUDCompactActivity {
+        if smartCareIsCleaning { return .cleaning }
+        if case .scanning = phase { return .scanning }
+        return .inactive
+    }
+
+    private var expandedHeroContent: FloatingHUDHeroContent {
+        FloatingHUDHeroContent(
+            title: expandedHeroMainTitle,
+            subtitle: expandedHeroLeftSub,
+            value: heroRightValueText,
+            percent: heroRightPercentText
+        )
+    }
+
+    private var compactHeroContent: FloatingHUDHeroContent {
+        FloatingHUDContentPolicy.compact(
+            activity: compactActivity,
+            scanningTitle: String(localized: "hud.scanning", bundle: .module),
+            cleaningTitle: String(localized: "hud.cleaning", bundle: .module),
+            regular: expandedHeroContent
+        )
+    }
+
+    private var expandedHeroMainTitle: String {
         switch phase {
         case .scanning:
             return smartCareActivityTitle ?? String(localized: "hud.scanning", bundle: .module)
@@ -1231,8 +1454,8 @@ struct FloatingScanHUDView: View {
         }
     }
 
-    private var heroLeftSub: String? {
-        if case .scanning = phase { return islandClosedScanTimerText() }
+    private var expandedHeroLeftSub: String? {
+        if case .scanning = phase { return scanTimerShortText() }
         return nil
     }
 
@@ -1294,7 +1517,7 @@ struct FloatingScanHUDView: View {
                 )
 
             expandedHeroLayout(pillH: pillH, isSource: true, namespace: islandExpandedProbeNS)
-                .frame(width: 540)
+                .frame(width: IslandPanelGeometry.expandedContentWidth)
                 .fixedSize(horizontal: false, vertical: true)
                 .background(
                     GeometryReader { geo in
@@ -1423,11 +1646,6 @@ struct FloatingScanHUDView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
             isPopping = false
         }
-    }
-
-    /// 收起态左胶囊扫描中文案：v2026.06.23 起仅显示已用时长（剩余时间不可信，统一不再展示）。
-    private func islandClosedScanTimerText(at date: Date = Date()) -> String {
-        return scanTimerShortText(at: date)
     }
 
     private var islandClosedMainFontSize: CGFloat {
@@ -1707,22 +1925,10 @@ struct FloatingScanHUDView: View {
     /// 鼠标悬停 tooltip——把 swapfile 个数 / sysctl 内核口径 / sleepimage 提示一次性给到。
     private var swapHintText: String {
         guard let s = coordinator.swapSnapshot else { return "" }
-        var parts: [String] = []
-        if s.swapFileSizeMeasured {
-            parts.append("\(s.swapFileCount) 个 swapfile = \(bytesString(s.swapFileBytesOnDisk))")
-        } else if s.swapTotalBytes > 0 {
-            parts.append("swap 文件估算 \(bytesString(s.swapTotalBytes))（系统保护下无法直接列文件，回退用 sysctl total）")
-        }
-        if s.sleepImageBytes > 0 {
-            parts.append("休眠镜像 = \(bytesString(s.sleepImageBytes))")
-        }
-        if s.swapTotalBytes > 0 {
-            parts.append("内核已用 \(bytesString(s.swapUsedBytes)) / \(bytesString(s.swapTotalBytes))")
-        }
-        if s.sleepImageBytes > 0 {
-            parts.append("如不使用休眠：终端 `sudo pmset -a hibernatemode 0` 后可手动删 sleepimage")
-        }
-        return parts.joined(separator: "\n")
+        return VirtualMemoryTooltipFormatter.text(
+            for: s,
+            locale: settings.effectiveLocale
+        ) { bytesString($0) }
     }
 
     /// 普通卡片形态（cardBody）末尾的紧凑 swap 行。

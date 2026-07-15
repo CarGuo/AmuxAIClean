@@ -1,4 +1,5 @@
 import Foundation
+import LogKit
 
 /// Apple 工作流配套：DerivedData 按工程粒度扫描器。
 ///
@@ -15,10 +16,10 @@ import Foundation
 /// - `estimateSize(at:)` 实现风格完全对齐 [SimctlRuntimeScanner.estimateSize]——
 ///   `FileManager.enumerator` 遍历，优先 `totalFileAllocatedSize`，回退 `fileAllocatedSize`。
 ///
-/// 容错红线：
-/// - DerivedData 根不存在 / 不是目录 / 无权限读 → 返回 `[]`，**不抛**；
-/// - 单个工程子目录 stat 失败 → 该项 `sizeBytes` / `modificationDate` 为 `nil`，但**仍纳入结果**；
-/// - 这与 UI 侧「展示空清单 + 引导用户检查 Xcode 安装」策略一致，避免错误冒泡污染整个工作流。
+/// 完整性红线：
+/// - DerivedData 根不存在 / 不是目录 → 完整空结果；
+/// - 根枚举或子目录 metadata 失败 → 结构化 `ScanIncompleteIssue`，不能伪装成完整空结果；
+/// - 旧 hits-only API 保持兼容，需要安全删除证据的调用方必须消费 evidence API。
 public actor DerivedDataPerProjectScanner {
 
     public init() {}
@@ -26,9 +27,30 @@ public actor DerivedDataPerProjectScanner {
     /// 异步入口：扫描 `~/Library/Developer/Xcode/DerivedData` 下每个工程子目录。
     ///
     /// - Parameter home: 用户 home 目录（注入便于测试，生产传 `FileManager.default.homeDirectoryForCurrentUser`）。
-    /// - Returns: 工程命中列表；任何 IO 失败一律 `[]`，**不抛**。
+    /// - Returns: 工程命中列表；兼容入口在取消时返回空，新增调用方应使用 [discoverWithEvidence]。
     public func discover(home: URL) async -> [ProjectHit] {
-        Self.detect(home: home)
+        do {
+            return try await discoverWithEvidence(home: home).hits
+        } catch is CancellationError {
+            return []
+        } catch {
+            GSYLog.error(.scan, "DerivedData discovery unexpected error: \(error)")
+            return []
+        }
+    }
+
+    /// 异步结构化入口。取消独立抛出，不写成扫描不完整证据。
+    public func discoverWithEvidence(
+        home: URL,
+        includeSizes: Bool = true
+    ) async throws -> DiscoveryEvidence<ProjectHit> {
+        try Task.checkCancellation()
+        return try Self.detectWithEvidence(
+            home: home,
+            includeSizes: includeSizes,
+            fileSystem: FileManager.default,
+            cancellationCheck: { try Task.checkCancellation() }
+        )
     }
 
     /// 同步入口：纯 FS 遍历，无 subprocess，供单测直接调用。
@@ -37,45 +59,155 @@ public actor DerivedDataPerProjectScanner {
     /// 1. 计算 DerivedData 根路径 `<home>/Library/Developer/Xcode/DerivedData`；
     /// 2. 列一级子目录，跳过 `ModuleCache.noindex` / `Manifest.plist` 等非工程项（仅保留目录）；
     /// 3. 对每个目录：解析工程名 + 估算大小 + 取 mtime。
-    public static func detect(home: URL) -> [ProjectHit] {
-        let fm = FileManager.default
+    public nonisolated static func detect(
+        home: URL,
+        includeSizes: Bool = true
+    ) -> [ProjectHit] {
+        detectWithEvidence(home: home, includeSizes: includeSizes).hits
+    }
+
+    /// 同步结构化入口。同步调用没有任务所有权，因此不会自行解释取消；异步入口负责取消传播。
+    public nonisolated static func detectWithEvidence(
+        home: URL,
+        includeSizes: Bool = true
+    ) -> DiscoveryEvidence<ProjectHit> {
+        do {
+            return try detectWithEvidence(
+                home: home,
+                includeSizes: includeSizes,
+                fileSystem: FileManager.default,
+                cancellationCheck: {}
+            )
+        } catch {
+            // 空 cancellationCheck 不会抛；保留类型安全的不可达分支并留下诊断。
+            GSYLog.error(.scan, "DerivedData synchronous discovery unexpected error: \(error)")
+            return DiscoveryEvidence(hits: [], incompleteIssues: [
+                ScanIncompleteIssue(path: derivedDataRoot(home: home).path, reason: .enumerationFailed)
+            ])
+        }
+    }
+
+    /// 模块内注入入口，供 WorkflowRegistry 传播取消及测试精确制造 I/O 故障。
+    nonisolated static func detectWithEvidence(
+        home: URL,
+        includeSizes: Bool,
+        fileSystem: any DynamicDiscoveryFileSystem,
+        cancellationCheck: () throws -> Void
+    ) throws -> DiscoveryEvidence<ProjectHit> {
         let root = home
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("Developer", isDirectory: true)
             .appendingPathComponent("Xcode", isDirectory: true)
             .appendingPathComponent("DerivedData", isDirectory: true)
 
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: root.path, isDirectory: &isDir), isDir.boolValue else {
-            return []
+        try cancellationCheck()
+        let rootAttributes: [FileAttributeKey: Any]
+        do {
+            rootAttributes = try fileSystem.attributesOfItem(atPath: root.path)
+        } catch {
+            if DiscoveryFileErrorClassifier.isMissing(error) {
+                return DiscoveryEvidence(hits: [])
+            }
+            return incomplete(
+                path: root.path,
+                reason: DiscoveryFileErrorClassifier.incompleteReason(
+                    for: error,
+                    fallback: .metadataUnavailable
+                )
+            )
+        }
+        guard let rootType = rootAttributes[.type] as? FileAttributeType else {
+            return incomplete(path: root.path, reason: .metadataUnavailable)
+        }
+        guard rootType == .typeDirectory || rootType == .typeSymbolicLink else {
+            return DiscoveryEvidence(hits: [])
         }
 
-        let keys: Set<URLResourceKey> = [.isDirectoryKey, .contentModificationDateKey]
-        guard let children = try? fm.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
+        let childNames: [String]
+        do {
+            childNames = try fileSystem.contentsOfDirectory(atPath: root.path).sorted()
+        } catch {
+            return incomplete(
+                path: root.path,
+                reason: DiscoveryFileErrorClassifier.incompleteReason(
+                    for: error,
+                    fallback: .enumerationFailed
+                )
+            )
         }
 
         var hits: [ProjectHit] = []
-        hits.reserveCapacity(children.count)
-        for child in children {
-            let values = try? child.resourceValues(forKeys: keys)
+        var incompleteIssues: [ScanIncompleteIssue] = []
+        hits.reserveCapacity(childNames.count)
+        for name in childNames {
+            try cancellationCheck()
+            if name.hasPrefix(".") || name == "ModuleCache.noindex" { continue }
+            let child = root.appendingPathComponent(name, isDirectory: true)
+            let attributes: [FileAttributeKey: Any]
+            do {
+                attributes = try fileSystem.attributesOfItem(atPath: child.path)
+            } catch {
+                incompleteIssues.append(ScanIncompleteIssue(
+                    path: child.path,
+                    reason: DiscoveryFileErrorClassifier.incompleteReason(
+                        for: error,
+                        fallback: .metadataUnavailable
+                    )
+                ))
+                continue
+            }
             // 仅保留目录；非目录（如 Manifest.plist）忽略
-            guard values?.isDirectory == true else { continue }
-            let name = child.lastPathComponent
-            // 跳过 Xcode 自身公共缓存目录，不属于"按工程"维度
-            if name == "ModuleCache.noindex" { continue }
+            guard let type = attributes[.type] as? FileAttributeType else {
+                incompleteIssues.append(ScanIncompleteIssue(
+                    path: child.path,
+                    reason: .metadataUnavailable
+                ))
+                continue
+            }
+            guard type == .typeDirectory else { continue }
+            let modificationDate = attributes[.modificationDate] as? Date
+            if modificationDate == nil {
+                incompleteIssues.append(ScanIncompleteIssue(
+                    path: child.path,
+                    reason: .metadataUnavailable
+                ))
+            }
+            let sizeResult: DirectorySizeResult
+            if includeSizes {
+                sizeResult = try estimateSizeWithEvidence(
+                    at: child,
+                    cancellationCheck: cancellationCheck
+                )
+                incompleteIssues.append(contentsOf: sizeResult.incompleteIssues)
+            } else {
+                sizeResult = DirectorySizeResult(sizeBytes: nil, incompleteIssues: [])
+            }
             hits.append(ProjectHit(
                 url: child,
                 projectName: parseProjectName(from: name),
-                sizeBytes: estimateSize(at: child.path),
-                modificationDate: values?.contentModificationDate
+                sizeBytes: sizeResult.sizeBytes,
+                modificationDate: modificationDate
             ))
         }
-        return hits
+        try cancellationCheck()
+        return DiscoveryEvidence(hits: hits, incompleteIssues: incompleteIssues)
+    }
+
+    private nonisolated static func derivedDataRoot(home: URL) -> URL {
+        home
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Developer", isDirectory: true)
+            .appendingPathComponent("Xcode", isDirectory: true)
+            .appendingPathComponent("DerivedData", isDirectory: true)
+    }
+
+    private nonisolated static func incomplete(
+        path: String,
+        reason: ScanIncompleteReason
+    ) -> DiscoveryEvidence<ProjectHit> {
+        let issue = ScanIncompleteIssue(path: path, reason: reason)
+        GSYLog.warning(.scan, "DerivedData discovery incomplete path=\(path) reason=\(reason.rawValue)")
+        return DiscoveryEvidence(hits: [], incompleteIssues: [issue])
     }
 
     // MARK: - 工程名解析
@@ -100,30 +232,76 @@ public actor DerivedDataPerProjectScanner {
     /// 失败语义：路径不存在 / 不是目录 / 无权限读 → 返回 `nil`（UI 侧显示 "—"）。
     static func estimateSize(at path: String) -> Int64? {
         guard !path.isEmpty else { return nil }
-        let fm = FileManager.default
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else {
+        do {
+            return try estimateSizeWithEvidence(
+                at: URL(fileURLWithPath: path, isDirectory: true),
+                cancellationCheck: {}
+            ).sizeBytes
+        } catch {
+            // 空 cancellationCheck 不会抛；保留不可达分支的诊断，兼容 API 仍以 nil 表示未知。
+            GSYLog.error(.scan, "DerivedData size estimation unexpected error path=\(path): \(error)")
             return nil
         }
-        let url = URL(fileURLWithPath: path)
+    }
+
+    private struct DirectorySizeResult {
+        let sizeBytes: Int64?
+        let incompleteIssues: [ScanIncompleteIssue]
+    }
+
+    private nonisolated static func estimateSizeWithEvidence(
+        at url: URL,
+        cancellationCheck: () throws -> Void
+    ) throws -> DirectorySizeResult {
+        let fm = FileManager.default
         let keys: Set<URLResourceKey> = [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .isRegularFileKey]
+        var incompleteIssues: [ScanIncompleteIssue] = []
         guard let enumerator = fm.enumerator(
             at: url,
             includingPropertiesForKeys: Array(keys),
             options: [.skipsHiddenFiles],
-            errorHandler: { _, _ in true }
+            errorHandler: { failedURL, error in
+                incompleteIssues.append(ScanIncompleteIssue(
+                    path: failedURL.standardizedFileURL.path,
+                    reason: DiscoveryFileErrorClassifier.incompleteReason(
+                        for: error,
+                        fallback: .enumerationFailed
+                    )
+                ))
+                return true
+            }
         ) else {
-            return nil
+            return DirectorySizeResult(
+                sizeBytes: nil,
+                incompleteIssues: [ScanIncompleteIssue(path: url.path, reason: .enumerationFailed)]
+            )
         }
         var total: Int64 = 0
         for case let fileURL as URL in enumerator {
-            guard let values = try? fileURL.resourceValues(forKeys: keys) else { continue }
+            try cancellationCheck()
+            let values: URLResourceValues
+            do {
+                values = try fileURL.resourceValues(forKeys: keys)
+            } catch {
+                incompleteIssues.append(ScanIncompleteIssue(
+                    path: fileURL.standardizedFileURL.path,
+                    reason: DiscoveryFileErrorClassifier.incompleteReason(
+                        for: error,
+                        fallback: .metadataUnavailable
+                    )
+                ))
+                continue
+            }
             if values.isRegularFile == true {
                 let size = values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0
                 total += Int64(size)
             }
         }
-        return total
+        try cancellationCheck()
+        return DirectorySizeResult(
+            sizeBytes: incompleteIssues.isEmpty ? total : nil,
+            incompleteIssues: incompleteIssues
+        )
     }
 }
 

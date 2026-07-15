@@ -1,8 +1,8 @@
-2026-07-13 11:04:06.710 AmuxAIClean[19601:36018582] [AmuxAIClean] 已加载 123 条 vendor 规则
-[REGR] case=launchagent-scan defaults_snapshot_keys=5 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
+2026-07-15 17:10:37.337 AmuxAIClean[91480:191132] [AmuxAIClean] 已加载 123 条 vendor 规则
+[REGR] case=launchagent-scan defaults_snapshot_keys=7 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
 [REGR_BEGIN] case=launchagent-scan
 [REGR] case=launchagent-scan items=12 labels=com.example.empty,com.google.security.zynamics.bindiff,com.gsyclean.regression.agent,com.microsoft.autoupdate.helper,com.microsoft.update.agent,com.oray.sunlogin.client.startup,com.oray.sunlogin.desktopagent,com.oray.sunlogin.helper,com.oray.sunlogin.service,com.west2online.ClashXPro.ProxyConfigHelper,com.xk72.charles.ProxyHelper,io.github.clash-verge-rev.clash-verge-rev.service
 [REGR_OK] case=launchagent-scan user-scope launch agents=2
 [REGR_OK] case=launchagent-scan expected agent label=true
-[REGR] case=launchagent-scan defaults_restored_keys=5
-[REGR_PASS] case=launchagent-scan elapsed_ms=220
+[REGR] case=launchagent-scan defaults_restored_keys=7
+[REGR_PASS] case=launchagent-scan elapsed_ms=320

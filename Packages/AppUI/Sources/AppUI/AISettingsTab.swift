@@ -20,8 +20,9 @@ struct AISettingsTab: View {
     @State private var apiKeyInput: String = ""
     @State private var storedKeyMasked: String = ""
     @State private var saveMessage: String?
+    @State private var isKeychainBusy = false
 
-    private let keyStore = KeychainAPIKeyStore()
+    private let keyStore = KeychainAPIKeyStore.shared
 
     var body: some View {
         Form {
@@ -117,17 +118,17 @@ struct AISettingsTab: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button {
-                        saveKey()
+                        Task { await saveKey() }
                     } label: {
                         Text("settings.ai.api_key.save", bundle: .module)
                     }
-                    .disabled(apiKeyInput.isEmpty)
+                    .disabled(apiKeyInput.isEmpty || isKeychainBusy)
                     Button(role: .destructive) {
-                        removeKey()
+                        Task { await removeKey() }
                     } label: {
                         Text("settings.ai.api_key.remove", bundle: .module)
                     }
-                    .disabled(storedKeyMasked.isEmpty)
+                    .disabled(storedKeyMasked.isEmpty || isKeychainBusy)
                 }
                 if let msg = saveMessage {
                     Text(msg)
@@ -179,36 +180,45 @@ struct AISettingsTab: View {
         }
         .formStyle(.grouped)
         .padding()
-        .task { refreshMaskedKey() }
+        .task { await refreshMaskedKey() }
     }
 
     // MARK: - Actions
 
-    private func refreshMaskedKey() {
-        let raw = (try? keyStore.load()) ?? nil
-        storedKeyMasked = KeychainAPIKeyStore.masked(raw)
-    }
-
-    private func saveKey() {
+    private func refreshMaskedKey() async {
+        isKeychainBusy = true
+        defer { isKeychainBusy = false }
         do {
-            try keyStore.save(apiKeyInput)
-            apiKeyInput = ""
-            saveMessage = String(localized: "settings.ai.api_key.saved", bundle: .module)
-            refreshMaskedKey()
+            let raw = try await keyStore.load()
+            storedKeyMasked = KeychainAPIKeyStore.masked(raw)
         } catch {
-            saveMessage = String(format: String(localized: "settings.ai.api_key.save_failed.format", bundle: .module),
-                                 String(describing: error))
+            saveMessage = KeychainUserFacingError.message(for: error)
         }
     }
 
-    private func removeKey() {
+    private func saveKey() async {
+        isKeychainBusy = true
+        defer { isKeychainBusy = false }
         do {
-            try keyStore.remove()
-            saveMessage = String(localized: "settings.ai.api_key.removed", bundle: .module)
-            refreshMaskedKey()
+            try await keyStore.save(apiKeyInput)
+            let raw = try await keyStore.load()
+            apiKeyInput = ""
+            storedKeyMasked = KeychainAPIKeyStore.masked(raw)
+            saveMessage = String(localized: "settings.ai.api_key.saved", bundle: .module)
         } catch {
-            saveMessage = String(format: String(localized: "settings.ai.api_key.save_failed.format", bundle: .module),
-                                 String(describing: error))
+            saveMessage = KeychainUserFacingError.message(for: error)
+        }
+    }
+
+    private func removeKey() async {
+        isKeychainBusy = true
+        defer { isKeychainBusy = false }
+        do {
+            try await keyStore.remove()
+            storedKeyMasked = ""
+            saveMessage = String(localized: "settings.ai.api_key.removed", bundle: .module)
+        } catch {
+            saveMessage = KeychainUserFacingError.message(for: error)
         }
     }
 }

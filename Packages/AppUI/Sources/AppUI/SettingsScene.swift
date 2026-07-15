@@ -38,6 +38,8 @@ public struct SettingsScene: View {
     @State private var pathsMirror: [URL] = []
     @State private var logActionMessage: String?
     @State private var confirmClearLogs = false
+    @State private var isPathImporterPresented = false
+    @State private var pathImportMessage: String?
 
     public init(settings: AppSettings,
                 pathStore: UserPathStore,
@@ -53,82 +55,106 @@ public struct SettingsScene: View {
 
     public var body: some View {
         TabView(selection: $navigation.destination) {
-            scanTab
-                .tag(SettingsNavigation.Destination.scan)
-                .tabItem {
-                    Label {
-                        Text("settings.tab.scan", bundle: .module)
-                    } icon: {
-                        Image(systemName: "magnifyingglass")
-                    }
+            Tab(value: SettingsNavigation.Destination.scan) {
+                scanTab
+            } label: {
+                Label {
+                    Text("settings.tab.scan", bundle: .module)
+                } icon: {
+                    Image(systemName: "magnifyingglass")
                 }
-            largeFilesTab
-                .tag(SettingsNavigation.Destination.largeFiles)
-                .tabItem {
-                    Label {
-                        Text("settings.tab.large_files", bundle: .module)
-                    } icon: {
-                        Image(systemName: "doc.richtext")
-                    }
+            }
+            Tab(value: SettingsNavigation.Destination.largeFiles) {
+                largeFilesTab
+            } label: {
+                Label {
+                    Text("settings.tab.large_files", bundle: .module)
+                } icon: {
+                    Image(systemName: "doc.richtext")
                 }
-            pathsTab
-                .tag(SettingsNavigation.Destination.customPaths)
-                .tabItem {
-                    Label {
-                        Text("settings.tab.custom_paths", bundle: .module)
-                    } icon: {
-                        Image(systemName: "folder.badge.plus")
-                    }
+            }
+            Tab(value: SettingsNavigation.Destination.customPaths) {
+                pathsTab
+            } label: {
+                Label {
+                    Text("settings.tab.custom_paths", bundle: .module)
+                } icon: {
+                    Image(systemName: "folder.badge.plus")
                 }
-            updateTab
-                .tag(SettingsNavigation.Destination.update)
-                .tabItem {
-                    Label {
-                        Text("settings.tab.update", bundle: .module)
-                    } icon: {
-                        Image(systemName: "arrow.down.circle")
-                    }
+            }
+            Tab(value: SettingsNavigation.Destination.update) {
+                updateTab
+            } label: {
+                Label {
+                    Text("settings.tab.update", bundle: .module)
+                } icon: {
+                    Image(systemName: "arrow.down.circle")
                 }
-            developerArtifactsTab
-                .tag(SettingsNavigation.Destination.developerScan)
-                .tabItem {
-                    Label {
-                        Text("settings.tab.dev_scan", bundle: .module)
-                    } icon: {
-                        Image(systemName: "hammer")
-                    }
+            }
+            Tab(value: SettingsNavigation.Destination.developerScan) {
+                developerArtifactsTab
+            } label: {
+                Label {
+                    Text("settings.tab.dev_scan", bundle: .module)
+                } icon: {
+                    Image(systemName: "hammer")
                 }
-            storageTab
-                .tag(SettingsNavigation.Destination.storageAndLogs)
-                .tabItem {
-                    Label {
-                        Text("settings.tab.storage", bundle: .module)
-                    } icon: {
-                        Image(systemName: "internaldrive")
-                    }
+            }
+            Tab(value: SettingsNavigation.Destination.storageAndLogs) {
+                storageTab
+            } label: {
+                Label {
+                    Text("settings.tab.storage", bundle: .module)
+                } icon: {
+                    Image(systemName: "internaldrive")
                 }
-            AISettingsTab(settings: aiSettings)
-                .tag(SettingsNavigation.Destination.ai)
-                .tabItem {
-                    Label {
-                        Text("settings.tab.ai", bundle: .module)
-                    } icon: {
-                        Image(systemName: "sparkles")
-                    }
+            }
+            Tab(value: SettingsNavigation.Destination.ai) {
+                AISettingsTab(settings: aiSettings)
+            } label: {
+                Label {
+                    Text("settings.tab.ai", bundle: .module)
+                } icon: {
+                    Image(systemName: "sparkles")
                 }
-            advancedTab
-                .tag(SettingsNavigation.Destination.advanced)
-                .tabItem {
-                    Label {
-                        Text("settings.tab.advanced", bundle: .module)
-                    } icon: {
-                        Image(systemName: "shield")
-                    }
+            }
+            Tab(value: SettingsNavigation.Destination.advanced) {
+                advancedTab
+            } label: {
+                Label {
+                    Text("settings.tab.advanced", bundle: .module)
+                } icon: {
+                    Image(systemName: "shield")
                 }
+            }
         }
-        .frame(width: 520, height: 460)
+        .tabViewStyle(.sidebarAdaptable)
+        .frame(minWidth: 620, idealWidth: 720, minHeight: 460, idealHeight: 520)
+        .fileImporter(
+            isPresented: $isPathImporterPresented,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: true,
+            onCompletion: handlePathImport
+        )
+        .alert(
+            String(localized: "custom_path.import.notice.title", bundle: .module),
+            isPresented: Binding(
+                get: { pathImportMessage != nil },
+                set: { if !$0 { pathImportMessage = nil } }
+            )
+        ) {
+            Button(String(localized: "main.delete.result.ok", bundle: .module)) {
+                pathImportMessage = nil
+            }
+        } message: {
+            Text(pathImportMessage ?? "")
+        }
         .task {
-            await refreshPaths()
+            let snapshots = await pathStore.snapshots()
+            for await paths in snapshots {
+                guard !Task.isCancelled else { return }
+                pathsMirror = paths
+            }
         }
     }
 
@@ -205,24 +231,6 @@ public struct SettingsScene: View {
                 }
             } header: {
                 Text("settings.scan.section.behavior", bundle: .module)
-            }
-            Section {
-                Picker(selection: $settings.sizeAccountingMode) {
-                    ForEach(AppSettings.SizeAccountingMode.allCases, id: \.self) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("settings.scan.size_mode.title", bundle: .module)
-                        Text("settings.scan.size_mode.detail", bundle: .module)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .pickerStyle(.menu)
-            } header: {
-                Text("settings.scan.section.size_mode", bundle: .module)
             }
             Section {
                 Toggle(isOn: $settings.hudEnabled) {
@@ -319,7 +327,7 @@ public struct SettingsScene: View {
                     .font(.headline)
                 Spacer()
                 Button {
-                    addPathViaPanel()
+                    isPathImporterPresented = true
                 } label: {
                     Label {
                         Text("settings.paths.add", bundle: .module)
@@ -358,12 +366,13 @@ public struct SettingsScene: View {
                                     .truncationMode(.middle)
                             }
                             Spacer()
-                            Button(role: .destructive) {
+                            Button {
                                 Task { await removePath(url) }
                             } label: {
-                                Image(systemName: "trash")
+                                Image(systemName: "minus.circle")
                             }
                             .buttonStyle(.borderless)
+                            .help(String(localized: "menu.path.remove", bundle: .module))
                         }
                         .padding(.vertical, 2)
                     }
@@ -471,35 +480,37 @@ public struct SettingsScene: View {
 
     // MARK: - 行为
 
-    private func addPathViaPanel() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = true
-        panel.title = String(localized: "settings.paths.panel.title", bundle: .module)
-        panel.prompt = String(localized: "settings.paths.panel.prompt", bundle: .module)
-        panel.begin { response in
-            guard response == .OK else { return }
-            let urls = panel.urls
-            Task {
+    private func handlePathImport(_ result: Result<[URL], any Error>) {
+        switch result {
+        case .success(let urls):
+            guard !urls.isEmpty else { return }
+            Task { @MainActor in
+                var duplicateCount = 0
                 for url in urls {
-                    _ = await pathStore.add(url)
+                    if !(await pathStore.add(url.standardizedFileURL)) {
+                        duplicateCount &+= 1
+                    }
                 }
-                await refreshPaths()
+                if duplicateCount == urls.count {
+                    pathImportMessage = String(
+                        format: String(localized: "custom_path.import.duplicate %lld", bundle: .module),
+                        duplicateCount
+                    )
+                }
             }
+        case .failure(let error):
+            // 取消由系统 fileImporter 自己消化；其它错误必须留诊断证据，不能 try? 吞掉。
+            guard (error as? CocoaError)?.code != .userCancelled else { return }
+            GSYLog.error(.settings, "settings directory importer failed: \(error.localizedDescription)")
+            pathImportMessage = String(
+                format: String(localized: "custom_path.import.failed %@", bundle: .module),
+                error.localizedDescription
+            )
         }
     }
 
     private func removePath(_ url: URL) async {
         _ = await pathStore.remove(url)
-        await refreshPaths()
-    }
-
-    private func refreshPaths() async {
-        let list = await pathStore.list()
-        await MainActor.run {
-            pathsMirror = list
-        }
     }
 }
 

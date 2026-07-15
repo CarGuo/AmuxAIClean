@@ -164,6 +164,57 @@ final class SmartCarePresentationTests: XCTestCase {
         }
     }
 
+    func test_failurePresentation_展示真实扫描与清理错误并提供对应恢复动作() {
+        let scan = SmartCareFailurePresentation(
+            error: .scanFailed("Common App Cache: 14 paths incomplete")
+        )
+        XCTAssertEqual(scan.titleKey, "smart_care.failure.scan.title")
+        XCTAssertTrue(scan.detailText.contains("14 paths incomplete"))
+        XCTAssertEqual(scan.primaryKey, "smart_care.action.retry_scan")
+        XCTAssertEqual(SmartCareError.scanFailed("x").recovery, .retryScan)
+
+        let cleanup = SmartCareFailurePresentation(
+            error: .cleanFailed("The item is in use")
+        )
+        XCTAssertEqual(cleanup.titleKey, "smart_care.failure.clean.title")
+        XCTAssertTrue(cleanup.detailText.contains("The item is in use"))
+        XCTAssertEqual(cleanup.primaryKey, "smart_care.action.review_cleanup_again")
+        XCTAssertEqual(SmartCareError.cleanFailed("x").recovery, .reviewCleanup)
+    }
+
+    func test_scanLimitationPresentation_去重排序并限制可见路径数量() {
+        let presentation = SmartCareScanLimitationProjection(
+            paths: ["/C", "/A", "/B"],
+            displayLimit: 2
+        )
+
+        XCTAssertEqual(presentation.totalCount, 3)
+        XCTAssertEqual(presentation.displayedPaths, ["/A", "/B"])
+        XCTAssertEqual(presentation.remainingCount, 1)
+        XCTAssertFalse(presentation.isEmpty)
+        XCTAssertNotNil(presentation.remainingText)
+        XCTAssertTrue(presentation.titleText.contains("3"))
+    }
+
+    func test_completedPhasePresentation_区分完整与部分完成() {
+        XCTAssertEqual(
+            SmartCarePresentation.phaseTitleKey(for: .completed(result: SmartCareResult(
+                movedCount: 1,
+                skippedCount: 0,
+                releasedBytes: 100
+            ))),
+            "smart_care.phase.completed"
+        )
+        XCTAssertEqual(
+            SmartCarePresentation.phaseTitleKey(for: .completed(result: SmartCareResult(
+                movedCount: 1,
+                skippedCount: 1,
+                releasedBytes: 100
+            ))),
+            "smart_care.phase.partial"
+        )
+    }
+
     func test_defaultRiskCopy_confirm按桶覆盖_forbid统一保护文案() {
         for bucket in SmartCareBucketID.allCases {
             let item = SmartCareItem(
@@ -220,6 +271,7 @@ final class SmartCarePresentationTests: XCTestCase {
         let kinds: [SmartCareAIReviewFailure.Kind] = [
             .configuration,
             .authentication,
+            .credentialStorage,
             .rateLimit,
             .network,
             .server,

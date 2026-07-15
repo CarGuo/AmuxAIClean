@@ -126,7 +126,10 @@ enum SmartCarePresentation {
         case .reviewing: return "smart_care.phase.reviewing"
         case .confirming: return "smart_care.phase.confirming"
         case .cleaning: return "smart_care.phase.cleaning"
-        case .completed: return "smart_care.phase.completed"
+        case .completed(let result):
+            return result.completion == .partial
+                ? "smart_care.phase.partial"
+                : "smart_care.phase.completed"
         case .failed: return "smart_care.phase.failed"
         case .cancelled: return "smart_care.phase.cancelled"
         }
@@ -186,6 +189,7 @@ enum SmartCarePresentation {
         switch kind {
         case .configuration: return "smart_care.ai.report.failure.configuration"
         case .authentication: return "smart_care.ai.report.failure.authentication"
+        case .credentialStorage: return "smart_care.ai.report.failure.credential_storage"
         case .rateLimit: return "smart_care.ai.report.failure.rate_limit"
         case .network: return "smart_care.ai.report.failure.network"
         case .server: return "smart_care.ai.report.failure.server"

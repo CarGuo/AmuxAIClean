@@ -78,7 +78,7 @@ public actor MailDownloadsScanner {
             guard let enumerator = fm.enumerator(
                 at: root,
                 includingPropertiesForKeys: [
-                    .isRegularFileKey, .fileSizeKey,
+                    .isRegularFileKey, .fileAllocatedSizeKey, .totalFileAllocatedSizeKey,
                     .contentModificationDateKey, .contentAccessDateKey,
                 ],
                 options: [.skipsHiddenFiles]
@@ -86,7 +86,7 @@ public actor MailDownloadsScanner {
 
             for case let url as URL in enumerator {
                 let values = try? url.resourceValues(forKeys: [
-                    .isRegularFileKey, .fileSizeKey,
+                    .isRegularFileKey, .fileAllocatedSizeKey, .totalFileAllocatedSizeKey,
                     .contentModificationDateKey, .contentAccessDateKey,
                 ])
                 guard let v = values, v.isRegularFile == true else { continue }
@@ -95,7 +95,7 @@ public actor MailDownloadsScanner {
 
                 guard mtime < cutoff, atime < cutoff else { continue }
 
-                let size = UInt64(v.fileSize ?? 0)
+                let size = UInt64(max(0, v.totalFileAllocatedSize ?? v.fileAllocatedSize ?? 0))
                 let ageDays = options.now.timeIntervalSince(max(mtime, atime)) / 86400
                 hits.append(Hit(
                     url: url,

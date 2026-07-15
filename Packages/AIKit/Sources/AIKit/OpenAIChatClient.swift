@@ -35,8 +35,9 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
     /// 反射或 `String(describing:)` 顺手 dump 到日志/崩溃报告里。
     /// 闭包内部典型实现：从 Keychain 取值（参考
     /// [AISettings.apiKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/AISettings.swift)）。
-    /// 闭包 throws 直接转 `Error.missingAPIKey`，UI 引导用户去 Settings 重新填。
-    private let apiKeyProvider: @Sendable () throws -> String
+    /// 闭包错误必须原样上抛。尤其 Keychain 的 ACL / 存储错误不是“没有 Key”，
+    /// 如果压成 `missingAPIKey`，UI 会给出错误恢复建议并掩盖真实故障。
+    private let apiKeyProvider: @Sendable () async throws -> String
     private let session: URLSession
     private let redactor: PathRedactor
     private let prompts: PromptBuilder
@@ -65,7 +66,21 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
                 redactor: PathRedactor = PathRedactor(),
                 prompts: PromptBuilder = PromptBuilder()) {
         self.settings = settings
-        self.apiKeyProvider = apiKeyProvider
+        self.apiKeyProvider = { try apiKeyProvider() }
+        self.session = session
+        self.redactor = redactor
+        self.prompts = prompts
+    }
+
+    /// 异步凭证入口。Keychain 等同步系统 API 应由其独立 actor 包装后从这里 `await`，
+    /// 不能在 SwiftUI / MainActor 上直接执行。
+    public init(settings: SettingsSnapshot,
+                asyncAPIKeyProvider: @escaping @Sendable () async throws -> String,
+                session: URLSession = .shared,
+                redactor: PathRedactor = PathRedactor(),
+                prompts: PromptBuilder = PromptBuilder()) {
+        self.settings = settings
+        self.apiKeyProvider = asyncAPIKeyProvider
         self.session = session
         self.redactor = redactor
         self.prompts = prompts
@@ -109,10 +124,14 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
         // **v2026.06.22 (P0-4)**：按需取 key，不在 struct 字段常驻
         let apiKey: String
         do {
-            apiKey = try apiKeyProvider()
+            apiKey = try await apiKeyProvider()
+        } catch is CancellationError {
+            // 本地免鉴权端点只允许忽略“凭证不可用”，不能吞掉父任务取消。
+            // 否则用户关闭 AI sheet 后仍会继续构造并发送一次本地请求。
+            throw CancellationError()
         } catch {
             guard Self.allowsMissingAPIKey(forEndpoint: url) else {
-                throw Error.missingAPIKey
+                throw error
             }
             apiKey = ""
         }

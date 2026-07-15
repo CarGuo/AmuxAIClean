@@ -226,6 +226,29 @@ final class SimulatorDeleteCoordinatorTests: XCTestCase {
 final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
     private let uuid = "11111111-2222-3333-4444-555555555555"
 
+    private func confirmedIntent(
+        from vm: WorkflowDetailViewModel,
+        pipeline: any DeletionPipeline
+    ) async throws -> WorkflowDeletionIntent {
+        await vm.requestDeleteConfirmation(pipeline: pipeline)
+        guard case let .deleteConfirm(confirmation) = vm.activeSheet else {
+            throw NSError(
+                domain: "WorkflowDetailViewModel_PR9Tests",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Expected Workflow delete confirmation"]
+            )
+        }
+        vm.confirmDelete(
+            confirmation,
+            executionPlan: ToolTrashExecutionPlan(
+                paths: confirmation.intent.filesystemPaths,
+                runningAppSkipped: [],
+                vendorOverrideRequest: confirmation.intent.vendorOverrideRequest
+            )
+        )
+        return try XCTUnwrap(vm.takePendingConfirmedDeleteIntent())
+    }
+
     /// PR-9：模拟用户 → performDelete → advance → executeConfirmed，
     /// 验证 sheet 状态机 firstReview → secondConfirm → nil。
     func test_PR9_sheet_状态机_firstReview_secondConfirm_v17() async throws {
@@ -254,7 +277,8 @@ final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
         vm.toggleSelection(hitID: "/tmp/dev", on: true)
 
         let stubPipeline = StubPipelinePR9()
-        await vm.performDelete(pipeline: stubPipeline)
+        let intent = try await confirmedIntent(from: vm, pipeline: stubPipeline)
+        await vm.performDelete(pipeline: stubPipeline, intent: intent)
         guard case .firstReview = vm.pendingSimctlStage else {
             return XCTFail("第一轮应进入 firstReview")
         }
@@ -272,8 +296,10 @@ final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
         XCTAssertEqual(vm.lastDeleteResult?.status, .success)
     }
 
-    /// Filesystem cleanup happens before the two simctl confirmations. Its partial
-    /// outcome must survive refreshes and be merged with the final subprocess result.
+    /// Filesystem cleanup happens before the two simctl confirmations. A recycle
+    /// success + ordinary recycle failure can continue to simctl and its partial
+    /// outcome must survive refreshes. Safety rejections are covered separately because
+    /// the production pipeline's batch-atomic contract forbids mixing moved + rejected.
     func test_mixedFilesystemAndSimctl_preservesOneCombinedOperationResult() async throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("WFDVM-Mixed-\(UUID().uuidString)", isDirectory: true)
@@ -293,8 +319,6 @@ final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
                                     sizeBytes: 10, displayName: "moved", note: nil)
         let failed = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/mixed-failed"),
                                      sizeBytes: 20, displayName: "failed", note: nil)
-        let rejected = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/mixed-rejected"),
-                                       sizeBytes: 30, displayName: "rejected", note: nil)
         let simulator = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/mixed-simulator"),
                                         sizeBytes: 0,
                                         displayName: "iPhone 16",
@@ -302,18 +326,19 @@ final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
                                         commandLineTailArg: uuid)
         vm.setTestCards(cards)
         vm.setTestHits([
-            "card.test.filesystem": [moved, failed, rejected],
+            "card.test.filesystem": [moved, failed],
             "card.test.simctl": [simulator],
         ])
-        vm.selected = [moved.id, failed.id, rejected.id, simulator.id]
+        vm.setTestSelection([moved.id, failed.id, simulator.id])
 
         let pipeline = StubMixedPipeline(outcome: TrashOutcome(
             movedPairs: [(moved.url.path, "/Trash/mixed-moved")],
             failedPaths: [failed.url.path],
-            safetyRejected: [(rejected.url.path, "accessDenied")],
+            safetyRejected: [],
             missingPaths: []
         ))
-        await vm.performDelete(pipeline: pipeline)
+        let intent = try await confirmedIntent(from: vm, pipeline: pipeline)
+        await vm.performDelete(pipeline: pipeline, intent: intent)
         guard case .firstReview = vm.pendingSimctlStage else {
             return XCTFail("mixed workflow should enter first simctl confirmation")
         }
@@ -324,7 +349,7 @@ final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
         let result = try XCTUnwrap(vm.lastDeleteResult)
         XCTAssertEqual(result.movedPairs.map(\.originalPath), [moved.url.path])
         XCTAssertEqual(result.failedPaths, [failed.url.path])
-        XCTAssertEqual(result.safetyRejected.map(\.path), [rejected.url.path])
+        XCTAssertTrue(result.safetyRejected.isEmpty)
         XCTAssertEqual(result.commandLineSucceeded, 1)
         XCTAssertEqual(result.commandLineSkipped, 0)
         XCTAssertEqual(result.status, .partial)
@@ -352,9 +377,11 @@ final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
                                         commandLineTailArg: uuid)
         vm.setTestCards(workflow.cards(home: home))
         vm.setTestHits(["card.test.simctl": [simulator]])
-        vm.selected = [simulator.id]
+        vm.setTestSelection([simulator.id])
 
-        await vm.performDelete(pipeline: StubPipelinePR9())
+        let pipeline = StubPipelinePR9()
+        let intent = try await confirmedIntent(from: vm, pipeline: pipeline)
+        await vm.performDelete(pipeline: pipeline, intent: intent)
         XCTAssertNotNil(vm.pendingSimctlStage)
         vm.cancelSimctlConfirm()
 
@@ -389,7 +416,7 @@ final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
             "card.test.filesystem": [moved],
             "card.test.simctl": [simulator],
         ])
-        vm.selected = [moved.id, simulator.id]
+        vm.setTestSelection([moved.id, simulator.id])
 
         let pipeline = StubMixedPipeline(outcome: TrashOutcome(
             movedPairs: [(moved.url.path, "/Trash/mixed-cancel-moved")],
@@ -397,7 +424,8 @@ final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
             safetyRejected: [],
             missingPaths: []
         ))
-        await vm.performDelete(pipeline: pipeline)
+        let intent = try await confirmedIntent(from: vm, pipeline: pipeline)
+        await vm.performDelete(pipeline: pipeline, intent: intent)
         vm.cancelSimctlConfirm()
 
         let result = try XCTUnwrap(vm.lastDeleteResult)
@@ -405,6 +433,7 @@ final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
         XCTAssertEqual(result.commandLineSkipped, 1)
         XCTAssertEqual(result.commandLineSucceeded, 0)
         XCTAssertTrue(result.commandLineFailures.isEmpty)
+        XCTAssertEqual(result.status, .partial)
     }
 
     func test_commandFailure_isNotMisreportedAsFilesystemPath() async throws {
@@ -428,9 +457,11 @@ final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
                                         commandLineTailArg: uuid)
         vm.setTestCards(workflow.cards(home: home))
         vm.setTestHits(["card.test.simctl": [simulator]])
-        vm.selected = [simulator.id]
+        vm.setTestSelection([simulator.id])
 
-        await vm.performDelete(pipeline: StubPipelinePR9())
+        let pipeline = StubPipelinePR9()
+        let intent = try await confirmedIntent(from: vm, pipeline: pipeline)
+        await vm.performDelete(pipeline: pipeline, intent: intent)
         vm.advanceSimctlConfirm()
         await vm.executeConfirmedSimctl()
 
@@ -442,7 +473,7 @@ final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
         XCTAssertEqual(result.status, .failed)
     }
 
-    /// PR-9：Simulator 运行中 → performDelete 不开 sheet，只 alert。
+    /// PR-9：Simulator 运行中 → 命令未提交，只能展示阻止提示。
     func test_PR9_performDelete_Simulator运行中_不弹sheet_v17() async throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("WFDVM-PR9b-\(UUID().uuidString)", isDirectory: true)
@@ -467,14 +498,13 @@ final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
         ])
         vm.toggleSelection(hitID: "/tmp/dev", on: true)
 
-        await vm.performDelete(pipeline: StubPipelinePR9())
+        let pipeline = StubPipelinePR9()
+        let intent = try await confirmedIntent(from: vm, pipeline: pipeline)
+        await vm.performDelete(pipeline: pipeline, intent: intent)
         XCTAssertNil(vm.pendingSimctlStage, "Simulator 在跑时不应弹 sheet")
-        // v2026.06.16 修复 #4：blockedSimulatorRunning 现在写入 lastDeleteResult.safetyRejected，
-        // 由 OperationResultSheet 展示具体哪个 Simulator 进程在跑——替代旧的 alertMessage 文案拼接。
-        XCTAssertNotNil(vm.lastDeleteResult, "Simulator 在跑时应有结构化结果 payload 弹 OperationResultSheet")
-        let blocked = vm.lastDeleteResult?.safetyRejected ?? []
-        XCTAssertTrue(blocked.contains(where: { $0.path == "simulator-running" }),
-                      "blockedSimulatorRunning 必须以 safetyRejected 一条 'simulator-running' 暴露给 UI")
+        XCTAssertNil(vm.lastDeleteResult,
+                     "Simulator 阻止发生在 execute 前，不能伪装成执行失败")
+        XCTAssertNotNil(vm.alertMessage, "未提交阻止仍应给用户本地化提示")
     }
 }
 
@@ -526,6 +556,9 @@ private struct StubMixedWorkflow: DeveloperWorkflow {
 
 /// 不真删的 pipeline stub。
 private struct StubPipelinePR9: DeletionPipeline {
+    func preflight(paths: [String], accessDeniedPaths: Set<String>) async -> DeletionPreflight {
+        DeletionPreflight(allowedPaths: paths, rejections: [])
+    }
     func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)]) {
         return (0, 0, nil, [])
     }
@@ -535,6 +568,10 @@ private struct StubPipelinePR9: DeletionPipeline {
 
 private struct StubMixedPipeline: DeletionPipeline {
     let outcome: TrashOutcome
+
+    func preflight(paths: [String], accessDeniedPaths: Set<String>) async -> DeletionPreflight {
+        DeletionPreflight(allowedPaths: paths, rejections: [])
+    }
 
     func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)]) {
         (outcome.movedPairs.count,
@@ -547,6 +584,21 @@ private struct StubMixedPipeline: DeletionPipeline {
         -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
         let legacy = await moveToTrash(paths: paths, dryRun: dryRun)
         return (legacy, outcome)
+    }
+
+    /// This stub models a filesystem request that has crossed the recycle boundary.
+    /// Professional callers must not infer that fact from non-empty pairs/outcome.
+    func submitToTrashReturningDisposition(
+        paths: [String],
+        accessDeniedPaths: Set<String>,
+        vendorOverrideRequest: VendorPathOverrideRequest?
+    ) async -> TrashSubmissionDisposition {
+        let legacy = await moveToTrash(paths: paths, dryRun: false)
+        return .recycleCompleted(TrashRecycleCompletion(
+            attemptedPaths: paths,
+            legacy: legacy,
+            outcome: outcome
+        ))
     }
 
     func setAccessDeniedPaths(_ paths: Set<String>) { /* test stub: no-op */ }

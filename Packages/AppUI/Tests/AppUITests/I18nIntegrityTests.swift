@@ -304,6 +304,88 @@ final class I18nIntegrityTests: XCTestCase {
         return json
     }
 
+    /// 递归抽取一个 localization payload 里的所有 `stringUnit`。
+    ///
+    /// String Catalog 同时存在三种形态：直接 `stringUnit`、顶层
+    /// `variations` 以及 `substitutions.*.variations`。只查直接字段会把 plural
+    /// 翻译的真正 value 漏掉，因此这里按 JSON 树递归。
+    private static func stringUnits(
+        in node: Any,
+        path: String = "localization"
+    ) -> [(path: String, state: String?, value: String?)] {
+        if let dictionary = node as? [String: Any] {
+            var units: [(String, String?, String?)] = []
+            for key in dictionary.keys.sorted() {
+                guard let child = dictionary[key] else { continue }
+                let childPath = "\(path).\(key)"
+                if key == "stringUnit", let unit = child as? [String: Any] {
+                    units.append((childPath, unit["state"] as? String, unit["value"] as? String))
+                } else {
+                    units.append(contentsOf: stringUnits(in: child, path: childPath))
+                }
+            }
+            return units
+        }
+        if let array = node as? [Any] {
+            return array.enumerated().flatMap { index, child in
+                stringUnits(in: child, path: "\(path)[\(index)]")
+            }
+        }
+        return []
+    }
+
+    /// 全 catalog 双语完整性硬契约。
+    ///
+    /// 旧契约只会在某条 key **已经启用 plural variations** 时检查
+    /// en / zh-Hans，因此普通 `stringUnit` 漏一边、值为空或状态未翻译
+    /// 都不会报错。此契约遍历 `strings` 下的每条用户文案，并要求：
+    ///
+    /// 1. `en` 与 `zh-Hans` localization 同时存在；
+    /// 2. 每个 locale 至少有一个 string unit；
+    /// 3. 直接文案和 variations 里的每个 unit 都已 translated 且 value 非空。
+    func test_xcstrings_全catalog都有完整中英文翻译() throws {
+        let json = try loadXcstringsRaw()
+        guard let strings = json["strings"] as? [String: Any] else {
+            return XCTFail("xcstrings 缺 strings 字典")
+        }
+
+        let requiredLocales = ["en", "zh-Hans"]
+        var defects: [String] = []
+        for key in strings.keys.sorted() {
+            guard let entry = strings[key] as? [String: Any],
+                  let localizations = entry["localizations"] as? [String: Any] else {
+                defects.append("[\(key)] 缺 localizations")
+                continue
+            }
+
+            for locale in requiredLocales {
+                guard let localization = localizations[locale] as? [String: Any] else {
+                    defects.append("[\(key)][\(locale)] 缺 localization")
+                    continue
+                }
+                let units = Self.stringUnits(in: localization, path: locale)
+                if units.isEmpty {
+                    defects.append("[\(key)][\(locale)] 没有任何 stringUnit")
+                    continue
+                }
+                for unit in units {
+                    if unit.state != "translated" {
+                        let state = unit.state ?? "nil"
+                        defects.append("[\(key)][\(unit.path)] state=\(state)")
+                    }
+                    if unit.value?.isEmpty != false {
+                        defects.append("[\(key)][\(unit.path)] value 为空或缺失")
+                    }
+                }
+            }
+        }
+
+        XCTAssertTrue(
+            defects.isEmpty,
+            "String Catalog 双语完整性破损：\n  - " + defects.joined(separator: "\n  - ")
+        )
+    }
+
     /// 遍历 xcstrings strings 字典，为每条 key 抽出所有 (locale, value) pair。
     /// 返回 [(key, locale, value, hasVariations)] 平铺数组。
     ///

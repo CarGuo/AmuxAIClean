@@ -51,9 +51,6 @@ public struct AppFootprintScreen: View {
                 .layoutPriority(1)
         }
         .task { await reload() }
-        // v2：套布局沙箱——「应用占用排行榜」内 leftPane 表格 + rightPane 分项
-        // 都有大量长 bundleID / 应用路径，禁止 ideal width 反推外层。
-        .layoutSandbox()
     }
 
     // MARK: - 左栏：排行榜

@@ -20,8 +20,12 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         try FileManager.default.createDirectory(at: wechat, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: confirm, withIntermediateDirectories: true)
-        try Data(repeating: 0xAB, count: 128).write(to: wechat.appendingPathComponent("cache.bin"))
-        try Data(repeating: 0xCD, count: 256).write(to: confirm.appendingPathComponent("background.bin"))
+        let wechatFile = wechat.appendingPathComponent("cache.bin")
+        let confirmFile = confirm.appendingPathComponent("background.bin")
+        try Data(repeating: 0xAB, count: 128).write(to: wechatFile)
+        try Data(repeating: 0xCD, count: 256).write(to: confirmFile)
+        let wechatAllocated = try allocatedBytes(of: wechatFile)
+        let confirmAllocated = try allocatedBytes(of: confirmFile)
 
         let vendors = [
             VendorRule(
@@ -75,7 +79,7 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         XCTAssertFalse(coord.isScanning)
         XCTAssertNil(coord.activeCategoryID)
         XCTAssertEqual(coord.snapshot.rows.map(\.title), ["Zoom Virtual Backgrounds", "WeChat Cache"])
-        XCTAssertEqual(coord.snapshot.totalBytes, 384)
+        XCTAssertEqual(coord.snapshot.totalBytes, wechatAllocated + confirmAllocated)
         XCTAssertEqual(coord.snapshot.scannedFileCount, 2)
 
         let verdicts = Dictionary(uniqueKeysWithValues: coord.snapshot.rows.map { ($0.title, $0.verdict) })
@@ -83,8 +87,11 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         XCTAssertEqual(verdicts["Zoom Virtual Backgrounds"], .confirm)
         let prefixes = Dictionary(uniqueKeysWithValues: coord.snapshot.rows.map { ($0.title, $0.runningBundleIDPrefix) })
         XCTAssertEqual(prefixes["WeChat Cache"]!, "com.tencent.xinWeChat")
-        XCTAssertEqual(coord.snapshot.safeBytes, 128)
-        XCTAssertEqual(coord.snapshot.confirmBytes, 256)
+        XCTAssertEqual(coord.snapshot.safeBytes, wechatAllocated)
+        XCTAssertEqual(coord.snapshot.confirmBytes, confirmAllocated)
+        let logicalByTitle = Dictionary(uniqueKeysWithValues: coord.snapshot.rows.map { ($0.title, $0.logicalBytes) })
+        XCTAssertEqual(logicalByTitle["WeChat Cache"], 128)
+        XCTAssertEqual(logicalByTitle["Zoom Virtual Backgrounds"], 256)
     }
 
     func test_scanCommonAppCaches_treeRootShowsSnapshotRows() async throws {
@@ -94,7 +101,9 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         let cache = home.appendingPathComponent("Library/Caches/com.demo.App",
                                                 isDirectory: true)
         try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
-        try Data(repeating: 0xAB, count: 64).write(to: cache.appendingPathComponent("cache.bin"))
+        let cacheFile = cache.appendingPathComponent("cache.bin")
+        try Data(repeating: 0xAB, count: 64).write(to: cacheFile)
+        let allocated = try allocatedBytes(of: cacheFile)
 
         let vendors = [
             VendorRule(
@@ -117,7 +126,8 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         let children = coord.directChildren(of: ScanCoordinator.commonAppCacheSentinelPath,
                                             sortedBy: .sizeDesc)
         XCTAssertEqual(children.map(\.title), ["Demo Cache"])
-        XCTAssertEqual(children.first?.bytes, 64)
+        XCTAssertEqual(children.first?.bytes, allocated)
+        XCTAssertEqual(children.first?.logicalBytes, 64)
         XCTAssertEqual(children.first?.hasChildren, true)
     }
 
@@ -129,8 +139,10 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         let confirm = home.appendingPathComponent("Library/Caches/confirm", isDirectory: true)
         try FileManager.default.createDirectory(at: safe, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: confirm, withIntermediateDirectories: true)
-        try Data(repeating: 0xAA, count: 11).write(to: safe.appendingPathComponent("a.bin"))
+        let safeFile = safe.appendingPathComponent("a.bin")
+        try Data(repeating: 0xAA, count: 11).write(to: safeFile)
         try Data(repeating: 0xBB, count: 22).write(to: confirm.appendingPathComponent("b.bin"))
+        let safeAllocated = try allocatedBytes(of: safeFile)
 
         let vendors = [
             VendorRule(
@@ -154,7 +166,8 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         await waitScanFinished(coord)
 
         XCTAssertEqual(coord.snapshot.rows.map(\.title), ["Safe Cache"])
-        XCTAssertEqual(coord.snapshot.totalBytes, 11)
+        XCTAssertEqual(coord.snapshot.totalBytes, safeAllocated)
+        XCTAssertEqual(coord.snapshot.rows.first?.logicalBytes, 11)
         XCTAssertEqual(coord.snapshot.confirmBytes, 0)
     }
 
@@ -182,7 +195,20 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         XCTAssertEqual(coord.snapshot.rows.map(\.url.standardizedFileURL.path),
                        [cache.standardizedFileURL.path],
                        "partial bytes 可以展示，但必须同时携带删除保护上下文")
-        XCTAssertEqual(coord.permissionDeniedPaths, [cache.standardizedFileURL.path])
+        XCTAssertEqual(coord.permissionDeniedPaths, [],
+                       "entry limit 是通用扫描不完整，不能被误报成 FDA 权限拒绝")
+        XCTAssertEqual(coord.incompleteScanPaths, [cache.standardizedFileURL.path])
+        XCTAssertTrue(coord.snapshot.isFinished,
+                      "部分结果仍是终态，不能让 UI/Smart Care 永久等待")
+        XCTAssertFalse(coord.snapshot.isComplete,
+                       "带不完整证据的终态不能发布为成功完成")
+        let rowsBeforeSort = coord.snapshot.rows
+        coord.mainListSortKey = .nameAsc
+        XCTAssertTrue(coord.snapshot.isFinished)
+        XCTAssertFalse(coord.snapshot.isComplete,
+                       "排序重发布只能改变展示顺序，不能把 partial 终态提升为成功")
+        XCTAssertEqual(Set(coord.snapshot.rows), Set(rowsBeforeSort),
+                       "专用扫描结果没有通用 buckets，排序不能把已发布 rows 清空")
         XCTAssertEqual(coord.snapshot.rows.first?.verdict, .forbid,
                        "不完整统计只能展示为不可选项，不能先作为 safe 再等删除时失败")
         XCTAssertEqual(coord.snapshot.rows.first?.rejection, .accessDenied)
@@ -190,7 +216,8 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         let partition = TrashPipeline.partitionByForbid(
             paths: [cachesRoot.path],
             safety: SafetyEngine(),
-            accessDeniedPaths: Set(coord.permissionDeniedPaths),
+            accessDeniedPaths: Set(coord.permissionDeniedPaths)
+                .union(coord.incompleteScanPaths),
             home: home.path
         )
         XCTAssertTrue(partition.allowed.isEmpty)
@@ -244,6 +271,7 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
                     verdict: .safe,
                     reason: "current",
                     sizeBytes: 73,
+                    logicalSizeBytes: 2 * 1_024 * 1_024 * 1_024,
                     entryCount: 1
                 )],
                 incompletePaths: []
@@ -275,6 +303,7 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         XCTAssertTrue(coord.snapshot.isFinished)
         XCTAssertEqual(coord.snapshot.rows.map(\.title), ["Current Generation"])
         XCTAssertEqual(coord.snapshot.totalBytes, 73)
+        XCTAssertEqual(coord.snapshot.rows.first?.logicalBytes, 2 * 1_024 * 1_024 * 1_024)
     }
 
     private func makeTempHome() throws -> URL {
@@ -286,11 +315,23 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         return url
     }
 
+    private func allocatedBytes(of url: URL) throws -> Int64 {
+        let values = try url.resourceValues(forKeys: [
+            .fileAllocatedSizeKey,
+            .totalFileAllocatedSizeKey,
+        ])
+        return Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+    }
+
     private func waitScanFinished(_ coord: ScanCoordinator,
                                   timeout: TimeInterval = 6) async {
         let deadline = Date().addingTimeInterval(timeout)
-        while (coord.isScanning || !coord.snapshot.isFinished) && Date() < deadline {
-            try? await Task.sleep(nanoseconds: 30_000_000)
+        while coord.isScanning && Date() < deadline {
+            do {
+                try await Task.sleep(nanoseconds: 30_000_000)
+            } catch {
+                return
+            }
         }
     }
 }

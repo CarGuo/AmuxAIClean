@@ -170,35 +170,75 @@ public enum KnownVersionedRoots {
         }
     }
 
+    /// 全部已知版本化根的一次聚合结果。
+    ///
+    /// `hits` 与旧 [scanAll] 返回值一致；`incompleteIssues` 汇总每个 entry 及每个分组的
+    /// 发现缺口。不存在的可选根不是错误，只有“根存在但无法完整读取”才会进入 evidence。
+    public struct ScanResult: Sendable, Equatable {
+        public let hits: [Hit]
+        public let incompleteIssues: [ScanIncompleteIssue]
+
+        public var isComplete: Bool { incompleteIssues.isEmpty }
+
+        public init(hits: [Hit], incompleteIssues: [ScanIncompleteIssue]) {
+            self.hits = hits
+            self.incompleteIssues = Set(incompleteIssues).sorted {
+                if $0.path == $1.path { return $0.reason.rawValue < $1.reason.rawValue }
+                return $0.path < $1.path
+            }
+        }
+    }
+
     /// 扫描所有已知 collection root，返回可回收的旧版本目录。
     ///
     /// - Parameter home: 用户 home 目录 URL，通常来自 `FileManager.default.homeDirectoryForCurrentUser`
-    /// - Returns: 全部命中扁平合并；空数组表示无可回收
+    /// - Returns: 全部命中扁平合并；空数组本身不表示扫描完整，完整性请用 [scanAllWithEvidence]
     public static func scanAll(home: URL) -> [Hit] {
+        scanAllWithEvidence(home: home).hits
+    }
+
+    /// 扫描全部已知 collection root，并同时返回结构化完整性证据。
+    ///
+    /// 这是需要驱动删除能力的权威入口；旧 [scanAll] 仅为 API 兼容保留，无法仅凭空数组
+    /// 区分“没有旧版本”和“某个存在的根读取失败”。
+    public static func scanAllWithEvidence(home: URL) -> ScanResult {
+        scanAllWithEvidence(home: home, fileSystem: FileManager.default)
+    }
+
+    /// 注入文件系统仅供确定性测试使用。
+    static func scanAllWithEvidence(
+        home: URL,
+        fileSystem: any VersionedRootFileSystem
+    ) -> ScanResult {
         var result: [Hit] = []
         result.reserveCapacity(64)
+        var incompleteIssues: [ScanIncompleteIssue] = []
 
         for entry in entries {
             let collectionRoot = home.appendingPathComponent(entry.relativePath)
-            var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: collectionRoot.path, isDirectory: &isDir),
-                  isDir.boolValue else {
-                continue
-            }
             let options = VersionedRetainScanner.Options(keepLatest: entry.keepLatest,
                                                           ordering: entry.ordering)
 
             if let regex = entry.groupingRegex {
                 // PR-3 分组路径：先按正则 capture group 1 把子目录分桶，每桶独立 detect。
-                result.append(contentsOf: scanGrouped(entry: entry,
-                                                      collectionRoot: collectionRoot,
-                                                      options: options,
-                                                      groupingRegex: regex))
+                let groupedResult = scanGroupedWithEvidence(
+                    entry: entry,
+                    collectionRoot: collectionRoot,
+                    options: options,
+                    groupingRegex: regex,
+                    fileSystem: fileSystem
+                )
+                result.append(contentsOf: groupedResult.hits)
+                incompleteIssues.append(contentsOf: groupedResult.incompleteIssues)
             } else {
                 // PR-3 之前的旧行为：整 root 一组，直接 detect。
-                let rawHits = VersionedRetainScanner.detect(collectionRoot: collectionRoot,
-                                                            options: options)
-                for rh in rawHits {
+                let detection = VersionedRetainScanner.detectWithEvidence(
+                    collectionRoot: collectionRoot,
+                    options: options,
+                    fileSystem: fileSystem
+                )
+                incompleteIssues.append(contentsOf: detection.incompleteIssues)
+                for rh in detection.hits {
                     result.append(Hit(url: rh.url,
                                       ruleID: entry.ruleID,
                                       displayName: entry.displayName,
@@ -208,7 +248,14 @@ public enum KnownVersionedRoots {
                 }
             }
         }
-        return result
+        let scanResult = ScanResult(hits: result, incompleteIssues: incompleteIssues)
+        if !scanResult.incompleteIssues.isEmpty {
+            let evidence = scanResult.incompleteIssues
+                .map { "\($0.path):\($0.reason.rawValue)" }
+                .joined(separator: ",")
+            GSYLog.warning(.scan, "KnownVersionedRoots incomplete evidence=\(evidence)")
+        }
+        return scanResult
     }
 
     /// PR-3 分组扫描内核（仅在 entry.groupingRegex 非 nil 时调用）。
@@ -218,35 +265,79 @@ public enum KnownVersionedRoots {
     /// - 未匹配的子目录被忽略（避免把 `.DS_Store` / Toolbox 自身这类无版本号目录误判）；
     /// - 每个 group 内单独跑 [VersionedRetainScanner.detect]，但因 detect 入口要求 collectionRoot
     ///   是真实路径，这里改用其底层排序逻辑（直接复用 detect 的判定语义，避免造临时目录）。
-    private static func scanGrouped(entry: Entry,
-                                    collectionRoot: URL,
-                                    options: VersionedRetainScanner.Options,
-                                    groupingRegex: String) -> [Hit] {
-        let fm = FileManager.default
-        guard let nsRegex = try? NSRegularExpression(pattern: groupingRegex) else {
+    private static func scanGroupedWithEvidence(
+        entry: Entry,
+        collectionRoot: URL,
+        options: VersionedRetainScanner.Options,
+        groupingRegex: String,
+        fileSystem: any VersionedRootFileSystem
+    ) -> ScanResult {
+        let nsRegex: NSRegularExpression
+        do {
+            nsRegex = try NSRegularExpression(pattern: groupingRegex)
+        } catch {
             GSYLog.warning(.scan,
                         "KnownVersionedRoots groupingRegex 编译失败，降级为旧行为 ruleID=\(entry.ruleID) pattern=\(groupingRegex)")
-            let rawHits = VersionedRetainScanner.detect(collectionRoot: collectionRoot,
-                                                        options: options)
-            return rawHits.map {
+            let detection = VersionedRetainScanner.detectWithEvidence(
+                collectionRoot: collectionRoot,
+                options: options,
+                fileSystem: fileSystem
+            )
+            let hits = detection.hits.map {
                 Hit(url: $0.url, ruleID: entry.ruleID, displayName: entry.displayName,
                     collectionRoot: $0.collectionRoot, versionName: $0.versionName,
                     retainedLatest: $0.retainedLatest)
             }
+            return ScanResult(hits: hits, incompleteIssues: detection.incompleteIssues)
         }
 
-        guard let children = try? fm.contentsOfDirectory(atPath: collectionRoot.path) else {
-            return []
+        let rootAttributes: [FileAttributeKey: Any]
+        do {
+            rootAttributes = try fileSystem.attributesOfItem(atPath: collectionRoot.path)
+        } catch {
+            if isFileNotFound(error) {
+                return ScanResult(hits: [], incompleteIssues: [])
+            }
+            let reason: ScanIncompleteReason = VersionedRootErrorClassifier.isPermissionDenied(error)
+                ? .permissionDenied
+                : .metadataUnavailable
+            return ScanResult(
+                hits: [],
+                incompleteIssues: [ScanIncompleteIssue(path: collectionRoot.path, reason: reason)]
+            )
+        }
+        guard let rootType = rootAttributes[.type] as? FileAttributeType else {
+            return ScanResult(
+                hits: [],
+                incompleteIssues: [ScanIncompleteIssue(
+                    path: collectionRoot.path,
+                    reason: .metadataUnavailable
+                )]
+            )
+        }
+        guard rootType == .typeDirectory || rootType == .typeSymbolicLink else {
+            return ScanResult(hits: [], incompleteIssues: [])
+        }
+
+        let children: [String]
+        do {
+            children = try fileSystem.contentsOfDirectory(atPath: collectionRoot.path)
+        } catch {
+            let reason: ScanIncompleteReason = VersionedRootErrorClassifier.isPermissionDenied(error)
+                ? .permissionDenied
+                : .enumerationFailed
+            return ScanResult(
+                hits: [],
+                incompleteIssues: [ScanIncompleteIssue(path: collectionRoot.path, reason: reason)]
+            )
         }
 
         // 按 group key 分桶
-        var groups: [String: [(name: String, url: URL)]] = [:]
+        var groups: [String: [VersionedRetainScanner.Candidate]] = [:]
+        var invalidGroups: Set<String> = []
+        var incompleteIssues: [ScanIncompleteIssue] = []
         for name in children {
             if name.hasPrefix(".") { continue }
-            let child = collectionRoot.appendingPathComponent(name)
-            var childIsDir: ObjCBool = false
-            guard fm.fileExists(atPath: child.path, isDirectory: &childIsDir),
-                  childIsDir.boolValue else { continue }
 
             let range = NSRange(name.startIndex..<name.endIndex, in: name)
             guard let match = nsRegex.firstMatch(in: name, range: range),
@@ -257,13 +348,56 @@ public enum KnownVersionedRoots {
                 continue
             }
             let key = String(name[groupRange])
-            groups[key, default: []].append((name, child))
+            let child = collectionRoot.appendingPathComponent(name)
+
+            let attributes: [FileAttributeKey: Any]
+            do {
+                attributes = try fileSystem.attributesOfItem(atPath: child.path)
+            } catch {
+                invalidGroups.insert(key)
+                incompleteIssues.append(ScanIncompleteIssue(
+                    path: child.path,
+                    reason: VersionedRootErrorClassifier.isPermissionDenied(error)
+                        ? .permissionDenied
+                        : .metadataUnavailable
+                ))
+                continue
+            }
+            guard let type = attributes[.type] as? FileAttributeType else {
+                invalidGroups.insert(key)
+                incompleteIssues.append(ScanIncompleteIssue(
+                    path: child.path,
+                    reason: .metadataUnavailable
+                ))
+                continue
+            }
+            if type == .typeSymbolicLink, options.skipSymlinks {
+                continue
+            }
+            guard type == .typeDirectory else { continue }
+
+            let modificationDate = attributes[.modificationDate] as? Date
+            if case .modificationDateDescending = options.ordering,
+               modificationDate == nil {
+                invalidGroups.insert(key)
+                incompleteIssues.append(ScanIncompleteIssue(
+                    path: child.path,
+                    reason: .metadataUnavailable
+                ))
+                continue
+            }
+            groups[key, default: []].append(VersionedRetainScanner.Candidate(
+                name: name,
+                url: child,
+                modificationDate: modificationDate
+            ))
         }
 
         var result: [Hit] = []
         result.reserveCapacity(groups.count * 2)
 
         for (groupKey, candidates) in groups {
+            guard !invalidGroups.contains(groupKey) else { continue }
             guard candidates.count > options.keepLatest else { continue }
             let sorted = VersionedRetainScanner.sort(candidates: candidates,
                                                      ordering: options.ordering)
@@ -281,6 +415,21 @@ public enum KnownVersionedRoots {
                                   groupKey: groupKey))
             }
         }
-        return result
+        return ScanResult(hits: result, incompleteIssues: incompleteIssues)
+    }
+
+    private static func isFileNotFound(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain,
+           nsError.code == CocoaError.fileNoSuchFile.rawValue {
+            return true
+        }
+        if nsError.domain == NSPOSIXErrorDomain, nsError.code == Int(ENOENT) {
+            return true
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isFileNotFound(underlying)
+        }
+        return false
     }
 }

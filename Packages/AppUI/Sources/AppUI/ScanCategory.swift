@@ -204,4 +204,14 @@ public enum ScanCategories {
         let coreIDs: Set<String> = ["user.logs"]
         return recommended(home: home).filter { coreIDs.contains($0.id) }
     }
+
+    /// 开发者扫描必须显式包含的已知安全根。
+    ///
+    /// DevArtifactScanner 为避免 TCC/误命中会剪掉整个 `~/Library`，因此无法通过
+    /// “从 home 找目录名”的启发式发现 Xcode DerivedData。这里复用推荐分类这一份
+    /// 路径真相，避免在 Smart Care、Professional 和设置页各写一条路径常量。
+    public static func developerCacheRoots(home: String = NSHomeDirectory()) -> [ScanCategory] {
+        let developerCacheIDs: Set<String> = ["xcode.derived"]
+        return recommended(home: home).filter { developerCacheIDs.contains($0.id) }
+    }
 }

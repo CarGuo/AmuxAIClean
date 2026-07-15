@@ -223,6 +223,38 @@
 ### 3.8 [体验] 删除时进程仍持有文件 -> 删而不释空间
 - **避坑**：`lsof +D <path>` 检测；若有占用，提示"请先退出 X 应用"。
 
+### 3.9 [阻塞] 统一 TrashPipeline 不等于统一删除交互
+- **现象**：所有入口最终都走 `TrashPipeline`，但 Main、Smart Care、Brew、Duplicate、Uninstall、Workflow 各自维护确认 sheet；有的先确认，有的把预检拒绝直接画成 `Cleanup Failed 0/N`，还有的行按钮/右键/Delete 键行为不同。
+- **根因**：只收敛了执行函数，没有收敛 `intent → preflight → confirmation → running-app choice → final revalidation → execution → result` 状态机。
+- **避坑**：
+ - 所有真实文件删除入口只提交 typed intent，必须进入 [DELETION_UX_CONTRACT.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/DELETION_UX_CONTRACT.md) 定义的共享 coordinator 和唯一确认页。
+ - preflight rejection 是 confirmation plan，不是执行结果；`OperationResultSheet` 只能在用户确认并实际提交后呈现。
+ - 禁止保留名称为 force、实现却回落 normal 或静默丢弃回调的空心 API。
+ - 每次修改跑 `ProfessionalToolDeletionFlowTests`、`DeletionUXPolicyTests`，并维护删除入口矩阵。
+
+### 3.10 [阻塞] 扫描不完整被误当删除权限，污染整棵 HOME 子树
+- **现象**：一个 descendant 目录无法枚举，扫描器同时发 scoped incomplete 和全局 failed；上层再把整个 scan root 加入 incomplete。删除预检按祖先重叠后，所有 sibling 都变成 `accessDenied`，真实 vendor override 消失，UI 还错误提示 Full Disk Access。
+- **根因**：fatal/partial 事件没有 scope，且 `incomplete / TCC / POSIX / OS delete permission` 被压进同一个字符串或 Set。
+- **避坑**：
+ - `ScanEvent.failed` 只用于扫描根/整轮没有可信终态的失败；后代权限、瞬时 ENOENT/rename、枚举失败只上报 typed incomplete。
+ - 已有精确 child issue 时禁止把 root 补成 incomplete；兄弟路径不得继承无关拒绝证据。
+ - 删除确认前做目标级重验；“内容没有完整扫描”不等于“不能把目录移到废纸篓”。
+ - 用户可见层禁止 raw `"\(error)"`、`file:///`、percent encoding；permission/partial/fatal 只能有一个主 presentation。
+ - 对应合同：`ScanCompletenessContractTests`、`MultiRootCompletionPolicyTests`、`ProfessionalToolDeletionFlowTests`。
+
+### 3.11 [阻塞] 子孙 incomplete 被对称投影成祖先锁
+- **现象**：真实受限路径位于 `~/Library/Containers/...`、`~/Library/Services/...` 等深层位置，Tree 却把 `Library`、`Containers` 等可访问父目录一起画成锁并去掉展开入口。如果该父目录保留了上一帧的 `expanded` 状态，还会出现“行已锁、没有披露三角，但旧子项仍显示”的矛盾 UI。
+- **根因**：投影层用“相等 / 祖先 / 后代”对称 overlap 直接生成单一 `accessState`，再让同一字段同时决定锁图标、灰态、是否可展开、统计是否可信和是否可发起删除。这把“节点自身不可访问”与“子树内部有未完整后代”混成了一个概念；仅改 exact-match 又会让删除入口把父目录误当成完整可删。
+- **正交模型**：
+ - `accessState` 只表示当前节点 exact issue，或当前节点确实位于已锁上级范围内。只有这个维度可以画 lock、置灰、隐藏大小和禁止下钻。
+ - `subtreeCompleteness` 独立表示当前行内部是否包含 strict-descendant issue。该维度只显示 partial/内部受限提示，父行保持正常可展开，统计值必须表达为下界或部分值，不得伪装精确。
+ - 删除预检独立消费 `subtreeCompleteness`：祖先不画锁不代表能够盲删它包含的未完整子树；Professional 模式应进入目标级重验/严格确认，不得从视觉 lock 布尔值推导授权。
+ - 旧展开状态不得绕过 `accessState`：真实锁节点变为不可访问后，必须停止递归其陈旧后代；只有 `subtreeCompleteness == .containsIncompleteDescendant` 的可访问祖先仍可继续下钻。
+- **防复发测试**：
+ - [ScanCoordinatorCompletenessProjectionTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/ScanCoordinatorCompletenessProjectionTests.swift) 覆盖 exact / ancestor / descendant / sibling 关系：真实 issue 行锁定，祖先 `accessState == .normal` 且 `subtreeCompleteness == .containsIncompleteDescendant`，兄弟完全正常。
+ - [ScanCoordinatorFullDiskTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/ScanCoordinatorFullDiskTests.swift) 覆盖真实按需扫描中的深层权限拒绝；[FlatRowsIncrementalPatchTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/FlatRowsIncrementalPatchTests.swift) 覆盖 issue 到达后仍残留旧 `expanded` 状态时，真实锁节点不再展示陈旧后代，而 partial 祖先仍可展开。
+ - 删除合同必须另断言祖先的 incomplete 证据仍进入预检，禁止为了修 UI 锁而放开父目录删除。
+
 ---
 
 ## 4. 签名 / 公证 / 分发 —— 商业化前置
@@ -280,7 +312,7 @@
 ### 5.5 [阻塞] AppCleaner / Pearcleaner 教训：勾选框默认全选 = 用户事故制造机
 - **AppCleaner 历史事故**：默认勾选所有"相关文件"，包括 Adobe 共享 / Microsoft Office Group Container，用户一键删除全完蛋。
 - **避坑**：
- - 勾选默认**只勾 SafetyKit 判定为 OK 的项**；`confirm` 项不勾，`forbid` 项不显示勾选框（灰色锁图标）
+ - Normal 模式默认**只勾 SafetyKit 判定为 OK 的项**；`confirm` 项不勾，`forbid` 项不提供普通勾选框（灰色锁图标）。Professional 模式只能让显式 allowlist 中的 policy-forbid 进入严格确认；hard/结构边界仍不可选。
  - 列表行加颜色徽章：[优化] OK / [体验] confirm / [阻塞] forbid（鼠标悬停 tooltip 显示拒绝原因 = `SafetyRejection.rawValue`）
  - 任何单次"删除"动作的总数据量 > 1 GB 或文件数 > 500 时强制弹**二次确认对话框**列出前 10 项预览
  - 选中 vendor 共享路径（[vendor_shared.yaml](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/vendor_shared.yaml)）需要再加一道 "我知道这是共享的" 复选框
@@ -291,7 +323,7 @@
 
 ### 5.7 [体验] Pearcleaner 教训：trash preview 模式让用户更敢点
 - Pearcleaner 删除前用一个独立 sheet 列出"将移到废纸篓的所有路径"，用户能逐项取消。
-- **避坑**：删除按钮**永远不直接动手**——点一下后弹 preview sheet -> 用户看清楚 -> 点"确认移到废纸篓"才发 XPC 请求；同一个 sheet 上提供"先 dry-run 看一遍"开关，对应 `DeletionRequest.dryRun=true`。
+- **当前避坑**：删除按钮**永远不直接动手**——点一下后进入共享确认页，用户看清楚后点“移到废纸篓”才生成真实执行授权。旧版曾在同一 sheet 暴露 dry-run 开关；该交互会干扰发布版用户，现仅允许 Debug 诊断使用，Release 必须隐藏。
 
 ### 5.8 [体验] DaisyDisk 教训：彩色 sunburst 图很酷但非必需
 - DaisyDisk 的环形图很惊艳，但 v0 不做。先做扁平 list + 体积条；环形图作为 v1 plus。
@@ -302,8 +334,8 @@
 
 1. **左栏 5 个推荐类目**（[ScanCategories.recommended](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCategory.swift)）—— 用户缓存 / 应用日志 / Xcode 构建 / 下载 / 废纸篓。学 OnyX 教训不堆 20 个 tab。
 2. **中栏聚合行** —— [ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 把 BulkScanner 的每个 FSNode 归到"根的第一级子目录"做累计，4 万文件不会 yield 4 万行进 List。每 150ms commit 一次 snapshot。
-3. **颜色徽章 + forbid 锁** —— [RowView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowView.swift) 直接消费 `SafetyVerdict`：[优化] 默认勾、[体验] 默认不勾但可勾、[阻塞] 渲染锁图标不可勾，hover 显示 `SafetyRejection.rawValue`。
-4. **删除走 trash-preview sheet** —— [DeleteSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeleteSheet.swift) 列出最多 200 项预览 + dry-run 开关，确认按钮按 dry-run 切换文案，destructive role 仅在真删时生效。
+3. **颜色徽章 + 分级 forbid** —— [RowView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowView.swift) 直接消费 `SafetyVerdict`：Normal 下 [优化] 默认勾、[体验] 默认不勾但可勾、[阻塞] 锁定；Professional 仅对类型化可覆盖 reason 提供严格入口，hard boundary 始终锁定。
+4. **删除走统一 trash confirmation** —— [DeleteSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeleteSheet.swift) 列出最多 200 项预览；Release 只提供取消和“移到废纸篓”，destructive role 仅用于真实提交；dry-run 只保留为 Debug/测试能力。
 
 #### Strict Concurrency 实战踩坑（写血泪了）
 [project.yml](file:///Users/guoshuyu/workspace/GSYCleanMac/project.yml) 开了 `SWIFT_STRICT_CONCURRENCY: complete` + `-warnings-as-errors`，[HelperClient](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift) 第一版差点崩在三处：
@@ -553,7 +585,7 @@
 
 **M-4 - 应用卸载侧边栏** —— [UninstallScreen.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UninstallScreen.swift) + [GSYCleanMacApp.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
 - [UninstallStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UninstallScreen.swift) actor，参数注入 `applicationsPath`/`uninstaller`/`fileManager` 让测试能绕开真实 /Applications
-- [警告] 真删按钮**强制二次确认 sheet** —— `dryRun` 默认 true，必须点完二次确认才会调 `performDelete(dryRun: false)`
+- [警告] 真删按钮**强制二次确认 sheet** —— 执行请求默认 dryRun，只有用户在共享确认页明确选择“移到废纸篓”才会生成真实提交；Release 不显示 dry-run 开关。
 - TabView 包装而**不是**改 MainView 内部，避免 4 路 subagent 都改 MainView 撞车
 - 测试 +4：[UninstallStoreTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/UninstallStoreTests.swift)，关键安全断言：`test_删除走dryRun不会真动文件`
 

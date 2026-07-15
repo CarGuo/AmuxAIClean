@@ -17,8 +17,62 @@ private enum MainWindowMetrics {
 /// 该同步只发生在进程终止阶段，不占用正常交互帧；避免最后一次清理刚完成就退出时丢失恢复记录。
 @MainActor
 private final class ApplicationLifecycleDelegate: NSObject, NSApplicationDelegate {
+    private typealias MainWindowSceneOpener = @MainActor () -> Void
+    private var mainWindowSceneOpeners: [UUID: MainWindowSceneOpener] = [:]
+
     func applicationWillTerminate(_ notification: Notification) {
         UndoHistoryStore.shared.saveHistorySync()
+    }
+
+    var canRequestMainWindowScene: Bool {
+        !mainWindowSceneOpeners.isEmpty
+    }
+
+    func installMainWindowSceneOpener(
+        id: UUID,
+        _ opener: @escaping @MainActor () -> Void
+    ) {
+        mainWindowSceneOpeners[id] = opener
+    }
+
+    func removeMainWindowSceneOpener(id: UUID) {
+        mainWindowSceneOpeners.removeValue(forKey: id)
+    }
+
+    @discardableResult
+    func requestMainWindowScene() -> Bool {
+        guard let mainWindowSceneOpener = mainWindowSceneOpeners.values.first else {
+            return false
+        }
+        mainWindowSceneOpener()
+        return true
+    }
+}
+
+/// 把 SwiftUI 的 `OpenWindowAction` 提升到 App delegate 生命周期。
+/// 主窗口关闭后其 View 已销毁，但托盘仍需能够精确重建 `main` scene；设置窗口也挂载
+/// 同一个桥，确保“只剩设置窗口”时不会退回模糊的 AppKit 窗口遍历。
+@MainActor
+private struct MainWindowOpenActionBridge: View {
+    @Environment(\.openWindow) private var openWindow
+    @State private var registrationID = UUID()
+
+    let sceneID: String
+    let delegate: ApplicationLifecycleDelegate
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .onAppear {
+                let action = openWindow
+                delegate.installMainWindowSceneOpener(id: registrationID) {
+                    action(id: sceneID)
+                }
+            }
+            .onDisappear {
+                delegate.removeMainWindowSceneOpener(id: registrationID)
+            }
     }
 }
 
@@ -116,13 +170,11 @@ struct GSYCleanMacApp: App {
             vendors: loadedVendors,
             enableTreeDeepIndex: deepIndex
         )
-        professionalCoordinator.accountingMode = s.sizeAccountingMode
         self._coordinator = StateObject(wrappedValue: professionalCoordinator)
         let smartCareScanner = ScanCoordinator(
             vendors: loadedVendors,
             enableTreeDeepIndex: false
         )
-        smartCareScanner.accountingMode = s.sizeAccountingMode
         self._smartCareSession = State(initialValue: SmartCareSession(
             scanCoordinator: smartCareScanner
         ))
@@ -142,6 +194,16 @@ struct GSYCleanMacApp: App {
             .frame(minWidth: MainWindowMetrics.minWidth,
                    minHeight: MainWindowMetrics.minHeight)
             .environment(\.locale, settings.effectiveLocale)
+            .background {
+                MainWindowIdentityMarker {
+                    reconcileActivationPolicy()
+                }
+                    .frame(width: 0, height: 0)
+                MainWindowOpenActionBridge(
+                    sceneID: Self.mainWindowID,
+                    delegate: lifecycleDelegate
+                )
+            }
             .task {
                 // v1.7：把用户在「设置 → 外观 → 界面语言」选定的覆盖值同步到 AppleLanguages，
                 // 让原生 NSAlert / NSMenu / 系统弹窗下次启动也跟着切。当次会话靠
@@ -164,7 +226,6 @@ struct GSYCleanMacApp: App {
                     // 主窗口可能已经被 ⌘W 销毁；扫描配置必须在真正的 App 级入口
                     // 重新同步，不能依赖 MainView.task/onChange 仍然存活。
                     smartCareAIReviewSession.reset()
-                    smartCareSession.scanCoordinator.accountingMode = settings.sizeAccountingMode
                     smartCareSession.scanCoordinator.refreshFDAStatus()
                     smartCareSession.startScan(
                         includeHidden: settings.showHidden,
@@ -175,7 +236,6 @@ struct GSYCleanMacApp: App {
                 statusItem.onOpenMainWindow = { Self.bringMainWindowToFront() }
                 statusItem.onStartRecommendedScan = { [smartCareSession, smartCareAIReviewSession] in
                     smartCareAIReviewSession.reset()
-                    smartCareSession.scanCoordinator.accountingMode = settings.sizeAccountingMode
                     smartCareSession.scanCoordinator.refreshFDAStatus()
                     smartCareSession.startScan(
                         includeHidden: settings.showHidden,
@@ -346,6 +406,12 @@ struct GSYCleanMacApp: App {
                           aiSettings: aiSettings,
                           navigation: settingsNavigation)
                 .environment(\.locale, settings.effectiveLocale)
+                .background {
+                    MainWindowOpenActionBridge(
+                        sceneID: Self.mainWindowID,
+                        delegate: lifecycleDelegate
+                    )
+                }
         }
     }
 
@@ -417,17 +483,15 @@ struct GSYCleanMacApp: App {
     }
 
     /// v1.3.x：判断当前是否至少有一个"可见主窗口"——即用户视觉上能看到 / 点亮的主窗口。
-    /// 与 [bringMainWindowToFront](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift#L186-L218) 用的过滤条件保持一致：
-    /// 非 NSPanel + 有 contentViewController + windowNumber > 0 + (isVisible || isMiniaturized)。
+    /// 与 [bringMainWindowToFront](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift) 共用
+    /// [MainWindowRoutingPolicy](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainWindowRoutingPolicy.swift)：
+    /// 只认主 WindowGroup 写入的稳定 identifier，再判断 (isVisible || isMiniaturized)。
     /// 最小化窗口算"可见"，因为 Dock 还有缩略图，用户预期 Dock 图标在场。
     @MainActor
     private static func hasVisibleMainWindow() -> Bool {
-        NSApp.windows.contains { window in
-            guard !(window is NSPanel) else { return false }
-            guard window.contentViewController != nil else { return false }
-            guard window.windowNumber > 0 else { return false }
-            return window.isVisible || window.isMiniaturized
-        }
+        MainWindowRoutingPolicy.hasVisibleMainWindow(
+            in: MainWindowRoutingPolicy.descriptors(for: NSApp.windows)
+        )
     }
 
     /// v1.3：把主窗口拉回前台并激活进程。
@@ -437,12 +501,11 @@ struct GSYCleanMacApp: App {
     /// 1. `NSApp.activate(ignoringOtherApps: true)` 在 macOS 14+ 已 deprecated，且
     ///    Apple 论坛 thread/739075 明确指出 Sonoma 起 ~15% 概率不激活 App，导致用户点
     ///    托盘 / HUD"打开主窗口"明显"没反应"。改用新 API `NSApp.activate()`。
-    /// 2. `NSApp.windows where !(window is NSPanel)` 仍会命中 SwiftUI 创建的隐藏辅助窗口
-    ///    （menu bar item 关联窗口、tooltip / popover host 等），这些都满足 `canBecomeKey == true`。
-    ///    必须叠加 `isVisible || identifier` 等更强过滤才能精准命中主窗口。
+    /// 2. `NSApp.windows where !(window is NSPanel)` 会命中 Settings 和 SwiftUI 辅助窗口；
+    ///    主窗口必须由稳定 identifier 精确识别，不能依赖数组顺序或本地化标题。
     /// 3. 用户 ⌘W 关掉主窗口后，SwiftUI WindowGroup 默认实例被销毁；调 `makeKeyAndOrderFront`
-    ///    在 NSApp.windows 里根本找不到主窗口，"打不开"。修复：用 `OpenWindowAction` 通过
-    ///    通知中心向 MainView 发"openMainWindow"广播，由 view 层调 `openWindow(id:)` 重建。
+    ///    在 NSApp.windows 里根本找不到主窗口。修复：把 `OpenWindowAction` 提升到 App delegate
+    ///    生命周期，由托盘直接请求 `main` scene；通知 + LaunchServices 仅保留为启动期回退。
     @MainActor
     fileprivate static let mainWindowID = "main"
 
@@ -455,19 +518,17 @@ struct GSYCleanMacApp: App {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
 
-        // v1.3 review-fix B2：精确过滤——必须满足"非 panel + 非隐藏辅助窗口"，
-        // 用 contentViewController != nil + (isVisible || isMiniaturized) + title 匹配
-        // 三个条件叠加，能把 SwiftUI 的内部辅助 host 全部排除。
-        let candidate = NSApp.windows.first { window in
-            guard !(window is NSPanel) else { return false }
-            // SwiftUI WindowGroup 创建的主窗口一定有 contentViewController（NSHostingController）
-            guard window.contentViewController != nil else { return false }
-            // 排除已 release / 已弃用的窗口（windowNumber < 0 表示已 dispose）
-            guard window.windowNumber > 0 else { return false }
-            return true
-        }
+        let windows = NSApp.windows
+        let lifecycleDelegate = NSApp.delegate as? ApplicationLifecycleDelegate
+        let decision = MainWindowRoutingPolicy.decision(
+            windows: MainWindowRoutingPolicy.descriptors(for: windows),
+            canRequestMainScene: lifecycleDelegate?.canRequestMainWindowScene == true
+        )
 
-        if let window = candidate {
+        switch decision {
+        case let .focusExisting(index):
+            guard windows.indices.contains(index) else { break }
+            let window = windows[index]
             // 主窗口被最小化时，先 deminiaturize 再 makeKey
             if window.isMiniaturized {
                 window.deminiaturize(nil)
@@ -475,6 +536,14 @@ struct GSYCleanMacApp: App {
             window.makeKeyAndOrderFront(nil)
             window.orderFrontRegardless()
             return
+
+        case .requestMainScene:
+            if lifecycleDelegate?.requestMainWindowScene() == true {
+                return
+            }
+
+        case .reopenApplication:
+            break
         }
 
         // v1.3 review-fix B3 + v1.3.zz 强化：找不到主窗口（用户 ⌘W 关掉后 WindowGroup 实例已销毁）。

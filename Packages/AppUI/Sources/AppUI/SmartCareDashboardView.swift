@@ -2,6 +2,51 @@ import AppKit
 import SafetyKit
 import SwiftUI
 
+struct SmartCareFailurePresentation: Equatable, Sendable {
+    let titleKey: String
+    let detailText: String
+    let primaryKey: String
+    let primaryIcon: String
+
+    init(error: SmartCareError) {
+        switch error {
+        case .scanFailed(let message):
+            titleKey = "smart_care.failure.scan.title"
+            detailText = String(
+                format: String(localized: "smart_care.failure.scan.detail %@", bundle: .module),
+                message
+            )
+            primaryKey = "smart_care.action.retry_scan"
+            primaryIcon = "arrow.counterclockwise"
+        case .cleanFailed(let message):
+            titleKey = "smart_care.failure.clean.title"
+            detailText = String(
+                format: String(localized: "smart_care.failure.clean.detail %@", bundle: .module),
+                message
+            )
+            primaryKey = "smart_care.action.review_cleanup_again"
+            primaryIcon = "doc.text.magnifyingglass"
+        }
+    }
+}
+
+extension SmartCareScanLimitationProjection {
+    var titleText: String {
+        String(
+            format: String(localized: "smart_care.scan_limitations.title %lld", bundle: .module),
+            Int64(totalCount)
+        )
+    }
+
+    var remainingText: String? {
+        guard remainingCount > 0 else { return nil }
+        return String(
+            format: String(localized: "smart_care.scan_limitations.remaining %lld", bundle: .module),
+            Int64(remainingCount)
+        )
+    }
+}
+
 struct SmartCareDashboardView: View {
     let coordinator: SmartCareCoordinator
     let session: SmartCareSession?
@@ -19,6 +64,7 @@ struct SmartCareDashboardView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var resultExpansion: SmartCareResultExpansion?
+    @State private var scanLimitationsExpanded = false
 
     var body: some View {
         ZStack {
@@ -49,8 +95,8 @@ struct SmartCareDashboardView: View {
                     cleaningExperience(progress)
                 case .completed(let result):
                     completedExperience(result)
-                case .failed:
-                    failedExperience
+                case .failed(let error):
+                    failedExperience(error)
                 case .cancelled:
                     cancelledExperience
                 }
@@ -62,6 +108,7 @@ struct SmartCareDashboardView: View {
         .onChange(of: phaseID) { _, newValue in
             if newValue != "result" {
                 resultExpansion = nil
+                scanLimitationsExpanded = false
             }
         }
     }
@@ -141,6 +188,10 @@ struct SmartCareDashboardView: View {
 
             ScrollView {
                 VStack(spacing: 10) {
+                    if !scanLimitations.isEmpty {
+                        scanLimitationsNotice
+                    }
+
                     if !resultBuckets.isEmpty {
                         categorySelectionList
                     }
@@ -186,18 +237,27 @@ struct SmartCareDashboardView: View {
     }
 
     private var resultHeader: some View {
-        HStack(spacing: 24) {
+        let hasLimitations = !scanLimitations.isEmpty
+        let headerTint = hasLimitations
+            ? SmartCarePresentation.tint(for: .confirm)
+            : SmartCarePresentation.tint(for: .safe)
+        return HStack(spacing: 24) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(SmartCarePresentation.tint(for: .safe))
-                    Text("smart_care.result.scan_complete", bundle: .module)
+                    Image(systemName: hasLimitations ? "exclamationmark.shield.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(headerTint)
+                    Text(
+                        hasLimitations
+                            ? "smart_care.result.scan_limited"
+                            : "smart_care.result.scan_complete",
+                        bundle: .module
+                    )
                         .font(.system(.title3, design: .rounded).weight(.bold))
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(
-                    SmartCarePresentation.tint(for: .safe).opacity(0.1),
+                    headerTint.opacity(0.1),
                     in: Capsule()
                 )
 
@@ -425,37 +485,72 @@ struct SmartCareDashboardView: View {
     }
 
     private func completedExperience(_ result: SmartCareResult) -> some View {
-        VStack(spacing: 14) {
+        let isPartial = result.completion == .partial
+        let tint = isPartial
+            ? SmartCarePresentation.tint(for: .confirm)
+            : SmartCarePresentation.tint(for: .safe)
+
+        return VStack(spacing: 14) {
             Spacer(minLength: 28)
 
-            Image(systemName: "checkmark")
+            Image(systemName: isPartial ? "exclamationmark.circle" : "checkmark")
                 .font(.system(size: 92, weight: .light))
-                .foregroundStyle(SmartCarePresentation.tint(for: .safe))
-                .symbolEffect(.bounce, value: result.movedCount)
+                .foregroundStyle(tint)
+                .symbolEffect(.bounce, value: result)
 
-            Text("smart_care.phase.completed", bundle: .module)
+            Text(
+                isPartial ? "smart_care.phase.partial" : "smart_care.phase.completed",
+                bundle: .module
+            )
                 .font(.system(.title, design: .rounded).weight(.semibold))
 
-            Text(String(
-                format: String(localized: "smart_care.detail.completed %lld %@", bundle: .module),
-                Int64(result.movedCount),
-                formattedSmartCareBytes(result.releasedBytes)
-            ))
-            .font(.callout)
-            .foregroundStyle(.secondary)
+            Text(completionDetail(for: result))
+                .font(.callout)
+                .foregroundStyle(.secondary)
 
-            Button {
-                onPrimaryAction(.scanAgain)
-            } label: {
-                Label {
-                    Text("smart_care.action.scan_again", bundle: .module)
-                } icon: {
-                    Image(systemName: "arrow.clockwise")
+            if isPartial {
+                HStack(spacing: 10) {
+                    Button {
+                        onPrimaryAction(.cleanSafeItems)
+                    } label: {
+                        Label {
+                            Text("smart_care.action.retry_remaining", bundle: .module)
+                        } icon: {
+                            Image(systemName: "arrow.counterclockwise")
+                        }
+                        .frame(minWidth: 142)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .tint(tint)
+
+                    Button {
+                        onPrimaryAction(.scanAgain)
+                    } label: {
+                        Label {
+                            Text("smart_care.action.scan_again", bundle: .module)
+                        } icon: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .frame(minWidth: 124)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
                 }
-                .frame(minWidth: 124)
+            } else {
+                Button {
+                    onPrimaryAction(.scanAgain)
+                } label: {
+                    Label {
+                        Text("smart_care.action.scan_again", bundle: .module)
+                    } icon: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .frame(minWidth: 124)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
 
             Spacer(minLength: 32)
         }
@@ -463,15 +558,38 @@ struct SmartCareDashboardView: View {
         .padding(28)
     }
 
-    private var failedExperience: some View {
-        SmartCareRecoveryView(
+    private func completionDetail(for result: SmartCareResult) -> String {
+        if result.completion == .partial {
+            return String(
+                format: String(
+                    localized: "smart_care.detail.partial %lld %lld %@",
+                    bundle: .module
+                ),
+                Int64(result.movedCount),
+                Int64(result.skippedCount),
+                formattedSmartCareBytes(result.releasedBytes)
+            )
+        }
+        return String(
+            format: String(localized: "smart_care.detail.completed %lld %@", bundle: .module),
+            Int64(result.movedCount),
+            formattedSmartCareBytes(result.releasedBytes)
+        )
+    }
+
+    private func failedExperience(_ error: SmartCareError) -> some View {
+        let presentation = SmartCareFailurePresentation(error: error)
+        return SmartCareRecoveryView(
             icon: "exclamationmark.triangle",
-            titleKey: "smart_care.phase.failed",
+            titleKey: presentation.titleKey,
             detailKey: "smart_care.detail.failed",
-            primaryKey: "smart_care.action.retry",
-            primaryIcon: "arrow.counterclockwise",
+            detailText: presentation.detailText,
+            primaryKey: presentation.primaryKey,
+            primaryIcon: presentation.primaryIcon,
             tint: SmartCarePresentation.tint(for: .confirm),
-            primaryAction: { onPrimaryAction(.retry) }
+            primaryAction: { onPrimaryAction(.retry) },
+            secondaryKey: "smart_care.action.start_over",
+            secondaryAction: { onPrimaryAction(.scanAgain) }
         )
     }
 
@@ -495,6 +613,56 @@ struct SmartCareDashboardView: View {
             guard let bucket = byID[bucketID], !bucket.safeItems.isEmpty else { return nil }
             return bucket
         }
+    }
+
+    private var scanLimitations: SmartCareScanLimitationProjection {
+        session?.scanLimitationProjection ?? .empty
+    }
+
+    private var scanLimitationsNotice: some View {
+        DisclosureGroup(isExpanded: $scanLimitationsExpanded) {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(scanLimitations.displayedPaths, id: \.self) { path in
+                    Text(verbatim: path)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+                if let remainingText = scanLimitations.remainingText {
+                    Text(verbatim: remainingText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.shield.fill")
+                    .foregroundStyle(SmartCarePresentation.tint(for: .confirm))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(verbatim: scanLimitations.titleText)
+                        .font(.callout.weight(.semibold))
+                    Text("smart_care.scan_limitations.detail", bundle: .module)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            SmartCarePresentation.tint(for: .confirm).opacity(0.07),
+            in: RoundedRectangle(cornerRadius: 12)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(
+                    SmartCarePresentation.tint(for: .confirm).opacity(0.22),
+                    lineWidth: 1
+                )
+        )
     }
 
     private func expansionBinding(for target: SmartCareResultExpansion) -> Binding<Bool> {
@@ -1865,6 +2033,7 @@ private struct SmartCareRecoveryView: View {
     let icon: String
     let titleKey: String
     let detailKey: String
+    var detailText: String? = nil
     let primaryKey: String
     let primaryIcon: String
     let tint: Color
@@ -1883,10 +2052,18 @@ private struct SmartCareRecoveryView: View {
             Text(LocalizedStringKey(titleKey), bundle: .module)
                 .font(.system(.title, design: .rounded).weight(.semibold))
 
-            Text(LocalizedStringKey(detailKey), bundle: .module)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            Group {
+                if let detailText {
+                    Text(verbatim: detailText)
+                        .textSelection(.enabled)
+                } else {
+                    Text(LocalizedStringKey(detailKey), bundle: .module)
+                }
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: 760)
 
             HStack(spacing: 10) {
                 Button(action: primaryAction) {

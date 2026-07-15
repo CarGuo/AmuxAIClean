@@ -1,9 +1,9 @@
-2026-07-13 11:04:10.813 AmuxAIClean[19730:36018865] [AmuxAIClean] 已加载 123 条 vendor 规则
-[REGR] case=hud-toggle defaults_snapshot_keys=5 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
+2026-07-15 17:10:41.468 AmuxAIClean[92068:191907] [AmuxAIClean] 已加载 123 条 vendor 规则
+[REGR] case=hud-toggle defaults_snapshot_keys=7 backup=/Users/guoshuyu/Library/Caches/com.amux.ai.Clean/regression-defaults-backup.plist
 [REGR_BEGIN] case=hud-toggle
 [REGR] case=hud-toggle hud_visible_on=true
 [REGR_OK] case=hud-toggle HUD panel visible when persistent+enabled=true
 [REGR] case=hud-toggle hud_visible_off=false
 [REGR_OK] case=hud-toggle HUD panel hidden after disable=false
-[REGR] case=hud-toggle defaults_restored_keys=5
-[REGR_PASS] case=hud-toggle elapsed_ms=2288
+[REGR] case=hud-toggle defaults_restored_keys=7
+[REGR_PASS] case=hud-toggle elapsed_ms=2426

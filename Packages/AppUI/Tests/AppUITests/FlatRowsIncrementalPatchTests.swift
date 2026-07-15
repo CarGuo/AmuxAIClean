@@ -212,4 +212,91 @@ final class FlatRowsIncrementalPatchTests: XCTestCase {
         XCTAssertEqual(evalCount, 3,
                        "evaluator 必须只被 A 的 3 个新子项调（X/Y/Z），原顶层 3 行 verdict 保留")
     }
+
+    // MARK: - 契约 6：访问锁与子树 partial 不能再次混用
+
+    func test_旧expanded状态不能让真实锁节点继续显示陈旧后代() {
+        let locked = TreeRow(
+            path: "/root/locked",
+            title: "locked",
+            bytes: 0,
+            fileCount: 0,
+            isDirectory: true,
+            hasChildren: true,
+            accessState: .permissionDenied
+        )
+        let old = [FlatTreeRow(
+            row: locked,
+            depth: 0,
+            verdict: .safe,
+            rejection: .ok
+        )]
+        var providerCalls = 0
+
+        let patched = TreeBrowserView.applyExpansionPatch(
+            old: old,
+            togglePath: locked.path,
+            isExpanding: true,
+            sortKey: .nameAsc,
+            expandedAfter: [locked.path: true],
+            childrenProvider: { _, _ in
+                providerCalls += 1
+                return [TreeRow(
+                    path: "/root/locked/stale",
+                    title: "stale",
+                    bytes: 1,
+                    fileCount: 1,
+                    isDirectory: false,
+                    hasChildren: false
+                )]
+            },
+            evaluator: { _ in .safe }
+        )
+
+        XCTAssertEqual(patched, old)
+        XCTAssertEqual(providerCalls, 0,
+                       "真实锁节点即使残留 expanded=true，也不能再读取或显示旧后代")
+    }
+
+    func test_仅含未完整后代的祖先仍可展开定位真实问题() {
+        let partialAncestor = TreeRow(
+            path: "/root/partial",
+            title: "partial",
+            bytes: 10,
+            fileCount: 1,
+            isDirectory: true,
+            hasChildren: true,
+            accessState: .normal,
+            subtreeCompleteness: .containsIncompleteDescendant
+        )
+        let old = [FlatTreeRow(
+            row: partialAncestor,
+            depth: 0,
+            verdict: .safe,
+            rejection: .ok
+        )]
+
+        let patched = TreeBrowserView.applyExpansionPatch(
+            old: old,
+            togglePath: partialAncestor.path,
+            isExpanding: true,
+            sortKey: .nameAsc,
+            expandedAfter: [partialAncestor.path: true],
+            childrenProvider: { _, _ in
+                [TreeRow(
+                    path: "/root/partial/locked",
+                    title: "locked",
+                    bytes: 0,
+                    fileCount: 0,
+                    isDirectory: true,
+                    hasChildren: false,
+                    accessState: .incomplete
+                )]
+            },
+            evaluator: { _ in .safe }
+        )
+
+        XCTAssertEqual(patched?.map(\.row.path), [partialAncestor.path, "/root/partial/locked"])
+        XCTAssertEqual(patched?.last?.row.accessState, .incomplete)
+    }
 }

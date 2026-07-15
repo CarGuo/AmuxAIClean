@@ -49,13 +49,15 @@ public final class QuickLookController: NSObject, QLPreviewPanelDataSource, QLPr
         }
     }
 
-    /// 单测探测：当前内部状态（urls / initialIndex），用于断言 preview 是否正确接受参数。
-    /// 不影响生产路径；仅 #if DEBUG 下暴露。
-    #if DEBUG
+    /// 回归探测：当前内部状态（urls / initialIndex），用于断言 preview 是否正确接受参数。
+    ///
+    /// [RegressionRunner](file:///Users/guoshuyu/workspace/GSYCleanMac/App/RegressionRunner.swift)
+    /// 在 Release 回归构建中也会编译并调用这三个只读/重置入口，因此不能用
+    /// `#if DEBUG` 把 API 从 Release module 中删掉。它们不打开窗口、不访问磁盘，
+    /// 也不改变正常 preview 路径。
     public var _testCurrentURLs: [URL] { urls }
     public var _testInitialIndex: Int { initialIndex }
     public func _testReset() { urls = []; initialIndex = 0 }
-    #endif
 
     /// 关闭当前预览（用户按 Esc / 主动关闭走系统逻辑，这里用于程序触发，比如选中变没了）。
     public func close() {

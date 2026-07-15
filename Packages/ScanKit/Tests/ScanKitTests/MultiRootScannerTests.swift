@@ -203,5 +203,59 @@ final class MultiRootScannerTests: XCTestCase {
         XCTAssertEqual(summary.directoryCount, 1)
         XCTAssertEqual(summary.permissionDeniedCount, 1)
         XCTAssertEqual(summary.tccProtectedSkippedCount, 1)
+        XCTAssertEqual(summary.completionStatus, .partial,
+                       "超时合成 summary 只能作为 partial 结果，不能伪装成完整扫描")
+    }
+
+    func test_totalDeadlineCancelsRunningRootsAndStopsScheduling() async {
+        let probe = MultiRootDeadlineProbe()
+        let scanner = MultiRootScanner(
+            options: .default,
+            rootScanOperation: { _, _, _, _, _ in
+                await probe.recordStarted()
+                do {
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                } catch is CancellationError {
+                    await probe.recordCancelled()
+                } catch {
+                    XCTFail("fake root scanner sleep 失败：\(error)")
+                }
+            }
+        )
+        let roots = (0..<8).map { URL(fileURLWithPath: "/tmp/deadline-root-\($0)") }
+        let startedAt = Date()
+
+        let events = await collect(
+            await scanner.scan(
+                roots: roots,
+                maxConcurrentRoots: 2,
+                perRootTimeout: 30,
+                noProgressTimeout: 30,
+                totalDeadline: 0.05
+            )
+        )
+
+        let counts = await probe.counts()
+        XCTAssertTrue(events.isEmpty)
+        XCTAssertEqual(counts.started, 2, "deadline 前只应启动 sliding window 内的两个 root")
+        XCTAssertEqual(counts.cancelled, counts.started, "total deadline 必须取消所有已启动 root")
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 1.0, "不能继续等待单根 5 秒任务")
+    }
+}
+
+private actor MultiRootDeadlineProbe {
+    private var started = 0
+    private var cancelled = 0
+
+    func recordStarted() {
+        started += 1
+    }
+
+    func recordCancelled() {
+        cancelled += 1
+    }
+
+    func counts() -> (started: Int, cancelled: Int) {
+        (started, cancelled)
     }
 }

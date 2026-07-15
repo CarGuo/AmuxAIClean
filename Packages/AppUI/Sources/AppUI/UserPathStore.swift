@@ -16,6 +16,9 @@ public actor UserPathStore {
 
     private let defaults: UserDefaults
     private var paths: [String]
+    /// 同一 `UserPathStore` 会被主窗口与设置窗口共享。两边都消费这里的快照流，
+    /// 因此任一窗口 add/remove 后，另一边无需靠通知、轮询或重新打开窗口刷新。
+    private var snapshotContinuations: [UUID: AsyncStream<[URL]>.Continuation] = [:]
 
     /// 标准构造（生产代码用）：直接使用 `UserDefaults.standard`。
     public init() {
@@ -44,7 +47,23 @@ public actor UserPathStore {
 
     /// 当前已保存的所有自定义路径（按用户加入顺序）。
     public func list() -> [URL] {
-        paths.map { URL(fileURLWithPath: $0) }
+        pathURLs()
+    }
+
+    /// 路径仓库的跨 Scene 观察入口。新订阅者先收到当前完整快照，后续每次真实
+    /// add/remove/reset 收到一份最新快照；buffer 只保留最新值，窗口暂时繁忙时
+    /// 不会积压过期状态。
+    public func snapshots() -> AsyncStream<[URL]> {
+        let id = UUID()
+        let initial = pathURLs()
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            snapshotContinuations[id] = continuation
+            continuation.yield(initial)
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                Task { await self.removeSnapshotContinuation(id) }
+            }
+        }
     }
 
     /// 加入一个 URL；标准化后去重。返回 true 表示真实加入。
@@ -56,6 +75,7 @@ public actor UserPathStore {
         }
         paths.append(key)
         persist()
+        publishSnapshot()
         return true
     }
 
@@ -68,6 +88,7 @@ public actor UserPathStore {
         }
         paths.remove(at: idx)
         persist()
+        publishSnapshot()
         return true
     }
 
@@ -75,12 +96,28 @@ public actor UserPathStore {
     public func _testReset() {
         paths.removeAll()
         defaults.removeObject(forKey: Self.defaultsKey)
+        publishSnapshot()
     }
 
     // MARK: - 私有
 
     private func persist() {
         defaults.set(paths, forKey: Self.defaultsKey)
+    }
+
+    private func pathURLs() -> [URL] {
+        paths.map { URL(fileURLWithPath: $0) }
+    }
+
+    private func publishSnapshot() {
+        let snapshot = pathURLs()
+        for continuation in snapshotContinuations.values {
+            continuation.yield(snapshot)
+        }
+    }
+
+    private func removeSnapshotContinuation(_ id: UUID) {
+        snapshotContinuations[id] = nil
     }
 
     /// 把 URL 标准化为绝对路径字符串：展开 `~`，resolveSymlinks，去掉尾随 `/`。

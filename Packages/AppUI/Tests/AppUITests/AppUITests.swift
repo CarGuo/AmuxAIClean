@@ -17,6 +17,18 @@ final class ScanCategoryTests: XCTestCase {
         let dl = cats.first { $0.id == "user.downloads" }
         XCTAssertEqual(dl?.defaultVerdict, .confirm)
     }
+
+    func testDeveloperCacheRootsReuseCanonicalDerivedDataCategory() {
+        let roots = ScanCategories.developerCacheRoots(home: "/Users/foo")
+
+        XCTAssertEqual(roots.map(\.id), ["xcode.derived"])
+        XCTAssertEqual(
+            roots.map(\.rootPath),
+            ["/Users/foo/Library/Developer/Xcode/DerivedData"],
+            "开发者扫描不得因 DevArtifactScanner 跳过 ~/Library 而漏掉 DerivedData"
+        )
+        XCTAssertEqual(roots.first?.defaultVerdict, .safe)
+    }
 }
 
 final class RowItemSelectionTests: XCTestCase {

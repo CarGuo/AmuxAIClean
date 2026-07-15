@@ -1,0 +1,552 @@
+import Foundation
+import ScanKit
+import SafetyKit
+
+/// Immutable metadata accepted by the shared deletion coordinator.
+///
+/// Tool views may describe size and presentation facts, but they do not decide
+/// safety.  Every snapshot starts as an ordinary candidate and the production
+/// `DeletionPipeline.preflight` result is the only input that can classify it as
+/// normal, strict-override eligible, or non-bypassable.
+struct DeletionInteractionCandidateSnapshot: Sendable, Equatable {
+    let path: String
+    let title: String
+    let isDirectory: Bool
+    let bytes: Int64
+    let fileCount: Int
+    let runningBundleIDPrefix: String?
+    let accessEvidence: DeletionAccessEvidence
+
+    init(
+        path: String,
+        title: String,
+        isDirectory: Bool,
+        bytes: Int64,
+        fileCount: Int,
+        runningBundleIDPrefix: String? = nil,
+        accessEvidence: DeletionAccessEvidence = .complete
+    ) {
+        self.path = path
+        self.title = title
+        self.isDirectory = isDirectory
+        self.bytes = max(0, bytes)
+        self.fileCount = max(0, fileCount)
+        self.runningBundleIDPrefix = runningBundleIDPrefix
+        self.accessEvidence = accessEvidence
+    }
+
+    fileprivate var intentCandidate: DeletionIntentCandidate {
+        DeletionIntentCandidate(
+            path: path,
+            title: title,
+            isDirectory: isDirectory,
+            bytes: bytes,
+            fileCount: fileCount,
+            verdict: .safe,
+            rejection: .ok,
+            accessEvidence: accessEvidence,
+            runningBundleIDPrefix: runningBundleIDPrefix
+        )
+    }
+}
+
+/// The only input a compact/strict Professional confirmation view may consume.
+/// It binds presentation back to the exact typed plan created by production
+/// preflight; views never infer override eligibility from strings or booleans.
+struct DeletionPreparedInteraction: Sendable, Equatable {
+    let plan: DeletionConfirmationPlan
+    let vendorOverrideRequest: VendorPathOverrideRequest?
+    let scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest?
+    let carriedRunningAppSkipped: [OperationResultPayload.RunningAppSkippedItem]
+
+    var confirmationCandidates: [RunningAppGuard.Candidate] {
+        plan.submittableItems.map { item in
+            RunningAppGuard.Candidate(
+                path: item.candidate.rawPath,
+                title: item.candidate.title,
+                bundleIDPrefix: item.candidate.runningBundleIDPrefix
+            )
+        }
+    }
+
+    var paths: [String] { confirmationCandidates.map(\.path) }
+}
+
+struct DeletionInteractionBlock: Sendable, Equatable {
+    let intentID: UUID
+    let rejections: [DeletionPreflight.Rejection]
+}
+
+enum DeletionInteractionPreparation: Sendable, Equatable {
+    case confirmation(DeletionPreparedInteraction)
+    case blocked(DeletionInteractionBlock)
+    case cancelled(intentID: UUID)
+}
+
+struct DeletionAuthorizedInteraction: Sendable, Equatable {
+    let prepared: DeletionPreparedInteraction
+    let authorization: DeletionExecutionAuthorization
+    let vendorOverrideRequest: VendorPathOverrideRequest?
+    let scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest?
+    let runningAppSkipped: [OperationResultPayload.RunningAppSkippedItem]
+}
+
+enum DeletionInteractionAuthorizationDecision: Sendable, Equatable {
+    case authorized(DeletionAuthorizedInteraction)
+    case blocked(DeletionInteractionBlock)
+    /// A legitimate no-op after the user chose to skip every running item.
+    /// It crosses neither the submission boundary nor the result boundary.
+    case cancelled(intentID: UUID)
+}
+
+struct DeletionCompletedInteraction: Sendable {
+    let receipt: DeletionSubmissionReceipt
+    let trashSubmission: TrashActionCoordinator.CompletedSubmission
+    let runningAppSkipped: [OperationResultPayload.RunningAppSkippedItem]
+
+    var result: TrashActionCoordinator.Result { trashSubmission.result }
+    var submissionState: DeletionSubmissionState { .submitted(receipt) }
+
+    fileprivate init(
+        receipt: DeletionSubmissionReceipt,
+        trashSubmission: TrashActionCoordinator.CompletedSubmission,
+        runningAppSkipped: [OperationResultPayload.RunningAppSkippedItem]
+    ) {
+        self.receipt = receipt
+        self.trashSubmission = trashSubmission
+        self.runningAppSkipped = runningAppSkipped
+    }
+}
+
+enum DeletionInteractionSubmission {
+    case requiresConfirmation(DeletionPreparedInteraction)
+    case blocked(DeletionInteractionBlock)
+    case completed(DeletionCompletedInteraction)
+}
+
+/// Production adapter for the deletion interaction contract.
+///
+/// The coordinator is deliberately the only type that performs all five
+/// transitions:
+///
+/// `DeletionIntent -> DeletionConfirmationPlan -> ExecutionAuthorization ->`
+/// `typed Trash submission -> DeletionSubmissionReceipt + TrashOutcome`.
+///
+/// A pre-submit rejection has no result-bearing case, so a caller cannot turn a
+/// safety explanation into `Cleanup Failed 0/N` by accident.
+@MainActor
+struct DeletionInteractionCoordinator {
+    let pipeline: any DeletionPipeline
+    let undoHistoryStore: UndoHistoryStore
+
+    init(
+        pipeline: any DeletionPipeline,
+        undoHistoryStore: UndoHistoryStore = .shared
+    ) {
+        self.pipeline = pipeline
+        self.undoHistoryStore = undoHistoryStore
+    }
+
+    func makeIntent(
+        origin: DeleteRequestOrigin,
+        mode: DeletionUserMode,
+        snapshotIdentity: DeletionSnapshotIdentity,
+        candidates: [DeletionInteractionCandidateSnapshot]
+    ) throws -> DeletionIntent {
+        try DeletionIntent(
+            origin: origin,
+            mode: mode,
+            snapshotIdentity: snapshotIdentity,
+            candidates: candidates.map(\.intentCandidate)
+        )
+    }
+
+    func prepare(
+        intent: DeletionIntent,
+        currentSnapshotIdentity: DeletionSnapshotIdentity,
+        accessDeniedPaths: Set<String> = []
+    ) async -> DeletionInteractionPreparation {
+        let preflight = await pipeline.preflight(
+            paths: intent.candidates.map(\.rawPath),
+            accessDeniedPaths: accessDeniedPaths
+        )
+        return preparation(
+            intent: intent,
+            preflight: preflight,
+            currentSnapshotIdentity: currentSnapshotIdentity,
+            carriedRunningAppSkipped: []
+        )
+    }
+
+    /// Consumes the typed target-revalidation capability without downgrading it
+    /// back to an ordinary preflight. The request must cover the exact frozen
+    /// intent and the same scan session; otherwise the interaction is blocked.
+    func prepareRevalidatedScanIncomplete(
+        intent: DeletionIntent,
+        currentSnapshotIdentity: DeletionSnapshotIdentity,
+        preparation: ScanIncompleteOverridePreparation
+    ) -> DeletionInteractionPreparation {
+        switch preparation {
+        case .blocked(let rejections):
+            return .blocked(DeletionInteractionBlock(
+                intentID: intent.id,
+                rejections: rejections.isEmpty
+                    ? invariantBlock(intent: intent).rejections
+                    : rejections
+            ))
+
+        case .strictConfirmation(let scanRequest, let vendorRequest):
+            let intentPaths = intent.candidates.map(\.standardizedPath)
+            let scanPaths = normalizedPaths(scanRequest.paths)
+            guard currentSnapshotIdentity == intent.snapshotIdentity,
+                  scanRequest.scanSessionID == intent.snapshotIdentity.sessionID,
+                  scanPaths == intentPaths,
+                  Set(scanPaths).count == scanPaths.count,
+                  vendorRequest == nil || normalizedPaths(vendorRequest?.paths ?? []) == intentPaths,
+                  scanRequest.entries.contains(where: { !$0.incompleteIssues.isEmpty }) else {
+                return .blocked(invariantBlock(intent: intent))
+            }
+
+            let scanEntryByPath = Dictionary(uniqueKeysWithValues: scanRequest.entries.map {
+                (DeletionIntentCandidate.pathIdentity($0.path), $0)
+            })
+            let vendorProtected = Set(
+                vendorRequest?.vendorRuleProtectedPaths.map(
+                    DeletionIntentCandidate.pathIdentity
+                ) ?? []
+            )
+            let items = intent.candidates.map { candidate -> DeletionConfirmationItem in
+                guard let entry = scanEntryByPath[candidate.standardizedPath] else {
+                    return DeletionConfirmationItem(
+                        candidate: candidate,
+                        disposition: .nonBypassable(.missingPreflightDecision)
+                    )
+                }
+                if let issue = entry.incompleteIssues.first {
+                    return DeletionConfirmationItem(
+                        candidate: candidate,
+                        disposition: .strictOverride(.scanIncomplete(
+                            DeletionIncompleteReason(scanIncompleteReason: issue.reason)
+                        ))
+                    )
+                }
+                if vendorProtected.contains(candidate.standardizedPath) {
+                    return DeletionConfirmationItem(
+                        candidate: candidate,
+                        disposition: .strictOverride(.vendorPathRule)
+                    )
+                }
+                return DeletionConfirmationItem(candidate: candidate, disposition: .normal)
+            }
+            do {
+                let plan = try DeletionConfirmationPlan(intent: intent, items: items)
+                guard plan.nonBypassableItems.isEmpty else {
+                    return .blocked(invariantBlock(intent: intent))
+                }
+                return .confirmation(DeletionPreparedInteraction(
+                    plan: plan,
+                    vendorOverrideRequest: vendorRequest,
+                    scanIncompleteOverrideRequest: scanRequest,
+                    carriedRunningAppSkipped: []
+                ))
+            } catch {
+                assertionFailure("Scan-incomplete preparation invariant failed: \(error)")
+                return .blocked(invariantBlock(intent: intent))
+            }
+        }
+    }
+
+    /// Mints request-scoped authorization from the exact prepared plan and the
+    /// compact sheet's frozen decision.  The sheet can propose paths; it cannot
+    /// create capability or validate its own strict token.
+    func authorize(
+        prepared: DeletionPreparedInteraction,
+        executionPlan: ToolTrashExecutionPlan
+    ) -> DeletionInteractionAuthorizationDecision {
+        let intent = prepared.plan.intent
+        let candidateByPath = Dictionary(
+            uniqueKeysWithValues: intent.candidates.map { ($0.standardizedPath, $0) }
+        )
+        let submittedPaths = executionPlan.paths.map(DeletionIntentCandidate.pathIdentity)
+        let skippedPaths = executionPlan.runningAppSkipped.map {
+            DeletionIntentCandidate.pathIdentity($0.path)
+        }
+        let originalPaths = intent.candidates.map(\.standardizedPath)
+
+        guard Set(submittedPaths).count == submittedPaths.count,
+              Set(skippedPaths).count == skippedPaths.count,
+              Set(submittedPaths).isDisjoint(with: Set(skippedPaths)),
+              Set(submittedPaths).union(skippedPaths) == Set(originalPaths),
+              submittedPaths.allSatisfy({ candidateByPath[$0] != nil }) else {
+            return .blocked(invariantBlock(intent: intent))
+        }
+
+        let expectedOverride = prepared.vendorOverrideRequest.flatMap {
+            $0.restricting(to: executionPlan.paths)
+        }
+        guard expectedOverride == executionPlan.vendorOverrideRequest else {
+            return .blocked(invariantBlock(intent: intent))
+        }
+        let expectedScanOverride = prepared.scanIncompleteOverrideRequest.flatMap {
+            $0.restricting(to: executionPlan.paths)
+        }
+        guard expectedScanOverride == executionPlan.scanIncompleteOverrideRequest else {
+            return .blocked(invariantBlock(intent: intent))
+        }
+        guard !submittedPaths.isEmpty else {
+            return .cancelled(intentID: intent.id)
+        }
+
+        let confirmedConflicts = executionPlan.confirmedRunningAppConflicts
+        let conflictPaths = confirmedConflicts.map {
+            DeletionIntentCandidate.pathIdentity($0.path)
+        }
+        guard Set(conflictPaths).count == conflictPaths.count,
+              conflictPaths.allSatisfy({ candidateByPath[$0] != nil }) else {
+            return .blocked(invariantBlock(intent: intent))
+        }
+
+        let runningChoice: DeletionRunningAppChoice
+        if confirmedConflicts.isEmpty {
+            runningChoice = .noConflicts
+        } else if !executionPlan.runningAppSkipped.isEmpty {
+            runningChoice = .skipRunningItems
+        } else {
+            runningChoice = .attemptWhileRunning
+        }
+
+        let proof: DeletionConfirmationProof
+        if expectedOverride != nil || expectedScanOverride != nil {
+            let expectedToken = String(
+                localized: "delete.vendor_override.token",
+                bundle: .module
+            )
+            guard executionPlan.strictConfirmationToken == expectedToken else {
+                return .blocked(invariantBlock(intent: intent))
+            }
+            proof = .professionalStrict(
+                confirmationToken: expectedToken,
+                confirmedAt: Date()
+            )
+        } else {
+            proof = .standard(confirmedAt: Date())
+        }
+
+        do {
+            let authorizationPlan = try DeletionConfirmationPlan(
+                id: prepared.plan.id,
+                intent: intent,
+                items: prepared.plan.items,
+                runningAppConflicts: confirmedConflicts,
+                preparedAt: prepared.plan.preparedAt
+            )
+            let candidateIDs = submittedPaths.compactMap { candidateByPath[$0]?.id }
+            let authorization = try DeletionExecutionAuthorization.make(
+                plan: authorizationPlan,
+                selectedCandidateIDs: candidateIDs,
+                runningAppChoice: runningChoice,
+                proof: proof
+            )
+            return .authorized(DeletionAuthorizedInteraction(
+                prepared: prepared,
+                authorization: authorization,
+                vendorOverrideRequest: expectedOverride,
+                scanIncompleteOverrideRequest: expectedScanOverride,
+                runningAppSkipped: mergeRunningAppSkipped(
+                    prepared.carriedRunningAppSkipped,
+                    executionPlan.runningAppSkipped
+                )
+            ))
+        } catch {
+            assertionFailure("Deletion authorization invariant failed: \(error)")
+            return .blocked(invariantBlock(intent: intent))
+        }
+    }
+
+    /// Executes one typed authorization.  A receipt is minted only after the
+    /// pipeline returns `.recycleCompleted`; strict escalation and all final
+    /// revalidation failures remain confirmation/explanation routes.
+    func submit(
+        _ confirmed: DeletionAuthorizedInteraction,
+        accessDeniedPaths: Set<String>
+    ) async -> DeletionInteractionSubmission {
+        let authorization = confirmed.authorization
+        let intent = confirmed.prepared.plan.intent
+        guard authorization.intentID == intent.id,
+              authorization.planID == confirmed.prepared.plan.id,
+              authorization.snapshotIdentity == intent.snapshotIdentity else {
+            return .blocked(invariantBlock(intent: intent))
+        }
+
+        let submission = await TrashActionCoordinator(
+            pipeline: pipeline,
+            undoHistoryStore: undoHistoryStore
+        ).submitConfirmed(
+            paths: authorization.paths,
+            source: intent.origin.historySource,
+            accessDeniedPaths: accessDeniedPaths,
+            vendorOverrideRequest: confirmed.vendorOverrideRequest,
+            scanIncompleteOverrideRequest: confirmed.scanIncompleteOverrideRequest
+        )
+
+        switch submission {
+        case .recycleCompleted(let submission):
+            guard submission.attemptedPaths == authorization.paths,
+                  Set(normalizedPaths(submission.attemptedPaths)).count == submission.attemptedPaths.count else {
+                return .blocked(invariantBlock(intent: intent))
+            }
+            let receipt = DeletionSubmissionReceipt(
+                id: submission.receipt.id,
+                authorizationID: authorization.id,
+                intentID: authorization.intentID,
+                submittedPaths: submission.receipt.submittedPaths,
+                submittedAt: submission.receipt.submittedAt
+            )
+            return .completed(DeletionCompletedInteraction(
+                receipt: receipt,
+                trashSubmission: submission,
+                runningAppSkipped: confirmed.runningAppSkipped
+            ))
+
+        case .preSubmitRejected(.safety(let preflight)):
+            guard confirmed.vendorOverrideRequest == nil,
+                  confirmed.scanIncompleteOverrideRequest == nil else {
+                return .blocked(block(intent: intent, preflight: preflight))
+            }
+            let narrowedIntent: DeletionIntent
+            do {
+                narrowedIntent = try restrictedIntent(
+                    intent,
+                    paths: authorization.paths
+                )
+            } catch {
+                assertionFailure("Final deletion replan lost frozen candidates: \(error)")
+                return .blocked(invariantBlock(intent: intent))
+            }
+            return switch preparation(
+                intent: narrowedIntent,
+                preflight: preflight,
+                currentSnapshotIdentity: authorization.snapshotIdentity,
+                carriedRunningAppSkipped: confirmed.runningAppSkipped
+            ) {
+            case .confirmation(let prepared):
+                .requiresConfirmation(prepared)
+            case .blocked(let block):
+                .blocked(block)
+            case .cancelled:
+                .blocked(block(intent: narrowedIntent, preflight: preflight))
+            }
+
+        case .preSubmitRejected(.invalidVendorOverride(let preflight)):
+            return .blocked(block(intent: intent, preflight: preflight))
+
+        case .preSubmitRejected(.invalidScanIncompleteOverride(let rejections)):
+            return .blocked(DeletionInteractionBlock(
+                intentID: intent.id,
+                rejections: rejections.isEmpty ? invariantBlock(intent: intent).rejections : rejections
+            ))
+
+        case .preSubmitRejected(.emptyRequest),
+             .preSubmitRejected(.unsupportedPipeline):
+            return .blocked(invariantBlock(intent: intent))
+        }
+    }
+
+    private func preparation(
+        intent: DeletionIntent,
+        preflight: DeletionPreflight,
+        currentSnapshotIdentity: DeletionSnapshotIdentity,
+        carriedRunningAppSkipped: [OperationResultPayload.RunningAppSkippedItem]
+    ) -> DeletionInteractionPreparation {
+        do {
+            let decision = try DeletionConfirmationPlanner.makeDecision(
+                intent: intent,
+                preflight: preflight,
+                currentSnapshotIdentity: currentSnapshotIdentity
+            )
+            switch decision {
+            case .cancelled(let intentID):
+                return .cancelled(intentID: intentID)
+            case .requiresConfirmation(let plan):
+                guard plan.nonBypassableItems.isEmpty,
+                      plan.changedSinceScanItems.isEmpty,
+                      !plan.submittableItems.isEmpty else {
+                    return .blocked(block(intent: intent, preflight: preflight))
+                }
+                let overrideRequest: VendorPathOverrideRequest?
+                if plan.strictOverrideItems.isEmpty {
+                    overrideRequest = nil
+                } else {
+                    guard let request = VendorPathOverrideRequest(preflight: preflight) else {
+                        return .blocked(block(intent: intent, preflight: preflight))
+                    }
+                    overrideRequest = request
+                }
+                return .confirmation(DeletionPreparedInteraction(
+                    plan: plan,
+                    vendorOverrideRequest: overrideRequest,
+                    scanIncompleteOverrideRequest: nil,
+                    carriedRunningAppSkipped: carriedRunningAppSkipped
+                ))
+            }
+        } catch {
+            assertionFailure("Deletion preparation invariant failed: \(error)")
+            return .blocked(invariantBlock(intent: intent))
+        }
+    }
+
+    private func restrictedIntent(
+        _ intent: DeletionIntent,
+        paths: [String]
+    ) throws -> DeletionIntent {
+        let selected = Set(paths.map(DeletionIntentCandidate.pathIdentity))
+        return try DeletionIntent(
+            id: intent.id,
+            origin: intent.origin,
+            mode: intent.mode,
+            snapshotIdentity: intent.snapshotIdentity,
+            candidates: intent.candidates.filter { selected.contains($0.standardizedPath) },
+            createdAt: intent.createdAt
+        )
+    }
+
+    private func block(
+        intent: DeletionIntent,
+        preflight: DeletionPreflight
+    ) -> DeletionInteractionBlock {
+        guard !preflight.rejections.isEmpty else {
+            return invariantBlock(intent: intent)
+        }
+        return DeletionInteractionBlock(
+            intentID: intent.id,
+            rejections: preflight.rejections
+        )
+    }
+
+    private func invariantBlock(intent: DeletionIntent) -> DeletionInteractionBlock {
+        DeletionInteractionBlock(
+            intentID: intent.id,
+            rejections: intent.candidates.map {
+                DeletionPreflight.Rejection(
+                    path: $0.rawPath,
+                    reason: SafetyRejection.preflightCancelled.rawValue
+                )
+            }
+        )
+    }
+
+    private func mergeRunningAppSkipped(
+        _ lhs: [OperationResultPayload.RunningAppSkippedItem],
+        _ rhs: [OperationResultPayload.RunningAppSkippedItem]
+    ) -> [OperationResultPayload.RunningAppSkippedItem] {
+        var seen = Set<String>()
+        return (lhs + rhs).filter {
+            seen.insert(DeletionIntentCandidate.pathIdentity($0.path)).inserted
+        }
+    }
+
+    private func normalizedPaths(_ paths: [String]) -> [String] {
+        paths.map(DeletionIntentCandidate.pathIdentity)
+    }
+
+}

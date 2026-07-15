@@ -4,9 +4,9 @@ import XCTest
 /// v1.3.x：TreeSizeEstimator 行为测试。
 final class TreeSizeEstimatorTests: XCTestCase {
 
-    func test_estimate_单一目录_应返回所有常规文件大小之和() async throws {
+    func test_estimate_单一目录_应返回所有常规文件磁盘占用之和() async throws {
         let tmp = try makeTempDir()
-        defer { try? FileManager.default.removeItem(at: tmp) }
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
         try writeFile(in: tmp, name: "a.bin", bytes: 1024)
         try writeFile(in: tmp, name: "b.bin", bytes: 2048)
         // 子目录里的也要算
@@ -14,8 +14,11 @@ final class TreeSizeEstimatorTests: XCTestCase {
         try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
         try writeFile(in: sub, name: "c.bin", bytes: 4096)
 
+        let expected = try allocatedSize(of: tmp.appendingPathComponent("a.bin"))
+            + allocatedSize(of: tmp.appendingPathComponent("b.bin"))
+            + allocatedSize(of: sub.appendingPathComponent("c.bin"))
         let total = await TreeSizeEstimator.estimate(roots: [tmp], timeout: 4.0)
-        XCTAssertEqual(total, 1024 + 2048 + 4096)
+        XCTAssertEqual(total, expected)
     }
 
     func test_estimate_多根_应累加() async throws {
@@ -28,8 +31,10 @@ final class TreeSizeEstimatorTests: XCTestCase {
         try writeFile(in: tmp1, name: "x.bin", bytes: 100)
         try writeFile(in: tmp2, name: "y.bin", bytes: 200)
 
+        let expected = try allocatedSize(of: tmp1.appendingPathComponent("x.bin"))
+            + allocatedSize(of: tmp2.appendingPathComponent("y.bin"))
         let total = await TreeSizeEstimator.estimate(roots: [tmp1, tmp2], timeout: 4.0)
-        XCTAssertEqual(total, 300)
+        XCTAssertEqual(total, expected)
     }
 
     func test_estimate_空根列表_应返回nil() async {
@@ -50,14 +55,14 @@ final class TreeSizeEstimatorTests: XCTestCase {
 
     func test_estimate_空目录_应返回0而非nil() async throws {
         let tmp = try makeTempDir()
-        defer { try? FileManager.default.removeItem(at: tmp) }
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
         let total = await TreeSizeEstimator.estimate(roots: [tmp], timeout: 1.0)
         XCTAssertEqual(total, 0, "空目录是合法估算结果，应返回 0 字节")
     }
 
     func test_estimate_符号链接不应被递归吞() async throws {
         let tmp = try makeTempDir()
-        defer { try? FileManager.default.removeItem(at: tmp) }
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
         try writeFile(in: tmp, name: "real.bin", bytes: 500)
         // 创建一个指向自己的 symlink，如果 estimator 跟着递归就会爆炸
         let link = tmp.appendingPathComponent("loop")
@@ -67,6 +72,22 @@ final class TreeSizeEstimatorTests: XCTestCase {
         XCTAssertNotNil(total)
         // 至少包含 real.bin；不应该因为 symlink 循环爆栈/超时
         XCTAssertGreaterThanOrEqual(total ?? 0, 500)
+    }
+
+    func test_estimate_稀疏文件_应返回磁盘占用而不是虚拟容量() async throws {
+        let tmp = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
+        let sparse = tmp.appendingPathComponent("Docker.raw")
+        XCTAssertTrue(FileManager.default.createFile(atPath: sparse.path, contents: Data([0x1])))
+        let handle = try FileHandle(forWritingTo: sparse)
+        try handle.truncate(atOffset: 2 * 1_024 * 1_024 * 1_024)
+        try handle.close()
+
+        let estimate = await TreeSizeEstimator.estimate(roots: [tmp], timeout: 4.0)
+        let total = try XCTUnwrap(estimate)
+        XCTAssertEqual(total, try allocatedSize(of: sparse))
+        XCTAssertLessThan(total, 64 * 1_024 * 1_024,
+                          "ETA 分母不能把 Docker sparse 虚拟容量当成磁盘占用")
     }
 
     // MARK: - Step 13A 并发改造：5 根并发不应远慢于 1 根串行
@@ -132,10 +153,12 @@ final class TreeSizeEstimatorTests: XCTestCase {
         let perRootFiles = 200
         let perFileBytes = 1024
         var roots: [URL] = []
+        var expectedAllocated: Int64 = 0
         for _ in 0..<5 {
             let r = try makeTempDir()
             for i in 0..<perRootFiles {
                 try writeFile(in: r, name: "f\(i).bin", bytes: perFileBytes)
+                expectedAllocated += try allocatedSize(of: r.appendingPathComponent("f\(i).bin"))
             }
             roots.append(r)
         }
@@ -150,7 +173,7 @@ final class TreeSizeEstimatorTests: XCTestCase {
         }
         let concurrent = await TreeSizeEstimator.estimate(roots: roots, timeout: 4.0) ?? -1
         XCTAssertEqual(concurrent, sumOfSingles, "5 根并发聚合结果应等于各根串行之和")
-        XCTAssertEqual(concurrent, Int64(5 * perRootFiles * perFileBytes), "结果应等于精确字节数")
+        XCTAssertEqual(concurrent, expectedAllocated, "结果应等于文件系统报告的磁盘分配量")
     }
 
     /// 并发改造下的取消传播：调用方 task 被取消时，所有根 walk 应及时结束（不等到全部跑完）。
@@ -189,5 +212,10 @@ final class TreeSizeEstimatorTests: XCTestCase {
     private func writeFile(in dir: URL, name: String, bytes: Int) throws {
         let data = Data(repeating: 0xCD, count: bytes)
         try data.write(to: dir.appendingPathComponent(name))
+    }
+
+    private func allocatedSize(of url: URL) throws -> Int64 {
+        let values = try url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey])
+        return Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
     }
 }

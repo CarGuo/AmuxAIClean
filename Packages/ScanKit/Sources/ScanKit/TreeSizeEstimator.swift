@@ -3,7 +3,7 @@ import Darwin
 
 /// v1.3.x：用户反馈"推荐扫描很久没 ETA"——给非整盘扫描提供"先估算总量、再正式扫"的能力。
 ///
-/// 设计目标：**几百毫秒级**走完一个或多个根目录，只统计"逻辑总字节"，不分类、不
+/// 设计目标：**几百毫秒级**走完一个或多个根目录，只统计 on-disk allocated bytes，不分类、不
 /// 去重 hardlink、不发 progress。失败/超时直接吞掉，调用方拿到 nil 即可。
 ///
 /// 与 [BulkScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift) 的差异：
@@ -20,7 +20,7 @@ import Darwin
 /// ```
 public enum TreeSizeEstimator {
 
-    /// 估算多个根的总字节数（逻辑大小，对应 `URLResourceKey.fileSizeKey`）。
+    /// 估算多个根的磁盘分配量（对应 `ATTR_FILE_ALLOCSIZE` / `du`）。
     /// - Parameters:
     ///   - roots: 要估算的根目录 URL 列表（推荐 5 个以内）
     ///   - timeout: 软超时秒数。任何根估算到一半到时间就提前返回累计值。默认 4s。
@@ -80,7 +80,7 @@ public enum TreeSizeEstimator {
     /// [BulkEnumerate.enumerate(fd:dirPath:_:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L443-L573)
     /// （getattrlistbulk + attrlist 直读 dirent + inode metadata，64KB 缓冲）+ 手动 DFS：
     ///   - 跳过 NSURL bridge / FileCache / LaunchServices isPackage 全部开销
-    ///   - 直接从 attrlist 拿 `logicalSize`，免去 per-entry resourceValues 调用
+    ///   - 直接从 attrlist 拿 `allocatedSize`，免去 per-entry resourceValues 调用
     ///   - 跨卷用 `entry.device`（已经从 attrlist 解析好）vs root `stat.st_dev`，
     ///     省去 `.volumeIdentifierKey` 的 NSURL bridge
     ///   - 隐藏文件按名字前缀 `.` 跳过（对齐原 `.skipsHiddenFiles` 行为）
@@ -125,8 +125,8 @@ public enum TreeSizeEstimator {
                 if entry.isDirectory {
                     stack.append("\(dirPath)/\(entry.name)")
                 } else {
-                    // logicalSize 对齐原 .fileSizeKey 含义
-                    total += entry.logicalSize
+                    // 与正式 BulkScanner、System Settings 储存空间使用同一 allocated 语义。
+                    total += entry.allocatedSize
                 }
                 return true
             }

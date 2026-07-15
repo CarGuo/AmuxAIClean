@@ -55,14 +55,14 @@ final class SwapProbeTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tmp) }
 
         // 制造 swapfile0 (1KB), swapfile1 (2KB), other.bin (10KB), .DS_Store (1B)
-        try writeFile(in: tmp, name: "swapfile0", bytes: 1024)
-        try writeFile(in: tmp, name: "swapfile1", bytes: 2048)
+        let swap0 = try writeFile(in: tmp, name: "swapfile0", bytes: 1024)
+        let swap1 = try writeFile(in: tmp, name: "swapfile1", bytes: 2048)
         try writeFile(in: tmp, name: "other.bin", bytes: 10_240)
         try writeFile(in: tmp, name: ".DS_Store", bytes: 1)
 
         let (total, count) = SwapProbe.sumSwapFiles(in: tmp.path)
         XCTAssertEqual(count, 2, "只应数出 swapfile0/1 两个")
-        XCTAssertEqual(total, 1024 + 2048, "swapfile 字节数累加")
+        XCTAssertEqual(total, allocatedSize(of: swap0) + allocatedSize(of: swap1), "swapfile 磁盘占用累加")
     }
 
     func test_sumSwapFiles_目录不存在_应回退为0() {
@@ -74,9 +74,9 @@ final class SwapProbeTests: XCTestCase {
     func test_sleepImageSize_存在文件_应返回字节数() throws {
         let tmp = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        try writeFile(in: tmp, name: "sleepimage", bytes: 4096)
+        let sleepImage = try writeFile(in: tmp, name: "sleepimage", bytes: 4096)
 
-        XCTAssertEqual(SwapProbe.sleepImageSize(in: tmp.path), 4096)
+        XCTAssertEqual(SwapProbe.sleepImageSize(in: tmp.path), allocatedSize(of: sleepImage))
     }
 
     func test_sleepImageSize_不存在_应返回0() {
@@ -89,14 +89,15 @@ final class SwapProbeTests: XCTestCase {
     func test_probe_自定义vmDirectory_swapfile与sleepimage应组合在totalDiskFootprint() throws {
         let tmp = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: tmp) }
-        try writeFile(in: tmp, name: "swapfile0", bytes: 4096)
-        try writeFile(in: tmp, name: "sleepimage", bytes: 8192)
+        let swap = try writeFile(in: tmp, name: "swapfile0", bytes: 4096)
+        let sleepImage = try writeFile(in: tmp, name: "sleepimage", bytes: 8192)
 
         let snap = SwapProbe.probe(vmDirectory: tmp.path)
-        XCTAssertEqual(snap.swapFileBytesOnDisk, 4096)
+        XCTAssertEqual(snap.swapFileBytesOnDisk, allocatedSize(of: swap))
         XCTAssertEqual(snap.swapFileCount, 1)
-        XCTAssertEqual(snap.sleepImageBytes, 8192)
-        XCTAssertEqual(snap.totalDiskFootprintBytes, 4096 + 8192)
+        XCTAssertEqual(snap.sleepImageBytes, allocatedSize(of: sleepImage))
+        XCTAssertEqual(snap.totalDiskFootprintBytes,
+                       allocatedSize(of: swap) + allocatedSize(of: sleepImage))
         XCTAssertTrue(snap.diskFootprintAvailable)
 
         // sysctl 在 CI/真机 都不抛错；数值非负即可
@@ -163,8 +164,17 @@ final class SwapProbeTests: XCTestCase {
         return url
     }
 
-    private func writeFile(in dir: URL, name: String, bytes: Int) throws {
+    @discardableResult
+    private func writeFile(in dir: URL, name: String, bytes: Int) throws -> URL {
         let data = Data(repeating: 0xAB, count: bytes)
-        try data.write(to: dir.appendingPathComponent(name))
+        let url = dir.appendingPathComponent(name)
+        try data.write(to: url)
+        return url
+    }
+
+    private func allocatedSize(of url: URL) -> Int64 {
+        var metadata = stat()
+        guard lstat(url.path, &metadata) == 0 else { return -1 }
+        return Int64(metadata.st_blocks) * 512
     }
 }

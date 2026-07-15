@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import LogKit
 import SafetyKit
@@ -534,9 +535,16 @@ public struct FSEntry: Hashable, Sendable {
 }
 
 public struct FSSnapshot: Hashable, Sendable {
+    /// on-disk allocated bytes；所有清理/占用主值统一消费这一字段。
     public let bytes: Int64
+    /// 文件逻辑长度之和；仅供 Finder 式详情或诊断展示。
+    public let logicalBytes: Int64
     public let fileCount: Int
-    public init(bytes: Int64, fileCount: Int) { self.bytes = bytes; self.fileCount = fileCount }
+    public init(bytes: Int64, logicalBytes: Int64? = nil, fileCount: Int) {
+        self.bytes = bytes
+        self.logicalBytes = logicalBytes ?? bytes
+        self.fileCount = fileCount
+    }
 }
 
 /// 真实磁盘实现。第一层用 `contentsOfDirectory`，size 用浅递归（深度无限，但目录数量
@@ -582,11 +590,20 @@ public struct DefaultFileManagerSnapshot: FileManagerSnapshotting {
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: path, isDirectory: &isDir) else { return .init(bytes: 0, fileCount: 0) }
         if !isDir.boolValue {
-            let bytes = (try? fm.attributesOfItem(atPath: path)[.size] as? NSNumber)?.int64Value ?? 0
-            return .init(bytes: bytes, fileCount: 1)
+            var metadata = stat()
+            guard lstat(path, &metadata) == 0 else { return .init(bytes: 0, fileCount: 0) }
+            return .init(
+                bytes: Int64(metadata.st_blocks) * 512,
+                logicalBytes: Int64(metadata.st_size),
+                fileCount: 1
+            )
         }
         var totalBytes: Int64 = 0
+        var totalLogicalBytes: Int64 = 0
         var totalFiles: Int = 0
+        // 每次 snapshot 都拥有独立 inode 会话。不能跨 App/候选路径共享，否则并发
+        // 扫描时“谁先看到 hardlink”会改变各行大小；未知 inode 由 InodeSet 保守计入。
+        let inodes = InodeSet()
         let startedAt = Date()
         if let en = fm.enumerator(atPath: path) {
             for case let rel as String in en {
@@ -599,16 +616,22 @@ public struct DefaultFileManagerSnapshot: FileManagerSnapshotting {
                     break
                 }
                 let full = "\(path)/\(rel)"
-                var sub: ObjCBool = false
-                guard fm.fileExists(atPath: full, isDirectory: &sub) else { continue }
-                if sub.boolValue { continue }
+                var metadata = stat()
+                guard lstat(full, &metadata) == 0,
+                      (metadata.st_mode & S_IFMT) == S_IFREG else { continue }
                 totalFiles += 1
-                if let size = (try? fm.attributesOfItem(atPath: full)[.size] as? NSNumber)?.int64Value {
-                    totalBytes += size
-                }
+                // 绝大多数普通文件只有一个目录项，不必把它们全部塞进去重表。
+                // 只有真实 hardlink（或 link count 异常未知）才需要保存 inode 身份。
+                let isFirstLink = metadata.st_nlink == 1 || inodes.insertIfFirstSeen(
+                    device: UInt64(bitPattern: Int64(metadata.st_dev)),
+                    inode: UInt64(metadata.st_ino)
+                )
+                guard isFirstLink else { continue }
+                totalBytes &+= Int64(metadata.st_blocks) * 512
+                totalLogicalBytes &+= Int64(metadata.st_size)
             }
         }
-        return .init(bytes: totalBytes, fileCount: totalFiles)
+        return .init(bytes: totalBytes, logicalBytes: totalLogicalBytes, fileCount: totalFiles)
     }
 
     /// 错误分类落点：EACCES 上报 + debug；ENOENT 仅 debug；其他 warning。

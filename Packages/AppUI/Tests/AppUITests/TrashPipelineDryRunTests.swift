@@ -55,23 +55,108 @@ final class TrashPipelineDryRunTests: XCTestCase {
     /// 这是单元级的拦截策略验证，不依赖 NSWorkspace。
     func test_partitionByForbid_系统路径被拦截() {
         let safety = SafetyEngine()
+        let currentUserTempRoot = URL(fileURLWithPath: NSTemporaryDirectory()).standardizedFileURL.path
+        let currentUserTempFile = currentUserTempRoot + "/normal-tempfile.bin"
+        let anotherUsersTempFile = "/var/folders/zz/not-current-user/T/normal-tempfile.bin"
         let paths = [
             "/System",
             "/System/Library/Frameworks",
             "/usr/bin/ls",
             "/etc/hosts",
             "/Applications/Safari.app",
-            "/var/folders/zz/abc/T/normal-tempfile.bin"
+            currentUserTempFile,
+            anotherUsersTempFile,
         ]
-        let r = TrashPipeline.partitionByForbid(paths: paths, safety: safety)
-        XCTAssertTrue(r.allowed.contains("/var/folders/zz/abc/T/normal-tempfile.bin"),
-                      "tempdir 应被允许通过")
+        let r = TrashPipeline.partitionByForbid(
+            paths: paths,
+            safety: safety,
+            externalDeletionRoots: [currentUserTempRoot]
+        )
+        XCTAssertTrue(r.allowed.contains(currentUserTempFile),
+                      "系统 API 返回的当前用户临时根子项应被允许通过")
+        XCTAssertEqual(
+            r.rejected.first(where: { $0.path == anotherUsersTempFile })?.reason,
+            .outsideUserDeletionScope,
+            "不能把 /var/folders 总根误当成所有用户都可删的能力范围"
+        )
         XCTAssertFalse(r.allowed.contains("/System"))
         XCTAssertFalse(r.allowed.contains("/usr/bin/ls"))
         XCTAssertFalse(r.allowed.contains("/etc/hosts"))
         XCTAssertFalse(r.allowed.contains("/Applications/Safari.app"))
-        XCTAssertEqual(r.rejected.count, 5)
-        XCTAssertTrue(r.rejected.allSatisfy { $0.reason == .hardForbidPrefix })
+        XCTAssertEqual(r.rejected.count, 6)
+        XCTAssertTrue(
+            r.rejected.filter { $0.path != anotherUsersTempFile }
+                .allSatisfy { $0.reason == .hardForbidPrefix }
+        )
+    }
+
+    func test_preflight_拒绝其它用户与外置卷路径() async {
+        let pipeline = TrashPipeline(home: "/Users/current", externalDeletionRoots: [])
+        let paths = [
+            "/Users/other/Library/Caches/example",
+            "/Volumes/External/cache",
+        ]
+
+        let result = await pipeline.preflight(paths: paths, accessDeniedPaths: [])
+
+        XCTAssertFalse(result.canProceed)
+        XCTAssertTrue(result.allowedPaths.isEmpty)
+        let reasons = Dictionary(uniqueKeysWithValues: result.rejections.map { ($0.path, $0.reason) })
+        XCTAssertEqual(reasons[paths[0]], SafetyRejection.outsideUserDeletionScope.rawValue)
+        XCTAssertEqual(reasons[paths[1]], SafetyRejection.outsideUserDeletionScope.rawValue)
+    }
+
+    func test_preflight_HOME内symlink逃逸到外部目录会拒绝() async throws {
+        let fixtureRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DeletionScope-\(UUID().uuidString)", isDirectory: true)
+        let home = fixtureRoot.appendingPathComponent("home", isDirectory: true)
+        let outside = fixtureRoot.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: fixtureRoot)) }
+
+        let target = outside.appendingPathComponent("cache")
+        try Data("cache".utf8).write(to: target)
+        let alias = home.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: outside)
+        let requested = alias.appendingPathComponent("cache").path
+
+        let pipeline = TrashPipeline(home: home.path, externalDeletionRoots: [])
+        let result = await pipeline.preflight(paths: [requested], accessDeniedPaths: [])
+
+        XCTAssertFalse(result.canProceed)
+        XCTAssertEqual(
+            result.rejections.first?.reason,
+            SafetyRejection.outsideUserDeletionScope.rawValue
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.path))
+    }
+
+    func test_partitionByForbid_HOME子目录挂载到不同设备时仍拒绝() {
+        let home = "/Users/current"
+        let sameVolume = home + "/Library/Caches/local-cache"
+        let mountedVolume = home + "/MountedExternal/cache"
+        let result = TrashPipeline.partitionByForbid(
+            paths: [sameVolume, mountedVolume],
+            safety: SafetyEngine(),
+            home: home,
+            externalDeletionRoots: [],
+            deviceIdentityProvider: { path in
+                switch path {
+                case home, sameVolume:
+                    return .device(100)
+                case mountedVolume:
+                    return .device(200)
+                default:
+                    return .missing
+                }
+            }
+        )
+
+        XCTAssertEqual(result.allowed, [sameVolume])
+        XCTAssertEqual(result.rejected.count, 1)
+        XCTAssertEqual(result.rejected.first?.path, mountedVolume)
+        XCTAssertEqual(result.rejected.first?.reason, .outsideUserDeletionScope)
     }
 
     /// M4 闸门：含 `..` 路径穿越尝试一律拦截（dotDotInPath）。
@@ -560,6 +645,236 @@ final class TrashPipelineDryRunTests: XCTestCase {
                        SafetyRejection.vendorPathRule.rawValue)
     }
 
+    func test_preflight_与执行共享批级原子拒绝合同() async {
+        let safe = "/Users/test/Library/Caches/rebuildable"
+        let denied = "/Users/test/Library/Caches/locked"
+        let pipeline = TrashPipeline(home: "/Users/test")
+
+        let result = await pipeline.preflight(
+            paths: [safe, denied],
+            accessDeniedPaths: [denied]
+        )
+
+        XCTAssertFalse(result.canProceed)
+        XCTAssertTrue(result.allowedPaths.isEmpty)
+        XCTAssertEqual(
+            Dictionary(uniqueKeysWithValues: result.rejections.map { ($0.path, $0.reason) }),
+            [
+                denied: SafetyRejection.accessDenied.rawValue,
+                safe: SafetyRejection.batchContainsForbidden.rawValue,
+            ]
+        )
+    }
+
+    func test_vendorOverride_混合安全项与vendor项可整批铸造且最终重验() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VendorOverrideMixed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let safe = home.appendingPathComponent("safe-cache")
+        let vendorProtected = home.appendingPathComponent("sdk-system-images")
+        try Data("safe".utf8).write(to: safe)
+        try Data("vendor".utf8).write(to: vendorProtected)
+        let vendor = VendorRule(
+            name: "SDK",
+            paths: [PathRule(path: vendorProtected.path, verdict: .forbid)]
+        )
+        let pipeline = TrashPipeline(vendors: [vendor], home: home.path)
+
+        let preflight = await pipeline.preflight(
+            paths: [safe.path, vendorProtected.path],
+            accessDeniedPaths: []
+        )
+        XCTAssertEqual(preflight.vendorOverrideEligiblePaths, [safe.path, vendorProtected.path])
+        let request = try XCTUnwrap(VendorPathOverrideRequest(preflight: preflight))
+
+        let result = await pipeline.moveToTrashVendorPathOverride(
+            request: request,
+            dryRun: true,
+            accessDeniedPaths: []
+        )
+        XCTAssertEqual(result.legacy.0, 2)
+        XCTAssertEqual(result.legacy.1, 0)
+        XCTAssertTrue(result.outcome?.safetyRejected.isEmpty ?? false)
+    }
+
+    func test_vendorOverride_重复路径按首次顺序去重() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VendorOverrideDedup-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let protected = home.appendingPathComponent("protected")
+        try Data("vendor".utf8).write(to: protected)
+        let pipeline = TrashPipeline(
+            vendors: [VendorRule(
+                name: "SDK",
+                paths: [PathRule(path: protected.path, verdict: .forbid)]
+            )],
+            home: home.path
+        )
+
+        let preflight = await pipeline.preflight(
+            paths: [protected.path, protected.path],
+            accessDeniedPaths: []
+        )
+        XCTAssertEqual(preflight.vendorOverrideEligiblePaths, [protected.path])
+        XCTAssertEqual(preflight.rejections.count, 1)
+    }
+
+    func test_vendorOverride_vendor规则覆盖受保护bundle时仍不可铸造() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VendorOverrideBundle-\(UUID().uuidString)", isDirectory: true)
+        let protected = home
+            .appendingPathComponent("Library/Caches/com.1password.7", isDirectory: true)
+        try FileManager.default.createDirectory(at: protected, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let pipeline = TrashPipeline(
+            vendors: [VendorRule(
+                name: "ConflictingVendorRule",
+                paths: [PathRule(path: protected.path, verdict: .forbid)]
+            )],
+            home: home.path
+        )
+
+        let preflight = await pipeline.preflight(
+            paths: [protected.path],
+            accessDeniedPaths: []
+        )
+        XCTAssertEqual(preflight.rejections.first?.reason, SafetyRejection.vendorPathRule.rawValue)
+        XCTAssertTrue(preflight.vendorOverrideEligiblePaths.isEmpty,
+                      "vendor 最终 reason 不能遮蔽 protected_bundles 的硬排除合同")
+        XCTAssertNil(VendorPathOverrideRequest(preflight: preflight))
+    }
+
+    func test_vendorOverride_bundleProtection资源缺失或损坏时failClosed() async {
+        let home = "/Users/vendor-override-bundle-evidence"
+        let vendorProtected = home + "/Library/Android/sdk/system-images"
+
+        for failure in [
+            BundleProtectionLoadFailure.resourceMissing,
+            .invalidResource,
+        ] {
+            let safety = SafetyEngine(
+                bundleProtectionMatcher: .unavailable(failure: failure)
+            )
+            let pipeline = TrashPipeline(
+                safety: safety,
+                vendors: [VendorRule(
+                    name: "Android SDK",
+                    paths: [PathRule(path: vendorProtected, verdict: .forbid)]
+                )],
+                home: home
+            )
+
+            let preflight = await pipeline.preflight(
+                paths: [vendorProtected],
+                accessDeniedPaths: []
+            )
+
+            XCTAssertEqual(
+                preflight.rejections.first?.reason,
+                SafetyRejection.vendorPathRule.rawValue,
+                "普通安全判定仍应保留 vendor 拒绝原因"
+            )
+            XCTAssertTrue(
+                preflight.vendorOverrideEligiblePaths.isEmpty,
+                "\(failure.rawValue): bundle 规则证据不完整时不得铸造 override"
+            )
+            XCTAssertNil(VendorPathOverrideRequest(preflight: preflight))
+        }
+    }
+
+    func test_vendorOverride_accessDenied混入时不可铸造() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VendorOverrideDenied-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let vendorProtected = home.appendingPathComponent("sdk")
+        let denied = home.appendingPathComponent("locked")
+        let pipeline = TrashPipeline(
+            vendors: [VendorRule(
+                name: "SDK",
+                paths: [PathRule(path: vendorProtected.path, verdict: .forbid)]
+            )],
+            home: home.path
+        )
+
+        let preflight = await pipeline.preflight(
+            paths: [vendorProtected.path, denied.path],
+            accessDeniedPaths: [denied.path]
+        )
+        XCTAssertTrue(preflight.vendorOverrideEligiblePaths.isEmpty)
+        XCTAssertNil(VendorPathOverrideRequest(preflight: preflight))
+
+        let initiallyEligible = await pipeline.preflight(
+            paths: [vendorProtected.path],
+            accessDeniedPaths: []
+        )
+        let request = try XCTUnwrap(VendorPathOverrideRequest(preflight: initiallyEligible))
+        let finalResult = await pipeline.moveToTrashVendorPathOverride(
+            request: request,
+            dryRun: true,
+            accessDeniedPaths: [vendorProtected.path]
+        )
+        XCTAssertEqual(finalResult.legacy.0, 0)
+        XCTAssertEqual(finalResult.outcome?.safetyRejected.first?.reason,
+                       SafetyRejection.accessDenied.rawValue,
+                       "确认后新增的 incomplete/access evidence 必须在最终预检重新拦下")
+    }
+
+    func test_vendorOverride_敏感凭证混入时不可铸造() async {
+        let home = "/Users/vendor-override-sensitive"
+        let vendorProtected = home + "/Library/Android/sdk/system-images"
+        let sensitiveCredential = home + "/.ssh/id_rsa"
+        let pipeline = TrashPipeline(
+            vendors: [VendorRule(
+                name: "Android SDK",
+                paths: [PathRule(path: vendorProtected, verdict: .forbid)]
+            )],
+            home: home
+        )
+
+        let preflight = await pipeline.preflight(
+            paths: [vendorProtected, sensitiveCredential],
+            accessDeniedPaths: []
+        )
+
+        XCTAssertTrue(preflight.vendorOverrideEligiblePaths.isEmpty)
+        XCTAssertNil(VendorPathOverrideRequest(preflight: preflight))
+        XCTAssertTrue(preflight.rejections.contains {
+            $0.path == sensitiveCredential
+                && $0.reason == SafetyRejection.sensitiveCredential.rawValue
+        })
+    }
+
+    func test_vendorOverride_用户白名单混入时不可铸造() async {
+        let home = "/Users/vendor-override-whitelist"
+        let vendorProtected = home + "/Library/Android/sdk/system-images"
+        let userProtected = home + "/Library/Caches/keep-me"
+        let whitelist = WhitelistStore(storageURL: nil)
+        await whitelist.add(path: userProtected, reason: "test-contract")
+        let pipeline = TrashPipeline(
+            vendors: [VendorRule(
+                name: "Android SDK",
+                paths: [PathRule(path: vendorProtected, verdict: .forbid)]
+            )],
+            home: home,
+            whitelistStore: whitelist
+        )
+
+        let preflight = await pipeline.preflight(
+            paths: [vendorProtected, userProtected],
+            accessDeniedPaths: []
+        )
+
+        XCTAssertTrue(preflight.vendorOverrideEligiblePaths.isEmpty)
+        XCTAssertNil(VendorPathOverrideRequest(preflight: preflight))
+        XCTAssertTrue(preflight.rejections.contains {
+            $0.path == userProtected
+                && $0.reason == SafetyRejection.userWhitelisted.rawValue
+        })
+    }
+
     // MARK: - v2026.06.17 (AUDIT A2)：DeletionPipeline 协议层 setAccessDeniedPaths
     //
     // 历史背景：v1.3.zzzz Phase 3-A 协议化时给 setAccessDeniedPaths 留了 protocol extension
@@ -574,6 +889,9 @@ final class TrashPipelineDryRunTests: XCTestCase {
     func test_DeletionPipeline显式no_op_stub不影响moveToTrash() async {
         // 用一个最小自定义实现：显式空实现 setAccessDeniedPaths。
         struct StubPipeline: DeletionPipeline {
+            func preflight(paths: [String], accessDeniedPaths: Set<String>) async -> DeletionPreflight {
+                DeletionPreflight(allowedPaths: paths, rejections: [])
+            }
             func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)]) {
                 return (paths.count, 0, nil, [])
             }

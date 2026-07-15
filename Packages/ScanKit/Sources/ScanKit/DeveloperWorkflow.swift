@@ -59,19 +59,24 @@ public struct DeveloperCard: Sendable, Hashable, Identifiable {
     /// - confirm：必须用户显式确认；
     /// - blocked：仅在某条件解除后才允许（如 Simulator 运行中的版本目录）。
     public let risk: Risk
+    /// 与该卡文件路径直接关联的 macOS App bundle ID 前缀。它只驱动删除前的
+    /// “应用仍在运行”提示，不参与 Safety 判定，也不能放宽任何删除规则。
+    public let runningBundleIDPrefix: String?
 
     public init(id: String,
                 title: String,
                 summary: String,
                 source: PathSource,
                 recipe: DeletionRecipe,
-                risk: Risk) {
+                risk: Risk,
+                runningBundleIDPrefix: String? = nil) {
         self.id = id
         self.title = title
         self.summary = summary
         self.source = source
         self.recipe = recipe
         self.risk = risk
+        self.runningBundleIDPrefix = runningBundleIDPrefix
     }
 
     /// 风险等级（与 SafetyEngine 三档对齐，但语义更偏 UI 展示）。
