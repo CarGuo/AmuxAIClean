@@ -47,8 +47,8 @@ final class I18nIntegrityTests: XCTestCase {
     }
 
     /// v2026.07.15：所有 AppUI / App target 界面承诺在同一进程内即时切换语言。
-    /// 若再次直接使用 Foundation 的进程级 `String(localized:)`，tooltip、AppKit bridge、
-    /// 格式串或异步结果会重新锁回启动语言；必须统一走显式 locale resolver。
+    /// 若再次直接使用 Foundation 的进程级字符串解析，tooltip、AppKit bridge、格式串或
+    /// 异步结果会重新锁回启动语言；必须统一走 AppLocalization 显式 locale resolver。
     ///
     /// 旧合同只列举少数“关键文件”，因此新增界面和服务层悄悄绕过检查，最终出现同一屏
     /// 中英文混杂。这里改为扫描完整产品源；注释中的事故说明不算运行期调用。
@@ -69,18 +69,34 @@ final class I18nIntegrityTests: XCTestCase {
             while let url = enumerator.nextObject() as? URL {
                 guard url.pathExtension == "swift",
                       !Self.shouldSkipSwiftSource(url: url) else { continue }
+                if url.lastPathComponent == "AppLocalization.swift" { continue }
                 let source = try String(contentsOf: url, encoding: .utf8)
                 let relativePath = url.path.replacingOccurrences(
                     of: root.path + "/",
                     with: ""
                 )
-                for (index, line) in source
-                    .split(separator: "\n", omittingEmptySubsequences: false)
-                    .enumerated() {
-                    let trimmed = line.trimmingCharacters(in: .whitespaces)
-                    guard !trimmed.hasPrefix("//"),
-                          line.contains("String(localized:") else { continue }
-                    violations.append("\(relativePath):\(index + 1)")
+                // v2026.07.16：旧测试逐行找固定文本，`String(` 与 `localized:` 换行后
+                // 就会假绿。先保留换行地抹掉注释，再对整文件做跨行语法形状扫描。
+                let codeOnly = Self.replacingCommentsWithWhitespace(in: source)
+                let nsCode = codeOnly as NSString
+                let forbiddenPatterns = [
+                    #"String\s*\(\s*localized\s*:"#,
+                    #"ByteCountFormatter\s*(?:\.|\()"#,
+                    #"formatted\s*\(\s*\.byteCount\s*\("#,
+                    #"formatted\s*\(\s*date\s*:"#,
+                ]
+                for pattern in forbiddenPatterns {
+                    let regex = try NSRegularExpression(pattern: pattern)
+                    for match in regex.matches(
+                        in: codeOnly,
+                        range: NSRange(location: 0, length: nsCode.length)
+                    ) {
+                        let prefix = nsCode.substring(to: match.range.location)
+                        let line = prefix.reduce(into: 1) { count, character in
+                            if character == "\n" { count += 1 }
+                        }
+                        violations.append("\(relativePath):\(line)")
+                    }
                 }
             }
         }
@@ -88,6 +104,25 @@ final class I18nIntegrityTests: XCTestCase {
             violations.isEmpty,
             "live-locale 界面重新引入了进程级字符串解析：\(violations.joined(separator: ", "))"
         )
+    }
+
+    private static func replacingCommentsWithWhitespace(in source: String) -> String {
+        var result = source
+        for pattern in [#"(?s)/\*.*?\*/"#, #"(?m)//.*$"#] {
+            let regex = try! NSRegularExpression(pattern: pattern)
+            let matches = regex.matches(
+                in: result,
+                range: NSRange(result.startIndex..., in: result)
+            )
+            for match in matches.reversed() {
+                guard let range = Range(match.range, in: result) else { continue }
+                let replacement = result[range].map { character -> Character in
+                    character == "\n" ? "\n" : " "
+                }
+                result.replaceSubrange(range, with: replacement)
+            }
+        }
+        return result
     }
 
     /// DevArtifactRules 的 displayName/subtitle 允许真实目录名，但凡声明为 `rule.*`
@@ -139,6 +174,39 @@ final class I18nIntegrityTests: XCTestCase {
         XCTAssertFalse(dependencySurface.contains("ScanCoordinator"))
         XCTAssertFalse(dependencySurface.contains("ScanSnapshot"))
         XCTAssertFalse(dependencySurface.contains("AppSettings"))
+    }
+
+    /// v2026.07.16 回归：主窗口关闭后，语言修改只会从 Settings scene 的 onChange 进入
+    /// App.applyLiveLocale。该边界必须继续调用双 coordinator fanout；否则菜单会变语言，
+    /// 但托盘/HUD 后续扫描仍会生成旧语言文案，且包内 fanout 单测无法发现接线被移除。
+    func test_settingsOnlyLiveLocaleChange_routesThroughAppCoordinatorFanout() throws {
+        let root = try repoRoot()
+        let appSource = try String(
+            contentsOf: root.appendingPathComponent("App/GSYCleanMacApp.swift"),
+            encoding: .utf8
+        )
+
+        guard let settingsSceneStart = appSource.range(of: "Settings {"),
+              let settingsSceneEnd = appSource.range(
+                of: "/// v1.3：HUD 开关 binding",
+                range: settingsSceneStart.lowerBound..<appSource.endIndex
+              ),
+              let applyStart = appSource.range(of: "private func applyLiveLocale()"),
+              let applyEnd = appSource.range(
+                of: "/// v1.3.x：根据当前主窗口可见性",
+                range: applyStart.lowerBound..<appSource.endIndex
+              ) else {
+            return XCTFail("找不到 Settings scene 或 applyLiveLocale App 级边界")
+        }
+
+        let settingsScene = String(appSource[settingsSceneStart.lowerBound..<settingsSceneEnd.lowerBound])
+        let applyBody = String(appSource[applyStart.lowerBound..<applyEnd.lowerBound])
+
+        XCTAssertTrue(settingsScene.contains(".onChange(of: settings.preferredLanguage, initial: true)"))
+        XCTAssertTrue(settingsScene.contains("applyLiveLocale()"))
+        XCTAssertTrue(applyBody.contains("ScanPresentationLocaleFanout.apply("))
+        XCTAssertTrue(applyBody.contains("professionalCoordinator: coordinator"))
+        XCTAssertTrue(applyBody.contains("smartCareCoordinator: smartCareSession.scanCoordinator"))
     }
 
     /// 找仓库根：从当前测试文件一路 ../ 找到 .git

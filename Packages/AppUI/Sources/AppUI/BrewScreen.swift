@@ -80,11 +80,15 @@ public struct BrewScreen: View {
     @State private var selectedTab: Tab = .installed
     @State private var isLoading: Bool = false
     @State private var isCleaning: Bool = false
-    @State private var lastError: String?
     @State private var activeSheet: ActiveSheet?
     @State private var cleanupDeletionHandoff = ToolDeletionHandoff<CleanupConfirmedDeletion>()
     @State private var cleanupPreflightTask: Task<Void, Never>?
     @State private var cleanupPreflightGate = ToolDeletionPreflightRequestGate<[String]>()
+    /// v2026.07.16: one stable capability lineage per cleanup result set. The session changes
+    /// only when Homebrew is scanned again; repeated confirmation clicks reuse the same token
+    /// and therefore cannot clear a durable pending-operation invalidation.
+    @State private var cleanupScanSessionID = UUID()
+    @State private var cleanupScanRevision: UInt64 = 0
     /// v2026.07.15：Brew 模型只保存命令事实；格式串与容量按当前 View locale 即时投影。
     @Environment(\.locale) private var locale
 
@@ -263,15 +267,8 @@ public struct BrewScreen: View {
 
     @ViewBuilder
     private var content: some View {
-        if let err = lastError {
-            Label {
-                Text(verbatim: err)
-            } icon: {
-                Image(systemName: "exclamationmark.triangle")
-            }
-                .font(.callout)
-                .foregroundStyle(.red)
-        }
+        // v2026.07.16：Brew 当前 API 只返回值模型；这里不保留通用 String 错误槽。
+        // 后续若增加失败态，必须先定义 typed presentation，不能重新直出 raw Error。
         switch selectedTab {
         case .installed: installedSection
         case .outdated:  outdatedSection
@@ -468,7 +465,6 @@ public struct BrewScreen: View {
     private func reloadInstalled() {
         guard let ctl = controller else { return }
         isLoading = true
-        lastError = nil
         Task.detached {
             let pkgs = ctl.listAll()
             await MainActor.run {
@@ -481,7 +477,6 @@ public struct BrewScreen: View {
     private func reloadOutdated() {
         guard let ctl = controller else { return }
         isLoading = true
-        lastError = nil
         Task.detached {
             // BrewRegistry 用户本地 brew api cache（brew update 一下就有）。
             // 完全离线场景下 registry 是空的，outdated == [] 是合理结果。
@@ -495,13 +490,17 @@ public struct BrewScreen: View {
     }
 
     private func reloadCleanup() {
+        let scanSessionID = UUID()
+        cleanupScanSessionID = scanSessionID
+        cleanupScanRevision &+= 1
+        let scanRevision = cleanupScanRevision
         guard let c = cleanup else {
             cleanupPlan = nil
             cleanupBytesByPath = [:]
+            isLoading = false
             return
         }
         isLoading = true
-        lastError = nil
         Task.detached {
             let plan = c.dryRun()
             let bytesByPath = Dictionary(uniqueKeysWithValues: plan.stalePaths.map { url in
@@ -519,6 +518,10 @@ public struct BrewScreen: View {
                 return (url.path, max(0, bytes))
             })
             await MainActor.run {
+                // v2026.07.16: an older detached scan must not overwrite a newer result set or
+                // lend its review identity to paths that the user never reviewed together.
+                guard cleanupScanSessionID == scanSessionID,
+                      cleanupScanRevision == scanRevision else { return }
                 cleanupPlan = plan
                 cleanupBytesByPath = bytesByPath
                 isLoading = false
@@ -534,9 +537,13 @@ public struct BrewScreen: View {
         let paths = plan.stalePaths.map(\.path)
         cleanupPreflightTask?.cancel()
         let token = cleanupPreflightGate.begin(context: paths)
+        let identity = DeletionSnapshotIdentity(
+            sessionID: cleanupScanSessionID,
+            revision: cleanupScanRevision,
+            categoryID: "brew-cleanup"
+        )
         isCleaning = true
         cleanupPreflightTask = Task { @MainActor in
-            let identity = DeletionSnapshotIdentity(sessionID: UUID(), revision: 0)
             let coordinator = DeletionInteractionCoordinator(pipeline: pipeline)
             let decision: DeletionInteractionPreparation
             do {
@@ -570,6 +577,8 @@ public struct BrewScreen: View {
             cleanupPreflightTask = nil
             isCleaning = false
             guard !Task.isCancelled,
+                  cleanupScanSessionID == identity.sessionID,
+                  cleanupScanRevision == identity.revision,
                   !cleanupDeletionHandoff.hasPending,
                   activeSheet == nil else { return }
             switch decision {
@@ -669,6 +678,6 @@ public struct BrewScreen: View {
     }
 
     private func byteString(_ bytes: Int64) -> String {
-        max(0, bytes).formatted(.byteCount(style: .file).locale(locale))
+        AppLocalization.byteCount(bytes, locale: locale)
     }
 }

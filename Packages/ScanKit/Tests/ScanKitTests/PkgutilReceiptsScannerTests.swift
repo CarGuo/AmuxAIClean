@@ -119,6 +119,88 @@ final class PkgutilReceiptsScannerTests: XCTestCase {
         XCTAssertEqual(receipts.map(\.pkgID), ["good"],
                        "packageInfo 返回 nil 时该条目应被跳过，不能崩")
     }
+
+    // MARK: - Default runner owned-child 边界（仅注入无副作用 fixture）
+
+    /// v2026.07.16：pkgutil 的 stderr 可能包含 warning，但 pkgID/路径协议只存在 stdout。
+    /// 两路必须分离，避免诊断文字被当成可删除路径。
+    func test_defaultRunner_只解析stdout且保留硬编码参数形状() {
+        let recorder = PkgutilArgumentsRecorder()
+        let runner = DefaultPkgutilRunner { args in
+            recorder.store(args)
+            return makeOwnedResult(
+                terminal: .exited(status: 0),
+                stdout: "com.example.one\ncom.example.two\n",
+                stderr: "pkgutil diagnostic must not be parsed\n"
+            )
+        }
+
+        XCTAssertEqual(
+            runner.listPackages(matchingRegex: "com\\.example.*"),
+            ["com.example.one", "com.example.two"]
+        )
+        XCTAssertEqual(recorder.value, ["--pkgs=com\\.example.*"])
+    }
+
+    /// 大 stdout/stderr 同时写入必须持续排空；fixture 只运行 `/bin/sh`，不调用真实
+    /// pkgutil、不读取 receipt 或用户目录。
+    func test_defaultRunner_大files输出不会pipe死锁且stderr不混入路径() {
+        let script = """
+        (i=0; while [ $i -lt 10000 ]; do printf 'Library/file-%05d\\n' "$i"; i=$((i+1)); done) &
+        (i=0; while [ $i -lt 10000 ]; do printf 'diagnostic-%05d\\n' "$i" >&2; i=$((i+1)); done) &
+        wait
+        """
+        let runner = DefaultPkgutilRunner { _ in
+            OwnedChildProcessExecutor.run(
+                path: "/bin/sh",
+                arguments: ["-c", script],
+                timeout: 5,
+                outputLimitPerStream: DefaultPkgutilRunner.outputLimitPerStream
+            )
+        }
+
+        let files = runner.files(pkgID: "fixture")
+        XCTAssertEqual(files?.count, 10_000)
+        XCTAssertEqual(files?.first, "Library/file-00000")
+        XCTAssertEqual(files?.last, "Library/file-09999")
+        XCTAssertFalse(files?.contains(where: { $0.hasPrefix("diagnostic-") }) ?? true)
+    }
+
+    func test_defaultRunner_launch非零timeout继续返回nil() {
+        let failures: [OwnedChildProcessExecutor.TerminalState] = [
+            .launchFailed(message: "fixture launch failure"),
+            .exited(status: 7 << 8),
+            .timedOut(sentSIGKILL: false, reapTransferred: false),
+            .notOwned,
+        ]
+        for terminal in failures {
+            let runner = DefaultPkgutilRunner { _ in
+                makeOwnedResult(terminal: terminal, stdout: "must-not-parse\n")
+            }
+            XCTAssertNil(runner.files(pkgID: "fixture"), "失败终态必须返回 nil: \(terminal)")
+        }
+    }
+
+    /// 截断的路径列表不是可信前缀；即使命令 exit 0 也必须 fail closed。
+    func test_defaultRunner_stdout截断或未到EOF返回nil() {
+        let truncated = DefaultPkgutilRunner { _ in
+            makeOwnedResult(
+                terminal: .exited(status: 0),
+                stdout: "partial/path\n",
+                stdoutWasTruncated: true
+            )
+        }
+        XCTAssertNil(truncated.files(pkgID: "fixture"))
+
+        let incomplete = DefaultPkgutilRunner { _ in
+            makeOwnedResult(
+                terminal: .exited(status: 0),
+                stdout: "partial/path\n",
+                readersReachedEOF: false
+            )
+        }
+        XCTAssertNil(incomplete.files(pkgID: "fixture"))
+    }
 }
 
 // MARK: - Fake runner
@@ -154,5 +236,41 @@ private final class FakePkgutilRunner: PkgutilRunning, @unchecked Sendable {
 
     func files(pkgID: String) -> [String]? {
         files[pkgID]
+    }
+}
+
+private func makeOwnedResult(
+    terminal: OwnedChildProcessExecutor.TerminalState,
+    stdout: String = "",
+    stderr: String = "",
+    stdoutWasTruncated: Bool = false,
+    stderrWasTruncated: Bool = false,
+    readersReachedEOF: Bool = true
+) -> OwnedChildProcessExecutor.ExecutionResult {
+    OwnedChildProcessExecutor.ExecutionResult(
+        terminal: terminal,
+        stdout: stdout,
+        stderr: stderr,
+        output: stdout + stderr,
+        stdoutWasTruncated: stdoutWasTruncated,
+        stderrWasTruncated: stderrWasTruncated,
+        readersReachedEOF: readersReachedEOF
+    )
+}
+
+private final class PkgutilArgumentsRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+
+    func store(_ arguments: [String]) {
+        lock.lock()
+        storage = arguments
+        lock.unlock()
+    }
+
+    var value: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
     }
 }

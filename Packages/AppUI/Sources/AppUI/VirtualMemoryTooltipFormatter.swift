@@ -16,11 +16,7 @@ public enum VirtualMemoryTooltipFormatter {
             locale: locale,
             formatBytes: formatBytes,
             localize: { key in
-                String(
-                    localized: String.LocalizationValue(key),
-                    bundle: .module,
-                    locale: locale
-                )
+                AppLocalization.string(key, locale: locale)
             }
         )
     }

@@ -99,6 +99,22 @@ enum DeletionSafetyReasonPresentation {
     /// protocol. Only an exact enum value may select a specific user-facing
     /// explanation; malformed and future values deliberately remain generic.
     static func localizationKey(for raw: String) -> String {
+        if let pendingReason = TrashPendingOperationRejection.Reason(rawValue: raw) {
+            switch pendingReason {
+            case .priorOperationPending:
+                return "op.result.reason.trash_pending_operation"
+            case .identityChanged:
+                return "op.result.reason.trash_pending_identity_changed"
+            case .targetMissing:
+                return "op.result.reason.trash_pending_target_missing"
+            case .ledgerUnavailable:
+                return "op.result.reason.trash_pending_ledger_unavailable"
+            case .submissionQueueExpired:
+                return "op.result.reason.trash_submission_queue_expired"
+            case .freshReviewRequired:
+                return "op.result.reason.trash_pending_fresh_review_required"
+            }
+        }
         if let targetReason = ScanIncompleteTargetRejectionReason(rawValue: raw) {
             switch targetReason {
             case .missingTypedEvidence, .invalidStrictRequest:

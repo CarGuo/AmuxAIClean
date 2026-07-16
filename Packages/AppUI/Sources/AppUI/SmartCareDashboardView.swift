@@ -1411,13 +1411,12 @@ private struct SmartCareScanAgainButton: View {
 private struct SmartCareActivityBadge: View {
     let activity: SmartCareScanActivity
     let reduceMotion: Bool
+    @Environment(\.locale) private var locale
 
     var body: some View {
         let titleKey = SmartCarePresentation.activityTitleKey(for: activity)
-        let localizedTitle = String(
-            localized: String.LocalizationValue(titleKey),
-            bundle: .module
-        )
+        // v2026.07.16：动画文本桥接层接收的是 String，不会自动继承 Text 的环境语言。
+        let localizedTitle = AppLocalization.string(titleKey, locale: locale)
         let activityTint = activity.stage.map(SmartCarePresentation.tint(for:))
             ?? SmartCarePresentation.tint(for: SafetyVerdict.safe)
         HStack(spacing: 9) {
@@ -2115,5 +2114,5 @@ private struct SmartCareRecoveryView: View {
 
 /// v2026.07.15：容量不是扫描事实的一部分，必须在每个消费 View 的当前 locale 下格式化。
 private func formattedSmartCareBytes(_ bytes: Int64, locale: Locale) -> String {
-    max(0, bytes).formatted(.byteCount(style: .file).locale(locale))
+    AppLocalization.byteCount(bytes, locale: locale)
 }

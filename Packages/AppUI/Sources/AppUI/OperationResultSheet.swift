@@ -66,6 +66,13 @@ public struct OperationResultPayload: Identifiable {
     public let movedPairs: [(originalPath: String, trashedPath: String)]
     /// NSWorkspace.recycle 真正失败的路径
     public let failedPaths: [String]
+    /// 已提交给系统，但 `NSWorkspace.recycle` 尚未回调最终状态的路径。
+    public let pendingPaths: [String]
+    /// 已进入同步 AppKit API，但连 API 是否接受请求都还无法确认的路径。
+    public let submissionUnknownPaths: [String]
+    /// 因前一批状态未知而主动停止、尚未提交给系统的路径。
+    public let notSubmittedPaths: [String]
+    public let notSubmittedReasons: [String: TrashPendingOperationRejection.Reason]
     /// 每条 recycle 失败路径对应的系统错误原因。
     public let failureReasons: [String: String]
     /// 被 SafetyEngine / accessDenied 拦的 (path, reason) 对
@@ -75,12 +82,20 @@ public struct OperationResultPayload: Identifiable {
     fileprivate init(id: UUID,
                      movedPairs: [(String, String)] = [],
                      failedPaths: [String] = [],
+                     pendingPaths: [String] = [],
+                     submissionUnknownPaths: [String] = [],
+                     notSubmittedPaths: [String] = [],
+                     notSubmittedReasons: [String: TrashPendingOperationRejection.Reason] = [:],
                      failureReasons: [String: String] = [:],
                      safetyRejected: [(String, String)] = [],
                      runningAppSkipped: [RunningAppSkippedItem] = []) {
         self.id = id
         self.movedPairs = movedPairs.map { (originalPath: $0.0, trashedPath: $0.1) }
         self.failedPaths = failedPaths
+        self.pendingPaths = pendingPaths
+        self.submissionUnknownPaths = submissionUnknownPaths
+        self.notSubmittedPaths = notSubmittedPaths
+        self.notSubmittedReasons = notSubmittedReasons
         self.failureReasons = failureReasons
         self.safetyRejected = safetyRejected.map { (path: $0.0, reason: $0.1) }
         self.runningAppSkipped = runningAppSkipped
@@ -95,6 +110,10 @@ public struct OperationResultPayload: Identifiable {
                 id: completed.receipt.id,
                 movedPairs: outcome.movedPairs,
                 failedPaths: outcome.failedPaths,
+                pendingPaths: outcome.pendingPaths,
+                submissionUnknownPaths: outcome.submissionUnknownPaths,
+                notSubmittedPaths: outcome.notSubmittedPaths,
+                notSubmittedReasons: outcome.notSubmittedReasons,
                 failureReasons: outcome.failureReasons,
                 safetyRejected: outcome.safetyRejected,
                 runningAppSkipped: runningAppSkipped
@@ -116,14 +135,18 @@ public struct OperationResultPayload: Identifiable {
         )
     }
 
-    /// 状态判定优先级：有失败 / 有拦截 > 部分；纯成功 → success；全失败/全拦截 → failed。
+    /// v2026.07.16：未知系统终态优先于成功/失败。pending 只能通过重新扫描收敛，
+    /// 不能被“部分成功”文案掩盖，也不能诱导用户立即重复提交。
     public var status: Status {
         let succeededCount = movedPairs.count
         let failedCount = failedPaths.count + safetyRejected.count
         return OperationResultStatusPolicy.status(
             succeededCount: succeededCount,
             failedCount: failedCount,
-            runningAppSkippedCount: runningAppSkipped.count
+            runningAppSkippedCount: runningAppSkipped.count,
+            pendingCount: pendingPaths.count,
+            submissionUnknownCount: submissionUnknownPaths.count,
+            notSubmittedCount: notSubmittedPaths.count
         )
     }
 
@@ -131,6 +154,7 @@ public struct OperationResultPayload: Identifiable {
         case success
         case partial
         case failed
+        case pending
     }
 }
 
@@ -138,8 +162,13 @@ enum OperationResultStatusPolicy {
     static func status(
         succeededCount: Int,
         failedCount: Int,
-        runningAppSkippedCount: Int
+        runningAppSkippedCount: Int,
+        pendingCount: Int = 0,
+        submissionUnknownCount: Int = 0,
+        notSubmittedCount: Int = 0
     ) -> OperationResultPayload.Status {
+        if pendingCount > 0 || submissionUnknownCount > 0 { return .pending }
+        if notSubmittedCount > 0 { return .partial }
         if failedCount == 0 {
             return runningAppSkippedCount == 0
                 ? .success
@@ -159,6 +188,7 @@ public struct OperationResultSheet: View {
     @State private var failedExpanded = true
     @State private var blockedExpanded = true
     @State private var runningAppSkippedExpanded = true
+    @State private var pendingExpanded = true
 
     init(completion: OperationResultCompletion,
          onDismiss: @escaping () -> Void) {
@@ -178,6 +208,11 @@ public struct OperationResultSheet: View {
                     }
                     if !payload.failedPaths.isEmpty {
                         failedSection
+                    }
+                    if !payload.pendingPaths.isEmpty
+                        || !payload.submissionUnknownPaths.isEmpty
+                        || !payload.notSubmittedPaths.isEmpty {
+                        pendingSection
                     }
                     if !payload.safetyRejected.isEmpty {
                         blockedSection
@@ -219,6 +254,7 @@ public struct OperationResultSheet: View {
         case .success: return "checkmark.circle.fill"
         case .partial: return "exclamationmark.triangle.fill"
         case .failed: return "xmark.octagon.fill"
+        case .pending: return "clock.arrow.circlepath"
         }
     }
 
@@ -227,6 +263,7 @@ public struct OperationResultSheet: View {
         case .success: return .green
         case .partial: return .orange
         case .failed: return .red
+        case .pending: return .blue
         }
     }
 
@@ -235,6 +272,7 @@ public struct OperationResultSheet: View {
         case .success: return "op.result.title.success"
         case .partial: return "op.result.title.partial"
         case .failed: return "op.result.title.failed"
+        case .pending: return "op.result.title.pending"
         }
     }
 
@@ -244,13 +282,19 @@ public struct OperationResultSheet: View {
             + payload.failedPaths.count
             + payload.safetyRejected.count
             + payload.runningAppSkipped.count
+            + payload.pendingPaths.count
+            + payload.submissionUnknownPaths.count
+            + payload.notSubmittedPaths.count
         return "\(succeeded) / \(total)"
     }
 
-    // MARK: - Stats Row（三栏统计）
+    // MARK: - Stats Row
 
     private var statsRow: some View {
-        HStack(spacing: 12) {
+        LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3),
+            spacing: 12
+        ) {
             statTile(
                 icon: "trash.fill",
                 color: .green,
@@ -275,6 +319,86 @@ public struct OperationResultSheet: View {
                 titleKey: "op.result.stat.running_skipped",
                 count: payload.runningAppSkipped.count
             )
+            statTile(
+                icon: "clock.arrow.circlepath",
+                color: .blue,
+                titleKey: "op.result.stat.pending",
+                count: payload.pendingPaths.count
+                    + payload.submissionUnknownPaths.count
+                    + payload.notSubmittedPaths.count
+            )
+        }
+    }
+
+    // MARK: - Pending Section
+
+    private var pendingSection: some View {
+        DisclosureGroup(isExpanded: $pendingExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(
+                    LocalizedStringKey(
+                        payload.pendingPaths.isEmpty && payload.submissionUnknownPaths.isEmpty
+                            ? "op.result.hint.not_submitted"
+                            : !payload.submissionUnknownPaths.isEmpty
+                                ? "op.result.hint.submission_unknown"
+                            : "op.result.hint.pending"
+                    ),
+                    bundle: .module
+                )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !payload.pendingPaths.isEmpty {
+                    Label {
+                        Text("op.result.pending.submitted", bundle: .module)
+                            .font(.caption.weight(.semibold))
+                    } icon: {
+                        Image(systemName: "clock.arrow.circlepath")
+                    }
+                    pathListView(paths: payload.pendingPaths, color: .blue)
+                }
+                if !payload.submissionUnknownPaths.isEmpty {
+                    Label {
+                        Text("op.result.pending.submission_unknown", bundle: .module)
+                            .font(.caption.weight(.semibold))
+                    } icon: {
+                        Image(systemName: "questionmark.circle")
+                    }
+                    pathListView(paths: payload.submissionUnknownPaths, color: .purple)
+                }
+                if !payload.notSubmittedPaths.isEmpty {
+                    Label {
+                        Text("op.result.pending.not_submitted", bundle: .module)
+                            .font(.caption.weight(.semibold))
+                    } icon: {
+                        Image(systemName: "pause.circle")
+                    }
+                    notSubmittedPathListView
+                }
+                Button {
+                    copyToPasteboard(
+                        (payload.pendingPaths
+                            + payload.submissionUnknownPaths
+                            + payload.notSubmittedPaths)
+                            .joined(separator: "\n")
+                    )
+                } label: {
+                    Label {
+                        Text("op.result.button.copy", bundle: .module)
+                    } icon: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                }
+                .controlSize(.small)
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "clock.arrow.circlepath").foregroundStyle(.blue)
+                Text("op.result.section.pending", bundle: .module).bold()
+                Text("(\(payload.pendingPaths.count + payload.submissionUnknownPaths.count + payload.notSubmittedPaths.count))")
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+            }
         }
     }
 
@@ -475,9 +599,11 @@ public struct OperationResultSheet: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     if let reason = payload.failureReasons[path], !reason.isEmpty {
+                        // v2026.07.16：NSError 原文仍留在结构化 outcome/log 供诊断；结果页
+                        // 只显示稳定的产品语义，避免 errno、枚举名或未本地化系统文本泄漏。
                         Text(reason == TrashFailureSummary.unknownRecycleReasonKey
                             ? AppLocalization.string(reason, locale: locale)
-                            : reason)
+                            : AppLocalization.string("op.result.reason.recycle_failed", locale: locale))
                             .font(.caption2)
                             .foregroundStyle(.red)
                             .textSelection(.enabled)
@@ -498,6 +624,33 @@ public struct OperationResultSheet: View {
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(Color.red.opacity(0.06))
+        )
+    }
+
+    private var notSubmittedPathListView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(payload.notSubmittedPaths.prefix(20), id: \.self) { path in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(path)
+                        .font(.system(.caption, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let reason = payload.notSubmittedReasons[path] {
+                        Text(DeletionSafetyReasonPresentation.text(
+                            for: reason.rawValue,
+                            locale: locale
+                        ))
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.gray.opacity(0.06))
         )
     }
 

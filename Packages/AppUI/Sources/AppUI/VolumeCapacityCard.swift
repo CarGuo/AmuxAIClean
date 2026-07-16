@@ -430,12 +430,9 @@ public struct VolumeCapacityCard: View {
         }
     }
 
-    /// 字节数格式化：用 ByteCountFormatter（与系统设置 / Finder 同口径）。
+    /// 字节数格式化：使用 Foundation file 口径，并显式跟随 App 内当前语言。
     private func formatBytes(_ n: Int64) -> String {
-        let f = ByteCountFormatter()
-        f.allowedUnits = [.useGB, .useMB, .useKB, .useBytes]
-        f.countStyle = .file  // 对齐 Finder 的 1 KB = 1000 B 口径
-        return f.string(fromByteCount: max(0, n))
+        AppLocalization.byteCount(n, locale: locale)
     }
 
     /// v1.3.x：swap / sleepimage 占盘信息行。

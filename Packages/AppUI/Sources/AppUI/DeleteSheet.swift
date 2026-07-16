@@ -287,6 +287,6 @@ public struct DeleteSheet: View {
     }
 
     private func formattedBytes(_ bytes: Int64) -> String {
-        max(0, bytes).formatted(.byteCount(style: .file).locale(locale))
+        AppLocalization.byteCount(bytes, locale: locale)
     }
 }

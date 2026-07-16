@@ -32,17 +32,19 @@ struct AIAdviceSheet: View {
         case failure(FailurePresentation)
     }
 
-    /// v2026.07.15：请求失败可能在 sheet 内停留很久；状态只保存错误种类与原始参数，
-    /// 不保存启动语言下翻译出的 String。文件、服务响应与底层错误原文保持 verbatim。
+    /// v2026.07.15：请求失败可能在 sheet 内停留很久；状态只保存错误种类与安全参数，
+    /// 不保存启动语言下翻译出的 String。
+    /// v2026.07.16：服务 body、transport 文本与未知 Error 不再进入用户界面；它们只经
+    /// 去敏后写技术日志，避免服务器实现细节、路径或未本地化系统文本泄漏。
     enum FailurePresentation: Equatable, Sendable {
         case notConfigured
         case invalidBaseURL
         case insecureBaseURL(scheme: String, host: String)
         case missingAPIKey
         case keychain(KeychainUserFacingError.Presentation)
-        case http(status: Int, body: String)
-        case transport(String)
-        case raw(String)
+        case http(status: Int)
+        case transport
+        case unexpected
 
         func localizedMessage(locale: Locale) -> String {
             switch self {
@@ -60,20 +62,16 @@ struct AIAdviceSheet: View {
                 return AppLocalization.string("ai.sheet.error.no_api_key", locale: locale)
             case .keychain(let presentation):
                 return presentation.localizedMessage(locale: locale)
-            case .http(let status, let body):
+            case .http(let status):
                 return AppLocalization.format(
-                    "ai.sheet.error.http.format",
+                    "ai.sheet.error.http.status %lld",
                     locale: locale,
-                    arguments: [Int64(status), body]
+                    arguments: [Int64(status)]
                 )
-            case .transport(let message):
-                return AppLocalization.format(
-                    "ai.sheet.error.transport.format",
-                    locale: locale,
-                    arguments: [message]
-                )
-            case .raw(let message):
-                return message
+            case .transport:
+                return AppLocalization.string("ai.sheet.error.transport", locale: locale)
+            case .unexpected:
+                return AppLocalization.string("ai.sheet.error.unexpected", locale: locale)
             }
         }
     }
@@ -266,7 +264,11 @@ struct AIAdviceSheet: View {
             state = .failure(.insecureBaseURL(scheme: scheme, host: host))
             return
         } catch {
-            state = .failure(.raw(String(describing: error)))
+            GSYLog.warning(
+                .operation,
+                "AI advice endpoint validation failed: \(PathRedactor().redact(String(describing: error)))"
+            )
+            state = .failure(.unexpected)
             return
         }
         let apiKey: String
@@ -310,14 +312,17 @@ struct AIAdviceSheet: View {
         do {
             let advice = try await client.ask(inquiry)
             state = .success(advice)
-        } catch let OpenAIChatClient.Error.http(status, body) {
+        } catch let OpenAIChatClient.Error.http(status, _) {
             // **v2026.06.22 (P0-4)**：body 已在 [OpenAIChatClient](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift)
-            // 抛出前经 PathRedactor.redact 去敏，这里只用作 UI 展示，**不再二次 log body**——
-            // 避免把脱敏前/后的内容都落到日志里增加泄漏面。OpenAIChatClient 已经 log 了
-            // status + body length，已足以排障。
-            state = .failure(.http(status: status, body: body.prefix(160).description))
+            // 抛出前虽经 PathRedactor.redact 去敏，服务 body 仍可能包含实现细节，不能
+            // 直接展示。OpenAIChatClient 已记录 status + body length，足以定位请求类别。
+            state = .failure(.http(status: status))
         } catch let OpenAIChatClient.Error.transport(msg) {
-            state = .failure(.transport(msg))
+            GSYLog.warning(
+                .operation,
+                "AI advice transport failed: \(PathRedactor().redact(msg))"
+            )
+            state = .failure(.transport)
         } catch OpenAIChatClient.Error.missingAPIKey {
             state = .failure(.missingAPIKey)
         } catch OpenAIChatClient.Error.invalidBaseURL {
@@ -325,7 +330,11 @@ struct AIAdviceSheet: View {
         } catch OpenAIChatClient.Error.insecureBaseURL(let scheme, let host) {
             state = .failure(.insecureBaseURL(scheme: scheme, host: host))
         } catch {
-            state = .failure(.raw(String(describing: error)))
+            GSYLog.warning(
+                .operation,
+                "AI advice request failed: \(PathRedactor().redact(String(describing: error)))"
+            )
+            state = .failure(.unexpected)
         }
     }
 

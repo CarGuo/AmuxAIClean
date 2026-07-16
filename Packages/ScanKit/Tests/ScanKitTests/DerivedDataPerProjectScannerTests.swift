@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 @testable import ScanKit
 
 /// DerivedDataPerProjectScanner 行为契约。
@@ -47,6 +48,25 @@ final class DerivedDataPerProjectScannerTests: XCTestCase {
         // 调整子目录 mtime，便于排序断言
         try fm.setAttributes([.modificationDate: mtime], ofItemAtPath: projectDir.path)
         return projectDir
+    }
+
+    private func makeHardLink(from source: URL, to destination: URL) throws {
+        let result = source.path.withCString { sourcePath in
+            destination.path.withCString { destinationPath in
+                link(sourcePath, destinationPath)
+            }
+        }
+        guard result == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+    }
+
+    private func allocatedBytes(of file: URL) throws -> Int64 {
+        let values = try file.resourceValues(forKeys: [
+            .totalFileAllocatedSizeKey,
+            .fileAllocatedSizeKey,
+        ])
+        return Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
     }
 
     // MARK: - Cases
@@ -152,5 +172,95 @@ final class DerivedDataPerProjectScannerTests: XCTestCase {
         let hits = await scanner.discover(home: home)
         XCTAssertEqual(hits.count, 1)
         XCTAssertEqual(hits.first?.projectName, "AlphaApp")
+    }
+
+    /// v2026.07.16: shared Xcode caches are not projects merely because they are first-level
+    /// directories. The aggregate snapshot still counts their bytes, while the project
+    /// projection is driven by structural identity rather than a product-name deny-list.
+    func test_snapshot_共享noindex缓存计入整根但不伪装成项目() throws {
+        let (home, derived) = try makeTempHome()
+        try FileManager.default.createDirectory(at: derived, withIntermediateDirectories: true)
+        let project = try makeProject(
+            named: "RealProject-abc123",
+            in: derived,
+            fileSize: 1_024,
+            mtime: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        for cacheName in ["CompilationCache.noindex", "SDKStatCaches.noindex"] {
+            let cache = derived.appendingPathComponent(cacheName, isDirectory: true)
+            try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+            try Data(repeating: 0xCD, count: 2_048).write(
+                to: cache.appendingPathComponent("payload.bin")
+            )
+        }
+
+        let snapshot = DerivedDataPerProjectScanner.detectSnapshot(home: home)
+
+        XCTAssertTrue(snapshot.rootExists)
+        XCTAssertEqual(snapshot.projects.hits.map(\.url), [project])
+        XCTAssertEqual(snapshot.projects.hits.map(\.projectName), ["RealProject"])
+        XCTAssertEqual(snapshot.sharedDirectoryCount, 2)
+        let projectBytes = try XCTUnwrap(snapshot.projects.hits.first?.sizeBytes)
+        let rootBytes = try XCTUnwrap(snapshot.rootSizeBytes)
+        XCTAssertGreaterThan(rootBytes, projectBytes, "整根容量必须包含共享缓存，但项目卡不能展示它们")
+    }
+
+    /// **v2026.07.16 root-cause regression:** one physical inode can have pathnames in a
+    /// shared Xcode cache and multiple project directories. The root counts it once, while
+    /// project attribution is deterministic and exclusive so project rows cannot sum to an
+    /// invented multiple of the physical allocation.
+    func test_snapshot_跨共享目录与两个工程的hardlink_整根只计一次且归属唯一() throws {
+        let (home, derived) = try makeTempHome()
+        let shared = derived.appendingPathComponent("CompilationCache.noindex", isDirectory: true)
+        let alpha = derived.appendingPathComponent("Alpha-aaa", isDirectory: true)
+        let zulu = derived.appendingPathComponent("Zulu-zzz", isDirectory: true)
+        for directory in [shared, alpha, zulu] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+
+        let source = shared.appendingPathComponent("physical.bin")
+        try Data(repeating: 0xA5, count: 4_096).write(to: source)
+        try makeHardLink(from: source, to: zulu.appendingPathComponent("zulu-link.bin"))
+        try makeHardLink(from: source, to: alpha.appendingPathComponent("alpha-link.bin"))
+        let expectedPhysicalBytes = try allocatedBytes(of: source)
+        XCTAssertGreaterThan(expectedPhysicalBytes, 0)
+
+        let snapshot = DerivedDataPerProjectScanner.detectSnapshot(home: home)
+        let alphaBytes = try XCTUnwrap(
+            snapshot.projects.hits.first { $0.projectName == "Alpha" }?.sizeBytes
+        )
+        let zuluBytes = try XCTUnwrap(
+            snapshot.projects.hits.first { $0.projectName == "Zulu" }?.sizeBytes
+        )
+
+        XCTAssertEqual(snapshot.rootSizeBytes, expectedPhysicalBytes,
+                       "三个 pathname 共享一个 inode，整根只能计一份物理分配")
+        XCTAssertEqual(alphaBytes, expectedPhysicalBytes,
+                       "跨工程 hardlink 固定归属字典序最小的工程目录")
+        XCTAssertEqual(zuluBytes, 0)
+        XCTAssertEqual(
+            snapshot.projects.hits.compactMap(\.sizeBytes).reduce(0, +),
+            expectedPhysicalBytes,
+            "project buckets 之间不得重复归属同一物理 inode"
+        )
+        XCTAssertEqual(snapshot.sharedDirectoryCount, 1)
+    }
+
+    func test_detect_infoPlist元数据可识别非hash工程目录() throws {
+        let (home, derived) = try makeTempHome()
+        let project = derived.appendingPathComponent("CustomLocation", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let metadata: [String: Any] = ["WorkspacePath": "/tmp/Custom.xcworkspace"]
+        let plist = try PropertyListSerialization.data(
+            fromPropertyList: metadata,
+            format: .binary,
+            options: 0
+        )
+        try plist.write(to: project.appendingPathComponent("info.plist"))
+
+        let hits = DerivedDataPerProjectScanner.detect(home: home, includeSizes: false)
+
+        XCTAssertEqual(hits.map(\.url), [project])
+        XCTAssertEqual(hits.map(\.projectName), ["CustomLocation"])
     }
 }

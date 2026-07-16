@@ -14,14 +14,13 @@ enum RunningAppNoticeFormatter {
     }
 
     static func text(
-        localizationKey: String.LocalizationValue,
+        localizationKey: String,
         appNames: [String],
         locale: Locale
     ) -> String {
         text(
-            localizedTemplate: String(
-                localized: localizationKey,
-                bundle: .module,
+            localizedTemplate: AppLocalization.string(
+                localizationKey,
                 locale: locale
             ),
             appNames: appNames,

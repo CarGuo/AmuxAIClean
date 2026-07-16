@@ -84,6 +84,52 @@ public struct SubprocessExecutor: Sendable {
         public var isSuccess: Bool { exitCode == 0 }
     }
 
+    /// 系统托管命令的可观察生命周期。
+    ///
+    /// **v2026.07.16 根因修复**：`waitUntilExit` 保护 CoreSimulator 事务不被 App 强杀，
+    /// 但旧 API 只能在命令退出后返回，UI 因而只能无限旋转。新的观察流把“已跨过
+    /// owned spawn 提交边界”“仍在运行”“观察窗口已耗尽”和“拿到真实退出码”分开。
+    /// `.stalled` 不是进程超时：执行器不会发送 TERM/KILL，后台仍等待系统事务自然结束。
+    public enum ManagedExecutionUpdate: Sendable, Hashable {
+        /// 紧邻 owned spawn 的最后安全复核拒绝了提交。该事件发生时没有 PID、没有
+        /// 系统事务，也不能生成 destructive-operation receipt。
+        case submissionRejected(ManagedSubmissionGuardDecision)
+        /// `processIdentifier == nil` 仅用于 dry-run 测试；生产提交一定有 PID。
+        case submitted(processIdentifier: Int32?)
+        case running(processIdentifier: Int32?)
+        case stalled(processIdentifier: Int32, elapsed: TimeInterval)
+        case confirmedTerminal(Result)
+    }
+
+    /// Managed operation 在真正跨过 owned spawn 前的最后安全判定。
+    ///
+    /// **v2026.07.16 根因修复**：调用方在 await 之前检查 Simulator 状态仍存在 TOCTOU
+    /// 窗口。闸门闭包由执行器在无任何 suspension point 的情况下、紧邻 owned spawn
+    /// 调用；失败时 fail closed，绝不启动子进程。
+    public enum ManagedSubmissionGuardDecision: Sendable, Hashable {
+        case allow
+        case blocked
+        case verificationUnavailable
+        /// 持久 tombstone 对应的资源仍在权威清单中，禁止跨重启重复提交。
+        case persistentPendingOperation
+        /// 权威清单已确认 tombstone 对应资源消失；本次不再提交，要求 UI 重扫对账。
+        case resourceAlreadyAbsent
+    }
+
+    public typealias ManagedSubmissionGuard = @Sendable () -> ManagedSubmissionGuardDecision
+
+    /// owned spawn 前的最后一个持久状态屏障。
+    ///
+    /// **v2026.07.16 根因修复**：安全闸只负责 reserve 还不够；调用方必须先把持久
+    /// tombstone 提升为 submitted，执行器才可启动进程。返回 false 时本方法发布
+    /// verificationUnavailable 且绝不启动子进程，避免 ledger 阶段与真实提交
+    /// 边界发生静默分叉。
+    public typealias ManagedSubmissionPersistenceBarrier = @Sendable () -> Bool
+
+    /// stdout/stderr 各自最多保留的诊断字节数。pipe reader 仍会持续读取并丢弃
+    /// 超出部分，避免 pipe 反压卡死子进程，同时避免异常命令无限吃掉 App 内存。
+    static let outputCaptureLimitPerStream = 64 * 1_024
+
     public let allowlist: [AllowEntry]
     public let terminalWaitPolicy: TerminalWaitPolicy
     public let dryRun: Bool
@@ -122,7 +168,113 @@ public struct SubprocessExecutor: Sendable {
     /// ——这两个 actor 串行使用 executor，外部不会并发等同一 actor，可接受。
     /// `.waitUntilExit` 必须在 nonisolated / detached 上下文调用，避免阻塞主线程或核心 actor。
     public func run(executable: String, args: [String]) throws -> Result {
+        try runInternal(
+            executable: executable,
+            args: args,
+            managedStallAfter: nil,
+            onManagedUpdate: nil,
+            preSubmissionGuard: nil,
+            preLaunchPersistenceBarrier: nil
+        )
+    }
+
+    /// 启动一个不会被观察窗口强杀的系统托管命令，并返回有序生命周期流。
+    ///
+    /// 调用方可以在 `.stalled` 后停止消费，把结果标记为 unknown 并稍后通过权威扫描
+    /// 对账；生产者会继续持有 owned child/Pipe，直到 CoreSimulator 自己返回真实终态。
+    /// 该 API 只允许 `.waitUntilExit`，查询命令仍使用同步 `run` 的有界 timeout。
+    public func observeManagedExecution(
+        executable: String,
+        args: [String],
+        stallAfter: TimeInterval,
+        preSubmissionGuard: ManagedSubmissionGuard? = nil,
+        preLaunchPersistenceBarrier: ManagedSubmissionPersistenceBarrier? = nil
+    ) throws -> AsyncStream<ManagedExecutionUpdate> {
+        precondition(stallAfter.isFinite && stallAfter > 0, "stallAfter must be finite and positive")
+        precondition(
+            dryRun || terminalWaitPolicy == .waitUntilExit,
+            "Managed execution observation requires waitUntilExit"
+        )
+        // 同步校验后才创建 detached producer，确保 allowlist/UUID 拒绝仍发生在提交前，
+        // 不会出现“流已返回但其实永远不会执行”的模糊状态。
+        try validate(executable: executable, args: args)
+
+        return AsyncStream(bufferingPolicy: .bufferingNewest(8)) { continuation in
+            Task.detached(priority: .userInitiated) { [self] in
+                do {
+                    let result = try runInternal(
+                        executable: executable,
+                        args: args,
+                        managedStallAfter: stallAfter,
+                        onManagedUpdate: { update in
+                            _ = continuation.yield(update)
+                        },
+                        preSubmissionGuard: preSubmissionGuard,
+                        preLaunchPersistenceBarrier: preLaunchPersistenceBarrier
+                    )
+                    // -4 是执行前安全闸的内部 sentinel；对应的类型化
+                    // `.submissionRejected` 已经发布，不能再伪装成子进程终态。
+                    if result.exitCode != -4 {
+                        _ = continuation.yield(.confirmedTerminal(result))
+                    }
+                } catch {
+                    // allowlist 已在创建流前同步复核；若不可变 executor 在这里仍拒绝，说明
+                    // 内部合同被破坏。流必须收敛，不能留给上层永久等待。
+                    _ = continuation.yield(.confirmedTerminal(Result(
+                        exitCode: -3,
+                        output: "managed execution rejected after validation: \(error)"
+                    )))
+                }
+                continuation.finish()
+            }
+        }
+    }
+
+    private func runInternal(
+        executable: String,
+        args: [String],
+        managedStallAfter: TimeInterval?,
+        onManagedUpdate: (@Sendable (ManagedExecutionUpdate) -> Void)?,
+        preSubmissionGuard: ManagedSubmissionGuard?,
+        preLaunchPersistenceBarrier: ManagedSubmissionPersistenceBarrier?
+    ) throws -> Result {
         // 1. allowlist 检查（必须先于任何执行动作）
+        try validate(executable: executable, args: args)
+
+        // 2. dryRun 闸门：不真起进程
+        if dryRun {
+            if let preSubmissionGuard {
+                let decision = preSubmissionGuard()
+                guard decision == .allow else {
+                    onManagedUpdate?(.submissionRejected(decision))
+                    return Result(exitCode: -4, output: "managed submission rejected by safety guard")
+                }
+            }
+            if let preLaunchPersistenceBarrier, !preLaunchPersistenceBarrier() {
+                onManagedUpdate?(.submissionRejected(.verificationUnavailable))
+                return Result(
+                    exitCode: -4,
+                    output: "managed submission rejected by persistence barrier"
+                )
+            }
+            let argsJoined = args.joined(separator: " ")
+            onManagedUpdate?(.submitted(processIdentifier: nil))
+            onManagedUpdate?(.running(processIdentifier: nil))
+            return Result(exitCode: 0, output: "<dryRun> \(executable) \(argsJoined)")
+        }
+
+        // 3. 实际执行（事件驱动 + timeout 闸门 + 双 Pipe 边读边累积）
+        return runProcess(
+            executable: executable,
+            args: args,
+            managedStallAfter: managedStallAfter,
+            onManagedUpdate: onManagedUpdate,
+            preSubmissionGuard: preSubmissionGuard,
+            preLaunchPersistenceBarrier: preLaunchPersistenceBarrier
+        )
+    }
+
+    private func validate(executable: String, args: [String]) throws {
         let isAllowed = allowlist.contains { entry in
             entry.executable == executable
             && args.count >= entry.argsPrefix.count
@@ -134,131 +286,92 @@ public struct SubprocessExecutor: Sendable {
         guard Self.argumentsPassDestructiveTailPolicy(executable: executable, args: args) else {
             throw SubprocessError.notAllowed(executable: executable, args: args)
         }
+    }
 
-        // 2. dryRun 闸门：不真起进程
-        if dryRun {
-            let argsJoined = args.joined(separator: " ")
-            return Result(exitCode: 0, output: "<dryRun> \(executable) \(argsJoined)")
-        }
-
-        // 3. 实际执行（事件驱动 + timeout 闸门 + 双 Pipe 边读边累积）
-        //
-        // **Review fix #1，2026-06-15**：原实现是
-        //   while task.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-        // 这是 busy-loop polling——平均 50ms 醒一次，CPU 浪费 + 唤醒抖动；且在 timeout
-        // 路径上 sleep 颗粒度直接决定"超时判定误差"。改为 DispatchSemaphore + Process
-        // 的 terminationHandler 事件驱动：子进程结束的瞬间 signal 唤醒等待，毫秒级精确；
-        // timeout 用 semaphore.wait(timeout:) 由 GCD 内核计时，零 CPU 占用。
-        //
-        // **Review fix #2，2026-06-22（P0-2）**：原实现把 stdout/stderr 复用同一根 Pipe，
-        // 且采用「wait-then-read」（task 结束后再 readDataToEndOfFile）。macOS Pipe
-        // 内核缓冲约 64KB——一旦子命令输出超过 64KB（如 simctl list 在巨多设备上、或
-        // runtime delete 失败时的长 stderr），子进程会在写入 pipe 时阻塞，永远不退出，
-        // 进而把 terminationHandler 卡死，触发 timeout 但仍残留泄漏的 fd。
-        // 同时 terminationHandler 闭包没显式断开 task.terminationHandler，存在 ARC
-        // 循环引用（Process → closure → semaphore 持有；Process 不被 release）。
-        // 修复：
-        //   - 拆 stdout / stderr 为独立 Pipe；
-        //   - 用 readabilityHandler 在后台线程边读边累积到 NSLock 保护的 Data 中；
-        //   - defer 关闭 read/write FD，timeout/正常路径统一回收；
-        //   - wait 完成后立即把 task.terminationHandler = nil 解循环。
-        let task = Process()
-        task.launchPath = executable
-        task.arguments = args
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        task.standardOutput = stdoutPipe
-        task.standardError = stderrPipe
-
-        // 后台累积缓冲（NSLock 保护，跨线程安全）
-        //
-        // **Sendable 闭包约束**：readabilityHandler 是 `@Sendable` 闭包，不能 capture
-        // 一个可变 `var Data`（会触发 `mutation of captured var in concurrently-executing
-        // code` 报错）。改用 final class box 让 capture 的是引用，引用内字段的写入
-        // 由 NSLock 保护——既满足 Sendable，又保留"边读边累积"语义。
-        final class ByteBuffer: @unchecked Sendable {
-            var data = Data()
-        }
-        let bufferLock = NSLock()
-        let stdoutBuffer = ByteBuffer()
-        let stderrBuffer = ByteBuffer()
-
-        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            guard !chunk.isEmpty else { return }
-            bufferLock.lock()
-            stdoutBuffer.data.append(chunk)
-            bufferLock.unlock()
-        }
-        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            guard !chunk.isEmpty else { return }
-            bufferLock.lock()
-            stderrBuffer.data.append(chunk)
-            bufferLock.unlock()
-        }
-
-        let semaphore = DispatchSemaphore(value: 0)
-        task.terminationHandler = { _ in
-            // 子进程退出由独立线程回调；signal 唤醒下面 wait()。
-            // 多次 signal 是安全的（即便 wait 已经返回，下次 wait 会立即通过）。
-            semaphore.signal()
-        }
-
-        // 统一回收 readabilityHandler / FD / 循环引用。
-        // 注意：terminate() 之后内核才会关闭子进程那侧的 write end，readabilityHandler
-        // 会再被回调一次 chunk.isEmpty 表示 EOF，然后我们置 nil 让闭包释放。
-        func cleanup() {
-            stdoutPipe.fileHandleForReading.readabilityHandler = nil
-            stderrPipe.fileHandleForReading.readabilityHandler = nil
-            try? stdoutPipe.fileHandleForReading.close()
-            try? stderrPipe.fileHandleForReading.close()
-            try? stdoutPipe.fileHandleForWriting.close()
-            try? stderrPipe.fileHandleForWriting.close()
-            task.terminationHandler = nil
-        }
-
-        do {
-            try task.run()
-        } catch {
-            cleanup()
-            return Result(exitCode: -1, output: "launch failed: \(error)")
-        }
-
-        // 查询使用有界 timeout；managed operation 等待系统命令自然收敛到终态。
-        // `.waitUntilExit` 不响应 Task cancellation：上层停止语义是“不再提交下一项”，
-        // 当前 CoreSimulator 事务必须继续等待真实 exit status。
-        switch terminalWaitPolicy {
-        case .waitUntilExit:
-            semaphore.wait()
-
-        case .timeout(let timeout):
-            let waitResult = semaphore.wait(timeout: .now() + timeout)
-            if waitResult == .timedOut {
-                task.terminate()
-                var killed = false
-                if semaphore.wait(timeout: .now() + 1.0) == .timedOut {
-                    kill(task.processIdentifier, SIGKILL)
-                    killed = true
-                    _ = semaphore.wait(timeout: .now() + 1.0)
-                }
-                bufferLock.lock()
-                let pre = String(data: stdoutBuffer.data + stderrBuffer.data, encoding: .utf8) ?? ""
-                bufferLock.unlock()
-                cleanup()
-                let suffix = killed ? " SIGKILL sent" : " terminated"
-                return Result(exitCode: -2, output: "timeout after \(timeout)s;\(suffix); partial=\(pre)")
+    private func runProcess(
+        executable: String,
+        args: [String],
+        managedStallAfter: TimeInterval?,
+        onManagedUpdate: (@Sendable (ManagedExecutionUpdate) -> Void)?,
+        preSubmissionGuard: ManagedSubmissionGuard?,
+        preLaunchPersistenceBarrier: ManagedSubmissionPersistenceBarrier?
+    ) -> Result {
+        // **v2026.07.16 相邻重验**：安全状态必须在执行器内部、紧邻 spawn 读取；
+        // 此处与下方 owned-child primitive 之间没有 await 或其它调用方代码，消除上层
+        // 复核后再切回 detached producer 的 TOCTOU 窗口。
+        if let preSubmissionGuard {
+            let decision = preSubmissionGuard()
+            guard decision == .allow else {
+                onManagedUpdate?(.submissionRejected(decision))
+                return Result(exitCode: -4, output: "managed submission rejected by safety guard")
             }
         }
 
-        // 正常退出：readabilityHandler 已把所有数据累积到 buffer 中。
-        bufferLock.lock()
-        let combined = stdoutBuffer.data + stderrBuffer.data
-        bufferLock.unlock()
-        let output = String(data: combined, encoding: .utf8) ?? ""
-        let status = task.terminationStatus
-        cleanup()
-        return Result(exitCode: status, output: output)
+        // **v2026.07.16 阶段屏障**：reserve 与 submitted 不再共用一个模糊 intent。
+        // 屏障与下方 owned spawn 同处无 suspension 的同步调用栈；若持久转换失败，
+        // 本次仍处于“明确未启动”，因此发布类型化拒绝而不是冒险提交。
+        if let preLaunchPersistenceBarrier, !preLaunchPersistenceBarrier() {
+            onManagedUpdate?(.submissionRejected(.verificationUnavailable))
+            return Result(exitCode: -4, output: "managed submission rejected by persistence barrier")
+        }
+
+        // SAFETY v2026.07.16：查询 timeout 改由唯一 `waitpid` owner 管理。Foundation
+        // 不再能先 reap 子进程；只有 `.running` 才会 TERM/KILL，`ECHILD` 后永不 signal，
+        // 从根因上关闭“缓存 PID 已复用却被超时清理误杀”的窗口。两个 pipe 从 launch
+        // 起持续排空并各自有界，正常、超时和 ownership-lost 都收敛到类型化终态。
+        let ownedResult: OwnedChildProcessExecutor.ExecutionResult
+        switch terminalWaitPolicy {
+        case .waitUntilExit:
+            ownedResult = OwnedChildProcessExecutor.run(
+                path: executable,
+                arguments: args,
+                timeout: nil,
+                stallAfter: managedStallAfter,
+                outputLimitPerStream: Self.outputCaptureLimitPerStream,
+                onSpawn: { pid in
+                    onManagedUpdate?(.submitted(processIdentifier: pid))
+                    onManagedUpdate?(.running(processIdentifier: pid))
+                },
+                onStall: { pid, elapsed in
+                    onManagedUpdate?(.stalled(processIdentifier: pid, elapsed: elapsed))
+                }
+            )
+        case .timeout(let timeout):
+            ownedResult = OwnedChildProcessExecutor.run(
+                path: executable,
+                arguments: args,
+                timeout: timeout,
+                outputLimitPerStream: Self.outputCaptureLimitPerStream
+            )
+        }
+
+        switch ownedResult.terminal {
+        case .exited(let rawStatus):
+            return Result(
+                exitCode: OwnedChildProcessExecutor.decodedExitStatus(rawStatus),
+                output: ownedResult.output
+            )
+        case .timedOut(let sentSIGKILL, _):
+            let timeout: TimeInterval
+            if case .timeout(let configured) = terminalWaitPolicy {
+                timeout = configured
+            } else {
+                // Managed operations never enter the destructive timeout state.
+                return Result(exitCode: -1, output: "child wait contract violated; \(ownedResult.output)")
+            }
+            let suffix = sentSIGKILL ? " SIGKILL sent" : " terminated"
+            return Result(
+                exitCode: -2,
+                output: "timeout after \(timeout)s;\(suffix); partial=\(ownedResult.output)"
+            )
+        case .notOwned:
+            return Result(
+                exitCode: -1,
+                output: "child ownership lost before terminal status; \(ownedResult.output)"
+            )
+        case .launchFailed(let message):
+            return Result(exitCode: -1, output: message)
+        }
     }
 
     static func argumentsPassDestructiveTailPolicy(executable: String, args: [String]) -> Bool {

@@ -258,12 +258,11 @@ CFRunLoopRun()
 
 - step6_verify 阶段会在 [Packages/AppUI/Tests/AppUITests/](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests) 下重写 step6_daemon_core 阶段已写过的 14 个 SPM 单测（`TrashListenerTests` / `HotspotBlacklistTests` / `HotspotRingBufferTests` / `URLSchemeDispatcherTests`）。理由：step6_target 落地时为遵循 Apple 官方 PBXNativeTarget Command Line Tool 路径，删掉了 [Tools/Sentinel/Package.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/Sentinel/Package.swift) SPM 子包（避免"同源 main.swift 被两处引用"风险）。这 14 个单测验证的纯逻辑（`isAppBundle` / `isBlacklisted` / RingBuffer 容量 / URL percent-encode）在 step6_verify 重写到 AppUI 测试包并通过 `@testable import` 访问 helper 内部符号 —— 实际执行因 helper 是独立 target，要么把这些纯函数提取到 [Packages/SafetyKit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit) 共享，要么直接复制到 AppUITests 文件里（无外部依赖、纯 Foundation 函数）。
 
-### 6.2 Regression case（新增）
+### 6.2 系统服务验收边界
 
-[Tests/Regression/cases/sentinel-register-unregister.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Tests/Regression/cases/sentinel-register-unregister.swift)：
-- 调 `SMAppService.daemon.register()` → 等 100ms → `launchctl list | grep com.amux.ai.Clean.sentinel` 应非空
-- 调 `unregister()` → 等 100ms → grep 应空
-- 超时 10s
+v2026.07.16 起不再保留快速启动/退出 App 的 regression case，也不允许自动化反复
+`register()` / `unregister()` 污染真实登录项状态。纯状态机与失败回滚进入 AppUI package tests；
+系统服务的真实授权流只在用户明确批准的一次持续 C4 中操作并观察。
 
 ### 6.3 真实场景验证（手动）
 
@@ -284,7 +283,7 @@ CFRunLoopRun()
 | step6_daemon_core | main.swift FSEvents listener + ringbuffer | [Tools/Sentinel/Sources/Sentinel/main.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/Sentinel/Sources/Sentinel/main.swift) | ✅ commit `2376078`（SPM 子包形态，14 单测全绿；step6_target 阶段 SPM 子包被删，仅留 main.swift） |
 | step6_target | Xcode 加 GSYCleanMacSentinel PBXNativeTarget Command Line Tool + Embed Helper Tools build phase + Sentinel.entitlements | .pbxproj diff (~140 行) + [Tools/Sentinel/Sentinel.entitlements](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/Sentinel/Sentinel.entitlements) | ✅ Step 6.2（本 commit） |
 | step6_main_app | SMAppService register + URL routing + AppSettings + 设置面板 + LaunchDaemon plist embed | App/ + Packages/AppUI/ diff | ⏳ 待做 |
-| step6_verify | 单测重写到 AppUITests + regression case + 手动 24h 烧测 | logs/ + last-run.json | ⏳ 待做 |
+| step6_verify | 单测集中到 AppUITests + 一次持续 C4 + 手动 24h 烧测 | package test 结果 + C4 记录 | ⏳ 待做 |
 
 ---
 
@@ -302,7 +301,7 @@ CFRunLoopRun()
 
 ## 9. 验收标准
 
-- [ ] regression.sh 21/21 全绿（含 sentinel-register-unregister）
+- [ ] Sentinel AppUITests 全绿；不得用反复启动/退出 App 的壳替代真实交互
 - [ ] AppUITests SentinelURLSchemeTests + SentinelTrashDetectionTests 全绿
 - [ ] 手动验证场景 1 + 场景 2 各 1 次成功
 - [ ] `top` 24h 后 RSS < 5 MB

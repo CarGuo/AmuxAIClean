@@ -38,9 +38,9 @@ DeletionPresentationRoute
 ExecutionAuthorization
     ↓ 执行前最终重验
 TrashPipeline → NSWorkspace.recycle
-    ↓ 真实调用被接受后
+    ↓ 真实调用已交给系统后
 DeletionSubmissionReceipt
-    ↓ 执行终态
+    ↓ 已确认终态 / 系统回调待确认
 TrashOutcome
     ↓
 OperationResultSheet(receipt, payload)
@@ -102,6 +102,49 @@ receipt 只能在以下事实同时成立后创建：
 - 非 dry-run 的真实删除请求已经交给 `TrashPipeline`，并实际进入 `NSWorkspace.recycle` 提交边界。
 
 receipt 至少绑定 intent revision、精确提交路径、提交时间和执行 request id。授权成功、开始加载动画、sheet 被 dismiss 或生成 Task 都不等于 receipt。
+
+**v2026.07.16 异步回调边界**：调用已交给 `NSWorkspace.recycle` 后仍可能长期不回调。
+应用等待窗口到期时必须返回独立 `pending` 状态，绝不能伪造成成功或失败，也不能对未知
+路径自动重试。当前已提交但未知的路径写入 `pendingPaths`；为避免扩大未知面而停止的后续
+路径写入 `notSubmittedPaths`。receipt 只记录真正跨过系统提交边界的路径，因此它可以是
+授权集合的严格子集，但 outcome 必须无重叠、无遗漏地证明已提交与未提交的完整分区。
+只有系统确认的 moved pair 才能写 Undo、更新统计或从 UI 移除。若迟到回调随后返回
+confirmed moved pair，执行层必须 exactly-once 补写 Undo 并广播模型失效；原结果页仍保留
+pending 语义，最终通过重新扫描收敛真实状态。
+
+### 3.5 v2026.07.16 持久化提交身份与重启恢复
+
+`NSWorkspace.recycle` 的同步返回、异步 callback 和 App 生命周期互不等价。为避免回调迟到、
+诊断重试、另一个窗口或重启后的请求对同一路径重复提交，真实 Trash 提交必须遵守以下合同：
+
+- 整批先以一个 parent `operationID` 原子 reserve；进程内 active registry 在所有普通、迟到
+  callback 和外层终态路径上恰好一次 unregister。新建 pipeline 的 reconcile 必须跳过该
+  active operation 的全部 sibling，不能因某个源路径已被系统移动或替换而清除它。
+- 每次进入系统 API 的 `recycleOnce` 使用唯一 `attemptID`。claim、API-return、callback、
+  retry-ready 和 finish 都必须同时匹配 parent operation 与当前 attempt；旧、重复或迟到事件
+  不得推进或清除新一轮 retry。
+- ledger 以独立稳定 lock inode 的 `flock` 串行化跨实例 read-modify-write，并为每条路径冻结
+  `lstat(device, inode, fileType)`；JSON 的 atomic replace 本身不等于跨进程互斥。
+- 每条持久记录必须冻结 owner 进程身份 `(pid, kernelStartSeconds, kernelStartMicroseconds)`；PID
+  单独不是所有权能力。owner liveness 必须在同一个 `flock` 事务内查询：同 PID 不同 kernel
+  start 视为旧 owner 已退出，查询失败视为 `unavailable` 并保持原记录、拒绝新提交。进程内
+  active registry 只封闭 register→persist 窗口，不能代替跨进程 owner 身份。
+- 一旦 `claim` 把 attempt 推进到 `submissionUnknown` / `callbackPending`，owner 退出、源路径缺失
+  或 inode 被替换都不能证明 AppKit 没有接受请求；该 generation 必须继续保持 pending，不得
+  自动转 fresh review 或重试。
+- 只有 inactive `reserved` 才能证明尚未 claim：旧审阅转为 `needsFreshReview`；
+  `callbackObserved` / `retryReady` 已有精确 attempt 的权威 callback，可按终态清除。仅 claim 前
+  发现的缺失/替换进入 durable fresh-review tombstone。原 authorization、相同
+  `DeletionSnapshotIdentity(sessionID, revision, categoryID)`、裸路径重试和缺少 identity 的
+  legacy/debug 请求都不能清除此 tombstone。
+- 只有用户看到新扫描结果后形成的 typed snapshot 可以在同一个 flock 事务中“清除 tombstone
+  + reserve 新 operation”：同 session 必须是更高 revision；新 session 表示新的扫描 lineage。
+  无旧 identity 的 legacy ledger 无法证明新旧关系，保持 fail-closed。
+
+生产 identity 来源必须是结果集而非点击事件：Main/Tree/Large Files 使用 ScanCoordinator
+session+store revision；Duplicate、Workflow 使用各自 scan evidence；Smart Care 在预览出现前
+冻结其 ScanCoordinator session 与 summary revision；Brew/Uninstall 每次重新扫描候选时生成
+稳定 session，并在该结果集内保持单调 revision。禁止在确认按钮中临时 `UUID()` 冒充新审阅。
 
 `OperationResultPayload` 必须引用 receipt；没有 receipt 的预检拒绝、用户取消、路径变化或 hard-forbid 只能进入对应 presentation route，不能进入结果页。
 
@@ -202,6 +245,8 @@ Normal 不自动获得 Professional 严格覆盖能力。若用户需要覆盖�
 
 - `trashed`；
 - `failed`（系统/IO 返回）；
+- `pending`（系统已接受请求但尚未返回最终结果；不得立即重试，稍后重新扫描确认）；
+- `not-submitted`（前一批仍待确认，因此后续路径主动停止提交）；
 - `blocked`（执行边界的最终重验在提交前发现新增风险；这类路径不得计入 receipt 的 submitted set）；
 - `skipped`（用户在授权中明确选择跳过，或执行层返回路径变化）。
 
@@ -231,7 +276,30 @@ Normal 不自动获得 Professional 严格覆盖能力。若用户需要覆盖�
 | Uninstall | App 残留文件 | 详细审阅 | 简洁/严格按 plan 路由 | App bundle/残留必须分别判定，不得扩大删除范围 | ☐ | ☐ | ☐ |
 | Workflow 文件删除 | 单项、批量 | 详细审阅 | 简洁/严格按 plan 路由 | 只允许 Trash 类型节点进入本合同 | ☐ | ☐ | ☐ |
 
-纯 command 操作和 Simulator destructive command 不是文件废纸篓操作，可使用独立的 typed destructive coordinator；必须明确标注操作类型，不得复用 `OperationResultSheet` 伪装成 Trash，也不得借此绕过文件删除安全边界。
+### 7.1 Simulator managed-resource 非 Trash 例外
+
+在 Workflow 清理候选中，唯一允许不走 `TrashPipeline` 的系统托管资源是封闭的
+`ManagedUninstallRecipe.simulatorDevice` 与 `.simulatorRuntime`。DerivedData、Archives、
+Device Support、Caches 等文件项仍必须移到废纸篓；泛化 command line 不能成为删除通道，
+CoreSimulator 挂载卷也不得作为文件候选。托管卸载必须明确显示“卸载、不可从废纸篓恢复”，
+使用独立 typed receipt/result，绝不能伪装成 Trash。
+
+复核必须冻结 `scanSessionID`、`scanRevision` 与完整 item identity；执行前再次拒绝 stale
+revision。所有进度事件携带同一 `sourceIntent`，迟到终态只有在当前投影仍属于同
+session/revision 且完整 item 相等时才能移除 row；ledger 对账可继续，但旧事件不得污染新扫描结果。
+
+单一 sheet 必须收敛 `preparing → review → executing → finished/blocked`；逐项区分
+`pending / validating / submitted / running / stalled / succeeded / failed / unknown / blocked /
+skipped`。`stalled/unknown` 不是失败：唯一 monitor 继续等待权威终态并允许迟到对账；状态未知
+时停止提交后续项，后续项保持未提交。停止按钮只阻止后续提交，绝不强杀正在执行的
+CoreSimulator 事务；receipt 只包含真实跨过提交屏障的项。
+
+持久 managed ledger 使用独立 lock inode + `flock`，并冻结 owner PID+kernel start、唯一
+attemptID 与产生本次复核的 scan session/revision。死亡 owner 的 stale `reserved` 只能由新
+session 或同 session 更高 revision 在同一事务中清除；点击时生成的 operation UUID 不构成新复核。
+`reserved → submitted → terminal` 的每次 mutation/clear 都必须匹配 kind、identifier、owner
+（适用时）和 expected attempt；owner 查询失败、submitted 未知、authority probe 失败均
+fail closed。旧 schema 使用稳定 migration identity，不能绕过上述单调复核边界。
 
 矩阵每一行至少验证：
 
@@ -254,6 +322,16 @@ Normal 不自动获得 Professional 严格覆盖能力。若用户需要覆盖�
 9. receipt 只在真实 `NSWorkspace.recycle` 提交边界创建；没有 receipt 时 `OperationResultSheet` 不可呈现。
 10. Release 所有入口不存在 dry-run UI；Professional 在 Debug/Release 都不存在 dry-run。
 11. presentation dismiss/route handoff 不丢失肯定操作，也不会重复提交或提前显示结果。
+12. pending ledger 覆盖跨实例原子 reserve、active-operation 全组跳过、唯一 attemptID 的 ABA
+    防护、restart stage 分类、缺失/替换后的 durable fresh-review tombstone，以及旧 token 拒绝、
+    新 revision 原子清除并 reserve；测试只能使用临时 fixture 与 scripted recycle closure。
+13. 所有生产 intent producer 必须证明 review identity 来自稳定扫描 session + revision；同一次
+    结果集的重复点击不得生成随机 session，旧异步扫描结果不得覆盖新 identity。
+14. Trash ledger 覆盖 live other-process owner、PID reuse、owner probe unavailable，以及 claimed
+    后路径缺失/替换仍不重提。
+15. Simulator ledger 覆盖跨实例 reserve、owner PID+kernel start、attempt CAS/ABA、
+    submitted/terminal/authority-absence 分类；Workflow 覆盖 stale revision 零提交、迟到终态不污染
+    同 hitID 的新 revision、unknown 不伪装失败，以及 managed 成功不触发无关 card loading。
 
 对应测试职责应落在：
 
@@ -261,6 +339,8 @@ Normal 不自动获得 Professional 严格覆盖能力。若用户需要覆盖�
 - `ProfessionalToolDeletionFlowTests.swift`：专业入口统一、简洁/严格确认；
 - `TrashActionCoordinatorTests.swift`：authorization、最终重验、恰好一次提交；
 - `TrashPipelineDryRunTests.swift`：诊断 dry-run 与生产真实提交隔离；
+- `TrashPendingOperationLedgerTests.swift`：跨实例 ledger、attempt generation、restart recovery 与
+  typed fresh-review capability；
 - `PerformDeleteIntegrationTests.swift`：presentation handoff、receipt 与结果页门禁；
 - 逐入口 integration/UI regression：验收矩阵中每一种触发方式。
 

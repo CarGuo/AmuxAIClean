@@ -40,7 +40,7 @@ enum ToolTrashConfirmationCopyResolver {
                     locale: locale,
                     arguments: [
                         count,
-                        max(0, totalBytes).formatted(.byteCount(style: .file).locale(locale))
+                        AppLocalization.byteCount(totalBytes, locale: locale)
                     ]
                 )
             )

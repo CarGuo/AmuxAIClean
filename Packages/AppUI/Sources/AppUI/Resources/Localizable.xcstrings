@@ -120,19 +120,19 @@
         }
       }
     },
-    "ai.sheet.error.http.format": {
+    "ai.sheet.error.http.status %lld": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Server returned HTTP %lld. %@"
+            "value": "The server returned HTTP %lld. Review the app log for technical details."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "服务端返回 HTTP %lld。%@"
+            "value": "服务端返回 HTTP %lld，可在应用日志中查看技术详情。"
           }
         }
       }
@@ -205,19 +205,36 @@
         }
       }
     },
-    "ai.sheet.error.transport.format": {
+    "ai.sheet.error.transport": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Network error: %@"
+            "value": "The network request failed. Check your connection and review the app log for technical details."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "网络错误：%@"
+            "value": "网络请求失败，请检查连接；技术详情可在应用日志中查看。"
+          }
+        }
+      }
+    },
+    "ai.sheet.error.unexpected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The request could not be completed. Review the app log for technical details."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请求未能完成，技术详情可在应用日志中查看。"
           }
         }
       }
@@ -4867,13 +4884,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@"
+            "value": "The file could not be written. Choose another destination and try again. Technical details were recorded in the app log."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@"
+            "value": "无法写入文件，请选择其他位置后重试。技术详情已记录到应用日志。"
           }
         }
       }
@@ -6476,6 +6493,27 @@
         }
       }
     },
+    "menu.native.toggle_full_screen": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Toggle Full Screen" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "切换全屏" } }
+      }
+    },
+    "menu.native.toggle_sidebar": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Toggle Sidebar" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "切换侧边栏" } }
+      }
+    },
+    "menu.native.toggle_toolbar": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Toggle Toolbar" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "切换工具栏" } }
+      }
+    },
     "menu.app.checkUpdates": {
       "extractionState": "manual",
       "localizations": {
@@ -6765,6 +6803,37 @@
         }
       }
     },
+    "op.result.hint.not_submitted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The operation reached its overall wait budget, so these later items were not handed to macOS. They remain unchanged and may be reviewed and submitted again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本次操作已达到整体等待预算，因此这些后续项目未交给 macOS。它们保持不变，可重新审阅后再次提交。" } }
+      }
+    },
+    "op.result.hint.pending": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Part of this request was handed to macOS, but its final result is not yet confirmed. Do not submit the pending items again now. Rescan later to confirm what changed; later items listed below were deliberately not submitted."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分请求已交给 macOS，但最终结果尚未确认。请勿立即重复提交待确认项；稍后重新扫描以确认实际变化。下列后续项已主动停止提交。"
+          }
+        }
+      }
+    },
+    "op.result.hint.submission_unknown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The system recycle API did not return before the wait budget ended, so macOS acceptance is unknown. Do not retry these items. Rescan later to reconcile their actual state." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "系统废纸篓 API 在等待预算内没有返回，因此无法确认 macOS 是否已接受请求。请勿重试这些项目，稍后重新扫描以对账实际状态。" } }
+      }
+    },
     "op.result.hint.running_skipped": {
       "extractionState": "manual",
       "localizations": {
@@ -6850,6 +6919,48 @@
         }
       }
     },
+    "op.result.reason.trash_pending_operation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "A previous Trash request for this exact item is still pending. Nothing was submitted again; rescan later to reconcile it." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这个项目之前的废纸篓请求仍待确认。本次没有重复提交，请稍后重新扫描对账。" } }
+      }
+    },
+    "op.result.reason.trash_pending_identity_changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The path now refers to a different filesystem item. The old authorization was rejected; rescan and review the new item." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "该路径现在指向不同的文件系统项目，旧授权已被拒绝；请重新扫描并审阅新项目。" } }
+      }
+    },
+    "op.result.reason.trash_pending_target_missing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The original item is no longer at this path. Nothing was submitted; rescan to refresh the result." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原项目已不在该路径，本次没有提交；请重新扫描刷新结果。" } }
+      }
+    },
+    "op.result.reason.trash_pending_ledger_unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The app could not safely verify the pending-operation ledger, so no Trash request was submitted." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "应用无法安全核验待确认操作记录，因此没有提交废纸篓请求。" } }
+      }
+    },
+    "op.result.reason.trash_pending_fresh_review_required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "An earlier unresolved Trash request no longer matches this path. Nothing was submitted; run a fresh scan and explicitly review the current item before trying again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "之前未决的废纸篓请求已不再匹配当前路径。本次没有提交；请完成一次全新扫描并明确审阅当前项目后再试。" } }
+      }
+    },
+    "op.result.reason.trash_submission_queue_expired": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The submission queue did not obtain the system-call claim before the wait budget ended. Nothing was submitted; review and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "提交队列在等待预算结束前未取得系统调用资格，本次没有提交；请重新审阅后再试。" } }
+      }
+    },
     "op.result.reason.target_evidence_missing": {
       "extractionState": "manual",
       "localizations": {
@@ -6915,6 +7026,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "超出当前用户的清理范围；外置卷和其他用户的文件仅允许扫描。"
+          }
+        }
+      }
+    },
+    "op.result.reason.recycle_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS could not move this item to Trash. It may be in use, locked, or unavailable. Technical details were recorded in the app log."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 无法将此项目移到废纸篓；项目可能正在使用、已锁定或当前不可用。技术详情已记录到应用日志。"
           }
         }
       }
@@ -7021,6 +7149,27 @@
         }
       }
     },
+    "op.result.pending.not_submitted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Not submitted after the pending operation" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "因前一项待确认而未提交" } }
+      }
+    },
+    "op.result.pending.submitted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Submitted; waiting for macOS to confirm" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已提交，等待 macOS 确认" } }
+      }
+    },
+    "op.result.pending.submission_unknown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "System API entered; acceptance unknown" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已进入系统 API，是否接受未知" } }
+      }
+    },
     "op.result.section.blocked": {
       "extractionState": "manual",
       "localizations": {
@@ -7053,6 +7202,13 @@
             "value": "无法移到废纸篓的项"
           }
         }
+      }
+    },
+    "op.result.section.pending": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Status needs confirmation" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "状态需要重新确认" } }
       }
     },
     "op.result.section.running_skipped": {
@@ -7121,6 +7277,13 @@
             "value": "已移入废纸篓"
           }
         }
+      }
+    },
+    "op.result.stat.pending": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Needs Confirmation" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "待确认" } }
       }
     },
     "op.result.stat.running_skipped": {
@@ -7233,6 +7396,13 @@
             "value": "部分清理完成"
           }
         }
+      }
+    },
+    "op.result.title.pending": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Waiting for macOS" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "等待 macOS 确认" } }
       }
     },
     "op.result.title.success": {
@@ -7830,6 +8000,74 @@
         }
       }
     },
+    "port_cleaner.kill.already_exited": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The original process had already exited"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原进程已退出"
+          }
+        }
+      }
+    },
+    "port_cleaner.kill.became_protected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The process is now protected and was not changed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "进程现已受保护，未执行操作"
+          }
+        }
+      }
+    },
+    "port_cleaner.kill.identity_changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The PID now belongs to a different process; no signal was sent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PID 已属于其他进程，未发送信号"
+          }
+        }
+      }
+    },
+    "port_cleaner.kill.identity_unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to verify the process identity; no signal was sent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法核验进程身份，未发送信号"
+          }
+        }
+      }
+    },
     "port_cleaner.kill.invalid_pid": {
       "extractionState": "manual",
       "localizations": {
@@ -7843,6 +8081,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "无效 PID"
+          }
+        }
+      }
+    },
+    "port_cleaner.kill.not_submitted_limit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not submitted because this batch reached the 128-process safety limit"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本轮达到 128 个进程的安全上限，未提交此项"
           }
         }
       }
@@ -7870,13 +8125,30 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Quit request sent to %d process(es), %d failed."
+            "value": "%d confirmed stopped; quit request sent but not yet confirmed for %d; %d failed."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已请求结束 %d 个进程，失败 %d 个。"
+            "value": "已确认停止 %d 个；已发送结束请求但尚未确认退出 %d 个；失败 %d 个。"
+          }
+        }
+      }
+    },
+    "port_cleaner.kill.result_with_not_submitted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d confirmed stopped; quit request sent but not yet confirmed for %d; %d not submitted; %d failed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已确认停止 %d 个；已发送结束请求但尚未确认退出 %d 个；未提交 %d 个；失败 %d 个。"
           }
         }
       }
@@ -7887,13 +8159,149 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Quit request sent"
+            "value": "Quit request sent; exit not yet confirmed"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已结束"
+            "value": "已发送结束请求，尚未确认退出"
+          }
+        }
+      }
+    },
+    "port_cleaner.kill.system_failure": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The system rejected the quit request. Review the app log for technical details."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统拒绝了结束请求，可在应用日志中查看技术详情。"
+          }
+        }
+      }
+    },
+    "port_cleaner.kill.terminated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Process exit confirmed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已确认进程退出"
+          }
+        }
+      }
+    },
+    "port_cleaner.scan.error.command_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The system port scan command failed. Your previous results were kept."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统端口扫描命令执行失败，已保留上一次结果。"
+          }
+        }
+      }
+    },
+    "port_cleaner.scan.error.launch_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The system port scan tool could not be started. Your previous results were kept."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法启动系统端口扫描工具，已保留上一次结果。"
+          }
+        }
+      }
+    },
+    "port_cleaner.scan.error.output_truncated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The port snapshot was incomplete, so it was not applied. Your previous results were kept."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "端口快照不完整，本次结果未应用，已保留上一次结果。"
+          }
+        }
+      }
+    },
+    "port_cleaner.scan.error.timed_out": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The system port scan timed out. Your previous results were kept."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统端口扫描超时，已保留上一次结果。"
+          }
+        }
+      }
+    },
+    "port_cleaner.scan.error.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Port Scan Unavailable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂时无法扫描端口"
+          }
+        }
+      }
+    },
+    "port_cleaner.scan.retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试"
           }
         }
       }
@@ -9207,19 +9615,19 @@
         }
       }
     },
-    "sentinel.alert.register_failed.body %@ %@": {
+    "sentinel.alert.register_failed.body %@": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Failed to register the helper daemon.\n\nError: %@\n%@"
+            "value": "The background helper could not be enabled, so the switch was restored. Review Login Items in System Settings, then try again. Technical details: %@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "无法注册守护任务。\n\n错误：%@\n%@"
+            "value": "无法启用后台守护任务，开关已恢复。请检查「系统设置」中的登录项后重试。技术详情：%@"
           }
         }
       }
@@ -9241,6 +9649,13 @@
         }
       }
     },
+    "sentinel.alert.register_failed.startup.body %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The saved request to enable the background sentinel was kept, but the helper is not running. Review Login Items in System Settings, then try again. Technical details: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已保留开启后台守护的期望，但守护任务当前未运行。请检查「系统设置」中的登录项后重试。技术详情：%@" } }
+      }
+    },
     "sentinel.alert.register_failed.title": {
       "extractionState": "manual",
       "localizations": {
@@ -9256,6 +9671,48 @@
             "value": "注册失败"
           }
         }
+      }
+    },
+    "sentinel.alert.status_unavailable.body %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "macOS could not verify the background sentinel's actual state, so the switch was restored. Review Login Items in System Settings and try again. Technical details: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "macOS 无法验证后台守护的实际状态，因此开关已恢复。请检查「系统设置」中的登录项后重试。技术详情：%@" } }
+      }
+    },
+    "sentinel.alert.status_unavailable.startup.body %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The saved background sentinel preference was kept, but macOS could not verify its actual state. The settings page will show the requested and actual states separately. Technical details: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已保留后台守护的期望设置，但 macOS 无法验证实际状态；设置页会分别显示期望与实际状态。技术详情：%@" } }
+      }
+    },
+    "sentinel.alert.status_unavailable.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Sentinel Status Not Verified" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "守护状态尚未验证" } }
+      }
+    },
+    "sentinel.alert.unregister_failed.body %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The background sentinel could not be disabled, so the switch was restored. Review Login Items in System Settings, then try again. Technical details: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法关闭后台守护任务，开关已恢复。请检查「系统设置」中的登录项后重试。技术详情：%@" } }
+      }
+    },
+    "sentinel.alert.unregister_failed.startup.body %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The saved request to disable the background sentinel was kept, but macOS could not confirm that it stopped. It may still be registered or running. Review Login Items in System Settings, then try again. Technical details: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已保留关闭后台守护的期望，但 macOS 无法确认它已经停止，守护任务仍可能处于已注册或运行状态。请检查「系统设置」中的登录项后重试。技术详情：%@" } }
+      }
+    },
+    "sentinel.alert.unregister_failed.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Disable Failed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "关闭失败" } }
       }
     },
     "sentinel.alert.scan_invitation.action_dismiss": {
@@ -9341,6 +9798,34 @@
             "value": "运行中"
           }
         }
+      }
+    },
+    "sentinel.status.desired_off_still_registered": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Requested off · Still registered" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "期望关闭 · 系统仍显示已注册" } }
+      }
+    },
+    "sentinel.status.desired_off_unverified": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Requested off · Actual status not verified" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "期望关闭 · 实际状态尚未验证" } }
+      }
+    },
+    "sentinel.status.desired_on_not_running": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Requested on · Not running" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "期望开启 · 当前未运行" } }
+      }
+    },
+    "sentinel.status.desired_on_unverified": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Requested on · Actual status not verified" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "期望开启 · 实际状态尚未验证" } }
       }
     },
     "sentinel.status.not_found": {
@@ -9477,6 +9962,13 @@
             "value": "后台守护"
           }
         }
+      }
+    },
+    "settings.advanced.sentinel.status": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Actual status" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "实际状态" } }
       }
     },
     "settings.advanced.sentinel.title": {
@@ -10244,19 +10736,19 @@
         }
       }
     },
-    "custom_path.import.failed %@": {
+    "custom_path.import.failed": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The folder could not be added: %@"
+            "value": "The folder could not be added. Check its availability and permissions, then try again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "无法添加文件夹：%@"
+            "value": "无法添加文件夹，请检查路径是否可用以及访问权限后重试。"
           }
         }
       }
@@ -10703,19 +11195,19 @@
         }
       }
     },
-    "settings.storage.log.clear.failed %@": {
+    "settings.storage.log.clear.failed": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Clear failed: %@"
+            "value": "The logs could not be cleared. Technical details remain in the current log file."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "清理失败：%@"
+            "value": "无法清理日志，技术详情已保留在当前日志文件中。"
           }
         }
       }
@@ -10771,19 +11263,19 @@
         }
       }
     },
-    "settings.storage.log.export.failed %@": {
+    "settings.storage.log.export.failed": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Export failed: %@"
+            "value": "The logs could not be exported. Choose another destination and try again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "导出失败：%@"
+            "value": "无法导出日志，请选择其他位置后重试。"
           }
         }
       }
@@ -12046,6 +12538,91 @@
         }
       }
     },
+    "stash.ai.verdict.error.configuration": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI configuration changed or is incomplete. Review Settings and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI 配置已变化或不完整，请检查设置后重试。"
+          }
+        }
+      }
+    },
+    "stash.ai.verdict.error.decoding": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The AI response could not be understood. Review the app log and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法解析 AI 返回内容，可查看应用日志后重试。"
+          }
+        }
+      }
+    },
+    "stash.ai.verdict.error.http %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The server returned HTTP %lld. Review the app log and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务端返回 HTTP %lld，可查看应用日志后重试。"
+          }
+        }
+      }
+    },
+    "stash.ai.verdict.error.transport": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The network request failed. Check your connection and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "网络请求失败，请检查连接后重试。"
+          }
+        }
+      }
+    },
+    "stash.ai.verdict.error.unexpected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI review failed unexpectedly. Review the app log and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI 判断意外失败，可查看应用日志后重试。"
+          }
+        }
+      }
+    },
     "stash.ai.verdict.forbid": {
       "extractionState": "manual",
       "localizations": {
@@ -12792,6 +13369,37 @@
             "value": "recycle-failed：%1$lld 项无法移到废纸篓%2$@%3$@"
           }
         }
+      }
+    },
+    "trash.err.recycle_budget_expired %lld %lld %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The overall wait budget was reached. %1$lld later items were not submitted; %2$lld were confirmed moved to Trash and %3$lld failed." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已达到本次操作的整体等待预算。后续 %1$lld 项未提交；已确认 %2$lld 项移到废纸篓，%3$lld 项失败。" } }
+      }
+    },
+    "trash.err.recycle_pending %lld %lld %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The final result is not yet confirmed for %1$lld items handed to macOS; %2$lld later items were not submitted. %3$lld items were confirmed moved to Trash. Do not retry the pending items immediately; rescan to confirm their status."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已交给 macOS 的 %1$lld 项最终结果尚未确认；后续 %2$lld 项未提交。已确认 %3$lld 项移到废纸篓。请勿立即重试待确认项，重新扫描后再确认状态。"
+          }
+        }
+      }
+    },
+    "trash.err.recycle_submission_unknown %lld %lld %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The system recycle API did not return for %1$lld items, so acceptance is unknown; %2$lld later items were not submitted. %3$lld items were confirmed moved to Trash. Do not retry the unknown items; rescan later." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%1$lld 项的系统废纸篓 API 未返回，是否接受未知；后续 %2$lld 项未提交。已确认 %3$lld 项移到废纸篓。请勿重试未知项，稍后重新扫描。" } }
       }
     },
     "trash.err.safety_blocked_only %lld %@": {
@@ -13644,36 +14252,36 @@
         }
       }
     },
-    "undo.err.create_parent_failed %@": {
+    "undo.err.create_parent_failed": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Could not create the destination folder: %@"
+            "value": "Could not create the destination folder. Check permissions and available space, then try again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "无法创建目标文件夹：%@"
+            "value": "无法创建目标文件夹，请检查权限与可用空间后重试。"
           }
         }
       }
     },
-    "undo.err.move_item_failed %@": {
+    "undo.err.move_item_failed": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "moveItem failed: %@"
+            "value": "The item could not be restored. It may be in use or the destination may be unavailable."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "moveItem 失败：%@"
+            "value": "无法恢复项目；项目可能正在使用，或目标位置当前不可用。"
           }
         }
       }
@@ -14976,6 +15584,13 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描失败" } }
       }
     },
+    "workflow.card.scan_cancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scan stopped" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描已停止" } }
+      }
+    },
     "workflow.card.size_unknown": {
       "extractionState": "manual",
       "localizations": {
@@ -15096,6 +15711,13 @@
         }
       }
     },
+    "workflow.detail.waiting_to_scan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Waiting for an available scan slot…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在等待可用扫描任务…" } }
+      }
+    },
     "workflow.detail.footer.summary %lld %@": {
       "extractionState": "manual",
       "localizations": {
@@ -15139,6 +15761,13 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Scan failed; no complete result is available." } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描失败，当前没有可信的完整结果。" } }
+      }
+    },
+    "workflow.detail.scan_cancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The scan stopped when this page closed. Retry to scan again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "页面关闭时扫描已停止，可点击重试重新扫描。" } }
       }
     },
     "workflow.detail.delete_confirm.action": {
@@ -15314,6 +15943,62 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在管理模拟器资源" } }
       }
     },
+    "workflow.detail.managed_uninstall.failure.command_failed %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "CoreSimulator could not complete the operation (exit code %lld). Technical details were written to the app log." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "CoreSimulator 未能完成此操作（退出码 %lld）。技术详情已记录到应用日志。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.failure.command_rejected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The operation was rejected by the command safety rules before submission. Nothing was changed." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "命令安全规则在提交前拒绝了此操作；没有更改任何资源。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.failure.generic": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The operation could not be completed. Technical details were written to the app log." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此操作无法完成。技术详情已记录到应用日志。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.failure.launch_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "CoreSimulator could not be started for this operation. Nothing was submitted; technical details were written to the app log." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法为此操作启动 CoreSimulator。操作尚未提交；技术详情已记录到应用日志。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.failure.pending_operation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This resource already has an operation awaiting a terminal status. It was not submitted again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此资源已有一个操作仍在等待终态，因此没有重复提交。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.failure.persistent_pending": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "A previous managed operation for this resource has not been reconciled. It was not submitted again. Rescan first, or manage the resource in Xcode." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此资源之前的管理操作尚未完成权威对账，因此没有重复提交。请先重新扫描，或在 Xcode 中管理此资源。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.failure.resource_absent": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "CoreSimulator confirms that this resource is no longer installed. Nothing was submitted; rescan to refresh the list." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "CoreSimulator 已确认此资源不再安装。本次未提交操作；请重新扫描以刷新列表。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.failure.safety_unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The current Simulator device state could not be verified, so the operation was not submitted." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法核验当前模拟器设备状态，因此没有提交此操作。" } }
+      }
+    },
     "workflow.detail.managed_uninstall.finished.failed.title": {
       "extractionState": "manual",
       "localizations": {
@@ -15384,11 +16069,39 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在处理第 %1$lld/%2$lld 个项目…" } }
       }
     },
+    "workflow.detail.managed_uninstall.interruption.stop_requested": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Stopped safely after the current item. Remaining resources were not submitted." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已在当前项目后安全停止；其余资源未提交。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.interruption.simulator_started": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Simulator started running, so this item and the remaining resources were not submitted." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Simulator 已开始运行，因此当前及剩余资源均未提交。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.interruption.status_unknown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "CoreSimulator did not report a terminal status. No further items were submitted; rescan later to verify the current resource." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "CoreSimulator 未返回终态，后续项目未提交；请稍后重新扫描核对当前资源。" } }
+      }
+    },
     "workflow.detail.managed_uninstall.result.failed": {
       "extractionState": "manual",
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Failed" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "失败" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.result.unknown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Needs verification" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "待重新核对" } }
       }
     },
     "workflow.detail.managed_uninstall.result.skipped": {
@@ -15424,6 +16137,48 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Selected resource awaiting execution" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "已选资源，等待执行" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.status.submitted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Submitted to CoreSimulator" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已提交给 CoreSimulator" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.status.validating": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Revalidating this item before submission" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "提交前正在重新验证该项目" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.status.running": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "CoreSimulator is processing this resource" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "CoreSimulator 正在处理该资源" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.status.stalled %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Submitted %lld seconds ago; terminal status is still pending. The operation was not cancelled." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已提交 %lld 秒，系统仍未返回终态；操作没有被取消。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.status.unknown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The operation was submitted, but its terminal status is unknown. Rescan later to verify it." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "操作已提交，但终态未知。请稍后重新扫描核对。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.status.blocked_simulator_running": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Not submitted because Simulator started running." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Simulator 已开始运行，因此未提交。" } }
       }
     },
     "workflow.detail.managed_uninstall.stop": {
@@ -17429,6 +18184,13 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Nothing was changed automatically. Review the error and retry." } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "未自动改动任何内容，请查看错误后重试。" } }
+      }
+    },
+    "smart_care.failure.unexpected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "An unexpected system or scanner error occurred. No unknown item was treated as safe. Review access permissions and retry; technical details were recorded in the app log." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "发生未预期的系统或扫描错误；任何未知项目都未被视为安全。请检查访问权限后重试，技术详情已记录到应用日志。" } }
       }
     },
     "smart_care.failure.clean.detail %@": {

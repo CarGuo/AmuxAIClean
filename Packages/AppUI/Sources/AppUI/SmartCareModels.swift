@@ -643,11 +643,15 @@ struct SmartCareScanLimitationProjection: Equatable, Sendable {
     var isEmpty: Bool { totalCount == 0 }
 }
 
-/// v2026.07.15：Smart Care 终态只保存错误语义或系统原文。产品自身的默认错误在
-/// Dashboard 渲染时按当前 App locale 投影，运行中切换语言不会留下启动语言快照。
+/// v2026.07.15：Smart Care 终态只保存错误语义。产品错误在 Dashboard 渲染时按
+/// 当前 App locale 投影，运行中切换语言不会留下启动语言快照。
 public enum SmartCareFailureDetail: Sendable, Hashable {
     case scanIncomplete
     case trash(TrashFailureSummary)
+    /// v2026.07.16：未知 scanner/FileManager 错误的用户安全投影。原始 Error 只进日志；
+    /// UI 不暴露 errno、枚举名、percent encoding 或未本地化的系统字符串。
+    case unexpectedFailure
+    /// 仅供产品已经验证为用户文案的兼容调用；禁止传入 raw Error。
     case verbatim(String)
 
     public func text(locale: Locale) -> String {
@@ -656,6 +660,8 @@ public enum SmartCareFailureDetail: Sendable, Hashable {
             return AppLocalization.string("main.scan.incomplete", locale: locale)
         case .trash(let failure):
             return failure.message(locale: locale)
+        case .unexpectedFailure:
+            return AppLocalization.string("smart_care.failure.unexpected", locale: locale)
         case .verbatim(let message):
             return message
         }
@@ -666,14 +672,16 @@ public enum SmartCareError: Sendable, Hashable {
     case scanFailed(SmartCareFailureDetail)
     case cleanFailed(SmartCareFailureDetail)
 
-    /// 原始 scanner / FileManager 错误没有可翻译的产品语义，按 verbatim 保存；这些
-    /// overload 同时保留历史调用点的源码兼容，避免调用方重新把 String 当 i18n 状态。
+    /// v2026.07.16：String overload 仅保留源码兼容，不再把任意字符串带到 UI。
+    /// 生产调用方应先把原始错误写日志，再使用类型化 detail。
     public static func scanFailed(_ message: String) -> SmartCareError {
-        .scanFailed(.verbatim(message))
+        _ = message
+        return .scanFailed(.unexpectedFailure)
     }
 
     public static func cleanFailed(_ message: String) -> SmartCareError {
-        .cleanFailed(.verbatim(message))
+        _ = message
+        return .cleanFailed(.unexpectedFailure)
     }
 
     var recovery: SmartCareFailureRecovery {
@@ -714,6 +722,10 @@ public struct SmartCareCleanRequest: Identifiable, Sendable, Hashable {
     public let previewRows: [RowItem]
     let sourceSummaryRevision: UInt64?
     let sourceSelectionRevision: UInt64?
+    /// v2026.07.16: frozen by MainView when the preview becomes presentable. SmartCare's model
+    /// owns the revisions while its ScanCoordinator owns the scan session, so the request binds
+    /// both before the sheet is shown and carries them unchanged through dismissal.
+    let sourceDeletionSnapshotIdentity: DeletionSnapshotIdentity?
 
     public init(items: [SmartCareItem]) {
         var selectedItems: [SmartCareItem] = []
@@ -752,7 +764,8 @@ public struct SmartCareCleanRequest: Identifiable, Sendable, Hashable {
             confirmCount: confirmations,
             previewRows: rows,
             sourceSummaryRevision: nil,
-            sourceSelectionRevision: nil
+            sourceSelectionRevision: nil,
+            sourceDeletionSnapshotIdentity: nil
         )
     }
 
@@ -766,7 +779,23 @@ public struct SmartCareCleanRequest: Identifiable, Sendable, Hashable {
             confirmCount: confirmCount,
             previewRows: previewRows,
             sourceSummaryRevision: summaryRevision,
-            sourceSelectionRevision: selectionRevision
+            sourceSelectionRevision: selectionRevision,
+            sourceDeletionSnapshotIdentity: sourceDeletionSnapshotIdentity
+        )
+    }
+
+    func bindingDeletionSnapshot(_ identity: DeletionSnapshotIdentity) -> Self {
+        Self(
+            id: id,
+            items: items,
+            requiresConfirmation: requiresConfirmation,
+            paths: paths,
+            totalBytes: totalBytes,
+            confirmCount: confirmCount,
+            previewRows: previewRows,
+            sourceSummaryRevision: sourceSummaryRevision,
+            sourceSelectionRevision: sourceSelectionRevision,
+            sourceDeletionSnapshotIdentity: identity
         )
     }
 
@@ -778,7 +807,8 @@ public struct SmartCareCleanRequest: Identifiable, Sendable, Hashable {
                  confirmCount: Int,
                  previewRows: [RowItem],
                  sourceSummaryRevision: UInt64?,
-                 sourceSelectionRevision: UInt64?) {
+                 sourceSelectionRevision: UInt64?,
+                 sourceDeletionSnapshotIdentity: DeletionSnapshotIdentity?) {
         self.id = id
         self.items = items
         self.requiresConfirmation = requiresConfirmation
@@ -788,6 +818,7 @@ public struct SmartCareCleanRequest: Identifiable, Sendable, Hashable {
         self.previewRows = previewRows
         self.sourceSummaryRevision = sourceSummaryRevision
         self.sourceSelectionRevision = sourceSelectionRevision
+        self.sourceDeletionSnapshotIdentity = sourceDeletionSnapshotIdentity
     }
 }
 

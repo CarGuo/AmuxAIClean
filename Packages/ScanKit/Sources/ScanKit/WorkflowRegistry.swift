@@ -222,25 +222,7 @@ public enum WorkflowRegistry {
                     ScanIncompleteIssue(path: "/usr/bin/xcrun", reason: .enumerationFailed)
                 ])
             }
-            return DiscoveryEvidence(hits: runtimes.map { runtime in
-                let buildSuffix = runtime.buildversion.map { " (\($0))" } ?? ""
-                return WorkflowScanHit(
-                    url: URL(fileURLWithPath: runtime.runtimeRoot),
-                    sizeBytes: runtime.sizeBytes,
-                    displayName: "iOS \(runtime.version)\(buildSuffix)",
-                    note: nil,
-                    semanticNote: .simulatorRuntime(
-                        runtimeIdentifier: runtime.runtimeIdentifier,
-                        isAvailable: runtime.isAvailable,
-                        management: runtime.managedUninstallIdentifier != nil
-                            ? .uninstallable
-                            : (runtime.discoverySource == .legacyReadOnly
-                               ? .legacyReadOnly
-                               : .notDeletable)
-                    ),
-                    managedUninstallIdentifier: runtime.managedUninstallIdentifier
-                )
-            })
+            return DiscoveryEvidence(hits: runtimes.map(simulatorRuntimeHit))
 
         case "scanner.node-modules-scattered":
             // WebNode 工作流：扫描 5 个常见 dev 根下的所有 node_modules。
@@ -270,5 +252,29 @@ public enum WorkflowRegistry {
             GSYLog.warning(.app, "WorkflowRegistry 收到未知 scannerID=\(scannerID)，返回空列表")
             return DiscoveryEvidence(hits: [])
         }
+    }
+
+    /// 把 runtime 原始模型投影为通用 hit。独立纯函数让平台名称与 managed UUID 边界
+    /// 可以不启动 xcrun 直接回归测试。
+    static func simulatorRuntimeHit(_ runtime: SimctlRuntime) -> WorkflowScanHit {
+        let buildSuffix = runtime.buildversion.map { " (\($0))" } ?? ""
+        return WorkflowScanHit(
+            url: URL(fileURLWithPath: runtime.runtimeRoot),
+            sizeBytes: runtime.sizeBytes,
+            // **v2026.07.16 根因修复**：显示名必须来自 SimctlRuntime 保留的
+            // platformIdentifier/semantic identifier，不能在统一路由层硬编码 iOS。
+            displayName: "\(runtime.displayName)\(buildSuffix)",
+            note: nil,
+            semanticNote: .simulatorRuntime(
+                runtimeIdentifier: runtime.runtimeIdentifier,
+                isAvailable: runtime.isAvailable,
+                management: runtime.managedUninstallIdentifier != nil
+                    ? .uninstallable
+                    : (runtime.discoverySource == .legacyReadOnly
+                       ? .legacyReadOnly
+                       : .notDeletable)
+            ),
+            managedUninstallIdentifier: runtime.managedUninstallIdentifier
+        )
     }
 }

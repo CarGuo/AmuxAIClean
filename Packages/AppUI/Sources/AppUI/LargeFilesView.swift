@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import Combine
 import AIKit
+import LogKit
 
 /// v1.0 T4：大文件视图。
 ///
@@ -608,11 +609,12 @@ public struct LargeFilesView: View {
                     "largefiles.export.failed.title",
                     locale: locale
                 )
-                alert.informativeText = AppLocalization.format(
+                alert.informativeText = AppLocalization.string(
                     "largefiles.export.failed.body",
-                    locale: locale,
-                    arguments: [error.localizedDescription]
+                    locale: locale
                 )
+                // v2026.07.16：系统写入错误仅进入日志；alert 不直接暴露 raw Error。
+                GSYLog.error(.operation, "large files export failed path=\(url.path) error=\(error.localizedDescription)")
                 alert.runModal()
             }
         }
@@ -1006,7 +1008,7 @@ private final class LargeFilesRowCanvas: NSView {
                  font: .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                  color: .secondaryLabelColor,
                  lineBreak: .byTruncatingMiddle)
-        drawText(item.bytes.formatted(.byteCount(style: .file).locale(locale)),
+        drawText(AppLocalization.byteCount(item.bytes, locale: locale),
                  in: CGRect(x: sizeX, y: 12, width: LargeFilesTableMetrics.sizeWidth - 8, height: 17),
                  font: .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
                  color: .labelColor,

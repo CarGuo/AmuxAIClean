@@ -44,6 +44,14 @@ public protocol DeveloperWorkflow: Sendable {
 
 /// 一张「开发者清理卡片」。
 public struct DeveloperCard: Sendable, Hashable, Identifiable {
+    /// Optional semantic role for cards that are two projections of one filesystem scan.
+    /// AppUI may coalesce matching roles into one immutable snapshot; this is scan planning
+    /// metadata only and never changes deletion semantics.
+    public enum SharedScanRole: Sendable, Hashable {
+        case derivedDataRoot
+        case derivedDataProjects
+    }
+
     /// 稳定 ID，命名约定 `card.<workflow>.<topic>`，如 `card.apple.derived-data`。
     public let id: String
     /// 卡片标题，如 "Xcode DerivedData"。
@@ -62,6 +70,9 @@ public struct DeveloperCard: Sendable, Hashable, Identifiable {
     /// 与该卡文件路径直接关联的 macOS App bundle ID 前缀。它只驱动删除前的
     /// “应用仍在运行”提示，不参与 Safety 判定，也不能放宽任何删除规则。
     public let runningBundleIDPrefix: String?
+    /// **v2026.07.16 root-cause fix:** explicitly models shared DerivedData projections so
+    /// the scheduler does not infer relationships from card IDs or path-name hardcoding.
+    public let sharedScanRole: SharedScanRole?
 
     public init(id: String,
                 title: String,
@@ -69,7 +80,8 @@ public struct DeveloperCard: Sendable, Hashable, Identifiable {
                 source: PathSource,
                 recipe: DeletionRecipe,
                 risk: Risk,
-                runningBundleIDPrefix: String? = nil) {
+                runningBundleIDPrefix: String? = nil,
+                sharedScanRole: SharedScanRole? = nil) {
         self.id = id
         self.title = title
         self.summary = summary
@@ -77,6 +89,7 @@ public struct DeveloperCard: Sendable, Hashable, Identifiable {
         self.recipe = recipe
         self.risk = risk
         self.runningBundleIDPrefix = runningBundleIDPrefix
+        self.sharedScanRole = sharedScanRole
     }
 
     /// 风险等级（与 SafetyEngine 三档对齐，但语义更偏 UI 展示）。
@@ -227,7 +240,8 @@ public struct AppleWorkflow: DeveloperWorkflow {
                 summary: "card.apple.derived-data.summary",
                 source: .literal(paths: [derivedData.path]),
                 recipe: .filesystem,
-                risk: .safe))
+                risk: .safe,
+                sharedScanRole: .derivedDataRoot))
 
             // 1b. DerivedData 按工程分粒度卡（PR-2 新增，dynamicScanner 占位）
             //     该卡与 card.apple.derived-data 同源不同粒度：整删走前者，按工程子目录单选走本卡
@@ -238,7 +252,8 @@ public struct AppleWorkflow: DeveloperWorkflow {
                 summary: "card.apple.derived-data-per-project.summary",
                 source: .dynamicScanner(scannerID: "scanner.derived-data-per-project"),
                 recipe: .filesystem,
-                risk: .safe))
+                risk: .safe,
+                sharedScanRole: .derivedDataProjects))
         }
 
         // 2. Archives（confirm）—— vendors.yaml L59-L61

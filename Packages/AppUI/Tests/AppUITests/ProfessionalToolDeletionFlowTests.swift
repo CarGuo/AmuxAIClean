@@ -290,6 +290,7 @@ final class ProfessionalToolDeletionFlowTests: XCTestCase {
             requestSelectionRevision: 12,
             boundSnapshotIdentity: identity,
             currentAppID: "/Applications/New.app",
+            currentScanSessionID: identity.sessionID,
             currentSelectionRevision: 13,
             paths: [path]
         )
@@ -325,6 +326,7 @@ final class ProfessionalToolDeletionFlowTests: XCTestCase {
             requestSelectionRevision: 21,
             boundSnapshotIdentity: identity,
             currentAppID: "/Applications/Current.app",
+            currentScanSessionID: identity.sessionID,
             currentSelectionRevision: 21,
             paths: [path]
         )
@@ -358,6 +360,32 @@ final class ProfessionalToolDeletionFlowTests: XCTestCase {
         XCTAssertTrue(terminal.candidates.isEmpty,
                       "真提交成功后必须先从当前 UI 模型投影掉已移动路径")
         XCTAssertTrue(terminal.checked.isEmpty)
+    }
+
+    func test_uninstall同App同revision但候选扫描session已变化_旧确认被取消() {
+        let path = "/tmp/uninstall-stale-session"
+        let identity = DeletionSnapshotIdentity(
+            sessionID: UUID(),
+            revision: 21,
+            categoryID: "/Applications/Current.app"
+        )
+
+        let decision = UninstallDeletionSubmissionGate.evaluate(
+            requestAppID: "/Applications/Current.app",
+            requestSelectionRevision: 21,
+            boundSnapshotIdentity: identity,
+            currentAppID: "/Applications/Current.app",
+            currentScanSessionID: UUID(),
+            currentSelectionRevision: 21,
+            paths: [path]
+        )
+
+        guard case .cancelled(let rejections) = decision else {
+            return XCTFail("v2026.07.16: a new candidate scan must invalidate the old review")
+        }
+        XCTAssertEqual(rejections, [
+            .init(path: path, reason: SafetyRejection.preflightCancelled.rawValue)
+        ])
     }
 
     func test_rejectedToolPreflightProducesConfirmationPlanWithoutMoveOrResult() async throws {

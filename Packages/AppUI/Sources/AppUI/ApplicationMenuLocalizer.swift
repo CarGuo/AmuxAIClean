@@ -159,6 +159,12 @@ public enum ApplicationMenuLocalizer {
             "performMiniaturize:": "menu.native.minimize",
             "performZoom:": "menu.native.zoom",
             "arrangeInFront:": "menu.native.bring_all_to_front",
+            // v2026.07.16：这三项早已用于识别 View 菜单，却没有进入动作映射，
+            // 导致顶层已切中文、子项仍保留进程启动语言。使用不猜测当前显隐状态的
+            // “切换”语义，避免把正在退出全屏误标成“进入全屏”。
+            "toggleFullScreen:": "menu.native.toggle_full_screen",
+            "toggleSidebar:": "menu.native.toggle_sidebar",
+            "toggleToolbarShown:": "menu.native.toggle_toolbar",
         ]
 
         for item in menu.items {

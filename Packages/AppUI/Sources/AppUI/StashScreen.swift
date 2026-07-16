@@ -144,7 +144,7 @@ struct StashScreen: View {
             Spacer()
             // v2026.06.19 行内 AI 队列结果徽标（pending 默认不渲染，避免 12 行全是灰点干扰）。
             aiBadge(for: entry)
-            Text(ByteCountFormatter.string(fromByteCount: entry.bytes, countStyle: .file))
+            Text(AppLocalization.byteCount(entry.bytes, locale: locale))
                 .font(.callout.monospacedDigit())
                 .foregroundStyle(.secondary)
             // 行内 AI 按钮：未启用时整体 disable + tooltip 解释。
@@ -228,7 +228,7 @@ struct StashScreen: View {
         case .done(let verdict, let summary):
             verdictChip(for: verdict)
                 .help(summary)
-        case .error(let message):
+        case .error(let failure):
             HStack(spacing: 4) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
@@ -239,7 +239,31 @@ struct StashScreen: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(Color.red.opacity(0.12), in: Capsule())
-            .help(message)
+            // v2026.07.16：tooltip 从 typed failure 按当前 App locale 投影；不得显示
+            // transport/body/任意 Error 原文，也不需要重启才能切换语言。
+            .help(Self.localizedItemAIFailure(failure, locale: locale))
+        }
+    }
+
+    static func localizedItemAIFailure(
+        _ failure: StashStore.AIVerdictCache.Failure,
+        locale: Locale
+    ) -> String {
+        switch failure {
+        case .http(let status):
+            return AppLocalization.format(
+                "stash.ai.verdict.error.http %lld",
+                locale: locale,
+                arguments: [Int64(status)]
+            )
+        case .transport:
+            return AppLocalization.string("stash.ai.verdict.error.transport", locale: locale)
+        case .decoding:
+            return AppLocalization.string("stash.ai.verdict.error.decoding", locale: locale)
+        case .configuration:
+            return AppLocalization.string("stash.ai.verdict.error.configuration", locale: locale)
+        case .unexpected:
+            return AppLocalization.string("stash.ai.verdict.error.unexpected", locale: locale)
         }
     }
 
@@ -429,7 +453,7 @@ struct StashScreen: View {
             locale: locale,
             arguments: [
                 Int64(stash.count),
-                ByteCountFormatter.string(fromByteCount: stash.totalBytes, countStyle: .file)
+                AppLocalization.byteCount(stash.totalBytes, locale: locale)
             ]
         )
     }

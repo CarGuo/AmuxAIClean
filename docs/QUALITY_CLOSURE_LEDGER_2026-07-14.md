@@ -137,8 +137,9 @@
   - 缺口：没有正式定义专业模式哪些拒绝可 override，导致一处 vendor-only、一处全部锁死。
 - 已有：权限拒绝路径与真实错误要分 channel（`PITFALLS.md` 已记录）。
   - 缺口：没有可执行规则禁止 `Text(lastError)` 和 `"\(error)"` 直出 UI。
-- 已有：扫描/删除/UI 主链路修改后跑 regression。
-  - 缺口：没有要求写明真实交互观察点，导致“启动后马上关闭”也被误当测试。
+- 旧有：扫描/删除/UI 主链路修改后跑快速启停 regression。
+  - v2026.07.16 处理：该入口、内置 Runner 与生成日志已删除。逻辑断言归入 package tests；
+    真实交互必须是用户授权的一次持续 C4，不能再把“启动后马上关闭”计作证据。
 - 已有：`docs/RELEASE.md` 已定义 Developer ID + 最终 DMG-only 公证。
   - 缺口：`SECURITY.md` 仍残留 ad-hoc、未公证、默认 GitHub Releases 的历史事实，和当前流程冲突。
 - 已有：顶层规则宣称零网络。
@@ -203,3 +204,105 @@
 - AppUI 聚焦：`ScanIssuePresentationTests`、`DeletionUXPolicyTests`、`ProfessionalToolDeletionFlowTests`、`MultiRootCompletionPolicyTests` 共 46 tests 通过、0 failure。
 - ScanCoordinator 完整性投影：5 个聚焦测试通过、0 failure；更大组合测试的最终摘要未确认，因此不计入证据。
 - 本轮没有启动 App、没有执行真实删除、没有打包、没有提交或推送；所以没有 C4/C5，也不宣称相关 UI 已完成。
+
+## 9. v2026.07.16 根因修复与当前证据
+
+> 本节记录 2026-07-16 的新实现与重新核验结果；对本节覆盖的容量、本地化、Workflow、
+> Simulator、Trash、Port 和 Sentinel 问题，以这里的状态为准。前面第 2–8 节保留为事故基线，
+> 不应再把其中修改前的源码描述当成当前实现。
+
+### 9.1 “重启后释放 100 多 GB、开机后又回来”的证据结论
+
+- 现场 APFS 权威值显示该占用是真实卷占用，不只是 Storage 分类动画：主 container 已用
+  `425,771,298,816 B`、可用 `68,613,496,832 B`，Data volume 约 `402.7 GB`；VM volume
+  只有约 `24.6 KB`，因此不是 2–3 GB 的 swap/sleep image 解释了 100 多 GB。
+- Simulator 也不是这次 100 多 GB 回涨的主体：用户 CoreSimulator 目录约 `3.2 GB`，系统
+  iOS Simulator Runtime assets 约 `31 GB`，两者量级都不等于本次回涨。
+- 本次开机时间为 13:35。统一日志在 13:37 记录 `templateMigrator` 把 Previous System 下的
+  `com_apple_MobileAsset_UAF_FM_GenerativeModels` 迁入当前 `AssetsV2`，随后
+  `mobileassetd` 恢复 5,733 个 asset locks。15:32 的 cache-delete 记录中有 67 个唯一
+  GenerativeModels asset 标记为 locked / never remove；按日志的 binary byte 字段合计约
+  `135.499 GB`（`126.194 GiB`）。
+- 因此当前最高置信解释是：已有或从 Previous System 迁移的 Apple Intelligence/Foundation
+  Model 资产在开机后被重新登记、校验并锁定，从“可回收/暂未计入普通可用”的状态变为活跃的
+  非可回收占用。这能解释“重启后短暂空出、稍后又被占用”的时间和量级。
+- Apple 当前官方设备要求写的是 Apple Intelligence 约需 `7 GB` 存储，因此日志里的
+  `135.499 GB` 不是单套正常模型的合理稳态量级；更符合多版本/迁移遗留 asset 被同时锁定的
+  异常系统托管积累。这里的“异常”指资产保留状态与量级异常，不代表 APFS 占用是假的。
+- 证据边界：没有与事故同步保存重启前后两份 APFS block snapshot，日志也不能证明这
+  `135.499 GB` 全部在 13:37 后新写入。因此不能声称每一个字节都是当时下载的；准确说法是
+  “现有/迁移模型资产在开机后重新激活并变得不可回收”，不是“虚构的 100 GB”，也不是已证明
+  的单目录新下载。
+- 当前 Foundation 容量 API 的普通可用约 `68.60 GB`、important-usage 可用约
+  `76.12 GB`，差值约 `7.52 GB`。这说明此刻 macOS 对公开 API 暴露的可回收估算已经不是
+  100 多 GB；App 不得用历史 `mobileassetd.cache-delete` 活动标签冒充当前可安全删除目录。
+- 安全处置只走系统所有者：关闭“系统设置 → Apple Intelligence 与 Siri”可请求系统移除
+  on-device models；不能手工删除 `/System/Library/AssetsV2`。Xcode → Settings → Components
+  只管理 Simulator runtime，与这批 Foundation Models 是两件事。
+
+### 9.2 本轮共享根因修复
+
+- **容量口径**：侧栏把 ordinary physical free、macOS may release（important minus ordinary）
+  和 estimated upper bound 三个值拆开；柱状图/current free 不再重复加 reclaimable。tooltip
+  明确这是系统估算、不是单一目录、没有安全的 Clear All，并随 App locale 即时重投影。
+- **实时本地化**：菜单、设置、工具卡、结果页、tooltip/popover、日期与容量格式统一消费显式
+  App locale；长期存活的 Professional/Smart Care coordinator 由 App 级 fanout 更新，切换语言
+  不再依赖重启。raw Error、URL、errno 和 CLI stdout/stderr 只进结构化日志/技术 outcome。
+- **Workflow/DerivedData**：共享扫描按真实 plist/project metadata 投影，修复 `.noindex` 假项目、
+  父子重复选择、hard-link 重复计数、空 Archives/Device Support 和一张卡刷新拖动全页 loading。
+  全页与单卡任务均绑定 session/revision、可取消且旧结果不能覆盖新页面。
+- **Simulator 托管卸载**：唯一非 Trash 例外封闭为 Simulator Device/Runtime；文件项仍只走
+  `TrashPipeline → NSWorkspace.recycle`。单一 sheet 显示 preparing、逐项验证、已提交、运行、
+  stalled、终态与未提交项；停止只阻止后续提交，不强杀 CoreSimulator。持久账本以跨进程锁、
+  owner kernel identity、scan/review identity 和 attempt CAS 阻止 PID reuse、同一陈旧复核、重启、
+  迟到终态与 replacement attempt ABA；schema 4 严格拒绝畸形 owner 并保守迁移旧记录。
+- **Trash**：每批冻结 parent operation、每次 AppKit 调用冻结 attempt、每条路径冻结 inode/type，
+  并以稳定 lock inode 的 `flock` 串行化跨 App 实例。claimed unknown 即使 owner 退出、路径缺失或
+  被替换也保持 pending；只有未 claim 的 inactive reservation 可要求 fresh review，旧 callback
+  不能清除或授权新实体。
+- **Port Cleaner**：两轮 `lsof` 只接受稳定监听项；确认冻结 PID、UID、executable 和 kernel
+  start time，SIGTERM 前在同一同步执行栈重验。命令输出有界且截断即拒绝；reload 绑定 revision，
+  失败保留旧可信结果并给 typed retry，不把不完整结果显示成“没有端口”。
+- **ScanKit 子进程与取消**：查询、维护命令和 pkgutil 统一使用 `posix_spawn` + 唯一 `waitpid`
+  owner；已 reap/ECHILD 后不再 signal，双 Pipe 从启动起有界排空，pkgutil 只解析完整 stdout。
+  版本根发现把取消检查下沉到逐子项 I/O 边界，取消后整轮候选清空且不伪装完整结果。
+- **Sentinel**：开关、系统回调、失败 rollback 和 modal 期间的合并通知统一进入 MainActor typed
+  transaction，避免重复 register/unregister/reconcile；程序写回不再被误当第二次用户手势。
+
+### 9.3 已运行验证与等级
+
+- 聚焦行为测试（C2）：Trash ledger `22/22`；Simulator coordinator/ledger `27/27`；
+  Workflow `51/51`（其中 managed ViewModel `3/3` 另行复跑）；Port parser/scanner/reload `27/27`；
+  Sentinel `22/22`；VersionedRoot discovery evidence `8/8`。所有 destructive 模拟均为 dry-run/scripted closure。
+- 全包与构建（C3）：9 个 Swift package 全部 `swift test --parallel` exit 0；其中 ScanKit
+  `411` tests、AppUI `995` XCTest + `11` Swift Testing。原生 Debug `xcodebuild` 明确输出
+  `** BUILD SUCCEEDED **`。
+- 验证噪声如实记录：SafetyKit 性能阈值在一次与其它包并行的早期运行中为 `1.744s`、超过
+  `1.0s` 而失败；同项隔离复跑为 `0.695s`，随后 SafetyKit 全包 `167/167` 再次通过。
+  未放宽阈值、未改测试，也不把首次失败藏掉。
+- 快速启停结果已撤销：本轮曾运行的结果不计入证据。`Scripts/regression.sh`、
+  `Scripts/e2e-smoke.sh`、`App/RegressionRunner.swift`、`Tests/Regression`、`GSY_AUTOSCAN` 及正式 App
+  对 `TestHarness` 的链接已删除，防止以后继续把窗口/进程存在或进程内断言误报成 UI 验收。
+- 只读性能基准：`~/Library/Caches` 扫描 `383,375` files / `17.35 GB`，完成时间 `6.47s`；
+  `du -sh` 对照约 `16 GB`。权限拒绝作为 scoped incomplete 报告，基准没有把不可读目录伪装为
+  完整结果。
+- 静态审计：`git diff --check` 与 String Catalog JSON 校验通过；project 仅按用户明确要求移除
+  RegressionRunner/TestHarness App 链接，Release 脚本仅删除用户明确要求退役的 `e2e-smoke.sh`；
+  package/plist/entitlements/rules/CI 未修改，生产扫描候选无 `unlink/removeItem` 绕行。
+- 证据等级仍为 **C3**。没有进行人工持续点击和视觉核对，因此没有 C4；没有签名、公证、
+  staple 的最终 DMG，因此也没有 C5。
+
+### 9.4 尚未关闭与授权边界
+
+- **P2 pkg receipt 完整性**：单个 `pkgutil --pkg-info/--files` 失败目前会 fail closed、漏掉该
+  receipt 的卸载候选，但 `receipts(...)` 的旧数组接口没有把 scoped incomplete 证据带到卸载页。
+  它不会扩大删除范围或解析截断输出；要正确展示需把 ScanKit 返回值和 AppUninstaller 状态合同
+  一起类型化，不能用空候选旁边补一条通用警告来伪装修复。
+- **P1 隐私清单**：仓库尚无 `PrivacyInfo.xcprivacy`，而容量 API 等 Required Reason API 需要
+  清单审计。新增 manifest 与把它加入 Xcode resources 会修改受保护工程配置，当前未获这项
+  单独授权，不能擅自落地。
+- **保守 pending 的可用性代价**：Trash 已 claim 未知、Simulator 已 submitted 未知在 App
+  崩溃后可能长期保留 tombstone。这是为了阻止重复破坏性提交；完全自动恢复需要进程外 helper
+  或系统提供原子“查询事务 + 提交”能力，当前没有安全依据把未知猜成失败。
+- **C4/C5**：仍缺一次按入口矩阵执行的人工持续 UI 验收，也缺最终发行产物验证。修复完成不等于
+  用户交互已亲眼验收，更不等于可直接发布。

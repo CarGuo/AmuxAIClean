@@ -10,6 +10,7 @@ final class DeletionInteractionCoordinatorTests: XCTestCase {
         private var submissions: [TrashSubmissionDisposition]
         private(set) var preflightCalls: [[String]] = []
         private(set) var submissionCalls: [[String]] = []
+        private(set) var submittedReviewIdentities: [DeletionSnapshotIdentity?] = []
         private(set) var legacyMoveCalls = 0
 
         init(
@@ -30,6 +31,19 @@ final class DeletionInteractionCoordinatorTests: XCTestCase {
 
         func nextSubmission(paths: [String]) -> TrashSubmissionDisposition {
             submissionCalls.append(paths)
+            submittedReviewIdentities.append(nil)
+            guard !submissions.isEmpty else {
+                return .preSubmitRejected(.unsupportedPipeline)
+            }
+            return submissions.removeFirst()
+        }
+
+        func nextSubmission(
+            paths: [String],
+            reviewIdentity: DeletionSnapshotIdentity?
+        ) -> TrashSubmissionDisposition {
+            submissionCalls.append(paths)
+            submittedReviewIdentities.append(reviewIdentity)
             guard !submissions.isEmpty else {
                 return .preSubmitRejected(.unsupportedPipeline)
             }
@@ -40,6 +54,10 @@ final class DeletionInteractionCoordinatorTests: XCTestCase {
 
         func snapshot() -> (preflight: Int, submission: Int, legacy: Int) {
             (preflightCalls.count, submissionCalls.count, legacyMoveCalls)
+        }
+
+        func reviewIdentitySnapshot() -> [DeletionSnapshotIdentity?] {
+            submittedReviewIdentities
         }
     }
 
@@ -69,6 +87,19 @@ final class DeletionInteractionCoordinatorTests: XCTestCase {
             vendorOverrideRequest: VendorPathOverrideRequest?
         ) async -> TrashSubmissionDisposition {
             await state.nextSubmission(paths: paths)
+        }
+
+        func submitToTrashReturningDisposition(
+            paths: [String],
+            accessDeniedPaths: Set<String>,
+            vendorOverrideRequest: VendorPathOverrideRequest?,
+            scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest?,
+            reviewIdentity: DeletionSnapshotIdentity?
+        ) async -> TrashSubmissionDisposition {
+            await state.nextSubmission(
+                paths: paths,
+                reviewIdentity: reviewIdentity
+            )
         }
 
         func submitToTrashReturningDisposition(
@@ -200,6 +231,12 @@ final class DeletionInteractionCoordinatorTests: XCTestCase {
         let calls = await state.snapshot()
         XCTAssertEqual(calls.submission, 1)
         XCTAssertEqual(calls.legacy, 0)
+        let reviewIdentities = await state.reviewIdentitySnapshot()
+        XCTAssertEqual(
+            reviewIdentities,
+            [identity],
+            "v2026.07.16: submit must carry the exact authorized review snapshot"
+        )
     }
 
     @MainActor
@@ -281,7 +318,12 @@ final class DeletionInteractionCoordinatorTests: XCTestCase {
             executionPlan: invalid
         ) else { return XCTFail("Wrong strict token must not mint authorization") }
 
-        let expectedToken = String(localized: "delete.vendor_override.token", bundle: .module)
+        // v2026.07.16: mirror the production protocol token, which is deliberately resolved
+        // from the invariant English catalog instead of the process/UI locale.
+        let expectedToken = AppLocalization.string(
+            "delete.vendor_override.token",
+            locale: Locale(identifier: "en")
+        )
         let valid = ToolTrashExecutionPlan(
             paths: [path],
             runningAppSkipped: [],
@@ -331,6 +373,68 @@ final class DeletionInteractionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func test_pendingRecycleAccountsForUnsubmittedAuthorizationWithoutFalseFailure() async throws {
+        let pending = "/Users/test/Library/Caches/pending"
+        let notSubmitted = "/Users/test/Library/Caches/not-submitted"
+        let outcome = TrashOutcome(
+            movedPairs: [],
+            failedPaths: [],
+            pendingPaths: [pending],
+            notSubmittedPaths: [notSubmitted],
+            safetyRejected: [],
+            missingPaths: [],
+            failureSummary: .recyclePending(
+                pendingCount: 1,
+                notSubmittedCount: 1,
+                movedCount: 0
+            )
+        )
+        let state = PipelineState(
+            preflights: [DeletionPreflight(
+                allowedPaths: [pending, notSubmitted],
+                rejections: []
+            )],
+            submissions: [
+                .recycleCompleted(TrashRecycleCompletion(
+                    attemptedPaths: [pending],
+                    legacy: (0, 2, "recycle pending", []),
+                    outcome: outcome
+                ))
+            ]
+        )
+        let coordinator = makeCoordinator(state: state)
+        let identity = DeletionSnapshotIdentity(sessionID: UUID(), revision: 51)
+        let intent = try coordinator.makeIntent(
+            origin: .brew,
+            mode: .professional,
+            snapshotIdentity: identity,
+            candidates: [candidate(pending), candidate(notSubmitted)]
+        )
+        guard case .confirmation(let prepared) = await coordinator.prepare(
+            intent: intent,
+            currentSnapshotIdentity: identity
+        ), case .authorized(let authorized) = coordinator.authorize(
+            prepared: prepared,
+            executionPlan: ToolTrashExecutionPlan(
+                paths: [pending, notSubmitted],
+                runningAppSkipped: []
+            )
+        ) else { return XCTFail("Expected authorization") }
+
+        guard case .completed(let completed) = await coordinator.submit(
+            authorized,
+            accessDeniedPaths: []
+        ) else { return XCTFail("Accounted pending state must reach result presentation") }
+
+        XCTAssertEqual(completed.receipt.submittedPaths, [pending])
+        let payload = OperationResultCompletion.deletion(completed).resultPayload
+        XCTAssertEqual(payload.status, .pending)
+        XCTAssertEqual(payload.pendingPaths, [pending])
+        XCTAssertEqual(payload.notSubmittedPaths, [notSubmitted])
+        XCTAssertTrue(payload.failedPaths.isEmpty)
+    }
+
+    @MainActor
     func test_scanIncompleteCapabilitySurvivesPreparationAuthorizationAndSubmit() async throws {
         let path = "/Users/test/Library/Containers/example"
         let sessionID = UUID()
@@ -341,7 +445,16 @@ final class DeletionInteractionCoordinatorTests: XCTestCase {
                 .recycleCompleted(TrashRecycleCompletion(
                     attemptedPaths: [path],
                     legacy: (0, 1, "simulated", []),
-                    outcome: nil
+                    // v2026.07.16: a real typed submission must return an exact
+                    // completion partition. This test is about preserving the
+                    // scan-incomplete capability through submit, not about
+                    // bypassing the fail-closed outcome accounting gate.
+                    outcome: TrashOutcome(
+                        movedPairs: [],
+                        failedPaths: [path],
+                        safetyRejected: [],
+                        missingPaths: []
+                    )
                 ))
             ]
         )
@@ -380,7 +493,10 @@ final class DeletionInteractionCoordinatorTests: XCTestCase {
             preparation: .strictConfirmation(request: request, vendorOverrideRequest: nil)
         ) else { return XCTFail("Expected strict scan-incomplete confirmation") }
 
-        let token = String(localized: "delete.vendor_override.token", bundle: .module)
+        let token = AppLocalization.string(
+            "delete.vendor_override.token",
+            locale: Locale(identifier: "en")
+        )
         guard case .authorized(let authorized) = coordinator.authorize(
             prepared: prepared,
             executionPlan: ToolTrashExecutionPlan(

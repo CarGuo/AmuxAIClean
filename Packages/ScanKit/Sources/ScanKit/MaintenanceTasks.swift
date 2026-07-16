@@ -7,7 +7,7 @@ import LogKit
 /// 但**坚守 SOLO Mac App 边界**：
 ///   - 不调任何需要 sudo / SystemAdministration / root 的命令
 ///   - 不动 SIP-protected 路径
-///   - 不在 release 路径里走 `Process.run` 之前先经 SafetyEngine 审计 ✓
+///   - release 路径启动子进程前先经 SafetyEngine 审计 ✓
 ///
 /// 2 个开箱即用任务（每个都可独立调度，互不依赖）：
 ///   - `.flushQuickLookCache`    — Finder 预览图变白 / 不刷新缩略图时用
@@ -122,7 +122,7 @@ public protocol MaintenanceCommandRunning: Sendable {
     func execute(_ command: MaintenanceCommand) -> MaintenanceCommandResult
 }
 
-/// 生产 runner —— Process 执行，30s 超时。
+/// 生产 runner —— owned-child 执行，30s 超时。
 public struct DefaultMaintenanceRunner: MaintenanceCommandRunning {
 
     public let timeout: TimeInterval
@@ -132,29 +132,34 @@ public struct DefaultMaintenanceRunner: MaintenanceCommandRunning {
     }
 
     public func execute(_ command: MaintenanceCommand) -> MaintenanceCommandResult {
-        let task = Process()
-        task.launchPath = command.launchPath
-        task.arguments = command.arguments
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = pipe
-        do {
-            try task.run()
-        } catch {
-            return MaintenanceCommandResult(exitCode: -1,
-                                            output: "launch failed: \(error)")
+        // SAFETY v2026.07.16：旧 `Process.isRunning → terminate()` 同样允许 Foundation
+        // 在检查后先 reap，再用缓存 PID 发信号；共用 ScanKit 的唯一 waitpid owner 后，
+        // ECHILD 永不 signal，stdout/stderr 也从启动起并行排空，不再有 wait-then-read
+        // 填满 pipe 的死锁。维护命令仍保持原有 -1 launch / -2 timeout 终态合同。
+        let result = OwnedChildProcessExecutor.run(
+            path: command.launchPath,
+            arguments: command.arguments,
+            timeout: timeout,
+            outputLimitPerStream: SubprocessExecutor.outputCaptureLimitPerStream
+        )
+        switch result.terminal {
+        case .exited(let rawStatus):
+            return MaintenanceCommandResult(
+                exitCode: OwnedChildProcessExecutor.decodedExitStatus(rawStatus),
+                output: result.output
+            )
+        case .timedOut:
+            return MaintenanceCommandResult(
+                exitCode: -2,
+                output: "timeout after \(timeout)s; partial=\(result.output)"
+            )
+        case .notOwned:
+            return MaintenanceCommandResult(
+                exitCode: -1,
+                output: "child ownership lost before terminal status; \(result.output)"
+            )
+        case .launchFailed(let message):
+            return MaintenanceCommandResult(exitCode: -1, output: message)
         }
-        let deadline = Date().addingTimeInterval(timeout)
-        while task.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        if task.isRunning {
-            task.terminate()
-            return MaintenanceCommandResult(exitCode: -2,
-                                            output: "timeout after \(timeout)s")
-        }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        return MaintenanceCommandResult(exitCode: task.terminationStatus, output: output)
     }
 }

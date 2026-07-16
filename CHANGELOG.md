@@ -8,6 +8,17 @@
 
 ## [Unreleased]
 
+### Fixed
+- **v2026.07.16 容量口径**：侧栏把“当前物理可用”“macOS 可能释放（估算）”“预计可用上限”拆成三个互不重复的值；System Reclaimable tooltip 改为中英文实时切换，并明确它不是一个可直接“全部清除”的目录，也不再把系统内部 `mobileassetd.cache-delete` 标签伪装成独立文件夹。
+- **v2026.07.16 实时本地化**：菜单、设置、工具页、结果页、tooltip/popover 与字节/日期格式统一使用显式 App locale；切换中英文后同一进程立即重投影，不再依赖重启或残留英文缓存。
+- **v2026.07.16 Apple Workflow**：DerivedData 改为共享扫描与真实项目元数据归类，修正 `.noindex` 假项目、空 Archives/iOS Device Support、父子重复选择、hard-link 重复计数、单卡刷新拖动整页 loading、旧扫描覆盖新结果等问题；扫描与重试绑定会话 revision 和可取消任务，版本目录在逐子项 I/O 边界协作取消并丢弃整轮部分候选。
+- **v2026.07.16 Simulator managed uninstall**：明确仅 Simulator Device 与 Runtime 两类属于系统托管卸载，文件类仍统一移到废纸篓；单一复核 sheet 展示 preparing/validating/submitted/running/stalled/confirmed/unknown/skipped，停止只阻止后续提交、不强杀当前事务。持久账本以跨进程 `flock`、owner PID+kernel start、稳定 scan/review identity 与 attempt generation CAS 阻止重启、迟到终态和 authority probe 的 ABA 重复提交；迟到事件绑定 frozen sourceIntent，仅能投影到同 scan session/revision 与完整 item。
+- **v2026.07.16 Trash 主链路**：所有生产删除入口携带稳定 scan/review identity；`NSWorkspace.recycle` 前以跨进程 `flock`、owner PID+kernel start、父 operation、单次 attempt 和 inode identity 冻结提交。PID reuse 与 owner 探针失败均 fail closed；claimed unknown 即使 owner 退出或路径缺失/替换也保持 pending，旧 callback 不能清除或授权新路径实体。
+- **v2026.07.16 端口清理**：冻结 PID/UID/可执行文件/内核启动时间并在信号前重验；两轮 `lsof` 只接受稳定监听项，超时、输出截断与退出确认均进入类型化结果，避免把不完整快照或复用 PID 当作可终止目标。
+- **v2026.07.16 子进程超时安全**：ScanKit 查询、`pkgutil` receipt 与维护命令统一改为 `posix_spawn` + 唯一 `waitpid` owner；仅在 owned child 明确仍运行时发送 TERM/KILL，已 reap 或 `ECHILD` 后永久禁止信号，关闭 Foundation 先回收后缓存 PID 被复用的误杀窗口。stdout/stderr 从启动起独立、有界排空，`pkgutil` 只解析完整 stdout，超时、ownership lost、launch failure 与真实退出状态均明确收敛。
+- **v2026.07.16 Sentinel 与错误呈现**：登录项开关使用单一 MainActor transaction 处理系统回调与 rollback，避免嵌套 modal/通知导致重复 reconcile；扫描、AI、导入导出、Undo、Stash 等界面不再直接显示 raw Error、URL 编码或 enum 文本。
+- **v2026.07.16 验证链路**：移除会为每个 case 反复启动并立即退出 App 的 `regression.sh`、只检查窗口/AX 后退出的 `e2e-smoke.sh`、内置 `RegressionRunner`、无人调用的 `GSY_AUTOSCAN` Release 入口、正式 App 对 `TestHarness` 的链接及生成日志。这类快速启停不再冒充 UI 回归；逻辑验证归入 package tests，发行合同使用无启动的静态校验，性能走 ScanKit CLI，真实交互只在单次持续运行的 C4 中留证。
+
 ### Added
 - `PRIVACY.md`：零遥测隐私协议，明确写出唯一对外网络请求（GitHub Releases API）与本地数据保留范围
 - `TERMS.md`：MIT 复述 + 删除操作不可逆免责声明 + 用户责任界定

@@ -57,21 +57,6 @@ public final class FloatingScanHUDController {
     private weak var smartCareSession: SmartCareSession?
     private weak var settings: AppSettings?
 
-    #if DEBUG
-    /// 仅 DEBUG 暴露：HUD panel 是否当前可见（panel 存在且 isVisible=true）。
-    /// 供 [App/RegressionRunner.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/App/RegressionRunner.swift)
-    /// 等真实回归测试断言用，不影响生产路径。
-    ///
-    /// 注：原本只在 DEBUG 暴露，但 [RegressionRunner](file:///Users/guoshuyu/workspace/GSYCleanMac/App/RegressionRunner.swift)
-    /// 在 Release 构建里也参与编译（它由 main App target 引入），导致 release.yml 的
-    /// `xcodebuild -configuration Release` 会因找不到该成员而 BUILD FAILED。属性本身只读、
-    /// 零副作用，所以撤掉 `#if DEBUG`，保留注释提醒生产代码勿依赖。
-    public var isPanelVisibleForTesting: Bool { panel?.isVisible == true }
-    #else
-    /// Release 构建同样需要这个 stub（理由见 DEBUG 分支）；只读、零副作用，安全。
-    public var isPanelVisibleForTesting: Bool { panel?.isVisible == true }
-    #endif
-
     /// 当前 panel 创建时使用的 placement。变化时需要 rebuild panel（level 不能动态切，
     /// `kCGDesktopIconWindowLevel` 这种 raw level 在已有 panel 上 setLevel 偶发卡死）。
     private var lastPlacement: AppSettings.HUDPlacement?
@@ -930,6 +915,7 @@ struct IslandUnifiedShape: Shape {
 /// - 普通模式（notchUnder / desktop*）：原 v1.3 卡片
 /// - 灵动岛模式（dynamicIsland）：收起 = 贴刘海胶囊；展开 = 凹顶大窗
 struct FloatingScanHUDView: View {
+    @Environment(\.locale) private var locale
     @ObservedObject var coordinator: ScanCoordinator
     let smartCareSession: SmartCareSession?
     @Bindable var settings: AppSettings
@@ -1936,7 +1922,7 @@ struct FloatingScanHUDView: View {
     }
 
     private func bytesString(_ b: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: b, countStyle: .file)
+        AppLocalization.byteCount(b, locale: locale)
     }
 
     private func percentString(_ r: Double) -> String {

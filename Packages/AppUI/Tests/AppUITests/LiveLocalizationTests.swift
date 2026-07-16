@@ -44,6 +44,29 @@ final class LiveLocalizationTests: XCTestCase {
         )
     }
 
+    func test_byteCountFormatter_switchesZeroValueWithinOneProcess() {
+        let en = AppLocalization.byteCount(0, locale: english)
+        let zh = AppLocalization.byteCount(0, locale: simplifiedChinese)
+
+        // v2026.07.16 回归：旧 ByteCountFormatter 跟随进程语言，中文界面仍显示
+        // “Zero kB”。这里验证同一进程、同一数值会随显式 locale 重投影。
+        XCTAssertNotEqual(en, zh)
+        XCTAssertTrue(en.localizedCaseInsensitiveContains("zero"), en)
+        XCTAssertFalse(zh.localizedCaseInsensitiveContains("zero"), zh)
+    }
+
+    func test_dateFormatter_switchesWithinOneProcess() throws {
+        let date = try XCTUnwrap(
+            Calendar(identifier: .gregorian).date(
+                from: DateComponents(year: 2026, month: 7, day: 16, hour: 15, minute: 32)
+            )
+        )
+        let style = Date.FormatStyle(date: .abbreviated, time: .shortened)
+        let en = date.formatted(style.locale(english))
+        let zh = date.formatted(style.locale(simplifiedChinese))
+        XCTAssertNotEqual(en, zh)
+    }
+
     func test_scanCategory_displayTitle_usesRequestedLiveLocale() {
         let category = ScanCategories.recommended().first {
             $0.title == "category.user_caches.title"
@@ -154,6 +177,18 @@ final class LiveLocalizationTests: XCTestCase {
         XCTAssertEqual(notice.localized(locale: simplifiedChinese), "选中的 2 个路径已在列表中。")
     }
 
+    func test_settingsPathFailure_isLocalizedWithoutRawSystemError() {
+        let notice = SettingsPathImportNotice.failed
+        XCTAssertEqual(
+            notice.localized(locale: english),
+            AppLocalization.string("custom_path.import.failed", locale: english)
+        )
+        XCTAssertEqual(
+            notice.localized(locale: simplifiedChinese),
+            AppLocalization.string("custom_path.import.failed", locale: simplifiedChinese)
+        )
+    }
+
     func test_settingsLogNotice_reprojectsWhilePreservingOperationPayload() {
         let notice = SettingsLogActionNotice.exported(path: "/tmp/AmuxAIClean-Logs.txt")
         XCTAssertEqual(
@@ -174,6 +209,43 @@ final class LiveLocalizationTests: XCTestCase {
         )
         XCTAssertEqual(progress.displayTitle(locale: english), "User Caches")
         XCTAssertEqual(progress.displayTitle(locale: simplifiedChinese), "用户缓存")
+    }
+
+    @MainActor
+    func test_settingsOnlyLanguageChange_fansOutToBothAppOwnedCoordinators_withoutRebuildingSnapshots() {
+        let suite = "LiveLocalizationTests.app-fanout.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)
+        defaults?.removePersistentDomain(forName: suite)
+        defer { defaults?.removePersistentDomain(forName: suite) }
+
+        let settings = AppSettings(testSuite: suite)
+        let professionalCoordinator = ScanCoordinator()
+        let smartCareCoordinator = ScanCoordinator()
+
+        settings.preferredLanguage = .en
+        ScanPresentationLocaleFanout.apply(
+            settings.effectiveLocale,
+            professionalCoordinator: professionalCoordinator,
+            smartCareCoordinator: smartCareCoordinator
+        )
+        let professionalSnapshot = professionalCoordinator.snapshot
+        let smartCareSnapshot = smartCareCoordinator.snapshot
+
+        // v2026.07.16 回归：模拟主窗口已关闭、仅 Settings 修改同一份 AppSettings。
+        // App 层 fanout 必须同步两个长期存活的 coordinator，但不能借语言切换重扫或发 snapshot。
+        settings.preferredLanguage = .zhHans
+        ScanPresentationLocaleFanout.apply(
+            settings.effectiveLocale,
+            professionalCoordinator: professionalCoordinator,
+            smartCareCoordinator: smartCareCoordinator
+        )
+
+        XCTAssertEqual(professionalCoordinator._presentationLocaleIdentifierForTesting, "zh-Hans")
+        XCTAssertEqual(smartCareCoordinator._presentationLocaleIdentifierForTesting, "zh-Hans")
+        XCTAssertEqual(professionalCoordinator.snapshot, professionalSnapshot)
+        XCTAssertEqual(smartCareCoordinator.snapshot, smartCareSnapshot)
+        XCTAssertFalse(professionalCoordinator.isScanning)
+        XCTAssertFalse(smartCareCoordinator.isScanning)
     }
 
     @MainActor
@@ -265,6 +337,8 @@ final class LiveLocalizationTests: XCTestCase {
         let edit = NSMenu(title: "stale-edit")
         edit.addItem(item(action: "copy:"))
         let view = NSMenu(title: "stale-view")
+        view.addItem(item(action: "toggleFullScreen:"))
+        view.addItem(item(action: "toggleSidebar:"))
         view.addItem(item(action: "toggleToolbarShown:"))
         let windows = NSMenu(title: "stale-window")
         windows.addItem(item(action: "performMiniaturize:"))
@@ -297,6 +371,9 @@ final class LiveLocalizationTests: XCTestCase {
         XCTAssertEqual(app.items[5].title, "隐藏其他")
         XCTAssertEqual(app.items[6].title, "全部显示")
         XCTAssertEqual(app.items[7].title, "退出 AmuxAIClean")
+        XCTAssertEqual(view.items[0].title, "切换全屏")
+        XCTAssertEqual(view.items[1].title, "切换侧边栏")
+        XCTAssertEqual(view.items[2].title, "切换工具栏")
     }
 
     @MainActor
@@ -315,8 +392,9 @@ final class LiveLocalizationTests: XCTestCase {
             failure: .moveFailed(systemDescription: "raw filesystem error")
         )
         XCTAssertNotEqual(undo.text(locale: english), undo.text(locale: simplifiedChinese))
-        XCTAssertTrue(undo.text(locale: english).contains("raw filesystem error"))
-        XCTAssertTrue(undo.text(locale: simplifiedChinese).contains("raw filesystem error"))
+        // v2026.07.16：系统原始错误只进日志；长生命周期 UI 仅重投影类型化语义。
+        XCTAssertFalse(undo.text(locale: english).contains("raw filesystem error"))
+        XCTAssertFalse(undo.text(locale: simplifiedChinese).contains("raw filesystem error"))
 
         XCTAssertEqual(
             PortCleanerKillTitle.selected.text(locale: english),
@@ -326,7 +404,12 @@ final class LiveLocalizationTests: XCTestCase {
             PortCleanerKillTitle.selected.text(locale: simplifiedChinese),
             "结束所选"
         )
-        let killResult = PortCleanerKillResultPresentation(success: 2, failed: 1)
+        let killResult = PortCleanerKillResultPresentation(
+            confirmedStopped: 2,
+            requestPending: 1,
+            notSubmitted: 3,
+            failed: 1
+        )
         XCTAssertNotEqual(
             killResult.text(locale: english),
             killResult.text(locale: simplifiedChinese)

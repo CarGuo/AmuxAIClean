@@ -177,4 +177,22 @@ final class SimctlDevicesScannerTests: XCTestCase {
             .commandFailed(query: .devices, exitCode: 72)
         )
     }
+
+    func test_bootedDeviceProbe_只有全Shutdown才允许提交() {
+        let shutdown = #"{"devices":{"runtime":[{"udid":"11111111-2222-3333-4444-555555555555","name":"iPhone","state":"Shutdown","dataPath":"/tmp/device"}]}}"#
+        let booted = #"{"devices":{"runtime":[{"udid":"11111111-2222-3333-4444-555555555555","name":"iPhone","state":"Booted","dataPath":"/tmp/device"}]}}"#
+        let transitioning = #"{"devices":{"runtime":[{"udid":"11111111-2222-3333-4444-555555555555","name":"iPhone","state":"Booting","dataPath":"/tmp/device"}]}}"#
+
+        XCTAssertEqual(SimctlBootedDeviceProbe.classify(json: shutdown), .safeToSubmit)
+        for payload in [booted, transitioning] {
+            guard case .activeDevices(let names) = SimctlBootedDeviceProbe.classify(json: payload) else {
+                return XCTFail("Booted/transitioning device 必须阻止 managed delete")
+            }
+            XCTAssertEqual(names.count, 1)
+        }
+        XCTAssertEqual(
+            SimctlBootedDeviceProbe.classify(json: "not-json"),
+            .verificationUnavailable
+        )
+    }
 }

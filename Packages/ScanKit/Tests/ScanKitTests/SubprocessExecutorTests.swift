@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 @testable import ScanKit
 
 /// v1.7 M1 PR-2：SubprocessExecutor 的契约钉死测试。
@@ -204,6 +205,163 @@ final class SubprocessExecutorTests: XCTestCase {
         XCTAssertTrue(result.output.contains("managed done"))
     }
 
+    /// **v2026.07.16 回归合同**：stall 是观察状态，不是破坏性 timeout。即便观察窗口
+    /// 先耗尽，/bin/sleep 仍应自然 exit 0；若实现偷偷复用 timeout 的 TERM/KILL，此测试会红。
+    func test_managed观察流_区分提交运行停滞与真实终态_且不强杀进程() async throws {
+        let sleep = SubprocessExecutor.AllowEntry(executable: "/bin/sleep", argsPrefix: ["0.2"])
+        let exec = SubprocessExecutor(
+            allowlist: [sleep],
+            terminalWaitPolicy: .waitUntilExit,
+            dryRun: false
+        )
+        let startedAt = Date()
+        let updates = try exec.observeManagedExecution(
+            executable: "/bin/sleep",
+            args: ["0.2"],
+            stallAfter: 0.03
+        )
+
+        var collected: [SubprocessExecutor.ManagedExecutionUpdate] = []
+        for await update in updates {
+            collected.append(update)
+        }
+
+        guard collected.count >= 4 else {
+            return XCTFail("managed lifecycle 缺少事件：\(collected)")
+        }
+        guard case .submitted(let pid) = collected[0] else {
+            return XCTFail("第一条事件必须证明 Process.run 已提交")
+        }
+        XCTAssertNotNil(pid)
+        guard case .running = collected[1] else {
+            return XCTFail("第二条事件必须是 running")
+        }
+        guard case .stalled(_, let elapsed) = collected[2] else {
+            return XCTFail("观察窗口耗尽必须先发布 stalled，而不是终止进程")
+        }
+        XCTAssertEqual(elapsed, 0.03, accuracy: 0.001)
+        guard case .confirmedTerminal(let result) = collected.last else {
+            return XCTFail("后台自然结束后必须发布 confirmed terminal")
+        }
+        XCTAssertEqual(result.exitCode, 0, "stall watchdog 绝不能 TERM/KILL managed transaction")
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(startedAt), 0.15)
+    }
+
+    func test_managed观察流_仍在创建流前同步执行allowlist和UUID校验() {
+        let exec = SubprocessExecutor(
+            terminalWaitPolicy: .waitUntilExit,
+            dryRun: true
+        )
+        XCTAssertThrowsError(try exec.observeManagedExecution(
+            executable: "/usr/bin/xcrun",
+            args: ["simctl", "runtime", "delete", "not-a-uuid"],
+            stallAfter: 1
+        )) { error in
+            guard case SubprocessExecutor.SubprocessError.notAllowed = error else {
+                return XCTFail("managed observer 不得绕过 destructive tail policy: \(error)")
+            }
+        }
+    }
+
+    func test_managed执行前安全闸拒绝时_没有PID也没有伪终态() async throws {
+        let exec = SubprocessExecutor(
+            terminalWaitPolicy: .waitUntilExit,
+            dryRun: true
+        )
+        let updates = try exec.observeManagedExecution(
+            executable: "/usr/bin/xcrun",
+            args: ["simctl", "runtime", "delete", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"],
+            stallAfter: 1,
+            preSubmissionGuard: { .persistentPendingOperation }
+        )
+        var collected: [SubprocessExecutor.ManagedExecutionUpdate] = []
+        for await update in updates { collected.append(update) }
+        XCTAssertEqual(collected, [.submissionRejected(.persistentPendingOperation)])
+    }
+
+    /// **v2026.07.16 阶段屏障回归**：持久 submitted 转换失败时必须停在
+    /// `Process.run()` 之前，不能发布 submitted/running，更不能伪造 terminal。
+    func test_managed持久提交屏障失败_明确零提交() async throws {
+        let exec = SubprocessExecutor(
+            terminalWaitPolicy: .waitUntilExit,
+            dryRun: true
+        )
+        let order = ManagedSubmissionOrderRecorder()
+        let updates = try exec.observeManagedExecution(
+            executable: "/usr/bin/xcrun",
+            args: ["simctl", "runtime", "delete", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"],
+            stallAfter: 1,
+            preSubmissionGuard: {
+                order.append("guard")
+                return .allow
+            },
+            preLaunchPersistenceBarrier: {
+                order.append("persistence")
+                return false
+            }
+        )
+        var collected: [SubprocessExecutor.ManagedExecutionUpdate] = []
+        for await update in updates { collected.append(update) }
+
+        XCTAssertEqual(order.snapshot(), ["guard", "persistence"])
+        XCTAssertEqual(collected, [.submissionRejected(.verificationUnavailable)])
+    }
+
+    func test_大量stdout持续排空但诊断保留有界() throws {
+        let yes = SubprocessExecutor.AllowEntry(
+            executable: "/usr/bin/yes",
+            argsPrefix: ["bounded-output"]
+        )
+        let exec = SubprocessExecutor(allowlist: [yes], timeout: 0.05, dryRun: false)
+        let result = try exec.run(executable: "/usr/bin/yes", args: ["bounded-output"])
+
+        XCTAssertEqual(result.exitCode, -2)
+        XCTAssertTrue(result.output.contains("output truncated"))
+        XCTAssertLessThanOrEqual(
+            result.output.utf8.count,
+            SubprocessExecutor.outputCaptureLimitPerStream + 512,
+            "readability handler 必须持续排空超量输出，但内存诊断缓冲不能无界增长"
+        )
+    }
+
+    /// **v2026.07.16 P0 回归**：simctl 的诊断通常写到 stderr。stderr handler 的锁
+    /// 必须与 stdout 一样严格成对，否则首个诊断 chunk 就可能触发未持锁 unlock 崩溃。
+    func test_真实stderr可排空并保留非零退出码() throws {
+        let script = "printf 'simctl diagnostic\\n' >&2; exit 7"
+        let shell = SubprocessExecutor.AllowEntry(
+            executable: "/bin/sh",
+            argsPrefix: ["-c", script]
+        )
+        let exec = SubprocessExecutor(allowlist: [shell], timeout: 5, dryRun: false)
+        let result = try exec.run(executable: "/bin/sh", args: ["-c", script])
+
+        XCTAssertEqual(result.exitCode, 7)
+        XCTAssertTrue(result.output.contains("simctl diagnostic"))
+    }
+
+    /// stdout/stderr 分别由并发 writer 产生，钉死两个 readability handler 共享锁时
+    /// 不得死锁、越界解锁或遗漏整条数据流。输出规模保持在各自 64 KiB 上限内。
+    func test_并发stdout与stderr都能完整排空() throws {
+        let script = """
+        (i=0; while [ $i -lt 512 ]; do printf 'stdout-%04d\\n' "$i"; i=$((i+1)); done) &
+        (i=0; while [ $i -lt 512 ]; do printf 'stderr-%04d\\n' "$i" >&2; i=$((i+1)); done) &
+        wait
+        """
+        let shell = SubprocessExecutor.AllowEntry(
+            executable: "/bin/sh",
+            argsPrefix: ["-c", script]
+        )
+        let exec = SubprocessExecutor(allowlist: [shell], timeout: 5, dryRun: false)
+        let result = try exec.run(executable: "/bin/sh", args: ["-c", script])
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertTrue(result.output.contains("stdout-0000"))
+        XCTAssertTrue(result.output.contains("stdout-0511"))
+        XCTAssertTrue(result.output.contains("stderr-0000"))
+        XCTAssertTrue(result.output.contains("stderr-0511"))
+        XCTAssertFalse(result.output.contains("output truncated"))
+    }
+
     // MARK: - 9. 超时：sleep 30s + timeout 0.5s → terminate，exitCode = -2
 
     /// PITFALL：超时闸门是防"长任务卡死调用线程"的最后防线；
@@ -221,12 +379,92 @@ final class SubprocessExecutorTests: XCTestCase {
                           "超时应在 ~0.5s 触发，不应等满 30s，实际耗时 \(elapsed)s")
     }
 
+    /// SAFETY v2026.07.16：若首次 owned wait 已经 reap，PID 已可能被系统复用；状态机
+    /// 必须直接返回终态，既不能 TERM，也不能 KILL。用注入 syscall 让该竞态确定可复现。
+    func test_ownedWait_已reap后绝不对缓存PID发信号() {
+        var signals: [Int32] = []
+        var waiterCalled = false
+        let terminal = OwnedChildProcessExecutor.resolveTimeout(
+            pid: 42,
+            initial: .reaped(status: 0),
+            terminationGrace: 1,
+            killGrace: 1,
+            waiter: { _, _ in
+                waiterCalled = true
+                return .notOwned
+            },
+            signaler: { _, signal in signals.append(signal) }
+        )
+
+        XCTAssertEqual(terminal, .exited(status: 0))
+        XCTAssertFalse(waiterCalled)
+        XCTAssertTrue(signals.isEmpty, "reaped PID 不得收到任何后续信号")
+    }
+
+    /// SAFETY v2026.07.16：`ECHILD` 代表唯一 owner 已丢失，后续即使宽限期结束也不能
+    /// 猜测 PID 身份。该分支必须 fail closed，且永不 signal。
+    func test_ownedWait_ECHILD后绝不对缓存PID发信号() {
+        var signals: [Int32] = []
+        let terminal = OwnedChildProcessExecutor.resolveTimeout(
+            pid: 43,
+            initial: .notOwned,
+            terminationGrace: 1,
+            killGrace: 1,
+            waiter: { _, _ in .running },
+            signaler: { _, signal in signals.append(signal) }
+        )
+
+        XCTAssertEqual(terminal, .notOwned)
+        XCTAssertTrue(signals.isEmpty, "ECHILD 后必须永久关闭 signal 路径")
+    }
+
+    func test_ownedWait_TERM后ECHILD_不再升级KILL() {
+        var signals: [Int32] = []
+        let terminal = OwnedChildProcessExecutor.resolveTimeout(
+            pid: 44,
+            initial: .running,
+            terminationGrace: 1,
+            killGrace: 1,
+            waiter: { _, _ in .notOwned },
+            signaler: { _, signal in signals.append(signal) }
+        )
+
+        XCTAssertEqual(terminal, .timedOut(sentSIGKILL: false, reapTransferred: false))
+        XCTAssertEqual(signals, [SIGTERM], "首次 ECHILD 后不得继续 SIGKILL")
+    }
+
+    /// 真子进程超时必须由同步 owner reap 完成；测试只运行 `/bin/sleep` fixture，既不
+    /// 触发 simctl，也不执行任何用户数据操作。
+    func test_ownedChild_真实超时后已收敛且无遗留wait义务() {
+        let pidRecorder = OwnedChildPIDRecorder()
+        let result = OwnedChildProcessExecutor.run(
+            path: "/bin/sleep",
+            arguments: ["30"],
+            timeout: 0.05,
+            outputLimitPerStream: 1_024,
+            onSpawn: { pidRecorder.store($0) }
+        )
+
+        guard case .timedOut = result.terminal else {
+            return XCTFail("sleep fixture 应超时，得到 \(result.terminal)")
+        }
+        guard let pid = pidRecorder.value else {
+            return XCTFail("spawn 后必须提供 owned PID")
+        }
+        var status: Int32 = 0
+        errno = 0
+        XCTAssertEqual(waitpid(pid, &status, WNOHANG), -1)
+        XCTAssertEqual(errno, ECHILD, "返回前 child 必须已 reap，不得遗留并发 waiter")
+    }
+
     func test_超时_忽略TERM时升级SIGKILL() throws {
+        // `exec` 保证 shell 与 sleep 是同一 owned PID，不留下继承 pipe 的孙进程。
+        let script = "trap '' TERM; exec /bin/sleep 30"
         let shell = SubprocessExecutor.AllowEntry(executable: "/bin/sh",
-                                                  argsPrefix: ["-c", "trap '' TERM; sleep 30"])
+                                                  argsPrefix: ["-c", script])
         let exec = SubprocessExecutor(allowlist: [shell], timeout: 0.2, dryRun: false)
         let start = Date()
-        let r = try exec.run(executable: "/bin/sh", args: ["-c", "trap '' TERM; sleep 30"])
+        let r = try exec.run(executable: "/bin/sh", args: ["-c", script])
         let elapsed = Date().timeIntervalSince(start)
         XCTAssertEqual(r.exitCode, -2)
         XCTAssertTrue(r.output.contains("SIGKILL sent"), "忽略 TERM 时必须升级 SIGKILL：\(r.output)")
@@ -245,5 +483,39 @@ final class SubprocessExecutorTests: XCTestCase {
         XCTAssertEqual(r.exitCode, -1, "launch 失败必须返回 -1，得到 \(r.exitCode)")
         XCTAssertTrue(r.output.contains("launch failed"),
                       "launch 失败输出必须含 'launch failed'：\(r.output)")
+    }
+}
+
+private final class ManagedSubmissionOrderRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String] = []
+
+    func append(_ value: String) {
+        lock.lock()
+        values.append(value)
+        lock.unlock()
+    }
+
+    func snapshot() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return values
+    }
+}
+
+private final class OwnedChildPIDRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: pid_t?
+
+    func store(_ pid: pid_t) {
+        lock.lock()
+        storage = pid
+        lock.unlock()
+    }
+
+    var value: pid_t? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
     }
 }

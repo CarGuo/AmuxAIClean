@@ -32,6 +32,25 @@ import LogKit
 /// 失败回退：如果根目录无法 `open(O_RDONLY)`（典型于 TCC / Full Disk Access），
 /// 调用方应回退到 `Scanner` 的 FileManager 路径。
 public actor BulkScanner {
+    /// Controls whether a consumer needs the full incremental tree or only capacity and
+    /// completeness evidence.
+    ///
+    /// **v2026.07.16 root-cause fix:** Workflow cards used to subscribe to the complete
+    /// stream and discard every node on the UI-owned task. A wide developer directory could
+    /// therefore fill the unbounded lossless stream with hundreds of thousands of DTOs even
+    /// though the card only needed the terminal summary. Summary-only delivery keeps typed
+    /// incomplete/failed/finished events, while workers do not allocate or publish node,
+    /// progress, or cache-tag events. Existing tree consumers retain the exact default
+    /// contract through `.complete`.
+    public enum EventDelivery: Sendable {
+        case complete
+        case summaryOnly
+
+        fileprivate var includesIncrementalNodes: Bool {
+            self == .complete
+        }
+    }
+
     /// Maximum number of entries carried by one `.nodes` event.
     ///
     /// The consumer currently ingests each batch on MainActor. Keeping this
@@ -45,7 +64,10 @@ public actor BulkScanner {
         self.options = options
     }
 
-    public nonisolated func scan(root: URL) -> AsyncStream<ScanEvent> {
+    public nonisolated func scan(
+        root: URL,
+        delivery: EventDelivery = .complete
+    ) -> AsyncStream<ScanEvent> {
         // v1.3 P0 修复：原 `.bufferingNewest(8192)` 在 195k+ 文件场景会静默丢事件
         //（消费者主线程慢于 worker yield 速度时，最旧的 .node 事件被 AsyncStream 主动丢弃，
         // 直接导致 Finder 18.86 GB / 195,979 items → 应用 552.6 MB / 1,209 items 的灾难性少算）。
@@ -132,7 +154,8 @@ public actor BulkScanner {
                                 dirInodes: dirInodes,
                                 options: opts,
                                 rootDev: rootDev,
-                                continuation: continuation
+                                continuation: continuation,
+                                delivery: delivery
                             )
                         }
                     }
@@ -178,7 +201,8 @@ public actor BulkScanner {
         dirInodes: DirInodeSet,
         options: ScanOptions,
         rootDev: UInt64,
-        continuation: AsyncStream<ScanEvent>.Continuation
+        continuation: AsyncStream<ScanEvent>.Continuation,
+        delivery: EventDelivery
     ) async {
         while !Task.isCancelled {
             let nextOp = await queue.popOrFinish()
@@ -195,7 +219,8 @@ public actor BulkScanner {
                     dirInodes: dirInodes,
                     options: options,
                     rootDev: rootDev,
-                    continuation: continuation
+                    continuation: continuation,
+                    delivery: delivery
                 )
                 // 注意顺序：必须先把发现的子目录全部 push 完才 markCompleted，
                 // 否则可能出现"queue 空 + inFlight==0"假象 → 其他 worker 提前退出 → 漏扫。
@@ -215,7 +240,8 @@ public actor BulkScanner {
         dirInodes: DirInodeSet,
         options: ScanOptions,
         rootDev: UInt64,
-        continuation: AsyncStream<ScanEvent>.Continuation
+        continuation: AsyncStream<ScanEvent>.Continuation,
+        delivery: EventDelivery
     ) async {
         guard !Task.isCancelled else { return }
         let openOutcome = BulkDirectoryOpener.open(
@@ -264,7 +290,7 @@ public actor BulkScanner {
         // CACHEDIR.TAG（cache-directory-tagging.com 标准）是“内容可视为缓存”的分类信号，
         // 不是“清理工具可以不统计大小”的许可。备份工具可以据此跳过内容，但本应用必须继续
         // 下钻，才能给出真实的可释放字节数。事件仍保留给上层做 safe 分类提示。
-        if CacheDirTag.isCacheDirectory(at: dirPath) {
+        if delivery == .complete, CacheDirTag.isCacheDirectory(at: dirPath) {
             continuation.yield(.cacheDirTagged(path: dirPath))
             GSYLog.info(.scan, "BulkScanner 命中 CACHEDIR.TAG，保留缓存分类并继续统计 dir=\(dirPath)")
         }
@@ -282,7 +308,9 @@ public actor BulkScanner {
         // 逐 entry yield 会造成过多 continuation hop；整目录一次 yield 又会让超宽目录在
         // MainActor 上形成无界事务。256 是两者之间的固定内存/帧预算边界。
         var localNodes: [FSNode] = []
-        localNodes.reserveCapacity(Self.nodeBatchLimit)
+        if delivery.includesIncrementalNodes {
+            localNodes.reserveCapacity(Self.nodeBatchLimit)
+        }
 
         let enumerationOutcome = BulkEnumerate.enumerate(
             fd: fd,
@@ -346,30 +374,32 @@ public actor BulkScanner {
             // - 目录的 subtree bytes 由后代文件聚合，目录 inode 本身不能再加一次；
             // - 同 inode 的后续 hardlink 仍保留路径/fileCount，但字节归零。
             // 这样展平 node stream 的和与 ScanSummary 保持严格一致。
-            let contributesBytes = !entry.isDirectory && isFirstFile
-            let nodeAllocated = contributesBytes ? entry.allocatedSize : 0
-            let nodeLogical = contributesBytes ? entry.logicalSize : 0
+            if delivery.includesIncrementalNodes {
+                let contributesBytes = !entry.isDirectory && isFirstFile
+                let nodeAllocated = contributesBytes ? entry.allocatedSize : 0
+                let nodeLogical = contributesBytes ? entry.logicalSize : 0
 
-            // P0：直接 path 主路径，省掉 URL(fileURLWithPath:) 的 147 ms（trace 4.83s）。
-            // 旧实现：每个 entry 都 URL.init → RFC3986Parser.parse + percentEncodePath
-            // + String._decomposed Unicode 归一化，且所有消费方拿到后立刻 .url.path
-            // 反向 bridge 回 String，纯白工。FSNode 已把 url 改成 computed，需要 URL
-            // 的 cold path 自己付钱即可。
-            let node = FSNode(
-                path: absPath,
-                isDirectory: entry.isDirectory,
-                isSymlink: entry.isSymlink,
-                allocatedSize: nodeAllocated,
-                logicalSize: nodeLogical,
-                inode: entry.inode,
-                device: entry.device,
-                modificationDate: entry.modificationDate
-            )
-            // 同一父目录内保持原枚举顺序；达到固定上限立即 flush，避免宽目录无界 batch。
-            localNodes.append(node)
-            if localNodes.count == Self.nodeBatchLimit {
-                continuation.yield(.nodes(localNodes))
-                localNodes.removeAll(keepingCapacity: true)
+                // P0：直接 path 主路径，省掉 URL(fileURLWithPath:) 的 147 ms（trace 4.83s）。
+                // 旧实现：每个 entry 都 URL.init → RFC3986Parser.parse + percentEncodePath
+                // + String._decomposed Unicode 归一化，且所有消费方拿到后立刻 .url.path
+                // 反向 bridge 回 String，纯白工。FSNode 已把 url 改成 computed，需要 URL
+                // 的 cold path 自己付钱即可。
+                let node = FSNode(
+                    path: absPath,
+                    isDirectory: entry.isDirectory,
+                    isSymlink: entry.isSymlink,
+                    allocatedSize: nodeAllocated,
+                    logicalSize: nodeLogical,
+                    inode: entry.inode,
+                    device: entry.device,
+                    modificationDate: entry.modificationDate
+                )
+                // 同一父目录内保持原枚举顺序；达到固定上限立即 flush，避免宽目录无界 batch。
+                localNodes.append(node)
+                if localNodes.count == Self.nodeBatchLimit {
+                    continuation.yield(.nodes(localNodes))
+                    localNodes.removeAll(keepingCapacity: true)
+                }
             }
             return true
         }
@@ -415,10 +445,12 @@ public actor BulkScanner {
 
         // Flush 尾批；单 entry 仍保留 `.node` 兼容路径。
         // AsyncStream.continuation.yield 是 thread-safe（Apple 文档保证）
-        if localNodes.count == 1 {
-            continuation.yield(.node(localNodes[0]))
-        } else if localNodes.count >= 2 {
-            continuation.yield(.nodes(localNodes))
+        if delivery.includesIncrementalNodes {
+            if localNodes.count == 1 {
+                continuation.yield(.node(localNodes[0]))
+            } else if localNodes.count >= 2 {
+                continuation.yield(.nodes(localNodes))
+            }
         }
 
         // 关键：先 push 新目录、再 merge stats，最后才 markCompleted（在 workerLoop 里）
@@ -432,7 +464,7 @@ public actor BulkScanner {
             tccSkipped: localTCCSkipped,
             incompleteIssues: localIncompleteIssues
         )
-        if let prog = await stats.progressIfDue() {
+        if delivery == .complete, let prog = await stats.progressIfDue() {
             continuation.yield(.progress(scannedBytes: prog.bytes, fileCount: prog.files))
         }
     }

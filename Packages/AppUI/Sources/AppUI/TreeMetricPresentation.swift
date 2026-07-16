@@ -32,21 +32,9 @@ struct TreeMetricPresentation: Equatable, Sendable {
 
         static func resolved(locale: Locale) -> Self {
             Self(
-                lowerBoundFormat: String(
-                    localized: "tree.metric.lower_bound",
-                    bundle: .module,
-                    locale: locale
-                ),
-                partialStatus: String(
-                    localized: "tree.subtree.partial.badge",
-                    bundle: .module,
-                    locale: locale
-                ),
-                partialHelpFormat: String(
-                    localized: "tree.subtree.partial.help",
-                    bundle: .module,
-                    locale: locale
-                )
+                lowerBoundFormat: AppLocalization.string("tree.metric.lower_bound", locale: locale),
+                partialStatus: AppLocalization.string("tree.subtree.partial.badge", locale: locale),
+                partialHelpFormat: AppLocalization.string("tree.subtree.partial.help", locale: locale)
             )
         }
     }
@@ -142,7 +130,7 @@ struct TreeMetricPresentation: Equatable, Sendable {
     }
 
     private static func exactSize(_ bytes: Int64, locale: Locale) -> String {
-        bytes.formatted(.byteCount(style: .file).locale(locale))
+        AppLocalization.byteCount(bytes, locale: locale)
     }
 
     /// Finder/file-style decimal units with a downward rounding rule.

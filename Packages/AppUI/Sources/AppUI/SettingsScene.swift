@@ -12,7 +12,9 @@ import UniformTypeIdentifiers
 /// 为刷新语言重新执行导入、导出或清理操作。
 enum SettingsPathImportNotice: Equatable {
     case duplicate(count: Int)
-    case failed(detail: String)
+    /// v2026.07.16：系统选择器错误只进入日志；UI 保存稳定语义，避免 raw NSError、
+    /// percent-encoded 路径或启动语言快照直接泄漏到用户界面。
+    case failed
 
     func localized(locale: Locale) -> String {
         switch self {
@@ -22,21 +24,17 @@ enum SettingsPathImportNotice: Equatable {
                 locale: locale,
                 arguments: [count]
             )
-        case .failed(let detail):
-            return AppLocalization.format(
-                "custom_path.import.failed %@",
-                locale: locale,
-                arguments: [detail]
-            )
+        case .failed:
+            return AppLocalization.string("custom_path.import.failed", locale: locale)
         }
     }
 }
 
 enum SettingsLogActionNotice: Equatable {
     case exported(path: String)
-    case exportFailed(detail: String)
+    case exportFailed
     case cleared(count: Int)
-    case clearFailed(detail: String)
+    case clearFailed
 
     func localized(locale: Locale) -> String {
         switch self {
@@ -46,24 +44,16 @@ enum SettingsLogActionNotice: Equatable {
                 locale: locale,
                 arguments: [path]
             )
-        case .exportFailed(let detail):
-            return AppLocalization.format(
-                "settings.storage.log.export.failed %@",
-                locale: locale,
-                arguments: [detail]
-            )
+        case .exportFailed:
+            return AppLocalization.string("settings.storage.log.export.failed", locale: locale)
         case .cleared(let count):
             return AppLocalization.format(
                 "settings.storage.log.clear.done %d",
                 locale: locale,
                 arguments: [count]
             )
-        case .clearFailed(let detail):
-            return AppLocalization.format(
-                "settings.storage.log.clear.failed %@",
-                locale: locale,
-                arguments: [detail]
-            )
+        case .clearFailed:
+            return AppLocalization.string("settings.storage.log.clear.failed", locale: locale)
         }
     }
 }
@@ -89,6 +79,7 @@ public struct SettingsScene: View {
     /// 一致但 @Observable 通知不跨实例 → 需重启 App 才生效（Review fix #2，2026-06-15）。
     /// 为兼容旧测试 / Preview，参数允许省略，省略时仍 new 一份私有实例（仅 settings 窗口自用）。
     @Bindable private var aiSettings: AISettings
+    @ObservedObject private var sentinelManager: SentinelManager
 
     /// 当前 SwiftUI 环境的 locale —— 给语言 Picker 选项做"按当前界面语言展示"用。
     /// [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
@@ -108,12 +99,14 @@ public struct SettingsScene: View {
                 pathStore: UserPathStore,
                 updateChecker: UpdateChecker,
                 aiSettings: AISettings? = nil,
-                navigation: SettingsNavigation? = nil) {
+                navigation: SettingsNavigation? = nil,
+                sentinelManager: SentinelManager) {
         self.settings = settings
         self.pathStore = pathStore
         self.updateChecker = updateChecker
         self.aiSettings = aiSettings ?? AISettings()
         self.navigation = navigation ?? SettingsNavigation()
+        self._sentinelManager = ObservedObject(wrappedValue: sentinelManager)
     }
 
     public var body: some View {
@@ -550,7 +543,7 @@ public struct SettingsScene: View {
             // 取消由系统 fileImporter 自己消化；其它错误必须留诊断证据，不能 try? 吞掉。
             guard (error as? CocoaError)?.code != .userCancelled else { return }
             GSYLog.error(.settings, "settings directory importer failed: \(error.localizedDescription)")
-            pathImportNotice = .failed(detail: error.localizedDescription)
+            pathImportNotice = .failed
         }
     }
 
@@ -810,7 +803,8 @@ extension SettingsScene {
             logActionNotice = .exported(path: url.path)
         } catch {
             GSYLog.error(.operation, "settings.log.export_failed path=\(url.path) error=\(error)")
-            logActionNotice = .exportFailed(detail: "\(error)")
+            // v2026.07.16：原始文件系统 Error 已写日志；用户提示只保留稳定语义。
+            logActionNotice = .exportFailed
         }
     }
 
@@ -821,7 +815,7 @@ extension SettingsScene {
             logActionNotice = .cleared(count: count)
         } catch {
             GSYLog.error(.operation, "settings.log.clear_failed error=\(error)")
-            logActionNotice = .clearFailed(detail: "\(error)")
+            logActionNotice = .clearFailed
         }
     }
 
@@ -845,12 +839,27 @@ extension SettingsScene {
                 }
                 if let last = settings.sentinelLastEnabled {
                     LabeledContent {
-                        Text(last.formatted(date: .abbreviated, time: .shortened))
+                        // v2026.07.16：该 String 必须显式绑定设置页当前语言；便利重载
+                        // 只读取进程 locale，会让 Sentinel 状态卡在切换后继续显示英文日期。
+                        Text(last.formatted(
+                            Date.FormatStyle(date: .abbreviated, time: .shortened)
+                                .locale(currentEnvironmentLocale)
+                        ))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } label: {
                         Text("settings.advanced.sentinel.last_enabled", bundle: .module)
                     }
+                }
+                LabeledContent {
+                    Text(verbatim: sentinelManager.presentationState.localized(
+                        locale: currentEnvironmentLocale
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+                } label: {
+                    Text("settings.advanced.sentinel.status", bundle: .module)
                 }
             } header: {
                 Text("settings.advanced.sentinel.section", bundle: .module)
@@ -862,5 +871,10 @@ extension SettingsScene {
         }
         .formStyle(.grouped)
         .padding(.top, 4)
+        .onAppear {
+            // v2026.07.16：设置页每次出现都重新读取 SMAppService 权威状态；Toggle
+            // 只表达用户意图，不能被当成“daemon 已启用”的事实来源。
+            sentinelManager.refreshPresentation()
+        }
     }
 }

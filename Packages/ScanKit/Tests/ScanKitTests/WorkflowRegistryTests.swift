@@ -251,6 +251,36 @@ final class WorkflowRegistryTests: XCTestCase {
         )
     }
 
+    func test_simulatorRuntimeHit_使用真实watchOS平台名且保留managedUUID() {
+        let uuid = "12345678-1234-1234-1234-123456789ABC"
+        let runtime = SimctlRuntime(
+            runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.watchOS-11-0",
+            managedUninstallIdentifier: uuid,
+            platformIdentifier: "com.apple.platform.watchsimulator",
+            kind: "Patchable Cryptex Disk Image",
+            version: "11.0",
+            buildversion: "22R345",
+            runtimeRoot: "/Library/Developer/CoreSimulator/Volumes/watchOS_22R345",
+            isAvailable: true,
+            deletable: true,
+            sizeBytes: 4_096
+        )
+
+        let hit = WorkflowRegistry.simulatorRuntimeHit(runtime)
+
+        XCTAssertEqual(hit.displayName, "watchOS 11.0 (22R345)")
+        XCTAssertFalse(hit.displayName.hasPrefix("iOS"))
+        XCTAssertEqual(hit.managedUninstallIdentifier, uuid)
+        XCTAssertEqual(
+            hit.semanticNote,
+            .simulatorRuntime(
+                runtimeIdentifier: runtime.runtimeIdentifier,
+                isAvailable: true,
+                management: .uninstallable
+            )
+        )
+    }
+
     // MARK: - case 7: node-modules-scattered 路由（WebNode 工作流）
 
     func test_resolve_nodeModulesScattered_空home_返回空() async {

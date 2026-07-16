@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import LogKit
 
 /// Apple 工作流配套：DerivedData 按工程粒度扫描器。
@@ -52,6 +53,21 @@ public actor DerivedDataPerProjectScanner {
         )
     }
 
+    /// One immutable view of the DerivedData root and its real project children.
+    ///
+    /// **v2026.07.16 root-cause fix:** the Workflow previously scanned the entire root for
+    /// the aggregate card and then recursively scanned every first-level directory again for
+    /// the project card. The snapshot API performs one recursive allocation pass and returns
+    /// both projections, so AppUI can share the evidence without sharing mutable state.
+    public func discoverSnapshot(home: URL) async throws -> DerivedDataScanSnapshot {
+        try Task.checkCancellation()
+        return try Self.detectSnapshot(
+            home: home,
+            fileSystem: FileManager.default,
+            cancellationCheck: { try Task.checkCancellation() }
+        )
+    }
+
     /// 同步入口：纯 FS 遍历，无 subprocess，供单测直接调用。
     ///
     /// 流程：
@@ -86,6 +102,29 @@ public actor DerivedDataPerProjectScanner {
         }
     }
 
+    /// Synchronous snapshot entry used by tests and detached Workflow workers.
+    public nonisolated static func detectSnapshot(home: URL) -> DerivedDataScanSnapshot {
+        do {
+            return try detectSnapshot(
+                home: home,
+                fileSystem: FileManager.default,
+                cancellationCheck: {}
+            )
+        } catch {
+            let root = derivedDataRoot(home: home)
+            GSYLog.error(.scan, "DerivedData snapshot unexpected error root=\(root.path): \(error)")
+            let issue = ScanIncompleteIssue(path: root.path, reason: .enumerationFailed)
+            return DerivedDataScanSnapshot(
+                rootURL: root,
+                rootExists: true,
+                rootSizeBytes: nil,
+                projects: DiscoveryEvidence(hits: [], incompleteIssues: [issue]),
+                rootIncompleteIssues: [issue],
+                sharedDirectoryCount: 0
+            )
+        }
+    }
+
     /// 模块内注入入口，供 WorkflowRegistry 传播取消及测试精确制造 I/O 故障。
     nonisolated static func detectWithEvidence(
         home: URL,
@@ -93,11 +132,136 @@ public actor DerivedDataPerProjectScanner {
         fileSystem: any DynamicDiscoveryFileSystem,
         cancellationCheck: () throws -> Void
     ) throws -> DiscoveryEvidence<ProjectHit> {
-        let root = home
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Developer", isDirectory: true)
-            .appendingPathComponent("Xcode", isDirectory: true)
-            .appendingPathComponent("DerivedData", isDirectory: true)
+        if includeSizes {
+            return try detectSnapshot(
+                home: home,
+                fileSystem: fileSystem,
+                cancellationCheck: cancellationCheck
+            ).projects
+        }
+
+        return try discoverLayout(
+            home: home,
+            fileSystem: fileSystem,
+            cancellationCheck: cancellationCheck
+        ).projectEvidence()
+    }
+
+    /// Shared snapshot implementation. The shallow layout discovery and the recursive size
+    /// traversal are deliberately separate: classification is based on Xcode structure and
+    /// metadata, while byte accounting never needs to guess whether an entry is a project.
+    nonisolated static func detectSnapshot(
+        home: URL,
+        fileSystem: any DynamicDiscoveryFileSystem,
+        cancellationCheck: () throws -> Void
+    ) throws -> DerivedDataScanSnapshot {
+        let layout = try discoverLayout(
+            home: home,
+            fileSystem: fileSystem,
+            cancellationCheck: cancellationCheck
+        )
+        guard layout.rootExists else {
+            return DerivedDataScanSnapshot(
+                rootURL: layout.root,
+                rootExists: false,
+                rootSizeBytes: 0,
+                projects: layout.projectEvidence(),
+                rootIncompleteIssues: layout.incompleteIssues,
+                sharedDirectoryCount: layout.sharedDirectoryCount
+            )
+        }
+        guard layout.incompleteIssues.isEmpty || !layout.projects.isEmpty else {
+            return DerivedDataScanSnapshot(
+                rootURL: layout.root,
+                rootExists: true,
+                rootSizeBytes: nil,
+                projects: layout.projectEvidence(),
+                rootIncompleteIssues: layout.incompleteIssues,
+                sharedDirectoryCount: layout.sharedDirectoryCount
+            )
+        }
+
+        let allocation = try measureRootOnce(
+            layout: layout,
+            cancellationCheck: cancellationCheck
+        )
+        let allIssues = layout.incompleteIssues + allocation.incompleteIssues
+        let hits = layout.projects.map { project -> ProjectHit in
+            let relevantIssues = allIssues.filter {
+                isSameOrDescendant(path: $0.path, root: project.url.path)
+            }
+            return ProjectHit(
+                url: project.url,
+                projectName: project.projectName,
+                sizeBytes: relevantIssues.isEmpty
+                    ? allocation.projectBytes[project.url.lastPathComponent, default: 0]
+                    : nil,
+                modificationDate: project.modificationDate
+            )
+        }
+        return DerivedDataScanSnapshot(
+            rootURL: layout.root,
+            rootExists: true,
+            rootSizeBytes: allIssues.isEmpty ? allocation.rootBytes : nil,
+            projects: DiscoveryEvidence(hits: hits, incompleteIssues: allIssues),
+            rootIncompleteIssues: allIssues,
+            sharedDirectoryCount: layout.sharedDirectoryCount
+        )
+    }
+
+    private struct LayoutProject {
+        let url: URL
+        let projectName: String
+        let modificationDate: Date?
+    }
+
+    private struct DerivedDataLayout {
+        let root: URL
+        let rootExists: Bool
+        let projects: [LayoutProject]
+        let incompleteIssues: [ScanIncompleteIssue]
+        let sharedDirectoryCount: Int
+
+        func projectEvidence() -> DiscoveryEvidence<ProjectHit> {
+            DiscoveryEvidence(
+                hits: projects.map {
+                    ProjectHit(
+                        url: $0.url,
+                        projectName: $0.projectName,
+                        sizeBytes: nil,
+                        modificationDate: $0.modificationDate
+                    )
+                },
+                incompleteIssues: incompleteIssues
+            )
+        }
+    }
+
+    private struct RootAllocation {
+        let rootBytes: Int64
+        let projectBytes: [String: Int64]
+        let incompleteIssues: [ScanIncompleteIssue]
+    }
+
+    /// Physical identity for hardlink accounting. APFS clones intentionally remain distinct:
+    /// they have different inodes and neither `st_blocks` nor URL allocated-size metadata can
+    /// prove exclusive/reclaimable extents.
+    private struct PhysicalFileIdentity: Hashable {
+        let device: UInt64
+        let inode: UInt64
+    }
+
+    private struct PhysicalFileAttribution {
+        let bytes: Int64
+        var projectName: String?
+    }
+
+    private nonisolated static func discoverLayout(
+        home: URL,
+        fileSystem: any DynamicDiscoveryFileSystem,
+        cancellationCheck: () throws -> Void
+    ) throws -> DerivedDataLayout {
+        let root = derivedDataRoot(home: home)
 
         try cancellationCheck()
         let rootAttributes: [FileAttributeKey: Any]
@@ -105,42 +269,73 @@ public actor DerivedDataPerProjectScanner {
             rootAttributes = try fileSystem.attributesOfItem(atPath: root.path)
         } catch {
             if DiscoveryFileErrorClassifier.isMissing(error) {
-                return DiscoveryEvidence(hits: [])
+                return DerivedDataLayout(
+                    root: root,
+                    rootExists: false,
+                    projects: [],
+                    incompleteIssues: [],
+                    sharedDirectoryCount: 0
+                )
             }
-            return incomplete(
-                path: root.path,
-                reason: DiscoveryFileErrorClassifier.incompleteReason(
+            return DerivedDataLayout(
+                root: root,
+                rootExists: true,
+                projects: [],
+                incompleteIssues: [ScanIncompleteIssue(
+                    path: root.path,
+                    reason: DiscoveryFileErrorClassifier.incompleteReason(
                     for: error,
                     fallback: .metadataUnavailable
-                )
+                    )
+                )],
+                sharedDirectoryCount: 0
             )
         }
         guard let rootType = rootAttributes[.type] as? FileAttributeType else {
-            return incomplete(path: root.path, reason: .metadataUnavailable)
+            return DerivedDataLayout(
+                root: root,
+                rootExists: true,
+                projects: [],
+                incompleteIssues: [ScanIncompleteIssue(path: root.path, reason: .metadataUnavailable)],
+                sharedDirectoryCount: 0
+            )
         }
         guard rootType == .typeDirectory || rootType == .typeSymbolicLink else {
-            return DiscoveryEvidence(hits: [])
+            return DerivedDataLayout(
+                root: root,
+                rootExists: false,
+                projects: [],
+                incompleteIssues: [],
+                sharedDirectoryCount: 0
+            )
         }
 
         let childNames: [String]
         do {
             childNames = try fileSystem.contentsOfDirectory(atPath: root.path).sorted()
         } catch {
-            return incomplete(
-                path: root.path,
-                reason: DiscoveryFileErrorClassifier.incompleteReason(
-                    for: error,
-                    fallback: .enumerationFailed
-                )
+            return DerivedDataLayout(
+                root: root,
+                rootExists: true,
+                projects: [],
+                incompleteIssues: [ScanIncompleteIssue(
+                    path: root.path,
+                    reason: DiscoveryFileErrorClassifier.incompleteReason(
+                        for: error,
+                        fallback: .enumerationFailed
+                    )
+                )],
+                sharedDirectoryCount: 0
             )
         }
 
-        var hits: [ProjectHit] = []
+        var projects: [LayoutProject] = []
         var incompleteIssues: [ScanIncompleteIssue] = []
-        hits.reserveCapacity(childNames.count)
+        var sharedDirectoryCount = 0
+        projects.reserveCapacity(childNames.count)
         for name in childNames {
             try cancellationCheck()
-            if name.hasPrefix(".") || name == "ModuleCache.noindex" { continue }
+            if name.hasPrefix(".") { continue }
             let child = root.appendingPathComponent(name, isDirectory: true)
             let attributes: [FileAttributeKey: Any]
             do {
@@ -164,6 +359,10 @@ public actor DerivedDataPerProjectScanner {
                 continue
             }
             guard type == .typeDirectory else { continue }
+            guard isProjectDirectory(name: name, at: child) else {
+                sharedDirectoryCount += 1
+                continue
+            }
             let modificationDate = attributes[.modificationDate] as? Date
             if modificationDate == nil {
                 incompleteIssues.append(ScanIncompleteIssue(
@@ -171,25 +370,209 @@ public actor DerivedDataPerProjectScanner {
                     reason: .metadataUnavailable
                 ))
             }
-            let sizeResult: DirectorySizeResult
-            if includeSizes {
-                sizeResult = try estimateSizeWithEvidence(
-                    at: child,
-                    cancellationCheck: cancellationCheck
-                )
-                incompleteIssues.append(contentsOf: sizeResult.incompleteIssues)
-            } else {
-                sizeResult = DirectorySizeResult(sizeBytes: nil, incompleteIssues: [])
-            }
-            hits.append(ProjectHit(
+            projects.append(LayoutProject(
                 url: child,
                 projectName: parseProjectName(from: name),
-                sizeBytes: sizeResult.sizeBytes,
                 modificationDate: modificationDate
             ))
         }
         try cancellationCheck()
-        return DiscoveryEvidence(hits: hits, incompleteIssues: incompleteIssues)
+        return DerivedDataLayout(
+            root: root,
+            rootExists: true,
+            projects: projects,
+            incompleteIssues: incompleteIssues,
+            sharedDirectoryCount: sharedDirectoryCount
+        )
+    }
+
+    /// Xcode project directories carry workspace metadata and use a stable hashed suffix.
+    /// Shared caches use structural `.noindex` containers and do not satisfy that identity.
+    /// This intentionally avoids a growing deny-list of cache product names: new shared
+    /// caches are excluded by shape, including CompilationCache.noindex and
+    /// SDKStatCaches.noindex, without adding either spelling to production logic.
+    private nonisolated static func isProjectDirectory(name: String, at url: URL) -> Bool {
+        if url.pathExtension.caseInsensitiveCompare("noindex") == .orderedSame {
+            return false
+        }
+        if hasWorkspaceMetadata(at: url.appendingPathComponent("info.plist")) {
+            return true
+        }
+        guard let dash = name.lastIndex(of: "-"), dash != name.startIndex else { return false }
+        let suffix = name[name.index(after: dash)...]
+        guard suffix.count >= 3 else { return false }
+        return suffix.unicodeScalars.allSatisfy { scalar in
+            (scalar.value >= 48 && scalar.value <= 57)
+                || (scalar.value >= 97 && scalar.value <= 122)
+        }
+    }
+
+    private nonisolated static func hasWorkspaceMetadata(at plistURL: URL) -> Bool {
+        guard let data = try? Data(contentsOf: plistURL),
+              let dictionary = try? PropertyListSerialization.propertyList(
+                from: data,
+                options: [],
+                format: nil
+              ) as? [String: Any] else {
+            return false
+        }
+        return dictionary["WorkspacePath"] is String || dictionary["ProjectPath"] is String
+    }
+
+    /// One recursive enumeration for both aggregate bytes and all project buckets.
+    ///
+    /// **v2026.07.16 root-cause fix:** the former shared snapshot summed every pathname and
+    /// therefore counted one physical hardlinked file multiple times, unlike BulkScanner's
+    /// default `(device, inode)` contract. Root bytes now count each physical identity once.
+    /// If one identity is linked into multiple project directories, exactly one deterministic
+    /// owner receives it: the lexicographically smallest project child name. A link first seen
+    /// in a shared cache can still be attributed later to a project, but never to two projects.
+    private nonisolated static func measureRootOnce(
+        layout: DerivedDataLayout,
+        cancellationCheck: () throws -> Void
+    ) throws -> RootAllocation {
+        let keys: Set<URLResourceKey> = [
+            .totalFileAllocatedSizeKey,
+            .fileAllocatedSizeKey,
+            .isRegularFileKey,
+        ]
+        var issues: [ScanIncompleteIssue] = []
+        guard let enumerator = FileManager.default.enumerator(
+            at: layout.root,
+            includingPropertiesForKeys: Array(keys),
+            options: [],
+            errorHandler: { failedURL, error in
+                issues.append(ScanIncompleteIssue(
+                    path: failedURL.standardizedFileURL.path,
+                    reason: DiscoveryFileErrorClassifier.incompleteReason(
+                        for: error,
+                        fallback: .enumerationFailed
+                    )
+                ))
+                return true
+            }
+        ) else {
+            return RootAllocation(
+                rootBytes: 0,
+                projectBytes: [:],
+                incompleteIssues: [ScanIncompleteIssue(
+                    path: layout.root.path,
+                    reason: .enumerationFailed
+                )]
+            )
+        }
+
+        let projectNames = Set(layout.projects.map { $0.url.lastPathComponent })
+        let rootPrefix = layout.root.standardizedFileURL.path + "/"
+        var rootBytes: Int64 = 0
+        var projectBytes: [String: Int64] = [:]
+        var physicalFiles: [PhysicalFileIdentity: PhysicalFileAttribution] = [:]
+        for case let fileURL as URL in enumerator {
+            try cancellationCheck()
+            let values: URLResourceValues
+            do {
+                values = try fileURL.resourceValues(forKeys: keys)
+            } catch {
+                issues.append(ScanIncompleteIssue(
+                    path: fileURL.standardizedFileURL.path,
+                    reason: DiscoveryFileErrorClassifier.incompleteReason(
+                        for: error,
+                        fallback: .metadataUnavailable
+                    )
+                ))
+                continue
+            }
+            guard values.isRegularFile == true else { continue }
+            let path = fileURL.standardizedFileURL.path
+            let projectName: String? = {
+                guard path.hasPrefix(rootPrefix) else { return nil }
+                let relative = path.dropFirst(rootPrefix.count)
+                guard let first = relative.split(separator: "/", maxSplits: 1).first else {
+                    return nil
+                }
+                let childName = String(first)
+                return projectNames.contains(childName) ? childName : nil
+            }()
+            let identity: PhysicalFileIdentity
+            do {
+                identity = try physicalFileIdentity(at: fileURL)
+            } catch let error as POSIXIdentityError {
+                issues.append(ScanIncompleteIssue(
+                    path: path,
+                    reason: .metadataUnavailable,
+                    stage: .metadata,
+                    posixErrorCode: error.code
+                ))
+                continue
+            } catch {
+                issues.append(ScanIncompleteIssue(
+                    path: path,
+                    reason: .metadataUnavailable,
+                    stage: .metadata
+                ))
+                continue
+            }
+
+            if var existing = physicalFiles[identity] {
+                if let projectName {
+                    if let currentOwner = existing.projectName {
+                        if projectName < currentOwner {
+                            projectBytes[currentOwner, default: 0] -= existing.bytes
+                            projectBytes[projectName, default: 0] &+= existing.bytes
+                            existing.projectName = projectName
+                            physicalFiles[identity] = existing
+                        }
+                    } else {
+                        projectBytes[projectName, default: 0] &+= existing.bytes
+                        existing.projectName = projectName
+                        physicalFiles[identity] = existing
+                    }
+                }
+                continue
+            }
+
+            let bytes = max(0, Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0))
+            rootBytes &+= bytes
+            if let projectName {
+                projectBytes[projectName, default: 0] &+= bytes
+            }
+            physicalFiles[identity] = PhysicalFileAttribution(
+                bytes: bytes,
+                projectName: projectName
+            )
+        }
+        try cancellationCheck()
+        return RootAllocation(
+            rootBytes: rootBytes,
+            projectBytes: projectBytes,
+            incompleteIssues: issues
+        )
+    }
+
+    private struct POSIXIdentityError: Error {
+        let code: Int32
+    }
+
+    private nonisolated static func physicalFileIdentity(
+        at url: URL
+    ) throws -> PhysicalFileIdentity {
+        var metadata = stat()
+        let result = url.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return EINVAL }
+            guard lstat(path, &metadata) == 0 else { return errno }
+            return 0
+        }
+        guard result == 0 else { throw POSIXIdentityError(code: result) }
+        return PhysicalFileIdentity(
+            device: UInt64(bitPattern: Int64(metadata.st_dev)),
+            inode: UInt64(metadata.st_ino)
+        )
+    }
+
+    private nonisolated static func isSameOrDescendant(path: String, root: String) -> Bool {
+        let normalizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        let normalizedRoot = URL(fileURLWithPath: root).standardizedFileURL.path
+        return normalizedPath == normalizedRoot || normalizedPath.hasPrefix(normalizedRoot + "/")
     }
 
     private nonisolated static func derivedDataRoot(home: URL) -> URL {
@@ -301,6 +684,36 @@ public actor DerivedDataPerProjectScanner {
             sizeBytes: incompleteIssues.isEmpty ? total : nil,
             incompleteIssues: incompleteIssues
         )
+    }
+}
+
+/// A single filesystem transaction projected as both the whole DerivedData root and the
+/// subset of directories proven to be Xcode projects.
+public struct DerivedDataScanSnapshot: Sendable {
+    public let rootURL: URL
+    public let rootExists: Bool
+    public let rootSizeBytes: Int64?
+    public let projects: DiscoveryEvidence<ProjectHit>
+    public let rootIncompleteIssues: [ScanIncompleteIssue]
+    public let sharedDirectoryCount: Int
+
+    public init(
+        rootURL: URL,
+        rootExists: Bool,
+        rootSizeBytes: Int64?,
+        projects: DiscoveryEvidence<ProjectHit>,
+        rootIncompleteIssues: [ScanIncompleteIssue],
+        sharedDirectoryCount: Int
+    ) {
+        self.rootURL = rootURL
+        self.rootExists = rootExists
+        self.rootSizeBytes = rootSizeBytes
+        self.projects = projects
+        self.rootIncompleteIssues = DiscoveryEvidence<ProjectHit>(
+            hits: [],
+            incompleteIssues: rootIncompleteIssues
+        ).incompleteIssues
+        self.sharedDirectoryCount = sharedDirectoryCount
     }
 }
 

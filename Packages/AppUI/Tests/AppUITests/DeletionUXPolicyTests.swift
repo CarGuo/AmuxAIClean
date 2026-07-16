@@ -350,6 +350,18 @@ final class DeletionUXPolicyTests: XCTestCase {
         )
     }
 
+    func test_pendingRecycleHasDedicatedUnknownStatus() {
+        XCTAssertEqual(
+            OperationResultStatusPolicy.status(
+                succeededCount: 2,
+                failedCount: 1,
+                runningAppSkippedCount: 0,
+                pendingCount: 1
+            ),
+            .pending
+        )
+    }
+
     func test_smartCareProjectionFiltersPathsAndAccountingItemsTogether() async throws {
         let running = SmartCareItem(
             id: "wechat",
@@ -484,6 +496,92 @@ final class DeletionUXPolicyTests: XCTestCase {
         XCTAssertTrue(result.failureReasons.isEmpty)
         let calls = await operation.recordedCalls()
         XCTAssertEqual(calls, [[first, recovered], [recovered]])
+    }
+
+    func test_recyclePendingBatchStopsWithoutRetryingOrSubmittingLaterBatches() async {
+        let first = "/tmp/first"
+        let second = "/tmp/second"
+        let third = "/tmp/third"
+        let operationID = UUID()
+        let operation = ScriptedRecycleOperation(attempts: [
+            TrashPipeline.RecycleAttempt(
+                moved: [],
+                errorDescription: nil,
+                state: .callbackPending(operationID: operationID)
+            )
+        ])
+
+        let result = await TrashPipeline.executeRecycleBatches(
+            urls: [first, second, third].map(URL.init(fileURLWithPath:)),
+            batchSize: 2,
+            recycle: { urls in await operation.run(urls: urls) }
+        )
+
+        XCTAssertTrue(result.moved.isEmpty)
+        XCTAssertTrue(result.failureReasons.isEmpty)
+        XCTAssertEqual(result.attemptedPaths, [first, second])
+        XCTAssertEqual(result.pendingPaths, [first, second])
+        XCTAssertEqual(result.notSubmittedPaths, [third])
+        let calls = await operation.recordedCalls()
+        XCTAssertEqual(calls, [[first, second]])
+    }
+
+    func test_recyclePendingSingleRetryDoesNotDuplicateUnknownPath() async {
+        let first = "/tmp/first"
+        let second = "/tmp/second"
+        let laterBatch = "/tmp/later"
+        let operation = ScriptedRecycleOperation(attempts: [
+            TrashPipeline.RecycleAttempt(
+                moved: [],
+                errorDescription: "Batch completed without moving the items."
+            ),
+            TrashPipeline.RecycleAttempt(
+                moved: [],
+                errorDescription: nil,
+                state: .callbackPending(operationID: UUID())
+            )
+        ])
+
+        let result = await TrashPipeline.executeRecycleBatches(
+            urls: [first, second, laterBatch].map(URL.init(fileURLWithPath:)),
+            batchSize: 2,
+            recycle: { urls in await operation.run(urls: urls) }
+        )
+
+        XCTAssertEqual(result.attemptedPaths, [first, second])
+        XCTAssertEqual(result.pendingPaths, [first])
+        XCTAssertEqual(result.notSubmittedPaths, [laterBatch])
+        XCTAssertEqual(
+            result.failureReasons,
+            [second: "Batch completed without moving the items."]
+        )
+        let calls = await operation.recordedCalls()
+        XCTAssertEqual(calls, [[first, second], [first]])
+    }
+
+    func test_recycleBudgetExpiryBeforeBatchMarksEverythingNotSubmitted() async {
+        let first = "/tmp/first"
+        let second = "/tmp/second"
+        let operation = ScriptedRecycleOperation(attempts: [
+            TrashPipeline.RecycleAttempt(
+                moved: [],
+                errorDescription: nil,
+                state: .notSubmittedBudgetExpired
+            )
+        ])
+
+        let result = await TrashPipeline.executeRecycleBatches(
+            urls: [first, second].map(URL.init(fileURLWithPath:)),
+            batchSize: 1,
+            recycle: { urls in await operation.run(urls: urls) }
+        )
+
+        XCTAssertTrue(result.attemptedPaths.isEmpty)
+        XCTAssertTrue(result.pendingPaths.isEmpty)
+        XCTAssertEqual(result.notSubmittedPaths, [first, second])
+        XCTAssertTrue(result.failureReasons.isEmpty)
+        let calls = await operation.recordedCalls()
+        XCTAssertEqual(calls, [[first]])
     }
 
     func test_trashOutcomeDropsFailureReasonForPathThatIsNotFinallyFailed() {

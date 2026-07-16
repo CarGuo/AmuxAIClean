@@ -114,6 +114,41 @@ final class VersionedRootDiscoveryEvidenceTests: XCTestCase {
         )
     }
 
+    /// v2026.07.16: direct discovery must observe cancellation inside one collection root,
+    /// stop reading later children, and discard candidates already accumulated in this revision.
+    func test_detectWithEvidence_单根逐子项协作取消并丢弃候选() throws {
+        let root = try makeDirectory(named: "DirectCancellation")
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: root)) }
+        let names = ["1.0", "2.0", "3.0", "4.0", "5.0", "6.0"]
+        try makeVersions(root: root, names: names)
+        let trackedPaths = Set(names.map {
+            root.appendingPathComponent($0, isDirectory: true).path
+        })
+        let cancellation = MetadataReadCancellationProbe(
+            trackedPaths: trackedPaths,
+            cancelAfterReads: 3
+        )
+        let fileSystem = FaultInjectingVersionedFileSystem(
+            metadataReadObserver: { cancellation.record(path: $0) }
+        )
+
+        let result = VersionedRetainScanner.detectWithEvidence(
+            collectionRoot: root,
+            options: .init(keepLatest: 2, ordering: .semverPreferred),
+            fileSystem: fileSystem,
+            cancellationCheck: { cancellation.isCancelled }
+        )
+
+        XCTAssertTrue(result.wasCancelled)
+        XCTAssertFalse(result.isComplete)
+        XCTAssertTrue(result.hits.isEmpty,
+                      "cancelled discovery must discard candidates read before cancellation")
+        XCTAssertTrue(result.incompleteIssues.isEmpty,
+                      "cancellation must not be fabricated as filesystem incompleteness")
+        XCTAssertEqual(cancellation.trackedReadCount, 3,
+                       "per-child cancellation must stop before reading remaining children")
+    }
+
     func test_scanAllWithEvidence_聚合所有entry与group_仅封锁失败分组() throws {
         let home = try makeDirectory(named: "KnownRootsHome")
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
@@ -182,6 +217,54 @@ final class VersionedRootDiscoveryEvidenceTests: XCTestCase {
         XCTAssertFalse(result.isComplete)
     }
 
+    /// v2026.07.16: grouped discovery uses its own child loop. Cancellation inside that loop
+    /// must invalidate hits accumulated by earlier roots and propagate as one typed transaction.
+    func test_scanAllWithEvidence_分组子项取消会丢弃较早根的命中() throws {
+        let home = try makeDirectory(named: "KnownRootsCancelled")
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let iosRoot = home.appendingPathComponent(
+            "Library/Developer/Xcode/iOS DeviceSupport",
+            isDirectory: true
+        )
+        try makeVersions(root: iosRoot, names: ["15.0", "16.0", "17.0", "18.0"])
+        let cachesRoot = home.appendingPathComponent(
+            "Library/Caches/JetBrains",
+            isDirectory: true
+        )
+        let groupedNames = [
+            "IntelliJIdea2024.1",
+            "IntelliJIdea2024.2",
+            "IntelliJIdea2024.3",
+            "IntelliJIdea2024.4",
+        ]
+        try makeVersions(root: cachesRoot, names: groupedNames)
+        let trackedPaths = Set(groupedNames.map {
+            cachesRoot.appendingPathComponent($0, isDirectory: true).path
+        })
+        let cancellation = MetadataReadCancellationProbe(
+            trackedPaths: trackedPaths,
+            cancelAfterReads: 2
+        )
+        let fileSystem = FaultInjectingVersionedFileSystem(
+            metadataReadObserver: { cancellation.record(path: $0) }
+        )
+
+        let result = KnownVersionedRoots.scanAllWithEvidence(
+            home: home,
+            fileSystem: fileSystem,
+            cancellationCheck: { cancellation.isCancelled }
+        )
+
+        XCTAssertTrue(result.wasCancelled)
+        XCTAssertFalse(result.isComplete)
+        XCTAssertTrue(result.hits.isEmpty,
+                      "cancelled transaction must not leak hits accumulated before cancellation")
+        XCTAssertTrue(result.incompleteIssues.isEmpty,
+                      "cancellation is not a fabricated filesystem completeness issue")
+        XCTAssertEqual(cancellation.trackedReadCount, 2,
+                       "grouped discovery must stop reading children when cancellation arrives")
+    }
+
     private func makeDirectory(named name: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
@@ -200,25 +283,61 @@ final class VersionedRootDiscoveryEvidenceTests: XCTestCase {
     }
 }
 
+private final class MetadataReadCancellationProbe {
+    private let lock = NSLock()
+    private let trackedPaths: Set<String>
+    private let cancelAfterReads: Int
+    private var reads = 0
+
+    init(trackedPaths: Set<String>, cancelAfterReads: Int) {
+        self.trackedPaths = trackedPaths
+        self.cancelAfterReads = cancelAfterReads
+    }
+
+    func record(path: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        if trackedPaths.contains(path) {
+            reads += 1
+        }
+    }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return reads >= cancelAfterReads
+    }
+
+    var trackedReadCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return reads
+    }
+}
+
 private struct FaultInjectingVersionedFileSystem: VersionedRootFileSystem {
     let enumerationPermissionFailurePaths: Set<String>
     let enumerationFailurePaths: Set<String>
     let metadataFailurePaths: Set<String>
     let missingModificationDatePaths: Set<String>
+    let metadataReadObserver: ((String) -> Void)?
 
     init(
         enumerationPermissionFailurePaths: Set<String> = [],
         enumerationFailurePaths: Set<String> = [],
         metadataFailurePaths: Set<String> = [],
-        missingModificationDatePaths: Set<String> = []
+        missingModificationDatePaths: Set<String> = [],
+        metadataReadObserver: ((String) -> Void)? = nil
     ) {
         self.enumerationPermissionFailurePaths = enumerationPermissionFailurePaths
         self.enumerationFailurePaths = enumerationFailurePaths
         self.metadataFailurePaths = metadataFailurePaths
         self.missingModificationDatePaths = missingModificationDatePaths
+        self.metadataReadObserver = metadataReadObserver
     }
 
     func attributesOfItem(atPath path: String) throws -> [FileAttributeKey: Any] {
+        metadataReadObserver?(path)
         if metadataFailurePaths.contains(path) {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))
         }

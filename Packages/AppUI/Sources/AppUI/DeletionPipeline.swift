@@ -115,6 +115,18 @@ public protocol DeletionPipeline: Sendable {
         scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest?
     ) async -> TrashSubmissionDisposition
 
+    /// **v2026.07.16 durable review binding**: carries the exact scan/review snapshot that
+    /// produced the confirmation into the persistent recycle ledger. Production callers must
+    /// use this overload; the legacy overload remains for test/debug implementations and is
+    /// deliberately represented by `nil`, which cannot clear a durable fresh-review tombstone.
+    func submitToTrashReturningDisposition(
+        paths: [String],
+        accessDeniedPaths: Set<String>,
+        vendorOverrideRequest: VendorPathOverrideRequest?,
+        scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest?,
+        reviewIdentity: DeletionSnapshotIdentity?
+    ) async -> TrashSubmissionDisposition
+
     /// 历史兼容入口。它不能泛化绕过 `.forbid`，因此实现只能等价于普通删除；
     /// vendorPathRule 的专业模式能力必须走上面的类型化请求与最终重验，不能复用本接口。
     func moveToTrashForce(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?)
@@ -217,6 +229,13 @@ public enum TrashFailureSummary: Sendable, Equatable, Hashable {
     case safetyBlocked(count: Int, firstReason: String, preview: Bool)
     case previewMissing(count: Int)
     case recycleFailed(failedCount: Int, movedCount: Int, firstPath: String?)
+    /// v2026.07.16：系统已接受废纸篓请求，但在产品等待窗口内没有回调。此状态既不
+    /// 是成功也不是失败；调用方必须保留原扫描结果，并提示用户稍后重新扫描确认。
+    case recyclePending(pendingCount: Int, notSubmittedCount: Int, movedCount: Int)
+    /// The synchronous AppKit API did not return, so acceptance itself is unknown.
+    case recycleSubmissionUnknown(unknownCount: Int, notSubmittedCount: Int, movedCount: Int)
+    /// 整体等待预算耗尽，后续路径明确没有交给系统；它们可在重新审阅后安全重试。
+    case recycleBudgetExpired(notSubmittedCount: Int, movedCount: Int, failedCount: Int)
 
     public func message(locale: Locale) -> String {
         switch self {
@@ -263,6 +282,24 @@ public enum TrashFailureSummary: Sendable, Equatable, Hashable {
                 locale: locale,
                 arguments: [Int64(failedCount), partialNote, firstFailure]
             )
+        case .recyclePending(let pendingCount, let notSubmittedCount, let movedCount):
+            return AppLocalization.format(
+                "trash.err.recycle_pending %lld %lld %lld",
+                locale: locale,
+                arguments: [Int64(pendingCount), Int64(notSubmittedCount), Int64(movedCount)]
+            )
+        case .recycleSubmissionUnknown(let unknownCount, let notSubmittedCount, let movedCount):
+            return AppLocalization.format(
+                "trash.err.recycle_submission_unknown %lld %lld %lld",
+                locale: locale,
+                arguments: [Int64(unknownCount), Int64(notSubmittedCount), Int64(movedCount)]
+            )
+        case .recycleBudgetExpired(let notSubmittedCount, let movedCount, let failedCount):
+            return AppLocalization.format(
+                "trash.err.recycle_budget_expired %lld %lld %lld",
+                locale: locale,
+                arguments: [Int64(notSubmittedCount), Int64(movedCount), Int64(failedCount)]
+            )
         }
     }
 
@@ -275,6 +312,12 @@ public enum TrashFailureSummary: Sendable, Equatable, Hashable {
             return "preview-missing count=\(count)"
         case .recycleFailed(let failedCount, let movedCount, let firstPath):
             return "recycle-failed failed=\(failedCount) moved=\(movedCount) first=\(firstPath ?? "none")"
+        case .recyclePending(let pendingCount, let notSubmittedCount, let movedCount):
+            return "recycle-pending pending=\(pendingCount) not-submitted=\(notSubmittedCount) moved=\(movedCount)"
+        case .recycleSubmissionUnknown(let unknownCount, let notSubmittedCount, let movedCount):
+            return "recycle-submission-unknown unknown=\(unknownCount) not-submitted=\(notSubmittedCount) moved=\(movedCount)"
+        case .recycleBudgetExpired(let notSubmittedCount, let movedCount, let failedCount):
+            return "recycle-budget-expired not-submitted=\(notSubmittedCount) moved=\(movedCount) failed=\(failedCount)"
         }
     }
 }
@@ -287,6 +330,18 @@ public struct TrashOutcome: Sendable, Equatable {
     /// `NSWorkspace.recycle` 真正失败的路径清单（不含被 SafetyEngine 拦的）。
     /// 来自分批 recycle 中的"批失败回退单 URL 隔离"路径。
     public let failedPaths: [String]
+    /// 已交给 `NSWorkspace.recycle`、但系统尚未返回最终回调的路径。它们不得计作失败、
+    /// 不得自动重试，也不能写入 Undo；只能通过后续重新扫描确认最终状态。
+    public let pendingPaths: [String]
+    /// **v2026.07.16 根因修复**：提交队列已经取得调用 claim，并进入同步
+    /// `NSWorkspace.recycle` API，但 API 本身在等待预算内没有返回。此时甚至不能断言
+    /// macOS 已接受请求，必须与“API 已返回、只缺 callback”的 `pendingPaths` 分开。
+    public let submissionUnknownPaths: [String]
+    /// 因前一批仍处于未知状态而主动停止、尚未提交给系统的路径。
+    public let notSubmittedPaths: [String]
+    /// `notSubmittedPaths` 中由持久 gate 拒绝的精确 typed reason。普通预算停止无需逐项
+    /// reason，保持空字典；身份变化/ledger 故障绝不能退化成通用失败字符串。
+    public let notSubmittedReasons: [String: TrashPendingOperationRejection.Reason]
     /// 被 [SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 或 `accessDeniedPaths`
     /// 拦下的路径清单（拒绝原因可读）。
     public let safetyRejected: [(path: String, reason: String)]
@@ -302,6 +357,10 @@ public struct TrashOutcome: Sendable, Equatable {
 
     public init(movedPairs: [(String, String)],
                 failedPaths: [String],
+                pendingPaths: [String] = [],
+                submissionUnknownPaths: [String] = [],
+                notSubmittedPaths: [String] = [],
+                notSubmittedReasons: [String: TrashPendingOperationRejection.Reason] = [:],
                 safetyRejected: [(String, String)],
                 missingPaths: [String],
                 failureReasons: [String: String] = [:],
@@ -309,6 +368,11 @@ public struct TrashOutcome: Sendable, Equatable {
                 failureSummary: TrashFailureSummary? = nil) {
         self.movedPairs = movedPairs.map { (originalPath: $0.0, trashedPath: $0.1) }
         self.failedPaths = failedPaths
+        self.pendingPaths = pendingPaths
+        self.submissionUnknownPaths = submissionUnknownPaths
+        self.notSubmittedPaths = notSubmittedPaths
+        let notSubmittedSet = Set(notSubmittedPaths)
+        self.notSubmittedReasons = notSubmittedReasons.filter { notSubmittedSet.contains($0.key) }
         self.safetyRejected = safetyRejected.map { (path: $0.0, reason: $0.1) }
         self.missingPaths = missingPaths
         let failedPathSet = Set(failedPaths)
@@ -317,14 +381,21 @@ public struct TrashOutcome: Sendable, Equatable {
         self.failureSummary = failureSummary
     }
 
-    /// 总计提交的路径数（成功 + 失败 + 拒绝 + 缺失）。
+    /// 本次请求涉及的路径总数。`notSubmittedPaths` 尚未跨过系统提交边界，但必须计入
+    /// UI 结果，避免用户误以为整批已处理。
     public var totalSubmitted: Int {
-        movedPairs.count + failedPaths.count + safetyRejected.count + missingPaths.count
+        movedPairs.count + failedPaths.count + pendingPaths.count + submissionUnknownPaths.count
+            + notSubmittedPaths.count
+            + safetyRejected.count + missingPaths.count
     }
 
     /// Equatable：tuple 类型自定义比较（Swift tuple 不直接 Equatable）。
     public static func == (lhs: TrashOutcome, rhs: TrashOutcome) -> Bool {
         guard lhs.failedPaths == rhs.failedPaths,
+              lhs.pendingPaths == rhs.pendingPaths,
+              lhs.submissionUnknownPaths == rhs.submissionUnknownPaths,
+              lhs.notSubmittedPaths == rhs.notSubmittedPaths,
+              lhs.notSubmittedReasons == rhs.notSubmittedReasons,
               lhs.missingPaths == rhs.missingPaths,
               lhs.failureReasons == rhs.failureReasons,
               lhs.vendorOverrideEligiblePaths == rhs.vendorOverrideEligiblePaths,
@@ -354,13 +425,21 @@ public enum TrashPreSubmitRejection: Sendable, Equatable {
     case safety(DeletionPreflight)
     case invalidVendorOverride(DeletionPreflight)
     case invalidScanIncompleteOverride([DeletionPreflight.Rejection])
+    /// Persistent duplicate-submission / identity / queue-claim gate. This remains a
+    /// confirmation-time typed block and can never construct an operation result.
+    case pendingOperation(TrashPendingOperationRejection)
     /// 兼容测试/旧实现的 fail-closed case。生产 `TrashPipeline` 不会返回它。
     case unsupportedPipeline
 }
 
 /// 已完成至少一次 `NSWorkspace.recycle` 调用的结构化回执。`attemptedPaths` 是系统
-/// 提交边界的精确输入；即使 outcome 缺失或 recycle 全部失败，这个值仍证明真实尝试
-/// 已经发生，因此不能靠 movedPairs/outcome 是否为空反推提交状态。
+/// 提交边界的精确输入。v2026.07.16 起真实 UI 还必须取得与它精确分区的 outcome；仅凭
+/// legacy tuple 或 attemptedPaths 不足以铸造结果 receipt，也不能触发 Undo/模型通知。
+///
+/// v2026.07.16：类型名保留兼容，但“完成”只表示至少取得过系统调用 claim。
+/// `submissionUnknownPaths` 表示同步 API 未返回，`pendingPaths` 表示 API 已返回但回调
+/// 未到，`notSubmittedPaths` 表示未取得调用 claim；调用方不得把它们当成功、失败或
+/// 可立即重试项。
 public struct TrashRecycleCompletion: Sendable {
     public let attemptedPaths: [String]
     public let legacy: (Int, Int, String?, [(String, String)])
@@ -463,6 +542,24 @@ extension DeletionPipeline {
             paths: paths,
             accessDeniedPaths: accessDeniedPaths,
             vendorOverrideRequest: vendorOverrideRequest
+        )
+    }
+
+    public func submitToTrashReturningDisposition(
+        paths: [String],
+        accessDeniedPaths: Set<String>,
+        vendorOverrideRequest: VendorPathOverrideRequest?,
+        scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest?,
+        reviewIdentity: DeletionSnapshotIdentity?
+    ) async -> TrashSubmissionDisposition {
+        // v2026.07.16: compatibility stubs cannot persist a review capability themselves. Keep
+        // their old typed boundary working, while the production TrashPipeline overrides this
+        // overload and binds the identity to the durable reservation transaction.
+        await submitToTrashReturningDisposition(
+            paths: paths,
+            accessDeniedPaths: accessDeniedPaths,
+            vendorOverrideRequest: vendorOverrideRequest,
+            scanIncompleteOverrideRequest: scanIncompleteOverrideRequest
         )
     }
 

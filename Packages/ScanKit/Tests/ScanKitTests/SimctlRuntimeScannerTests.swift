@@ -21,6 +21,8 @@ final class SimctlRuntimeScannerTests: XCTestCase {
           "5B8AD6C2-263A-40BB-80DB-B2751E2ACAD7": {
             "identifier": "5B8AD6C2-263A-40BB-80DB-B2751E2ACAD7",
             "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-0",
+            "platformIdentifier": "com.apple.platform.iphonesimulator",
+            "kind": "Cryptex Disk Image",
             "version": "18.0",
             "build": "22A3351",
             "runtimeBundlePath": "/Library/Developer/CoreSimulator/Volumes/iOS_22A3351/iOS 18.0.simruntime",
@@ -31,6 +33,8 @@ final class SimctlRuntimeScannerTests: XCTestCase {
           "11111111-2222-3333-4444-555555555555": {
             "identifier": "11111111-2222-3333-4444-555555555555",
             "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.watchOS-11-0",
+            "platformIdentifier": "com.apple.platform.watchsimulator",
+            "kind": "Patchable Cryptex Disk Image",
             "version": "11.0",
             "build": "22R345",
             "mountPath": "/Library/Developer/CoreSimulator/Volumes/watchOS_22R345",
@@ -45,6 +49,10 @@ final class SimctlRuntimeScannerTests: XCTestCase {
         XCTAssertEqual(runtimes[0].runtimeIdentifier, "com.apple.CoreSimulator.SimRuntime.iOS-18-0")
         XCTAssertEqual(runtimes[0].managedUninstallIdentifier,
                        "5B8AD6C2-263A-40BB-80DB-B2751E2ACAD7")
+        XCTAssertEqual(runtimes[0].platformIdentifier, "com.apple.platform.iphonesimulator")
+        XCTAssertEqual(runtimes[0].kind, "Cryptex Disk Image")
+        XCTAssertEqual(runtimes[0].platformDisplayName, "iOS")
+        XCTAssertEqual(runtimes[0].displayName, "iOS 18.0")
         XCTAssertEqual(runtimes[0].version, "18.0")
         XCTAssertEqual(runtimes[0].buildversion, "22A3351")
         XCTAssertEqual(runtimes[0].sizeBytes, 8_361_951_702)
@@ -53,6 +61,8 @@ final class SimctlRuntimeScannerTests: XCTestCase {
         XCTAssertEqual(runtimes[1].deletable, false)
         XCTAssertNil(runtimes[1].managedUninstallIdentifier,
                      "deletable=false 的 runtime 只展示，不得产出卸载 ID")
+        XCTAssertEqual(runtimes[1].platformDisplayName, "watchOS")
+        XCTAssertEqual(runtimes[1].displayName, "watchOS 11.0")
         XCTAssertFalse(runtimes[1].isAvailable)
     }
 
@@ -94,6 +104,10 @@ final class SimctlRuntimeScannerTests: XCTestCase {
         XCTAssertEqual(runtimes[0].version, "17.5")
         XCTAssertEqual(runtimes[0].runtimeIdentifier,
                        "com.apple.CoreSimulator.SimRuntime.tvOS-17-5")
+        XCTAssertNil(runtimes[0].platformIdentifier)
+        XCTAssertNil(runtimes[0].kind)
+        XCTAssertEqual(runtimes[0].platformDisplayName, "tvOS")
+        XCTAssertEqual(runtimes[0].displayName, "tvOS 17.5")
         XCTAssertNil(runtimes[0].managedUninstallIdentifier)
         XCTAssertNil(runtimes[0].deletable,
                      "legacy payload 没有 deletable 语义，必须保留未知而非猜测")
@@ -118,6 +132,100 @@ final class SimctlRuntimeScannerTests: XCTestCase {
         let runtimes = SimctlRuntimeScanner.detect(from: json)
         XCTAssertEqual(runtimes.count, 1, "isAvailable=false 仍然要返回，让 UI 决定过滤策略")
         XCTAssertFalse(runtimes[0].isAvailable)
+    }
+
+    func test_detect_managedRuntimeList_按真实平台区分visionOS而不是硬编码iOS() {
+        let json = """
+        {
+          "12345678-1234-1234-1234-123456789ABC": {
+            "identifier": "12345678-1234-1234-1234-123456789ABC",
+            "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.xrOS-2-0",
+            "platformIdentifier": "com.apple.platform.xrsimulator",
+            "kind": "Patchable Cryptex Disk Image",
+            "version": "2.0",
+            "runtimeBundlePath": "/Library/Developer/CoreSimulator/Volumes/xrOS_2",
+            "state": "Ready",
+            "deletable": true,
+            "sizeBytes": 2048
+          }
+        }
+        """
+
+        let runtime = SimctlRuntimeScanner.detect(from: json).first
+        XCTAssertEqual(runtime?.platformIdentifier, "com.apple.platform.xrsimulator")
+        XCTAssertEqual(runtime?.kind, "Patchable Cryptex Disk Image")
+        XCTAssertEqual(runtime?.platformDisplayName, "visionOS")
+        XCTAssertEqual(runtime?.displayName, "visionOS 2.0")
+    }
+
+    func test_detect_managedRuntimeList_未知真实平台不回退冒充iOS() {
+        let json = """
+        {
+          "12345678-1234-1234-1234-123456789ABC": {
+            "identifier": "12345678-1234-1234-1234-123456789ABC",
+            "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-99-0",
+            "platformIdentifier": "com.apple.platform.futureSimulator",
+            "kind": "Future Disk Image",
+            "version": "99.0",
+            "runtimeBundlePath": "/tmp/Future.simruntime",
+            "deletable": true
+          }
+        }
+        """
+
+        let runtime = SimctlRuntimeScanner.detect(from: json).first
+        XCTAssertEqual(runtime?.platformDisplayName, "Simulator")
+        XCTAssertEqual(runtime?.displayName, "Simulator 99.0")
+        XCTAssertNotEqual(runtime?.displayName, "iOS 99.0")
+    }
+
+    func test_decode_拒绝重复identifier与空相对歧义runtimeRoot() {
+        let duplicateRuntimeIdentifier = """
+        {
+          "11111111-1111-1111-1111-111111111111": {
+            "identifier": "11111111-1111-1111-1111-111111111111",
+            "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-0",
+            "version": "18.0", "mountPath": "/Library/Runtime/A"
+          },
+          "22222222-2222-2222-2222-222222222222": {
+            "identifier": "22222222-2222-2222-2222-222222222222",
+            "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-0",
+            "version": "18.0", "mountPath": "/Library/Runtime/B"
+          }
+        }
+        """
+        let relativeRoot = """
+        {"11111111-1111-1111-1111-111111111111": {
+          "identifier": "11111111-1111-1111-1111-111111111111",
+          "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-0",
+          "version": "18.0", "runtimeBundlePath": "relative/runtime"
+        }}
+        """
+        let ambiguousRoots = """
+        {"11111111-1111-1111-1111-111111111111": {
+          "identifier": "11111111-1111-1111-1111-111111111111",
+          "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-0",
+          "version": "18.0",
+          "runtimeBundlePath": "/Library/Runtime/A/iOS.simruntime",
+          "mountPath": "/Library/Runtime/B"
+        }}
+        """
+        let duplicateLegacyIdentifier = """
+        {"runtimes": [
+          {"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-18-0","version":"18.0","runtimeRoot":"/Library/A","isAvailable":true},
+          {"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-18-0","version":"18.0","runtimeRoot":"/Library/B","isAvailable":true}
+        ]}
+        """
+
+        for payload in [
+            duplicateRuntimeIdentifier,
+            relativeRoot,
+            ambiguousRoots,
+            duplicateLegacyIdentifier,
+        ] {
+            XCTAssertEqual(SimctlRuntimeScanner.detect(from: payload), [])
+            XCTAssertThrowsError(try SimctlRuntimeScanner.decode(from: payload))
+        }
     }
 
     func test_detect_非法JSON_返回空不抛() {

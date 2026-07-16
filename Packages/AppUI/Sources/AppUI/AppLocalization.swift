@@ -23,6 +23,13 @@ public enum AppLocalization {
         )
     }
 
+    /// v2026.07.16：容量字符串与普通文案共用同一显式语言边界。
+    /// `ByteCountFormatter.string` 读取进程默认语言，App 内切换语言后会留下 `Zero kB`
+    /// 等旧语言文本；FormatStyle 的 locale 才能随 SwiftUI 环境即时重投影。
+    public static func byteCount(_ bytes: Int64, locale: Locale) -> String {
+        max(0, bytes).formatted(.byteCount(style: .file).locale(locale))
+    }
+
     /// Bundle 可注入的核心仅供同包测试验证语言表选择；生产始终使用 `.module`。
     static func string(_ key: String, locale: Locale, bundle: Bundle) -> String {
         let language = Locale.Language(identifier: locale.identifier)

@@ -14,14 +14,13 @@
 
 | 路径 | 职责 |
 |---|---|
-| `App/` | `@main` 入口、Info.plist、回归 runner |
+| `App/` | `@main` 入口、Info.plist |
 | `Packages/AppUI/` | SwiftUI/AppKit 界面、扫描协调、删除交互 |
 | `Packages/ScanKit/` | 文件扫描、容量统计、完整性证据 |
 | `Packages/SafetyKit/` | 安全判定、hard-forbid、规则加载 |
 | `Packages/{AIKit,BrewKit,FileSearchKit,HeuristicKit,LogKit,TestHarness}/` | 支撑能力与测试基础设施 |
 | `Resources/Rules/` | vendor、安全前缀等运行规则 |
-| `Scripts/` | Debug、回归、性能、Release 脚本 |
-| `Tests/Regression/` | 真机回归结果与日志 |
+| `Scripts/` | Debug、性能、Release 脚本 |
 | `docs/` | 开发、发布、产品合同与质量台账 |
 
 关键入口：
@@ -45,15 +44,15 @@ done
 # 只构建，不启动 App
 xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build
 
-# 扫描 / 删除 / UI 主链路的受控回归
-./Scripts/regression.sh
-
 # 性能基准
 ./Scripts/bench.sh ~/Library/Caches
 ```
 
 - 禁止直接运行 `xcodebuild test`；包测试统一走 `swift test`。
-- `regression.sh`、`run_debug.sh` 等任何会启动 App 的命令，只有在写明场景、入口、观察点和数据边界后才能运行。
+- `run_debug.sh` 等任何会启动 App 的命令，只有在写明场景、入口、观察点和数据边界并获得用户明确同意后才能运行。
+- v2026.07.16 起禁止用“启动 App、只看窗口/进程后立即退出”的快速启停壳充当 UI 回归；
+  也不得按 case 反复拉起 App。逻辑自动化放在 package tests，C4 必须是一次持续运行、
+  明确业务操作与可观察结果的验收。
 - Release、公证和 DMG 命令只从
   [docs/RELEASE.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/RELEASE.md) 读取，禁止在此复制版本化步骤。
 
@@ -95,8 +94,8 @@ xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Deb
 |---|---|
 | 单个包 | 该包 `swift test` |
 | 跨 AppUI / ScanKit / SafetyKit 主链路 | 全部 9 包 `swift test` |
-| 扫描、删除、Tree 或 UI 交互 | 上述测试 + 相关 `regression.sh` case |
-| Release、签名、Info.plist | Release 构建 + `e2e-smoke.sh`；最终 DMG 另做 C5 |
+| 扫描、删除、Tree 或 UI 交互 | 上述测试 + 目标 Debug 构建；若宣称真实交互正确，另需用户授权的一次持续 C4 |
+| Release、签名、Info.plist | `test_release_contract.sh` + Release 构建；最终 DMG 另做 C5 |
 
 - 证据等级使用
   [QUALITY_CLOSURE_LEDGER_2026-07-14.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/QUALITY_CLOSURE_LEDGER_2026-07-14.md) 的 C1–C5：聚焦行为测试是 C2；相关包全测加目标构建才是 C3；二者都不得表述为真实 UI 已测试。

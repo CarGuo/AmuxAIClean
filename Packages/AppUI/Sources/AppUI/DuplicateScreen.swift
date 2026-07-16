@@ -729,7 +729,7 @@ public struct DuplicateScreen: View {
     }
 
     private func byteString(_ b: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: b, countStyle: .file)
+        AppLocalization.byteCount(b, locale: locale)
     }
 
     @ViewBuilder
@@ -1210,7 +1210,7 @@ private struct DuplicateHandleSheet: View {
                     locale: locale,
                     arguments: [
                         Int64(group.files.count),
-                        ByteCountFormatter.string(fromByteCount: group.reclaimableBytes, countStyle: .file)
+                        AppLocalization.byteCount(group.reclaimableBytes, locale: locale)
                     ]
                 ))
                     .font(.callout)
@@ -1295,10 +1295,7 @@ private struct DuplicateHandleSheet: View {
                 locale: locale,
                 arguments: [
                     Int64(manualTargets.count),
-                    ByteCountFormatter.string(
-                        fromByteCount: manualSelectedBytes,
-                        countStyle: .file
-                    )
+                    AppLocalization.byteCount(manualSelectedBytes, locale: locale)
                 ]
             ))
                 .font(.caption.monospacedDigit())

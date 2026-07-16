@@ -27,7 +27,7 @@ import LogKit
 /// ```
 ///
 /// 失败处理：
-/// - 单条抛错 → 写入 `.error(message)` 到 store.entries[i].aiVerdict，**继续下一条**；
+/// - 单条抛错 → 写入 typed `.error(failure)` 到 store.entries[i].aiVerdict，**继续下一条**；
 /// - 全局错误（invalidBaseURL / insecureBaseURL / missingAPIKey 在 start 前做一次预检）
 ///   → 整队列拒发 + 暴露 `lastGlobalError`，UI 直接展示错误条，不进 running 态。
 @MainActor
@@ -172,10 +172,12 @@ public final class StashAIQueue {
                     // 用户点了取消——保留本条 .pending（不写 verdict），跳出循环
                     break
                 } catch {
-                    // 单条失败：写 .error 并继续下一条
-                    let msg = StashAIQueue.shortError(error)
-                    stash.setAIVerdict(path: entry.path, verdict: .error(message: msg))
-                    GSYLog.warning(.settings, "[StashAIQueue] ask failed: \(msg)")
+                    // v2026.07.16：单条失败只把类型化语义留给 UI；raw transport/body/Error
+                    // 经 PathRedactor 去敏后进入技术日志，不能写入 tooltip 状态。
+                    let failure = StashAIQueue.itemFailure(error)
+                    let diagnostic = PathRedactor().redact(String(describing: error))
+                    stash.setAIVerdict(path: entry.path, verdict: .error(failure))
+                    GSYLog.warning(.settings, "[StashAIQueue] ask failed: \(diagnostic)")
                 }
 
                 self.processed += 1
@@ -259,23 +261,22 @@ public final class StashAIQueue {
         runTask = nil
     }
 
-    /// 把任意 Error 压成"一句话错误"——UI 行内 tooltip 用，避免堆栈/巨长 body 撑爆 tooltip。
-    private static func shortError(_ error: Error) -> String {
+    /// v2026.07.16：把任意 Error 压成稳定语义。这里刻意不返回 String，避免异步状态
+    /// 固化启动语言或把服务端/网络实现文本带进用户界面。
+    private static func itemFailure(_ error: Error) -> StashStore.AIVerdictCache.Failure {
         switch error {
-        case OpenAIChatClient.Error.missingAPIKey:
-            return "missing api key"
-        case OpenAIChatClient.Error.invalidBaseURL:
-            return "invalid base url"
-        case let OpenAIChatClient.Error.insecureBaseURL(scheme, host):
-            return "insecure \(scheme)://\(host)"
+        case OpenAIChatClient.Error.missingAPIKey,
+             OpenAIChatClient.Error.invalidBaseURL,
+             OpenAIChatClient.Error.insecureBaseURL:
+            return .configuration
         case let OpenAIChatClient.Error.http(status, _):
-            return "http \(status)"
-        case let OpenAIChatClient.Error.transport(msg):
-            return "transport: \(msg.prefix(60))"
-        case let OpenAIChatClient.Error.decoding(msg):
-            return "decode: \(msg.prefix(60))"
+            return .http(status: status)
+        case OpenAIChatClient.Error.transport:
+            return .transport
+        case OpenAIChatClient.Error.decoding:
+            return .decoding
         default:
-            return String(describing: error).prefix(80).description
+            return .unexpected
         }
     }
 }

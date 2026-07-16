@@ -102,6 +102,67 @@ final class TrashActionCoordinatorTests: XCTestCase {
         return (UndoHistoryStore(storeURL: url, maxHistoryCount: 10), url)
     }
 
+    func test_malformedPendingCompletionIsRejectedBeforeUndoSideEffects() async {
+        let path = "/tmp/malformed-pending"
+        let trashed = "/Users/me/.Trash/malformed-pending"
+        let pipe = StubPipeline()
+        pipe.submissionLegacy = (1, 0, nil, [(path, trashed)])
+        pipe.submissionOutcome = TrashOutcome(
+            movedPairs: [(path, trashed)],
+            failedPaths: [],
+            pendingPaths: [path],
+            safetyRejected: [],
+            missingPaths: []
+        )
+        let (undo, undoURL) = makeUndoStore()
+        defer { try? FileManager.default.removeItem(at: undoURL) }
+
+        let result = await TrashActionCoordinator(
+            pipeline: pipe,
+            undoHistoryStore: undo
+        ).submitConfirmed(
+            paths: [path],
+            source: "test",
+            accessDeniedPaths: []
+        )
+
+        guard case .preSubmitRejected(.unsupportedPipeline) = result else {
+            return XCTFail("Overlapping moved/pending accounting must fail closed")
+        }
+        XCTAssertTrue(undo.history.isEmpty, "Malformed outcome must be rejected before Undo write")
+    }
+
+    func test_legacyPairsCannotEscapeValidatedOutcomeBeforeUndoSideEffects() async {
+        let authorized = "/tmp/authorized"
+        let unauthorized = "/tmp/unauthorized"
+        let pipe = StubPipeline()
+        pipe.submissionLegacy = (1, 0, nil, [
+            (unauthorized, "/Users/me/.Trash/unauthorized")
+        ])
+        pipe.submissionOutcome = TrashOutcome(
+            movedPairs: [(authorized, "/Users/me/.Trash/authorized")],
+            failedPaths: [],
+            safetyRejected: [],
+            missingPaths: []
+        )
+        let (undo, undoURL) = makeUndoStore()
+        defer { try? FileManager.default.removeItem(at: undoURL) }
+
+        let result = await TrashActionCoordinator(
+            pipeline: pipe,
+            undoHistoryStore: undo
+        ).submitConfirmed(
+            paths: [authorized],
+            source: "test",
+            accessDeniedPaths: []
+        )
+
+        guard case .preSubmitRejected(.unsupportedPipeline) = result else {
+            return XCTFail("Legacy pairs must be the exact structured-outcome projection")
+        }
+        XCTAssertTrue(undo.history.isEmpty, "Unvalidated legacy pairs must never reach Undo")
+    }
+
     func test_run_部分成功即使err非空也写Undo并暴露成功路径() async throws {
         let pipe = StubPipeline()
         pipe.normalReturn = (
@@ -232,6 +293,13 @@ final class TrashActionCoordinatorTests: XCTestCase {
             paths: ["/tmp/professional-cache"],
             runningAppSkipped: []
         )
+        pipe.submissionLegacy = (0, 1, "failed", [])
+        pipe.submissionOutcome = TrashOutcome(
+            movedPairs: [],
+            failedPaths: plan.paths,
+            safetyRejected: [],
+            missingPaths: []
+        )
 
         let disposition = await ProfessionalTrashSubmissionExecutor(
             pipeline: pipe,
@@ -314,6 +382,13 @@ final class TrashActionCoordinatorTests: XCTestCase {
             paths: [path],
             runningAppSkipped: [],
             vendorOverrideRequest: request
+        )
+        pipe.submissionLegacy = (0, 1, "failed", [])
+        pipe.submissionOutcome = TrashOutcome(
+            movedPairs: [],
+            failedPaths: plan.paths,
+            safetyRejected: [],
+            missingPaths: []
         )
 
         let disposition = await ProfessionalTrashSubmissionExecutor(
@@ -431,7 +506,7 @@ final class TrashActionCoordinatorTests: XCTestCase {
         XCTAssertEqual(rejections, [rejection])
     }
 
-    func test_professionalMissingOutcomeStillReturnsRecycleCompletion() async {
+    func test_professionalMissingOutcomeFailsClosedBeforeReceipt() async {
         let path = "/tmp/missing-outcome"
         let pipe = StubPipeline()
         pipe.submissionLegacy = (0, 1, "system failure", [])
@@ -443,12 +518,9 @@ final class TrashActionCoordinatorTests: XCTestCase {
             accessDeniedPaths: []
         )
 
-        guard case .recycleCompleted(let result) = disposition else {
-            return XCTFail("Outcome presence must not be used to infer the recycle boundary")
+        guard case .blocked(.unsupportedPipeline) = disposition else {
+            return XCTFail("A legacy tuple without structured accounting must not mint a receipt")
         }
-        XCTAssertEqual(result.moved, 0)
-        XCTAssertEqual(result.skipped, 1)
-        XCTAssertNil(result.outcome)
     }
 
     func test_professionalAttemptWithNoMovedPairsStillReturnsRecycleCompletion() async {

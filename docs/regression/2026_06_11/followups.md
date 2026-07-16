@@ -8,7 +8,7 @@
 |---|---|---|
 | F-0-1 | [KnownVersionedRoots.swift#L111-L139](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift#L111-L139) `var fileManager` 死代码删除 | ✅ 本轮删除（实际从未引用，"forward-compat" 注释名不副实） |
 | F-0-2 | PerfBench 1M 节点压力 bench | ✅ 本轮跑完，[B3](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/perf.md) 入库 |
-| F-0-3 | E2E smoke 启动 release .app 跑通 + AX 抓取 + 干净退出 | ✅ 本轮 [e2e.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/e2e.md) PASS |
+| F-0-3 | E2E smoke 启动 release .app 跑通 + AX 抓取 + 干净退出 | ⚠️ 历史记录；v2026.07.16 脚本删除，PASS 不再作为当前质量证据 |
 
 ## P0-bug — E2E 发现的真 bug（需要单独修）
 
@@ -21,7 +21,7 @@
 - **验收**：
   - ✅ `find .app -name vendors.yaml` 命中 3 个 yaml（vendors / vendor_shared / safe_paths）
   - ✅ 启动 NSLog 改为 `[GSYCleanMac] 已加载 79 条 vendor 规则`
-  - ✅ e2e-smoke 二次跑 RESULT PASS、crash_hits=0
+  - ⚠️ 历史 e2e-smoke 曾报告 PASS、crash_hits=0；该快速启停证据已于 v2026.07.16 撤销
   - 详情：[e2e.md §三 二次验证](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/e2e.md)
 - **优先级**：~~**P0**~~ → ✅ 已闭环
 

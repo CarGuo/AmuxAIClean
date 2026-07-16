@@ -44,7 +44,7 @@ enum RowViewLiveLocalization {
     }
 
     static func bytes(_ value: Int64, locale: Locale) -> String {
-        value.formatted(.byteCount(style: .file).locale(locale))
+        AppLocalization.byteCount(value, locale: locale)
     }
 
     static func verdictLabel(_ verdict: SafetyVerdict, locale: Locale) -> String {

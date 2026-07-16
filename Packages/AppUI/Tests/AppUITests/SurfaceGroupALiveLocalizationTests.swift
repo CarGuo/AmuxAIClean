@@ -16,20 +16,22 @@ final class SurfaceGroupALiveLocalizationTests: XCTestCase {
         XCTAssertEqual(phase.localizedTitle(locale: simplifiedChinese), "前缀 hash")
     }
 
-    func test_aiAdviceFailure_reprojectsLocalizedShell_andPreservesRawPayload() {
+    func test_aiAdviceFailure_reprojectsTypedMessage_withoutRawPayload() {
         let failure = AIAdviceSheet.FailurePresentation.http(
-            status: 503,
-            body: "upstream unavailable"
+            status: 503
         )
         let englishMessage = failure.localizedMessage(locale: english)
         let chineseMessage = failure.localizedMessage(locale: simplifiedChinese)
 
-        XCTAssertEqual(englishMessage, "Server returned HTTP 503. upstream unavailable")
-        XCTAssertEqual(chineseMessage, "服务端返回 HTTP 503。upstream unavailable")
+        XCTAssertEqual(englishMessage, "The server returned HTTP 503. Review the app log for technical details.")
+        XCTAssertEqual(chineseMessage, "服务端返回 HTTP 503，可在应用日志中查看技术详情。")
 
-        let raw = AIAdviceSheet.FailurePresentation.raw("POSIX EACCES /tmp/example")
-        XCTAssertEqual(raw.localizedMessage(locale: english), "POSIX EACCES /tmp/example")
-        XCTAssertEqual(raw.localizedMessage(locale: simplifiedChinese), "POSIX EACCES /tmp/example")
+        let unexpected = AIAdviceSheet.FailurePresentation.unexpected
+        XCTAssertFalse(unexpected.localizedMessage(locale: english).contains("POSIX"))
+        XCTAssertNotEqual(
+            unexpected.localizedMessage(locale: english),
+            unexpected.localizedMessage(locale: simplifiedChinese)
+        )
     }
 
     @MainActor
@@ -55,6 +57,29 @@ final class SurfaceGroupALiveLocalizationTests: XCTestCase {
         XCTAssertTrue(englishMessage.contains("http://remote.example"))
         XCTAssertTrue(chineseMessage.contains("http://remote.example"))
         XCTAssertNotEqual(englishMessage, chineseMessage)
+    }
+
+    @MainActor
+    func test_stashItemFailure_reprojectsWithoutRawTransportOrResponseText() {
+        // v2026.07.16：逐行 tooltip 也必须保存 typed 状态；不能只修 footer 的
+        // global error，而让单条 transport/body 继续以英文原文泄漏。
+        let failure = StashStore.AIVerdictCache.Failure.http(status: 429)
+        XCTAssertEqual(
+            StashScreen.localizedItemAIFailure(failure, locale: english),
+            "The server returned HTTP 429. Review the app log and try again."
+        )
+        XCTAssertEqual(
+            StashScreen.localizedItemAIFailure(failure, locale: simplifiedChinese),
+            "服务端返回 HTTP 429，可查看应用日志后重试。"
+        )
+
+        let transport = StashScreen.localizedItemAIFailure(.transport, locale: english)
+        XCTAssertFalse(transport.contains("NSURLError"))
+        XCTAssertFalse(transport.contains("file://"))
+        XCTAssertNotEqual(
+            transport,
+            StashScreen.localizedItemAIFailure(.transport, locale: simplifiedChinese)
+        )
     }
 
     @MainActor

@@ -71,11 +71,23 @@ public final class StashStore {
     /// AI 一键判断的逐条结果状态机。
     /// - `.pending`：尚未进队列 / 队列尚未跑到这条 / 队列取消时未到这条
     /// - `.done(verdict, summary)`：AI 返回了 canDelete + 一句话摘要
-    /// - `.error(message)`：单条调用失败（http / 解析失败 / 取消等）
+    /// - `.error(failure)`：单条调用失败的稳定语义；UI 按当前 locale 投影。
+    ///
+    /// v2026.07.16：旧实现把 transport/body/任意 Error 截断后存成 String，并直接放进
+    /// tooltip，既无法实时切换语言，也可能泄漏服务端或本机实现细节。状态现在只保存
+    /// 类型与安全的 HTTP status，原始诊断仅进入去敏日志。
     public enum AIVerdictCache: Hashable, Sendable {
+        public enum Failure: Hashable, Sendable {
+            case http(status: Int)
+            case transport
+            case decoding
+            case configuration
+            case unexpected
+        }
+
         case pending
         case done(SafetyVerdict, summary: String)
-        case error(message: String)
+        case error(Failure)
     }
 
     /// 当前所有待处理条目（按加入顺序排列）。

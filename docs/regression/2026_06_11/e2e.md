@@ -1,7 +1,8 @@
 # E2E 烟雾测试报告 — 2026-06-11
 
-> 跑法：[Scripts/e2e-smoke.sh](file:///Users/guoshuyu/workspace/GSYCleanMac/Scripts/e2e-smoke.sh) → release-built `.app` + `osascript` System Events 抓 AX tree
-> 配套：[Scripts/regression.sh](file:///Users/guoshuyu/workspace/GSYCleanMac/Scripts/regression.sh) 22 case 跑代码路径，**此报告补「真启动 + 真 quit + 真 AX」一层**
+> 历史记录：`regression.sh` 与只做启动/窗口/退出检查的 `e2e-smoke.sh` 均已于
+> v2026.07.16 删除。本报告仅保留当时事故线索，原 PASS 已撤销为当前质量证据；它不能替代
+> 业务交互 C4，也不再提供可执行跑法。
 > 结果：✅ **PASS**
 
 ## 一、烟雾测试七步执行结果
@@ -98,16 +99,7 @@ $ find /tmp/gsy-e2e-dd/Build/Products/Release/GSYCleanMac.app -name "*.yaml"
 | 崩溃 | ✅ 0 |
 | 发现 bug | 🟡 1 个 P0：vendors.yaml 未打包 → 已记 F-0-4 |
 
-## 五、可重复跑法
+## 五、当前状态
 
-```bash
-xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Release \
-    -derivedDataPath /tmp/gsy-e2e-dd build
-
-./Scripts/e2e-smoke.sh /tmp/gsy-e2e-dd/Build/Products/Release/GSYCleanMac.app \
-                       docs/regression/2026_06_11/logs
-
-cat docs/regression/2026_06_11/logs/e2e-smoke.log
-cat docs/regression/2026_06_11/logs/e2e-ax-dump.log
-cat docs/regression/2026_06_11/logs/e2e-runtime.log
-```
+原快速启停脚本已经删除。Release 合同使用 `Scripts/test_release_contract.sh` 做不启动 App 的静态校验；
+需要声明真实交互正确时，必须按明确场景让 App 单次持续运行并完成人工 C4。

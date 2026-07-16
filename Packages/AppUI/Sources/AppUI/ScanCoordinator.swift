@@ -449,11 +449,18 @@ public final class ScanCoordinator: ObservableObject {
         }
     }
     /// 用户可见、但必须先落成 `String` 的扫描文案所使用的界面 locale。
-    /// MainView 在语言环境变化时同步；扫描任务按启动 revision 捕获，避免读进程语言。
+    /// v2026.07.16：App 级 fanout 在语言变化时同步长期存活的 Professional / Smart Care
+    /// 实例；MainView 仍可幂等同步。扫描任务按启动 revision 捕获，避免读进程语言。
     private var presentationLocale: Locale = .current
 
     public func updatePresentationLocale(_ locale: Locale) {
         presentationLocale = locale
+    }
+
+    /// 仅供 AppUI 行为测试确认 App 级 fanout 同时覆盖两个协调器。
+    /// 读取 locale 不触发 objectWillChange，也不会物化或重发扫描快照。
+    var _presentationLocaleIdentifierForTesting: String {
+        presentationLocale.identifier
     }
     private var lastFinishedCategoryID: String?
 
@@ -1476,6 +1483,10 @@ public final class ScanCoordinator: ObservableObject {
             let whitelist = await whitelistStore.snapshotPaths()
             if Task.isCancelled { return }
             let discovery = KnownVersionedRoots.scanAllWithEvidence(home: home)
+            // v2026.07.16: the synchronous provider now reports cooperative cancellation as
+            // a typed terminal state. Never project that state into an apparently complete
+            // empty snapshot if cancellation landed between two shallow roots.
+            if discovery.wasCancelled || Task.isCancelled { return }
             let hits = discovery.hits.filter {
                 !Self.isWhitelisted($0.url.path, in: whitelist)
             }

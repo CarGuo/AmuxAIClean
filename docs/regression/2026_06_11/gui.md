@@ -1,5 +1,8 @@
 # GUI 全流程回归 — 2026-06-11
 
+> 历史记录：此处使用的 `regression.sh` / `RegressionRunner` 已于 v2026.07.16 删除。
+> 下列结果不能证明真实 GUI 交互，也不得照此重新运行。
+
 > 跑法：[Scripts/regression.sh](file:///Users/guoshuyu/workspace/GSYCleanMac/Scripts/regression.sh) → `xcodebuild` Debug → 22 case 串行 → `GSY_REGRESSION_CASE=<id>` 环境变量驱动 [RegressionRunner.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/App/RegressionRunner.swift) → 结构化日志 → [Tests/Regression/last-run.json](file:///Users/guoshuyu/workspace/GSYCleanMac/Tests/Regression/last-run.json)
 > 运行时间：2026-06-11T06:34:49Z
 > 结果：**total=22  PASS=22  FAIL=0  TIMEOUT=0** ✅
@@ -40,9 +43,6 @@
 2. **真扫盘 3 case ~39s**：scan-recommended / fda-banner-diagnose / scan-perf-diagnose 在真用户 home 上 ~39s，符合 [perf.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/perf.md) Bench A 体感（用户 home 通常 1.5~3 倍 Caches 体量）。
 3. **轻量交互 case 全部 <1s**：tree-drilldown 700ms、quicklook 759ms、safety-veto 220ms — 与 [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 实测 mid-tree 24ms 一致。
 
-## 三、可重复
+## 三、当前状态
 
-```bash
-./Scripts/regression.sh
-cat Tests/Regression/last-run.json | jq
-```
+该 harness 已删除，不再可重复运行；需要复验的纯逻辑应迁入 package tests，真实 GUI 走持续 C4。

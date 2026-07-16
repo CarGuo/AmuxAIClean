@@ -164,15 +164,13 @@ final class SmartCarePresentationTests: XCTestCase {
         }
     }
 
-    func test_failurePresentation_展示真实扫描与清理错误并提供对应恢复动作() {
+    func test_failurePresentation_不泄漏原始错误并提供对应恢复动作() {
         let scan = SmartCareFailurePresentation(
             error: .scanFailed("Common App Cache: 14 paths incomplete")
         )
         XCTAssertEqual(scan.titleKey, "smart_care.failure.scan.title")
-        XCTAssertTrue(
-            scan.detailText(locale: Locale(identifier: "en"))
-                .contains("14 paths incomplete")
-        )
+        XCTAssertFalse(scan.detailText(locale: Locale(identifier: "en"))
+            .contains("14 paths incomplete"))
         XCTAssertNotEqual(
             scan.detailText(locale: Locale(identifier: "en")),
             scan.detailText(locale: Locale(identifier: "zh-Hans"))
@@ -184,10 +182,8 @@ final class SmartCarePresentationTests: XCTestCase {
             error: .cleanFailed("The item is in use")
         )
         XCTAssertEqual(cleanup.titleKey, "smart_care.failure.clean.title")
-        XCTAssertTrue(
-            cleanup.detailText(locale: Locale(identifier: "zh-Hans"))
-                .contains("The item is in use")
-        )
+        XCTAssertFalse(cleanup.detailText(locale: Locale(identifier: "zh-Hans"))
+            .contains("The item is in use"))
         XCTAssertEqual(cleanup.primaryKey, "smart_care.action.review_cleanup_again")
         XCTAssertEqual(SmartCareError.cleanFailed("x").recovery, .reviewCleanup)
     }

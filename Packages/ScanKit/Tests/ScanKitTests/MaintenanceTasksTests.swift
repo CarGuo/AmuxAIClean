@@ -85,6 +85,40 @@ final class MaintenanceTasksTests: XCTestCase {
         XCTAssertEqual(outcomes.map(\.task), [.flushQuickLookCache, .flushDNSCache])
         XCTAssertEqual(fake.executedCommands.count, 2)
     }
+
+    // MARK: - 生产 runner 的 owned-child 合同（仅测试无副作用 fixture）
+
+    /// v2026.07.16：runner 不再 wait-then-read；stdout/stderr 同时超过单个 pipe 常见容量
+    /// 也必须完整收敛。这里只执行 shell 输出 fixture，不触发任何真实维护命令。
+    func test_defaultRunner_并发排空stdout与stderr() {
+        let script = """
+        (i=0; while [ $i -lt 4096 ]; do printf 'o'; i=$((i+1)); done) &
+        (i=0; while [ $i -lt 4096 ]; do printf 'e' >&2; i=$((i+1)); done) &
+        wait
+        """
+        let result = DefaultMaintenanceRunner(timeout: 5).execute(MaintenanceCommand(
+            launchPath: "/bin/sh",
+            arguments: ["-c", script]
+        ))
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.output.utf8.count, 8_192)
+        XCTAssertFalse(result.output.contains("output incomplete"))
+    }
+
+    /// v2026.07.16：timeout fixture 使用单一 `/bin/sleep` child，验证共享 owned waiter
+    /// 返回明确 -2；不运行 qlmanage、dscacheutil 或 simctl。
+    func test_defaultRunner_超时收敛为minus2() {
+        let startedAt = Date()
+        let result = DefaultMaintenanceRunner(timeout: 0.05).execute(MaintenanceCommand(
+            launchPath: "/bin/sleep",
+            arguments: ["30"]
+        ))
+
+        XCTAssertEqual(result.exitCode, -2)
+        XCTAssertTrue(result.output.contains("timeout"))
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 3)
+    }
 }
 
 // MARK: - Fake runner

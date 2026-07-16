@@ -14,7 +14,7 @@ import LogKit
 /// 真正删除依然走 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit) +
 /// 用户勾选 + SafetyEngine 守门。它**不**调 `pkgutil --forget`（那是 root 权限动作）。
 ///
-/// 注入策略：`runner` 默认是 `DefaultPkgutilRunner()` 走 `/usr/sbin/pkgutil` Process。
+/// 注入策略：`runner` 默认是 `DefaultPkgutilRunner()` 走硬编码 `/usr/sbin/pkgutil`。
 /// 单测可注入 `FakePkgutilRunner` 喂死数据，绕过子进程。
 public struct PkgutilReceiptsScanner: Sendable {
 
@@ -122,18 +122,41 @@ public struct PkgutilPackageInfo: Sendable, Hashable {
 
 /// 生产 runner —— 调 /usr/sbin/pkgutil。
 public struct DefaultPkgutilRunner: PkgutilRunning {
+    /// `pkgutil --files` 在大型 receipt 上可能输出数十万行。32 MiB 足以覆盖正常清单，
+    /// 同时给异常输出设置明确内存上限；一旦截断就 fail closed，不解析半份路径清单。
+    static let outputLimitPerStream = 32 * 1_024 * 1_024
+    static let timeout: TimeInterval = 30
 
-    public init() {}
+    private let commandExecutor: @Sendable ([String]) -> OwnedChildProcessExecutor.ExecutionResult
+
+    public init() {
+        commandExecutor = { args in
+            // SAFETY v2026.07.16：生产路径固定为系统 pkgutil，不接受 caller 提供可执行文件。
+            // 唯一 waitpid owner 消除 Foundation reap 后缓存 PID 被误 signal 的窗口，两个
+            // pipe 从 launch 起持续排空，避免 `--files` 大输出填满 pipe 后永久等待。
+            OwnedChildProcessExecutor.run(
+                path: "/usr/sbin/pkgutil",
+                arguments: args,
+                timeout: Self.timeout,
+                outputLimitPerStream: Self.outputLimitPerStream
+            )
+        }
+    }
+
+    /// 仅供 ScanKit 确定性测试注入无副作用 fixture；生产 public init 始终硬编码 pkgutil。
+    init(commandExecutor: @escaping @Sendable ([String]) -> OwnedChildProcessExecutor.ExecutionResult) {
+        self.commandExecutor = commandExecutor
+    }
 
     public func listPackages(matchingRegex regex: String?) -> [String]? {
         var args: [String] = []
         if let regex { args.append("--pkgs=\(regex)") } else { args.append("--pkgs") }
-        guard let output = Self.run(args: args) else { return nil }
+        guard let output = run(args: args) else { return nil }
         return output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
     }
 
     public func packageInfo(pkgID: String) -> PkgutilPackageInfo? {
-        guard let output = Self.run(args: ["--pkg-info", pkgID]) else { return nil }
+        guard let output = run(args: ["--pkg-info", pkgID]) else { return nil }
         var volume = "/"
         var location = ""
         var installTime: Date?
@@ -156,26 +179,21 @@ public struct DefaultPkgutilRunner: PkgutilRunning {
     }
 
     public func files(pkgID: String) -> [String]? {
-        guard let output = Self.run(args: ["--files", pkgID]) else { return nil }
+        guard let output = run(args: ["--files", pkgID]) else { return nil }
         return output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
     }
 
-    private static func run(args: [String]) -> String? {
-        let task = Process()
-        task.launchPath = "/usr/sbin/pkgutil"
-        task.arguments = args
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = Pipe()
-        do {
-            try task.run()
-        } catch {
+    private func run(args: [String]) -> String? {
+        let result = commandExecutor(args)
+        guard case .exited(let rawStatus) = result.terminal,
+              OwnedChildProcessExecutor.decodedExitStatus(rawStatus) == 0,
+              result.readersReachedEOF,
+              !result.stdoutWasTruncated else {
+            // v2026.07.16：launch/nonzero/timeout/ownership lost 和不完整 stdout 均维持
+            // 既有 nil 合同；stderr 仅是诊断，绝不能混入 pkgID 或文件路径解析。
             return nil
         }
-        task.waitUntilExit()
-        guard task.terminationStatus == 0 else { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)
+        return result.stdout
     }
 }
 

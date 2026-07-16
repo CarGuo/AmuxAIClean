@@ -42,20 +42,6 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
     /// 所以托盘菜单必须由控制器显式重建，不能等下次进程启动。
     private var locale: Locale = .current
 
-    #if DEBUG
-    /// 仅 DEBUG 暴露：托盘是否当前已挂在 NSStatusBar 上。
-    /// 供 [App/RegressionRunner.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/App/RegressionRunner.swift)
-    /// 等真实回归测试断言用，不影响生产路径。
-    ///
-    /// 注：与 [FloatingScanHUDController.isPanelVisibleForTesting](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
-    /// 同处境——RegressionRunner 在 Release 构建里也会参与编译，因此该属性需要在两种
-    /// 构建里都存在。属性只读、零副作用，撤掉 `#if DEBUG` 安全。
-    public var isInstalledForTesting: Bool { item != nil }
-    #else
-    /// Release 构建同样需要的 stub（理由见 DEBUG 分支）。只读、零副作用。
-    public var isInstalledForTesting: Bool { item != nil }
-    #endif
-
     /// 点击"打开主窗口"，由 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
     /// 注入：调 NSApp.activate + 主窗口 makeKeyAndOrderFront。
     public var onOpenMainWindow: (() -> Void)?

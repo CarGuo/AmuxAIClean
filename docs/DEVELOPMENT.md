@@ -153,7 +153,6 @@ GSYCleanMac/
 │  ├─ setup_dev.sh               # 新机器开发环境初始化（v1.5.x 后不再装 xcodegen）
 │  ├─ run_debug.sh               # ⌘R 同款（命令行版，APP_PATH 用 -showBuildSettings 动态查）
 │  ├─ build_release.sh           # Release 构建（签名由 project.pbxproj 决定）
-│  ├─ regression.sh              # 22 case 真实场景回归（全部 case 见 Scripts/regression.sh 的 ALL_CASES 数组）
 │  ├─ make_dmg.sh                # hdiutil 打 DMG，create-dmg fallback
 │  ├─ codesign.sh                # 显式 Developer ID 签名辅助脚本
 │  ├─ make_app_icon.swift        # 22.37% squircle + 12% 留白生成 AppIcon 套装

@@ -61,18 +61,11 @@ public final class UndoHistoryStore: ObservableObject {
                     locale: locale,
                     arguments: [path]
                 )
-            case .createDestinationDirectoryFailed(let description):
-                return AppLocalization.format(
-                    "undo.err.create_parent_failed %@",
-                    locale: locale,
-                    arguments: [description]
-                )
-            case .moveFailed(let description):
-                return AppLocalization.format(
-                    "undo.err.move_item_failed %@",
-                    locale: locale,
-                    arguments: [description]
-                )
+            case .createDestinationDirectoryFailed:
+                // v2026.07.16：关联值仅用于诊断/日志，用户界面不展示 raw FileManager Error。
+                return AppLocalization.string("undo.err.create_parent_failed", locale: locale)
+            case .moveFailed:
+                return AppLocalization.string("undo.err.move_item_failed", locale: locale)
             }
         }
     }

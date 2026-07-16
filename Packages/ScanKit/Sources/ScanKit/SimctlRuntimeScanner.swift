@@ -139,13 +139,30 @@ public actor SimctlRuntimeScanner {
 
         var runtimes: [SimctlRuntime] = []
         runtimes.reserveCapacity(payload.count)
+        var seenManagedIdentifiers = Set<String>()
+        var seenRuntimeIdentifiers = Set<String>()
         for (key, dto) in payload {
             let uninstallIdentifier = dto.identifier ?? key
             guard let runtimeIdentifier = dto.runtimeIdentifier,
+                  !runtimeIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   let version = dto.version,
-                  let runtimeRoot = dto.runtimeBundlePath ?? dto.mountPath else {
+                  !version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  Self.identifiersMatch(key, dto.identifier),
+                  let runtimeRoot = Self.validatedRuntimeRoot(
+                    runtimeBundlePath: dto.runtimeBundlePath,
+                    mountPath: dto.mountPath
+                  ) else {
                 // 成功 JSON 中出现不符合 runtime DTO 的 entry 是 schema mismatch，不能
                 // compactMap 成“完整空清单”。
+                return nil
+            }
+
+            // **v2026.07.16 安全合同**：UUID 与 semantic runtime identifier 都必须一一
+            // 对应。重复值会让 UI 的稳定 ID、选择和最终卸载命令产生歧义，因此整份
+            // payload 作为 schema/authority failure 拒绝，不能偷偷挑第一条。
+            guard seenManagedIdentifiers.insert(uninstallIdentifier.lowercased()).inserted,
+                  seenRuntimeIdentifiers.insert(runtimeIdentifier.lowercased()).inserted else {
                 return nil
             }
             let hasCanonicalUUID = UUID(uuidString: uninstallIdentifier) != nil
@@ -155,6 +172,8 @@ public actor SimctlRuntimeScanner {
             runtimes.append(SimctlRuntime(
                 runtimeIdentifier: runtimeIdentifier,
                 managedUninstallIdentifier: safeUninstallIdentifier,
+                platformIdentifier: dto.platformIdentifier,
+                kind: dto.kind,
                 version: version,
                 buildversion: dto.build,
                 runtimeRoot: runtimeRoot,
@@ -173,24 +192,76 @@ public actor SimctlRuntimeScanner {
               let payload = try? JSONDecoder().decode(LegacyRuntimeListPayload.self, from: data) else {
             return nil
         }
-        return payload.runtimes.map { dto in
-            SimctlRuntime(
+        var seenIdentifiers = Set<String>()
+        var runtimes: [SimctlRuntime] = []
+        runtimes.reserveCapacity(payload.runtimes.count)
+        for dto in payload.runtimes {
+            guard !dto.identifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !dto.version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  seenIdentifiers.insert(dto.identifier.lowercased()).inserted,
+                  let runtimeRoot = validatedAbsolutePath(dto.runtimeRoot) else {
+                return nil
+            }
+            runtimes.append(SimctlRuntime(
                 runtimeIdentifier: dto.identifier,
                 managedUninstallIdentifier: nil,
+                platformIdentifier: nil,
+                kind: nil,
                 version: dto.version,
                 buildversion: dto.buildversion,
-                runtimeRoot: dto.runtimeRoot,
+                runtimeRoot: runtimeRoot,
                 isAvailable: dto.isAvailable,
                 deletable: nil,
                 sizeBytes: nil,
                 discoverySource: .legacyReadOnly
-            )
+            ))
         }
+        return runtimes
+    }
+
+    /// Managed map key 与 DTO identifier 同时存在时必须指向同一实体；否则无法证明
+    /// 哪个 UUID 才是 `runtime delete` 的权威参数。
+    private static func identifiersMatch(_ key: String, _ identifier: String?) -> Bool {
+        guard let identifier else { return true }
+        return key.caseInsensitiveCompare(identifier) == .orderedSame
+    }
+
+    /// runtimeBundlePath 优先，但若同时给出 mountPath，bundle 必须位于该 mount 内。
+    /// 两个不相关绝对路径代表 payload 自相矛盾，不能猜一个继续。
+    private static func validatedRuntimeRoot(
+        runtimeBundlePath: String?,
+        mountPath: String?
+    ) -> String? {
+        let bundle = runtimeBundlePath.flatMap(validatedAbsolutePath)
+        let mount = mountPath.flatMap(validatedAbsolutePath)
+        if runtimeBundlePath != nil && bundle == nil { return nil }
+        if mountPath != nil && mount == nil { return nil }
+
+        if let bundle, let mount {
+            guard bundle == mount || bundle.hasPrefix(mount + "/") else { return nil }
+            return bundle
+        }
+        return bundle ?? mount
+    }
+
+    /// 空、相对、根目录、`.`/`..`、重复斜线和尾斜线都属于歧义路径。扫描结果只用于
+    /// 展示/关联，但路径身份不明确时仍必须整份拒绝，避免后续选择绑定到另一个资源。
+    private static func validatedAbsolutePath(_ raw: String) -> String? {
+        guard !raw.isEmpty, raw != "/", raw.hasPrefix("/") else { return nil }
+        let components = raw.split(separator: "/", omittingEmptySubsequences: false)
+        guard !components.dropFirst().contains(where: { $0 == "." || $0 == ".." || $0.isEmpty }) else {
+            return nil
+        }
+        let standardized = URL(fileURLWithPath: raw).standardizedFileURL.path
+        guard standardized == raw else { return nil }
+        return raw
     }
 
     private struct ManagedRuntimeDTO: Decodable {
         let identifier: String?
         let runtimeIdentifier: String?
+        let platformIdentifier: String?
+        let kind: String?
         let version: String?
         let build: String?
         let runtimeBundlePath: String?
@@ -229,6 +300,12 @@ public struct SimctlRuntime: Sendable, Hashable, Identifiable {
     /// `simctl runtime list -j` 返回的 disk-image UUID。
     /// 只有 UUID 合法且 `deletable == true` 时才有值；legacy 扫描恒为 nil。
     public let managedUninstallIdentifier: String?
+    /// `simctl runtime list -j` 的真实平台标识，例如
+    /// `com.apple.platform.iphonesimulator`。legacy payload 不提供时为 nil。
+    public let platformIdentifier: String?
+    /// 系统报告的镜像类型，例如 `Cryptex Disk Image`。这是诊断元数据，不能被用来
+    /// 推断可删除性；可删除性仍只认 `deletable + UUID` 双条件。
+    public let kind: String?
     /// 如 `"18.0"`。
     public let version: String
     /// 如 `"22A348"`；老版本 simctl 可能不返回，所以可空。
@@ -245,8 +322,50 @@ public struct SimctlRuntime: Sendable, Hashable, Identifiable {
 
     public var id: String { managedUninstallIdentifier ?? runtimeIdentifier }
 
+    /// Runtime 的用户可读平台名。
+    ///
+    /// **v2026.07.16 根因修复**：旧路由层把所有 CoreSimulator Runtime 都显示为
+    /// `iOS`，即使 DTO 已经来自 watchOS/tvOS/visionOS。平台必须优先取 simctl 的
+    /// `platformIdentifier`；legacy 才从 semantic runtime identifier 恢复。未知平台
+    /// 返回稳定的 `Simulator`，绝不再冒充 iOS。
+    public var platformDisplayName: String {
+        let normalized = platformIdentifier?.lowercased()
+        switch normalized {
+        case "com.apple.platform.iphonesimulator": return "iOS"
+        case "com.apple.platform.watchsimulator": return "watchOS"
+        case "com.apple.platform.appletvsimulator": return "tvOS"
+        case "com.apple.platform.xrsimulator": return "visionOS"
+        case .some:
+            // 新平台标识尚未纳入映射时宁可明确显示通用 Runtime，也不能从另一个字段
+            // 猜成 iOS；原始 platformIdentifier/kind 仍保留给诊断和后续版本扩展。
+            return "Simulator"
+        default:
+            let marker = ".SimRuntime."
+            guard let range = runtimeIdentifier.range(of: marker) else { return "Simulator" }
+            let semanticPlatform = runtimeIdentifier[range.upperBound...]
+                .split(separator: "-", maxSplits: 1)
+                .first
+                .map(String.init)
+            switch semanticPlatform?.lowercased() {
+            case "ios": return "iOS"
+            case "watchos": return "watchOS"
+            case "tvos": return "tvOS"
+            case "visionos", "xros": return "visionOS"
+            default:
+                if let semanticPlatform, !semanticPlatform.isEmpty { return semanticPlatform }
+                return "Simulator"
+            }
+        }
+    }
+
+    public var displayName: String {
+        "\(platformDisplayName) \(version)"
+    }
+
     public init(runtimeIdentifier: String,
                 managedUninstallIdentifier: String?,
+                platformIdentifier: String? = nil,
+                kind: String? = nil,
                 version: String,
                 buildversion: String?,
                 runtimeRoot: String,
@@ -256,6 +375,8 @@ public struct SimctlRuntime: Sendable, Hashable, Identifiable {
                 discoverySource: DiscoverySource = .managed) {
         self.runtimeIdentifier = runtimeIdentifier
         self.managedUninstallIdentifier = managedUninstallIdentifier
+        self.platformIdentifier = platformIdentifier
+        self.kind = kind
         self.version = version
         self.buildversion = buildversion
         self.runtimeRoot = runtimeRoot

@@ -158,7 +158,9 @@ public struct MainView: View {
     @State private var presetCategories: [ScanCategory] = ScanCategories.recommended()
     @State private var customCategories: [ScanCategory] = []
     @State private var isCustomPathImporterPresented = false
-    @State private var customPathImportMessage: String?
+    /// v2026.07.16：保存导入结果语义而非本地化字符串，语言切换立即重投影；系统原始
+    /// Error 只写日志，不进入 alert。
+    @State private var customPathImportNotice: SettingsPathImportNotice?
     @State private var professionalColumnVisibility: NavigationSplitViewVisibility = .all
     @State private var selectedCategory: ScanCategory.ID?
     @State private var selection: Set<String> = []   // 勾选的 row.id
@@ -567,15 +569,15 @@ public struct MainView: View {
         .alert(
             AppLocalization.string("custom_path.import.notice.title", locale: locale),
             isPresented: Binding(
-                get: { customPathImportMessage != nil },
-                set: { if !$0 { customPathImportMessage = nil } }
+                get: { customPathImportNotice != nil },
+                set: { if !$0 { customPathImportNotice = nil } }
             )
         ) {
             Button(AppLocalization.string("main.delete.result.ok", locale: locale)) {
-                customPathImportMessage = nil
+                customPathImportNotice = nil
             }
         } message: {
-            Text(customPathImportMessage ?? "")
+            Text(customPathImportNotice?.localized(locale: locale) ?? "")
         }
         // 删除结果只展示已经跨过 NSWorkspace.recycle 提交边界的真实尝试。
         // 最终重验发现的新风险会回到严格确认或 typed explanation，不会先进结果页。
@@ -770,11 +772,11 @@ public struct MainView: View {
         guard let failure = smartCareAIReviewSession.latestReport?.globalFailure else {
             return nil
         }
-        return String(
-            localized: String.LocalizationValue(
-                SmartCarePresentation.aiFailureSummaryKey(for: failure.kind)
-            ),
-            bundle: .module
+        // v2026.07.16：AI 终态属于先物化为 String 的动态文案，必须显式消费当前
+        // SwiftUI locale；否则 App 内切换语言后仍会沿用进程启动语言。
+        return AppLocalization.string(
+            SmartCarePresentation.aiFailureSummaryKey(for: failure.kind),
+            locale: locale
         )
     }
 
@@ -876,7 +878,7 @@ public struct MainView: View {
             || deletePreflightNotice != nil
             || aiUnconfiguredAlert
             || deleteResult != nil
-            || customPathImportMessage != nil
+            || customPathImportNotice != nil
             || isCustomPathImporterPresented
             || sentinelScanInvitationVisible
             || showSwitchCategoryConfirm
@@ -1160,6 +1162,7 @@ public struct MainView: View {
 
         let frozenSummaryRevision = smartCareSession.care.summaryRevision
         let frozenSelectionRevision = smartCareSession.care.selectionRevision
+        let frozenScanSessionID = smartCareSession.scanCoordinator.currentScanSessionID
         if let expectedSummaryRevision,
            expectedSummaryRevision != frozenSummaryRevision {
             return
@@ -1175,8 +1178,18 @@ public struct MainView: View {
         }
 
         do {
-            let request = try await smartCareSession.care.makeCleanRequest()
-            guard !request.items.isEmpty else { return }
+            let projectedRequest = try await smartCareSession.care.makeCleanRequest()
+            let request = projectedRequest.bindingDeletionSnapshot(
+                DeletionSnapshotIdentity(
+                    sessionID: frozenScanSessionID,
+                    revision: frozenSummaryRevision,
+                    categoryID: "smart-care"
+                )
+            )
+            guard !request.items.isEmpty,
+                  smartCareSession.scanCoordinator.currentScanSessionID == frozenScanSessionID else {
+                return
+            }
             let modalAvailable = interfaceMode == .normal
                 && !hasOtherMainModalPresentation
                 && deleteSheetRequest == nil
@@ -1261,7 +1274,11 @@ public struct MainView: View {
             return
         }
 
-        guard smartCareSession.care.confirmClean(request) else {
+        guard let reviewIdentity = request.sourceDeletionSnapshotIdentity,
+              reviewIdentity.sessionID == smartCareSession.scanCoordinator.currentScanSessionID,
+              reviewIdentity.revision == request.sourceSummaryRevision,
+              reviewIdentity.categoryID == "smart-care",
+              smartCareSession.care.confirmClean(request) else {
             // sheet 展示期间选择发生变化：旧请求不能静默扩张为最新选择。
             // 先让上一张 item sheet 完成 dismiss，再用最新 revision 重建预览。
             await Task.yield()
@@ -1288,7 +1305,10 @@ public struct MainView: View {
         let submission = await TrashActionCoordinator(pipeline: pipeline).submitConfirmed(
             paths: execution.paths,
             source: "smart-care",
-            accessDeniedPaths: finalDeniedPaths
+            accessDeniedPaths: finalDeniedPaths,
+            // v2026.07.16: this is the identity frozen before the preview sheet appeared, not a
+            // new token minted by the confirmation click.
+            reviewIdentity: reviewIdentity
         )
         let result: TrashRunResult
         let completedSubmission: TrashActionCoordinator.CompletedSubmission
@@ -1317,6 +1337,13 @@ public struct MainView: View {
         case .preSubmitRejected(.invalidScanIncompleteOverride(let rejections)):
             smartCareSession.care.resumeReviewAfterUnsubmittedClean()
             deletePreflightNotice = DeletionPreflightNotice(rejections: rejections)
+            return
+
+        case .preSubmitRejected(.pendingOperation(let rejection)):
+            smartCareSession.care.resumeReviewAfterUnsubmittedClean()
+            deletePreflightNotice = DeletionPreflightNotice(
+                rejections: rejection.preflightRejections
+            )
             return
 
         case .preSubmitRejected(.unsupportedPipeline):
@@ -1353,8 +1380,23 @@ public struct MainView: View {
             }
         }
 
+        if let outcome = result.outcome,
+           (!outcome.pendingPaths.isEmpty
+            || !outcome.submissionUnknownPaths.isEmpty
+            || !outcome.notSubmittedPaths.isEmpty) {
+            // v2026.07.16：系统终态未知时既不是 cleanup failed，也不是 completed。
+            // 已确认 moved 的项目已在上方同步，其余选择保持不变并回到 review，等待用户
+            // 查看结果页后重新扫描对账；禁止用失败按钮诱导立即重复提交。
+            smartCareSession.care.resumeReviewAfterUnsubmittedClean()
+            deleteResultCompletion = .trash(
+                completedSubmission,
+                runningAppSkipped: execution.runningAppSkippedResultItems
+            )
+            return
+        }
+
         let cleanFailureDetail = result.outcome?.failureSummary.map(SmartCareFailureDetail.trash)
-            ?? result.err.map(SmartCareFailureDetail.verbatim)
+            ?? result.err.map { _ in SmartCareFailureDetail.unexpectedFailure }
         if succeededPaths.isEmpty, let cleanFailureDetail {
             smartCareSession.care.fail(.cleanFailed(cleanFailureDetail))
             deleteResultCompletion = .trash(
@@ -3370,7 +3412,7 @@ public struct MainView: View {
     }
 
     private func formattedBytes(_ b: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: b, countStyle: .file)
+        AppLocalization.byteCount(b, locale: locale)
     }
 
     /// v2026.06.18 把购物车里的 [StashEntry](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashStore.swift#L35-L51)
@@ -3948,19 +3990,13 @@ public struct MainView: View {
                     }
                 }
                 if duplicateCount == urls.count {
-                    customPathImportMessage = String(
-                        format: AppLocalization.string("custom_path.import.duplicate %lld", locale: locale),
-                        duplicateCount
-                    )
+                    customPathImportNotice = .duplicate(count: duplicateCount)
                 }
             }
         case .failure(let error):
             guard (error as? CocoaError)?.code != .userCancelled else { return }
             GSYLog.error(.settings, "main directory importer failed: \(error.localizedDescription)")
-            customPathImportMessage = String(
-                format: AppLocalization.string("custom_path.import.failed %@", locale: locale),
-                error.localizedDescription
-            )
+            customPathImportNotice = .failed
         }
     }
 

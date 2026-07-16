@@ -145,6 +145,177 @@ public actor SimctlDevicesScanner {
     }
 }
 
+/// CoreSimulator 设备运行态的权威、同步提交前探针。
+///
+/// **v2026.07.16 根因修复**：只看 `Simulator.app` 进程会漏掉由 `simctl boot`、测试任务
+/// 或 Xcode 启动的 headless Booted device。managed delete 的最后执行闸必须读取
+/// `simctl list devices --json`；查询/解析失败时 fail closed，绝不把“不知道”当作安全。
+public struct SimctlBootedDeviceProbe: Sendable {
+    public enum ProbeResult: Sendable, Hashable {
+        /// 所有权威清单里的设备都处于 Shutdown；可继续做相邻的 App-process 复核。
+        case safeToSubmit
+        /// 至少一个设备处于 Booted/Booting/Shutting Down 或未来未知的非 Shutdown 状态。
+        case activeDevices(displayNames: [String])
+        /// 命令拒绝、launch/timeout/nonzero 或 payload 变化，无法证明安全。
+        case verificationUnavailable
+    }
+
+    private let executor: SubprocessExecutor
+
+    public init(executor: SubprocessExecutor = SubprocessExecutor(timeout: 5)) {
+        self.executor = executor
+    }
+
+    /// 同步 API 是刻意设计：它由 `SubprocessExecutor` 的 detached producer 在
+    /// `Process.run()` 前调用，调用完成到 destructive process 提交之间没有 await。
+    public func probe() -> ProbeResult {
+        let result: SubprocessExecutor.Result
+        do {
+            result = try executor.run(
+                executable: "/usr/bin/xcrun",
+                args: ["simctl", "list", "devices", "--json"]
+            )
+        } catch {
+            GSYLog.warning(.app, "Simulator submit guard: simctl devices query rejected: \(error)")
+            return .verificationUnavailable
+        }
+        guard result.exitCode == 0 else {
+            GSYLog.warning(
+                .app,
+                "Simulator submit guard: simctl devices query failed exit=\(result.exitCode) output=\(Self.logExcerpt(result.output))"
+            )
+            return .verificationUnavailable
+        }
+
+        return Self.classify(json: result.output)
+    }
+
+    /// 纯解析入口供提交闸测试；未知/过渡状态也视为 active，只有全 Shutdown 才安全。
+    static func classify(json: String) -> ProbeResult {
+        guard let devices = try? SimctlDevicesScanner.decode(from: json) else {
+            return .verificationUnavailable
+        }
+        let active = devices.filter {
+            $0.state.trimmingCharacters(in: .whitespacesAndNewlines)
+                .localizedCaseInsensitiveCompare("Shutdown") != .orderedSame
+        }
+        guard active.isEmpty else {
+            return .activeDevices(displayNames: active.map { "\($0.name) (\($0.state))" })
+        }
+        return .safeToSubmit
+    }
+
+    private static func logExcerpt(_ output: String) -> String {
+        String(output.prefix(512)).replacingOccurrences(of: "\n", with: " ")
+    }
+}
+
+/// 持久 pending ledger 的权威对账探针。
+///
+/// tombstone 不能按时间删除，也不能因 App 重启就遗忘；只有 simctl 的当前设备/runtime
+/// 清单明确不再包含目标 UUID 时才返回 `.absent`。任何命令或 schema 问题均 fail closed。
+public struct SimctlManagedResourceAuthorityProbe: Sendable {
+    public enum Presence: Sendable, Hashable {
+        case present
+        case absent
+        case verificationUnavailable
+    }
+
+    private let executor: SubprocessExecutor
+
+    public init(executor: SubprocessExecutor = SubprocessExecutor(timeout: 5)) {
+        self.executor = executor
+    }
+
+    public func presence(
+        of identifier: String,
+        kind: ManagedUninstallRecipe
+    ) -> Presence {
+        guard let uuid = UUID(uuidString: identifier)?.uuidString.lowercased() else {
+            return .verificationUnavailable
+        }
+        switch kind {
+        case .simulatorDevice:
+            return devicePresence(uuid: uuid)
+        case .simulatorRuntime:
+            return runtimePresence(uuid: uuid)
+        }
+    }
+
+    private func devicePresence(uuid: String) -> Presence {
+        guard let output = successfulOutput(
+            args: ["simctl", "list", "devices", "--json"],
+            label: "devices"
+        ) else { return .verificationUnavailable }
+        do {
+            let devices = try SimctlDevicesScanner.decode(from: output)
+            var identifiers = Set<String>()
+            for device in devices {
+                guard let canonical = UUID(uuidString: device.udid)?.uuidString.lowercased(),
+                      identifiers.insert(canonical).inserted else {
+                    return .verificationUnavailable
+                }
+            }
+            return identifiers.contains(uuid) ? .present : .absent
+        } catch {
+            GSYLog.warning(.app, "Simulator authority: invalid devices payload: \(error)")
+            return .verificationUnavailable
+        }
+    }
+
+    private func runtimePresence(uuid: String) -> Presence {
+        guard let output = successfulOutput(
+            args: ["simctl", "runtime", "list", "-j"],
+            label: "runtimes"
+        ), let data = output.data(using: .utf8) else {
+            return .verificationUnavailable
+        }
+        do {
+            guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return .verificationUnavailable
+            }
+            var identifiers = Set<String>()
+            for (key, rawValue) in payload {
+                guard let value = rawValue as? [String: Any],
+                      let keyUUID = UUID(uuidString: key)?.uuidString.lowercased() else {
+                    return .verificationUnavailable
+                }
+                if let rawIdentifier = value["identifier"] {
+                    guard let identifier = rawIdentifier as? String,
+                          let canonical = UUID(uuidString: identifier)?.uuidString.lowercased(),
+                          canonical == keyUUID else {
+                        return .verificationUnavailable
+                    }
+                }
+                guard identifiers.insert(keyUUID).inserted else {
+                    return .verificationUnavailable
+                }
+            }
+            return identifiers.contains(uuid) ? .present : .absent
+        } catch {
+            GSYLog.warning(.app, "Simulator authority: invalid runtimes payload: \(error)")
+            return .verificationUnavailable
+        }
+    }
+
+    private func successfulOutput(args: [String], label: String) -> String? {
+        do {
+            let result = try executor.run(executable: "/usr/bin/xcrun", args: args)
+            guard result.exitCode == 0 else {
+                GSYLog.warning(
+                    .app,
+                    "Simulator authority: \(label) query failed exit=\(result.exitCode) output=\(String(result.output.prefix(512)))"
+                )
+                return nil
+            }
+            return result.output
+        } catch {
+            GSYLog.warning(.app, "Simulator authority: \(label) query rejected: \(error)")
+            return nil
+        }
+    }
+}
+
 /// 单个 simctl 模拟器设备实例。
 public struct SimctlDevice: Sendable, Hashable, Identifiable {
     /// simctl 主键 UDID，如 `"D1A4B...-..."`。后续 `simctl delete <udid>` 也以此为参数。

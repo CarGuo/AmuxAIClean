@@ -48,11 +48,13 @@ enum UninstallDeletionSubmissionGate {
         requestSelectionRevision: UInt64,
         boundSnapshotIdentity: DeletionSnapshotIdentity,
         currentAppID: String?,
+        currentScanSessionID: UUID,
         currentSelectionRevision: UInt64,
         paths: [String]
     ) -> Decision {
         guard !requestAppID.isEmpty,
               boundSnapshotIdentity.categoryID == requestAppID,
+              boundSnapshotIdentity.sessionID == currentScanSessionID,
               boundSnapshotIdentity.revision == requestSelectionRevision,
               currentAppID == requestAppID,
               currentSelectionRevision == requestSelectionRevision else {
@@ -150,6 +152,9 @@ public struct UninstallScreen: View {
     @State private var uninstallPreflightTask: Task<Void, Never>?
     @State private var uninstallPreflightGate = ToolDeletionPreflightRequestGate<UninstallPreflightContext>()
     @State private var selectedAppRevision: UInt64 = 0
+    /// v2026.07.16: identifies the candidate scan, not the confirmation click. This closes the
+    /// path where a random UUID made every retry look like a fresh review after restart.
+    @State private var selectedAppScanSessionID = UUID()
 
     private var isDeletionTransactionActive: Bool {
         isDeleting
@@ -304,6 +309,8 @@ public struct UninstallScreen: View {
             .disabled(isDeletionTransactionActive)
             .onChange(of: selectedApp) { _, new in
                 selectedAppRevision &+= 1
+                selectedAppScanSessionID = UUID()
+                let scanSessionID = selectedAppScanSessionID
                 cancelUninstallPreflight()
                 candidateTask?.cancel()
                 guard let app = new else {
@@ -312,7 +319,9 @@ public struct UninstallScreen: View {
                     isLoadingCandidates = false
                     return
                 }
-                candidateTask = Task { await reloadCandidates(for: app) }
+                candidateTask = Task {
+                    await reloadCandidates(for: app, scanSessionID: scanSessionID)
+                }
             }
         }
     }
@@ -477,7 +486,7 @@ public struct UninstallScreen: View {
         }
     }
 
-    private func reloadCandidates(for app: InstalledApp) async {
+    private func reloadCandidates(for app: InstalledApp, scanSessionID: UUID) async {
         let selectedID = app.id
         await MainActor.run {
             self.isLoadingCandidates = true
@@ -487,7 +496,8 @@ public struct UninstallScreen: View {
         let list = await store.selectApp(app)
         await MainActor.run {
             guard !Task.isCancelled else { return }
-            guard self.selectedApp?.id == selectedID else { return }
+            guard self.selectedApp?.id == selectedID,
+                  self.selectedAppScanSessionID == scanSessionID else { return }
             self.candidates = list
             self.isLoadingCandidates = false
         }
@@ -518,13 +528,13 @@ public struct UninstallScreen: View {
         })
         uninstallPreflightTask?.cancel()
         let token = uninstallPreflightGate.begin(context: context)
+        let identity = DeletionSnapshotIdentity(
+            sessionID: selectedAppScanSessionID,
+            revision: selectedAppRevision,
+            categoryID: selectedApp.id
+        )
         isDeleting = true
         uninstallPreflightTask = Task { @MainActor in
-            let identity = DeletionSnapshotIdentity(
-                sessionID: UUID(),
-                revision: selectedAppRevision,
-                categoryID: selectedApp.id
-            )
             let coordinator = DeletionInteractionCoordinator(pipeline: pipeline)
             let decision: DeletionInteractionPreparation
             do {
@@ -602,6 +612,7 @@ public struct UninstallScreen: View {
             requestSelectionRevision: request.selectionRevision,
             boundSnapshotIdentity: identity,
             currentAppID: selectedApp?.id,
+            currentScanSessionID: selectedAppScanSessionID,
             currentSelectionRevision: selectedAppRevision,
             paths: request.paths
         ) {
@@ -728,7 +739,7 @@ public struct UninstallScreen: View {
     }
 
     private func formattedBytes(_ b: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: b, countStyle: .file)
+        AppLocalization.byteCount(b, locale: locale)
     }
 
     private func reasonLabel(_ r: MatchReason) -> String {

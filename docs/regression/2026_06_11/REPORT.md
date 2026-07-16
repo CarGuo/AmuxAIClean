@@ -1,5 +1,8 @@
 # 规模化全流程回归 — 总报告 2026-06-11
 
+> 历史记录：v2026.07.16 已删除“逐 case 启动/退出 App”与“只看窗口/AX 后退出”的 harness，
+> 本文结果不得作为当前 UI 验收或可执行指引；当前逻辑证据以 package tests 为准，真实交互须单次持续 C4。
+
 > 触发：用户请求「把所有功能都测一遍 + 性能各项数据 + 竞品对比」
 > 范围：**最重档** — 全量单元 + 全量 GUI + 4 套性能 bench + 7 篇竞品矩阵
 > 总结论：✅ **0 崩溃 / 0 fail / 0 timeout，性能在多项维度领先 du 与多数竞品**
@@ -11,7 +14,7 @@
 | 单元测试 | [unit.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/unit.md) | 9 包 / 857 PASS / 2 skipped / 0 fail |
 | 性能基线 | [perf.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/perf.md) | 65k files/s 扫描 / 比 du 快又准 / 全链路 ingest 开销 <8% |
 | GUI 回归 | [gui.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/gui.md) | 22 GUI case / PASS=22 / FAIL=0 |
-| E2E 烟雾 | [e2e.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/e2e.md) | release .app 启动 ≤2s + 退出 1s + exit 0；P0 bug **F-0-4 vendors.yaml 未打包** ✅ 已修复（79 条规则加载） |
+| E2E 烟雾 | [e2e.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/e2e.md) | ⚠️ 历史事故线索；快速启停 PASS 已撤销为当前质量证据 |
 | 竞品矩阵 | [competitors_matrix.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/competitors_matrix.md) | 6 维 vs CMM / Pearcleaner / AppCleaner / DaisyDisk / ODS / GP |
 | 追踪条目 | [followups.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/followups.md) | P0~P4 待办（F-0-4 ✅ 已闭环） |
 
@@ -62,9 +65,7 @@ swift build -c release --package-path Tools/CoordinatorBench --product Coordinat
 ./Packages/ScanKit/.build/release/scankit-bench ~/Library/Caches
 ./Tools/CoordinatorBench/.build/release/CoordinatorBench --root .
 
-# (3) 22 GUI case
-./Scripts/regression.sh
-cat Tests/Regression/last-run.json | jq
+# (3) 当时的 22 GUI case harness 已于 v2026.07.16 删除，不再可执行或计作 UI 证据
 
 # (4) du 对比
 du -sh -x ~/Library/Caches

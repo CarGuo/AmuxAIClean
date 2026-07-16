@@ -1,9 +1,99 @@
 import Foundation
+import LogKit
 
 extension Notification.Name {
     /// 所有成功的废纸篓操作统一广播真实 moved original paths；跨功能页面据此
     /// 使扫描快照失效，避免 Brew/卸载/重复文件删除后 Smart Care 仍展示旧结果。
     static let gsyTrashDidMove = Notification.Name("com.amux.ai.clean.trash-did-move")
+
+    /// v2026.07.16：pending ledger 发现“重启后已不存在 / inode 已替换 / claim 前中断”
+    /// 只代表旧扫描模型失效，不代表本次确认了删除成功。通知也不是清除持久 tombstone
+    /// 的能力；必须走独立通道，禁止复用 `gsyTrashDidMove` 铸造成功历史。
+    static let gsyTrashPendingLedgerDidInvalidate = Notification.Name(
+        "com.amux.ai.clean.trash-pending-ledger-did-invalidate"
+    )
+}
+
+/// v2026.07.16：真实副作用前的请求级核算闸门。pipeline 返回值即使来自未来实现或
+/// 测试替身，也必须无重叠、无越权地覆盖“已提交结果 + 未提交后续”；否则不得写 Undo、
+/// 发模型通知或铸造 receipt。
+enum TrashCompletionAccountingValidator {
+    static func isValid(
+        _ completion: TrashRecycleCompletion,
+        requestedPaths: [String]
+    ) -> Bool {
+        let requested = requestedPaths.map(TrashPipeline.normalizePath)
+        let attempted = completion.attemptedPaths.map(TrashPipeline.normalizePath)
+        let requestedSet = Set(requested)
+        let attemptedSet = Set(attempted)
+        guard requestedSet.count == requested.count,
+              attemptedSet.count == attempted.count,
+              !attempted.isEmpty,
+              attemptedSet.isSubset(of: requestedSet) else { return false }
+
+        // v2026.07.16：真实提交边界必须返回结构化 outcome。仅有 legacy tuple 无法证明
+        // attempted 中哪些已移动、失败或仍待系统确认；放行会铸造“0/N 成功”receipt。
+        guard let outcome = completion.outcome else { return false }
+
+        let movedPaths = outcome.movedPairs.map { TrashPipeline.normalizePath($0.originalPath) }
+        let failedPaths = outcome.failedPaths.map(TrashPipeline.normalizePath)
+        let pendingPaths = outcome.pendingPaths.map(TrashPipeline.normalizePath)
+        let submissionUnknownPaths = outcome.submissionUnknownPaths.map(TrashPipeline.normalizePath)
+        let notSubmittedPaths = outcome.notSubmittedPaths.map(TrashPipeline.normalizePath)
+        let moved = Set(movedPaths)
+        let failed = Set(failedPaths)
+        let pending = Set(pendingPaths)
+        let submissionUnknown = Set(submissionUnknownPaths)
+        let notSubmitted = Set(notSubmittedPaths)
+
+        // finalize/Undo/通知历史上消费 legacy pair，因此在任何副作用前把它锁定为 outcome
+        // 的精确投影。不能只校验 outcome 后又信任另一份可能越权或重复的 tuple。
+        let legacyPairs = completion.legacy.3.map {
+            (
+                original: TrashPipeline.normalizePath($0.0),
+                trashed: TrashPipeline.normalizePath($0.1)
+            )
+        }
+        let outcomePairs = outcome.movedPairs.map {
+            (
+                original: TrashPipeline.normalizePath($0.originalPath),
+                trashed: TrashPipeline.normalizePath($0.trashedPath)
+            )
+        }
+        let pairsMatch = legacyPairs.count == outcomePairs.count
+            && zip(legacyPairs, outcomePairs).allSatisfy { pair in
+                pair.0.original == pair.1.original && pair.0.trashed == pair.1.trashed
+            }
+        let uniqueTrashedDestinations = Set(outcomePairs.map { $0.trashed }).count == outcomePairs.count
+        let expectedSkipped = failedPaths.count
+            + pendingPaths.count
+            + submissionUnknownPaths.count
+            + notSubmittedPaths.count
+
+        guard moved.count == movedPaths.count,
+              uniqueTrashedDestinations,
+              failed.count == failedPaths.count,
+              pending.count == pendingPaths.count,
+              submissionUnknown.count == submissionUnknownPaths.count,
+              notSubmitted.count == notSubmittedPaths.count,
+              moved.isDisjoint(with: failed),
+              moved.isDisjoint(with: pending),
+              moved.isDisjoint(with: submissionUnknown),
+              failed.isDisjoint(with: pending),
+              failed.isDisjoint(with: submissionUnknown),
+              pending.isDisjoint(with: submissionUnknown),
+              notSubmitted.isDisjoint(with: attemptedSet),
+              moved.union(failed).union(pending).union(submissionUnknown) == attemptedSet,
+              notSubmitted == requestedSet.subtracting(attemptedSet),
+              Set(outcome.notSubmittedReasons.keys.map(TrashPipeline.normalizePath))
+                .isSubset(of: notSubmitted),
+              outcome.safetyRejected.isEmpty,
+              outcome.missingPaths.isEmpty,
+              pairsMatch,
+              completion.legacy.0 == outcomePairs.count,
+              completion.legacy.1 == expectedSkipped else { return false }
+        return true
+    }
 }
 
 /// Single execution core for UI trash actions.
@@ -225,7 +315,8 @@ struct TrashActionCoordinator {
         source: String,
         accessDeniedPaths: Set<String>,
         vendorOverrideRequest: VendorPathOverrideRequest? = nil,
-        scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest? = nil
+        scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest? = nil,
+        reviewIdentity: DeletionSnapshotIdentity? = nil
     ) async -> ConfirmedSubmissionResult {
         let submissionID = UUID()
         let submittedAt = Date()
@@ -233,11 +324,19 @@ struct TrashActionCoordinator {
             paths: paths,
             accessDeniedPaths: accessDeniedPaths,
             vendorOverrideRequest: vendorOverrideRequest,
-            scanIncompleteOverrideRequest: scanIncompleteOverrideRequest
+            scanIncompleteOverrideRequest: scanIncompleteOverrideRequest,
+            reviewIdentity: reviewIdentity
         ) {
         case .preSubmitRejected(let rejection):
             return .preSubmitRejected(rejection)
         case .recycleCompleted(let completion):
+            guard TrashCompletionAccountingValidator.isValid(
+                completion,
+                requestedPaths: paths
+            ) else {
+                GSYLog.error(.trash, "拒绝不一致的 recycle completion requested=\(paths.count) attempted=\(completion.attemptedPaths.count)")
+                return .preSubmitRejected(.unsupportedPipeline)
+            }
             let result = await finalizeRecycleCompletion(
                 completion,
                 source: source
@@ -338,6 +437,10 @@ struct ProfessionalTrashSubmissionExecutor {
             return .blocked(.finalRevalidation(preflight.rejections))
         case .preSubmitRejected(.invalidScanIncompleteOverride(let rejections)):
             return .blocked(.finalRevalidation(rejections))
+        case .preSubmitRejected(.pendingOperation(let rejection)):
+            // v2026.07.16: persistent duplicate/identity gates are pre-submit facts. They
+            // remain in the typed explanation route and can never mint a result receipt.
+            return .blocked(.finalRevalidation(rejection.preflightRejections))
         case .preSubmitRejected(.emptyRequest):
             return .blocked(.emptySelection)
         case .preSubmitRejected(.unsupportedPipeline):

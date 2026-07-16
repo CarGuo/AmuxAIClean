@@ -128,8 +128,8 @@ struct GSYCleanMacApp: App {
 
     /// v1.6：Sentinel 守护管理器（SMAppService.daemon 包装）。
     /// 在 init 阶段构造，启动钩子里按 [settings.sentinelEnabled](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
-    /// 做幂等 register；用户在「设置 → 高级 → 后台守护」toggle 时通过
-    /// `.onChange(of: settings.sentinelEnabled)` 钩子驱动 enable / disable。
+    /// 做幂等 register；v2026.07.16 起用户 toggle 先经过 typed change-source 边界，
+    /// 程序性失败回滚不会再由 `.onChange` 重复驱动 enable / disable。
     @State private var sentinelManager: SentinelManager
 
     private let tccDismissedKey = "tcc.onboarding.dismissed"
@@ -261,57 +261,11 @@ struct GSYCleanMacApp: App {
                 reconcileActivationPolicy()
                 // v1.6：Sentinel 启动钩子——若用户已 ON，进程拉起时立刻幂等 register，
                 // 兜住升级 / 重装 / SMAppService bundle 路径变化等场景。默认 OFF 时跳过。
-                reconcileSentinel(initial: true)
+                reconcileSentinelAtStartup()
 
-                // v1.3.zz 真实回归套件总入口。
-                // 环境变量 GSY_REGRESSION_CASE=<case-id> 启动后跑指定 case，结果以
-                // [REGR k=v ...] 行打到 stderr，最终行 [REGR_PASS case=...] / [REGR_FAIL case=...]
-                // 让 Scripts/regression.sh 直接 grep 判定。每条 case 跑完后退出 App。
-                // 与 GSY_AUTOSCAN 互斥（GSY_REGRESSION_CASE 优先），避免双钩子打架。
-                if let caseID = ProcessInfo.processInfo.environment["GSY_REGRESSION_CASE"], !caseID.isEmpty {
-                    let runner = RegressionRunner(
-                        caseID: caseID,
-                        coordinator: coordinator,
-                        settings: settings,
-                        hud: hud,
-                        statusItem: statusItem,
-                        activationPolicy: activationPolicy,
-                        vendors: vendors,
-                        env: ProcessInfo.processInfo.environment
-                    )
-                    Task { @MainActor in
-                        await runner.run()
-                    }
-                } else if let target = ProcessInfo.processInfo.environment["GSY_AUTOSCAN"], !target.isEmpty {
-                    // v1.3.z 老开发钩子：环境变量 GSY_AUTOSCAN=<path> 启动后立刻扫描指定根，
-                    // 扫完打印一行 `[GSY_AUTOSCAN_RESULT] elapsed_ms=... files=... bytes=...`
-                    // 到 stderr。回归套件已经覆盖该场景，但保留向后兼容。
-                    let url = URL(fileURLWithPath: target)
-                    let started = Date()
-                    let cat = ScanCategory.makeCustom(url: url)
-                    coordinator.scan(category: cat,
-                                     includeHidden: settings.showHidden)
-                    Task { @MainActor [coordinator] in
-                        var lastBeat = Date()
-                        while !coordinator.snapshot.isFinished {
-                            try? await Task.sleep(nanoseconds: 500_000_000)
-                            let now = Date()
-                            if now.timeIntervalSince(lastBeat) >= 5.0 {
-                                let snap = coordinator.snapshot
-                                let elapsed = Int(now.timeIntervalSince(started))
-                                FileHandle.standardError.write(Data(
-                                    "[GSY_AUTOSCAN_TICK] t=\(elapsed)s files=\(snap.scannedFileCount) bytes=\(snap.totalBytes / 1_048_576)MB\n".utf8
-                                ))
-                                lastBeat = now
-                            }
-                        }
-                        let snap = coordinator.snapshot
-                        let elapsedMs = Int(Date().timeIntervalSince(started) * 1000)
-                        FileHandle.standardError.write(Data(
-                            "[GSY_AUTOSCAN_RESULT] elapsed_ms=\(elapsedMs) files=\(snap.scannedFileCount) bytes=\(snap.totalBytes) finished=true\n".utf8
-                        ))
-                    }
-                }
+                // v2026.07.16：移除所有环境变量驱动的 App 内测试/自动扫盘入口。
+                // 反复启动并 exit 不能验证 UI；未授权的启动时自动扫描也不应进入 Release。
+                // 逻辑回归使用 package tests，性能使用 ScanKit CLI，真实交互只做持续 C4。
             }
             .onChange(of: coordinator.isScanning) { _, _ in
                 // v1.3：扫描开始 → HUD 弹出；扫描结束 → 非常驻模式下 0.8s 后渐隐
@@ -345,10 +299,14 @@ struct GSYCleanMacApp: App {
                 // 关 → 立刻回 regular，不会让用户因为 Dock 没了而困惑。
                 reconcileActivationPolicy()
             }
-            .onChange(of: settings.sentinelEnabled) { _, _ in
-                // v1.6：用户在「设置 → 高级 → 后台守护」拨动开关 → 立刻 enable / disable。
-                // reconcileSentinel 内部识别 settings 当前值，幂等并能在失败时回滚 toggle。
-                reconcileSentinel(initial: false)
+            .onChange(of: settings.sentinelEnabled) { oldValue, newValue in
+                // v2026.07.16：所有 Sentinel setting 变化先过 MainActor 类型化事务边界。
+                // 真实用户手势才 reconcile；失败回滚产生的第二轮 onChange 只消费事务，
+                // 不重复 register/unregister、不重复弹错，也不靠异步延时猜事件来源。
+                _ = sentinelManager.handleObservedToggleChange(
+                    from: oldValue,
+                    to: newValue
+                )
             }
             .onChange(of: settings.preferredLanguage) { _, _ in
                 // v2026.07.15：String 型 tooltip / tray NSMenu / application main menu
@@ -417,7 +375,8 @@ struct GSYCleanMacApp: App {
                           pathStore: pathStore,
                           updateChecker: updateChecker,
                           aiSettings: aiSettings,
-                          navigation: settingsNavigation)
+                          navigation: settingsNavigation,
+                          sentinelManager: sentinelManager)
                 .environment(\.locale, settings.effectiveLocale)
                 .onChange(of: settings.preferredLanguage, initial: true) { _, _ in
                     // 主窗口可能已关闭，只剩 Settings scene；这里同样刷新原生菜单。
@@ -451,10 +410,18 @@ struct GSYCleanMacApp: App {
     }
 
     /// v2026.07.15：把同一份语言状态同步到所有非 SwiftUI locale 消费者。
+    /// v2026.07.16：两个扫描协调器属于 App 生命周期，必须在这里一起同步；
+    /// 这样主窗口销毁、只剩 Settings scene 时切语言，托盘/HUD 后续发起的扫描也不会
+    /// 继续生成旧语言文案。fanout 只写展示 locale，不重扫、不替换或重建 snapshot。
     /// 延后一轮再刷新 main menu，是为了让本次 SwiftUI Commands diff 先完成，
     /// 避免刚改好的原生标题被随后发生的 command rebuild 覆盖回启动语言。
     private func applyLiveLocale() {
         let locale = settings.effectiveLocale
+        ScanPresentationLocaleFanout.apply(
+            locale,
+            professionalCoordinator: coordinator,
+            smartCareCoordinator: smartCareSession.scanCoordinator
+        )
         statusItem.updateLocale(locale)
         ApplicationMenuLocalizer.apply(locale: locale)
         DispatchQueue.main.async {
@@ -482,21 +449,12 @@ struct GSYCleanMacApp: App {
     /// v1.6：把 [settings.sentinelEnabled](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
     /// 与 SMAppService 的实际 register 状态对齐。
     ///
-    /// - `initial=true`：进程拉起钩子，幂等 register（用户已 ON 时）。
-    /// - `initial=false`：用户 toggle，按新值调 enable / disable；register 失败会回滚 toggle 到 false，
-    ///   保证 settings 不会出现"开关 ON 但守护没起来"的不一致。
+    /// v2026.07.16：启动对账与用户手势使用不同入口。用户变化只允许从
+    /// `handleObservedToggleChange` 进入；这里不能再接收 Bool 参数，否则程序性回滚很容易
+    /// 被误标成 `.user` 并重复执行系统动作。
     @MainActor
-    private func reconcileSentinel(initial: Bool) {
-        if settings.sentinelEnabled {
-            let ok = sentinelManager.enable()
-            if !ok && !initial {
-                // 用户 toggle 后失败 → 把开关弹回 false，避免"开关 ON 但实际未注册"
-                settings.sentinelEnabled = false
-            }
-        } else {
-            // 关：调 unregister；返回值不影响 settings（已经是 false）。
-            _ = sentinelManager.disable()
-        }
+    private func reconcileSentinelAtStartup() {
+        _ = sentinelManager.reconcile(trigger: .startup)
     }
 
     /// v1.3.x：响应 NSWindow.willCloseNotification —— willClose 时窗口本身仍 isVisible=true，

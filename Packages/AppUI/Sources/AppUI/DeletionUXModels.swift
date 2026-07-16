@@ -112,7 +112,7 @@ public enum DeletionUserMode: String, Sendable, Equatable {
 
 /// 用户看到候选时对应的扫描/发现快照身份。所有授权都必须绑定该身份；相同类目
 /// 重新扫描后即使路径文本相同，也不能复用旧确认。
-public struct DeletionSnapshotIdentity: Sendable, Equatable {
+public struct DeletionSnapshotIdentity: Sendable, Equatable, Hashable, Codable {
     public let sessionID: UUID
     public let revision: UInt64
     public let categoryID: String?

@@ -4,9 +4,8 @@ import XCTest
 /// Step 7-5：TrashPipeline 返回 trashedPairs 的语义验证。
 ///
 /// 设计：四个 return path 中三个是确定性的（dry-run / 全 forbid / 空数组），
-/// 必须返回空 `[]`。第四个（NSWorkspace.recycle 真把文件移入用户废纸篓）
-/// 在 SPM 测试沙箱里不稳定，留给 RegressionRunner 的 undo-history-restore case
-/// 跑真实 .app 验证。
+/// 必须返回空 `[]`。第四个（NSWorkspace.recycle 真把文件移入用户废纸篓）不能靠
+/// 快速启动/退出 App 冒充 UI 验收；它只允许在明确授权的 C4 中对临时 fixture 验证。
 ///
 /// 这条 test 把"非 recycle 路径必返回空 pairs"作为契约钉住，避免后续重构误改语义。
 final class TrashPipelinePairTests: XCTestCase {

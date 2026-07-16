@@ -16,15 +16,79 @@ enum PortCleanerKillTitle: Equatable, Sendable {
 }
 
 struct PortCleanerKillResultPresentation: Equatable, Sendable {
-    let success: Int
+    let confirmedStopped: Int
+    let requestPending: Int
+    let notSubmitted: Int
     let failed: Int
 
     func text(locale: Locale) -> String {
         AppLocalization.format(
-            "port_cleaner.kill.result",
+            "port_cleaner.kill.result_with_not_submitted",
             locale: locale,
-            arguments: [Int64(success), Int64(failed)]
+            arguments: [
+                Int64(confirmedStopped),
+                Int64(requestPending),
+                Int64(notSubmitted),
+                Int64(failed)
+            ]
         )
+    }
+}
+
+/// v2026.07.16: one revision-owned reload state machine shared by the screen and tests.
+/// A failure preserves the last successful entries; cancellation or a late older revision can
+/// never clear/replace them. The model stores only typed failure semantics, never raw stderr.
+@MainActor
+final class PortCleanerReloadModel: ObservableObject {
+    typealias Loader = @Sendable () async -> PortCleanerScanOutcome
+
+    @Published private(set) var entries: [PortCleanerEntry] = []
+    @Published private(set) var isLoading = false
+    @Published private(set) var failure: PortCleanerScanFailure?
+
+    private let loader: Loader
+    private var revision: UInt64 = 0
+    private var loadTask: Task<Void, Never>?
+
+    init(loader: @escaping Loader) {
+        self.loader = loader
+    }
+
+    func reload() {
+        revision &+= 1
+        let ownedRevision = revision
+        loadTask?.cancel()
+        failure = nil
+        isLoading = true
+        let loader = self.loader
+        loadTask = Task { [weak self] in
+            let outcome = await loader()
+            guard let self,
+                  !Task.isCancelled,
+                  self.revision == ownedRevision else { return }
+            switch outcome {
+            case .success(let entries):
+                self.entries = entries
+                self.failure = nil
+            case .failure(let failure):
+                self.failure = failure
+            case .cancelled:
+                break
+            }
+            self.isLoading = false
+            self.loadTask = nil
+        }
+    }
+
+    func cancel() {
+        revision &+= 1
+        loadTask?.cancel()
+        loadTask = nil
+        isLoading = false
+    }
+
+    deinit {
+        loadTask?.cancel()
     }
 }
 
@@ -38,7 +102,9 @@ public struct PortCleanerScreen: View {
 
     private struct PendingKill: Equatable {
         let title: PortCleanerKillTitle
-        let pids: [Int32]
+        /// v2026.07.16：确认弹窗冻结完整进程身份，不能在用户点击确认后再按 PID 重新
+        /// 猜测目标；执行层会用该快照重验 PID reuse、UID、路径和启动时间。
+        let identities: [PortCleanerProcessIdentity]
     }
 
     private enum TableMetrics {
@@ -58,14 +124,12 @@ public struct PortCleanerScreen: View {
 
     private let scanner: PortCleanerScanner
 
-    @State private var entries: [PortCleanerEntry] = []
+    @StateObject private var reloadModel: PortCleanerReloadModel
     @State private var query = ""
     @State private var viewMode: ViewMode = .grouped
     @State private var selectedIDs: Set<String> = []
     @State private var expandedGroups: Set<String> = []
-    @State private var isLoading = false
     @State private var isKilling = false
-    @State private var loadTask: Task<Void, Never>?
     @State private var pendingKill: PendingKill?
     @State private var showKillConfirm = false
     @State private var resultPresentation: PortCleanerKillResultPresentation?
@@ -73,6 +137,9 @@ public struct PortCleanerScreen: View {
 
     public init(scanner: PortCleanerScanner = PortCleanerScanner()) {
         self.scanner = scanner
+        _reloadModel = StateObject(wrappedValue: PortCleanerReloadModel {
+            await scanner.listPorts()
+        })
     }
 
     public var body: some View {
@@ -84,9 +151,14 @@ public struct PortCleanerScreen: View {
             footer
         }
         .task { startReload() }
+        .onChange(of: reloadModel.entries) { _, latest in
+            selectedIDs.formIntersection(Set(latest.filter(\.canRequestTermination).map(\.id)))
+            if expandedGroups.isEmpty {
+                expandedGroups = Set(PortCleanerGroup.groups(from: latest).prefix(5).map(\.id))
+            }
+        }
         .onDisappear {
-            loadTask?.cancel()
-            loadTask = nil
+            reloadModel.cancel()
         }
         .confirmationDialog(
             pendingKill?.title.text(locale: locale)
@@ -103,7 +175,7 @@ public struct PortCleanerScreen: View {
                 pendingKill = nil
             }
         } message: {
-            let count = pendingKill?.pids.count ?? 0
+            let count = pendingKill?.identities.count ?? 0
             Text(AppLocalization.format(
                 "port_cleaner.confirm.message",
                 locale: locale,
@@ -183,6 +255,20 @@ public struct PortCleanerScreen: View {
 
     @ViewBuilder
     private var content: some View {
+        if let failure = reloadModel.failure, entries.isEmpty {
+            scanFailurePlaceholder(failure)
+        } else {
+            VStack(spacing: 0) {
+                if let failure = reloadModel.failure {
+                    scanFailureBanner(failure)
+                }
+                contentSnapshot
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var contentSnapshot: some View {
         if isLoading && entries.isEmpty {
             placeholder("port_cleaner.placeholder.scanning", icon: "network")
         } else if filteredEntries.isEmpty {
@@ -215,6 +301,44 @@ public struct PortCleanerScreen: View {
                 }
             }
         }
+    }
+
+    private func scanFailureBanner(_ failure: PortCleanerScanFailure) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(verbatim: failure.message(locale: locale))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button(AppLocalization.string("port_cleaner.scan.retry", locale: locale)) {
+                startReload()
+            }
+            .controlSize(.small)
+            .disabled(isLoading || isKilling)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
+        .background(.orange.opacity(0.08))
+    }
+
+    private func scanFailurePlaceholder(_ failure: PortCleanerScanFailure) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 30))
+                .foregroundStyle(.orange)
+            Text("port_cleaner.scan.error.title", bundle: .module)
+                .font(.headline)
+            Text(verbatim: failure.message(locale: locale))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button(AppLocalization.string("port_cleaner.scan.retry", locale: locale)) {
+                startReload()
+            }
+            .disabled(isLoading || isKilling)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
     }
 
     private var tableHeader: some View {
@@ -429,25 +553,21 @@ public struct PortCleanerScreen: View {
         PortCleanerGroup.groups(from: filteredEntries)
     }
 
+    private var entries: [PortCleanerEntry] { reloadModel.entries }
+    private var isLoading: Bool { reloadModel.isLoading }
+
     private func startReload() {
-        loadTask?.cancel()
-        loadTask = Task {
-            isLoading = true
-            let latest = await scanner.listPorts()
-            guard !Task.isCancelled else { return }
-            entries = latest
-            selectedIDs.formIntersection(Set(latest.filter(\.canRequestTermination).map(\.id)))
-            if expandedGroups.isEmpty {
-                expandedGroups = Set(PortCleanerGroup.groups(from: latest).prefix(5).map(\.id))
-            }
-            isLoading = false
-        }
+        reloadModel.reload()
     }
 
     private func requestKill(title: PortCleanerKillTitle, entries: [PortCleanerEntry]) {
-        let pids = Array(Set(entries.filter(\.canRequestTermination).map(\.pid))).sorted()
-        guard !pids.isEmpty else { return }
-        pendingKill = PendingKill(title: title, pids: pids)
+        let identities = Array(Set(
+            entries
+                .filter(\.canRequestTermination)
+                .compactMap(\.processIdentity)
+        )).sorted { $0.pid < $1.pid }
+        guard !identities.isEmpty else { return }
+        pendingKill = PendingKill(title: title, identities: identities)
         showKillConfirm = true
     }
 
@@ -463,10 +583,19 @@ public struct PortCleanerScreen: View {
     private func performKill(_ request: PendingKill?) async {
         guard let request else { return }
         isKilling = true
-        let results = await scanner.kill(pids: request.pids)
-        let success = results.filter(\.success).count
-        let failed = results.count - success
-        resultPresentation = PortCleanerKillResultPresentation(success: success, failed: failed)
+        let results = await scanner.kill(identities: request.identities)
+        let confirmedStopped = results.filter(\.success).count
+        let requestPending = results.filter(\.requestPending).count
+        let notSubmitted = results.filter(\.notSubmitted).count
+        let failed = results.count - confirmedStopped - requestPending - notSubmitted
+        // v2026.07.16：结果必须区分“已确认退出”和“SIGTERM 已提交但仍在运行”，避免
+        // kill(2) 返回 0 后把尚未退出的进程误报为成功结束。
+        resultPresentation = PortCleanerKillResultPresentation(
+            confirmedStopped: confirmedStopped,
+            requestPending: requestPending,
+            notSubmitted: notSubmitted,
+            failed: failed
+        )
         selectedIDs.removeAll()
         isKilling = false
         startReload()

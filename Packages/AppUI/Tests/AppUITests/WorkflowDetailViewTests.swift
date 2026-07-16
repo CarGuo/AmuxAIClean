@@ -67,6 +67,318 @@ final class WorkflowDetailViewTests: XCTestCase {
         XCTAssertEqual(vm.cardLoading, snapshot1, "二次 bootstrap 不应改变 loading 状态")
     }
 
+    /// v2026.07.16: a bounded queue must refill immediately. This also locks the explicit
+    /// pending -> scanning -> completed contract so unstarted cards never render as empty.
+    func test_workflowScheduler_任一卡完成立即补位且pending不冒充empty() async throws {
+        let home = makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let gate = CardScanGate()
+        let vm = WorkflowDetailViewModel(
+            workflow: FourDynamicCardsWorkflow(),
+            home: home,
+            dynamicDiscovery: { scannerID, _, _ in
+                await gate.wait(scannerID)
+                return DiscoveryEvidence(hits: [])
+            }
+        )
+        let bootstrap = Task { await vm.bootstrap() }
+
+        let startedInitialPair = await eventually { await gate.startedIDs().count == 2 }
+        XCTAssertTrue(startedInitialPair)
+        XCTAssertEqual(vm.cardScanPhase(for: "card.test.a"), .scanning)
+        XCTAssertEqual(vm.cardScanPhase(for: "card.test.b"), .scanning)
+        XCTAssertEqual(vm.cardScanPhase(for: "card.test.c"), .pending)
+        XCTAssertEqual(vm.cardCapacityState(for: "card.test.c"), .pending)
+        XCTAssertEqual(vm.cardScanPhase(for: "card.test.d"), .pending)
+
+        await gate.release("scanner.test.a")
+        let startedThird = await eventually { await gate.startedIDs().contains("scanner.test.c") }
+        XCTAssertTrue(startedThird)
+        XCTAssertEqual(vm.cardScanPhase(for: "card.test.a"), .completed)
+        XCTAssertEqual(vm.cardScanPhase(for: "card.test.b"), .scanning,
+                       "慢 sibling 未完成不能阻止空闲 slot 补入下一张卡")
+        XCTAssertEqual(vm.cardScanPhase(for: "card.test.c"), .scanning)
+        XCTAssertEqual(vm.cardScanPhase(for: "card.test.d"), .pending)
+
+        await gate.release("scanner.test.b")
+        let startedFourth = await eventually { await gate.startedIDs().contains("scanner.test.d") }
+        XCTAssertTrue(startedFourth)
+        await gate.release("scanner.test.c")
+        await gate.release("scanner.test.d")
+        await bootstrap.value
+
+        XCTAssertTrue(vm.cardLoading.isEmpty)
+        XCTAssertTrue(vm.cards.allSatisfy { vm.cardScanPhase(for: $0.id) == .completed })
+    }
+
+    /// **v2026.07.16 root-cause regression:** SwiftUI cancels `.task` when the user leaves
+    /// the page. The cancelled revision must stop both structured card work and the shared
+    /// versioned-root task, converge every pending/scanning card, then allow re-entry to start
+    /// one fresh scan. A successfully completed bootstrap remains idempotent.
+    func test_bootstrap取消后_任务与phase收敛_重新进入可完整扫描且完成后幂等() async throws {
+        let home = makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let probe = WorkflowCancellationProbe()
+        let vm = WorkflowDetailViewModel(
+            workflow: CancellationReentryWorkflow(),
+            home: home,
+            versionedRootDiscovery: { _ in
+                await probe.discoverVersionedRoots()
+            },
+            dynamicDiscovery: { scannerID, _, _ in
+                try await probe.discoverDynamic(scannerID: scannerID)
+            }
+        )
+
+        let firstBootstrap = Task { await vm.bootstrap() }
+        let firstPairStarted = await eventually {
+            let versionedCalls = await probe.versionedCallCount()
+            let dynamicCalls = await probe.dynamicCallCount(scannerID: "scanner.cancel.a")
+            return versionedCalls == 1 && dynamicCalls == 1
+        }
+        XCTAssertTrue(firstPairStarted)
+        XCTAssertEqual(vm.cardScanPhase(for: "card.cancel.versioned"), .scanning)
+        XCTAssertEqual(vm.cardScanPhase(for: "card.cancel.a"), .scanning)
+        XCTAssertEqual(vm.cardScanPhase(for: "card.cancel.b"), .pending)
+        XCTAssertEqual(vm.cardScanPhase(for: "card.cancel.c"), .pending)
+
+        firstBootstrap.cancel()
+        await firstBootstrap.value
+
+        let cancellationReachedProviders = await eventually {
+            let versioned = await probe.versionedCancellationCount()
+            let dynamic = await probe.dynamicCancellationCount(scannerID: "scanner.cancel.a")
+            return versioned == 1 && dynamic == 1
+        }
+        XCTAssertTrue(cancellationReachedProviders,
+                      "page task cancellation must reach shared and structured providers")
+        XCTAssertTrue(vm.cardLoading.isEmpty, "cancelled revision must leave no permanent spinner")
+        for card in vm.cards {
+            XCTAssertEqual(vm.cardScanPhase(for: card.id), .cancelled)
+            XCTAssertEqual(vm.cardCapacityState(for: card.id), .cancelled)
+        }
+
+        await probe.allowCompletion()
+        await vm.bootstrap()
+
+        XCTAssertTrue(vm.cardLoading.isEmpty)
+        XCTAssertTrue(vm.cards.allSatisfy { vm.cardScanPhase(for: $0.id) == .completed })
+        let versionedCallsAfterReentry = await probe.versionedCallCount()
+        let dynamicACallsAfterReentry = await probe.dynamicCallCount(scannerID: "scanner.cancel.a")
+        let dynamicBCallsAfterReentry = await probe.dynamicCallCount(scannerID: "scanner.cancel.b")
+        let dynamicCCallsAfterReentry = await probe.dynamicCallCount(scannerID: "scanner.cancel.c")
+        XCTAssertEqual(versionedCallsAfterReentry, 2,
+                       "cancelled attempt must not set didBootstrap")
+        XCTAssertEqual(dynamicACallsAfterReentry, 2)
+        XCTAssertEqual(dynamicBCallsAfterReentry, 1)
+        XCTAssertEqual(dynamicCCallsAfterReentry, 1)
+
+        await vm.bootstrap()
+        let finalVersionedCalls = await probe.versionedCallCount()
+        let finalDynamicCalls = await probe.dynamicTotalCallCount()
+        XCTAssertEqual(finalVersionedCalls, 2,
+                       "completed bootstrap remains idempotent")
+        XCTAssertEqual(finalDynamicCalls, 4)
+    }
+
+    /// **v2026.07.16 root-cause regression:** row Retry is a card-scoped transaction. It
+    /// must preserve sibling phase/items and the full-scan revision. A second Retry supersedes
+    /// an uncooperative first provider, whose late result must never overwrite attempt two.
+    func test_单卡连续retry_其他卡与全局revision不变_旧任务晚到不能覆盖() async throws {
+        let home = makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let workflow = TwoRetryCardsWorkflow()
+        let cards = workflow.cards(home: home)
+        let targetCard = try XCTUnwrap(cards.first { $0.id == "card.retry.target" })
+        let siblingCard = try XCTUnwrap(cards.first { $0.id == "card.retry.sibling" })
+        let probe = CardRetryProbe()
+        let vm = WorkflowDetailViewModel(
+            workflow: workflow,
+            home: home,
+            dynamicDiscovery: { scannerID, _, _ in
+                await probe.discover(scannerID: scannerID)
+            }
+        )
+        let oldTargetHit = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/retry/old"),
+            sizeBytes: 10,
+            displayName: "old-target",
+            note: nil
+        )
+        let siblingHit = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/retry/sibling"),
+            sizeBytes: 20,
+            displayName: "stable-sibling",
+            note: nil
+        )
+        let oldIssue = ScanIncompleteIssue(path: "/retry/old", reason: .enumerationFailed)
+        vm.setTestCards(cards)
+        vm.setTestHits([
+            targetCard.id: [oldTargetHit],
+            siblingCard.id: [siblingHit],
+        ])
+        vm.setTestCardIncompleteIssues([targetCard.id: [oldIssue]])
+        vm.setTestScanEvidence(WorkflowScanEvidence(
+            revision: 77,
+            incompleteIssues: [oldIssue]
+        ))
+        let originalSessionID = vm.scanEvidence.sessionID
+
+        let firstRetry = Task { await vm.refreshCard(cardID: targetCard.id) }
+        let firstAttemptStarted = await eventually { await probe.callCount() == 1 }
+        XCTAssertTrue(firstAttemptStarted)
+        XCTAssertEqual(vm.cardScanPhase(for: targetCard.id), .scanning)
+        XCTAssertEqual(vm.cardScanPhase(for: siblingCard.id), .completed)
+        XCTAssertEqual(vm.cardHits[siblingCard.id], [siblingHit])
+        XCTAssertEqual(vm.scanEvidence.revision, 77)
+        XCTAssertEqual(vm.scanEvidence.sessionID, originalSessionID)
+
+        let secondRetry = Task { await vm.refreshCard(cardID: targetCard.id) }
+        await secondRetry.value
+        XCTAssertEqual(vm.cardHits[targetCard.id]?.first?.displayName, "attempt-2")
+        XCTAssertEqual(vm.cardScanPhase(for: targetCard.id), .completed)
+        XCTAssertEqual(vm.cardScanPhase(for: siblingCard.id), .completed)
+        XCTAssertEqual(vm.cardHits[siblingCard.id], [siblingHit])
+        XCTAssertEqual(vm.scanEvidence.revision, 77)
+        XCTAssertEqual(vm.scanEvidence.sessionID, originalSessionID)
+
+        await probe.releaseFirstAttempt()
+        await firstRetry.value
+        XCTAssertEqual(vm.cardHits[targetCard.id]?.first?.displayName, "attempt-2",
+                       "superseded attempt must not publish after its continuation resumes")
+        XCTAssertEqual(vm.cardHits[siblingCard.id], [siblingHit])
+        XCTAssertEqual(vm.cardScanPhase(for: siblingCard.id), .completed)
+        let cancelledAttemptCount = await probe.cancelledAttemptCount()
+        XCTAssertEqual(cancelledAttemptCount, 1)
+    }
+
+    /// v2026.07.16: row retry used to be launched by an anonymous View `Task`, which retained
+    /// the old ViewModel after navigation. The page lifetime must cancel the registered caller
+    /// and worker, rotate scan identity, and reject even a provider that returns after cancel.
+    func test_页面离开取消已登记单卡retry_旧结果不得后台发布() async throws {
+        let home = makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let workflow = SingleManagedCardWorkflow()
+        let card = try XCTUnwrap(workflow.cards(home: home).first)
+        let probe = ManagedWorkflowLifetimeProbe()
+        let vm = WorkflowDetailViewModel(
+            workflow: workflow,
+            home: home,
+            dynamicDiscovery: { scannerID, _, _ in
+                await probe.discover(scannerID: scannerID)
+            }
+        )
+        let original = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/lifetime/original"),
+            sizeBytes: 1,
+            displayName: "original",
+            note: nil
+        )
+        vm.setTestCards([card])
+        vm.setTestHits([card.id: [original]])
+        vm.setTestScanEvidence(WorkflowScanEvidence(revision: 90))
+        let oldRevision = vm.scanEvidence.revision
+
+        vm.startCardRefresh(cardID: card.id)
+        let retryStarted = await eventually { await probe.callCount() == 1 }
+        XCTAssertTrue(retryStarted)
+        XCTAssertEqual(vm.cardScanPhase(for: card.id), .scanning)
+
+        vm.cancelVisibleScanWork()
+
+        let retryCancelled = await eventually { await probe.cancellationCount() == 1 }
+        XCTAssertTrue(retryCancelled)
+        XCTAssertEqual(vm.scanEvidence.revision, oldRevision + 1)
+        XCTAssertEqual(vm.cardScanPhase(for: card.id), .cancelled)
+        XCTAssertEqual(vm.cardHits[card.id], [],
+                       "cancelled retry cleared its stale row and must not publish a late result")
+        XCTAssertTrue(vm.selected.isEmpty)
+    }
+
+    /// v2026.07.16: a second full refresh is a new revision, not merely a publication token.
+    /// It must cancel the prior provider promptly and complete from a fresh transaction.
+    func test_连续全量重新扫描_新revision主动取消旧扫描body() async throws {
+        let home = makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let probe = ManagedWorkflowLifetimeProbe()
+        let vm = WorkflowDetailViewModel(
+            workflow: SingleManagedCardWorkflow(),
+            home: home,
+            dynamicDiscovery: { scannerID, _, _ in
+                await probe.discover(scannerID: scannerID)
+            }
+        )
+
+        vm.startFullRefresh()
+        let firstRefreshStarted = await eventually { await probe.callCount() == 1 }
+        XCTAssertTrue(firstRefreshStarted)
+
+        vm.startFullRefresh()
+
+        let oldRefreshCancelled = await eventually { await probe.cancellationCount() == 1 }
+        XCTAssertTrue(oldRefreshCancelled)
+        let freshRefreshCompleted = await eventually {
+            await probe.callCount() >= 2 && vm.cardLoading.isEmpty
+        }
+        XCTAssertTrue(freshRefreshCompleted)
+        XCTAssertEqual(vm.cardHits.values.flatMap { $0 }.first?.displayName, "attempt-2")
+        XCTAssertEqual(vm.cards.first.map { vm.cardScanPhase(for: $0.id) }, .completed)
+    }
+
+    func test_derivedData双卡_同一snapshot只发现一次且不调用动态二次扫描() async throws {
+        let home = makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let root = home.appendingPathComponent(
+            "Library/Developer/Xcode/DerivedData",
+            isDirectory: true
+        )
+        let projectURL = root.appendingPathComponent("Example-abc123", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectURL, withIntermediateDirectories: true)
+        let project = ProjectHit(
+            url: projectURL,
+            projectName: "Example",
+            sizeBytes: 4_096,
+            modificationDate: Date()
+        )
+        let snapshot = DerivedDataScanSnapshot(
+            rootURL: root,
+            rootExists: true,
+            rootSizeBytes: 8_192,
+            projects: DiscoveryEvidence(hits: [project]),
+            rootIncompleteIssues: [],
+            sharedDirectoryCount: 1
+        )
+        let snapshotProbe = DerivedSnapshotProbe(snapshot: snapshot)
+        let dynamicProbe = CallCounter()
+        let vm = WorkflowDetailViewModel(
+            workflow: AppleWorkflow(),
+            home: home,
+            dynamicDiscovery: { _, _, _ in
+                await dynamicProbe.increment()
+                return DiscoveryEvidence(hits: [])
+            },
+            derivedDataSnapshotDiscovery: { _ in
+                await snapshotProbe.discover()
+            }
+        )
+
+        await vm.bootstrap()
+
+        let snapshotCalls = await snapshotProbe.callCount()
+        let dynamicCalls = await dynamicProbe.value()
+        XCTAssertEqual(snapshotCalls, 1)
+        XCTAssertEqual(dynamicCalls, 0,
+                       "per-project card 必须复用 snapshot，不能再递归扫描每个项目")
+        XCTAssertEqual(
+            vm.cardHits["card.apple.derived-data"]?.first?.sizeBytes,
+            8_192
+        )
+        XCTAssertEqual(
+            vm.cardHits["card.apple.derived-data-per-project"]?.first?.sizeBytes,
+            4_096
+        )
+    }
+
     /// PR-5：toggleSelection / clearAlert 这些纯函数路径不依赖磁盘，独立验证。
     func test_PR5_toggleSelection_clearAlert_纯逻辑_v17() async {
         let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: makeTempHome())
@@ -186,10 +498,11 @@ final class WorkflowDetailViewTests: XCTestCase {
 
     /// PR-5：formatBytes 不应对极值崩溃。
     func test_PR5_formatBytes_边界值_不崩_v17() {
-        _ = WorkflowDetailViewModel.formatBytes(0)
-        _ = WorkflowDetailViewModel.formatBytes(1024)
-        _ = WorkflowDetailViewModel.formatBytes(1_073_741_824)
-        _ = WorkflowDetailViewModel.formatBytes(Int64.max)
+        let en = Locale(identifier: "en")
+        _ = WorkflowDetailViewModel.formatBytes(0, locale: en)
+        _ = WorkflowDetailViewModel.formatBytes(1024, locale: en)
+        _ = WorkflowDetailViewModel.formatBytes(1_073_741_824, locale: en)
+        _ = WorkflowDetailViewModel.formatBytes(Int64.max, locale: en)
     }
 
     /// PR-5：MainView workflow sentinel ID 不能重名也不能与既有 sentinel 冲突。
@@ -448,6 +761,244 @@ final class WorkflowDetailViewTests: XCTestCase {
         }
     }
 
+    private struct FourDynamicCardsWorkflow: DeveloperWorkflow {
+        let id = "workflow.test.scheduler"
+        let displayName = "workflow.test.scheduler"
+        let subtitle = "workflow.test.scheduler"
+
+        func cards(home: URL) -> [DeveloperCard] {
+            ["a", "b", "c", "d"].map { suffix in
+                DeveloperCard(
+                    id: "card.test.\(suffix)",
+                    title: suffix,
+                    summary: "",
+                    source: .dynamicScanner(scannerID: "scanner.test.\(suffix)"),
+                    recipe: .filesystem,
+                    risk: .safe
+                )
+            }
+        }
+    }
+
+    private struct CancellationReentryWorkflow: DeveloperWorkflow {
+        let id = "workflow.test.cancellation-reentry"
+        let displayName = "workflow.test.cancellation-reentry"
+        let subtitle = "workflow.test.cancellation-reentry"
+
+        func cards(home: URL) -> [DeveloperCard] {
+            let versioned = DeveloperCard(
+                id: "card.cancel.versioned",
+                title: "versioned",
+                summary: "",
+                source: .versionedRoot(ruleID: "rule.cancel.versioned"),
+                recipe: .filesystem,
+                risk: .safe
+            )
+            let dynamic = ["a", "b", "c"].map { suffix in
+                DeveloperCard(
+                    id: "card.cancel.\(suffix)",
+                    title: suffix,
+                    summary: "",
+                    source: .dynamicScanner(scannerID: "scanner.cancel.\(suffix)"),
+                    recipe: .filesystem,
+                    risk: .safe
+                )
+            }
+            return [versioned] + dynamic
+        }
+    }
+
+    private struct TwoRetryCardsWorkflow: DeveloperWorkflow {
+        let id = "workflow.test.card-retry"
+        let displayName = "workflow.test.card-retry"
+        let subtitle = "workflow.test.card-retry"
+
+        func cards(home: URL) -> [DeveloperCard] {
+            ["target", "sibling"].map { suffix in
+                DeveloperCard(
+                    id: "card.retry.\(suffix)",
+                    title: suffix,
+                    summary: "",
+                    source: .dynamicScanner(scannerID: "scanner.retry.\(suffix)"),
+                    recipe: .managedUninstall(.simulatorDevice),
+                    risk: .confirm
+                )
+            }
+        }
+    }
+
+    private struct SingleManagedCardWorkflow: DeveloperWorkflow {
+        let id = "workflow.test.managed-lifetime"
+        let displayName = "workflow.test.managed-lifetime"
+        let subtitle = "workflow.test.managed-lifetime"
+
+        func cards(home _: URL) -> [DeveloperCard] {
+            [DeveloperCard(
+                id: "card.managed-lifetime",
+                title: "managed-lifetime",
+                summary: "",
+                source: .dynamicScanner(scannerID: "scanner.managed-lifetime"),
+                recipe: .managedUninstall(.simulatorDevice),
+                risk: .confirm
+            )]
+        }
+    }
+
+    private actor ManagedWorkflowLifetimeProbe {
+        private var calls = 0
+        private var cancellations = 0
+
+        func discover(scannerID: String) async -> DiscoveryEvidence<WorkflowScanHit> {
+            calls &+= 1
+            let attempt = calls
+            if attempt == 1 {
+                do {
+                    try await Task.sleep(for: .seconds(30))
+                } catch is CancellationError {
+                    cancellations &+= 1
+                } catch {}
+            }
+            return DiscoveryEvidence(hits: [WorkflowScanHit(
+                url: URL(fileURLWithPath: "/lifetime/attempt-\(attempt)"),
+                sizeBytes: Int64(attempt),
+                displayName: "attempt-\(attempt)",
+                note: scannerID
+            )])
+        }
+
+        func callCount() -> Int { calls }
+        func cancellationCount() -> Int { cancellations }
+    }
+
+    private actor CardRetryProbe {
+        private var calls = 0
+        private var cancelledAttempts = 0
+        private var firstContinuation: CheckedContinuation<Void, Never>?
+
+        func discover(scannerID: String) async -> DiscoveryEvidence<WorkflowScanHit> {
+            calls &+= 1
+            let attempt = calls
+            if attempt == 1 {
+                await withCheckedContinuation { continuation in
+                    firstContinuation = continuation
+                }
+                if Task.isCancelled { cancelledAttempts &+= 1 }
+            }
+            return DiscoveryEvidence(hits: [WorkflowScanHit(
+                url: URL(fileURLWithPath: "/retry/attempt-\(attempt)"),
+                sizeBytes: Int64(attempt),
+                displayName: "attempt-\(attempt)",
+                note: scannerID
+            )])
+        }
+
+        func releaseFirstAttempt() {
+            firstContinuation?.resume()
+            firstContinuation = nil
+        }
+
+        func callCount() -> Int { calls }
+        func cancelledAttemptCount() -> Int { cancelledAttempts }
+    }
+
+    private actor WorkflowCancellationProbe {
+        private var shouldBlock = true
+        private var versionedCalls = 0
+        private var versionedCancellations = 0
+        private var dynamicCalls: [String: Int] = [:]
+        private var dynamicCancellations: [String: Int] = [:]
+
+        func discoverVersionedRoots() async -> KnownVersionedRoots.ScanResult {
+            versionedCalls &+= 1
+            guard shouldBlock else {
+                return KnownVersionedRoots.ScanResult(hits: [], incompleteIssues: [])
+            }
+            do {
+                try await Task.sleep(for: .seconds(30))
+            } catch is CancellationError {
+                versionedCancellations &+= 1
+            } catch {
+                return KnownVersionedRoots.ScanResult(hits: [], incompleteIssues: [])
+            }
+            return KnownVersionedRoots.ScanResult(hits: [], incompleteIssues: [])
+        }
+
+        func discoverDynamic(
+            scannerID: String
+        ) async throws -> DiscoveryEvidence<WorkflowScanHit> {
+            dynamicCalls[scannerID, default: 0] &+= 1
+            guard shouldBlock else { return DiscoveryEvidence(hits: []) }
+            do {
+                try await Task.sleep(for: .seconds(30))
+                return DiscoveryEvidence(hits: [])
+            } catch is CancellationError {
+                dynamicCancellations[scannerID, default: 0] &+= 1
+                throw CancellationError()
+            }
+        }
+
+        func allowCompletion() { shouldBlock = false }
+        func versionedCallCount() -> Int { versionedCalls }
+        func versionedCancellationCount() -> Int { versionedCancellations }
+        func dynamicCallCount(scannerID: String) -> Int { dynamicCalls[scannerID, default: 0] }
+        func dynamicCancellationCount(scannerID: String) -> Int {
+            dynamicCancellations[scannerID, default: 0]
+        }
+        func dynamicTotalCallCount() -> Int { dynamicCalls.values.reduce(0, +) }
+    }
+
+    private actor CardScanGate {
+        private var started: [String] = []
+        private var waiters: [String: CheckedContinuation<Void, Never>] = [:]
+
+        func wait(_ id: String) async {
+            started.append(id)
+            await withCheckedContinuation { continuation in
+                waiters[id] = continuation
+            }
+        }
+
+        func release(_ id: String) {
+            waiters.removeValue(forKey: id)?.resume()
+        }
+
+        func startedIDs() -> [String] { started }
+    }
+
+    private actor DerivedSnapshotProbe {
+        let snapshot: DerivedDataScanSnapshot
+        private var calls = 0
+
+        init(snapshot: DerivedDataScanSnapshot) {
+            self.snapshot = snapshot
+        }
+
+        func discover() -> DerivedDataScanSnapshot {
+            calls += 1
+            return snapshot
+        }
+
+        func callCount() -> Int { calls }
+    }
+
+    private actor CallCounter {
+        private var count = 0
+        func increment() { count += 1 }
+        func value() -> Int { count }
+    }
+
+    private func eventually(
+        timeout: TimeInterval = 2,
+        condition: @escaping () async -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await condition() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return await condition()
+    }
+
     private enum InjectedDynamicDiscoveryError: Error {
         case failedWithoutScopedPath
     }
@@ -595,9 +1146,11 @@ final class WorkflowDetailViewTests: XCTestCase {
                 paths: [path],
                 runningAppSkipped: [],
                 vendorOverrideRequest: request,
-                strictConfirmationToken: String(
-                    localized: "delete.vendor_override.token",
-                    bundle: .module
+                // Mirror the production safety protocol token. It is deliberately invariant
+                // across the live UI locale and resolved from the English catalog.
+                strictConfirmationToken: AppLocalization.string(
+                    "delete.vendor_override.token",
+                    locale: Locale(identifier: "en")
                 )
             )
         )
@@ -718,7 +1271,8 @@ final class WorkflowDetailViewTests: XCTestCase {
             home: home,
             simulatorCoordinator: SimulatorDeleteCoordinator(
                 executor: SubprocessExecutor(timeout: 1, dryRun: true),
-                isSimulatorRunning: { false }
+                isSimulatorRunning: { false },
+                bootedDeviceProbe: { .safeToSubmit }
             )
         )
         vm.setTestCards([filesystemCard, managedCard])
@@ -1100,9 +1654,11 @@ final class WorkflowDetailViewTests: XCTestCase {
                 paths: [target.path],
                 runningAppSkipped: [],
                 scanIncompleteOverrideRequest: request,
-                strictConfirmationToken: String(
-                    localized: "delete.vendor_override.token",
-                    bundle: .module
+                // Mirror the production safety protocol token. It is deliberately invariant
+                // across the live UI locale and resolved from the English catalog.
+                strictConfirmationToken: AppLocalization.string(
+                    "delete.vendor_override.token",
+                    locale: Locale(identifier: "en")
                 )
             )
         )
@@ -1243,7 +1799,8 @@ final class WorkflowDetailViewTests: XCTestCase {
             home: home,
             simulatorCoordinator: SimulatorDeleteCoordinator(
                 executor: SubprocessExecutor(timeout: 1, dryRun: true),
-                isSimulatorRunning: { false }
+                isSimulatorRunning: { false },
+                bootedDeviceProbe: { .safeToSubmit }
             )
         )
         vm.setTestCards([filesystemCard, managedCard])
@@ -1304,7 +1861,8 @@ final class WorkflowDetailViewTests: XCTestCase {
             home: home,
             simulatorCoordinator: SimulatorDeleteCoordinator(
                 executor: SubprocessExecutor(timeout: 1, dryRun: true),
-                isSimulatorRunning: { false }
+                isSimulatorRunning: { false },
+                bootedDeviceProbe: { .safeToSubmit }
             )
         )
         vm.setTestCards([managedCard, unrelatedCard])
@@ -1369,6 +1927,117 @@ final class WorkflowDetailViewTests: XCTestCase {
         XCTAssertNil(vm.activeSheet)
     }
 
+    /// v2026.07.16 P1 regression: an unknown managed operation keeps running after its sheet is
+    /// closed. If the user refreshes and CoreSimulator publishes a replacement row with the same
+    /// path/hitID, the old terminal event must complete only its ledger reconciliation; it cannot
+    /// remove the replacement projection. The injected events are pure values and never launch
+    /// `simctl` or touch a real Simulator resource.
+    func test_managedUninstall旧终态_关闭sheet重扫后不删除同hitID替代资源() async throws {
+        let home = makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let card = makeManagedCard(
+            id: "card.managed.late-replacement",
+            kind: .simulatorRuntime
+        )
+        let sharedHitID = "/simulator/runtime/shared"
+        let oldHit = makeManagedHit(
+            path: sharedHitID,
+            displayName: "Old Runtime",
+            identifier: "11111111-2222-3333-4444-555555555555"
+        )
+        let replacementHit = makeManagedHit(
+            path: sharedHitID,
+            displayName: "Replacement Runtime",
+            identifier: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+        )
+        let vm = WorkflowDetailViewModel(
+            workflow: AppleWorkflow(),
+            home: home,
+            simulatorCoordinator: SimulatorDeleteCoordinator(
+                executor: SubprocessExecutor(timeout: 1, dryRun: true),
+                isSimulatorRunning: { false },
+                bootedDeviceProbe: { .safeToSubmit }
+            )
+        )
+        let oldEvidence = WorkflowScanEvidence(revision: 41, sessionID: UUID())
+        vm.setTestCards([card])
+        vm.setTestHits([card.id: [oldHit]])
+        vm.setTestSelection([oldHit.id])
+        vm.setTestScanEvidence(oldEvidence)
+        await vm.requestSimulatorUninstall()
+        guard case let .review(oldIntent) = vm.simulatorUninstallState,
+              let oldItem = oldIntent.items.first else {
+            return XCTFail("旧 revision 必须冻结 managed intent")
+        }
+
+        // Represents the presentation teardown after an initial unknown result. The real monitor
+        // remains owned by SimulatorDeleteCoordinator; this test injects only its later value.
+        vm.cancelSimulatorUninstall()
+        let replacementEvidence = WorkflowScanEvidence(revision: 42, sessionID: UUID())
+        vm.setTestHits([card.id: [replacementHit]])
+        vm.setTestSelection([replacementHit.id])
+        vm.setTestScanEvidence(replacementEvidence)
+        await vm.requestSimulatorUninstall()
+        guard case let .review(replacementIntent) = vm.simulatorUninstallState else {
+            return XCTFail("新 revision 必须冻结 replacement intent")
+        }
+        vm.cancelSimulatorUninstall()
+
+        let oldLateSuccess = SimulatorDeleteCoordinator.Outcome(
+            item: oldItem,
+            status: .confirmedTerminal(exitCode: 0)
+        )
+        vm.applyTestSimulatorUninstallEvent(
+            .finished(index: 1, total: 1, outcome: oldLateSuccess),
+            sourceIntent: oldIntent
+        )
+        XCTAssertEqual(vm.cardHits[card.id], [replacementHit])
+        XCTAssertEqual(vm.selected, [replacementHit.id])
+
+        // Even if a caller accidentally pairs the current revision with an old item carrying the
+        // same hitID, full frozen item identity (managed UUID/kind/args), not the path alone, wins.
+        vm.applyTestSimulatorUninstallEvent(
+            .finished(index: 1, total: 1, outcome: oldLateSuccess),
+            sourceIntent: replacementIntent
+        )
+        XCTAssertEqual(vm.cardHits[card.id], [replacementHit])
+        XCTAssertEqual(vm.selected, [replacementHit.id])
+    }
+
+    func test_managedUninstall终态投影_unknown与Simulator启动阻断不伪装失败或普通跳过() {
+        let item = SimulatorDeleteCoordinator.Item(
+            cardID: "card.runtime",
+            hitID: "/runtime/one",
+            displayName: "Runtime One",
+            kind: .simulatorRuntime,
+            executable: "/usr/bin/xcrun",
+            args: ["simctl", "runtime", "delete", "11111111-2222-3333-4444-555555555555"]
+        )
+        let unknown = SimulatorDeleteCoordinator.Outcome(
+            item: item,
+            status: .unknownAfterStall,
+            truncatedOutput: "still running"
+        )
+
+        XCTAssertEqual(
+            WorkflowDetailViewModel.simulatorFinishedStatus(
+                outcome: unknown,
+                wasSkipped: false,
+                interruptionReason: .currentItemStatusUnknown
+            ),
+            .unknown(detail: ""),
+            "raw executor detail 不得进入用户状态；sheet 按 typed unknown 在当前 locale 投影"
+        )
+        XCTAssertEqual(
+            WorkflowDetailViewModel.simulatorFinishedStatus(
+                outcome: nil,
+                wasSkipped: true,
+                interruptionReason: .simulatorStarted
+            ),
+            .blockedSimulatorRunning
+        )
+    }
+
     func test_managedUninstall_review冻结计划_执行不回读可变cards与hits() async throws {
         let home = makeTempHome()
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
@@ -1388,7 +2057,8 @@ final class WorkflowDetailViewTests: XCTestCase {
             home: home,
             simulatorCoordinator: SimulatorDeleteCoordinator(
                 executor: SubprocessExecutor(timeout: 1, dryRun: true),
-                isSimulatorRunning: { false }
+                isSimulatorRunning: { false },
+                bootedDeviceProbe: { .safeToSubmit }
             )
         )
         vm.setTestCards([card])
@@ -1438,7 +2108,8 @@ final class WorkflowDetailViewTests: XCTestCase {
             home: home,
             simulatorCoordinator: SimulatorDeleteCoordinator(
                 executor: SubprocessExecutor(timeout: 1, dryRun: true),
-                isSimulatorRunning: { false }
+                isSimulatorRunning: { false },
+                bootedDeviceProbe: { .safeToSubmit }
             )
         )
         vm.setTestCards([card])
@@ -1477,7 +2148,8 @@ final class WorkflowDetailViewTests: XCTestCase {
                     terminalWaitPolicy: .waitUntilExit,
                     dryRun: false
                 ),
-                isSimulatorRunning: { running.read() }
+                isSimulatorRunning: { running.read() },
+                bootedDeviceProbe: { .safeToSubmit }
             )
         )
         vm.setTestCards([card])
@@ -1519,7 +2191,8 @@ final class WorkflowDetailViewTests: XCTestCase {
                     terminalWaitPolicy: .waitUntilExit,
                     dryRun: false
                 ),
-                isSimulatorRunning: { false }
+                isSimulatorRunning: { false },
+                bootedDeviceProbe: { .safeToSubmit }
             )
         )
         vm.setTestCards([card])
@@ -1580,13 +2253,20 @@ final class WorkflowDetailViewTests: XCTestCase {
         let (undo, undoURL) = try makeUndoStore()
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: undoURL)) }
 
-        // 三个 hit：success / failed / safetyRejected 各一
-        let hitOK = WorkflowScanHit(url: URL(fileURLWithPath: "/A/ok"),
+        // v2026.07.16: use HOME-scoped fixtures and a legal post-submission
+        // partition. Safety rejections are pre-submit batch failures; they cannot
+        // coexist with moved pairs in one recycle completion.
+        let fixtureRoot = home.appendingPathComponent("A", isDirectory: true)
+        let okPath = fixtureRoot.appendingPathComponent("ok").path
+        let failPath = fixtureRoot.appendingPathComponent("fail").path
+        let trashedOKPath = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("Trash-ok-\(UUID().uuidString)").path
+
+        // 两个 hit：success / recycle failed 各一。
+        let hitOK = WorkflowScanHit(url: URL(fileURLWithPath: okPath),
                                     sizeBytes: 100, displayName: "ok", note: nil)
-        let hitFail = WorkflowScanHit(url: URL(fileURLWithPath: "/A/fail"),
+        let hitFail = WorkflowScanHit(url: URL(fileURLWithPath: failPath),
                                       sizeBytes: 100, displayName: "fail", note: nil)
-        let hitReject = WorkflowScanHit(url: URL(fileURLWithPath: "/A/reject"),
-                                        sizeBytes: 100, displayName: "reject", note: nil)
         let card = makeFilesystemCard(id: "card.test")
 
         let denied: Set<String> = ["/Forbidden/secret"]
@@ -1595,8 +2275,8 @@ final class WorkflowDetailViewTests: XCTestCase {
             undoHistoryStore: undo
         )
         vm.setTestCards([card])
-        vm.setTestHits([card.id: [hitOK, hitFail, hitReject]])
-        vm.setTestSelection([hitOK.id, hitFail.id, hitReject.id])
+        vm.setTestHits([card.id: [hitOK, hitFail]])
+        vm.setTestSelection([hitOK.id, hitFail.id])
         vm.setTestScanEvidence(WorkflowScanEvidence(
             revision: 11,
             permissionDeniedPaths: denied
@@ -1604,11 +2284,11 @@ final class WorkflowDetailViewTests: XCTestCase {
 
         let pipe = StubDeletionPipeline()
         pipe.stubOutcome = TrashOutcome(
-            movedPairs: [("/A/ok", "/Trash/ok")],
-            failedPaths: ["/A/fail"],
-            safetyRejected: [("/A/reject", "accessDenied")],
+            movedPairs: [(okPath, trashedOKPath)],
+            failedPaths: [failPath],
+            safetyRejected: [],
             missingPaths: [],
-            failureReasons: ["/A/fail": "The item is in use."]
+            failureReasons: [failPath: "The item is in use."]
         )
 
         let intent = try await confirmedIntent(from: vm, pipeline: pipe)
@@ -1617,15 +2297,15 @@ final class WorkflowDetailViewTests: XCTestCase {
         // ① accessDenied 注入到 pipeline——必须在 moveToTrash 之前调到
         XCTAssertEqual(pipe.deniedReceived, denied,
                        "performDelete 必须把 intent 冻结的 Workflow 扫描证据传给删除 pipeline")
-        // ② pipeline 收到全部 3 条 fs path
-        XCTAssertEqual(Set(pipe.movedPathsReceived), Set(["/A/ok", "/A/fail", "/A/reject"]))
-        // ③ UndoHistory 仅写成功的 1 条 pair——不能把 fail/reject 也算进恢复链
+        // ② pipeline 收到全部 2 条 fs path
+        XCTAssertEqual(Set(pipe.movedPathsReceived), Set([okPath, failPath]))
+        // ③ UndoHistory 仅写成功的 1 条 pair——不能把 failedPath 也算进恢复链
         XCTAssertEqual(undo.history.count, 1, "performDelete 成功才写 UndoHistory，且只写真删的 pair")
         XCTAssertEqual(undo.history.first?.source, "workflow")
         XCTAssertEqual(undo.history.first?.filePairs.count, 1,
-                       "filePairs 必须等于 outcome.movedPairs，不能把 failedPaths/safetyRejected 算进去")
-        XCTAssertEqual(undo.history.first?.filePairs.first?.original, "/A/ok")
-        XCTAssertEqual(vm.lastDeleteResult?.failureReasons["/A/fail"], "The item is in use.",
+                       "filePairs 必须等于 outcome.movedPairs，不能把 failedPaths 算进去")
+        XCTAssertEqual(undo.history.first?.filePairs.first?.original, okPath)
+        XCTAssertEqual(vm.lastDeleteResult?.failureReasons[failPath], "The item is in use.",
                        "开发者工作流重组结果 payload 时不能丢失逐路径 recycle 原因")
     }
 
@@ -1641,7 +2321,10 @@ final class WorkflowDetailViewTests: XCTestCase {
             }
         }
 
-        let hit = WorkflowScanHit(url: URL(fileURLWithPath: "/A/x"),
+        // v2026.07.16: keep this fixture inside the isolated HOME so the test
+        // reaches completion accounting instead of correctly failing scope checks.
+        let failedPath = home.appendingPathComponent("A/x").path
+        let hit = WorkflowScanHit(url: URL(fileURLWithPath: failedPath),
                                   sizeBytes: 0, displayName: "x", note: nil)
         let card = makeFilesystemCard(id: "card.test")
         let vm = WorkflowDetailViewModel(
@@ -1654,7 +2337,7 @@ final class WorkflowDetailViewTests: XCTestCase {
 
         let pipe = StubDeletionPipeline()
         pipe.stubOutcome = TrashOutcome(movedPairs: [],
-                                        failedPaths: ["/A/x"],
+                                        failedPaths: [failedPath],
                                         safetyRejected: [], missingPaths: [])
 
         let intent = try await confirmedIntent(from: vm, pipeline: pipe)
@@ -1668,11 +2351,20 @@ final class WorkflowDetailViewTests: XCTestCase {
         let (undo, undoURL) = try makeUndoStore()
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: undoURL)) }
 
-        let parent = WorkflowScanHit(url: URL(fileURLWithPath: "/A"),
+        // v2026.07.16: HOME-scoped paths preserve the parent/child test while
+        // honoring the same deletion capability boundary as production.
+        let parentPath = home.appendingPathComponent("A", isDirectory: true).path
+        let childPath = home.appendingPathComponent("A/build").path
+        let siblingPath = home.appendingPathComponent("B/cache").path
+        let trashedParentPath = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("Trash-A-\(UUID().uuidString)").path
+        let trashedSiblingPath = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("Trash-cache-\(UUID().uuidString)").path
+        let parent = WorkflowScanHit(url: URL(fileURLWithPath: parentPath),
                                      sizeBytes: 300, displayName: "A", note: nil)
-        let child = WorkflowScanHit(url: URL(fileURLWithPath: "/A/build"),
+        let child = WorkflowScanHit(url: URL(fileURLWithPath: childPath),
                                     sizeBytes: 100, displayName: "build", note: nil)
-        let sibling = WorkflowScanHit(url: URL(fileURLWithPath: "/B/cache"),
+        let sibling = WorkflowScanHit(url: URL(fileURLWithPath: siblingPath),
                                       sizeBytes: 200, displayName: "cache", note: nil)
         let card = makeFilesystemCard(id: "card.test")
         let vm = WorkflowDetailViewModel(
@@ -1685,15 +2377,15 @@ final class WorkflowDetailViewTests: XCTestCase {
 
         let pipe = StubDeletionPipeline()
         pipe.stubOutcome = TrashOutcome(
-            movedPairs: [("/A", "/Trash/A"), ("/B/cache", "/Trash/cache")],
+            movedPairs: [(parentPath, trashedParentPath), (siblingPath, trashedSiblingPath)],
             failedPaths: [], safetyRejected: [], missingPaths: []
         )
 
         let intent = try await confirmedIntent(from: vm, pipeline: pipe)
         await vm.performDelete(pipeline: pipe, intent: intent)
 
-        XCTAssertEqual(pipe.movedPathsReceived, ["/A", "/B/cache"])
-        XCTAssertEqual(undo.history.first?.filePairs.map(\.original), ["/A", "/B/cache"])
+        XCTAssertEqual(pipe.movedPathsReceived, [parentPath, siblingPath])
+        XCTAssertEqual(undo.history.first?.filePairs.map(\.original), [parentPath, siblingPath])
     }
 
     func test_totalSelectedBytes_同路径跨卡只统计一次() {

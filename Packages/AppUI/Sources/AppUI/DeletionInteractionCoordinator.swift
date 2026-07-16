@@ -317,9 +317,11 @@ struct DeletionInteractionCoordinator {
 
         let proof: DeletionConfirmationProof
         if expectedOverride != nil || expectedScanOverride != nil {
-            let expectedToken = String(
-                localized: "delete.vendor_override.token",
-                bundle: .module
+            // v2026.07.16：严格确认词是跨语言不变的安全协议值（两份 catalog 均为
+            // DELETE），执行边界固定从英文表解析，不能偷偷依赖进程启动语言。
+            let expectedToken = AppLocalization.string(
+                "delete.vendor_override.token",
+                locale: Locale(identifier: "en")
             )
             guard executionPlan.strictConfirmationToken == expectedToken else {
                 return .blocked(invariantBlock(intent: intent))
@@ -386,13 +388,22 @@ struct DeletionInteractionCoordinator {
             source: intent.origin.historySource,
             accessDeniedPaths: accessDeniedPaths,
             vendorOverrideRequest: confirmed.vendorOverrideRequest,
-            scanIncompleteOverrideRequest: confirmed.scanIncompleteOverrideRequest
+            scanIncompleteOverrideRequest: confirmed.scanIncompleteOverrideRequest,
+            // v2026.07.16: the persistent pending-operation ledger receives the exact
+            // authorization snapshot. A path invalidated after restart cannot be retried by
+            // reusing this token; only a newly scanned revision can replace its tombstone.
+            reviewIdentity: authorization.snapshotIdentity
         )
 
         switch submission {
         case .recycleCompleted(let submission):
-            guard submission.attemptedPaths == authorization.paths,
-                  Set(normalizedPaths(submission.attemptedPaths)).count == submission.attemptedPaths.count else {
+            // v2026.07.16：系统回收回调超时后，执行层会停止后续批次。此时真正提交的
+            // 路径可以是授权集合的严格子集，但 outcome 必须精确证明 pending 与未提交
+            // 的边界；缺失、重叠或越权都 fail closed，不能伪造成完成结果。
+            guard submissionAccountsForAuthorization(
+                submission,
+                authorizedPaths: authorization.paths
+            ) else {
                 return .blocked(invariantBlock(intent: intent))
             }
             let receipt = DeletionSubmissionReceipt(
@@ -446,10 +457,56 @@ struct DeletionInteractionCoordinator {
                 rejections: rejections.isEmpty ? invariantBlock(intent: intent).rejections : rejections
             ))
 
+        case .preSubmitRejected(.pendingOperation(let rejection)):
+            return .blocked(DeletionInteractionBlock(
+                intentID: intent.id,
+                rejections: rejection.preflightRejections.isEmpty
+                    ? invariantBlock(intent: intent).rejections
+                    : rejection.preflightRejections
+            ))
+
         case .preSubmitRejected(.emptyRequest),
              .preSubmitRejected(.unsupportedPipeline):
             return .blocked(invariantBlock(intent: intent))
         }
+    }
+
+    private func submissionAccountsForAuthorization(
+        _ submission: TrashActionCoordinator.CompletedSubmission,
+        authorizedPaths: [String]
+    ) -> Bool {
+        let authorized = normalizedPaths(authorizedPaths)
+        let attempted = normalizedPaths(submission.attemptedPaths)
+        let authorizedSet = Set(authorized)
+        let attemptedSet = Set(attempted)
+
+        guard authorizedSet.count == authorized.count,
+              attemptedSet.count == attempted.count,
+              !attempted.isEmpty,
+              attemptedSet.isSubset(of: authorizedSet) else { return false }
+
+        let hasUnknownBoundary = !(submission.outcome?.pendingPaths.isEmpty ?? true)
+            || !(submission.outcome?.submissionUnknownPaths.isEmpty ?? true)
+            || !(submission.outcome?.notSubmittedPaths.isEmpty ?? true)
+        if attemptedSet == authorizedSet, !hasUnknownBoundary {
+            return true
+        }
+
+        guard let outcome = submission.outcome else { return false }
+        let moved = Set(normalizedPaths(outcome.movedPairs.map(\.originalPath)))
+        let failed = Set(normalizedPaths(outcome.failedPaths))
+        let pending = Set(normalizedPaths(outcome.pendingPaths))
+        let submissionUnknown = Set(normalizedPaths(outcome.submissionUnknownPaths))
+        let notSubmitted = Set(normalizedPaths(outcome.notSubmittedPaths))
+        guard moved.isDisjoint(with: failed),
+              moved.isDisjoint(with: pending),
+              moved.isDisjoint(with: submissionUnknown),
+              failed.isDisjoint(with: pending),
+              failed.isDisjoint(with: submissionUnknown),
+              pending.isDisjoint(with: submissionUnknown),
+              moved.union(failed).union(pending).union(submissionUnknown) == attemptedSet,
+              notSubmitted == authorizedSet.subtracting(attemptedSet) else { return false }
+        return true
     }
 
     private func preparation(

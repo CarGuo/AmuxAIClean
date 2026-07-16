@@ -42,12 +42,20 @@ public actor VersionedRetainScanner {
     public struct DetectionResult: Sendable, Equatable {
         public let hits: [Hit]
         public let incompleteIssues: [ScanIncompleteIssue]
+        /// Cancellation is a distinct transaction terminal state. It is neither a complete
+        /// empty discovery nor a filesystem failure, and partial candidates must be discarded.
+        public let wasCancelled: Bool
 
-        public var isComplete: Bool { incompleteIssues.isEmpty }
+        public var isComplete: Bool { !wasCancelled && incompleteIssues.isEmpty }
 
-        public init(hits: [Hit], incompleteIssues: [ScanIncompleteIssue]) {
+        public init(
+            hits: [Hit],
+            incompleteIssues: [ScanIncompleteIssue],
+            wasCancelled: Bool = false
+        ) {
             self.hits = hits
             self.incompleteIssues = Self.normalized(incompleteIssues)
+            self.wasCancelled = wasCancelled
         }
 
         private static func normalized(_ issues: [ScanIncompleteIssue]) -> [ScanIncompleteIssue] {
@@ -130,9 +138,14 @@ public actor VersionedRetainScanner {
     /// 异步结构化入口。与 [discover] 相比，它会区分“没有旧版本”和“发现阶段不完整”。
     public func discoverWithEvidence(collectionRoot: URL) async -> DetectionResult {
         let opts = options
-        return await Task.detached(priority: .userInitiated) {
+        let discovery = Task.detached(priority: .userInitiated) {
             VersionedRetainScanner.detectWithEvidence(collectionRoot: collectionRoot, options: opts)
-        }.value
+        }
+        return await withTaskCancellationHandler {
+            await discovery.value
+        } onCancel: {
+            discovery.cancel()
+        }
     }
 
     /// 同步识别（便于测试 + 并行批处理）。
@@ -162,19 +175,26 @@ public actor VersionedRetainScanner {
     nonisolated static func detectWithEvidence(
         collectionRoot: URL,
         options: Options,
-        fileSystem: any VersionedRootFileSystem
+        fileSystem: any VersionedRootFileSystem,
+        cancellationCheck: () -> Bool = { Task<Never, Never>.isCancelled }
     ) -> DetectionResult {
         let rootPath = collectionRoot.path
 
+        // v2026.07.16: synchronous shallow discovery is commonly hosted by a detached task.
+        // Task cancellation cannot pre-empt FileManager calls, so observe it before/after each
+        // I/O boundary and each child. A cancelled revision returns no partial deletion evidence.
+        if cancellationCheck() { return cancelledDetectionResult }
         let rootAttributes: [FileAttributeKey: Any]
         do {
             rootAttributes = try fileSystem.attributesOfItem(atPath: rootPath)
         } catch {
+            if cancellationCheck() { return cancelledDetectionResult }
             if isFileNotFound(error) {
                 return DetectionResult(hits: [], incompleteIssues: [])
             }
             return incompleteResult(path: rootPath, error: error, metadataOperation: true)
         }
+        if cancellationCheck() { return cancelledDetectionResult }
 
         guard let rootType = rootAttributes[.type] as? FileAttributeType else {
             return incompleteResult(path: rootPath, reason: .metadataUnavailable)
@@ -187,12 +207,15 @@ public actor VersionedRetainScanner {
         do {
             entries = try fileSystem.contentsOfDirectory(atPath: rootPath)
         } catch {
+            if cancellationCheck() { return cancelledDetectionResult }
             return incompleteResult(path: rootPath, error: error, metadataOperation: false)
         }
+        if cancellationCheck() { return cancelledDetectionResult }
 
         var candidates: [Candidate] = []
         var incompleteIssues: [ScanIncompleteIssue] = []
         for name in entries {
+            if cancellationCheck() { return cancelledDetectionResult }
             if options.skipHiddenDirectories && name.hasPrefix(".") { continue }
             let child = collectionRoot.appendingPathComponent(name)
 
@@ -200,6 +223,7 @@ public actor VersionedRetainScanner {
             do {
                 attributes = try fileSystem.attributesOfItem(atPath: child.path)
             } catch {
+                if cancellationCheck() { return cancelledDetectionResult }
                 incompleteIssues.append(ScanIncompleteIssue(
                     path: child.path,
                     reason: VersionedRootErrorClassifier.isPermissionDenied(error)
@@ -208,6 +232,7 @@ public actor VersionedRetainScanner {
                 ))
                 continue
             }
+            if cancellationCheck() { return cancelledDetectionResult }
 
             guard let type = attributes[.type] as? FileAttributeType else {
                 incompleteIssues.append(ScanIncompleteIssue(
@@ -231,6 +256,7 @@ public actor VersionedRetainScanner {
                     }
                     attributes = try fileSystem.attributesOfItem(atPath: targetURL.path)
                 } catch {
+                    if cancellationCheck() { return cancelledDetectionResult }
                     incompleteIssues.append(ScanIncompleteIssue(
                         path: child.path,
                         reason: VersionedRootErrorClassifier.isPermissionDenied(error)
@@ -239,6 +265,7 @@ public actor VersionedRetainScanner {
                     ))
                     continue
                 }
+                if cancellationCheck() { return cancelledDetectionResult }
                 guard attributes[.type] as? FileAttributeType == .typeDirectory else { continue }
             } else if type != .typeDirectory {
                 continue
@@ -259,6 +286,7 @@ public actor VersionedRetainScanner {
                 modificationDate: modificationDate
             ))
         }
+        if cancellationCheck() { return cancelledDetectionResult }
 
         // 版本排序的正确性依赖完整候选集。任一候选 metadata 缺口都会让“最新 N 个”失去
         // 可证明性，因此保留证据但不从这个集合返回任何可删除项。
@@ -274,6 +302,7 @@ public actor VersionedRetainScanner {
 
         // 排序：升序排列后，尾 N 个为保留版本，前面的都是旧版本
         let sorted = sort(candidates: candidates, ordering: options.ordering)
+        if cancellationCheck() { return cancelledDetectionResult }
         let retainCount = options.keepLatest
         let oldCount = sorted.count - retainCount
         let retainedLatest = sorted.last?.name ?? ""
@@ -281,6 +310,7 @@ public actor VersionedRetainScanner {
         var hits: [Hit] = []
         hits.reserveCapacity(oldCount)
         for i in 0..<oldCount {
+            if cancellationCheck() { return cancelledDetectionResult }
             let entry = sorted[i]
             hits.append(Hit(
                 url: entry.url,
@@ -289,6 +319,7 @@ public actor VersionedRetainScanner {
                 retainedLatest: retainedLatest
             ))
         }
+        if cancellationCheck() { return cancelledDetectionResult }
 
         if !hits.isEmpty {
             GSYLog.info(
@@ -297,6 +328,10 @@ public actor VersionedRetainScanner {
             )
         }
         return DetectionResult(hits: hits, incompleteIssues: [])
+    }
+
+    nonisolated private static var cancelledDetectionResult: DetectionResult {
+        DetectionResult(hits: [], incompleteIssues: [], wasCancelled: true)
     }
 
     struct Candidate: Sendable {

@@ -158,6 +158,7 @@ struct SmartCareAIReviewResultSheet: View {
     let onRerun: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.locale) private var locale
     @State private var proposedSelectionByPath: [String: Bool]
     @State private var baselineSelectionByPath: [String: Bool]
     @State private var expandedRowIDs: Set<String>
@@ -275,13 +276,13 @@ struct SmartCareAIReviewResultSheet: View {
                 Text(LocalizedStringKey(statusTitleKey), bundle: .module)
                     .font(.system(.title2, design: .rounded).weight(.bold))
                 Text(
-                    String(
-                        format: String(
-                            localized: "smart_care.ai.report.subtitle.format",
-                            bundle: .module
-                        ),
-                        presentation.completedCount,
-                        presentation.requestedCount
+                    AppLocalization.format(
+                        "smart_care.ai.report.subtitle.format",
+                        locale: locale,
+                        arguments: [
+                            presentation.completedCount,
+                            presentation.requestedCount,
+                        ]
                     )
                 )
                 .font(.callout)
@@ -316,12 +317,10 @@ struct SmartCareAIReviewResultSheet: View {
                 Text("smart_care.ai.report.scope.title", bundle: .module)
                     .font(.callout.weight(.semibold))
                 Text(
-                    String(
-                        format: String(
-                            localized: "smart_care.ai.report.scope.description.format",
-                            bundle: .module
-                        ),
-                        presentation.requestedCount
+                    AppLocalization.format(
+                        "smart_care.ai.report.scope.description.format",
+                        locale: locale,
+                        arguments: [presentation.requestedCount]
                     )
                 )
                 .font(.caption)
@@ -739,12 +738,10 @@ struct SmartCareAIReviewResultSheet: View {
                 } label: {
                     Label {
                         Text(
-                            String(
-                                format: String(
-                                    localized: "smart_care.ai.report.action.apply.format",
-                                    bundle: .module
-                                ),
-                                changedSelections.count
+                            AppLocalization.format(
+                                "smart_care.ai.report.action.apply.format",
+                                locale: locale,
+                                arguments: [changedSelections.count]
                             )
                         )
                     } icon: {
@@ -989,15 +986,16 @@ struct SmartCareAIReviewResultSheet: View {
     }
 
     private func formattedBytes(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: max(0, bytes), countStyle: .file)
+        AppLocalization.byteCount(bytes, locale: locale)
     }
 
     private func localizedAdviceReason(_ reason: String) -> String {
         let prefix = AIAdviceClamp.localPolicyOverridePrefix
         guard reason.hasPrefix(prefix) else { return reason }
-        let localizedPrefix = String(
-            localized: "ai.advice.local_policy_override.prefix",
-            bundle: .module
+        // v2026.07.16：报告可在不重启 App 的情况下跨语言重绘，前缀必须跟随当前 sheet。
+        let localizedPrefix = AppLocalization.string(
+            "ai.advice.local_policy_override.prefix",
+            locale: locale
         )
         return localizedPrefix + String(reason.dropFirst(prefix.count))
     }

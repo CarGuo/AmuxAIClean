@@ -177,15 +177,23 @@ public enum KnownVersionedRoots {
     public struct ScanResult: Sendable, Equatable {
         public let hits: [Hit]
         public let incompleteIssues: [ScanIncompleteIssue]
+        /// Cancellation is a transaction terminal state, not a complete empty discovery and
+        /// not a filesystem defect. Callers that drive deletion must discard this revision.
+        public let wasCancelled: Bool
 
-        public var isComplete: Bool { incompleteIssues.isEmpty }
+        public var isComplete: Bool { !wasCancelled && incompleteIssues.isEmpty }
 
-        public init(hits: [Hit], incompleteIssues: [ScanIncompleteIssue]) {
+        public init(
+            hits: [Hit],
+            incompleteIssues: [ScanIncompleteIssue],
+            wasCancelled: Bool = false
+        ) {
             self.hits = hits
             self.incompleteIssues = Set(incompleteIssues).sorted {
                 if $0.path == $1.path { return $0.reason.rawValue < $1.reason.rawValue }
                 return $0.path < $1.path
             }
+            self.wasCancelled = wasCancelled
         }
     }
 
@@ -208,13 +216,19 @@ public enum KnownVersionedRoots {
     /// 注入文件系统仅供确定性测试使用。
     static func scanAllWithEvidence(
         home: URL,
-        fileSystem: any VersionedRootFileSystem
+        fileSystem: any VersionedRootFileSystem,
+        cancellationCheck: () -> Bool = { Task<Never, Never>.isCancelled }
     ) -> ScanResult {
         var result: [Hit] = []
         result.reserveCapacity(64)
         var incompleteIssues: [ScanIncompleteIssue] = []
 
         for entry in entries {
+            // v2026.07.16: this API is synchronous but normally runs inside a cancelled
+            // detached task. A Task cancellation does not pre-empt synchronous filesystem
+            // calls, so cooperate at every shallow root/group boundary and discard partial
+            // candidates as one typed cancelled transaction.
+            if cancellationCheck() { return cancelledScanResult }
             let collectionRoot = home.appendingPathComponent(entry.relativePath)
             let options = VersionedRetainScanner.Options(keepLatest: entry.keepLatest,
                                                           ordering: entry.ordering)
@@ -226,8 +240,10 @@ public enum KnownVersionedRoots {
                     collectionRoot: collectionRoot,
                     options: options,
                     groupingRegex: regex,
-                    fileSystem: fileSystem
+                    fileSystem: fileSystem,
+                    cancellationCheck: cancellationCheck
                 )
+                if groupedResult.wasCancelled { return cancelledScanResult }
                 result.append(contentsOf: groupedResult.hits)
                 incompleteIssues.append(contentsOf: groupedResult.incompleteIssues)
             } else {
@@ -235,10 +251,13 @@ public enum KnownVersionedRoots {
                 let detection = VersionedRetainScanner.detectWithEvidence(
                     collectionRoot: collectionRoot,
                     options: options,
-                    fileSystem: fileSystem
+                    fileSystem: fileSystem,
+                    cancellationCheck: cancellationCheck
                 )
+                if detection.wasCancelled { return cancelledScanResult }
                 incompleteIssues.append(contentsOf: detection.incompleteIssues)
                 for rh in detection.hits {
+                    if cancellationCheck() { return cancelledScanResult }
                     result.append(Hit(url: rh.url,
                                       ruleID: entry.ruleID,
                                       displayName: entry.displayName,
@@ -248,6 +267,7 @@ public enum KnownVersionedRoots {
                 }
             }
         }
+        if cancellationCheck() { return cancelledScanResult }
         let scanResult = ScanResult(hits: result, incompleteIssues: incompleteIssues)
         if !scanResult.incompleteIssues.isEmpty {
             let evidence = scanResult.incompleteIssues
@@ -270,8 +290,10 @@ public enum KnownVersionedRoots {
         collectionRoot: URL,
         options: VersionedRetainScanner.Options,
         groupingRegex: String,
-        fileSystem: any VersionedRootFileSystem
+        fileSystem: any VersionedRootFileSystem,
+        cancellationCheck: () -> Bool
     ) -> ScanResult {
+        if cancellationCheck() { return cancelledScanResult }
         let nsRegex: NSRegularExpression
         do {
             nsRegex = try NSRegularExpression(pattern: groupingRegex)
@@ -281,12 +303,22 @@ public enum KnownVersionedRoots {
             let detection = VersionedRetainScanner.detectWithEvidence(
                 collectionRoot: collectionRoot,
                 options: options,
-                fileSystem: fileSystem
+                fileSystem: fileSystem,
+                cancellationCheck: cancellationCheck
             )
-            let hits = detection.hits.map {
-                Hit(url: $0.url, ruleID: entry.ruleID, displayName: entry.displayName,
-                    collectionRoot: $0.collectionRoot, versionName: $0.versionName,
-                    retainedLatest: $0.retainedLatest)
+            if detection.wasCancelled { return cancelledScanResult }
+            var hits: [Hit] = []
+            hits.reserveCapacity(detection.hits.count)
+            for detectedHit in detection.hits {
+                if cancellationCheck() { return cancelledScanResult }
+                hits.append(Hit(
+                    url: detectedHit.url,
+                    ruleID: entry.ruleID,
+                    displayName: entry.displayName,
+                    collectionRoot: detectedHit.collectionRoot,
+                    versionName: detectedHit.versionName,
+                    retainedLatest: detectedHit.retainedLatest
+                ))
             }
             return ScanResult(hits: hits, incompleteIssues: detection.incompleteIssues)
         }
@@ -295,6 +327,7 @@ public enum KnownVersionedRoots {
         do {
             rootAttributes = try fileSystem.attributesOfItem(atPath: collectionRoot.path)
         } catch {
+            if cancellationCheck() { return cancelledScanResult }
             if isFileNotFound(error) {
                 return ScanResult(hits: [], incompleteIssues: [])
             }
@@ -306,6 +339,7 @@ public enum KnownVersionedRoots {
                 incompleteIssues: [ScanIncompleteIssue(path: collectionRoot.path, reason: reason)]
             )
         }
+        if cancellationCheck() { return cancelledScanResult }
         guard let rootType = rootAttributes[.type] as? FileAttributeType else {
             return ScanResult(
                 hits: [],
@@ -323,6 +357,7 @@ public enum KnownVersionedRoots {
         do {
             children = try fileSystem.contentsOfDirectory(atPath: collectionRoot.path)
         } catch {
+            if cancellationCheck() { return cancelledScanResult }
             let reason: ScanIncompleteReason = VersionedRootErrorClassifier.isPermissionDenied(error)
                 ? .permissionDenied
                 : .enumerationFailed
@@ -331,12 +366,14 @@ public enum KnownVersionedRoots {
                 incompleteIssues: [ScanIncompleteIssue(path: collectionRoot.path, reason: reason)]
             )
         }
+        if cancellationCheck() { return cancelledScanResult }
 
         // 按 group key 分桶
         var groups: [String: [VersionedRetainScanner.Candidate]] = [:]
         var invalidGroups: Set<String> = []
         var incompleteIssues: [ScanIncompleteIssue] = []
         for name in children {
+            if cancellationCheck() { return cancelledScanResult }
             if name.hasPrefix(".") { continue }
 
             let range = NSRange(name.startIndex..<name.endIndex, in: name)
@@ -354,6 +391,7 @@ public enum KnownVersionedRoots {
             do {
                 attributes = try fileSystem.attributesOfItem(atPath: child.path)
             } catch {
+                if cancellationCheck() { return cancelledScanResult }
                 invalidGroups.insert(key)
                 incompleteIssues.append(ScanIncompleteIssue(
                     path: child.path,
@@ -363,6 +401,7 @@ public enum KnownVersionedRoots {
                 ))
                 continue
             }
+            if cancellationCheck() { return cancelledScanResult }
             guard let type = attributes[.type] as? FileAttributeType else {
                 invalidGroups.insert(key)
                 incompleteIssues.append(ScanIncompleteIssue(
@@ -397,6 +436,7 @@ public enum KnownVersionedRoots {
         result.reserveCapacity(groups.count * 2)
 
         for (groupKey, candidates) in groups {
+            if cancellationCheck() { return cancelledScanResult }
             guard !invalidGroups.contains(groupKey) else { continue }
             guard candidates.count > options.keepLatest else { continue }
             let sorted = VersionedRetainScanner.sort(candidates: candidates,
@@ -405,6 +445,7 @@ public enum KnownVersionedRoots {
             let oldCount = sorted.count - retainCount
             let retainedLatest = sorted.last?.name ?? ""
             for i in 0..<oldCount {
+                if cancellationCheck() { return cancelledScanResult }
                 let old = sorted[i]
                 result.append(Hit(url: old.url,
                                   ruleID: entry.ruleID,
@@ -415,7 +456,12 @@ public enum KnownVersionedRoots {
                                   groupKey: groupKey))
             }
         }
+        if cancellationCheck() { return cancelledScanResult }
         return ScanResult(hits: result, incompleteIssues: incompleteIssues)
+    }
+
+    private static var cancelledScanResult: ScanResult {
+        ScanResult(hits: [], incompleteIssues: [], wasCancelled: true)
     }
 
     private static func isFileNotFound(_ error: Error) -> Bool {

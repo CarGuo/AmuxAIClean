@@ -62,7 +62,9 @@ enum SmartCareSnapshotTerminalDecision: Sendable, Equatable {
     case fail(SmartCareFailureDetail)
 
     static func fail(_ message: String) -> SmartCareSnapshotTerminalDecision {
-        .fail(.verbatim(message))
+        // v2026.07.16：测试/兼容入口不能把 scanner 原文变成产品文案。
+        _ = message
+        return .fail(.unexpectedFailure)
     }
 }
 
@@ -77,8 +79,8 @@ enum SmartCareSnapshotCompletionPolicy {
         guard snapshot.isFinished else {
             if isScanning { return .wait }
             return .fail(
-                terminalFailure.map { .verbatim($0.message) }
-                    ?? fallbackError.map(SmartCareFailureDetail.verbatim)
+                terminalFailure.map { _ in .unexpectedFailure }
+                    ?? fallbackError.map { _ in SmartCareFailureDetail.unexpectedFailure }
                     ?? .scanIncomplete
             )
         }
@@ -86,7 +88,8 @@ enum SmartCareSnapshotCompletionPolicy {
         // Scanner 的显式 `.failed` 优先于 partial 外观；该阶段不得写入 completedStages，
         // 否则 Retry 会永久跳过真正失败的阶段。
         if let terminalFailure {
-            return .fail(.verbatim(terminalFailure.message))
+            _ = terminalFailure
+            return .fail(.unexpectedFailure)
         }
 
         // Partial 只有在同时携带精确删除拒绝证据时才是可用终态。缺少证据意味着
@@ -94,7 +97,7 @@ enum SmartCareSnapshotCompletionPolicy {
         guard snapshot.isComplete else {
             guard hasDeletionDeniedEvidence else {
                 return .fail(
-                    fallbackError.map(SmartCareFailureDetail.verbatim)
+                    fallbackError.map { _ in SmartCareFailureDetail.unexpectedFailure }
                         ?? .scanIncomplete
                 )
             }
@@ -102,7 +105,8 @@ enum SmartCareSnapshotCompletionPolicy {
         }
 
         if snapshot.rows.isEmpty, let fallbackError {
-            return .fail(.verbatim(fallbackError))
+            _ = fallbackError
+            return .fail(.unexpectedFailure)
         }
         return .accept(isComplete: true)
     }
@@ -356,7 +360,7 @@ public final class SmartCareSession {
                 guard self.scanGeneration == generation else { return }
                 self.finishedAt = Date()
                 GSYLog.error(.scan, "Smart Care scan failed: \(error.localizedDescription)")
-                self.care.fail(.scanFailed(error.localizedDescription))
+                self.care.fail(.scanFailed(.unexpectedFailure))
             }
 
             if self.scanGeneration == generation {
@@ -879,6 +883,7 @@ private enum SmartCareScanFailure: Error {
         switch detail {
         case .scanIncomplete: return "scanIncomplete"
         case .trash(let failure): return "trashFailure(\(failure.legacyDiagnostic))"
+        case .unexpectedFailure: return "unexpectedFailure"
         case .verbatim(let message): return message
         }
     }

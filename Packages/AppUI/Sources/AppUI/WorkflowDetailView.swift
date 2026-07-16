@@ -111,6 +111,12 @@ public struct WorkflowDetailView: View {
         .task {
             await viewModel.bootstrap()
         }
+        // v2026.07.16: SwiftUI owns the bootstrap `.task`, while button-triggered rescans
+        // are owned by the ViewModel. Leaving this screen must cancel both lifetimes and
+        // invalidate their revision before an old ViewModel can publish in the background.
+        .onDisappear {
+            viewModel.cancelVisibleScanWork()
+        }
         .alert(viewModel.alertTitle ?? "",
                isPresented: Binding(get: { viewModel.alertMessage != nil },
                                     set: { if !$0 { viewModel.clearAlert() } })) {
@@ -248,13 +254,42 @@ public struct WorkflowDetailView: View {
     @ViewBuilder
     private func cardBody(_ card: DeveloperCard) -> some View {
         let hits = viewModel.cardHits[card.id] ?? []
-        if viewModel.cardLoading.contains(card.id) {
+        if viewModel.cardScanPhase(for: card.id) == .pending {
+            HStack {
+                Image(systemName: "hourglass")
+                    .foregroundStyle(.secondary)
+                Text("workflow.detail.waiting_to_scan", bundle: .module)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.leading, 28)
+            .padding(.vertical, 6)
+        } else if viewModel.cardScanPhase(for: card.id) == .scanning {
             HStack {
                 ProgressView()
                     .controlSize(.small)
                 Text("workflow.detail.scanning", bundle: .module)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            .padding(.leading, 28)
+            .padding(.vertical, 6)
+        } else if viewModel.cardScanPhase(for: card.id) == .cancelled {
+            HStack(spacing: 10) {
+                Label {
+                    Text("workflow.detail.scan_cancelled", bundle: .module)
+                } icon: {
+                    Image(systemName: "pause.circle.fill")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    viewModel.startCardRefresh(cardID: card.id)
+                } label: {
+                    Text("workflow.detail.action.retry", bundle: .module)
+                }
+                .controlSize(.small)
             }
             .padding(.leading, 28)
             .padding(.vertical, 6)
@@ -269,7 +304,7 @@ public struct WorkflowDetailView: View {
                 .foregroundStyle(.orange)
                 Spacer()
                 Button {
-                    Task { await viewModel.refreshAll() }
+                    viewModel.startCardRefresh(cardID: card.id)
                 } label: {
                     Text("workflow.detail.action.retry", bundle: .module)
                 }
@@ -326,7 +361,7 @@ public struct WorkflowDetailView: View {
             }
             Spacer()
             if let size = hit.sizeBytes {
-                Text(WorkflowDetailViewModel.formatBytes(size))
+                Text(WorkflowDetailViewModel.formatBytes(size, locale: locale))
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
             } else {
@@ -346,7 +381,7 @@ public struct WorkflowDetailView: View {
                 .foregroundStyle(.secondary)
             Spacer()
             Button {
-                Task { await viewModel.refreshAll() }
+                viewModel.startFullRefresh()
             } label: {
                 Label {
                     Text("workflow.detail.action.rescan", bundle: .module)
@@ -394,15 +429,24 @@ public struct WorkflowDetailView: View {
     @ViewBuilder
     private func cardCapacityBadge(cardID: String) -> some View {
         switch viewModel.cardCapacityState(for: cardID) {
+        case .pending:
+            Image(systemName: "hourglass")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
         case .loading:
             ProgressView().controlSize(.small)
+        case .cancelled:
+            capacityChip(
+                AppLocalization.string("workflow.card.scan_cancelled", locale: locale),
+                color: .secondary
+            )
         case .empty:
             capacityChip(
                 AppLocalization.string("workflow.card.empty_chip", locale: locale),
                 color: .secondary
             )
         case .known(let bytes):
-            Text(WorkflowDetailViewModel.formatBytes(bytes))
+            Text(WorkflowDetailViewModel.formatBytes(bytes, locale: locale))
                 .font(.callout.monospacedDigit())
                 .foregroundStyle(.secondary)
         case .partialUnknown(let knownBytes):
@@ -410,7 +454,7 @@ public struct WorkflowDetailView: View {
                 AppLocalization.format(
                     "workflow.card.partial_size %@",
                     locale: locale,
-                    arguments: [WorkflowDetailViewModel.formatBytes(knownBytes)]
+                    arguments: [WorkflowDetailViewModel.formatBytes(knownBytes, locale: locale)]
                 ),
                 color: .orange
             )
@@ -679,7 +723,7 @@ private struct WorkflowDeleteConfirmSheetContent: View {
             Text(String(
                 format: AppLocalization.string("workflow.detail.delete_confirm.message %lld %@", locale: locale),
                 confirmation.itemCount,
-                WorkflowDetailViewModel.formatBytes(confirmation.totalBytes)
+                WorkflowDetailViewModel.formatBytes(confirmation.totalBytes, locale: locale)
             ))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -764,9 +808,10 @@ struct SimulatorManagedUninstallSheetContent: View {
         case .finished(_, let completion):
             let failed = completion.failedCount
             let succeeded = completion.succeededCount
+            let unknown = completion.unknownCount
             let skipped = completion.skippedItems.count
-            let isCompleteSuccess = failed == 0 && skipped == 0
-            let isCompleteFailure = succeeded == 0 && failed > 0 && skipped == 0
+            let isCompleteSuccess = failed == 0 && unknown == 0 && skipped == 0
+            let isCompleteFailure = succeeded == 0 && failed > 0 && unknown == 0 && skipped == 0
             headerRow(
                 icon: isCompleteSuccess ? "checkmark.circle.fill" : (isCompleteFailure ? "xmark.octagon.fill" : "exclamationmark.triangle.fill"),
                 color: isCompleteSuccess ? .green : (isCompleteFailure ? .red : .orange),
@@ -872,21 +917,36 @@ struct SimulatorManagedUninstallSheetContent: View {
                         color: .red
                     )
                     resultTile(
+                        titleKey: "workflow.detail.managed_uninstall.result.unknown",
+                        count: completion.unknownCount,
+                        color: .orange
+                    )
+                    resultTile(
                         titleKey: "workflow.detail.managed_uninstall.result.skipped",
                         count: completion.skippedItems.count,
                         color: .orange
                     )
                 }
                 let rows = intent.items.map { item -> WorkflowDetailViewModel.SimulatorUninstallItemProgress in
-                    if let outcome = completion.outcomes.first(where: { $0.item.hitID == item.hitID }) {
-                        return .init(
-                            item: item,
-                            status: outcome.isSuccess
-                                ? .succeeded
-                                : .failed(exitCode: outcome.exitCode, detail: outcome.truncatedOutput)
+                    let outcome = completion.outcomes.first { $0.item.hitID == item.hitID }
+                    let wasSkipped = completion.skippedItems.contains { $0.hitID == item.hitID }
+                    return .init(
+                        item: item,
+                        status: WorkflowDetailViewModel.simulatorFinishedStatus(
+                            outcome: outcome,
+                            wasSkipped: wasSkipped,
+                            interruptionReason: completion.interruptionReason
                         )
+                    )
+                }
+                if let reason = completion.interruptionReason {
+                    Label {
+                        Text(interruptionMessage(reason))
+                    } icon: {
+                        Image(systemName: "info.circle.fill")
                     }
-                    return .init(item: item, status: .skipped)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
                 }
                 itemList(rows)
             }
@@ -931,15 +991,15 @@ struct SimulatorManagedUninstallSheetContent: View {
                                     locale: locale
                                 ))
                                 if let size = row.item.sizeBytes {
-                                    Text(verbatim: "· \(WorkflowDetailViewModel.formatBytes(size))")
+                                    Text(verbatim: "· \(WorkflowDetailViewModel.formatBytes(size, locale: locale))")
                                 }
                             }
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            if case .failed(_, let detail) = row.status, !detail.isEmpty {
+                            if let detail = statusDetail(row.status), !detail.isEmpty {
                                 Text(detail)
                                     .font(.caption2.monospaced())
-                                    .foregroundStyle(.red)
+                                    .foregroundStyle(statusDetailColor(row.status))
                                     .lineLimit(2)
                                     .textSelection(.enabled)
                             }
@@ -975,15 +1035,128 @@ struct SimulatorManagedUninstallSheetContent: View {
                         locale: locale
                     ))
                 )
+        case .validating:
+            Image(systemName: "checkmark.shield")
+                .foregroundStyle(.blue)
+                .help(Text(AppLocalization.string(
+                    "workflow.detail.managed_uninstall.status.validating",
+                    locale: locale
+                )))
+        case .submitted:
+            Image(systemName: "paperplane.circle.fill")
+                .foregroundStyle(.blue)
+                .help(Text(AppLocalization.string(
+                    "workflow.detail.managed_uninstall.status.submitted",
+                    locale: locale
+                )))
         case .running:
             ProgressView().controlSize(.small)
+                .help(Text(AppLocalization.string(
+                    "workflow.detail.managed_uninstall.status.running",
+                    locale: locale
+                )))
+        case .stalled:
+            Image(systemName: "clock.badge.exclamationmark.fill")
+                .foregroundStyle(.orange)
         case .succeeded:
             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case .failed:
             Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+        case .unknown:
+            Image(systemName: "questionmark.circle.fill").foregroundStyle(.orange)
+        case .blockedSimulatorRunning:
+            Image(systemName: "lock.circle.fill").foregroundStyle(.orange)
         case .skipped:
             Image(systemName: "pause.circle.fill").foregroundStyle(.orange)
         }
+    }
+
+    private func statusDetail(
+        _ status: WorkflowDetailViewModel.SimulatorUninstallItemStatus
+    ) -> String? {
+        switch status {
+        case .stalled(let elapsed):
+            return AppLocalization.format(
+                "workflow.detail.managed_uninstall.status.stalled %lld",
+                locale: locale,
+                arguments: [Int64(elapsed.rounded(.down))]
+            )
+        case .failed(let exitCode, let reason):
+            return managedUninstallFailureDetail(
+                reason: reason,
+                exitCode: exitCode
+            )
+        case .unknown:
+            return AppLocalization.string(
+                "workflow.detail.managed_uninstall.status.unknown",
+                locale: locale
+            )
+        case .blockedSimulatorRunning:
+            return AppLocalization.string(
+                "workflow.detail.managed_uninstall.status.blocked_simulator_running",
+                locale: locale
+            )
+        case .pending, .validating, .submitted, .running, .succeeded, .skipped:
+            return nil
+        }
+    }
+
+    /// v2026.07.16：simctl 原始 stdout/stderr 只进日志。用户详情从 typed reason 在当前
+    /// locale 下实时投影，切换语言不需要重启，也不会泄露 CLI/path/errno 文本。
+    private func managedUninstallFailureDetail(
+        reason: SimulatorDeleteCoordinator.Outcome.FailureReason?,
+        exitCode: Int32
+    ) -> String {
+        let key: String
+        switch reason {
+        case .commandRejected:
+            key = "workflow.detail.managed_uninstall.failure.command_rejected"
+        case .processLaunchFailed:
+            key = "workflow.detail.managed_uninstall.failure.launch_failed"
+        case .commandFailed:
+            return AppLocalization.format(
+                "workflow.detail.managed_uninstall.failure.command_failed %lld",
+                locale: locale,
+                arguments: [Int64(exitCode)]
+            )
+        case .simulatorOrDeviceActive:
+            key = "workflow.detail.managed_uninstall.status.blocked_simulator_running"
+        case .safetyVerificationUnavailable:
+            key = "workflow.detail.managed_uninstall.failure.safety_unavailable"
+        case .duplicatePendingOperation:
+            key = "workflow.detail.managed_uninstall.failure.pending_operation"
+        case .persistentPendingOperation:
+            key = "workflow.detail.managed_uninstall.failure.persistent_pending"
+        case .resourceAlreadyAbsent:
+            key = "workflow.detail.managed_uninstall.failure.resource_absent"
+        case .observationEndedWithoutTerminal:
+            key = "workflow.detail.managed_uninstall.status.unknown"
+        case .none:
+            key = "workflow.detail.managed_uninstall.failure.generic"
+        }
+        return AppLocalization.string(key, locale: locale)
+    }
+
+    private func statusDetailColor(
+        _ status: WorkflowDetailViewModel.SimulatorUninstallItemStatus
+    ) -> Color {
+        if case .failed = status { return .red }
+        return .orange
+    }
+
+    private func interruptionMessage(
+        _ reason: SimulatorDeleteCoordinator.ManagedExecutionCompletion.InterruptionReason
+    ) -> String {
+        let key: String
+        switch reason {
+        case .stopRequested:
+            key = "workflow.detail.managed_uninstall.interruption.stop_requested"
+        case .simulatorStarted:
+            key = "workflow.detail.managed_uninstall.interruption.simulator_started"
+        case .currentItemStatusUnknown:
+            key = "workflow.detail.managed_uninstall.interruption.status_unknown"
+        }
+        return AppLocalization.string(key, locale: locale)
     }
 
     private func resultTile(titleKey: String, count: Int, color: Color) -> some View {
@@ -1045,12 +1218,25 @@ public final class WorkflowDetailViewModel: ObservableObject {
     /// 卡片容量的用户可见状态。`partialUnknown` 的字节只是已知下界；`allUnknown`
     /// 与完整空结果完全不同；`failed` 表示没有可信终态。
     public enum CardCapacityState: Sendable, Equatable {
+        case pending
         case loading
         case empty
         case known(bytes: Int64)
         case partialUnknown(knownBytes: Int64)
         case allUnknown
         case failed
+        case cancelled
+    }
+
+    /// One explicit state machine per card. Pending is intentionally distinct from an empty
+    /// completed scan so queued work can never render as "nothing found".
+    public enum CardScanPhase: Sendable, Equatable {
+        case pending
+        case scanning
+        case completed
+        case partial
+        case failed
+        case cancelled
     }
 
     public enum SelectionCapacityState: Sendable, Equatable {
@@ -1063,7 +1249,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
     @Published public private(set) var cardHits: [String: [WorkflowScanHit]] = [:]
     @Published public private(set) var cardTotalBytes: [String: Int64] = [:]
     @Published public private(set) var cardIncompleteIssues: [String: [ScanIncompleteIssue]] = [:]
-    @Published public private(set) var cardLoading: Set<String> = []
+    @Published public private(set) var cardScanPhases: [String: CardScanPhase] = [:]
     @Published public var expanded: Set<String> = []
     @Published public private(set) var selected: Set<String> = []
     @Published public private(set) var scanEvidence = WorkflowScanEvidence(revision: 0)
@@ -1168,10 +1354,43 @@ public final class WorkflowDetailViewModel: ObservableObject {
 
     public enum SimulatorUninstallItemStatus: Sendable, Equatable {
         case pending
+        case validating
+        case submitted
         case running
+        case stalled(elapsed: TimeInterval)
         case succeeded
-        case failed(exitCode: Int32, detail: String)
+        case failed(exitCode: Int32, reason: SimulatorDeleteCoordinator.Outcome.FailureReason?)
+        case unknown(detail: String)
+        case blockedSimulatorRunning
         case skipped
+    }
+
+    /// v2026.07.16: one typed terminal projection shared by the sheet and tests. In
+    /// particular, an already-submitted operation with no observed terminal status is
+    /// `.unknown`, never failed; resources withheld because Simulator started retain the
+    /// block reason instead of being flattened into a generic skipped row.
+    static func simulatorFinishedStatus(
+        outcome: SimulatorDeleteCoordinator.Outcome?,
+        wasSkipped: Bool,
+        interruptionReason: SimulatorDeleteCoordinator.ManagedExecutionCompletion.InterruptionReason?
+    ) -> SimulatorUninstallItemStatus {
+        if let outcome {
+            switch outcome.status {
+            case .confirmedTerminal(exitCode: 0):
+                return .succeeded
+            case .confirmedTerminal(let exitCode), .notSubmitted(let exitCode):
+                if outcome.failureReason == .simulatorOrDeviceActive {
+                    return .blockedSimulatorRunning
+                }
+                return .failed(exitCode: exitCode, reason: outcome.failureReason)
+            case .unknownAfterStall:
+                return .unknown(detail: "")
+            }
+        }
+        if wasSkipped, interruptionReason == .simulatorStarted {
+            return .blockedSimulatorRunning
+        }
+        return .skipped
     }
 
     public struct SimulatorUninstallItemProgress: Identifiable, Sendable, Equatable {
@@ -1236,11 +1455,32 @@ public final class WorkflowDetailViewModel: ObservableObject {
         URL,
         Bool
     ) async throws -> DiscoveryEvidence<WorkflowScanHit>
+    /// Apple exposes the whole DerivedData root and per-project rows as two cards, but both
+    /// must come from one filesystem transaction. Tests inject this immutable boundary to
+    /// prove that the scheduler never performs a second recursive pass.
+    private let derivedDataSnapshotDiscovery: @Sendable (URL) async throws -> DerivedDataScanSnapshot
     private var simulatorUninstallStopControl: SimulatorDeleteCoordinator.StopControl?
     private var pendingConfirmedDeleteIntent: WorkflowDeletionIntent?
     private var deletionInteractionCoordinator: DeletionInteractionCoordinator?
     private var didBootstrap: Bool = false
     private var scanRevision: UInt64 = 0
+    /// Issues discovered once for the whole revision (currently KnownVersionedRoots), kept
+    /// separate from per-card evidence so a card retry can replace only its own contribution.
+    private var sharedScanIncompleteIssues: [ScanIncompleteIssue] = []
+    /// The active full-scan body is explicitly owned here even when its caller is SwiftUI's
+    /// structured `.task`. A new revision can therefore cancel the old body immediately,
+    /// rather than relying only on late publication guards.
+    private var activeScanTask: Task<Bool, Never>?
+    private var activeScanOperationID: UUID?
+    /// Button actions are synchronous UI events. Their async continuations must be registered
+    /// before work starts so page disappearance can cancel every outstanding caller lifetime.
+    private var scheduledFullRefreshTask: Task<Void, Never>?
+    private var scheduledFullRefreshOperationID: UUID?
+    private var scheduledCardRefreshTasks: [String: Task<Void, Never>] = [:]
+    private var scheduledCardRefreshOperationIDs: [String: UUID] = [:]
+    private var hasActiveViewScanLifetime = false
+    private var cardRetryRevisions: [String: UInt64] = [:]
+    private var cardRetryTasks: [String: Task<CardRetryOutput?, Never>] = [:]
     /// 本轮扫描中用户显式选择的 filesystem 路径。卡片是并发发布的；若较慢卡片
     /// 随后完成，其 safe 默认选择不得覆盖用户已经做出的父/子粒度选择。
     private var explicitFilesystemSelectionPaths: [String: String] = [:]
@@ -1255,7 +1495,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
                     String,
                     URL,
                     Bool
-                ) async throws -> DiscoveryEvidence<WorkflowScanHit>)? = nil) {
+                ) async throws -> DiscoveryEvidence<WorkflowScanHit>)? = nil,
+                derivedDataSnapshotDiscovery: (@Sendable (URL) async throws -> DerivedDataScanSnapshot)? = nil) {
         self.workflow = workflow
         self.home = home
         // **v2026.07.15 根因修复**：CoreSimulator 托管卸载没有可证明安全的固定时限。
@@ -1269,10 +1510,12 @@ public final class WorkflowDetailViewModel: ObservableObject {
             isSimulatorRunning: SimulatorDeleteCoordinator.defaultSimulatorRunning
         )
         self.undoHistoryStore = undoHistoryStore
+        // **v2026.07.16 root-cause fix:** `loadAllCards` already owns the one detached,
+        // revision-scoped discovery task. Nesting another detached task here severed
+        // cancellation propagation, so leaving the page could keep the filesystem walk alive
+        // while the visible cards remained stuck in `scanning`.
         self.versionedRootDiscovery = versionedRootDiscovery ?? { home in
-            await Task.detached(priority: .userInitiated) {
-                KnownVersionedRoots.scanAllWithEvidence(home: home)
-            }.value
+            KnownVersionedRoots.scanAllWithEvidence(home: home)
         }
         self.dynamicDiscovery = dynamicDiscovery ?? { scannerID, home, includeFilesystemSizes in
             try await WorkflowRegistry.resolveWithEvidence(
@@ -1281,9 +1524,34 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 includeFilesystemSizes: includeFilesystemSizes
             )
         }
+        self.derivedDataSnapshotDiscovery = derivedDataSnapshotDiscovery ?? { home in
+            try await DerivedDataPerProjectScanner().discoverSnapshot(home: home)
+        }
+    }
+
+    deinit {
+        activeScanTask?.cancel()
+        scheduledFullRefreshTask?.cancel()
+        scheduledCardRefreshTasks.values.forEach { $0.cancel() }
+        cardRetryTasks.values.forEach { $0.cancel() }
+    }
+
+    /// Compatibility projection retained for existing callers/tests. Pending work is part of
+    /// the transaction even though it has not begun filesystem I/O yet.
+    public var cardLoading: Set<String> {
+        Set(cardScanPhases.compactMap { cardID, phase in
+            switch phase {
+            case .pending, .scanning: cardID
+            case .completed, .partial, .failed, .cancelled: nil
+            }
+        })
     }
 
     public var isAnyLoading: Bool { !cardLoading.isEmpty }
+
+    public func cardScanPhase(for cardID: String) -> CardScanPhase {
+        cardScanPhases[cardID] ?? .completed
+    }
 
     public var isDeletionTransactionActive: Bool {
         if isPreparingDeletion || isDeleting || pendingConfirmedDeleteIntent != nil {
@@ -1306,7 +1574,12 @@ public final class WorkflowDetailViewModel: ObservableObject {
     }
 
     public func cardCapacityState(for cardID: String) -> CardCapacityState {
-        if cardLoading.contains(cardID) { return .loading }
+        switch cardScanPhase(for: cardID) {
+        case .pending: return .pending
+        case .scanning: return .loading
+        case .cancelled: return .cancelled
+        case .completed, .partial, .failed: break
+        }
         let hits = cardHits[cardID] ?? []
         let hasIncompleteEvidence = !(cardIncompleteIssues[cardID] ?? []).isEmpty
         guard !hits.isEmpty else {
@@ -1350,13 +1623,13 @@ public final class WorkflowDetailViewModel: ObservableObject {
             return AppLocalization.format(
                 "workflow.detail.footer.summary %lld %@",
                 locale: locale,
-                arguments: [itemCount, Self.formatBytes(bytes)]
+                arguments: [itemCount, Self.formatBytes(bytes, locale: locale)]
             )
         case .partialUnknown(let itemCount, let knownBytes):
             return AppLocalization.format(
                 "workflow.detail.footer.summary.partial %lld %@",
                 locale: locale,
-                arguments: [itemCount, Self.formatBytes(knownBytes)]
+                arguments: [itemCount, Self.formatBytes(knownBytes, locale: locale)]
             )
         case .allUnknown(let itemCount):
             return AppLocalization.format(
@@ -1520,14 +1793,149 @@ public final class WorkflowDetailViewModel: ObservableObject {
     }
 
     public func bootstrap() async {
+        hasActiveViewScanLifetime = true
         guard !didBootstrap else { return }
-        didBootstrap = true
-        await runScan()
+        _ = await runScan()
     }
 
     public func refreshAll() async {
         guard !isDeletionTransactionActive else { return }
-        await runScan()
+        hasActiveViewScanLifetime = true
+        _ = await runScan()
+    }
+
+    /// Starts a user-requested full refresh under a ViewModel-owned lifetime. The View no
+    /// longer creates an anonymous `Task`, so navigation can deterministically stop it.
+    public func startFullRefresh() {
+        guard !isDeletionTransactionActive else { return }
+        hasActiveViewScanLifetime = true
+        scheduledFullRefreshTask?.cancel()
+        let operationID = UUID()
+        scheduledFullRefreshOperationID = operationID
+        scheduledFullRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            await self.refreshAll()
+            guard self.scheduledFullRefreshOperationID == operationID else { return }
+            self.scheduledFullRefreshTask = nil
+            self.scheduledFullRefreshOperationID = nil
+        }
+    }
+
+    /// Starts one card retry under a keyed, cancellable caller lifetime. `refreshCard` still
+    /// owns its off-main worker; this outer handle closes the formerly unowned View Task.
+    public func startCardRefresh(cardID: String) {
+        guard !isDeletionTransactionActive,
+              cards.contains(where: { $0.id == cardID }) else { return }
+        hasActiveViewScanLifetime = true
+        scheduledCardRefreshTasks[cardID]?.cancel()
+        let operationID = UUID()
+        scheduledCardRefreshOperationIDs[cardID] = operationID
+        scheduledCardRefreshTasks[cardID] = Task { [weak self] in
+            guard let self else { return }
+            await self.refreshCard(cardID: cardID)
+            guard self.scheduledCardRefreshOperationIDs[cardID] == operationID else { return }
+            self.scheduledCardRefreshTasks.removeValue(forKey: cardID)
+            self.scheduledCardRefreshOperationIDs.removeValue(forKey: cardID)
+        }
+    }
+
+    /// Page-lifetime boundary for scan work only. It does not terminate a managed uninstall
+    /// or Trash transaction, but it invalidates scan-derived selections and all scan workers.
+    /// This method is idempotent because SwiftUI may cancel `.task` before or after disappear.
+    public func cancelVisibleScanWork() {
+        guard hasActiveViewScanLifetime else { return }
+        hasActiveViewScanLifetime = false
+        activeScanTask?.cancel()
+        activeScanTask = nil
+        activeScanOperationID = nil
+        scheduledFullRefreshTask?.cancel()
+        scheduledFullRefreshTask = nil
+        scheduledFullRefreshOperationID = nil
+        cancelScheduledCardRefreshes()
+        cardRetryTasks.values.forEach { $0.cancel() }
+        cardRetryTasks.removeAll()
+        convergeCancelledScan(
+            revision: scanRevision,
+            sessionID: scanEvidence.sessionID
+        )
+
+        // A cancelled page revision can no longer authorize a deletion after re-entry. Keep
+        // already-rendered rows for a stable transition, but clear selections and rotate both
+        // identity dimensions before any late provider resumes.
+        didBootstrap = false
+        selected.removeAll()
+        explicitFilesystemSelectionPaths.removeAll()
+        pendingConfirmedDeleteIntent = nil
+        scanRevision &+= 1
+        scanEvidence = WorkflowScanEvidence(
+            revision: scanRevision,
+            sessionID: UUID(),
+            incompleteIssues: scanEvidence.incompleteIssues
+        )
+    }
+
+    private func cancelScheduledCardRefreshes() {
+        scheduledCardRefreshTasks.values.forEach { $0.cancel() }
+        scheduledCardRefreshTasks.removeAll()
+        scheduledCardRefreshOperationIDs.removeAll()
+    }
+
+    /// Retry one failed/cancelled card without invalidating trustworthy sibling results.
+    ///
+    /// **v2026.07.16 root-cause fix:** the row-level Retry button previously called
+    /// `refreshAll()`, resetting every card to pending/loading and recreating the exact
+    /// whole-page spinner reported by users. Each card now owns a monotonic retry token and
+    /// one cancellable worker. A newer retry cancels and supersedes the older worker; both the
+    /// token and full-scan session are revalidated before any result reaches `@Published` state.
+    public func refreshCard(cardID: String) async {
+        guard !isDeletionTransactionActive,
+              let card = cards.first(where: { $0.id == cardID }) else { return }
+        hasActiveViewScanLifetime = true
+
+        let globalRevision = scanRevision
+        let sessionID = scanEvidence.sessionID
+        let retryRevision = (cardRetryRevisions[cardID] ?? 0) &+ 1
+        cardRetryRevisions[cardID] = retryRevision
+        cardRetryTasks[cardID]?.cancel()
+
+        clearCardForRetry(cardID: cardID, revision: globalRevision, sessionID: sessionID)
+        let work: CardScanWork = card.sharedScanRole == nil
+            ? .single(card)
+            : .derivedData([card])
+        let retryTask = Task.detached(priority: .userInitiated) {
+            [home, versionedRootDiscovery, dynamicDiscovery, derivedDataSnapshotDiscovery] in
+            await Self.executeCardRetry(
+                work,
+                home: home,
+                versionedRootDiscovery: versionedRootDiscovery,
+                dynamicDiscovery: dynamicDiscovery,
+                derivedDataSnapshotDiscovery: derivedDataSnapshotDiscovery
+            )
+        }
+        cardRetryTasks[cardID] = retryTask
+
+        let output = await withTaskCancellationHandler {
+            await retryTask.value
+        } onCancel: {
+            retryTask.cancel()
+        }
+
+        guard cardRetryRevisions[cardID] == retryRevision,
+              scanRevision == globalRevision,
+              scanEvidence.sessionID == sessionID else {
+            return
+        }
+        cardRetryTasks.removeValue(forKey: cardID)
+        guard !Task.isCancelled,
+              let output,
+              let result = output.workOutput.results[cardID] else {
+            cardScanPhases[cardID] = .cancelled
+            return
+        }
+        if let sharedIssues = output.sharedIncompleteIssues {
+            sharedScanIncompleteIssues = sharedIssues
+        }
+        publish(result, for: card, revision: globalRevision, sessionID: sessionID)
     }
 
     public func toggleExpanded(cardID: String, open: Bool) {
@@ -2088,13 +2496,22 @@ public final class WorkflowDetailViewModel: ObservableObject {
 
         let completion = await simulatorCoordinator.executeManaged(
             items: validatedItems,
+            // **v2026.07.16 根因修复**：managed ledger 的复核代际必须取自用户实际
+            // 审阅的冻结扫描证据，而不是 operationID（点击时随机 UUID）。这样跨重启
+            // stale reservation 只允许由新 session 或同 session 更高 revision 清理。
+            reviewIdentity: SimulatorManagedReviewIdentity(
+                sessionID: intent.scanSessionID,
+                revision: intent.scanRevision
+            ),
             stopControl: stopControl
         ) { [weak self] event in
-            await self?.applySimulatorUninstallEvent(event, operationID: intent.id)
+            await self?.applySimulatorUninstallEvent(event, sourceIntent: intent)
         }
         simulatorUninstallStopControl = nil
         guard case .executing(let currentIntent, _) = simulatorUninstallState,
-              currentIntent.id == intent.id else { return }
+              currentIntent == intent,
+              scanEvidence.revision == intent.scanRevision,
+              scanEvidence.sessionID == intent.scanSessionID else { return }
 
         let succeededIDs = Set(
             completion.outcomes.filter(\.isSuccess).map(\.item.hitID)
@@ -2102,6 +2519,27 @@ public final class WorkflowDetailViewModel: ObservableObject {
         selected.subtract(succeededIDs)
         removeHitsFromVisibleState(succeededIDs)
         simulatorUninstallState = .finished(intent, completion)
+
+        // 先落 initial `.finished`，再等待迟到终态，形成顺序屏障：终态绝不会先更新 UI
+        // 又被含 unknown 的 completion 覆盖。duplicate-pending 也接入同一等待通道，
+        // 支持页面重建后的 process-session 对账。
+        let awaitingReconciliation = completion.outcomes.filter {
+            ($0.isUnknown && $0.failureReason != .observationEndedWithoutTerminal)
+                || $0.failureReason == .duplicatePendingOperation
+        }
+        let coordinator = simulatorCoordinator
+        for pendingOutcome in awaitingReconciliation {
+            Task { [weak self] in
+                guard let reconciled = await coordinator.awaitReconciledOutcome(
+                    for: pendingOutcome.item
+                ) else { return }
+                guard let self else { return }
+                self.applySimulatorUninstallEvent(
+                    .finished(index: 1, total: 1, outcome: reconciled),
+                    sourceIntent: intent
+                )
+            }
+        }
     }
 
     public func finishSimulatorUninstallPresentation() {
@@ -2117,22 +2555,85 @@ public final class WorkflowDetailViewModel: ObservableObject {
 
     private func applySimulatorUninstallEvent(
         _ event: SimulatorDeleteCoordinator.ExecutionEvent,
-        operationID: UUID
+        sourceIntent: SimulatorUninstallIntent
     ) {
+        // **v2026.07.16 late-terminal reconciliation**：stall 后 coordinator 仍是流的唯一
+        // 消费者；终态可能在 overall state 已 `.finished` 或 sheet 已关闭后到达。成功项
+        // 只有在当前投影仍属于产生该命令的同一 scan session/revision，且 outcome 精确匹配
+        // 冻结 item 时才能从可见/可选状态移除。旧实现只看稳定 hitID：用户在 unknown 后
+        // 关闭 sheet、重扫并得到复用同一路径的替代资源时，旧命令的迟到 success 会误删
+        // 新 revision 的 row。ledger/monitor 仍照常完成旧操作对账，但旧终态不得污染新投影。
+        let projectsOntoCurrentScan =
+            scanEvidence.revision == sourceIntent.scanRevision
+            && scanEvidence.sessionID == sourceIntent.scanSessionID
+        if case .finished(_, _, let lateOutcome) = event {
+            let belongsToFrozenIntent = sourceIntent.items.contains(lateOutcome.item)
+            if lateOutcome.isSuccess,
+               projectsOntoCurrentScan,
+               belongsToFrozenIntent {
+                selected.remove(lateOutcome.item.hitID)
+                removeHitsFromVisibleState([lateOutcome.item.hitID])
+            }
+            if case .finished(let intent, let completion) = simulatorUninstallState,
+               intent == sourceIntent,
+               belongsToFrozenIntent {
+                simulatorUninstallState = .finished(
+                    intent,
+                    completion.reconciling(lateOutcome)
+                )
+                return
+            }
+        }
+
         guard case .executing(let intent, var progress) = simulatorUninstallState,
-              intent.id == operationID else { return }
+              intent == sourceIntent,
+              projectsOntoCurrentScan else { return }
         switch event {
         case .started(let index, _, let item):
             progress.currentIndex = index
             if let rowIndex = progress.rows.firstIndex(where: { $0.item.hitID == item.hitID }) {
+                // v2026.07.16: started means the item entered per-item revalidation; no
+                // subprocess has been submitted yet. Keep it distinct from actual running.
+                progress.rows[rowIndex].status = .validating
+            }
+        case .submitted(let index, _, let item):
+            progress.currentIndex = index
+            if let rowIndex = progress.rows.firstIndex(where: { $0.item.hitID == item.hitID }) {
+                progress.rows[rowIndex].status = .submitted
+            }
+        case .running(let index, _, let item):
+            progress.currentIndex = index
+            if let rowIndex = progress.rows.firstIndex(where: { $0.item.hitID == item.hitID }) {
                 progress.rows[rowIndex].status = .running
+            }
+        case .stalled(let index, _, let item, let elapsed):
+            progress.currentIndex = index
+            if let rowIndex = progress.rows.firstIndex(where: { $0.item.hitID == item.hitID }) {
+                progress.rows[rowIndex].status = .stalled(elapsed: elapsed)
+            }
+        case .blockedSimulatorRunning(let index, _, let item):
+            progress.currentIndex = index
+            if let rowIndex = progress.rows.firstIndex(where: { $0.item.hitID == item.hitID }) {
+                progress.rows[rowIndex].status = .blockedSimulatorRunning
             }
         case .finished(_, _, let outcome):
             progress.completedCount += 1
             if let rowIndex = progress.rows.firstIndex(where: { $0.item.hitID == outcome.item.hitID }) {
-                progress.rows[rowIndex].status = outcome.isSuccess
-                    ? .succeeded
-                    : .failed(exitCode: outcome.exitCode, detail: outcome.truncatedOutput)
+                switch outcome.status {
+                case .confirmedTerminal(exitCode: 0):
+                    progress.rows[rowIndex].status = .succeeded
+                case .confirmedTerminal(let exitCode), .notSubmitted(let exitCode):
+                    if outcome.failureReason == .simulatorOrDeviceActive {
+                        progress.rows[rowIndex].status = .blockedSimulatorRunning
+                        break
+                    }
+                    progress.rows[rowIndex].status = .failed(
+                        exitCode: exitCode,
+                        reason: outcome.failureReason
+                    )
+                case .unknownAfterStall:
+                    progress.rows[rowIndex].status = .unknown(detail: "")
+                }
             }
         }
         simulatorUninstallState = .executing(intent, progress)
@@ -2155,15 +2656,22 @@ public final class WorkflowDetailViewModel: ObservableObject {
     private struct CardScanResult: Sendable {
         var hits: [WorkflowScanHit]
         var incompleteIssues: [ScanIncompleteIssue] = []
+        var terminalFailure: Bool = false
 
         mutating func merge(incompleteIssues: [ScanIncompleteIssue]) {
             self.incompleteIssues.append(contentsOf: incompleteIssues)
+        }
+
+        mutating func merge(filesystem: FilesystemScanResult) {
+            incompleteIssues.append(contentsOf: filesystem.incompleteIssues)
+            terminalFailure = terminalFailure || filesystem.terminalFailure
         }
     }
 
     private struct FilesystemScanResult: Sendable {
         let sizeBytes: Int64?
         let incompleteIssues: [ScanIncompleteIssue]
+        let terminalFailure: Bool
     }
 
     private struct PathExpansionResult: Sendable {
@@ -2171,108 +2679,414 @@ public final class WorkflowDetailViewModel: ObservableObject {
         let incompleteIssues: [ScanIncompleteIssue]
     }
 
-    private func runScan() async {
+    private enum CardScanWork: Sendable {
+        case single(DeveloperCard)
+        case derivedData([DeveloperCard])
+
+        var cards: [DeveloperCard] {
+            switch self {
+            case .single(let card): [card]
+            case .derivedData(let cards): cards
+            }
+        }
+    }
+
+    private struct CardScanWorkOutput: Sendable {
+        let results: [String: CardScanResult]
+    }
+
+    private struct CardRetryOutput: Sendable {
+        let workOutput: CardScanWorkOutput
+        /// Non-nil only when this card owns a versioned-root discovery transaction.
+        let sharedIncompleteIssues: [ScanIncompleteIssue]?
+    }
+
+    /// **v2026.07.16 root-cause fix:** `didBootstrap` records a completed scan transaction,
+    /// not merely an attempted one. SwiftUI cancels the view `.task` when the page leaves;
+    /// marking bootstrap complete before that task reached a terminal state made re-entry a
+    /// permanent no-op with cards still shown as loading.
+    @discardableResult
+    private func runScan() async -> Bool {
+        didBootstrap = false
+        // A revision owns exactly one full-scan body. Cancel before rotating the revision so
+        // providers observe cancellation promptly; revision/session checks remain the final
+        // publication boundary for uncooperative providers.
+        activeScanTask?.cancel()
+        activeScanTask = nil
+        activeScanOperationID = nil
+        cancelScheduledCardRefreshes()
+        for task in cardRetryTasks.values { task.cancel() }
+        cardRetryTasks.removeAll()
+        cardRetryRevisions.removeAll()
+        sharedScanIncompleteIssues.removeAll()
         scanRevision &+= 1
         let revision = scanRevision
         let sessionID = UUID()
         cardHits.removeAll()
         cardTotalBytes.removeAll()
         cardIncompleteIssues.removeAll()
-        cardLoading.removeAll()
+        cardScanPhases.removeAll()
         selected.removeAll()
         explicitFilesystemSelectionPaths.removeAll()
         pendingConfirmedDeleteIntent = nil
         scanEvidence = WorkflowScanEvidence(revision: revision, sessionID: sessionID)
         cards = workflow.cards(home: home)
+        cardScanPhases = Dictionary(uniqueKeysWithValues: cards.map { ($0.id, .pending) })
         for card in cards where card.risk == .safe {
             expanded.insert(card.id)
         }
-        await loadAllCards(revision: revision, sessionID: sessionID)
+        let operationID = UUID()
+        let scanTask = Task { [weak self] in
+            guard let self else { return false }
+            return await self.loadAllCards(revision: revision, sessionID: sessionID)
+        }
+        activeScanOperationID = operationID
+        activeScanTask = scanTask
+        let completed = await withTaskCancellationHandler {
+            await scanTask.value
+        } onCancel: {
+            scanTask.cancel()
+        }
+        if activeScanOperationID == operationID {
+            activeScanTask = nil
+            activeScanOperationID = nil
+        }
+        guard revision == scanRevision,
+              scanEvidence.sessionID == sessionID else {
+            return false
+        }
+        guard completed, !Task.isCancelled else {
+            convergeCancelledScan(revision: revision, sessionID: sessionID)
+            return false
+        }
+        didBootstrap = true
+        return true
     }
 
-    private func loadAllCards(revision: UInt64, sessionID: UUID) async {
+    @discardableResult
+    private func loadAllCards(revision: UInt64, sessionID: UUID) async -> Bool {
         let cardsSnapshot = cards
         let needsVersionedRoots = cardsSnapshot.contains { card in
             if case .versionedRoot = card.source { return true }
             return false
         }
-        let versionedDiscovery: KnownVersionedRoots.ScanResult?
-        if needsVersionedRoots {
-            versionedDiscovery = await versionedRootDiscovery(home)
-        } else {
-            versionedDiscovery = nil
-        }
-        guard revision == scanRevision, scanEvidence.sessionID == sessionID else { return }
-
-        if let versionedDiscovery {
-            scanEvidence = WorkflowScanEvidence(
-                revision: revision,
-                sessionID: sessionID,
-                incompleteIssues: scanEvidence.incompleteIssues
-                    + versionedDiscovery.incompleteIssues
-            )
-        }
-
-        var startIndex = 0
-        while startIndex < cardsSnapshot.count {
-            let endIndex = min(startIndex + maxConcurrentCardLoads, cardsSnapshot.count)
-            let batch = Array(cardsSnapshot[startIndex..<endIndex])
-            startIndex = endIndex
-
-            for card in batch {
-                cardLoading.insert(card.id)
+        let versionedTask: Task<KnownVersionedRoots.ScanResult, Never>? = needsVersionedRoots
+            ? Task.detached(priority: .userInitiated) { [home, versionedRootDiscovery] in
+                await versionedRootDiscovery(home)
             }
+            : nil
+        // The task is revision-owned. Every exit path, including parent cancellation and a
+        // superseding refresh, must stop it; otherwise it outlives the screen transaction.
+        defer { versionedTask?.cancel() }
+        let workItems = Self.makeCardScanWork(cardsSnapshot)
+        var nextWorkIndex = 0
 
-            // v2026.07.15：每张卡完成就立刻发布。旧实现先 collect 整个 batch，
-            // Devices 的只读查询会被同批 Runtime 的递归容量扫描拖住，两张卡一起
-            // loading 数分钟；这里消除 batch barrier，让慢卡只影响自己。
-            await withTaskGroup(of: (String, CardScanResult).self) { group in
-                for card in batch {
-                    let cardID = card.id
-                    group.addTask { [home, versionedDiscovery, dynamicDiscovery] in
-                        let result = await Self.resolveCard(
-                            card: card,
+        // **v2026.07.16 root-cause fix:** the old outer `while` submitted fixed batches of
+        // two. A fast card finishing first could not release its slot until the slow sibling
+        // also completed. This is a real bounded work queue: every completion immediately
+        // starts the next pending unit, while MainActor only applies compact final DTOs.
+        let completed = await withTaskCancellationHandler {
+            await withTaskGroup(of: CardScanWorkOutput?.self) { group in
+                guard !Task.isCancelled else { return false }
+                while nextWorkIndex < min(maxConcurrentCardLoads, workItems.count) {
+                    let work = workItems[nextWorkIndex]
+                    nextWorkIndex += 1
+                    for card in work.cards { cardScanPhases[card.id] = .scanning }
+                    group.addTask { [home, dynamicDiscovery, derivedDataSnapshotDiscovery] in
+                        await Self.executeScanWork(
+                            work,
                             home: home,
-                            versionedDiscovery: versionedDiscovery,
-                            dynamicDiscovery: dynamicDiscovery
+                            versionedTask: versionedTask,
+                            dynamicDiscovery: dynamicDiscovery,
+                            derivedDataSnapshotDiscovery: derivedDataSnapshotDiscovery
                         )
-                        return (cardID, result)
                     }
                 }
-                for await (cardID, result) in group {
-                    guard revision == scanRevision,
-                          scanEvidence.sessionID == sessionID else {
+
+                while let workOutput = await group.next() {
+                    guard !Task.isCancelled,
+                          revision == scanRevision,
+                          scanEvidence.sessionID == sessionID,
+                          let output = workOutput else {
                         group.cancelAll()
-                        return
+                        versionedTask?.cancel()
+                        return false
                     }
-                    guard let card = cardsSnapshot.first(where: { $0.id == cardID }) else {
-                        cardLoading.remove(cardID)
-                        continue
+                    for card in cardsSnapshot {
+                        guard let result = output.results[card.id] else { continue }
+                        publish(result, for: card, revision: revision, sessionID: sessionID)
                     }
-                    let published = Self.normalizedForPublication(result, card: card)
-                    cardHits[cardID] = published.hits
-                    cardTotalBytes[cardID] = published.hits.reduce(0) {
-                        $0 &+ max(0, $1.sizeBytes ?? 0)
+                    guard !Task.isCancelled else {
+                        group.cancelAll()
+                        versionedTask?.cancel()
+                        return false
                     }
-                    cardIncompleteIssues[cardID] = published.incompleteIssues
-                    cardLoading.remove(cardID)
-                    scanEvidence = WorkflowScanEvidence(
-                        revision: revision,
-                        sessionID: sessionID,
-                        incompleteIssues: scanEvidence.incompleteIssues
-                            + published.incompleteIssues
-                    )
-                    if card.risk == .safe,
-                       case .filesystem = card.recipe {
-                        for hit in published.hits where shouldApplyDefaultSelection(to: hit) {
-                            selected.insert(hit.id)
+                    if nextWorkIndex < workItems.count {
+                        let work = workItems[nextWorkIndex]
+                        nextWorkIndex += 1
+                        for card in work.cards { cardScanPhases[card.id] = .scanning }
+                        group.addTask { [home, dynamicDiscovery, derivedDataSnapshotDiscovery] in
+                            await Self.executeScanWork(
+                                work,
+                                home: home,
+                                versionedTask: versionedTask,
+                                dynamicDiscovery: dynamicDiscovery,
+                                derivedDataSnapshotDiscovery: derivedDataSnapshotDiscovery
+                            )
                         }
                     }
-                    collapseNestedFilesystemSelections()
                 }
+                return !Task.isCancelled
+            }
+        } onCancel: {
+            // The shared task is unstructured by design so multiple versioned cards can await
+            // one immutable result; cancellation therefore has to be forwarded explicitly.
+            versionedTask?.cancel()
+        }
+
+        guard completed, !Task.isCancelled,
+              revision == scanRevision,
+              scanEvidence.sessionID == sessionID else {
+            return false
+        }
+        if let versionedTask {
+            let versionedDiscovery = await versionedTask.value
+            guard !Task.isCancelled,
+                  !versionedDiscovery.wasCancelled,
+                  revision == scanRevision,
+                  scanEvidence.sessionID == sessionID else {
+                return false
+            }
+            sharedScanIncompleteIssues = versionedDiscovery.incompleteIssues
+            rebuildScanEvidence(revision: revision, sessionID: sessionID)
+        }
+        collapseNestedFilesystemSelections()
+        return true
+    }
+
+    /// Cancellation is a real terminal state, not an empty result and not a scan failure.
+    /// Preserve cards that already published a trustworthy result, while converging queued
+    /// and in-flight cards so no spinner survives the revision that owned it.
+    private func convergeCancelledScan(revision: UInt64, sessionID: UUID) {
+        guard revision == scanRevision,
+              scanEvidence.sessionID == sessionID else { return }
+        for card in cards {
+            switch cardScanPhases[card.id] {
+            case .pending, .scanning:
+                cardScanPhases[card.id] = .cancelled
+            case .completed, .partial, .failed, .cancelled, .none:
+                break
+            }
+        }
+    }
+
+    private func clearCardForRetry(cardID: String, revision: UInt64, sessionID: UUID) {
+        let oldHitIDs = Set((cardHits[cardID] ?? []).map(\.id))
+        let siblingHitIDs = Set(cardHits
+            .filter { $0.key != cardID }
+            .values
+            .flatMap { $0 }
+            .map(\.id))
+        for hitID in oldHitIDs.subtracting(siblingHitIDs) {
+            selected.remove(hitID)
+            explicitFilesystemSelectionPaths.removeValue(forKey: hitID)
+        }
+        cardHits[cardID] = []
+        cardTotalBytes[cardID] = 0
+        cardIncompleteIssues[cardID] = []
+        cardScanPhases[cardID] = .scanning
+        rebuildScanEvidence(revision: revision, sessionID: sessionID)
+    }
+
+    /// Rebuild instead of append: a successful retry must remove the old card's incomplete
+    /// evidence, while unrelated cards and revision-wide discovery evidence stay unchanged.
+    private func rebuildScanEvidence(revision: UInt64, sessionID: UUID) {
+        guard revision == scanRevision,
+              scanEvidence.sessionID == sessionID else { return }
+        scanEvidence = WorkflowScanEvidence(
+            revision: revision,
+            sessionID: sessionID,
+            incompleteIssues: sharedScanIncompleteIssues
+                + cardIncompleteIssues.values.flatMap { $0 }
+        )
+    }
+
+    private func publish(
+        _ result: CardScanResult,
+        for card: DeveloperCard,
+        revision: UInt64,
+        sessionID: UUID
+    ) {
+        let published = Self.normalizedForPublication(result, card: card)
+        cardHits[card.id] = published.hits
+        cardTotalBytes[card.id] = published.hits.reduce(0) {
+            $0 &+ max(0, $1.sizeBytes ?? 0)
+        }
+        cardIncompleteIssues[card.id] = published.incompleteIssues
+        if published.terminalFailure || (published.hits.isEmpty && !published.incompleteIssues.isEmpty) {
+            cardScanPhases[card.id] = .failed
+        } else if published.incompleteIssues.isEmpty {
+            cardScanPhases[card.id] = .completed
+        } else {
+            cardScanPhases[card.id] = .partial
+        }
+        rebuildScanEvidence(revision: revision, sessionID: sessionID)
+        if card.risk == .safe, case .filesystem = card.recipe {
+            for hit in published.hits where shouldApplyDefaultSelection(to: hit) {
+                selected.insert(hit.id)
             }
         }
         collapseNestedFilesystemSelections()
+    }
+
+    private static func makeCardScanWork(_ cards: [DeveloperCard]) -> [CardScanWork] {
+        let sharedDerivedDataCards = cards.filter { $0.sharedScanRole != nil }
+        var emittedSharedDerivedData = false
+        var work: [CardScanWork] = []
+        work.reserveCapacity(cards.count)
+        for card in cards {
+            if card.sharedScanRole != nil {
+                guard !emittedSharedDerivedData else { continue }
+                emittedSharedDerivedData = true
+                work.append(.derivedData(sharedDerivedDataCards))
+            } else {
+                work.append(.single(card))
+            }
+        }
+        return work
+    }
+
+    /// Runs entirely outside MainActor. Only `CardScanWorkOutput`, whose cardinality is the
+    /// number of visible rows rather than filesystem entries, crosses back to the ViewModel.
+    private nonisolated static func executeScanWork(
+        _ work: CardScanWork,
+        home: URL,
+        versionedTask: Task<KnownVersionedRoots.ScanResult, Never>?,
+        dynamicDiscovery: @Sendable (
+            String,
+            URL,
+            Bool
+        ) async throws -> DiscoveryEvidence<WorkflowScanHit>,
+        derivedDataSnapshotDiscovery: @Sendable (URL) async throws -> DerivedDataScanSnapshot
+    ) async -> CardScanWorkOutput? {
+        do {
+            try Task.checkCancellation()
+            switch work {
+            case .single(let card):
+                let versionedDiscovery: KnownVersionedRoots.ScanResult?
+                if case .versionedRoot = card.source {
+                    versionedDiscovery = await versionedTask?.value
+                    try Task.checkCancellation()
+                    guard versionedDiscovery?.wasCancelled != true else { return nil }
+                } else {
+                    versionedDiscovery = nil
+                }
+                let result = try await resolveCard(
+                    card: card,
+                    home: home,
+                    versionedDiscovery: versionedDiscovery,
+                    dynamicDiscovery: dynamicDiscovery
+                )
+                return CardScanWorkOutput(results: [card.id: result])
+            case .derivedData(let cards):
+                let snapshot = try await derivedDataSnapshotDiscovery(home)
+                try Task.checkCancellation()
+                var results: [String: CardScanResult] = [:]
+                for card in cards {
+                    switch card.sharedScanRole {
+                    case .derivedDataRoot:
+                        let hit = WorkflowScanHit(
+                            url: snapshot.rootURL,
+                            sizeBytes: snapshot.rootSizeBytes,
+                            displayName: snapshot.rootURL.lastPathComponent,
+                            note: snapshot.rootURL.path
+                        )
+                        results[card.id] = CardScanResult(
+                            hits: snapshot.rootExists ? [hit] : [],
+                            incompleteIssues: snapshot.rootIncompleteIssues,
+                            terminalFailure: snapshot.rootSizeBytes == nil
+                                && snapshot.rootIncompleteIssues.isEmpty
+                        )
+                    case .derivedDataProjects:
+                        results[card.id] = CardScanResult(
+                            hits: snapshot.projects.hits.map { project in
+                                WorkflowScanHit(
+                                    url: project.url,
+                                    sizeBytes: project.sizeBytes,
+                                    displayName: project.projectName,
+                                    note: project.url.lastPathComponent
+                                )
+                            },
+                            incompleteIssues: snapshot.projects.incompleteIssues
+                        )
+                    case .none:
+                        break
+                    }
+                }
+                return CardScanWorkOutput(results: results)
+            }
+        } catch is CancellationError {
+            return nil
+        } catch {
+            GSYLog.error(.scan, "Workflow scan work failed without scoped evidence: \(error)")
+            return CardScanWorkOutput(results: Dictionary(
+                uniqueKeysWithValues: work.cards.map {
+                    ($0.id, CardScanResult(hits: [], terminalFailure: true))
+                }
+            ))
+        }
+    }
+
+    /// One off-main worker owned by a single card retry token. A versioned-root retry still
+    /// uses exactly one shared discovery result for that worker, and its unstructured task is
+    /// explicitly tied to the outer worker's cancellation lifetime.
+    private nonisolated static func executeCardRetry(
+        _ work: CardScanWork,
+        home: URL,
+        versionedRootDiscovery: @escaping @Sendable (URL) async -> KnownVersionedRoots.ScanResult,
+        dynamicDiscovery: @Sendable (
+            String,
+            URL,
+            Bool
+        ) async throws -> DiscoveryEvidence<WorkflowScanHit>,
+        derivedDataSnapshotDiscovery: @Sendable (URL) async throws -> DerivedDataScanSnapshot
+    ) async -> CardRetryOutput? {
+        let needsVersionedRoots = work.cards.contains { card in
+            if case .versionedRoot = card.source { return true }
+            return false
+        }
+        let versionedTask: Task<KnownVersionedRoots.ScanResult, Never>? = needsVersionedRoots
+            ? Task.detached(priority: .userInitiated) {
+                await versionedRootDiscovery(home)
+            }
+            : nil
+        defer { versionedTask?.cancel() }
+
+        return await withTaskCancellationHandler {
+            guard let workOutput = await executeScanWork(
+                work,
+                home: home,
+                versionedTask: versionedTask,
+                dynamicDiscovery: dynamicDiscovery,
+                derivedDataSnapshotDiscovery: derivedDataSnapshotDiscovery
+            ), !Task.isCancelled else {
+                return nil
+            }
+            let sharedIncompleteIssues: [ScanIncompleteIssue]?
+            if let versionedTask {
+                let discovery = await versionedTask.value
+                guard !Task.isCancelled else { return nil }
+                sharedIncompleteIssues = discovery.incompleteIssues
+            } else {
+                sharedIncompleteIssues = nil
+            }
+            return CardRetryOutput(
+                workOutput: workOutput,
+                sharedIncompleteIssues: sharedIncompleteIssues
+            )
+        } onCancel: {
+            versionedTask?.cancel()
+        }
     }
 
     /// v2026.07.15：扫描结果进入 `@Published` 状态前的唯一 filesystem 空结果边界。
@@ -2302,7 +3116,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
         }
         return CardScanResult(
             hits: hits,
-            incompleteIssues: result.incompleteIssues
+            incompleteIssues: result.incompleteIssues,
+            terminalFailure: result.terminalFailure
         )
     }
 
@@ -2366,14 +3181,15 @@ public final class WorkflowDetailViewModel: ObservableObject {
         child == ancestor || child.hasPrefix(ancestor.hasSuffix("/") ? ancestor : ancestor + "/")
     }
 
-    private static func resolveCard(card: DeveloperCard,
+    private nonisolated static func resolveCard(card: DeveloperCard,
                                     home: URL,
                                     versionedDiscovery: KnownVersionedRoots.ScanResult?,
                                     dynamicDiscovery: @Sendable (
                                         String,
                                         URL,
                                         Bool
-                                    ) async throws -> DiscoveryEvidence<WorkflowScanHit>) async -> CardScanResult {
+                                    ) async throws -> DiscoveryEvidence<WorkflowScanHit>) async throws -> CardScanResult {
+        try Task.checkCancellation()
         switch card.source {
         case .literal(let paths):
             // **v2026.06.22 (P0-5)**：`.literal` 分支历史只走 `FileManager.fileExists`，不展开 glob。
@@ -2382,13 +3198,14 @@ public final class WorkflowDetailViewModel: ObservableObject {
             // 导致 JetBrains / AndroidStudio 整卡 0 命中。改为：含 `*` 走 parent + fnmatch 枚举。
             var result = CardScanResult(hits: [])
             for raw in paths {
+                try Task.checkCancellation()
                 let expandedRaw = (raw as NSString).expandingTildeInPath
                 let expansion = Self.expandGlob(expandedRaw)
                 result.merge(incompleteIssues: expansion.incompleteIssues)
                 for matchedPath in expansion.paths {
                     let url = URL(fileURLWithPath: matchedPath)
-                    let filesystem = await scanFilesystemIfNeeded(url: url, recipe: card.recipe)
-                    result.merge(incompleteIssues: filesystem.incompleteIssues)
+                    let filesystem = try await scanFilesystemIfNeeded(url: url, recipe: card.recipe)
+                    result.merge(filesystem: filesystem)
                     result.hits.append(WorkflowScanHit(
                         url: url,
                         sizeBytes: filesystem.sizeBytes,
@@ -2410,8 +3227,9 @@ public final class WorkflowDetailViewModel: ObservableObject {
             let hits = versionedDiscovery.hits.filter { $0.ruleID == ruleID }
             var result = CardScanResult(hits: [])
             for hit in hits {
-                let filesystem = await scanFilesystemIfNeeded(url: hit.url, recipe: card.recipe)
-                result.merge(incompleteIssues: filesystem.incompleteIssues)
+                try Task.checkCancellation()
+                let filesystem = try await scanFilesystemIfNeeded(url: hit.url, recipe: card.recipe)
+                result.merge(filesystem: filesystem)
                 // 保留语义 key 到发布边界；View 依据当前环境 locale 投影，切语言无需重扫。
                 let localizedName = hit.displayName
                 let composedName: String
@@ -2446,14 +3264,14 @@ public final class WorkflowDetailViewModel: ObservableObject {
                     !isFilesystemRecipe
                 )
             } catch is CancellationError {
-                return CardScanResult(hits: [])
+                throw CancellationError()
             } catch {
                 GSYLog.error(.scan, "Workflow 动态发现异常 scannerID=\(scannerID) error=\(error)")
                 // `WorkflowRegistry.resolveWithEvidence` returns filesystem failures as scoped
                 // ScanIncompleteIssue values and throws only for cancellation/unexpected provider
                 // failures. A generic Error has no trustworthy path scope, so fabricating HOME
                 // here would contaminate every sibling deletion. Preserve only typed evidence.
-                return CardScanResult(hits: [])
+                return CardScanResult(hits: [], terminalFailure: true)
             }
             let resolved = discovery.hits
             guard isFilesystemRecipe else {
@@ -2468,8 +3286,9 @@ public final class WorkflowDetailViewModel: ObservableObject {
             )
             result.hits.reserveCapacity(resolved.count)
             for hit in resolved {
-                let filesystem = await scanFilesystemIfNeeded(url: hit.url, recipe: card.recipe)
-                result.merge(incompleteIssues: filesystem.incompleteIssues)
+                try Task.checkCancellation()
+                let filesystem = try await scanFilesystemIfNeeded(url: hit.url, recipe: card.recipe)
+                result.merge(filesystem: filesystem)
                 result.hits.append(WorkflowScanHit(
                     url: hit.url,
                     sizeBytes: filesystem.sizeBytes,
@@ -2483,23 +3302,25 @@ public final class WorkflowDetailViewModel: ObservableObject {
         }
     }
 
-    private static func scanFilesystemIfNeeded(
+    private nonisolated static func scanFilesystemIfNeeded(
         url: URL,
         recipe: DeletionRecipe
-    ) async -> FilesystemScanResult {
+    ) async throws -> FilesystemScanResult {
         guard case .filesystem = recipe else {
             return FilesystemScanResult(
                 sizeBytes: nil,
-                incompleteIssues: []
+                incompleteIssues: [],
+                terminalFailure: false
             )
         }
-        return await scanFilesystem(at: url)
+        return try await scanFilesystem(at: url)
     }
 
     /// Workflow-owned filesystem scan. BulkScanner supplies physical allocated size and
     /// explicit permission/TCC/partial events in one pass, so deletion safety no longer
     /// borrows evidence from MainView's unrelated ScanCoordinator session.
-    private static func scanFilesystem(at url: URL) async -> FilesystemScanResult {
+    private nonisolated static func scanFilesystem(at url: URL) async throws -> FilesystemScanResult {
+        try Task.checkCancellation()
         let resourceKeys: Set<URLResourceKey> = [
             .isDirectoryKey,
             .totalFileAllocatedSizeKey,
@@ -2510,7 +3331,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
             if values.isDirectory != true {
                 return FilesystemScanResult(
                     sizeBytes: Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0),
-                    incompleteIssues: []
+                    incompleteIssues: [],
+                    terminalFailure: false
                 )
             }
         } catch {
@@ -2522,7 +3344,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
             GSYLog.warning(.scan, "Workflow 根路径 metadata 读取失败 path=\(url.path) error=\(error)")
             return FilesystemScanResult(
                 sizeBytes: nil,
-                incompleteIssues: [issue]
+                incompleteIssues: [issue],
+                terminalFailure: true
             )
         }
 
@@ -2530,7 +3353,9 @@ public final class WorkflowDetailViewModel: ObservableObject {
         var sizeBytes: Int64?
         var incompleteIssues: [ScanIncompleteIssue] = []
         var didFinish = false
-        for await event in scanner.scan(root: url) {
+        var terminalFailure = false
+        for await event in scanner.scan(root: url, delivery: .summaryOnly) {
+            try Task.checkCancellation()
             switch event {
             case .permissionDenied(let path):
                 incompleteIssues.append(ScanIncompleteIssue(
@@ -2545,6 +3370,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
                     stage: .open
                 ))
             case .failed(let error):
+                terminalFailure = true
                 let issue: ScanIncompleteIssue
                 switch error {
                 case .cannotEnumerate(let path, let stage, let posixErrorCode):
@@ -2590,6 +3416,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 break
             }
         }
+        try Task.checkCancellation()
         if !didFinish {
             incompleteIssues.append(ScanIncompleteIssue(
                 path: url.path,
@@ -2599,7 +3426,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
         }
         return FilesystemScanResult(
             sizeBytes: sizeBytes,
-            incompleteIssues: incompleteIssues
+            incompleteIssues: incompleteIssues,
+            terminalFailure: terminalFailure || !didFinish
         )
     }
 
@@ -2612,7 +3440,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
     ///   [WebNodeWorkflow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/WebNodeWorkflow.swift)
     ///   声明的 glob 全是末段形态，扩大支持面会增加误命中风险，按需再加；
     /// - 不含 `*` 时退化为单条 `fileExists` 判断，与历史行为完全等价。
-    private static func expandGlob(_ pattern: String) -> PathExpansionResult {
+    private nonisolated static func expandGlob(_ pattern: String) -> PathExpansionResult {
         guard pattern.contains("*") else {
             return PathExpansionResult(
                 paths: FileManager.default.fileExists(atPath: pattern) ? [pattern] : [],
@@ -2652,7 +3480,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
         )
     }
 
-    private static func scanIncompleteIssue(
+    private nonisolated static func scanIncompleteIssue(
         path: String,
         stage: ScanIssueStage,
         posixErrorCode: Int32?
@@ -2674,7 +3502,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
         )
     }
 
-    private static func posixErrorCode(from error: Error) -> Int32? {
+    private nonisolated static func posixErrorCode(from error: Error) -> Int32? {
         let nsError = error as NSError
         if nsError.domain == NSPOSIXErrorDomain {
             return Int32(exactly: nsError.code)
@@ -2689,10 +3517,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
         return nil
     }
 
-    public static func formatBytes(_ bytes: Int64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: bytes)
+    public static func formatBytes(_ bytes: Int64, locale: Locale) -> String {
+        AppLocalization.byteCount(bytes, locale: locale)
     }
 
     /// PR-9 测试 hook：注入 cardHits 用于单测，**仅在测试代码中调用**。
@@ -2700,16 +3526,25 @@ public final class WorkflowDetailViewModel: ObservableObject {
         self.cardHits = hits
         for (cardID, hitList) in hits {
             cardTotalBytes[cardID] = hitList.reduce(0) { $0 &+ ($1.sizeBytes ?? 0) }
+            if cardScanPhases[cardID] == nil {
+                cardScanPhases[cardID] = .completed
+            }
         }
     }
 
     internal func setTestCardIncompleteIssues(_ issues: [String: [ScanIncompleteIssue]]) {
         cardIncompleteIssues = issues
+        for (cardID, cardIssues) in issues where !cardIssues.isEmpty {
+            cardScanPhases[cardID] = (cardHits[cardID] ?? []).isEmpty ? .failed : .partial
+        }
     }
 
     /// PR-9 测试 hook：注入 cards 用于单测，**仅在测试代码中调用**。
     internal func setTestCards(_ cards: [DeveloperCard]) {
         self.cards = cards
+        for card in cards where cardScanPhases[card.id] == nil {
+            cardScanPhases[card.id] = .completed
+        }
     }
 
     internal func setTestSelection(_ selection: Set<String>) {
@@ -2721,6 +3556,15 @@ public final class WorkflowDetailViewModel: ObservableObject {
     internal func setTestScanEvidence(_ evidence: WorkflowScanEvidence) {
         scanRevision = evidence.revision
         scanEvidence = evidence
+    }
+
+    /// v2026.07.16 回归 hook：只把确定性虚拟 lifecycle event 送入与生产相同的
+    /// revision/identity 投影边界；测试不会启动 `simctl` 或改动真实 Simulator 资源。
+    internal func applyTestSimulatorUninstallEvent(
+        _ event: SimulatorDeleteCoordinator.ExecutionEvent,
+        sourceIntent: SimulatorUninstallIntent
+    ) {
+        applySimulatorUninstallEvent(event, sourceIntent: sourceIntent)
     }
 
     /// 回归锁：生产默认 managed executor 必须等待系统事务自然终止，不能退回固定 timeout。

@@ -412,7 +412,7 @@ public struct AppFootprintScreen: View {
     }
 
     private func byteString(_ b: Int64) -> String {
-        b.formatted(.byteCount(style: .file).locale(locale))
+        AppLocalization.byteCount(b, locale: locale)
     }
 
     private func bucketIcon(_ k: AppFootprintBucket.Kind) -> String {
