@@ -1,14 +1,14 @@
 import XCTest
 @testable import ScanKit
 
-/// v1.7 M1 PR-2：AppleWorkflow simctl/volumes/per-project 4 张新卡专项测试。
+/// v1.7 M1 PR-2 + v2026.07.15 safety fix：AppleWorkflow simctl/per-project 专项测试。
 ///
 /// 与 [AppleWorkflowCardsTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/AppleWorkflowCardsTests.swift) 的分工：
-/// - AppleWorkflowCardsTests 守 PR-1 6 张静态卡 + PR-2 整体集合契约（10 张卡 / ID 唯一）；
-/// - 本文件聚焦 PR-2 4 张新卡的独立行为：
+/// - AppleWorkflowCardsTests 守 PR-1 6 张静态卡 + PR-2 整体集合契约（9 张卡 / ID 唯一）；
+/// - 本文件聚焦 PR-2 3 张新卡及 Volumes 禁止入口的独立行为：
 ///   - devices 卡：仅当 `~/Library/Developer/CoreSimulator/Devices` 存在才出
 ///   - runtimes 卡：仅当 csRoot 存在即出（无需子目录，因为 runtime 是 simctl 自报数据）
-///   - volumes 卡：仅当 Volumes 子目录存在才出，且为 .filesystem
+///   - volumes：即使目录存在也不生成卡，避免把 CoreSimulator 挂载卷伪装成废纸篓操作
 ///   - per-project 卡：仅当 DerivedData 存在才出，且为 .dynamicScanner + .filesystem
 /// - Simulator 运行中 → devices/runtimes risk = blocked 的安全门
 ///
@@ -28,7 +28,7 @@ final class AppleWorkflowPR2CardsTests: XCTestCase {
                        "PITFALL：CoreSimulator/Devices 不存在时 devices 卡必须不出")
     }
 
-    func test_Devices卡_存在时_recipe_是_commandLine_simctl_delete() throws {
+    func test_Devices卡_存在时_recipe_是类型化托管卸载() throws {
         let home = try makeTmpHome()
         defer { try? FileManager.default.removeItem(at: home) }
         try makeDir(at: "Library/Developer/CoreSimulator/Devices", in: home)
@@ -36,12 +36,12 @@ final class AppleWorkflowPR2CardsTests: XCTestCase {
         let cards = AppleWorkflow(isSimulatorRunning: { false }).cards(home: home)
         let card = try XCTUnwrap(cards.first(where: { $0.id == "card.apple.coresimulator-devices" }))
 
-        if case .commandLine(let exe, let args) = card.recipe {
-            XCTAssertEqual(exe, "/usr/bin/xcrun")
-            XCTAssertEqual(args, ["simctl", "delete"],
-                           "PITFALL：args 必须严格匹配 SubprocessExecutor.defaultAllowlist 前缀，否则 isExecutable 会返 false")
+        if case .managedUninstall(let managed) = card.recipe {
+            XCTAssertEqual(managed, .simulatorDevice)
+            XCTAssertEqual(managed.executable, "/usr/bin/xcrun")
+            XCTAssertEqual(managed.argsPrefix, ["simctl", "delete"])
         } else {
-            XCTFail("Devices 卡必须用 .commandLine recipe")
+            XCTFail("Devices 卡必须用封闭的 .managedUninstall(.simulatorDevice) recipe")
         }
 
         XCTAssertTrue(card.recipe.isExecutableInCurrentBuild,
@@ -66,7 +66,7 @@ final class AppleWorkflowPR2CardsTests: XCTestCase {
                       "Runtime 数据来自 simctl JSON 而非 FS 枚举，因此 csRoot 在即出卡")
     }
 
-    func test_Runtimes卡_recipe_是_commandLine_simctl_runtime_delete() throws {
+    func test_Runtimes卡_recipe_是类型化托管卸载() throws {
         let home = try makeTmpHome()
         defer { try? FileManager.default.removeItem(at: home) }
         try makeDir(at: "Library/Developer/CoreSimulator", in: home)
@@ -74,35 +74,28 @@ final class AppleWorkflowPR2CardsTests: XCTestCase {
         let cards = AppleWorkflow(isSimulatorRunning: { false }).cards(home: home)
         let card = try XCTUnwrap(cards.first(where: { $0.id == "card.apple.coresimulator-runtimes" }))
 
-        if case .commandLine(let exe, let args) = card.recipe {
-            XCTAssertEqual(exe, "/usr/bin/xcrun")
-            XCTAssertEqual(args, ["simctl", "runtime", "delete"])
+        if case .managedUninstall(let managed) = card.recipe {
+            XCTAssertEqual(managed, .simulatorRuntime)
+            XCTAssertEqual(managed.executable, "/usr/bin/xcrun")
+            XCTAssertEqual(managed.argsPrefix, ["simctl", "runtime", "delete"])
         } else {
-            XCTFail("Runtimes 卡必须用 .commandLine recipe")
+            XCTFail("Runtimes 卡必须用封闭的 .managedUninstall(.simulatorRuntime) recipe")
         }
         XCTAssertTrue(card.recipe.isExecutableInCurrentBuild)
     }
 
-    // MARK: - Volumes 卡
+    // MARK: - Volumes 禁止入口
 
-    func test_Volumes卡_存在时_用_filesystem_recipe_不走_simctl() throws {
+    func test_Volumes目录存在时_也不生成可清理卡() throws {
         let home = try makeTmpHome()
         defer { try? FileManager.default.removeItem(at: home) }
         try makeDir(at: "Library/Developer/CoreSimulator/Volumes", in: home)
 
         let cards = AppleWorkflow(isSimulatorRunning: { false }).cards(home: home)
-        let card = try XCTUnwrap(cards.first(where: { $0.id == "card.apple.coresimulator-volumes" }))
-
-        XCTAssertEqual(card.recipe, .filesystem,
-                       "PITFALL：Volumes 是普通目录，必须走回收站；若改 commandLine 等于让用户跑未知脚本")
-        XCTAssertEqual(card.risk, .safe)
-
-        if case .literal(let paths) = card.source {
-            XCTAssertEqual(paths.count, 1)
-            XCTAssertTrue(paths.first!.hasSuffix("Library/Developer/CoreSimulator/Volumes"))
-        } else {
-            XCTFail("Volumes 卡必须使用 .literal 源")
-        }
+        XCTAssertFalse(
+            cards.contains(where: { $0.id == "card.apple.coresimulator-volumes" }),
+            "CoreSimulator/Volumes 是挂载卷且规则为 forbid，只能由受管 runtime 卸载间接管理"
+        )
     }
 
     // MARK: - per-project 卡

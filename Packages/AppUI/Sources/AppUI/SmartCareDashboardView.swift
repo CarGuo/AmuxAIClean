@@ -4,45 +4,54 @@ import SwiftUI
 
 struct SmartCareFailurePresentation: Equatable, Sendable {
     let titleKey: String
-    let detailText: String
+    let detailKey: String
+    let detail: SmartCareFailureDetail
     let primaryKey: String
     let primaryIcon: String
 
     init(error: SmartCareError) {
         switch error {
-        case .scanFailed(let message):
+        case .scanFailed(let detail):
             titleKey = "smart_care.failure.scan.title"
-            detailText = String(
-                format: String(localized: "smart_care.failure.scan.detail %@", bundle: .module),
-                message
-            )
+            detailKey = "smart_care.failure.scan.detail %@"
+            self.detail = detail
             primaryKey = "smart_care.action.retry_scan"
             primaryIcon = "arrow.counterclockwise"
-        case .cleanFailed(let message):
+        case .cleanFailed(let detail):
             titleKey = "smart_care.failure.clean.title"
-            detailText = String(
-                format: String(localized: "smart_care.failure.clean.detail %@", bundle: .module),
-                message
-            )
+            detailKey = "smart_care.failure.clean.detail %@"
+            self.detail = detail
             primaryKey = "smart_care.action.review_cleanup_again"
             primaryIcon = "doc.text.magnifyingglass"
         }
     }
+
+    /// v2026.07.15：产品错误语义与外层模板都在渲染时按当前 locale 投影；无法
+    /// 重新解释的系统/scanner 原文则由 `SmartCareFailureDetail.verbatim` 保持原样。
+    func detailText(locale: Locale) -> String {
+        AppLocalization.format(
+            detailKey,
+            locale: locale,
+            arguments: [detail.text(locale: locale)]
+        )
+    }
 }
 
 extension SmartCareScanLimitationProjection {
-    var titleText: String {
-        String(
-            format: String(localized: "smart_care.scan_limitations.title %lld", bundle: .module),
-            Int64(totalCount)
+    func titleText(locale: Locale) -> String {
+        AppLocalization.format(
+            "smart_care.scan_limitations.title %lld",
+            locale: locale,
+            arguments: [Int64(totalCount)]
         )
     }
 
-    var remainingText: String? {
+    func remainingText(locale: Locale) -> String? {
         guard remainingCount > 0 else { return nil }
-        return String(
-            format: String(localized: "smart_care.scan_limitations.remaining %lld", bundle: .module),
-            Int64(remainingCount)
+        return AppLocalization.format(
+            "smart_care.scan_limitations.remaining %lld",
+            locale: locale,
+            arguments: [Int64(remainingCount)]
         )
     }
 }
@@ -63,6 +72,7 @@ struct SmartCareDashboardView: View {
     let onAIShowReport: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.locale) private var locale
     @State private var resultExpansion: SmartCareResultExpansion?
     @State private var scanLimitationsExpanded = false
 
@@ -262,7 +272,7 @@ struct SmartCareDashboardView: View {
                 )
 
                 HStack(alignment: .firstTextBaseline, spacing: 9) {
-                    Text(verbatim: formattedSmartCareBytes(coordinator.selectedBytes))
+                    Text(verbatim: formattedSmartCareBytes(coordinator.selectedBytes, locale: locale))
                         .font(.system(
                             size: resultExpansion == nil ? 44 : 35,
                             weight: .bold,
@@ -560,20 +570,23 @@ struct SmartCareDashboardView: View {
 
     private func completionDetail(for result: SmartCareResult) -> String {
         if result.completion == .partial {
-            return String(
-                format: String(
-                    localized: "smart_care.detail.partial %lld %lld %@",
-                    bundle: .module
-                ),
-                Int64(result.movedCount),
-                Int64(result.skippedCount),
-                formattedSmartCareBytes(result.releasedBytes)
+            return AppLocalization.format(
+                "smart_care.detail.partial %lld %lld %@",
+                locale: locale,
+                arguments: [
+                    Int64(result.movedCount),
+                    Int64(result.skippedCount),
+                    formattedSmartCareBytes(result.releasedBytes, locale: locale)
+                ]
             )
         }
-        return String(
-            format: String(localized: "smart_care.detail.completed %lld %@", bundle: .module),
-            Int64(result.movedCount),
-            formattedSmartCareBytes(result.releasedBytes)
+        return AppLocalization.format(
+            "smart_care.detail.completed %lld %@",
+            locale: locale,
+            arguments: [
+                Int64(result.movedCount),
+                formattedSmartCareBytes(result.releasedBytes, locale: locale)
+            ]
         )
     }
 
@@ -583,7 +596,7 @@ struct SmartCareDashboardView: View {
             icon: "exclamationmark.triangle",
             titleKey: presentation.titleKey,
             detailKey: "smart_care.detail.failed",
-            detailText: presentation.detailText,
+            detailText: presentation.detailText(locale: locale),
             primaryKey: presentation.primaryKey,
             primaryIcon: presentation.primaryIcon,
             tint: SmartCarePresentation.tint(for: .confirm),
@@ -630,7 +643,7 @@ struct SmartCareDashboardView: View {
                         .truncationMode(.middle)
                         .textSelection(.enabled)
                 }
-                if let remainingText = scanLimitations.remainingText {
+                if let remainingText = scanLimitations.remainingText(locale: locale) {
                     Text(verbatim: remainingText)
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
@@ -642,7 +655,7 @@ struct SmartCareDashboardView: View {
                 Image(systemName: "exclamationmark.shield.fill")
                     .foregroundStyle(SmartCarePresentation.tint(for: .confirm))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(verbatim: scanLimitations.titleText)
+                    Text(verbatim: scanLimitations.titleText(locale: locale))
                         .font(.callout.weight(.semibold))
                     Text("smart_care.scan_limitations.detail", bundle: .module)
                         .font(.caption)
@@ -677,10 +690,10 @@ struct SmartCareDashboardView: View {
     }
 
     private var aiProgressText: String {
-        String(
-            format: String(localized: "smart_care.ai.progress %lld %lld", bundle: .module),
-            Int64(aiProcessed),
-            Int64(aiTotal)
+        AppLocalization.format(
+            "smart_care.ai.progress %lld %lld",
+            locale: locale,
+            arguments: [Int64(aiProcessed), Int64(aiTotal)]
         )
     }
 
@@ -698,11 +711,10 @@ struct SmartCareDashboardView: View {
             }
         }
         guard safe + review + avoid > 0 else { return nil }
-        return String(
-            format: String(localized: "smart_care.ai.summary %lld %lld %lld", bundle: .module),
-            Int64(safe),
-            Int64(review),
-            Int64(avoid)
+        return AppLocalization.format(
+            "smart_care.ai.summary %lld %lld %lld",
+            locale: locale,
+            arguments: [Int64(safe), Int64(review), Int64(avoid)]
         )
     }
 
@@ -751,6 +763,7 @@ private struct SmartCareIdleVisual: View {
     let onScan: () -> Void
     @State private var scanHovered = false
     @State private var cardsRevealed = false
+    @Environment(\.locale) private var locale
 
     var body: some View {
         VStack(spacing: 22) {
@@ -834,11 +847,12 @@ private struct SmartCareIdleVisual: View {
 
     private var scopeSummary: String {
         guard canScan else {
-            return String(localized: "smart_care.scope.none_selected", bundle: .module)
+            return AppLocalization.string("smart_care.scope.none_selected", locale: locale)
         }
-        return String(
-            format: String(localized: "smart_care.scope.selected_count %lld", bundle: .module),
-            Int64(selectedStages.count)
+        return AppLocalization.format(
+            "smart_care.scope.selected_count %lld",
+            locale: locale,
+            arguments: [Int64(selectedStages.count)]
         )
     }
 }
@@ -1081,6 +1095,7 @@ private enum SmartCareWorkingVisualMode {
 private struct SmartCareWorkingVisual: View {
     let mode: SmartCareWorkingVisualMode
     let reduceMotion: Bool
+    @Environment(\.locale) private var locale
 
     var body: some View {
         ZStack {
@@ -1104,7 +1119,7 @@ private struct SmartCareWorkingVisual: View {
     private var primaryReadout: some View {
         switch mode {
         case .scanning(let bytes):
-            Text(verbatim: formattedSmartCareBytes(bytes))
+            Text(verbatim: formattedSmartCareBytes(bytes, locale: locale))
                 .font(.system(size: 26, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .contentTransition(.numericText())
@@ -1214,6 +1229,7 @@ private struct SmartCareMetricLabel: View {
     let value: Int64
     let labelKey: String
     let tint: Color
+    @Environment(\.locale) private var locale
 
     var body: some View {
         HStack(spacing: 6) {
@@ -1223,7 +1239,7 @@ private struct SmartCareMetricLabel: View {
                 .frame(width: 22, height: 22)
                 .background(tint.opacity(0.11), in: RoundedRectangle(cornerRadius: 6))
             VStack(alignment: .leading, spacing: 0) {
-                Text(verbatim: formattedSmartCareBytes(value))
+                Text(verbatim: formattedSmartCareBytes(value, locale: locale))
                     .font(.caption.monospacedDigit().weight(.semibold))
                 Text(LocalizedStringKey(labelKey), bundle: .module)
                     .font(.caption2)
@@ -1244,6 +1260,7 @@ private struct SmartCareResultRing: View {
     let safeBytes: Int64
     let confirmBytes: Int64
     let selectedBytes: Int64
+    @Environment(\.locale) private var locale
 
     var body: some View {
         GeometryReader { proxy in
@@ -1291,7 +1308,7 @@ private struct SmartCareResultRing: View {
                 }
 
                 VStack(spacing: 2) {
-                    Text(verbatim: formattedSmartCareBytes(selectedBytes))
+                    Text(verbatim: formattedSmartCareBytes(selectedBytes, locale: locale))
                         .font(.system(
                             size: size >= 120 ? 24 : 17,
                             weight: .bold,
@@ -1668,6 +1685,7 @@ private struct SmartCareCategorySection: View {
     @Binding var isExpanded: Bool
     let onToggleAll: (Bool) -> Void
     let onToggleItem: (Bool, SmartCareItem) -> Void
+    @Environment(\.locale) private var locale
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1785,9 +1803,9 @@ private struct SmartCareCategorySection: View {
 
     private var selectionSizeText: String {
         if selectionState == .all {
-            return formattedSmartCareBytes(bucket.safeBytes)
+            return formattedSmartCareBytes(bucket.safeBytes, locale: locale)
         }
-        return "\(formattedSmartCareBytes(selectedBytes)) / \(formattedSmartCareBytes(bucket.safeBytes))"
+        return "\(formattedSmartCareBytes(selectedBytes, locale: locale)) / \(formattedSmartCareBytes(bucket.safeBytes, locale: locale))"
     }
 
     private var selectionFraction: Double {
@@ -1839,6 +1857,7 @@ private struct SmartCareRiskSection: View {
     let aiItemStates: [String: SmartCareAIItemState]
     @Binding var isExpanded: Bool
     let onToggleItem: (Bool, SmartCareItem) -> Void
+    @Environment(\.locale) private var locale
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1860,7 +1879,7 @@ private struct SmartCareRiskSection: View {
 
                     Spacer(minLength: 12)
 
-                    Text(verbatim: formattedSmartCareBytes(bytes))
+                    Text(verbatim: formattedSmartCareBytes(bytes, locale: locale))
                         .font(.callout.monospacedDigit().weight(.semibold))
                         .padding(.horizontal, 9)
                         .padding(.vertical, 4)
@@ -1924,6 +1943,7 @@ private struct SmartCareSelectableItemRow: View {
     let showsRisk: Bool
     var selectionEnabled: Bool = true
     let onToggle: (Bool) -> Void
+    @Environment(\.locale) private var locale
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
@@ -1959,7 +1979,7 @@ private struct SmartCareSelectableItemRow: View {
 
             Spacer(minLength: 12)
 
-            Text(verbatim: formattedSmartCareBytes(item.bytes))
+            Text(verbatim: formattedSmartCareBytes(item.bytes, locale: locale))
                 .font(.callout.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
@@ -2093,6 +2113,7 @@ private struct SmartCareRecoveryView: View {
     }
 }
 
-private func formattedSmartCareBytes(_ bytes: Int64) -> String {
-    ByteCountFormatter.string(fromByteCount: max(0, bytes), countStyle: .file)
+/// v2026.07.15：容量不是扫描事实的一部分，必须在每个消费 View 的当前 locale 下格式化。
+private func formattedSmartCareBytes(_ bytes: Int64, locale: Locale) -> String {
+    max(0, bytes).formatted(.byteCount(style: .file).locale(locale))
 }

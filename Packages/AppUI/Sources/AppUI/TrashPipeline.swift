@@ -235,20 +235,22 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         rejections: [DeletionPreflight.Rejection],
         dryRun: Bool
     ) -> PerformedMove {
+        let firstReason = rejections.first?.reason
+            ?? ScanIncompleteTargetRejectionReason.invalidStrictRequest.rawValue
+        let failureSummary = TrashFailureSummary.safetyBlocked(
+            count: paths.count,
+            firstReason: firstReason,
+            preview: dryRun
+        )
         let outcome = TrashOutcome(
             movedPairs: [],
             failedPaths: [],
             safetyRejected: rejections.map { ($0.path, $0.reason) },
-            missingPaths: []
+            missingPaths: [],
+            failureSummary: failureSummary
         )
         recordOutcome(outcome)
-        let firstReason = rejections.first?.reason
-            ?? ScanIncompleteTargetRejectionReason.invalidStrictRequest.rawValue
-        let err = String(
-            format: String(localized: "trash.err.safety_blocked_only %lld %@", bundle: .module),
-            paths.count,
-            firstReason
-        )
+        let err = failureSummary.legacyDiagnostic
         return PerformedMove(
             payload: ((0, paths.count, err, []), outcome),
             submissionDisposition: dryRun ? nil : .preSubmitRejected(
@@ -852,31 +854,21 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         if !rejected.isEmpty {
             let atomicSafetyRejectedTuples = rejected.map { ($0.path, $0.reason) }
             let firstReason = rejected[0].reason
+            let failureSummary = TrashFailureSummary.safetyBlocked(
+                count: paths.count,
+                firstReason: firstReason,
+                preview: dryRun
+            )
             let outcome = TrashOutcome(
                 movedPairs: [],
                 failedPaths: [],
                 safetyRejected: atomicSafetyRejectedTuples,
                 missingPaths: [],
-                vendorOverrideEligiblePaths: preflight.vendorOverrideEligiblePaths
+                vendorOverrideEligiblePaths: preflight.vendorOverrideEligiblePaths,
+                failureSummary: failureSummary
             )
             recordOutcome(outcome)
-
-            let err: String
-            if dryRun {
-                err = String(
-                    format: String(localized: "trash.err.dryrun.safety_blocked %lld", bundle: .module),
-                    paths.count
-                ) + String(
-                    format: String(localized: "trash.err.first_reason_suffix %@", bundle: .module),
-                    firstReason
-                )
-            } else {
-                err = String(
-                    format: String(localized: "trash.err.safety_blocked_only %lld %@", bundle: .module),
-                    paths.count,
-                    firstReason
-                )
-            }
+            let err = failureSummary.legacyDiagnostic
             GSYLog.warning(
                 .trash,
                 "moveToTrash 批级原子拒绝 submitted=\(paths.count) directRejected=\(rejected.count) firstReason=\(firstReason)"
@@ -931,17 +923,16 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             }
             let missing = missingPaths.count
             let skipped = missing
-            let err: String?
-            if missing > 0 {
-                err = String(format: String(localized: "trash.err.dryrun.missing %lld", bundle: .module), missing)
-            } else {
-                err = nil
-            }
+            let failureSummary = missing > 0
+                ? TrashFailureSummary.previewMissing(count: missing)
+                : nil
+            let err = failureSummary?.legacyDiagnostic
             GSYLog.info(.trash, "moveToTrash dryRun 完成 present=\(present) skipped=\(skipped) missing=\(missing)")
             let outcome = TrashOutcome(movedPairs: [],
                                        failedPaths: [],
                                        safetyRejected: [],
-                                       missingPaths: missingPaths)
+                                       missingPaths: missingPaths,
+                                       failureSummary: failureSummary)
             recordOutcome(outcome)
             return PerformedMove(
                 payload: ((present, skipped, err, []), outcome),
@@ -963,33 +954,28 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         let movedSet = Set(movedPairs.map { $0.0 })
         let failedPaths = allowed.filter { !movedSet.contains($0) }
         var failureReasons = recycleResult.failureReasons
-        let unknownFailure = String(localized: "trash.recycle.failure.unknown", bundle: .module)
+        let unknownFailure = TrashFailureSummary.unknownRecycleReasonKey
         for path in failedPaths where failureReasons[path] == nil {
             failureReasons[path] = unknownFailure
         }
 
+        let movedCount = movedPairs.count
+        let totalSkipped = failedPaths.count
+        let failureSummary = failedPaths.isEmpty
+            ? nil
+            : TrashFailureSummary.recycleFailed(
+                failedCount: failedPaths.count,
+                movedCount: movedCount,
+                firstPath: failedPaths.first
+            )
         let outcome = TrashOutcome(movedPairs: movedPairs,
                                    failedPaths: failedPaths,
                                    safetyRejected: [],
                                    missingPaths: [],
-                                   failureReasons: failureReasons)
+                                   failureReasons: failureReasons,
+                                   failureSummary: failureSummary)
         recordOutcome(outcome)
-
-        let movedCount = movedPairs.count
-        let totalSkipped = failedPaths.count
-        let err: String?
-        if !failedPaths.isEmpty {
-            let partialNote = movedCount > 0
-                ? String(format: String(localized: "trash.err.partial_note %lld", bundle: .module), movedCount)
-                : ""
-            let firstFail = failedPaths.first.map {
-                String(format: String(localized: "trash.err.first_fail_path %@", bundle: .module), $0)
-            } ?? ""
-            err = String(format: String(localized: "trash.err.recycle_failed %lld %@ %@", bundle: .module),
-                         failedPaths.count, partialNote, firstFail)
-        } else {
-            err = nil
-        }
+        let err = failureSummary?.legacyDiagnostic
         GSYLog.info(.trash, "moveToTrash 完成 moved=\(movedCount) failed=\(failedPaths.count) safetyRejected=\(rejected.count) totalSkipped=\(totalSkipped) pairs=\(movedPairs.count)")
         let payload: MovePayload = ((movedCount, totalSkipped, err, movedPairs), outcome)
         return PerformedMove(
@@ -1055,7 +1041,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 if singleAttempt.moved.isEmpty {
                     failureReasons[url.path] = singleAttempt.errorDescription
                         ?? batchAttempt.errorDescription
-                        ?? String(localized: "trash.recycle.failure.unknown", bundle: .module)
+                        ?? TrashFailureSummary.unknownRecycleReasonKey
                 }
             }
         }

@@ -579,11 +579,17 @@ final class RegressionRunner {
         assertEqual(record.fileCount, 1, "fileCount 字段")
 
         // 3) restoreRecord：把 trashed mv 回 original，record 自动从 history 移除
-        let restoreResult = await s2.restoreRecord(record, conflictPolicy: .skipExisting)
-        log("[REGR] case=\(caseID) restored=\(restoreResult.restoredCount) skipped=\(restoreResult.skippedCount) err=\(restoreResult.firstError ?? "-")")
+        // v2026.07.15：回归 runner 不承载用户界面语言；显式固定测试 locale，
+        // 避免验证结果受运行机器首选语言影响，同时跟随 UndoHistory 的实时本地化 API。
+        let restoreResult = await s2.restoreRecord(
+            record,
+            conflictPolicy: .skipExisting,
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+        log("[REGR] case=\(caseID) restored=\(restoreResult.restoredCount) skipped=\(restoreResult.skippedCount) failure=\(String(describing: restoreResult.firstFailure))")
         assertEqual(restoreResult.restoredCount, 1, "restored count")
         assertEqual(restoreResult.skippedCount, 0, "skipped count")
-        assertTrue(restoreResult.firstError == nil, "no error")
+        assertTrue(restoreResult.firstFailure == nil, "no failure")
         assertTrue(FileManager.default.fileExists(atPath: originalFile.path),
                    "文件已 mv 回原路径")
         assertTrue(!FileManager.default.fileExists(atPath: trashedFile.path),

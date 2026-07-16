@@ -21,6 +21,7 @@ struct DeletionPreflightNotice: Identifiable, Sendable, Equatable {
 struct DeletionPreflightNoticeSheet: View {
     let notice: DeletionPreflightNotice
     let onDismiss: () -> Void
+    @Environment(\.locale) private var locale
 
     var body: some View {
         VStack(spacing: 0) {
@@ -49,7 +50,10 @@ struct DeletionPreflightNoticeSheet: View {
                                 .font(.system(.caption, design: .monospaced))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
-                            Text(DeletionSafetyReasonPresentation.text(for: rejection.reason))
+                            Text(DeletionSafetyReasonPresentation.text(
+                                for: rejection.reason,
+                                locale: locale
+                            ))
                                 .font(.caption)
                                 .foregroundStyle(.orange)
                         }
@@ -69,7 +73,7 @@ struct DeletionPreflightNoticeSheet: View {
 
             HStack {
                 Spacer()
-                Button(String(localized: "main.delete.result.ok", bundle: .module)) {
+                Button(AppLocalization.string("main.delete.result.ok", locale: locale)) {
                     onDismiss()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -85,9 +89,10 @@ struct DeletionPreflightNoticeSheet: View {
 enum DeletionSafetyReasonPresentation {
     private static let genericKey = "op.result.reason.generic"
 
-    static func text(for raw: String) -> String {
+    /// v2026.07.15：raw reason 永远保持机器语义；用户文案只在当前 View locale 下投影。
+    static func text(for raw: String, locale: Locale) -> String {
         let key = localizationKey(for: raw)
-        return String(localized: String.LocalizationValue(key), bundle: .module)
+        return AppLocalization.string(key, locale: locale)
     }
 
     /// SafetyKit raw values are machine-readable identifiers, not a fuzzy text

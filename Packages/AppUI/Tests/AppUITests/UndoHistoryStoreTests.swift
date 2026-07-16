@@ -164,11 +164,15 @@ final class UndoHistoryStoreTests: XCTestCase {
         XCTAssertEqual(store.history.count, 1)
         let record = store.history[0]
 
-        let result = await store.restoreRecord(record, conflictPolicy: .skipExisting)
+        let result = await store.restoreRecord(
+            record,
+            conflictPolicy: .skipExisting,
+            locale: Locale(identifier: "en")
+        )
         XCTAssertEqual(result.restoredCount, 1)
         XCTAssertEqual(result.skippedCount, 0)
         XCTAssertEqual(result.renamedCount, 0)
-        XCTAssertNil(result.firstError)
+        XCTAssertNil(result.firstFailure)
         // 文件已 mv 回 original，trashed 不应再存在
         XCTAssertTrue(FileManager.default.fileExists(atPath: originalFile.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: trashedFile.path))
@@ -202,11 +206,15 @@ final class UndoHistoryStoreTests: XCTestCase {
         ])
         let record = try XCTUnwrap(store.history.first)
 
-        let result = await store.restoreRecord(record, conflictPolicy: .skipExisting)
+        let result = await store.restoreRecord(
+            record,
+            conflictPolicy: .skipExisting,
+            locale: Locale(identifier: "en")
+        )
 
         XCTAssertEqual(result.restoredCount, 1)
         XCTAssertEqual(result.skippedCount, 1)
-        XCTAssertNotNil(result.firstError)
+        XCTAssertNotNil(result.firstFailure)
         XCTAssertTrue(FileManager.default.fileExists(atPath: okOriginal.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: blockedTrashed.path))
         XCTAssertEqual(store.history.count, 1, "partial 失败后不能整条移除，否则剩余文件失去恢复入口")
@@ -260,12 +268,16 @@ final class UndoHistoryStoreTests: XCTestCase {
         ])
         let record = try XCTUnwrap(store.history.first)
 
-        let result = await store.restoreRecord(record, conflictPolicy: .skipExisting)
+        let result = await store.restoreRecord(
+            record,
+            conflictPolicy: .skipExisting,
+            locale: Locale(identifier: "en")
+        )
 
         XCTAssertEqual(result.restoredCount, 0)
         XCTAssertEqual(result.skippedCount, 1)
         XCTAssertEqual(result.renamedCount, 0)
-        XCTAssertNotNil(result.firstError, "跳过冲突必须给用户可见原因")
+        XCTAssertNotNil(result.firstFailure, "跳过冲突必须给用户可见原因")
         XCTAssertEqual(try String(contentsOf: original, encoding: .utf8), "current")
         XCTAssertEqual(try String(contentsOf: trashed, encoding: .utf8), "older")
         XCTAssertEqual(store.history.first?.filePairs, record.filePairs,
@@ -290,12 +302,16 @@ final class UndoHistoryStoreTests: XCTestCase {
         ])
         let record = try XCTUnwrap(store.history.first)
 
-        let result = await store.restoreRecord(record, conflictPolicy: .restoreWithUniqueName)
+        let result = await store.restoreRecord(
+            record,
+            conflictPolicy: .restoreWithUniqueName,
+            locale: Locale(identifier: "en")
+        )
 
         XCTAssertEqual(result.restoredCount, 1)
         XCTAssertEqual(result.skippedCount, 0)
         XCTAssertEqual(result.renamedCount, 1)
-        XCTAssertNil(result.firstError)
+        XCTAssertNil(result.firstFailure)
         XCTAssertEqual(try String(contentsOf: original, encoding: .utf8), "current",
                        "恢复冲突绝不能覆盖或移动用户后来创建的文件")
         XCTAssertFalse(FileManager.default.fileExists(atPath: trashed.path))

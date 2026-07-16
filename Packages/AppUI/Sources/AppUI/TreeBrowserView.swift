@@ -979,6 +979,80 @@ public struct TreeBrowserView: View {
     }
 }
 
+/// v2026.07.15：Tree 主浏览界面的运行期本地化投影边界。
+///
+/// AppKit 自绘行、右键菜单和 tooltip 都必须先得到 `String`，无法依赖 SwiftUI
+/// 的 `Text` 在环境 locale 变化时重新解析。把这些投影统一收口后，切换语言只会
+/// 重绘当前表格，不会重扫目录，也不会继续沿用进程启动语言。
+enum TreeBrowserLiveLocalization {
+    static func metricPresentation(row: TreeRow, locale: Locale) -> TreeMetricPresentation {
+        let localization: TreeMetricPresentation.Localization?
+        if row.accessState == .normal,
+           !row.isSizePending,
+           row.subtreeCompleteness == .containsIncompleteDescendant {
+            localization = .init(
+                lowerBoundFormat: AppLocalization.string("tree.metric.lower_bound", locale: locale),
+                partialStatus: AppLocalization.string("tree.subtree.partial.badge", locale: locale),
+                partialHelpFormat: AppLocalization.string("tree.subtree.partial.help", locale: locale)
+            )
+        } else {
+            // Exact/pending/unavailable rows do not consume localized metric templates.
+            localization = nil
+        }
+        return TreeMetricPresentation(row: row, locale: locale, localization: localization)
+    }
+
+    static func accessHelp(for row: TreeRow, locale: Locale) -> String? {
+        let key: String
+        switch row.accessState {
+        case .normal:
+            return nil
+        case .permissionDenied:
+            key = "tree.access.permission_denied"
+        case .tccProtected:
+            key = "tree.access.tcc_protected"
+        case .incomplete:
+            key = "tree.access.incomplete"
+        }
+        return AppLocalization.format(key, locale: locale, arguments: [row.path])
+    }
+
+    static func mtimeDisplay(
+        _ date: Date?,
+        denied: Bool,
+        locale: Locale,
+        now: Date = Date()
+    ) -> String {
+        if denied { return "—" }
+        guard let date else { return "·" }
+        let calendar = Calendar.current
+        if calendar.isDate(date, equalTo: now, toGranularity: .year) {
+            return date.formatted(
+                Date.FormatStyle()
+                    .month(.twoDigits)
+                    .day(.twoDigits)
+                    .locale(locale)
+            )
+        }
+        return date.formatted(
+            Date.FormatStyle()
+                .year(.defaultDigits)
+                .month(.twoDigits)
+                .day(.twoDigits)
+                .locale(locale)
+        )
+    }
+
+    static func mtimeFullHelp(_ date: Date?, locale: Locale) -> String {
+        guard let date else {
+            return AppLocalization.string("tree.column.mtime.aggregate_help", locale: locale)
+        }
+        return date.formatted(
+            Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale)
+        )
+    }
+}
+
 private struct AppKitFlatTreeTable: NSViewRepresentable {
     let rows: [FlatTreeRow]
     let maxBytes: Int64
@@ -1301,7 +1375,8 @@ private final class TreeTableRowCanvas: NSView {
     private let inlineProgress = NSProgressIndicator()
     private var flat: FlatTreeRow?
     private var maxBytes: Int64 = 0
-    private var locale = Locale.current
+    /// `configure` 在首帧绘制前总会覆盖；固定占位值避免误用进程级 locale。
+    private var locale = Locale(identifier: "en")
     private var isExpanded = false
     private var isSelected = false
     private var isStashed = false
@@ -1358,8 +1433,10 @@ private final class TreeTableRowCanvas: NSView {
         self.hasAI = hasAI
         self.aiReady = aiReady
         self.actions = actions
-        let metrics = TreeMetricPresentation(row: flat.row, locale: locale)
-        if let helpText = metrics.helpText {
+        let metrics = TreeBrowserLiveLocalization.metricPresentation(row: flat.row, locale: locale)
+        if let accessHelp = TreeBrowserLiveLocalization.accessHelp(for: flat.row, locale: locale) {
+            toolTip = accessHelp
+        } else if let helpText = metrics.helpText {
             toolTip = flat.row.path + "\n\n" + helpText
         } else {
             toolTip = flat.row.path
@@ -1425,10 +1502,12 @@ private final class TreeTableRowCanvas: NSView {
                 allowsVendorPathOverride: allowsVendorPathOverride
             )
             let item = ClosureMenuItem(
-                title: String(localized: requiresOverride
-                              ? "delete.vendor_override.action"
-                              : (isTrashable(flat) ? "tree.menu.trash" : "tree.menu.trash_forbidden"),
-                              bundle: .module),
+                title: AppLocalization.string(
+                    requiresOverride
+                        ? "delete.vendor_override.action"
+                        : (isTrashable(flat) ? "tree.menu.trash" : "tree.menu.trash_forbidden"),
+                    locale: locale
+                ),
                 action: { if self.isTrashable(flat) { actions.trash() } }
             )
             item.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
@@ -1437,8 +1516,10 @@ private final class TreeTableRowCanvas: NSView {
         }
         if hasStash {
             let item = ClosureMenuItem(
-                title: String(localized: isStashed ? "tree.menu.stash_already" : "tree.menu.stash",
-                              bundle: .module),
+                title: AppLocalization.string(
+                    isStashed ? "tree.menu.stash_already" : "tree.menu.stash",
+                    locale: locale
+                ),
                 action: { if !self.isStashed { actions.stash() } }
             )
             item.image = NSImage(systemSymbolName: isStashed ? "tray.full.fill" : "tray.and.arrow.down",
@@ -1449,7 +1530,7 @@ private final class TreeTableRowCanvas: NSView {
         if hasTrash || hasStash { menu.addItem(.separator()) }
         if hasAI {
             let item = ClosureMenuItem(
-                title: String(localized: "tree.menu.ask_ai", bundle: .module),
+                title: AppLocalization.string("tree.menu.ask_ai", locale: locale),
                 action: actions.askAI
             )
             item.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)
@@ -1457,13 +1538,13 @@ private final class TreeTableRowCanvas: NSView {
             menu.addItem(.separator())
         }
         let quickLook = ClosureMenuItem(
-            title: String(localized: "tree.menu.quick_look", bundle: .module),
+            title: AppLocalization.string("tree.menu.quick_look", locale: locale),
             action: { QuickLookController.shared.preview(urls: [URL(fileURLWithPath: row.path)]) }
         )
         quickLook.image = NSImage(systemSymbolName: "eye", accessibilityDescription: nil)
         menu.addItem(quickLook)
         let reveal = ClosureMenuItem(
-            title: String(localized: "tree.menu.reveal_in_finder", bundle: .module),
+            title: AppLocalization.string("tree.menu.reveal_in_finder", locale: locale),
             action: { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: row.path)]) }
         )
         reveal.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
@@ -1471,7 +1552,7 @@ private final class TreeTableRowCanvas: NSView {
         menu.addItem(.separator())
         if row.isDirectory {
             let refresh = ClosureMenuItem(
-                title: String(localized: "tree.menu.refresh", bundle: .module),
+                title: AppLocalization.string("tree.menu.refresh", locale: locale),
                 action: {
                     GSYLog.notice(.operation, "tree.menu.refresh path=\(row.path)")
                     actions.refresh()
@@ -1482,8 +1563,10 @@ private final class TreeTableRowCanvas: NSView {
         }
         if canExpand(flat) {
             let disclose = ClosureMenuItem(
-                title: String(localized: isExpanded ? "tree.disclose.collapse" : "tree.disclose.expand",
-                              bundle: .module),
+                title: AppLocalization.string(
+                    isExpanded ? "tree.disclose.collapse" : "tree.disclose.expand",
+                    locale: locale
+                ),
                 action: actions.toggle
             )
             disclose.image = NSImage(systemSymbolName: isExpanded ? "chevron.down" : "chevron.right",
@@ -1492,13 +1575,13 @@ private final class TreeTableRowCanvas: NSView {
         }
         menu.addItem(.separator())
         let copyPath = ClosureMenuItem(
-            title: String(localized: "tree.menu.copy_path", bundle: .module),
+            title: AppLocalization.string("tree.menu.copy_path", locale: locale),
             action: { Self.copy(row.path) }
         )
         copyPath.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
         menu.addItem(copyPath)
         let copyName = ClosureMenuItem(
-            title: String(localized: "tree.menu.copy_name", bundle: .module),
+            title: AppLocalization.string("tree.menu.copy_name", locale: locale),
             action: { Self.copy((row.path as NSString).lastPathComponent) }
         )
         copyName.image = NSImage(systemSymbolName: "textformat", accessibilityDescription: nil)
@@ -1510,7 +1593,7 @@ private final class TreeTableRowCanvas: NSView {
         let x = TreeTableMetrics.leftPadding
             + CGFloat(flat.depth) * TreeTableMetrics.indentation
             + TreeTableMetrics.chevronWidth
-        drawText(String(localized: "tree.loading.children", bundle: .module),
+        drawText(AppLocalization.string("tree.loading.children", locale: locale),
                  in: CGRect(x: x, y: 5, width: bounds.width - x - 8, height: 18),
                  font: .systemFont(ofSize: NSFont.systemFontSize),
                  color: .secondaryLabelColor)
@@ -1518,7 +1601,7 @@ private final class TreeTableRowCanvas: NSView {
 
     private func drawRow(_ flat: FlatTreeRow) {
         let row = flat.row
-        let metrics = TreeMetricPresentation(row: row, locale: locale)
+        let metrics = TreeBrowserLiveLocalization.metricPresentation(row: row, locale: locale)
         let denied = row.accessState != .normal
         let chevronRect = disclosureRect(for: flat)
         if canExpand(flat) {
@@ -1577,7 +1660,11 @@ private final class TreeTableRowCanvas: NSView {
                  font: .monospacedSystemFont(ofSize: 13.5, weight: .regular),
                  color: .tertiaryLabelColor,
                  alignment: .right)
-        drawText(TreeBrowserRow.mtimeDisplay(row.modificationDate, denied: denied),
+        drawText(TreeBrowserLiveLocalization.mtimeDisplay(
+                    row.modificationDate,
+                    denied: denied,
+                    locale: locale
+                 ),
                  in: CGRect(x: mtimeX, y: 6, width: TreeTableMetrics.mtimeWidth - 8, height: 17),
                  font: .monospacedSystemFont(ofSize: 13.5, weight: .regular),
                  color: .tertiaryLabelColor,
@@ -1836,19 +1923,20 @@ private final class ClosureMenuItem: NSMenuItem {
 /// 的 mtime 单元宽度对齐。点击切 desc/asc，与 size/name/count 一致。
 struct TreeColumnHeader: View {
     @Binding var sortKey: TreeSortKey
+    @Environment(\.locale) private var locale
 
     var body: some View {
         HStack(spacing: 10) {
             // 与 TreeBrowserRow 的 icon + 三角占位对齐：22（三角 hit area）+ 6（间距）+ 16（icon）= 44
             Spacer().frame(width: 44)
-            headerButton(label: String(localized: "tree.column.name", bundle: .module), column: .name)
+            headerButton(key: "tree.column.name", column: .name)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            headerButton(label: String(localized: "tree.column.size", bundle: .module), column: .size)
+            headerButton(key: "tree.column.size", column: .size)
                 .frame(width: 90, alignment: .trailing)
-            headerButton(label: String(localized: "tree.column.count", bundle: .module), column: .count)
+            headerButton(key: "tree.column.count", column: .count)
                 .frame(width: 56, alignment: .trailing)
             // v1.5.4：mtime 列。98pt 给"yyyy-MM-dd"或"3 天前"宽度足够。
-            headerButton(label: String(localized: "tree.column.mtime", bundle: .module), column: .mtime)
+            headerButton(key: "tree.column.mtime", column: .mtime)
                 .frame(width: 98, alignment: .trailing)
             // v2026.06.21 反馈修复：之前 mtime 与按钮列贴边，视觉上像"挤在一起"。
             // 加一个 12pt gap，让 mtime 文案与「操作」列有清晰的视觉分隔。
@@ -1869,7 +1957,8 @@ struct TreeColumnHeader: View {
     }
 
     @ViewBuilder
-    private func headerButton(label: String, column: TreeSortKey.Column) -> some View {
+    private func headerButton(key: String, column: TreeSortKey.Column) -> some View {
+        let label = AppLocalization.string(key, locale: locale)
         Button {
             sortKey = sortKey.toggled(to: column)
         } label: {
@@ -1885,7 +1974,7 @@ struct TreeColumnHeader: View {
             }
         }
         .buttonStyle(.plain)
-        .help(String(format: String(localized: "tree.column.sort_help", bundle: .module), label))
+        .help(AppLocalization.format("tree.column.sort_help", locale: locale, arguments: [label]))
     }
 }
 
@@ -1965,6 +2054,7 @@ struct TreeNodeRow: View {
     let aiSettings: AISettings?
     /// v2026.06.20 AI 入口回调。给 nil 时按钮不出现；给值后未配置 → disabled + 提示去设置。
     let onAskAI: ((TreeRow) -> Void)?
+    @Environment(\.locale) private var locale
 
     private var row: TreeRow { flat.row }
     private var indent: CGFloat { CGFloat(flat.depth) * 16 }
@@ -2006,8 +2096,8 @@ struct TreeNodeRow: View {
                     }
                     .buttonStyle(.plain)
                     .help(isExpanded
-                          ? String(localized: "tree.disclose.collapse", bundle: .module)
-                          : String(localized: "tree.disclose.expand", bundle: .module))
+                          ? AppLocalization.string("tree.disclose.collapse", locale: locale)
+                          : AppLocalization.string("tree.disclose.expand", locale: locale))
                 } else {
                     Spacer().frame(width: 22, height: 22)
                 }
@@ -2049,8 +2139,8 @@ struct TreeNodeRow: View {
                 .buttonStyle(.plain)
                 .disabled(isStashed)
                 .help(isStashed
-                      ? String(localized: "tree.row.stash.already", bundle: .module)
-                      : String(localized: "tree.row.stash", bundle: .module))
+                      ? AppLocalization.string("tree.row.stash.already", locale: locale)
+                      : AppLocalization.string("tree.row.stash", locale: locale))
             }
             // **v1.5.3**：行内 trash 按钮——单击 = 立刻调 onTrash（已经过外层二次确认 wrapper）。
             if let onTrash {
@@ -2068,8 +2158,8 @@ struct TreeNodeRow: View {
                 .buttonStyle(.plain)
                 .disabled(!isTrashable)
                 .help(isTrashable
-                      ? String(localized: "tree.row.trash", bundle: .module)
-                      : String(localized: "tree.row.trash.locked", bundle: .module))
+                      ? AppLocalization.string("tree.row.trash", locale: locale)
+                      : AppLocalization.string("tree.row.trash.locked", locale: locale))
             }
         }
         .padding(.horizontal, 4)
@@ -2295,8 +2385,8 @@ struct TreeNodeRow: View {
             }
             .buttonStyle(.plain)
             .help(aiReady
-                  ? String(localized: "tree.row.ai", bundle: .module)
-                  : String(localized: "tree.row.ai.not_configured", bundle: .module))
+                  ? AppLocalization.string("tree.row.ai", locale: locale)
+                  : AppLocalization.string("tree.row.ai.not_configured", locale: locale))
         }
     }
 }
@@ -2328,15 +2418,7 @@ struct TreeBrowserRow: View {
     /// 文案分两档：tccProtected 是用户层"sandbox 整段拒"，
     /// permissionDenied 是运行时 open 失败；都建议用户去开 FDA 但措辞不同。
     private var deniedHelp: String {
-        switch row.accessState {
-        case .normal: return row.path
-        case .permissionDenied:
-            return String(format: String(localized: "tree.access.permission_denied", bundle: .module), row.path)
-        case .tccProtected:
-            return String(format: String(localized: "tree.access.tcc_protected", bundle: .module), row.path)
-        case .incomplete:
-            return String(format: String(localized: "tree.access.incomplete", bundle: .module), row.path)
-        }
+        TreeBrowserLiveLocalization.accessHelp(for: row, locale: locale) ?? row.path
     }
 
     private func rowHelp(for metrics: TreeMetricPresentation) -> String {
@@ -2346,7 +2428,7 @@ struct TreeBrowserRow: View {
     }
 
     var body: some View {
-        let metrics = TreeMetricPresentation(row: row, locale: locale)
+        let metrics = TreeBrowserLiveLocalization.metricPresentation(row: row, locale: locale)
         HStack(spacing: 10) {
             // 图标 + 锁定叠加徽章（仅 accessDenied 时显示）
             ZStack(alignment: .bottomTrailing) {
@@ -2409,11 +2491,15 @@ struct TreeBrowserRow: View {
                 .frame(width: 56, alignment: .trailing)
             // v1.5.4：mtime 列——与 LargeFilesView 文案风格一致，省"x天前"等本地化偏差。
             // accessDenied 行直接画"—"避免误导；mtime 缺失（极早期 publish 帧或 root 顶层）也画"—"。
-            Text(TreeBrowserRow.mtimeDisplay(row.modificationDate, denied: isAccessDenied))
+            Text(TreeBrowserRow.mtimeDisplay(
+                row.modificationDate,
+                denied: isAccessDenied,
+                locale: locale
+            ))
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.tertiary)
                 .frame(width: 98, alignment: .trailing)
-                .help(TreeBrowserRow.mtimeFullHelp(row.modificationDate))
+                .help(TreeBrowserRow.mtimeFullHelp(row.modificationDate, locale: locale))
         }
         .padding(.vertical, 2)
         .opacity(isAccessDenied ? 0.7 : 1.0)
@@ -2429,47 +2515,13 @@ struct TreeBrowserRow: View {
     /// - 当年 → "MM-dd"
     /// - 跨年 → "yyyy-MM-dd"
     /// 用 cached formatter 避免每行重新建（SwiftUI body 高频重算）。
-    static func mtimeDisplay(_ date: Date?, denied: Bool) -> String {
-        if denied { return "—" }
-        guard let date else { return "·" }
-        let cal = Calendar.current
-        if cal.isDate(date, equalTo: Date(), toGranularity: .year) {
-            return Self.shortFormatter.string(from: date)
-        }
-        return Self.fullFormatter.string(from: date)
+    static func mtimeDisplay(_ date: Date?, denied: Bool, locale: Locale) -> String {
+        TreeBrowserLiveLocalization.mtimeDisplay(date, denied: denied, locale: locale)
     }
 
     /// 鼠标悬停时显示完整时间——窄列里的省略不丢精度。
     /// v2026.06.18：mtime 缺失时给出明确的解释，避免被误解为"bug 没读到"。
-    static func mtimeFullHelp(_ date: Date?) -> String {
-        guard let date = date else {
-            return String(localized: "tree.column.mtime.aggregate_help", bundle: .module)
-        }
-        return Self.fullDateTimeFormatter.string(from: date)
+    static func mtimeFullHelp(_ date: Date?, locale: Locale) -> String {
+        TreeBrowserLiveLocalization.mtimeFullHelp(date, locale: locale)
     }
-
-    /// 列内默认值：MM-dd（同年）。
-    private static let shortFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MM-dd"
-        f.locale = Locale.current
-        return f
-    }()
-
-    /// 列内：跨年改 yyyy-MM-dd。
-    private static let fullFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd"
-        f.locale = Locale.current
-        return f
-    }()
-
-    /// help/tooltip：完整本地化日期+时间。
-    private static let fullDateTimeFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateStyle = .medium
-        f.timeStyle = .short
-        f.locale = Locale.current
-        return f
-    }()
 }

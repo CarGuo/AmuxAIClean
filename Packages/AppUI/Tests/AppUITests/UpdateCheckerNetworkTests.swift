@@ -88,10 +88,11 @@ final class UpdateCheckerNetworkTests: XCTestCase {
         let checker = UpdateChecker(session: makeSession())
         checker.checkNow()
         await waitForResult(checker)
-        guard case .failed(let msg) = checker.lastResult else {
+        guard case .failed(let failure) = checker.lastResult else {
             XCTFail("HTTP 401 应该走 .failed，实际 lastResult=\(String(describing: checker.lastResult))")
             return
         }
+        let msg = failure.message(locale: Locale(identifier: "en"))
         XCTAssertTrue(msg.contains("401"),
             "failed 文案应携带状态码 401，便于设置面板诊断；实际 = \(msg)")
         XCTAssertNil(checker.availableUpdate, "401 不能弹更新对话框")

@@ -21,7 +21,7 @@ import Foundation
 /// 4. **risk 等级**：5 张缓存卡均为 `.safe`（删后包管理器自动重建），
 ///    scattered 卡为 `.confirm`（删除散落 node_modules 后需重新 `pnpm install`）。
 ///
-/// 删除通道统一为 `.filesystem`（回收站），不引入 `.commandLine`，因此所有卡片均无 allowlist 校验风险。
+/// 删除通道统一为 `.filesystem`（回收站），不引入 `.managedUninstall`。
 public struct WebNodeWorkflow: DeveloperWorkflow {
     public let id: String = "workflow.web-node"
     /// i18n key —— UI 层用 `Text(LocalizedStringKey(...), bundle: .module)` 渲染。

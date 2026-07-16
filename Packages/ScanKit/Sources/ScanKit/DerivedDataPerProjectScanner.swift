@@ -11,10 +11,9 @@ import LogKit
 /// - 与既有 [KnownVersionedRoots]（整目录粒度）互补：前者负责"DerivedData 这一级"，
 ///   本扫描器下钻一层，给 UI 渲染「按工程的 DerivedData 占用列表」。
 ///
-/// 与 [SimctlRuntimeScanner] 的关系：
-/// - 同样采用「`static detect(home:)` 同步入口 + `actor discover()` 异步入口」双形态；
-/// - `estimateSize(at:)` 实现风格完全对齐 [SimctlRuntimeScanner.estimateSize]——
-///   `FileManager.enumerator` 遍历，优先 `totalFileAllocatedSize`，回退 `fileAllocatedSize`。
+/// 与其他专用扫描器一样，采用「`static detect(home:)` 同步入口 +
+/// `actor discover()` 异步入口」双形态。`estimateSize(at:)` 用 `FileManager.enumerator`
+/// 遍历，优先 `totalFileAllocatedSize`，回退 `fileAllocatedSize`。
 ///
 /// 完整性红线：
 /// - DerivedData 根不存在 / 不是目录 → 完整空结果；
@@ -225,7 +224,7 @@ public actor DerivedDataPerProjectScanner {
         return prefix.isEmpty ? folderName : String(prefix)
     }
 
-    // MARK: - sizeBytes 估算（对位 SimctlRuntimeScanner.estimateSize 风格）
+    // MARK: - sizeBytes 估算
 
     /// 遍历目录累加 totalFileAllocatedSize，回退 fileAllocatedSize。
     ///

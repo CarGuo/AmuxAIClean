@@ -17,6 +17,7 @@ import LogKit
 /// - 这里**只展示**，不改任何 RowItem.selected 状态；
 /// - 即便 AI 说 "safe"，UI 也不会自动勾上——本地三档闸是唯一勾选权威。
 struct AIAdviceSheet: View {
+    @Environment(\.locale) private var locale
 
     let row: RowItem
     let aiSettings: AISettings
@@ -28,7 +29,53 @@ struct AIAdviceSheet: View {
         case idle
         case loading
         case success(AIAdvice)
-        case failure(String)
+        case failure(FailurePresentation)
+    }
+
+    /// v2026.07.15：请求失败可能在 sheet 内停留很久；状态只保存错误种类与原始参数，
+    /// 不保存启动语言下翻译出的 String。文件、服务响应与底层错误原文保持 verbatim。
+    enum FailurePresentation: Equatable, Sendable {
+        case notConfigured
+        case invalidBaseURL
+        case insecureBaseURL(scheme: String, host: String)
+        case missingAPIKey
+        case keychain(KeychainUserFacingError.Presentation)
+        case http(status: Int, body: String)
+        case transport(String)
+        case raw(String)
+
+        func localizedMessage(locale: Locale) -> String {
+            switch self {
+            case .notConfigured:
+                return AppLocalization.string("ai.sheet.error.not_configured", locale: locale)
+            case .invalidBaseURL:
+                return AppLocalization.string("ai.sheet.error.invalid_base_url", locale: locale)
+            case .insecureBaseURL(let scheme, let host):
+                return AppLocalization.format(
+                    "ai.sheet.error.insecure_base_url.format",
+                    locale: locale,
+                    arguments: [scheme, host]
+                )
+            case .missingAPIKey:
+                return AppLocalization.string("ai.sheet.error.no_api_key", locale: locale)
+            case .keychain(let presentation):
+                return presentation.localizedMessage(locale: locale)
+            case .http(let status, let body):
+                return AppLocalization.format(
+                    "ai.sheet.error.http.format",
+                    locale: locale,
+                    arguments: [Int64(status), body]
+                )
+            case .transport(let message):
+                return AppLocalization.format(
+                    "ai.sheet.error.transport.format",
+                    locale: locale,
+                    arguments: [message]
+                )
+            case .raw(let message):
+                return message
+            }
+        }
     }
 
     var body: some View {
@@ -142,7 +189,7 @@ struct AIAdviceSheet: View {
                     .padding(.top, 4)
             }
 
-        case .failure(let msg):
+        case .failure(let failure):
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -150,7 +197,7 @@ struct AIAdviceSheet: View {
                     Text("ai.sheet.failed.title", bundle: .module)
                         .font(.headline)
                 }
-                Text(msg)
+                Text(verbatim: failure.localizedMessage(locale: locale))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -185,7 +232,10 @@ struct AIAdviceSheet: View {
         let prefix = AIAdviceClamp.localPolicyOverridePrefix
         guard reason.hasPrefix(prefix) else { return reason }
         let tail = String(reason.dropFirst(prefix.count))
-        let localizedPrefix = String(localized: "ai.advice.local_policy_override.prefix", bundle: .module)
+        let localizedPrefix = AppLocalization.string(
+            "ai.advice.local_policy_override.prefix",
+            locale: locale
+        )
         return localizedPrefix + tail
     }
 
@@ -196,7 +246,7 @@ struct AIAdviceSheet: View {
         if case .success = state { return }
         state = .loading
         guard aiSettings.isReadyForUI else {
-            state = .failure(String(localized: "ai.sheet.error.not_configured", bundle: .module))
+            state = .failure(.notConfigured)
             return
         }
         // 异步：抓 API Key + 拼 inquiry + 发请求
@@ -210,21 +260,20 @@ struct AIAdviceSheet: View {
         do {
             authOptional = try OpenAIChatClient.allowsMissingAPIKey(baseURL: snapshot.baseURL)
         } catch OpenAIChatClient.Error.invalidBaseURL {
-            state = .failure(String(localized: "ai.sheet.error.invalid_base_url", bundle: .module))
+            state = .failure(.invalidBaseURL)
             return
         } catch OpenAIChatClient.Error.insecureBaseURL(let scheme, let host) {
-            state = .failure(String(format: String(localized: "ai.sheet.error.insecure_base_url.format", bundle: .module),
-                                    scheme, host))
+            state = .failure(.insecureBaseURL(scheme: scheme, host: host))
             return
         } catch {
-            state = .failure(String(describing: error))
+            state = .failure(.raw(String(describing: error)))
             return
         }
         let apiKey: String
         do {
             let raw = try await KeychainAPIKeyStore.shared.load() ?? ""
             guard !raw.isEmpty || authOptional else {
-                state = .failure(String(localized: "ai.sheet.error.no_api_key", bundle: .module))
+                state = .failure(.missingAPIKey)
                 return
             }
             apiKey = raw
@@ -232,7 +281,7 @@ struct AIAdviceSheet: View {
             if authOptional {
                 apiKey = ""
             } else {
-                state = .failure(KeychainUserFacingError.message(for: error))
+                state = .failure(.keychain(KeychainUserFacingError.presentation(for: error)))
                 return
             }
         }
@@ -266,19 +315,17 @@ struct AIAdviceSheet: View {
             // 抛出前经 PathRedactor.redact 去敏，这里只用作 UI 展示，**不再二次 log body**——
             // 避免把脱敏前/后的内容都落到日志里增加泄漏面。OpenAIChatClient 已经 log 了
             // status + body length，已足以排障。
-            state = .failure(String(format: String(localized: "ai.sheet.error.http.format", bundle: .module),
-                                    status, body.prefix(160).description))
+            state = .failure(.http(status: status, body: body.prefix(160).description))
         } catch let OpenAIChatClient.Error.transport(msg) {
-            state = .failure(String(format: String(localized: "ai.sheet.error.transport.format", bundle: .module), msg))
+            state = .failure(.transport(msg))
         } catch OpenAIChatClient.Error.missingAPIKey {
-            state = .failure(String(localized: "ai.sheet.error.no_api_key", bundle: .module))
+            state = .failure(.missingAPIKey)
         } catch OpenAIChatClient.Error.invalidBaseURL {
-            state = .failure(String(localized: "ai.sheet.error.invalid_base_url", bundle: .module))
+            state = .failure(.invalidBaseURL)
         } catch OpenAIChatClient.Error.insecureBaseURL(let scheme, let host) {
-            state = .failure(String(format: String(localized: "ai.sheet.error.insecure_base_url.format", bundle: .module),
-                                    scheme, host))
+            state = .failure(.insecureBaseURL(scheme: scheme, host: host))
         } catch {
-            state = .failure(String(describing: error))
+            state = .failure(.raw(String(describing: error)))
         }
     }
 
@@ -301,9 +348,9 @@ struct AIAdviceSheet: View {
 
     private func verdictLabel(_ v: SafetyVerdict) -> String {
         switch v {
-        case .safe: return String(localized: "ai.sheet.verdict.safe", bundle: .module)
-        case .confirm: return String(localized: "ai.sheet.verdict.confirm", bundle: .module)
-        case .forbid: return String(localized: "ai.sheet.verdict.forbid", bundle: .module)
+        case .safe: return AppLocalization.string("ai.sheet.verdict.safe", locale: locale)
+        case .confirm: return AppLocalization.string("ai.sheet.verdict.confirm", locale: locale)
+        case .forbid: return AppLocalization.string("ai.sheet.verdict.forbid", locale: locale)
         }
     }
 }

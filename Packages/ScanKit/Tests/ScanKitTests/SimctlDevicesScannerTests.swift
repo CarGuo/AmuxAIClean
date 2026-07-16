@@ -5,9 +5,8 @@ import XCTest
 ///
 /// 关注两条入口（与 [SimctlRuntimeScannerTests] 同构）：
 /// 1. `static detect(from:)` —— 纯解析，覆盖空 / 合法多 runtime / 缺字段 / 非法 各情形；
-/// 2. `actor discover()` —— 走 SubprocessExecutor：
-///    - allowlist 拒绝（模拟 simctl 不可用）→ throw 被吞、返回 []；
-///    - dryRun 模式 → 走 dryRun 闸门、不真起子进程、输出非合法 JSON → 返回 []。
+/// 2. `actor discover()` —— 走 SubprocessExecutor；任何命令/JSON 失败必须抛 typed error，
+///    只有合法 `devices: {}` 才代表完整空清单。
 final class SimctlDevicesScannerTests: XCTestCase {
 
     // MARK: - detect 纯解析
@@ -106,18 +105,20 @@ final class SimctlDevicesScannerTests: XCTestCase {
 
     // MARK: - discover (actor)
 
-    func test_discover_当simctl不可用时_返回空数组() async throws {
-        // 用空 allowlist 模拟 "xcrun 不在允许列表"——SubprocessExecutor 会 throw notAllowed，
-        // discover 必须吞掉异常并返回 []（对位 macOS 没装 Xcode 的真实场景：
-        // exitCode != 0 / launch 失败，都不该让错误冒泡污染 Apple 卡片）。
+    func test_discover_当simctl命令被拒绝时_抛typedError() async {
         let executor = SubprocessExecutor(allowlist: [], dryRun: true)
         let scanner = SimctlDevicesScanner(executor: executor)
-        let devices = try await scanner.discover()
-        XCTAssertEqual(devices.count, 0,
-                       "simctl 不可用（allowlist 拒绝）时 discover 应返回空数组、不抛")
+        do {
+            _ = try await scanner.discover()
+            XCTFail("allowlist 拒绝不能伪装成空设备清单")
+        } catch let error as SimctlDiscoveryError {
+            XCTAssertEqual(error, .commandRejected(query: .devices))
+        } catch {
+            XCTFail("应抛 SimctlDiscoveryError，实际：\(error)")
+        }
     }
 
-    func test_discover_dryRun模式不真执行子进程() async throws {
+    func test_discover_dryRun模式不真执行且非法payload抛typedError() async {
         // 通过 timeout=0.01 + dryRun=true 验证：
         // - 若真起了 /usr/bin/xcrun 子进程，0.01s 必定 timeout（exitCode = -2），
         //   但 dryRun 闸门保证压根不进入 Process()，所以 discover 应在毫秒内返回；
@@ -127,11 +128,53 @@ final class SimctlDevicesScannerTests: XCTestCase {
         let scanner = SimctlDevicesScanner(executor: executor)
 
         let start = Date()
-        let devices = try await scanner.discover()
+        do {
+            _ = try await scanner.discover()
+            XCTFail("dryRun 文本不是合法 JSON，不能解释为完整空清单")
+        } catch let error as SimctlDiscoveryError {
+            XCTAssertEqual(error, .invalidPayload(query: .devices))
+        } catch {
+            XCTFail("应抛 SimctlDiscoveryError，实际：\(error)")
+        }
         let elapsed = Date().timeIntervalSince(start)
 
-        XCTAssertEqual(devices.count, 0, "dryRun 输出非合法 JSON，应兜底为空")
         XCTAssertLessThan(elapsed, 1.0,
                           "dryRun 不应真起 Process；若起了子进程会被 0.01s timeout 拖到秒级")
+    }
+
+    func test_decode_合法空devices才返回完整空清单() throws {
+        XCTAssertEqual(try SimctlDevicesScanner.decode(from: #"{"devices":{}}"#), [])
+    }
+
+    func test_decode_非法JSON与缺字段抛invalidPayload() {
+        for payload in ["not-json", #"{"runtimes":[]}"#, #"{"devices":"oops"}"#] {
+            XCTAssertThrowsError(try SimctlDevicesScanner.decode(from: payload)) { error in
+                XCTAssertEqual(error as? SimctlDiscoveryError, .invalidPayload(query: .devices))
+            }
+        }
+    }
+
+    func test_subprocess失败码_映射为不同typedDiscoveryError() {
+        XCTAssertEqual(
+            SimctlDiscoveryError.commandFailure(
+                for: .init(exitCode: -1, output: "launch"),
+                query: .devices
+            ),
+            .launchFailed(query: .devices)
+        )
+        XCTAssertEqual(
+            SimctlDiscoveryError.commandFailure(
+                for: .init(exitCode: -2, output: "timeout"),
+                query: .devices
+            ),
+            .timedOut(query: .devices)
+        )
+        XCTAssertEqual(
+            SimctlDiscoveryError.commandFailure(
+                for: .init(exitCode: 72, output: "xcrun failure"),
+                query: .devices
+            ),
+            .commandFailed(query: .devices, exitCode: 72)
+        )
     }
 }

@@ -85,6 +85,8 @@ public struct BrewScreen: View {
     @State private var cleanupDeletionHandoff = ToolDeletionHandoff<CleanupConfirmedDeletion>()
     @State private var cleanupPreflightTask: Task<Void, Never>?
     @State private var cleanupPreflightGate = ToolDeletionPreflightRequestGate<[String]>()
+    /// v2026.07.15：Brew 模型只保存命令事实；格式串与容量按当前 View locale 即时投影。
+    @Environment(\.locale) private var locale
 
     private struct CleanupDeleteRequest: Identifiable, Sendable {
         let id = UUID()
@@ -195,7 +197,11 @@ public struct BrewScreen: View {
                 Text("brew.header.title", bundle: .module)
                     .font(.title2.bold())
                 if let prefix = controller?.prefix.path {
-                    Text(verbatim: String(format: String(localized: "brew.header.prefix %@", bundle: .module), prefix))
+                    Text(verbatim: AppLocalization.format(
+                        "brew.header.prefix %@",
+                        locale: locale,
+                        arguments: [prefix]
+                    ))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -283,7 +289,11 @@ public struct BrewScreen: View {
                 .foregroundStyle(.tertiary)
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                Text(verbatim: String(format: String(localized: "brew.installed.count %lld", bundle: .module), packages.count))
+                Text(verbatim: AppLocalization.format(
+                    "brew.installed.count %lld",
+                    locale: locale,
+                    arguments: [Int64(packages.count)]
+                ))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 ScrollView {
@@ -343,7 +353,11 @@ public struct BrewScreen: View {
                 .foregroundStyle(.tertiary)
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                Text(verbatim: String(format: String(localized: "brew.outdated.count %lld", bundle: .module), outdated.count))
+                Text(verbatim: AppLocalization.format(
+                    "brew.outdated.count %lld",
+                    locale: locale,
+                    arguments: [Int64(outdated.count)]
+                ))
                     .font(.subheadline)
                     .foregroundStyle(.orange)
                 ScrollView {
@@ -382,8 +396,11 @@ public struct BrewScreen: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Label {
-                        Text(verbatim: String(format: String(localized: "brew.cleanup.summary %lld %@", bundle: .module),
-                                              plan.stalePaths.count, byteString(plan.totalBytes)))
+                        Text(verbatim: AppLocalization.format(
+                            "brew.cleanup.summary %lld %@",
+                            locale: locale,
+                            arguments: [Int64(plan.stalePaths.count), byteString(plan.totalBytes)]
+                        ))
                     } icon: {
                         Image(systemName: "trash")
                     }
@@ -396,7 +413,7 @@ public struct BrewScreen: View {
                     Button {
                         prepareCleanupForTrash(plan)
                     } label: {
-                        Label(String(localized: "brew.cleanup.move_to_trash", bundle: .module),
+                        Label(AppLocalization.string("brew.cleanup.move_to_trash", locale: locale),
                               systemImage: "trash")
                     }
                     .disabled(plan.isEmpty || isCleaning)
@@ -652,6 +669,6 @@ public struct BrewScreen: View {
     }
 
     private func byteString(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        max(0, bytes).formatted(.byteCount(style: .file).locale(locale))
     }
 }

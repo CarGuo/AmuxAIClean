@@ -86,18 +86,25 @@ public enum MainListSortKey: String, CaseIterable, Sendable, Hashable, Identifia
 
     public var id: String { rawValue }
 
-    /// UI 菜单文案。
+    /// UI 菜单文案。运行期界面必须调用 `label(locale:)`，避免
+    /// Foundation 的进程级字符串解析会锁定启动语言，无法响应应用内语言切换。
     public var label: String {
+        label(locale: .current)
+    }
+
+    public func label(locale: Locale) -> String {
+        let key: String
         switch self {
-        case .sizeDesc:      return String(localized: "sort.size.desc", bundle: .module)
-        case .sizeAsc:       return String(localized: "sort.size.asc", bundle: .module)
-        case .nameAsc:       return String(localized: "sort.name.asc", bundle: .module)
-        case .nameDesc:      return String(localized: "sort.name.desc", bundle: .module)
-        case .fileCountDesc: return String(localized: "sort.filecount.desc", bundle: .module)
-        case .fileCountAsc:  return String(localized: "sort.filecount.asc", bundle: .module)
-        case .mtimeDesc:     return String(localized: "sort.mtime.desc", bundle: .module)
-        case .mtimeAsc:      return String(localized: "sort.mtime.asc", bundle: .module)
+        case .sizeDesc:      key = "sort.size.desc"
+        case .sizeAsc:       key = "sort.size.asc"
+        case .nameAsc:       key = "sort.name.asc"
+        case .nameDesc:      key = "sort.name.desc"
+        case .fileCountDesc: key = "sort.filecount.desc"
+        case .fileCountAsc:  key = "sort.filecount.asc"
+        case .mtimeDesc:     key = "sort.mtime.desc"
+        case .mtimeAsc:      key = "sort.mtime.asc"
         }
+        return AppLocalization.string(key, locale: locale)
     }
 
     /// 比较函数。主键相等时一律按 path 升序兜底，保证 ForEach 不抖。

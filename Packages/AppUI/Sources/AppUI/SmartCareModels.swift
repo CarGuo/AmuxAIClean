@@ -643,9 +643,38 @@ struct SmartCareScanLimitationProjection: Equatable, Sendable {
     var isEmpty: Bool { totalCount == 0 }
 }
 
+/// v2026.07.15：Smart Care 终态只保存错误语义或系统原文。产品自身的默认错误在
+/// Dashboard 渲染时按当前 App locale 投影，运行中切换语言不会留下启动语言快照。
+public enum SmartCareFailureDetail: Sendable, Hashable {
+    case scanIncomplete
+    case trash(TrashFailureSummary)
+    case verbatim(String)
+
+    public func text(locale: Locale) -> String {
+        switch self {
+        case .scanIncomplete:
+            return AppLocalization.string("main.scan.incomplete", locale: locale)
+        case .trash(let failure):
+            return failure.message(locale: locale)
+        case .verbatim(let message):
+            return message
+        }
+    }
+}
+
 public enum SmartCareError: Sendable, Hashable {
-    case scanFailed(String)
-    case cleanFailed(String)
+    case scanFailed(SmartCareFailureDetail)
+    case cleanFailed(SmartCareFailureDetail)
+
+    /// 原始 scanner / FileManager 错误没有可翻译的产品语义，按 verbatim 保存；这些
+    /// overload 同时保留历史调用点的源码兼容，避免调用方重新把 String 当 i18n 状态。
+    public static func scanFailed(_ message: String) -> SmartCareError {
+        .scanFailed(.verbatim(message))
+    }
+
+    public static func cleanFailed(_ message: String) -> SmartCareError {
+        .cleanFailed(.verbatim(message))
+    }
 
     var recovery: SmartCareFailureRecovery {
         switch self {

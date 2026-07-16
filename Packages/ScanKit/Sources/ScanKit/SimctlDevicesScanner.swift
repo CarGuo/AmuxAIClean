@@ -23,10 +23,10 @@ import LogKit
 /// 1. `static detect(from json:)`：**纯解析**，无 IO，专供单测；
 /// 2. `actor discover()`：起 subprocess 拿 JSON，生产用。
 ///
-/// 容错红线（与 SimctlRuntimeScanner 一致）：
-/// - simctl 不可用（throw / exitCode -1 launch 失败 / -2 timeout / 非 0 退出）→ 返回 `[]`，**不抛**；
-///   非 Apple 开发者机器没装 Xcode 是常见场景，UI 侧表现为"空清单"，不应让错误冒泡污染整个工作流。
-/// - JSON 非法 / 顶层结构不对 → 返回 `[]` 并通过 [LogKit] 打 warning，便于排查 simctl 输出格式变迁。
+/// 完整性红线（与 SimctlRuntimeScanner 一致）：
+/// - 只有命令成功、JSON 合法且 `devices` 确实为空才返回 `[]`；
+/// - launch / timeout / 非 0 / schema 变化抛 [SimctlDiscoveryError]，由 Workflow evidence
+///   展示“扫描失败，可重试”，不能伪装成“没有设备”。
 /// - `dataPathSize` 字段在老 simctl（Xcode 14 之前）可能不存在，解析为 `nil` 而非 0，UI 侧据此显示 "—"。
 public actor SimctlDevicesScanner {
 
@@ -38,7 +38,8 @@ public actor SimctlDevicesScanner {
 
     /// 起 `xcrun simctl list devices --json` 拿全部已创建模拟器实例。
     ///
-    /// - Returns: 设备列表（已 flatten 各 runtime 下的子数组）；任何失败一律返回 `[]`。
+    /// - Returns: 设备列表（已 flatten 各 runtime 下的子数组）；完整成功空清单才返回 `[]`。
+    /// - Throws: [SimctlDiscoveryError]，表示本轮结果不完整、不可解释为“没有设备”。
     public func discover() async throws -> [SimctlDevice] {
         let result: SubprocessExecutor.Result
         do {
@@ -47,13 +48,13 @@ public actor SimctlDevicesScanner {
                 args: ["simctl", "list", "devices", "--json"]
             )
         } catch {
-            // allowlist 拒绝 / 其他主动 throw（注入了不兼容的 executor 时才可能走到）
-            return []
+            throw SimctlDiscoveryError.commandRejected(query: .devices)
         }
-        // exitCode != 0 包括 -1 launch 失败、-2 timeout、xcrun 真实非 0 退出
-        // 非 Apple 开发者机器没装 Xcode 时 xcrun 会直接报错，全部按"空清单"处理
-        guard result.isSuccess else { return [] }
-        return Self.detect(from: result.output)
+        if let failure = SimctlDiscoveryError.commandFailure(for: result, query: .devices) {
+            GSYLog.warning(.app, "SimctlDevicesScanner command failure: \(failure); output=\(Self.logExcerpt(result.output))")
+            throw failure
+        }
+        return try Self.decode(from: result.output)
     }
 
     /// 纯解析入口：把 simctl JSON 字符串转 `[SimctlDevice]`。
@@ -70,11 +71,22 @@ public actor SimctlDevicesScanner {
     /// ```
     /// 外层 key（runtime identifier）会被 flatten 注入到每条 device 的 `runtimeIdentifier` 字段。
     ///
-    /// 任何解析失败（空串、非 JSON、顶层 `devices` 不是 dict）一律返回 `[]`，并打 warning。
+    /// 兼容 hits-only 调用方的纯解析入口。生产 discover 使用 throwing [decode(from:)]，
+    /// 因此这里的空数组不能作为完整性证据。
     public static func detect(from json: String) -> [SimctlDevice] {
+        do {
+            return try decode(from: json)
+        } catch {
+            GSYLog.warning(.app, "SimctlDevicesScanner JSON 解析失败: \(error)")
+            return []
+        }
+    }
+
+    /// 严格解析入口：schema 不匹配即抛 typed failure；合法 `{"devices": {}}` 返回空。
+    public static func decode(from json: String) throws -> [SimctlDevice] {
         guard !json.isEmpty,
               let data = json.data(using: .utf8) else {
-            return []
+            throw SimctlDiscoveryError.invalidPayload(query: .devices)
         }
         // 用 JSONSerialization 而非 Decodable：因为外层 key（runtime identifier）是动态的，
         // 自定义 CodingKey 容器反而比 dictionary 遍历更绕。
@@ -82,26 +94,26 @@ public actor SimctlDevicesScanner {
         do {
             object = try JSONSerialization.jsonObject(with: data, options: [])
         } catch {
-            GSYLog.warning(.app, "SimctlDevicesScanner JSON 解析失败: \(error)")
-            return []
+            throw SimctlDiscoveryError.invalidPayload(query: .devices)
         }
         guard let root = object as? [String: Any],
               let devicesByRuntime = root["devices"] as? [String: Any] else {
-            GSYLog.warning(.app, "SimctlDevicesScanner 顶层结构不匹配（缺 devices dict）")
-            return []
+            throw SimctlDiscoveryError.invalidPayload(query: .devices)
         }
 
         var result: [SimctlDevice] = []
         result.reserveCapacity(devicesByRuntime.count * 4)
         // 排序保证 detect 输出确定性（同 runtime 下保留 simctl 原顺序）
         for runtimeID in devicesByRuntime.keys.sorted() {
-            guard let list = devicesByRuntime[runtimeID] as? [[String: Any]] else { continue }
+            guard let list = devicesByRuntime[runtimeID] as? [[String: Any]] else {
+                throw SimctlDiscoveryError.invalidPayload(query: .devices)
+            }
             for raw in list {
                 guard let udid = raw["udid"] as? String,
                       let name = raw["name"] as? String,
                       let state = raw["state"] as? String,
                       let dataPath = raw["dataPath"] as? String else {
-                    continue
+                    throw SimctlDiscoveryError.invalidPayload(query: .devices)
                 }
                 let dataPathSize = Self.parseDataPathSize(raw["dataPathSize"])
                 result.append(SimctlDevice(
@@ -115,6 +127,10 @@ public actor SimctlDevicesScanner {
             }
         }
         return result
+    }
+
+    private static func logExcerpt(_ output: String) -> String {
+        String(output.prefix(512)).replacingOccurrences(of: "\n", with: " ")
     }
 
     /// `dataPathSize` 在不同 simctl 版本可能是 NSNumber（Int64）/ Int / Double，统一兜底为 Int64?。

@@ -38,6 +38,9 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
     private var item: NSStatusItem?
     /// 缓存最近一次构建的 menu，便于 install() 之外的二次刷新。
     private var menu: NSMenu?
+    /// v2026.07.15：App 内语言覆盖的当前 locale。NSMenu 不读取 SwiftUI Environment，
+    /// 所以托盘菜单必须由控制器显式重建，不能等下次进程启动。
+    private var locale: Locale = .current
 
     #if DEBUG
     /// 仅 DEBUG 暴露：托盘是否当前已挂在 NSStatusBar 上。
@@ -69,6 +72,21 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
 
     public override init() { super.init() }
 
+    /// 运行期切换托盘菜单语言。只重建四个轻量 NSMenuItem，不触发扫描或其它业务状态。
+    public func updateLocale(_ locale: Locale) {
+        self.locale = locale
+        guard let item else { return }
+        if let button = item.button {
+            let appName = AppLocalization.string("app.name", locale: locale)
+            button.toolTip = appName
+            button.image?.accessibilityDescription = appName
+        }
+        let updatedMenu = makeMenu(locale: locale)
+        updatedMenu.delegate = self
+        item.menu = updatedMenu
+        menu = updatedMenu
+    }
+
     /// 把图标挂到 NSStatusBar。重复调用安全 —— 已挂载则直接返回。
     public func install() {
         if item != nil { return }
@@ -78,13 +96,13 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
             // accessibilityDescription 给 VoiceOver / 系统辅助技术读屏用。
             let image = NSImage(
                 systemSymbolName: "trash.fill",
-                accessibilityDescription: String(localized: "app.name", bundle: .module)
+                accessibilityDescription: AppLocalization.string("app.name", locale: locale)
             )
             image?.isTemplate = true
             button.image = image
-            button.toolTip = String(localized: "app.name", bundle: .module)
+            button.toolTip = AppLocalization.string("app.name", locale: locale)
         }
-        let m = makeMenu()
+        let m = makeMenu(locale: locale)
         m.delegate = self
         statusItem.menu = m
         self.menu = m
@@ -106,25 +124,25 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
     /// 单测专用：构建一份"未挂载"的菜单快照（不依赖 NSStatusBar），
     /// 调用方可断言 keyEquivalent / enabled 状态而无需启 UI 测试。
     /// `scanning` 模拟 onQueryScanState 的返回值。
-    func _testMenuSnapshot(scanning: Bool) -> NSMenu {
-        let m = makeMenu()
-        applyDynamicState(to: m, scanning: scanning)
+    func _testMenuSnapshot(scanning: Bool, locale: Locale = .current) -> NSMenu {
+        let m = makeMenu(locale: locale)
+        applyDynamicState(to: m, scanning: scanning, locale: locale)
         return m
     }
 
     /// **M5 核心**：menu 即将弹出时刷新 disabled 状态。
     public func menuWillOpen(_ menu: NSMenu) {
         let scanning = onQueryScanState?() ?? false
-        applyDynamicState(to: menu, scanning: scanning)
+        applyDynamicState(to: menu, scanning: scanning, locale: locale)
     }
 
-    private func applyDynamicState(to menu: NSMenu, scanning: Bool) {
+    private func applyDynamicState(to menu: NSMenu, scanning: Bool, locale: Locale) {
         // 用 tag 锚定"开始推荐扫描"那项；不依赖位置（防未来插入新项）
         if let scanItem = menu.item(withTag: MenuTag.startScan.rawValue) {
             scanItem.isEnabled = !scanning
             scanItem.title = scanning
-                ? String(localized: "tray.scanning", bundle: .module)
-                : String(localized: "tray.start_recommended", bundle: .module)
+                ? AppLocalization.string("tray.scanning", locale: locale)
+                : AppLocalization.string("tray.start_recommended", locale: locale)
         }
     }
 
@@ -135,7 +153,7 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
         case quit           = 1004
     }
 
-    private func makeMenu() -> NSMenu {
+    private func makeMenu(locale: Locale) -> NSMenu {
         let menu = NSMenu()
         // M5：autoenablesItems = false 避免 AppKit 自动校验 target/action 把
         // 我们手动设置的 isEnabled 覆盖回去（AppKit 会顺着 first responder
@@ -143,7 +161,7 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
         menu.autoenablesItems = false
 
         let openItem = NSMenuItem(
-            title: String(localized: "tray.menu.open_main", bundle: .module),
+            title: AppLocalization.string("tray.menu.open_main", locale: locale),
             action: #selector(handleOpenMainWindow),
             keyEquivalent: "o" // ⌘O：与 Finder 系列一致的"打开"语义
         )
@@ -154,7 +172,7 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
 
         let scanItem = NSMenuItem(
-            title: String(localized: "tray.menu.start_recommended", bundle: .module),
+            title: AppLocalization.string("tray.menu.start_recommended", locale: locale),
             action: #selector(handleStartRecommendedScan),
             keyEquivalent: "r" // ⌘R：与浏览器/Xcode 的"刷新/构建"语义对齐
         )
@@ -163,7 +181,7 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(scanItem)
 
         let hudItem = NSMenuItem(
-            title: String(localized: "tray.menu.toggle_hud", bundle: .module),
+            title: AppLocalization.string("tray.menu.toggle_hud", locale: locale),
             action: #selector(handleToggleHUD),
             keyEquivalent: "h" // ⌘H：与系统 hide 习惯保持类似的字母
         )
@@ -174,7 +192,7 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(
-            title: String(localized: "tray.menu.quit", bundle: .module),
+            title: AppLocalization.string("tray.menu.quit", locale: locale),
             action: #selector(handleQuit),
             keyEquivalent: "q" // ⌘Q：标准退出
         )

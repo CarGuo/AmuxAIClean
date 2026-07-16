@@ -77,7 +77,7 @@ final class AppleWorkflowCardsTests: XCTestCase {
 
     // MARK: - 全部存在场景
 
-    func test_全部目录存在_出齐_10_张卡_且_ID_全局唯一_v17_PR2() throws {
+    func test_全部目录存在_出齐_9_张卡_且_ID_全局唯一_v17_PR2() throws {
         let home = try makeTmpHome()
         defer { try? FileManager.default.removeItem(at: home) }
 
@@ -89,15 +89,15 @@ final class AppleWorkflowCardsTests: XCTestCase {
             "Library/Developer/Xcode/macOS DeviceSupport",
             "Library/Developer/CoreSimulator/Caches",
             "Library/Developer/CoreSimulator/Devices",  // PR-2 触发 devices 卡
-            "Library/Developer/CoreSimulator/Volumes",  // PR-2 触发 volumes 卡
+            "Library/Developer/CoreSimulator/Volumes",  // 安全回归：存在也不得生成清理卡
         ] {
             try makeDir(at: sub, in: home)
         }
 
         // 注入 isSimulatorRunning=false（确保 risk 期望稳定，不被 CI 上真跑 Simulator 干扰）
         let cards = AppleWorkflow(isSimulatorRunning: { false }).cards(home: home)
-        // PR-2 后：6 PR-1 卡 + per-project + devices + runtimes + volumes = 10 张
-        XCTAssertEqual(cards.count, 10, "PR-2 后全部目录存在时必须出齐 10 卡")
+        // 安全修复后：6 PR-1 卡 + per-project + devices + runtimes = 9 张；Volumes 为 forbid。
+        XCTAssertEqual(cards.count, 9, "CoreSimulator Volumes 不得作为第 10 张可清理卡出现")
 
         let ids = cards.map(\.id)
         XCTAssertEqual(Set(ids).count, ids.count, "卡片 ID 必须全局唯一")
@@ -112,7 +112,6 @@ final class AppleWorkflowCardsTests: XCTestCase {
             "card.apple.coresimulator-caches",
             "card.apple.coresimulator-devices",
             "card.apple.coresimulator-runtimes",
-            "card.apple.coresimulator-volumes",
         ]
         XCTAssertEqual(Set(ids), expectedIDs, "卡片 ID 集合与设计文档对位")
     }
@@ -146,7 +145,7 @@ final class AppleWorkflowCardsTests: XCTestCase {
         }
     }
 
-    func test_PR1_类卡片_recipe_全部filesystem_simctl卡_仅在simctl_ID下_v17_PR2() throws {
+    func test_文件卡只用filesystem_simctl卡只用类型化托管卸载() throws {
         let home = try makeTmpHome()
         defer { try? FileManager.default.removeItem(at: home) }
 
@@ -161,8 +160,8 @@ final class AppleWorkflowCardsTests: XCTestCase {
             try makeDir(at: sub, in: home)
         }
 
-        // PITFALL：未来若有人把 PR-1 静态卡（DerivedData / Archives / DeviceSupport×3 / Caches / per-project / Volumes）
-        // 任何一张偷偷改成 commandLine，本用例必须红
+        // PITFALL：未来若有人把 PR-1 静态卡（DerivedData / Archives / DeviceSupport×3 / Caches / per-project）
+        // 任何一张偷偷改成 managedUninstall，本用例必须红
         let pr1AndFilesystemPR2: Set<String> = [
             "card.apple.derived-data",
             "card.apple.derived-data-per-project",
@@ -171,28 +170,26 @@ final class AppleWorkflowCardsTests: XCTestCase {
             "card.apple.watchos-devicesupport",
             "card.apple.macos-devicesupport",
             "card.apple.coresimulator-caches",
-            "card.apple.coresimulator-volumes",
         ]
         let cards = AppleWorkflow(isSimulatorRunning: { false }).cards(home: home)
         for card in cards where pr1AndFilesystemPR2.contains(card.id) {
-            if case .commandLine = card.recipe {
-                XCTFail("\(card.id) 必须是 .filesystem recipe，不应泄漏到 .commandLine")
-            }
+            XCTAssertEqual(card.recipe, .filesystem,
+                           "\(card.id) 必须是 .filesystem recipe，不应进入托管卸载")
             XCTAssertTrue(card.recipe.isExecutableInCurrentBuild,
                           "\(card.id) 必须在当前构建可执行")
         }
 
-        // simctl 卡（commandLine）反向断言：仅 devices/runtimes 两 ID 允许 commandLine
-        let allowedCommandLine: Set<String> = [
+        // simctl 卡反向断言：仅 devices/runtimes 两 ID 允许托管卸载。
+        let allowedManagedUninstall: Set<String> = [
             "card.apple.coresimulator-devices",
             "card.apple.coresimulator-runtimes",
         ]
         for card in cards {
-            if case .commandLine = card.recipe {
-                XCTAssertTrue(allowedCommandLine.contains(card.id),
-                              "\(card.id) 不在白名单内不应使用 .commandLine recipe")
+            if case .managedUninstall = card.recipe {
+                XCTAssertTrue(allowedManagedUninstall.contains(card.id),
+                              "\(card.id) 不应使用托管卸载 recipe")
                 XCTAssertTrue(card.recipe.isExecutableInCurrentBuild,
-                              "\(card.id) 的 commandLine 必须在 SubprocessExecutor allowlist 内")
+                              "\(card.id) 的托管卸载前缀必须在 SubprocessExecutor allowlist 内")
             }
         }
     }

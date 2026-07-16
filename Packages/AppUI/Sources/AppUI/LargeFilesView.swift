@@ -15,6 +15,10 @@ import AIKit
 /// 4. **不显示安全徽章 / 默认勾选**：大文件清理本来就要"用户确认才删"，
 ///    不能再叫 SafetyEngine 把 ~/Movies/big.mov 标成 .safe。
 public struct LargeFilesView: View {
+    /// v2026.07.15：SwiftUI 格式串、AppKit 面板和自绘表右键菜单共享同一个
+    /// View locale；否则 AppKit 子树会继续显示进程启动语言。
+    @Environment(\.locale) private var locale
+
     let coordinator: ScanCoordinator
     @Bindable var settings: AppSettings
 
@@ -249,12 +253,18 @@ public struct LargeFilesView: View {
 
             Image(systemName: "doc.richtext")
                 .foregroundStyle(.tint)
-            Text(String(format: String(localized: "largefiles.threshold.badge %lld %lld", bundle: .module),
-                        settings.minFileSizeMB, limit))
+            Text(AppLocalization.format(
+                "largefiles.threshold.badge %lld %lld",
+                locale: locale,
+                arguments: [Int64(settings.minFileSizeMB), Int64(limit)]
+            ))
                 .font(.callout)
             Spacer()
             if needsRescanForLowerThreshold {
-                Label(String(localized: "largefiles.banner.threshold_lowered", bundle: .module), systemImage: "exclamationmark.triangle")
+                Label(
+                    AppLocalization.string("largefiles.banner.threshold_lowered", locale: locale),
+                    systemImage: "exclamationmark.triangle"
+                )
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -263,7 +273,11 @@ public struct LargeFilesView: View {
             // 唯一承载——本处不再画独立按钮，避免"多入口 + 状态不同步"的用户反馈。
             // 头部依然提供三态全选 checkbox（勾选/取消可见项）与阈值展示。
 
-            Text(String(format: String(localized: "largefiles.toolbar.count %lld", bundle: .module), displayedItems.count))
+            Text(AppLocalization.format(
+                "largefiles.toolbar.count %lld",
+                locale: locale,
+                arguments: [Int64(displayedItems.count)]
+            ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
@@ -272,10 +286,20 @@ public struct LargeFilesView: View {
             Menu {
                 Button {
                     exportCurrent(format: .json)
-                } label: { Label(String(localized: "largefiles.export.json", bundle: .module), systemImage: "curlybraces") }
+                } label: {
+                    Label(
+                        AppLocalization.string("largefiles.export.json", locale: locale),
+                        systemImage: "curlybraces"
+                    )
+                }
                 Button {
                     exportCurrent(format: .tsv)
-                } label: { Label(String(localized: "largefiles.export.tsv", bundle: .module), systemImage: "tablecells") }
+                } label: {
+                    Label(
+                        AppLocalization.string("largefiles.export.tsv", locale: locale),
+                        systemImage: "tablecells"
+                    )
+                }
             } label: {
                 Image(systemName: "square.and.arrow.up")
             }
@@ -328,7 +352,7 @@ public struct LargeFilesView: View {
         Button {
             settings.mtimeFilter = filter
         } label: {
-            Text(filter.label)
+            Text(filter.label(in: locale))
                 .font(.caption)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 3)
@@ -343,7 +367,11 @@ public struct LargeFilesView: View {
                 .foregroundStyle(isOn ? Color.white : Color.primary)
         }
         .buttonStyle(.plain)
-        .help(Text(String(format: String(localized: "largefiles.help.filter_by_age %@", bundle: .module), filter.label)))
+        .help(Text(AppLocalization.format(
+            "largefiles.help.filter_by_age %@",
+            locale: locale,
+            arguments: [filter.label(in: locale)]
+        )))
     }
 
     // MARK: - Kind bar (v1.2 P2-3 类型分桶染色)
@@ -414,7 +442,7 @@ public struct LargeFilesView: View {
                 Circle()
                     .fill(kind.tint)
                     .frame(width: 7, height: 7)
-                Text(kind.label)
+                Text(kind.label(locale: locale))
                     .font(.caption)
                 Text("\(count)")
                     .font(.caption2)
@@ -432,7 +460,11 @@ public struct LargeFilesView: View {
             .foregroundStyle(.primary)
         }
         .buttonStyle(.plain)
-        .help(Text(String(format: String(localized: "largefiles.help.filter_by_kind %@ %lld", bundle: .module), kind.label, count)))
+        .help(Text(AppLocalization.format(
+            "largefiles.help.filter_by_kind %@ %lld",
+            locale: locale,
+            arguments: [kind.label(locale: locale), Int64(count)]
+        )))
     }
 
     // MARK: - Content
@@ -450,6 +482,7 @@ public struct LargeFilesView: View {
                     selectedItem: $selection,
                     selectedPaths: batch.selected,
                     aiReady: aiSettings?.isReadyForUI == true,
+                    locale: locale,
                     isStashed: isStashed,
                     onTogglePick: { batch.toggle($0) },
                     onAskAI: { item in onAskAI(item) },
@@ -475,7 +508,11 @@ public struct LargeFilesView: View {
                 Text("main.scan.incomplete", bundle: .module)
                     .foregroundStyle(.orange)
             } else if coordinator.isFinished {
-                Text(String(format: String(localized: "largefiles.empty.no_results %lld", bundle: .module), settings.minFileSizeMB))
+                Text(AppLocalization.format(
+                    "largefiles.empty.no_results %lld",
+                    locale: locale,
+                    arguments: [Int64(settings.minFileSizeMB)]
+                ))
                     .foregroundStyle(.secondary)
                 Text("largefiles.empty.tip_lower_threshold", bundle: .module)
                     .font(.caption)
@@ -498,9 +535,15 @@ public struct LargeFilesView: View {
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            columnButton(title: String(localized: "largefiles.column.size", bundle: .module), column: .size)
+            columnButton(
+                title: AppLocalization.string("largefiles.column.size", locale: locale),
+                column: .size
+            )
                 .frame(width: 110, alignment: .trailing)
-            columnButton(title: String(localized: "largefiles.column.mtime", bundle: .module), column: .mtime)
+            columnButton(
+                title: AppLocalization.string("largefiles.column.mtime", locale: locale),
+                column: .mtime
+            )
                 .frame(width: 130, alignment: .trailing)
         }
         .padding(.horizontal, 16)
@@ -525,7 +568,11 @@ public struct LargeFilesView: View {
             .foregroundStyle(sortKey.column == column ? Color.primary : Color.secondary)
         }
         .buttonStyle(.plain)
-        .help(Text(String(format: String(localized: "largefiles.help.sort_toggle %@", bundle: .module), title)))
+        .help(Text(AppLocalization.format(
+            "largefiles.help.sort_toggle %@",
+            locale: locale,
+            arguments: [title]
+        )))
     }
 
     // MARK: - 导出（v1.2 P2-6）
@@ -548,7 +595,7 @@ public struct LargeFilesView: View {
         }
 
         let panel = NSSavePanel()
-        panel.title = String(localized: "largefiles.export.panel_title", bundle: .module)
+        panel.title = AppLocalization.string("largefiles.export.panel_title", locale: locale)
         panel.nameFieldStringValue = suggested
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
@@ -557,8 +604,15 @@ public struct LargeFilesView: View {
                 try data.write(to: url, options: .atomic)
             } catch {
                 let alert = NSAlert()
-                alert.messageText = String(localized: "largefiles.export.failed.title", bundle: .module)
-                alert.informativeText = String(format: String(localized: "largefiles.export.failed.body", bundle: .module), error.localizedDescription)
+                alert.messageText = AppLocalization.string(
+                    "largefiles.export.failed.title",
+                    locale: locale
+                )
+                alert.informativeText = AppLocalization.format(
+                    "largefiles.export.failed.body",
+                    locale: locale,
+                    arguments: [error.localizedDescription]
+                )
                 alert.runModal()
             }
         }
@@ -570,6 +624,7 @@ private struct AppKitLargeFilesTable: NSViewRepresentable {
     @Binding var selectedItem: LargeFileItem?
     let selectedPaths: Set<String>
     let aiReady: Bool
+    let locale: Locale
     let isStashed: (String) -> Bool
     let onTogglePick: (String) -> Void
     let onAskAI: (LargeFileItem) -> Void
@@ -647,6 +702,7 @@ private struct AppKitLargeFilesTable: NSViewRepresentable {
                 isPicked: parent.selectedPaths.contains(item.path),
                 isStashed: parent.isStashed(item.path),
                 aiReady: parent.aiReady,
+                locale: parent.locale,
                 actions: LargeFilesRowActions(
                     select: { [weak self] in self?.select(item, in: tableView) },
                     togglePick: { [weak self] in self?.parent.onTogglePick(item.path) },
@@ -784,12 +840,14 @@ private final class LargeFilesTableCellView: NSTableCellView {
                    isPicked: Bool,
                    isStashed: Bool,
                    aiReady: Bool,
+                   locale: Locale,
                    actions: LargeFilesRowActions) {
         canvas.configure(item: item,
                          isSelected: isSelected,
                          isPicked: isPicked,
                          isStashed: isStashed,
                          aiReady: aiReady,
+                         locale: locale,
                          actions: actions)
     }
 }
@@ -800,6 +858,9 @@ private final class LargeFilesRowCanvas: NSView {
     private var isPicked = false
     private var isStashed = false
     private var aiReady = false
+    // v2026.07.15：configure 会在首帧绘制前覆盖为 App 当前语言；默认仅用于尚未配置、
+    // 因而没有可见内容的 NSView 生命周期窗口，且不冻结一次性的进程 locale。
+    private var locale = Locale.autoupdatingCurrent
     private var actions: LargeFilesRowActions?
 
     override var isFlipped: Bool { true }
@@ -809,12 +870,14 @@ private final class LargeFilesRowCanvas: NSView {
                    isPicked: Bool,
                    isStashed: Bool,
                    aiReady: Bool,
+                   locale: Locale,
                    actions: LargeFilesRowActions) {
         self.item = item
         self.isSelected = isSelected
         self.isPicked = isPicked
         self.isStashed = isStashed
         self.aiReady = aiReady
+        self.locale = locale
         self.actions = actions
         toolTip = item.path
         needsDisplay = true
@@ -858,8 +921,10 @@ private final class LargeFilesRowCanvas: NSView {
         actions.select()
         let menu = NSMenu()
         let pick = LargeFilesClosureMenuItem(
-            title: String(localized: isPicked ? "largefiles.menu.unpick" : "largefiles.menu.pick",
-                          bundle: .module),
+            title: AppLocalization.string(
+                isPicked ? "largefiles.menu.unpick" : "largefiles.menu.pick",
+                locale: locale
+            ),
             action: actions.togglePick
         )
         pick.image = NSImage(systemSymbolName: isPicked ? "square" : "checkmark.square",
@@ -867,14 +932,16 @@ private final class LargeFilesRowCanvas: NSView {
         menu.addItem(pick)
         menu.addItem(.separator())
         let ask = LargeFilesClosureMenuItem(
-            title: String(localized: "tree.menu.ask_ai", bundle: .module),
+            title: AppLocalization.string("tree.menu.ask_ai", locale: locale),
             action: actions.askAI
         )
         ask.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)
         menu.addItem(ask)
         let stash = LargeFilesClosureMenuItem(
-            title: String(localized: isStashed ? "tree.menu.stash_already" : "tree.menu.stash",
-                          bundle: .module),
+            title: AppLocalization.string(
+                isStashed ? "tree.menu.stash_already" : "tree.menu.stash",
+                locale: locale
+            ),
             action: { if !self.isStashed { actions.stash() } }
         )
         stash.image = NSImage(systemSymbolName: isStashed ? "tray.full.fill" : "tray.and.arrow.down",
@@ -883,26 +950,26 @@ private final class LargeFilesRowCanvas: NSView {
         menu.addItem(stash)
         menu.addItem(.separator())
         let quickLook = LargeFilesClosureMenuItem(
-            title: String(localized: "largefiles.context.quicklook", bundle: .module),
+            title: AppLocalization.string("largefiles.context.quicklook", locale: locale),
             action: { QuickLookController.shared.preview(urls: [item.url]) }
         )
         quickLook.image = NSImage(systemSymbolName: "eye", accessibilityDescription: nil)
         menu.addItem(quickLook)
         let reveal = LargeFilesClosureMenuItem(
-            title: String(localized: "largefiles.context.reveal_finder", bundle: .module),
+            title: AppLocalization.string("largefiles.context.reveal_finder", locale: locale),
             action: { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
         )
         reveal.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
         menu.addItem(reveal)
         let copyPath = LargeFilesClosureMenuItem(
-            title: String(localized: "largefiles.context.copy_path", bundle: .module),
+            title: AppLocalization.string("largefiles.context.copy_path", locale: locale),
             action: { Self.copy(item.path) }
         )
         copyPath.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
         menu.addItem(copyPath)
         menu.addItem(.separator())
         let trash = LargeFilesClosureMenuItem(
-            title: String(localized: "largefiles.context.move_to_trash", bundle: .module),
+            title: AppLocalization.string("largefiles.context.move_to_trash", locale: locale),
             action: actions.trash
         )
         trash.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
@@ -939,12 +1006,14 @@ private final class LargeFilesRowCanvas: NSView {
                  font: .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                  color: .secondaryLabelColor,
                  lineBreak: .byTruncatingMiddle)
-        drawText(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file),
+        drawText(item.bytes.formatted(.byteCount(style: .file).locale(locale)),
                  in: CGRect(x: sizeX, y: 12, width: LargeFilesTableMetrics.sizeWidth - 8, height: 17),
                  font: .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
                  color: .labelColor,
                  alignment: .right)
-        drawText(item.modificationDate.map { Self.mtimeFormatter.string(from: $0) } ?? "—",
+        drawText(item.modificationDate.map {
+            $0.formatted(Date.FormatStyle(date: .numeric, time: .shortened).locale(locale))
+        } ?? "—",
                  in: CGRect(x: mtimeX, y: 13, width: LargeFilesTableMetrics.mtimeWidth - 8, height: 16),
                  font: .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
                  color: .secondaryLabelColor,
@@ -1107,13 +1176,6 @@ private final class LargeFilesRowCanvas: NSView {
         pb.setString(text, forType: .string)
     }
 
-    private static let mtimeFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateStyle = .short
-        f.timeStyle = .short
-        f.locale = .current
-        return f
-    }()
 }
 
 private final class LargeFilesClosureMenuItem: NSMenuItem {

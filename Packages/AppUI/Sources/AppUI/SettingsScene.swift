@@ -5,6 +5,69 @@ import ScanKit
 import AIKit
 import UniformTypeIdentifiers
 
+/// v2026.07.15：设置页瞬态反馈只保存语义和不可翻译参数，显示时再按当前 locale 投影。
+///
+/// 过去在操作完成时直接把本地化后的 `String` 写进 `@State`，切换语言后该字符串不会
+/// 重新计算，造成同一设置窗口内中英文混排。保留 error detail/path 等原始参数，避免
+/// 为刷新语言重新执行导入、导出或清理操作。
+enum SettingsPathImportNotice: Equatable {
+    case duplicate(count: Int)
+    case failed(detail: String)
+
+    func localized(locale: Locale) -> String {
+        switch self {
+        case .duplicate(let count):
+            return AppLocalization.format(
+                "custom_path.import.duplicate %lld",
+                locale: locale,
+                arguments: [count]
+            )
+        case .failed(let detail):
+            return AppLocalization.format(
+                "custom_path.import.failed %@",
+                locale: locale,
+                arguments: [detail]
+            )
+        }
+    }
+}
+
+enum SettingsLogActionNotice: Equatable {
+    case exported(path: String)
+    case exportFailed(detail: String)
+    case cleared(count: Int)
+    case clearFailed(detail: String)
+
+    func localized(locale: Locale) -> String {
+        switch self {
+        case .exported(let path):
+            return AppLocalization.format(
+                "settings.storage.log.export.done %@",
+                locale: locale,
+                arguments: [path]
+            )
+        case .exportFailed(let detail):
+            return AppLocalization.format(
+                "settings.storage.log.export.failed %@",
+                locale: locale,
+                arguments: [detail]
+            )
+        case .cleared(let count):
+            return AppLocalization.format(
+                "settings.storage.log.clear.done %d",
+                locale: locale,
+                arguments: [count]
+            )
+        case .clearFailed(let detail):
+            return AppLocalization.format(
+                "settings.storage.log.clear.failed %@",
+                locale: locale,
+                arguments: [detail]
+            )
+        }
+    }
+}
+
 /// v1.0 设置窗口（⌘, 自动可用）。
 ///
 /// 三个分区：
@@ -36,10 +99,10 @@ public struct SettingsScene: View {
 
     /// 路径列表的 UI 镜像。actor 数据要在 SwiftUI 里显示必须先快照。
     @State private var pathsMirror: [URL] = []
-    @State private var logActionMessage: String?
+    @State private var logActionNotice: SettingsLogActionNotice?
     @State private var confirmClearLogs = false
     @State private var isPathImporterPresented = false
-    @State private var pathImportMessage: String?
+    @State private var pathImportNotice: SettingsPathImportNotice?
 
     public init(settings: AppSettings,
                 pathStore: UserPathStore,
@@ -137,17 +200,17 @@ public struct SettingsScene: View {
             onCompletion: handlePathImport
         )
         .alert(
-            String(localized: "custom_path.import.notice.title", bundle: .module),
+            AppLocalization.string("custom_path.import.notice.title", locale: currentEnvironmentLocale),
             isPresented: Binding(
-                get: { pathImportMessage != nil },
-                set: { if !$0 { pathImportMessage = nil } }
+                get: { pathImportNotice != nil },
+                set: { if !$0 { pathImportNotice = nil } }
             )
         ) {
-            Button(String(localized: "main.delete.result.ok", bundle: .module)) {
-                pathImportMessage = nil
+            Button(AppLocalization.string("main.delete.result.ok", locale: currentEnvironmentLocale)) {
+                pathImportNotice = nil
             }
         } message: {
-            Text(pathImportMessage ?? "")
+            Text(pathImportNotice?.localized(locale: currentEnvironmentLocale) ?? "")
         }
         .task {
             let snapshots = await pathStore.snapshots()
@@ -160,33 +223,12 @@ public struct SettingsScene: View {
 
     // MARK: - Tabs
 
-    /// **v2026.06.18**：让用户在改完语言后自助"立即重启 App"，把原生主菜单/系统弹窗
-    /// 也带到新语言。`relaunch` 走标准 macOS pattern：
-    /// `/usr/bin/open -n` 异步打开自身一份新进程 → 当前进程 `terminate`。
-    /// 不强制——也不在每次切语言时自动调用，避免破坏用户当前操作流。
-    private func restartApp() {
-        let bundleURL = Bundle.main.bundleURL
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        task.arguments = ["-n", bundleURL.path]
-        do {
-            try task.run()
-        } catch {
-            // 启动失败就什么都不做——保持当前进程存活，用户至少不会"两边都没了"。
-            return
-        }
-        // 给新进程一点点起跑时间再退当前进程，避免极少数情况下 launchd 还没接到新实例。
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            NSApp.terminate(nil)
-        }
-    }
-
     private var scanTab: some View {
         Form {
             Section {
                 Picker(selection: $settings.preferredLanguage) {
                     ForEach(AppSettings.LanguageOverride.allCases, id: \.self) { lang in
-                        // **v2026.06.18 修复**：原来用 `lang.label` 走 `String(localized:)`，
+                        // **v2026.06.18 修复**：原来用 `lang.label` 走进程级字符串解析，
                         // 该重载不读 SwiftUI 环境 locale，只读 process Bundle.main.preferredLocalizations，
                         // 导致中文界面下 Picker 选项仍显示 "Simplified Chinese / English / Follow System"。
                         // 现在显式透传环境 locale，让选项文本与界面其它文本同语言。
@@ -202,21 +244,6 @@ public struct SettingsScene: View {
                     }
                 }
                 .pickerStyle(.menu)
-                if settings.preferredLanguage != .system {
-                    HStack(alignment: .top, spacing: 8) {
-                        Text("settings.language.restart_hint", bundle: .module)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer()
-                        Button {
-                            restartApp()
-                        } label: {
-                            Text("settings.language.restart_now", bundle: .module)
-                        }
-                        .controlSize(.small)
-                    }
-                }
             } header: {
                 Text("settings.section.appearance", bundle: .module)
             }
@@ -254,7 +281,7 @@ public struct SettingsScene: View {
                 .disabled(!settings.hudEnabled)
                 Picker(selection: $settings.hudPlacement) {
                     ForEach(AppSettings.HUDPlacement.allCases, id: \.self) { placement in
-                        Text(placement.label).tag(placement)
+                        Text(placement.label(in: currentEnvironmentLocale)).tag(placement)
                     }
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
@@ -300,12 +327,20 @@ public struct SettingsScene: View {
                 HStack {
                     Text("settings.large.min_threshold", bundle: .module)
                     Spacer()
-                    Stepper(String(format: String(localized: "settings.large.value.format", bundle: .module), settings.minFileSizeMB),
+                    Stepper(AppLocalization.format(
+                        "settings.large.value.format",
+                        locale: currentEnvironmentLocale,
+                        arguments: [settings.minFileSizeMB]
+                    ),
                             value: $settings.minFileSizeMB,
                             in: AppSettings.allowedMinFileSizeMB...AppSettings.allowedMaxFileSizeMB,
                             step: 10)
                         .labelsHidden()
-                    Text(String(format: String(localized: "settings.large.value.format", bundle: .module), settings.minFileSizeMB))
+                    Text(AppLocalization.format(
+                        "settings.large.value.format",
+                        locale: currentEnvironmentLocale,
+                        arguments: [settings.minFileSizeMB]
+                    ))
                         .monospacedDigit()
                         .frame(minWidth: 70, alignment: .trailing)
                 }
@@ -372,7 +407,7 @@ public struct SettingsScene: View {
                                 Image(systemName: "minus.circle")
                             }
                             .buttonStyle(.borderless)
-                            .help(String(localized: "menu.path.remove", bundle: .module))
+                            .help(AppLocalization.string("menu.path.remove", locale: currentEnvironmentLocale))
                         }
                         .padding(.vertical, 2)
                     }
@@ -422,7 +457,11 @@ public struct SettingsScene: View {
                 }
                 if let skipped = settings.skippedUpdateTag {
                     HStack {
-                        Text(String(format: String(localized: "settings.update.skipped.format", bundle: .module), skipped))
+                        Text(AppLocalization.format(
+                            "settings.update.skipped.format",
+                            locale: currentEnvironmentLocale,
+                            arguments: [skipped]
+                        ))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -454,21 +493,33 @@ public struct SettingsScene: View {
             .foregroundStyle(.green).font(.caption)
         case .newer(let r):
             Label {
-                Text(String(format: String(localized: "settings.update.status.newer.format", bundle: .module), r.tagName))
+                Text(AppLocalization.format(
+                    "settings.update.status.newer.format",
+                    locale: currentEnvironmentLocale,
+                    arguments: [r.tagName]
+                ))
             } icon: {
                 Image(systemName: "arrow.down.circle.fill")
             }
             .foregroundStyle(.tint).font(.caption)
         case .skippedByUser(let r):
             Label {
-                Text(String(format: String(localized: "settings.update.status.skipped.format", bundle: .module), r.tagName))
+                Text(AppLocalization.format(
+                    "settings.update.status.skipped.format",
+                    locale: currentEnvironmentLocale,
+                    arguments: [r.tagName]
+                ))
             } icon: {
                 Image(systemName: "minus.circle")
             }
             .foregroundStyle(.secondary).font(.caption)
-        case .failed(let msg):
+        case .failed(let failure):
             Label {
-                Text(String(format: String(localized: "settings.update.status.failed.format", bundle: .module), msg))
+                Text(AppLocalization.format(
+                    "settings.update.status.failed.format",
+                    locale: currentEnvironmentLocale,
+                    arguments: [failure.message(locale: currentEnvironmentLocale)]
+                ))
             } icon: {
                 Image(systemName: "exclamationmark.triangle")
             }
@@ -492,20 +543,14 @@ public struct SettingsScene: View {
                     }
                 }
                 if duplicateCount == urls.count {
-                    pathImportMessage = String(
-                        format: String(localized: "custom_path.import.duplicate %lld", bundle: .module),
-                        duplicateCount
-                    )
+                    pathImportNotice = .duplicate(count: duplicateCount)
                 }
             }
         case .failure(let error):
             // 取消由系统 fileImporter 自己消化；其它错误必须留诊断证据，不能 try? 吞掉。
             guard (error as? CocoaError)?.code != .userCancelled else { return }
             GSYLog.error(.settings, "settings directory importer failed: \(error.localizedDescription)")
-            pathImportMessage = String(
-                format: String(localized: "custom_path.import.failed %@", bundle: .module),
-                error.localizedDescription
-            )
+            pathImportNotice = .failed(detail: error.localizedDescription)
         }
     }
 
@@ -551,10 +596,10 @@ extension SettingsScene {
                         Text("settings.dev.safe_only", bundle: .module)
                     }
                     Spacer()
-                    Text(String(
-                        format: String(localized: "settings.dev.enabled_count.format", bundle: .module),
-                        settings.enabledDevArtifactRuleIDs.count,
-                        DevArtifactRules.all.count
+                    Text(AppLocalization.format(
+                        "settings.dev.enabled_count.format",
+                        locale: currentEnvironmentLocale,
+                        arguments: [settings.enabledDevArtifactRuleIDs.count, DevArtifactRules.all.count]
                     ))
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -575,7 +620,10 @@ extension SettingsScene {
                             Toggle(isOn: bindingForRule(rule.id)) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack(spacing: 6) {
-                                        Text(rule.displayName)
+                                        Text(AppLocalization.string(
+                                            rule.displayName,
+                                            locale: currentEnvironmentLocale
+                                        ))
                                         Text(rule.directoryName)
                                             .font(.caption.monospaced())
                                             .padding(.horizontal, 4)
@@ -588,12 +636,19 @@ extension SettingsScene {
                                                 .foregroundStyle(.orange)
                                         }
                                     }
-                                    Text(rule.subtitle)
+                                    Text(AppLocalization.string(
+                                        rule.subtitle,
+                                        locale: currentEnvironmentLocale
+                                    ))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)
                                     if !rule.siblingMarkers.isEmpty {
-                                        Text(String(format: String(localized: "settings.dev.sibling_markers.format", bundle: .module), rule.siblingMarkers.joined(separator: " / ")))
+                                        Text(AppLocalization.format(
+                                            "settings.dev.sibling_markers.format",
+                                            locale: currentEnvironmentLocale,
+                                            arguments: [rule.siblingMarkers.joined(separator: " / ")]
+                                        ))
                                             .font(.caption2)
                                             .foregroundStyle(.tertiary)
                                     }
@@ -601,7 +656,7 @@ extension SettingsScene {
                             }
                         }
                     } header: {
-                        Text(String(localized: String.LocalizationValue(ecosystem.localizationKey), bundle: .module))
+                        Text(AppLocalization.string(ecosystem.localizationKey, locale: currentEnvironmentLocale))
                     }
                 }
             }
@@ -634,7 +689,10 @@ extension SettingsScene {
         Form {
             Section {
                 LabeledContent {
-                    Text(GSYLog.currentLogDirectory?.path ?? String(localized: "settings.storage.log.no_file_sink", bundle: .module))
+                    Text(
+                        GSYLog.currentLogDirectory?.path
+                            ?? AppLocalization.string("settings.storage.log.no_file_sink", locale: currentEnvironmentLocale)
+                    )
                         .font(.caption)
                         .lineLimit(2)
                         .truncationMode(.middle)
@@ -688,8 +746,8 @@ extension SettingsScene {
                     }
                     .disabled(GSYLog.currentLogDirectory == nil)
                 }
-                if let logActionMessage {
-                    Text(logActionMessage)
+                if let logActionNotice {
+                    Text(logActionNotice.localized(locale: currentEnvironmentLocale))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
@@ -705,15 +763,15 @@ extension SettingsScene {
         .formStyle(.grouped)
         .padding()
         .confirmationDialog(
-            String(localized: "settings.storage.log.clear.confirm.title", bundle: .module),
+            AppLocalization.string("settings.storage.log.clear.confirm.title", locale: currentEnvironmentLocale),
             isPresented: $confirmClearLogs,
             titleVisibility: .visible
         ) {
-            Button(String(localized: "settings.storage.log.clear.confirm.action", bundle: .module),
+            Button(AppLocalization.string("settings.storage.log.clear.confirm.action", locale: currentEnvironmentLocale),
                    role: .destructive) {
                 clearLogs()
             }
-            Button(String(localized: "settings.storage.log.clear.confirm.cancel", bundle: .module),
+            Button(AppLocalization.string("settings.storage.log.clear.confirm.cancel", locale: currentEnvironmentLocale),
                    role: .cancel) {}
         } message: {
             Text("settings.storage.log.clear.confirm.message", bundle: .module)
@@ -749,10 +807,10 @@ extension SettingsScene {
         do {
             try GSYLog.exportLogs(to: url)
             GSYLog.notice(.operation, "settings.log.export path=\(url.path) files=\(GSYLog.currentLogFiles().count)")
-            logActionMessage = String(format: String(localized: "settings.storage.log.export.done %@", bundle: .module), url.path)
+            logActionNotice = .exported(path: url.path)
         } catch {
             GSYLog.error(.operation, "settings.log.export_failed path=\(url.path) error=\(error)")
-            logActionMessage = String(format: String(localized: "settings.storage.log.export.failed %@", bundle: .module), "\(error)")
+            logActionNotice = .exportFailed(detail: "\(error)")
         }
     }
 
@@ -760,10 +818,10 @@ extension SettingsScene {
         do {
             let count = try GSYLog.clearLogs()
             GSYLog.notice(.operation, "settings.log.clear count=\(count)")
-            logActionMessage = String(format: String(localized: "settings.storage.log.clear.done %d", bundle: .module), count)
+            logActionNotice = .cleared(count: count)
         } catch {
             GSYLog.error(.operation, "settings.log.clear_failed error=\(error)")
-            logActionMessage = String(format: String(localized: "settings.storage.log.clear.failed %@", bundle: .module), "\(error)")
+            logActionNotice = .clearFailed(detail: "\(error)")
         }
     }
 

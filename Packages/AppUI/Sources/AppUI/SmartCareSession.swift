@@ -59,7 +59,11 @@ typealias SmartCareCandidateDeletionAggregator = @Sendable (
 enum SmartCareSnapshotTerminalDecision: Sendable, Equatable {
     case wait
     case accept(isComplete: Bool)
-    case fail(String)
+    case fail(SmartCareFailureDetail)
+
+    static func fail(_ message: String) -> SmartCareSnapshotTerminalDecision {
+        .fail(.verbatim(message))
+    }
 }
 
 enum SmartCareSnapshotCompletionPolicy {
@@ -73,16 +77,16 @@ enum SmartCareSnapshotCompletionPolicy {
         guard snapshot.isFinished else {
             if isScanning { return .wait }
             return .fail(
-                terminalFailure?.message
-                    ?? fallbackError
-                    ?? String(localized: "main.scan.incomplete", bundle: .module)
+                terminalFailure.map { .verbatim($0.message) }
+                    ?? fallbackError.map(SmartCareFailureDetail.verbatim)
+                    ?? .scanIncomplete
             )
         }
 
         // Scanner 的显式 `.failed` 优先于 partial 外观；该阶段不得写入 completedStages，
         // 否则 Retry 会永久跳过真正失败的阶段。
         if let terminalFailure {
-            return .fail(terminalFailure.message)
+            return .fail(.verbatim(terminalFailure.message))
         }
 
         // Partial 只有在同时携带精确删除拒绝证据时才是可用终态。缺少证据意味着
@@ -90,14 +94,15 @@ enum SmartCareSnapshotCompletionPolicy {
         guard snapshot.isComplete else {
             guard hasDeletionDeniedEvidence else {
                 return .fail(
-                    fallbackError ?? String(localized: "main.scan.incomplete", bundle: .module)
+                    fallbackError.map(SmartCareFailureDetail.verbatim)
+                        ?? .scanIncomplete
                 )
             }
             return .accept(isComplete: false)
         }
 
         if snapshot.rows.isEmpty, let fallbackError {
-            return .fail(fallbackError)
+            return .fail(.verbatim(fallbackError))
         }
         return .accept(isComplete: true)
     }
@@ -342,6 +347,11 @@ public final class SmartCareSession {
                 // 完整阶段的 coordinator/checkpoint 是同一 MainActor 事务提交；
                 // 直接使用已发布 summary，避免取消时再做一次 20k 结构比较/重投影。
                 self.care.cancel()
+            } catch let failure as SmartCareScanFailure {
+                guard self.scanGeneration == generation else { return }
+                self.finishedAt = Date()
+                GSYLog.error(.scan, "Smart Care scan failed: \(failure.diagnosticDescription)")
+                self.care.fail(.scanFailed(failure.detail))
             } catch {
                 guard self.scanGeneration == generation else { return }
                 self.finishedAt = Date()
@@ -734,8 +744,8 @@ public final class SmartCareSession {
                     )
                 }
                 return snapshot
-            case .fail(let message):
-                throw SmartCareScanFailure.message(message)
+            case .fail(let detail):
+                throw SmartCareScanFailure.detail(detail)
             }
         }
         throw CancellationError()
@@ -856,12 +866,20 @@ enum SmartCareAggregationExecutor {
     }
 }
 
-private enum SmartCareScanFailure: LocalizedError {
-    case message(String)
+private enum SmartCareScanFailure: Error {
+    case detail(SmartCareFailureDetail)
 
-    var errorDescription: String? {
+    var detail: SmartCareFailureDetail {
         switch self {
-        case .message(let message): return message
+        case .detail(let detail): return detail
+        }
+    }
+
+    var diagnosticDescription: String {
+        switch detail {
+        case .scanIncomplete: return "scanIncomplete"
+        case .trash(let failure): return "trashFailure(\(failure.legacyDiagnostic))"
+        case .verbatim(let message): return message
         }
     }
 }

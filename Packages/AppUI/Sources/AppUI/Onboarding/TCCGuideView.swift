@@ -3,6 +3,8 @@ import AppKit
 
 public struct TCCGuideView: View {
     public let onDismiss: (_ openedSettings: Bool) -> Void
+    /// v2026.07.15：Button 的 String 标签显式读取当前界面语言，无需重启向导。
+    @Environment(\.locale) private var locale
 
     public init(onDismiss: @escaping (_ openedSettings: Bool) -> Void) {
         self.onDismiss = onDismiss
@@ -41,14 +43,14 @@ public struct TCCGuideView: View {
             Divider()
 
             HStack {
-                Button(String(localized: "tcc.guide.button.later", bundle: .module)) {
+                Button(AppLocalization.string("tcc.guide.button.later", locale: locale)) {
                     onDismiss(false)
                 }
                 .keyboardShortcut(.cancelAction)
 
                 Spacer()
 
-                Button(String(localized: "tcc.guide.button.open_settings", bundle: .module)) {
+                Button(AppLocalization.string("tcc.guide.button.open_settings", locale: locale)) {
                     if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
                         NSWorkspace.shared.open(url)
                     }

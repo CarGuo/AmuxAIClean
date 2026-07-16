@@ -131,10 +131,43 @@ public struct PortCleanerGroup: Identifiable, Hashable, Sendable {
     }
 }
 
+/// v2026.07.15：终止请求结果只保存事实，不在后台 actor 内提前固化 App 语言。
+/// 若 UI 需要展示逐项原因，应在渲染边界调用 `message(locale:)`；系统 errno 文本保持
+/// verbatim，产品自身的原因则由显式传入的 App locale 投影。
+public enum PortCleanerKillDisposition: Hashable, Sendable {
+    case terminationRequested
+    case invalidPID
+    case currentApplicationProtected
+    case systemFailure(code: Int32, description: String)
+
+    public var succeeded: Bool {
+        if case .terminationRequested = self { return true }
+        return false
+    }
+
+    public func message(locale: Locale) -> String {
+        switch self {
+        case .terminationRequested:
+            return AppLocalization.string("port_cleaner.kill.success", locale: locale)
+        case .invalidPID:
+            return AppLocalization.string("port_cleaner.kill.invalid_pid", locale: locale)
+        case .currentApplicationProtected:
+            return AppLocalization.string("port_cleaner.kill.refuse_self", locale: locale)
+        case .systemFailure(_, let description):
+            return description
+        }
+    }
+}
+
 public struct PortCleanerKillResult: Hashable, Sendable {
     public let pid: Int32
-    public let success: Bool
-    public let message: String
+    public let disposition: PortCleanerKillDisposition
+
+    public var success: Bool { disposition.succeeded }
+
+    public func message(locale: Locale) -> String {
+        disposition.message(locale: locale)
+    }
 }
 
 public actor PortCleanerScanner {
@@ -171,8 +204,7 @@ public actor PortCleanerScanner {
     public func kill(pid: Int32) async -> PortCleanerKillResult {
         await kill(pids: [pid]).first ?? PortCleanerKillResult(
             pid: pid,
-            success: false,
-            message: String(localized: "port_cleaner.kill.invalid_pid", bundle: .module)
+            disposition: .invalidPID
         )
     }
 
@@ -182,29 +214,29 @@ public actor PortCleanerScanner {
             guard pid > 1 else {
                 return PortCleanerKillResult(
                     pid: pid,
-                    success: false,
-                    message: String(localized: "port_cleaner.kill.invalid_pid", bundle: .module)
+                    disposition: .invalidPID
                 )
             }
             guard pid != currentPID else {
                 return PortCleanerKillResult(
                     pid: pid,
-                    success: false,
-                    message: String(localized: "port_cleaner.kill.refuse_self", bundle: .module)
+                    disposition: .currentApplicationProtected
                 )
             }
             let rc = Darwin.kill(pid_t(pid), SIGTERM)
             if rc == 0 {
                 return PortCleanerKillResult(
                     pid: pid,
-                    success: true,
-                    message: String(localized: "port_cleaner.kill.success", bundle: .module)
+                    disposition: .terminationRequested
                 )
             }
+            let errorCode = errno
             return PortCleanerKillResult(
                 pid: pid,
-                success: false,
-                message: String(cString: strerror(errno))
+                disposition: .systemFailure(
+                    code: errorCode,
+                    description: String(cString: strerror(errorCode))
+                )
             )
         }
     }

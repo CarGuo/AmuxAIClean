@@ -25,20 +25,30 @@ public enum FileKind: String, CaseIterable, Sendable, Hashable, Identifiable {
 
     public var id: String { rawValue }
 
-    /// 用户可见名称。
-    public var label: String {
+    /// v2026.07.15：用户可见名称必须在 View 的当前 locale 下投影；枚举本身只保存
+    /// 稳定语义，不在进程启动语言里提前固化。
+    public var localizationKey: String {
         switch self {
-        case .video:     return String(localized: "filekind.video", bundle: .module)
-        case .image:     return String(localized: "filekind.image", bundle: .module)
-        case .audio:     return String(localized: "filekind.audio", bundle: .module)
-        case .archive:   return String(localized: "filekind.archive", bundle: .module)
-        case .disk:      return String(localized: "filekind.disk", bundle: .module)
-        case .installer: return String(localized: "filekind.installer", bundle: .module)
-        case .design:    return String(localized: "filekind.design", bundle: .module)
-        case .document:  return String(localized: "filekind.document", bundle: .module)
-        case .code:      return String(localized: "filekind.code", bundle: .module)
-        case .other:     return String(localized: "filekind.other", bundle: .module)
+        case .video:     return "filekind.video"
+        case .image:     return "filekind.image"
+        case .audio:     return "filekind.audio"
+        case .archive:   return "filekind.archive"
+        case .disk:      return "filekind.disk"
+        case .installer: return "filekind.installer"
+        case .design:    return "filekind.design"
+        case .document:  return "filekind.document"
+        case .code:      return "filekind.code"
+        case .other:     return "filekind.other"
         }
+    }
+
+    public func label(locale: Locale) -> String {
+        AppLocalization.string(localizationKey, locale: locale)
+    }
+
+    /// 兼容非界面调用；用户可见 View 必须调用 `label(locale:)`。
+    public var label: String {
+        label(locale: .current)
     }
 
     /// SF Symbol 名（Image(systemName:) 直接用）。

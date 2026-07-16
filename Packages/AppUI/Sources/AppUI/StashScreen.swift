@@ -27,6 +27,9 @@ import SafetyKit
 /// 4. **危险操作二次确认**：真正删除统一交给 MainView 的 DeleteSheet；这里只为
 ///    “清空购物车但不删文件”保留本地 confirmationDialog，避免同一动作弹两次确认。
 struct StashScreen: View {
+    /// v2026.07.15：tooltip、格式串与 confirmationDialog 都先要求具体 String；
+    /// 必须显式读取 View locale，不能让进程级字符串解析固化为启动语言。
+    @Environment(\.locale) private var locale
 
     /// 共享购物车 store。@Bindable 让 entries 变化自动驱动 List。
     @Bindable var stash: StashStore
@@ -88,7 +91,7 @@ struct StashScreen: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .help(String(localized: "stash.action.close", bundle: .module))
+            .help(AppLocalization.string("stash.action.close", locale: locale))
         }
         .padding(.horizontal)
         .padding(.vertical, 12)
@@ -152,7 +155,7 @@ struct StashScreen: View {
                 Image(systemName: "sparkles")
             }
             .buttonStyle(.borderless)
-            .help(String(localized: "stash.action.ai_one", bundle: .module))
+            .help(AppLocalization.string("stash.action.ai_one", locale: locale))
             .disabled(!aiSettings.isReadyForUI || aiQueue.phase == .running)
             // 行内单独清理：→ 主删除链路。
             Button(role: .destructive) {
@@ -161,7 +164,7 @@ struct StashScreen: View {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
-            .help(String(localized: "stash.action.trash_one", bundle: .module))
+            .help(AppLocalization.string("stash.action.trash_one", locale: locale))
             .disabled(aiQueue.phase == .running)
             // 行内剔除：仅从购物车移除，不删文件。
             Button {
@@ -171,7 +174,7 @@ struct StashScreen: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.borderless)
-            .help(String(localized: "stash.row.remove", bundle: .module))
+            .help(AppLocalization.string("stash.row.remove", locale: locale))
             .disabled(aiQueue.phase == .running)
         }
         .padding(.vertical, 2)
@@ -179,14 +182,14 @@ struct StashScreen: View {
             Button {
                 onAskAIOne(entry)
             } label: {
-                Label(String(localized: "stash.action.ai_one", bundle: .module),
+                Label(AppLocalization.string("stash.action.ai_one", locale: locale),
                       systemImage: "sparkles")
             }
             .disabled(!aiSettings.isReadyForUI || aiQueue.phase == .running)
             Button(role: .destructive) {
                 onCleanOne(entry)
             } label: {
-                Label(String(localized: "stash.action.trash_one", bundle: .module),
+                Label(AppLocalization.string("stash.action.trash_one", locale: locale),
                       systemImage: "trash")
             }
             .disabled(aiQueue.phase == .running)
@@ -194,7 +197,7 @@ struct StashScreen: View {
             Button {
                 stash.remove(entry.path)
             } label: {
-                Label(String(localized: "stash.row.remove", bundle: .module),
+                Label(AppLocalization.string("stash.row.remove", locale: locale),
                       systemImage: "xmark.circle")
             }
             .disabled(aiQueue.phase == .running)
@@ -218,7 +221,7 @@ struct StashScreen: View {
             if aiQueue.phase == .running && aiQueue.currentPath == entry.path {
                 ProgressView()
                     .controlSize(.small)
-                    .help(String(localized: "stash.ai.row.querying", bundle: .module))
+                    .help(AppLocalization.string("stash.ai.row.querying", locale: locale))
             } else {
                 EmptyView()
             }
@@ -272,20 +275,20 @@ struct StashScreen: View {
             Button(role: .destructive) {
                 isConfirmClearAllPresented = true
             } label: {
-                Label(String(localized: "stash.action.clear_all", bundle: .module),
+                Label(AppLocalization.string("stash.action.clear_all", locale: locale),
                       systemImage: "xmark.bin")
             }
             .disabled(stash.entries.isEmpty || aiQueue.phase == .running)
             .confirmationDialog(
-                String(localized: "stash.confirm.clear_all.title", bundle: .module),
+                AppLocalization.string("stash.confirm.clear_all.title", locale: locale),
                 isPresented: $isConfirmClearAllPresented,
                 titleVisibility: .visible
             ) {
-                Button(String(localized: "stash.confirm.clear_all.confirm", bundle: .module),
+                Button(AppLocalization.string("stash.confirm.clear_all.confirm", locale: locale),
                        role: .destructive) {
                     stash.clear()
                 }
-                Button(String(localized: "stash.confirm.cancel", bundle: .module),
+                Button(AppLocalization.string("stash.confirm.cancel", locale: locale),
                        role: .cancel) {}
             } message: {
                 Text("stash.confirm.clear_all.message", bundle: .module)
@@ -303,7 +306,7 @@ struct StashScreen: View {
             Button(role: .destructive) {
                 onCleanAll(stash.entries)
             } label: {
-                Label(String(localized: "stash.action.trash_all", bundle: .module),
+                Label(AppLocalization.string("stash.action.trash_all", locale: locale),
                       systemImage: "trash.fill")
             }
             .keyboardShortcut(.defaultAction)
@@ -332,15 +335,14 @@ struct StashScreen: View {
                 Button {
                     aiQueue.cancel()
                 } label: {
-                    Label(String(localized: "stash.ai.batch.cancel", bundle: .module),
+                    Label(AppLocalization.string("stash.ai.batch.cancel", locale: locale),
                           systemImage: "stop.circle")
                 }
             }
         case .idle:
             HStack(spacing: 8) {
-                if let key = aiQueue.lastGlobalError {
-                    // 全局预检失败：把 lastGlobalError 这条 i18n key 翻成展示文案
-                    Text(Self.localizedGlobalError(key))
+                if let error = aiQueue.lastGlobalError {
+                    Text(Self.localizedGlobalError(error, locale: locale))
                         .font(.caption)
                         .foregroundStyle(.red)
                         .lineLimit(2)
@@ -349,13 +351,16 @@ struct StashScreen: View {
                 Button {
                     onRunAIBatch()
                 } label: {
-                    Label(String(localized: "stash.action.ai_all", bundle: .module),
+                    Label(AppLocalization.string("stash.action.ai_all", locale: locale),
                           systemImage: "sparkles")
                 }
                 .disabled(stash.entries.isEmpty || !aiSettings.isReadyForUI)
                 .help(aiSettings.isReadyForUI
-                      ? String(localized: "stash.action.ai_all.help", bundle: .module)
-                      : String(localized: "stash.action.ai_all.help_disabled_not_configured", bundle: .module))
+                      ? AppLocalization.string("stash.action.ai_all.help", locale: locale)
+                      : AppLocalization.string(
+                          "stash.action.ai_all.help_disabled_not_configured",
+                          locale: locale
+                      ))
             }
         }
     }
@@ -363,26 +368,55 @@ struct StashScreen: View {
     /// 进度文案："3 / 12 · 正在询问 xxx"。currentPath 缺失时只显示数字。
     private var progressLine: String {
         if let p = aiQueue.currentPath {
-            return String(format: String(localized: "stash.ai.batch.progress.with_path", bundle: .module),
-                          aiQueue.processed, aiQueue.total, (p as NSString).lastPathComponent)
+            return AppLocalization.format(
+                "stash.ai.batch.progress.with_path",
+                locale: locale,
+                arguments: [
+                    Int64(aiQueue.processed),
+                    Int64(aiQueue.total),
+                    (p as NSString).lastPathComponent
+                ]
+            )
         } else {
-            return String(format: String(localized: "stash.ai.batch.progress", bundle: .module),
-                          aiQueue.processed, aiQueue.total)
+            return AppLocalization.format(
+                "stash.ai.batch.progress",
+                locale: locale,
+                arguments: [Int64(aiQueue.processed), Int64(aiQueue.total)]
+            )
         }
     }
 
-    /// 把 StashAIQueue 的 lastGlobalError（可能是已知 i18n key）翻成 UI 文案，
-    /// 未知字符串则原样回显（避免不可见错误）。
-    private static func localizedGlobalError(_ raw: String) -> String {
-        switch raw {
-        case "ai.sheet.error.not_configured":
-            return String(localized: "ai.sheet.error.not_configured", bundle: .module)
-        case "ai.sheet.error.invalid_base_url":
-            return String(localized: "ai.sheet.error.invalid_base_url", bundle: .module)
-        case "ai.sheet.error.no_api_key":
-            return String(localized: "ai.sheet.error.no_api_key", bundle: .module)
-        default:
-            return raw
+    /// 把 StashAIQueue 的语义错误按 View 当前 locale 投影；技术参数原样嵌入模板。
+    static func localizedGlobalError(
+        _ error: StashAIQueue.GlobalError,
+        locale: Locale
+    ) -> String {
+        switch error {
+        case .notConfigured:
+            return AppLocalization.string("ai.sheet.error.not_configured", locale: locale)
+        case .invalidBaseURL:
+            return AppLocalization.string("ai.sheet.error.invalid_base_url", locale: locale)
+        case .insecureBaseURL(let scheme, let host):
+            return AppLocalization.format(
+                "ai.sheet.error.insecure_base_url.format",
+                locale: locale,
+                arguments: [scheme, host]
+            )
+        case .missingAPIKey:
+            return AppLocalization.string("ai.sheet.error.no_api_key", locale: locale)
+        case .credentialStorage(let failure):
+            let presentation: KeychainUserFacingError.Presentation
+            switch failure {
+            case .staleFileReference:
+                presentation = .staleFileReference
+            case .system(let technicalDetail):
+                presentation = .system(technicalDetail: technicalDetail)
+            case .unknown:
+                presentation = .unknown
+            }
+            return presentation.localizedMessage(locale: locale)
+        case .unknown:
+            return KeychainUserFacingError.Presentation.unknown.localizedMessage(locale: locale)
         }
     }
 
@@ -390,8 +424,13 @@ struct StashScreen: View {
 
     /// 顶部摘要文案："N 项 · X.X MB"，与 toolbar badge 信号一致。
     private var summaryLine: String {
-        String(format: String(localized: "stash.summary.count_bytes", bundle: .module),
-               stash.count,
-               ByteCountFormatter.string(fromByteCount: stash.totalBytes, countStyle: .file))
+        AppLocalization.format(
+            "stash.summary.count_bytes",
+            locale: locale,
+            arguments: [
+                Int64(stash.count),
+                ByteCountFormatter.string(fromByteCount: stash.totalBytes, countStyle: .file)
+            ]
+        )
     }
 }

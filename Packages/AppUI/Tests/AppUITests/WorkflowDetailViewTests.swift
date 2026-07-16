@@ -11,7 +11,7 @@ import SafetyKit
 /// 1. 空 home 不发出任何 card → cards == []，bootstrap 后 cardLoading 清空；
 /// 2. AppleWorkflow 默认实例在临时 fake home 下 cards 数稳定；
 /// 3. 一次性 bootstrap 幂等（重复 await 不重复加载）；
-/// 4. .commandLine recipe 的卡 hits 在 performDelete 时被记入 commandLineBlocked，不进 fsPaths；
+/// 4. Trash 与 Simulator managed uninstall 是两个独立事务，不共享意图或结果；
 /// 5. formatBytes 处理 0 / 1KB / 1GB / Int64.max 不崩。
 @MainActor
 final class WorkflowDetailViewTests: XCTestCase {
@@ -79,6 +79,109 @@ final class WorkflowDetailViewTests: XCTestCase {
         XCTAssertTrue(vm.expanded.contains("c1"))
         vm.toggleExpanded(cardID: "c1", open: false)
         XCTAssertFalse(vm.expanded.contains("c1"))
+    }
+
+    /// v2026.07.15：整根 DerivedData 默认选中后，用户仍必须能改选具体项目。
+    /// 父子互斥由“最后一次显式选择”决定；两个不重叠项目可以同时选择。
+    func test_toggleSelection_父子重叠时最后显式选择优先_兄弟可多选() {
+        let home = makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let rootCard = makeFilesystemCard(id: "card.derived-data.root")
+        let projectCard = makeFilesystemCard(id: "card.derived-data.projects")
+        let parent = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/DerivedData"),
+            sizeBytes: 300,
+            displayName: "DerivedData",
+            note: nil
+        )
+        let projectA = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/DerivedData/ProjectA-hash"),
+            sizeBytes: 100,
+            displayName: "ProjectA",
+            note: nil
+        )
+        let projectB = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/DerivedData/ProjectB-hash"),
+            sizeBytes: 200,
+            displayName: "ProjectB",
+            note: nil
+        )
+        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        vm.setTestCards([rootCard, projectCard])
+        vm.setTestHits([
+            rootCard.id: [parent],
+            projectCard.id: [projectA, projectB],
+        ])
+
+        vm.toggleSelection(hitID: parent.id, on: true)
+        XCTAssertEqual(vm.selected, [parent.id])
+
+        vm.toggleSelection(hitID: projectA.id, on: true)
+        XCTAssertEqual(vm.selected, [projectA.id],
+                       "显式选择子项必须取消已选父项")
+
+        vm.toggleSelection(hitID: projectB.id, on: true)
+        XCTAssertEqual(vm.selected, [projectA.id, projectB.id],
+                       "不重叠的兄弟项目必须允许多选")
+
+        vm.toggleSelection(hitID: parent.id, on: true)
+        XCTAssertEqual(vm.selected, [parent.id],
+                       "随后显式选择父项必须取消其所有已选后代")
+    }
+
+    /// 并发卡片可能在用户点击后才完成。晚到的 safe 默认选择不能把显式子项
+    /// 又折回父根，否则真实 UI 会出现“点中后过一会儿自己跳回去”。
+    func test_toggleSelection_显式子项不被晚到父卡默认选择覆盖() async throws {
+        let home = makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let parentURL = home.appendingPathComponent("DerivedData", isDirectory: true)
+        let childURL = parentURL.appendingPathComponent("ProjectA-hash", isDirectory: true)
+        try FileManager.default.createDirectory(at: childURL, withIntermediateDirectories: true)
+        try Data(repeating: 0x01, count: 4_096)
+            .write(to: childURL.appendingPathComponent("payload.bin"))
+        let releaseParent = LockedFlag(false)
+        let parentHit = WorkflowScanHit(
+            url: parentURL,
+            sizeBytes: nil,
+            displayName: "DerivedData",
+            note: nil
+        )
+        let childHit = WorkflowScanHit(
+            url: childURL,
+            sizeBytes: nil,
+            displayName: "ProjectA",
+            note: nil
+        )
+        let vm = WorkflowDetailViewModel(
+            workflow: ParentChildDynamicWorkflow(),
+            home: home,
+            dynamicDiscovery: { scannerID, _, _ in
+                if scannerID == "scanner.test.parent" {
+                    while !releaseParent.read() {
+                        try await Task.sleep(for: .milliseconds(2))
+                    }
+                    return DiscoveryEvidence(hits: [parentHit], incompleteIssues: [])
+                }
+                return DiscoveryEvidence(hits: [childHit], incompleteIssues: [])
+            }
+        )
+
+        let bootstrap = Task { await vm.bootstrap() }
+        for _ in 0..<500 where vm.cardHits["card.test.child"] == nil {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        guard vm.cardHits["card.test.child"]?.first != nil else {
+            releaseParent.set(true)
+            await bootstrap.value
+            return XCTFail("子卡应先发布，才能复现用户扫描中途点击")
+        }
+
+        vm.toggleSelection(hitID: childHit.id, on: true)
+        releaseParent.set(true)
+        await bootstrap.value
+
+        XCTAssertEqual(vm.selected, [childHit.id],
+                       "晚到父卡的 safe 默认选择不得覆盖更早的用户显式子项")
     }
 
     /// PR-5：formatBytes 不应对极值崩溃。
@@ -218,18 +321,51 @@ final class WorkflowDetailViewTests: XCTestCase {
                       runningBundleIDPrefix: runningBundleIDPrefix)
     }
 
-    private func makeCommandCard(id: String) -> DeveloperCard {
+    private func makeManagedCard(
+        id: String,
+        kind: ManagedUninstallRecipe = .simulatorDevice,
+        risk: DeveloperCard.Risk = .confirm
+    ) -> DeveloperCard {
         DeveloperCard(
             id: id,
             title: id,
             summary: "",
             source: .dynamicScanner(scannerID: "scanner.simctl-devices"),
-            recipe: .commandLine(
-                executable: "/usr/bin/xcrun",
-                args: ["simctl", "delete"]
-            ),
-            risk: .confirm
+            recipe: .managedUninstall(kind),
+            risk: risk
         )
+    }
+
+    private func makeManagedHit(
+        path: String,
+        displayName: String,
+        identifier: String?,
+        sizeBytes: Int64 = 0
+    ) -> WorkflowScanHit {
+        WorkflowScanHit(
+            url: URL(fileURLWithPath: path),
+            sizeBytes: sizeBytes,
+            displayName: displayName,
+            note: nil,
+            managedUninstallIdentifier: identifier
+        )
+    }
+
+    private final class LockedFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: Bool
+
+        init(_ initialValue: Bool) {
+            storage = initialValue
+        }
+
+        func read() -> Bool {
+            lock.withLock { storage }
+        }
+
+        func set(_ value: Bool) {
+            lock.withLock { storage = value }
+        }
     }
 
     private struct LiteralFilesystemWorkflow: DeveloperWorkflow {
@@ -282,6 +418,33 @@ final class WorkflowDetailViewTests: XCTestCase {
                 recipe: .filesystem,
                 risk: .safe
             )]
+        }
+    }
+
+    private struct ParentChildDynamicWorkflow: DeveloperWorkflow {
+        let id = "workflow.test.parent-child-dynamic"
+        let displayName = "workflow.test.parent-child-dynamic"
+        let subtitle = "workflow.test.parent-child-dynamic"
+
+        func cards(home: URL) -> [DeveloperCard] {
+            [
+                DeveloperCard(
+                    id: "card.test.parent",
+                    title: "card.test.parent",
+                    summary: "",
+                    source: .dynamicScanner(scannerID: "scanner.test.parent"),
+                    recipe: .filesystem,
+                    risk: .safe
+                ),
+                DeveloperCard(
+                    id: "card.test.child",
+                    title: "card.test.child",
+                    summary: "",
+                    source: .dynamicScanner(scannerID: "scanner.test.child"),
+                    recipe: .filesystem,
+                    risk: .safe
+                ),
+            ]
         }
     }
 
@@ -485,7 +648,8 @@ final class WorkflowDetailViewTests: XCTestCase {
         XCTAssertEqual(strictIntent.vendorOverrideRequest?.paths, [path])
         XCTAssertEqual(vm.selected, [hit.id])
         XCTAssertNil(vm.lastDeleteResult)
-        XCTAssertNil(vm.pendingSimctlStage)
+        XCTAssertNil(vm.simulatorUninstallState,
+                     "Trash 最终重验不得偷偷启动托管卸载事务")
     }
 
     func test_runningApp选择全部跳过_不调用删除也不伪造执行结果() async throws {
@@ -532,7 +696,7 @@ final class WorkflowDetailViewTests: XCTestCase {
         XCTAssertEqual(vm.selected, [hit.id], "跳过项必须保留选择，便于用户关闭应用后重试")
     }
 
-    func test_runningApp文件项全跳过_混合任务仍继续冻结的命令计划() async throws {
+    func test_runningApp文件项全跳过_managed卸载仍必须由独立请求启动() async throws {
         let home = makeTempHome()
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
         let filesystemPath = "/A/running-cache"
@@ -542,15 +706,13 @@ final class WorkflowDetailViewTests: XCTestCase {
             displayName: "Running Cache",
             note: nil
         )
-        let commandHit = WorkflowScanHit(
-            url: URL(fileURLWithPath: "/simulator/frozen"),
-            sizeBytes: 0,
+        let managedHit = makeManagedHit(
+            path: "/simulator/frozen",
             displayName: "Frozen Simulator",
-            note: nil,
-            commandLineTailArg: "11111111-2222-3333-4444-555555555555"
+            identifier: "11111111-2222-3333-4444-555555555555"
         )
         let filesystemCard = makeFilesystemCard(id: "card.running")
-        let commandCard = makeCommandCard(id: "card.command")
+        let managedCard = makeManagedCard(id: "card.managed")
         let vm = WorkflowDetailViewModel(
             workflow: AppleWorkflow(),
             home: home,
@@ -559,18 +721,20 @@ final class WorkflowDetailViewTests: XCTestCase {
                 isSimulatorRunning: { false }
             )
         )
-        vm.setTestCards([filesystemCard, commandCard])
+        vm.setTestCards([filesystemCard, managedCard])
         vm.setTestHits([
             filesystemCard.id: [filesystemHit],
-            commandCard.id: [commandHit],
+            managedCard.id: [managedHit],
         ])
-        vm.setTestSelection([filesystemHit.id, commandHit.id])
+        vm.setTestSelection([filesystemHit.id, managedHit.id])
         let pipeline = StubDeletionPipeline()
 
         await vm.requestDeleteConfirmation(pipeline: pipeline)
         guard case let .deleteConfirm(confirmation) = vm.activeSheet else {
-            return XCTFail("混合任务应先展示统一确认")
+            return XCTFail("Trash 应只为文件子集展示确认")
         }
+        XCTAssertEqual(confirmation.intent.selectedHitIDs, [filesystemHit.id])
+        XCTAssertEqual(confirmation.intent.filesystemPaths, [filesystemPath])
         let skipped = OperationResultPayload.RunningAppSkippedItem(
             path: filesystemPath,
             itemTitle: filesystemHit.displayName,
@@ -584,27 +748,24 @@ final class WorkflowDetailViewTests: XCTestCase {
             )
         )
         XCTAssertTrue(accepted)
-        let intent = try XCTUnwrap(vm.takePendingConfirmedDeleteIntent())
-        XCTAssertTrue(intent.filesystemPaths.isEmpty)
-        XCTAssertNil(intent.authorizedInteraction,
-                     "文件项全跳过后不得伪造 Trash 授权")
-        XCTAssertEqual(intent.runningAppSkipped, [skipped])
-        guard case let .ready(items) = intent.commandPlan else {
-            return XCTFail("文件项全跳过不得取消已冻结的命令计划")
-        }
-        XCTAssertEqual(items.map(\.hitID), [commandHit.id])
+        XCTAssertNil(vm.takePendingConfirmedDeleteIntent(),
+                     "Trash 文件全跳过时不得用 managed 项伪造 Trash 意图")
+        XCTAssertTrue(pipeline.movedPathsReceived.isEmpty)
+        XCTAssertNil(vm.simulatorUninstallState,
+                     "Trash 确认结束不能自动跳到 managed 卸载")
+        XCTAssertEqual(vm.selected, [filesystemHit.id, managedHit.id])
 
-        await vm.performDelete(pipeline: pipeline, intent: intent)
+        await vm.requestSimulatorUninstall()
 
-        XCTAssertTrue(pipeline.movedPathsReceived.isEmpty, "已跳过的文件项不得提交 Trash")
-        guard case let .firstReview(commandItems) = vm.pendingSimctlStage else {
-            return XCTFail("冻结命令应继续进入独立的两次确认")
+        guard case let .review(intent) = vm.simulatorUninstallState else {
+            return XCTFail("managed 卸载必须经独立请求后才进入 review")
         }
-        XCTAssertEqual(commandItems.map(\.hitID), [commandHit.id])
-        guard case .simctlConfirm = vm.activeSheet else {
-            return XCTFail("命令计划不仅要保留，还必须真正展示第一轮确认")
+        XCTAssertEqual(intent.selectedHitIDs, [managedHit.id])
+        XCTAssertEqual(intent.items.map(\.hitID), [managedHit.id])
+        XCTAssertEqual(intent.items.map(\.kind), [.simulatorDevice])
+        guard case .simulatorUninstall = vm.activeSheet else {
+            return XCTFail("managed 卸载必须使用自己的单一状态 sheet")
         }
-        XCTAssertNil(vm.lastDeleteResult, "进入命令确认前不能伪造文件删除结果")
     }
 
     func test_requestDeleteConfirmation_允许时冻结选择_等sheet关闭后才能执行() async {
@@ -751,6 +912,67 @@ final class WorkflowDetailViewTests: XCTestCase {
         XCTAssertTrue(vm.scanEvidence.partialPaths.isSuperset(of: [metadataPath, tccPath]))
         XCTAssertFalse(vm.scanEvidence.permissionDeniedPaths.contains(metadataPath))
         XCTAssertTrue(vm.scanEvidence.permissionDeniedPaths.contains(tccPath))
+    }
+
+    /// v2026.07.15：完整扫描的 0-byte filesystem 目标没有清理收益，不能发布成
+    /// “Zero KB” row，也不能因为 safe 卡默认选择而制造一个无效果操作。
+    func test_filesystem完整零占用_发布边界过滤row且不默认选择() async throws {
+        let home = makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let emptyArchives = home.appendingPathComponent("Archives", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: emptyArchives,
+            withIntermediateDirectories: true
+        )
+        let vm = WorkflowDetailViewModel(
+            workflow: LiteralFilesystemWorkflow(path: emptyArchives.path),
+            home: home
+        )
+
+        await vm.bootstrap()
+
+        XCTAssertEqual(vm.cardHits["card.test.literal"], [])
+        XCTAssertEqual(vm.cardTotalBytes["card.test.literal"], 0)
+        XCTAssertTrue(vm.selected.isEmpty,
+                      "完整 0-byte hit 不得进入 safe 卡默认选择")
+        XCTAssertTrue(vm.scanEvidence.incompleteIssues.isEmpty)
+    }
+
+    /// v2026.07.15：若 0 伴随目标级 incomplete evidence，它只能表示未知下界。
+    /// 必须保留 row 与证据，并把容量发布为 nil，不能与真正空目录合并。
+    func test_filesystem零占用但扫描不完整_保留row并发布未知容量() async throws {
+        let home = makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let target = home.appendingPathComponent("uncertain-cache")
+        try Data().write(to: target)
+        let issue = ScanIncompleteIssue(
+            path: target.path,
+            reason: .metadataUnavailable,
+            stage: .metadata,
+            posixErrorCode: EIO
+        )
+        let sourceHit = WorkflowScanHit(
+            url: target,
+            sizeBytes: 0,
+            displayName: "uncertain-cache",
+            note: target.path
+        )
+        let vm = WorkflowDetailViewModel(
+            workflow: DynamicOnlyWorkflow(),
+            home: home,
+            dynamicDiscovery: { _, _, _ in
+                DiscoveryEvidence(hits: [sourceHit], incompleteIssues: [issue])
+            }
+        )
+
+        await vm.bootstrap()
+
+        let published = try XCTUnwrap(vm.cardHits["card.test.dynamic"]?.first)
+        XCTAssertEqual(published.id, sourceHit.id)
+        XCTAssertNil(published.sizeBytes,
+                     "不完整扫描的 0 只是未知下界，UI 必须显示未知容量")
+        XCTAssertTrue(vm.selected.contains(published.id))
+        XCTAssertTrue(vm.scanEvidence.incompleteIssues.contains(issue))
     }
 
     func test_dynamicScanner_无路径的通用异常不伪造HOME根不完整证据() async throws {
@@ -933,39 +1155,29 @@ final class WorkflowDetailViewTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: target.path))
     }
 
-    func test_deleteIntent冻结路径命令与revision_确认后不回读可变cards() async throws {
+    func test_Trash意图只冻结filesystem_不携带managed且确认后不回读可变cards() async throws {
         let home = makeTempHome()
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
         let filesystemCard = makeFilesystemCard(id: "card.filesystem")
-        let commandCard = makeCommandCard(id: "card.command")
+        let managedCard = makeManagedCard(id: "card.managed")
         let oldFile = WorkflowScanHit(
             url: URL(fileURLWithPath: "/old/cache"),
             sizeBytes: 10,
             displayName: "old cache",
             note: nil
         )
-        let oldCommand = WorkflowScanHit(
-            url: URL(fileURLWithPath: "/old/simulator"),
-            sizeBytes: 0,
+        let oldManaged = makeManagedHit(
+            path: "/old/simulator",
             displayName: "old simulator",
-            note: nil,
-            commandLineTailArg: "11111111-2222-3333-4444-555555555555"
+            identifier: "11111111-2222-3333-4444-555555555555"
         )
-        let coordinator = SimulatorDeleteCoordinator(
-            executor: SubprocessExecutor(timeout: 1, dryRun: true),
-            isSimulatorRunning: { false }
-        )
-        let vm = WorkflowDetailViewModel(
-            workflow: AppleWorkflow(),
-            home: home,
-            simulatorCoordinator: coordinator
-        )
-        vm.setTestCards([filesystemCard, commandCard])
+        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        vm.setTestCards([filesystemCard, managedCard])
         vm.setTestHits([
             filesystemCard.id: [oldFile],
-            commandCard.id: [oldCommand],
+            managedCard.id: [oldManaged],
         ])
-        vm.setTestSelection([oldFile.id, oldCommand.id])
+        vm.setTestSelection([oldFile.id, oldManaged.id])
         vm.setTestScanEvidence(WorkflowScanEvidence(revision: 42))
         let pipeline = StubDeletionPipeline()
         pipeline.stubOutcome = TrashOutcome(
@@ -977,12 +1189,15 @@ final class WorkflowDetailViewTests: XCTestCase {
 
         await vm.requestDeleteConfirmation(pipeline: pipeline)
         guard case let .deleteConfirm(confirmation) = vm.activeSheet else {
-            return XCTFail("应生成冻结意图")
+            return XCTFail("应生成独立 Trash 冻结意图")
         }
+        XCTAssertEqual(confirmation.intent.selectedHitIDs, [oldFile.id])
+        XCTAssertEqual(confirmation.intent.filesystemPaths, [oldFile.url.path])
+        XCTAssertEqual(confirmation.intent.itemCount, 1)
         let revisionBefore = vm.scanEvidence.revision
-        vm.toggleSelection(hitID: oldCommand.id, on: false)
+        vm.toggleSelection(hitID: oldManaged.id, on: false)
         await vm.refreshAll()
-        XCTAssertEqual(vm.selected, [oldFile.id, oldCommand.id], "确认事务期间选择必须禁用")
+        XCTAssertEqual(vm.selected, [oldFile.id, oldManaged.id], "Trash 确认期间选择必须冻结")
         XCTAssertEqual(vm.scanEvidence.revision, revisionBefore, "确认事务期间重扫必须禁用")
 
         let newFile = WorkflowScanHit(
@@ -1001,31 +1216,27 @@ final class WorkflowDetailViewTests: XCTestCase {
         await vm.performDelete(pipeline: pipeline, intent: intent)
 
         XCTAssertEqual(pipeline.movedPathsReceived, [oldFile.url.path])
-        guard case let .firstReview(items) = vm.pendingSimctlStage else {
-            return XCTFail("冻结的 simctl item 不得因 cardHits 改变而丢失")
-        }
-        XCTAssertEqual(items.map(\.args), [[
-            "simctl", "delete", "11111111-2222-3333-4444-555555555555",
-        ]])
+        XCTAssertNil(vm.simulatorUninstallState,
+                     "Trash 执行完成不得自动复用选中集启动 managed 事务")
+        XCTAssertEqual(vm.selected, [oldManaged.id],
+                       "Trash 成功只能消费 filesystem row，managed row 保留")
     }
 
-    func test_filesystem最终安全拒绝_整次动作不进入simctl确认() async throws {
+    func test_filesystem最终安全拒绝_不启动独立managed事务() async throws {
         let home = makeTempHome()
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
         let filesystemCard = makeFilesystemCard(id: "card.filesystem")
-        let commandCard = makeCommandCard(id: "card.command")
+        let managedCard = makeManagedCard(id: "card.managed")
         let file = WorkflowScanHit(
             url: URL(fileURLWithPath: "/blocked/cache"),
             sizeBytes: 10,
             displayName: "cache",
             note: nil
         )
-        let command = WorkflowScanHit(
-            url: URL(fileURLWithPath: "/simulator"),
-            sizeBytes: 0,
+        let managed = makeManagedHit(
+            path: "/simulator",
             displayName: "simulator",
-            note: nil,
-            commandLineTailArg: "11111111-2222-3333-4444-555555555555"
+            identifier: "11111111-2222-3333-4444-555555555555"
         )
         let vm = WorkflowDetailViewModel(
             workflow: AppleWorkflow(),
@@ -1035,14 +1246,15 @@ final class WorkflowDetailViewTests: XCTestCase {
                 isSimulatorRunning: { false }
             )
         )
-        vm.setTestCards([filesystemCard, commandCard])
+        vm.setTestCards([filesystemCard, managedCard])
         vm.setTestHits([
             filesystemCard.id: [file],
-            commandCard.id: [command],
+            managedCard.id: [managed],
         ])
-        vm.setTestSelection([file.id, command.id])
+        vm.setTestSelection([file.id, managed.id])
         let pipeline = StubDeletionPipeline()
         let intent = try await confirmedIntent(from: vm, pipeline: pipeline)
+        XCTAssertEqual(intent.selectedHitIDs, [file.id])
         let rejection = DeletionPreflight.Rejection(
             path: file.url.path,
             reason: SafetyRejection.rootOrAboveHome.rawValue
@@ -1054,12 +1266,281 @@ final class WorkflowDetailViewTests: XCTestCase {
 
         await vm.performDelete(pipeline: pipeline, intent: intent)
 
-        XCTAssertNil(vm.pendingSimctlStage, "filesystem 安全拒绝后不能继续不可恢复的 simctl")
+        XCTAssertNil(vm.simulatorUninstallState,
+                     "filesystem 安全拒绝后不能偷偷开始 managed 卸载")
         guard case let .preflightNotice(_, rejections) = vm.activeSheet else {
             return XCTFail("最终重验拒绝必须回 typed notice，不能伪造成执行结果")
         }
         XCTAssertEqual(rejections, [rejection])
         XCTAssertNil(vm.lastDeleteResult)
+        XCTAssertEqual(vm.selected, [file.id, managed.id])
+        XCTAssertEqual(vm.cardHits[managedCard.id], [managed])
+    }
+
+    func test_managedUninstall_request_review_executing_finished_成功仅局部移除() async throws {
+        let home = makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let managedCard = makeManagedCard(
+            id: "card.managed.runtimes",
+            kind: .simulatorRuntime
+        )
+        let unrelatedCard = makeFilesystemCard(id: "card.unrelated")
+        let managedHits = (0..<8).map { index in
+            makeManagedHit(
+                path: "/simulator/runtime/\(index)",
+                displayName: "Runtime \(index)",
+                identifier: "11111111-2222-3333-4444-\(String(format: "%012llX", UInt64(index + 1)))",
+                sizeBytes: 1_024
+            )
+        }
+        let unrelatedHit = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/unrelated/cache"),
+            sizeBytes: 9_999,
+            displayName: "Unrelated Cache",
+            note: nil
+        )
+        let vm = WorkflowDetailViewModel(
+            workflow: AppleWorkflow(),
+            home: home,
+            simulatorCoordinator: SimulatorDeleteCoordinator(
+                executor: SubprocessExecutor(timeout: 1, dryRun: true),
+                isSimulatorRunning: { false }
+            )
+        )
+        vm.setTestCards([managedCard, unrelatedCard])
+        vm.setTestHits([
+            managedCard.id: managedHits,
+            unrelatedCard.id: [unrelatedHit],
+        ])
+        vm.setTestSelection(Set(managedHits.map(\.id)).union([unrelatedHit.id]))
+        vm.setTestScanEvidence(WorkflowScanEvidence(revision: 7))
+        let unrelatedLoadingSnapshot = vm.cardLoading
+
+        await vm.requestSimulatorUninstall()
+
+        guard case let .review(reviewIntent) = vm.simulatorUninstallState else {
+            return XCTFail("managed request 必须收敛到 review")
+        }
+        XCTAssertEqual(reviewIntent.selectedHitIDs, Set(managedHits.map(\.id)))
+        XCTAssertEqual(reviewIntent.items.map(\.kind), Array(repeating: .simulatorRuntime, count: 8))
+        XCTAssertEqual(reviewIntent.totalBytes, 8_192)
+        guard case .simulatorUninstall = vm.activeSheet else {
+            return XCTFail("review 必须留在 managed uninstall 独立 sheet")
+        }
+
+        let executionTask = Task { @MainActor in
+            await vm.executeSimulatorUninstall()
+        }
+        var observedExecuting: WorkflowDetailViewModel.SimulatorUninstallProgress?
+        for _ in 0..<200 {
+            if case let .executing(intent, progress) = vm.simulatorUninstallState {
+                XCTAssertEqual(intent.id, reviewIntent.id)
+                observedExecuting = progress
+                break
+            }
+            if case .finished = vm.simulatorUninstallState { break }
+            await Task.yield()
+        }
+        await executionTask.value
+
+        XCTAssertNotNil(observedExecuting,
+                        "执行必须发布独立 executing 状态，不能用全局 card loading 代替")
+        guard case let .finished(finishedIntent, completion) = vm.simulatorUninstallState else {
+            return XCTFail("所有托管提交完成后必须保留 finished 终态")
+        }
+        XCTAssertEqual(finishedIntent, reviewIntent)
+        XCTAssertEqual(completion.receipt?.submittedItemIDs, managedHits.map(\.id))
+        XCTAssertEqual(completion.succeededCount, managedHits.count)
+        XCTAssertEqual(completion.failedCount, 0)
+        XCTAssertTrue(completion.skippedItems.isEmpty)
+        XCTAssertEqual(vm.cardHits[managedCard.id], [])
+        XCTAssertEqual(vm.cardTotalBytes[managedCard.id], 0)
+        XCTAssertEqual(vm.cardHits[unrelatedCard.id], [unrelatedHit])
+        XCTAssertEqual(vm.cardTotalBytes[unrelatedCard.id], unrelatedHit.sizeBytes)
+        XCTAssertEqual(vm.selected, [unrelatedHit.id])
+        XCTAssertEqual(vm.cardLoading, unrelatedLoadingSnapshot,
+                       "managed 成功只局部移除 row，不得让无关卡进入 loading")
+        guard case .simulatorUninstall = vm.activeSheet else {
+            return XCTFail("finished 结果必须仍在同一 managed sheet 中可见")
+        }
+
+        vm.finishSimulatorUninstallPresentation()
+        XCTAssertNil(vm.simulatorUninstallState)
+        XCTAssertNil(vm.activeSheet)
+    }
+
+    func test_managedUninstall_review冻结计划_执行不回读可变cards与hits() async throws {
+        let home = makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let card = makeManagedCard(id: "card.managed.freeze")
+        let oldHit = makeManagedHit(
+            path: "/simulator/old",
+            displayName: "Old Simulator",
+            identifier: "11111111-2222-3333-4444-555555555555"
+        )
+        let newHit = makeManagedHit(
+            path: "/simulator/new",
+            displayName: "New Simulator",
+            identifier: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+        )
+        let vm = WorkflowDetailViewModel(
+            workflow: AppleWorkflow(),
+            home: home,
+            simulatorCoordinator: SimulatorDeleteCoordinator(
+                executor: SubprocessExecutor(timeout: 1, dryRun: true),
+                isSimulatorRunning: { false }
+            )
+        )
+        vm.setTestCards([card])
+        vm.setTestHits([card.id: [oldHit]])
+        vm.setTestSelection([oldHit.id])
+        vm.setTestScanEvidence(WorkflowScanEvidence(revision: 21))
+
+        await vm.requestSimulatorUninstall()
+        guard case let .review(frozenIntent) = vm.simulatorUninstallState else {
+            return XCTFail("请求应冻结 old hit 计划")
+        }
+        XCTAssertEqual(frozenIntent.items.map(\.hitID), [oldHit.id])
+        XCTAssertEqual(frozenIntent.items.map(\.args), [[
+            "simctl", "delete", "11111111-2222-3333-4444-555555555555",
+        ]])
+
+        vm.setTestHits([card.id: [newHit]])
+        vm.setTestSelection([newHit.id])
+        await vm.executeSimulatorUninstall()
+
+        guard case let .finished(intent, completion) = vm.simulatorUninstallState else {
+            return XCTFail("执行必须消费 review 时冻结的 intent")
+        }
+        XCTAssertEqual(intent, frozenIntent)
+        XCTAssertEqual(completion.outcomes.map(\.item.hitID), [oldHit.id])
+        XCTAssertEqual(completion.outcomes.map(\.item.args), frozenIntent.items.map(\.args))
+        XCTAssertEqual(vm.cardHits[card.id], [newHit],
+                       "旧操作成功只移除旧 hitID，不得覆盖新扫描 row")
+        XCTAssertEqual(vm.selected, [newHit.id])
+    }
+
+    func test_managedUninstall_不可卸载hit不可选_强制注入也会被深层预检阻断() async throws {
+        let home = makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let card = makeManagedCard(
+            id: "card.managed.read-only",
+            kind: .simulatorRuntime
+        )
+        let hit = makeManagedHit(
+            path: "/simulator/legacy-runtime",
+            displayName: "Legacy Runtime",
+            identifier: nil,
+            sizeBytes: 8_000
+        )
+        let vm = WorkflowDetailViewModel(
+            workflow: AppleWorkflow(),
+            home: home,
+            simulatorCoordinator: SimulatorDeleteCoordinator(
+                executor: SubprocessExecutor(timeout: 1, dryRun: true),
+                isSimulatorRunning: { false }
+            )
+        )
+        vm.setTestCards([card])
+        vm.setTestHits([card.id: [hit]])
+
+        XCTAssertFalse(vm.canSelect(card: card, hit: hit),
+                       "legacy/deletable=false runtime 没有 UUID，UI 必须禁止选择")
+
+        vm.setTestSelection([hit.id])
+        await vm.requestSimulatorUninstall()
+
+        guard case let .blocked(_, reason) = vm.simulatorUninstallState else {
+            return XCTFail("即使测试强制注入选择，深层 prepare 也必须 fail closed")
+        }
+        XCTAssertEqual(reason, .invalidSelection)
+        XCTAssertEqual(vm.cardHits[card.id], [hit])
+        XCTAssertEqual(vm.selected, [hit.id])
+    }
+
+    func test_managedUninstall_review期间Simulator启动_执行前revalidate阻断() async throws {
+        let home = makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let running = LockedFlag(false)
+        let card = makeManagedCard(id: "card.managed.running")
+        let hit = makeManagedHit(
+            path: "/simulator/running",
+            displayName: "Running Simulator",
+            identifier: "11111111-2222-3333-4444-555555555555"
+        )
+        let vm = WorkflowDetailViewModel(
+            workflow: AppleWorkflow(),
+            home: home,
+            simulatorCoordinator: SimulatorDeleteCoordinator(
+                executor: SubprocessExecutor(
+                    allowlist: [],
+                    terminalWaitPolicy: .waitUntilExit,
+                    dryRun: false
+                ),
+                isSimulatorRunning: { running.read() }
+            )
+        )
+        vm.setTestCards([card])
+        vm.setTestHits([card.id: [hit]])
+        vm.setTestSelection([hit.id])
+        vm.setTestScanEvidence(WorkflowScanEvidence(revision: 31))
+
+        await vm.requestSimulatorUninstall()
+        guard case .review = vm.simulatorUninstallState else {
+            return XCTFail("Simulator 未运行时应允许 review")
+        }
+        running.set(true)
+        await vm.executeSimulatorUninstall()
+
+        guard case let .blocked(_, reason) = vm.simulatorUninstallState else {
+            return XCTFail("执行前发现 Simulator 启动必须进入 blocked")
+        }
+        XCTAssertEqual(reason, .simulatorRunning(names: [hit.displayName]))
+        XCTAssertEqual(vm.selected, [hit.id])
+        XCTAssertEqual(vm.cardHits[card.id], [hit])
+        XCTAssertFalse(vm.isDeleting)
+    }
+
+    func test_managedUninstall_review意图过期_执行前staleBlocked且零提交() async throws {
+        let home = makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let card = makeManagedCard(id: "card.managed.stale")
+        let hit = makeManagedHit(
+            path: "/simulator/stale",
+            displayName: "Stale Simulator",
+            identifier: "11111111-2222-3333-4444-555555555555"
+        )
+        let vm = WorkflowDetailViewModel(
+            workflow: AppleWorkflow(),
+            home: home,
+            simulatorCoordinator: SimulatorDeleteCoordinator(
+                executor: SubprocessExecutor(
+                    allowlist: [],
+                    terminalWaitPolicy: .waitUntilExit,
+                    dryRun: false
+                ),
+                isSimulatorRunning: { false }
+            )
+        )
+        vm.setTestCards([card])
+        vm.setTestHits([card.id: [hit]])
+        vm.setTestSelection([hit.id])
+        vm.setTestScanEvidence(WorkflowScanEvidence(revision: 41))
+
+        await vm.requestSimulatorUninstall()
+        guard case .review = vm.simulatorUninstallState else {
+            return XCTFail("应先生成与 revision 41 绑定的 review intent")
+        }
+        vm.setTestScanEvidence(WorkflowScanEvidence(revision: 42))
+        await vm.executeSimulatorUninstall()
+
+        guard case let .blocked(_, reason) = vm.simulatorUninstallState else {
+            return XCTFail("旧 review 不得跨扫描 revision 提交")
+        }
+        XCTAssertEqual(reason, .staleSnapshot)
+        XCTAssertEqual(vm.selected, [hit.id])
+        XCTAssertEqual(vm.cardHits[card.id], [hit])
+        XCTAssertFalse(vm.isDeleting)
     }
 
     func test_scanRevision变化后_旧intent不能执行() async throws {
@@ -1232,6 +1713,109 @@ final class WorkflowDetailViewTests: XCTestCase {
 
         XCTAssertEqual(vm.totalSelectedBytes, 100,
                        "同一路径被多张 filesystem card 命中时，footer 总量不能重复计数")
+    }
+
+    func test_cardCapacityState_区分empty_known_partial_allUnknown_failed() {
+        let home = makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let card = makeFilesystemCard(id: "card.capacity.contract")
+        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        vm.setTestCards([card])
+
+        vm.setTestHits([card.id: []])
+        XCTAssertEqual(vm.cardCapacityState(for: card.id), .empty)
+
+        let known = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/known"),
+            sizeBytes: 2_048,
+            displayName: "known",
+            note: nil
+        )
+        let unknown = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/unknown"),
+            sizeBytes: nil,
+            displayName: "unknown",
+            note: nil
+        )
+        vm.setTestHits([card.id: [known]])
+        XCTAssertEqual(vm.cardCapacityState(for: card.id), .known(bytes: 2_048))
+
+        vm.setTestHits([card.id: [known, unknown]])
+        XCTAssertEqual(vm.cardCapacityState(for: card.id), .partialUnknown(knownBytes: 2_048))
+
+        vm.setTestHits([card.id: [unknown]])
+        XCTAssertEqual(vm.cardCapacityState(for: card.id), .allUnknown)
+
+        vm.setTestHits([card.id: []])
+        vm.setTestCardIncompleteIssues([
+            card.id: [ScanIncompleteIssue(path: "/usr/bin/xcrun", reason: .enumerationFailed)],
+        ])
+        XCTAssertEqual(vm.cardCapacityState(for: card.id), .failed)
+    }
+
+    func test_footer_选中未知大小时不再显示0KB_且中英文实时投影() {
+        let home = makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let card = makeFilesystemCard(id: "card.footer.unknown")
+        let hit = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/unknown"),
+            sizeBytes: nil,
+            displayName: "unknown",
+            note: nil
+        )
+        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        vm.setTestCards([card])
+        vm.setTestHits([card.id: [hit]])
+        vm.setTestSelection([hit.id])
+
+        XCTAssertEqual(vm.selectionCapacityState, .allUnknown(itemCount: 1))
+        let en = vm.selectionSummary(locale: Locale(identifier: "en"))
+        let zh = vm.selectionSummary(locale: Locale(identifier: "zh-Hans"))
+        XCTAssertTrue(en.contains("Size unknown"), "actual=\(en)")
+        XCTAssertTrue(zh.contains("大小未知"), "actual=\(zh)")
+        XCTAssertFalse(en.contains("0 KB"))
+        XCTAssertFalse(zh.contains("0 KB"))
+    }
+
+    func test_simctlSemanticNote_状态不泄露rawEnglish并随locale切换() {
+        let device = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/device"),
+            sizeBytes: nil,
+            displayName: "iPhone",
+            note: nil,
+            semanticNote: .simulatorDevice(
+                state: .shutdown,
+                runtimeIdentifier: "runtime-id"
+            )
+        )
+        let unavailable = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/runtime"),
+            sizeBytes: nil,
+            displayName: "iOS",
+            note: nil,
+            semanticNote: .simulatorRuntime(
+                runtimeIdentifier: "runtime-id",
+                isAvailable: false,
+                management: .legacyReadOnly
+            )
+        )
+
+        let enDevice = WorkflowHitNotePresentation.string(device, locale: Locale(identifier: "en"))
+        let zhDevice = WorkflowHitNotePresentation.string(device, locale: Locale(identifier: "zh-Hans"))
+        XCTAssertEqual(enDevice, "Shut Down · runtime-id")
+        XCTAssertEqual(zhDevice, "已关机 · runtime-id")
+        XCTAssertFalse(zhDevice?.contains("Shutdown") == true)
+        XCTAssertEqual(
+            WorkflowHitNotePresentation.string(unavailable, locale: Locale(identifier: "zh-Hans")),
+            "runtime-id · 当前不可用 · 旧版 Xcode 只读结果，请在 Xcode 中管理"
+        )
+    }
+
+    func test_默认managedExecutor_等待系统事务自然终态而非固定timeout() {
+        let home = makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        XCTAssertEqual(vm.testingSimulatorTerminalWaitPolicy, .waitUntilExit)
     }
 
     // MARK: - v2026.06.22 (P0-5) expandGlob

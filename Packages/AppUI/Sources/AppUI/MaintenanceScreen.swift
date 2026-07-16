@@ -12,6 +12,10 @@ import ScanKit
 /// - **不依赖 ScanCoordinator**：完全独立屏幕，本身是只读 + 用户主动触发。
 /// - **可注入** `tasks: MaintenanceTasks`：测试用注入 fake runner 即可绕开 Process.run。
 public struct MaintenanceScreen: View {
+    /// v2026.07.15：任务本身与 outcome 只保存语义/命令原始日志；所有标题、说明和
+    /// 按钮在当前 View locale 下投影，避免运行结果留在页面时语言无法同步切换。
+    @Environment(\.locale) private var locale
+
     private let tasks: MaintenanceTasks
 
     @State private var outcomes: [MaintenanceTasks.Outcome] = []
@@ -35,9 +39,9 @@ public struct MaintenanceScreen: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(String(localized: "maintenance.title", bundle: .module))
+            Text(AppLocalization.string("maintenance.title", locale: locale))
                 .font(.title2.bold())
-            Text(String(localized: "maintenance.subtitle", bundle: .module))
+            Text(AppLocalization.string("maintenance.subtitle", locale: locale))
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -53,7 +57,7 @@ public struct MaintenanceScreen: View {
                 Button {
                     runAll()
                 } label: {
-                    Label(String(localized: "maintenance.button.run_all", bundle: .module),
+                    Label(AppLocalization.string("maintenance.button.run_all", locale: locale),
                           systemImage: "play.rectangle.fill")
                 }
                 .disabled(!runningTasks.isEmpty)
@@ -82,7 +86,7 @@ public struct MaintenanceScreen: View {
             Button {
                 runTask(task)
             } label: {
-                Text(String(localized: "maintenance.button.run", bundle: .module))
+                Text(AppLocalization.string("maintenance.button.run", locale: locale))
             }
             .disabled(runningTasks.contains(task))
         }
@@ -93,10 +97,10 @@ public struct MaintenanceScreen: View {
     @ViewBuilder
     private var outcomeSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(String(localized: "maintenance.outcome.title", bundle: .module))
+            Text(AppLocalization.string("maintenance.outcome.title", locale: locale))
                 .font(.headline)
             if outcomes.isEmpty {
-                Text(String(localized: "maintenance.outcome.empty", bundle: .module))
+                Text(AppLocalization.string("maintenance.outcome.empty", locale: locale))
                     .font(.callout)
                     .foregroundStyle(.tertiary)
             } else {
@@ -173,18 +177,18 @@ public struct MaintenanceScreen: View {
     private func localizedTitle(for task: MaintenanceTasks.Task) -> String {
         switch task {
         case .flushQuickLookCache:
-            return String(localized: "maintenance.task.quicklook.title", bundle: .module)
+            return AppLocalization.string("maintenance.task.quicklook.title", locale: locale)
         case .flushDNSCache:
-            return String(localized: "maintenance.task.dns.title", bundle: .module)
+            return AppLocalization.string("maintenance.task.dns.title", locale: locale)
         }
     }
 
     private func localizedSubtitle(for task: MaintenanceTasks.Task) -> String {
         switch task {
         case .flushQuickLookCache:
-            return String(localized: "maintenance.task.quicklook.subtitle", bundle: .module)
+            return AppLocalization.string("maintenance.task.quicklook.subtitle", locale: locale)
         case .flushDNSCache:
-            return String(localized: "maintenance.task.dns.subtitle", bundle: .module)
+            return AppLocalization.string("maintenance.task.dns.subtitle", locale: locale)
         }
     }
 }

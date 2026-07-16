@@ -1,6 +1,25 @@
 import SwiftUI
 import AIKit
 
+/// v2026.07.15：AI 设置页保存语义反馈而不是已翻译 String。状态跨语言切换保持不变，
+/// View 每次按当前环境 locale 解析，避免“保存成功/Keychain 错误”停留在启动语言。
+enum AISettingsAPIKeyFeedback: Equatable, Sendable {
+    case saved
+    case removed
+    case failure(KeychainUserFacingError.Presentation)
+
+    func localizedMessage(locale: Locale) -> String {
+        switch self {
+        case .saved:
+            return AppLocalization.string("settings.ai.api_key.saved", locale: locale)
+        case .removed:
+            return AppLocalization.string("settings.ai.api_key.removed", locale: locale)
+        case .failure(let presentation):
+            return presentation.localizedMessage(locale: locale)
+        }
+    }
+}
+
 /// M5 / 2026-06：AI 设置 Tab。
 ///
 /// 位置：[SettingsScene](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SettingsScene.swift)
@@ -15,11 +34,12 @@ import AIKit
 ///   按需触发场景下用户在主列表右键"问 AI"那一刻就是天然的连通性测试，无须重复。
 struct AISettingsTab: View {
 
+    @Environment(\.locale) private var locale
     @Bindable var settings: AISettings
 
     @State private var apiKeyInput: String = ""
     @State private var storedKeyMasked: String = ""
-    @State private var saveMessage: String?
+    @State private var feedback: AISettingsAPIKeyFeedback?
     @State private var isKeychainBusy = false
 
     private let keyStore = KeychainAPIKeyStore.shared
@@ -112,7 +132,7 @@ struct AISettingsTab: View {
                 }
                 HStack {
                     Text(storedKeyMasked.isEmpty
-                         ? String(localized: "settings.ai.api_key.empty", bundle: .module)
+                         ? AppLocalization.string("settings.ai.api_key.empty", locale: locale)
                          : storedKeyMasked)
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
@@ -130,8 +150,8 @@ struct AISettingsTab: View {
                     }
                     .disabled(storedKeyMasked.isEmpty || isKeychainBusy)
                 }
-                if let msg = saveMessage {
-                    Text(msg)
+                if let feedback {
+                    Text(feedback.localizedMessage(locale: locale))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -192,7 +212,7 @@ struct AISettingsTab: View {
             let raw = try await keyStore.load()
             storedKeyMasked = KeychainAPIKeyStore.masked(raw)
         } catch {
-            saveMessage = KeychainUserFacingError.message(for: error)
+            feedback = .failure(KeychainUserFacingError.presentation(for: error))
         }
     }
 
@@ -204,9 +224,9 @@ struct AISettingsTab: View {
             let raw = try await keyStore.load()
             apiKeyInput = ""
             storedKeyMasked = KeychainAPIKeyStore.masked(raw)
-            saveMessage = String(localized: "settings.ai.api_key.saved", bundle: .module)
+            feedback = .saved
         } catch {
-            saveMessage = KeychainUserFacingError.message(for: error)
+            feedback = .failure(KeychainUserFacingError.presentation(for: error))
         }
     }
 
@@ -216,9 +236,9 @@ struct AISettingsTab: View {
         do {
             try await keyStore.remove()
             storedKeyMasked = ""
-            saveMessage = String(localized: "settings.ai.api_key.removed", bundle: .module)
+            feedback = .removed
         } catch {
-            saveMessage = KeychainUserFacingError.message(for: error)
+            feedback = .failure(KeychainUserFacingError.presentation(for: error))
         }
     }
 }

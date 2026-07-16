@@ -33,36 +33,42 @@ public struct ScanCategory: Identifiable, Hashable, Sendable {
 
     /// 本地化后的标题。`titleIsLocalizationKey == false` 时直接返回原值。
     public var displayTitle: String {
-        if titleIsLocalizationKey {
-            return String(localized: String.LocalizationValue(title), bundle: .module)
-        }
-        return title
+        displayTitle(locale: .current)
+    }
+
+    /// 按当前 SwiftUI 环境 locale 解析侧栏标题。
+    /// `displayTitle` 保留给非 UI / 旧调用方；运行期可切语言的 View 必须使用本入口。
+    public func displayTitle(locale: Locale) -> String {
+        titleIsLocalizationKey ? AppLocalization.string(title, locale: locale) : title
     }
 
     /// 本地化后的副标题。同上策略。
     public var displaySubtitle: String {
-        if titleIsLocalizationKey {
-            return String(localized: String.LocalizationValue(subtitle), bundle: .module)
-        }
-        return subtitle
+        displaySubtitle(locale: .current)
+    }
+
+    public func displaySubtitle(locale: Locale) -> String {
+        titleIsLocalizationKey ? AppLocalization.string(subtitle, locale: locale) : subtitle
     }
 
     /// 本地化后的长说明；未配置时退回副标题。
     public var displayHelp: String {
-        guard let help else { return displaySubtitle }
-        if titleIsLocalizationKey {
-            return String(localized: String.LocalizationValue(help), bundle: .module)
-        }
-        return help
+        displayHelp(locale: .current)
+    }
+
+    public func displayHelp(locale: Locale) -> String {
+        guard let help else { return displaySubtitle(locale: locale) }
+        return titleIsLocalizationKey ? AppLocalization.string(help, locale: locale) : help
     }
 
     /// 仅在显式配置长说明时返回 tooltip 文案；避免普通分类多做一次本地化。
     public var displayHelpIfConfigured: String? {
+        displayHelpIfConfigured(locale: .current)
+    }
+
+    public func displayHelpIfConfigured(locale: Locale) -> String? {
         guard let help else { return nil }
-        if titleIsLocalizationKey {
-            return String(localized: String.LocalizationValue(help), bundle: .module)
-        }
-        return help
+        return titleIsLocalizationKey ? AppLocalization.string(help, locale: locale) : help
     }
 
     public init(id: String, title: String, subtitle: String, rootPath: String,

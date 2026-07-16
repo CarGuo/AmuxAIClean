@@ -1197,13 +1197,30 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Available"
+            "value": "Available Now"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "可用"
+            "value": "当前空闲"
+          }
+        }
+      }
+    },
+    "capacity.legend.available_if_reclaimed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Est. Maximum Available"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "预计可用上限"
           }
         }
       }
@@ -1259,6 +1276,112 @@
         }
       }
     },
+    "capacity.legend.system_reclaimable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS May Release"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 可能释放"
+          }
+        }
+      }
+    },
+    "capacity.reclaimable.info.action": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "It is not one folder, and there is no safe “Clear All” action. Manage identifiable content in its own Settings pane or app—for example, turning off Apple Intelligence removes its on-device models. macOS reclaims the remaining system-managed data when needed." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "它不是某一个目录，也不存在安全的“一键全部清除”。可识别的内容应在所属设置或应用中管理；例如关闭 Apple Intelligence 会移除其设备端模型。其余系统管理的数据由 macOS 在需要时自动回收。" } }
+      }
+    },
+    "capacity.reclaimable.info.action.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Can I clear it now?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "能现在清掉吗？"
+          }
+        }
+      }
+    },
+    "capacity.reclaimable.info.changes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The estimate can jump when macOS recalculates caches, local snapshots, or downloadable system assets, such as on-device Apple Intelligence models. A change here does not by itself mean that files of the same size were just added or removed." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "macOS 重新评估缓存、本地快照或可重新下载的系统资源（例如设备端 Apple Intelligence 模型）时，这个估算可能突然变化。仅仅数字变化，并不代表刚刚新增或删除了同等大小的文件。" } }
+      }
+    },
+    "capacity.reclaimable.info.changes.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Why can it change suddenly?" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "为什么会突然变化？" } }
+      }
+    },
+    "capacity.reclaimable.info.help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "About system-reclaimable space"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "了解系统可能释放的空间"
+          }
+        }
+      }
+    },
+    "capacity.reclaimable.info.relationship": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“Available Now” is free space you can use immediately. “macOS May Release” is system-managed data that macOS estimates it could discard if space is needed. Adding them gives the “Estimated Maximum Available,” but that total is not guaranteed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“当前空闲”是现在就能使用的真实空闲空间。“macOS 可能释放”是系统估算在需要空间时可以丢弃的系统管理数据。两者相加得到“预计可用上限”，但这个总数并非保证。"
+          }
+        }
+      }
+    },
+    "capacity.reclaimable.info.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "System-Reclaimable Space"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统可能释放的空间"
+          }
+        }
+      }
+    },
     "capacity.retry": {
       "extractionState": "manual",
       "localizations": {
@@ -1299,13 +1422,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Run `sudo pmset -a hibernatemode 0; sudo rm /private/var/vm/sleepimage` in Terminal to free it (if you do not use hibernation)"
+            "value": "Managed by macOS for sleep and memory recovery. Do not delete this system file directly; macOS recreates it as needed."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "终端运行 `sudo pmset -a hibernatemode 0; sudo rm /private/var/vm/sleepimage` 可释放（如不使用休眠）"
+            "value": "由 macOS 用于睡眠与内存恢复。请勿直接删除该系统文件；macOS 会在需要时重新创建。"
           }
         }
       }
@@ -1490,6 +1613,146 @@
         }
       }
     },
+    "card.android.android-avd.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Emulator devices and their app data; review before removal" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "模拟器设备及其中的 App 数据；删除前请确认" } }
+      }
+    },
+    "card.android.android-avd.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Android Virtual Devices" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Android 虚拟设备" } }
+      }
+    },
+    "card.android.android-build-cache.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Legacy Android build outputs that can be regenerated" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "可重新生成的旧版 Android 构建产物" } }
+      }
+    },
+    "card.android.android-build-cache.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Android Build Cache" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Android 构建缓存" } }
+      }
+    },
+    "card.android.android-cache.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Downloaded metadata and temporary Android tool data" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Android 工具下载的元数据与临时数据" } }
+      }
+    },
+    "card.android.android-cache.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Android Tool Cache" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Android 工具缓存" } }
+      }
+    },
+    "card.android.gradle-caches.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Downloaded dependencies and reusable build caches" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已下载的依赖与可复用的构建缓存" } }
+      }
+    },
+    "card.android.gradle-caches.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Gradle Caches" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Gradle 缓存" } }
+      }
+    },
+    "card.android.gradle-daemon.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Daemon logs and state files recreated by Gradle" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Gradle 会重新生成的守护进程日志与状态文件" } }
+      }
+    },
+    "card.android.gradle-daemon.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Gradle Daemon Data" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Gradle 守护进程数据" } }
+      }
+    },
+    "card.android.jetbrains-androidstudio-caches.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "IDE indexes and caches that Android Studio can rebuild" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Android Studio 可重新生成的 IDE 索引与缓存" } }
+      }
+    },
+    "card.android.jetbrains-androidstudio-caches.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Android Studio Caches" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Android Studio 缓存" } }
+      }
+    },
+    "card.android.jetbrains-androidstudio-logs.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Diagnostic logs from installed Android Studio versions" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "各 Android Studio 版本生成的诊断日志" } }
+      }
+    },
+    "card.android.jetbrains-androidstudio-logs.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Android Studio Logs" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Android Studio 日志" } }
+      }
+    },
+    "card.android.sdk-build-tools.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Older installed versions; keep versions required by active projects" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已安装的旧版本；请保留当前项目所需版本" } }
+      }
+    },
+    "card.android.sdk-build-tools.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Android SDK Build Tools" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Android SDK 构建工具" } }
+      }
+    },
+    "card.android.sdk-platforms.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Older installed versions; keep versions required by active projects" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已安装的旧版本；请保留当前项目所需版本" } }
+      }
+    },
+    "card.android.sdk-platforms.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Android SDK Platforms" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Android SDK 平台" } }
+      }
+    },
+    "card.android.sdk-system-images.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Large emulator images that must be downloaded again after removal" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "体积较大的模拟器镜像；删除后需要重新下载" } }
+      }
+    },
+    "card.android.sdk-system-images.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Android Emulator System Images" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Android 模拟器系统镜像" } }
+      }
+    },
     "card.apple.archives.summary": {
       "extractionState": "manual",
       "localizations": {
@@ -1524,21 +1787,210 @@
         }
       }
     },
+    "card.apple.coresimulator-caches.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Temporary Simulator data that CoreSimulator can rebuild" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "CoreSimulator 可重新生成的模拟器临时数据" } }
+      }
+    },
+    "card.apple.coresimulator-caches.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "CoreSimulator Caches" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "CoreSimulator 缓存" } }
+      }
+    },
+    "card.apple.coresimulator-devices.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Device instances and app data managed by CoreSimulator" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "由 CoreSimulator 管理的设备实例与 App 数据" } }
+      }
+    },
+    "card.apple.coresimulator-devices.summary.blocked": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Quit Simulator before deleting device instances" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请先退出“模拟器”，再删除设备实例" } }
+      }
+    },
+    "card.apple.coresimulator-devices.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Simulator Devices" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "模拟器设备" } }
+      }
+    },
+    "card.apple.coresimulator-runtimes.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Installed OS runtimes managed by Xcode" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "由 Xcode 管理的已安装系统运行时" } }
+      }
+    },
+    "card.apple.coresimulator-runtimes.summary.blocked": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Quit Simulator before uninstalling runtimes" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请先退出“模拟器”，再卸载运行时" } }
+      }
+    },
+    "card.apple.coresimulator-runtimes.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Simulator Runtimes" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "模拟器运行时" } }
+      }
+    },
+    "card.apple.derived-data-per-project.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Review Xcode build data one project at a time" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "按项目检查 Xcode 编译数据" } }
+      }
+    },
+    "card.apple.derived-data-per-project.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "DerivedData by Project" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "按项目查看 DerivedData" } }
+      }
+    },
+    "card.apple.derived-data.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Build intermediates and indexes that Xcode can regenerate" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Xcode 可重新生成的编译中间产物与索引" } }
+      }
+    },
+    "card.apple.derived-data.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Xcode DerivedData" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Xcode DerivedData" } }
+      }
+    },
+    "card.apple.ios-devicesupport.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Older iOS Device Support" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "旧版 iOS 真机调试支持" } }
+      }
+    },
+    "card.apple.macos-devicesupport.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Older macOS Device Support" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "旧版 macOS 设备调试支持" } }
+      }
+    },
+    "card.apple.watchos-devicesupport.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Older watchOS Device Support" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "旧版 watchOS 真机调试支持" } }
+      }
+    },
     "card.apple.devicesupport.summary": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Symbol files for connected devices"
+            "value": "Xcode support and symbol caches for physical-device debugging; only cleanup candidates from older versions are listed"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已连接设备的符号文件"
+            "value": "Xcode 真机调试支持与符号缓存；这里只列出可清理的旧版本候选"
           }
         }
+      }
+    },
+    "card.webnode.electron-cache.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Downloaded Electron binaries that can be fetched again" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "可重新下载的 Electron 二进制文件" } }
+      }
+    },
+    "card.webnode.electron-cache.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Electron Cache" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Electron 缓存" } }
+      }
+    },
+    "card.webnode.node-gyp-cache.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Downloaded Node.js headers used for native builds" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原生构建所用的 Node.js 头文件下载缓存" } }
+      }
+    },
+    "card.webnode.node-gyp-cache.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "node-gyp Cache" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "node-gyp 缓存" } }
+      }
+    },
+    "card.webnode.node-modules-scattered.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Project dependencies across common development folders; reinstall after removal" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "常用开发目录中的项目依赖；删除后需重新安装" } }
+      }
+    },
+    "card.webnode.node-modules-scattered.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scattered node_modules" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "散落的 node_modules" } }
+      }
+    },
+    "card.webnode.npm-cache.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Downloaded package data that npm can fetch again" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "npm 可重新下载的依赖数据" } }
+      }
+    },
+    "card.webnode.npm-cache.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "npm Cache" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "npm 缓存" } }
+      }
+    },
+    "card.webnode.pnpm-store.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Shared package content that pnpm can download again" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "pnpm 可重新下载的共享依赖内容" } }
+      }
+    },
+    "card.webnode.pnpm-store.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "pnpm Store" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "pnpm 存储" } }
+      }
+    },
+    "card.webnode.yarn-cache.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Downloaded package data that Yarn can fetch again" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Yarn 可重新下载的依赖数据" } }
+      }
+    },
+    "card.webnode.yarn-cache.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Yarn Cache" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Yarn 缓存" } }
       }
     },
     "category.app_logs.subtitle": {
@@ -5633,6 +6085,397 @@
         }
       }
     },
+    "menu.native.file": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "File"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件"
+          }
+        }
+      }
+    },
+    "menu.native.edit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑"
+          }
+        }
+      }
+    },
+    "menu.native.view": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示"
+          }
+        }
+      }
+    },
+    "menu.native.window": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Window"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "窗口"
+          }
+        }
+      }
+    },
+    "menu.native.help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Help"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "帮助"
+          }
+        }
+      }
+    },
+    "menu.native.about %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "About %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关于 %@"
+          }
+        }
+      }
+    },
+    "menu.native.settings": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Settings…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置…"
+          }
+        }
+      }
+    },
+    "menu.native.services": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Services"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务"
+          }
+        }
+      }
+    },
+    "menu.native.hide %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐藏 %@"
+          }
+        }
+      }
+    },
+    "menu.native.hide_others": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide Others"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐藏其他"
+          }
+        }
+      }
+    },
+    "menu.native.show_all": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show All"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部显示"
+          }
+        }
+      }
+    },
+    "menu.native.quit %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quit %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "退出 %@"
+          }
+        }
+      }
+    },
+    "menu.native.close": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭"
+          }
+        }
+      }
+    },
+    "menu.native.undo": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Undo"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "撤销"
+          }
+        }
+      }
+    },
+    "menu.native.redo": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Redo"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重做"
+          }
+        }
+      }
+    },
+    "menu.native.cut": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cut"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "剪切"
+          }
+        }
+      }
+    },
+    "menu.native.copy": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制"
+          }
+        }
+      }
+    },
+    "menu.native.paste": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "粘贴"
+          }
+        }
+      }
+    },
+    "menu.native.delete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除"
+          }
+        }
+      }
+    },
+    "menu.native.select_all": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select All"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全选"
+          }
+        }
+      }
+    },
+    "menu.native.minimize": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minimize"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最小化"
+          }
+        }
+      }
+    },
+    "menu.native.zoom": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zoom"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "缩放"
+          }
+        }
+      }
+    },
+    "menu.native.bring_all_to_front": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bring All to Front"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "前置全部窗口"
+          }
+        }
+      }
+    },
     "menu.app.checkUpdates": {
       "extractionState": "manual",
       "localizations": {
@@ -5888,57 +6731,6 @@
         }
       }
     },
-    "op.result.cmdline.skipped %lld": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld command-line cleanup items were not run."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld 项命令行清理任务未执行。"
-          }
-        }
-      }
-    },
-    "op.result.cmdline.failure.detail %lld %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Exit code %1$lld: %2$@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "退出码 %1$lld：%2$@"
-          }
-        }
-      }
-    },
-    "op.result.cmdline.succeeded %lld": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld simulator cleanup commands completed successfully."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已成功完成 %lld 项模拟器清理命令。"
-          }
-        }
-      }
-    },
     "op.result.hint.blocked": {
       "extractionState": "manual",
       "localizations": {
@@ -5952,23 +6744,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "这些路径被内置安全规则保护，避免误删系统或其他应用。"
-          }
-        }
-      }
-    },
-    "op.result.hint.cmdline_failed": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "These simulator cleanup commands did not complete. The affected items were not reported as moved to Trash."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "这些模拟器清理命令未完成，相关项不会被误报为已移入废纸篓。"
           }
         }
       }
@@ -6259,23 +7034,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "被安全规则拦截的项"
-          }
-        }
-      }
-    },
-    "op.result.section.cmdline_failed": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Command-line cleanup failures"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "命令行清理失败"
           }
         }
       }
@@ -7527,6 +8285,533 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在扫描中…"
+          }
+        }
+      }
+    },
+    "rule.android.build_gradle.displayName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Android / Gradle build output"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Android / Gradle 构建产物"
+          }
+        }
+      }
+    },
+    "rule.android.build_gradle.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Generated Gradle or Android build output; recreated by the next build."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gradle 或 Android 生成的构建产物，可在下次构建时重新生成。"
+          }
+        }
+      }
+    },
+    "rule.android.cxx.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Android NDK and CMake build intermediates; recreated by the native build."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Android NDK 与 CMake 构建中间产物，可由原生构建重新生成。"
+          }
+        }
+      }
+    },
+    "rule.android.gradle_proj.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Project-local Gradle cache and metadata; Gradle recreates it as needed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "项目内的 Gradle 缓存与元数据，Gradle 会按需重新生成。"
+          }
+        }
+      }
+    },
+    "rule.apple.carthage.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Carthage dependency build products; Carthage can rebuild them."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Carthage 依赖构建产物，可由 Carthage 重新构建。"
+          }
+        }
+      }
+    },
+    "rule.apple.pods.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installed CocoaPods dependencies; pod install can recreate them but may take time."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CocoaPods 已安装依赖，可通过 pod install 重新生成，但可能耗时。"
+          }
+        }
+      }
+    },
+    "rule.apple.spm_dot.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Project-local Swift Package Manager metadata and configuration; review before removing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "项目内的 Swift Package Manager 元数据与配置，移除前请先确认。"
+          }
+        }
+      }
+    },
+    "rule.apple.swiftpm_build.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Swift Package Manager build products and caches; recreated by the next build."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Swift Package Manager 构建产物与缓存，可在下次构建时重新生成。"
+          }
+        }
+      }
+    },
+    "rule.apple.xcuserdata.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Per-user Xcode project and workspace state; Xcode recreates it, but personal UI state may reset."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Xcode 项目或工作区的用户状态；Xcode 可重新生成，但个人界面状态可能会重置。"
+          }
+        }
+      }
+    },
+    "rule.flutter.build.displayName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flutter build output"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flutter 构建产物"
+          }
+        }
+      }
+    },
+    "rule.flutter.build.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Generated Flutter build output; recreated by the next Flutter build."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flutter 生成的构建产物，可在下次 Flutter 构建时重新生成。"
+          }
+        }
+      }
+    },
+    "rule.flutter.dart_tool.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dart and Flutter tool metadata and generated cache; recreated by the toolchain."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dart 与 Flutter 工具元数据及生成缓存，可由工具链重新生成。"
+          }
+        }
+      }
+    },
+    "rule.general.cache.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Project-local tool cache beside package.json; tools recreate it as needed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "package.json 旁的项目工具缓存，相关工具会按需重新生成。"
+          }
+        }
+      }
+    },
+    "rule.general.turbo.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turborepo build cache; regenerated by later tasks."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turborepo 构建缓存，可由后续任务重新生成。"
+          }
+        }
+      }
+    },
+    "rule.go.vendor.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vendored Go dependencies; they may be checked into source control, so review before removing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go vendor 依赖可能已纳入版本控制，移除前请先确认。"
+          }
+        }
+      }
+    },
+    "rule.py.mypy_cache.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "mypy type-checking cache; regenerated by the next analysis."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "mypy 类型检查缓存，可在下次分析时重新生成。"
+          }
+        }
+      }
+    },
+    "rule.py.pycache.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compiled Python bytecode cache; Python recreates it automatically."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Python 编译字节码缓存，Python 会自动重新生成。"
+          }
+        }
+      }
+    },
+    "rule.py.pytest_cache.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "pytest run metadata and cache; regenerated by later test runs."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "pytest 运行元数据与缓存，可由后续测试重新生成。"
+          }
+        }
+      }
+    },
+    "rule.py.tox.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "tox test environments and cache; tox recreates them when tests run."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "tox 测试环境与缓存，可在运行测试时重新生成。"
+          }
+        }
+      }
+    },
+    "rule.py.venv.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Project virtual environment; dependencies can be reinstalled, but setup may take time."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "项目虚拟环境；依赖可重新安装，但环境配置可能耗时。"
+          }
+        }
+      }
+    },
+    "rule.py.venv2.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Project virtual environment; dependencies can be reinstalled, but setup may take time."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "项目虚拟环境；依赖可重新安装，但环境配置可能耗时。"
+          }
+        }
+      }
+    },
+    "rule.rust.target.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cargo build products and incremental cache; recreated by later builds."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cargo 构建产物与增量缓存，可由后续构建重新生成。"
+          }
+        }
+      }
+    },
+    "rule.web.coverage.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Generated test coverage reports; recreated by the next coverage run."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "测试覆盖率报告，可在下次覆盖率任务中重新生成。"
+          }
+        }
+      }
+    },
+    "rule.web.dist.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Generated web build output derived from source files."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "由源文件生成的 Web 构建产物。"
+          }
+        }
+      }
+    },
+    "rule.web.expo.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expo local development state and cache; Expo recreates it as needed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expo 本地开发状态与缓存，Expo 会按需重新生成。"
+          }
+        }
+      }
+    },
+    "rule.web.next.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next.js build output and cache; recreated by the next build."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next.js 构建产物与缓存，可在下次构建时重新生成。"
+          }
+        }
+      }
+    },
+    "rule.web.node_modules.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installed Node.js dependencies; the package manager can recreate them."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Node.js 已安装依赖，可由包管理器重新生成。"
+          }
+        }
+      }
+    },
+    "rule.web.nuxt.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuxt build output and cache; recreated by the next build."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuxt 构建产物与缓存，可在下次构建时重新生成。"
+          }
+        }
+      }
+    },
+    "rule.web.out_next.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exported or static web output may be a deliverable; review before removing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导出或静态 Web 产物可能是交付内容，移除前请先确认。"
+          }
+        }
+      }
+    },
+    "rule.web.parcel_cache.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Parcel incremental build cache; regenerated by later builds."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Parcel 增量构建缓存，可由后续构建重新生成。"
+          }
+        }
+      }
+    },
+    "rule.web.svelte_kit.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SvelteKit generated build state and cache; recreated by the next build."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SvelteKit 生成的构建状态与缓存，可在下次构建时重新生成。"
           }
         }
       }
@@ -8819,40 +10104,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "英文"
-          }
-        }
-      }
-    },
-    "settings.language.restart_hint": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Only the top menu bar and a few native system dialogs need a restart to switch language."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "仅顶部主菜单与少数系统原生弹窗需要重启 App 后才会跟着切换。"
-          }
-        }
-      }
-    },
-    "settings.language.restart_now": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Restart App Now"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "立即重启 App"
           }
         }
       }
@@ -13120,6 +14371,23 @@
         }
       }
     },
+    "updater.error.http_status %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The update server returned HTTP status %lld."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新服务器返回了 HTTP 状态码 %lld。"
+          }
+        }
+      }
+    },
     "updater.error.html_url_parse_failed": {
       "extractionState": "manual",
       "localizations": {
@@ -13133,6 +14401,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "html_url 解析失败"
+          }
+        }
+      }
+    },
+    "updater.error.invalid_response": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The update server returned an invalid response."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新服务器返回了无效响应。"
+          }
+        }
+      }
+    },
+    "updater.error.request_failed %@ %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The update request failed (%1$@, code %2$lld)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新请求失败（%1$@，错误码 %2$lld）。"
           }
         }
       }
@@ -13426,6 +14728,76 @@
         }
       }
     },
+    "versioned-root.android.sdk-build-tools.displayName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Android SDK Build Tools" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Android SDK 构建工具" } }
+      }
+    },
+    "versioned-root.android.sdk-platforms.displayName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Android SDK Platforms" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Android SDK 平台" } }
+      }
+    },
+    "versioned-root.android.sdk-system-images.displayName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Android Emulator System Images" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Android 模拟器系统镜像" } }
+      }
+    },
+    "versioned-root.apple.ios-device-support.displayName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "iOS Device Support" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "iOS 设备支持文件" } }
+      }
+    },
+    "versioned-root.apple.macos-device-support.displayName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "macOS Device Support" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "macOS 设备支持文件" } }
+      }
+    },
+    "versioned-root.apple.watchos-device-support.displayName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "watchOS Device Support" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "watchOS 设备支持文件" } }
+      }
+    },
+    "versioned-root.jetbrains.app-support.displayName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "JetBrains Application Support" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "JetBrains 应用支持数据" } }
+      }
+    },
+    "versioned-root.jetbrains.caches.displayName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "JetBrains Caches" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "JetBrains 缓存" } }
+      }
+    },
+    "versioned-root.jetbrains.logs.displayName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "JetBrains Logs" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "JetBrains 日志" } }
+      }
+    },
+    "versioned-root.jetbrains.toolbox-apps.displayName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "JetBrains Toolbox Apps" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "JetBrains Toolbox 应用" } }
+      }
+    },
     "view_mode.list.hint": {
       "extractionState": "manual",
       "localizations": {
@@ -13511,6 +14883,13 @@
         }
       }
     },
+    "workflow.android.displayName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Android" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Android" } }
+      }
+    },
     "workflow.android.subtitle": {
       "extractionState": "manual",
       "localizations": {
@@ -13526,6 +14905,13 @@
             "value": "Gradle 缓存、AVD 镜像等生成产物"
           }
         }
+      }
+    },
+    "workflow.apple.displayName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Apple" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Apple" } }
       }
     },
     "workflow.apple.subtitle": {
@@ -13545,6 +14931,20 @@
         }
       }
     },
+    "workflow.web-node.displayName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Web / Node" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Web / Node" } }
+      }
+    },
+    "workflow.web-node.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Package-manager caches, native build caches, and scattered node_modules" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "包管理器缓存、原生构建缓存与散落的 node_modules" } }
+      }
+    },
     "workflow.card.empty_chip": {
       "extractionState": "manual",
       "localizations": {
@@ -13562,6 +14962,34 @@
         }
       }
     },
+    "workflow.card.partial_size %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%@ known + unknown" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已知 %@ + 未知" } }
+      }
+    },
+    "workflow.card.scan_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scan failed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描失败" } }
+      }
+    },
+    "workflow.card.size_unknown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Size unknown" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "大小未知" } }
+      }
+    },
+    "workflow.detail.action.retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Retry Scan" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "重试扫描" } }
+      }
+    },
     "workflow.detail.action.rescan": {
       "extractionState": "manual",
       "localizations": {
@@ -13577,6 +15005,27 @@
             "value": "重新扫描"
           }
         }
+      }
+    },
+    "workflow.detail.action.delete_devices": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Delete Devices" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "删除设备" } }
+      }
+    },
+    "workflow.detail.action.managed_uninstall": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Uninstall / Delete" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "卸载 / 删除" } }
+      }
+    },
+    "workflow.detail.action.uninstall_runtimes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Uninstall Runtimes" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "卸载运行时" } }
       }
     },
     "workflow.detail.action.trash": {
@@ -13664,6 +15113,34 @@
         }
       }
     },
+    "workflow.detail.footer.summary.partial %lld %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Selected %1$lld items · %2$@ known + unknown size" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已选 %1$lld 项 · 已知 %2$@，另有大小未知项" } }
+      }
+    },
+    "workflow.detail.footer.summary.unknown %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Selected %lld items · Size unknown" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已选 %lld 项 · 大小未知" } }
+      }
+    },
+    "workflow.detail.partial_scan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Some items or sizes could not be read. The shown total is incomplete." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "部分条目或大小无法读取，当前显示并非完整总量。" } }
+      }
+    },
+    "workflow.detail.scan_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scan failed; no complete result is available." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描失败，当前没有可信的完整结果。" } }
+      }
+    },
     "workflow.detail.delete_confirm.action": {
       "extractionState": "manual",
       "localizations": {
@@ -13732,140 +15209,284 @@
         }
       }
     },
-    "workflow.detail.simctl.sheet.cancel": {
+    "workflow.detail.managed_uninstall.blocked.invalid": {
       "extractionState": "manual",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cancel"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "取消"
-          }
-        }
+        "en": { "stringUnit": { "state": "translated", "value": "The selected Simulator resource no longer has a valid management identifier. Rescan and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "所选模拟器资源已没有有效的管理标识。请重新扫描后再试。" } }
       }
     },
-    "workflow.detail.simctl.sheet.confirm_delete": {
+    "workflow.detail.managed_uninstall.blocked.simulator_running": {
       "extractionState": "manual",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Confirm Delete"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "确认删除"
-          }
-        }
+        "en": { "stringUnit": { "state": "translated", "value": "Simulator is running. Shut down Simulator and all booted devices before retrying this managed operation." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Simulator 正在运行。请先关闭 Simulator 及所有已启动设备，再重试此管理操作。" } }
       }
     },
-    "workflow.detail.simctl.sheet.confirm_irreversible": {
+    "workflow.detail.managed_uninstall.blocked.stale": {
       "extractionState": "manual",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "⚠️ Once confirmed, simctl will permanently remove the listed devices/runtimes. They will not appear in Trash."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "⚠️ 确认后 simctl 将永久删除以上设备/runtime，不会进入回收站。"
-          }
-        }
+        "en": { "stringUnit": { "state": "translated", "value": "The scan changed while this operation was being prepared. Review the current list and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "准备操作期间扫描内容已变化。请检查当前列表后重试。" } }
       }
     },
-    "workflow.detail.simctl.sheet.confirm_subtitle": {
+    "workflow.detail.managed_uninstall.blocked.subtitle": {
       "extractionState": "manual",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This action is destructive and cannot be undone."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "此操作具有破坏性，无法撤销。"
-          }
-        }
+        "en": { "stringUnit": { "state": "translated", "value": "Nothing was submitted to the system manager." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "尚未向系统管理器提交任何操作。" } }
       }
     },
-    "workflow.detail.simctl.sheet.confirm_title": {
+    "workflow.detail.managed_uninstall.blocked.title": {
       "extractionState": "manual",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Final Confirmation"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "最终确认"
-          }
-        }
+        "en": { "stringUnit": { "state": "translated", "value": "Operation Blocked" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "操作已阻止" } }
       }
     },
-    "workflow.detail.simctl.sheet.continue": {
+    "workflow.detail.managed_uninstall.cancel": {
       "extractionState": "manual",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Continue"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "下一步"
-          }
-        }
+        "en": { "stringUnit": { "state": "translated", "value": "Cancel" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "取消" } }
       }
     },
-    "workflow.detail.simctl.sheet.review_subtitle": {
+    "workflow.detail.managed_uninstall.confirm.devices": {
       "extractionState": "manual",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The following commands will be executed in the next step."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "下一步将执行以下命令，请先核对清单。"
-          }
-        }
+        "en": { "stringUnit": { "state": "translated", "value": "Delete Devices" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "删除设备" } }
       }
     },
-    "workflow.detail.simctl.sheet.review_title": {
+    "workflow.detail.managed_uninstall.confirm.mixed": {
       "extractionState": "manual",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Review simctl Deletions"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "确认要删除的 simctl 项"
-          }
-        }
+        "en": { "stringUnit": { "state": "translated", "value": "Confirm Managed Operation" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "确认管理操作" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.confirm.runtimes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Uninstall Runtimes" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "卸载运行时" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.consequence.devices": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The selected Simulator devices and their app data will be permanently deleted through CoreSimulator. They will not be moved to Trash." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "所选模拟器设备及其中的 App 数据将通过 CoreSimulator 永久删除，不会移入废纸篓。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.consequence.mixed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The selected Simulator devices will be permanently deleted and the selected runtimes will be uninstalled through CoreSimulator. None of these items will be moved to Trash." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "所选模拟器设备将被永久删除，所选运行时将通过 CoreSimulator 卸载；这些项目均不会移入废纸篓。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.consequence.runtimes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The selected Simulator runtimes will be uninstalled through CoreSimulator. They will not be moved to Trash or be restorable, but you can download them again from Xcode > Settings > Components." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "所选模拟器运行时将通过 CoreSimulator 卸载，不会移入废纸篓，也无法恢复；之后可在 Xcode「设置 > 组件」中重新下载。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.done": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Done" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "完成" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.executing.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The current item is allowed to finish safely before another item starts." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前项目会安全完成后，才会开始下一项。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.executing.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Managing Simulator Resources" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在管理模拟器资源" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.finished.failed.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Operation Failed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "操作失败" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.finished.partial.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Operation Partially Completed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "操作部分完成" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.finished.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Review the status of every selected item below." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请在下方检查每个所选项目的状态。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.finished.success.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Operation Completed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "操作已完成" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.kind.device": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Simulator device" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "模拟器设备" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.kind.runtime": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Simulator runtime" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "模拟器运行时" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.preparing.count %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Preparing %lld selected items…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在准备 %lld 个所选项目…" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.preparing.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Validating the frozen selection and Simulator state." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在验证冻结的选择及 Simulator 状态。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.preparing.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Preparing Managed Operation" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在准备管理操作" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.progress %lld %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Processing item %1$lld of %2$lld…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在处理第 %1$lld/%2$lld 个项目…" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.result.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Failed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "失败" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.result.skipped": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Not submitted" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未提交" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.result.succeeded": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Completed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已完成" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.review.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Review exactly which system-managed resources are selected." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请检查将要处理的系统管理资源。" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.review.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Review Simulator Resources" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "检查模拟器资源" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.status.pending": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Selected resource awaiting execution" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已选资源，等待执行" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.stop": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Stop After Current Item" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前项完成后停止" } }
+      }
+    },
+    "workflow.detail.managed_uninstall.stop_pending": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Stop requested. The current system operation will finish; remaining items will not be submitted." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已请求停止。当前系统操作会完成，剩余项目不会提交。" } }
+      }
+    },
+    "workflow.simulator.runtime.unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Unavailable" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前不可用" } }
+      }
+    },
+    "workflow.simulator.runtime.legacy_read_only": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Legacy Xcode read-only result; manage it in Xcode" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "旧版 Xcode 只读结果，请在 Xcode 中管理" } }
+      }
+    },
+    "workflow.simulator.runtime.not_deletable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "CoreSimulator does not currently allow uninstalling this runtime" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "CoreSimulator 当前不允许卸载此运行时" } }
+      }
+    },
+    "workflow.simulator.state.booted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Running" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "运行中" } }
+      }
+    },
+    "workflow.simulator.state.shutdown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Shut Down" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已关机" } }
+      }
+    },
+    "workflow.simulator.state.transitioning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Changing State" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "状态切换中" } }
+      }
+    },
+    "workflow.simulator.state.unknown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "State Unknown" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "状态未知" } }
       }
     },
     "workflow.risk.tooltip.blocked": {

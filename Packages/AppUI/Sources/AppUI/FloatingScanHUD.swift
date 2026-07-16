@@ -611,6 +611,27 @@ enum FloatingHUDContentPolicy {
     }
 }
 
+/// v2026.07.15：HUD 由独立 `NSHostingView` 承载，不能依赖主 WindowGroup 的
+/// locale environment。所有先落成 `String` 的标题、tooltip 和图例都从
+/// `AppSettings.effectiveLocale` 显式投影；切语言只重算 View，不重建扫描或 panel。
+enum FloatingHUDLocalization {
+    static func string(_ key: String, locale: Locale) -> String {
+        AppLocalization.string(key, locale: locale)
+    }
+
+    static func severityLabel(_ severity: CleanableSeverity, locale: Locale) -> String {
+        let key: String
+        switch severity {
+        case .critical: key = "severity.critical"
+        case .warning: key = "severity.warning"
+        case .caution: key = "severity.caution"
+        case .healthy: key = "severity.healthy"
+        case .idle: key = "severity.idle"
+        }
+        return string(key, locale: locale)
+    }
+}
+
 /// `NSHostingView.sizingOptions` 默认会把 SwiftUI 的最小、理想和最大尺寸反写为
 /// AppKit 约束；当 hosting view 本身就是 NSWindow.contentView 时，还会更新窗口尺寸边界。
 /// HUD 的窗口 frame 由 Controller 管理，因此关闭这条反向约束通道，让 host 始终服从 panel。
@@ -963,6 +984,10 @@ struct FloatingScanHUDView: View {
         coordinator.volumeSnapshot?.availableBytes ?? 0
     }
 
+    /// `@Bindable settings` 让独立 NSHostingView 直接观察语言设置；切换后本 body
+    /// 当帧重算，不需要 Controller 重建 panel，更不会触碰 ScanCoordinator。
+    private var liveLocale: Locale { settings.effectiveLocale }
+
     /// 可清理 = 当前 snapshot 中 verdict==.safe 的字节合计。
     ///
     /// v1.6 / 2026-06：本地 reduce 已下沉到 [ScanSnapshot.cleanableBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L389-L394)
@@ -1062,7 +1087,7 @@ struct FloatingScanHUDView: View {
     }
     /// 卷名（"Macintosh HD" 等），缺失时显示"本机磁盘"。
     private var volumeName: String {
-        coordinator.volumeSnapshot?.volumeName ?? String(localized: "hud.volume.default", bundle: .module)
+        coordinator.volumeSnapshot?.volumeName ?? FloatingHUDLocalization.string("hud.volume.default", locale: liveLocale)
     }
     /// 速度文案——"2.4 MB/s"，速率不足时显示"估算中…"。
     private var speedText: String {
@@ -1074,34 +1099,38 @@ struct FloatingScanHUDView: View {
             }
             return String(format: "%.1f MB/s", mbps)
         }
-        return String(localized: "hud.speed.estimating", bundle: .module)
+        return FloatingHUDLocalization.string("hud.speed.estimating", locale: liveLocale)
     }
     /// 扫描态时间标签——v2026.06.23 起仅显示已用时长（"已 0:14"）。
     /// 剩余时间不可信，已统一停用，避免"~ 4:00:00"这类误导文案。
     private func scanTimerText(at date: Date = Date()) -> String {
         if smartCareIsActive, let smartCareSession {
-            return String(format: String(localized: "hud.time.elapsed %@", bundle: .module),
+            return String(format: FloatingHUDLocalization.string("hud.time.elapsed %@", locale: liveLocale),
                           durationString(smartCareSession.elapsedForDisplay(referenceDate: date)))
         }
-        return String(format: String(localized: "hud.time.elapsed %@", bundle: .module),
+        return String(format: FloatingHUDLocalization.string("hud.time.elapsed %@", locale: liveLocale),
                       durationString(coordinator.elapsedForDisplay(referenceDate: date)))
     }
     /// 同上，紧凑版（给灵动岛展开态用，节省横向空间）。
     private func scanTimerShortText(at date: Date = Date()) -> String {
         if smartCareIsActive, let smartCareSession {
-            return String(format: String(localized: "hud.time.elapsed %@", bundle: .module),
+            return String(format: FloatingHUDLocalization.string("hud.time.elapsed %@", locale: liveLocale),
                           durationShort(smartCareSession.elapsedForDisplay(referenceDate: date)))
         }
-        return String(format: String(localized: "hud.time.elapsed %@", bundle: .module),
+        return String(format: FloatingHUDLocalization.string("hud.time.elapsed %@", locale: liveLocale),
                       durationShort(coordinator.elapsedForDisplay(referenceDate: date)))
     }
 
     var body: some View {
-        if placement == .dynamicIsland {
-            islandBody
-        } else {
-            cardBody
+        Group {
+            if placement == .dynamicIsland {
+                islandBody
+            } else {
+                cardBody
+            }
         }
+        // 同时覆盖仍直接使用 `Text("key", bundle:)` 的纯 SwiftUI 文案。
+        .environment(\.locale, liveLocale)
     }
 
     // MARK: - 灵动岛形态
@@ -1439,8 +1468,8 @@ struct FloatingScanHUDView: View {
     private var compactHeroContent: FloatingHUDHeroContent {
         FloatingHUDContentPolicy.compact(
             activity: compactActivity,
-            scanningTitle: String(localized: "hud.scanning", bundle: .module),
-            cleaningTitle: String(localized: "hud.cleaning", bundle: .module),
+            scanningTitle: FloatingHUDLocalization.string("hud.scanning", locale: liveLocale),
+            cleaningTitle: FloatingHUDLocalization.string("hud.cleaning", locale: liveLocale),
             regular: expandedHeroContent
         )
     }
@@ -1448,8 +1477,9 @@ struct FloatingScanHUDView: View {
     private var expandedHeroMainTitle: String {
         switch phase {
         case .scanning:
-            return smartCareActivityTitle ?? String(localized: "hud.scanning", bundle: .module)
-        case .finished: return cleanableSeverity.label
+            return smartCareActivityTitle ?? FloatingHUDLocalization.string("hud.scanning", locale: liveLocale)
+        case .finished:
+            return FloatingHUDLocalization.severityLabel(cleanableSeverity, locale: liveLocale)
         case .idle: return idleLeadingText
         }
     }
@@ -1472,14 +1502,12 @@ struct FloatingScanHUDView: View {
         guard let smartCareSession else { return nil }
         switch smartCareSession.care.phase {
         case .scanning(let progress):
-            return String(
-                localized: String.LocalizationValue(
-                    SmartCarePresentation.activityTitleKey(for: progress.activity)
-                ),
-                bundle: .module
+            return FloatingHUDLocalization.string(
+                SmartCarePresentation.activityTitleKey(for: progress.activity),
+                locale: liveLocale
             )
         case .cleaning:
-            return String(localized: "smart_care.activity.cleaning", bundle: .module)
+            return FloatingHUDLocalization.string("smart_care.activity.cleaning", locale: liveLocale)
         case .idle, .reviewing, .confirming, .completed, .failed, .cancelled:
             return nil
         }
@@ -1558,7 +1586,10 @@ struct FloatingScanHUDView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "rectangle.expand.vertical")
-                        Text("hud.button.open_main", bundle: .module)
+                        Text(verbatim: FloatingHUDLocalization.string(
+                            "hud.button.open_main",
+                            locale: liveLocale
+                        ))
                     }
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white)
@@ -1574,7 +1605,10 @@ struct FloatingScanHUDView: View {
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "play.fill")
-                            Text("hud.button.scan_now", bundle: .module)
+                            Text(verbatim: FloatingHUDLocalization.string(
+                                "hud.button.scan_now",
+                                locale: liveLocale
+                            ))
                         }
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.white)
@@ -1617,11 +1651,11 @@ struct FloatingScanHUDView: View {
     @ViewBuilder
     private var islandLegendRows: some View {
         VStack(alignment: .leading, spacing: 4) {
-            islandLegendRow(color: .white.opacity(0.45), label: String(localized: "hud.legend.used", bundle: .module),
+            islandLegendRow(color: .white.opacity(0.45), label: FloatingHUDLocalization.string("hud.legend.used", locale: liveLocale),
                             value: bytesString(coordinator.volumeSnapshot?.usedBytes ?? 0))
-            islandLegendRow(color: cleanableSeverity.color, label: String(localized: "hud.legend.cleanable", bundle: .module),
+            islandLegendRow(color: cleanableSeverity.color, label: FloatingHUDLocalization.string("hud.legend.cleanable", locale: liveLocale),
                             value: bytesString(cleanableBytes))
-            islandLegendRow(color: availableSeverity.color, label: String(localized: "hud.legend.free", bundle: .module),
+            islandLegendRow(color: availableSeverity.color, label: FloatingHUDLocalization.string("hud.legend.free", locale: liveLocale),
                             value: bytesString(availableBytes))
         }
     }
@@ -1658,10 +1692,10 @@ struct FloatingScanHUDView: View {
     }
     private var idleLeadingText: String {
         switch diskSeverity {
-        case .critical: return String(localized: "hud.idle.disk_tight", bundle: .module)
-        case .warning:  return String(localized: "hud.idle.disk_full", bundle: .module)
-        case .caution:  return String(localized: "hud.idle.attention", bundle: .module)
-        default:        return String(localized: "hud.idle.idle", bundle: .module)
+        case .critical: return FloatingHUDLocalization.string("hud.idle.disk_tight", locale: liveLocale)
+        case .warning:  return FloatingHUDLocalization.string("hud.idle.disk_full", locale: liveLocale)
+        case .caution:  return FloatingHUDLocalization.string("hud.idle.attention", locale: liveLocale)
+        default:        return FloatingHUDLocalization.string("hud.idle.idle", locale: liveLocale)
         }
     }
 
@@ -1736,7 +1770,7 @@ struct FloatingScanHUDView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(Text("hud.help.start_scan", bundle: .module))
+                .help(FloatingHUDLocalization.string("hud.help.start_scan", locale: liveLocale))
             }
             Button(action: onOpen) {
                 Image(systemName: "macwindow.on.rectangle")
@@ -1746,7 +1780,7 @@ struct FloatingScanHUDView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(Text("hud.help.open_main", bundle: .module))
+            .help(FloatingHUDLocalization.string("hud.help.open_main", locale: liveLocale))
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .bold))
@@ -1766,7 +1800,7 @@ struct FloatingScanHUDView: View {
                 .fill(Color.green)
                 .frame(width: 6, height: 6)
             Text(verbatim: smartCareActivityTitle
-                 ?? String(localized: "hud.scanning_dot", bundle: .module))
+                 ?? FloatingHUDLocalization.string("hud.scanning_dot", locale: liveLocale))
                 .font(.system(.caption, design: .rounded).weight(.medium))
                 .foregroundStyle(.primary)
             if !smartCareIsActive {
@@ -1780,7 +1814,7 @@ struct FloatingScanHUDView: View {
                 Text(scanTimerText(at: context.date))
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
-                    .help(Text(LocalizedStringKey("hud.eta.help.elapsed"), bundle: .module))
+                    .help(FloatingHUDLocalization.string("hud.eta.help.elapsed", locale: liveLocale))
             }
             Spacer(minLength: 0)
         }
@@ -1818,21 +1852,21 @@ struct FloatingScanHUDView: View {
         VStack(spacing: 3) {
             cardLegendRow(
                 color: cleanableSeverity.color,
-                label: String(localized: "hud.legend.cleanable", bundle: .module),
+                label: FloatingHUDLocalization.string("hud.legend.cleanable", locale: liveLocale),
                 bytes: cleanableBytes,
                 valueColor: cleanableSeverity.color,
                 bold: cleanableBytes > 0
             )
             cardLegendRow(
                 color: Color.gray.opacity(0.55),
-                label: String(localized: "hud.legend.other_used", bundle: .module),
+                label: FloatingHUDLocalization.string("hud.legend.other_used", locale: liveLocale),
                 bytes: otherUsedBytes,
                 valueColor: nil,
                 bold: false
             )
             cardLegendRow(
                 color: availableSeverity.color,
-                label: String(localized: "hud.legend.free", bundle: .module),
+                label: FloatingHUDLocalization.string("hud.legend.free", locale: liveLocale),
                 bytes: availableBytes,
                 valueColor: availableSeverity.color,
                 bold: availableSeverity == .critical || availableSeverity == .warning
@@ -1865,9 +1899,9 @@ struct FloatingScanHUDView: View {
 
     private var closeButtonHelp: String {
         if settings.hudPersistent {
-            return String(localized: "hud.help.close.persistent", bundle: .module)
+            return FloatingHUDLocalization.string("hud.help.close.persistent", locale: liveLocale)
         }
-        return String(localized: "hud.help.close.floating", bundle: .module)
+        return FloatingHUDLocalization.string("hud.help.close.floating", locale: liveLocale)
     }
 
     private func durationString(_ s: TimeInterval) -> String {
@@ -1939,7 +1973,10 @@ struct FloatingScanHUDView: View {
                 Image(systemName: "memorychip")
                     .font(.system(.caption2, design: .rounded))
                     .foregroundStyle(.secondary)
-                Text("capacity.virtual_memory.title", bundle: .module)
+                Text(verbatim: FloatingHUDLocalization.string(
+                    "capacity.virtual_memory.title",
+                    locale: liveLocale
+                ))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
@@ -1960,7 +1997,10 @@ struct FloatingScanHUDView: View {
                 Image(systemName: "memorychip")
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.white.opacity(0.65))
-                Text("capacity.virtual_memory.title", bundle: .module)
+                Text(verbatim: FloatingHUDLocalization.string(
+                    "capacity.virtual_memory.title",
+                    locale: liveLocale
+                ))
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.white.opacity(0.65))
                 Spacer(minLength: 0)

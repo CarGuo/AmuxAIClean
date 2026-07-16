@@ -5,6 +5,24 @@ private enum CapacityCardMetrics {
     static let valueMinWidth: CGFloat = 72
 }
 
+/// v2026.07.15：容量卡的显示口径投影。
+///
+/// 把主数与解释性估算在类型层分开，避免 View 重构时再次把
+/// `availableIfReclaimedBytes` 接到 headline、容量条或 Physical Free 行。
+struct VolumeCapacityDisplayValues: Sendable, Equatable {
+    let headlineUsedBytes: Int64
+    let physicalFreeBytes: Int64
+    let estimatedReclaimableBytes: Int64?
+    let availableIfReclaimedBytes: Int64?
+
+    init(snapshot: VolumeCapacity.Snapshot) {
+        headlineUsedBytes = snapshot.usedBytes
+        physicalFreeBytes = snapshot.availableBytes
+        estimatedReclaimableBytes = snapshot.estimatedReclaimableBytes
+        availableIfReclaimedBytes = snapshot.availableIfReclaimedBytes
+    }
+}
+
 /// v1.3：sidebar 底部固定的"卷容量条"。
 ///
 /// 类似 macOS 系统设置 → 通用 → 储存空间 顶部那条彩色堆叠条。
@@ -20,7 +38,10 @@ private enum CapacityCardMetrics {
 ///    **不计入"自动清"数字**，单独成段是因为：用户能看出"还有多少潜在空间没释放"，
 ///    但不会被误导以为这部分是一键清的
 /// 3. **其它已用 (灰色)**：usedBytes - safe - confirm，系统/应用/文档/不可清理等
-/// 4. **可用 (按 available severity 变色)**：availableBytes
+/// 4. **物理空闲 (按 available severity 变色)**：普通 `availableBytes`
+///
+/// macOS 可按需释放估算不进入上述堆叠条；它来自 important-usage 与普通 available
+/// 的差值，只在条下方作为解释性附加行展示。
 ///
 /// 设计权衡：
 /// - **为什么不一锅炖把 safe + confirm 合并为"可清理"**：v1.6 之前就这么干过，
@@ -31,6 +52,9 @@ private enum CapacityCardMetrics {
 /// - confirm 段固定 caution 黄而不跟 severity 变色：避免与 safe 段颜色冲突，
 ///   且语义上 confirm 段越大不是越"危险"，只是"等用户决定"
 public struct VolumeCapacityCard: View {
+
+    @Environment(\.locale) private var locale
+    @State private var isReclaimableInfoPresented = false
 
     let snapshot: VolumeCapacity.Snapshot?
     /// 当前会话本 App 识别到的"可直接安全清理"字节数。来自 [ScanSnapshot.safeBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L375-L377)。
@@ -61,6 +85,7 @@ public struct VolumeCapacityCard: View {
 
     public var body: some View {
         if let s = snapshot {
+            let display = VolumeCapacityDisplayValues(snapshot: s)
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Image(systemName: "internaldrive")
@@ -70,7 +95,7 @@ public struct VolumeCapacityCard: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Spacer()
-                    Text("\(formatBytes(s.usedBytes)) / \(formatBytes(s.totalBytes))")
+                    Text("\(formatBytes(display.headlineUsedBytes)) / \(formatBytes(s.totalBytes))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
@@ -79,7 +104,7 @@ public struct VolumeCapacityCard: View {
                         .layoutPriority(1)
                 }
                 stackedBar(snapshot: s)
-                legend(snapshot: s)
+                legend(snapshot: s, display: display)
                 if let swap, swap.totalDiskFootprintBytes > 0 || swap.swapTotalBytes > 0 {
                     swapInfoRow(swap: swap)
                 }
@@ -118,7 +143,7 @@ public struct VolumeCapacityCard: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
-                    .help(String(localized: "capacity.retry", bundle: .module))
+                    .help(AppLocalization.string("capacity.retry", locale: locale))
                 }
             }
             // 保持与正常态相同的占位高度（8pt 灰条 + legend 三行），sidebar 底部高度恒定。
@@ -127,9 +152,9 @@ public struct VolumeCapacityCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4))
                 .frame(height: 8)
             VStack(alignment: .leading, spacing: 3) {
-                placeholderLegendRow(label: String(localized: "capacity.legend.cleanable", bundle: .module))
-                placeholderLegendRow(label: String(localized: "capacity.legend.other_used", bundle: .module))
-                placeholderLegendRow(label: String(localized: "capacity.legend.available", bundle: .module))
+                placeholderLegendRow(label: AppLocalization.string("capacity.legend.cleanable", locale: locale))
+                placeholderLegendRow(label: AppLocalization.string("capacity.legend.other_used", locale: locale))
+                placeholderLegendRow(label: AppLocalization.string("capacity.legend.available", locale: locale))
             }
             .font(.caption2)
         }
@@ -188,15 +213,18 @@ public struct VolumeCapacityCard: View {
 
     /// 图例：每段一个色块 + 文案 + 字节数。confirm 段为 0 时整行省略。
     @ViewBuilder
-    private func legend(snapshot s: VolumeCapacity.Snapshot) -> some View {
+    private func legend(
+        snapshot s: VolumeCapacity.Snapshot,
+        display: VolumeCapacityDisplayValues
+    ) -> some View {
         let segs = clampedSegments(s: s)
         let safeSeverity = CleanableSeverity.forCleanableBytes(segs.safe)
-        let availableSeverity = CleanableSeverity.forAvailableBytes(s.availableBytes)
+        let availableSeverity = CleanableSeverity.forAvailableBytes(display.physicalFreeBytes)
         VStack(alignment: .leading, spacing: 3) {
             if segs.safe > 0 {
                 legendRow(
                     color: safeSeverity.color,
-                    label: String(localized: "capacity.legend.cleanable", bundle: .module),
+                    label: AppLocalization.string("capacity.legend.cleanable", locale: locale),
                     bytes: segs.safe,
                     valueColor: safeSeverity.color,
                     bold: true
@@ -208,23 +236,143 @@ public struct VolumeCapacityCard: View {
             if segs.confirm > 0 {
                 legendRow(
                     color: CleanableSeverity.caution.color,
-                    label: String(localized: "capacity.legend.confirm", bundle: .module),
+                    label: AppLocalization.string("capacity.legend.confirm", locale: locale),
                     bytes: segs.confirm,
                     valueColor: CleanableSeverity.caution.color,
                     bold: false
                 )
             }
-            legendRow(color: .gray.opacity(0.6), label: String(localized: "capacity.legend.other_used", bundle: .module), bytes: segs.other)
+            legendRow(
+                color: .gray.opacity(0.6),
+                label: AppLocalization.string("capacity.legend.other_used", locale: locale),
+                bytes: segs.other
+            )
             // 可用段也按"可用空间 severity"上色（绿/黄/橙/红）：剩越少越红
             legendRow(
                 color: availableSeverity.color,
-                label: String(localized: "capacity.legend.available", bundle: .module),
-                bytes: s.availableBytes,
+                label: AppLocalization.string("capacity.legend.available", locale: locale),
+                bytes: display.physicalFreeBytes,
                 valueColor: availableSeverity.color,
                 bold: availableSeverity == .critical || availableSeverity == .warning
             )
+            // v2026.07.15：estimated reclaimable 是当前 used 中 macOS 认为可按需释放的
+            // 动态估算，不是第五个容量段，也不是 AmuxAIClean 可逐文件删除的清单。
+            if let reclaimable = display.estimatedReclaimableBytes {
+                reclaimableLegendRows(
+                    estimatedBytes: reclaimable,
+                    availableIfReclaimedBytes: display.availableIfReclaimedBytes
+                )
+            }
         }
         .font(.caption2)
+    }
+
+    @ViewBuilder
+    private func reclaimableLegendRows(
+        estimatedBytes: Int64,
+        availableIfReclaimedBytes: Int64?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                // v2026.07.15：这里用公式中的“+”，而不是另一个容量分类圆点。
+                // 上一行已经给出“当前空闲”，用户可直接顺序读成：当前空闲 + 系统可能释放 ≈ 预计可用上限。
+                Text("+")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.blue)
+                    .frame(width: 7, height: 7)
+                Text("capacity.legend.system_reclaimable", bundle: .module)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Button {
+                    isReclaimableInfoPresented.toggle()
+                } label: {
+                    Image(systemName: "info.circle")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(AppLocalization.string("capacity.reclaimable.info.help", locale: locale))
+                .accessibilityLabel(AppLocalization.string("capacity.reclaimable.info.help", locale: locale))
+                .popover(isPresented: $isReclaimableInfoPresented, arrowEdge: .trailing) {
+                    reclaimableInfoPopover
+                        // Popover 由独立 NSHostingView 承载；locale 变化时用 identity
+                        // 明确重建，避免已经打开的 tooltip 继续持有旧语言环境。
+                        .id(locale.identifier)
+                }
+                Spacer()
+                Text(formatBytes(estimatedBytes))
+                    .foregroundStyle(.blue)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(minWidth: CapacityCardMetrics.valueMinWidth, alignment: .trailing)
+                    .layoutPriority(1)
+            }
+            if let availableIfReclaimedBytes {
+                HStack(spacing: 6) {
+                    Text("≈")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 7, height: 7)
+                    Text("capacity.legend.available_if_reclaimed", bundle: .module)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer()
+                    Text(formatBytes(availableIfReclaimedBytes))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .frame(minWidth: CapacityCardMetrics.valueMinWidth, alignment: .trailing)
+                        .layoutPriority(1)
+                }
+            }
+        }
+        .padding(.leading, 4)
+    }
+
+    private var reclaimableInfoPopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label {
+                Text(AppLocalization.string("capacity.reclaimable.info.title", locale: locale))
+                    .font(.headline)
+            } icon: {
+                Image(systemName: "internaldrive.fill")
+                    .foregroundStyle(.blue)
+            }
+
+            Text(AppLocalization.string("capacity.reclaimable.info.relationship", locale: locale))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            reclaimableInfoSection(
+                titleKey: "capacity.reclaimable.info.changes.title",
+                bodyKey: "capacity.reclaimable.info.changes"
+            )
+            reclaimableInfoSection(
+                titleKey: "capacity.reclaimable.info.action.title",
+                bodyKey: "capacity.reclaimable.info.action"
+            )
+        }
+        .padding(16)
+        .frame(width: 330, alignment: .leading)
+    }
+
+    /// v2026.07.15：把长篇技术说明拆成“为什么变化 / 能否清理”两个可扫读问题，
+    /// 避免窄侧栏弹层成为一整块难以理解的系统术语。
+    @ViewBuilder
+    private func reclaimableInfoSection(titleKey: String, bodyKey: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(AppLocalization.string(titleKey, locale: locale))
+                .font(.caption.weight(.semibold))
+            Text(AppLocalization.string(bodyKey, locale: locale))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     /// 把 (safeBytes, confirmBytes) 钳制到 usedBytes 范围内，算出四段最终展示字节。
@@ -236,7 +384,6 @@ public struct VolumeCapacityCard: View {
     ///
     /// 钳制策略（顺序很重要）：
     /// 1. 先各自非负
-    /// 2. 若 safe > used，safe = used、confirm = 0（safe 优先级最高）
     /// 3. 否则若 safe + confirm > used，confirm 让步到 used - safe
     /// 4. other = used - safe - confirm（守恒不变量：safe + confirm + other == used）
     ///
@@ -298,7 +445,8 @@ public struct VolumeCapacityCard: View {
     ///   删了立即被 `dynamic_pager` / hibernate 重建，且可能引发 paging 错误或破坏休眠。
     /// - 优先展示**物理占盘**（用户能直接换算成"我硬盘上少了多少"），
     ///   sysctl 内核口径放进 tooltip 给好奇用户看，避免主信息行字数爆炸。
-    /// - sleepimage 存在时给一句"如不使用休眠，可手动…"的善意提醒（仅文案，不替用户执行命令）。
+    /// - v2026.07.15：sleepimage 只解释为系统管理空间，不再提供直接 `rm` 系统文件的
+    ///   命令。容量说明不能诱导用户绕过统一废纸篓边界或破坏休眠恢复能力。
     /// - **v1.3.x review-fix**：主数字与 macOS 活动监视器 "Swap Used" 对齐，
     ///   即 `swap used + sleepimage`。原来用 `swap total + sleepimage`（已分配但内核可能没全用）
     ///   会让用户对照活动监视器时疑惑"我看到 34 G，你显示 36 G"。
@@ -337,26 +485,30 @@ public struct VolumeCapacityCard: View {
             // 已用与已分配可能不同：内核会预留 swap 文件位（"分配"），但只有真正写入 page 时才"使用"。
             if swap.swapUsedBytes > 0 {
                 swapDetailRow(
-                    label: String(localized: "capacity.swap.used", bundle: .module),
+                    label: AppLocalization.string("capacity.swap.used", locale: locale),
                     bytes: swap.swapUsedBytes,
-                    hint: String(localized: "capacity.swap.used.hint", bundle: .module)
+                    hint: AppLocalization.string("capacity.swap.used.hint", locale: locale)
                 )
             }
             if swap.swapDiskBytes > 0,
                swap.swapDiskBytes != swap.swapUsedBytes {
                 swapDetailRow(
-                    label: String(localized: "capacity.swap.allocated", bundle: .module),
+                    label: AppLocalization.string("capacity.swap.allocated", locale: locale),
                     bytes: swap.swapDiskBytes,
                     hint: swap.swapFileSizeMeasured
-                        ? String(format: String(localized: "capacity.swap.allocated.hint.real", bundle: .module), swap.swapFileCount)
-                        : String(localized: "capacity.swap.allocated.hint.fallback", bundle: .module)
+                        ? AppLocalization.format(
+                            "capacity.swap.allocated.hint.real",
+                            locale: locale,
+                            arguments: [swap.swapFileCount]
+                        )
+                        : AppLocalization.string("capacity.swap.allocated.hint.fallback", locale: locale)
                 )
             }
             if swap.sleepImageBytes > 0 {
                 swapDetailRow(
-                    label: String(localized: "capacity.sleepimage", bundle: .module),
+                    label: AppLocalization.string("capacity.sleepimage", locale: locale),
                     bytes: swap.sleepImageBytes,
-                    hint: String(localized: "capacity.sleepimage.hint", bundle: .module)
+                    hint: AppLocalization.string("capacity.sleepimage.hint", locale: locale)
                 )
             }
         }
@@ -383,5 +535,28 @@ public struct VolumeCapacityCard: View {
         }
         .font(.caption2)
         .help(hint)
+    }
+}
+
+/// v2026.07.15：容量卡的实时订阅容器。
+///
+/// `ScanCoordinator.volumeSnapshot` 是兼容旧代码的低频镜像；15 秒自动探针只发布到
+/// `SystemProbeStore`。此前 sidebar 继续读镜像，导致系统已经回收大量空间后界面仍保持
+/// 旧值，只有重新扫描或重启才更新。这里让容量卡直接观察 SSOT，同时保持扫描高频状态
+/// 不会触发整张 sidebar 容量卡重算。
+struct LiveVolumeCapacityCard: View {
+    @ObservedObject var systemProbe: SystemProbeStore
+    let safeBytes: Int64
+    let confirmBytes: Int64
+    let onRetry: (() -> Void)?
+
+    var body: some View {
+        VolumeCapacityCard(
+            snapshot: systemProbe.volumeSnapshot,
+            safeBytes: safeBytes,
+            confirmBytes: confirmBytes,
+            swap: systemProbe.swapSnapshot,
+            onRetry: onRetry
+        )
     }
 }

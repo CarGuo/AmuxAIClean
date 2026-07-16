@@ -1,6 +1,43 @@
 import Foundation
 import LogKit
 
+/// Dynamic-hit 副标题的跨模块语义，而不是已经本地化的 String。
+///
+/// **v2026.07.15 根因修复**：simctl 的 `Shutdown` / `Booted` / availability 是协议值，
+/// 过去被直接拼进 note，中文 UI 因而永久混入英文。ScanKit 现在只传递有限语义，AppUI
+/// 在当前 locale 下投影；未知的新 simctl 状态也不会把 raw token 泄露给用户。
+public enum WorkflowScanHitNote: Sendable, Hashable {
+    public enum SimulatorDeviceState: Sendable, Hashable {
+        case shutdown
+        case booted
+        case transitioning
+        case unknown
+
+        init(simctlValue: String) {
+            switch simctlValue.lowercased() {
+            case "shutdown": self = .shutdown
+            case "booted": self = .booted
+            case "booting", "shutting down", "creating": self = .transitioning
+            default: self = .unknown
+            }
+        }
+    }
+
+    public enum SimulatorRuntimeManagement: Sendable, Hashable {
+        case uninstallable
+        case legacyReadOnly
+        case notDeletable
+    }
+
+    case verbatim(String)
+    case simulatorDevice(state: SimulatorDeviceState, runtimeIdentifier: String)
+    case simulatorRuntime(
+        runtimeIdentifier: String,
+        isAvailable: Bool,
+        management: SimulatorRuntimeManagement
+    )
+}
+
 /// 「动态扫描器」统一产物（v1.7 M1 PR-4 骨架）。
 ///
 /// 设计动机（对位 [DEVELOPER_ONE_CLICK_PLAN.md](../../../../../docs/DEVELOPER_ONE_CLICK_PLAN.md) §动态卡片）：
@@ -8,7 +45,7 @@ import LogKit
 ///   但 UI 侧最终需要一个**结构一致**的产物列表才能渲染（标题 / 大小 / 备注 / 唯一 ID）。
 /// - 不同扫描器原生类型差异极大：
 ///   - [SimctlDevice] 主键是 `udid`、占用走 `dataPathSize`；
-///   - [SimctlRuntime] 主键是 `identifier`、占用走 sizeBytes 估算；
+///   - [SimctlRuntime] 展示主键是 `runtimeIdentifier`，可卸载主键是 simctl runtime UUID；
 ///   - DerivedDataPerProject 主键是子目录路径、占用走 FS 估算。
 /// - [WorkflowScanHit] 把这些异构产物折叠为统一 DTO，让 AppUI 侧不必关心扫描器内部细节。
 ///
@@ -17,10 +54,11 @@ import LogKit
 ///   即便扫描器原生数据没有 URL（如 simctl runtime 只给字符串），也必须由 [WorkflowRegistry] 转 file URL。
 /// - `sizeBytes`：占用估算字节数；不可得时为 `nil`，UI 据此显示 "—" 而非 "0 B"。
 /// - `displayName`：用户可读名（如 "iPhone 16 · iOS 18.0"）。
-/// - `note`：可选副标题，承载 state / runtime / Project Hash 等次要信息。
-/// - `commandLineTailArg`：v1.7 M1 PR-9 新增。仅 `.commandLine` recipe 卡片需要——
-///   该字段承载 `xcrun simctl delete <尾参>` 的尾参（设备卡填 UDID、runtime 卡填 identifier）；
-///   `.filesystem` recipe 卡保持 `nil`。这样 AppUI 侧无需关心扫描器细节就能拼出完整 args。
+/// - `note`：普通文件路径/Project Hash 等不可翻译副标题；
+/// - `semanticNote`：simctl 状态等需要在 AppUI 当前 locale 下投影的类型化副标题；
+/// - `managedUninstallIdentifier`：仅 `.managedUninstall` recipe 卡片需要。
+///   设备卡填 UDID；runtime 卡只有在 `simctl runtime list -j` 明确给出可卸载 UUID 时才填值。
+///   legacy runtime list 可用于展示，但不把 semantic runtime identifier 冒充为安全卸载 ID。
 /// - `id`：`Identifiable` 契约。统一用 `url.path` 作为稳定主键——这是所有动态扫描器都能提供的最低公约数，
 ///   避免不同扫描器各自选 udid / identifier 导致跨源 diff 时主键冲突。
 public struct WorkflowScanHit: Sendable, Hashable, Identifiable {
@@ -28,7 +66,8 @@ public struct WorkflowScanHit: Sendable, Hashable, Identifiable {
     public let sizeBytes: Int64?
     public let displayName: String
     public let note: String?
-    public let commandLineTailArg: String?
+    public let semanticNote: WorkflowScanHitNote?
+    public let managedUninstallIdentifier: String?
 
     public var id: String { url.path }
 
@@ -36,12 +75,14 @@ public struct WorkflowScanHit: Sendable, Hashable, Identifiable {
                 sizeBytes: Int64?,
                 displayName: String,
                 note: String?,
-                commandLineTailArg: String? = nil) {
+                semanticNote: WorkflowScanHitNote? = nil,
+                managedUninstallIdentifier: String? = nil) {
         self.url = url
         self.sizeBytes = sizeBytes
         self.displayName = displayName
         self.note = note
-        self.commandLineTailArg = commandLineTailArg
+        self.semanticNote = semanticNote ?? note.map(WorkflowScanHitNote.verbatim)
+        self.managedUninstallIdentifier = managedUninstallIdentifier
     }
 }
 
@@ -147,8 +188,8 @@ public enum WorkflowRegistry {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                // discover 内部已兜底为 []，理论上不会抛；保留 catch 是为契约稳健性
-                GSYLog.warning(.app, "WorkflowRegistry simctl-devices discover 抛错: \(error)")
+                // 完整成功空清单与失败严格分离；typed failure 变成 card-scoped evidence。
+                GSYLog.warning(.app, "WorkflowRegistry simctl-devices discovery incomplete: \(error)")
                 return DiscoveryEvidence(hits: [], incompleteIssues: [
                     ScanIncompleteIssue(path: "/usr/bin/xcrun", reason: .enumerationFailed)
                 ])
@@ -158,8 +199,12 @@ public enum WorkflowRegistry {
                     url: URL(fileURLWithPath: device.dataPath),
                     sizeBytes: device.dataPathSize,
                     displayName: "\(device.name) · \(device.udid)",
-                    note: "\(device.state) · \(device.runtimeIdentifier)",
-                    commandLineTailArg: device.udid
+                    note: nil,
+                    semanticNote: .simulatorDevice(
+                        state: .init(simctlValue: device.state),
+                        runtimeIdentifier: device.runtimeIdentifier
+                    ),
+                    managedUninstallIdentifier: device.udid
                 )
             })
 
@@ -183,8 +228,17 @@ public enum WorkflowRegistry {
                     url: URL(fileURLWithPath: runtime.runtimeRoot),
                     sizeBytes: runtime.sizeBytes,
                     displayName: "iOS \(runtime.version)\(buildSuffix)",
-                    note: runtime.isAvailable ? runtime.identifier : "\(runtime.identifier) · unavailable",
-                    commandLineTailArg: runtime.identifier
+                    note: nil,
+                    semanticNote: .simulatorRuntime(
+                        runtimeIdentifier: runtime.runtimeIdentifier,
+                        isAvailable: runtime.isAvailable,
+                        management: runtime.managedUninstallIdentifier != nil
+                            ? .uninstallable
+                            : (runtime.discoverySource == .legacyReadOnly
+                               ? .legacyReadOnly
+                               : .notDeletable)
+                    ),
+                    managedUninstallIdentifier: runtime.managedUninstallIdentifier
                 )
             })
 

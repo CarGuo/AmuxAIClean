@@ -277,7 +277,14 @@ public struct MainView: View {
     public enum ResultsViewMode: String, CaseIterable, Identifiable {
         case list, tree
         public var id: String { rawValue }
-        var label: String { self == .list ? String(localized: "main.results.mode.list", bundle: .module) : String(localized: "main.results.mode.tree", bundle: .module) }
+        /// 非 SwiftUI / 旧调用方的进程默认文案；运行期界面用 `label(locale:)`。
+        var label: String { label(locale: .current) }
+        func label(locale: Locale) -> String {
+            AppLocalization.string(
+                self == .list ? "main.results.mode.list" : "main.results.mode.tree",
+                locale: locale
+            )
+        }
         var icon: String { self == .list ? "list.bullet" : "rectangle.grid.1x2" }
     }
 
@@ -415,7 +422,7 @@ public struct MainView: View {
         // 设计：role:.destructive 暗示"放弃当前结果"是有损操作；cancel 同时复位 selection
         // 回到 old（用 isRevertingSelection 短路再次 onChange）。
         .confirmationDialog(
-            String(localized: "mainview.switch_category.confirm.title", bundle: .module),
+            AppLocalization.string("mainview.switch_category.confirm.title", locale: locale),
             isPresented: $showSwitchCategoryConfirm,
             titleVisibility: .visible
         ) {
@@ -501,17 +508,16 @@ public struct MainView: View {
         // v1.5 P2 / Q3：AI 未配置时点击"问 AI" → 弹"前往设置？"alert，
         // 用户确认则调 openSettings()（macOS 14+ 标准 action）。
         // 取代旧的"按钮直接隐藏 / disabled"路径，让用户知道有这能力 + 怎么开。
-        .alert(String(localized: "ai.unconfigured.alert.title", bundle: .module),
+        .alert(AppLocalization.string("ai.unconfigured.alert.title", locale: locale),
                isPresented: $aiUnconfiguredAlert) {
-            Button(String(localized: "ai.unconfigured.alert.open_settings", bundle: .module)) {
+            Button(AppLocalization.string("ai.unconfigured.alert.open_settings", locale: locale)) {
                 settingsNavigation.select(.ai)
                 openSettings()
             }
-            Button(String(localized: "ai.unconfigured.alert.cancel", bundle: .module),
+            Button(AppLocalization.string("ai.unconfigured.alert.cancel", locale: locale),
                    role: .cancel) {}
         } message: {
-            Text(String(localized: "ai.unconfigured.alert.message",
-                        bundle: .module))
+            Text(AppLocalization.string("ai.unconfigured.alert.message", locale: locale))
         }
         // v2026.06.18 **稍后处理 sheet**。点 toolbar 的 `tray.full.fill` 按钮触发；
         // 在 sheet 内做"一键清理 / 一键 AI / 单独清理 / 单独 AI / 剔除"集中操作。
@@ -553,19 +559,19 @@ public struct MainView: View {
             )
         }
         // 删除结果提示：真删完成后按 movedPairs 更新列表；失败 / 拦截项留在原处并通过结果弹窗说明。
-        .alert(String(localized: "main.delete.result.title", bundle: .module), isPresented: .constant(deleteResult != nil)) {
-            Button(String(localized: "main.delete.result.ok", bundle: .module)) { deleteResult = nil }
+        .alert(AppLocalization.string("main.delete.result.title", locale: locale), isPresented: .constant(deleteResult != nil)) {
+            Button(AppLocalization.string("main.delete.result.ok", locale: locale)) { deleteResult = nil }
         } message: {
             Text(deleteResult ?? "")
         }
         .alert(
-            String(localized: "custom_path.import.notice.title", bundle: .module),
+            AppLocalization.string("custom_path.import.notice.title", locale: locale),
             isPresented: Binding(
                 get: { customPathImportMessage != nil },
                 set: { if !$0 { customPathImportMessage = nil } }
             )
         ) {
-            Button(String(localized: "main.delete.result.ok", bundle: .module)) {
+            Button(AppLocalization.string("main.delete.result.ok", locale: locale)) {
                 customPathImportMessage = nil
             }
         } message: {
@@ -614,6 +620,12 @@ public struct MainView: View {
             // coordinator 内部 didSet 会判断仅 finished 态 republish snapshot，
             // 扫描中切换不会扰乱视觉位置（扫描中强制 path 字典序保持稳定）。
             coordinator.mainListSortKey = newKey
+        }
+        .onChange(of: locale.identifier, initial: true) { _, _ in
+            // v2026.07.15：扫描协调器中的格式串/兼容标题也必须使用当前界面语言；
+            // 只同步 locale，不重建扫描 frame、不重扫磁盘。
+            coordinator.updatePresentationLocale(locale)
+            smartCareSession.scanCoordinator.updatePresentationLocale(locale)
         }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             handleDrop(providers: providers)
@@ -670,14 +682,14 @@ public struct MainView: View {
             }
         }
         .alert(
-            String(localized: "sentinel.alert.scan_invitation.title", bundle: .module),
+            AppLocalization.string("sentinel.alert.scan_invitation.title", locale: locale),
             isPresented: $sentinelScanInvitationVisible
         ) {
-            Button(String(localized: "sentinel.alert.scan_invitation.action_scan", bundle: .module)) {
+            Button(AppLocalization.string("sentinel.alert.scan_invitation.action_scan", locale: locale)) {
                 interfaceMode = .normal
                 startSmartCareScan()
             }
-            Button(String(localized: "sentinel.alert.scan_invitation.action_dismiss", bundle: .module), role: .cancel) {}
+            Button(AppLocalization.string("sentinel.alert.scan_invitation.action_dismiss", locale: locale), role: .cancel) {}
         } message: {
             Text("sentinel.alert.scan_invitation.message", bundle: .module)
         }
@@ -1240,7 +1252,8 @@ public struct MainView: View {
             presentTrashPreviewOutcome(
                 moved: result.moved,
                 skipped: result.skipped,
-                err: result.err
+                failureSummary: result.outcome?.failureSummary,
+                legacyError: result.err
             )
 #else
             assertionFailure("Release Smart Care cannot submit a preview action")
@@ -1340,8 +1353,10 @@ public struct MainView: View {
             }
         }
 
-        if succeededPaths.isEmpty, let error = result.err {
-            smartCareSession.care.fail(.cleanFailed(error))
+        let cleanFailureDetail = result.outcome?.failureSummary.map(SmartCareFailureDetail.trash)
+            ?? result.err.map(SmartCareFailureDetail.verbatim)
+        if succeededPaths.isEmpty, let cleanFailureDetail {
+            smartCareSession.care.fail(.cleanFailed(cleanFailureDetail))
             deleteResultCompletion = .trash(
                 completedSubmission,
                 runningAppSkipped: execution.runningAppSkippedResultItems
@@ -1400,8 +1415,8 @@ public struct MainView: View {
         VStack(spacing: 0) {
             sidebarList
             Divider()
-            VolumeCapacityCard(
-                snapshot: coordinator.volumeSnapshot,
+            LiveVolumeCapacityCard(
+                systemProbe: coordinator.systemProbe,
                 // v1.6 / 2026-06：**口径修复**——以前这里灌的是 `coordinator.snapshot.totalBytes`，
                 // 即"已扫到的全部字节"，导致 sidebar 出现"扫多少就 Cleanable 多少"的离谱口径（
                 // 用户截图: Scanning 133.49 GB ↔ Cleanable 133.49 GB）。
@@ -1410,7 +1425,6 @@ public struct MainView: View {
                 // 行单独成"需要确认"段，与业界（CleanMyMac / DaisyDisk）四段分层对齐。
                 safeBytes: coordinator.snapshot.safeBytes,
                 confirmBytes: coordinator.snapshot.confirmBytes,
-                swap: coordinator.swapSnapshot,
                 // v1.3 review-fix Must1：snapshot 探测失败时让卡片提供"重试"按钮，回调到 coordinator.refreshVolumeCapacity()。
                 onRetry: { coordinator.refreshVolumeCapacity() }
             )
@@ -1835,10 +1849,10 @@ public struct MainView: View {
             Image(systemName: iconOverride ?? iconName(for: cat.kind))
                 .foregroundStyle(.tint)
                 .frame(width: 16)
-            sidebarTitle(cat.displayTitle)
+            sidebarTitle(cat.displayTitle(locale: locale))
         }
         .padding(.vertical, 2)
-        .modifier(OptionalHelpModifier(helpText: cat.displayHelpIfConfigured))
+        .modifier(OptionalHelpModifier(helpText: cat.displayHelpIfConfigured(locale: locale)))
     }
 
     private func localizedSidebarTitle(_ key: String) -> some View {
@@ -1853,7 +1867,7 @@ public struct MainView: View {
 
     private func helpText(_ helpKey: String?) -> String? {
         guard let helpKey else { return nil }
-        return String(localized: String.LocalizationValue(helpKey), bundle: .module)
+        return AppLocalization.string(helpKey, locale: locale)
     }
 
     private func iconName(for kind: ScanCategory.Kind) -> String {
@@ -2241,7 +2255,7 @@ public struct MainView: View {
         HStack(spacing: 12) {
             Picker(selection: $viewMode) {
                 ForEach(ResultsViewMode.allCases) { mode in
-                    Label(mode.label, systemImage: mode.icon).tag(mode)
+                    Label(mode.label(locale: locale), systemImage: mode.icon).tag(mode)
                 }
             } label: {
                 Text("view_mode.picker.label", bundle: .module)
@@ -2435,9 +2449,13 @@ public struct MainView: View {
                                             .font(.caption.bold())
                                             .foregroundStyle(statusColor)
                                         let bytesText: String = (p.bytes <= 0 && p.fileCount <= 0)
-                                            ? String(localized: "progress.size.placeholder", bundle: .module)
+                                            ? AppLocalization.string("progress.size.placeholder", locale: locale)
                                             : formattedBytes(p.bytes)
-                                        Text(String(format: String(localized: "main.scan.progress.multi.row", bundle: .module), p.title, bytesText, p.fileCount))
+                                        Text(AppLocalization.format(
+                                            "main.scan.progress.multi.row",
+                                            locale: locale,
+                                            arguments: [p.displayTitle(locale: locale), bytesText, p.fileCount]
+                                        ))
                                             .font(.callout)
                                             .lineLimit(1)
                                             .truncationMode(.middle)
@@ -2449,14 +2467,25 @@ public struct MainView: View {
                     }
                 } else if coordinator.snapshot.isFinished {
                     if coordinator.snapshot.isComplete {
-                        Text(String(format: String(localized: "main.scan.finished", bundle: .module), coordinator.snapshot.scannedFileCount, formattedBytes(coordinator.snapshot.totalBytes), String(format: "%.2fs", coordinator.snapshot.elapsed)))
+                        Text(AppLocalization.format(
+                            "main.scan.finished",
+                            locale: locale,
+                            arguments: [
+                                coordinator.snapshot.scannedFileCount,
+                                formattedBytes(coordinator.snapshot.totalBytes),
+                                String(format: "%.2fs", coordinator.snapshot.elapsed),
+                            ]
+                        ))
                             .font(.callout)
                     } else {
-                        Text(String(
-                            format: String(localized: "main.scan.incomplete.summary %lld %@ %@", bundle: .module),
-                            Int64(coordinator.snapshot.scannedFileCount),
-                            formattedBytes(coordinator.snapshot.totalBytes),
-                            String(format: "%.2fs", coordinator.snapshot.elapsed)
+                        Text(AppLocalization.format(
+                            "main.scan.incomplete.summary %lld %@ %@",
+                            locale: locale,
+                            arguments: [
+                                Int64(coordinator.snapshot.scannedFileCount),
+                                formattedBytes(coordinator.snapshot.totalBytes),
+                                String(format: "%.2fs", coordinator.snapshot.elapsed),
+                            ]
                         ))
                             .font(.callout)
                             .foregroundStyle(.orange)
@@ -2604,9 +2633,9 @@ public struct MainView: View {
         let rows = isLargeFilesMode ? [] : selectedRows
         let selectedRowsEmpty = rows.isEmpty
         let summaryText: String = {
-            if selectedRowsEmpty { return String(localized: "selection.empty", bundle: .module) }
+            if selectedRowsEmpty { return AppLocalization.string("selection.empty", locale: locale) }
             let total = rows.reduce(Int64(0)) { $0 + $1.bytes }
-            return String(format: String(localized: "selection.summary %lld %@", bundle: .module), rows.count, formattedBytes(total))
+            return String(format: AppLocalization.string("selection.summary %lld %@", locale: locale), rows.count, formattedBytes(total))
         }()
         return HStack {
             if isLargeFilesMode {
@@ -2636,14 +2665,14 @@ public struct MainView: View {
                 }()
                 let summary: String = {
                     if hasPicked {
-                        return String(format: String(localized: "selection.summary %lld %@", bundle: .module),
+                        return String(format: AppLocalization.string("selection.summary %lld %@", locale: locale),
                                       pickedCount, formattedBytes(pickedBytes))
                     }
                     if let sel = largeFileSelection {
-                        return String(format: String(localized: "footer.selection.large_file %@ %@", bundle: .module),
+                        return String(format: AppLocalization.string("footer.selection.large_file %@ %@", locale: locale),
                                       sel.title, formattedBytes(sel.bytes))
                     }
-                    return String(localized: "selection.empty", bundle: .module)
+                    return AppLocalization.string("selection.empty", locale: locale)
                 }()
                 Text(summary)
                     .font(.callout)
@@ -2733,13 +2762,13 @@ public struct MainView: View {
                     .textSelection(.enabled)
                     .longPathStyle()
                 Divider()
-                LabeledContent(String(localized: "detail.size.physical", bundle: .module), value: formattedBytes(item.bytes))
-                LabeledContent(String(localized: "detail.size.logical", bundle: .module), value: formattedBytes(item.logicalBytes))
-                LabeledContent(String(localized: "detail.file.count", bundle: .module), value: "\(item.fileCount)")
-                LabeledContent(String(localized: "detail.is.directory", bundle: .module), value: item.isDirectory ? String(localized: "detail.bool.yes", bundle: .module) : String(localized: "detail.bool.no", bundle: .module))
-                LabeledContent(String(localized: "detail.safety.level", bundle: .module), value: verdictLabel(item.verdict))
+                LabeledContent(AppLocalization.string("detail.size.physical", locale: locale), value: formattedBytes(item.bytes))
+                LabeledContent(AppLocalization.string("detail.size.logical", locale: locale), value: formattedBytes(item.logicalBytes))
+                LabeledContent(AppLocalization.string("detail.file.count", locale: locale), value: "\(item.fileCount)")
+                LabeledContent(AppLocalization.string("detail.is.directory", locale: locale), value: item.isDirectory ? AppLocalization.string("detail.bool.yes", locale: locale) : AppLocalization.string("detail.bool.no", locale: locale))
+                LabeledContent(AppLocalization.string("detail.safety.level", locale: locale), value: verdictLabel(item.verdict))
                 if item.verdict == .forbid {
-                    Text(String(format: String(localized: "detail.rejection.reason", bundle: .module), item.rejection.rawValue))
+                    Text(String(format: AppLocalization.string("detail.rejection.reason", locale: locale), item.rejection.rawValue))
                         .font(.callout)
                         .foregroundStyle(.red)
                 }
@@ -2771,20 +2800,20 @@ public struct MainView: View {
                         .help(metrics.helpText ?? partialStatus)
                 }
                 LabeledContent(
-                    String(localized: "detail.size.physical", bundle: .module),
+                    AppLocalization.string("detail.size.physical", locale: locale),
                     value: metrics.size.detailText
                 )
                 LabeledContent(
-                    String(localized: "detail.size.logical", bundle: .module),
+                    AppLocalization.string("detail.size.logical", locale: locale),
                     value: metrics.logicalSize.detailText
                 )
                 LabeledContent(
-                    String(localized: "detail.file.count", bundle: .module),
+                    AppLocalization.string("detail.file.count", locale: locale),
                     value: metrics.count.detailText
                 )
-                LabeledContent(String(localized: "detail.is.directory", bundle: .module), value: row.isDirectory ? String(localized: "detail.bool.yes", bundle: .module) : String(localized: "detail.bool.no", bundle: .module))
+                LabeledContent(AppLocalization.string("detail.is.directory", locale: locale), value: row.isDirectory ? AppLocalization.string("detail.bool.yes", locale: locale) : AppLocalization.string("detail.bool.no", locale: locale))
                 if row.isDirectory && row.hasChildren {
-                    LabeledContent(String(localized: "detail.expandable", bundle: .module), value: String(localized: "detail.bool.yes", bundle: .module))
+                    LabeledContent(AppLocalization.string("detail.expandable", locale: locale), value: AppLocalization.string("detail.bool.yes", locale: locale))
                 }
                 Divider()
                 Text("detail.tree.hint", bundle: .module)
@@ -2853,7 +2882,7 @@ public struct MainView: View {
 
     private var interfaceModePicker: some View {
         Picker(
-            String(localized: "smart_care.mode.label", bundle: .module),
+            AppLocalization.string("smart_care.mode.label", locale: locale),
             selection: $interfaceMode
         ) {
             Text("smart_care.mode.normal", bundle: .module)
@@ -2872,7 +2901,7 @@ public struct MainView: View {
     private var appVersionBadge: some View {
         let version = UpdateChecker.currentVersion
         let accessibleLabel = String(
-            format: String(localized: "updater.prompt.current_version %@", bundle: .module),
+            format: AppLocalization.string("updater.prompt.current_version %@", locale: locale),
             version
         )
         return Text(verbatim: version)
@@ -2895,16 +2924,16 @@ public struct MainView: View {
         return Menu {
             Picker(selection: $settings.mainListSortKey) {
                 ForEach(MainListSortKey.allCases) { key in
-                    Text(key.label).tag(key)
+                    Text(key.label(locale: locale)).tag(key)
                 }
             } label: {
                 Text("sort.menu.label", bundle: .module)
             }
             .pickerStyle(.inline)
         } label: {
-            Label(settings.mainListSortKey.label, systemImage: "arrow.up.arrow.down")
+            Label(settings.mainListSortKey.label(locale: locale), systemImage: "arrow.up.arrow.down")
         }
-        .help(String(localized: "sort.menu.help", bundle: .module))
+        .help(AppLocalization.string("sort.menu.help", locale: locale))
     }
 
     /// v2026.06.21：是否需要在切换 category 前弹确认。
@@ -3041,12 +3070,12 @@ public struct MainView: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
                 .font(.caption)
-            TextField(String(localized: "pathbar.placeholder", bundle: .module), text: $pathBarInput)
+            TextField(AppLocalization.string("pathbar.placeholder", locale: locale), text: $pathBarInput)
                 .textFieldStyle(.plain)
                 .focused($pathBarFocused)
                 .frame(minWidth: 220, idealWidth: 320)
                 .onSubmit { submitPathBar() }
-                .help(String(localized: "pathbar.help", bundle: .module))
+                .help(AppLocalization.string("pathbar.help", locale: locale))
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
@@ -3096,7 +3125,7 @@ public struct MainView: View {
                     }
                 }
             }
-            .help(String(format: String(localized: "toolbar.stash.help_with_count", bundle: .module),
+            .help(String(format: AppLocalization.string("toolbar.stash.help_with_count", locale: locale),
                          stash.count))
             .disabled(hasConflictingMainModalPresentation)
         }
@@ -3137,7 +3166,7 @@ public struct MainView: View {
                     Image(systemName: "stop.circle")
                 }
             }
-                .help(String(localized: "toolbar.help.stop", bundle: .module))
+                .help(AppLocalization.string("toolbar.help.stop", locale: locale))
         } else if let id = selectedCategory, let cat = allCategories.first(where: { $0.id == id }) {
             Button {
                 // v1.3：统一走 resetSelectionState()，避免重新扫描后 detail/treeSelection 残留
@@ -3150,7 +3179,7 @@ public struct MainView: View {
                     Image(systemName: "arrow.clockwise")
                 }
             }
-                .help(String(localized: "toolbar.help.rescan", bundle: .module))
+                .help(AppLocalization.string("toolbar.help.rescan", locale: locale))
         } else if selectedCategory == MainView.devVersionedSentinelID {
             // v2026.06.21：开发者旧版本扫描 sentinel 不在 allCategories 里，
             // 上面 `allCategories.first` 永远拿不到 cat，重新扫描按钮就没了
@@ -3166,7 +3195,7 @@ public struct MainView: View {
                     Image(systemName: "arrow.clockwise")
                 }
             }
-                .help(String(localized: "toolbar.help.rescan", bundle: .module))
+                .help(AppLocalization.string("toolbar.help.rescan", locale: locale))
         } else if let id = selectedCategory, ScanCategory.batchScanIDs.contains(id) {
             // v2026.06.21：批量扫描 sentinel 也走 trigger* helper，
             // 之前 scanControlButton 仅在 allCategories.first(cat) 命中时才出现，
@@ -3192,7 +3221,7 @@ public struct MainView: View {
                     Image(systemName: "arrow.clockwise")
                 }
             }
-                .help(String(localized: "toolbar.help.rescan", bundle: .module))
+                .help(AppLocalization.string("toolbar.help.rescan", locale: locale))
         }
     }
 
@@ -3213,7 +3242,7 @@ public struct MainView: View {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
             // 简单提示：路径不存在/不是目录
-            deleteResult = String(format: String(localized: "delete.result.path_invalid %@", bundle: .module), url.path)
+            deleteResult = String(format: AppLocalization.string("delete.result.path_invalid %@", locale: locale), url.path)
             return
         }
         Task {
@@ -3322,9 +3351,9 @@ public struct MainView: View {
 
     private var selectionSummary: String {
         let rows = selectedRows
-        if rows.isEmpty { return String(localized: "selection.empty", bundle: .module) }
+        if rows.isEmpty { return AppLocalization.string("selection.empty", locale: locale) }
         let total = rows.reduce(Int64(0)) { $0 + $1.bytes }
-        return String(format: String(localized: "selection.summary %lld %@", bundle: .module), rows.count, formattedBytes(total))
+        return String(format: AppLocalization.string("selection.summary %lld %@", locale: locale), rows.count, formattedBytes(total))
     }
 
     /// v1.3.zzzz：从 ScanCoordinator 拉一份"上层一票否决"路径快照。
@@ -3427,19 +3456,22 @@ public struct MainView: View {
                         .progressViewStyle(.linear)
                         .frame(maxWidth: 180)
                 }
-                Text(String(format: String(localized: "main.scan.progress.single", bundle: .module),
-                            coordinator.snapshot.scannedFileCount,
-                            formattedBytes(scanned)))
+                Text(AppLocalization.format(
+                    "main.scan.progress.single",
+                    locale: locale,
+                    arguments: [coordinator.snapshot.scannedFileCount, formattedBytes(scanned)]
+                ))
                     .font(.callout)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
             HStack(spacing: 10) {
                 if let f = fraction, let exp = expected {
-                    Text(String(format: String(localized: "main.scan.progress.percent", bundle: .module),
-                                Int(f * 100),
-                                formattedBytes(scanned),
-                                formattedBytes(exp)))
+                    Text(AppLocalization.format(
+                        "main.scan.progress.percent",
+                        locale: locale,
+                        arguments: [Int(f * 100), formattedBytes(scanned), formattedBytes(exp)]
+                    ))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .help(Text("main.scan.progress.percent.tooltip", bundle: .module))
@@ -3448,8 +3480,11 @@ public struct MainView: View {
                 // ETA 计算在长扫场景下不可信，已在 ScanCoordinator 侧停止下发；
                 // 这里 UI 也不再读 estimatedRemaining，避免任何残留入口偷渡回来。
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text(String(format: String(localized: "main.scan.progress.elapsed", bundle: .module),
-                                formatDuration(coordinator.elapsedForDisplay(referenceDate: context.date))))
+                    Text(AppLocalization.format(
+                        "main.scan.progress.elapsed",
+                        locale: locale,
+                        arguments: [formatDuration(coordinator.elapsedForDisplay(referenceDate: context.date))]
+                    ))
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
@@ -3460,9 +3495,9 @@ public struct MainView: View {
     // 注：2026-05-25 移除原本拼接的 emoji，保留 SF Symbol + 文本，避免不同语言下 emoji 渲染不一致。
     private func verdictLabel(_ v: SafetyVerdict) -> String {
         switch v {
-        case .safe: return String(localized: "main.delete.safety.safe", bundle: .module)
-        case .confirm: return String(localized: "main.delete.safety.confirm", bundle: .module)
-        case .forbid: return String(localized: "main.delete.safety.forbid", bundle: .module)
+        case .safe: return AppLocalization.string("main.delete.safety.safe", locale: locale)
+        case .confirm: return AppLocalization.string("main.delete.safety.confirm", locale: locale)
+        case .forbid: return AppLocalization.string("main.delete.safety.forbid", locale: locale)
         }
     }
 
@@ -3530,11 +3565,13 @@ public struct MainView: View {
     @MainActor
     private func presentTrashPreviewOutcome(moved: Int,
                                             skipped: Int,
-                                            err: String?) {
-        if let err {
-            deleteResult = String(format: String(localized: "delete.result.failure.dryrun %@ %lld %lld", bundle: .module), err, moved, skipped)
+                                            failureSummary: TrashFailureSummary?,
+                                            legacyError: String?) {
+        let error = failureSummary?.message(locale: locale) ?? legacyError
+        if let error {
+            deleteResult = String(format: AppLocalization.string("delete.result.failure.dryrun %@ %lld %lld", locale: locale), error, moved, skipped)
         } else {
-            deleteResult = String(format: String(localized: "delete.result.success.dryrun %lld %lld", bundle: .module), moved, skipped)
+            deleteResult = String(format: AppLocalization.string("delete.result.success.dryrun %lld %lld", locale: locale), moved, skipped)
         }
     }
 
@@ -3548,7 +3585,7 @@ public struct MainView: View {
               coordinator.snapshot.categoryID == request.sourceCategoryID,
               coordinator.currentScanSessionID == request.scanSessionID,
               coordinator.storeRevision == request.preparedInteraction.plan.intent.snapshotIdentity.revision else {
-            deleteResult = String(localized: "delete.preflight.scan_changed", bundle: .module)
+            deleteResult = AppLocalization.string("delete.preflight.scan_changed", locale: locale)
             return
         }
         isDeleting = true
@@ -3656,7 +3693,7 @@ public struct MainView: View {
         accessDeniedPaths suppliedDeniedPaths: Set<String>? = nil
     ) {
         guard !coordinator.isScanning, coordinator.snapshot.isFinished else {
-            deleteResult = String(localized: "delete.preflight.scan_in_progress", bundle: .module)
+            deleteResult = AppLocalization.string("delete.preflight.scan_in_progress", locale: locale)
             return
         }
         guard !rows.isEmpty,
@@ -3735,7 +3772,7 @@ public struct MainView: View {
                   coordinator.snapshot.categoryID == categoryID,
                   coordinator.currentScanSessionID == scanSessionID,
                   coordinator.storeRevision == snapshotIdentity.revision else {
-                deleteResult = String(localized: "delete.preflight.scan_changed", bundle: .module)
+                deleteResult = AppLocalization.string("delete.preflight.scan_changed", locale: locale)
                 return
             }
             guard deleteSheetRequest == nil,
@@ -3882,7 +3919,7 @@ public struct MainView: View {
         fileCount: Int
     ) {
         guard !coordinator.isScanning, coordinator.snapshot.isFinished else {
-            deleteResult = String(localized: "delete.preflight.scan_in_progress", bundle: .module)
+            deleteResult = AppLocalization.string("delete.preflight.scan_in_progress", locale: locale)
             return
         }
         stash.add(
@@ -3912,7 +3949,7 @@ public struct MainView: View {
                 }
                 if duplicateCount == urls.count {
                     customPathImportMessage = String(
-                        format: String(localized: "custom_path.import.duplicate %lld", bundle: .module),
+                        format: AppLocalization.string("custom_path.import.duplicate %lld", locale: locale),
                         duplicateCount
                     )
                 }
@@ -3921,7 +3958,7 @@ public struct MainView: View {
             guard (error as? CocoaError)?.code != .userCancelled else { return }
             GSYLog.error(.settings, "main directory importer failed: \(error.localizedDescription)")
             customPathImportMessage = String(
-                format: String(localized: "custom_path.import.failed %@", bundle: .module),
+                format: AppLocalization.string("custom_path.import.failed %@", locale: locale),
                 error.localizedDescription
             )
         }
@@ -3982,6 +4019,7 @@ public struct MainView: View {
 }
 
 private struct PermissionStatusBanner: View {
+    @Environment(\.locale) private var locale
     /// 扫描器真实 open/readdir 失败的路径。显示前会再分成：
     /// - FDA/TCC 仍可由隐私授权解决；
     /// - FDA 已 granted 但 POSIX owner/mode 不允许当前用户进入。
@@ -4025,7 +4063,7 @@ private struct PermissionStatusBanner: View {
     private var headlineText: String {
         if incompleteCount > 0 {
             return String(
-                format: String(localized: "scan.limitations.title %lld", bundle: .module),
+                format: AppLocalization.string("scan.limitations.title %lld", locale: locale),
                 Int64(totalLimitedCount)
             )
         }
@@ -4034,14 +4072,14 @@ private struct PermissionStatusBanner: View {
         case (0, 0):
             return ""
         case (0, let fs):
-            return String(format: String(localized: "permission.banner.filesystem_only %lld", bundle: .module), fs)
+            return String(format: AppLocalization.string("permission.banner.filesystem_only %lld", locale: locale), fs)
         case (let p, let fs) where fs > 0:
-            return String(format: String(localized: "permission.banner.privacy_and_filesystem %lld %lld", bundle: .module), p, fs)
+            return String(format: AppLocalization.string("permission.banner.privacy_and_filesystem %lld %lld", locale: locale), p, fs)
         default:
             switch (fdaCount, tccCount) {
-            case (let f, 0): return String(format: String(localized: "permission.banner.fda_only %lld", bundle: .module), f)
-            case (0, let t): return String(format: String(localized: "permission.banner.tcc_only %lld", bundle: .module), t)
-            case (let f, let t): return String(format: String(localized: "permission.banner.fda_and_tcc %lld %lld", bundle: .module), f, t)
+            case (let f, 0): return String(format: AppLocalization.string("permission.banner.fda_only %lld", locale: locale), f)
+            case (0, let t): return String(format: AppLocalization.string("permission.banner.tcc_only %lld", locale: locale), t)
+            case (let f, let t): return String(format: AppLocalization.string("permission.banner.fda_and_tcc %lld %lld", locale: locale), f, t)
             }
         }
     }
@@ -4062,11 +4100,11 @@ private struct PermissionStatusBanner: View {
         // ~/Desktop 等"独立 TCC 类目"时，提示"打开 FDA"是错的——这些目录不归 FDA 管，
         // 用户开了 FDA 也不会解开。改为引导到 Files & Folders 类目。
         if needsFilesAndFolders {
-            return String(localized: "permission.banner.action.open_files_and_folders", bundle: .module)
+            return AppLocalization.string("permission.banner.action.open_files_and_folders", locale: locale)
         }
         return fdaCount > 0
-            ? String(localized: "permission.banner.action.open_fda", bundle: .module)
-            : String(localized: "permission.banner.action.open_and_rescan", bundle: .module)
+            ? AppLocalization.string("permission.banner.action.open_fda", locale: locale)
+            : AppLocalization.string("permission.banner.action.open_and_rescan", locale: locale)
     }
 
     /// v2026.06 用户反馈 #1：判断"denied 列表是否需要 Files & Folders 类目"。
@@ -4113,23 +4151,23 @@ private struct PermissionStatusBanner: View {
     /// ~/Downloads / ~/Documents / ~/Desktop 这种"独立 TCC 类目"，必须单独授权。
     private var diagnosticHint: String? {
         if incompleteCount > 0 {
-            return String(localized: "scan.limitations.detail", bundle: .module)
+            return AppLocalization.string("scan.limitations.detail", locale: locale)
         }
         if fdaCount == 0, tccCount == 0, filesystemCount > 0 {
-            return String(localized: "permission.hint.filesystem_blocked", bundle: .module)
+            return AppLocalization.string("permission.hint.filesystem_blocked", locale: locale)
         }
         if needsFilesAndFolders {
-            return String(localized: "permission.hint.files_and_folders", bundle: .module)
+            return AppLocalization.string("permission.hint.files_and_folders", locale: locale)
         }
         let trashDenied = privacyDeniedPaths.contains { $0.hasSuffix("/.Trash") }
         if fdaStatus == .granted && trashDenied {
-            return String(localized: "permission.hint.trash_not_fda", bundle: .module)
+            return AppLocalization.string("permission.hint.trash_not_fda", locale: locale)
         }
         if fdaStatus == .denied && fdaCount > 0 {
-            return String(localized: "permission.hint.fda_denied", bundle: .module)
+            return AppLocalization.string("permission.hint.fda_denied", locale: locale)
         }
         if fdaStatus == .unknown && fdaCount > 0 {
-            return String(localized: "permission.hint.fda_unknown", bundle: .module)
+            return AppLocalization.string("permission.hint.fda_unknown", locale: locale)
         }
         return nil
     }
@@ -4183,24 +4221,24 @@ private struct PermissionStatusBanner: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
                         if fdaCount > 0 {
-                            Text(String(format: String(localized: "banner.fda.denied.title", bundle: .module), fdaCount)).font(.caption).foregroundStyle(.orange)
+                            Text(String(format: AppLocalization.string("banner.fda.denied.title", locale: locale), fdaCount)).font(.caption).foregroundStyle(.orange)
                             ForEach(privacyDeniedPaths.prefix(50), id: \.self) { p in
                                 Text(verbatim: p).font(.caption2).foregroundStyle(.secondary)
                                     .lineLimit(1).truncationMode(.middle)
                             }
                             if fdaCount > 50 {
-                                Text(String(format: String(localized: "banner.fda.denied.more", bundle: .module), fdaCount - 50)).font(.caption2).foregroundStyle(.tertiary)
+                                Text(String(format: AppLocalization.string("banner.fda.denied.more", locale: locale), fdaCount - 50)).font(.caption2).foregroundStyle(.tertiary)
                             }
                         }
                         if tccCount > 0 {
                             if fdaCount > 0 { Divider().padding(.vertical, 2) }
-                            Text(String(format: String(localized: "banner.fda.tcc.title", bundle: .module), tccCount)).font(.caption).foregroundStyle(.blue)
+                            Text(String(format: AppLocalization.string("banner.fda.tcc.title", locale: locale), tccCount)).font(.caption).foregroundStyle(.blue)
                             ForEach(tccSkippedPaths.prefix(50), id: \.self) { p in
                                 Text(verbatim: p).font(.caption2).foregroundStyle(.secondary)
                                     .lineLimit(1).truncationMode(.middle)
                             }
                             if tccCount > 50 {
-                                Text(String(format: String(localized: "banner.fda.tcc.more", bundle: .module), tccCount - 50)).font(.caption2).foregroundStyle(.tertiary)
+                                Text(String(format: AppLocalization.string("banner.fda.tcc.more", locale: locale), tccCount - 50)).font(.caption2).foregroundStyle(.tertiary)
                             }
                             Text("banner.fda.tcc.privacy_note", bundle: .module)
                                 .font(.caption2)
@@ -4209,13 +4247,13 @@ private struct PermissionStatusBanner: View {
                         }
                         if filesystemCount > 0 {
                             if fdaCount > 0 || tccCount > 0 { Divider().padding(.vertical, 2) }
-                            Text(String(format: String(localized: "banner.filesystem.denied.title", bundle: .module), filesystemCount)).font(.caption).foregroundStyle(.secondary)
+                            Text(String(format: AppLocalization.string("banner.filesystem.denied.title", locale: locale), filesystemCount)).font(.caption).foregroundStyle(.secondary)
                             ForEach(filesystemBlockedPaths.prefix(50), id: \.self) { p in
                                 Text(verbatim: p).font(.caption2).foregroundStyle(.secondary)
                                     .lineLimit(1).truncationMode(.middle)
                             }
                             if filesystemCount > 50 {
-                                Text(String(format: String(localized: "banner.filesystem.denied.more", bundle: .module), filesystemCount - 50)).font(.caption2).foregroundStyle(.tertiary)
+                                Text(String(format: AppLocalization.string("banner.filesystem.denied.more", locale: locale), filesystemCount - 50)).font(.caption2).foregroundStyle(.tertiary)
                             }
                         }
                         if incompleteCount > 0 {
@@ -4223,7 +4261,7 @@ private struct PermissionStatusBanner: View {
                                 Divider().padding(.vertical, 2)
                             }
                             Text(String(
-                                format: String(localized: "scan.limitations.other.title %lld", bundle: .module),
+                                format: AppLocalization.string("scan.limitations.other.title %lld", locale: locale),
                                 Int64(incompleteCount)
                             ))
                             .font(.caption)
@@ -4237,7 +4275,7 @@ private struct PermissionStatusBanner: View {
                             }
                             if incompleteCount > 50 {
                                 Text(String(
-                                    format: String(localized: "banner.filesystem.denied.more", bundle: .module),
+                                    format: AppLocalization.string("banner.filesystem.denied.more", locale: locale),
                                     incompleteCount - 50
                                 ))
                                 .font(.caption2)

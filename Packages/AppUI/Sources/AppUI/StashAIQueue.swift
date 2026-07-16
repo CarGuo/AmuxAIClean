@@ -39,6 +39,23 @@ public final class StashAIQueue {
         case running
     }
 
+    /// v2026.07.15：全局预检错误可能在 footer 中持续显示；这里仅保存错误语义与
+    /// 安全技术参数，不保存启动语言下生成的 String。StashScreen 按当前 locale 投影。
+    public enum GlobalError: Equatable, Sendable {
+        public enum CredentialStorageFailure: Equatable, Sendable {
+            case staleFileReference
+            case system(technicalDetail: String)
+            case unknown
+        }
+
+        case notConfigured
+        case invalidBaseURL
+        case insecureBaseURL(scheme: String, host: String)
+        case missingAPIKey
+        case credentialStorage(CredentialStorageFailure)
+        case unknown
+    }
+
     /// 当前阶段；UI 决定按钮是渲染 "一键 AI" 还是 ProgressView。
     public private(set) var phase: Phase = .idle
 
@@ -55,7 +72,7 @@ public final class StashAIQueue {
 
     /// 最近一次"全局"失败原因（baseURL / apiKey / scheme 等 start 前的预检失败）。
     /// 单条失败**不**写到这里——单条失败已逐项写入 store.entries[i].aiVerdict。
-    public private(set) var lastGlobalError: String? = nil
+    public private(set) var lastGlobalError: GlobalError? = nil
 
     @ObservationIgnored
     private var runTask: Task<Void, Never>? = nil
@@ -78,7 +95,7 @@ public final class StashAIQueue {
 
         // 预检：未开 AI 或 key/url 不全直接拒发——比循环里第一次抛错友好得多。
         guard aiSettings.isReadyForUI else {
-            lastGlobalError = "ai.sheet.error.not_configured"
+            lastGlobalError = .notConfigured
             return
         }
 
@@ -209,19 +226,31 @@ public final class StashAIQueue {
     }
 
     private func finishPreparationFailure(_ error: any Error) {
+        lastGlobalError = Self.globalError(for: error)
+        finishRun()
+    }
+
+    /// 纯语义映射供聚焦测试覆盖；不读取 locale，也不触发网络或 Keychain IO。
+    static func globalError(for error: any Error) -> GlobalError {
         switch error {
         case OpenAIChatClient.Error.invalidBaseURL:
-            lastGlobalError = "ai.sheet.error.invalid_base_url"
+            return .invalidBaseURL
         case OpenAIChatClient.Error.insecureBaseURL(let scheme, let host):
-            lastGlobalError = "[insecure] \(scheme)://\(host)"
+            return .insecureBaseURL(scheme: scheme, host: host)
         case OpenAIChatClient.Error.missingAPIKey:
-            lastGlobalError = "ai.sheet.error.no_api_key"
+            return .missingAPIKey
         case is KeychainAPIKeyStoreError:
-            lastGlobalError = KeychainUserFacingError.message(for: error)
+            switch KeychainUserFacingError.presentation(for: error) {
+            case .staleFileReference:
+                return .credentialStorage(.staleFileReference)
+            case .system(let technicalDetail):
+                return .credentialStorage(.system(technicalDetail: technicalDetail))
+            case .unknown:
+                return .credentialStorage(.unknown)
+            }
         default:
-            lastGlobalError = KeychainUserFacingError.message(for: error)
+            return .unknown
         }
-        finishRun()
     }
 
     private func finishRun() {

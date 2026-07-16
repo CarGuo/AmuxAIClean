@@ -86,15 +86,24 @@ public enum CleanableSeverity: Sendable, Hashable {
         color.opacity(0.18)
     }
 
-    /// 简短状态文案
-    public var label: String {
+    /// v2026.07.15：严重度是语义，文案在当前界面 locale 下投影。
+    public var localizationKey: String {
         switch self {
-        case .critical: return String(localized: "severity.critical", bundle: .module)
-        case .warning:  return String(localized: "severity.warning", bundle: .module)
-        case .caution:  return String(localized: "severity.caution", bundle: .module)
-        case .healthy:  return String(localized: "severity.healthy", bundle: .module)
-        case .idle:     return String(localized: "severity.idle", bundle: .module)
+        case .critical: return "severity.critical"
+        case .warning:  return "severity.warning"
+        case .caution:  return "severity.caution"
+        case .healthy:  return "severity.healthy"
+        case .idle:     return "severity.idle"
         }
+    }
+
+    public func label(locale: Locale) -> String {
+        AppLocalization.string(localizationKey, locale: locale)
+    }
+
+    /// 兼容非界面调用；用户可见 View 必须调用 `label(locale:)`。
+    public var label: String {
+        label(locale: .current)
     }
 
     /// SF Symbol（用于灵动岛收起态左侧图标 / 主 App 状态徽章）

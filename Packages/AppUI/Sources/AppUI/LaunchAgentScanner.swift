@@ -35,13 +35,23 @@ public enum LaunchAgentScope: String, Hashable, Sendable, CaseIterable {
         }
     }
 
-    /// UI 展示用的中文名。
-    public var displayName: String {
+    /// v2026.07.15：scope 保留语义 key，View 显式传当前 locale，避免切语言后标题
+    /// 仍停在进程启动语言。
+    public var localizationKey: String {
         switch self {
-        case .user:   return String(localized: "launch_agent.scope.user", bundle: .module)
-        case .system: return String(localized: "launch_agent.scope.system", bundle: .module)
-        case .daemon: return String(localized: "launch_agent.scope.daemon", bundle: .module)
+        case .user:   return "launch_agent.scope.user"
+        case .system: return "launch_agent.scope.system"
+        case .daemon: return "launch_agent.scope.daemon"
         }
+    }
+
+    public func displayName(locale: Locale) -> String {
+        AppLocalization.string(localizationKey, locale: locale)
+    }
+
+    /// 兼容非界面调用；用户可见 View 必须调用 `displayName(locale:)`。
+    public var displayName: String {
+        displayName(locale: .current)
     }
 }
 

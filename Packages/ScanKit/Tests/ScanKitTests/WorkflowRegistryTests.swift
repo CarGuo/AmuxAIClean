@@ -6,8 +6,7 @@ import XCTest
 /// 覆盖六类核心契约：
 /// 1. 未知 scannerID → 空数组（不抛、不崩）；
 /// 2. derived-data-per-project 路由命中（当前为占位实现，应返回 []）；
-/// 3. simctl-devices 路由：注入 dryRun executor 不真起进程，dryRun 输出非合法 JSON → 兜底为 []；
-/// 4. simctl-runtimes 路由：注入空 allowlist executor 模拟 allowlist 拒绝 → 兜底为 []；
+/// 3. simctl typed failure 在 hits-only 兼容入口仍为空，但 evidence 入口必须标记 incomplete；
 /// 5. 默认 executor 路径（executor 参数为 nil）应能编译并运行不崩；
 /// 6. WorkflowScanHit 的 Hashable / Identifiable 契约。
 final class WorkflowRegistryTests: XCTestCase {
@@ -116,6 +115,18 @@ final class WorkflowRegistryTests: XCTestCase {
                           "dryRun 不应真起 Process；若起了子进程会被 timeout 拖到秒级")
     }
 
+    func test_resolveWithEvidence_simctlDevices非法payload_不是完整空结果() async throws {
+        let evidence = try await WorkflowRegistry.resolveWithEvidence(
+            scannerID: "scanner.simctl-devices",
+            home: FileManager.default.temporaryDirectory,
+            executor: SubprocessExecutor(dryRun: true)
+        )
+        XCTAssertTrue(evidence.hits.isEmpty)
+        XCTAssertFalse(evidence.isComplete)
+        XCTAssertEqual(evidence.incompleteIssues.map(\.path), ["/usr/bin/xcrun"])
+        XCTAssertEqual(evidence.incompleteIssues.map(\.reason), [.enumerationFailed])
+    }
+
     // MARK: - case 4: simctl-runtimes 路由（空 allowlist 模拟拒绝）
 
     func test_resolve_simctlRuntimes_空allowlist_返回空不抛() async {
@@ -130,6 +141,17 @@ final class WorkflowRegistryTests: XCTestCase {
         )
         XCTAssertEqual(hits.count, 0,
                        "allowlist 拒绝时应兜底为空，对位 macOS 未装 Xcode 的真实场景")
+    }
+
+    func test_resolveWithEvidence_simctlRuntimes命令拒绝_不是完整空结果() async throws {
+        let evidence = try await WorkflowRegistry.resolveWithEvidence(
+            scannerID: "scanner.simctl-runtimes",
+            home: FileManager.default.temporaryDirectory,
+            executor: SubprocessExecutor(allowlist: [], dryRun: true)
+        )
+        XCTAssertTrue(evidence.hits.isEmpty)
+        XCTAssertFalse(evidence.isComplete)
+        XCTAssertEqual(evidence.incompleteIssues.map(\.path), ["/usr/bin/xcrun"])
     }
 
     // MARK: - case 5: 默认 executor（executor 参数为 nil）
@@ -187,7 +209,46 @@ final class WorkflowRegistryTests: XCTestCase {
         let hit = WorkflowScanHit(url: url, sizeBytes: nil, displayName: "X", note: nil)
         XCTAssertNil(hit.sizeBytes)
         XCTAssertNil(hit.note)
+        XCTAssertNil(hit.managedUninstallIdentifier)
         XCTAssertEqual(hit.id, "/tmp/x")
+    }
+
+    func test_WorkflowScanHit_托管卸载ID参与Hashable契约() {
+        let url = URL(fileURLWithPath: "/tmp/runtime")
+        let uuid = "5B8AD6C2-263A-40BB-80DB-B2751E2ACAD7"
+        let managed = WorkflowScanHit(url: url,
+                                      sizeBytes: 1024,
+                                      displayName: "iOS 18.0",
+                                      note: nil,
+                                      managedUninstallIdentifier: uuid)
+        let readOnly = WorkflowScanHit(url: url,
+                                       sizeBytes: 1024,
+                                       displayName: "iOS 18.0",
+                                       note: nil)
+        XCTAssertEqual(managed.managedUninstallIdentifier, uuid)
+        XCTAssertNotEqual(managed, readOnly,
+                          "可卸载命中与 legacy 只读命中必须是不同状态")
+    }
+
+    func test_WorkflowScanHit_simctlNote保留类型语义而非rawEnglish() {
+        let hit = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/tmp/device"),
+            sizeBytes: nil,
+            displayName: "iPhone",
+            note: nil,
+            semanticNote: .simulatorDevice(
+                state: .shutdown,
+                runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-18-0"
+            )
+        )
+        XCTAssertNil(hit.note, "Shutdown 不得再固化为 raw note")
+        XCTAssertEqual(
+            hit.semanticNote,
+            .simulatorDevice(
+                state: .shutdown,
+                runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-18-0"
+            )
+        )
     }
 
     // MARK: - case 7: node-modules-scattered 路由（WebNode 工作流）

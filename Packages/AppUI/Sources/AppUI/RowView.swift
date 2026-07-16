@@ -2,6 +2,62 @@ import SwiftUI
 import SafetyKit
 import AIKit
 
+/// v2026.07.15：清单行中必须先落成 `String` 的运行期本地化投影。
+/// tooltip、右键菜单与格式化数值都显式接收当前 SwiftUI locale，避免切换语言后
+/// 继续显示进程启动时的语言；SafetyKit 的 raw rejection 只用于日志，不再直出 UI。
+enum RowViewLiveLocalization {
+    static func protectedHelp(rejection: SafetyRejection, locale: Locale) -> String {
+        let reasonKey = DeletionSafetyReasonPresentation.localizationKey(for: rejection.rawValue)
+        let reason = AppLocalization.string(reasonKey, locale: locale)
+        return AppLocalization.format("row.help.protected %@", locale: locale, arguments: [reason])
+    }
+
+    static func mtimeShort(
+        _ date: Date?,
+        locale: Locale,
+        now: Date = Date()
+    ) -> String {
+        guard let date else { return "—" }
+        let calendar = Calendar.current
+        if calendar.isDate(date, equalTo: now, toGranularity: .year) {
+            return date.formatted(
+                Date.FormatStyle()
+                    .month(.twoDigits)
+                    .day(.twoDigits)
+                    .locale(locale)
+            )
+        }
+        return date.formatted(
+            Date.FormatStyle()
+                .year(.defaultDigits)
+                .month(.twoDigits)
+                .day(.twoDigits)
+                .locale(locale)
+        )
+    }
+
+    static func mtimeFull(_ date: Date?, locale: Locale) -> String {
+        guard let date else { return "" }
+        return date.formatted(
+            Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale)
+        )
+    }
+
+    static func bytes(_ value: Int64, locale: Locale) -> String {
+        value.formatted(.byteCount(style: .file).locale(locale))
+    }
+
+    static func verdictLabel(_ verdict: SafetyVerdict, locale: Locale) -> String {
+        let key: String
+        switch verdict {
+        case .safe: key = "verdict.label.safe"
+        case .confirm: key = "verdict.label.confirm"
+        case .forbid: key = "verdict.label.forbid"
+        }
+        return AppLocalization.string(key, locale: locale)
+    }
+}
+
 /// 列表行 —— 颜色徽章 + 体积条 + 勾选框。
 /// 默认勾选仍只有 `.safe`；专业模式可显式开放 vendorPathRule 风险项进入严格确认，
 /// 其它 `.forbid` 始终锁定。
@@ -9,6 +65,7 @@ struct RowView: View {
     let row: RowItem
     @Binding var selected: Bool
     let maxBytes: Int64
+    @Environment(\.locale) private var locale
     /// 只控制是否允许 vendorPathRule 项发起预检；最终权限仍由 TrashPipeline 重验。
     var allowsVendorPathOverride: Bool = false
     /// M5 / 2026-06：AI 入口配置。
@@ -31,7 +88,10 @@ struct RowView: View {
                 } else {
                     Image(systemName: "lock.fill")
                         .foregroundStyle(.secondary)
-                        .help(Text(String(format: String(localized: "row.help.protected %@", bundle: .module), row.rejection.rawValue)))
+                        .help(Text(RowViewLiveLocalization.protectedHelp(
+                            rejection: row.rejection,
+                            locale: locale
+                        )))
                 }
             }
             .frame(width: 24)
@@ -42,7 +102,7 @@ struct RowView: View {
             // 未变时跳过子树 body 重建。背景：扫描期 publishSnapshot 每 0.4s 一帧整发
             // snapshot，rows 大部分行的 bytes/fileCount 在窗口内未变，但 ForEach 仍会
             // 把每个 RowView 的 body 跑一遍 —— 拆出 Equatable 子 view 把"未变的行"短路掉。
-            RowContentView(row: row, maxBytes: maxBytes)
+            RowContentView(row: row, maxBytes: maxBytes, locale: locale)
                 .equatable()
         }
         .padding(.vertical, 4)
@@ -58,7 +118,7 @@ struct RowView: View {
                                                     reason: "user contextMenu")
                 }
             } label: {
-                Label(String(localized: "row.context.whitelist.add", bundle: .module),
+                Label(AppLocalization.string("row.context.whitelist.add", locale: locale),
                       systemImage: "hand.raised")
             }
             // M5 / 2026-06：按需触发"问 AI"。
@@ -74,7 +134,7 @@ struct RowView: View {
                 Button {
                     cb(row)
                 } label: {
-                    Label(String(localized: "row.context.ask_ai", bundle: .module),
+                    Label(AppLocalization.string("row.context.ask_ai", locale: locale),
                           systemImage: "sparkles")
                 }
             }
@@ -98,30 +158,14 @@ struct RowView: View {
     }
 
     /// 列内 mtime 短文案：当年 MM-dd / 跨年 yyyy-MM-dd / nil → "—"。
-    static func mtimeShort(_ date: Date?) -> String {
-        guard let date = date else { return "—" }
-        let cal = Calendar.current
-        if cal.isDate(date, equalTo: Date(), toGranularity: .year) {
-            return Self.shortFmt.string(from: date)
-        }
-        return Self.fullFmt.string(from: date)
+    static func mtimeShort(_ date: Date?, locale: Locale) -> String {
+        RowViewLiveLocalization.mtimeShort(date, locale: locale)
     }
 
     /// help/tooltip：完整本地化 datetime；nil 给空串避免没必要 tooltip。
-    static func mtimeFull(_ date: Date?) -> String {
-        guard let date = date else { return "" }
-        return Self.fullDateTimeFmt.string(from: date)
+    static func mtimeFull(_ date: Date?, locale: Locale) -> String {
+        RowViewLiveLocalization.mtimeFull(date, locale: locale)
     }
-
-    private static let shortFmt: DateFormatter = {
-        let f = DateFormatter(); f.dateFormat = "MM-dd"; f.locale = .current; return f
-    }()
-    private static let fullFmt: DateFormatter = {
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = .current; return f
-    }()
-    private static let fullDateTimeFmt: DateFormatter = {
-        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short; f.locale = .current; return f
-    }()
 }
 
 /// v1.3 P1-A：行内"纯展示"子视图 —— 实现 Equatable 让 SwiftUI 在扫描帧（0.4s 一帧）
@@ -141,6 +185,7 @@ struct RowView: View {
 private struct RowContentView: View, Equatable {
     let row: RowItem
     let maxBytes: Int64
+    let locale: Locale
 
     private var ratio: CGFloat {
         guard maxBytes > 0 else { return 0 }
@@ -199,11 +244,11 @@ private struct RowContentView: View, Equatable {
                 .frame(width: 56, alignment: .trailing)
 
             // mtime 列
-            Text(RowView.mtimeShort(row.modificationDate))
+            Text(RowView.mtimeShort(row.modificationDate, locale: locale))
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.tertiary)
                 .frame(width: 86, alignment: .trailing)
-                .help(RowView.mtimeFull(row.modificationDate))
+                .help(RowView.mtimeFull(row.modificationDate, locale: locale))
         }
         // v1.5 P2：钉死行高，消除 isActive / vendor 切换造成的 NSTableView re-measure。
         // 28pt 实测能容纳 vendor capsule 与 active Circle 两种最高态。
@@ -216,7 +261,7 @@ private struct RowContentView: View, Equatable {
     /// 也不再用 `.id("\(row.id)-active")` 强制重建子树（避免 active 翻转抖动）。
     @ViewBuilder
     private var bytesLabel: some View {
-        let text = ByteCountFormatter.string(fromByteCount: row.bytes, countStyle: .file)
+        let text = RowViewLiveLocalization.bytes(row.bytes, locale: locale)
         if row.isActive {
             TimelineView(.animation(minimumInterval: 0.1, paused: false)) { ctx in
                 // 0.7s 周期、easeInOut 拟合：用 cos 形成 0~1 振荡，映射到 0.35~1.0。
@@ -257,6 +302,7 @@ private struct RowContentView: View, Equatable {
     /// 这里 == 只读 let / 值类型字段，没有 MainActor 状态访问，安全标记 nonisolated。
     nonisolated static func == (lhs: RowContentView, rhs: RowContentView) -> Bool {
         lhs.maxBytes == rhs.maxBytes
+            && lhs.locale.identifier == rhs.locale.identifier
             && lhs.row.id == rhs.row.id
             && lhs.row.bytes == rhs.row.bytes
             && lhs.row.fileCount == rhs.row.fileCount
@@ -270,6 +316,7 @@ private struct RowContentView: View, Equatable {
 
 struct VerdictBadge: View {
     let verdict: SafetyVerdict
+    @Environment(\.locale) private var locale
     var body: some View {
         Circle()
             .fill(color)
@@ -283,10 +330,6 @@ struct VerdictBadge: View {
         }
     }
     private var label: String {
-        switch verdict {
-        case .safe: return String(localized: "verdict.label.safe", bundle: .module)
-        case .confirm: return String(localized: "verdict.label.confirm", bundle: .module)
-        case .forbid: return String(localized: "verdict.label.forbid", bundle: .module)
-        }
+        RowViewLiveLocalization.verdictLabel(verdict, locale: locale)
     }
 }

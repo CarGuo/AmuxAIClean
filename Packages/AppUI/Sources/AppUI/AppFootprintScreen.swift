@@ -24,6 +24,8 @@ public struct AppFootprintScreen: View {
     @State private var progressTotal: Int = 0
     @State private var search: String = ""
     @State private var streamTask: Task<Void, Never>? = nil
+    /// v2026.07.15：String 型 placeholder、格式串与容量必须按当前界面语言即时投影。
+    @Environment(\.locale) private var locale
 
     public init(
         store: UninstallStore? = nil,
@@ -60,7 +62,7 @@ public struct AppFootprintScreen: View {
             header
             Divider()
             if isLoading && items.isEmpty {
-                placeholder(String(localized: "appfootprint.placeholder.loading", bundle: .module), systemImage: "hourglass")
+                placeholder(AppLocalization.string("appfootprint.placeholder.loading", locale: locale), systemImage: "hourglass")
             } else if filtered.isEmpty {
                 placeholder(emptyText, systemImage: "tray")
             } else {
@@ -80,7 +82,7 @@ public struct AppFootprintScreen: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            TextField(String(localized: "appfootprint.header.search_placeholder", bundle: .module), text: $search)
+            TextField(AppLocalization.string("appfootprint.header.search_placeholder", locale: locale), text: $search)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 220)
             if isLoading {
@@ -131,7 +133,9 @@ public struct AppFootprintScreen: View {
                 Spacer()
                 VStack(alignment: .trailing, spacing: 1) {
                     if isPending {
-                        Text(item.totalBytes > 0 ? byteString(item.totalBytes) : String(localized: "appfootprint.row.computing", bundle: .module))
+                        Text(item.totalBytes > 0
+                             ? byteString(item.totalBytes)
+                             : AppLocalization.string("appfootprint.row.computing", locale: locale))
                             .font(item.totalBytes > 0 ? .callout.monospacedDigit() : .caption)
                             .foregroundStyle(item.totalBytes > 0 ? .primary : .secondary)
                         HStack(spacing: 4) {
@@ -171,11 +175,19 @@ public struct AppFootprintScreen: View {
     private var footer: some View {
         HStack {
             if isLoading && progressTotal > 0 {
-                Text(String(format: String(localized: "appfootprint.footer.progress", bundle: .module), progressDone, progressTotal))
+                Text(AppLocalization.format(
+                    "appfootprint.footer.progress",
+                    locale: locale,
+                    arguments: [progressDone, progressTotal]
+                ))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if !items.isEmpty {
-                Text(String(format: String(localized: "appfootprint.footer.total", bundle: .module), byteString(loadedItems.map(\.totalBytes).reduce(0, +))))
+                Text(AppLocalization.format(
+                    "appfootprint.footer.total",
+                    locale: locale,
+                    arguments: [byteString(loadedItems.map(\.totalBytes).reduce(0, +))]
+                ))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -201,7 +213,7 @@ public struct AppFootprintScreen: View {
                     detailList(item)
                 }
             } else {
-                placeholder(String(localized: "appfootprint.placeholder.select_app", bundle: .module), systemImage: "sidebar.right")
+                placeholder(AppLocalization.string("appfootprint.placeholder.select_app", locale: locale), systemImage: "sidebar.right")
             }
         }
     }
@@ -233,7 +245,11 @@ public struct AppFootprintScreen: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(String(format: String(localized: "appfootprint.detail.total_size", bundle: .module), byteString(item.totalBytes)))
+                Text(AppLocalization.format(
+                    "appfootprint.detail.total_size",
+                    locale: locale,
+                    arguments: [byteString(item.totalBytes)]
+                ))
                     .font(.callout.monospacedDigit())
             }
             Spacer()
@@ -292,9 +308,9 @@ public struct AppFootprintScreen: View {
 
     private var emptyText: String {
         if !search.trimmingCharacters(in: .whitespaces).isEmpty {
-            return String(localized: "appfootprint.empty.no_match", bundle: .module)
+            return AppLocalization.string("appfootprint.empty.no_match", locale: locale)
         }
-        return String(localized: "appfootprint.empty.no_apps", bundle: .module)
+        return AppLocalization.string("appfootprint.empty.no_apps", locale: locale)
     }
 
     private func reload() async {
@@ -396,7 +412,7 @@ public struct AppFootprintScreen: View {
     }
 
     private func byteString(_ b: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: b, countStyle: .file)
+        b.formatted(.byteCount(style: .file).locale(locale))
     }
 
     private func bucketIcon(_ k: AppFootprintBucket.Kind) -> String {

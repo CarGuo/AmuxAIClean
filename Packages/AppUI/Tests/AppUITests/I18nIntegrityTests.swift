@@ -39,6 +39,108 @@ final class I18nIntegrityTests: XCTestCase {
     /// 等 i18n key 字面量。若不纳入扫描，会把这些活引用全部误报为 stale。
     private static let siblingPackagesRoot = "Packages"
 
+    /// v2026.07.15：界面语言已在当前进程完整刷新，设置页不得重新引入“需重启”合同。
+    func test_languageSwitch_不再保留重启文案key() throws {
+        let keys = Set(try loadXcstringsKeys())
+        XCTAssertFalse(keys.contains("settings.language.restart_hint"))
+        XCTAssertFalse(keys.contains("settings.language.restart_now"))
+    }
+
+    /// v2026.07.15：所有 AppUI / App target 界面承诺在同一进程内即时切换语言。
+    /// 若再次直接使用 Foundation 的进程级 `String(localized:)`，tooltip、AppKit bridge、
+    /// 格式串或异步结果会重新锁回启动语言；必须统一走显式 locale resolver。
+    ///
+    /// 旧合同只列举少数“关键文件”，因此新增界面和服务层悄悄绕过检查，最终出现同一屏
+    /// 中英文混杂。这里改为扫描完整产品源；注释中的事故说明不算运行期调用。
+    func test_liveLocale关键界面_禁止重新引入进程级字符串解析() throws {
+        let root = try repoRoot()
+        let sourceRoots = [
+            root.appendingPathComponent(Self.appUISources),
+            root.appendingPathComponent(Self.appTargetSources),
+        ]
+        let fileManager = FileManager.default
+        var violations: [String] = []
+
+        for sourceRoot in sourceRoots {
+            guard let enumerator = fileManager.enumerator(
+                at: sourceRoot,
+                includingPropertiesForKeys: nil
+            ) else { continue }
+            while let url = enumerator.nextObject() as? URL {
+                guard url.pathExtension == "swift",
+                      !Self.shouldSkipSwiftSource(url: url) else { continue }
+                let source = try String(contentsOf: url, encoding: .utf8)
+                let relativePath = url.path.replacingOccurrences(
+                    of: root.path + "/",
+                    with: ""
+                )
+                for (index, line) in source
+                    .split(separator: "\n", omittingEmptySubsequences: false)
+                    .enumerated() {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    guard !trimmed.hasPrefix("//"),
+                          line.contains("String(localized:") else { continue }
+                    violations.append("\(relativePath):\(index + 1)")
+                }
+            }
+        }
+        XCTAssertTrue(
+            violations.isEmpty,
+            "live-locale 界面重新引入了进程级字符串解析：\(violations.joined(separator: ", "))"
+        )
+    }
+
+    /// DevArtifactRules 的 displayName/subtitle 允许真实目录名，但凡声明为 `rule.*`
+    /// 就是用户可见的语义 key，必须双语落入 AppUI String Catalog。
+    func test_developerRule用户文案key_全部存在于Catalog() throws {
+        let root = try repoRoot()
+        let rulesURL = root.appendingPathComponent(
+            "Packages/ScanKit/Sources/ScanKit/DevArtifactRules.swift"
+        )
+        let source = try String(contentsOf: rulesURL, encoding: .utf8)
+        let regex = try NSRegularExpression(
+            pattern: #"(?:displayName|subtitle):\s*\"(rule\.[^\"]+)\""#
+        )
+        let nsSource = source as NSString
+        let declaredKeys = Set(regex.matches(
+            in: source,
+            range: NSRange(location: 0, length: nsSource.length)
+        ).compactMap { match -> String? in
+            guard match.numberOfRanges > 1 else { return nil }
+            return nsSource.substring(with: match.range(at: 1))
+        })
+        let catalogKeys = Set(try loadXcstringsKeys())
+        let missing = declaredKeys.subtracting(catalogKeys).sorted()
+
+        XCTAssertFalse(declaredKeys.isEmpty)
+        XCTAssertTrue(
+            missing.isEmpty,
+            "DevArtifactRules 用户文案缺少 String Catalog 翻译：\(missing)"
+        )
+    }
+
+    /// 扫描快照若进入 Commands 的 stored dependency，SwiftUI 会在每个扫描发布帧
+    /// 重建整张 AppKit 菜单。语言切换只能新增轻量 locale 依赖，不能扩大到扫描状态。
+    func test_liveLocaleCommands_依赖面不包含扫描快照() throws {
+        let root = try repoRoot()
+        let appSource = try String(
+            contentsOf: root.appendingPathComponent("App/GSYCleanMacApp.swift"),
+            encoding: .utf8
+        )
+        guard let typeStart = appSource.range(of: "private struct GSYCleanCommands: Commands"),
+              let bodyStart = appSource.range(of: "var body: some Commands", range: typeStart.lowerBound..<appSource.endIndex) else {
+            return XCTFail("找不到 GSYCleanCommands 依赖声明")
+        }
+        let dependencySurface = String(appSource[typeStart.lowerBound..<bodyStart.lowerBound])
+
+        XCTAssertTrue(dependencySurface.contains("let updateChecker: UpdateChecker"))
+        XCTAssertTrue(dependencySurface.contains("@Binding var hudShown: Bool"))
+        XCTAssertTrue(dependencySurface.contains("let locale: Locale"))
+        XCTAssertFalse(dependencySurface.contains("ScanCoordinator"))
+        XCTAssertFalse(dependencySurface.contains("ScanSnapshot"))
+        XCTAssertFalse(dependencySurface.contains("AppSettings"))
+    }
+
     /// 找仓库根：从当前测试文件一路 ../ 找到 .git
     private func repoRoot() throws -> URL {
         var url = URL(fileURLWithPath: #filePath)
@@ -125,41 +227,46 @@ final class I18nIntegrityTests: XCTestCase {
     /// "面向用户的失败原因（dryrun 拦截 / 移动失败 / 安全策略阻断）必须可翻译"，
     /// 9 条 `trash.err.*` 复活进入活代码（见 [TrashPipeline.swift L268-L344](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L268-L344)）。
     ///
-    /// **新契约**（2026-06-21 修订）：不再"必须 0 条"，而是**双向同步**——
-    ///   1) xcstrings 里每条 `trash.err.*` key 必须在 TrashPipeline.swift 中至少出现一次；
-    ///   2) TrashPipeline.swift 里每个 `trash.err.*` 字面量必须在 xcstrings 中有 key。
+    /// **新契约**（2026-07-15 修订）：不再"必须 0 条"，而是**双向同步**——
+    ///   1) xcstrings 里每条 `trash.err.*` key 必须在 Trash typed model / pipeline 中出现；
+    ///   2) 这两个文件里的每个 `trash.err.*` 字面量必须在 xcstrings 中有 key。
     ///
     /// 取舍：
     ///   - 不全仓 grep（避免被本测试文件自身的字面量 "trash.err." 自检自污染）。
-    ///   - 只锁定 TrashPipeline.swift —— 这是 trash.err.* 的唯一活引用点。
-    ///     如果未来出现第二个活引用点（如 BatchTrashCoordinator），需扩展本测试。
+    ///   - v2026.07.15 起 `TrashFailureSummary` 在 DeletionPipeline.swift 保存事实并按显式
+    ///     locale 投影，TrashPipeline.swift 只生产 typed summary；两者共同构成边界。
     func test_xcstrings_trash_err_key_双向同步() throws {
         let root = try repoRoot()
         let pipelinePath = root
             .appendingPathComponent("Packages/AppUI/Sources/AppUI/TrashPipeline.swift")
             .path
-        let pipelineSrc = try String(contentsOfFile: pipelinePath, encoding: .utf8)
+        let modelPath = root
+            .appendingPathComponent("Packages/AppUI/Sources/AppUI/DeletionPipeline.swift")
+            .path
+        let trashSources = try [pipelinePath, modelPath]
+            .map { try String(contentsOfFile: $0, encoding: .utf8) }
+            .joined(separator: "\n")
 
         let xcstringsTrashKeys = try loadXcstringsKeys().filter { $0.hasPrefix("trash.err.") }
 
         // 1) xcstrings → 源码：每条 key 必须被 TrashPipeline 引用
         var unreferenced: [String] = []
         for key in xcstringsTrashKeys {
-            if !pipelineSrc.contains(key) {
+            if !trashSources.contains(key) {
                 unreferenced.append(key)
             }
         }
         XCTAssertTrue(
             unreferenced.isEmpty,
-            "xcstrings 中 \(unreferenced.count) 条 trash.err.* key 在 TrashPipeline.swift 找不到引用（疑似 stale，应在 xcstrings 删除）：\(unreferenced.sorted())"
+            "xcstrings 中 \(unreferenced.count) 条 trash.err.* key 在 Trash typed model / pipeline 找不到引用（疑似 stale，应在 xcstrings 删除）：\(unreferenced.sorted())"
         )
 
         // 2) 源码 → xcstrings：每个 "trash.err.XXX" 字面量必须在 xcstrings 中存在
         // 抓 pipeline 中所有 "trash.err.<rest>" 字面量（截到下一个空白 / " / ) 之前）。
         let pattern = #""(trash\.err\.[A-Za-z0-9_.]+(?:\s+%(?:lld|d|@|ld|\.\d+f))*)""#
         let regex = try NSRegularExpression(pattern: pattern)
-        let ns = pipelineSrc as NSString
-        let matches = regex.matches(in: pipelineSrc,
+        let ns = trashSources as NSString
+        let matches = regex.matches(in: trashSources,
                                     range: NSRange(location: 0, length: ns.length))
         var sourceKeys = Set<String>()
         for m in matches where m.numberOfRanges >= 2 {
@@ -169,7 +276,7 @@ final class I18nIntegrityTests: XCTestCase {
         let missingInCatalog = sourceKeys.subtracting(xcSet).sorted()
         XCTAssertTrue(
             missingInCatalog.isEmpty,
-            "TrashPipeline.swift 引用了 \(missingInCatalog.count) 条 trash.err.* key 但 xcstrings 缺翻译（运行期会 fallback 到 key 字符串）：\(missingInCatalog)"
+            "Trash typed model / pipeline 引用了 \(missingInCatalog.count) 条 trash.err.* key 但 xcstrings 缺翻译（运行期会 fallback 到 key 字符串）：\(missingInCatalog)"
         )
     }
 
@@ -854,6 +961,75 @@ final class I18nIntegrityTests: XCTestCase {
               1) 在 Localizable.xcstrings 添加该 key 的翻译（en + zh-Hans）；
               2) 若 key 已废弃，从 Swift 源中删除对应 Text/String(localized:) 调用；
               3) 若 key 实际是运行期前缀拼接生成，把前缀加入 dynamicPrefixes 白名单并注释说明。
+            """
+        )
+    }
+
+    // MARK: - 契约 10：动态 workflow metadata 也必须在 xcstrings 中存在
+
+    /// Workflow/Card metadata 先在 ScanKit 中以 key 字面量声明，再由 AppUI 通过
+    /// `LocalizedStringKey(workflow.displayName)` 等动态入口解析；versioned-root 的命中名称
+    /// 也通过 `String.LocalizationValue(hit.displayName)` 动态解析。契约 9 只识别直接写在
+    /// `String(localized:)` / `Text(..., bundle:)` 里的 key，无法覆盖这两类间接引用。
+    ///
+    /// 这里直接扫描生产源码中的 metadata key 形状，避免删除或漏加 String Catalog 条目后，
+    /// UI 静默回退为 `workflow.apple.displayName` 之类的原始 key。
+    func test_dynamic_workflow_metadata_keys_必须在_xcstrings_中存在() throws {
+        let root = try repoRoot()
+        let fm = FileManager.default
+        let definedKeys = Set(try loadXcstringsKeys())
+        let metadataPattern = try NSRegularExpression(
+            pattern: #""((?:(?:workflow|card)\.[A-Za-z0-9_.-]+\.(?:displayName|subtitle|title|summary)(?:\.blocked)?|versioned-root\.[A-Za-z0-9_.-]+\.displayName))""#,
+            options: []
+        )
+
+        var locationsByKey: [String: Set<String>] = [:]
+        let dirs = [
+            root.appendingPathComponent(Self.appTargetSources),
+            root.appendingPathComponent(Self.siblingPackagesRoot),
+        ]
+
+        for dir in dirs {
+            guard let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: nil) else { continue }
+            while let url = enumerator.nextObject() as? URL {
+                guard url.pathExtension == "swift" else { continue }
+                if Self.shouldSkipSwiftSource(url: url) { continue }
+                if url.lastPathComponent == "I18nIntegrityTests.swift" { continue }
+
+                guard let source = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                let lines = source.split(separator: "\n", omittingEmptySubsequences: false)
+                for (lineIndex, rawLine) in lines.enumerated() {
+                    let line = String(rawLine)
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if trimmed.hasPrefix("//") || trimmed.hasPrefix("///") || trimmed.hasPrefix("*") {
+                        continue
+                    }
+
+                    let nsLine = line as NSString
+                    let range = NSRange(location: 0, length: nsLine.length)
+                    for match in metadataPattern.matches(in: line, range: range) where match.numberOfRanges >= 2 {
+                        let key = nsLine.substring(with: match.range(at: 1))
+                        let relativePath = url.path.replacingOccurrences(of: root.path + "/", with: "")
+                        locationsByKey[key, default: []].insert("\(relativePath):\(lineIndex + 1)")
+                    }
+                }
+            }
+        }
+
+        let missingKeys = locationsByKey.keys
+            .filter { !definedKeys.contains($0) }
+            .sorted()
+        let details = missingKeys.map { key in
+            let locations = locationsByKey[key, default: []].sorted().joined(separator: ", ")
+            return "\(key) [\(locations)]"
+        }
+
+        XCTAssertTrue(
+            missingKeys.isEmpty,
+            """
+            发现 \(missingKeys.count) 个动态 workflow metadata key 未收入 Localizable.xcstrings：
+              \(details.joined(separator: "\n  "))
+            这些 key 通过 LocalizedStringKey/String.LocalizationValue 间接解析，缺失时 UI 会显示原始 key。
             """
         )
     }

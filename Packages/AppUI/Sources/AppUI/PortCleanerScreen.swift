@@ -1,5 +1,33 @@
 import SwiftUI
 
+/// v2026.07.15：端口终止确认只保存标题语义或进程原名；结果只保存计数。
+/// confirmationDialog/alert 存续期间切换语言时，由当前 View locale 重新投影。
+enum PortCleanerKillTitle: Equatable, Sendable {
+    case processName(String)
+    case selected
+
+    func text(locale: Locale) -> String {
+        switch self {
+        case .processName(let value): return value
+        case .selected:
+            return AppLocalization.string("port_cleaner.button.kill_selected", locale: locale)
+        }
+    }
+}
+
+struct PortCleanerKillResultPresentation: Equatable, Sendable {
+    let success: Int
+    let failed: Int
+
+    func text(locale: Locale) -> String {
+        AppLocalization.format(
+            "port_cleaner.kill.result",
+            locale: locale,
+            arguments: [Int64(success), Int64(failed)]
+        )
+    }
+}
+
 public struct PortCleanerScreen: View {
     private enum ViewMode: String, CaseIterable, Identifiable {
         case flat
@@ -9,7 +37,7 @@ public struct PortCleanerScreen: View {
     }
 
     private struct PendingKill: Equatable {
-        let title: String
+        let title: PortCleanerKillTitle
         let pids: [Int32]
     }
 
@@ -40,7 +68,8 @@ public struct PortCleanerScreen: View {
     @State private var loadTask: Task<Void, Never>?
     @State private var pendingKill: PendingKill?
     @State private var showKillConfirm = false
-    @State private var resultMessage: String?
+    @State private var resultPresentation: PortCleanerKillResultPresentation?
+    @Environment(\.locale) private var locale
 
     public init(scanner: PortCleanerScanner = PortCleanerScanner()) {
         self.scanner = scanner
@@ -60,32 +89,37 @@ public struct PortCleanerScreen: View {
             loadTask = nil
         }
         .confirmationDialog(
-            pendingKill?.title ?? String(localized: "port_cleaner.confirm.title", bundle: .module),
+            pendingKill?.title.text(locale: locale)
+                ?? AppLocalization.string("port_cleaner.confirm.title", locale: locale),
             isPresented: $showKillConfirm,
             titleVisibility: .visible
         ) {
-            Button(String(localized: "port_cleaner.button.kill", bundle: .module), role: .destructive) {
+            Button(AppLocalization.string("port_cleaner.button.kill", locale: locale), role: .destructive) {
                 let request = pendingKill
                 pendingKill = nil
                 Task { await performKill(request) }
             }
-            Button(String(localized: "common.button.cancel", bundle: .module), role: .cancel) {
+            Button(AppLocalization.string("common.button.cancel", locale: locale), role: .cancel) {
                 pendingKill = nil
             }
         } message: {
             let count = pendingKill?.pids.count ?? 0
-            Text(String(format: String(localized: "port_cleaner.confirm.message", bundle: .module), count))
+            Text(AppLocalization.format(
+                "port_cleaner.confirm.message",
+                locale: locale,
+                arguments: [Int64(count)]
+            ))
         }
-        .alert(String(localized: "port_cleaner.result.title", bundle: .module),
+        .alert(AppLocalization.string("port_cleaner.result.title", locale: locale),
                isPresented: Binding(
-                get: { resultMessage != nil },
-                set: { if !$0 { resultMessage = nil } }
+                get: { resultPresentation != nil },
+                set: { if !$0 { resultPresentation = nil } }
                )) {
-            Button(String(localized: "common.button.ok", bundle: .module)) {
-                resultMessage = nil
+            Button(AppLocalization.string("common.button.ok", locale: locale)) {
+                resultPresentation = nil
             }
         } message: {
-            Text(resultMessage ?? "")
+            Text(resultPresentation?.text(locale: locale) ?? "")
         }
     }
 
@@ -106,7 +140,7 @@ public struct PortCleanerScreen: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 180)
-                TextField(String(localized: "port_cleaner.search.placeholder", bundle: .module), text: $query)
+                TextField(AppLocalization.string("port_cleaner.search.placeholder", locale: locale), text: $query)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 260)
                 if isLoading || isKilling {
@@ -122,17 +156,22 @@ public struct PortCleanerScreen: View {
             }
 
             HStack {
-                Text(String(format: String(localized: "port_cleaner.summary", bundle: .module),
-                            filteredEntries.count,
-                            groupedEntries.count,
-                            Set(filteredEntries.map(\.pid)).count))
+                Text(AppLocalization.format(
+                    "port_cleaner.summary",
+                    locale: locale,
+                    arguments: [
+                        Int64(filteredEntries.count),
+                        Int64(groupedEntries.count),
+                        Int64(Set(filteredEntries.map(\.pid)).count)
+                    ]
+                ))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button(role: .destructive) {
                     requestKillSelected()
                 } label: {
-                    Label(String(localized: "port_cleaner.button.kill_selected", bundle: .module),
+                    Label(AppLocalization.string("port_cleaner.button.kill_selected", locale: locale),
                           systemImage: "xmark.octagon")
                 }
                 .disabled(selectedIDs.isEmpty || isKilling)
@@ -241,9 +280,11 @@ public struct PortCleanerScreen: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text(String(format: String(localized: "port_cleaner.group.summary", bundle: .module),
-                        group.portCount,
-                        group.pids.count))
+            Text(AppLocalization.format(
+                "port_cleaner.group.summary",
+                locale: locale,
+                arguments: [Int64(group.portCount), Int64(group.pids.count)]
+            ))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .frame(width: TableMetrics.localWidth, alignment: .leading)
@@ -259,7 +300,7 @@ public struct PortCleanerScreen: View {
                 .lineLimit(1)
                 .frame(width: TableMetrics.userWidth, alignment: .leading)
             Button(role: .destructive) {
-                requestKill(title: group.title, entries: group.entries)
+                requestKill(title: .processName(group.title), entries: group.entries)
             } label: {
                 Image(systemName: "xmark.octagon")
             }
@@ -326,7 +367,7 @@ public struct PortCleanerScreen: View {
                 .lineLimit(1)
                 .frame(width: TableMetrics.userWidth, alignment: .leading)
             Button(role: .destructive) {
-                requestKill(title: entry.processName, entries: [entry])
+                requestKill(title: .processName(entry.processName), entries: [entry])
             } label: {
                 Image(systemName: "xmark.octagon")
             }
@@ -341,7 +382,11 @@ public struct PortCleanerScreen: View {
     private var footer: some View {
         HStack {
             if !selectedIDs.isEmpty {
-                Text(String(format: String(localized: "port_cleaner.footer.selected", bundle: .module), selectedIDs.count))
+                Text(AppLocalization.format(
+                    "port_cleaner.footer.selected",
+                    locale: locale,
+                    arguments: [Int64(selectedIDs.count)]
+                ))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             } else {
@@ -399,7 +444,7 @@ public struct PortCleanerScreen: View {
         }
     }
 
-    private func requestKill(title: String, entries: [PortCleanerEntry]) {
+    private func requestKill(title: PortCleanerKillTitle, entries: [PortCleanerEntry]) {
         let pids = Array(Set(entries.filter(\.canRequestTermination).map(\.pid))).sorted()
         guard !pids.isEmpty else { return }
         pendingKill = PendingKill(title: title, pids: pids)
@@ -409,7 +454,7 @@ public struct PortCleanerScreen: View {
     private func requestKillSelected() {
         let selectedEntries = entries.filter { selectedIDs.contains($0.id) && $0.canRequestTermination }
         requestKill(
-            title: String(localized: "port_cleaner.button.kill_selected", bundle: .module),
+            title: .selected,
             entries: selectedEntries
         )
     }
@@ -421,7 +466,7 @@ public struct PortCleanerScreen: View {
         let results = await scanner.kill(pids: request.pids)
         let success = results.filter(\.success).count
         let failed = results.count - success
-        resultMessage = String(format: String(localized: "port_cleaner.kill.result", bundle: .module), success, failed)
+        resultPresentation = PortCleanerKillResultPresentation(success: success, failed: failed)
         selectedIDs.removeAll()
         isKilling = false
         startReload()

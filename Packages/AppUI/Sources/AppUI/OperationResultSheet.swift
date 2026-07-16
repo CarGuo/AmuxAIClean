@@ -7,37 +7,17 @@ import AppKit
 enum OperationResultCompletion: Identifiable, Sendable {
     /// Full deletion interaction: typed intent, authorization and Trash receipt.
     case deletion(DeletionCompletedInteraction)
-    /// A mixed Workflow already completed its Trash phase, then the user cancelled
-    /// the still-pending command phase. The result remains anchored to the real Trash
-    /// receipt while preserving the frozen command items that were explicitly not run.
-    case deletionWithSkippedCommands(
-        deletion: DeletionCompletedInteraction,
-        skippedCommands: [SimulatorDeleteCoordinator.Item]
-    )
     /// Main/Smart Care currently submit through the shared Trash coordinator
     /// directly; its completion is an equivalent unforgeable recycle receipt.
     case trash(
         TrashActionCoordinator.CompletedSubmission,
         runningAppSkipped: [OperationResultPayload.RunningAppSkippedItem]
     )
-    /// simctl is a destructive command, not a Trash operation, and therefore
-    /// carries its own independent command receipt.
-    case command(
-        SimulatorDeleteCoordinator.CompletedSubmission,
-        runningAppSkipped: [OperationResultPayload.RunningAppSkippedItem]
-    )
-    case combined(
-        deletion: DeletionCompletedInteraction,
-        command: SimulatorDeleteCoordinator.CompletedSubmission
-    )
 
     var id: UUID {
         switch self {
         case .deletion(let completed): return completed.receipt.id
-        case .deletionWithSkippedCommands(let deletion, _): return deletion.receipt.id
         case .trash(let completed, _): return completed.receipt.id
-        case .command(let completed, _): return completed.receipt.id
-        case .combined(_, let command): return command.receipt.id
         }
     }
 
@@ -48,18 +28,8 @@ enum OperationResultCompletion: Identifiable, Sendable {
                 completed.trashSubmission,
                 runningAppSkipped: completed.runningAppSkipped
             )
-        case .deletionWithSkippedCommands(let deletion, let skippedCommands):
-            return .trash(
-                deletion.trashSubmission,
-                runningAppSkipped: deletion.runningAppSkipped,
-                commandLineSkipped: skippedCommands.count
-            )
         case .trash(let completed, let runningAppSkipped):
             return .trash(completed, runningAppSkipped: runningAppSkipped)
-        case .command(let completed, let runningAppSkipped):
-            return .command(completed, runningAppSkipped: runningAppSkipped)
-        case .combined(let deletion, let command):
-            return .combined(deletion: deletion, command: command)
         }
     }
 }
@@ -91,18 +61,6 @@ public struct OperationResultPayload: Identifiable {
         }
     }
 
-    public struct CommandLineFailure: Equatable {
-        public let item: String
-        public let exitCode: Int32
-        public let detail: String
-
-        public init(item: String, exitCode: Int32, detail: String) {
-            self.item = item
-            self.exitCode = exitCode
-            self.detail = detail
-        }
-    }
-
     public let id: UUID
     /// 成功移入废纸篓的 (原路径, 废纸篓路径) 对
     public let movedPairs: [(originalPath: String, trashedPath: String)]
@@ -112,12 +70,6 @@ public struct OperationResultPayload: Identifiable {
     public let failureReasons: [String: String]
     /// 被 SafetyEngine / accessDenied 拦的 (path, reason) 对
     public let safetyRejected: [(path: String, reason: String)]
-    /// 复合 Workflow 中，用户在文件阶段已经完成后明确取消、因而未执行的命令项数。
-    public let commandLineSkipped: Int
-    /// 已经成功执行的命令行清理项数。命令行操作不经过废纸篓，不能伪装成 movedPairs。
-    public let commandLineSucceeded: Int
-    /// 命令行清理的失败结果。单独建模，避免把 simctl 失败伪装成可在 Finder 中定位的文件路径。
-    public let commandLineFailures: [CommandLineFailure]
     /// 用户明确选择跳过的运行中 App 相关项；它不是系统失败，也不是 SafetyEngine 拦截。
     public let runningAppSkipped: [RunningAppSkippedItem]
     fileprivate init(id: UUID,
@@ -125,25 +77,18 @@ public struct OperationResultPayload: Identifiable {
                      failedPaths: [String] = [],
                      failureReasons: [String: String] = [:],
                      safetyRejected: [(String, String)] = [],
-                     commandLineSkipped: Int = 0,
-                     commandLineSucceeded: Int = 0,
-                     commandLineFailures: [CommandLineFailure] = [],
                      runningAppSkipped: [RunningAppSkippedItem] = []) {
         self.id = id
         self.movedPairs = movedPairs.map { (originalPath: $0.0, trashedPath: $0.1) }
         self.failedPaths = failedPaths
         self.failureReasons = failureReasons
         self.safetyRejected = safetyRejected.map { (path: $0.0, reason: $0.1) }
-        self.commandLineSkipped = commandLineSkipped
-        self.commandLineSucceeded = commandLineSucceeded
-        self.commandLineFailures = commandLineFailures
         self.runningAppSkipped = runningAppSkipped
     }
 
     fileprivate static func trash(
         _ completed: TrashActionCoordinator.CompletedSubmission,
-        runningAppSkipped: [RunningAppSkippedItem],
-        commandLineSkipped: Int = 0
+        runningAppSkipped: [RunningAppSkippedItem]
     ) -> OperationResultPayload {
         if let outcome = completed.outcome {
             return OperationResultPayload(
@@ -152,7 +97,6 @@ public struct OperationResultPayload: Identifiable {
                 failedPaths: outcome.failedPaths,
                 failureReasons: outcome.failureReasons,
                 safetyRejected: outcome.safetyRejected,
-                commandLineSkipped: commandLineSkipped,
                 runningAppSkipped: runningAppSkipped
             )
         }
@@ -168,67 +112,18 @@ public struct OperationResultPayload: Identifiable {
             movedPairs: completed.pairs,
             failedPaths: failedPaths,
             failureReasons: failureReasons,
-            commandLineSkipped: commandLineSkipped,
             runningAppSkipped: runningAppSkipped
-        )
-    }
-
-    fileprivate static func command(
-        _ completed: SimulatorDeleteCoordinator.CompletedSubmission,
-        runningAppSkipped: [RunningAppSkippedItem]
-    ) -> OperationResultPayload {
-        let failures = completed.outcomes.compactMap { outcome -> CommandLineFailure? in
-            guard !outcome.isSuccess else { return nil }
-            return CommandLineFailure(
-                item: outcome.item.displayName,
-                exitCode: outcome.exitCode,
-                detail: outcome.truncatedOutput
-            )
-        }
-        return OperationResultPayload(
-            id: completed.receipt.id,
-            commandLineSucceeded: completed.outcomes.count - failures.count,
-            commandLineFailures: failures,
-            runningAppSkipped: runningAppSkipped
-        )
-    }
-
-    fileprivate static func combined(
-        deletion: DeletionCompletedInteraction,
-        command: SimulatorDeleteCoordinator.CompletedSubmission
-    ) -> OperationResultPayload {
-        let trash = OperationResultPayload.trash(
-            deletion.trashSubmission,
-            runningAppSkipped: deletion.runningAppSkipped
-        )
-        let commandResult = OperationResultPayload.command(
-            command,
-            runningAppSkipped: []
-        )
-        return OperationResultPayload(
-            id: command.receipt.id,
-            movedPairs: trash.movedPairs.map { ($0.originalPath, $0.trashedPath) },
-            failedPaths: trash.failedPaths,
-            failureReasons: trash.failureReasons,
-            safetyRejected: trash.safetyRejected.map { ($0.path, $0.reason) },
-            commandLineSucceeded: commandResult.commandLineSucceeded,
-            commandLineFailures: commandResult.commandLineFailures,
-            runningAppSkipped: trash.runningAppSkipped
         )
     }
 
     /// 状态判定优先级：有失败 / 有拦截 > 部分；纯成功 → success；全失败/全拦截 → failed。
-    ///
-    /// `commandLineSkipped` 不是执行失败，不能计入红色 failed；但它表示复合动作没有全部完成，
-    /// 所以与运行中 App 跳过项一样让已经有成功结果的操作呈现为 partial。
     public var status: Status {
-        let succeededCount = movedPairs.count + commandLineSucceeded
-        let failedCount = failedPaths.count + safetyRejected.count + commandLineFailures.count
+        let succeededCount = movedPairs.count
+        let failedCount = failedPaths.count + safetyRejected.count
         return OperationResultStatusPolicy.status(
             succeededCount: succeededCount,
             failedCount: failedCount,
-            runningAppSkippedCount: runningAppSkipped.count,
-            commandLineSkippedCount: commandLineSkipped
+            runningAppSkippedCount: runningAppSkipped.count
         )
     }
 
@@ -243,11 +138,10 @@ enum OperationResultStatusPolicy {
     static func status(
         succeededCount: Int,
         failedCount: Int,
-        runningAppSkippedCount: Int,
-        commandLineSkippedCount: Int = 0
+        runningAppSkippedCount: Int
     ) -> OperationResultPayload.Status {
         if failedCount == 0 {
-            return runningAppSkippedCount == 0 && commandLineSkippedCount == 0
+            return runningAppSkippedCount == 0
                 ? .success
                 : .partial
         }
@@ -258,6 +152,7 @@ enum OperationResultStatusPolicy {
 
 /// 删除操作结果 sheet。**所有 alert("删除结果")样式都应该换到这个 sheet。**
 public struct OperationResultSheet: View {
+    @Environment(\.locale) private var locale
     public let payload: OperationResultPayload
     public let onDismiss: () -> Void
 
@@ -281,23 +176,14 @@ public struct OperationResultSheet: View {
                     if payload.status == .success, !payload.movedPairs.isEmpty {
                         successSummary
                     }
-                    if payload.commandLineSucceeded > 0 {
-                        commandLineSuccessSummary
-                    }
                     if !payload.failedPaths.isEmpty {
                         failedSection
-                    }
-                    if !payload.commandLineFailures.isEmpty {
-                        commandLineFailureSection
                     }
                     if !payload.safetyRejected.isEmpty {
                         blockedSection
                     }
                     if !payload.runningAppSkipped.isEmpty {
                         runningAppSkippedSection
-                    }
-                    if payload.commandLineSkipped > 0 {
-                        commandLineHint
                     }
                 }
                 .padding(20)
@@ -353,12 +239,10 @@ public struct OperationResultSheet: View {
     }
 
     private var statusSubtitle: String {
-        let succeeded = payload.movedPairs.count + payload.commandLineSucceeded
+        let succeeded = payload.movedPairs.count
         let total = succeeded
             + payload.failedPaths.count
             + payload.safetyRejected.count
-            + payload.commandLineFailures.count
-            + payload.commandLineSkipped
             + payload.runningAppSkipped.count
         return "\(succeeded) / \(total)"
     }
@@ -377,7 +261,7 @@ public struct OperationResultSheet: View {
                 icon: "xmark.circle.fill",
                 color: .red,
                 titleKey: "op.result.stat.failed",
-                count: payload.failedPaths.count + payload.commandLineFailures.count
+                count: payload.failedPaths.count
             )
             statTile(
                 icon: "shield.lefthalf.filled",
@@ -423,7 +307,7 @@ public struct OperationResultSheet: View {
 
     private var successSummary: some View {
         Label {
-            Text(String(format: String(localized: "op.result.summary.success %lld", bundle: .module), payload.movedPairs.count))
+            Text(String(format: AppLocalization.string("op.result.summary.success %lld", locale: locale), payload.movedPairs.count))
                 .font(.callout)
         } icon: {
             Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
@@ -433,64 +317,6 @@ public struct OperationResultSheet: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.green.opacity(0.08))
         )
-    }
-
-    private var commandLineSuccessSummary: some View {
-        Label {
-            Text(String(format: String(localized: "op.result.cmdline.succeeded %lld", bundle: .module),
-                        payload.commandLineSucceeded))
-                .font(.callout)
-        } icon: {
-            Image(systemName: "terminal.fill").foregroundStyle(.green)
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.green.opacity(0.08))
-        )
-    }
-
-    private var commandLineFailureSection: some View {
-        DisclosureGroup {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("op.result.hint.cmdline_failed", bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(payload.commandLineFailures.enumerated()), id: \.offset) { _, failure in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(failure.item)
-                                .font(.system(.caption, design: .monospaced))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Text(String(
-                                format: String(localized: "op.result.cmdline.failure.detail %lld %@", bundle: .module),
-                                Int64(failure.exitCode),
-                                failure.detail
-                            ))
-                            .font(.caption2)
-                            .foregroundStyle(.red)
-                            .textSelection(.enabled)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color.red.opacity(0.06))
-                )
-            }
-            .padding(.top, 8)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "terminal.fill").foregroundStyle(.red)
-                Text("op.result.section.cmdline_failed", bundle: .module).bold()
-                Text("(\(payload.commandLineFailures.count))")
-                    .foregroundStyle(.secondary)
-                    .font(.callout)
-            }
-        }
     }
 
     // MARK: - Failed Section（可折叠 + Reveal / Copy）
@@ -552,7 +378,10 @@ public struct OperationResultSheet: View {
                                 .font(.system(.caption, design: .monospaced))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
-                            Text(DeletionSafetyReasonPresentation.text(for: item.reason))
+                            Text(DeletionSafetyReasonPresentation.text(
+                                for: item.reason,
+                                locale: locale
+                            ))
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
                         }
@@ -560,7 +389,7 @@ public struct OperationResultSheet: View {
                     }
                     if payload.safetyRejected.count > 20 {
                         Text(String(
-                            format: String(localized: "op.result.more %lld", bundle: .module),
+                            format: AppLocalization.string("op.result.more %lld", locale: locale),
                             payload.safetyRejected.count - 20
                         ))
                             .font(.caption2)
@@ -609,7 +438,7 @@ public struct OperationResultSheet: View {
                     }
                     if payload.runningAppSkipped.count > 20 {
                         Text(String(
-                            format: String(localized: "op.result.more %lld", bundle: .module),
+                            format: AppLocalization.string("op.result.more %lld", locale: locale),
                             payload.runningAppSkipped.count - 20
                         ))
                             .font(.caption2)
@@ -635,22 +464,6 @@ public struct OperationResultSheet: View {
         }
     }
 
-    // MARK: - 命令行待办提示
-
-    private var commandLineHint: some View {
-        Label {
-            Text(String(format: String(localized: "op.result.cmdline.skipped %lld", bundle: .module), payload.commandLineSkipped))
-                .font(.callout)
-        } icon: {
-            Image(systemName: "terminal").foregroundStyle(.blue)
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.blue.opacity(0.08))
-        )
-    }
-
     // MARK: - 路径列表通用渲染
 
     private var failedPathListView: some View {
@@ -662,7 +475,9 @@ public struct OperationResultSheet: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     if let reason = payload.failureReasons[path], !reason.isEmpty {
-                        Text(reason)
+                        Text(reason == TrashFailureSummary.unknownRecycleReasonKey
+                            ? AppLocalization.string(reason, locale: locale)
+                            : reason)
                             .font(.caption2)
                             .foregroundStyle(.red)
                             .textSelection(.enabled)
@@ -672,7 +487,7 @@ public struct OperationResultSheet: View {
             }
             if payload.failedPaths.count > 20 {
                 Text(String(
-                    format: String(localized: "op.result.more %lld", bundle: .module),
+                    format: AppLocalization.string("op.result.more %lld", locale: locale),
                     payload.failedPaths.count - 20
                 ))
                     .font(.caption2)
@@ -698,7 +513,7 @@ public struct OperationResultSheet: View {
             }
             if paths.count > 20 {
                 Text(String(
-                    format: String(localized: "op.result.more %lld", bundle: .module),
+                    format: AppLocalization.string("op.result.more %lld", locale: locale),
                     paths.count - 20
                 ))
                     .font(.caption2)

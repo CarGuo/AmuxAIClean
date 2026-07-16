@@ -8,7 +8,7 @@ import XCTest
 /// 2. **仅 pnpm-store 存在**：出 pnpm-store + node-gyp + electron + scattered（4 张）；
 /// 3. **全部目录存在**：出齐 6 张 + ID 全局唯一；
 /// 4. **scattered 卡**：source 必为 `.dynamicScanner("scanner.node-modules-scattered")`；
-/// 5. **所有卡 recipe 都是 .filesystem**：本工作流不引入任何 .commandLine；
+/// 5. **所有卡 recipe 都是 .filesystem**：本工作流不引入托管卸载；
 /// 6. **risk 等级**：5 张缓存卡 safe + scattered confirm。
 ///
 /// 测试不依赖真实 ~ 路径：全部在 tmp 目录下构造伪 home。
@@ -153,12 +153,12 @@ final class WebNodeWorkflowCardsTests: XCTestCase {
         XCTAssertEqual(scattered.risk, .confirm,
                        "scattered 卡删除影响工程本地 install 速度，必须 confirm")
         XCTAssertEqual(scattered.recipe, .filesystem,
-                       "scattered 卡走回收站（NSWorkspace.recycle），不应引入 commandLine")
+                       "scattered 卡走回收站（NSWorkspace.recycle），不应引入托管卸载")
     }
 
     // MARK: - 场景 5：所有卡 recipe 都是 filesystem
 
-    func test_所有卡_recipe_都是_filesystem_本工作流不引入_commandLine() throws {
+    func test_所有卡_recipe_都是_filesystem_本工作流不引入托管卸载() throws {
         let home = try makeTmpHome()
         defer { try? FileManager.default.removeItem(at: home) }
 
@@ -176,9 +176,6 @@ final class WebNodeWorkflowCardsTests: XCTestCase {
         let cards = WebNodeWorkflow().cards(home: home)
         XCTAssertEqual(cards.count, 6)
         for card in cards {
-            if case .commandLine = card.recipe {
-                XCTFail("\(card.id) 不应使用 .commandLine recipe；WebNode 工作流统一走回收站")
-            }
             XCTAssertEqual(card.recipe, .filesystem, "\(card.id) recipe 必须是 .filesystem")
             XCTAssertTrue(card.recipe.isExecutableInCurrentBuild,
                           "\(card.id) 的 .filesystem 永远应当可执行")

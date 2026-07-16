@@ -99,6 +99,8 @@ enum DuplicateDeletionSubmissionGate {
 /// - UI 层提供每组处理入口，删除动作统一走 TrashPipeline 移到废纸篓。
 /// - 顶部 banner 醒目提示「重复检测可能漏报或误报」，prefix-only 组建议手动核对。
 public struct DuplicateScreen: View {
+    @Environment(\.locale) private var locale
+
     /// 顶栏「最小尺寸」滑杆挡位。
     enum SizeStep: Int, CaseIterable, Identifiable {
         case mb1 = 0, mb10, mb100, gb1
@@ -121,6 +123,24 @@ public struct DuplicateScreen: View {
         }
     }
 
+    /// v2026.07.15：扫描状态只保存稳定语义，不再保存启动语言下生成的阶段文案。
+    /// footer 每次渲染都按当前 View locale 投影，切换语言不会等待下一轮扫描。
+    enum ScanPhase: Equatable, Sendable {
+        case enumerate
+        case prefixHash
+        case fullHash
+
+        func localizedTitle(locale: Locale) -> String {
+            let key: String
+            switch self {
+            case .enumerate: key = "duplicate.phase.enumerate"
+            case .prefixHash: key = "duplicate.phase.prefix_hash"
+            case .fullHash: key = "duplicate.phase.full_hash"
+            }
+            return AppLocalization.string(key, locale: locale)
+        }
+    }
+
     // MARK: - State
 
     @State private var roots: [URL] = DuplicateScreen.defaultRoots()
@@ -128,7 +148,7 @@ public struct DuplicateScreen: View {
     @State private var groups: [DuplicateGroup] = []
     @State private var selectedGroupID: String?
     @State private var isScanning: Bool = false
-    @State private var phaseLabel: String = ""
+    @State private var scanPhase: ScanPhase?
     @State private var bucketsDone: Int = 0
     @State private var bucketsTotal: Int = 0
     @State private var sizingFiles: Int = 0
@@ -325,7 +345,13 @@ public struct DuplicateScreen: View {
         HStack(spacing: 12) {
             // 扫描根（固定默认 + 可加）
             VStack(alignment: .leading, spacing: 2) {
-                Text(String(format: String(localized: "duplicate.topbar.roots", bundle: .module), roots.count)).font(.caption).foregroundStyle(.secondary)
+                Text(AppLocalization.format(
+                    "duplicate.topbar.roots",
+                    locale: locale,
+                    arguments: [Int64(roots.count)]
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 // v1.3.ab：扫描根 chip 横排——根多了之后 ideal width 会爆窗口，
                 // 包一层 ScrollView(.horizontal) 让它在窗口窄时滚动，不再反推父容器。
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -351,7 +377,13 @@ public struct DuplicateScreen: View {
             Spacer(minLength: 12)
             // 最小尺寸滑杆
             VStack(alignment: .leading, spacing: 2) {
-                Text(String(format: String(localized: "duplicate.topbar.min_size", bundle: .module), minStep.label)).font(.caption).foregroundStyle(.secondary)
+                Text(AppLocalization.format(
+                    "duplicate.topbar.min_size",
+                    locale: locale,
+                    arguments: [minStep.label]
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 Picker("", selection: $minStep) {
                     ForEach(SizeStep.allCases) { step in
                         Text(step.label).tag(step)
@@ -439,9 +471,15 @@ public struct DuplicateScreen: View {
             .padding(.vertical, 8)
             Divider()
             if isScanning && groups.isEmpty {
-                placeholder(String(localized: "duplicate.placeholder.scanning", bundle: .module), systemImage: "hourglass")
+                placeholder(
+                    AppLocalization.string("duplicate.placeholder.scanning", locale: locale),
+                    systemImage: "hourglass"
+                )
             } else if groups.isEmpty {
-                placeholder(String(localized: "duplicate.placeholder.no_results", bundle: .module), systemImage: "doc.on.doc")
+                placeholder(
+                    AppLocalization.string("duplicate.placeholder.no_results", locale: locale),
+                    systemImage: "doc.on.doc"
+                )
             } else {
                 List(selection: $selectedGroupID) {
                     ForEach(groups) { g in
@@ -459,7 +497,11 @@ public struct DuplicateScreen: View {
                 Image(systemName: g.reliability == .full ? "checkmark.seal.fill" : "questionmark.circle.fill")
                     .foregroundStyle(g.reliability == .full ? .green : .orange)
                     .font(.caption)
-                Text(String(format: String(localized: "duplicate.group.copies", bundle: .module), g.files.count))
+                Text(AppLocalization.format(
+                    "duplicate.group.copies",
+                    locale: locale,
+                    arguments: [Int64(g.files.count)]
+                ))
                     .font(.callout.bold())
                 Spacer()
                 Text(byteString(g.totalBytes))
@@ -467,15 +509,19 @@ public struct DuplicateScreen: View {
                 Button {
                     activeSheet = .handle(g)
                 } label: {
-                    Label(String(localized: "duplicate.action.handle", bundle: .module),
+                    Label(AppLocalization.string("duplicate.action.handle", locale: locale),
                           systemImage: "checklist")
                         .labelStyle(.iconOnly)
                 }
                 .buttonStyle(.borderless)
-                .help(String(localized: "duplicate.action.handle", bundle: .module))
+                .help(AppLocalization.string("duplicate.action.handle", locale: locale))
                 .disabled(isDeletingDuplicates)
             }
-            Text(String(format: String(localized: "duplicate.group.reclaim_per", bundle: .module), byteString(g.reclaimableBytes), byteString(g.logicalBytes)))
+            Text(AppLocalization.format(
+                "duplicate.group.reclaim_per",
+                locale: locale,
+                arguments: [byteString(g.reclaimableBytes), byteString(g.logicalBytes)]
+            ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(g.files.first.map { URL(fileURLWithPath: $0.path).lastPathComponent } ?? "")
@@ -513,7 +559,10 @@ public struct DuplicateScreen: View {
                 }
                 .listStyle(.inset)
             } else {
-                placeholder(String(localized: "duplicate.placeholder.select_group", bundle: .module), systemImage: "sidebar.right")
+                placeholder(
+                    AppLocalization.string("duplicate.placeholder.select_group", locale: locale),
+                    systemImage: "sidebar.right"
+                )
             }
         }
     }
@@ -521,24 +570,35 @@ public struct DuplicateScreen: View {
     private func detailHeader(_ g: DuplicateGroup) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(g.reliability == .full
-                     ? String(localized: "duplicate.detail.full_hash", bundle: .module)
-                     : String(localized: "duplicate.detail.prefix_hash", bundle: .module))
+                Text(AppLocalization.string(
+                    g.reliability == .full
+                        ? "duplicate.detail.full_hash"
+                        : "duplicate.detail.prefix_hash",
+                    locale: locale
+                ))
                     .font(.callout.bold())
                     .foregroundStyle(g.reliability == .full ? .green : .orange)
                 Spacer()
-                Text(String(format: String(localized: "duplicate.detail.copies_size", bundle: .module), g.files.count, byteString(g.logicalBytes)))
+                Text(AppLocalization.format(
+                    "duplicate.detail.copies_size",
+                    locale: locale,
+                    arguments: [Int64(g.files.count), byteString(g.logicalBytes)]
+                ))
                     .font(.callout.monospacedDigit())
                 Button {
                     activeSheet = .handle(g)
                 } label: {
-                    Label(String(localized: "duplicate.action.handle", bundle: .module),
+                    Label(AppLocalization.string("duplicate.action.handle", locale: locale),
                           systemImage: "checklist")
                 }
                 .controlSize(.small)
                 .disabled(isDeletingDuplicates)
             }
-            Text(String(format: String(localized: "duplicate.detail.reclaimable", bundle: .module), byteString(g.reclaimableBytes)))
+            Text(AppLocalization.format(
+                "duplicate.detail.reclaimable",
+                locale: locale,
+                arguments: [byteString(g.reclaimableBytes)]
+            ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text("duplicate.detail.tip", bundle: .module)
@@ -573,23 +633,40 @@ public struct DuplicateScreen: View {
         HStack(spacing: 8) {
             if isScanning {
                 ProgressView().controlSize(.small)
+                let phaseTitle = scanPhase?.localizedTitle(locale: locale) ?? ""
                 if bucketsTotal > 0 {
-                    Text(String(format: String(localized: "duplicate.footer.phase_progress", bundle: .module), phaseLabel, bucketsDone, bucketsTotal))
+                    Text(AppLocalization.format(
+                        "duplicate.footer.phase_progress",
+                        locale: locale,
+                        arguments: [phaseTitle, Int64(bucketsDone), Int64(bucketsTotal)]
+                    ))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 } else {
-                    Text(String(format: String(localized: "duplicate.footer.phase_candidates", bundle: .module), phaseLabel, sizingFiles))
+                    Text(AppLocalization.format(
+                        "duplicate.footer.phase_candidates",
+                        locale: locale,
+                        arguments: [phaseTitle, Int64(sizingFiles)]
+                    ))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
             } else if !groups.isEmpty {
                 let totalReclaim = groups.map(\.reclaimableBytes).reduce(0, +)
-                Text(String(format: String(localized: "duplicate.footer.summary", bundle: .module), groups.count, byteString(totalReclaim)))
+                Text(AppLocalization.format(
+                    "duplicate.footer.summary",
+                    locale: locale,
+                    arguments: [Int64(groups.count), byteString(totalReclaim)]
+                ))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
             if !tccSkippedRoots.isEmpty {
-                Text(String(format: String(localized: "duplicate.footer.tcc_skipped", bundle: .module), tccSkippedRoots.count))
+                Text(AppLocalization.format(
+                    "duplicate.footer.tcc_skipped",
+                    locale: locale,
+                    arguments: [Int64(tccSkippedRoots.count)]
+                ))
                     .font(.caption)
                     .foregroundStyle(.blue)
             }
@@ -1019,7 +1096,7 @@ public struct DuplicateScreen: View {
         bucketsDone = 0
         bucketsTotal = 0
         sizingFiles = 0
-        phaseLabel = String(localized: "duplicate.phase.enumerate", bundle: .module)
+        scanPhase = .enumerate
         isScanning = true
 
         let scanner = DuplicateScanner(roots: roots, minBytes: minStep.bytes)
@@ -1029,14 +1106,14 @@ public struct DuplicateScreen: View {
                 guard scanSessionID == sessionID, scanRevision == revision else { break }
                 switch event {
                 case .sizingProgress(let n):
-                    phaseLabel = String(localized: "duplicate.phase.enumerate", bundle: .module)
+                    scanPhase = .enumerate
                     sizingFiles = n
                 case .hashingProgress(let done, let total):
-                    phaseLabel = String(localized: "duplicate.phase.prefix_hash", bundle: .module)
+                    scanPhase = .prefixHash
                     bucketsDone = done
                     bucketsTotal = total
                 case .fullHashingProgress(let done, let total):
-                    phaseLabel = String(localized: "duplicate.phase.full_hash", bundle: .module)
+                    scanPhase = .fullHash
                     bucketsDone = done
                     bucketsTotal = total
                 case .finished(let g):
@@ -1061,7 +1138,7 @@ public struct DuplicateScreen: View {
             // 避免下次启动前 footer 闪显旧进度数字。
             if scanSessionID == sessionID, scanRevision == revision {
                 isScanning = false
-                phaseLabel = ""
+                scanPhase = nil
                 bucketsDone = 0
                 bucketsTotal = 0
                 sizingFiles = 0
@@ -1071,6 +1148,8 @@ public struct DuplicateScreen: View {
 }
 
 private struct DuplicateHandleSheet: View {
+    @Environment(\.locale) private var locale
+
     let group: DuplicateGroup
     let isDeleting: Bool
     let onCancel: () -> Void
@@ -1126,9 +1205,14 @@ private struct DuplicateHandleSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("duplicate.handle.title", bundle: .module)
                     .font(.title2.bold())
-                Text(String(format: String(localized: "duplicate.handle.subtitle %lld %@", bundle: .module),
-                            group.files.count,
-                            ByteCountFormatter.string(fromByteCount: group.reclaimableBytes, countStyle: .file)))
+                Text(AppLocalization.format(
+                    "duplicate.handle.subtitle %lld %@",
+                    locale: locale,
+                    arguments: [
+                        Int64(group.files.count),
+                        ByteCountFormatter.string(fromByteCount: group.reclaimableBytes, countStyle: .file)
+                    ]
+                ))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -1144,8 +1228,11 @@ private struct DuplicateHandleSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("duplicate.handle.default.title", bundle: .module)
                     .font(.headline)
-                Text(String(format: String(localized: "duplicate.handle.default.detail %@", bundle: .module),
-                            URL(fileURLWithPath: group.files.first?.path ?? "").lastPathComponent))
+                Text(AppLocalization.format(
+                    "duplicate.handle.default.detail %@",
+                    locale: locale,
+                    arguments: [URL(fileURLWithPath: group.files.first?.path ?? "").lastPathComponent]
+                ))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -1203,20 +1290,25 @@ private struct DuplicateHandleSheet: View {
 
     private var footer: some View {
         HStack {
-            Text(String(format: String(localized: "duplicate.handle.selected %lld %@", bundle: .module),
-                        manualTargets.count,
-                        ByteCountFormatter.string(
-                            fromByteCount: manualSelectedBytes,
-                            countStyle: .file
-                        )))
+            Text(AppLocalization.format(
+                "duplicate.handle.selected %lld %@",
+                locale: locale,
+                arguments: [
+                    Int64(manualTargets.count),
+                    ByteCountFormatter.string(
+                        fromByteCount: manualSelectedBytes,
+                        countStyle: .file
+                    )
+                ]
+            ))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
             Spacer()
-            Button(String(localized: "delete.action.cancel", bundle: .module), role: .cancel) {
+            Button(AppLocalization.string("delete.action.cancel", locale: locale), role: .cancel) {
                 onCancel()
             }
             .keyboardShortcut(.cancelAction)
-            Button(String(localized: "duplicate.handle.manual.button", bundle: .module), role: .destructive) {
+            Button(AppLocalization.string("duplicate.handle.manual.button", locale: locale), role: .destructive) {
                 onManual(Array(manualTargets))
             }
             .disabled(isDeleting || manualTargets.isEmpty || manualTargets.count >= group.files.count)

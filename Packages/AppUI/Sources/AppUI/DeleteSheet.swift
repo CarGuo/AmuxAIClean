@@ -40,25 +40,16 @@ public struct DeleteSheet: View {
     }
     private var skipActionTitle: String {
         if nonConflictingItemCount == 0 {
-            return String(
-                format: String(
-                    localized: "delete.running_app.choice.skip_all %lld",
-                    bundle: .module,
-                    locale: locale
-                ),
+            return AppLocalization.format(
+                "delete.running_app.choice.skip_all %lld",
                 locale: locale,
-                decisionConflictCount
+                arguments: [decisionConflictCount]
             )
         }
-        return String(
-            format: String(
-                localized: "delete.running_app.choice.skip %lld %lld",
-                bundle: .module,
-                locale: locale
-            ),
+        return AppLocalization.format(
+            "delete.running_app.choice.skip %lld %lld",
             locale: locale,
-            decisionConflictCount,
-            nonConflictingItemCount
+            arguments: [decisionConflictCount, nonConflictingItemCount]
         )
     }
     private var isPreviewAction: Bool {
@@ -70,7 +61,11 @@ public struct DeleteSheet: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("delete.summary.title", bundle: .module)
                     .font(.title2.bold())
-                Text(String(format: String(localized: "delete.summary.detail %lld %lld %@", bundle: .module), items.count, totalFiles, ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)))
+                Text(AppLocalization.format(
+                    "delete.summary.detail %lld %lld %@",
+                    locale: locale,
+                    arguments: [items.count, totalFiles, formattedBytes(totalBytes)]
+                ))
                     .foregroundStyle(.secondary)
                     .font(.callout)
             }
@@ -121,14 +116,18 @@ public struct DeleteSheet: View {
                                 .truncationMode(.head)
                         }
                         Spacer()
-                        Text(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file))
+                        Text(formattedBytes(item.bytes))
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 2)
                 }
                 if items.count > 200 {
-                    Text(String(format: String(localized: "delete.summary.more %lld", bundle: .module), items.count - 200))
+                    Text(AppLocalization.format(
+                        "delete.summary.more %lld",
+                        locale: locale,
+                        arguments: [items.count - 200]
+                    ))
                         .foregroundStyle(.tertiary)
                         .font(.caption)
                         .padding(.vertical, 2)
@@ -157,14 +156,14 @@ public struct DeleteSheet: View {
                     ProgressView()
                         .controlSize(.small)
                 }
-                Button(String(localized: "delete.action.cancel", bundle: .module), role: .cancel) {
+                Button(AppLocalization.string("delete.action.cancel", locale: locale), role: .cancel) {
                     cancelAndClose()
                 }
                     .keyboardShortcut(.cancelAction)
                 Button(
                     isPreviewAction
-                        ? String(localized: "delete.action.preview", bundle: .module)
-                        : String(localized: "delete.action.confirm", bundle: .module),
+                        ? AppLocalization.string("delete.action.preview", locale: locale)
+                        : AppLocalization.string("delete.action.confirm", locale: locale),
                     role: isPreviewAction ? nil : .destructive
                 ) {
                     confirmCurrentAction()
@@ -176,11 +175,7 @@ public struct DeleteSheet: View {
         }
         .frame(minWidth: 560, minHeight: 480)
         .confirmationDialog(
-            String(
-                localized: "delete.running_app.choice.title",
-                bundle: .module,
-                locale: locale
-            ),
+            AppLocalization.string("delete.running_app.choice.title", locale: locale),
             isPresented: $showRunningAppDecision,
             titleVisibility: .visible
         ) {
@@ -289,5 +284,9 @@ public struct DeleteSheet: View {
     private func cancelAndClose() {
         conflictResolutionTask?.cancel()
         onCancel()
+    }
+
+    private func formattedBytes(_ bytes: Int64) -> String {
+        max(0, bytes).formatted(.byteCount(style: .file).locale(locale))
     }
 }

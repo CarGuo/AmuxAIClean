@@ -5,7 +5,7 @@ import XCTest
 ///
 /// 本测试**故意非常薄**——仅验证骨架不破不漏：
 /// - AppleWorkflow.cards 返回空（避免半成品 UI 进入用户视线）；
-/// - DeletionRecipe.commandLine 在当前构建下被显式禁执行（守住安全门）；
+/// - 托管卸载 recipe 是封闭类型，不接受任意 executable/args；
 /// - 协议 ID 命名约定符合 docs/V17_M1_TASKS.md 规约。
 ///
 /// 真正的卡片注入测试放 PR-2 / PR-3 落地时再补。
@@ -36,29 +36,25 @@ final class DeveloperWorkflowSkeletonTests: XCTestCase {
                       ".filesystem 是 v1.7 M1 唯一允许的 recipe")
     }
 
-    func test_DeletionRecipe_commandLine_命中allowlist_允许执行_v17_PR2() {
-        // v1.7 M1 PR-2 起开放：xcrun simctl delete 在 SubprocessExecutor.defaultAllowlist 内
-        let recipe = DeletionRecipe.commandLine(executable: "/usr/bin/xcrun",
-                                                args: ["simctl", "delete"])
-        XCTAssertTrue(recipe.isExecutableInCurrentBuild,
-                      ".commandLine 命中 SubprocessExecutor allowlist 必须允许执行")
+    func test_ManagedUninstallRecipe_仅包含两种CoreSimulator资源() {
+        XCTAssertEqual(Set(ManagedUninstallRecipe.allCases), [.simulatorDevice, .simulatorRuntime])
+        XCTAssertEqual(ManagedUninstallRecipe.simulatorDevice.rawValue, "simulatorDevice")
+        XCTAssertEqual(ManagedUninstallRecipe.simulatorRuntime.rawValue, "simulatorRuntime")
     }
 
-    func test_DeletionRecipe_commandLine_具体破坏性命令拒绝额外参数() {
-        let recipe = DeletionRecipe.commandLine(
-            executable: "/usr/bin/xcrun",
-            args: ["simctl", "delete", "11111111-2222-3333-4444-555555555555", "--extra"]
-        )
-        XCTAssertFalse(recipe.isExecutableInCurrentBuild,
-                       "recipe 二道闸不能把带额外参数的 destructive simctl 命令标为可执行")
+    func test_ManagedUninstallRecipe_命令前缀由类型固定() {
+        XCTAssertEqual(ManagedUninstallRecipe.simulatorDevice.executable, "/usr/bin/xcrun")
+        XCTAssertEqual(ManagedUninstallRecipe.simulatorDevice.argsPrefix, ["simctl", "delete"])
+        XCTAssertEqual(ManagedUninstallRecipe.simulatorRuntime.executable, "/usr/bin/xcrun")
+        XCTAssertEqual(ManagedUninstallRecipe.simulatorRuntime.argsPrefix,
+                       ["simctl", "runtime", "delete"])
     }
 
-    func test_DeletionRecipe_commandLine_未命中allowlist_仍然禁执行_安全门() {
-        // PITFALL：未来若有人误改 isExecutableInCurrentBuild 为永远 true，此用例必须红
-        let recipe = DeletionRecipe.commandLine(executable: "/bin/rm",
-                                                args: ["-rf", "/"])
-        XCTAssertFalse(recipe.isExecutableInCurrentBuild,
-                       "未授权命令必须挡住，DeletionRecipe 是 SubprocessExecutor 之外的二道闸门")
+    func test_DeletionRecipe_managedUninstall_两种都命中allowlist二道闸() {
+        for managed in ManagedUninstallRecipe.allCases {
+            XCTAssertTrue(DeletionRecipe.managedUninstall(managed).isExecutableInCurrentBuild,
+                          "\(managed) 必须与 SubprocessExecutor allowlist 严格对齐")
+        }
     }
 
     func test_DeveloperCard_Risk_三档与_SafetyEngine_对齐() {

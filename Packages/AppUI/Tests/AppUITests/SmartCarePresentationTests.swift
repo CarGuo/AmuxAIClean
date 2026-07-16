@@ -169,7 +169,14 @@ final class SmartCarePresentationTests: XCTestCase {
             error: .scanFailed("Common App Cache: 14 paths incomplete")
         )
         XCTAssertEqual(scan.titleKey, "smart_care.failure.scan.title")
-        XCTAssertTrue(scan.detailText.contains("14 paths incomplete"))
+        XCTAssertTrue(
+            scan.detailText(locale: Locale(identifier: "en"))
+                .contains("14 paths incomplete")
+        )
+        XCTAssertNotEqual(
+            scan.detailText(locale: Locale(identifier: "en")),
+            scan.detailText(locale: Locale(identifier: "zh-Hans"))
+        )
         XCTAssertEqual(scan.primaryKey, "smart_care.action.retry_scan")
         XCTAssertEqual(SmartCareError.scanFailed("x").recovery, .retryScan)
 
@@ -177,7 +184,10 @@ final class SmartCarePresentationTests: XCTestCase {
             error: .cleanFailed("The item is in use")
         )
         XCTAssertEqual(cleanup.titleKey, "smart_care.failure.clean.title")
-        XCTAssertTrue(cleanup.detailText.contains("The item is in use"))
+        XCTAssertTrue(
+            cleanup.detailText(locale: Locale(identifier: "zh-Hans"))
+                .contains("The item is in use")
+        )
         XCTAssertEqual(cleanup.primaryKey, "smart_care.action.review_cleanup_again")
         XCTAssertEqual(SmartCareError.cleanFailed("x").recovery, .reviewCleanup)
     }
@@ -192,8 +202,12 @@ final class SmartCarePresentationTests: XCTestCase {
         XCTAssertEqual(presentation.displayedPaths, ["/A", "/B"])
         XCTAssertEqual(presentation.remainingCount, 1)
         XCTAssertFalse(presentation.isEmpty)
-        XCTAssertNotNil(presentation.remainingText)
-        XCTAssertTrue(presentation.titleText.contains("3"))
+        XCTAssertNotNil(presentation.remainingText(locale: Locale(identifier: "en")))
+        XCTAssertTrue(presentation.titleText(locale: Locale(identifier: "en")).contains("3"))
+        XCTAssertNotEqual(
+            presentation.titleText(locale: Locale(identifier: "en")),
+            presentation.titleText(locale: Locale(identifier: "zh-Hans"))
+        )
     }
 
     func test_completedPhasePresentation_区分完整与部分完成() {

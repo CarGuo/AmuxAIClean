@@ -182,7 +182,12 @@ struct GSYCleanMacApp: App {
     }
 
     var body: some Scene {
-        WindowGroup(String(localized: "app.name", bundle: AppUIResources.bundle), id: Self.mainWindowID) {
+        // v2026.07.15：WindowGroup 标题也属于先落成 String 的 AppKit 边界；显式按
+        // 当前设置语言解析，避免主界面已切换而窗口标题仍冻结在进程启动语言。
+        WindowGroup(
+            AppLocalization.string("app.name", locale: settings.effectiveLocale),
+            id: Self.mainWindowID
+        ) {
             MainView(vendors: vendors,
                      settings: settings,
                      pathStore: pathStore,
@@ -205,10 +210,10 @@ struct GSYCleanMacApp: App {
                 )
             }
             .task {
-                // v1.7：把用户在「设置 → 外观 → 界面语言」选定的覆盖值同步到 AppleLanguages，
-                // 让原生 NSAlert / NSMenu / 系统弹窗下次启动也跟着切。当次会话靠
-                // `.environment(\.locale, ...)` 即时切换 SwiftUI 自绘文本。
+                // v1.7：AppleLanguages 保持跨进程一致；当前会话的 SwiftUI、String 型
+                // tooltip、托盘与主菜单分别由 environment + applyLiveLocale 即时刷新。
                 settings.applyToAppleLanguagesIfNeeded()
+                applyLiveLocale()
                 await evaluateTCCOnboarding()
                 // v1.1：尊重 settings.updateCheckEnabled 决定是否联网；用户可在设置里关
                 updateChecker.checkOnLaunch()
@@ -345,6 +350,11 @@ struct GSYCleanMacApp: App {
                 // reconcileSentinel 内部识别 settings 当前值，幂等并能在失败时回滚 toggle。
                 reconcileSentinel(initial: false)
             }
+            .onChange(of: settings.preferredLanguage) { _, _ in
+                // v2026.07.15：String 型 tooltip / tray NSMenu / application main menu
+                // 不读取 SwiftUI environment；统一刷新其显式 locale 边界。
+                applyLiveLocale()
+            }
             .onOpenURL { url in
                 // v1.6：daemon 通过 `amuxaiclean://` 把候选传回主 App。
                 // 拉主窗口 + 路由分发由 SentinelURLRouter 完成（NotificationCenter 广播）。
@@ -384,18 +394,21 @@ struct GSYCleanMacApp: App {
             // publishSnapshot → Scene body invalidate → SwiftUI 重跑这个
             // `.commands { }` 闭包 → AppKit 调
             // `AppDelegate.makeMainMenuUpdateImmediately` 整张 NSMenu 拆建 →
-            // 7 个 NSMenuItem 全部走 String(localized:) + bundle:
-            // AppUIResources.bundle 重新查表（NSCache.objectForKey /
+            // 7 个 NSMenuItem 全部重新走进程级 bundle 查表（NSCache.objectForKey /
             // NSPathStore2.fastCharacterContents / NSAttributedString.init）
             // → 主线程 100~600ms microhang 连成串。
             //
             // 修复双管齐下：
             //  ① 拆为 [GSYCleanCommands](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
-            //     独立 Commands struct，参数（class ref + Binding）等价时
+            //     独立 Commands struct，参数（class ref + Binding + locale）等价时
             //     SwiftUI 跳过菜单重建。
-            //  ② 7 个标题改为 GSYCleanCommands 内部的 static let，进程内
-            //     `String(localized:)` 只查一次表，再也不进 NSCache。
-            GSYCleanCommands(updateChecker: updateChecker, hudShown: hudBinding)
+            //  ② 7 个标题显式按 locale 解析；只有语言变化才改变 Commands 依赖，
+            //     扫描 snapshot publish 不会触发本地化查表。
+            GSYCleanCommands(
+                updateChecker: updateChecker,
+                hudShown: hudBinding,
+                locale: settings.effectiveLocale
+            )
         }
 
         // v1.0：标准 ⌘, 设置窗口（隐藏文件 toggle / 大文件阈值 / 自定义路径）。
@@ -406,6 +419,10 @@ struct GSYCleanMacApp: App {
                           aiSettings: aiSettings,
                           navigation: settingsNavigation)
                 .environment(\.locale, settings.effectiveLocale)
+                .onChange(of: settings.preferredLanguage, initial: true) { _, _ in
+                    // 主窗口可能已关闭，只剩 Settings scene；这里同样刷新原生菜单。
+                    applyLiveLocale()
+                }
                 .background {
                     MainWindowOpenActionBridge(
                         sceneID: Self.mainWindowID,
@@ -427,8 +444,21 @@ struct GSYCleanMacApp: App {
     private func reconcileTray() {
         if settings.trayEnabled {
             statusItem.install()
+            statusItem.updateLocale(settings.effectiveLocale)
         } else {
             statusItem.uninstall()
+        }
+    }
+
+    /// v2026.07.15：把同一份语言状态同步到所有非 SwiftUI locale 消费者。
+    /// 延后一轮再刷新 main menu，是为了让本次 SwiftUI Commands diff 先完成，
+    /// 避免刚改好的原生标题被随后发生的 command rebuild 覆盖回启动语言。
+    private func applyLiveLocale() {
+        let locale = settings.effectiveLocale
+        statusItem.updateLocale(locale)
+        ApplicationMenuLocalizer.apply(locale: locale)
+        DispatchQueue.main.async {
+            ApplicationMenuLocalizer.apply(locale: locale)
         }
     }
 
@@ -649,38 +679,21 @@ struct GSYCleanMacApp: App {
 /// **不再**让 AppKit 重建整张 NSMenu。
 ///
 /// 关键设计：
-/// - 内部 7 个标题改为 `static let`：进程内 `String(localized:)` 只查一次表，
-///   再也不进 NSCache.objectForKey / NSPathStore2.fastCharacterContents
-///   （Instruments Hangs 模板 backtrace 的核心热点）。
-/// - 自身只持有 class ref + Binding 两个轻量值：SwiftUI 在 .commands diff
-///   阶段比较等价时直接短路菜单重建。
+/// - 菜单只持有轻量的 locale 值；扫描 snapshot 不进入依赖面，所以扫描帧不会重建菜单。
+/// - 语言变化时 Commands identity 才变化，7 个标题通过 AppLocalization 按新 locale
+///   解析一次，兼顾运行期切换与原有性能边界。
 /// - **不持有 AppSettings**：dev 扫期间 settings 不会变，但 AppSettings
 ///   是 `@Observable`，作为 stored prop 会让本 struct 被 SwiftUI 视为
 ///   会变化的依赖；改成只传 `Binding<Bool>` 后依赖面收紧到 hudEnabled 一项。
 private struct GSYCleanCommands: Commands {
     let updateChecker: UpdateChecker
     @Binding var hudShown: Bool
-
-    // MARK: - 本地化文案 static let（消除每帧 NSCache/NSPathStore2 查表）
-    private static let titleCheckUpdates =
-        String(localized: "menu.app.checkUpdates", bundle: AppUIResources.bundle)
-    private static let titleShowHUD =
-        String(localized: "menu.view.showHUD", bundle: AppUIResources.bundle)
-    private static let titleHelp =
-        String(localized: "menu.help.help", bundle: AppUIResources.bundle)
-    private static let titlePrivacy =
-        String(localized: "menu.help.privacy", bundle: AppUIResources.bundle)
-    private static let titleTerms =
-        String(localized: "menu.help.terms", bundle: AppUIResources.bundle)
-    private static let titleFeedback =
-        String(localized: "menu.help.feedback", bundle: AppUIResources.bundle)
-    private static let titleRevealLogs =
-        String(localized: "menu.help.revealLogs", bundle: AppUIResources.bundle)
+    let locale: Locale
 
     var body: some Commands {
         // v1.1：Help 菜单加"检查更新"入口（实际落在 appInfo 后面，约定俗成）
         CommandGroup(after: .appInfo) {
-            Button(Self.titleCheckUpdates) {
+            Button(AppLocalization.string("menu.app.checkUpdates", locale: locale)) {
                 updateChecker.checkNow()
             }
         }
@@ -688,27 +701,27 @@ private struct GSYCleanCommands: Commands {
         // 用 CommandGroup(after: .toolbar) 让它落在 macOS 标准"显示"区。
         CommandGroup(after: .toolbar) {
             Divider()
-            Toggle(Self.titleShowHUD, isOn: $hudShown)
+            Toggle(AppLocalization.string("menu.view.showHUD", locale: locale), isOn: $hudShown)
                 .keyboardShortcut("h", modifiers: [.command, .shift])
         }
         // v1.5.7：替换 SwiftUI 默认的占位 Help 菜单，提供生产级帮助入口。
         CommandGroup(replacing: .help) {
-            Button(Self.titleHelp) {
+            Button(AppLocalization.string("menu.help.help", locale: locale)) {
                 GSYCleanMacApp.openExternal("https://github.com/CarGuo/GSYCleanMac#readme")
             }
             .keyboardShortcut("?", modifiers: [.command])
             Divider()
-            Button(Self.titlePrivacy) {
+            Button(AppLocalization.string("menu.help.privacy", locale: locale)) {
                 GSYCleanMacApp.openExternal("https://github.com/CarGuo/GSYCleanMac/blob/main/PRIVACY.md")
             }
-            Button(Self.titleTerms) {
+            Button(AppLocalization.string("menu.help.terms", locale: locale)) {
                 GSYCleanMacApp.openExternal("https://github.com/CarGuo/GSYCleanMac/blob/main/TERMS.md")
             }
             Divider()
-            Button(Self.titleFeedback) {
+            Button(AppLocalization.string("menu.help.feedback", locale: locale)) {
                 GSYCleanMacApp.openExternal("https://github.com/CarGuo/GSYCleanMac/issues/new/choose")
             }
-            Button(Self.titleRevealLogs) {
+            Button(AppLocalization.string("menu.help.revealLogs", locale: locale)) {
                 GSYCleanMacApp.revealLogsInFinder()
             }
         }

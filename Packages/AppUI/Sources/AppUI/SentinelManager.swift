@@ -43,15 +43,27 @@ public final class SentinelManager {
             }
         }
 
-        /// UI 展示的人类可读文案。
-        public var displayLabel: String {
+        /// v2026.07.15：状态只保存语义，显示时按当前 App locale 投影。
+        public func displayLabel(locale: Locale) -> String {
+            let key: String
             switch self {
-            case .notRegistered: return String(localized: "sentinel.status.not_registered", bundle: .module)
-            case .enabled: return String(localized: "sentinel.status.enabled", bundle: .module)
-            case .requiresApproval: return String(localized: "sentinel.status.requires_approval", bundle: .module)
-            case .notFound: return String(localized: "sentinel.status.not_found", bundle: .module)
-            case .unknown(let raw): return String(format: String(localized: "sentinel.status.unknown %lld", bundle: .module), raw)
+            case .notRegistered: key = "sentinel.status.not_registered"
+            case .enabled: key = "sentinel.status.enabled"
+            case .requiresApproval: key = "sentinel.status.requires_approval"
+            case .notFound: key = "sentinel.status.not_found"
+            case .unknown(let raw):
+                return AppLocalization.format(
+                    "sentinel.status.unknown %lld",
+                    locale: locale,
+                    arguments: [Int64(raw)]
+                )
             }
+            return AppLocalization.string(key, locale: locale)
+        }
+
+        /// 兼容诊断/回归调用；用户可见 UI 必须使用 `displayLabel(locale:)`。
+        public var displayLabel: String {
+            displayLabel(locale: .current)
         }
     }
 
@@ -75,18 +87,19 @@ public final class SentinelManager {
     /// 成功 → 写 `sentinelLastEnabled = Date()`；失败 → 弹 NSAlert（如 requiresApproval 引导跳系统设置）。
     @discardableResult
     public func enable() -> Bool {
+        let locale = settings?.effectiveLocale ?? .current
         do {
             try service.register()
             settings?.sentinelLastEnabled = Date()
-            GSYLog.info(.sentinel, "register succeeded; status=\(currentStatus().displayLabel)")
+            GSYLog.info(.sentinel, "register succeeded; status=\(currentStatus())")
             // register() 成功后 status 可能是 .enabled 也可能是 .requiresApproval（首次安装）。
             if case .requiresApproval = currentStatus() {
-                presentApprovalAlert()
+                presentApprovalAlert(locale: locale)
             }
             return true
         } catch {
             GSYLog.error(.sentinel, "register failed: \(error.localizedDescription)")
-            presentRegisterFailureAlert(error: error)
+            presentRegisterFailureAlert(error: error, locale: locale)
             return false
         }
     }
@@ -108,12 +121,12 @@ public final class SentinelManager {
 
     // MARK: - Alert 兜底
 
-    private func presentApprovalAlert() {
+    private func presentApprovalAlert(locale: Locale) {
         let alert = NSAlert()
-        alert.messageText = String(localized: "sentinel.alert.approval.title", bundle: .module)
-        alert.informativeText = String(localized: "sentinel.alert.approval.body", bundle: .module)
-        alert.addButton(withTitle: String(localized: "sentinel.alert.button.open_settings", bundle: .module))
-        alert.addButton(withTitle: String(localized: "sentinel.alert.button.later", bundle: .module))
+        alert.messageText = AppLocalization.string("sentinel.alert.approval.title", locale: locale)
+        alert.informativeText = AppLocalization.string("sentinel.alert.approval.body", locale: locale)
+        alert.addButton(withTitle: AppLocalization.string("sentinel.alert.button.open_settings", locale: locale))
+        alert.addButton(withTitle: AppLocalization.string("sentinel.alert.button.later", locale: locale))
         alert.alertStyle = .informational
         let resp = alert.runModal()
         if resp == .alertFirstButtonReturn {
@@ -121,14 +134,18 @@ public final class SentinelManager {
         }
     }
 
-    private func presentRegisterFailureAlert(error: Error) {
+    private func presentRegisterFailureAlert(error: Error, locale: Locale) {
         let alert = NSAlert()
-        alert.messageText = String(localized: "sentinel.alert.register_failed.title", bundle: .module)
-        let logHint = GSYLog.currentLogFileURL()?.path ?? String(localized: "sentinel.alert.register_failed.log_hint_fallback", bundle: .module)
-        alert.informativeText = String(format: String(localized: "sentinel.alert.register_failed.body %@ %@", bundle: .module),
-                                        error.localizedDescription, logHint)
-        alert.addButton(withTitle: String(localized: "sentinel.alert.button.open_settings", bundle: .module))
-        alert.addButton(withTitle: String(localized: "sentinel.alert.button.ok", bundle: .module))
+        alert.messageText = AppLocalization.string("sentinel.alert.register_failed.title", locale: locale)
+        let logHint = GSYLog.currentLogFileURL()?.path
+            ?? AppLocalization.string("sentinel.alert.register_failed.log_hint_fallback", locale: locale)
+        alert.informativeText = AppLocalization.format(
+            "sentinel.alert.register_failed.body %@ %@",
+            locale: locale,
+            arguments: [error.localizedDescription, logHint]
+        )
+        alert.addButton(withTitle: AppLocalization.string("sentinel.alert.button.open_settings", locale: locale))
+        alert.addButton(withTitle: AppLocalization.string("sentinel.alert.button.ok", locale: locale))
         alert.alertStyle = .warning
         let resp = alert.runModal()
         if resp == .alertFirstButtonReturn {

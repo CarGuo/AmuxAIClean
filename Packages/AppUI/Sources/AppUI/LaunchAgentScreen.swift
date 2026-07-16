@@ -14,6 +14,8 @@ public struct LaunchAgentScreen: View {
     @State private var selected: LaunchAgentItem?
     @State private var isLoading: Bool = false
     @State private var search: String = ""
+    /// v2026.07.15：只保留扫描事实，所有占位、分组和容量在渲染时按当前 locale 投影。
+    @Environment(\.locale) private var locale
 
     public init(scanner: LaunchAgentScanner? = nil) {
         self.scanner = scanner ?? LaunchAgentScanner()
@@ -24,7 +26,7 @@ public struct LaunchAgentScreen: View {
             header
             Divider()
             if isLoading && items.isEmpty {
-                placeholder(String(localized: "launchagent.placeholder.scanning", bundle: .module), systemImage: "hourglass")
+                placeholder(AppLocalization.string("launchagent.placeholder.scanning", locale: locale), systemImage: "hourglass")
             } else if filtered.isEmpty {
                 placeholder(emptyText, systemImage: "tray")
             } else {
@@ -47,7 +49,7 @@ public struct LaunchAgentScreen: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            TextField(String(localized: "launchagent.header.search_placeholder", bundle: .module), text: $search)
+            TextField(AppLocalization.string("launchagent.header.search_placeholder", locale: locale), text: $search)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 220)
             if isLoading {
@@ -69,7 +71,11 @@ public struct LaunchAgentScreen: View {
         HStack {
             if !items.isEmpty {
                 let total = items.map(\.fileSize).reduce(Int64(0), +)
-                Text(String(format: String(localized: "launchagent.footer.total", bundle: .module), items.count, byteString(total)))
+                Text(AppLocalization.format(
+                    "launchagent.footer.total",
+                    locale: locale,
+                    arguments: [items.count, byteString(total)]
+                ))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -106,7 +112,7 @@ public struct LaunchAgentScreen: View {
         HStack(spacing: 6) {
             Image(systemName: scopeIcon(scope))
                 .foregroundStyle(scopeTint(scope))
-            Text(scope.displayName)
+            Text(scope.displayName(locale: locale))
                 .font(.caption.bold())
             Text("· \(count)")
                 .font(.caption)
@@ -181,9 +187,9 @@ public struct LaunchAgentScreen: View {
 
     private var emptyText: String {
         if !search.trimmingCharacters(in: .whitespaces).isEmpty {
-            return String(localized: "launchagent.empty.no_match", bundle: .module)
+            return AppLocalization.string("launchagent.empty.no_match", locale: locale)
         }
-        return String(localized: "launchagent.empty.no_items", bundle: .module)
+        return AppLocalization.string("launchagent.empty.no_items", locale: locale)
     }
 
     private func reload() async {
@@ -208,7 +214,7 @@ public struct LaunchAgentScreen: View {
     }
 
     private func byteString(_ b: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: b, countStyle: .file)
+        b.formatted(.byteCount(style: .file).locale(locale))
     }
 
     private func scopeIcon(_ s: LaunchAgentScope) -> String {

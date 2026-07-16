@@ -75,6 +75,14 @@ final class SubprocessExecutorTests: XCTestCase {
         XCTAssertTrue(r.output.hasPrefix("<dryRun> "), "dryRun 输出必须以 `<dryRun> ` 开头")
     }
 
+    func test_runtimeListJSON_只读命令命中默认allowlist() throws {
+        let exec = SubprocessExecutor(timeout: 1, dryRun: true)
+        let result = try exec.run(executable: "/usr/bin/xcrun",
+                                  args: ["simctl", "runtime", "list", "-j"])
+        XCTAssertTrue(result.isSuccess)
+        XCTAssertTrue(result.output.contains("simctl runtime list -j"))
+    }
+
     // MARK: - 5. allowlist 闸门：args 长于前缀 = 允许
 
     /// PITFALL：`simctl delete <UUID>` 必须被 `["simctl","delete"]` 这种短前缀放过；
@@ -108,6 +116,27 @@ final class SubprocessExecutorTests: XCTestCase {
         }
     }
 
+    func test_destructive_simctl_runtime_delete_tail_必须是runtimeUUID() throws {
+        let exec = SubprocessExecutor(timeout: 1, dryRun: true)
+        let uuid = "5B8AD6C2-263A-40BB-80DB-B2751E2ACAD7"
+        let result = try exec.run(executable: "/usr/bin/xcrun",
+                                  args: ["simctl", "runtime", "delete", uuid])
+        XCTAssertTrue(result.isSuccess)
+        XCTAssertTrue(result.output.contains("simctl runtime delete \(uuid)"))
+    }
+
+    func test_destructive_simctl_runtime_delete_拒绝semanticIdentifier() {
+        let exec = SubprocessExecutor(timeout: 1, dryRun: true)
+        XCTAssertThrowsError(try exec.run(
+            executable: "/usr/bin/xcrun",
+            args: ["simctl", "runtime", "delete", "com.apple.CoreSimulator.SimRuntime.iOS-18-0"]
+        )) { error in
+            guard case SubprocessExecutor.SubprocessError.notAllowed = error else {
+                return XCTFail("semantic runtime identifier 必须被 tail policy 拒绝，得到：\(error)")
+            }
+        }
+    }
+
     // MARK: - 6. dryRun 命中 allowlist：返回 exitCode 0 + `<dryRun> ` 前缀
 
     /// PITFALL：dryRun 用于"用户预览"+"测试不真起进程"，输出必须以固定 `<dryRun> ` 前缀，
@@ -115,7 +144,7 @@ final class SubprocessExecutorTests: XCTestCase {
     /// 所有依赖该约定的上层代码会静默失效——此处用 hasPrefix 钉死。
     func test_dryRun_命中allowlist_不真起进程_返回exitCode_0_含dryRun前缀() throws {
         let exec = SubprocessExecutor(timeout: 1, dryRun: true)
-        let runtimeID = "com.apple.CoreSimulator.SimRuntime.iOS-18-0"
+        let runtimeID = "5B8AD6C2-263A-40BB-80DB-B2751E2ACAD7"
         let r = try exec.run(executable: "/usr/bin/xcrun",
                              args: ["simctl", "runtime", "delete", runtimeID])
         XCTAssertEqual(r.exitCode, 0)
@@ -151,6 +180,28 @@ final class SubprocessExecutorTests: XCTestCase {
         XCTAssertTrue(r.isSuccess)
         XCTAssertTrue(r.output.contains("hello world"),
                       "stdout 必须经 Pipe 解析为字符串，得到：\(r.output)")
+    }
+
+    /// v2026.07.15：只读 discovery 默认必须保持有界 timeout；这是扫描可重试的前提。
+    func test_默认executor_保留查询timeout策略() {
+        XCTAssertEqual(
+            SubprocessExecutor(dryRun: true).terminalWaitPolicy,
+            .timeout(5)
+        )
+    }
+
+    /// managed destructive command 当前项必须等待真实终态，不能复用查询 timeout 后强杀。
+    func test_waitUntilExit策略_显式可选且自然返回() throws {
+        let echo = SubprocessExecutor.AllowEntry(executable: "/bin/echo", argsPrefix: ["managed"])
+        let exec = SubprocessExecutor(
+            allowlist: [echo],
+            terminalWaitPolicy: .waitUntilExit,
+            dryRun: false
+        )
+        XCTAssertEqual(exec.terminalWaitPolicy, .waitUntilExit)
+        let result = try exec.run(executable: "/bin/echo", args: ["managed", "done"])
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertTrue(result.output.contains("managed done"))
     }
 
     // MARK: - 9. 超时：sleep 30s + timeout 0.5s → terminate，exitCode = -2

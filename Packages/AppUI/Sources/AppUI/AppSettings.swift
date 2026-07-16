@@ -64,9 +64,8 @@ public final class AppSettings {
         public static let sentinelLastEnabled = "v1.6.sentinel_last_enabled"
         /// v1.7：用户在设置面板里手动指定的 UI 语言（覆盖系统跟随）。
         /// 持久化 raw string（`LanguageOverride.rawValue`）；`.system` 视为不覆盖。
-        /// 改动后会同步写 `AppleLanguages` 让原生控件/系统弹窗下次启动跟着切；
-        /// 当次会话靠 [effectiveLocale](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
-        /// + `environment(\.locale, ...)` 即时生效大部分自绘文本。
+        /// 改动后会同步写 `AppleLanguages`，并由 App 层把同一 locale 实时同步给
+        /// SwiftUI、tooltip、托盘和原生主菜单；系统拥有的面板仍按系统自身策略取语言。
         public static let preferredLanguage = "v1.7.preferred_language"
     }
 
@@ -96,13 +95,19 @@ public final class AppSettings {
         case desktopBottomLeft     // 桌面左下角（桌面级）
 
         public var label: String {
+            label(in: .current)
+        }
+
+        public func label(in locale: Locale) -> String {
+            let key: String
             switch self {
-            case .dynamicIsland:      return String(localized: "hud.placement.dynamic_island", bundle: .module)
-            case .notchUnder:         return String(localized: "hud.placement.notch_under", bundle: .module)
-            case .desktopTopRight:    return String(localized: "hud.placement.desktop_top_right", bundle: .module)
-            case .desktopBottomRight: return String(localized: "hud.placement.desktop_bottom_right", bundle: .module)
-            case .desktopBottomLeft:  return String(localized: "hud.placement.desktop_bottom_left", bundle: .module)
+            case .dynamicIsland:      key = "hud.placement.dynamic_island"
+            case .notchUnder:         key = "hud.placement.notch_under"
+            case .desktopTopRight:    key = "hud.placement.desktop_top_right"
+            case .desktopBottomRight: key = "hud.placement.desktop_bottom_right"
+            case .desktopBottomLeft:  key = "hud.placement.desktop_bottom_left"
             }
+            return AppLocalization.string(key, locale: locale)
         }
 
         /// 是否走桌面层级（在 App 窗口下、桌面图标上）。
@@ -144,11 +149,17 @@ public final class AppSettings {
         case last1Year
 
         public var label: String {
+            label(in: .current)
+        }
+
+        public func label(in locale: Locale) -> String {
+            let key: String
             switch self {
-            case .all:        return String(localized: "mtime.filter.all", bundle: .module)
-            case .last30Days: return String(localized: "mtime.filter.last30days", bundle: .module)
-            case .last1Year:  return String(localized: "mtime.filter.last1year", bundle: .module)
+            case .all:        key = "mtime.filter.all"
+            case .last30Days: key = "mtime.filter.last30days"
+            case .last1Year:  key = "mtime.filter.last1year"
             }
+            return AppLocalization.string(key, locale: locale)
         }
 
         /// 转为天数；`.all` 返回 nil，调用方据此跳过比较。
@@ -178,13 +189,10 @@ public final class AppSettings {
     /// - **`.zhHans`、`.en`**：用户在「设置 → 扫描 → 界面语言」里显式选定，此时：
     ///   1. 即时生效：通过 [effectiveLocale](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
     ///      + `.environment(\.locale, ...)` 让所有走 SwiftUI 字符串目录的 `Text` 当次会话即换语言。
-    ///   2. 跨进程：[applyToAppleLanguagesIfNeeded](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
-    ///      会把 `AppleLanguages` 改写为 `["zh-Hans"]` / `["en"]`，让原生 NSAlert / NSMenu /
-    ///      系统弹窗、以及 Bundle.main 资源（Info.plist 等）在**下次启动**也是这门语言。
-    ///
-    /// 为什么不直接 swap：SwiftUI / AppKit 的非 SwiftUI 控件（NSMenu / NSAlert / NSOpenPanel）
-    /// 依赖 `Bundle.main.preferredLocalizations` —— 这是进程启动期固化的，运行时改 `AppleLanguages`
-    /// 不会改这些控件已经 cache 的本地化资源；故仍需冷启动一次。
+    ///   2. 非 SwiftUI 消费者：App 层用同一个 locale 重建托盘菜单，并只更新主菜单的
+    ///      title（保留 target/action/responder chain）；不再要求用户重启。
+    ///   3. 跨进程：[applyToAppleLanguagesIfNeeded](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
+    ///      仍同步 `AppleLanguages`，让下一次进程和系统拥有的原生面板保持一致。
     public enum LanguageOverride: String, CaseIterable, Sendable, Hashable {
         case system
         case zhHans = "zh-Hans"
@@ -203,11 +211,9 @@ public final class AppSettings {
 
         /// 按指定 locale 返回 label。`nil` 时退化为 process 默认（与 [label](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift) 等价）。
         ///
-        /// 实现：直接走 `Bundle.module` 的 `localizedString(forKey:...)`——
-        /// 先按 `locale.identifier` 找匹配的 `.lproj`（xcstrings 编译产物为各语言 lproj），
-        /// 命中则用该语言的字符串；否则回落 Bundle.module 自身的 development localization
-        /// （base = en），与 SwiftUI `Text(_:bundle:)` 在 `environment(\.locale, ...)` 下
-        /// 的解析行为对齐，避免"选项文本与界面其它文本"语言不一致。
+        /// 实现统一走 [AppLocalization](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppLocalization.swift)，
+        /// 显式把 locale 交给 String Catalog。不要再自行拼 `.lproj` 路径；那会绕过
+        /// Foundation 的语言回退规则，也会让相同问题在 tooltip / AppKit menu 重复出现。
         public func label(in locale: Locale?) -> String {
             let key: String
             switch self {
@@ -215,21 +221,7 @@ public final class AppSettings {
             case .zhHans: key = "settings.language.zh_hans"
             case .en:     key = "settings.language.en"
             }
-            guard let locale, let table = Self.tableName(for: locale),
-                  let path = Bundle.module.path(forResource: table, ofType: "lproj"),
-                  let bundle = Bundle(path: path) else {
-                return String(localized: String.LocalizationValue(key), bundle: .module)
-            }
-            return bundle.localizedString(forKey: key, value: nil, table: nil)
-        }
-
-        /// 把 SwiftUI 环境给的 `Locale` 映射到 Bundle.module 内的 lproj 名称。
-        /// 只关心我们 ship 的两种语言；其它 locale 回 nil 让上层走默认 bundle 解析。
-        private static func tableName(for locale: Locale) -> String? {
-            let id = locale.identifier
-            if id.hasPrefix("zh") { return "zh-Hans" }
-            if id.hasPrefix("en") { return "en" }
-            return nil
+            return AppLocalization.string(key, locale: locale ?? .current)
         }
 
         /// 转成 SwiftUI / Foundation 的 `Locale`。`.system` 返回 nil，
@@ -410,7 +402,7 @@ public final class AppSettings {
     /// v1.7：UI 语言覆盖（默认 `.system`）。
     /// `didSet`：
     /// 1. 同步持久化（`.system` → 删 key）。
-    /// 2. 同步把覆盖值写到 `AppleLanguages`（影响下次启动的 NSAlert / 系统资源选择）。
+    /// 2. 同步把覆盖值写到 `AppleLanguages`（保持跨进程/系统资源选择一致）。
     public var preferredLanguage: LanguageOverride {
         didSet {
             if preferredLanguage == .system {
@@ -431,8 +423,8 @@ public final class AppSettings {
 
     /// v1.7：把覆盖值同步到 `UserDefaults.standard` 的 `AppleLanguages`。
     /// 只在 backend 是 `UserDefaults.standard` 时执行（单测用独立 suite 时短路），
-    /// 避免测试时污染主域。设置 / 删除后**不会**立刻影响当前进程已加载的 NSBundle 资源——
-    /// 那些得等下一次冷启动；当次会话靠 SwiftUI environment(\.locale) 即时生效。
+    /// 避免测试时污染主域。当前进程的用户可见菜单/tooltip 不依赖这里重新加载 Bundle，
+    /// 而由显式 locale resolver 和 ApplicationMenuLocalizer 实时刷新。
     public func applyToAppleLanguagesIfNeeded() {
         guard defaults == UserDefaults.standard else { return }
         if let value = preferredLanguage.appleLanguagesValue {

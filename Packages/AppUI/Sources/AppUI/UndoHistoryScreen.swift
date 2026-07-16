@@ -1,5 +1,50 @@
 import SwiftUI
 
+/// v2026.07.15：恢复完成后只保存事实，alert 打开期间切换语言时再按当前 locale 投影。
+/// 文件系统错误原文保持 verbatim，不把一次异步结果提前冻结成启动语言字符串。
+enum UndoHistoryAlertPresentation: Equatable, Sendable {
+    case partial(
+        restored: Int,
+        skipped: Int,
+        failure: UndoHistoryStore.RestoreFailure
+    )
+    case renamed(restored: Int, renamed: Int)
+    case success(restored: Int)
+
+    func text(locale: Locale) -> String {
+        switch self {
+        case .partial(let restored, let skipped, let failure):
+            return AppLocalization.format(
+                "undo_history.alert.partial %lld %lld %@",
+                locale: locale,
+                arguments: [
+                    Int64(restored),
+                    Int64(skipped),
+                    failure.message(locale: locale)
+                ]
+            )
+        case .renamed(let restored, let renamed):
+            let summary = AppLocalization.format(
+                "undo_history.alert.success %lld",
+                locale: locale,
+                arguments: [Int64(restored)]
+            )
+            let detail = AppLocalization.format(
+                "undo_history.alert.renamed_detail %lld",
+                locale: locale,
+                arguments: [Int64(renamed)]
+            )
+            return "\(summary) \(detail)"
+        case .success(let restored):
+            return AppLocalization.format(
+                "undo_history.alert.success %lld",
+                locale: locale,
+                arguments: [Int64(restored)]
+            )
+        }
+    }
+}
+
 /// Step 7：「最近清理」面板 —— 渲染 [UndoHistoryStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UndoHistoryStore.swift)
 /// 当前记录，每条带"恢复"按钮把整批 trash 反推回原位。
 ///
@@ -12,12 +57,13 @@ import SwiftUI
 struct UndoHistoryScreen: View {
     @ObservedObject private var store = UndoHistoryStore.shared
     @State private var selectedRecordID: UUID?
-    @State private var alertMessage: String?
+    @State private var alertPresentation: UndoHistoryAlertPresentation?
     @State private var isRestoring = false
     @State private var isPreparingRestore = false
     @State private var pendingConflictRecord: UndoHistoryStore.Record?
     @State private var pendingConflictCount = 0
     @State private var showConflictDecision = false
+    @Environment(\.locale) private var locale
 
     private var selectedRecord: UndoHistoryStore.Record? {
         guard let id = selectedRecordID else { return nil }
@@ -41,37 +87,38 @@ struct UndoHistoryScreen: View {
             // 视图打开时主动刷新一次：用户可能刚清空了系统废纸篓
             store.cleanupStaleEntries()
         }
-        .alert(String(localized: "undo_history.alert.title", bundle: .module), isPresented: Binding(
-            get: { alertMessage != nil },
-            set: { if !$0 { alertMessage = nil } }
+        .alert(AppLocalization.string("undo_history.alert.title", locale: locale), isPresented: Binding(
+            get: { alertPresentation != nil },
+            set: { if !$0 { alertPresentation = nil } }
         ), actions: {
-            Button(String(localized: "undo_history.alert.ok", bundle: .module)) { alertMessage = nil }
+            Button(AppLocalization.string("undo_history.alert.ok", locale: locale)) {
+                alertPresentation = nil
+            }
         }, message: {
-            Text(alertMessage ?? "")
+            Text(alertPresentation?.text(locale: locale) ?? "")
         })
         .confirmationDialog(
-            String(localized: "undo_history.conflict.title", bundle: .module),
+            AppLocalization.string("undo_history.conflict.title", locale: locale),
             isPresented: $showConflictDecision,
             titleVisibility: .visible
         ) {
-            Button(String(localized: "undo_history.conflict.restore_new_name", bundle: .module)) {
+            Button(AppLocalization.string("undo_history.conflict.restore_new_name", locale: locale)) {
                 resolvePendingConflict(with: .restoreWithUniqueName)
             }
-            Button(String(localized: "undo_history.conflict.skip_existing", bundle: .module)) {
+            Button(AppLocalization.string("undo_history.conflict.skip_existing", locale: locale)) {
                 resolvePendingConflict(with: .skipExisting)
             }
-            Button(String(localized: "common.button.cancel", bundle: .module), role: .cancel) {
+            Button(AppLocalization.string("common.button.cancel", locale: locale), role: .cancel) {
                 pendingConflictRecord = nil
                 pendingConflictCount = 0
                 showConflictDecision = false
             }
         } message: {
-            Text(
-                String(
-                    format: String(localized: "undo_history.conflict.message %lld", bundle: .module),
-                    pendingConflictCount
-                )
-            )
+            Text(AppLocalization.format(
+                "undo_history.conflict.message %lld",
+                locale: locale,
+                arguments: [Int64(pendingConflictCount)]
+            ))
         }
     }
 
@@ -109,7 +156,11 @@ struct UndoHistoryScreen: View {
                             .padding(.vertical, 2)
                             .background(.tint.opacity(0.15), in: Capsule())
                             .foregroundStyle(.tint)
-                        Text(String(format: String(localized: "undo_history.row.count %lld", bundle: .module), record.fileCount))
+                        Text(AppLocalization.format(
+                            "undo_history.row.count %lld",
+                            locale: locale,
+                            arguments: [Int64(record.fileCount)]
+                        ))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -127,7 +178,11 @@ struct UndoHistoryScreen: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(record.timestamp, style: .date) + Text(" ") + Text(record.timestamp, style: .time)
-                        Text(String(format: String(localized: "undo_history.detail.summary %@ %lld", bundle: .module), record.source, record.fileCount))
+                        Text(AppLocalization.format(
+                            "undo_history.detail.summary %@ %lld",
+                            locale: locale,
+                            arguments: [record.source, Int64(record.fileCount)]
+                        ))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
@@ -205,29 +260,24 @@ struct UndoHistoryScreen: View {
     ) async {
         isRestoring = true
         defer { isRestoring = false }
-        let result = await store.restoreRecord(record, conflictPolicy: conflictPolicy)
-        if let err = result.firstError {
-            alertMessage = String(
-                format: String(localized: "undo_history.alert.partial %lld %lld %@", bundle: .module),
-                result.restoredCount,
-                result.skippedCount,
-                err
+        let result = await store.restoreRecord(
+            record,
+            conflictPolicy: conflictPolicy,
+            locale: locale
+        )
+        if let failure = result.firstFailure {
+            alertPresentation = .partial(
+                restored: result.restoredCount,
+                skipped: result.skippedCount,
+                failure: failure
             )
         } else if result.renamedCount > 0 {
-            let successSummary = String(
-                format: String(localized: "undo_history.alert.success %lld", bundle: .module),
-                result.restoredCount
+            alertPresentation = .renamed(
+                restored: result.restoredCount,
+                renamed: result.renamedCount
             )
-            let renamedDetail = String(
-                format: String(localized: "undo_history.alert.renamed_detail %lld", bundle: .module),
-                result.renamedCount
-            )
-            alertMessage = "\(successSummary) \(renamedDetail)"
         } else {
-            alertMessage = String(
-                format: String(localized: "undo_history.alert.success %lld", bundle: .module),
-                result.restoredCount
-            )
+            alertPresentation = .success(restored: result.restoredCount)
         }
         // 恢复后选中态可能已无效（record 被从 history 删了）
         if !store.history.contains(where: { $0.id == record.id }) {

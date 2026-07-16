@@ -12,8 +12,8 @@ import LogKit
 ///
 /// 与 [DerivedDataPerProjectScanner] 的关系：
 /// - 同样采用「`static detect(home:)` 同步入口 + `actor discover()` 异步入口」双形态；
-/// - `estimateSize(at:)` 实现风格完全对齐 [SimctlRuntimeScanner.estimateSize] /
-///   [DerivedDataPerProjectScanner.estimateSize]：`FileManager.enumerator` 遍历，
+/// - `estimateSize(at:)` 实现风格对齐 [DerivedDataPerProjectScanner.estimateSize]：
+///   `FileManager.enumerator` 遍历，
 ///   优先 `totalFileAllocatedSize`，回退 `fileAllocatedSize`；
 /// - 命中 `node_modules` 后**不再下钻**——node_modules 内部可能藏 5 万+ 文件，
 ///   下钻会让单次扫描爆栈到分钟级，违背"快速列清单"目标。
@@ -298,7 +298,7 @@ public actor NodeModulesScanner {
         ), incompleteIssues: sizeResult.incompleteIssues)
     }
 
-    // MARK: - sizeBytes 估算（对位 SimctlRuntimeScanner.estimateSize 风格）
+    // MARK: - sizeBytes 估算
 
     /// 遍历目录累加 totalFileAllocatedSize，回退 fileAllocatedSize。
     ///

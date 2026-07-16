@@ -448,6 +448,13 @@ public final class ScanCoordinator: ObservableObject {
             )
         }
     }
+    /// 用户可见、但必须先落成 `String` 的扫描文案所使用的界面 locale。
+    /// MainView 在语言环境变化时同步；扫描任务按启动 revision 捕获，避免读进程语言。
+    private var presentationLocale: Locale = .current
+
+    public func updatePresentationLocale(_ locale: Locale) {
+        presentationLocale = locale
+    }
     private var lastFinishedCategoryID: String?
 
     /// 当前/最近一次扫描的根路径；`nil` 表示尚未发起任何扫描（notStarted 态）。
@@ -579,7 +586,11 @@ public final class ScanCoordinator: ObservableObject {
     ///   stream 关闭，runMultiRootScan 自身把 isScanning 翻 false。
     public struct PerRootProgress: Sendable, Equatable {
         public let rootPath: String
+        /// 兼容旧调用方/日志的启动语言快照。SwiftUI 不得直接展示这个字段；
+        /// 应调用 `displayTitle(locale:)`，由语义 key 在当前界面 locale 下投影。
         public let title: String
+        public let titleLocalizationKey: String?
+        public let titleSuffix: String?
         public var bytes: Int64
         public var logicalBytes: Int64
         public var fileCount: Int
@@ -588,15 +599,25 @@ public final class ScanCoordinator: ObservableObject {
         /// 这种终态可以展示已观察结果，但 UI 不能画成绿色完成勾。
         public var isPartial: Bool
         public init(rootPath: String, title: String,
+                    titleLocalizationKey: String? = nil,
+                    titleSuffix: String? = nil,
                     bytes: Int64 = 0, logicalBytes: Int64? = nil, fileCount: Int = 0,
                     isFinished: Bool = false, isPartial: Bool = false) {
             self.rootPath = rootPath
             self.title = title
+            self.titleLocalizationKey = titleLocalizationKey
+            self.titleSuffix = titleSuffix
             self.bytes = bytes
             self.logicalBytes = logicalBytes ?? bytes
             self.fileCount = fileCount
             self.isFinished = isFinished
             self.isPartial = isPartial
+        }
+
+        public func displayTitle(locale: Locale) -> String {
+            guard let titleLocalizationKey else { return title }
+            let base = AppLocalization.string(titleLocalizationKey, locale: locale)
+            return base + (titleSuffix ?? "")
         }
     }
 
@@ -1440,6 +1461,7 @@ public final class ScanCoordinator: ObservableObject {
         let homeStr = self.home
         let startedAtCopy = startedAt
         let whitelistStore = self.whitelistStore
+        let localeSnapshot = presentationLocale
         let scanOptions = ScanOptions(
             includeHidden: true,
             includePackageContents: true,
@@ -1479,7 +1501,7 @@ public final class ScanCoordinator: ObservableObject {
                 incompleteIssues.formUnion(measurement.incompleteIssues)
                 totalAccum &+= measurement.allocatedBytes
                 fileCountAccum &+= measurement.fileCount
-                let localizedDisplay = String(localized: String.LocalizationValue(hit.displayName), bundle: .module)
+                let localizedDisplay = AppLocalization.string(hit.displayName, locale: localeSnapshot)
                 let composedTitle: String
                 if let groupKey = hit.groupKey, !groupKey.isEmpty {
                     composedTitle = "\(localizedDisplay) · \(groupKey) · \(hit.versionName)"
@@ -1628,13 +1650,14 @@ public final class ScanCoordinator: ObservableObject {
         options.includedVerdicts = included
         let whitelistStore = self.whitelistStore
         let detector = commonAppCacheDetector
+        let localeSnapshot = presentationLocale
         GSYLog.notice(.flow,
                       "scan.common_app_cache.start rules=\(vendorsCopy.filter { $0.category == "common_app_cache" }.count) includeConfirm=\(includeConfirm)")
 
         scanTask = Task.detached { [weak self] in
             let whitelist = await whitelistStore.snapshotPaths()
             if Task.isCancelled { return }
-            let standardRules = Self.standardInstalledAppCacheRules()
+            let standardRules = Self.standardInstalledAppCacheRules(locale: localeSnapshot)
             let scanResult = detector(vendorsCopy + standardRules, homeURL, options)
             if scanResult.wasCancelled { return }
             let hits = scanResult.hits
@@ -1725,7 +1748,7 @@ public final class ScanCoordinator: ObservableObject {
         }
     }
 
-    nonisolated private static func standardInstalledAppCacheRules() -> [VendorRule] {
+    nonisolated private static func standardInstalledAppCacheRules(locale: Locale) -> [VendorRule] {
         let appsPath = "/Applications"
         let fm = FileManager.default
         guard let names = try? fm.contentsOfDirectory(atPath: appsPath) else { return [] }
@@ -1749,8 +1772,11 @@ public final class ScanCoordinator: ObservableObject {
             }
 
             rules.append(VendorRule(
-                name: String(format: String(localized: "common_app_cache.standard.title %@", bundle: .module),
-                             meta.appName),
+                name: AppLocalization.format(
+                    "common_app_cache.standard.title %@",
+                    locale: locale,
+                    arguments: [meta.appName]
+                ),
                 bundleIDPrefix: bundleID,
                 category: "common_app_cache",
                 source: "standard-macos-cache",
@@ -1978,7 +2004,11 @@ public final class ScanCoordinator: ObservableObject {
         // 后续 .node / .finished 事件再原地累加 / 翻 isFinished。
         var initial: [String: PerRootProgress] = [:]
         for c in categories {
-            initial[c.rootPath] = PerRootProgress(rootPath: c.rootPath, title: c.displayTitle)
+            initial[c.rootPath] = PerRootProgress(
+                rootPath: c.rootPath,
+                title: c.displayTitle,
+                titleLocalizationKey: c.titleIsLocalizationKey ? c.title : nil
+            )
         }
         syncPerRootPublished(from: initial)
         // v1.3.zz 性能修复：staging 同步初始化，让 .node 事件累计的目标存在
@@ -2141,9 +2171,17 @@ public final class ScanCoordinator: ObservableObject {
                         if self.isDeletedTombstoned(path) { continue }
                         if self.perRootStaging[path] != nil { continue }
                         let shortPath = self.shortenPath(path, home: homeStr)
-                        let localizedDisplay = String(localized: String.LocalizationValue(hit.displayName), bundle: .module)
+                        let localizedDisplay = AppLocalization.string(
+                            hit.displayName,
+                            locale: self.presentationLocale
+                        )
                         let title = "\(localizedDisplay) · \(shortPath)"
-                        self.perRootStaging[path] = PerRootProgress(rootPath: path, title: title)
+                        self.perRootStaging[path] = PerRootProgress(
+                            rootPath: path,
+                            title: title,
+                            titleLocalizationKey: hit.displayName,
+                            titleSuffix: " · \(shortPath)"
+                        )
                     }
                     // 节流：距离上次 sync ≥ 0.4s 才推；否则只动 staging，等下个 partial 或最终
                     // result 之后的兜底 sync。这样 sidebar 新行最坏延迟 0.4s 出现，UX 无感。
@@ -2195,9 +2233,17 @@ public final class ScanCoordinator: ObservableObject {
                     finalRoots.append(hit.url)
                     if finalStaging[path] == nil {
                         let shortPath = self.shortenPath(path, home: self.home)
-                        let localizedDisplay = String(localized: String.LocalizationValue(hit.displayName), bundle: .module)
+                        let localizedDisplay = AppLocalization.string(
+                            hit.displayName,
+                            locale: self.presentationLocale
+                        )
                         let title = "\(localizedDisplay) · \(shortPath)"
-                        finalStaging[path] = PerRootProgress(rootPath: path, title: title)
+                        finalStaging[path] = PerRootProgress(
+                            rootPath: path,
+                            title: title,
+                            titleLocalizationKey: hit.displayName,
+                            titleSuffix: " · \(shortPath)"
+                        )
                     }
                 }
                 for category in supplementalRoots {
@@ -2208,7 +2254,12 @@ public final class ScanCoordinator: ObservableObject {
                     if finalStaging[path] == nil {
                         let shortPath = self.shortenPath(path, home: self.home)
                         let title = "\(category.displayTitle) · \(shortPath)"
-                        finalStaging[path] = PerRootProgress(rootPath: path, title: title)
+                        finalStaging[path] = PerRootProgress(
+                            rootPath: path,
+                            title: title,
+                            titleLocalizationKey: category.titleIsLocalizationKey ? category.title : nil,
+                            titleSuffix: " · \(shortPath)"
+                        )
                     }
                 }
                 if finalRoots.isEmpty {
@@ -2407,7 +2458,7 @@ public final class ScanCoordinator: ObservableObject {
             || (finishedSummary?.completionStatus == .partial
                 && finishedSummary?.incompleteIssues.isEmpty == true)
         if !completedSuccessfully, hasOpaqueRootFailure, lastError == nil {
-            let message = String(localized: "main.scan.incomplete", bundle: .module)
+            let message = AppLocalization.string("main.scan.incomplete", locale: presentationLocale)
             lastError = message
             if finishedSummary == nil {
                 terminalFailure = TerminalFailure(message: message)
@@ -2627,7 +2678,7 @@ public final class ScanCoordinator: ObservableObject {
             }
         }
         if !fallbackRoots.isEmpty, lastError == nil {
-            let message = String(localized: "main.scan.incomplete", bundle: .module)
+            let message = AppLocalization.string("main.scan.incomplete", locale: presentationLocale)
             lastError = message
             terminalFailure = TerminalFailure(message: message)
         }

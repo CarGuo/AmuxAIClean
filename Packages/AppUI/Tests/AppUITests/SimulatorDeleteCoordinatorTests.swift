@@ -3,50 +3,363 @@ import Foundation
 import ScanKit
 @testable import AppUI
 
-/// v1.7 M1 PR-9：SimulatorDeleteCoordinator 单测。
+/// Simulator system-managed uninstall contract tests.
 ///
-/// 测试矩阵覆盖：
-/// 1. prepare 空选 → .empty；
-/// 2. prepare 命中 .filesystem 卡 → 跳过（不进 plan）；
-/// 3. prepare 命中 .commandLine 卡但 commandLineTailArg=nil → .invalid；
-/// 4. prepare Simulator running → .blockedSimulatorRunning；
-/// 5. prepare 正常 → .ready，args 必须形如 `argsPrefix + [tailArg]`；
-/// 6. execute dryRun=true → exitCode 0 + output 含 `<dryRun>`，但**不真起进程**（关键安全断言）；
-/// 7. execute 多项 + 部分失败 → outcomes 数量 = items 数量，逐条独立结果；
-/// 8. execute throw（注入空 allowlist）→ exitCode -3，不中断后续。
+/// No test in this file starts a real `simctl` process. Execution tests inject a dry-run
+/// `SubprocessExecutor`, while preparation tests exercise only pure typed-plan validation.
 final class SimulatorDeleteCoordinatorTests: XCTestCase {
-    private let uuid1 = "11111111-2222-3333-4444-555555555555"
-    private let uuid2 = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-    private let uuid3 = "12345678-1234-1234-1234-123456789abc"
+    private let deviceUUID = "11111111-2222-3333-4444-555555555555"
+    private let runtimeUUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    private let secondRuntimeUUID = "12345678-1234-1234-1234-123456789abc"
 
-    // MARK: - 工具：构造 card / hit
+    func test_prepare_emptySelection_returnsEmpty() {
+        let coordinator = makeCoordinator()
+
+        XCTAssertEqual(
+            coordinator.prepare(cards: [deviceCard()], cardHits: [:], selected: []),
+            .empty
+        )
+    }
+
+    func test_prepare_filesystemSelection_neverEntersManagedPlan() {
+        let coordinator = makeCoordinator()
+        let filesystemHit = hit(
+            name: "DerivedData",
+            path: "/tmp/DerivedData",
+            identifier: nil
+        )
+
+        let plan = coordinator.prepare(
+            cards: [filesystemCard()],
+            cardHits: [filesystemCardID: [filesystemHit]],
+            selected: [filesystemHit.id]
+        )
+
+        XCTAssertEqual(plan, .empty)
+    }
+
+    func test_prepare_deviceAndRuntime_buildsTypedCommandsFromManagedRecipes() throws {
+        let coordinator = makeCoordinator()
+        let device = hit(
+            name: "iPhone 17",
+            path: "/tmp/device",
+            sizeBytes: 1_024,
+            identifier: deviceUUID
+        )
+        let runtime = hit(
+            name: "iOS 26.2",
+            path: "/tmp/runtime",
+            sizeBytes: 8_000_000_000,
+            identifier: runtimeUUID
+        )
+
+        let plan = coordinator.prepare(
+            cards: [deviceCard(), runtimeCard()],
+            cardHits: [
+                deviceCardID: [device],
+                runtimeCardID: [runtime],
+            ],
+            selected: [device.id, runtime.id]
+        )
+
+        guard case let .ready(items) = plan else {
+            return XCTFail("Valid managed device/runtime selections must produce a ready plan")
+        }
+        XCTAssertEqual(items.map(\.hitID), [device.id, runtime.id])
+        XCTAssertEqual(items.map(\.kind), [.simulatorDevice, .simulatorRuntime])
+        XCTAssertEqual(items.map(\.sizeBytes), [1_024, 8_000_000_000])
+        XCTAssertEqual(items[0].executable, "/usr/bin/xcrun")
+        XCTAssertEqual(items[0].args, ["simctl", "delete", deviceUUID])
+        XCTAssertEqual(items[1].executable, "/usr/bin/xcrun")
+        XCTAssertEqual(items[1].args, ["simctl", "runtime", "delete", runtimeUUID])
+    }
+
+    func test_prepare_missingManagedIdentifier_returnsInvalid() {
+        let coordinator = makeCoordinator()
+        let runtime = hit(
+            name: "Legacy runtime",
+            path: "/tmp/legacy-runtime",
+            identifier: nil
+        )
+
+        let plan = coordinator.prepare(
+            cards: [runtimeCard()],
+            cardHits: [runtimeCardID: [runtime]],
+            selected: [runtime.id]
+        )
+
+        guard case let .invalid(reason) = plan else {
+            return XCTFail("A non-deletable runtime without a UUID must be rejected")
+        }
+        XCTAssertTrue(reason.contains(runtime.displayName))
+    }
+
+    func test_prepare_deviceRejectsMalformedUUID() {
+        let coordinator = makeCoordinator()
+        let device = hit(
+            name: "Malformed device",
+            path: "/tmp/malformed-device",
+            identifier: "not-a-uuid"
+        )
+
+        let plan = coordinator.prepare(
+            cards: [deviceCard()],
+            cardHits: [deviceCardID: [device]],
+            selected: [device.id]
+        )
+
+        guard case let .invalid(reason) = plan else {
+            return XCTFail("A malformed Simulator device identifier must be rejected")
+        }
+        XCTAssertTrue(reason.contains(device.displayName))
+    }
+
+    func test_prepare_runtimeRejectsSemanticIdentifierAndRequiresImageUUID() {
+        let coordinator = makeCoordinator()
+        let runtime = hit(
+            name: "iOS 18.0",
+            path: "/tmp/semantic-runtime",
+            identifier: "com.apple.CoreSimulator.SimRuntime.iOS-18-0"
+        )
+
+        let plan = coordinator.prepare(
+            cards: [runtimeCard()],
+            cardHits: [runtimeCardID: [runtime]],
+            selected: [runtime.id]
+        )
+
+        guard case let .invalid(reason) = plan else {
+            return XCTFail("Xcode runtime delete requires the image UUID, not the semantic runtime ID")
+        }
+        XCTAssertTrue(reason.contains(runtime.displayName))
+    }
+
+    func test_prepare_whenSimulatorIsRunning_blocksEveryManagedItem() {
+        let coordinator = makeCoordinator(running: true)
+        let runtime = hit(
+            name: "iOS 26.2",
+            path: "/tmp/runtime-running",
+            identifier: runtimeUUID
+        )
+
+        let plan = coordinator.prepare(
+            cards: [runtimeCard()],
+            cardHits: [runtimeCardID: [runtime]],
+            selected: [runtime.id]
+        )
+
+        XCTAssertEqual(
+            plan,
+            .blockedSimulatorRunning(displayNames: [runtime.displayName])
+        )
+    }
+
+    func test_executeManaged_publishesOrderedPerItemProgressAndReceipt() async throws {
+        let coordinator = makeCoordinator()
+        let items = [
+            makeItem(
+                hitID: "/tmp/device-progress",
+                name: "iPhone 17",
+                kind: .simulatorDevice,
+                identifier: deviceUUID
+            ),
+            makeItem(
+                hitID: "/tmp/runtime-progress",
+                name: "iOS 26.2",
+                kind: .simulatorRuntime,
+                identifier: runtimeUUID
+            ),
+        ]
+        let recorder = ManagedEventRecorder()
+        let control = SimulatorDeleteCoordinator.StopControl()
+
+        let completion = await coordinator.executeManaged(
+            items: items,
+            stopControl: control
+        ) { event in
+            await recorder.append(event)
+        }
+
+        let events = await recorder.snapshot()
+        XCTAssertEqual(events.count, 4)
+        assertStarted(events[0], index: 1, total: 2, hitID: items[0].hitID)
+        assertFinished(events[1], index: 1, total: 2, hitID: items[0].hitID)
+        assertStarted(events[2], index: 2, total: 2, hitID: items[1].hitID)
+        assertFinished(events[3], index: 2, total: 2, hitID: items[1].hitID)
+        XCTAssertEqual(completion.succeededCount, 2)
+        XCTAssertEqual(completion.failedCount, 0)
+        XCTAssertTrue(completion.outcomes.allSatisfy(\.wasSubmitted))
+        XCTAssertTrue(completion.skippedItems.isEmpty)
+        XCTAssertEqual(
+            try XCTUnwrap(completion.receipt).submittedItemIDs,
+            items.map(\.hitID)
+        )
+    }
+
+    func test_executeManaged_stopAfterCurrent_skipsOnlyUnsubmittedItems() async throws {
+        let coordinator = makeCoordinator()
+        let items = [
+            makeItem(
+                hitID: "/tmp/runtime-stop-1",
+                name: "iOS 26.0",
+                kind: .simulatorRuntime,
+                identifier: runtimeUUID
+            ),
+            makeItem(
+                hitID: "/tmp/runtime-stop-2",
+                name: "iOS 26.1",
+                kind: .simulatorRuntime,
+                identifier: secondRuntimeUUID
+            ),
+            makeItem(
+                hitID: "/tmp/device-stop-3",
+                name: "iPhone 17",
+                kind: .simulatorDevice,
+                identifier: deviceUUID
+            ),
+        ]
+        let recorder = ManagedEventRecorder()
+        let control = SimulatorDeleteCoordinator.StopControl()
+
+        let completion = await coordinator.executeManaged(
+            items: items,
+            stopControl: control
+        ) { event in
+            await recorder.append(event)
+            if case .started(index: 1, total: _, item: _) = event {
+                // A submitted system uninstall is allowed to finish. The stop request is
+                // observed only at the next item boundary.
+                await control.requestStop()
+            }
+        }
+
+        let events = await recorder.snapshot()
+        XCTAssertEqual(events.count, 2)
+        assertStarted(events[0], index: 1, total: 3, hitID: items[0].hitID)
+        assertFinished(events[1], index: 1, total: 3, hitID: items[0].hitID)
+        XCTAssertEqual(completion.outcomes.map(\.item.hitID), [items[0].hitID])
+        XCTAssertEqual(completion.outcomes.map(\.wasSubmitted), [true])
+        XCTAssertEqual(completion.skippedItems.map(\.hitID), [items[1].hitID, items[2].hitID])
+        XCTAssertEqual(
+            try XCTUnwrap(completion.receipt).submittedItemIDs,
+            [items[0].hitID],
+            "The receipt must contain only the command that crossed the submission boundary"
+        )
+    }
+
+    func test_executeManaged_stoppedBeforeSubmission_hasNoReceiptAndSkipsAllItems() async {
+        let coordinator = makeCoordinator()
+        let items = [
+            makeItem(
+                hitID: "/tmp/runtime-prestopped",
+                name: "iOS 26.2",
+                kind: .simulatorRuntime,
+                identifier: runtimeUUID
+            ),
+        ]
+        let recorder = ManagedEventRecorder()
+        let control = SimulatorDeleteCoordinator.StopControl()
+        await control.requestStop()
+
+        let completion = await coordinator.executeManaged(
+            items: items,
+            stopControl: control
+        ) { event in
+            await recorder.append(event)
+        }
+
+        XCTAssertNil(completion.receipt)
+        XCTAssertTrue(completion.outcomes.isEmpty)
+        XCTAssertEqual(completion.skippedItems.map(\.hitID), items.map(\.hitID))
+        let events = await recorder.snapshot()
+        XCTAssertTrue(events.isEmpty)
+    }
+
+    func test_executeManaged_preSubmissionAllowlistRejection_hasNoReceipt() async {
+        let coordinator = makeCoordinator(allowlist: [])
+        let item = makeItem(
+            hitID: "/tmp/runtime-failure",
+            name: "iOS 26.2",
+            kind: .simulatorRuntime,
+            identifier: runtimeUUID
+        )
+
+        let completion = await coordinator.executeManaged(
+            items: [item],
+            stopControl: SimulatorDeleteCoordinator.StopControl()
+        ) { _ in }
+
+        XCTAssertEqual(completion.succeededCount, 0)
+        XCTAssertEqual(completion.failedCount, 1)
+        XCTAssertEqual(completion.outcomes.first?.exitCode, -3)
+        XCTAssertEqual(completion.outcomes.first?.wasSubmitted, false)
+        XCTAssertNil(
+            completion.receipt,
+            "An allowlist rejection happens before Process submission and must not mint a receipt"
+        )
+    }
+
+    func test_executeManaged_processLaunchFailure_hasNoSubmissionReceipt() async {
+        let missingExecutable = "/usr/bin/definitely-not-present-gsycleanmac"
+        let allowEntry = SubprocessExecutor.AllowEntry(
+            executable: missingExecutable,
+            argsPrefix: ["managed"]
+        )
+        let coordinator = SimulatorDeleteCoordinator(
+            executor: SubprocessExecutor(
+                allowlist: [allowEntry],
+                terminalWaitPolicy: .waitUntilExit,
+                dryRun: false
+            ),
+            isSimulatorRunning: { false }
+        )
+        let item = SimulatorDeleteCoordinator.Item(
+            cardID: runtimeCardID,
+            hitID: "/tmp/runtime-launch-failure",
+            displayName: "Runtime launch failure",
+            kind: .simulatorRuntime,
+            executable: missingExecutable,
+            args: ["managed"]
+        )
+
+        let completion = await coordinator.executeManaged(
+            items: [item],
+            stopControl: SimulatorDeleteCoordinator.StopControl()
+        ) { _ in }
+
+        XCTAssertEqual(completion.outcomes.first?.exitCode, -1)
+        XCTAssertEqual(completion.outcomes.first?.wasSubmitted, false)
+        XCTAssertNil(completion.receipt,
+                     "Process.run 失败没有跨过提交边界，不能铸造 receipt")
+    }
+
+    private var deviceCardID: String { "card.test.simulator-devices" }
+    private var runtimeCardID: String { "card.test.simulator-runtimes" }
+    private var filesystemCardID: String { "card.test.filesystem" }
 
     private func deviceCard() -> DeveloperCard {
-        DeveloperCard(
-            id: "card.apple.coresimulator-devices",
-            title: "iOS Simulator Devices",
-            summary: "test",
-            source: .dynamicScanner(scannerID: "scanner.simctl-devices"),
-            recipe: .commandLine(executable: "/usr/bin/xcrun", args: ["simctl", "delete"]),
-            risk: .confirm
-        )
+        managedCard(id: deviceCardID, kind: .simulatorDevice)
     }
 
     private func runtimeCard() -> DeveloperCard {
+        managedCard(id: runtimeCardID, kind: .simulatorRuntime)
+    }
+
+    private func managedCard(id: String, kind: ManagedUninstallRecipe) -> DeveloperCard {
         DeveloperCard(
-            id: "card.apple.coresimulator-runtimes",
-            title: "iOS Simulator Runtimes",
+            id: id,
+            title: id,
             summary: "test",
-            source: .dynamicScanner(scannerID: "scanner.simctl-runtimes"),
-            recipe: .commandLine(executable: "/usr/bin/xcrun", args: ["simctl", "runtime", "delete"]),
+            source: .dynamicScanner(scannerID: "scanner.test.\(kind.rawValue)"),
+            recipe: .managedUninstall(kind),
             risk: .confirm
         )
     }
 
-    private func fsCard() -> DeveloperCard {
+    private func filesystemCard() -> DeveloperCard {
         DeveloperCard(
-            id: "card.apple.derived-data",
-            title: "DerivedData",
+            id: filesystemCardID,
+            title: filesystemCardID,
             summary: "test",
             source: .literal(paths: []),
             recipe: .filesystem,
@@ -54,554 +367,259 @@ final class SimulatorDeleteCoordinatorTests: XCTestCase {
         )
     }
 
-    private func hit(name: String, path: String, tail: String?) -> WorkflowScanHit {
+    private func hit(name: String,
+                     path: String,
+                     sizeBytes: Int64? = nil,
+                     identifier: String?) -> WorkflowScanHit {
         WorkflowScanHit(
             url: URL(fileURLWithPath: path),
-            sizeBytes: 1024,
+            sizeBytes: sizeBytes,
             displayName: name,
             note: nil,
-            commandLineTailArg: tail
+            managedUninstallIdentifier: identifier
         )
     }
 
-    private func makeCoordinator(dryRun: Bool = true,
-                                 running: Bool = false,
-                                 allowlist: [SubprocessExecutor.AllowEntry] = SubprocessExecutor.defaultAllowlist) -> SimulatorDeleteCoordinator {
+    private func makeItem(hitID: String,
+                          name: String,
+                          kind: ManagedUninstallRecipe,
+                          identifier: String) -> SimulatorDeleteCoordinator.Item {
+        SimulatorDeleteCoordinator.Item(
+            cardID: kind == .simulatorRuntime ? runtimeCardID : deviceCardID,
+            hitID: hitID,
+            displayName: name,
+            kind: kind,
+            sizeBytes: 1_024,
+            executable: kind.executable,
+            args: kind.argsPrefix + [identifier]
+        )
+    }
+
+    private func makeCoordinator(
+        running: Bool = false,
+        allowlist: [SubprocessExecutor.AllowEntry] = SubprocessExecutor.defaultAllowlist
+    ) -> SimulatorDeleteCoordinator {
         SimulatorDeleteCoordinator(
-            executor: SubprocessExecutor(allowlist: allowlist, timeout: 1, dryRun: dryRun),
+            executor: SubprocessExecutor(
+                allowlist: allowlist,
+                timeout: 1,
+                dryRun: true
+            ),
             isSimulatorRunning: { running }
         )
     }
 
-    // MARK: - prepare 分支
-
-    /// PR-9：selected 为空 → .empty。
-    func test_PR9_prepare_空选_产出empty_v17() {
-        let coord = makeCoordinator()
-        let plan = coord.prepare(cards: [deviceCard()], cardHits: [:], selected: [])
-        XCTAssertEqual(plan, .empty)
+    private func assertStarted(
+        _ event: SimulatorDeleteCoordinator.ExecutionEvent,
+        index: Int,
+        total: Int,
+        hitID: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard case let .started(actualIndex, actualTotal, item) = event else {
+            return XCTFail("Expected a started event", file: file, line: line)
+        }
+        XCTAssertEqual(actualIndex, index, file: file, line: line)
+        XCTAssertEqual(actualTotal, total, file: file, line: line)
+        XCTAssertEqual(item.hitID, hitID, file: file, line: line)
     }
 
-    /// PR-9：仅命中 .filesystem 卡 → .empty（commandLine 流程不处理它）。
-    func test_PR9_prepare_filesystem卡_不进plan_v17() {
-        let coord = makeCoordinator()
-        let h = hit(name: "x", path: "/tmp/x", tail: nil)
-        let plan = coord.prepare(cards: [fsCard()],
-                                  cardHits: ["card.apple.derived-data": [h]],
-                                  selected: [h.id])
-        XCTAssertEqual(plan, .empty)
-    }
-
-    /// PR-9：.commandLine 卡命中但 hit.commandLineTailArg=nil → .invalid，
-    /// 防止 args 拼成残缺命令把 allowlist 当后门。
-    func test_PR9_prepare_missingTailArg_产出invalid_v17() {
-        let coord = makeCoordinator()
-        let h = hit(name: "broken", path: "/tmp/broken", tail: nil)
-        let plan = coord.prepare(cards: [deviceCard()],
-                                  cardHits: ["card.apple.coresimulator-devices": [h]],
-                                  selected: [h.id])
-        guard case let .invalid(reason) = plan else {
-            return XCTFail("应当产出 .invalid")
+    private func assertFinished(
+        _ event: SimulatorDeleteCoordinator.ExecutionEvent,
+        index: Int,
+        total: Int,
+        hitID: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard case let .finished(actualIndex, actualTotal, outcome) = event else {
+            return XCTFail("Expected a finished event", file: file, line: line)
         }
-        XCTAssertTrue(reason.contains("broken"))
-    }
-
-    /// PR-9：Simulator 正在跑 → .blockedSimulatorRunning，**永远不放行**。
-    /// 这是安全契约硬约束，防止破坏 booted 模拟器实例。
-    func test_PR9_prepare_Simulator运行中_产出blocked_v17() {
-        let coord = makeCoordinator(running: true)
-        let h = hit(name: "iPhone 16", path: "/tmp/d", tail: uuid1)
-        let plan = coord.prepare(cards: [deviceCard()],
-                                  cardHits: ["card.apple.coresimulator-devices": [h]],
-                                  selected: [h.id])
-        guard case let .blockedSimulatorRunning(names) = plan else {
-            return XCTFail("Simulator 在跑必须 blocked")
-        }
-        XCTAssertEqual(names, ["iPhone 16"])
-    }
-
-    /// PR-9：正常通路。
-    /// args 严格 == `argsPrefix + [tailArg]`，确保 SubprocessExecutor allowlist 二道闸能命中。
-    func test_PR9_prepare_正常_args严格拼接_v17() {
-        let coord = makeCoordinator()
-        let dev = hit(name: "iPhone 16", path: "/tmp/dev1", tail: uuid1)
-        let rt  = hit(name: "iOS 18.0", path: "/tmp/rt1",  tail: "com.apple.CoreSimulator.SimRuntime.iOS-18-0")
-        let plan = coord.prepare(
-            cards: [deviceCard(), runtimeCard()],
-            cardHits: [
-                "card.apple.coresimulator-devices":  [dev],
-                "card.apple.coresimulator-runtimes": [rt],
-            ],
-            selected: [dev.id, rt.id]
-        )
-        guard case let .ready(items) = plan else {
-            return XCTFail("应产出 ready")
-        }
-        XCTAssertEqual(items.count, 2)
-        let devItem = items.first { $0.hitID == dev.id }!
-        XCTAssertEqual(devItem.executable, "/usr/bin/xcrun")
-        XCTAssertEqual(devItem.args, ["simctl", "delete", uuid1])
-        let rtItem = items.first { $0.hitID == rt.id }!
-        XCTAssertEqual(rtItem.args, ["simctl", "runtime", "delete", "com.apple.CoreSimulator.SimRuntime.iOS-18-0"])
-    }
-
-    func test_PR9_prepare_invalidTailArg_产出invalid_v17() {
-        let coord = makeCoordinator()
-        let h = hit(name: "danger", path: "/tmp/danger", tail: "all")
-        let plan = coord.prepare(cards: [deviceCard()],
-                                 cardHits: ["card.apple.coresimulator-devices": [h]],
-                                 selected: [h.id])
-        guard case let .invalid(reason) = plan else {
-            return XCTFail("非法 destructive tail 必须产出 .invalid")
-        }
-        XCTAssertTrue(reason.contains("danger"))
-    }
-
-    // MARK: - execute 分支
-
-    /// PR-9：dryRun=true 时执行 → exitCode 0 + output 含 "<dryRun>" 标记，
-    /// 这是 CI safe 与单测 safe 的核心契约。
-    func test_PR9_execute_dryRun_不发真请求_v17() async {
-        let coord = makeCoordinator(dryRun: true)
-        let item = SimulatorDeleteCoordinator.Item(
-            cardID: "card.apple.coresimulator-devices",
-            hitID: "/tmp/dev1",
-            displayName: "iPhone 16",
-            executable: "/usr/bin/xcrun",
-            args: ["simctl", "delete", uuid1]
-        )
-        let outcomes = await coord.execute(items: [item])
-        XCTAssertEqual(outcomes.count, 1)
-        XCTAssertEqual(outcomes[0].exitCode, 0)
-        XCTAssertTrue(outcomes[0].isSuccess)
-        XCTAssertTrue(outcomes[0].truncatedOutput.contains("<dryRun>"))
-        XCTAssertTrue(outcomes[0].truncatedOutput.contains(uuid1))
-    }
-
-    /// PR-9：execute 多项串行 → outcomes 数量 == items 数量，且次序保留。
-    func test_PR9_execute_多项_顺序保留_v17() async {
-        let coord = makeCoordinator(dryRun: true)
-        let mk: (String) -> SimulatorDeleteCoordinator.Item = { udid in
-            .init(cardID: "card.apple.coresimulator-devices",
-                  hitID: "/tmp/\(udid)",
-                  displayName: udid,
-                  executable: "/usr/bin/xcrun",
-                  args: ["simctl", "delete", udid])
-        }
-        let items = [uuid1, uuid2, uuid3].map(mk)
-        let outcomes = await coord.execute(items: items)
-        XCTAssertEqual(outcomes.count, 3)
-        XCTAssertEqual(outcomes.map { $0.item.displayName }, [uuid1, uuid2, uuid3])
-        for outcome in outcomes {
-            XCTAssertTrue(outcome.isSuccess)
-        }
-    }
-
-    /// PR-9：execute 注入空 allowlist → SubprocessExecutor throw notAllowed，
-    /// 协调器吞掉异常并标记 exitCode = -3，不中断后续项。
-    func test_PR9_execute_throw时不中断后续_v17() async {
-        // 空 allowlist → 任何调用都 throw notAllowed
-        let coord = makeCoordinator(dryRun: true, allowlist: [])
-        let items = (0..<3).map { i in
-            SimulatorDeleteCoordinator.Item(
-                cardID: "card.apple.coresimulator-devices",
-                hitID: "/tmp/\(i)",
-                displayName: "dev\(i)",
-                executable: "/usr/bin/xcrun",
-                args: ["simctl", "delete", "U\(i)"]
-            )
-        }
-        let outcomes = await coord.execute(items: items)
-        XCTAssertEqual(outcomes.count, 3, "throw 也必须 yield outcome，不中断")
-        for outcome in outcomes {
-            XCTAssertEqual(outcome.exitCode, -3)
-            XCTAssertFalse(outcome.isSuccess)
-            XCTAssertTrue(outcome.truncatedOutput.contains("throw"))
-        }
+        XCTAssertEqual(actualIndex, index, file: file, line: line)
+        XCTAssertEqual(actualTotal, total, file: file, line: line)
+        XCTAssertEqual(outcome.item.hitID, hitID, file: file, line: line)
+        XCTAssertTrue(outcome.isSuccess, file: file, line: line)
     }
 }
 
-/// v1.7 M1 PR-9：WorkflowDetailViewModel 的 sheet/真删集成测试。
 @MainActor
-final class WorkflowDetailViewModel_PR9Tests: XCTestCase {
-    private let uuid = "11111111-2222-3333-4444-555555555555"
+final class WorkflowManagedUninstallViewModelTests: XCTestCase {
+    private let deviceUUID = "11111111-2222-3333-4444-555555555555"
+    private let runtimeUUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
-    private func confirmedIntent(
-        from vm: WorkflowDetailViewModel,
-        pipeline: any DeletionPipeline
-    ) async throws -> WorkflowDeletionIntent {
-        await vm.requestDeleteConfirmation(pipeline: pipeline)
-        guard case let .deleteConfirm(confirmation) = vm.activeSheet else {
-            throw NSError(
-                domain: "WorkflowDetailViewModel_PR9Tests",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Expected Workflow delete confirmation"]
-            )
-        }
-        vm.confirmDelete(
-            confirmation,
-            executionPlan: ToolTrashExecutionPlan(
-                paths: confirmation.intent.filesystemPaths,
-                runningAppSkipped: [],
-                vendorOverrideRequest: confirmation.intent.vendorOverrideRequest
-            )
-        )
-        return try XCTUnwrap(vm.takePendingConfirmedDeleteIntent())
-    }
-
-    /// PR-9：模拟用户 → performDelete → advance → executeConfirmed，
-    /// 验证 sheet 状态机 firstReview → secondConfirm → nil。
-    func test_PR9_sheet_状态机_firstReview_secondConfirm_v17() async throws {
-        let home = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WFDVM-PR9-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+    func test_mixedVisualSelection_routesManagedItemsWithoutJoiningTrashItems() async {
+        let home = makeTemporaryHome()
         defer { try? FileManager.default.removeItem(at: home) }
-
-        let wf = StubCommandLineWorkflow()
-        let coord = SimulatorDeleteCoordinator(
-            executor: SubprocessExecutor(timeout: 1, dryRun: true),
-            isSimulatorRunning: { false }
+        let filesystemCard = makeFilesystemCard()
+        let deviceCard = makeManagedCard(id: "card.vm.device", kind: .simulatorDevice)
+        let runtimeCard = makeManagedCard(id: "card.vm.runtime", kind: .simulatorRuntime)
+        let filesystemHit = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/tmp/vm-filesystem"),
+            sizeBytes: 10,
+            displayName: "Cache",
+            note: nil
         )
-        let vm = WorkflowDetailViewModel(workflow: wf, home: home, simulatorCoordinator: coord)
-        // 不走 bootstrap（会真起 simctl），直接 setTestCards + setTestHits 模拟"扫描完成"
-        vm.setTestCards(wf.cards(home: home))
-        vm.setTestHits([
-            "card.test.simctl": [WorkflowScanHit(
-                url: URL(fileURLWithPath: "/tmp/dev"),
-                sizeBytes: 0,
-                displayName: "iPhone 16",
-                note: nil,
-                commandLineTailArg: uuid
-            )]
+        let deviceHit = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/tmp/vm-device"),
+            sizeBytes: 20,
+            displayName: "iPhone 17",
+            note: nil,
+            managedUninstallIdentifier: deviceUUID
+        )
+        let runtimeHit = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/tmp/vm-runtime"),
+            sizeBytes: 30,
+            displayName: "iOS 26.2",
+            note: nil,
+            managedUninstallIdentifier: runtimeUUID
+        )
+        let viewModel = makeViewModel(home: home)
+        viewModel.setTestCards([filesystemCard, deviceCard, runtimeCard])
+        viewModel.setTestHits([
+            filesystemCard.id: [filesystemHit],
+            deviceCard.id: [deviceHit],
+            runtimeCard.id: [runtimeHit],
         ])
-        vm.toggleSelection(hitID: "/tmp/dev", on: true)
+        viewModel.setTestSelection([filesystemHit.id, deviceHit.id, runtimeHit.id])
 
-        let stubPipeline = StubPipelinePR9()
-        let intent = try await confirmedIntent(from: vm, pipeline: stubPipeline)
-        await vm.performDelete(pipeline: stubPipeline, intent: intent)
-        guard case .firstReview = vm.pendingSimctlStage else {
-            return XCTFail("第一轮应进入 firstReview")
+        XCTAssertEqual(viewModel.selectedFilesystemCount, 1)
+        XCTAssertEqual(viewModel.selectedManagedUninstallCount, 2)
+
+        await viewModel.requestSimulatorUninstall()
+
+        guard case let .review(intent) = viewModel.simulatorUninstallState else {
+            return XCTFail("Managed uninstall must enter its own review state")
         }
-
-        vm.advanceSimctlConfirm()
-        guard case .secondConfirm = vm.pendingSimctlStage else {
-            return XCTFail("第二轮应进入 secondConfirm")
+        XCTAssertEqual(intent.selectedHitIDs, [deviceHit.id, runtimeHit.id])
+        XCTAssertEqual(intent.items.map(\.kind), [.simulatorDevice, .simulatorRuntime])
+        XCTAssertEqual(intent.totalBytes, 50)
+        XCTAssertTrue(viewModel.selected.contains(filesystemHit.id))
+        guard case .simulatorUninstall = viewModel.activeSheet else {
+            return XCTFail("Managed uninstall must not reuse the Trash confirmation route")
         }
-
-        await vm.executeConfirmedSimctl()
-        XCTAssertNil(vm.pendingSimctlStage, "execute 后 sheet 应关闭")
-        XCTAssertNil(vm.alertMessage, "simctl 完成后不应再用 alert 覆盖结构化结果")
-        XCTAssertEqual(vm.lastDeleteResult?.commandLineSucceeded, 1)
-        XCTAssertEqual(vm.lastDeleteResult?.commandLineSkipped, 0)
-        XCTAssertEqual(vm.lastDeleteResult?.status, .success)
     }
 
-    /// Filesystem cleanup happens before the two simctl confirmations. A recycle
-    /// success + ordinary recycle failure can continue to simctl and its partial
-    /// outcome must survive refreshes. Safety rejections are covered separately because
-    /// the production pipeline's batch-atomic contract forbids mixing moved + rejected.
-    func test_mixedFilesystemAndSimctl_preservesOneCombinedOperationResult() async throws {
-        let home = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WFDVM-Mixed-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
-
-        let workflow = StubMixedWorkflow()
-        let coordinator = SimulatorDeleteCoordinator(
-            executor: SubprocessExecutor(timeout: 1, dryRun: true),
-            isSimulatorRunning: { false }
-        )
-        let vm = WorkflowDetailViewModel(workflow: workflow,
-                                         home: home,
-                                         simulatorCoordinator: coordinator)
-        let cards = workflow.cards(home: home)
-        let moved = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/mixed-moved"),
-                                    sizeBytes: 10, displayName: "moved", note: nil)
-        let failed = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/mixed-failed"),
-                                     sizeBytes: 20, displayName: "failed", note: nil)
-        let simulator = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/mixed-simulator"),
-                                        sizeBytes: 0,
-                                        displayName: "iPhone 16",
-                                        note: nil,
-                                        commandLineTailArg: uuid)
-        vm.setTestCards(cards)
-        vm.setTestHits([
-            "card.test.filesystem": [moved, failed],
-            "card.test.simctl": [simulator],
-        ])
-        vm.setTestSelection([moved.id, failed.id, simulator.id])
-
-        let pipeline = StubMixedPipeline(outcome: TrashOutcome(
-            movedPairs: [(moved.url.path, "/Trash/mixed-moved")],
-            failedPaths: [failed.url.path],
-            safetyRejected: [],
-            missingPaths: []
-        ))
-        let intent = try await confirmedIntent(from: vm, pipeline: pipeline)
-        await vm.performDelete(pipeline: pipeline, intent: intent)
-        guard case .firstReview = vm.pendingSimctlStage else {
-            return XCTFail("mixed workflow should enter first simctl confirmation")
-        }
-
-        vm.advanceSimctlConfirm()
-        await vm.executeConfirmedSimctl()
-
-        let result = try XCTUnwrap(vm.lastDeleteResult)
-        XCTAssertEqual(result.movedPairs.map(\.originalPath), [moved.url.path])
-        XCTAssertEqual(result.failedPaths, [failed.url.path])
-        XCTAssertTrue(result.safetyRejected.isEmpty)
-        XCTAssertEqual(result.commandLineSucceeded, 1)
-        XCTAssertEqual(result.commandLineSkipped, 0)
-        XCTAssertEqual(result.status, .partial)
-        XCTAssertNil(vm.alertMessage)
-    }
-
-    func test_commandLineOnlyCancel_closesWithoutFalseSuccessResult() async throws {
-        let home = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WFDVM-Cancel-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
-
-        let workflow = StubCommandLineWorkflow()
-        let coordinator = SimulatorDeleteCoordinator(
-            executor: SubprocessExecutor(timeout: 1, dryRun: true),
-            isSimulatorRunning: { false }
-        )
-        let vm = WorkflowDetailViewModel(workflow: workflow,
-                                         home: home,
-                                         simulatorCoordinator: coordinator)
-        let simulator = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/cancel-simulator"),
-                                        sizeBytes: 0,
-                                        displayName: "iPhone 16",
-                                        note: nil,
-                                        commandLineTailArg: uuid)
-        vm.setTestCards(workflow.cards(home: home))
-        vm.setTestHits(["card.test.simctl": [simulator]])
-        vm.setTestSelection([simulator.id])
-
-        let pipeline = StubPipelinePR9()
-        let intent = try await confirmedIntent(from: vm, pipeline: pipeline)
-        await vm.performDelete(pipeline: pipeline, intent: intent)
-        XCTAssertNotNil(vm.pendingSimctlStage)
-        vm.cancelSimctlConfirm()
-
-        XCTAssertNil(vm.pendingSimctlStage)
-        XCTAssertNil(vm.lastDeleteResult,
-                     "Cancelling a command-only confirmation must not report a 0/N success result")
-    }
-
-    func test_mixedCancel_preservesCompletedFilesystemResult() async throws {
-        let home = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WFDVM-MixedCancel-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
-
-        let workflow = StubMixedWorkflow()
-        let coordinator = SimulatorDeleteCoordinator(
-            executor: SubprocessExecutor(timeout: 1, dryRun: true),
-            isSimulatorRunning: { false }
-        )
-        let vm = WorkflowDetailViewModel(workflow: workflow,
-                                         home: home,
-                                         simulatorCoordinator: coordinator)
-        let moved = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/mixed-cancel-moved"),
-                                    sizeBytes: 10, displayName: "moved", note: nil)
-        let simulator = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/mixed-cancel-simulator"),
-                                        sizeBytes: 0,
-                                        displayName: "iPhone 16",
-                                        note: nil,
-                                        commandLineTailArg: uuid)
-        vm.setTestCards(workflow.cards(home: home))
-        vm.setTestHits([
-            "card.test.filesystem": [moved],
-            "card.test.simctl": [simulator],
-        ])
-        vm.setTestSelection([moved.id, simulator.id])
-
-        let pipeline = StubMixedPipeline(outcome: TrashOutcome(
-            movedPairs: [(moved.url.path, "/Trash/mixed-cancel-moved")],
-            failedPaths: [],
-            safetyRejected: [],
-            missingPaths: []
-        ))
-        let intent = try await confirmedIntent(from: vm, pipeline: pipeline)
-        await vm.performDelete(pipeline: pipeline, intent: intent)
-        vm.cancelSimctlConfirm()
-
-        let result = try XCTUnwrap(vm.lastDeleteResult)
-        XCTAssertEqual(result.movedPairs.map(\.originalPath), [moved.url.path])
-        XCTAssertEqual(result.commandLineSkipped, 1)
-        XCTAssertEqual(result.commandLineSucceeded, 0)
-        XCTAssertTrue(result.commandLineFailures.isEmpty)
-        XCTAssertEqual(result.status, .partial)
-    }
-
-    func test_commandFailure_isNotMisreportedAsFilesystemPath() async throws {
-        let home = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WFDVM-CommandFailure-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
-
-        let workflow = StubCommandLineWorkflow()
-        let coordinator = SimulatorDeleteCoordinator(
-            executor: SubprocessExecutor(allowlist: [], timeout: 1, dryRun: true),
-            isSimulatorRunning: { false }
-        )
-        let vm = WorkflowDetailViewModel(workflow: workflow,
-                                         home: home,
-                                         simulatorCoordinator: coordinator)
-        let simulator = WorkflowScanHit(url: URL(fileURLWithPath: "/tmp/failed-simulator"),
-                                        sizeBytes: 0,
-                                        displayName: "iPhone 16",
-                                        note: nil,
-                                        commandLineTailArg: uuid)
-        vm.setTestCards(workflow.cards(home: home))
-        vm.setTestHits(["card.test.simctl": [simulator]])
-        vm.setTestSelection([simulator.id])
-
-        let pipeline = StubPipelinePR9()
-        let intent = try await confirmedIntent(from: vm, pipeline: pipeline)
-        await vm.performDelete(pipeline: pipeline, intent: intent)
-        vm.advanceSimctlConfirm()
-        await vm.executeConfirmedSimctl()
-
-        let result = try XCTUnwrap(vm.lastDeleteResult)
-        XCTAssertTrue(result.failedPaths.isEmpty)
-        XCTAssertEqual(result.commandLineFailures.count, 1)
-        XCTAssertEqual(result.commandLineFailures.first?.item, "iPhone 16")
-        XCTAssertEqual(result.commandLineFailures.first?.exitCode, -3)
-        XCTAssertEqual(result.status, .failed)
-    }
-
-    /// PR-9：Simulator 运行中 → 命令未提交，只能展示阻止提示。
-    func test_PR9_performDelete_Simulator运行中_不弹sheet_v17() async throws {
-        let home = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WFDVM-PR9b-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+    func test_nonDeletableManagedHit_isNotSelectableOrSubmitted() async {
+        let home = makeTemporaryHome()
         defer { try? FileManager.default.removeItem(at: home) }
-
-        let wf = StubCommandLineWorkflow()
-        let coord = SimulatorDeleteCoordinator(
-            executor: SubprocessExecutor(timeout: 1, dryRun: true),
-            isSimulatorRunning: { true }
+        let runtimeCard = makeManagedCard(id: "card.vm.runtime", kind: .simulatorRuntime)
+        let runtimeHit = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/tmp/vm-runtime-legacy"),
+            sizeBytes: 30,
+            displayName: "Legacy iOS Runtime",
+            note: nil,
+            managedUninstallIdentifier: nil
         )
-        let vm = WorkflowDetailViewModel(workflow: wf, home: home, simulatorCoordinator: coord)
-        vm.setTestCards(wf.cards(home: home))
-        vm.setTestHits([
-            "card.test.simctl": [WorkflowScanHit(
-                url: URL(fileURLWithPath: "/tmp/dev"),
-                sizeBytes: 0,
-                displayName: "iPhone 16",
-                note: nil,
-                commandLineTailArg: uuid
-            )]
-        ])
-        vm.toggleSelection(hitID: "/tmp/dev", on: true)
+        let viewModel = makeViewModel(home: home)
+        viewModel.setTestCards([runtimeCard])
+        viewModel.setTestHits([runtimeCard.id: [runtimeHit]])
 
-        let pipeline = StubPipelinePR9()
-        let intent = try await confirmedIntent(from: vm, pipeline: pipeline)
-        await vm.performDelete(pipeline: pipeline, intent: intent)
-        XCTAssertNil(vm.pendingSimctlStage, "Simulator 在跑时不应弹 sheet")
-        XCTAssertNil(vm.lastDeleteResult,
-                     "Simulator 阻止发生在 execute 前，不能伪装成执行失败")
-        XCTAssertNotNil(vm.alertMessage, "未提交阻止仍应给用户本地化提示")
+        XCTAssertFalse(viewModel.canSelect(card: runtimeCard, hit: runtimeHit))
+        XCTAssertEqual(viewModel.selectedManagedUninstallCount, 0)
+        await viewModel.requestSimulatorUninstall()
+        XCTAssertNil(viewModel.simulatorUninstallState)
+        XCTAssertNil(viewModel.activeSheet)
     }
-}
 
-// MARK: - Stubs
+    func test_reviewedManagedUninstall_executesAndRemovesOnlySuccessfulManagedRows() async {
+        let home = makeTemporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let filesystemCard = makeFilesystemCard()
+        let runtimeCard = makeManagedCard(id: "card.vm.runtime", kind: .simulatorRuntime)
+        let filesystemHit = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/tmp/vm-retained-filesystem"),
+            sizeBytes: 10,
+            displayName: "Retained Cache",
+            note: nil
+        )
+        let runtimeHit = WorkflowScanHit(
+            url: URL(fileURLWithPath: "/tmp/vm-runtime-success"),
+            sizeBytes: 30,
+            displayName: "iOS 26.2",
+            note: nil,
+            managedUninstallIdentifier: runtimeUUID
+        )
+        let viewModel = makeViewModel(home: home)
+        viewModel.setTestCards([filesystemCard, runtimeCard])
+        viewModel.setTestHits([
+            filesystemCard.id: [filesystemHit],
+            runtimeCard.id: [runtimeHit],
+        ])
+        viewModel.setTestSelection([filesystemHit.id, runtimeHit.id])
 
-/// 单卡 commandLine workflow，专供 PR-9 测试。
-private struct StubCommandLineWorkflow: DeveloperWorkflow {
-    let id = "workflow.test"
-    let displayName = "Test Workflow"
-    let subtitle = "for PR-9"
-    func cards(home: URL) -> [DeveloperCard] {
-        [DeveloperCard(
-            id: "card.test.simctl",
-            title: "Test simctl card",
+        await viewModel.requestSimulatorUninstall()
+        await viewModel.executeSimulatorUninstall()
+
+        guard case let .finished(intent, completion) = viewModel.simulatorUninstallState else {
+            return XCTFail("A submitted managed operation must reach an explicit terminal state")
+        }
+        XCTAssertEqual(intent.items.map(\.hitID), [runtimeHit.id])
+        XCTAssertEqual(completion.succeededCount, 1)
+        XCTAssertEqual(completion.receipt?.submittedItemIDs, [runtimeHit.id])
+        XCTAssertEqual(viewModel.cardHits[filesystemCard.id], [filesystemHit])
+        XCTAssertEqual(viewModel.cardHits[runtimeCard.id], [])
+        XCTAssertEqual(viewModel.selected, [filesystemHit.id])
+        XCTAssertTrue(viewModel.cardLoading.isEmpty)
+    }
+
+    private func makeTemporaryHome() -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WorkflowManagedUninstallTests-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func makeViewModel(home: URL) -> WorkflowDetailViewModel {
+        WorkflowDetailViewModel(
+            workflow: EmptyWorkflow(),
+            home: home,
+            simulatorCoordinator: SimulatorDeleteCoordinator(
+                executor: SubprocessExecutor(timeout: 1, dryRun: true),
+                isSimulatorRunning: { false }
+            )
+        )
+    }
+
+    private func makeFilesystemCard() -> DeveloperCard {
+        DeveloperCard(
+            id: "card.vm.filesystem",
+            title: "Filesystem",
             summary: "test",
-            source: .dynamicScanner(scannerID: "scanner.simctl-devices"),
-            recipe: .commandLine(executable: "/usr/bin/xcrun", args: ["simctl", "delete"]),
+            source: .literal(paths: []),
+            recipe: .filesystem,
+            risk: .safe
+        )
+    }
+
+    private func makeManagedCard(id: String, kind: ManagedUninstallRecipe) -> DeveloperCard {
+        DeveloperCard(
+            id: id,
+            title: id,
+            summary: "test",
+            source: .dynamicScanner(scannerID: "scanner.test.\(kind.rawValue)"),
+            recipe: .managedUninstall(kind),
             risk: .confirm
-        )]
+        )
     }
 }
 
-private struct StubMixedWorkflow: DeveloperWorkflow {
-    let id = "workflow.test.mixed"
-    let displayName = "Test Mixed Workflow"
-    let subtitle = "filesystem plus simctl"
+private actor ManagedEventRecorder {
+    private var events: [SimulatorDeleteCoordinator.ExecutionEvent] = []
 
-    func cards(home: URL) -> [DeveloperCard] {
-        [
-            DeveloperCard(
-                id: "card.test.filesystem",
-                title: "Test filesystem card",
-                summary: "test",
-                source: .literal(paths: []),
-                recipe: .filesystem,
-                risk: .confirm
-            ),
-            DeveloperCard(
-                id: "card.test.simctl",
-                title: "Test simctl card",
-                summary: "test",
-                source: .dynamicScanner(scannerID: "scanner.simctl-devices"),
-                recipe: .commandLine(executable: "/usr/bin/xcrun", args: ["simctl", "delete"]),
-                risk: .confirm
-            ),
-        ]
+    func append(_ event: SimulatorDeleteCoordinator.ExecutionEvent) {
+        events.append(event)
+    }
+
+    func snapshot() -> [SimulatorDeleteCoordinator.ExecutionEvent] {
+        events
     }
 }
 
-/// 不真删的 pipeline stub。
-private struct StubPipelinePR9: DeletionPipeline {
-    func preflight(paths: [String], accessDeniedPaths: Set<String>) async -> DeletionPreflight {
-        DeletionPreflight(allowedPaths: paths, rejections: [])
-    }
-    func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)]) {
-        return (0, 0, nil, [])
-    }
-    /// v2026.06.17 (AUDIT A2)：协议取消 no-op 默认实现后，测试 stub 必须显式 no-op。
-    func setAccessDeniedPaths(_ paths: Set<String>) { /* test stub: no-op */ }
+private struct EmptyWorkflow: DeveloperWorkflow {
+    let id = "workflow.test.empty"
+    let displayName = "Test"
+    let subtitle = "Test"
+
+    func cards(home: URL) -> [DeveloperCard] { [] }
 }
-
-private struct StubMixedPipeline: DeletionPipeline {
-    let outcome: TrashOutcome
-
-    func preflight(paths: [String], accessDeniedPaths: Set<String>) async -> DeletionPreflight {
-        DeletionPreflight(allowedPaths: paths, rejections: [])
-    }
-
-    func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)]) {
-        (outcome.movedPairs.count,
-         outcome.failedPaths.count + outcome.safetyRejected.count,
-         nil,
-         outcome.movedPairs.map { ($0.originalPath, $0.trashedPath) })
-    }
-
-    func moveToTrashReturningOutcome(paths: [String], dryRun: Bool) async
-        -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?) {
-        let legacy = await moveToTrash(paths: paths, dryRun: dryRun)
-        return (legacy, outcome)
-    }
-
-    /// This stub models a filesystem request that has crossed the recycle boundary.
-    /// Professional callers must not infer that fact from non-empty pairs/outcome.
-    func submitToTrashReturningDisposition(
-        paths: [String],
-        accessDeniedPaths: Set<String>,
-        vendorOverrideRequest: VendorPathOverrideRequest?
-    ) async -> TrashSubmissionDisposition {
-        let legacy = await moveToTrash(paths: paths, dryRun: false)
-        return .recycleCompleted(TrashRecycleCompletion(
-            attemptedPaths: paths,
-            legacy: legacy,
-            outcome: outcome
-        ))
-    }
-
-    func setAccessDeniedPaths(_ paths: Set<String>) { /* test stub: no-op */ }
-}
-
-// 测试侧 helper 移除：直接调 setTestHits / setTestCards。

@@ -39,12 +39,50 @@ public final class UndoHistoryStore: ObservableObject {
         public var requiresConflictChoice: Bool { !conflictPaths.isEmpty }
     }
 
-    /// 一次恢复的结构化结果。`firstError` 会直接进入用户可见的结果弹窗。
+    /// v2026.07.15：恢复失败只保存语义和系统原文；结果弹窗在渲染时按当前 App locale
+    /// 投影，避免异步恢复完成时把某一种语言长期冻结在状态里。
+    public enum RestoreFailure: Sendable, Equatable {
+        case trashedItemMissing(path: String)
+        case destinationAlreadyExists(path: String)
+        case createDestinationDirectoryFailed(systemDescription: String)
+        case moveFailed(systemDescription: String)
+
+        public func message(locale: Locale) -> String {
+            switch self {
+            case .trashedItemMissing(let path):
+                return AppLocalization.format(
+                    "undo.err.trashed_missing %@",
+                    locale: locale,
+                    arguments: [path]
+                )
+            case .destinationAlreadyExists(let path):
+                return AppLocalization.format(
+                    "undo.err.original_exists %@",
+                    locale: locale,
+                    arguments: [path]
+                )
+            case .createDestinationDirectoryFailed(let description):
+                return AppLocalization.format(
+                    "undo.err.create_parent_failed %@",
+                    locale: locale,
+                    arguments: [description]
+                )
+            case .moveFailed(let description):
+                return AppLocalization.format(
+                    "undo.err.move_item_failed %@",
+                    locale: locale,
+                    arguments: [description]
+                )
+            }
+        }
+    }
+
+    /// 一次恢复的结构化结果。`firstFailure` 由 View 按当前 locale 投影。
     public struct RestoreResult: Sendable, Equatable {
         public let restoredCount: Int
         public let skippedCount: Int
         public let renamedCount: Int
-        public let firstError: String?
+        public let firstFailure: RestoreFailure?
     }
 
     private struct RestoreExecution: Sendable {
@@ -199,10 +237,15 @@ public final class UndoHistoryStore: ObservableObject {
     @discardableResult
     public func restoreRecord(
         _ record: Record,
-        conflictPolicy: RestoreConflictPolicy
+        conflictPolicy: RestoreConflictPolicy,
+        locale: Locale
     ) async -> RestoreResult {
         let execution = await Task.detached(priority: .userInitiated) {
-            Self.executeRestore(record, conflictPolicy: conflictPolicy)
+            Self.executeRestore(
+                record,
+                conflictPolicy: conflictPolicy,
+                locale: locale
+            )
         }.value
 
         let remainingPairs = execution.remainingPairs
@@ -223,7 +266,7 @@ public final class UndoHistoryStore: ObservableObject {
         let result = execution.result
         GSYLog.info(
             .trash,
-            "UndoHistory restoreRecord 完成 restored=\(result.restoredCount) renamed=\(result.renamedCount) skipped=\(result.skippedCount) err=\(result.firstError ?? "nil")"
+            "UndoHistory restoreRecord 完成 restored=\(result.restoredCount) renamed=\(result.renamedCount) skipped=\(result.skippedCount) failure=\(String(describing: result.firstFailure))"
         )
         return result
     }
@@ -260,13 +303,14 @@ public final class UndoHistoryStore: ObservableObject {
 
     nonisolated private static func executeRestore(
         _ record: Record,
-        conflictPolicy: RestoreConflictPolicy
+        conflictPolicy: RestoreConflictPolicy,
+        locale: Locale
     ) -> RestoreExecution {
         let fm = FileManager.default
         var restored = 0
         var skipped = 0
         var renamed = 0
-        var firstError: String?
+        var firstFailure: RestoreFailure?
         var remainingPairs: [Record.FilePair] = []
         var reservedDestinations = Set(record.filePairs.map { pair in
             URL(fileURLWithPath: pair.original).standardizedFileURL.path
@@ -278,8 +322,8 @@ public final class UndoHistoryStore: ObservableObject {
 
             guard fm.fileExists(atPath: pair.trashed) else {
                 skipped += 1
-                if firstError == nil {
-                    firstError = String(format: String(localized: "undo.err.trashed_missing %@", bundle: .module), pair.trashed)
+                if firstFailure == nil {
+                    firstFailure = .trashedItemMissing(path: pair.trashed)
                 }
                 continue
             }
@@ -290,18 +334,16 @@ public final class UndoHistoryStore: ObservableObject {
                 case .skipExisting:
                     skipped += 1
                     remainingPairs.append(pair)
-                    if firstError == nil {
-                        firstError = String(
-                            format: String(localized: "undo.err.original_exists %@", bundle: .module),
-                            pair.original
-                        )
+                    if firstFailure == nil {
+                        firstFailure = .destinationAlreadyExists(path: pair.original)
                     }
                     continue
                 case .restoreWithUniqueName:
                     destinationURL = availableRecoveryDestination(
                         for: originalURL,
                         fileManager: fm,
-                        reservedDestinations: reservedDestinations
+                        reservedDestinations: reservedDestinations,
+                        locale: locale
                     )
                     reservedDestinations.insert(destinationURL.standardizedFileURL.path)
                 }
@@ -314,10 +356,9 @@ public final class UndoHistoryStore: ObservableObject {
             } catch {
                 skipped += 1
                 remainingPairs.append(pair)
-                if firstError == nil {
-                    firstError = String(
-                        format: String(localized: "undo.err.create_parent_failed %@", bundle: .module),
-                        error.localizedDescription
+                if firstFailure == nil {
+                    firstFailure = .createDestinationDirectoryFailed(
+                        systemDescription: error.localizedDescription
                     )
                 }
                 GSYLog.error(
@@ -336,8 +377,8 @@ public final class UndoHistoryStore: ObservableObject {
             } catch {
                 skipped += 1
                 remainingPairs.append(pair)
-                if firstError == nil {
-                    firstError = String(format: String(localized: "undo.err.move_item_failed %@", bundle: .module), error.localizedDescription)
+                if firstFailure == nil {
+                    firstFailure = .moveFailed(systemDescription: error.localizedDescription)
                 }
                 GSYLog.error(.trash, "UndoHistory restoreRecord mv 失败 \(pair.trashed) → \(destinationURL.path) err=\(error.localizedDescription)")
             }
@@ -348,7 +389,7 @@ public final class UndoHistoryStore: ObservableObject {
                 restoredCount: restored,
                 skippedCount: skipped,
                 renamedCount: renamed,
-                firstError: firstError
+                firstFailure: firstFailure
             ),
             remainingPairs: remainingPairs
         )
@@ -358,14 +399,15 @@ public final class UndoHistoryStore: ObservableObject {
     nonisolated private static func availableRecoveryDestination(
         for originalURL: URL,
         fileManager fm: FileManager,
-        reservedDestinations: Set<String>
+        reservedDestinations: Set<String>,
+        locale: Locale
     ) -> URL {
         let parent = originalURL.deletingLastPathComponent()
         let pathExtension = originalURL.pathExtension
         let stem = pathExtension.isEmpty
             ? originalURL.lastPathComponent
             : originalURL.deletingPathExtension().lastPathComponent
-        let recovered = String(localized: "undo.restore.recovered_suffix", bundle: .module)
+        let recovered = AppLocalization.string("undo.restore.recovered_suffix", locale: locale)
         var sequence = 1
 
         while true {

@@ -15,8 +15,8 @@ import AppKit
 /// 本骨架版本（v1.7 M1 PR-1）的边界：
 /// 1. **仅落协议 + Apple 空实现**：cards() 暂返 `[]`，编译可过、不影响现网；
 /// 2. **不接 AppUI / 不进侧边栏**：避免半成品功能误导用户；
-/// 3. **DeletionRecipe.commandLine 仅占位**：simctl 子命令的实际接入放 M1 PR-3
-///    （需要先实现 [SimctlDevicesScanner / SimctlRuntimeScanner]，配套 V12 级集成测试）。
+/// 3. **托管卸载是封闭集合**：CoreSimulator 资源只能选择 [ManagedUninstallRecipe]
+///    中预先定义的类型，不向上层暴露任意可执行文件与参数。
 ///
 /// 与 [Scanner] / [VersionedRetainScanner] 的关系：
 /// - Workflow 是**入口层**，决定"展示什么卡片、卡片对应哪些路径源"；
@@ -100,59 +100,69 @@ public struct DeveloperCard: Sendable, Hashable, Identifiable {
     }
 }
 
-/// 删除方案：决定 UI 点击"清理"按钮后的实际动作。
-public enum DeletionRecipe: Sendable, Hashable {
-    /// 走 [NSWorkspace.recycle]——这是项目唯一允许的"删除"通道，最终落回收站。
-    case filesystem
-    /// 走命令行子命令（如 `xcrun simctl delete <udid>`）。
-    ///
-    /// **v1.7 M1 PR-2 起开放执行**，但必须满足两条硬约束：
-    /// 1. `(executable, args)` 必须命中 [SubprocessExecutor.defaultAllowlist]，
-    ///    `isExecutableInCurrentBuild` 会自动校验；
-    /// 2. UI 侧必须在执行前显式展示"将运行命令：xxx"。
-    ///
-    /// `args` 中的尾部参数（如 `<udid>`）通常是模板占位符——
-    /// 实际删除时由 caller 用具体 udid 替换尾部，再次经 SubprocessExecutor.run 二次校验。
-    case commandLine(executable: String, args: [String])
+/// 由系统管理器执行的卸载类型。
+///
+/// **2026-07-15 安全边界修订**：原有 `DeletionRecipe.commandLine` 可以携带任意
+/// executable/args，使得清理数据模型变成了泛化命令执行通道。现改为封闭 enum：
+/// 上层只能选择已审核的 CoreSimulator 资源类型，实际执行仍必须再经过
+/// [SubprocessExecutor] allowlist 与尾参格式双重校验。
+public enum ManagedUninstallRecipe: String, CaseIterable, Sendable, Hashable {
+    case simulatorDevice
+    case simulatorRuntime
 
-    /// 当前是否允许直接执行。
-    ///
-    /// - `.filesystem`：永远允许（回收站删除是项目唯一的安全删除通道）；
-    /// - `.commandLine`：仅当 `(executable, argsPrefix)` 命中 SubprocessExecutor.defaultAllowlist 才允许。
-    ///   这一层校验**冗余但必要**：即便 UI 侧忘记调 SubprocessExecutor，DeletionRecipe 自身也能挡住未授权命令。
-    public var isExecutableInCurrentBuild: Bool {
+    /// 托管卸载的系统入口。枚举不接受外部 executable，避免数据注入。
+    public var executable: String { "/usr/bin/xcrun" }
+
+    /// 不包含资源标识符的固定参数前缀。
+    public var argsPrefix: [String] {
         switch self {
-        case .filesystem:
-            return true
-        case .commandLine(let executable, let args):
-            guard SubprocessExecutor.defaultAllowlist.contains(where: { entry in
-                entry.executable == executable
-                && args.count >= entry.argsPrefix.count
-                && Array(args.prefix(entry.argsPrefix.count)) == entry.argsPrefix
-            }) else {
-                return false
-            }
-            // Workflow cards store a command template prefix such as `simctl delete`.
-            // If a concrete tail is already present, apply the same destructive-tail rule
-            // used by SubprocessExecutor so this second gate cannot bless extra args.
-            if args == ["simctl", "delete"] || args == ["simctl", "runtime", "delete"] {
-                return true
-            }
-            return SubprocessExecutor.argumentsPassDestructiveTailPolicy(executable: executable, args: args)
+        case .simulatorDevice:
+            return ["simctl", "delete"]
+        case .simulatorRuntime:
+            return ["simctl", "runtime", "delete"]
         }
     }
 }
 
-// MARK: - Apple 工作流（PR-1：6 张静态卡片 + PR-2：4 张 simctl/volumes/per-project 卡片）
+/// 清理方案：决定 UI 点击"清理"按钮后的实际动作。
+public enum DeletionRecipe: Sendable, Hashable {
+    /// 走 [NSWorkspace.recycle]——这是项目唯一允许的"删除"通道，最终落回收站。
+    case filesystem
+    /// 走受管系统 API 的卸载通道。不允许调用方自定义 executable/args。
+    case managedUninstall(ManagedUninstallRecipe)
+
+    /// 当前是否允许直接执行。
+    ///
+    /// - `.filesystem`：永远允许（回收站删除是项目唯一的安全删除通道）；
+    /// - `.managedUninstall`：固定命令前缀仍必须命中 SubprocessExecutor.defaultAllowlist。
+    ///   这一层是执行器之外的第二道安全闸门。
+    public var isExecutableInCurrentBuild: Bool {
+        switch self {
+        case .filesystem:
+            return true
+        case .managedUninstall(let managed):
+            return SubprocessExecutor.defaultAllowlist.contains { entry in
+                entry.executable == managed.executable
+                    && entry.argsPrefix == managed.argsPrefix
+            }
+        }
+    }
+}
+
+// MARK: - Apple 工作流（PR-1：6 张静态卡片 + PR-2：3 张 simctl/per-project 卡片）
 
 /// Apple（iOS / macOS / watchOS / tvOS / visionOS）开发者工作流。
 ///
 /// **v1.7 M1 PR-1**：注入 6 张零代码风险卡片（DerivedData / Archives / DeviceSupport×3 / CoreSimulator Caches）。
-/// **v1.7 M1 PR-2**：追加 4 张高价值卡片：
-/// - `card.apple.coresimulator-devices`：simctl 设备实例（含 .commandLine recipe，Simulator 运行中 → blocked）
-/// - `card.apple.coresimulator-runtimes`：simctl runtime（含 .commandLine recipe，Simulator 运行中 → blocked）
-/// - `card.apple.coresimulator-volumes`：runtime 镜像挂载点（.filesystem，目录树常见 5~10 GB）
+/// **v1.7 M1 PR-2**：追加 3 张高价值卡片：
+/// - `card.apple.coresimulator-devices`：simctl 设备实例（托管卸载，Simulator 运行中 → blocked）
+/// - `card.apple.coresimulator-runtimes`：simctl runtime（托管卸载，Simulator 运行中 → blocked）
 /// - `card.apple.derived-data-per-project`：DerivedData 按工程分粒度（.filesystem，dynamicScanner 占位待 PR-4）
+///
+/// **v2026.07.15 安全修复**：不再生成 `CoreSimulator/Volumes` 文件系统卡。
+/// 该目录是 CoreSimulator 挂载的只读 runtime 卷；仓库规则与事故文档均将其列为
+/// forbid。Runtime 只能通过上面的受管 `simctl runtime delete` 卡处理，不能伪装成
+/// 可移到废纸篓的普通目录。
 ///
 /// 所有路径均与 [vendors.yaml Apple Developer Tools](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/vendors.yaml#L16-L102) 对位，
 /// 不绕开 SafetyEngine、不引入新规则源，仅做"按工作流分组"的入口聚合。
@@ -163,8 +173,9 @@ public enum DeletionRecipe: Sendable, Hashable {
 /// 2. **DeviceSupport 三卡走 .versionedRoot**：复用 [KnownVersionedRoots] 的 keepLatest=2 语义，
 ///    避免把"当前在用的 18.0"误识别为旧版；
 /// 3. **存在性检测**：每张卡都先确认对应目录存在再展示，避免空入口污染 UI；
-/// 4. **risk 与 vendors.yaml verdict 严格对齐**：DerivedData/CoreSimulator Caches/Volumes=safe，Archives=confirm；
-/// 5. **.commandLine recipe 必须命中 [SubprocessExecutor.defaultAllowlist]**：
+/// 4. **risk 与 vendors.yaml verdict 严格对齐**：DerivedData/CoreSimulator Caches=safe，Archives=confirm；
+///    CoreSimulator Volumes=forbid，因此根本不生成清理卡；
+/// 5. **.managedUninstall recipe 必须命中 [SubprocessExecutor.defaultAllowlist]**：
 ///    `isExecutableInCurrentBuild` 会做二次校验，未授权命令的卡片 UI 不允许执行；
 /// 6. **Simulator 运行中 → risk = blocked**：检测 `com.apple.iphonesimulator` bundle id 是否在
 ///    NSRunningApplication 列表，命中则 devices/runtimes 两卡降级为 blocked，避免破坏正在运行的实例。
@@ -198,7 +209,7 @@ public struct AppleWorkflow: DeveloperWorkflow {
 
     public func cards(home: URL) -> [DeveloperCard] {
         var result: [DeveloperCard] = []
-        result.reserveCapacity(10)
+        result.reserveCapacity(9)
 
         // 0. 大前提：Xcode 开发者目录存在才有展示意义；否则视为"非 Apple 开发者机器"返回空。
         let xcodeRoot = home.appendingPathComponent("Library/Developer/Xcode", isDirectory: true)
@@ -263,7 +274,8 @@ public struct AppleWorkflow: DeveloperWorkflow {
         }
 
         // 6. CoreSimulator Caches（safe）—— vendors.yaml L55-L57
-        //    注意：不是 CoreSimulator 整目录，仅 Caches 子目录是 safe；Devices/Volumes 走专卡
+        //    注意：不是 CoreSimulator 整目录，仅 Caches 子目录是 safe；Devices 走受管专卡，
+        //    Volumes 是挂载卷并由规则 forbid，不能生成 filesystem 卡。
         let csCaches = csRoot.appendingPathComponent("Caches", isDirectory: true)
         if Self.dirExists(csCaches) {
             result.append(DeveloperCard(
@@ -275,7 +287,7 @@ public struct AppleWorkflow: DeveloperWorkflow {
                 risk: .safe))
         }
 
-        // 7-8. simctl Devices / Runtimes（PR-2 新增，commandLine recipe）
+        // 7-8. simctl Devices / Runtimes（PR-2 新增，封闭的 managedUninstall recipe）
         //      Simulator 运行中检测：命中则 risk 降级为 blocked，UI 必须禁用删除按钮
         let simulatorRunning = isSimulatorRunning()
         let simctlRisk: DeveloperCard.Risk = simulatorRunning ? .blocked : .confirm
@@ -290,8 +302,7 @@ public struct AppleWorkflow: DeveloperWorkflow {
                     ? "card.apple.coresimulator-devices.summary.blocked"
                     : "card.apple.coresimulator-devices.summary",
                 source: .dynamicScanner(scannerID: "scanner.simctl-devices"),
-                recipe: .commandLine(executable: "/usr/bin/xcrun",
-                                     args: ["simctl", "delete"]),
+                recipe: .managedUninstall(.simulatorDevice),
                 risk: simctlRisk))
         }
 
@@ -305,23 +316,8 @@ public struct AppleWorkflow: DeveloperWorkflow {
                     ? "card.apple.coresimulator-runtimes.summary.blocked"
                     : "card.apple.coresimulator-runtimes.summary",
                 source: .dynamicScanner(scannerID: "scanner.simctl-runtimes"),
-                recipe: .commandLine(executable: "/usr/bin/xcrun",
-                                     args: ["simctl", "runtime", "delete"]),
+                recipe: .managedUninstall(.simulatorRuntime),
                 risk: simctlRisk))
-        }
-
-        // 9. Volumes（safe）—— runtime 镜像挂载目录，每个 5~10 GB
-        //    与 runtime 卡的关系：runtime 卡删元数据登记，volumes 卡删磁盘镜像；正常应配套删
-        //    但 volumes 是普通目录可直接回收站删除，无须 simctl
-        let csVolumes = csRoot.appendingPathComponent("Volumes", isDirectory: true)
-        if Self.dirExists(csVolumes) {
-            result.append(DeveloperCard(
-                id: "card.apple.coresimulator-volumes",
-                title: "card.apple.coresimulator-volumes.title",
-                summary: "card.apple.coresimulator-volumes.summary",
-                source: .literal(paths: [csVolumes.path]),
-                recipe: .filesystem,
-                risk: .safe))
         }
 
         return result

@@ -209,6 +209,76 @@ public struct VendorPathOverrideRequest: Sendable, Equatable {
     }
 }
 
+/// v2026.07.15：TrashPipeline 自身产生的摘要错误保持为结构化事实。旧四元组中的
+/// String 只保留兼容诊断；用户界面必须在渲染时调用 `message(locale:)`。
+public enum TrashFailureSummary: Sendable, Equatable, Hashable {
+    public static let unknownRecycleReasonKey = "trash.recycle.failure.unknown"
+
+    case safetyBlocked(count: Int, firstReason: String, preview: Bool)
+    case previewMissing(count: Int)
+    case recycleFailed(failedCount: Int, movedCount: Int, firstPath: String?)
+
+    public func message(locale: Locale) -> String {
+        switch self {
+        case .safetyBlocked(let count, let firstReason, let preview):
+            if preview {
+                return AppLocalization.format(
+                    "trash.err.dryrun.safety_blocked %lld",
+                    locale: locale,
+                    arguments: [Int64(count)]
+                ) + AppLocalization.format(
+                    "trash.err.first_reason_suffix %@",
+                    locale: locale,
+                    arguments: [firstReason]
+                )
+            }
+            return AppLocalization.format(
+                "trash.err.safety_blocked_only %lld %@",
+                locale: locale,
+                arguments: [Int64(count), firstReason]
+            )
+        case .previewMissing(let count):
+            return AppLocalization.format(
+                "trash.err.dryrun.missing %lld",
+                locale: locale,
+                arguments: [Int64(count)]
+            )
+        case .recycleFailed(let failedCount, let movedCount, let firstPath):
+            let partialNote = movedCount > 0
+                ? AppLocalization.format(
+                    "trash.err.partial_note %lld",
+                    locale: locale,
+                    arguments: [Int64(movedCount)]
+                )
+                : ""
+            let firstFailure = firstPath.map {
+                AppLocalization.format(
+                    "trash.err.first_fail_path %@",
+                    locale: locale,
+                    arguments: [$0]
+                )
+            } ?? ""
+            return AppLocalization.format(
+                "trash.err.recycle_failed %lld %@ %@",
+                locale: locale,
+                arguments: [Int64(failedCount), partialNote, firstFailure]
+            )
+        }
+    }
+
+    /// 兼容旧协议的稳定诊断，不进入产品 UI，也不依赖进程首选语言。
+    var legacyDiagnostic: String {
+        switch self {
+        case .safetyBlocked(let count, let firstReason, let preview):
+            return "trash.err.safety_blocked_only count=\(count) reason=\(firstReason) preview=\(preview)"
+        case .previewMissing(let count):
+            return "preview-missing count=\(count)"
+        case .recycleFailed(let failedCount, let movedCount, let firstPath):
+            return "recycle-failed failed=\(failedCount) moved=\(movedCount) first=\(firstPath ?? "none")"
+        }
+    }
+}
+
 /// v2026.06.16：单次 `moveToTrash` 的结构化明细。它不携带提交边界证明；只有与
 /// `TrashSubmissionDisposition.recycleCompleted` 绑定时才能供执行结果页消费。
 public struct TrashOutcome: Sendable, Equatable {
@@ -227,13 +297,16 @@ public struct TrashOutcome: Sendable, Equatable {
     public let failureReasons: [String: String]
     /// 最终 normal 预检生成的 vendor-only override 能力；只用于后续呈现更严格确认。
     public let vendorOverrideEligiblePaths: [String]
+    /// 产品自身生成的摘要失败；系统逐路径原文仍保存在 `failureReasons`。
+    public let failureSummary: TrashFailureSummary?
 
     public init(movedPairs: [(String, String)],
                 failedPaths: [String],
                 safetyRejected: [(String, String)],
                 missingPaths: [String],
                 failureReasons: [String: String] = [:],
-                vendorOverrideEligiblePaths: [String] = []) {
+                vendorOverrideEligiblePaths: [String] = [],
+                failureSummary: TrashFailureSummary? = nil) {
         self.movedPairs = movedPairs.map { (originalPath: $0.0, trashedPath: $0.1) }
         self.failedPaths = failedPaths
         self.safetyRejected = safetyRejected.map { (path: $0.0, reason: $0.1) }
@@ -241,6 +314,7 @@ public struct TrashOutcome: Sendable, Equatable {
         let failedPathSet = Set(failedPaths)
         self.failureReasons = failureReasons.filter { failedPathSet.contains($0.key) }
         self.vendorOverrideEligiblePaths = vendorOverrideEligiblePaths
+        self.failureSummary = failureSummary
     }
 
     /// 总计提交的路径数（成功 + 失败 + 拒绝 + 缺失）。
@@ -254,6 +328,7 @@ public struct TrashOutcome: Sendable, Equatable {
               lhs.missingPaths == rhs.missingPaths,
               lhs.failureReasons == rhs.failureReasons,
               lhs.vendorOverrideEligiblePaths == rhs.vendorOverrideEligiblePaths,
+              lhs.failureSummary == rhs.failureSummary,
               lhs.movedPairs.count == rhs.movedPairs.count,
               lhs.safetyRejected.count == rhs.safetyRejected.count else { return false }
         for i in lhs.movedPairs.indices {

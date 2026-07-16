@@ -49,6 +49,23 @@ public enum MatchReason: Hashable, Sendable {
     case pkgReceipt(String)
 }
 
+/// v2026.07.15：Info.plist 的产品级解析失败保持为语义值，避免扫描 worker 在
+/// App 语言切换前后把某一种语言的 `NSLocalizedDescription` 固化进错误对象。
+/// 文件读取/PropertyList 解码抛出的系统错误仍原样向上传递。
+public enum AppMetadataReadError: Error, Hashable, Sendable {
+    case propertyListIsNotDictionary
+    case missingBundleIdentifier
+
+    public func message(locale: Locale) -> String {
+        switch self {
+        case .propertyListIsNotDictionary:
+            return AppLocalization.string("uninstaller.err.plist_not_dict", locale: locale)
+        case .missingBundleIdentifier:
+            return AppLocalization.string("uninstaller.err.missing_bundle_id", locale: locale)
+        }
+    }
+}
+
 /// 解析后的 .app 元数据。
 public struct AppMetadata: Hashable, Sendable {
     public let bundleID: String
@@ -72,10 +89,10 @@ public struct AppMetadata: Hashable, Sendable {
         guard
             let any = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any]
         else {
-            throw NSError(domain: "AppUninstaller", code: -1, userInfo: [NSLocalizedDescriptionKey: String(localized: "uninstaller.err.plist_not_dict", bundle: .module)])
+            throw AppMetadataReadError.propertyListIsNotDictionary
         }
         guard let bundleID = any["CFBundleIdentifier"] as? String, !bundleID.isEmpty else {
-            throw NSError(domain: "AppUninstaller", code: -2, userInfo: [NSLocalizedDescriptionKey: String(localized: "uninstaller.err.missing_bundle_id", bundle: .module)])
+            throw AppMetadataReadError.missingBundleIdentifier
         }
         let nameFromPlist = (any["CFBundleName"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         // 退化：取 .app 的文件名去掉 .app 后缀

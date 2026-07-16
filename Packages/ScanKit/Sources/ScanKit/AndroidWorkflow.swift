@@ -18,7 +18,7 @@ import Foundation
 /// 4. **JetBrains 路径含 glob `*`**：`~/Library/Caches/Google/AndroidStudio*` 形如
 ///    `AndroidStudio2024.1` 等多版本目录，按设计文档要求保留 glob 原样下发，UI 层负责 expand。
 ///
-/// 删除通道统一为 `.filesystem`（回收站），不引入 `.commandLine`，因此所有卡片均无 allowlist 校验风险。
+/// 删除通道统一为 `.filesystem`（回收站），不引入 `.managedUninstall`。
 public struct AndroidWorkflow: DeveloperWorkflow {
     public static let studioBundleIDPrefix = "com.google.android.studio"
     public let id: String = "workflow.android"

@@ -34,59 +34,34 @@ enum ToolTrashConfirmationCopyResolver {
         switch profile {
         case .normal:
             return ToolTrashConfirmationCopy(
-                title: String(
-                    localized: "delete.professional.confirm.title",
-                    bundle: .module,
-                    locale: locale
-                ),
-                message: String(
-                    format: String(
-                        localized: "delete.professional.confirm.message %lld %@",
-                        bundle: .module,
-                        locale: locale
-                    ),
+                title: AppLocalization.string("delete.professional.confirm.title", locale: locale),
+                message: AppLocalization.format(
+                    "delete.professional.confirm.message %lld %@",
                     locale: locale,
-                    count,
-                    ByteCountFormatter.string(
-                        fromByteCount: max(0, totalBytes),
-                        countStyle: .file
-                    )
+                    arguments: [
+                        count,
+                        max(0, totalBytes).formatted(.byteCount(style: .file).locale(locale))
+                    ]
                 )
             )
 
         case .vendorOverride:
             return ToolTrashConfirmationCopy(
-                title: String(
-                    localized: "delete.vendor_override.title",
-                    bundle: .module,
-                    locale: locale
-                ),
-                message: String(
-                    format: String(
-                        localized: "delete.vendor_override.body %lld",
-                        bundle: .module,
-                        locale: locale
-                    ),
+                title: AppLocalization.string("delete.vendor_override.title", locale: locale),
+                message: AppLocalization.format(
+                    "delete.vendor_override.body %lld",
                     locale: locale,
-                    count
+                    arguments: [count]
                 )
             )
 
         case .scanIncompleteOverride:
             return ToolTrashConfirmationCopy(
-                title: String(
-                    localized: "delete.scan_incomplete_override.title",
-                    bundle: .module,
-                    locale: locale
-                ),
-                message: String(
-                    format: String(
-                        localized: "delete.scan_incomplete_override.body %lld",
-                        bundle: .module,
-                        locale: locale
-                    ),
+                title: AppLocalization.string("delete.scan_incomplete_override.title", locale: locale),
+                message: AppLocalization.format(
+                    "delete.scan_incomplete_override.body %lld",
                     locale: locale,
-                    count
+                    arguments: [count]
                 )
             )
         }
@@ -155,30 +130,21 @@ struct ToolTrashConfirmationSheet: View {
 
     private var skipActionTitle: String {
         if nonConflictingItemCount == 0 {
-            return String(
-                format: String(
-                    localized: "delete.running_app.choice.skip_all %lld",
-                    bundle: .module,
-                    locale: locale
-                ),
+            return AppLocalization.format(
+                "delete.running_app.choice.skip_all %lld",
                 locale: locale,
-                decisionConflictCount
+                arguments: [decisionConflictCount]
             )
         }
-        return String(
-            format: String(
-                localized: "delete.running_app.choice.skip %lld %lld",
-                bundle: .module,
-                locale: locale
-            ),
+        return AppLocalization.format(
+            "delete.running_app.choice.skip %lld %lld",
             locale: locale,
-            decisionConflictCount,
-            nonConflictingItemCount
+            arguments: [decisionConflictCount, nonConflictingItemCount]
         )
     }
 
     private var expectedConfirmationToken: String {
-        String(localized: "delete.vendor_override.token", bundle: .module)
+        AppLocalization.string("delete.vendor_override.token", locale: locale)
     }
 
     private var requiresStrictConfirmation: Bool {
@@ -208,11 +174,11 @@ struct ToolTrashConfirmationSheet: View {
     private var destructiveActionTitle: String {
         switch confirmationProfile {
         case .vendorOverride:
-            return String(localized: "delete.vendor_override.action", bundle: .module)
+            return AppLocalization.string("delete.vendor_override.action", locale: locale)
         case .scanIncompleteOverride:
-            return String(localized: "delete.scan_incomplete_override.action", bundle: .module)
+            return AppLocalization.string("delete.scan_incomplete_override.action", locale: locale)
         case .normal:
-            return String(localized: "delete.action.confirm", bundle: .module)
+            return AppLocalization.string("delete.action.confirm", locale: locale)
         }
     }
 
@@ -252,20 +218,16 @@ struct ToolTrashConfirmationSheet: View {
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(.red)
 
-                    Text(String(
-                        format: String(
-                            localized: "delete.vendor_override.type_prompt %@",
-                            bundle: .module,
-                            locale: locale
-                        ),
+                    Text(AppLocalization.format(
+                        "delete.vendor_override.type_prompt %@",
                         locale: locale,
-                        expectedConfirmationToken
+                        arguments: [expectedConfirmationToken]
                     ))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                     TextField(
-                        String(localized: "delete.vendor_override.field", bundle: .module),
+                        AppLocalization.string("delete.vendor_override.field", locale: locale),
                         text: $typedConfirmation
                     )
                     .textFieldStyle(.roundedBorder)
@@ -318,7 +280,7 @@ struct ToolTrashConfirmationSheet: View {
                     ProgressView()
                         .controlSize(.small)
                 }
-                Button(String(localized: "delete.action.cancel", bundle: .module), role: .cancel) {
+                Button(AppLocalization.string("delete.action.cancel", locale: locale), role: .cancel) {
                     cancelAndClose()
                 }
                 .keyboardShortcut(.cancelAction)
@@ -336,11 +298,7 @@ struct ToolTrashConfirmationSheet: View {
         .padding(20)
         .frame(width: requiresStrictConfirmation ? 520 : 440)
         .confirmationDialog(
-            String(
-                localized: "delete.running_app.choice.title",
-                bundle: .module,
-                locale: locale
-            ),
+            AppLocalization.string("delete.running_app.choice.title", locale: locale),
             isPresented: $showRunningAppDecision,
             titleVisibility: .visible
         ) {

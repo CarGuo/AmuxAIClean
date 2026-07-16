@@ -51,12 +51,52 @@ public struct ReleaseAsset: Sendable, Equatable {
     }
 }
 
+/// v2026.07.15：更新检查失败保存稳定事实，不在网络任务结束时固化进程首选语言。
+/// Settings 在渲染 `lastResult` 时把当前 App locale 显式传给 `message(locale:)`。
+public enum UpdateCheckFailure: Sendable, Equatable {
+    case invalidRequestURL(String)
+    case httpStatus(Int)
+    case invalidReleaseURL
+    case invalidResponse
+    case requestFailed(domain: String, code: Int)
+
+    public func message(locale: Locale) -> String {
+        switch self {
+        case .invalidRequestURL(let value):
+            return AppLocalization.format(
+                "updater.error.url_build_failed %@",
+                locale: locale,
+                arguments: [value]
+            )
+        case .httpStatus(let code):
+            return AppLocalization.format(
+                "updater.error.http_status %lld",
+                locale: locale,
+                arguments: [Int64(code)]
+            )
+        case .invalidReleaseURL:
+            return AppLocalization.string(
+                "updater.error.html_url_parse_failed",
+                locale: locale
+            )
+        case .invalidResponse:
+            return AppLocalization.string("updater.error.invalid_response", locale: locale)
+        case .requestFailed(let domain, let code):
+            return AppLocalization.format(
+                "updater.error.request_failed %@ %lld",
+                locale: locale,
+                arguments: [domain, Int64(code)]
+            )
+        }
+    }
+}
+
 public enum UpdateCheckResult: Sendable {
     case upToDate
     case newer(ReleaseInfo)
     /// 用户已主动跳过此版本（仍会上报 release 信息，UI 决定是否再提示）。
     case skippedByUser(ReleaseInfo)
-    case failed(String)
+    case failed(UpdateCheckFailure)
 }
 
 /// SwiftUI `.sheet(item:)` 需要 Identifiable 包装；ReleaseInfo 是 value type 直接拿 tagName 当 id。
@@ -92,6 +132,10 @@ public enum SemVer {
         if pa.1 != pb.1 { return pa.1 < pb.1 }
         return pa.2 < pb.2
     }
+}
+
+private enum UpdateReleaseParsingError: Error {
+    case invalidReleaseURL
 }
 
 /// MainActor 持有的状态对象，UI 通过 @Bindable 观察。
@@ -166,7 +210,7 @@ public final class UpdateChecker {
         GSYLog.info(.updater, "runCheck 开始 force=\(force) url=\(urlStr)")
         guard let url = URL(string: urlStr) else {
             GSYLog.error(.updater, "URL 构造失败 url=\(urlStr)")
-            lastResult = .failed(String(format: String(localized: "updater.error.url_build_failed %@", bundle: .module), urlStr))
+            lastResult = .failed(.invalidRequestURL(urlStr))
             return
         }
         var req = URLRequest(url: url)
@@ -179,7 +223,7 @@ public final class UpdateChecker {
             guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
                 GSYLog.warning(.updater, "HTTP 状态码非 200 code=\(code)")
-                lastResult = .failed("HTTP \(code)")
+                lastResult = .failed(.httpStatus(code))
                 return
             }
             let release = try parseRelease(data)
@@ -200,7 +244,18 @@ public final class UpdateChecker {
             }
         } catch {
             GSYLog.error(.updater, "runCheck 网络/解析失败 err=\(error.localizedDescription)")
-            lastResult = .failed("\(error.localizedDescription)")
+            switch error {
+            case UpdateReleaseParsingError.invalidReleaseURL:
+                lastResult = .failed(.invalidReleaseURL)
+            case is DecodingError:
+                lastResult = .failed(.invalidResponse)
+            default:
+                let nsError = error as NSError
+                lastResult = .failed(.requestFailed(
+                    domain: nsError.domain,
+                    code: nsError.code
+                ))
+            }
         }
     }
 
@@ -220,8 +275,7 @@ public final class UpdateChecker {
         }
         let raw = try JSONDecoder().decode(RawRelease.self, from: data)
         guard let url = URL(string: raw.html_url) else {
-            throw NSError(domain: "UpdateChecker", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: String(localized: "updater.error.html_url_parse_failed", bundle: .module)])
+            throw UpdateReleaseParsingError.invalidReleaseURL
         }
         let date: Date? = raw.published_at.flatMap {
             ISO8601DateFormatter().date(from: $0)
@@ -287,6 +341,8 @@ public final class UpdateChecker {
 
 /// 新版本提示 sheet：跳过 / 稍后 / 前往下载。
 public struct UpdatePromptView: View {
+    /// v2026.07.15：更新弹层可在显示期间随 App 语言切换，格式串不能固化启动语言。
+    @Environment(\.locale) private var locale
     @Bindable public var checker: UpdateChecker
     public let release: ReleaseInfo
 
@@ -306,9 +362,17 @@ public struct UpdatePromptView: View {
                     .resizable().frame(width: 32, height: 32)
                     .foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(String(format: String(localized: "updater.prompt.new_version %@", bundle: .module), release.tagName))
+                    Text(AppLocalization.format(
+                        "updater.prompt.new_version %@",
+                        locale: locale,
+                        arguments: [release.tagName]
+                    ))
                         .font(.title3).fontWeight(.semibold)
-                    Text(String(format: String(localized: "updater.prompt.current_version %@", bundle: .module), UpdateChecker.currentVersion))
+                    Text(AppLocalization.format(
+                        "updater.prompt.current_version %@",
+                        locale: locale,
+                        arguments: [UpdateChecker.currentVersion]
+                    ))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -347,16 +411,16 @@ public struct UpdatePromptView: View {
             }
             Divider()
             HStack {
-                Button(String(localized: "updater.prompt.button.skip", bundle: .module)) {
+                Button(AppLocalization.string("updater.prompt.button.skip", locale: locale)) {
                     checker.skip(release)
                 }
                 .controlSize(.regular)
                 Spacer()
-                Button(String(localized: "updater.prompt.button.later", bundle: .module)) {
+                Button(AppLocalization.string("updater.prompt.button.later", locale: locale)) {
                     checker.dismissUntilNextLaunch()
                 }
                 .controlSize(.regular)
-                Button(String(localized: "updater.prompt.button.download", bundle: .module)) {
+                Button(AppLocalization.string("updater.prompt.button.download", locale: locale)) {
                     NSWorkspace.shared.open(release.htmlURL)
                     checker.dismissUntilNextLaunch()
                 }

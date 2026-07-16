@@ -130,6 +130,10 @@ public actor UninstallStore {
 /// - Professional 只展示不可变候选 + 删除确认，不提供 Preview/dry-run 分支
 /// - 用户确认后的执行固定为 `dryRun = false`
 public struct UninstallScreen: View {
+    /// v2026.07.15：占位、汇总、按钮和匹配原因都在当前 View locale 下解析；
+    /// 不再经由进程级字符串解析锁定 App 启动时的语言。
+    @Environment(\.locale) private var locale
+
     private let store: UninstallStore
     private let pipeline: any DeletionPipeline
 
@@ -320,11 +324,19 @@ public struct UninstallScreen: View {
             candidatesHeader
             Divider()
             if selectedApp == nil {
-                placeholder(String(localized: "uninstall.placeholder.select.app", bundle: .module), icon: "app.dashed")
+                placeholder(
+                    AppLocalization.string("uninstall.placeholder.select.app", locale: locale),
+                    icon: "app.dashed"
+                )
             } else if isLoadingCandidates {
-                loadingPlaceholder(String(localized: "uninstall.placeholder.scanning", bundle: .module))
+                loadingPlaceholder(
+                    AppLocalization.string("uninstall.placeholder.scanning", locale: locale)
+                )
             } else if candidates.isEmpty {
-                placeholder(String(localized: "uninstall.placeholder.empty", bundle: .module), icon: "sparkles")
+                placeholder(
+                    AppLocalization.string("uninstall.placeholder.empty", locale: locale),
+                    icon: "sparkles"
+                )
             } else {
                 List {
                     ForEach(candidates, id: \.path) { cand in
@@ -349,7 +361,11 @@ public struct UninstallScreen: View {
                 Text("uninstall.candidates.title", bundle: .module).font(.headline)
             }
             Spacer()
-            Text(String(format: String(localized: "uninstall.candidates.summary", bundle: .module), candidates.count, formattedBytes(totalCheckedBytes)))
+            Text(AppLocalization.format(
+                "uninstall.candidates.summary",
+                locale: locale,
+                arguments: [Int64(candidates.count), formattedBytes(totalCheckedBytes)]
+            ))
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -382,7 +398,11 @@ public struct UninstallScreen: View {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(formattedBytes(cand.bytes))
                     .font(.callout.monospacedDigit())
-                Text(String(format: String(localized: "uninstall.row.file.count", bundle: .module), cand.fileCount))
+                Text(AppLocalization.format(
+                    "uninstall.row.file.count",
+                    locale: locale,
+                    arguments: [Int64(cand.fileCount)]
+                ))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -392,21 +412,31 @@ public struct UninstallScreen: View {
 
     private var footerBar: some View {
         HStack {
-            Button(allChecked ? String(localized: "uninstall.toggle.deselect.all", bundle: .module) : String(localized: "uninstall.toggle.select.all", bundle: .module)) {
+            Button(AppLocalization.string(
+                allChecked ? "uninstall.toggle.deselect.all" : "uninstall.toggle.select.all",
+                locale: locale
+            )) {
                 toggleAll()
             }
             .disabled(candidates.isEmpty || isDeletionTransactionActive)
 
             Spacer()
 
-            Text(String(format: String(localized: "uninstall.footer.selected", bundle: .module), checked.count, formattedBytes(totalCheckedBytes)))
+            Text(AppLocalization.format(
+                "uninstall.footer.selected",
+                locale: locale,
+                arguments: [Int64(checked.count), formattedBytes(totalCheckedBytes)]
+            ))
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
             Button(role: .destructive) {
                 prepareRealDelete()
             } label: {
-                Label(String(localized: "uninstall.button.trash", bundle: .module), systemImage: "trash")
+                Label(
+                    AppLocalization.string("uninstall.button.trash", locale: locale),
+                    systemImage: "trash"
+                )
             }
             .disabled(checked.isEmpty || isDeletionTransactionActive)
         }
@@ -706,9 +736,19 @@ public struct UninstallScreen: View {
         case .bundleID(let s): return "bundleID · \(s)"
         case .bundleVendor(let s): return "vendor · \(s)"
         case .appName(let s): return "appName · \(s)"
-        case .vendorRule(let s): return String(format: String(localized: "uninstall.reason.vendor.rule", bundle: .module), s)
+        case .vendorRule(let s):
+            return AppLocalization.format(
+                "uninstall.reason.vendor.rule",
+                locale: locale,
+                arguments: [s]
+            )
         case .spotlight(let kind): return "spotlight · \(kind)"
-        case .pkgReceipt(let pkgID): return String(format: String(localized: "uninstall.reason.pkg_receipt", bundle: .module), pkgID)
+        case .pkgReceipt(let pkgID):
+            return AppLocalization.format(
+                "uninstall.reason.pkg_receipt",
+                locale: locale,
+                arguments: [pkgID]
+            )
         }
     }
 
