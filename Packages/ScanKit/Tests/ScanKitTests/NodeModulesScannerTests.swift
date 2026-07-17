@@ -212,6 +212,29 @@ final class NodeModulesScannerTests: XCTestCase {
         XCTAssertEqual(hits.first?.projectName, "real-app")
     }
 
+    /// v2026.07.17 regression: the fixed discovery roots themselves obey the same no-follow
+    /// contract as descendants. Otherwise `~/workspace -> <outside HOME>` performs an expensive
+    /// out-of-scope traversal and produces candidates the deletion boundary must reject later.
+    func test_detect_开发根本身是软链_不跟随到Home外() throws {
+        let home = try makeTempHome()
+        let outside = home.deletingLastPathComponent()
+            .appendingPathComponent("NodeModulesOutside-\(UUID().uuidString)", isDirectory: true)
+        try mkdir(outside)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: outside)
+        }
+        try makeProjectWithNodeModules("outside-app", in: outside)
+
+        let linkedRoot = home.appendingPathComponent("workspace", isDirectory: true)
+        try FileManager.default.createSymbolicLink(
+            at: linkedRoot,
+            withDestinationURL: outside
+        )
+
+        let hits = NodeModulesScanner.detect(home: home)
+        XCTAssertTrue(hits.isEmpty, "固定开发根不能经由软链扫描 HOME 外目标")
+    }
+
     /// 自指/循环软链不应导致 walk 卡死。给 detect 加一个总耗时上限做兜底。
     func test_detect_循环软链_不应卡死() throws {
         let home = try makeTempHome()

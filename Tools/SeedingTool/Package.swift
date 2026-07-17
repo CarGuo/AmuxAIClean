@@ -3,7 +3,8 @@ import PackageDescription
 
 let package = Package(
     name: "SeedingTool",
-    platforms: [.macOS(.v13)],
+    // v2026.07.16: fixtures use the exact product floor instead of a broader major-only target.
+    platforms: [.macOS("13.5")],
     products: [
         .executable(name: "seeding-tool", targets: ["SeedingTool"])
     ],

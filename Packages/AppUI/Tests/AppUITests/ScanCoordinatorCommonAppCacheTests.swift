@@ -79,6 +79,11 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         XCTAssertFalse(coord.isScanning)
         XCTAssertNil(coord.activeCategoryID)
         XCTAssertEqual(coord.snapshot.rows.map(\.title), ["Zoom Virtual Backgrounds", "WeChat Cache"])
+        let weChatRow = try XCTUnwrap(coord.snapshot.rows.first { $0.title == "WeChat Cache" })
+        XCTAssertEqual(weChatRow.displayTitle(locale: Locale(identifier: "en")), "WeChat Cache")
+        XCTAssertEqual(weChatRow.displayTitle(locale: Locale(identifier: "zh-Hans")), "WeChat Cache")
+        XCTAssertEqual(weChatRow.displayVendorNote(locale: Locale(identifier: "en")), "cache")
+        XCTAssertEqual(weChatRow.displayVendorNote(locale: Locale(identifier: "zh-Hans")), "cache")
         XCTAssertEqual(coord.snapshot.totalBytes, wechatAllocated + confirmAllocated)
         XCTAssertEqual(coord.snapshot.scannedFileCount, 2)
 
@@ -304,6 +309,151 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         XCTAssertEqual(coord.snapshot.rows.map(\.title), ["Current Generation"])
         XCTAssertEqual(coord.snapshot.totalBytes, 73)
         XCTAssertEqual(coord.snapshot.rows.first?.logicalBytes, 2 * 1_024 * 1_024 * 1_024)
+    }
+
+    func test_scanCommonAppCaches_parentAndChildRowsAreInclusiveButSnapshotTotalsAreUnique() async throws {
+        let home = try makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let parent = home.appendingPathComponent("Library/Caches/Browser", isDirectory: true)
+        let child = parent.appendingPathComponent("GPUCache", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        let parentFile = parent.appendingPathComponent("parent.bin")
+        let childFile = child.appendingPathComponent("child.bin")
+        try Data(repeating: 0xA1, count: 5_000).write(to: parentFile)
+        try Data(repeating: 0xB2, count: 7_000).write(to: childFile)
+        let parentAllocated = try allocatedBytes(of: parentFile)
+        let childAllocated = try allocatedBytes(of: childFile)
+
+        let coord = ScanCoordinator(vendors: [
+            VendorRule(
+                name: "Browser Review Root",
+                category: "common_app_cache",
+                paths: [PathRule(
+                    path: "~/Library/Caches/Browser",
+                    verdict: .confirm,
+                    reason: "review parent"
+                )]
+            ),
+            VendorRule(
+                name: "Browser Safe GPU Cache",
+                category: "common_app_cache",
+                paths: [PathRule(
+                    path: "~/Library/Caches/Browser/GPUCache",
+                    verdict: .safe,
+                    reason: "safe child"
+                )]
+            ),
+        ], home: home.path)
+        coord.scanCommonAppCaches()
+        await waitScanFinished(coord)
+
+        XCTAssertTrue(coord.snapshot.isFinished)
+        XCTAssertTrue(coord.snapshot.isComplete)
+        let byTitle = Dictionary(uniqueKeysWithValues: coord.snapshot.rows.map { ($0.title, $0) })
+        XCTAssertEqual(byTitle["Browser Review Root"]?.bytes,
+                       parentAllocated + childAllocated,
+                       "父风险行仍需展示完整 subtree 容量")
+        XCTAssertEqual(byTitle["Browser Safe GPU Cache"]?.bytes,
+                       childAllocated,
+                       "子风险行仍需展示自己的完整 subtree 容量")
+        XCTAssertEqual(byTitle["Browser Review Root"]?.verdict, .confirm)
+        XCTAssertEqual(byTitle["Browser Safe GPU Cache"]?.verdict, .safe)
+        XCTAssertEqual(coord.snapshot.totalBytes, parentAllocated + childAllocated,
+                       "snapshot total 必须来自候选路径并集，不能把 inclusive rows 相加")
+        XCTAssertEqual(coord.snapshot.scannedFileCount, 3,
+                       "父根下的子目录和两个文件在路径并集里各计一次")
+        XCTAssertGreaterThan(coord.snapshot.rows.reduce(0) { $0 &+ $1.bytes },
+                             coord.snapshot.totalBytes,
+                             "本用例必须真实覆盖重叠行，而不是偶然退化成互斥行")
+    }
+
+    func test_scanCommonAppCaches_whitelistIsAppliedBeforeUniqueTotalsAreMeasured() async throws {
+        let home = try makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let hidden = home.appendingPathComponent("Library/Caches/Hidden", isDirectory: true)
+        let visible = home.appendingPathComponent("Library/Caches/Visible", isDirectory: true)
+        try FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: visible, withIntermediateDirectories: true)
+        let hiddenFile = hidden.appendingPathComponent("hidden.bin")
+        let visibleFile = visible.appendingPathComponent("visible.bin")
+        try Data(repeating: 0xAA, count: 9_000).write(to: hiddenFile)
+        try Data(repeating: 0xBB, count: 5_000).write(to: visibleFile)
+        let visibleAllocated = try allocatedBytes(of: visibleFile)
+
+        let whitelist = WhitelistStore(storageURL: nil)
+        await whitelist.add(path: hidden.path, reason: "fixture")
+        let coord = ScanCoordinator(vendors: [
+            VendorRule(
+                name: "Hidden Cache",
+                category: "common_app_cache",
+                paths: [PathRule(path: "~/Library/Caches/Hidden", verdict: .safe)]
+            ),
+            VendorRule(
+                name: "Visible Cache",
+                category: "common_app_cache",
+                paths: [PathRule(path: "~/Library/Caches/Visible", verdict: .safe)]
+            ),
+        ], home: home.path, whitelistStore: whitelist)
+        coord.scanCommonAppCaches()
+        await waitScanFinished(coord)
+
+        XCTAssertEqual(coord.snapshot.rows.map(\.title), ["Visible Cache"])
+        XCTAssertEqual(coord.snapshot.totalBytes, visibleAllocated,
+                       "白名单必须在 ScanKit 形成并集前冻结，不能只隐藏 row 却保留其 total")
+        XCTAssertEqual(coord.snapshot.scannedFileCount, 1)
+    }
+
+    func test_scanCommonAppCaches_isolatedWorkerUnavailableFailsClosedWithoutFallback() async throws {
+        let home = try makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let coord = ScanCoordinator(
+            vendors: [],
+            home: home.path,
+            commonAppCacheExecution: .isolated(executableURL: nil)
+        )
+
+        coord.scanCommonAppCaches()
+        await waitScanFinished(coord)
+
+        XCTAssertFalse(coord.isScanning)
+        XCTAssertTrue(coord.snapshot.isFinished)
+        XCTAssertFalse(coord.snapshot.isComplete)
+        XCTAssertTrue(coord.snapshot.rows.isEmpty)
+        XCTAssertEqual(coord.incompleteScanIssues.count, 1)
+        XCTAssertEqual(
+            coord.incompleteScanIssues.first?.path,
+            home.appendingPathComponent("Library", isDirectory: true).path
+        )
+        XCTAssertEqual(coord.incompleteScanIssues.first?.stage, .open)
+    }
+
+    func test_scanCommonAppCaches_inProcessPublishesTypedTerminalProgress() async throws {
+        let home = try makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let cache = home.appendingPathComponent("Library/Caches/Progress", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try Data(repeating: 0xCC, count: 64).write(
+            to: cache.appendingPathComponent("cache.bin")
+        )
+        let coord = ScanCoordinator(vendors: [
+            VendorRule(
+                name: "Progress Cache",
+                category: "common_app_cache",
+                paths: [PathRule(path: "~/Library/Caches/Progress", verdict: .safe)]
+            )
+        ], home: home.path)
+
+        coord.scanCommonAppCaches()
+        await waitScanFinished(coord)
+        await Task.yield()
+
+        let progress = try XCTUnwrap(coord.commonAppCacheProgress)
+        XCTAssertTrue(progress.isTerminal)
+        XCTAssertEqual(progress.terminalOutcome, .complete)
+        XCTAssertEqual(progress.completedGroups, 1)
+        XCTAssertEqual(progress.totalGroups, 1)
+        XCTAssertTrue(progress.pendingPaths.isEmpty)
+        XCTAssertEqual(progress.checkpoint?.completedGroupCount, 1)
     }
 
     private func makeTempHome() throws -> URL {

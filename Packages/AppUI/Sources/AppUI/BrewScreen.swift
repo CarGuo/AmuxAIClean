@@ -255,7 +255,7 @@ public struct BrewScreen: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .onChange(of: selectedTab) { _, new in
+        .onValueChange(of: selectedTab) { _, new in
             cancelCleanupPreflight()
             switch new {
             case .installed: reloadInstalled()

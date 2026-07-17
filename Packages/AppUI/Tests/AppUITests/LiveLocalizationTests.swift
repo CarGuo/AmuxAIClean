@@ -211,6 +211,149 @@ final class LiveLocalizationTests: XCTestCase {
         XCTAssertEqual(progress.displayTitle(locale: simplifiedChinese), "用户缓存")
     }
 
+    func test_semanticScanResult_reprojectsTitleAndReason_withoutChangingIdentityOrSafety() {
+        // v2026.07.17 regression: these are the same long-lived values before and after a
+        // settings-only language switch. No rescan or model reconstruction is involved.
+        let title = LocalizedTextDescriptor
+            .catalog("versioned-root.apple.ios-device-support.displayName")
+            .appendingVerbatim(" · 17.5")
+        let reason = LocalizedTextDescriptor.catalog(
+            "versioned-root.retained_version %@",
+            arguments: [.string("18.0 (22A3351)")]
+        )
+        let row = RowItem(
+            id: "/tmp/DeviceSupport/17.5",
+            url: URL(fileURLWithPath: "/tmp/DeviceSupport/17.5"),
+            title: "versioned-root.apple.ios-device-support.displayName · 17.5",
+            isDirectory: true,
+            bytes: 42,
+            logicalBytes: 42,
+            fileCount: 1,
+            verdict: .confirm,
+            rejection: .vendorPathRule,
+            vendorNote: "retain: 18.0 (22A3351)",
+            titlePresentation: title,
+            vendorNotePresentation: reason
+        )
+
+        XCTAssertEqual(row.displayTitle(locale: english), "iOS Device Support · 17.5")
+        XCTAssertEqual(row.displayTitle(locale: simplifiedChinese), "iOS 设备支持文件 · 17.5")
+        XCTAssertEqual(row.displayVendorNote(locale: english), "Latest version kept: 18.0 (22A3351).")
+        XCTAssertEqual(row.displayVendorNote(locale: simplifiedChinese), "保留的最新版本：18.0 (22A3351)。")
+        XCTAssertEqual(row.id, "/tmp/DeviceSupport/17.5")
+        XCTAssertEqual(row.url.path, "/tmp/DeviceSupport/17.5")
+        XCTAssertEqual(row.verdict, .confirm)
+        XCTAssertEqual(row.rejection, .vendorPathRule)
+    }
+
+    func test_versionedRootRetainedVersion_reprojectsTheActualVersionName() {
+        // v2026.07.17 regression: KnownVersionedRoots retains a version name, not a numeric
+        // keep-count. The semantic descriptor must preserve values such as build numbers.
+        let descriptor = LocalizedTextDescriptor.catalog(
+            "versioned-root.retained_version %@",
+            arguments: [.string("18.0 (22A3351)")]
+        )
+        XCTAssertEqual(
+            descriptor.localized(locale: english),
+            "Latest version kept: 18.0 (22A3351)."
+        )
+        XCTAssertEqual(
+            descriptor.localized(locale: simplifiedChinese),
+            "保留的最新版本：18.0 (22A3351)。"
+        )
+    }
+
+    func test_standardCommonCacheDescriptor_reprojectsAppNameAndReason() {
+        let title = LocalizedTextDescriptor.catalog(
+            "common_app_cache.standard.title %@",
+            arguments: [.string("Example")]
+        )
+        let reason = LocalizedTextDescriptor.catalog("common_app_cache.standard.reason")
+
+        XCTAssertEqual(title.localized(locale: english), "Example Cache")
+        XCTAssertEqual(title.localized(locale: simplifiedChinese), "Example 缓存")
+        XCTAssertEqual(
+            reason.localized(locale: english),
+            "Standard macOS application cache that can be rebuilt."
+        )
+        XCTAssertEqual(
+            reason.localized(locale: simplifiedChinese),
+            "标准 macOS 应用缓存，可由对应应用重新生成。"
+        )
+    }
+
+    func test_nameSort_usesTheRequestedPresentationLocale() {
+        func row(id: String, key: String) -> RowItem {
+            RowItem(
+                id: id,
+                url: URL(fileURLWithPath: "/tmp/\(id)"),
+                title: key,
+                isDirectory: true,
+                bytes: 0,
+                logicalBytes: 0,
+                fileCount: 0,
+                verdict: .safe,
+                rejection: .ok,
+                titlePresentation: .catalog(key)
+            )
+        }
+        let appLogs = row(id: "app-logs", key: "category.app_logs.title")
+        let downloads = row(id: "downloads", key: "category.downloads.title")
+
+        XCTAssertTrue(MainListSortKey.nameAsc.lessThan(appLogs, downloads, locale: english))
+        XCTAssertTrue(MainListSortKey.nameAsc.lessThan(downloads, appLogs, locale: simplifiedChinese))
+    }
+
+    func test_protectedRuleSourceText_isVerbatimUntilBilingualSchemaMigration() {
+        // vendors.yaml currently stores source copy, not localization keys. AppUI must not guess
+        // that a product name or Chinese reason is a catalog identity.
+        let title = LocalizedTextDescriptor.verbatim("WeChat Cache")
+        let reason = LocalizedTextDescriptor.verbatim("微信 App 缓存，可重建")
+
+        XCTAssertEqual(title.localized(locale: english), "WeChat Cache")
+        XCTAssertEqual(title.localized(locale: simplifiedChinese), "WeChat Cache")
+        XCTAssertEqual(reason.localized(locale: english), "微信 App 缓存，可重建")
+        XCTAssertEqual(reason.localized(locale: simplifiedChinese), "微信 App 缓存，可重建")
+    }
+
+    func test_treeDeletionAndSmartCareCopies_preserveSemanticPresentation() throws {
+        let descriptor = LocalizedTextDescriptor.catalog("category.user_caches.title")
+        let tree = TreeRow(
+            path: "/tmp/Caches",
+            title: "category.user_caches.title",
+            bytes: 10,
+            fileCount: 1,
+            isDirectory: true,
+            hasChildren: true,
+            titlePresentation: descriptor
+        )
+        let deletionRow = try XCTUnwrap(DeletionRowSnapshotFactory.tree(
+            tree,
+            verdict: .safe,
+            rejection: .ok
+        ))
+        let smartCare = try XCTUnwrap(SmartCareSummaryBuilder.candidates(
+            from: [deletionRow],
+            source: .recommended,
+            home: "/tmp"
+        ).first)
+
+        XCTAssertEqual(tree.displayTitle(locale: simplifiedChinese), "用户缓存")
+        XCTAssertEqual(deletionRow.displayTitle(locale: english), "User Caches")
+        XCTAssertEqual(smartCare.displayTitle(locale: simplifiedChinese), "用户缓存")
+        XCTAssertEqual(deletionRow.url.path, tree.path)
+        XCTAssertEqual(deletionRow.verdict, .safe)
+
+        let skipped = OperationResultPayload.RunningAppSkippedItem(
+            path: tree.path,
+            itemTitle: tree.title,
+            appName: "Example",
+            itemTitlePresentation: tree.titlePresentation
+        )
+        XCTAssertEqual(skipped.displayItemTitle(locale: english), "User Caches")
+        XCTAssertEqual(skipped.displayItemTitle(locale: simplifiedChinese), "用户缓存")
+    }
+
     @MainActor
     func test_settingsOnlyLanguageChange_fansOutToBothAppOwnedCoordinators_withoutRebuildingSnapshots() {
         let suite = "LiveLocalizationTests.app-fanout.\(UUID().uuidString)"
@@ -291,6 +434,10 @@ final class LiveLocalizationTests: XCTestCase {
         XCTAssertEqual(
             WorkflowHitNamePresentation.string(stored, locale: simplifiedChinese),
             "iOS 设备支持文件 · 17.5"
+        )
+        XCTAssertEqual(
+            WorkflowHitNamePresentation.string("iPhone 17 Pro · DEVICE-ID", locale: simplifiedChinese),
+            "iPhone 17 Pro · DEVICE-ID"
         )
     }
 

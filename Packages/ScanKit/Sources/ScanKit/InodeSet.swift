@@ -10,10 +10,24 @@ public final class InodeSet: @unchecked Sendable {
         let inode: UInt64
     }
 
-    private let lock = NSLock()
-    private var seen: Set<Key> = []
+    /// v2026.07.17 transaction-ledger regression guard:
+    /// `MultiRootScanner` shares one allocation identity ledger across all root workers so a
+    /// physical hardlink allocation is counted once per multi-root transaction. A single lock
+    /// would serialize every file across as many as 24 workers and could reintroduce the scan
+    /// performance regression this ledger is meant to fix. Power-of-two striping keeps the
+    /// atomic "first observer wins" contract while unrelated inode identities proceed in
+    /// parallel. The key never escapes its shard, so count/reset remain exact.
+    private final class Shard: @unchecked Sendable {
+        let lock = NSLock()
+        var seen: Set<Key> = []
+    }
 
-    public init() {}
+    private static let shardCount = 64
+    private let shards: [Shard]
+
+    public init() {
+        shards = (0..<Self.shardCount).map { _ in Shard() }
+    }
 
     /// 返回 true 表示是首次出现（应该计入大小），false 表示已经计过。
     public func insertIfFirstSeen(device: UInt64, inode: UInt64) -> Bool {
@@ -21,21 +35,41 @@ public final class InodeSet: @unchecked Sendable {
         // fallback/权限异常下除第一项之外全部归零；未知身份只能保守地各自计入。
         guard inode != 0 else { return true }
         let key = Key(device: device, inode: inode)
-        lock.lock()
-        defer { lock.unlock() }
-        return seen.insert(key).inserted
+        let shard = shards[shardIndex(device: device, inode: inode)]
+        shard.lock.lock()
+        defer { shard.lock.unlock() }
+        return shard.seen.insert(key).inserted
     }
 
     public var count: Int {
-        lock.lock(); defer { lock.unlock() }
-        return seen.count
+        var total = 0
+        // Each shard is locked and released independently. `count` is diagnostic/test-only;
+        // scan accounting never samples it while workers are mutating the ledger.
+        for shard in shards {
+            shard.lock.lock()
+            total += shard.seen.count
+            shard.lock.unlock()
+        }
+        return total
     }
 
     /// 仅供明确拥有单次 transaction 的调用方复用；Scanner/BulkScanner 为每个 stream
     /// 创建独立集合，不通过 reset 协调并发扫描。
     public func reset() {
-        lock.lock(); defer { lock.unlock() }
-        seen.removeAll(keepingCapacity: true)
+        for shard in shards {
+            shard.lock.lock()
+            shard.seen.removeAll(keepingCapacity: true)
+            shard.lock.unlock()
+        }
+    }
+
+    @inline(__always)
+    private func shardIndex(device: UInt64, inode: UInt64) -> Int {
+        // Stable integer mixing avoids invoking Swift's randomized Hasher on the hot path.
+        // shardCount is deliberately a power of two so masking is cheaper than modulo.
+        let mixed = (device &* 0x9E37_79B9_7F4A_7C15)
+            ^ (inode &* 0xC2B2_AE3D_27D4_EB4F)
+        return Int(truncatingIfNeeded: mixed) & (Self.shardCount - 1)
     }
 }
 

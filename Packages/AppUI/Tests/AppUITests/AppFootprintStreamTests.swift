@@ -151,11 +151,13 @@ final class AppFootprintStreamTests: XCTestCase {
         }
 
         XCTAssertEqual(yielded.count, 2)
+        XCTAssertEqual(yielded[0].deliveryPhase, .intermediate)
         XCTAssertFalse(yielded[0].isComplete, "第一条应先给 UI 一个 bundle-only 阶段，避免长时间 0KB")
         XCTAssertEqual(yielded[0].appBundleBytes, 100)
         XCTAssertEqual(yielded[0].relatedBytes, 0)
         XCTAssertEqual(yielded[0].totalBytes, 100)
         XCTAssertTrue(yielded[1].isComplete)
+        XCTAssertEqual(yielded[1].deliveryPhase, .terminal)
         XCTAssertEqual(yielded[1].appBundleBytes, 100)
         XCTAssertEqual(yielded[1].relatedBytes, 900)
         XCTAssertEqual(yielded[1].totalBytes, 1000)
@@ -187,6 +189,7 @@ final class AppFootprintStreamTests: XCTestCase {
         let elapsed = Date().timeIntervalSince(start)
 
         XCTAssertEqual(yielded.count, 1)
+        XCTAssertEqual(yielded[0].deliveryPhase, .terminal)
         XCTAssertTrue(yielded[0].isComplete)
         XCTAssertEqual(yielded[0].appBundleBytes, 100)
         XCTAssertEqual(yielded[0].relatedBytes, 0)

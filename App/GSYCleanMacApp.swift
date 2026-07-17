@@ -1,6 +1,7 @@
 import SwiftUI
 import AppUI
 import AppKit
+import Darwin
 import LogKit
 import SafetyKit
 import ScanKit
@@ -76,31 +77,47 @@ private struct MainWindowOpenActionBridge: View {
     }
 }
 
+/// v2026.07.17 Common-app-cache hard-timeout boundary:
+///
+/// The private scanner worker must branch before SwiftUI constructs `NSApplication`, scenes, or
+/// property wrappers. Re-executing the already-signed App binary preserves one code identity while
+/// giving the parent a process it can terminate if a synchronous filesystem syscall never returns.
+/// Normal launches still enter the exact same SwiftUI `App.main()` path.
 @main
+@MainActor
+private enum GSYCleanMacEntrypoint {
+    static func main() {
+        if let exitCode = CommonAppCacheWorkerBridge.runIfRequested() {
+            Darwin.exit(exitCode)
+        }
+        GSYCleanMacApp.main()
+    }
+}
+
 struct GSYCleanMacApp: App {
     @NSApplicationDelegateAdaptor(ApplicationLifecycleDelegate.self) private var lifecycleDelegate
 
     private let vendors: [VendorRule]
 
-    /// v1.0：跨场景共享的设置 / 自定义路径状态（@MainActor @Observable + actor）。
+    /// v1.0：跨场景共享的设置 / 自定义路径状态（@MainActor ObservableObject + actor）。
     /// MainView 与 SettingsScene 共用同一份引用，⌘, 改了立刻生效。
-    @State private var settings = AppSettings()
+    @StateObject private var settings: AppSettings
     private let pathStore = UserPathStore()
 
     /// M5 / 2026-06：AI 模块配置——**必须由 App 层统一持有**并同时注入
     /// [MainView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
     /// 与 [SettingsScene](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SettingsScene.swift)，
     /// 否则两个场景各自 new 一份 [AISettings](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/AISettings.swift)
-    /// 实例：底层 UserDefaults 仍一致，但 @Observable 的 in-process 通知不会跨实例传递，
+    /// 实例：底层 UserDefaults 仍一致，但 ObservableObject 的 in-process 通知不会跨实例传递，
     /// 用户在 ⌘, 改了 AI Enabled / baseURL 后，RowView contextMenu 不会立刻刷新
     /// （需重启 App 才生效）。详见 Review fix #2，2026-06-15。
-    @State private var aiSettings = AISettings()
-    @State private var settingsNavigation = SettingsNavigation()
+    @StateObject private var aiSettings: AISettings
+    @StateObject private var settingsNavigation: SettingsNavigation
 
     @State private var showTCCGuide: Bool = false
 
     /// v1.1 更新检查器，启动时静默 GET 一次 GitHub Releases。
-    @State private var updateChecker: UpdateChecker
+    @StateObject private var updateChecker: UpdateChecker
 
     /// v1.3：把 ScanCoordinator 提升到 App 层，让主窗口与 [FloatingScanHUDController](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
     /// 共享同一个实例（同一份 snapshot / isScanning），HUD 实时刷新不需要双扫。
@@ -108,11 +125,11 @@ struct GSYCleanMacApp: App {
 
     /// Smart Care 普通模式会话提升到 App 层，确保主窗口、HUD 和托盘入口共享
     /// 同一份 phase / summary / selection，不会出现后台已扫描而首页仍显示 idle。
-    @State private var smartCareSession: SmartCareSession
+    @StateObject private var smartCareSession: SmartCareSession
 
     /// Normal AI Review 与 Smart Care 扫描会话同样提升到 App 生命周期：
     /// 主窗口关闭时请求继续，完成后不抢前台；重新打开可查看最新终态报告。
-    @State private var smartCareAIReviewSession: SmartCareAIReviewSession
+    @StateObject private var smartCareAIReviewSession: SmartCareAIReviewSession
 
     /// v1.3：扫描悬浮窗控制器。NSPanel 寄生在 App 上，跨 Space / 全屏 不被遮。
     @State private var hud = FloatingScanHUDController()
@@ -130,7 +147,7 @@ struct GSYCleanMacApp: App {
     /// 在 init 阶段构造，启动钩子里按 [settings.sentinelEnabled](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
     /// 做幂等 register；v2026.07.16 起用户 toggle 先经过 typed change-source 边界，
     /// 程序性失败回滚不会再由 `.onChange` 重复驱动 enable / disable。
-    @State private var sentinelManager: SentinelManager
+    @StateObject private var sentinelManager: SentinelManager
 
     private let tccDismissedKey = "tcc.onboarding.dismissed"
 
@@ -154,11 +171,13 @@ struct GSYCleanMacApp: App {
         let loadedVendors = Self.loadBundledVendors()
         self.vendors = loadedVendors
         let s = AppSettings()
-        self._settings = State(initialValue: s)
-        self._updateChecker = State(initialValue: UpdateChecker(settings: s))
+        self._settings = StateObject(wrappedValue: s)
+        self._aiSettings = StateObject(wrappedValue: AISettings())
+        self._settingsNavigation = StateObject(wrappedValue: SettingsNavigation())
+        self._updateChecker = StateObject(wrappedValue: UpdateChecker(settings: s))
         // v1.6：Sentinel 管理器与 AppSettings 同生命周期；register / unregister
         // 由启动钩子 + onChange 驱动，AppSettings 里 didSet 不直接调 SMAppService。
-        self._sentinelManager = State(initialValue: SentinelManager(settings: s))
+        self._sentinelManager = StateObject(wrappedValue: SentinelManager(settings: s))
         // v2026.06.22：产品路径不再打开/写入扫描数据库。
         // 扫描结果每次来自实时扫描；树形下钻由 ScanCoordinator.directChildrenAsync
         // 后台按需扫描当前目录并聚合直接子项，避免扫描结果数据库与扫描收尾落盘等待。
@@ -168,17 +187,19 @@ struct GSYCleanMacApp: App {
         let deepIndex = (ProcessInfo.processInfo.environment["GSY_DEEP_INDEX"] ?? "0") != "0"
         let professionalCoordinator = ScanCoordinator(
             vendors: loadedVendors,
-            enableTreeDeepIndex: deepIndex
+            enableTreeDeepIndex: deepIndex,
+            commonAppCacheExecution: .isolated(executableURL: Bundle.main.executableURL)
         )
         self._coordinator = StateObject(wrappedValue: professionalCoordinator)
         let smartCareScanner = ScanCoordinator(
             vendors: loadedVendors,
-            enableTreeDeepIndex: false
+            enableTreeDeepIndex: false,
+            commonAppCacheExecution: .isolated(executableURL: Bundle.main.executableURL)
         )
-        self._smartCareSession = State(initialValue: SmartCareSession(
+        self._smartCareSession = StateObject(wrappedValue: SmartCareSession(
             scanCoordinator: smartCareScanner
         ))
-        self._smartCareAIReviewSession = State(initialValue: SmartCareAIReviewSession())
+        self._smartCareAIReviewSession = StateObject(wrappedValue: SmartCareAIReviewSession())
     }
 
     var body: some Scene {
@@ -267,39 +288,39 @@ struct GSYCleanMacApp: App {
                 // 反复启动并 exit 不能验证 UI；未授权的启动时自动扫描也不应进入 Release。
                 // 逻辑回归使用 package tests，性能使用 ScanKit CLI，真实交互只做持续 C4。
             }
-            .onChange(of: coordinator.isScanning) { _, _ in
+            .onValueChange(of: coordinator.isScanning) { _, _ in
                 // v1.3：扫描开始 → HUD 弹出；扫描结束 → 非常驻模式下 0.8s 后渐隐
                 hud.reconcile()
             }
-            .onChange(of: smartCareSession.isBusy) { _, _ in
+            .onValueChange(of: smartCareSession.isBusy) { _, _ in
                 hud.reconcile()
             }
-            .onChange(of: settings.hudEnabled) { _, _ in
+            .onValueChange(of: settings.hudEnabled) { _, _ in
                 // 用户 toggle 设置里的 HUD 开关，立即生效
                 hud.reconcile()
             }
-            .onChange(of: settings.hudPersistent) { _, _ in
+            .onValueChange(of: settings.hudPersistent) { _, _ in
                 // 用户 toggle 常驻模式 → 立即让 HUD 弹/隐
                 hud.reconcile()
             }
-            .onChange(of: settings.hudPlacement) { _, _ in
+            .onValueChange(of: settings.hudPlacement) { _, _ in
                 // 用户切位置（顶部 / 桌面右上 / 桌面右下 / 桌面左下）→ rebuild panel
                 hud.reconcile()
             }
-            .onChange(of: settings.trayEnabled) { _, _ in
+            .onValueChange(of: settings.trayEnabled) { _, _ in
                 // 用户 toggle 设置里的托盘开关，立即生效
                 reconcileTray()
                 // 关托盘可能联动关掉 hideFromDockWhenClosed（互斥兜底），重新核对一次激活策略。
                 reconcileActivationPolicy()
             }
-            .onChange(of: settings.hideFromDockWhenClosed) { _, _ in
+            .onValueChange(of: settings.hideFromDockWhenClosed) { _, _ in
                 // 用户 toggle"关窗藏 Dock"开关 → 立即 reconcile：
                 // 开 + 当前没有可见主窗口 → 直接进 accessory；
                 // 开 + 有可见主窗口 → 保持 regular（关窗时再切）；
                 // 关 → 立刻回 regular，不会让用户因为 Dock 没了而困惑。
                 reconcileActivationPolicy()
             }
-            .onChange(of: settings.sentinelEnabled) { oldValue, newValue in
+            .onValueChange(of: settings.sentinelEnabled) { oldValue, newValue in
                 // v2026.07.16：所有 Sentinel setting 变化先过 MainActor 类型化事务边界。
                 // 真实用户手势才 reconcile；失败回滚产生的第二轮 onChange 只消费事务，
                 // 不重复 register/unregister、不重复弹错，也不靠异步延时猜事件来源。
@@ -308,7 +329,7 @@ struct GSYCleanMacApp: App {
                     to: newValue
                 )
             }
-            .onChange(of: settings.preferredLanguage) { _, _ in
+            .onValueChange(of: settings.preferredLanguage) { _, _ in
                 // v2026.07.15：String 型 tooltip / tray NSMenu / application main menu
                 // 不读取 SwiftUI environment；统一刷新其显式 locale 边界。
                 applyLiveLocale()
@@ -378,7 +399,7 @@ struct GSYCleanMacApp: App {
                           navigation: settingsNavigation,
                           sentinelManager: sentinelManager)
                 .environment(\.locale, settings.effectiveLocale)
-                .onChange(of: settings.preferredLanguage, initial: true) { _, _ in
+                .onValueChange(of: settings.preferredLanguage, initial: true) { _, _ in
                     // 主窗口可能已关闭，只剩 Settings scene；这里同样刷新原生菜单。
                     applyLiveLocale()
                 }
@@ -504,7 +525,7 @@ struct GSYCleanMacApp: App {
         // 直接 activate() 在 accessory 下不会让窗口拉回前台 / 抢焦点，必须先把策略切回
         // .regular 才能正常显示主窗口与抢键盘焦点。这一步幂等：已是 regular 不会反复调。
         NSApp.setActivationPolicy(.regular)
-        NSApp.activate()
+        ApplicationActivationCompatibility.requestForegroundActivation()
 
         let windows = NSApp.windows
         let lifecycleDelegate = NSApp.delegate as? ApplicationLifecycleDelegate
@@ -640,8 +661,8 @@ struct GSYCleanMacApp: App {
 /// - 菜单只持有轻量的 locale 值；扫描 snapshot 不进入依赖面，所以扫描帧不会重建菜单。
 /// - 语言变化时 Commands identity 才变化，7 个标题通过 AppLocalization 按新 locale
 ///   解析一次，兼顾运行期切换与原有性能边界。
-/// - **不持有 AppSettings**：dev 扫期间 settings 不会变，但 AppSettings
-///   是 `@Observable`，作为 stored prop 会让本 struct 被 SwiftUI 视为
+    /// - **不持有 AppSettings**：dev 扫期间 settings 不会变，但 AppSettings
+    ///   是 `ObservableObject`，作为 observed dependency 会让本 struct 被 SwiftUI 视为
 ///   会变化的依赖；改成只传 `Binding<Bool>` 后依赖面收紧到 hudEnabled 一项。
 private struct GSYCleanCommands: Commands {
     let updateChecker: UpdateChecker

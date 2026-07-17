@@ -11,6 +11,7 @@ struct ScanKitBench {
             -----------------
             用法:
               scankit-bench <path> [--no-hidden] [--no-dedup]
+                                   [--top-level | --summary-only | --large-files]
 
             示例:
               scankit-bench ~/Downloads
@@ -27,11 +28,19 @@ struct ScanKitBench {
         let path = (args[1] as NSString).expandingTildeInPath
         var options = ScanOptions()
         var useLegacy = false
+        var delivery: BulkScanner.EventDelivery = .complete
         for arg in args.dropFirst(2) {
             switch arg {
             case "--no-hidden": options.includeHidden = false
             case "--no-dedup": options.dedupByInode = false
             case "--legacy": useLegacy = true
+            case "--top-level": delivery = .topLevel
+            case "--summary-only": delivery = .summaryOnly
+            case "--large-files":
+                delivery = .largeFiles(
+                    minimumAllocatedBytes: 100 * 1024 * 1024,
+                    maximumResults: 1_000
+                )
             default: break
             }
         }
@@ -40,7 +49,7 @@ struct ScanKitBench {
         let engine = useLegacy ? "Scanner (FileManager.enumerator)" : "BulkScanner (getattrlistbulk)"
         print("→ scanning \(url.path) ...")
         print("  engine:  \(engine)")
-        print("  options: hidden=\(options.includeHidden) dedup=\(options.dedupByInode)")
+        print("  options: hidden=\(options.includeHidden) dedup=\(options.dedupByInode) delivery=\(delivery)")
 
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
@@ -49,18 +58,21 @@ struct ScanKitBench {
         if useLegacy {
             stream = ScanKit.Scanner(options: options).scan(root: url)
         } else {
-            stream = BulkScanner(options: options).scan(root: url)
+            stream = BulkScanner(options: options).scan(root: url, delivery: delivery)
         }
 
+        var incrementalNodeCount = 0
         for await event in stream {
             switch event {
+            case .heartbeat:
+                continue
             case .progress(let bytes, let count):
                 let human = formatter.string(fromByteCount: bytes)
                 fputs("\r  scanned: \(count) files / \(human)         ", stderr)
             case .node:
-                continue // bench 不输出每个节点
-            case .nodes:
-                continue // Step 13B micro-batch：bench 不输出节点
+                incrementalNodeCount += 1
+            case .nodes(let nodes):
+                incrementalNodeCount += nodes.count
             case .finished(let summary):
                 print("")
                 print("─────────────────────────────────────────────")
@@ -70,6 +82,17 @@ struct ScanKitBench {
                 print("  on disk:      \(formatter.string(fromByteCount: summary.totalAllocatedBytes))")
                 print("  logical:      \(formatter.string(fromByteCount: summary.totalLogicalBytes))")
                 print("  hardlink dedup saved: \(formatter.string(fromByteCount: summary.dedupedHardlinkBytes))")
+                print("  incremental nodes delivered: \(incrementalNodeCount)")
+                switch summary.projection {
+                case .none:
+                    print("  projection rows: none")
+                case .topLevel(let entries):
+                    print("  projection rows: \(entries.count)")
+                case .largeFiles(let nodes):
+                    print("  projection rows: \(nodes.count)")
+                case .fileCandidates(let nodes):
+                    print("  projected file candidates: \(nodes.count)")
+                }
                 let diff = summary.totalLogicalBytes - summary.totalAllocatedBytes
                 if diff != 0 {
                     let label = diff > 0 ? "iCloud/sparse phantom" : "compressed/cloned bonus"

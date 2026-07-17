@@ -173,6 +173,83 @@ final class SmartCareModelsTests: XCTestCase {
         XCTAssertEqual(MainView.defaultInterfaceMode, .normal)
     }
 
+    func test_mainView模式切换只移交离开侧的扫描所有权() {
+        XCTAssertNil(MainScanOwnershipPolicy.departingProducer(from: .normal, to: .normal))
+        XCTAssertNil(MainScanOwnershipPolicy.departingProducer(from: .professional, to: .professional))
+        XCTAssertEqual(
+            MainScanOwnershipPolicy.departingProducer(from: .normal, to: .professional),
+            .smartCare
+        )
+        XCTAssertEqual(
+            MainScanOwnershipPolicy.departingProducer(from: .professional, to: .normal),
+            .professional
+        )
+
+        var smartCareCancelCount = 0
+        var professionalCancelCount = 0
+        var transientProfessionalCancelCount = 0
+        MainScanOwnershipPolicy.relinquishDepartingMode(
+            from: .normal,
+            to: .professional,
+            smartCareIsScanning: true,
+            professionalIsScanning: true,
+            cancelSmartCare: { smartCareCancelCount += 1 },
+            cancelProfessional: { professionalCancelCount += 1 },
+            cancelProfessionalTransientWork: { transientProfessionalCancelCount += 1 }
+        )
+        XCTAssertEqual(smartCareCancelCount, 1)
+        XCTAssertEqual(professionalCancelCount, 0)
+        XCTAssertEqual(transientProfessionalCancelCount, 0)
+
+        MainScanOwnershipPolicy.relinquishDepartingMode(
+            from: .professional,
+            to: .normal,
+            smartCareIsScanning: true,
+            professionalIsScanning: false,
+            cancelSmartCare: { smartCareCancelCount += 1 },
+            cancelProfessional: { professionalCancelCount += 1 },
+            cancelProfessionalTransientWork: { transientProfessionalCancelCount += 1 }
+        )
+        XCTAssertEqual(smartCareCancelCount, 1)
+        XCTAssertEqual(professionalCancelCount, 0,
+                       "已完成的离开侧结果必须保留，不能把模式切换误当清空结果")
+        XCTAssertEqual(transientProfessionalCancelCount, 1,
+                       "保留完成结果时仍必须停止离开页面后的按需 Tree 磁盘遍历")
+    }
+
+    @MainActor
+    func test_mainView类目切换总是释放旧专业扫描所有权() {
+        XCTAssertFalse(MainScanOwnershipPolicy.relinquishesProfessionalCategory(
+            from: "large-files",
+            to: "large-files"
+        ))
+        XCTAssertTrue(MainScanOwnershipPolicy.relinquishesProfessionalCategory(
+            from: "large-files",
+            to: MainView.uninstallSentinelID
+        ))
+        XCTAssertTrue(MainScanOwnershipPolicy.relinquishesProfessionalCategory(
+            from: ScanCategory.batchRecommendedID,
+            to: MainView.appFootprintSentinelID
+        ))
+        XCTAssertTrue(MainScanOwnershipPolicy.relinquishesProfessionalCategory(
+            from: MainView.duplicateSentinelID,
+            to: nil
+        ))
+
+        var cancelCount = 0
+        MainScanOwnershipPolicy.relinquishProfessionalCategory(
+            from: "large-files",
+            to: MainView.uninstallSentinelID,
+            cancel: { cancelCount += 1 }
+        )
+        MainScanOwnershipPolicy.relinquishProfessionalCategory(
+            from: MainView.uninstallSentinelID,
+            to: MainView.uninstallSentinelID,
+            cancel: { cancelCount += 1 }
+        )
+        XCTAssertEqual(cancelCount, 1)
+    }
+
     func test_item保留删除预览所需元数据() {
         let item = SmartCareItem(
             id: "cache",

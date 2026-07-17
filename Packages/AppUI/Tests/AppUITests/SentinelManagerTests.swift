@@ -539,7 +539,7 @@ final class SentinelManagerTests: XCTestCase {
         XCTAssertNil(reloaded.sentinelLastEnabled, "重启后 sentinelLastEnabled 不应残留")
     }
 
-    /// v2026.07.16 App 接线合同：SwiftUI onChange 不得直接调用 `.user` reconcile；
+    /// v2026.07.16 App 接线合同：兼容 change 边界不得直接调用 `.user` reconcile；
     /// old/new 必须先交给 SentinelManager 的 typed source boundary。启动对账保留独立入口。
     func test_AppSentinelOnChange_只通过typed事件来源边界() throws {
         let root = try repoRoot()
@@ -548,13 +548,13 @@ final class SentinelManagerTests: XCTestCase {
             encoding: .utf8
         )
         guard let start = source.range(
-                of: ".onChange(of: settings.sentinelEnabled) { oldValue, newValue in"
+                of: ".onValueChange(of: settings.sentinelEnabled) { oldValue, newValue in"
               ),
               let end = source.range(
-                of: ".onChange(of: settings.preferredLanguage)",
+                of: ".onValueChange(of: settings.preferredLanguage)",
                 range: start.lowerBound..<source.endIndex
               ) else {
-            return XCTFail("找不到 Sentinel setting 的 App onChange 接线")
+            return XCTFail("找不到 Sentinel setting 的 App change 接线")
         }
         let handler = String(source[start.lowerBound..<end.lowerBound])
 

@@ -78,7 +78,8 @@ enum DeletionRowSnapshotFactory {
             vendorName: vendorName,
             vendorNote: vendorNote,
             runningBundleIDPrefix: runningBundleIDPrefix,
-            modificationDate: row.modificationDate
+            modificationDate: row.modificationDate,
+            titlePresentation: row.titlePresentation
         )
     }
 }
@@ -300,6 +301,9 @@ public struct DeletionIntentCandidate: Identifiable, Sendable, Equatable {
     public let rawPath: String
     public let standardizedPath: String
     public let title: String
+    /// Presentation-only semantics. Candidate identity and every safety/deletion decision remain
+    /// bound to `id`, `rawPath`, `standardizedPath` and typed evidence, never this descriptor.
+    public let titlePresentation: LocalizedTextDescriptor
     public let isDirectory: Bool
     public let bytes: Int64
     public let fileCount: Int
@@ -318,12 +322,14 @@ public struct DeletionIntentCandidate: Identifiable, Sendable, Equatable {
         verdict: SafetyVerdict,
         rejection: SafetyRejection,
         accessEvidence: DeletionAccessEvidence = .complete,
-        runningBundleIDPrefix: String? = nil
+        runningBundleIDPrefix: String? = nil,
+        titlePresentation: LocalizedTextDescriptor? = nil
     ) {
         self.id = id
         self.rawPath = path
         self.standardizedPath = Self.pathIdentity(path)
         self.title = title
+        self.titlePresentation = titlePresentation ?? .verbatim(title)
         self.isDirectory = isDirectory
         self.bytes = bytes
         self.fileCount = fileCount
@@ -331,6 +337,10 @@ public struct DeletionIntentCandidate: Identifiable, Sendable, Equatable {
         self.rejection = rejection
         self.accessEvidence = accessEvidence
         self.runningBundleIDPrefix = runningBundleIDPrefix
+    }
+
+    public func displayTitle(locale: Locale) -> String {
+        titlePresentation.localized(locale: locale)
     }
 
     static func pathIdentity(_ path: String) -> String {
@@ -344,6 +354,7 @@ public enum DeletionIntentValidationError: Error, Sendable, Equatable {
     case emptyPath(candidateID: UUID)
     case duplicatePath(String)
     case duplicateCandidateID(UUID)
+    case invalidExecutionVerification
 }
 
 /// 所有真实文件删除入口提交给统一交互协调器的唯一输入。构造时拒绝空项和重复路径，
@@ -354,6 +365,7 @@ public struct DeletionIntent: Identifiable, Sendable, Equatable {
     public let mode: DeletionUserMode
     public let snapshotIdentity: DeletionSnapshotIdentity
     public let candidates: [DeletionIntentCandidate]
+    public let executionVerification: DeletionExecutionVerification?
     public let createdAt: Date
 
     public init(
@@ -362,6 +374,7 @@ public struct DeletionIntent: Identifiable, Sendable, Equatable {
         mode: DeletionUserMode,
         snapshotIdentity: DeletionSnapshotIdentity,
         candidates: [DeletionIntentCandidate],
+        executionVerification: DeletionExecutionVerification? = nil,
         createdAt: Date = Date()
     ) throws {
         guard !candidates.isEmpty else {
@@ -380,11 +393,22 @@ public struct DeletionIntent: Identifiable, Sendable, Equatable {
                 throw DeletionIntentValidationError.duplicatePath(candidate.standardizedPath)
             }
         }
+        if let executionVerification {
+            switch (origin, executionVerification) {
+            case (.duplicate, .duplicate(let request)):
+                guard request.matchesExactTargets(candidates.map(\.standardizedPath)) else {
+                    throw DeletionIntentValidationError.invalidExecutionVerification
+                }
+            default:
+                throw DeletionIntentValidationError.invalidExecutionVerification
+            }
+        }
         self.id = id
         self.origin = origin
         self.mode = mode
         self.snapshotIdentity = snapshotIdentity
         self.candidates = candidates
+        self.executionVerification = executionVerification
         self.createdAt = createdAt
     }
 }
@@ -950,7 +974,8 @@ enum ToolTrashExecutionPlanner {
                 OperationResultPayload.RunningAppSkippedItem(
                     path: $0.path,
                     itemTitle: $0.title,
-                    appName: $0.runningAppName
+                    appName: $0.runningAppName,
+                    itemTitlePresentation: $0.titlePresentation
                 )
             },
             vendorOverrideRequest: vendorOverrideRequest.flatMap {
@@ -988,7 +1013,8 @@ public enum DeleteExecutionPlanner {
                 OperationResultPayload.RunningAppSkippedItem(
                     path: $0.path,
                     itemTitle: $0.title,
-                    appName: $0.runningAppName
+                    appName: $0.runningAppName,
+                    itemTitlePresentation: $0.titlePresentation
                 )
             }
             self.dryRun = dryRun

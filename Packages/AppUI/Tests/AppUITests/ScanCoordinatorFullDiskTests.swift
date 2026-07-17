@@ -1,3 +1,5 @@
+import Darwin
+import ScanKit
 import XCTest
 @testable import AppUI
 
@@ -82,6 +84,35 @@ final class ScanCoordinatorFullDiskTests: XCTestCase {
         )
     }
 
+    func test_fullDiskFirmlinkIncompleteEvidence_mapsIntoVisiblePathNamespace() {
+        let coord = ScanCoordinator()
+        let rawIssuePath = "/System/Volumes/Data/Users/example/Library/Locked"
+        coord._testInjectIncomplete(
+            ScanIncompleteIssue(
+                path: rawIssuePath,
+                reason: .permissionDenied,
+                stage: .open,
+                posixErrorCode: EACCES
+            ),
+            displayRootPath: "/"
+        )
+
+        let publicPath = "/Users/example/Library/Locked"
+        XCTAssertEqual(coord.permissionDeniedPaths, [publicPath],
+                       "整盘投影行与 typed issue 必须使用同一 firmlink 命名空间")
+        XCTAssertEqual(coord._testAccessState(for: publicPath), .permissionDenied)
+        XCTAssertEqual(
+            coord._testSubtreeCompleteness(for: "/Users"),
+            .containsIncompleteDescendant,
+            "公开 /Users 行必须看到 Data 卷后代的不完整证据"
+        )
+        XCTAssertEqual(
+            coord.incompleteIssues(overlappingAny: ["/Users"]).map(\.path),
+            [publicPath],
+            "删除父路径的 ancestor overlap 不得因 raw/public 路径不一致而漏拦"
+        )
+    }
+
     func test_fullDiskDirectChildren_usesSnapshotRowsForRootWhenStoreCacheMisses() {
         let coord = ScanCoordinator(enableTreeDeepIndex: false)
         let rows = [
@@ -149,49 +180,9 @@ final class ScanCoordinatorFullDiskTests: XCTestCase {
                       "扫描中不应启动按需下钻写树缓存")
     }
 
-    func test_fullDiskFinishedSnapshot_doesNotAutoPrefetchTopLevelRoots() {
-        let coord = ScanCoordinator(enableTreeDeepIndex: false)
-        let rows = [
-            RowItem(id: "/Users",
-                    url: URL(fileURLWithPath: "/Users", isDirectory: true),
-                    title: "Users",
-                    isDirectory: true,
-                    bytes: 100,
-                    logicalBytes: 100,
-                    fileCount: 1,
-                    verdict: .safe,
-                    rejection: .ok),
-            RowItem(id: "/System",
-                    url: URL(fileURLWithPath: "/System", isDirectory: true),
-                    title: "System",
-                    isDirectory: true,
-                    bytes: 200,
-                    logicalBytes: 200,
-                    fileCount: 2,
-                    verdict: .safe,
-                    rejection: .ok)
-        ]
-        coord._seedForTesting(
-            snapshot: ScanSnapshot(categoryID: ScanCategory.fullDisk.id,
-                                   rows: rows,
-                                   totalBytes: 300,
-                                   scannedFileCount: 3,
-                                   isFinished: true,
-                                   elapsed: 1),
-            currentRootPath: "/",
-            isScanning: false
-        )
-
-        coord.prefetchTreeChildren(paths: ["/Users", "/System"], sortedBy: .sizeDesc)
-
-        XCTAssertTrue(coord._treeChildrenInFlightForTesting().isEmpty,
-                      "全盘扫描完成后不能自动二次深扫顶层大目录；用户主动展开时再按需加载")
-        XCTAssertTrue(coord._treeChildrenCacheForTesting().isEmpty)
-    }
-
-    func test_nonFullDiskFinishedSnapshot_stillAllowsAutomaticPrefetch() async throws {
+    func test_treeChildrenOnlyStartAfterExplicitOnDemandRequest() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("TreePrefetch-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("TreeOnDemand-\(UUID().uuidString)", isDirectory: true)
         let parent = root.appendingPathComponent("Parent", isDirectory: true)
         let child = parent.appendingPathComponent("child.txt")
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
@@ -210,11 +201,13 @@ final class ScanCoordinatorFullDiskTests: XCTestCase {
             isScanning: false
         )
 
-        coord.prefetchTreeChildren(paths: [parent.path], sortedBy: .sizeDesc)
-
         let cacheKey = "\(parent.path)|\(TreeSortKey.sizeDesc.rawValue)"
+        XCTAssertTrue(coord._treeChildrenInFlightForTesting().isEmpty,
+                      "扫描完成不能无人触发地自动二次读取 top-level 子树")
+
+        _ = coord.directChildren(of: parent.path, sortedBy: .sizeDesc)
         XCTAssertTrue(coord._treeChildrenInFlightForTesting().contains(cacheKey),
-                      "非全盘场景仍应保留自动预热，避免回归普通目录首次展开体验")
+                      "用户显式展开时必须启动 staged shallow + deep 按需加载")
 
         let deadline = Date().addingTimeInterval(2)
         var cached: [TreeRow] = []
@@ -242,17 +235,32 @@ final class ScanCoordinatorFullDiskTests: XCTestCase {
         let coord = ScanCoordinator(enableTreeDeepIndex: false)
         coord._seedForTesting(
             snapshot: ScanSnapshot(categoryID: "test",
-                                   rows: [],
-                                   totalBytes: 0,
-                                   scannedFileCount: 0,
+                                   rows: [
+                                    RowItem(
+                                        id: parent.path,
+                                        url: parent,
+                                        title: parent.lastPathComponent,
+                                        isDirectory: true,
+                                        bytes: 1,
+                                        logicalBytes: 1,
+                                        fileCount: 1,
+                                        verdict: .safe,
+                                        rejection: .ok,
+                                        hasChildren: true
+                                    )
+                                   ],
+                                   totalBytes: 1,
+                                   scannedFileCount: 1,
                                    isFinished: true,
                                    elapsed: 1),
             currentRootPath: root.path,
             isScanning: false
         )
 
-        XCTAssertTrue(coord.directChildren(of: root.path).isEmpty)
-        let cacheKey = "\(root.path)|\(TreeSortKey.sizeDesc.rawValue)"
+        XCTAssertEqual(coord.directChildren(of: root.path).map(\.path), [parent.path],
+                       "finished root snapshot 是权威结果，不应隐式重扫 root")
+        _ = coord.directChildren(of: parent.path)
+        let cacheKey = "\(parent.path)|\(TreeSortKey.sizeDesc.rawValue)"
         let deadline = Date().addingTimeInterval(3)
         var cached: [TreeRow] = []
         while Date() < deadline {
@@ -261,12 +269,13 @@ final class ScanCoordinatorFullDiskTests: XCTestCase {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
 
-        let row = try XCTUnwrap(cached.first { $0.path == parent.path })
-        XCTAssertEqual(row.accessState, .normal,
+        XCTAssertNotNil(cached.first { $0.path == locked.path },
+                        "用户显式展开父目录后才应启动按需测量")
+        XCTAssertEqual(coord._testAccessState(for: parent.path), .normal,
                        "深层 denied/TCC 只应该进入 banner/log，不能把已成功列出的直接父目录画成锁")
     }
 
-    func test_snapshotTopLevelRows_verifiesFileBucketIsNotExpandable() throws {
+    func test_snapshotTopLevelRows_usesFrozenFileKindWithoutRestatting() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("FullDiskSnapshotRows-\(UUID().uuidString)", isDirectory: true)
         let file = root.appendingPathComponent(".VolumeIcon.icns")
@@ -281,12 +290,19 @@ final class ScanCoordinatorFullDiskTests: XCTestCase {
                                     RowItem(id: file.path,
                                             url: file,
                                             title: file.lastPathComponent,
-                                            isDirectory: true,
+                                            // v2026.07.17: RowItem is the authoritative result
+                                            // of ScanKit's top-level projection. Supplying the
+                                            // opposite kind here used to require a synchronous
+                                            // MainActor lstat for every visible row and directly
+                                            // recreated the performance regression this suite
+                                            // now prevents.
+                                            isDirectory: false,
                                             bytes: 1,
                                             logicalBytes: 1,
                                             fileCount: 1,
                                             verdict: .safe,
-                                            rejection: .ok)
+                                            rejection: .ok,
+                                            hasChildren: false)
                                    ],
                                    totalBytes: 1,
                                    scannedFileCount: 1,

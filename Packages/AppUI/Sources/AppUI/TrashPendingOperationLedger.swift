@@ -65,6 +65,14 @@ public struct TrashPendingOperationRejection: Sendable, Equatable {
         case ledgerUnavailable = "trashPendingLedgerUnavailable"
         case submissionQueueExpired = "trashSubmissionQueueExpired"
         case freshReviewRequired = "trashPendingFreshReviewRequired"
+        /// v2026.07.17 Duplicate claim fence: caller cancellation reached the explicit GCD
+        /// token before AppKit submission. The current and remaining targets were not submitted.
+        case duplicateVerificationCancelled = "duplicateVerification.cancelled"
+        /// One target no longer matches the identity frozen by the complete-hash descriptor.
+        case duplicateTargetIdentityChanged = "duplicateVerification.targetIdentityChanged"
+        /// The explicitly retained survivor changed after the complete-hash pass but before
+        /// this concrete batch/retry claim. No AppKit call is allowed for the blocked targets.
+        case duplicateRetainedReferenceChanged = "duplicateVerification.retainedReferenceChanged"
     }
 
     public let reasonsByPath: [String: Reason]

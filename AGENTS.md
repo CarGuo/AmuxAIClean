@@ -5,8 +5,9 @@
 
 ## 1. 项目与目录
 
-- macOS 15+ 原生 SwiftUI 应用，Swift 6 strict concurrency，使用已入仓的原生
+- macOS 13.5+ 原生 SwiftUI 应用，Swift 6 strict concurrency，使用已入仓的原生
   [GSYCleanMac.xcodeproj](file:///Users/guoshuyu/workspace/GSYCleanMac/GSYCleanMac.xcodeproj)，禁止用 xcodegen 重建。
+  <!-- v2026.07.16：产品部署下限降至 Ventura 13.5；macOS 15+ 仍是开发工具链门槛，不是用户安装门槛。 -->
 - Developer ID 分发，非 MAS。构建本地 Release/DMG 不等于上传 GitHub。
 - 文件清理仅限 `$HOME` 下用户态路径，最终操作是 `NSWorkspace.recycle` 移到废纸篓。
 - 用户可见语言为 `zh-Hans` 与 `en`；不得新增或扩大网络请求，待决边界见

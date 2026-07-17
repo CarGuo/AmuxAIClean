@@ -2,6 +2,20 @@ import Foundation
 import Darwin
 import LogKit
 
+/// Bounded, absolute progress from the one-pass DerivedData allocation traversal.
+/// There is intentionally no percentage: the filesystem does not provide a trustworthy total.
+public struct DerivedDataScanProgress: Sendable, Equatable {
+    public let scannedBytes: Int64
+    public let fileCount: Int
+    public let currentPath: String?
+
+    public init(scannedBytes: Int64, fileCount: Int, currentPath: String?) {
+        self.scannedBytes = max(0, scannedBytes)
+        self.fileCount = max(0, fileCount)
+        self.currentPath = currentPath
+    }
+}
+
 /// Apple 工作流配套：DerivedData 按工程粒度扫描器。
 ///
 /// 设计动机（对位 [DEVELOPER_ONE_CLICK_PLAN.md](../../../../../docs/DEVELOPER_ONE_CLICK_PLAN.md) §Apple）：
@@ -64,7 +78,24 @@ public actor DerivedDataPerProjectScanner {
         return try Self.detectSnapshot(
             home: home,
             fileSystem: FileManager.default,
-            cancellationCheck: { try Task.checkCancellation() }
+            cancellationCheck: { try Task.checkCancellation() },
+            progress: nil
+        )
+    }
+
+    /// v2026.07.17 Workflow visibility contract. The callback is emitted at most once per 256
+    /// regular files and no more than 10 Hz, plus one terminal sample. It runs on the caller's
+    /// scan worker and never changes snapshot accounting or cancellation semantics.
+    public func discoverSnapshot(
+        home: URL,
+        progress: @escaping @Sendable (DerivedDataScanProgress) -> Void
+    ) async throws -> DerivedDataScanSnapshot {
+        try Task.checkCancellation()
+        return try Self.detectSnapshot(
+            home: home,
+            fileSystem: FileManager.default,
+            cancellationCheck: { try Task.checkCancellation() },
+            progress: progress
         )
     }
 
@@ -153,7 +184,8 @@ public actor DerivedDataPerProjectScanner {
     nonisolated static func detectSnapshot(
         home: URL,
         fileSystem: any DynamicDiscoveryFileSystem,
-        cancellationCheck: () throws -> Void
+        cancellationCheck: () throws -> Void,
+        progress: (@Sendable (DerivedDataScanProgress) -> Void)? = nil
     ) throws -> DerivedDataScanSnapshot {
         let layout = try discoverLayout(
             home: home,
@@ -183,7 +215,8 @@ public actor DerivedDataPerProjectScanner {
 
         let allocation = try measureRootOnce(
             layout: layout,
-            cancellationCheck: cancellationCheck
+            cancellationCheck: cancellationCheck,
+            progress: progress
         )
         let allIssues = layout.incompleteIssues + allocation.incompleteIssues
         let hits = layout.projects.map { project -> ProjectHit in
@@ -205,7 +238,8 @@ public actor DerivedDataPerProjectScanner {
             rootSizeBytes: allIssues.isEmpty ? allocation.rootBytes : nil,
             projects: DiscoveryEvidence(hits: hits, incompleteIssues: allIssues),
             rootIncompleteIssues: allIssues,
-            sharedDirectoryCount: layout.sharedDirectoryCount
+            sharedDirectoryCount: layout.sharedDirectoryCount,
+            retainedHardlinkIdentityCount: allocation.retainedHardlinkIdentityCount
         )
     }
 
@@ -241,6 +275,9 @@ public actor DerivedDataPerProjectScanner {
         let rootBytes: Int64
         let projectBytes: [String: Int64]
         let incompleteIssues: [ScanIncompleteIssue]
+        /// Only identities with more than one live pathname need cross-path attribution.
+        /// Keeping every ordinary inode here makes memory O(all files) for no correctness gain.
+        let retainedHardlinkIdentityCount: Int
     }
 
     /// Physical identity for hardlink accounting. APFS clones intentionally remain distinct:
@@ -249,6 +286,11 @@ public actor DerivedDataPerProjectScanner {
     private struct PhysicalFileIdentity: Hashable {
         let device: UInt64
         let inode: UInt64
+    }
+
+    private struct PhysicalFileMetadata {
+        let identity: PhysicalFileIdentity
+        let linkCount: UInt64
     }
 
     private struct PhysicalFileAttribution {
@@ -429,7 +471,8 @@ public actor DerivedDataPerProjectScanner {
     /// in a shared cache can still be attributed later to a project, but never to two projects.
     private nonisolated static func measureRootOnce(
         layout: DerivedDataLayout,
-        cancellationCheck: () throws -> Void
+        cancellationCheck: () throws -> Void,
+        progress: (@Sendable (DerivedDataScanProgress) -> Void)?
     ) throws -> RootAllocation {
         let keys: Set<URLResourceKey> = [
             .totalFileAllocatedSizeKey,
@@ -458,7 +501,8 @@ public actor DerivedDataPerProjectScanner {
                 incompleteIssues: [ScanIncompleteIssue(
                     path: layout.root.path,
                     reason: .enumerationFailed
-                )]
+                )],
+                retainedHardlinkIdentityCount: 0
             )
         }
 
@@ -467,6 +511,9 @@ public actor DerivedDataPerProjectScanner {
         var rootBytes: Int64 = 0
         var projectBytes: [String: Int64] = [:]
         var physicalFiles: [PhysicalFileIdentity: PhysicalFileAttribution] = [:]
+        var scannedFiles = 0
+        var lastProgressEmit = Date.distantPast
+        var lastScannedPath: String?
         for case let fileURL as URL in enumerator {
             try cancellationCheck()
             let values: URLResourceValues
@@ -484,6 +531,23 @@ public actor DerivedDataPerProjectScanner {
             }
             guard values.isRegularFile == true else { continue }
             let path = fileURL.standardizedFileURL.path
+            scannedFiles += 1
+            lastScannedPath = path
+            defer {
+                // Read the clock only once per bounded batch; this keeps progress visibility
+                // out of the per-file hot path while preserving real absolute counters.
+                if progress != nil, scannedFiles.isMultiple(of: 256) {
+                    let now = Date()
+                    if now.timeIntervalSince(lastProgressEmit) >= 0.1 {
+                        lastProgressEmit = now
+                        progress?(DerivedDataScanProgress(
+                            scannedBytes: rootBytes,
+                            fileCount: scannedFiles,
+                            currentPath: path
+                        ))
+                    }
+                }
+            }
             let projectName: String? = {
                 guard path.hasPrefix(rootPrefix) else { return nil }
                 let relative = path.dropFirst(rootPrefix.count)
@@ -493,9 +557,9 @@ public actor DerivedDataPerProjectScanner {
                 let childName = String(first)
                 return projectNames.contains(childName) ? childName : nil
             }()
-            let identity: PhysicalFileIdentity
+            let metadata: PhysicalFileMetadata
             do {
-                identity = try physicalFileIdentity(at: fileURL)
+                metadata = try physicalFileMetadata(at: fileURL)
             } catch let error as POSIXIdentityError {
                 issues.append(ScanIncompleteIssue(
                     path: path,
@@ -513,39 +577,64 @@ public actor DerivedDataPerProjectScanner {
                 continue
             }
 
-            if var existing = physicalFiles[identity] {
+            let bytes = max(0, Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0))
+
+            // v2026.07.17 dynamic-link safety: consult the retained ledger before the
+            // single-link fast path. A hardlink observed earlier can drop from nlink > 1 to
+            // nlink == 1 while this live scan is running; its identity must still be de-duped.
+            if var existing = physicalFiles[metadata.identity] {
                 if let projectName {
                     if let currentOwner = existing.projectName {
                         if projectName < currentOwner {
                             projectBytes[currentOwner, default: 0] -= existing.bytes
                             projectBytes[projectName, default: 0] &+= existing.bytes
                             existing.projectName = projectName
-                            physicalFiles[identity] = existing
+                            physicalFiles[metadata.identity] = existing
                         }
                     } else {
                         projectBytes[projectName, default: 0] &+= existing.bytes
                         existing.projectName = projectName
-                        physicalFiles[identity] = existing
+                        physicalFiles[metadata.identity] = existing
                     }
                 }
                 continue
             }
 
-            let bytes = max(0, Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0))
+            // v2026.07.17 memory root-cause fix: a file whose link count is one at first
+            // observation is counted immediately instead of retaining one dictionary entry per
+            // DerivedData file. Real hardlinks still use the exact (device, inode) ledger below,
+            // so stable trees keep root de-duplication and deterministic cross-project
+            // attribution. APFS clones have distinct inodes. A hardlink created only after this
+            // first single-link observation cannot be correlated without retaining every inode;
+            // live filesystem enumeration is therefore not a point-in-time namespace snapshot.
+            if metadata.linkCount <= 1 {
+                rootBytes &+= bytes
+                if let projectName {
+                    projectBytes[projectName, default: 0] &+= bytes
+                }
+                continue
+            }
+
             rootBytes &+= bytes
             if let projectName {
                 projectBytes[projectName, default: 0] &+= bytes
             }
-            physicalFiles[identity] = PhysicalFileAttribution(
+            physicalFiles[metadata.identity] = PhysicalFileAttribution(
                 bytes: bytes,
                 projectName: projectName
             )
         }
         try cancellationCheck()
+        progress?(DerivedDataScanProgress(
+            scannedBytes: rootBytes,
+            fileCount: scannedFiles,
+            currentPath: lastScannedPath
+        ))
         return RootAllocation(
             rootBytes: rootBytes,
             projectBytes: projectBytes,
-            incompleteIssues: issues
+            incompleteIssues: issues,
+            retainedHardlinkIdentityCount: physicalFiles.count
         )
     }
 
@@ -553,9 +642,9 @@ public actor DerivedDataPerProjectScanner {
         let code: Int32
     }
 
-    private nonisolated static func physicalFileIdentity(
+    private nonisolated static func physicalFileMetadata(
         at url: URL
-    ) throws -> PhysicalFileIdentity {
+    ) throws -> PhysicalFileMetadata {
         var metadata = stat()
         let result = url.withUnsafeFileSystemRepresentation { path -> Int32 in
             guard let path else { return EINVAL }
@@ -563,9 +652,12 @@ public actor DerivedDataPerProjectScanner {
             return 0
         }
         guard result == 0 else { throw POSIXIdentityError(code: result) }
-        return PhysicalFileIdentity(
-            device: UInt64(bitPattern: Int64(metadata.st_dev)),
-            inode: UInt64(metadata.st_ino)
+        return PhysicalFileMetadata(
+            identity: PhysicalFileIdentity(
+                device: UInt64(bitPattern: Int64(metadata.st_dev)),
+                inode: UInt64(metadata.st_ino)
+            ),
+            linkCount: UInt64(metadata.st_nlink)
         )
     }
 
@@ -696,6 +788,9 @@ public struct DerivedDataScanSnapshot: Sendable {
     public let projects: DiscoveryEvidence<ProjectHit>
     public let rootIncompleteIssues: [ScanIncompleteIssue]
     public let sharedDirectoryCount: Int
+    /// Internal performance evidence used by regression tests. Ordinary files are accounted
+    /// immediately; only real multi-link identities may remain in the attribution ledger.
+    let retainedHardlinkIdentityCount: Int
 
     public init(
         rootURL: URL,
@@ -704,6 +799,26 @@ public struct DerivedDataScanSnapshot: Sendable {
         projects: DiscoveryEvidence<ProjectHit>,
         rootIncompleteIssues: [ScanIncompleteIssue],
         sharedDirectoryCount: Int
+    ) {
+        self.init(
+            rootURL: rootURL,
+            rootExists: rootExists,
+            rootSizeBytes: rootSizeBytes,
+            projects: projects,
+            rootIncompleteIssues: rootIncompleteIssues,
+            sharedDirectoryCount: sharedDirectoryCount,
+            retainedHardlinkIdentityCount: 0
+        )
+    }
+
+    init(
+        rootURL: URL,
+        rootExists: Bool,
+        rootSizeBytes: Int64?,
+        projects: DiscoveryEvidence<ProjectHit>,
+        rootIncompleteIssues: [ScanIncompleteIssue],
+        sharedDirectoryCount: Int,
+        retainedHardlinkIdentityCount: Int
     ) {
         self.rootURL = rootURL
         self.rootExists = rootExists
@@ -714,6 +829,7 @@ public struct DerivedDataScanSnapshot: Sendable {
             incompleteIssues: rootIncompleteIssues
         ).incompleteIssues
         self.sharedDirectoryCount = sharedDirectoryCount
+        self.retainedHardlinkIdentityCount = max(0, retainedHardlinkIdentityCount)
     }
 }
 

@@ -18,12 +18,14 @@ public struct SmartCareCandidate: Sendable, Hashable {
     public let bucketID: SmartCareBucketID
     public let path: String
     public let title: String
+    public let titlePresentation: LocalizedTextDescriptor
     public let bytes: Int64
     public let logicalBytes: Int64
     public let fileCount: Int
     public let isDirectory: Bool
     public let verdict: SafetyVerdict
     public let riskNote: String?
+    public let riskNotePresentation: LocalizedTextDescriptor?
     public let runningBundleIDPrefix: String?
 
     public init(source: SmartCareCandidateSource,
@@ -36,18 +38,31 @@ public struct SmartCareCandidate: Sendable, Hashable {
                 isDirectory: Bool = true,
                 verdict: SafetyVerdict,
                 riskNote: String? = nil,
-                runningBundleIDPrefix: String? = nil) {
+                runningBundleIDPrefix: String? = nil,
+                titlePresentation: LocalizedTextDescriptor? = nil,
+                riskNotePresentation: LocalizedTextDescriptor? = nil) {
         self.source = source
         self.bucketID = bucketID
         self.path = path
         self.title = title
+        self.titlePresentation = titlePresentation ?? .verbatim(title)
         self.bytes = bytes
         self.logicalBytes = logicalBytes ?? bytes
         self.fileCount = fileCount
         self.isDirectory = isDirectory
         self.verdict = verdict
         self.riskNote = riskNote
+        self.riskNotePresentation = riskNotePresentation
+            ?? riskNote.map(LocalizedTextDescriptor.verbatim)
         self.runningBundleIDPrefix = runningBundleIDPrefix
+    }
+
+    public func displayTitle(locale: Locale) -> String {
+        titlePresentation.localized(locale: locale)
+    }
+
+    public func displayRiskNote(locale: Locale) -> String? {
+        riskNotePresentation?.localized(locale: locale)
     }
 }
 
@@ -200,7 +215,9 @@ public enum SmartCareSummaryBuilder {
                 isDirectory: row.isDirectory,
                 verdict: row.verdict,
                 riskNote: row.vendorNote,
-                runningBundleIDPrefix: row.runningBundleIDPrefix
+                runningBundleIDPrefix: row.runningBundleIDPrefix,
+                titlePresentation: row.titlePresentation,
+                riskNotePresentation: row.vendorNotePresentation
             ))
         }
         return !shouldCancel()
@@ -306,7 +323,9 @@ public enum SmartCareSummaryBuilder {
                     isDirectory: candidate.isDirectory,
                     verdict: candidate.verdict,
                     riskNote: candidate.riskNote,
-                    runningBundleIDPrefix: candidate.runningBundleIDPrefix
+                    runningBundleIDPrefix: candidate.runningBundleIDPrefix,
+                    titlePresentation: candidate.titlePresentation,
+                    riskNotePresentation: candidate.riskNotePresentation
                 )
             )
         }
@@ -495,7 +514,12 @@ public enum SmartCareSummaryBuilder {
                 preferred.runningBundleIDPrefix,
                 existing.runningBundleIDPrefix,
                 incoming.runningBundleIDPrefix
-            )
+            ),
+            titlePresentation: preferred.titlePresentation,
+            riskNotePresentation: stricter.riskNotePresentation
+                ?? preferred.riskNotePresentation
+                ?? existing.riskNotePresentation
+                ?? incoming.riskNotePresentation
         )
     }
 
@@ -611,7 +635,11 @@ public enum SmartCareSummaryBuilder {
                 : firstNonEmpty(ancestor.riskNote, descendant.riskNote),
             runningBundleIDPrefix: descendantIsStricter
                 ? firstNonEmpty(descendant.runningBundleIDPrefix, ancestor.runningBundleIDPrefix)
-                : firstNonEmpty(ancestor.runningBundleIDPrefix, descendant.runningBundleIDPrefix)
+                : firstNonEmpty(ancestor.runningBundleIDPrefix, descendant.runningBundleIDPrefix),
+            titlePresentation: ancestor.titlePresentation,
+            riskNotePresentation: descendantIsStricter
+                ? (descendant.riskNotePresentation ?? ancestor.riskNotePresentation)
+                : (ancestor.riskNotePresentation ?? descendant.riskNotePresentation)
         )
     }
 
@@ -624,6 +652,9 @@ public enum SmartCareSummaryBuilder {
     private static func normalizedCandidate(_ candidate: SmartCareCandidate) -> SmartCareCandidate {
         let path = normalizePath(candidate.path)
         let title = firstNonEmpty(candidate.title) ?? (path as NSString).lastPathComponent
+        let titlePresentation = firstNonEmpty(candidate.title) == nil
+            ? LocalizedTextDescriptor.verbatim(title)
+            : candidate.titlePresentation
         return SmartCareCandidate(
             source: candidate.source,
             bucketID: candidate.bucketID,
@@ -635,7 +666,9 @@ public enum SmartCareSummaryBuilder {
             isDirectory: candidate.isDirectory,
             verdict: candidate.verdict,
             riskNote: firstNonEmpty(candidate.riskNote),
-            runningBundleIDPrefix: firstNonEmpty(candidate.runningBundleIDPrefix)
+            runningBundleIDPrefix: firstNonEmpty(candidate.runningBundleIDPrefix),
+            titlePresentation: titlePresentation,
+            riskNotePresentation: candidate.riskNotePresentation
         )
     }
 

@@ -58,7 +58,7 @@ extension SmartCareScanLimitationProjection {
 
 struct SmartCareDashboardView: View {
     let coordinator: SmartCareCoordinator
-    let session: SmartCareSession?
+    @ObservedObject var session: SmartCareSession
     let aiIsConfigured: Bool
     let aiIsRunning: Bool
     let aiProcessed: Int
@@ -114,8 +114,11 @@ struct SmartCareDashboardView: View {
             .id(phaseID)
             .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.992)))
         }
-        .animation(.smooth(duration: reduceMotion ? 0.12 : 0.36), value: phaseID)
-        .onChange(of: phaseID) { _, newValue in
+        .animation(
+            PlatformAnimationCompatibility.smooth(duration: reduceMotion ? 0.12 : 0.36),
+            value: phaseID
+        )
+        .onValueChange(of: phaseID) { _, newValue in
             if newValue != "result" {
                 resultExpansion = nil
                 scanLimitationsExpanded = false
@@ -125,10 +128,10 @@ struct SmartCareDashboardView: View {
 
     private var idleExperience: some View {
         SmartCareIdleVisual(
-            selectedStages: session?.selectedStages ?? Set(SmartCareSession.defaultStages),
+            selectedStages: session.selectedStages,
             reduceMotion: reduceMotion,
             onToggleStage: { stage, selected in
-                session?.setStage(stage, selected: selected)
+                session.setStage(stage, selected: selected)
             },
             onScan: { onPrimaryAction(.startScan) }
         )
@@ -333,7 +336,10 @@ struct SmartCareDashboardView: View {
             cornerRadius: 18,
             elevated: true
         )
-        .animation(.smooth(duration: reduceMotion ? 0.1 : 0.24), value: resultExpansion)
+        .animation(
+            PlatformAnimationCompatibility.smooth(duration: reduceMotion ? 0.1 : 0.24),
+            value: resultExpansion
+        )
     }
 
     private var categorySelectionList: some View {
@@ -506,7 +512,7 @@ struct SmartCareDashboardView: View {
             Image(systemName: isPartial ? "exclamationmark.circle" : "checkmark")
                 .font(.system(size: 92, weight: .light))
                 .foregroundStyle(tint)
-                .symbolEffect(.bounce, value: result)
+                .bouncingSymbolEffect(value: result)
 
             Text(
                 isPartial ? "smart_care.phase.partial" : "smart_care.phase.completed",
@@ -629,7 +635,7 @@ struct SmartCareDashboardView: View {
     }
 
     private var scanLimitations: SmartCareScanLimitationProjection {
-        session?.scanLimitationProjection ?? .empty
+        session.scanLimitationProjection
     }
 
     private var scanLimitationsNotice: some View {
@@ -808,7 +814,10 @@ private struct SmartCareIdleVisual: View {
                 .help(Text("smart_care.action.start_scan", bundle: .module))
                 .disabled(!canScan)
                 .onHover { scanHovered = $0 }
-                .animation(.smooth(duration: 0.18), value: scanHovered)
+                .animation(
+                    PlatformAnimationCompatibility.smooth(duration: 0.18),
+                    value: scanHovered
+                )
             }
             .frame(width: 280, height: 280)
 
@@ -981,8 +990,8 @@ private struct SmartCareScopeButton: View {
                     Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                         .font(.system(size: 17, weight: .medium))
                         .foregroundStyle(selected ? tint : Color.secondary.opacity(0.55))
-                        .contentTransition(.symbolEffect(.replace))
-                        .symbolEffect(.bounce, value: selected)
+                        .replacingSymbolTransitionWhenSupported()
+                        .bouncingSymbolEffect(value: selected)
 
                     if let badgeKey = SmartCarePresentation.durationBadgeKey(for: stage) {
                         Label {
@@ -1040,8 +1049,8 @@ private struct SmartCareScopeButton: View {
         )
         .onHover { hovered = $0 }
         .animation(entryAnimation, value: revealed)
-        .animation(.smooth(duration: 0.2), value: hovered)
-        .animation(.snappy(duration: 0.24), value: selected)
+        .animation(PlatformAnimationCompatibility.smooth(duration: 0.2), value: hovered)
+        .animation(PlatformAnimationCompatibility.snappy(duration: 0.24), value: selected)
         .accessibilityValue(Text(
             selected ? "smart_care.scope.selected" : "smart_care.scope.not_selected",
             bundle: .module
@@ -1403,7 +1412,10 @@ private struct SmartCareScanAgainButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
-        .animation(.smooth(duration: reduceMotion ? 0.1 : 0.18), value: hovered)
+        .animation(
+            PlatformAnimationCompatibility.smooth(duration: reduceMotion ? 0.1 : 0.18),
+            value: hovered
+        )
         .help(Text("smart_care.action.scan_again", bundle: .module))
     }
 }
@@ -1425,8 +1437,8 @@ private struct SmartCareActivityBadge: View {
                 .foregroundStyle(activityTint)
                 .frame(width: 28, height: 28)
                 .background(activityTint.opacity(0.1), in: Circle())
-                .contentTransition(.symbolEffect(.replace))
-                .symbolEffect(.bounce, value: activity)
+                .replacingSymbolTransitionWhenSupported()
+                .bouncingSymbolEffect(value: activity)
                 .accessibilityHidden(true)
 
             SmartCareAnimatedActivityTextView(
@@ -1548,7 +1560,7 @@ private struct SmartCareStageStrip: View {
         .frame(minWidth: 28, maxWidth: 72)
         .frame(height: 3)
         .animation(
-            .smooth(duration: reduceMotion ? 0.1 : 0.42),
+            PlatformAnimationCompatibility.smooth(duration: reduceMotion ? 0.1 : 0.42),
             value: status
         )
         .accessibilityHidden(true)
@@ -1606,7 +1618,7 @@ private struct SmartCareStageStrip: View {
                 Image(systemName: "checkmark")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(tint(for: status))
-                    .symbolEffect(.bounce, value: status)
+                    .bouncingSymbolEffect(value: status)
             case .pending:
                 Image(systemName: icon)
                     .font(.system(size: 11, weight: .medium))
@@ -1669,7 +1681,7 @@ private struct SmartCareSelectionRail: View {
         }
         .frame(height: 3)
         .animation(
-            .smooth(duration: reduceMotion ? 0.1 : 0.3),
+            PlatformAnimationCompatibility.smooth(duration: reduceMotion ? 0.1 : 0.3),
             value: fraction
         )
         .accessibilityHidden(true)
@@ -1951,7 +1963,7 @@ private struct SmartCareSelectableItemRow: View {
                     get: { selected },
                     set: { onToggle($0) }
                 )) {
-                    Text(verbatim: item.title)
+                    Text(verbatim: item.displayTitle(locale: locale))
                 }
                 .labelsHidden()
                 .toggleStyle(.checkbox)
@@ -1964,7 +1976,7 @@ private struct SmartCareSelectableItemRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 7) {
-                    Text(verbatim: item.title)
+                    Text(verbatim: item.displayTitle(locale: locale))
                         .font(.callout.weight(.medium))
                         .lineLimit(1)
                         .truncationMode(.middle)

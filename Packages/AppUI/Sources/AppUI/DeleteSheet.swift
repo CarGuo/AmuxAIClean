@@ -105,7 +105,7 @@ public struct DeleteSheet: View {
                         VerdictBadge(verdict: item.verdict)
                             .frame(width: 10, height: 10)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(item.title)
+                            Text(verbatim: item.displayTitle(locale: locale))
                                 .font(.system(.callout, design: .rounded))
                                 .lineLimit(1)
                                 .truncationMode(.middle)

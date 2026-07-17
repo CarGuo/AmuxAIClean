@@ -23,8 +23,10 @@ import LogKit
 /// ```
 ///
 /// 设计要点：
-/// - **不复用单 BulkScanner 的 InodeSet**：每个根独立 InodeSet。跨根 hardlink 极少且会让
-///   字节统计不准；保持每根独立扫描语义，与单根 BulkScanner 一致。
+/// - **事务级 allocation ledger**（v2026.07.17）：同一轮所有根共享文件 inode 身份账本，
+///   因此跨根 hardlink 的物理/逻辑字节只计一次；目录访问账本仍按根独立，避免一个根吞掉
+///   另一个根的枚举与完整性证据。并发扫描下由最先观察到该 inode 的根承载其字节，单根
+///   归属不保证稳定，但所有根合计是权威物理占用，不能在 UI 端事后相减猜测。
 /// - **不共享 worker pool**：每个根独立 6 worker。这等于让"多根 + 子树深"两种工作负载形态
 ///   同时打满核心；调用方可通过 `ScanOptions.maxConcurrency` 自行收窄。
 /// - **事件流加 `rootPath` 信封**：用 [MultiRootEvent](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/MultiRootScanner.swift)
@@ -45,6 +47,8 @@ public actor MultiRootScanner {
         _ options: ScanOptions,
         _ perRootTimeout: TimeInterval,
         _ noProgressTimeout: TimeInterval,
+        _ delivery: BulkScanner.EventDelivery,
+        _ allocationLedger: InodeSet,
         _ continuation: AsyncStream<MultiRootEvent>.Continuation
     ) async -> Void
 
@@ -62,7 +66,9 @@ public actor MultiRootScanner {
         self.rootScanOperation = rootScanOperation
     }
 
-    /// v1.3 P0-B：per-root 硬超时，超过即强制 cancel + 合成 partial .finished 让上游收敛。
+    /// v1.3 P0-B：per-root 协作式超时，超过即请求 cancel + 合成 partial .finished 让上游收敛。
+    /// v2026.07.17 全链路复核：Swift 结构化取消无法抢占正在进行的同步内核 I/O，
+    /// 因此不得将这条边界对外表述为“硬超时”；异常挂载点仍可能延迟最终收敛。
     /// 默认 5 分钟；dev/fullDisk 实测正常 root < 60s 完成，5 分钟覆盖极端 USB 慢盘已绰绰有余。
     public static let defaultPerRootTimeout: TimeInterval = 300
 
@@ -71,7 +77,7 @@ public actor MultiRootScanner {
     /// 90s 是综合权衡：低于 60s 在网络盘首次 enumerate 会误杀；高于 120s 用户感知 UI 假死。
     public static let defaultNoProgressTimeout: TimeInterval = 90
 
-    /// v1.3 P0-B：总扫描 deadline。20 分钟硬顶，超过即所有未完成 root 一起合成 .finished。
+    /// v1.3 P0-B：总扫描协作式 deadline。超过即向所有未完成 root 传播取消。
     /// 来自用户反馈"20 分钟都还没结束"——任何场景都不应突破这条线。
     public static let defaultTotalDeadline: TimeInterval = 20 * 60
 
@@ -85,18 +91,32 @@ public actor MultiRootScanner {
     ///   再放大整个 APFS metadata layer 进入 lock-step 串行化，反而更慢。
     ///   v1.5 性能修复：dev scan discover 命中 30+ root 直接 fan out 时整机
     ///   IO 子系统拥塞，App 与 Finder/浏览器一起卡。Sliding window 是最小修改面治本方案。
-    /// - parameter perRootTimeout: 单根硬超时，默认 5 分钟。超时合成 partial .finished 让上游收敛。
+    /// - parameter perRootTimeout: 单根协作式超时，默认 5 分钟。超时合成 partial .finished 让上游收敛。
     /// - parameter noProgressTimeout: 单根无进展超时，默认 90 秒。
-    /// - parameter totalDeadline: 整体扫描 deadline，默认 20 分钟。超过即所有未完成 root 强 cancel。
+    /// - parameter totalDeadline: 整体扫描协作式 deadline，默认 20 分钟。超过即向所有未完成 root 传播取消。
     public func scan(
         roots: [URL],
         maxConcurrentRoots: Int = 4,
         perRootTimeout: TimeInterval = MultiRootScanner.defaultPerRootTimeout,
         noProgressTimeout: TimeInterval = MultiRootScanner.defaultNoProgressTimeout,
-        totalDeadline: TimeInterval = MultiRootScanner.defaultTotalDeadline
+        totalDeadline: TimeInterval = MultiRootScanner.defaultTotalDeadline,
+        delivery: BulkScanner.EventDelivery = .complete
     ) -> AsyncStream<MultiRootEvent> {
         let opts = self.options
         let rootScanOperation = self.rootScanOperation
+        // v2026.07.17 public timeout hardening: TimeInterval accepts NaN, infinities and
+        // negative/overflowing values. Converting those directly to UInt64 traps before the
+        // scanner can emit a typed terminal state. Normalize once at the API boundary: invalid
+        // or non-positive values mean an immediate cooperative timeout; +infinity saturates.
+        let normalizedPerRootTimeout = Self.normalizedTimeoutSeconds(perRootTimeout)
+        let normalizedNoProgressTimeout = Self.normalizedTimeoutSeconds(noProgressTimeout)
+        let totalDeadlineNanoseconds = Self.normalizedTimeoutNanoseconds(totalDeadline)
+        let normalizedTotalDeadline = Double(totalDeadlineNanoseconds) / 1_000_000_000
+        // One ledger belongs to exactly one returned stream/transaction. It must not live on the
+        // actor instance: callers may start a later scan using the same MultiRootScanner while an
+        // earlier stream is still draining, and those transactions must never deduplicate each
+        // other's files.
+        let allocationLedger = InodeSet()
         let cap = max(1, maxConcurrentRoots)
         return AsyncStream(bufferingPolicy: .unbounded) { continuation in
             let parent = Task.detached(priority: .userInitiated) {
@@ -116,8 +136,10 @@ public actor MultiRootScanner {
                                     await rootScanOperation(
                                         root,
                                         opts,
-                                        perRootTimeout,
-                                        noProgressTimeout,
+                                        normalizedPerRootTimeout,
+                                        normalizedNoProgressTimeout,
+                                        delivery,
+                                        allocationLedger,
                                         continuation
                                     )
                                 }
@@ -131,8 +153,10 @@ public actor MultiRootScanner {
                                     await rootScanOperation(
                                         root,
                                         opts,
-                                        perRootTimeout,
-                                        noProgressTimeout,
+                                        normalizedPerRootTimeout,
+                                        normalizedNoProgressTimeout,
+                                        delivery,
+                                        allocationLedger,
                                         continuation
                                     )
                                 }
@@ -143,11 +167,10 @@ public actor MultiRootScanner {
                         return .scansFinished
                     }
 
-                    race.addTask { [totalDeadline] in
-                        guard totalDeadline > 0 else { return .deadlineReached }
+                    race.addTask {
                         do {
                             try await Task.sleep(
-                                nanoseconds: UInt64(totalDeadline * 1_000_000_000)
+                                nanoseconds: totalDeadlineNanoseconds
                             )
                             return .deadlineReached
                         } catch is CancellationError {
@@ -159,7 +182,7 @@ public actor MultiRootScanner {
                     }
 
                     if let first = await race.next(), first == .deadlineReached {
-                        GSYLog.warning(.scan, "MultiRootScanner 命中总扫描 deadline \(Int(totalDeadline))s，强制结束所有 root")
+                        GSYLog.warning(.scan, "MultiRootScanner 命中总扫描 deadline \(Self.timeoutLogLabel(normalizedTotalDeadline))，请求取消所有 root")
                     }
                     race.cancelAll()
                     await race.waitForAll()
@@ -176,33 +199,43 @@ public actor MultiRootScanner {
     }
 
     /// v1.5：抽出"扫单根"，给 sliding window 调度复用。
-    /// v1.3 P0-B：包了 per-root hard timeout + no-progress watchdog。
+    /// v1.3 P0-B：包了 per-root 协作式 timeout + no-progress watchdog。
     /// 超时时主动合成 partial `.finished` summary 让上游 ingest 流程收敛，避免 UI 永远"扫描中"。
     private static func scanOne(
         root: URL,
         opts: ScanOptions,
         perRootTimeout: TimeInterval,
         noProgressTimeout: TimeInterval,
+        delivery: BulkScanner.EventDelivery,
+        allocationLedger: InodeSet,
         into continuation: AsyncStream<MultiRootEvent>.Continuation
     ) async {
-        // 每个根一个独立 BulkScanner（独立 InodeSet / 独立 worker pool）。
+        // 每个根一个独立 BulkScanner/worker pool，但文件物理分配身份由本轮所有根共享；
+        // BulkScanner 内部的 DirInodeSet 仍属于单根，保证每根完整性证据独立收敛。
         // 共享同一个 outer continuation，多 worker yield Apple 文档保证 thread-safe。
         let scanner = BulkScanner(options: opts)
         let rootPath = root.path
         let started = Date()
         // 进度时钟：scanOne 主体每收到一个事件刷新，watchdog 通过 actor 读取判定 hang。
         let progressClock = MultiRootProgressClock()
-        // hardTimeout 哨兵 + noProgress watchdog 共用一个 cancellation 信号：通过 cancel
+        // timeout 哨兵 + noProgress watchdog 共用一个 cancellation 信号：通过 cancel
         // outer Task（withTimeoutSentinels 内）联动；这里直接捕获 Task.current 思路不通，
         // 改成包一层 child Task 拿到句柄。
         await withTaskGroup(of: Void.self) { group in
             // 子任务 1：真正消费 BulkScanner stream。
             group.addTask {
-                let stream = scanner.scan(root: root)
+                let stream = scanner.scan(
+                    root: root,
+                    delivery: delivery,
+                    topLevelPathMappings: [],
+                    allocationLedger: allocationLedger
+                )
                 var iterator = stream.makeAsyncIterator()
                 while !Task.isCancelled, let ev = await iterator.next() {
                     // 任何"实质事件"都刷新进度时钟。.tccProtectedSkipped/.cacheDirTagged 也算进展。
                     switch ev {
+                    case .heartbeat:
+                        await progressClock.touch()
                     case .node(let node):
                         await progressClock.record(node: node)
                     case .nodes(let nodes):
@@ -227,23 +260,33 @@ public actor MultiRootScanner {
                 }
                 _ = iterator
             }
-            // 子任务 2：硬 timeout 哨兵。到点 cancel 整组 → 子任务 1 退出。
+            // 子任务 2：协作式 timeout 哨兵。到点 cancel 整组 → 子任务 1 在下一个可取消边界退出。
             group.addTask { [perRootTimeout] in
-                try? await Task.sleep(nanoseconds: UInt64(perRootTimeout * 1_000_000_000))
+                try? await Task.sleep(
+                    nanoseconds: Self.normalizedTimeoutNanoseconds(perRootTimeout)
+                )
                 if !Task.isCancelled {
-                    GSYLog.warning(.scan, "MultiRootScanner per-root hard timeout root=\(rootPath) limit=\(Int(perRootTimeout))s")
+                    GSYLog.warning(.scan, "MultiRootScanner per-root timeout requested cancellation root=\(rootPath) limit=\(Self.timeoutLogLabel(perRootTimeout))")
                 }
             }
-            // 子任务 3：no-progress watchdog。每 15s 醒来一次，比阈值更老即认定 hang。
-            group.addTask { [noProgressTimeout] in
-                let tick: TimeInterval = max(5, noProgressTimeout / 6)
-                while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: UInt64(tick * 1_000_000_000))
-                    if Task.isCancelled { return }
-                    let idle = await progressClock.secondsSinceLastTouch()
-                    if idle >= noProgressTimeout {
-                        GSYLog.warning(.scan, "MultiRootScanner no-progress watchdog root=\(rootPath) idle=\(Int(idle))s ≥ \(Int(noProgressTimeout))s")
-                        return // 退出 → group.cancelAll 在 next() 处由外部判定
+            // 子任务 3：no-progress watchdog。summaryOnly 的公开合同明确不发布 progress/
+            // heartbeat；对它启用 idle watchdog 会把“正常但安静的长扫描”误杀为 hang。
+            // summaryOnly 仍受 perRootTimeout/totalDeadline 协作式上限保护，其它 delivery 都有
+            // node/progress/heartbeat 可作为 liveness 证据。
+            if Self.usesNoProgressWatchdog(delivery: delivery) {
+                group.addTask { [noProgressTimeout] in
+                    let threshold = Self.normalizedTimeoutSeconds(noProgressTimeout)
+                    let tickNanoseconds = Self.watchdogTickNanoseconds(
+                        thresholdSeconds: threshold
+                    )
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: tickNanoseconds)
+                        if Task.isCancelled { return }
+                        let idle = await progressClock.secondsSinceLastTouch()
+                        if idle >= threshold {
+                            GSYLog.warning(.scan, "MultiRootScanner no-progress watchdog root=\(rootPath) idle=\(Self.timeoutLogLabel(idle)) ≥ \(Self.timeoutLogLabel(threshold))")
+                            return // 退出 → group.cancelAll 在 next() 处由外部判定
+                        }
                     }
                 }
             }
@@ -257,9 +300,56 @@ public actor MultiRootScanner {
         // 通过 progressClock.didReceiveFinished 标志判断是否需要补。
         if await progressClock.didReceiveFinished == false {
             let synthetic = await progressClock.syntheticSummary(root: root, elapsed: Date().timeIntervalSince(started))
+            // v2026.07.17 terminal progress contract: a timeout/watchdog summary is authoritative
+            // for the observed lower bound just like BulkScanner's real terminal summary. Emit the
+            // final absolute sample first for every progress-capable delivery; summaryOnly keeps
+            // its intentionally quiet event contract.
+            if delivery.includesProgress {
+                continuation.yield(MultiRootEvent(
+                    rootPath: rootPath,
+                    event: .progress(
+                        scannedBytes: synthetic.totalAllocatedBytes,
+                        fileCount: synthetic.fileCount
+                    )
+                ))
+            }
             continuation.yield(MultiRootEvent(rootPath: rootPath, event: .finished(synthetic)))
             GSYLog.warning(.scan, "MultiRootScanner 合成 partial .finished 让上游收敛 root=\(rootPath) bytes=\(synthetic.totalAllocatedBytes) files=\(synthetic.fileCount) elapsed=\(String(format: "%.1f", synthetic.elapsed))s")
         }
+    }
+
+    static func usesNoProgressWatchdog(delivery: BulkScanner.EventDelivery) -> Bool {
+        delivery != .summaryOnly
+    }
+
+    /// 将公开的 `TimeInterval` 收敛为 Task.sleep 可安全消费的纳秒值。
+    /// - NaN、负数、-infinity、0：立即到期（0ns）。
+    /// - +infinity 或超出 UInt64 纳秒上限：饱和到 UInt64.max。
+    static func normalizedTimeoutNanoseconds(_ seconds: TimeInterval) -> UInt64 {
+        guard !seconds.isNaN, seconds > 0 else { return 0 }
+        guard seconds.isFinite else { return UInt64.max }
+        let nanoseconds = seconds * 1_000_000_000
+        guard nanoseconds.isFinite, nanoseconds < Double(UInt64.max) else {
+            return UInt64.max
+        }
+        return UInt64(nanoseconds)
+    }
+
+    static func normalizedTimeoutSeconds(_ seconds: TimeInterval) -> TimeInterval {
+        Double(normalizedTimeoutNanoseconds(seconds)) / 1_000_000_000
+    }
+
+    private static func watchdogTickNanoseconds(
+        thresholdSeconds: TimeInterval
+    ) -> UInt64 {
+        let threshold = normalizedTimeoutNanoseconds(thresholdSeconds)
+        guard threshold > 0 else { return 0 }
+        let fiveSeconds: UInt64 = 5_000_000_000
+        return max(fiveSeconds, threshold / 6)
+    }
+
+    private static func timeoutLogLabel(_ seconds: TimeInterval) -> String {
+        String(format: "%.3fs", normalizedTimeoutSeconds(seconds))
     }
 }
 

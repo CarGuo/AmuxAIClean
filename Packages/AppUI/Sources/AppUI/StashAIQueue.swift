@@ -1,5 +1,5 @@
+import Combine
 import Foundation
-import Observation
 import AIKit
 import SafetyKit
 import LogKit
@@ -30,9 +30,9 @@ import LogKit
 /// - 单条抛错 → 写入 typed `.error(failure)` 到 store.entries[i].aiVerdict，**继续下一条**；
 /// - 全局错误（invalidBaseURL / insecureBaseURL / missingAPIKey 在 start 前做一次预检）
 ///   → 整队列拒发 + 暴露 `lastGlobalError`，UI 直接展示错误条，不进 running 态。
+/// v2026.07.16：队列只发布用户可见进度，任务句柄继续保持内部状态，兼容 macOS 13.5。
 @MainActor
-@Observable
-public final class StashAIQueue {
+public final class StashAIQueue: ObservableObject {
 
     public enum Phase: Equatable, Sendable {
         case idle
@@ -57,24 +57,23 @@ public final class StashAIQueue {
     }
 
     /// 当前阶段；UI 决定按钮是渲染 "一键 AI" 还是 ProgressView。
-    public private(set) var phase: Phase = .idle
+    @Published public private(set) var phase: Phase = .idle
 
     /// 已处理条数（含成功 + 失败）。UI 进度文案：`processed / total`。
-    public private(set) var processed: Int = 0
+    @Published public private(set) var processed: Int = 0
 
     /// 本次队列总数（start 时一次性 snapshot store.entries.count，
     /// 跑过程中即使用户继续 add 新条目，本次 batch 也按 snapshot 走，
     /// 避免"永远跑不完"——下一轮 start 会重新 snapshot）。
-    public private(set) var total: Int = 0
+    @Published public private(set) var total: Int = 0
 
     /// 正在询问中的条目 path（仅展示用，nil 表示空闲）。
-    public private(set) var currentPath: String? = nil
+    @Published public private(set) var currentPath: String? = nil
 
     /// 最近一次"全局"失败原因（baseURL / apiKey / scheme 等 start 前的预检失败）。
     /// 单条失败**不**写到这里——单条失败已逐项写入 store.entries[i].aiVerdict。
-    public private(set) var lastGlobalError: GlobalError? = nil
+    @Published public private(set) var lastGlobalError: GlobalError? = nil
 
-    @ObservationIgnored
     private var runTask: Task<Void, Never>? = nil
 
     public init() {}

@@ -31,6 +31,12 @@ public struct ScanCategory: Identifiable, Hashable, Sendable {
 
     public var rootURL: URL { URL(fileURLWithPath: rootPath) }
 
+    /// Locale-neutral title used by scan progress snapshots. Custom path names are always
+    /// verbatim; built-in categories carry their String Catalog key until a View renders them.
+    public var titlePresentation: LocalizedTextDescriptor {
+        titleIsLocalizationKey ? .catalog(title) : .verbatim(title)
+    }
+
     /// 本地化后的标题。`titleIsLocalizationKey == false` 时直接返回原值。
     public var displayTitle: String {
         displayTitle(locale: .current)
@@ -39,7 +45,7 @@ public struct ScanCategory: Identifiable, Hashable, Sendable {
     /// 按当前 SwiftUI 环境 locale 解析侧栏标题。
     /// `displayTitle` 保留给非 UI / 旧调用方；运行期可切语言的 View 必须使用本入口。
     public func displayTitle(locale: Locale) -> String {
-        titleIsLocalizationKey ? AppLocalization.string(title, locale: locale) : title
+        titlePresentation.localized(locale: locale)
     }
 
     /// 本地化后的副标题。同上策略。

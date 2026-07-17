@@ -58,6 +58,37 @@ enum SettingsLogActionNotice: Equatable {
     }
 }
 
+/// v2026.07.16: one complete, testable mapping drives the Ventura-compatible
+/// settings sidebar. Keeping title and icon metadata on every destination prevents
+/// a newly added route from silently becoming unreachable or unlabeled.
+extension SettingsNavigation.Destination {
+    var settingsTitleKey: String {
+        switch self {
+        case .scan: "settings.tab.scan"
+        case .largeFiles: "settings.tab.large_files"
+        case .customPaths: "settings.tab.custom_paths"
+        case .update: "settings.tab.update"
+        case .developerScan: "settings.tab.dev_scan"
+        case .storageAndLogs: "settings.tab.storage"
+        case .ai: "settings.tab.ai"
+        case .advanced: "settings.tab.advanced"
+        }
+    }
+
+    var settingsSystemImage: String {
+        switch self {
+        case .scan: "magnifyingglass"
+        case .largeFiles: "doc.richtext"
+        case .customPaths: "folder.badge.plus"
+        case .update: "arrow.down.circle"
+        case .developerScan: "hammer"
+        case .storageAndLogs: "internaldrive"
+        case .ai: "sparkles"
+        case .advanced: "shield"
+        }
+    }
+}
+
 /// v1.0 设置窗口（⌘, 自动可用）。
 ///
 /// 三个分区：
@@ -67,18 +98,21 @@ enum SettingsLogActionNotice: Equatable {
 ///
 /// 决策来源：[docs/ROADMAP_V1.md](../../../../docs/ROADMAP_V1.md) §1 T2。
 public struct SettingsScene: View {
-    @Bindable private var settings: AppSettings
+    @ObservedObject private var settings: AppSettings
     private let pathStore: UserPathStore
-    @Bindable private var updateChecker: UpdateChecker
-    @Bindable private var navigation: SettingsNavigation
+    @ObservedObject private var updateChecker: UpdateChecker
+    @StateObject private var navigation: SettingsNavigation
     /// M5 / 2026-06：AI 模块配置。
     /// **必须**由 App 层（[GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)）
     /// 注入与 [MainView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
-    /// 共享同一份 @Observable 实例：⌘, 改了 AI Enabled / baseURL，RowView contextMenu
+    /// 共享同一份 ObservableObject 实例：⌘, 改了 AI Enabled / baseURL，RowView contextMenu
     /// 的"问 AI"按钮要立刻刷新可见性。若两端各自 `AISettings()`，UserDefaults 持久化
-    /// 一致但 @Observable 通知不跨实例 → 需重启 App 才生效（Review fix #2，2026-06-15）。
+    /// 一致但对象通知不跨实例 → 需重启 App 才生效（Review fix #2，2026-06-15）。
     /// 为兼容旧测试 / Preview，参数允许省略，省略时仍 new 一份私有实例（仅 settings 窗口自用）。
-    @Bindable private var aiSettings: AISettings
+    @StateObject private var aiSettings: AISettings
+    /// v2026.07.16：NavigationSplitView 只挂载当前 detail；把未保存的 Key 草稿与
+    /// Keychain 反馈提升到场景生命周期，切换侧栏不会销毁输入或重复触发初始读取。
+    @StateObject private var aiTabState: AISettingsTabState
     @ObservedObject private var sentinelManager: SentinelManager
 
     /// 当前 SwiftUI 环境的 locale —— 给语言 Picker 选项做"按当前界面语言展示"用。
@@ -101,90 +135,37 @@ public struct SettingsScene: View {
                 aiSettings: AISettings? = nil,
                 navigation: SettingsNavigation? = nil,
                 sentinelManager: SentinelManager) {
-        self.settings = settings
+        self._settings = ObservedObject(wrappedValue: settings)
         self.pathStore = pathStore
-        self.updateChecker = updateChecker
-        self.aiSettings = aiSettings ?? AISettings()
-        self.navigation = navigation ?? SettingsNavigation()
+        self._updateChecker = ObservedObject(wrappedValue: updateChecker)
+        self._aiSettings = StateObject(wrappedValue: aiSettings ?? AISettings())
+        self._aiTabState = StateObject(wrappedValue: AISettingsTabState())
+        self._navigation = StateObject(wrappedValue: navigation ?? SettingsNavigation())
         self._sentinelManager = ObservedObject(wrappedValue: sentinelManager)
     }
 
     public var body: some View {
-        TabView(selection: $navigation.destination) {
-            Tab(value: SettingsNavigation.Destination.scan) {
-                scanTab
-            } label: {
+        // v2026.07.16 macOS 13 compatibility root fix:
+        // macOS 15's new Tab/TabContent + sidebarAdaptable API made the entire settings
+        // scene unavailable on Ventura. Settings navigation is structurally a master/detail
+        // relationship, so model it once with NavigationSplitView instead of maintaining a
+        // newer Tab implementation plus scattered availability branches. The shared
+        // SettingsNavigation remains the source of truth, preserving external deep links.
+        NavigationSplitView {
+            List(SettingsNavigation.Destination.allCases, selection: $navigation.destination) { destination in
                 Label {
-                    Text("settings.tab.scan", bundle: .module)
+                    Text(LocalizedStringKey(destination.settingsTitleKey), bundle: .module)
                 } icon: {
-                    Image(systemName: "magnifyingglass")
+                    Image(systemName: destination.settingsSystemImage)
                 }
+                .tag(destination)
             }
-            Tab(value: SettingsNavigation.Destination.largeFiles) {
-                largeFilesTab
-            } label: {
-                Label {
-                    Text("settings.tab.large_files", bundle: .module)
-                } icon: {
-                    Image(systemName: "doc.richtext")
-                }
-            }
-            Tab(value: SettingsNavigation.Destination.customPaths) {
-                pathsTab
-            } label: {
-                Label {
-                    Text("settings.tab.custom_paths", bundle: .module)
-                } icon: {
-                    Image(systemName: "folder.badge.plus")
-                }
-            }
-            Tab(value: SettingsNavigation.Destination.update) {
-                updateTab
-            } label: {
-                Label {
-                    Text("settings.tab.update", bundle: .module)
-                } icon: {
-                    Image(systemName: "arrow.down.circle")
-                }
-            }
-            Tab(value: SettingsNavigation.Destination.developerScan) {
-                developerArtifactsTab
-            } label: {
-                Label {
-                    Text("settings.tab.dev_scan", bundle: .module)
-                } icon: {
-                    Image(systemName: "hammer")
-                }
-            }
-            Tab(value: SettingsNavigation.Destination.storageAndLogs) {
-                storageTab
-            } label: {
-                Label {
-                    Text("settings.tab.storage", bundle: .module)
-                } icon: {
-                    Image(systemName: "internaldrive")
-                }
-            }
-            Tab(value: SettingsNavigation.Destination.ai) {
-                AISettingsTab(settings: aiSettings)
-            } label: {
-                Label {
-                    Text("settings.tab.ai", bundle: .module)
-                } icon: {
-                    Image(systemName: "sparkles")
-                }
-            }
-            Tab(value: SettingsNavigation.Destination.advanced) {
-                advancedTab
-            } label: {
-                Label {
-                    Text("settings.tab.advanced", bundle: .module)
-                } icon: {
-                    Image(systemName: "shield")
-                }
-            }
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 260)
+        } detail: {
+            settingsDetail(for: navigation.destination)
         }
-        .tabViewStyle(.sidebarAdaptable)
+        .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 620, idealWidth: 720, minHeight: 460, idealHeight: 520)
         .fileImporter(
             isPresented: $isPathImporterPresented,
@@ -214,6 +195,28 @@ public struct SettingsScene: View {
         }
     }
 
+    @ViewBuilder
+    private func settingsDetail(for destination: SettingsNavigation.Destination) -> some View {
+        switch destination {
+        case .scan:
+            scanTab
+        case .largeFiles:
+            largeFilesTab
+        case .customPaths:
+            pathsTab
+        case .update:
+            updateTab
+        case .developerScan:
+            developerArtifactsTab
+        case .storageAndLogs:
+            storageTab
+        case .ai:
+            AISettingsTab(settings: aiSettings, state: aiTabState)
+        case .advanced:
+            advancedTab
+        }
+    }
+
     // MARK: - Tabs
 
     private var scanTab: some View {
@@ -237,6 +240,9 @@ public struct SettingsScene: View {
                     }
                 }
                 .pickerStyle(.menu)
+                // v2026.07.17 C4 contract: language switching must be addressable by
+                // semantic AX identity so the same App process can prove live relocalization.
+                .accessibilityIdentifier("settings.language")
             } header: {
                 Text("settings.section.appearance", bundle: .module)
             }

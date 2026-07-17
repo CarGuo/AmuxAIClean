@@ -44,6 +44,173 @@ final class AppUninstallerTests: XCTestCase {
         return appURL
     }
 
+    func test_UninstallCandidateLoadGate_旧取消任务不能结束或清空新轮() {
+        let appA = UninstallCandidateLoadIdentity(
+            appID: "/Applications/A.app",
+            scanSessionID: UUID(),
+            selectionRevision: 1
+        )
+        let appB = UninstallCandidateLoadIdentity(
+            appID: "/Applications/B.app",
+            scanSessionID: UUID(),
+            selectionRevision: 2
+        )
+        var gate = UninstallCandidateLoadGate()
+        gate.begin(appA)
+        gate.begin(appB)
+
+        XCTAssertNil(gate.completeIfCurrent(
+            appA,
+            selectedAppID: appB.appID,
+            scanSessionID: appB.scanSessionID,
+            selectionRevision: appB.selectionRevision,
+            taskWasCancelled: true
+        ))
+        XCTAssertEqual(gate.current, appB, "旧任务迟到收尾不能清除新轮 owner 或关闭新轮 spinner")
+
+        XCTAssertEqual(gate.completeIfCurrent(
+            appB,
+            selectedAppID: appB.appID,
+            scanSessionID: appB.scanSessionID,
+            selectionRevision: appB.selectionRevision,
+            taskWasCancelled: false
+        ), .publishResult)
+        XCTAssertNil(gate.current)
+    }
+
+    func test_UninstallCandidateLoadGate_取消与离页都收敛且拒绝迟到结果() {
+        let identity = UninstallCandidateLoadIdentity(
+            appID: "/Applications/A.app",
+            scanSessionID: UUID(),
+            selectionRevision: 7
+        )
+        var gate = UninstallCandidateLoadGate()
+        gate.begin(identity)
+
+        XCTAssertEqual(gate.completeIfCurrent(
+            identity,
+            selectedAppID: identity.appID,
+            scanSessionID: identity.scanSessionID,
+            selectionRevision: identity.selectionRevision,
+            taskWasCancelled: true
+        ), .cancelled)
+        XCTAssertNil(gate.current)
+
+        gate.begin(identity)
+        gate.invalidate()
+        XCTAssertNil(gate.completeIfCurrent(
+            identity,
+            selectedAppID: identity.appID,
+            scanSessionID: identity.scanSessionID,
+            selectionRevision: identity.selectionRevision,
+            taskWasCancelled: false
+        ), "离页失效后，同一磁盘任务即使迟到返回也不得重新发布")
+    }
+
+    func test_UninstallAppListLoadGate_旧刷新不能结束新轮() {
+        let old = UninstallAppListLoadIdentity(operationID: UUID(), revision: 1)
+        let current = UninstallAppListLoadIdentity(operationID: UUID(), revision: 2)
+        var gate = UninstallAppListLoadGate()
+        gate.begin(old)
+        gate.begin(current)
+
+        XCTAssertNil(gate.finishIfCurrent(old, taskWasCancelled: true))
+        XCTAssertEqual(gate.current, current)
+        XCTAssertEqual(gate.finishIfCurrent(current, taskWasCancelled: false), true)
+        XCTAssertNil(gate.current)
+    }
+
+    func test_UninstallExecutionProgressReducer_严格绑定App会话版本且单调() {
+        let session = UUID()
+        let owner = UninstallExecutionOwner(
+            id: UUID(),
+            appID: "/Applications/Demo.app",
+            scanSessionID: session,
+            selectionRevision: 5
+        )
+        let start = UninstallExecutionStatus.preparing(totalItems: 3)
+        let submitting = UninstallExecutionProgressReducer.reduce(
+            current: start,
+            event: .trash(.init(
+                phase: .submitting,
+                completedItems: 1,
+                totalItems: 3,
+                currentPath: "/tmp/a"
+            )),
+            eventOwner: owner,
+            currentOwner: owner,
+            currentAppID: owner.appID,
+            currentScanSessionID: session,
+            currentSelectionRevision: 5
+        )
+        XCTAssertEqual(submitting.phase, .submitting)
+        XCTAssertEqual(submitting.completedItems, 1)
+
+        let stale = UninstallExecutionProgressReducer.reduce(
+            current: submitting,
+            event: .trash(.init(
+                phase: .finalizing,
+                completedItems: 3,
+                totalItems: 3,
+                currentPath: nil
+            )),
+            eventOwner: owner,
+            currentOwner: owner,
+            currentAppID: owner.appID,
+            currentScanSessionID: session,
+            currentSelectionRevision: 6
+        )
+        XCTAssertEqual(stale, submitting)
+
+        let regressed = UninstallExecutionProgressReducer.reduce(
+            current: submitting,
+            event: .trash(.init(
+                phase: .finalValidation,
+                completedItems: 0,
+                totalItems: 3,
+                currentPath: nil
+            )),
+            eventOwner: owner,
+            currentOwner: owner,
+            currentAppID: owner.appID,
+            currentScanSessionID: session,
+            currentSelectionRevision: 5
+        )
+        XCTAssertEqual(regressed, submitting)
+
+        let diagnosing = UninstallExecutionProgressReducer.reduce(
+            current: submitting,
+            event: .trash(.init(
+                phase: .diagnosingItems,
+                completedItems: 1,
+                totalItems: 3,
+                currentPath: "/tmp/b"
+            )),
+            eventOwner: owner,
+            currentOwner: owner,
+            currentAppID: owner.appID,
+            currentScanSessionID: session,
+            currentSelectionRevision: 5
+        )
+        let nextBatch = UninstallExecutionProgressReducer.reduce(
+            current: diagnosing,
+            event: .trash(.init(
+                phase: .submitting,
+                completedItems: 2,
+                totalItems: 3,
+                currentPath: "/tmp/c"
+            )),
+            eventOwner: owner,
+            currentOwner: owner,
+            currentAppID: owner.appID,
+            currentScanSessionID: session,
+            currentSelectionRevision: 5
+        )
+        XCTAssertEqual(nextBatch.phase, .submitting,
+                       "分批回收可在逐项诊断后进入下一批提交，不能用伪线性 rank 卡住状态")
+        XCTAssertEqual(nextBatch.completedItems, 2)
+    }
+
     func test_DefaultFileManagerSnapshot_大目录应受文件数预算限制() throws {
         let tmp = try makeTempDir("bounded-snapshot")
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
@@ -56,6 +223,70 @@ final class AppUninstallerTests: XCTestCase {
         let snapshot = DefaultFileManagerSnapshot(maxDescendantFiles: 3)
             .snapshot(at: tmp.path)
         XCTAssertLessThanOrEqual(snapshot.fileCount, 3, "真实磁盘 snapshot 需要有预算，避免大型容器把 UI 等死")
+        XCTAssertTrue(snapshot.isDirectory)
+        XCTAssertEqual(snapshot.completion, .partial,
+                       "预算截断只能发布 partial 下界，不能伪装成完整容量")
+        XCTAssertTrue(snapshot.issues.contains { issue in
+            if case .fileBudgetExceeded(limit: 3) = issue.reason { return true }
+            return false
+        })
+    }
+
+    /// v2026.07.17 regression: NaN must not disable the public duration budget because every
+    /// `elapsed >= .nan` comparison is false.
+    func test_DefaultFileManagerSnapshot_非法时长预算必须收敛() {
+        XCTAssertEqual(DefaultFileManagerSnapshot.normalizedSnapshotDuration(.nan), 0)
+        XCTAssertEqual(DefaultFileManagerSnapshot.normalizedSnapshotDuration(-1), 0)
+        XCTAssertEqual(DefaultFileManagerSnapshot.normalizedSnapshotDuration(0), 0)
+        XCTAssertEqual(DefaultFileManagerSnapshot.normalizedSnapshotDuration(2.5), 2.5)
+        XCTAssertEqual(DefaultFileManagerSnapshot.normalizedSnapshotDuration(.infinity), .infinity)
+        XCTAssertNil(DefaultFileManagerSnapshot.normalizedSnapshotDuration(nil))
+    }
+
+    func test_DefaultFileManagerSnapshot_单文件目录仍保留真实目录类型() throws {
+        let tmp = try makeTempDir("single-file-directory")
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
+        try Data([0x1]).write(to: tmp.appendingPathComponent("only.bin"))
+
+        let snapshot = DefaultFileManagerSnapshot().snapshot(at: tmp.path)
+
+        XCTAssertEqual(snapshot.fileCount, 1)
+        XCTAssertTrue(snapshot.isDirectory,
+                      "目录里恰好一个文件时不能被 fileCount == 1 误判成普通文件")
+        XCTAssertEqual(snapshot.completion, .complete)
+        XCTAssertTrue(snapshot.issues.isEmpty)
+    }
+
+    func test_DefaultFileManagerSnapshot_逐项取消返回cancelled而非partial终态() throws {
+        let tmp = try makeTempDir("cooperative-cancellation")
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
+        for idx in 0..<4 {
+            try Data([UInt8(idx)]).write(to: tmp.appendingPathComponent("\(idx).bin"))
+        }
+
+        let probe = CancellationProbe(cancelAtCheck: 2)
+        let snapshot = DefaultFileManagerSnapshot(
+            isCancellationRequested: { probe.shouldCancel() }
+        ).snapshot(at: tmp.path)
+
+        XCTAssertEqual(snapshot.completion, .cancelled)
+        XCTAssertTrue(snapshot.isDirectory)
+        XCTAssertTrue(snapshot.issues.contains { $0.reason == .cancelled })
+        XCTAssertLessThan(snapshot.fileCount, 4,
+                          "取消必须在逐项边界停住，不能继续遍历完整目录")
+    }
+
+    func test_DefaultFileManagerSnapshot_根metadata失败保留结构化partial证据() {
+        let missing = "/tmp/AppUninstaller-missing-\(UUID().uuidString)"
+
+        let snapshot = DefaultFileManagerSnapshot().snapshot(at: missing)
+
+        XCTAssertFalse(snapshot.exists)
+        XCTAssertEqual(snapshot.completion, .partial)
+        XCTAssertEqual(snapshot.issues.first?.path, missing)
+        XCTAssertEqual(snapshot.issues.first?.reason, .metadataUnavailable)
+        XCTAssertEqual(snapshot.issues.first?.stage, .rootMetadata)
+        XCTAssertEqual(snapshot.issues.first?.posixErrorCode, ENOENT)
     }
 
     func test_DefaultFileManagerSnapshot_稀疏文件主值应对齐系统磁盘占用() throws {
@@ -92,6 +323,19 @@ final class AppUninstallerTests: XCTestCase {
         XCTAssertEqual(snapshot.bytes, Int64(metadata.st_blocks) * 512)
         XCTAssertEqual(snapshot.logicalBytes, Int64(metadata.st_size))
         XCTAssertEqual(snapshot.fileCount, 2, "文件数仍表示两个目录项，只有字节需要 inode 去重")
+    }
+
+    /// v2026.07.17 regression: after the first multi-link pathname is counted, a concurrent
+    /// unlink can make the next pathname report `st_nlink == 1`. The retained identity must be
+    /// consulted before the single-link fast path or the same allocation is counted twice.
+    func test_FSSnapshotHardlinkLedger_linkCount下降后仍不能重复计量() {
+        var ledger = FSSnapshotHardlinkLedger()
+
+        XCTAssertTrue(ledger.shouldCount(device: 7, inode: 42, linkCount: 2))
+        XCTAssertFalse(ledger.shouldCount(device: 7, inode: 42, linkCount: 1))
+        XCTAssertTrue(ledger.shouldCount(device: 7, inode: 43, linkCount: 1))
+        XCTAssertEqual(ledger.retainedIdentityCount, 1,
+                       "普通单链接 inode 不应为正确性修复重新全部常驻内存")
     }
 
     // MARK: - 1. Info.plist 解析
@@ -382,6 +626,152 @@ final class AppUninstallerTests: XCTestCase {
         func snapshot(at path: String) -> FSSnapshot {
             snapshots[path] ?? .init(bytes: 0, fileCount: 0)
         }
+    }
+
+    private final class CancellationProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private let cancelAtCheck: Int
+        private var checks = 0
+
+        init(cancelAtCheck: Int) {
+            self.cancelAtCheck = cancelAtCheck
+        }
+
+        func shouldCancel() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            checks += 1
+            return checks >= cancelAtCheck
+        }
+    }
+
+    private final class AsyncSnapshotCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+
+        func markStarted() {
+            lock.lock()
+            value += 1
+            lock.unlock()
+        }
+
+        var started: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
+    private struct CooperativelyBlockingFM: FileManagerSnapshotting {
+        let root: String
+        let entries: [FSEntry]
+        let counter: AsyncSnapshotCounter
+
+        func firstLevelEntries(at path: String) -> [FSEntry]? {
+            path == root ? entries : nil
+        }
+
+        func snapshot(at path: String) -> FSSnapshot {
+            blockingSnapshot(at: path) {
+                withUnsafeCurrentTask(body: { $0?.isCancelled ?? false })
+            }
+        }
+
+        func snapshot(
+            at path: String,
+            cancellationToken: FSSnapshotCancellationToken
+        ) -> FSSnapshot {
+            blockingSnapshot(at: path) { cancellationToken.isCancelled }
+        }
+
+        private func blockingSnapshot(
+            at path: String,
+            cancellationRequested: () -> Bool
+        ) -> FSSnapshot {
+            counter.markStarted()
+            while !cancellationRequested() {
+                usleep(500)
+            }
+            return FSSnapshot(
+                bytes: 0,
+                fileCount: 0,
+                exists: true,
+                isDirectory: true,
+                completion: .cancelled,
+                issues: [.init(path: path, reason: .cancelled, stage: .cancellation)]
+            )
+        }
+    }
+
+    func test_candidatesAsync_取消后停止补任务并丢弃整轮候选() async {
+        let root = "/H/Library/Caches"
+        let entries = (0..<40).map { index in
+            FSEntry(name: "com.acme.demo.\(index)", path: "\(root)/com.acme.demo.\(index)")
+        }
+        let counter = AsyncSnapshotCounter()
+        let uninstaller = AppUninstaller(
+            homeDirectory: "/H",
+            systemLibrary: "/Library",
+            fileManager: CooperativelyBlockingFM(root: root, entries: entries, counter: counter)
+        )
+        let metadata = AppMetadata(
+            bundleID: "com.acme.demo",
+            bundleVendor: "com.acme",
+            appName: "DemoApp",
+            executableName: nil
+        )
+
+        let task = Task {
+            await uninstaller.candidatesAsync(for: metadata, includeFallbacks: false)
+        }
+        while counter.started == 0 { await Task.yield() }
+        task.cancel()
+        let candidates = await task.value
+
+        XCTAssertTrue(candidates.isEmpty,
+                      "取消轮没有可信终态，不能发布抢先完成或 partial 候选")
+        XCTAssertLessThanOrEqual(counter.started, 8,
+                                 "滑动窗口取消后不得继续从 iterator 补任务")
+    }
+
+    func test_Uninstall删除策略_partial不可提交_完整单文件目录类型不丢失() {
+        let issue = FSSnapshotIssue(
+            path: "/H/Library/Caches/com.acme.demo",
+            reason: .fileBudgetExceeded(limit: 3),
+            stage: .budget
+        )
+        let partial = UninstallCandidate(
+            path: issue.path,
+            bytes: 100,
+            fileCount: 3,
+            isDirectory: true,
+            snapshotCompletion: .partial,
+            snapshotIssues: [issue],
+            matchReason: .bundleID("com.acme.demo")
+        )
+        XCTAssertFalse(UninstallDeletionSelectionPolicy.isSelectable(partial))
+        XCTAssertFalse(UninstallDeletionSelectionPolicy.canSubmit([partial]))
+        let partialInteraction = UninstallDeletionSelectionPolicy.interactionSnapshot(
+            for: partial,
+            runningBundleIDPrefix: "com.acme.demo"
+        )
+        XCTAssertEqual(partialInteraction.accessEvidence, .incomplete(.incompleteEnumeration))
+
+        let completeDirectory = UninstallCandidate(
+            path: "/H/Library/Caches/com.acme.complete",
+            bytes: 10,
+            fileCount: 1,
+            isDirectory: true,
+            matchReason: .bundleID("com.acme.demo")
+        )
+        XCTAssertTrue(UninstallDeletionSelectionPolicy.canSubmit([completeDirectory]))
+        let completeInteraction = UninstallDeletionSelectionPolicy.interactionSnapshot(
+            for: completeDirectory,
+            runningBundleIDPrefix: "com.acme.demo"
+        )
+        XCTAssertTrue(completeInteraction.isDirectory,
+                      "删除 intent 必须使用真实类型，不能再用 fileCount != 1 猜目录")
+        XCTAssertEqual(completeInteraction.accessEvidence, .complete)
     }
 
     func test_candidatesAsync与同步版本结果集相同() async {
@@ -713,6 +1103,11 @@ final class AppUninstallerTests: XCTestCase {
         XCTAssertNil(entries, "无权限目录 firstLevelEntries 必须返回 nil")
         XCTAssertEqual(collector.snapshot, [tmp.path],
             "permissionDeniedHandler 必须被调用一次")
+
+        let snapshot = snap.snapshot(at: tmp.path)
+        XCTAssertEqual(snapshot.completion, .partial)
+        XCTAssertTrue(snapshot.issues.contains { $0.reason == .permissionDenied },
+                      "snapshot 不能只写日志；权限错误必须进入 typed issues")
     }
 
     /// 不存在的目录静默不上报

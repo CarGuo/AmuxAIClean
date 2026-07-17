@@ -98,10 +98,10 @@ private struct SmartCareAIReportObserverModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .onChange(of: latestReport) { _, report in
+            .onValueChange(of: latestReport) { _, report in
                 onLatestReportChange(report)
             }
-            .onChange(of: canPresentPendingReport) { _, canPresent in
+            .onValueChange(of: canPresentPendingReport) { _, canPresent in
                 onPendingAvailabilityChange(canPresent)
             }
     }
@@ -135,6 +135,67 @@ private struct SidebarTitleStyle: ViewModifier {
     }
 }
 
+/// v2026.07.16 scan-performance regression guard: one main window has two scan
+/// producers (Smart Care and Professional). A UI mode/category transition is an
+/// ownership boundary, not merely a presentation change. Keeping the policy as
+/// a pure value makes every transition path—including programmatic Sentinel
+/// routing—use the same rule and keeps it regression-testable.
+enum MainScanOwnershipPolicy {
+    enum Producer: Equatable {
+        case smartCare
+        case professional
+    }
+
+    static func departingProducer(
+        from oldMode: SmartCareInterfaceMode,
+        to newMode: SmartCareInterfaceMode
+    ) -> Producer? {
+        guard oldMode != newMode else { return nil }
+        switch oldMode {
+        case .normal:
+            return .smartCare
+        case .professional:
+            return .professional
+        }
+    }
+
+    static func relinquishesProfessionalCategory(from oldID: String?, to newID: String?) -> Bool {
+        oldID != newID
+    }
+
+    static func relinquishProfessionalCategory(
+        from oldID: String?,
+        to newID: String?,
+        cancel: () -> Void
+    ) {
+        guard relinquishesProfessionalCategory(from: oldID, to: newID) else { return }
+        cancel()
+    }
+
+    static func relinquishDepartingMode(
+        from oldMode: SmartCareInterfaceMode,
+        to newMode: SmartCareInterfaceMode,
+        smartCareIsScanning: Bool,
+        professionalIsScanning: Bool,
+        cancelSmartCare: () -> Void,
+        cancelProfessional: () -> Void,
+        cancelProfessionalTransientWork: () -> Void
+    ) {
+        switch departingProducer(from: oldMode, to: newMode) {
+        case .smartCare where smartCareIsScanning:
+            cancelSmartCare()
+        case .professional where professionalIsScanning:
+            cancelProfessional()
+        case .professional:
+            // A completed Professional snapshot is preserved across mode switches,
+            // but an on-demand Tree fetch is still active disk work and must stop.
+            cancelProfessionalTransientWork()
+        case .smartCare, nil:
+            break
+        }
+    }
+}
+
 /// v1.3 review-fix B3：跨 target 的通知名常量。
 /// App 层在主窗口已被销毁的情况下 post 这个通知，MainView 监听并调 `openWindow(id:)` 重建。
 public extension Notification.Name {
@@ -149,7 +210,7 @@ public struct MainView: View {
     @Environment(\.locale) private var locale
     @StateObject private var coordinator: ScanCoordinator
     @State private var interfaceMode: SmartCareInterfaceMode = MainView.defaultInterfaceMode
-    @State private var smartCareSession: SmartCareSession
+    @StateObject private var smartCareSession: SmartCareSession
     @State private var smartCareSheetRoute: SmartCareSheetRoute?
     @State private var pendingSmartCareAIReport: SmartCareAIReviewReport? = nil
     /// Smart Care 删除 preview 的跨 await 单事务门。快速双击只能拿到一个 token；
@@ -243,9 +304,9 @@ public struct MainView: View {
     /// **提升到 MainView 的原因**：底部 [footerBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1671-L1730)
     /// 大文件分支必须与 LargeFilesView 头部三态 checkbox 共享**同一份 selection**，
     /// 否则会出现"复选框勾了 3 项但底部按钮 disabled"的错觉（用户反馈 Q1 根因）。
-    /// `BatchSelection` 是 `@Observable class`，用 `@State` 持有引用，
-    /// SwiftUI Observation 自动追踪 `selected` 变更 → 头部 checkbox 与 footer 按钮双向响应。
-    @State private var largeFilesBatch = BatchSelection()
+    /// `BatchSelection` 是 `ObservableObject`，由 `@StateObject` 持有唯一实例，
+    /// `selected` 变更会同步驱动头部 checkbox 与 footer 按钮。
+    @StateObject private var largeFilesBatch = BatchSelection()
     @State private var visibleLargeFileItems: [LargeFileItem] = []
     /// 树形视图选中行。bug A：之前 TreeBrowserView 的 selectedPath 锁在自身内部，
     /// 外层 detailPane 永远拿不到，详情面板因此长期空白。现在通过 onSelect 回调
@@ -297,16 +358,16 @@ public struct MainView: View {
     private let duplicatePipeline: any DeletionPipeline
     private let brewPipeline: any DeletionPipeline
     private let recorder: HeuristicRecorder
-    private let settings: AppSettings
+    @ObservedObject private var settings: AppSettings
     private let pathStore: UserPathStore
-    private let settingsNavigation: SettingsNavigation
+    @ObservedObject private var settingsNavigation: SettingsNavigation
     /// M5 / 2026-06：AI 模块配置。**必须由 App 层注入**与 [SettingsScene](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SettingsScene.swift)
-    /// 共享同一份 @Observable 实例：用户在 ⌘, 切 AI Enabled → RowView contextMenu
+    /// 共享同一份 ObservableObject 实例：用户在 ⌘, 切 AI Enabled → RowView contextMenu
     /// 的"问 AI"项要立刻刷新可见性。若各自 new 两份独立实例，虽然底层 UserDefaults
-    /// 一致，但 @Observable 的 in-process 通知不会跨实例传，会导致需重启 App 才生效
+    /// 一致，但 ObservableObject 的 in-process 通知不会跨实例传，会导致需重启 App 才生效
     /// （Review fix #2，2026-06-15）。为兼容旧测试构造保留可选参数；省略时仍 new
     /// 一份私有实例（同 process 内只有 MainView 自己用，无 drift 风险）。
-    @State private var aiSettings: AISettings
+    @StateObject private var aiSettings: AISettings
     /// 用户在 contextMenu 点过的最近一行 —— 非 nil 即弹 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)。
     @State private var aiAskingRow: RowItem?
     /// v1.5 P2 / Q3：AI 未配置时点击"问 AI"会把这里置 true，弹 alert 引导用户前往设置。
@@ -314,19 +375,17 @@ public struct MainView: View {
     @State private var aiUnconfiguredAlert: Bool = false
     /// 普通模式 AI 复核拥有独立 session：保存完整建议、批次终态、取消与扫描世代。
     /// 它只记录用户开始复核时的选择快照，绝不自动回写 SafetyVerdict 或选择。
-    @State private var smartCareAIReviewSession: SmartCareAIReviewSession
+    @StateObject private var smartCareAIReviewSession: SmartCareAIReviewSession
     /// Keychain 是同步系统 API 的 actor 包装；读取期间同样属于一次 AI 运行。
     /// 独立 gate 防止快速连点创建两批任务，并让取消能覆盖“尚未发出首个请求”的阶段。
-    @State private var smartCareAIPreparationGate = SmartCareAIReviewPreparationGate()
-    /// macOS 14+：通过环境拿到打开"设置..."窗口的标准 action。
-    /// Q3 alert 的"前往设置"按钮会调用它，免去手写 NSApp.sendAction 私有 selector。
-    @Environment(\.openSettings) private var openSettings
-
+    /// v2026.07.16：gate 的 `isPreparing` 是用户可见 loading 状态；必须订阅其
+    /// ObservableObject 发布，不能用只保存引用身份的 `@State`，否则预检期界面不刷新。
+    @StateObject private var smartCareAIPreparationGate = SmartCareAIReviewPreparationGate()
     /// v2026.06.18 **稍后处理（购物车）**：跨视图共享的待处理集合。
     /// 来源：tree row contextMenu → onStash → 入库；
     /// 出口：toolbar 右侧"待处理(N)"按钮 → 打开 [StashScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashScreen.swift)。
-    /// 用 @State 持 StashStore 实例，与 MainView 同生命周期；不持久化（参考购物车语义）。
-    @State private var stash: StashStore = StashStore()
+    /// 用 @StateObject 持 StashStore 实例，与 MainView 同生命周期；不持久化（参考购物车语义）。
+    @StateObject private var stash: StashStore = StashStore()
     /// 控制 [StashScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashScreen.swift)
     /// sheet 的开关；与 [stash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
     /// 分开以便 sheet dismiss 时不会清空购物车数据。
@@ -335,7 +394,7 @@ public struct MainView: View {
     /// 同生命周期；sheet 关闭时不取消跑中的队列（用户可能想后台先跑着，回头再开）。
     /// 实际并不会在 sheet 关闭后继续可见进度——但已得到的 verdict 仍然写在 store
     /// 里，下次打开 sheet 依然能看到徽标。
-    @State private var stashAIQueue: StashAIQueue = StashAIQueue()
+    @StateObject private var stashAIQueue: StashAIQueue = StashAIQueue()
 
     public init(pipeline: (any DeletionPipeline)? = nil,
                 vendors: [VendorRule],
@@ -355,20 +414,22 @@ public struct MainView: View {
         self.duplicatePipeline = TrashPipeline(vendors: vendors, whitelistStore: .shared)
         self.brewPipeline = TrashPipeline(vendors: vendors, whitelistStore: .shared)
         self.recorder = recorder
-        self.settings = settings ?? AppSettings()
+        _settings = ObservedObject(wrappedValue: settings ?? AppSettings())
         self.pathStore = pathStore ?? UserPathStore()
-        self.settingsNavigation = settingsNavigation ?? SettingsNavigation()
+        _settingsNavigation = ObservedObject(
+            wrappedValue: settingsNavigation ?? SettingsNavigation()
+        )
         // v1.3：coordinator 允许从 App 层注入，让 [FloatingScanHUD](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
         // 与主窗口共享同一个 ScanCoordinator 实例（订阅同一份 snapshot/isScanning），避免双扫。
         _coordinator = StateObject(wrappedValue: coordinator ?? ScanCoordinator(vendors: vendors))
-        _smartCareSession = State(initialValue: smartCareSession ?? SmartCareSession(
+        _smartCareSession = StateObject(wrappedValue: smartCareSession ?? SmartCareSession(
             scanCoordinator: ScanCoordinator(vendors: vendors)
         ))
-        _smartCareAIReviewSession = State(
-            initialValue: smartCareAIReviewSession ?? SmartCareAIReviewSession()
+        _smartCareAIReviewSession = StateObject(
+            wrappedValue: smartCareAIReviewSession ?? SmartCareAIReviewSession()
         )
         // M5 / Review fix #2：AISettings 必须 App 层注入。未注入时（老测试 / 预览）退回独立实例。
-        _aiSettings = State(initialValue: aiSettings ?? AISettings())
+        _aiSettings = StateObject(wrappedValue: aiSettings ?? AISettings())
     }
 
     /// 全部类目（preset + custom + libraryBrowse + largeFiles + fullDisk）—— 用于 toolbar / scan 查找。
@@ -508,13 +569,13 @@ public struct MainView: View {
                           onClose: { aiAskingRow = nil })
         }
         // v1.5 P2 / Q3：AI 未配置时点击"问 AI" → 弹"前往设置？"alert，
-        // 用户确认则调 openSettings()（macOS 14+ 标准 action）。
+        // 用户确认则通过标准 Command-, 菜单项打开 Settings scene。
         // 取代旧的"按钮直接隐藏 / disabled"路径，让用户知道有这能力 + 怎么开。
         .alert(AppLocalization.string("ai.unconfigured.alert.title", locale: locale),
                isPresented: $aiUnconfiguredAlert) {
             Button(AppLocalization.string("ai.unconfigured.alert.open_settings", locale: locale)) {
                 settingsNavigation.select(.ai)
-                openSettings()
+                openSettingsWindow()
             }
             Button(AppLocalization.string("ai.unconfigured.alert.cancel", locale: locale),
                    role: .cancel) {}
@@ -593,12 +654,12 @@ public struct MainView: View {
                 onDismiss: { deletePreflightNotice = nil }
             )
         }
-        .onChange(of: viewMode) { _, _ in
+        .onValueChange(of: viewMode) { _, _ in
             // bug A：清单 ↔ 树形 切换时各清各的选中态，避免两条选中互相覆盖。
             detail = nil
             treeSelection = nil
         }
-        .onChange(of: settings.minFileSizeMB) { _, _ in
+        .onValueChange(of: settings.minFileSizeMB) { _, _ in
             // v1.0 T4：阈值改变时，若当前正看大文件视图，自动重扫，
             // 让 ROADMAP 验收 3「改阈值到 500 → 重扫 → 列表变短」无需用户额外动作。
             // 注意：只有当扫描期阈值与新阈值差异显著（即更小阈值）时才需要重扫；
@@ -617,13 +678,13 @@ public struct MainView: View {
             onLatestReportChange: handleSmartCareAIReportChange,
             onPendingAvailabilityChange: presentPendingSmartCareAIReportIfPossible
         ))
-        .onChange(of: settings.mainListSortKey) { _, newKey in
+        .onValueChange(of: settings.mainListSortKey) { _, newKey in
             // v1.3：主列表排序键切换 → 同步到 coordinator。
             // coordinator 内部 didSet 会判断仅 finished 态 republish snapshot，
             // 扫描中切换不会扰乱视觉位置（扫描中强制 path 字典序保持稳定）。
             coordinator.mainListSortKey = newKey
         }
-        .onChange(of: locale.identifier, initial: true) { _, _ in
+        .onValueChange(of: locale.identifier, initial: true) { _, _ in
             // v2026.07.15：扫描协调器中的格式串/兼容标题也必须使用当前界面语言；
             // 只同步 locale，不重建扫描 frame、不重扫磁盘。
             coordinator.updatePresentationLocale(locale)
@@ -676,7 +737,7 @@ public struct MainView: View {
                 path: note.userInfo?[SentinelURLRouter.uninstallPathKey] as? String
             ))
         }
-        .onChange(of: hasConflictingMainModalPresentation) { _, isBusy in
+        .onValueChange(of: hasConflictingMainModalPresentation) { _, isBusy in
             // 所有 modal 共用 occupancy 边沿；当前 presentation 真正消失后再继续消费
             // Sentinel FIFO。调度器内部还会 yield 一轮，避免和 AppKit dismiss 动画竞争。
             if !isBusy {
@@ -688,7 +749,7 @@ public struct MainView: View {
             isPresented: $sentinelScanInvitationVisible
         ) {
             Button(AppLocalization.string("sentinel.alert.scan_invitation.action_scan", locale: locale)) {
-                interfaceMode = .normal
+                transitionInterfaceMode(to: .normal)
                 startSmartCareScan()
             }
             Button(AppLocalization.string("sentinel.alert.scan_invitation.action_dismiss", locale: locale), role: .cancel) {}
@@ -712,6 +773,32 @@ public struct MainView: View {
     }
 
     // MARK: - Smart Care
+
+    /// v2026.07.16 scan-performance regression fix: switching presentation modes
+    /// must stop the departing *active* producer synchronously. Completed results
+    /// remain available when the user switches back; deletion work is never
+    /// interrupted by this control (the picker is disabled during deletion).
+    private func transitionInterfaceMode(to newMode: SmartCareInterfaceMode) {
+        guard interfaceMode != newMode else { return }
+        let smartCareIsScanning: Bool
+        if case .scanning = smartCareSession.care.phase {
+            smartCareIsScanning = true
+        } else {
+            smartCareIsScanning = false
+        }
+        MainScanOwnershipPolicy.relinquishDepartingMode(
+            from: interfaceMode,
+            to: newMode,
+            smartCareIsScanning: smartCareIsScanning,
+            professionalIsScanning: coordinator.isScanning,
+            cancelSmartCare: { smartCareSession.cancelScan() },
+            cancelProfessional: { coordinator.cancel() },
+            cancelProfessionalTransientWork: {
+                coordinator.cancelOnDemandTreeScansPreservingResults()
+            }
+        )
+        interfaceMode = newMode
+    }
 
     private var smartCareHome: some View {
         SmartCareHomeView(
@@ -810,7 +897,10 @@ public struct MainView: View {
         }
         _ = smartCareAIPreparationGate.start { @MainActor in
             do {
-                let worker = try await SmartCareAIReviewWorker.makeOpenAI(settings: aiSettings)
+                let worker = try await SmartCareAIReviewWorker.makeOpenAI(
+                    settings: aiSettings,
+                    locale: locale
+                )
                 try Task.checkCancellation()
                 guard smartCareSession.care.summaryRevision == revision,
                       !smartCareAIReviewSession.phase.isRunning else {
@@ -911,7 +1001,7 @@ public struct MainView: View {
 
             case .openUninstall(let path):
                 openWindow(id: "main")
-                interfaceMode = .professional
+                transitionInterfaceMode(to: .professional)
                 requestCategorySwitch(to: MainView.uninstallSentinelID)
                 // 当前 UninstallScreen 还没有按路径高亮的输入口；路径仍被完整排队，
                 // 后续接通高亮时无需改变 Sentinel 的可靠投递契约。
@@ -1035,7 +1125,10 @@ public struct MainView: View {
         let expectedSummaryRevision = report.sourceSummaryRevision
         let didStart = smartCareAIPreparationGate.start { @MainActor in
             do {
-                let worker = try await SmartCareAIReviewWorker.makeOpenAI(settings: aiSettings)
+                let worker = try await SmartCareAIReviewWorker.makeOpenAI(
+                    settings: aiSettings,
+                    locale: locale
+                )
                 try Task.checkCancellation()
                 guard SmartCareAIReviewDeferredActionPolicy.allows(
                     expectedRunID: expectedRunID,
@@ -1107,7 +1200,18 @@ public struct MainView: View {
     private func openSmartCareAISettings() {
         smartCareSheetRoute = nil
         settingsNavigation.select(.ai)
-        openSettings()
+        openSettingsWindow()
+    }
+
+    /// v2026.07.16：`EnvironmentValues.openSettings` 仅支持 macOS 14+。
+    /// Ventura 通过 SwiftUI Settings scene 已安装的标准 Command-, 菜单项路由，既不依赖
+    /// 本地化标题，也不调用私有 selector；失败时保留结构化证据并给出系统提示音。
+    private func openSettingsWindow() {
+        guard SettingsWindowCompatibility.open() else {
+            GSYLog.error(.settings, "Unable to route the standard Settings menu item")
+            NSSound.beep()
+            return
+        }
     }
 
     private func handleSmartCarePrimaryAction(_ action: SmartCarePrimaryAction) {
@@ -1334,7 +1438,8 @@ public struct MainView: View {
             deletePreflightNotice = DeletionPreflightNotice(rejections: preflight.rejections)
             return
 
-        case .preSubmitRejected(.invalidScanIncompleteOverride(let rejections)):
+        case .preSubmitRejected(.invalidScanIncompleteOverride(let rejections)),
+             .preSubmitRejected(.invalidDuplicateVerification(let rejections)):
             smartCareSession.care.resumeReviewAfterUnsubmittedClean()
             deletePreflightNotice = DeletionPreflightNotice(rejections: rejections)
             return
@@ -1493,6 +1598,7 @@ public struct MainView: View {
                 batchScanRow(icon: "rectangle.3.group",
                              titleKey: "batch.recommended.title")
                     .tag(ScanCategory.batchRecommendedID)
+                    .accessibilityIdentifier("sidebar.batch.recommended")
 
                 batchScanRow(icon: "hammer",
                              titleKey: "batch.developer.title",
@@ -1513,6 +1619,7 @@ public struct MainView: View {
             Section {
                 sidebarRow(largeFilesCategory)
                     .tag(largeFilesCategory.id)
+                    .accessibilityIdentifier("sidebar.large_files")
             } header: {
                 Text("sidebar.section.large_files", bundle: .module)
             }
@@ -1585,12 +1692,14 @@ public struct MainView: View {
             Section {
                 appFootprintSidebarRow
                     .tag(MainView.appFootprintSentinelID)
+                    .accessibilityIdentifier("sidebar.app_footprint")
                 launchAgentSidebarRow
                     .tag(MainView.launchAgentSentinelID)
                 portCleanerSidebarRow
                     .tag(MainView.portCleanerSentinelID)
                 uninstallSidebarRow
                     .tag(MainView.uninstallSentinelID)
+                    .accessibilityIdentifier("sidebar.uninstaller")
                 devVersionedSidebarRow
                     .tag(MainView.devVersionedSentinelID)
             } header: {
@@ -1600,6 +1709,7 @@ public struct MainView: View {
             Section {
                 duplicateSidebarRow
                     .tag(MainView.duplicateSentinelID)
+                    .accessibilityIdentifier("sidebar.duplicates")
             } header: {
                 Text("sidebar.section.duplicates", bundle: .module)
             }
@@ -1643,6 +1753,7 @@ public struct MainView: View {
             Section {
                 workflowAppleSidebarRow
                     .tag(MainView.workflowAppleSentinelID)
+                    .accessibilityIdentifier("sidebar.workflow.apple")
                 workflowAndroidSidebarRow
                     .tag(MainView.workflowAndroidSentinelID)
                 workflowWebNodeSidebarRow
@@ -1657,7 +1768,10 @@ public struct MainView: View {
         // （包住整个 list 容器，看起来像"鼠标进入 sidebar 才出现的蓝框"）。
         // 我们已经有 row selection 的蓝色背景做选中反馈，再叠焦点环纯属冗余且割裂。
         // 关掉容器级焦点环，单行 selection 不受影响。
-        .focusEffectDisabled()
+        .suppressesFocusEffectWhenSupported()
+        // v2026.07.17 C4 contract: stable AX identifiers let a single long-running
+        // accessibility session select semantic destinations without hard-coded row indexes.
+        .accessibilityIdentifier("main.sidebar")
     }
 
     /// v1.2 P1-6：「应用占用排行榜」侧边项。用 sentinel ID 走旁路，避免污染
@@ -2160,7 +2274,8 @@ public struct MainView: View {
                                                 title: row.title,
                                                 bytes: row.bytes,
                                                 isDirectory: row.isDirectory,
-                                                fileCount: row.fileCount
+                                                fileCount: row.fileCount,
+                                                titlePresentation: row.titlePresentation
                                             )
                                         },
                                         isStashed: { path in stash.contains(path) },
@@ -2174,6 +2289,9 @@ public struct MainView: View {
                                             //
                                             // v1.5 P2 / Q3：走 requestAI 收敛 —— 未配置时弹 alert。
                                             let evaluation = coordinator.deletionSafetyEvaluation(for: row.path)
+                                            let snapshotItem = coordinator.snapshot.rows.first {
+                                                $0.id == row.path
+                                            }
                                             requestAI(row: RowItem(
                                                 id: row.path,
                                                 url: URL(fileURLWithPath: row.path),
@@ -2184,10 +2302,14 @@ public struct MainView: View {
                                                 fileCount: row.fileCount,
                                                 verdict: evaluation.verdict,
                                                 rejection: evaluation.rejection,
-                                                vendorName: evaluation.vendor?.name,
-                                                vendorNote: evaluation.vendor?.note,
-                                                runningBundleIDPrefix: evaluation.vendor?.bundleIDPrefix,
-                                                modificationDate: row.modificationDate
+                                                vendorName: snapshotItem?.vendorName ?? evaluation.vendor?.name,
+                                                vendorNote: snapshotItem?.vendorNote ?? evaluation.vendor?.note,
+                                                runningBundleIDPrefix: snapshotItem?.runningBundleIDPrefix
+                                                    ?? evaluation.vendor?.bundleIDPrefix,
+                                                modificationDate: row.modificationDate,
+                                                titlePresentation: row.titlePresentation,
+                                                vendorNamePresentation: snapshotItem?.vendorNamePresentation,
+                                                vendorNotePresentation: snapshotItem?.vendorNotePresentation
                                             ))
                                         },
                                         // v1.5 P2 / Q1：把全局排序键 binding 喂给树视图，
@@ -2233,7 +2355,7 @@ public struct MainView: View {
         // sandbox 外面，确保 NavigationSplitView 可以稳定读取。
         .layoutSandbox()
         .navigationSplitViewColumnWidth(min: 560, ideal: 760)
-        .onChange(of: coordinator.snapshot.rows.count) { _, newCount in
+        .onValueChange(of: coordinator.snapshot.rows.count) { _, newCount in
             guard !coordinator.isScanning else { return }
             // 默认勾选：仅勾 .safe（PITFALLS §5.5）
             // 用 union：用户已经手动改过的不要被覆盖
@@ -2273,10 +2395,10 @@ public struct MainView: View {
         .onAppear {
             syncThrottledListSnapshotIfNeeded(force: true)
         }
-        .onChange(of: coordinator.snapshot) { _, _ in
+        .onValueChange(of: coordinator.snapshot) { _, _ in
             syncThrottledListSnapshotIfNeeded(force: false)
         }
-        .onChange(of: coordinator.isScanning) { _, nowScanning in
+        .onValueChange(of: coordinator.isScanning) { _, nowScanning in
             // 扫描结束立刻补齐 latest（force=true 绕过扫描中冻结）
             if !nowScanning {
                 syncThrottledListSnapshotIfNeeded(force: true)
@@ -2305,6 +2427,7 @@ public struct MainView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(maxWidth: 180)
+            .accessibilityIdentifier("main.results-view-mode")
 
             // 当前视图角标——告诉用户"你在看树形（主视图）"或"清单是二级 fallback"
             switch viewMode {
@@ -2388,7 +2511,7 @@ public struct MainView: View {
         .listStyle(.inset)
         // bug B：清单视图的 List(selection:) 同样会画容器级焦点环，关掉。
         // 单行选中蓝条不受影响。
-        .focusEffectDisabled()
+        .suppressesFocusEffectWhenSupported()
         // v1.3.ab：把 List 的本征宽度上限钉死在父容器宽度，禁止某条特别宽的 RowView
         // （比如 10 GB+ 路径很长的行）反向把 ideal width 抬高 → 把整个外层 sidebar 挤掉。
         .frame(minWidth: 320, maxWidth: .infinity)
@@ -2552,6 +2675,7 @@ public struct MainView: View {
                 }
                 Spacer()
             }
+            .accessibilityIdentifier("main.scan-status")
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
@@ -2793,7 +2917,7 @@ public struct MainView: View {
                 HStack {
                     VerdictBadge(verdict: item.verdict)
                         .frame(width: 14, height: 14)
-                    Text(item.title)
+                    Text(verbatim: item.displayTitle(locale: locale))
                         .font(.title2.bold())
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -2824,7 +2948,7 @@ public struct MainView: View {
                 HStack {
                     Image(systemName: row.isDirectory ? "folder.fill" : "doc")
                         .foregroundStyle(.tint)
-                    Text(row.title)
+                    Text(verbatim: row.displayTitle(locale: locale))
                         .font(.title2.bold())
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -2909,6 +3033,7 @@ public struct MainView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 scanControlButton
+                    .accessibilityIdentifier("main.scan-control")
             }
         }
     }
@@ -2925,7 +3050,10 @@ public struct MainView: View {
     private var interfaceModePicker: some View {
         Picker(
             AppLocalization.string("smart_care.mode.label", locale: locale),
-            selection: $interfaceMode
+            selection: Binding(
+                get: { interfaceMode },
+                set: { transitionInterfaceMode(to: $0) }
+            )
         ) {
             Text("smart_care.mode.normal", bundle: .module)
                 .tag(SmartCareInterfaceMode.normal)
@@ -2935,6 +3063,9 @@ public struct MainView: View {
         .pickerStyle(.segmented)
         .frame(width: 220)
         .help(Text("smart_care.mode.label", bundle: .module))
+        .disabled(isPreparingDeletion || isDeleting)
+        // Stable semantic hook for accessibility and the single-session C4 matrix.
+        .accessibilityIdentifier("main.interface-mode")
     }
 
     /// 主窗口始终展示最终 App Bundle 的真实营销版本，便于截图、反馈和发版验收时
@@ -2959,10 +3090,8 @@ public struct MainView: View {
     /// - 扫描中切换不会打乱视觉位置：[ScanCoordinator.publishSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
     ///   在 finished=false 时强制 path 字典序，仅 finished=true 才用此键排序。
     /// - 用 Menu 而不是 segmented Picker：6 个 case 横排太挤；Menu 更紧凑且 macOS 原生。
-    /// - `@Bindable` 局部 wrap：MainView 把 settings 持成 `private let`，本地需要 binding 时
-    ///   按 Apple 推荐用 `@Bindable var x = settings` 即席包一层，不需要把整个视图改成 @Bindable。
+    /// - AppSettings 由 MainView 以 `@ObservedObject` 持有，Picker 直接使用 projected binding。
     private var sortMenu: some View {
-        @Bindable var settings = settings
         return Menu {
             Picker(selection: $settings.mainListSortKey) {
                 ForEach(MainListSortKey.allCases) { key in
@@ -3030,6 +3159,14 @@ public struct MainView: View {
         fallbackCategory: ScanCategory? = nil
     ) {
         guard old != new else { return }
+        // v2026.07.16 scan-performance regression fix: specialized destinations
+        // do not call ScanCoordinator.scan(...), so relying on the next scan to
+        // cancel the old producer left a full-disk/recommended scan running behind
+        // the newly selected screen. The confirmed category transition itself is
+        // the ownership boundary; cancel before dispatching any destination.
+        MainScanOwnershipPolicy.relinquishProfessionalCategory(from: old, to: new) {
+            coordinator.cancel()
+        }
         if let id = new, ScanCategory.batchScanIDs.contains(id) {
             switch id {
             case ScanCategory.batchRecommendedID:
@@ -3433,7 +3570,8 @@ public struct MainView: View {
             logicalBytes: entry.bytes,
             fileCount: 0,
             verdict: verdict,
-            rejection: rejection
+            rejection: rejection,
+            titlePresentation: entry.titlePresentation
         )
     }
 
@@ -3476,61 +3614,119 @@ public struct MainView: View {
     /// UI 上"剩余 0s"持续闪烁，体验同样误导）。
     @ViewBuilder
     private var singleRootProgress: some View {
-        let scanned = coordinator.snapshot.totalBytes
-        let expected = coordinator.expectedTotalBytes
+        if coordinator.activeCategoryID == ScanCoordinator.commonAppCacheCategoryID,
+           let progress = coordinator.commonAppCacheProgress {
+            commonAppCacheGroupProgress(progress)
+        } else {
+            let scanned = coordinator.snapshot.totalBytes
+            let expected = coordinator.expectedTotalBytes
 
-        // 0~1 比例。expected 缺失 / scanned > expected（估算偏小）时退化为 nil → **隐藏进度条**。
-        //
-        // v2026.06.23 产品决策：剩余时间根本算不准（速率窗口噪声 + 多根 stall + estimator 偏小都会
-        // 让 ETA 严重失真），整段 ETA 文案不再展示。同理，没分母时也不再用 indeterminate spinner
-        // 假装"在前进"——直接只显示已扫字节 + 已用时间，让用户看到的每个数字都是真实可信的。
-        let estimateOvershoot = (expected.map { scanned > $0 } ?? false)
-        let fraction: Double? = {
-            guard let exp = expected, exp > 0, !estimateOvershoot else { return nil }
-            return max(0.0, Double(scanned) / Double(exp))
-        }()
+            // 0~1 比例。expected 缺失 / scanned > expected（估算偏小）时退化为 nil → **隐藏进度条**。
+            //
+            // v2026.06.23 产品决策：剩余时间根本算不准（速率窗口噪声 + 多根 stall + estimator 偏小都会
+            // 让 ETA 严重失真），整段 ETA 文案不再展示。同理，没分母时也不再用 indeterminate spinner
+            // 假装"在前进"——直接只显示已扫字节 + 已用时间，让用户看到的每个数字都是真实可信的。
+            let estimateOvershoot = (expected.map { scanned > $0 } ?? false)
+            let fraction: Double? = {
+                guard let exp = expected, exp > 0, !estimateOvershoot else { return nil }
+                return max(0.0, Double(scanned) / Double(exp))
+            }()
 
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    // 仅当能估出 fraction 时才显示进度条；否则不画 spinner（避免"还在估算"的错觉）。
+                    if let f = fraction {
+                        ProgressView(value: f)
+                            .progressViewStyle(.linear)
+                            .frame(maxWidth: 180)
+                    }
+                    Text(AppLocalization.format(
+                        "main.scan.progress.single",
+                        locale: locale,
+                        arguments: [coordinator.snapshot.scannedFileCount, formattedBytes(scanned)]
+                    ))
+                        .font(.callout)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                HStack(spacing: 10) {
+                    if let f = fraction, let exp = expected {
+                        Text(AppLocalization.format(
+                            "main.scan.progress.percent",
+                            locale: locale,
+                            arguments: [Int(f * 100), formattedBytes(scanned), formattedBytes(exp)]
+                        ))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .help(Text("main.scan.progress.percent.tooltip", bundle: .module))
+                    }
+                    // v2026.06.23：仅展示「已用时间」，不再展示「剩余时间」。
+                    // ETA 计算在长扫场景下不可信，已在 ScanCoordinator 侧停止下发；
+                    // 这里 UI 也不再读 estimatedRemaining，避免任何残留入口偷渡回来。
+                    // v2026.07.16 性能回归复盘：String Catalog 同步改成纯“已用 %@”，
+                    // 不能再用“剩余时间估算中”暗示一个已经不存在且会触发重复遍历的 ETA。
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(AppLocalization.format(
+                            "main.scan.progress.elapsed",
+                            locale: locale,
+                            arguments: [formatDuration(coordinator.elapsedForDisplay(referenceDate: context.date))]
+                        ))
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+    }
+
+    /// v2026.07.17 Common App Cache does not have a trustworthy byte denominator. Its scanner
+    /// publishes completed forest groups and the exact current path instead; this view reports
+    /// those facts and elapsed time without fabricating ETA or treating an indeterminate spinner
+    /// as proof of liveness. A blocked group is ultimately terminated by the isolated worker.
+    @ViewBuilder
+    private func commonAppCacheGroupProgress(
+        _ progress: CommonAppCacheScanner.Progress
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                // 仅当能估出 fraction 时才显示进度条；否则不画 spinner（避免"还在估算"的错觉）。
-                if let f = fraction {
-                    ProgressView(value: f)
-                        .progressViewStyle(.linear)
-                        .frame(maxWidth: 180)
-                }
-                Text(AppLocalization.format(
-                    "main.scan.progress.single",
-                    locale: locale,
-                    arguments: [coordinator.snapshot.scannedFileCount, formattedBytes(scanned)]
-                ))
-                    .font(.callout)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            HStack(spacing: 10) {
-                if let f = fraction, let exp = expected {
+                if progress.totalGroups > 0 {
+                    ProgressView(
+                        value: Double(progress.completedGroups),
+                        total: Double(progress.totalGroups)
+                    )
+                    .progressViewStyle(.linear)
+                    .frame(maxWidth: 180)
                     Text(AppLocalization.format(
-                        "main.scan.progress.percent",
+                        "main.scan.progress.common_cache.groups %lld %lld",
                         locale: locale,
-                        arguments: [Int(f * 100), formattedBytes(scanned), formattedBytes(exp)]
+                        arguments: [Int64(progress.completedGroups), Int64(progress.totalGroups)]
                     ))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .help(Text("main.scan.progress.percent.tooltip", bundle: .module))
+                } else {
+                    Text("main.scan.progress.common_cache.resolving", bundle: .module)
                 }
-                // v2026.06.23：仅展示「已用时间」，不再展示「剩余时间」。
-                // ETA 计算在长扫场景下不可信，已在 ScanCoordinator 侧停止下发；
-                // 这里 UI 也不再读 estimatedRemaining，避免任何残留入口偷渡回来。
+            }
+            .font(.callout)
+
+            HStack(spacing: 10) {
+                if let currentPath = progress.currentPath {
+                    Text(AppLocalization.format(
+                        "main.scan.progress.common_cache.current %@",
+                        locale: locale,
+                        arguments: [currentPath]
+                    ))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Text(AppLocalization.format(
                         "main.scan.progress.elapsed",
                         locale: locale,
                         arguments: [formatDuration(coordinator.elapsedForDisplay(referenceDate: context.date))]
                     ))
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
                 }
             }
+            .font(.caption)
+            .foregroundStyle(.tertiary)
         }
     }
 
@@ -3777,7 +3973,8 @@ public struct MainView: View {
                             accessEvidence: deletionAccessEvidence(
                                 for: row.url.path,
                                 issues: typedIncompleteIssues
-                            )
+                            ),
+                            titlePresentation: row.titlePresentation
                         )
                     }
                 )
@@ -3905,7 +4102,8 @@ public struct MainView: View {
             rejection: evaluation.rejection,
             vendorName: evaluation.vendor?.name,
             vendorNote: evaluation.vendor?.note,
-            runningBundleIDPrefix: evaluation.vendor?.bundleIDPrefix
+            runningBundleIDPrefix: evaluation.vendor?.bundleIDPrefix,
+            titlePresentation: entry.titlePresentation
         )
     }
 
@@ -3958,7 +4156,8 @@ public struct MainView: View {
         title: String,
         bytes: Int64,
         isDirectory: Bool,
-        fileCount: Int
+        fileCount: Int,
+        titlePresentation: LocalizedTextDescriptor? = nil
     ) {
         guard !coordinator.isScanning, coordinator.snapshot.isFinished else {
             deleteResult = AppLocalization.string("delete.preflight.scan_in_progress", locale: locale)
@@ -3970,7 +4169,8 @@ public struct MainView: View {
             bytes: bytes,
             isDirectory: isDirectory,
             fileCount: fileCount,
-            accessDeniedPaths: accessDeniedPathsSnapshot()
+            accessDeniedPaths: accessDeniedPathsSnapshot(),
+            titlePresentation: titlePresentation
         )
     }
 

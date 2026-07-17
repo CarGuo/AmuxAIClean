@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import LogKit
 import SwiftUI
@@ -138,16 +139,16 @@ private enum UpdateReleaseParsingError: Error {
     case invalidReleaseURL
 }
 
-/// MainActor 持有的状态对象，UI 通过 @Bindable 观察。
+/// MainActor 持有的状态对象。v2026.07.16 起通过 Combine 发布用户可见检查状态，
+/// 网络 session、仓库标识和 settings 引用不参与发布，以兼容 macOS 13.5。
 @MainActor
-@Observable
-public final class UpdateChecker {
+public final class UpdateChecker: ObservableObject {
     /// 当前需要展示的可用新版本；nil 表示没有需要提示的更新。
-    public var availableUpdate: ReleaseInfo?
+    @Published public var availableUpdate: ReleaseInfo?
     /// 上次检查的结果（设置面板里"立即检查"按钮可看到详情）。
-    public var lastResult: UpdateCheckResult?
+    @Published public var lastResult: UpdateCheckResult?
     /// 是否正在检查中（设置面板按钮 disable 用）。
-    public var isChecking: Bool = false
+    @Published public var isChecking: Bool = false
 
     private let owner: String
     private let repo: String
@@ -343,7 +344,7 @@ public final class UpdateChecker {
 public struct UpdatePromptView: View {
     /// v2026.07.15：更新弹层可在显示期间随 App 语言切换，格式串不能固化启动语言。
     @Environment(\.locale) private var locale
-    @Bindable public var checker: UpdateChecker
+    @ObservedObject public var checker: UpdateChecker
     public let release: ReleaseInfo
 
     /// v1.5.7：从 release assets 拉到的 [filename: sha256-hex] 字典。
@@ -351,7 +352,7 @@ public struct UpdatePromptView: View {
     @State private var hashesLoaded: Bool = false
 
     public init(checker: UpdateChecker, release: ReleaseInfo) {
-        self.checker = checker
+        self._checker = ObservedObject(wrappedValue: checker)
         self.release = release
     }
 

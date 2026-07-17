@@ -9,7 +9,8 @@
 English | [简体中文](README.md)
 
 [![License MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![macOS 15+](https://img.shields.io/badge/macOS-15%2B-success)](docs/INSTALL.md)
+<!-- v2026.07.16: the product deployment floor is the contracted Ventura 13.5 baseline. -->
+[![macOS 13.5+](https://img.shields.io/badge/macOS-13.5%2B-success)](docs/INSTALL.md)
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange)](https://swift.org)
 [![Tests 370+ Pass](https://img.shields.io/badge/tests-370%2B%20pass-brightgreen)](#quality--safety)
 [![i18n zh-Hans EN](https://img.shields.io/badge/i18n-zh--Hans%20%7C%20EN-informational)](#languages)

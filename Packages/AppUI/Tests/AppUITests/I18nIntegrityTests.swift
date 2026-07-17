@@ -176,7 +176,7 @@ final class I18nIntegrityTests: XCTestCase {
         XCTAssertFalse(dependencySurface.contains("AppSettings"))
     }
 
-    /// v2026.07.16 回归：主窗口关闭后，语言修改只会从 Settings scene 的 onChange 进入
+    /// v2026.07.16 回归：主窗口关闭后，语言修改只会从 Settings scene 的兼容 change 边界进入
     /// App.applyLiveLocale。该边界必须继续调用双 coordinator fanout；否则菜单会变语言，
     /// 但托盘/HUD 后续扫描仍会生成旧语言文案，且包内 fanout 单测无法发现接线被移除。
     func test_settingsOnlyLiveLocaleChange_routesThroughAppCoordinatorFanout() throws {
@@ -202,7 +202,7 @@ final class I18nIntegrityTests: XCTestCase {
         let settingsScene = String(appSource[settingsSceneStart.lowerBound..<settingsSceneEnd.lowerBound])
         let applyBody = String(appSource[applyStart.lowerBound..<applyEnd.lowerBound])
 
-        XCTAssertTrue(settingsScene.contains(".onChange(of: settings.preferredLanguage, initial: true)"))
+        XCTAssertTrue(settingsScene.contains(".onValueChange(of: settings.preferredLanguage, initial: true)"))
         XCTAssertTrue(settingsScene.contains("applyLiveLocale()"))
         XCTAssertTrue(applyBody.contains("ScanPresentationLocaleFanout.apply("))
         XCTAssertTrue(applyBody.contains("professionalCoordinator: coordinator"))

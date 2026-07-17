@@ -1,5 +1,21 @@
 import AppKit
 
+/// v2026.07.16：统一 App 激活的系统版本边界。
+///
+/// `NSApplication.activate()` 从 macOS 14 才可用。Ventura 的旧 API 虽然在 Sonoma 起
+/// deprecated，但仍是 13.x 的公开入口；这里仅在用户明确要求打开窗口、或 accessory
+/// 切回 regular 时使用 `ignoringOtherApps: true`，不让兼容分支散落到窗口路由代码。
+@MainActor
+public enum ApplicationActivationCompatibility {
+    public static func requestForegroundActivation() {
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+}
+
 /// v1.3.x：App 激活策略控制器（决定是否显示 Dock 图标 / 顶部主菜单）。
 ///
 /// 设计来源：用户原话「我们都有顶部托盘托管了，关闭后是不是可以不显示在底部托管」。
@@ -45,7 +61,7 @@ public final class ActivationPolicyController {
         applyIfChanged(.regular)
         // accessory→regular 后 AppKit 不会自动给 App 抢焦点，必须显式 activate，
         // 否则用户点托盘"打开主窗口"会看到窗口但焦点仍在前一个 App。
-        NSApp.activate()
+        ApplicationActivationCompatibility.requestForegroundActivation()
     }
 
     /// 切到 `.accessory`：隐 Dock 图标 + 隐顶部主菜单 + ⌘Tab 不再命中。

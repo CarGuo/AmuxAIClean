@@ -2,6 +2,9 @@
 
 > 目的：把 2026-07-14 用户明确提出的问题、当前真实状态、验收标准和证据统一到一份可审计台账。
 > 本文不是“完成清单”。没有运行时证据的项目，即使已有代码或单测，也不得标记完成。
+>
+> **v2026.07.16 兼容合同**：产品部署下限统一为 macOS 13.5；工程、Info.plist、SwiftPM manifests
+> 和 Release 静态合同一致只构成 C1，不能替代 Ventura 真机/VM 的 C4 运行验收。
 
 ## 1. 状态与证据定义
 
@@ -306,3 +309,109 @@
   或系统提供原子“查询事务 + 提交”能力，当前没有安全依据把未知猜成失败。
 - **C4/C5**：仍缺一次按入口矩阵执行的人工持续 UI 验收，也缺最终发行产物验证。修复完成不等于
   用户交互已亲眼验收，更不等于可直接发布。
+
+### 9.5 v2026.07.17 前一快照的扫描性能证据
+
+- **共享根因与修复边界**：本轮不是只优化“大文件”或“推荐扫描”单页，而是沿生产扫描链路核对
+  main、recommended、full、custom、Tree 按需展开、duplicate、Workflow、App Footprint、
+  Uninstaller、orphan 以及页面/模式切换生命周期。核心回归是扫描线程把海量逐节点事件无界排队到
+  MainActor，导致磁盘遍历已结束后 UI 仍需数分钟消费事件；当前由扫描侧按业务需求生成有界投影，
+  终态摘要保持权威，页面切换会取消离开页面的生产者并阻止旧 revision 回写。Tree、同步快照和专用
+  扫描也统一了取消、partial 与终态合同，避免用额外主线程工作掩盖吞吐问题。
+- **安全合同未改变**：此次只收敛扫描事件量、后台执行和异步生命周期，没有扩大候选范围、放宽
+  incomplete/partial 判定或更改删除语义；文件删除仍只能进入
+  `TrashPipeline → NSWorkspace.recycle`，既有 SafetyEngine 与执行前重验继续生效。
+- **当时的全包与构建（历史 C3）**：AppUI 全量通过 `1,036` 个 XCTest 和 `11` 个 Swift Testing；其余八个
+  Swift package 合计 `731` 个测试通过。原生 Debug `xcodebuild` 成功，目标部署下限为
+  macOS `13.5`。这些证据覆盖共享扫描引擎、协调器投影、Tree、专业工具快照和生命周期合同，
+  但不等同于真实 UI 操作验收。
+- **协调器只读基准**：`~/Library/Caches` 完成 `385,054` files、`17,791,373,312 B`、
+  `248` 个投影行，耗时 `6.944s`；`$HOME` 大文件链路完成 `3,331,139` files、
+  `313,285,234,688 B`、`404` 个候选，耗时 `24.406s`。两项均通过生产协调器路径执行只读扫描，
+  没有移动、删除或修改用户文件。
+- **证据时效边界**：上述结果证明的是当时代码快照，不能继承到 9.6 记录的后续修改。验证期间
+  没有启动 App，因此该快照也从未达到 C4。当前工作树必须重新通过 C2/C3 后，再以一次持续运行
+  核对可见进度、取消、页面切换、partial 展示、终态收敛与交互流畅度；该矩阵通过前不宣称真实
+  UI 性能已完成人工验收。
+
+### 9.6 v2026.07.17 实现优先落地：当前仅 C1
+
+> 用户明确要求“先把问题都安全落地后再测试”。因此本节只记录当前源码/文档静态审阅，
+> **没有运行新增测试、九包全测、build、benchmark 或 App**；当前证据等级为 C1，不能沿用
+> 9.5 的历史 C3 数字。
+
+- **目录 TOCTOU / no-follow**：`BulkScanner` 的并发队列不再只保存 pathname，而是冻结每个
+  root/后代目录的 `(device, inode)`。默认以 `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC` 打开并
+  `fstat` 核对；显式 follow-symlink 分支也冻结 link 与 target identity。排队期间被替换只形成
+  scoped incomplete，不进入替换树。NodeModules 固定 HOME roots 在 depth zero 同样不跟随
+  symlink；外部卷必须由用户明确走 Custom Path。
+- **有序、权威进度**：统计 merge 与绝对 progress publish 位于同一 actor turn，避免并发 worker
+  恢复顺序导致进度倒退；所有 progress-capable delivery 在真实或 synthetic partial `finished`
+  前发布与 summary 一致的终态 bytes/files。AppUI 非终态帧只推进单调下界，只有 terminal
+  summary 可权威替换。进度不能推导 complete/success。
+- **Workflow/DerivedData 长任务**：文件系统卡使用 `.summaryWithProgress`，保持 summary-only
+  分配/完整性语义且不恢复 node/cache DTO；card/request、session、revision、retry generation
+  共同拥有任务。DerivedData 在同一 allocation traversal 中发布有界进度；单卡 loading 不再
+  借用整页/其它卡状态。
+- **Uninstaller 生命周期与时长**：app list、candidate discovery、Trash execution 分属不同
+  revision；执行 sheet 消费类型化 batch/diagnostic/disposition。`FSSnapshot` 对 NaN、负数和零
+  立即到期，对 `+infinity` 保持明确的无实际 deadline，避免 NaN 使限时遍历意外无界。
+- **Duplicate 最终证明与真实提交边界**：持久 reserve 后在后台完整 rehash targets 与 retained
+  reference，并在每个 batch/fallback 的 durable claim 前后做 identity fence。rehash、队列等待、
+  claim 都仍是 pre-submit；`.submittingToTrash` 只在 fence/claim 完成后、紧邻第一次真实
+  `NSWorkspace.recycle` 调用的串行 worker 边界同步记录。边界前页面离开可请求取消，边界后
+  transaction owner 必须保留到 typed recycle 终态；UI phase 不是授权或成功证据。
+- **动态本地化根因**：长期存活的 Row/Tree、Smart Care、Stash、删除/结果和 Workflow 投影携带
+  `LocalizedTextDescriptor`，在消费时按当前显式 locale 生成文案；path、ID、verdict、rejection、
+  completeness 和 authorization 永远不读取展示字符串，切语言不得触发重扫或改变候选身份。
+  现有 `Resources/Rules/vendors.yaml` common-app-cache 原文缺英文仍是受保护规则数据迁移，未获
+  规则库授权前不得用 AppUI 硬编码映射冒充修复。
+- **错误呈现边界**：根扫描 `.failed` 的 errno、原始路径与 `Error` 描述只进入结构化日志；长期
+  `terminalFailure/lastError` 只保存按当前 locale 解析的 catalog 文案。descendant failure 仍只进入
+  typed incomplete，不能因为清理 raw Error 而扩大成整轮失败。
+- **Ventura 兼容边界**：9 个 Packages、3 个 Tools、Xcode Debug/Release 与 Info.plist 的静态部署
+  合同均为 macOS 13.5。`onChange`、Settings、App 激活、symbol/focus effects 与 macOS 26 toolbar
+  已集中做 availability；本轮另发现并收口 Smart Care 的 8 处 `Animation.smooth` 和 1 处
+  `Animation.snappy`，Ventura 使用等价基础动画，14+ 保留增强曲线。无参数 `numericText()` 经 SDK
+  interface 核对从 macOS 13.0 可用，没有为了“看起来保险”添加无依据降级。
+- **长任务终态**：Workflow、Uninstaller 和 Duplicate 都以 typed terminal summary/disposition
+  决定结果，进度只作有界 side channel；新 revision 先失效旧 owner，迟到事件不能关闭新 spinner
+  或覆盖新行。
+
+**尚缺项**：生产扫描入口、跨模块并发/状态机、测试源码、Ventura availability、String Catalog
+结构与文档已完成静态收口；当前仍只是 C1。下一阶段统一跑新增聚焦测试（C2）、九包全测 +
+Debug build + 双性能基准（C3），最后只启动一次 App 完成持续
+C4（Large Files、推荐扫描、Workflow、Uninstaller、Duplicate、切语言、取消/页面离开与 partial
+终态）。macOS 13.5 真机/VM、Instruments/Memory Graph 和最终 DMG C5 仍分别缺失。
+
+### 9.7 Common App Cache C4 失败与硬终止修复（v2026.07.17，当前 C1）
+
+- **真实失败证据**：第一次持续 Debug App 验收中，System & Logs 在 0.536s 进入页面终态；
+  Common App Cache 声明 12s deadline，却约 368.47s 后才返回 partial（3 rows、80 incomplete）。
+  sample/LLDB 只证明同步 `open` 位于 WPS 容器 `.kingsoft` 路径，不能把“WPS 正在运行”当成
+  原因，也不能据此跳过运行中 App。整体 C4 判定失败，后续场景没有冒充通过。
+- **顺序根因**：本轮新增的跨 verdict 共享 forest 让宽泛 `confirm` 父目录成为 owner，抢在
+  具体 `safe` 子目录之前访问。现在 forest sharing 只发生在同 verdict，group 严格
+  `safe → confirm → forbid`；跨 verdict 的重叠允许为风险顺序重复读取，但 unique physical
+  totals 仍按 inode 去重，UI 不得把 inclusive rows 相加。
+- **硬终止边界**：shipped App 显式使用同一签名可执行文件的 private worker mode，在
+  SwiftUI/`NSApplication` 构造前分流；父进程通过 `posix_spawn` 成为唯一 `waitpid` owner。
+  timeout/cancel 都必须先由 WNOHANG 证明 child 仍归属当前 generation，再 TERM → KILL → reap。
+  worker 不可用或协议错误 fail closed，禁止静默回退到不可终止的 in-process 路径。
+- **能力与协议边界**：worker request 不出现在 argv，也不接受同 UID 可命名路径；父进程把
+  已 unlink 的只读 0600 descriptor 映射到 child stdin，child 复核 parent generation、同一
+  executable vnode、designated requirement 和 unique signing digest。spawn 使用
+  `POSIX_SPAWN_CLOEXEC_DEFAULT`，不继承 App 的无关 FD。stdout 采用严格单 final NDJSON；只有
+  exit 0、完整 EOF、未截断、无坏帧且恰好一个 final 才能成功，其余均为 typed partial。
+- **可信 partial 与进度**：候选解析和每个完整 group 发布 Codable checkpoint、pending paths、
+  当前 verdict/path 与真实 completed/total group count。worker 卡在 syscall 时，父进程保留上一
+  checkpoint，只把 pending 标为 typed deadline；MainActor 仍以 scan generation 拦截旧进度。
+  UI 展示组数、当前路径和已用时间，不伪造 byte denominator 或 ETA。
+- **测试源码已添加但尚未运行**：覆盖 safe-before-confirm 打开顺序、同 verdict 共享、checkpoint/
+  pending、Codable、缺 worker fail-closed、阻塞子进程硬超时/reap、stdout 流式解析、取消与
+  PID ownership。按用户明确顺序，当前先完成实现、静态审查、提交和推送，之后才运行 C2/C3。
+
+**仍缺项**：本节当前证据仍为 C1。提交推送后必须完成 ScanKit/AppUI 聚焦测试、全部 9 包、
+Debug build、双基准，并在一次持续 App 进程中复现相同受保护容器，验证 worker 的 FDA/TCC
+可见范围、12s 级硬终态、safe checkpoint 保留、后续扫描响应和完整 C4 矩阵。macOS 13.5
+真实设备/VM 与最终 DMG C5 仍未验证。

@@ -1,18 +1,39 @@
+import Darwin
 import XCTest
 import ScanKit
 @testable import AppUI
 
 final class DuplicateHandlingPlanTests: XCTestCase {
+    private func identity(inode: UInt64, logicalBytes: Int64) -> DuplicateFileIdentity {
+        DuplicateFileIdentity(
+            device: 1,
+            inode: inode,
+            fileType: UInt16(S_IFREG),
+            logicalBytes: logicalBytes,
+            modificationSeconds: 1,
+            modificationNanoseconds: 0,
+            statusChangeSeconds: 1,
+            statusChangeNanoseconds: 0
+        )
+    }
+
     private func makeGroup() -> DuplicateGroup {
-        DuplicateGroup(
+        let fingerprint = DuplicateContentFingerprint(
+            sha256Hex: String(repeating: "a", count: 64),
+            logicalBytes: 100
+        )!
+        // v2026.07.17: This helper returns the frozen full-content fixture consumed by every
+        // handling-plan assertion; constructing and discarding it left the suite uncompilable.
+        return DuplicateGroup(
             hashKey: "g",
             logicalBytes: 100,
             files: [
-                DuplicateFile(path: "/a", allocatedBytes: 80),
-                DuplicateFile(path: "/b", allocatedBytes: 40),
-                DuplicateFile(path: "/c", allocatedBytes: 20)
+                DuplicateFile(path: "/a", allocatedBytes: 80, snapshotIdentity: identity(inode: 1, logicalBytes: 100)),
+                DuplicateFile(path: "/b", allocatedBytes: 40, snapshotIdentity: identity(inode: 2, logicalBytes: 100)),
+                DuplicateFile(path: "/c", allocatedBytes: 20, snapshotIdentity: identity(inode: 3, logicalBytes: 100))
             ],
-            reliability: .full
+            reliability: .full,
+            contentFingerprint: fingerprint
         )
     }
 
@@ -22,6 +43,38 @@ final class DuplicateHandlingPlanTests: XCTestCase {
         XCTAssertEqual(DuplicateHandlingPlan.defaultDeleteTargets(for: group), ["/b", "/c"])
         XCTAssertEqual(group.reclaimableBytes, 60,
                        "默认可释放必须精确对应默认删除路径的 allocated bytes")
+    }
+
+    func test_prefixOnly只能复核不能生成删除目标() {
+        let group = DuplicateGroup(
+            hashKey: "prefix-only",
+            logicalBytes: 512 * 1_024 * 1_024,
+            files: [
+                DuplicateFile(path: "/large-a", allocatedBytes: 100),
+                DuplicateFile(path: "/large-b", allocatedBytes: 100)
+            ],
+            reliability: .prefixOnly
+        )
+
+        XCTAssertTrue(DuplicateHandlingPlan.defaultDeleteTargets(for: group).isEmpty)
+        XCTAssertFalse(DuplicateHandlingPlan.isValidDeleteTargets(["/large-b"], for: group),
+                       "前 64KB 一致不能跨过删除证明边界")
+    }
+
+    func test_fullLabelWithoutTypedHashAndIdentityCannotGenerateDeleteTargets() {
+        let group = DuplicateGroup(
+            hashKey: "legacy-full-label",
+            logicalBytes: 100,
+            files: [
+                DuplicateFile(path: "/a", allocatedBytes: 100),
+                DuplicateFile(path: "/b", allocatedBytes: 100)
+            ],
+            reliability: .full
+        )
+
+        XCTAssertFalse(DuplicateHandlingPlan.isExecutableGroup(group))
+        XCTAssertTrue(DuplicateHandlingPlan.defaultDeleteTargets(for: group).isEmpty)
+        XCTAssertFalse(DuplicateHandlingPlan.isValidDeleteTargets(["/b"], for: group))
     }
 
     func test_isValidDeleteTargets_requiresAtLeastOneRemainingCopy() {
@@ -47,10 +100,14 @@ final class DuplicateHandlingPlanTests: XCTestCase {
             hashKey: "other",
             logicalBytes: 200,
             files: [
-                DuplicateFile(path: "/x", allocatedBytes: 70),
-                DuplicateFile(path: "/y", allocatedBytes: 30)
+                DuplicateFile(path: "/x", allocatedBytes: 70, snapshotIdentity: identity(inode: 4, logicalBytes: 200)),
+                DuplicateFile(path: "/y", allocatedBytes: 30, snapshotIdentity: identity(inode: 5, logicalBytes: 200))
             ],
-            reliability: .full
+            reliability: .full,
+            contentFingerprint: DuplicateContentFingerprint(
+                sha256Hex: String(repeating: "b", count: 64),
+                logicalBytes: 200
+            )!
         )
 
         let result = DuplicateHandlingPlan.pruning(

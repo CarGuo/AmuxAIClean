@@ -12,12 +12,19 @@ public enum RunningAppGuard {
         public var id: String { path }
         public let path: String
         public let title: String
+        public let titlePresentation: LocalizedTextDescriptor
         public let bundleIDPrefix: String?
 
-        public init(path: String, title: String, bundleIDPrefix: String? = nil) {
+        public init(path: String, title: String, bundleIDPrefix: String? = nil,
+                    titlePresentation: LocalizedTextDescriptor? = nil) {
             self.path = path
             self.title = title
+            self.titlePresentation = titlePresentation ?? .verbatim(title)
             self.bundleIDPrefix = bundleIDPrefix
+        }
+
+        public func displayTitle(locale: Locale) -> String {
+            titlePresentation.localized(locale: locale)
         }
     }
 
@@ -34,6 +41,7 @@ public enum RunningAppGuard {
     public struct Conflict: Sendable, Equatable {
         public let path: String
         public let title: String
+        public let titlePresentation: LocalizedTextDescriptor
         public let bundleIDPrefix: String
         public let runningBundleID: String
         public let runningAppName: String
@@ -42,12 +50,18 @@ public enum RunningAppGuard {
                     title: String,
                     bundleIDPrefix: String,
                     runningBundleID: String,
-                    runningAppName: String? = nil) {
+                    runningAppName: String? = nil,
+                    titlePresentation: LocalizedTextDescriptor? = nil) {
             self.path = path
             self.title = title
+            self.titlePresentation = titlePresentation ?? .verbatim(title)
             self.bundleIDPrefix = bundleIDPrefix
             self.runningBundleID = runningBundleID
             self.runningAppName = runningAppName ?? runningBundleID
+        }
+
+        public func displayTitle(locale: Locale) -> String {
+            titlePresentation.localized(locale: locale)
         }
     }
 
@@ -107,7 +121,8 @@ public enum RunningAppGuard {
                 Candidate(
                     path: $0.url.path,
                     title: $0.title,
-                    bundleIDPrefix: $0.runningBundleIDPrefix
+                    bundleIDPrefix: $0.runningBundleIDPrefix,
+                    titlePresentation: $0.titlePresentation
                 )
             },
             runningApplications: runningApplications
@@ -134,7 +149,8 @@ public enum RunningAppGuard {
                                 title: candidate.title,
                                 bundleIDPrefix: prefix,
                                 runningBundleID: running.bundleID,
-                                runningAppName: running.localizedName))
+                                runningAppName: running.localizedName,
+                                titlePresentation: candidate.titlePresentation))
         }
         return out
     }
@@ -148,7 +164,8 @@ public enum RunningAppGuard {
                 Candidate(
                     path: $0.url.path,
                     title: $0.title,
-                    bundleIDPrefix: $0.runningBundleIDPrefix
+                    bundleIDPrefix: $0.runningBundleIDPrefix,
+                    titlePresentation: $0.titlePresentation
                 )
             },
             runningApplications: runningApplications,

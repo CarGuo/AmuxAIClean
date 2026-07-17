@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 /// M5 / 2026-06：AI 模块用户配置（按需触发版）。
@@ -14,9 +15,9 @@ import Foundation
 /// 决策来源：本仓库 [docs/MOLE_ALIGNMENT.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/MOLE_ALIGNMENT.md) §M5
 /// "按需触发 AI"路线——不做缓存 / 不做 rate limiter / 不做流式 SSE，
 /// 把复杂度降到"用户点 = 一次 HTTP = 一张卡片"。
+/// v2026.07.16：为 macOS 13.5 兼容，状态发布统一使用 Combine；持久化后端仍不参与 UI 刷新。
 @MainActor
-@Observable
-public final class AISettings {
+public final class AISettings: ObservableObject {
 
     // MARK: - 持久化键
 
@@ -36,37 +37,36 @@ public final class AISettings {
 
     // MARK: - 后端
 
-    @ObservationIgnored
     private let defaults: UserDefaults
 
     // MARK: - 字段
 
     /// AI 总开关。默认 `false`——关闭时 UI 入口（[RowView contextMenu "问 AI"](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowView.swift)）必须隐藏；
     /// 任何 AI 网络请求路径都 short-circuit。
-    public var enabled: Bool {
+    @Published public var enabled: Bool {
         didSet { defaults.set(enabled, forKey: Keys.enabled) }
     }
 
     /// OpenAI 协议 base URL。
     /// 不强制结尾斜杠；[OpenAIChatClient](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift)
     /// 内部统一 append `/v1/chat/completions`。
-    public var baseURL: String {
+    @Published public var baseURL: String {
         didSet { defaults.set(baseURL, forKey: Keys.baseURL) }
     }
 
     /// 模型名。自由文本，UI 给常用项下拉但允许用户改 string。
-    public var model: String {
+    @Published public var model: String {
         didSet { defaults.set(model, forKey: Keys.model) }
     }
 
     /// temperature，默认 0.2，**偏低**——本场景要稳定 JSON 输出，不要创造性。
-    public var temperature: Double {
+    @Published public var temperature: Double {
         didSet { defaults.set(temperature, forKey: Keys.temperature) }
     }
 
     /// 出网前是否对路径去敏（用户名 / UUID / 邮箱）。默认 `true`——
     /// 关闭仅供高级用户调试，UI 必须给红字警告。
-    public var redactPaths: Bool {
+    @Published public var redactPaths: Bool {
         didSet { defaults.set(redactPaths, forKey: Keys.redactPaths) }
     }
 

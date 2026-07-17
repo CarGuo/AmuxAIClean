@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import SafetyKit
 
 /// v1.2 P1-6 应用占用排行榜 —— 数据模型与扫描器。
@@ -45,12 +46,29 @@ public struct AppFootprintBucket: Hashable, Sendable, Identifiable {
 
 /// 排行榜单条 —— 一个 app 的体积聚合。
 public struct AppFootprintItem: Hashable, Sendable, Identifiable {
-    public var id: String { bundleID }
+    /// v2026.07.17：流的交付阶段与容量证据完整度是两个正交维度。
+    ///
+    /// `intermediate` 只用于 progressive stream 的 bundle-only 首阶段；`terminal`
+    /// 表示该 app 本轮已不再有后续更新。终态仍可能因为预算或访问缺口而
+    /// `isComplete == false`，因此消费方禁止再用 `isComplete` 推断进度完成。
+    public enum DeliveryPhase: String, Hashable, Sendable {
+        case intermediate
+        case terminal
+    }
+
+    /// v2026.07.17：安装实例由 bundle 路径唯一标识。不同路径可能安装同一个
+    /// Bundle ID；若用 bundleID 作为 List/刷新键，会让一条结果覆盖另一条，且与
+    /// `InstalledApp.id` 的路径身份不一致，导致 pending 永远无法收敛。
+    public var id: String { appURL.path }
     public let bundleID: String
     public let appName: String
     public let appURL: URL
-    /// true 表示 bundle 与关联目录都已统计；false 表示只完成了部分阶段。
+    /// true 表示当前已交付范围的容量证据完整；false 表示容量扫描命中预算/访问缺口，
+    /// 或 intermediate 阶段尚未覆盖最终范围。是否还会收到后续更新只看
+    /// `deliveryPhase`，不能从这个布尔值反推。
     public let isComplete: Bool
+    /// 当前 item 是两阶段流的中间交付，还是该 app 本轮的终态交付。
+    public let deliveryPhase: DeliveryPhase
     /// .app bundle 自身字节数（如 /Applications/Foo.app 整个目录的大小）。
     public let appBundleBytes: Int64
     /// 关联目录（用户数据 + 启动项 + vendor 命中）的字节数总和。
@@ -65,6 +83,7 @@ public struct AppFootprintItem: Hashable, Sendable, Identifiable {
         appName: String,
         appURL: URL,
         isComplete: Bool = true,
+        deliveryPhase: DeliveryPhase = .terminal,
         appBundleBytes: Int64,
         relatedBytes: Int64,
         buckets: [AppFootprintBucket]
@@ -73,9 +92,39 @@ public struct AppFootprintItem: Hashable, Sendable, Identifiable {
         self.appName = appName
         self.appURL = appURL
         self.isComplete = isComplete
+        self.deliveryPhase = deliveryPhase
         self.appBundleBytes = appBundleBytes
         self.relatedBytes = relatedBytes
         self.buckets = buckets
+    }
+}
+
+/// 一轮 App Footprint 流的 producer 所有权。
+///
+/// `AsyncStream` 自身只能通知 producer “消费者已经离开”，不能让下一轮 reload 等待
+/// 上一轮同步文件系统调用真正退出。这个 session 同时暴露 cancel 与 terminal wait，
+/// 让界面在启动新一轮 I/O 前先排空旧 producer，避免快速刷新叠加磁盘遍历。
+struct AppFootprintStreamSession: Sendable {
+    let stream: AsyncStream<AppFootprintItem>
+    private let cancelProducer: @Sendable () -> Void
+    private let waitForProducer: @Sendable () async -> Void
+
+    init(
+        stream: AsyncStream<AppFootprintItem>,
+        cancel: @escaping @Sendable () -> Void,
+        waitForTermination: @escaping @Sendable () async -> Void
+    ) {
+        self.stream = stream
+        self.cancelProducer = cancel
+        self.waitForProducer = waitForTermination
+    }
+
+    func cancel() {
+        cancelProducer()
+    }
+
+    func waitForTermination() async {
+        await waitForProducer()
     }
 }
 
@@ -203,64 +252,100 @@ public actor AppFootprintScanner {
         apps: [InstalledApp],
         maxConcurrent: Int = 4
     ) -> AsyncStream<AppFootprintItem> {
-        AsyncStream { continuation in
-            let task = Task.detached(priority: .userInitiated) { [self] in
-                guard !apps.isEmpty else {
-                    continuation.finish()
-                    return
-                }
-                let limit = max(1, min(maxConcurrent, apps.count))
-                await withTaskGroup(of: AppFootprintItem?.self) { group in
-                    var iterator = apps.makeIterator()
-                    var inFlight = 0
+        scanBundleSession(apps: apps, maxConcurrent: maxConcurrent).stream
+    }
 
-                    func enqueue(_ app: InstalledApp) {
-                        inFlight += 1
-                        group.addTask(priority: .utility) { [self] in
-                            if Task.isCancelled { return nil }
-                            let bundleSnap = snapshot.snapshot(at: app.appURL.path)
-                            if Task.isCancelled { return nil }
-                            return AppFootprintScanner.makeItem(
-                                app: app,
-                                bundleSnap: bundleSnap,
-                                relatedBuckets: [],
-                                isComplete: true
-                            )
-                        }
-                    }
-
-                    while inFlight < limit, let app = iterator.next(), !Task.isCancelled {
-                        enqueue(app)
-                    }
-
-                    while let item = await group.next() {
-                        inFlight -= 1
-                        if Task.isCancelled {
-                            group.cancelAll()
-                            break
-                        }
-                        if let item {
-                            continuation.yield(item)
-                        }
-                        if let next = iterator.next(), !Task.isCancelled {
-                            enqueue(next)
-                        }
-                    }
-                }
+    /// v2026.07.17：UI 使用的可取消、可等待终态 session。
+    ///
+    /// 一轮共享 cancellation token，使同步 snapshot 能在目录逐项边界观察离页/刷新；
+    /// `.cancelled` 快照绝不能作为 0 B 或 partial 排行结果发布。预算截断则保留已观察
+    /// bytes，但 `isComplete=false`，明确表达“至少这些”而非精确值。
+    nonisolated func scanBundleSession(
+        apps: [InstalledApp],
+        maxConcurrent: Int = 4
+    ) -> AppFootprintStreamSession {
+        let pair = AsyncStream<AppFootprintItem>.makeStream(bufferingPolicy: .unbounded)
+        let continuation = pair.continuation
+        let cancellationToken = FSSnapshotCancellationToken()
+        let task = Task.detached(priority: .userInitiated) { [self] in
+            guard !apps.isEmpty else {
                 continuation.finish()
+                return
             }
-            continuation.onTermination = { _ in
-                task.cancel()
+            let limit = max(1, min(maxConcurrent, apps.count))
+            await withTaskGroup(of: AppFootprintItem?.self) { group in
+                var iterator = apps.makeIterator()
+                var inFlight = 0
+
+                func enqueue(_ app: InstalledApp) {
+                    inFlight += 1
+                    group.addTask(priority: .utility) { [self] in
+                        guard !Task.isCancelled, !cancellationToken.isCancelled else { return nil }
+                        let bundleSnap = await Self.snapshotOffCooperativeExecutor(
+                            snapshot,
+                            at: app.appURL.path,
+                            cancellationToken: cancellationToken
+                        )
+                        guard !Task.isCancelled,
+                              !cancellationToken.isCancelled,
+                              bundleSnap.completion != .cancelled else { return nil }
+                        return AppFootprintScanner.makeItem(
+                            app: app,
+                            bundleSnap: bundleSnap,
+                            relatedBuckets: [],
+                            isComplete: Self.isComplete(bundleSnap)
+                        )
+                    }
+                }
+
+                while inFlight < limit,
+                      let app = iterator.next(),
+                      !Task.isCancelled,
+                      !cancellationToken.isCancelled {
+                    enqueue(app)
+                }
+
+                while let item = await group.next() {
+                    inFlight -= 1
+                    if Task.isCancelled || cancellationToken.isCancelled {
+                        group.cancelAll()
+                        break
+                    }
+                    if let item {
+                        continuation.yield(item)
+                    }
+                    if let next = iterator.next(),
+                       !Task.isCancelled,
+                       !cancellationToken.isCancelled {
+                        enqueue(next)
+                    }
+                }
             }
+            continuation.finish()
         }
+
+        let cancel: @Sendable () -> Void = {
+            cancellationToken.cancel()
+            task.cancel()
+        }
+        continuation.onTermination = { _ in
+            cancel()
+        }
+        return AppFootprintStreamSession(
+            stream: pair.stream,
+            cancel: cancel,
+            waitForTermination: { await task.value }
+        )
     }
 
     /// 面向 UI 的渐进式扫描：先 yield `.app` bundle 本体，再后台补关联目录。
     ///
     /// 与 `scanAllStream` 的区别：
     /// - `scanAllStream` 保持旧契约：每个 app 只 yield 一条完整结果，方便单测和批处理。
-    /// - 本方法每个 app 最多 yield 两条同 id item：`isComplete=false` 的 bundle 阶段，
-    ///   以及 `isComplete=true` 的完整阶段。UI 按 id 覆盖即可，不会长期显示 0 KB。
+    /// - 本方法每个 app 最多 yield 两条同 id item：`deliveryPhase=intermediate` 的
+    ///   bundle 阶段，以及一次 `deliveryPhase=terminal` 终态；若终态 snapshot 有预算/
+    ///   访问缺口，其 `isComplete` 仍为 false。
+    ///   UI 按 id 覆盖即可，不会长期显示 0 KB，也不会把下界伪装为精确值。
     public nonisolated func scanProgressiveStream(
         apps: [InstalledApp],
         maxConcurrent: Int = 3
@@ -280,23 +365,28 @@ public actor AppFootprintScanner {
                         inFlight += 1
                         group.addTask(priority: .utility) { [self] in
                             if Task.isCancelled { return }
-                            let bundleSnap = snapshot.snapshot(at: app.appURL.path)
+                            let bundleSnap = await Self.snapshotOffCooperativeExecutor(
+                                snapshot,
+                                at: app.appURL.path
+                            )
+                            guard bundleSnap.completion != .cancelled else { return }
                             let partial = AppFootprintScanner.makeItem(
                                 app: app,
                                 bundleSnap: bundleSnap,
                                 relatedBuckets: [],
-                                isComplete: false
+                                isComplete: false,
+                                deliveryPhase: .intermediate
                             )
                             if !Task.isCancelled {
                                 continuation.yield(partial)
                             }
                             if Task.isCancelled { return }
-                            let relatedBuckets = await self.relatedBuckets(for: app)
+                            let related = await self.relatedBuckets(for: app)
                             let complete = AppFootprintScanner.makeItem(
                                 app: app,
                                 bundleSnap: bundleSnap,
-                                relatedBuckets: relatedBuckets,
-                                isComplete: true
+                                relatedBuckets: related.buckets,
+                                isComplete: Self.isComplete(bundleSnap) && related.isComplete
                             )
                             if !Task.isCancelled {
                                 continuation.yield(complete)
@@ -330,12 +420,25 @@ public actor AppFootprintScanner {
     /// 单个 app 的聚合 —— 包内可见以便测试。
     nonisolated func scanOne(app: InstalledApp) async -> AppFootprintItem {
         // (1) bundle 自身
-        let bundleSnap = snapshot.snapshot(at: app.appURL.path)
-        let relatedBuckets = await relatedBuckets(for: app)
-        return Self.makeItem(app: app, bundleSnap: bundleSnap, relatedBuckets: relatedBuckets, isComplete: true)
+        let bundleSnap = await Self.snapshotOffCooperativeExecutor(
+            snapshot,
+            at: app.appURL.path
+        )
+        let related = await relatedBuckets(for: app)
+        return Self.makeItem(
+            app: app,
+            bundleSnap: bundleSnap,
+            relatedBuckets: related.buckets,
+            isComplete: Self.isComplete(bundleSnap) && related.isComplete
+        )
     }
 
-    private nonisolated func relatedBuckets(for app: InstalledApp) async -> [AppFootprintBucket] {
+    private struct RelatedBucketsResult: Sendable {
+        let buckets: [AppFootprintBucket]
+        let isComplete: Bool
+    }
+
+    private nonisolated func relatedBuckets(for app: InstalledApp) async -> RelatedBucketsResult {
         let cands = await uninstaller.candidatesAsync(for: app.metadata)
         var relatedBuckets: [AppFootprintBucket] = []
         relatedBuckets.reserveCapacity(cands.count)
@@ -350,14 +453,45 @@ public actor AppFootprintScanner {
 
         // 桶按字节数倒序，UI 上"哪条最肥"在最前面
         relatedBuckets.sort { $0.bytes > $1.bytes }
-        return relatedBuckets
+        return RelatedBucketsResult(
+            buckets: relatedBuckets,
+            isComplete: cands.allSatisfy(\.hasCompleteSnapshot)
+        )
+    }
+
+    private static func isComplete(_ snapshot: FSSnapshot) -> Bool {
+        snapshot.completion == .complete && snapshot.issues.isEmpty
+    }
+
+    /// v2026.07.17：`FileManager.enumerator` / `stat` 遍历是同步阻塞 I/O，不能直接占用
+    /// Swift cooperative executor 的 worker。统一桥接到 utility DispatchQueue；取消通过
+    /// typed token 在逐项边界传播，调用方仍 await 精确终态，不创建 fire-and-forget 工作。
+    private static func snapshotOffCooperativeExecutor(
+        _ snapshotter: any FileManagerSnapshotting,
+        at path: String,
+        cancellationToken providedToken: FSSnapshotCancellationToken? = nil
+    ) async -> FSSnapshot {
+        let token = providedToken ?? FSSnapshotCancellationToken()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .utility).async {
+                    continuation.resume(returning: snapshotter.snapshot(
+                        at: path,
+                        cancellationToken: token
+                    ))
+                }
+            }
+        } onCancel: {
+            token.cancel()
+        }
     }
 
     private static func makeItem(
         app: InstalledApp,
         bundleSnap: FSSnapshot,
         relatedBuckets: [AppFootprintBucket],
-        isComplete: Bool
+        isComplete: Bool,
+        deliveryPhase: AppFootprintItem.DeliveryPhase = .terminal
     ) -> AppFootprintItem {
         let bundleBucket = AppFootprintBucket(
             path: app.appURL.path,
@@ -373,6 +507,7 @@ public actor AppFootprintScanner {
             appName: app.metadata.appName,
             appURL: app.appURL,
             isComplete: isComplete,
+            deliveryPhase: deliveryPhase,
             appBundleBytes: bundleSnap.bytes,
             relatedBytes: relatedBytes,
             buckets: buckets

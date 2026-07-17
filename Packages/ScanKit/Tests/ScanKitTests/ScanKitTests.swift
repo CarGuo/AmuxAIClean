@@ -9,6 +9,39 @@ final class InodeSetTests: XCTestCase {
         XCTAssertTrue(set.insertIfFirstSeen(device: 2, inode: 100)) // 不同设备同 inode 也算独立
         XCTAssertEqual(set.count, 2)
     }
+
+    /// v2026.07.17：MultiRoot transaction 会让多个 root/worker 并发声明同一 inode。
+    /// 分片锁只能降低无关 key 的竞争，绝不能让“首次观察”出现多个 winner。
+    func testConcurrentInsertHasExactlyOneWinnerPerIdentity() {
+        let set = InodeSet()
+        let winners = LockedCounter()
+
+        DispatchQueue.concurrentPerform(iterations: 1_000) { _ in
+            if set.insertIfFirstSeen(device: 7, inode: 42) {
+                winners.increment()
+            }
+        }
+
+        XCTAssertEqual(winners.value, 1)
+        XCTAssertEqual(set.count, 1)
+    }
+}
+
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = 0
+
+    func increment() {
+        lock.lock()
+        storage += 1
+        lock.unlock()
+    }
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
 }
 
 final class FirmlinksTests: XCTestCase {

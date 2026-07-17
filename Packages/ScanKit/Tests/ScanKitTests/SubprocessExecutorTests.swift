@@ -401,6 +401,75 @@ final class SubprocessExecutorTests: XCTestCase {
         XCTAssertTrue(signals.isEmpty, "reaped PID 不得收到任何后续信号")
     }
 
+    func test_ownedWaitTimeoutConversionHandlesEveryDoubleClassWithoutTrap() {
+        XCTAssertEqual(OwnedChildProcessExecutor.normalizedTimeoutNanoseconds(.nan), 0)
+        XCTAssertEqual(OwnedChildProcessExecutor.normalizedTimeoutNanoseconds(-1), 0)
+        XCTAssertEqual(OwnedChildProcessExecutor.normalizedTimeoutNanoseconds(0), 0)
+        XCTAssertEqual(OwnedChildProcessExecutor.normalizedTimeoutNanoseconds(0.25), 250_000_000)
+        XCTAssertEqual(OwnedChildProcessExecutor.normalizedTimeoutNanoseconds(.infinity), .max)
+        XCTAssertEqual(
+            OwnedChildProcessExecutor.normalizedTimeoutNanoseconds(.greatestFiniteMagnitude),
+            .max
+        )
+    }
+
+    /// SAFETY v2026.07.17：取消请求若发生在 child 已 reap 之后，缓存 PID 已可能复用。
+    /// 独立 cancellation 状态机必须与 timeout 一样直接返回真实 exit，绝不 signal。
+    func test_ownedCancellation_已reap后绝不对缓存PID发信号() {
+        var signals: [Int32] = []
+        var waiterCalled = false
+        let terminal = OwnedChildProcessExecutor.resolveCancellation(
+            pid: 45,
+            initial: .reaped(status: 0),
+            terminationGrace: 1,
+            killGrace: 1,
+            waiter: { _, _ in
+                waiterCalled = true
+                return .notOwned
+            },
+            signaler: { _, signal in signals.append(signal) }
+        )
+
+        XCTAssertEqual(terminal, .exited(status: 0))
+        XCTAssertFalse(waiterCalled)
+        XCTAssertTrue(signals.isEmpty, "reaped PID 不得因取消收到任何信号")
+    }
+
+    /// 取消与 timeout 必须保留不同终态；TERM 后 ECHILD 也必须永久关闭 KILL 路径。
+    func test_ownedCancellation_TERM后ECHILD_不再升级KILL() {
+        var signals: [Int32] = []
+        let terminal = OwnedChildProcessExecutor.resolveCancellation(
+            pid: 46,
+            initial: .running,
+            terminationGrace: 1,
+            killGrace: 1,
+            waiter: { _, _ in .notOwned },
+            signaler: { _, signal in signals.append(signal) }
+        )
+
+        XCTAssertEqual(terminal, .cancelled(sentSIGKILL: false, reapTransferred: false))
+        XCTAssertEqual(signals, [SIGTERM], "首次 ECHILD 后不得继续 SIGKILL")
+    }
+
+    /// 若 child 忽略 TERM 且同步 KILL 宽限也未收敛，wait ownership 只能转移一次；
+    /// 返回后任何路径都不得再对该 PID 发信号。
+    func test_ownedCancellation_忽略TERM后升级KILL并转移唯一reap义务() {
+        var waits: [OwnedChildProcessExecutor.WaitState] = [.running, .running]
+        var signals: [Int32] = []
+        let terminal = OwnedChildProcessExecutor.resolveCancellation(
+            pid: 47,
+            initial: .running,
+            terminationGrace: 1,
+            killGrace: 1,
+            waiter: { _, _ in waits.removeFirst() },
+            signaler: { _, signal in signals.append(signal) }
+        )
+
+        XCTAssertEqual(terminal, .cancelled(sentSIGKILL: true, reapTransferred: true))
+        XCTAssertEqual(signals, [SIGTERM, SIGKILL])
+        XCTAssertTrue(waits.isEmpty)
+    }
+
     /// SAFETY v2026.07.16：`ECHILD` 代表唯一 owner 已丢失，后续即使宽限期结束也不能
     /// 猜测 PID 身份。该分支必须 fail closed，且永不 signal。
     func test_ownedWait_ECHILD后绝不对缓存PID发信号() {
@@ -455,6 +524,145 @@ final class SubprocessExecutorTests: XCTestCase {
         errno = 0
         XCTAssertEqual(waitpid(pid, &status, WNOHANG), -1)
         XCTAssertEqual(errno, ECHILD, "返回前 child 必须已 reap，不得遗留并发 waiter")
+    }
+
+    /// v2026.07.17：真实 cooperative cancellation 先由 WNOHANG 证明 child 仍 owned，
+    /// 再 TERM -> reap；测试只操作 `/bin/sleep` fixture，不触碰任何用户数据。
+    func test_ownedChild_真实取消后返回独立终态且无遗留wait义务() {
+        let pidRecorder = OwnedChildPIDRecorder()
+        let cancellation = OwnedCancellationCheckProbe(cancelAfterCheckCount: 2)
+        let start = Date()
+        let result = OwnedChildProcessExecutor.run(
+            path: "/bin/sleep",
+            arguments: ["30"],
+            timeout: nil,
+            terminationGrace: 0.1,
+            killGrace: 0.1,
+            outputLimitPerStream: 1_024,
+            onSpawn: { pidRecorder.store($0) },
+            isCancelled: { cancellation.isCancelled() }
+        )
+
+        guard case .cancelled = result.terminal else {
+            return XCTFail("sleep fixture 应被取消，得到 \(result.terminal)")
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 5)
+        guard let pid = pidRecorder.value else {
+            return XCTFail("spawn 后必须提供 owned PID")
+        }
+        var status: Int32 = 0
+        errno = 0
+        XCTAssertEqual(waitpid(pid, &status, WNOHANG), -1)
+        XCTAssertEqual(errno, ECHILD, "取消返回前 child 必须已 reap，不得遗留并发 waiter")
+    }
+
+    /// 调用在 spawn 前已经取消时，不应为了生成终态而启动任何命令。用不存在 executable
+    /// 钉死顺序：若实现先 spawn，结果会错误变成 launchFailed。
+    func test_ownedChild_spawn前已取消_不启动子进程() {
+        let result = OwnedChildProcessExecutor.run(
+            path: "/usr/bin/definitely-not-present",
+            arguments: [],
+            timeout: 5,
+            outputLimitPerStream: 1_024,
+            isCancelled: { true }
+        )
+
+        XCTAssertEqual(
+            result.terminal,
+            .cancelled(sentSIGKILL: false, reapTransferred: false)
+        )
+        XCTAssertEqual(result.output, "")
+        XCTAssertTrue(result.readersReachedEOF)
+    }
+
+    /// stdout chunk 在 pipe reader queue 上按读取顺序发布；调用方不必等进程退出才看到
+    /// 进度协议，同时最终 bounded capture 仍保持原有完整结果。
+    func test_ownedChild_stdoutChunk按读取顺序流式发布() {
+        let recorder = OwnedStdoutChunkRecorder()
+        let script = "printf 'phase-1\\n'; /bin/sleep 0.05; printf 'phase-2\\n'"
+        let result = OwnedChildProcessExecutor.run(
+            path: "/bin/sh",
+            arguments: ["-c", script],
+            timeout: 5,
+            outputLimitPerStream: 1_024,
+            onStdoutChunk: { recorder.append($0) }
+        )
+
+        XCTAssertEqual(result.terminal, .exited(status: 0))
+        XCTAssertEqual(recorder.string, "phase-1\nphase-2\n")
+        XCTAssertEqual(result.stdout, recorder.string)
+        XCTAssertTrue(result.readersReachedEOF)
+    }
+
+    /// 流式进度与诊断 capture 的内存上限是两个正交合同：即使最终 capture 截断，
+    /// reader 仍必须排空并把每个已读 stdout byte 交给 Sendable callback。
+    func test_ownedChild_stdoutChunk不受诊断capture上限截断() {
+        let recorder = OwnedStdoutChunkRecorder()
+        let script = "i=0; while [ $i -lt 128 ]; do printf 'progress-%03d\\n' \"$i\"; i=$((i+1)); done"
+        let result = OwnedChildProcessExecutor.run(
+            path: "/bin/sh",
+            arguments: ["-c", script],
+            timeout: 5,
+            outputLimitPerStream: 32,
+            onStdoutChunk: { recorder.append($0) }
+        )
+
+        XCTAssertEqual(result.terminal, .exited(status: 0))
+        XCTAssertTrue(result.stdoutWasTruncated)
+        XCTAssertTrue(recorder.string.hasPrefix("progress-000\n"))
+        XCTAssertTrue(recorder.string.contains("progress-127\n"))
+        XCTAssertGreaterThan(recorder.data.count, 32)
+        XCTAssertTrue(result.readersReachedEOF)
+    }
+
+    /// SAFETY v2026.07.17：请求 FD 只通过显式 stdin 映射进入 child；父进程仍持有并负责
+    /// 关闭原始只读 FD，executor 不改变唯一 waitpid owner 合同。
+    func test_ownedChild_显式只读FD映射到stdin且不夺取父FD所有权() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OwnedInput-\(UUID().uuidString)")
+        try Data("private-request\n".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let fd = open(url.path, O_RDONLY | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        guard fd >= 0 else { return }
+        defer { _ = close(fd) }
+
+        let result = OwnedChildProcessExecutor.run(
+            path: "/bin/sh",
+            arguments: ["-c", "IFS= read -r value; printf '%s' \"$value\""],
+            standardInputFD: fd,
+            timeout: 5,
+            outputLimitPerStream: 1_024
+        )
+
+        XCTAssertEqual(result.terminal, .exited(status: 0))
+        XCTAssertEqual(result.stdout, "private-request")
+        XCTAssertGreaterThanOrEqual(fcntl(fd, F_GETFL), 0, "原始 FD 仍由 caller 所有")
+    }
+
+    /// `POSIX_SPAWN_CLOEXEC_DEFAULT` 必须关闭未列入 file actions 的 ambient descriptor，
+    /// 即使父进程特意清除了该 descriptor 自身的 FD_CLOEXEC 位。
+    func test_ownedChild_未声明的ambientFD不会继承() {
+        let baseFD = open("/dev/null", O_RDONLY)
+        XCTAssertGreaterThanOrEqual(baseFD, 0)
+        guard baseFD >= 0 else { return }
+        defer { _ = close(baseFD) }
+        let ambientFD = fcntl(baseFD, F_DUPFD, 100)
+        XCTAssertGreaterThanOrEqual(ambientFD, 100)
+        guard ambientFD >= 100 else { return }
+        defer { _ = close(ambientFD) }
+        XCTAssertEqual(fcntl(ambientFD, F_SETFD, 0), 0)
+
+        let probe = "if /bin/sh -c 'true <&\(ambientFD)' 2>/dev/null; then printf inherited; else printf closed; fi"
+        let result = OwnedChildProcessExecutor.run(
+            path: "/bin/sh",
+            arguments: ["-c", probe],
+            timeout: 5,
+            outputLimitPerStream: 1_024
+        )
+
+        XCTAssertEqual(result.terminal, .exited(status: 0))
+        XCTAssertEqual(result.stdout, "closed")
     }
 
     func test_超时_忽略TERM时升级SIGKILL() throws {
@@ -517,5 +725,45 @@ private final class OwnedChildPIDRecorder: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return storage
+    }
+}
+
+/// v2026.07.17：`onStdoutChunk` 在 utility reader queue 调用，测试 recorder 与生产
+/// 使用方一样通过锁建立 Sendable 边界；禁止用非隔离数组掩盖数据竞争。
+private final class OwnedStdoutChunkRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = Data()
+
+    func append(_ chunk: Data) {
+        lock.lock()
+        storage.append(chunk)
+        lock.unlock()
+    }
+
+    var data: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    var string: String {
+        String(data: data, encoding: .utf8) ?? ""
+    }
+}
+
+private final class OwnedCancellationCheckProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let cancelAfterCheckCount: Int
+    private var checkCount = 0
+
+    init(cancelAfterCheckCount: Int) {
+        self.cancelAfterCheckCount = cancelAfterCheckCount
+    }
+
+    func isCancelled() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        checkCount += 1
+        return checkCount >= cancelAfterCheckCount
     }
 }

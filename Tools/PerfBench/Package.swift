@@ -3,7 +3,8 @@ import PackageDescription
 
 let package = Package(
     name: "PerfBench",
-    platforms: [.macOS(.v15)],
+    // v2026.07.16: benchmarks compile against the same Ventura 13.5 floor as the product.
+    platforms: [.macOS("13.5")],
     products: [
         .executable(name: "PerfBench", targets: ["PerfBench"])
     ],

@@ -15,8 +15,8 @@ import LogKit
 /// 2. **跨卷停**：碰到不同 volumeIdentifier 的子目录直接跳过，避免外接盘 / 网络盘吃爆；
 /// 3. **跳过 ~/Library 高敏区**：~/Library 内部叫 `Caches`、`Logs`、`build` 的目录大量
 ///    存在，这些**不是开发者产物**而是系统/App 缓存，下钻还会触发 TCC 弹窗；
-/// 4. **超时硬上限**：默认 60s，到点直接返回当前累计——不让用户在 IDE 工作目录里
-///    卡很久；
+/// 4. **显式预算而非默认截断**：生产默认不按任意秒数截断；调用方只有在能把 partial
+///    终态原样呈现时才可显式配置预算，用户取消则通过统一 cancellation relay 停止遍历；
 /// 5. **关键链路有 GSYLog 埋点**：开始 / 命中 / 完成 summary / 超时；用户拿日志即可还原。
 ///
 /// 安全：
@@ -141,9 +141,8 @@ public actor DevArtifactScanner {
     /// v2026.06.21：带"边走边喂"回调的勘察入口。
     ///
     /// **解决用户反馈**：「为什么不是一批一批显示出来？」
-    /// 旧 [discoverWithMetadata](#) 是 all-or-nothing —— 必须等整棵 walk 跑完
-    /// （maxHits 拉高后基本会跑满 timeoutSeconds 30s）才返回。期间 UI 完全没反馈，
-    /// 让用户感觉"卡死"。
+    /// 旧 [discoverWithMetadata](#) 是 all-or-nothing —— 必须等整棵 walk 跑完才返回。
+    /// 在大型 home 上即使没有配置超时，期间 UI 也完全没反馈，让用户感觉"卡死"。
     ///
     /// 新 API 让调用方传 `onPartial`：每命中 `flushEvery` 条 hit 就回一次（拷贝一份当前 hits 数组）。
     /// 调用方可以拿这些 partial hits 立刻预填 sidebar 进度行，UI 视觉上始终在长。
@@ -192,7 +191,7 @@ public actor DevArtifactScanner {
     /// - parameter onPartial: 流式增量回调。每命中 `every` 条 hit 就把"自上次回调以来新增"
     ///   的 hits 数组传给 callback；callback 在当前 detached 线程同步执行。nil 时为旧行为。
     private static func runWalk(home: URL, options: Options, onPartial: PartialFlush?) -> DiscoverResult {
-        let deadline = options.timeoutSeconds.map { Date().addingTimeInterval($0) }
+        let deadline = options.timeoutSeconds.map { ScanDeadline.make(timeout: $0) }
         let fm = FileManager.default
         let homeStd = home.standardizedFileURL
         let libraryPath = homeStd.appendingPathComponent("Library").standardizedFileURL.path

@@ -144,7 +144,14 @@ public actor NodeModulesScanner {
                 ))
                 continue
             }
-            guard rootType == .typeDirectory || rootType == .typeSymbolicLink else { continue }
+            // v2026.07.17 global scan hardening: the walk below intentionally never follows
+            // child symlinks, but the old root gate still accepted a symlink such as
+            // `~/workspace -> /Volumes/External`. `contentsOfDirectory` would then traverse the
+            // target before TrashPipeline eventually rejected the out-of-scope candidate. That
+            // wasted a potentially huge scan and presented an item the fixed HOME-owned workflow
+            // could never safely submit. Fixed discovery roots obey the same no-follow contract
+            // at depth zero; users who explicitly want another volume can use Custom Path.
+            guard rootType == .typeDirectory else { continue }
             try walk(
                 root: root,
                 maxDepth: max(0, maxDepth),

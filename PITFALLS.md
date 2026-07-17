@@ -42,7 +42,8 @@
 - **现象**：仅在 macOS 13.0/13.1 出现，13.5+ 正常。
 - **根因**：早期 Ventura 的 `smd` 对资源签名计算有 bug。
 - **避坑**：
- - 本项目最低系统版本锁定为 **macOS 15 Sequoia**（已直接绕开 Ventura 全部历史坑，并可放心使用 SwiftUI Observation / SwiftData 等现代 API）。
+ - **v2026.07.16**：当前产品部署下限统一为 **macOS 13.5 Ventura**；这是避开 13.0/13.1 已知系统缺陷并覆盖 Ventura 用户的兼容基线。所有更高版本 API 必须走共享兼容层或明确 availability，不能再依赖 macOS 15 的隐含下限。
+ - **v2026.07.17 防回归**：装饰性 API 也属于部署合同。`Animation.smooth/snappy`、symbol/focus effects、`openSettings` 和新式 `NSApplication.activate()` 不得因为“只影响动画/窗口”而裸用；统一进入 `PlatformCompatibility.swift`，Ventura 保留等价公开行为，较新系统再启用增强效果。
  - `Info.plist` 修改后必须**重新整体重签**，不能局部签。
 
 ### 1.3 [阻塞] 嵌套签名顺序错误 -> 整个 App 注册失败
@@ -166,6 +167,172 @@
 - **省 URL 创建**：`continuation.yield(.node(...))` 每次 new URL 是 hot path，UI 不实时画图时可走 `nodeBatch(_)` 一次发一批。
 - **省 String**：`String(cString:)` 在中文文件名上分配开销大，可延迟到真要展示时再做。
 
+### 2.9 [阻塞] 裸扫描几十秒已完成，UI 却继续“扫描中”数分钟
+
+> **v2026.07.16 事故记录**：详细证据、入口矩阵和验收门槛见
+> [SCAN_PERFORMANCE_REGRESSION_2026-07-16.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/SCAN_PERFORMANCE_REGRESSION_2026-07-16.md)。
+
+#### 症状与实证
+
+- Large Files 扫描 HOME：`BulkScanner` 在 **37.31s** 内已遍历
+  **3,272,465 files / 595,992 directories**，但 UI 到约 3m55s 仍只显示
+  707,622 个文件和第一批 1 个候选，最后由用户取消。
+- 紧接着的推荐扫描：最慢的 `~/Library/Caches` 裸遍历仅 **9.63s**，
+  其它四根均小于 1s；下一个明确的扫描后 Tree prefetch marker 却在
+  启动后约 **211.87s** 才出现，与“4 分钟才扫完”的交互观察一致。
+- 同一套当时代码的无 SwiftUI `CoordinatorBench` 扫约 38.5 万个 Caches 文件
+  约 7.2s 收敛。因此瓶颈不在 SSD 或 `getattrlistbulk`，而在 App 内的
+  事件交付、MainActor 消费和 SwiftUI invalidation 竞争。
+
+#### 根因
+
+1. `BulkScanner` 产生数百万 `FSNode` / `.nodes` 事件，为了不少算而使用
+   `.unbounded` `AsyncStream`。生产者几十秒完成后，未消费事件仍可以在内存中排队。
+2. `ScanCoordinator` 是 `@MainActor`，历史路径在主线程逐节点做 path 投影、
+   bucket 聚合、Top-N 维护、安全投影和快照发布。
+3. 实际 App 还要同时做 SwiftUI diff/layout/render；主线程越慢，无界队列越大，
+   又进一步延长取消和下一轮扫描的收敛时间。
+4. `MultiRootScanner` 历史上再包一层事件流，并在 progress clock 里重复遍历
+   node batch，使推荐/开发者多根入口更容易暴露同一架构缺陷。
+
+#### 长期性能/安全合同
+
+- **先决定消费者需要什么，再决定交付粒度**：
+  - `.summaryOnly`：只需终态容量和完整性证据；
+  - `.summaryWithProgress`：Workflow 等只需 summary、但用户必须看到真实长任务状态的入口；
+    只发布节流后的绝对 bytes/files 和 terminal summary，不恢复 node/cache DTO；
+  - `.topLevel`：默认列表/按需 Tree 入口，在 ScanKit worker 侧聚合扫描根的
+    一级可见行；
+  - `.largeFiles(minimumAllocatedBytes:maximumResults:)`：在 worker 侧过滤并只保留
+    有硬上限的 Top-N；
+  - `.fileCandidates(minimumLogicalBytes:)`：给 Duplicate 这类必须保留所有
+    达标候选的后台消费者；终态携带候选和 typed completeness，不交付
+    无关小文件的逐节点 DTO；
+  - `.complete`：仅给确实需要全部节点的后台消费者、显式 deep-index
+    调试/测试。**生产 UI 不得再把 `.complete` 直接接到 MainActor。**
+- 投影在每个 worker 的目录局部先累计，目录结束后最多跨 actor merge 一次；
+  禁止把“MainActor 每文件一次”换成“投影 actor 每文件一次”。
+- 多根容量是**一次物理 allocation transaction**：所有根必须共享文件 `(dev, ino)`
+  账本，跨根 hardlink 只计一份 allocated/logical bytes；目录回环账本仍按根独立，避免
+  一个根吞掉另一个根的枚举和 scoped incomplete。v2026.07.17 起该共享账本采用分片锁，
+  防止 4 根 × 多 worker 在单锁上串行化。并发下具体由哪个根承载该 inode 字节属于
+  first-observer attribution，不保证单根归属稳定；所有根合计才是权威物理占用，UI 禁止
+  事后按路径猜测相减。
+- 扫描期可合并的只有**绝对 progress 快照**；终态 `ScanSummary` 是容量和完整性
+  的权威来源。最终投影必须与 summary 来自同一轮枚举，并同时保留：
+  allocated/logical bytes、file/directory count、hardlink dedup、
+  `permissionDeniedCount`、`tccProtectedSkippedCount`、`incompleteIssues` 和
+  `completionStatus`。
+- 并发 worker 不得先从统计 actor 取出 progress、恢复后再各自 `yield`；这会让旧 snapshot
+  晚于新 snapshot 到达。merge 与 progress publish 必须在同一个 actor turn 内有序完成；所有
+  progress-capable delivery 在真实或 synthetic partial `finished` 前紧邻发布 summary 对应的
+  最终绝对帧。上层非终态只推进单调下界，只有 terminal summary 可以权威替换。
+- pathname 不是可冻结的目录身份。目录进入共享队列前必须冻结 `(device, inode)`；默认分支
+  用 `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC` 打开并 `fstat` 核对。仅显式
+  `followSymlinks=true` 可跟随最终 component，且 link/target identity 都须在入队/打开边界复核。
+  目录或 symlink 在排队期间被替换时只能报告 scoped incomplete，禁止扫描替换对象。
+- 取消是独立终态：不生成假 incomplete，旧 generation 不得覆盖新页面；
+  取消大扫描后立即开始另一入口必须有专门回归。
+- 没有可信分母时只显示真实已扫字节/文件/已用时间；禁止为了 ETA 与
+  正式扫描并发重走同一棵树。
+- Tree 终态不自动 prefetch，只在用户显式展开时读直接子项；切换排序必须
+  复用同一份测量结果，不得把 sort key 变化当 cache miss 重扫磁盘。
+- 同一个全盘会话的 firmlink 容量行与 incomplete/permission 证据必须映射到
+  同一公开路径命名空间；否则 `/Users` 行无法命中 Data 卷后代的删除拒绝。
+
+#### 生命周期与生产者所有权（v2026.07.17 补充）
+
+- **页面、模式和扫描入口切换都是扫描所有权边界**：离开当前页面/模式时，必须
+  取消它拥有的进行中扫描；进入专业扫描页前也必须先取消普通扫描，禁止让旧入口
+  在不可见页面继续争抢磁盘、MainActor 和发布通道。已经完成的主扫描快照属于
+  用户结果，不得因离开 Tree 或切换展示方式一并清空。
+- Tree 的按需展开、排序测量等属于**依附于页面的瞬时工作**。Tree 消失或主结果
+  revision 改变时，应取消这些 transient task，并同时旋转 generation 阻止迟到写回；
+  已完成的主扫描 snapshot、completeness evidence 和可复用 cache 必须保留。若下一轮
+  会复用同一重 I/O producer，则还必须等待上一轮收敛后再启动，禁止两轮叠加扫盘。
+- 专业页面若自行拥有 producer（例如应用占用、卸载残留或工作流扫描），重新加载、
+  离开页面或开始下一轮前必须先 `cancel` 并 `await` 上一 producer 收敛，再启动新的
+  重 I/O。只递增 revision 而放任旧 producer 在后台继续遍历，不是生命周期隔离。
+- 同步文件系统 snapshot（包括不可协作取消的 `FileManager` / POSIX 遍历）必须移出
+  cooperative executor，在受控后台执行上下文中运行，并通过生命周期句柄支持
+  `cancel + await`。结果必须携带 typed `complete / partial / cancelled` 终态及具体
+  issues；partial 只能显示可信下界且默认不可提交删除，cancelled 不得发布成完成结果。
+- **线程级 deadline 不是 syscall 硬超时**。v2026.07.17 Common App Cache 现场中，12s
+  deadline 因线程卡在 `open(2)`，约 368s 后才被观察。需要硬上限的同步 I/O 必须放到可
+  回收进程：父进程是唯一 `waitpid` owner，只有 WNOHANG 证明 child 仍归属当前 generation
+  才能 TERM → KILL → reap；超时后从最近一个完整 group checkpoint 恢复，pending paths
+  形成 typed incomplete。shipped App 的同可执行文件 worker 必须在 SwiftUI/NSApplication
+  构造前分流，一次扫描一个 worker；不得用启动窗口后立即退出的壳冒充此边界或 C4。
+- **同一可执行文件不等于可信调用者**。私有 worker flag 和同 UID 临时路径都不是能力边界；
+  请求只能通过父进程显式继承、已 unlink 的只读 0600 descriptor 传入，child 必须复核实时
+  parent generation、同 executable vnode、designated requirement 与 unique signing digest。
+  `posix_spawn` 使用 `POSIX_SPAWN_CLOEXEC_DEFAULT`，只显式保留 stdin/stdout/stderr，禁止把
+  App 的日志、数据库、目录或锁 FD 带入阻塞 worker。NDJSON 必须是严格单终态协议：exit 0
+  不能替代 EOF、未截断、无坏帧且恰好一个 final 的联合证明；任何协议异常都只能形成 typed
+  partial，协调器再依据最终 `ScanResult` 权威发布 terminal，旧 measuring 帧不得让 UI 继续 loading。
+- 风险顺序不能被遍历去重反转。Common App Cache 只允许同 verdict 父子共享 forest，跨
+  verdict 严格 `safe → confirm → forbid`；宽泛 confirm 父目录不得抢在具体 safe 子目录
+  之前访问。运行状态不是扫描 admission gate，运行中 App 仍可扫描；它只参与既有删除前
+  警告/强制确认合同。
+- 所有公开 `TimeInterval`/timeout 输入必须先在共享边界规范化：`NaN`、负数与零立即到期，
+  `+infinity` 明确表示无实际 deadline，换算纳秒时饱和而不是溢出。直接写
+  `elapsed >= duration` 会因 NaN 比较恒 false 把“有限扫描”静默变成无界任务。
+- producer 的投影必须与实际 UI 消费合同一致：只需要容量、一级行、Top-N 或候选时，
+  就在 worker 侧生成对应的有界投影。权威 terminal summary 必须拥有独立、可收敛的
+  交付路径，绝不能排在数百万个逐文件事件之后；否则“扫描器已完成、UI 仍 loading”
+  会在任何新入口重新出现。
+- 渐进式 producer 的“交付阶段”和“证据完整度”必须是两个字段。v2026.07.17 的
+  App Footprint 用 `deliveryPhase=intermediate/terminal` 表示是否仍有后续更新，
+  用 `isComplete` 表示容量是精确值还是可信下界；partial terminal 也必须结束进度，
+  intermediate 则不得提前移出 pending。禁止再用一个 `isComplete=false` 同时表达
+  “仍在扫描”和“扫描已结束但不完整”，终态之后也不得接受迟到中间态倒退 UI。
+- 需要按 inode 做 hardlink 归属时，不等于必须把每个普通文件都常驻字典。v2026.07.17
+  的 DerivedData snapshot 先读取 `st_nlink`：已登记 identity 必须先查 ledger，防止扫描中
+  其他链接被删除后同一 inode 降为单链接而重复计量；首次观察即为单链接的文件立即累计，
+  只有真实 multi-link identity 才进入 `(device, inode)` ledger。稳定目录下这会保留精确
+  去重/跨项目唯一归属，同时避免内存随全部普通文件线性增长。反向竞态——首次观察为单
+  链接、扫描中才新增 hardlink——无法在不保留全部 inode 或使用文件系统快照的前提下强
+  保证；live scan 不是原子 namespace snapshot。修改此路径必须同时回归普通文件 ledger
+  为 0、跨项目 hardlink 仍只计一次，并在高频变化 C4 中记录容量漂移。
+- `NSWorkspace.icon(forFile:)` 等看似 UI 的 helper 也可能触发 LaunchServices 和 bundle
+  metadata I/O，禁止直接放在会反复重算的 row body 中。cache miss 也不能同步留在 MainActor：
+  使用系统明确允许跨线程读取的 API，在受控 utility worker 中加载，并只把冻结的结果交回
+  UI。缓存、pending queue、active loads 都必须有硬上限、页面级生命周期和 reload generation
+  失效；无界全局字典或无界预取只是把滚动卡顿换成内存/I/O 增长。
+- `.topLevel` 的空间复杂度是 `O(真实一级可见行数)`，不是固定 Top-N。它已经与全部后代
+  inode 数解耦，但若根目录自身有百万个直接子项，当前 `ScanSummary.topLevel([row])`
+  完整数组仍必须承载百万行。没有先建立分页游标、稳定排序、完整容量与删除证据如何跨页
+  保留的产品合同前，ScanKit 禁止静默截断；这类根只能作为明确的分页化后续项管理。
+- typed incomplete 在 ScanKit 内部必须用 `Set`/hash index 去重，终态只排序一次；上层
+  消费者也不得在每条 `.incomplete` 到达时线性查数组并重建全部 Tree 投影，否则大量
+  issue 会退化为 `O(n²)`。兼容 companion event 与 richer typed event 应在索引键边界合并，
+  不能靠反复全表扫描替换。v2026.07.17 起 AppUI 使用“稳定有序数组 + exact/scope 哈希索引”
+  记录：rich evidence 原位替换 generic、不同 stage/errno 继续保留；公开 path 与 Tree
+  投影只允许在 snapshot throttle、per-root publish、Tree 权威批次或删除安全读取边界提交。
+  Tree 行查找使用 issue path `Set` 加预计算 strict-ancestor `Set`，复杂度按路径深度而不是
+  `rows × issues` 增长。禁止为省一次 commit 让 SwiftUI row synthesis 反向写 `@Published`。
+
+#### 严禁的“提速”方法
+
+- 不得把节点流改为 `.bufferingNewest` / 丢弃旧节点；这会重现历史上
+  195k+ 文件场景容量少算的数据事故。
+- 不得因 `CACHEDIR.TAG` 而跳过内容。它是“可视为缓存”的分类信号，
+  不是“允许少算容量”的许可。
+- 不得通过调大 batch、调低 UI 刷新率或反复增加 `Task.yield()` 宣称根治；
+  这些只改常数，没有消除 MainActor 的 O(全部节点) 工作量。
+- 不得用 `du`、Spotlight 或独立估算值替换同一轮 `BulkScanner` 证据；
+  这会破坏 allocated/logical、hardlink、TCC 和 partial 合同。
+
+#### 防回归门槛
+
+- 每次修改扫描、Observation/视图订阅、多根调度或结果投影，必须同时跑：
+  1. 投影与 `.complete` 的容量/数量/完整性等价测试；
+  2. 百万节点合成性能测试，验证投影有界、主线程不接收 node；
+  3. Large Files 取消后立即推荐扫描的 generation/终态回归；
+  4. `PerfBench` 裸扫描与 `CoordinatorBench` 端到端对比，不能只看其中一边。
+- 自动化和 Debug build 最多是 C3；还必须在用户授权的一次持续 C4 中
+  验证真实 Large Files、推荐扫描、取消后立即重扫、内存峰值和 UI 响应性。
+
 ---
 
 ## 3. 删除 / 安全判定 —— 用户数据丢一次就完蛋
@@ -254,6 +421,39 @@
  - [ScanCoordinatorCompletenessProjectionTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/ScanCoordinatorCompletenessProjectionTests.swift) 覆盖 exact / ancestor / descendant / sibling 关系：真实 issue 行锁定，祖先 `accessState == .normal` 且 `subtreeCompleteness == .containsIncompleteDescendant`，兄弟完全正常。
  - [ScanCoordinatorFullDiskTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/ScanCoordinatorFullDiskTests.swift) 覆盖真实按需扫描中的深层权限拒绝；[FlatRowsIncrementalPatchTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/FlatRowsIncrementalPatchTests.swift) 覆盖 issue 到达后仍残留旧 `expanded` 状态时，真实锁节点不再展示陈旧后代，而 partial 祖先仍可展开。
  - 删除合同必须另断言祖先的 incomplete 证据仍进入预检，禁止为了修 UI 锁而放开父目录删除。
+
+### 3.12 [阻塞] Duplicate 的 `.full` 结果在确认后被替换或改写
+
+- **现象**：扫描阶段算过完整 SHA256，但结果只保留 path/展示状态；用户打开确认页后，
+  同一路径可被替换为另一 inode，或原 inode 内容被改写。最终 Safety 预检只证明路径目前可移动，
+  不能证明它仍是扫描时那份重复内容。
+- **根因**：把 hash 当成 UI 可靠度而不是执行能力；只冻结待删路径，没有冻结一份明确保留副本；
+  重 hash 如果发生在 View 或持久 reservation 之前，仍留下新的检查—使用窗口。
+- **v2026.07.17 合同**：
+  - hash 必须通过 `open(O_NOFOLLOW) → fstat → read → fstat → lstat(path)` 产生；仅普通文件，
+    且读前后 descriptor identity 与读后 pathname identity 完全一致才可发布。该顺序遵循
+    [Apple Secure Coding 的 race-condition 指南](https://developer.apple.com/library/archive/documentation/Security/Conceptual/SecureCodingGuide/Articles/RaceConditions.html)。
+  - `.full` 删除证据必须类型化携带完整 SHA256、逻辑大小及每个文件的
+    device/inode/type/size/mtime/ctime；缺一项只能查看，不能生成删除目标。
+  - intent 同时冻结所有待移动项和至少一份确定的 retained copy。最终执行先 reserve 待移动项，
+    再在后台完整重 hash 两类文件；任何读取、身份或内容变化都释放未 claim reservation，
+    返回 pre-submit block，禁止 receipt/结果页。
+  - 重 hash 成功后，持久 ledger claim 继续比较 reservation 的 path/inode/type 身份；
+    每个 batch/单项 retry 还要在串行提交队列中、ledger claim 前后同时重验本批 targets 的
+    full-hash identity 与 retained copy 的 identity。完整 SHA 只做一次，避免把安全检查退化成
+    `批次数 × 全量文件` I/O；size/mtime/ctime 的轻量 fence 覆盖普通原地写与路径替换。
+  - GCD hash worker 不继承调用方 Swift Task 的取消上下文；必须把显式线程安全 cancellation token
+    传入每个 read chunk，并在每次 concrete claim 前后复查。取消仍在 pre-submit 边界时必须释放
+    reservation、零 recycle、零 receipt；progress 最多按文件/阶段有界发布，禁止按 read chunk
+    淹没 MainActor。
+  - claim 后到基于 URL 的 `NSWorkspace.recycle` 调用之间仍受 AppKit path API 的固有极小窗口约束，
+    不能虚构成 descriptor-based 原子移动。实际动作仍且只能是
+    [NSWorkspace.recycle](https://developer.apple.com/documentation/appkit/nsworkspace/recycle(_:completionhandler:))。
+  - `.submittingToTrash` 只能在串行 worker 已完成 reservation、最终复核、claim 前后 fence 和
+    durable claim 后，紧邻第一次真实 `NSWorkspace.recycle` 调用同步发布。rehash、排队、claim
+    都仍是可取消的 pre-submit；异步 UI phase 可能滞后，不能充当取消或授权的唯一依据。
+- **性能边界**：最终全量 hash 是确认后的安全成本，必须在后台执行；扫描 evidence 去重使用
+  Set + 稳定数组，禁止在 MainActor 对每条 incomplete issue 做 `Array.contains` 形成 O(n²)。
 
 ---
 
@@ -880,3 +1080,38 @@ v1.3.zzzz 早期会话拍板"方案 C：树形主视图，清单降级为筛选�
 ### 单测合同
 - AppUI 包总数 248 → 255（+5 ResultsViewMode 形态稳定 + +7 sanitize 行为）
 - ResultsViewMode CaseIterable 顺序、label、SF Symbol、rawValue 全 lock，避免 Phase 5 视图回归
+
+---
+
+## 9. v2026.07.17：扫描结果不能保存“已翻译字符串”
+
+### 事故根因
+
+应用内语言可在进程不退出、扫描结果不重建的情况下切换。旧链路在扫描阶段调用本地化，
+再把结果写入 `RowItem.title`；随后 Tree、Smart Care、待处理、删除确认和 AI 又复制这个
+`String`。因此设置切换语言后，长期存活的快照仍显示旧语言，只有重扫或重启才能恢复。
+
+### 长期合同
+
+- 扫描/聚合模型保存 `LocalizedTextDescriptor`（catalog key + typed arguments + verbatim
+  用户数据），View/AppKit/tooltip/AI 请求在消费时用当前显式 `Locale` 投影。
+- path、ID、verdict、rejection、完整性证据和删除授权永远不读取展示描述；切语言只能重排
+  已有“按名称排序”投影，不能清缓存、重扫磁盘或改变删除候选身份。
+- 文件名、版本号、App 名称和规则库原文必须是 `verbatim`。不能因为某个原文碰巧等于
+  String Catalog key 就猜测它可翻译。
+- `Resources/Rules/vendors.yaml` 属于受保护规则库。现有 common-app-cache 原文缺英文是
+  规则数据迁移问题，必须在获得规则库修改授权后扩展双语 schema；禁止在 AppUI 写
+  中文到英文的硬编码映射。本次只对运行时生成的标准 macOS App 缓存提供中英模板。
+
+### 防回归消费点
+
+主列表与名称排序、Tree SwiftUI/AppKit 行、详情、删除意图与运行中 App 冲突、Smart Care
+checkpoint/预览/AI、待处理列表，以及 Workflow 文件系统删除投影，都必须携带同一份语义
+描述。新增复制模型时，若只复制 `.title` 而不复制 `.titlePresentation`，即视为回归。
+
+### 当前验证边界
+
+v2026.07.17 本轮已完成 descriptor 传播与静态调用点审阅，新增实时切换/排序/复制模型测试源码；
+遵循“先完整落地、后统一测试”，这些测试、全包 build 与真实 App 切语言尚未运行，当前只能记为
+C1。受保护 rules 数据的双语迁移也仍待单独授权，不能把 catalog 路径通过等同于所有 vendor
+原文已有英文。

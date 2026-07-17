@@ -202,7 +202,7 @@ enum SmartCarePresentation {
 public struct SmartCareHomeView: View {
     public let coordinator: SmartCareCoordinator
 
-    private let session: SmartCareSession?
+    private let session: SmartCareSession
     private let aiIsConfigured: Bool
     private let aiIsRunning: Bool
     private let aiProcessed: Int
@@ -216,7 +216,7 @@ public struct SmartCareHomeView: View {
     private let onAIShowReport: () -> Void
 
     public init(coordinator: SmartCareCoordinator,
-                session: SmartCareSession? = nil,
+                session: SmartCareSession,
                 aiIsConfigured: Bool = false,
                 aiIsRunning: Bool = false,
                 aiProcessed: Int = 0,

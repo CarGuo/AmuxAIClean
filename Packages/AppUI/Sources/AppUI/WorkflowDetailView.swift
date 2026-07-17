@@ -8,14 +8,22 @@ import SafetyKit
 /// 工作流扫描结果既可能携带真实名称，也可能携带 String Catalog key。
 /// 保留语义到 View 投影，避免扫描时把启动语言固化进长生命周期结果。
 enum WorkflowHitNamePresentation {
-    static func string(_ value: String, locale: Locale) -> String {
+    static func descriptor(_ value: String) -> LocalizedTextDescriptor {
         let separator = " · "
-        guard let range = value.range(of: separator) else {
-            return AppLocalization.string(value, locale: locale)
-        }
-        let base = String(value[..<range.lowerBound])
-        let suffix = String(value[range.upperBound...])
-        return "\(AppLocalization.string(base, locale: locale))\(separator)\(suffix)"
+        let range = value.range(of: separator)
+        let base = range.map { String(value[..<$0.lowerBound]) } ?? value
+        let suffix = range.map { String(value[$0.lowerBound...]) } ?? ""
+        // ScanKit's semantic display keys live in explicit namespaces; simulator names,
+        // project names and filesystem names are user/source data and must remain verbatim.
+        let isCatalogKey = base.hasPrefix("versioned-root.")
+            || base.hasPrefix("rule.")
+            || base.hasPrefix("workflow.")
+        let descriptor: LocalizedTextDescriptor = isCatalogKey ? .catalog(base) : .verbatim(base)
+        return descriptor.appendingVerbatim(suffix)
+    }
+
+    static func string(_ value: String, locale: Locale) -> String {
+        descriptor(value).localized(locale: locale)
     }
 }
 
@@ -268,9 +276,23 @@ public struct WorkflowDetailView: View {
             HStack {
                 ProgressView()
                     .controlSize(.small)
-                Text("workflow.detail.scanning", bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Group {
+                    if let progress = viewModel.cardScanProgress[card.id] {
+                        Text(AppLocalization.format(
+                            "workflow.detail.scan_progress",
+                            locale: locale,
+                            arguments: [
+                                Int64(progress.fileCount),
+                                AppLocalization.byteCount(progress.scannedBytes, locale: locale)
+                            ]
+                        ))
+                        .help(progress.currentPath ?? "")
+                    } else {
+                        Text("workflow.detail.scanning", bundle: .module)
+                    }
+                }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
             }
             .padding(.leading, 28)
             .padding(.vertical, 6)
@@ -1239,6 +1261,20 @@ public final class WorkflowDetailViewModel: ObservableObject {
         case cancelled
     }
 
+    /// Real absolute progress for one card's current scan owner. Counts come from ScanKit's
+    /// allocation pass; there is no timer-derived percentage or guessed denominator.
+    public struct CardScanProgress: Sendable, Equatable {
+        public let scannedBytes: Int64
+        public let fileCount: Int
+        public let currentPath: String?
+
+        public init(scannedBytes: Int64, fileCount: Int, currentPath: String?) {
+            self.scannedBytes = max(0, scannedBytes)
+            self.fileCount = max(0, fileCount)
+            self.currentPath = currentPath
+        }
+    }
+
     public enum SelectionCapacityState: Sendable, Equatable {
         case known(itemCount: Int, bytes: Int64)
         case partialUnknown(itemCount: Int, knownBytes: Int64)
@@ -1250,6 +1286,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
     @Published public private(set) var cardTotalBytes: [String: Int64] = [:]
     @Published public private(set) var cardIncompleteIssues: [String: [ScanIncompleteIssue]] = [:]
     @Published public private(set) var cardScanPhases: [String: CardScanPhase] = [:]
+    @Published public private(set) var cardScanProgress: [String: CardScanProgress] = [:]
     @Published public var expanded: Set<String> = []
     @Published public private(set) var selected: Set<String> = []
     @Published public private(set) var scanEvidence = WorkflowScanEvidence(revision: 0)
@@ -1458,7 +1495,10 @@ public final class WorkflowDetailViewModel: ObservableObject {
     /// Apple exposes the whole DerivedData root and per-project rows as two cards, but both
     /// must come from one filesystem transaction. Tests inject this immutable boundary to
     /// prove that the scheduler never performs a second recursive pass.
-    private let derivedDataSnapshotDiscovery: @Sendable (URL) async throws -> DerivedDataScanSnapshot
+    private let derivedDataSnapshotDiscovery: @Sendable (
+        URL,
+        @escaping @Sendable (DerivedDataScanProgress) -> Void
+    ) async throws -> DerivedDataScanSnapshot
     private var simulatorUninstallStopControl: SimulatorDeleteCoordinator.StopControl?
     private var pendingConfirmedDeleteIntent: WorkflowDeletionIntent?
     private var deletionInteractionCoordinator: DeletionInteractionCoordinator?
@@ -1524,8 +1564,19 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 includeFilesystemSizes: includeFilesystemSizes
             )
         }
-        self.derivedDataSnapshotDiscovery = derivedDataSnapshotDiscovery ?? { home in
-            try await DerivedDataPerProjectScanner().discoverSnapshot(home: home)
+        if let derivedDataSnapshotDiscovery {
+            // Test/injected providers retain their existing API and simply provide no partial
+            // progress. Production uses the progress-aware one-pass scanner below.
+            self.derivedDataSnapshotDiscovery = { home, _ in
+                try await derivedDataSnapshotDiscovery(home)
+            }
+        } else {
+            self.derivedDataSnapshotDiscovery = { home, progress in
+                try await DerivedDataPerProjectScanner().discoverSnapshot(
+                    home: home,
+                    progress: progress
+                )
+            }
         }
     }
 
@@ -1740,7 +1791,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
                     candidateByPath[path] = RunningAppGuard.Candidate(
                         path: path,
                         title: hit.displayName,
-                        bundleIDPrefix: card.runningBundleIDPrefix
+                        bundleIDPrefix: card.runningBundleIDPrefix,
+                        titlePresentation: WorkflowHitNamePresentation.descriptor(hit.displayName)
                     )
                 }
             }
@@ -1771,7 +1823,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 fileCount: 1,
                 verdict: .safe,
                 rejection: .ok,
-                runningBundleIDPrefix: candidate.bundleIDPrefix
+                runningBundleIDPrefix: candidate.bundleIDPrefix,
+                titlePresentation: candidate.titlePresentation
             )
         }
     }
@@ -1902,6 +1955,20 @@ public final class WorkflowDetailViewModel: ObservableObject {
         let work: CardScanWork = card.sharedScanRole == nil
             ? .single(card)
             : .derivedData([card])
+        let progressPair = AsyncStream<CardScanProgressEvent>.makeStream(
+            bufferingPolicy: .bufferingNewest(16)
+        )
+        let progressContinuation = progressPair.continuation
+        let progressConsumer = Task { @MainActor [weak self] in
+            for await event in progressPair.stream {
+                self?.publishCardScanProgress(
+                    event,
+                    revision: globalRevision,
+                    sessionID: sessionID,
+                    retryRevision: retryRevision
+                )
+            }
+        }
         let retryTask = Task.detached(priority: .userInitiated) {
             [home, versionedRootDiscovery, dynamicDiscovery, derivedDataSnapshotDiscovery] in
             await Self.executeCardRetry(
@@ -1909,7 +1976,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 home: home,
                 versionedRootDiscovery: versionedRootDiscovery,
                 dynamicDiscovery: dynamicDiscovery,
-                derivedDataSnapshotDiscovery: derivedDataSnapshotDiscovery
+                derivedDataSnapshotDiscovery: derivedDataSnapshotDiscovery,
+                progress: { event in progressContinuation.yield(event) }
             )
         }
         cardRetryTasks[cardID] = retryTask
@@ -1919,6 +1987,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
         } onCancel: {
             retryTask.cancel()
         }
+        progressContinuation.finish()
+        await progressConsumer.value
 
         guard cardRetryRevisions[cardID] == retryRevision,
               scanRevision == globalRevision,
@@ -1930,6 +2000,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
               let output,
               let result = output.workOutput.results[cardID] else {
             cardScanPhases[cardID] = .cancelled
+            cardScanProgress.removeValue(forKey: cardID)
             return
         }
         if let sharedIssues = output.sharedIncompleteIssues {
@@ -2071,7 +2142,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
                             runningBundleIDPrefix: candidate.bundleIDPrefix,
                             accessEvidence: evidenceSnapshot.accessEvidence(
                                 for: candidate.path
-                            )
+                            ),
+                            titlePresentation: candidate.titlePresentation
                         )
                     }
                 )
@@ -2670,8 +2742,20 @@ public final class WorkflowDetailViewModel: ObservableObject {
 
     private struct FilesystemScanResult: Sendable {
         let sizeBytes: Int64?
+        let fileCount: Int
         let incompleteIssues: [ScanIncompleteIssue]
         let terminalFailure: Bool
+    }
+
+    private struct FilesystemScanProgress: Sendable, Equatable {
+        let scannedBytes: Int64
+        let fileCount: Int
+        let currentPath: String
+    }
+
+    private struct CardScanProgressEvent: Sendable, Equatable {
+        let cardID: String
+        let progress: CardScanProgress
     }
 
     private struct PathExpansionResult: Sendable {
@@ -2724,6 +2808,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
         let sessionID = UUID()
         cardHits.removeAll()
         cardTotalBytes.removeAll()
+        cardScanProgress.removeAll()
         cardIncompleteIssues.removeAll()
         cardScanPhases.removeAll()
         selected.removeAll()
@@ -2766,6 +2851,23 @@ public final class WorkflowDetailViewModel: ObservableObject {
     @discardableResult
     private func loadAllCards(revision: UInt64, sessionID: UUID) async -> Bool {
         let cardsSnapshot = cards
+        let progressPair = AsyncStream<CardScanProgressEvent>.makeStream(
+            bufferingPolicy: .bufferingNewest(32)
+        )
+        let progressContinuation = progressPair.continuation
+        let progressConsumer = Task { @MainActor [weak self] in
+            for await event in progressPair.stream {
+                self?.publishCardScanProgress(
+                    event,
+                    revision: revision,
+                    sessionID: sessionID,
+                    retryRevision: nil
+                )
+            }
+        }
+        let progressEmitter: @Sendable (CardScanProgressEvent) -> Void = { event in
+            progressContinuation.yield(event)
+        }
         let needsVersionedRoots = cardsSnapshot.contains { card in
             if case .versionedRoot = card.source { return true }
             return false
@@ -2791,14 +2893,22 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 while nextWorkIndex < min(maxConcurrentCardLoads, workItems.count) {
                     let work = workItems[nextWorkIndex]
                     nextWorkIndex += 1
-                    for card in work.cards { cardScanPhases[card.id] = .scanning }
+                    for card in work.cards {
+                        cardScanPhases[card.id] = .scanning
+                        cardScanProgress[card.id] = CardScanProgress(
+                            scannedBytes: 0,
+                            fileCount: 0,
+                            currentPath: nil
+                        )
+                    }
                     group.addTask { [home, dynamicDiscovery, derivedDataSnapshotDiscovery] in
                         await Self.executeScanWork(
                             work,
                             home: home,
                             versionedTask: versionedTask,
                             dynamicDiscovery: dynamicDiscovery,
-                            derivedDataSnapshotDiscovery: derivedDataSnapshotDiscovery
+                            derivedDataSnapshotDiscovery: derivedDataSnapshotDiscovery,
+                            progress: progressEmitter
                         )
                     }
                 }
@@ -2824,14 +2934,22 @@ public final class WorkflowDetailViewModel: ObservableObject {
                     if nextWorkIndex < workItems.count {
                         let work = workItems[nextWorkIndex]
                         nextWorkIndex += 1
-                        for card in work.cards { cardScanPhases[card.id] = .scanning }
+                        for card in work.cards {
+                            cardScanPhases[card.id] = .scanning
+                            cardScanProgress[card.id] = CardScanProgress(
+                                scannedBytes: 0,
+                                fileCount: 0,
+                                currentPath: nil
+                            )
+                        }
                         group.addTask { [home, dynamicDiscovery, derivedDataSnapshotDiscovery] in
                             await Self.executeScanWork(
                                 work,
                                 home: home,
                                 versionedTask: versionedTask,
                                 dynamicDiscovery: dynamicDiscovery,
-                                derivedDataSnapshotDiscovery: derivedDataSnapshotDiscovery
+                                derivedDataSnapshotDiscovery: derivedDataSnapshotDiscovery,
+                                progress: progressEmitter
                             )
                         }
                     }
@@ -2843,6 +2961,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
             // one immutable result; cancellation therefore has to be forwarded explicitly.
             versionedTask?.cancel()
         }
+        progressContinuation.finish()
+        await progressConsumer.value
 
         guard completed, !Task.isCancelled,
               revision == scanRevision,
@@ -2874,6 +2994,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
             switch cardScanPhases[card.id] {
             case .pending, .scanning:
                 cardScanPhases[card.id] = .cancelled
+                cardScanProgress.removeValue(forKey: card.id)
             case .completed, .partial, .failed, .cancelled, .none:
                 break
             }
@@ -2893,6 +3014,11 @@ public final class WorkflowDetailViewModel: ObservableObject {
         }
         cardHits[cardID] = []
         cardTotalBytes[cardID] = 0
+        cardScanProgress[cardID] = CardScanProgress(
+            scannedBytes: 0,
+            fileCount: 0,
+            currentPath: nil
+        )
         cardIncompleteIssues[cardID] = []
         cardScanPhases[cardID] = .scanning
         rebuildScanEvidence(revision: revision, sessionID: sessionID)
@@ -2923,6 +3049,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
             $0 &+ max(0, $1.sizeBytes ?? 0)
         }
         cardIncompleteIssues[card.id] = published.incompleteIssues
+        cardScanProgress.removeValue(forKey: card.id)
         if published.terminalFailure || (published.hits.isEmpty && !published.incompleteIssues.isEmpty) {
             cardScanPhases[card.id] = .failed
         } else if published.incompleteIssues.isEmpty {
@@ -2937,6 +3064,30 @@ public final class WorkflowDetailViewModel: ObservableObject {
             }
         }
         collapseNestedFilesystemSelections()
+    }
+
+    /// v2026.07.17 Workflow long-task owner gate. Worker progress is absolute and bounded, but
+    /// still untrusted for publication until the exact card + scan session/revision (and retry
+    /// revision when present) owns it. Monotonic checks prevent buffered late frames regressing
+    /// a newer byte/file count.
+    private func publishCardScanProgress(
+        _ event: CardScanProgressEvent,
+        revision: UInt64,
+        sessionID: UUID,
+        retryRevision: UInt64?
+    ) {
+        guard scanRevision == revision,
+              scanEvidence.sessionID == sessionID,
+              cardScanPhases[event.cardID] == .scanning else { return }
+        if let retryRevision {
+            guard cardRetryRevisions[event.cardID] == retryRevision else { return }
+        }
+        if let current = cardScanProgress[event.cardID],
+           (event.progress.scannedBytes < current.scannedBytes
+            || event.progress.fileCount < current.fileCount) {
+            return
+        }
+        cardScanProgress[event.cardID] = event.progress
     }
 
     private static func makeCardScanWork(_ cards: [DeveloperCard]) -> [CardScanWork] {
@@ -2967,7 +3118,11 @@ public final class WorkflowDetailViewModel: ObservableObject {
             URL,
             Bool
         ) async throws -> DiscoveryEvidence<WorkflowScanHit>,
-        derivedDataSnapshotDiscovery: @Sendable (URL) async throws -> DerivedDataScanSnapshot
+        derivedDataSnapshotDiscovery: @Sendable (
+            URL,
+            @escaping @Sendable (DerivedDataScanProgress) -> Void
+        ) async throws -> DerivedDataScanSnapshot,
+        progress: @escaping @Sendable (CardScanProgressEvent) -> Void
     ) async -> CardScanWorkOutput? {
         do {
             try Task.checkCancellation()
@@ -2985,11 +3140,26 @@ public final class WorkflowDetailViewModel: ObservableObject {
                     card: card,
                     home: home,
                     versionedDiscovery: versionedDiscovery,
-                    dynamicDiscovery: dynamicDiscovery
+                    dynamicDiscovery: dynamicDiscovery,
+                    progress: { snapshot in
+                        progress(CardScanProgressEvent(cardID: card.id, progress: snapshot))
+                    }
                 )
                 return CardScanWorkOutput(results: [card.id: result])
             case .derivedData(let cards):
-                let snapshot = try await derivedDataSnapshotDiscovery(home)
+                let snapshot = try await derivedDataSnapshotDiscovery(home) { scanProgress in
+                    let cardProgress = CardScanProgress(
+                        scannedBytes: scanProgress.scannedBytes,
+                        fileCount: scanProgress.fileCount,
+                        currentPath: scanProgress.currentPath
+                    )
+                    for card in cards {
+                        progress(CardScanProgressEvent(
+                            cardID: card.id,
+                            progress: cardProgress
+                        ))
+                    }
+                }
                 try Task.checkCancellation()
                 var results: [String: CardScanResult] = [:]
                 for card in cards {
@@ -3049,7 +3219,11 @@ public final class WorkflowDetailViewModel: ObservableObject {
             URL,
             Bool
         ) async throws -> DiscoveryEvidence<WorkflowScanHit>,
-        derivedDataSnapshotDiscovery: @Sendable (URL) async throws -> DerivedDataScanSnapshot
+        derivedDataSnapshotDiscovery: @Sendable (
+            URL,
+            @escaping @Sendable (DerivedDataScanProgress) -> Void
+        ) async throws -> DerivedDataScanSnapshot,
+        progress: @escaping @Sendable (CardScanProgressEvent) -> Void
     ) async -> CardRetryOutput? {
         let needsVersionedRoots = work.cards.contains { card in
             if case .versionedRoot = card.source { return true }
@@ -3068,7 +3242,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 home: home,
                 versionedTask: versionedTask,
                 dynamicDiscovery: dynamicDiscovery,
-                derivedDataSnapshotDiscovery: derivedDataSnapshotDiscovery
+                derivedDataSnapshotDiscovery: derivedDataSnapshotDiscovery,
+                progress: progress
             ), !Task.isCancelled else {
                 return nil
             }
@@ -3161,7 +3336,15 @@ public final class WorkflowDetailViewModel: ObservableObject {
         }
     }
 
-    static func foldNestedPaths(_ paths: [String]) -> [String] {
+    private nonisolated static func minimalNonOverlappingPaths(
+        _ paths: [String],
+        recipe: DeletionRecipe
+    ) -> [String] {
+        guard case .filesystem = recipe else { return paths }
+        return foldNestedPaths(paths)
+    }
+
+    nonisolated static func foldNestedPaths(_ paths: [String]) -> [String] {
         var kept: [String] = []
         let sorted = Array(Set(paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path }))
             .sorted { lhs, rhs in
@@ -3177,7 +3360,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
         return kept
     }
 
-    private static func isAncestor(_ ancestor: String, of child: String) -> Bool {
+    private nonisolated static func isAncestor(_ ancestor: String, of child: String) -> Bool {
         child == ancestor || child.hasPrefix(ancestor.hasSuffix("/") ? ancestor : ancestor + "/")
     }
 
@@ -3188,7 +3371,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
                                         String,
                                         URL,
                                         Bool
-                                    ) async throws -> DiscoveryEvidence<WorkflowScanHit>) async throws -> CardScanResult {
+                                    ) async throws -> DiscoveryEvidence<WorkflowScanHit>,
+                                    progress: @escaping @Sendable (CardScanProgress) -> Void) async throws -> CardScanResult {
         try Task.checkCancellation()
         switch card.source {
         case .literal(let paths):
@@ -3197,22 +3381,43 @@ public final class WorkflowDetailViewModel: ObservableObject {
             // （如 `~/Library/Caches/Google/AndroidStudio*`），未展开就 `fileExists` 会全部落空，
             // 导致 JetBrains / AndroidStudio 整卡 0 命中。改为：含 `*` 走 parent + fnmatch 枚举。
             var result = CardScanResult(hits: [])
+            var expandedPaths: [String] = []
             for raw in paths {
                 try Task.checkCancellation()
                 let expandedRaw = (raw as NSString).expandingTildeInPath
                 let expansion = Self.expandGlob(expandedRaw)
                 result.merge(incompleteIssues: expansion.incompleteIssues)
-                for matchedPath in expansion.paths {
-                    let url = URL(fileURLWithPath: matchedPath)
-                    let filesystem = try await scanFilesystemIfNeeded(url: url, recipe: card.recipe)
-                    result.merge(filesystem: filesystem)
-                    result.hits.append(WorkflowScanHit(
-                        url: url,
-                        sizeBytes: filesystem.sizeBytes,
-                        displayName: url.lastPathComponent,
-                        note: url.path
-                    ))
-                }
+                expandedPaths.append(contentsOf: expansion.paths)
+            }
+            // v2026.07.16 性能/容量合同：filesystem 卡可能同时声明父根与子根
+            // （历史 npm 卡为 ~/.npm + ~/.npm/_cacache）。逐 literal 扫描会把同一子树
+            // 读两遍并把展示容量双计，而删除阶段又会 fold 成父根，前后语义不一致。
+            // 在所有卡共享的扫描边界先折叠，禁止单卡硬编码修补。
+            let pathsToScan = minimalNonOverlappingPaths(
+                expandedPaths,
+                recipe: card.recipe
+            )
+            var completedBytes: Int64 = 0
+            var completedFiles = 0
+            for matchedPath in pathsToScan {
+                try Task.checkCancellation()
+                let url = URL(fileURLWithPath: matchedPath)
+                let filesystem = try await scanFilesystemIfNeeded(
+                    url: url,
+                    recipe: card.recipe,
+                    accumulatedBytes: completedBytes,
+                    accumulatedFiles: completedFiles,
+                    progress: progress
+                )
+                result.merge(filesystem: filesystem)
+                completedBytes = saturatingAdd(completedBytes, max(0, filesystem.sizeBytes ?? 0))
+                completedFiles = saturatingAdd(completedFiles, max(0, filesystem.fileCount))
+                result.hits.append(WorkflowScanHit(
+                    url: url,
+                    sizeBytes: filesystem.sizeBytes,
+                    displayName: url.lastPathComponent,
+                    note: url.path
+                ))
             }
             return result
         case .versionedRoot(let ruleID):
@@ -3224,12 +3429,31 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 // diagnostics and fail this card closed as an empty result instead.
                 return CardScanResult(hits: [])
             }
-            let hits = versionedDiscovery.hits.filter { $0.ruleID == ruleID }
+            let discoveredHits = versionedDiscovery.hits.filter { $0.ruleID == ruleID }
+            let retainedPaths = Set(minimalNonOverlappingPaths(
+                discoveredHits.map { $0.url.path },
+                recipe: card.recipe
+            ))
+            var seenPaths = Set<String>()
+            let hits = discoveredHits.filter { hit in
+                let path = hit.url.standardizedFileURL.path
+                return retainedPaths.contains(path) && seenPaths.insert(path).inserted
+            }
             var result = CardScanResult(hits: [])
+            var completedBytes: Int64 = 0
+            var completedFiles = 0
             for hit in hits {
                 try Task.checkCancellation()
-                let filesystem = try await scanFilesystemIfNeeded(url: hit.url, recipe: card.recipe)
+                let filesystem = try await scanFilesystemIfNeeded(
+                    url: hit.url,
+                    recipe: card.recipe,
+                    accumulatedBytes: completedBytes,
+                    accumulatedFiles: completedFiles,
+                    progress: progress
+                )
                 result.merge(filesystem: filesystem)
+                completedBytes = saturatingAdd(completedBytes, max(0, filesystem.sizeBytes ?? 0))
+                completedFiles = saturatingAdd(completedFiles, max(0, filesystem.fileCount))
                 // 保留语义 key 到发布边界；View 依据当前环境 locale 投影，切语言无需重扫。
                 let localizedName = hit.displayName
                 let composedName: String
@@ -3273,7 +3497,20 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 // here would contaminate every sibling deletion. Preserve only typed evidence.
                 return CardScanResult(hits: [], terminalFailure: true)
             }
-            let resolved = discovery.hits
+            let resolved: [WorkflowScanHit]
+            if isFilesystemRecipe {
+                let retainedPaths = Set(minimalNonOverlappingPaths(
+                    discovery.hits.map { $0.url.path },
+                    recipe: card.recipe
+                ))
+                var seenPaths = Set<String>()
+                resolved = discovery.hits.filter { hit in
+                    let path = hit.url.standardizedFileURL.path
+                    return retainedPaths.contains(path) && seenPaths.insert(path).inserted
+                }
+            } else {
+                resolved = discovery.hits
+            }
             guard isFilesystemRecipe else {
                 return CardScanResult(
                     hits: resolved,
@@ -3285,10 +3522,20 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 incompleteIssues: discovery.incompleteIssues
             )
             result.hits.reserveCapacity(resolved.count)
+            var completedBytes: Int64 = 0
+            var completedFiles = 0
             for hit in resolved {
                 try Task.checkCancellation()
-                let filesystem = try await scanFilesystemIfNeeded(url: hit.url, recipe: card.recipe)
+                let filesystem = try await scanFilesystemIfNeeded(
+                    url: hit.url,
+                    recipe: card.recipe,
+                    accumulatedBytes: completedBytes,
+                    accumulatedFiles: completedFiles,
+                    progress: progress
+                )
                 result.merge(filesystem: filesystem)
+                completedBytes = saturatingAdd(completedBytes, max(0, filesystem.sizeBytes ?? 0))
+                completedFiles = saturatingAdd(completedFiles, max(0, filesystem.fileCount))
                 result.hits.append(WorkflowScanHit(
                     url: hit.url,
                     sizeBytes: filesystem.sizeBytes,
@@ -3304,22 +3551,35 @@ public final class WorkflowDetailViewModel: ObservableObject {
 
     private nonisolated static func scanFilesystemIfNeeded(
         url: URL,
-        recipe: DeletionRecipe
+        recipe: DeletionRecipe,
+        accumulatedBytes: Int64,
+        accumulatedFiles: Int,
+        progress: @escaping @Sendable (CardScanProgress) -> Void
     ) async throws -> FilesystemScanResult {
         guard case .filesystem = recipe else {
             return FilesystemScanResult(
                 sizeBytes: nil,
+                fileCount: 0,
                 incompleteIssues: [],
                 terminalFailure: false
             )
         }
-        return try await scanFilesystem(at: url)
+        return try await scanFilesystem(at: url) { rootProgress in
+            progress(CardScanProgress(
+                scannedBytes: saturatingAdd(accumulatedBytes, rootProgress.scannedBytes),
+                fileCount: saturatingAdd(accumulatedFiles, rootProgress.fileCount),
+                currentPath: rootProgress.currentPath
+            ))
+        }
     }
 
     /// Workflow-owned filesystem scan. BulkScanner supplies physical allocated size and
     /// explicit permission/TCC/partial events in one pass, so deletion safety no longer
     /// borrows evidence from MainView's unrelated ScanCoordinator session.
-    private nonisolated static func scanFilesystem(at url: URL) async throws -> FilesystemScanResult {
+    private nonisolated static func scanFilesystem(
+        at url: URL,
+        progress: @escaping @Sendable (FilesystemScanProgress) -> Void
+    ) async throws -> FilesystemScanResult {
         try Task.checkCancellation()
         let resourceKeys: Set<URLResourceKey> = [
             .isDirectoryKey,
@@ -3329,8 +3589,15 @@ public final class WorkflowDetailViewModel: ObservableObject {
         do {
             let values = try url.resourceValues(forKeys: resourceKeys)
             if values.isDirectory != true {
+                let bytes = Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+                progress(FilesystemScanProgress(
+                    scannedBytes: max(0, bytes),
+                    fileCount: 1,
+                    currentPath: url.path
+                ))
                 return FilesystemScanResult(
-                    sizeBytes: Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0),
+                    sizeBytes: bytes,
+                    fileCount: 1,
                     incompleteIssues: [],
                     terminalFailure: false
                 )
@@ -3344,6 +3611,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
             GSYLog.warning(.scan, "Workflow 根路径 metadata 读取失败 path=\(url.path) error=\(error)")
             return FilesystemScanResult(
                 sizeBytes: nil,
+                fileCount: 0,
                 incompleteIssues: [issue],
                 terminalFailure: true
             )
@@ -3351,12 +3619,21 @@ public final class WorkflowDetailViewModel: ObservableObject {
 
         let scanner = BulkScanner(options: .default)
         var sizeBytes: Int64?
+        var fileCount = 0
         var incompleteIssues: [ScanIncompleteIssue] = []
         var didFinish = false
         var terminalFailure = false
-        for await event in scanner.scan(root: url, delivery: .summaryOnly) {
+        for await event in scanner.scan(root: url, delivery: .summaryWithProgress) {
             try Task.checkCancellation()
             switch event {
+            case .heartbeat:
+                continue
+            case .progress(let scannedBytes, let enumeratedFiles):
+                progress(FilesystemScanProgress(
+                    scannedBytes: max(0, scannedBytes),
+                    fileCount: max(0, enumeratedFiles),
+                    currentPath: url.path
+                ))
             case .permissionDenied(let path):
                 incompleteIssues.append(ScanIncompleteIssue(
                     path: path,
@@ -3387,6 +3664,12 @@ public final class WorkflowDetailViewModel: ObservableObject {
             case .finished(let summary):
                 didFinish = true
                 sizeBytes = summary.totalAllocatedBytes
+                fileCount = summary.fileCount
+                progress(FilesystemScanProgress(
+                    scannedBytes: max(0, summary.totalAllocatedBytes),
+                    fileCount: max(0, summary.fileCount),
+                    currentPath: url.path
+                ))
                 incompleteIssues.append(contentsOf: summary.incompleteIssues)
                 if summary.completionStatus == .partial,
                    summary.incompleteIssues.isEmpty {
@@ -3412,7 +3695,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
                         stage: .open
                     ))
                 }
-            case .node, .nodes, .progress, .cacheDirTagged:
+            case .node, .nodes, .cacheDirTagged:
                 break
             }
         }
@@ -3426,9 +3709,20 @@ public final class WorkflowDetailViewModel: ObservableObject {
         }
         return FilesystemScanResult(
             sizeBytes: sizeBytes,
+            fileCount: fileCount,
             incompleteIssues: incompleteIssues,
             terminalFailure: terminalFailure || !didFinish
         )
+    }
+
+    private nonisolated static func saturatingAdd(_ lhs: Int64, _ rhs: Int64) -> Int64 {
+        let sum = lhs.addingReportingOverflow(rhs)
+        return sum.overflow ? .max : sum.partialValue
+    }
+
+    private nonisolated static func saturatingAdd(_ lhs: Int, _ rhs: Int) -> Int {
+        let sum = lhs.addingReportingOverflow(rhs)
+        return sum.overflow ? .max : sum.partialValue
     }
 
     /// **v2026.06.22 (P0-5)**：展开 `.literal` 路径中的 `*` 通配符（仅展开最末段，不递归）。

@@ -630,6 +630,23 @@
         }
       }
     },
+    "appfootprint.partial.help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The scan reached its safety budget. The displayed size is a known lower bound, not the app's exact size."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描已达到安全预算。当前显示的是已知占用下界，并非该应用的精确大小。"
+          }
+        }
+      }
+    },
     "appfootprint.placeholder.loading": {
       "extractionState": "manual",
       "localizations": {
@@ -2316,6 +2333,23 @@
         }
       }
     },
+    "common_app_cache.standard.reason": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Standard macOS application cache that can be rebuilt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "标准 macOS 应用缓存，可由对应应用重新生成。"
+          }
+        }
+      }
+    },
     "common_app_cache.standard.title %@": {
       "extractionState": "manual",
       "localizations": {
@@ -3212,6 +3246,210 @@
         }
       }
     },
+    "duplicate.execution.cancelling": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopping final verification safely…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在安全停止最终校验…"
+          }
+        }
+      }
+    },
+    "duplicate.execution.current_path": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current item: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前项目：%@"
+          }
+        }
+      }
+    },
+    "duplicate.execution.finalizing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finalizing verification results…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在汇总最终校验结果…"
+          }
+        }
+      }
+    },
+    "duplicate.execution.preparing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing the safe Trash submission…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在准备安全移入废纸篓…"
+          }
+        }
+      }
+    },
+    "duplicate.execution.safety_note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Selected copies and one retained copy are read again before submission. Nothing is reported as removed until macOS returns the Trash result."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "提交前会重新读取所选副本及一个保留副本；只有 macOS 返回废纸篓结果后，才会报告移除成功。"
+          }
+        }
+      }
+    },
+    "duplicate.execution.stop": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop verification"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止校验"
+          }
+        }
+      }
+    },
+    "duplicate.execution.stop_pending": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for the current file read to stop safely…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在等待当前文件读取安全停止…"
+          }
+        }
+      }
+    },
+    "duplicate.execution.submitting": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verification complete; submitting to Trash…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "校验完成，正在提交到废纸篓…"
+          }
+        }
+      }
+    },
+    "duplicate.execution.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Final content verification may take time for large files."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "大文件的最终内容校验可能需要一些时间。"
+          }
+        }
+      }
+    },
+    "duplicate.execution.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reviewing Duplicate Files"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在复核重复文件"
+          }
+        }
+      }
+    },
+    "duplicate.execution.verifying_retained": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verifying the copy that will be kept"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在校验将保留的副本"
+          }
+        }
+      }
+    },
+    "duplicate.execution.verifying_targets": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verifying selected copies"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在校验所选副本"
+          }
+        }
+      }
+    },
     "duplicate.footer.delete_hint": {
       "extractionState": "manual",
       "localizations": {
@@ -3235,13 +3473,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ · %lld candidate files"
+            "value": "%@ · %lld files checked"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ · %lld 个候选文件"
+            "value": "%@ · 已检查 %lld 个文件"
           }
         }
       }
@@ -3439,13 +3677,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This group only matched by prefix hash; review paths before moving files."
+            "value": "This group only matched by prefix hash and cannot be moved until a full verification is available."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "该组仅前缀 hash 一致，移动前请先核对路径。"
+            "value": "该组仅前缀 hash 一致，完整复核能力就绪前不能移到废纸篓。"
           }
         }
       }
@@ -5728,19 +5966,70 @@
         }
       }
     },
+    "main.scan.progress.common_cache.current %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前：%@"
+          }
+        }
+      }
+    },
+    "main.scan.progress.common_cache.groups %lld %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scanning cache groups · %1$lld/%2$lld complete"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在扫描缓存 · 已完成 %1$lld/%2$lld 组"
+          }
+        }
+      }
+    },
+    "main.scan.progress.common_cache.resolving": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing cache candidates…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在整理缓存候选…"
+          }
+        }
+      }
+    },
     "main.scan.progress.elapsed": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "elapsed %@ · estimating remaining…"
+            "value": "elapsed %@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已用 %@ · 剩余时间估算中…"
+            "value": "已用 %@"
           }
         }
       }
@@ -14792,6 +15081,62 @@
         }
       }
     },
+    "uninstall.execution.diagnosing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Checking items that macOS did not move in the batch…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在核对 macOS 批量处理中未移动的项目…" } }
+      }
+    },
+    "uninstall.execution.finalizing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Finalizing the macOS Trash result…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在汇总 macOS 废纸篓结果…" } }
+      }
+    },
+    "uninstall.execution.preparing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Preparing the confirmed cleanup…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在准备已确认的清理操作…" } }
+      }
+    },
+    "uninstall.execution.safety_note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Keep this sheet open while macOS processes the request. Items are moved to Trash, and success is shown only after the typed system result returns." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "macOS 处理期间请保留此窗口。项目只会移到废纸篓，并且仅在结构化系统结果返回后才显示成功。" } }
+      }
+    },
+    "uninstall.execution.submitting": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Waiting for macOS to move items to Trash…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在等待 macOS 将项目移到废纸篓…" } }
+      }
+    },
+    "uninstall.execution.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The system may need time for large folders or many items." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "大型目录或较多项目可能需要一些时间。" } }
+      }
+    },
+    "uninstall.execution.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Moving App Data to Trash" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在将 App 数据移到废纸篓" } }
+      }
+    },
+    "uninstall.execution.validating": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Revalidating paths and the safety boundary…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在重新验证路径与安全边界…" } }
+      }
+    },
     "uninstall.footer.selected": {
       "extractionState": "manual",
       "localizations": {
@@ -14907,6 +15252,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld 文件"
+          }
+        }
+      }
+    },
+    "uninstall.row.snapshot.partial": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan incomplete; this item is unavailable for deletion"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描未完整，该项当前不能删除"
           }
         }
       }
@@ -15334,6 +15696,13 @@
             "value": "树形"
           }
         }
+      }
+    },
+    "versioned-root.retained_version %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Latest version kept: %@." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "保留的最新版本：%@。" } }
       }
     },
     "versioned-root.android.sdk-build-tools.displayName": {
@@ -15817,6 +16186,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "确认清理操作"
+          }
+        }
+      }
+    },
+    "workflow.detail.scan_progress": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scanning… %1$lld files · %2$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在扫描… %1$lld 个文件 · %2$@"
           }
         }
       }

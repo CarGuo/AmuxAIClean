@@ -151,7 +151,7 @@ public struct PortCleanerScreen: View {
             footer
         }
         .task { startReload() }
-        .onChange(of: reloadModel.entries) { _, latest in
+        .onValueChange(of: reloadModel.entries) { _, latest in
             selectedIDs.formIntersection(Set(latest.filter(\.canRequestTermination).map(\.id)))
             if expandedGroups.isEmpty {
                 expandedGroups = Set(PortCleanerGroup.groups(from: latest).prefix(5).map(\.id))

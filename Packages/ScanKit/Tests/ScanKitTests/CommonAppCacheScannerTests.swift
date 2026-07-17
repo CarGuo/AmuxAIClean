@@ -176,6 +176,127 @@ final class CommonAppCacheScannerTests: XCTestCase {
         XCTAssertEqual(hit.entryCount, 2, "目录项统计不应因字节去重而消失")
     }
 
+    /// v2026.07.17 regression: a rule path may itself be a symlink. The scanner must account
+    /// for the object Trash would actually move, never follow the alias and advertise the huge
+    /// target directory as reclaimable cache space.
+    func testDetect_candidateRootSymlinkDoesNotCountTargetSubtree() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let target = home.appendingPathComponent("Documents/Important", isDirectory: true)
+        let caches = home.appendingPathComponent("Library/Caches", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
+        try writeFile(in: target, name: "large-user-data.bin", bytes: 2 * 1_024 * 1_024)
+
+        let alias = caches.appendingPathComponent("com.example.Alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: target)
+        let linkAllocatedBytes = allocatedSize(of: alias)
+        let targetAllocatedBytes = allocatedSize(of: target.appendingPathComponent("large-user-data.bin"))
+
+        let result = CommonAppCacheScanner.detect(vendors: [
+            VendorRule(
+                name: "Alias Cache",
+                category: "common_app_cache",
+                paths: [PathRule(path: "~/Library/Caches/com.example.Alias", verdict: .safe)]
+            )
+        ], home: home)
+
+        XCTAssertEqual(result.uniqueTotalBytes, max(0, linkAllocatedBytes))
+        XCTAssertLessThan(result.uniqueTotalBytes, targetAllocatedBytes)
+        if let hit = result.hits.first {
+            XCTAssertFalse(hit.isDirectory, "候选根 symlink 不能继承目标目录类型")
+            XCTAssertEqual(hit.sizeBytes, linkAllocatedBytes)
+            XCTAssertEqual(hit.entryCount, 1)
+        }
+    }
+
+    /// v2026.07.17 regression: even when a path changes after candidate resolution, the
+    /// directory descriptor must still match the frozen dev/inode identity before enumeration.
+    func testDetect_openedReplacementDirectoryFailsIdentityFence() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let cache = home.appendingPathComponent("Library/Caches/com.example.Cache", isDirectory: true)
+        let replacement = home.appendingPathComponent("Documents/Replacement", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: replacement, withIntermediateDirectories: true)
+        try writeFile(in: cache, name: "cache.bin", bytes: 4_096)
+        try writeFile(in: replacement, name: "private.bin", bytes: 2 * 1_024 * 1_024)
+
+        let result = CommonAppCacheScanner.detect(
+            vendors: [VendorRule(
+                name: "Identity Fence",
+                category: "common_app_cache",
+                paths: [PathRule(
+                    path: "~/Library/Caches/com.example.Cache",
+                    verdict: .safe
+                )]
+            )],
+            home: home,
+            options: .default,
+            shouldCancel: { false },
+            openDirectory: { path in
+                path == cache.path
+                    ? Darwin.open(replacement.path, O_RDONLY)
+                    : Darwin.open(path, O_RDONLY)
+            }
+        )
+
+        XCTAssertTrue(result.hits.isEmpty)
+        XCTAssertEqual(result.uniqueTotalBytes, 0)
+        XCTAssertTrue(result.incompletePaths.contains(
+            .init(path: cache.path, reason: .pathIdentityChanged)
+        ))
+    }
+
+    /// A safe nested candidate is measured before the confirm parent. Replacing it at the later
+    /// parent open boundary must preserve the safe checkpoint but make deletion fail closed.
+    func testDetect_laterParentTraversalDetectsNestedCandidateIdentityChange() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let parent = home.appendingPathComponent("Library/Caches/Parent", isDirectory: true)
+        let child = parent.appendingPathComponent("Nested", isDirectory: true)
+        let replacement = home.appendingPathComponent("Replacement", isDirectory: true)
+        let displaced = home.appendingPathComponent("Displaced", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: replacement, withIntermediateDirectories: true)
+        try writeFile(in: child, name: "old-cache.bin", bytes: 4_096)
+        try writeFile(in: replacement, name: "replacement.bin", bytes: 64 * 1_024)
+
+        var swapped = false
+        let result = CommonAppCacheScanner.detect(
+            vendors: [
+                VendorRule(
+                    name: "Parent",
+                    category: "common_app_cache",
+                    paths: [PathRule(path: "~/Library/Caches/Parent", verdict: .confirm)]
+                ),
+                VendorRule(
+                    name: "Nested",
+                    category: "common_app_cache",
+                    paths: [PathRule(path: "~/Library/Caches/Parent/Nested", verdict: .safe)]
+                ),
+            ],
+            home: home,
+            options: .default,
+            shouldCancel: { false },
+            openDirectory: { path in
+                if path == parent.path, !swapped {
+                    swapped = true
+                    XCTAssertEqual(Darwin.rename(child.path, displaced.path), 0)
+                    XCTAssertEqual(Darwin.rename(replacement.path, child.path), 0)
+                }
+                return Darwin.open(path, O_RDONLY)
+            }
+        )
+
+        XCTAssertNotNil(result.hits.first(where: { $0.ruleName == "Parent" }))
+        XCTAssertNotNil(result.hits.first(where: { $0.ruleName == "Nested" }),
+                        "safe candidate was measured before the later confirm parent mutation")
+        XCTAssertTrue(result.incompletePaths.contains(
+            .init(path: child.path, reason: .pathIdentityChanged)
+        ), "later replacement must still fail the earlier safe row closed for deletion")
+    }
+
     func testPrioritizedCandidates_scanSafeCachesBeforeConfirmReviewPaths() throws {
         let home = try makeTempDir()
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
@@ -260,13 +381,20 @@ final class CommonAppCacheScannerTests: XCTestCase {
             paths: [PathRule(path: "~/Library/Caches/com.example.Timeout", verdict: .safe)]
         )]
         let options = CommonAppCacheScanner.Options(timeoutSeconds: -1)
+        let recorder = CommonAppCacheProgressRecorder()
 
-        let result = CommonAppCacheScanner.detect(vendors: vendors, home: home, options: options)
+        let result = CommonAppCacheScanner.detect(
+            vendors: vendors,
+            home: home,
+            options: options,
+            onProgress: { recorder.append($0) }
+        )
 
         XCTAssertTrue(result.hits.isEmpty)
         XCTAssertEqual(result.incompletePaths, [
             .init(path: cache.path, reason: .deadlineExceeded)
         ])
+        XCTAssertEqual(recorder.snapshot().last?.terminalOutcome, .partial)
     }
 
     func testSizeOfPath_openFailureIsExplicitAndNeverLooksComplete() throws {
@@ -305,11 +433,13 @@ final class CommonAppCacheScannerTests: XCTestCase {
             category: "common_app_cache",
             paths: [PathRule(path: "~/Library/Caches/com.example.Cancelled", verdict: .safe)]
         )]
+        let recorder = CommonAppCacheProgressRecorder()
 
         let result = CommonAppCacheScanner.detect(
             vendors: vendors,
             home: home,
-            shouldCancel: { true }
+            shouldCancel: { true },
+            onProgress: { recorder.append($0) }
         )
 
         XCTAssertTrue(result.wasCancelled)
@@ -318,6 +448,7 @@ final class CommonAppCacheScannerTests: XCTestCase {
         XCTAssertTrue(result.hits.isEmpty)
         XCTAssertTrue(result.incompletePaths.isEmpty,
                       "取消不是权限/枚举失败，不应污染删除保护错误语义")
+        XCTAssertEqual(recorder.snapshot().last?.terminalOutcome, .cancelled)
     }
 
     func testSizeOfPath_bulk枚举途中取消会丢弃部分计量() throws {
@@ -350,6 +481,405 @@ final class CommonAppCacheScannerTests: XCTestCase {
                       "协作取消不能被 BulkEnumerate 的 stoppedByConsumer 误报为 enumerationFailed")
     }
 
+    /// v2026.07.17 regression: candidate sorting alone is insufficient. A broad confirm parent
+    /// must never become the shared-forest owner that opens before its safe descendant.
+    func testDetect_safeChildIsOpenedBeforeConfirmParentAndUnionTotalsStayUnique() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let parent = home.appendingPathComponent("Library/Caches/Browser", isDirectory: true)
+        let child = parent.appendingPathComponent("GPUCache", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        let parentFile = parent.appendingPathComponent("parent.bin")
+        let childFile = child.appendingPathComponent("child.bin")
+        try Data(repeating: 0xA1, count: 5_000).write(to: parentFile)
+        try Data(repeating: 0xB2, count: 7_000).write(to: childFile)
+        let parentBytes = allocatedSize(of: parentFile)
+        let childBytes = allocatedSize(of: childFile)
+
+        let vendors = [
+            VendorRule(
+                name: "Browser Review Root",
+                category: "common_app_cache",
+                paths: [PathRule(path: "~/Library/Caches/Browser", verdict: .confirm)]
+            ),
+            VendorRule(
+                name: "Browser Safe GPU Cache",
+                category: "common_app_cache",
+                paths: [PathRule(path: "~/Library/Caches/Browser/GPUCache", verdict: .safe)]
+            ),
+        ]
+        var openCounts: [String: Int] = [:]
+        var openOrder: [String] = []
+        let recorder = CommonAppCacheProgressRecorder()
+        let result = CommonAppCacheScanner.detect(
+            vendors: vendors,
+            home: home,
+            options: .default,
+            shouldCancel: { false },
+            openDirectory: { path in
+                openCounts[path, default: 0] += 1
+                openOrder.append(path)
+                if path == parent.path {
+                    let lastProgress = recorder.snapshot().last
+                    XCTAssertEqual(lastProgress?.currentPath, parent.path)
+                    XCTAssertEqual(lastProgress?.checkpoint?.hits.map(\.verdict), [.safe])
+                    XCTAssertEqual(lastProgress?.pendingPaths, [parent.path])
+                }
+                return Darwin.open(path, O_RDONLY)
+            },
+            onProgress: { recorder.append($0) }
+        )
+
+        XCTAssertTrue(result.isComplete)
+        XCTAssertEqual(result.hits.count, 2)
+        let byName = Dictionary(uniqueKeysWithValues: result.hits.map { ($0.ruleName, $0) })
+        XCTAssertEqual(byName["Browser Review Root"]?.verdict, .confirm)
+        XCTAssertEqual(byName["Browser Review Root"]?.sizeBytes, parentBytes + childBytes,
+                       "父行必须保持完整 inclusive subtree 容量")
+        XCTAssertEqual(byName["Browser Review Root"]?.entryCount, 3)
+        XCTAssertEqual(byName["Browser Safe GPU Cache"]?.verdict, .safe)
+        XCTAssertEqual(byName["Browser Safe GPU Cache"]?.sizeBytes, childBytes,
+                       "子行仍显示自己的完整 subtree，而不是父行扣减后的残值")
+        XCTAssertEqual(byName["Browser Safe GPU Cache"]?.entryCount, 1)
+        XCTAssertEqual(result.uniqueTotalBytes, parentBytes + childBytes)
+        XCTAssertEqual(result.uniqueLogicalBytes, 12_000)
+        XCTAssertEqual(result.uniqueEntryCount, 3)
+        XCTAssertEqual(openOrder.first, child.path,
+                       "safe 子路径必须在任何 confirm 父路径之前进入同步 open 边界")
+        XCTAssertGreaterThan(
+            try XCTUnwrap(openOrder.firstIndex(of: parent.path)),
+            try XCTUnwrap(openOrder.firstIndex(of: child.path))
+        )
+        XCTAssertEqual(openCounts[parent.path], 1)
+        XCTAssertEqual(openCounts[child.path], 2,
+                       "跨 verdict 为保证 safe 优先允许重叠访问，但 union 结果必须去重")
+    }
+
+    func testDetect_sameVerdictParentAndChildStillShareOneForestTraversal() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let parent = home.appendingPathComponent("Library/Caches/SameVerdict", isDirectory: true)
+        let child = parent.appendingPathComponent("Nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        try writeFile(in: parent, name: "parent.bin", bytes: 4_096)
+        try writeFile(in: child, name: "child.bin", bytes: 4_096)
+
+        var openCounts: [String: Int] = [:]
+        let result = CommonAppCacheScanner.detect(
+            vendors: [
+                VendorRule(
+                    name: "Safe Parent",
+                    category: "common_app_cache",
+                    paths: [PathRule(path: "~/Library/Caches/SameVerdict", verdict: .safe)]
+                ),
+                VendorRule(
+                    name: "Safe Child",
+                    category: "common_app_cache",
+                    paths: [PathRule(path: "~/Library/Caches/SameVerdict/Nested", verdict: .safe)]
+                ),
+            ],
+            home: home,
+            options: .default,
+            shouldCancel: { false },
+            openDirectory: { path in
+                openCounts[path, default: 0] += 1
+                return Darwin.open(path, O_RDONLY)
+            }
+        )
+
+        XCTAssertTrue(result.isComplete)
+        XCTAssertEqual(result.hits.count, 2)
+        XCTAssertEqual(openCounts[parent.path], 1)
+        XCTAssertEqual(openCounts[child.path], 1,
+                       "同 verdict 父子候选必须继续共享一次森林遍历")
+    }
+
+    func testDetect_progressReportsEveryVerdictGroupAndExplicitTerminalOutcome() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let safe = home.appendingPathComponent("Library/Caches/Safe", isDirectory: true)
+        let confirm = home.appendingPathComponent("Library/Caches/Confirm", isDirectory: true)
+        try FileManager.default.createDirectory(at: safe, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: confirm, withIntermediateDirectories: true)
+        try writeFile(in: safe, name: "safe.bin", bytes: 64)
+        try writeFile(in: confirm, name: "confirm.bin", bytes: 64)
+
+        let recorder = CommonAppCacheProgressRecorder()
+        let result = CommonAppCacheScanner.detect(
+            vendors: [
+                VendorRule(
+                    name: "Confirm",
+                    category: "common_app_cache",
+                    paths: [PathRule(path: "~/Library/Caches/Confirm", verdict: .confirm)]
+                ),
+                VendorRule(
+                    name: "Safe",
+                    category: "common_app_cache",
+                    paths: [PathRule(path: "~/Library/Caches/Safe", verdict: .safe)]
+                ),
+            ],
+            home: home,
+            onProgress: { recorder.append($0) }
+        )
+
+        XCTAssertTrue(result.isComplete)
+        let progress = recorder.snapshot()
+        XCTAssertEqual(progress.first?.phase, .resolvingCandidates)
+        let measuring = progress.filter { $0.phase == .measuringGroups }
+        XCTAssertEqual(measuring.map(\.completedGroups), [0, 1, 1, 2])
+        XCTAssertEqual(measuring.map(\.totalGroups), [2, 2, 2, 2])
+        XCTAssertEqual(measuring[0].currentVerdict, .safe)
+        XCTAssertEqual(measuring[1].currentVerdict, .safe)
+        XCTAssertEqual(measuring[2].currentVerdict, .confirm)
+        XCTAssertEqual(measuring[3].currentVerdict, .confirm)
+        XCTAssertEqual(measuring[1].currentPath, safe.standardizedFileURL.path)
+        XCTAssertEqual(measuring[2].currentPath, confirm.standardizedFileURL.path)
+        XCTAssertEqual(measuring[0].pendingPaths, [safe.path, confirm.path])
+        XCTAssertEqual(measuring[1].pendingPaths, [confirm.path])
+        XCTAssertEqual(measuring[1].checkpoint?.completedGroupCount, 1)
+        XCTAssertEqual(measuring[1].checkpoint?.hits.map(\.verdict), [.safe])
+        XCTAssertEqual(measuring[2].checkpoint, measuring[1].checkpoint,
+                       "下一组开始事件必须携带上一组的不可变可信 checkpoint")
+        XCTAssertEqual(measuring[3].pendingPaths, [])
+        XCTAssertEqual(measuring[3].checkpoint?.completedGroupCount, 2)
+        XCTAssertEqual(progress.last?.phase, .terminal)
+        XCTAssertEqual(progress.last?.terminalOutcome, .complete)
+        XCTAssertEqual(progress.last?.completedGroups, 2)
+        XCTAssertEqual(progress.last?.totalGroups, 2)
+        XCTAssertEqual(progress.last?.pendingPaths, [])
+        XCTAssertEqual(progress.last?.checkpoint, measuring[3].checkpoint)
+    }
+
+    func testWorkerProtocolPayloads_roundTripThroughCodable() throws {
+        let options = CommonAppCacheScanner.Options(
+            includedVerdicts: [.safe, .confirm],
+            timeoutSeconds: 7.5,
+            maxGlobExpansionsPerRule: 17,
+            maxEntriesPerPath: 99,
+            excludedCandidatePathPrefixes: ["/tmp/excluded"]
+        )
+        let encodedOptions = try JSONEncoder().encode(options)
+        let decodedOptions = try JSONDecoder().decode(
+            CommonAppCacheScanner.Options.self,
+            from: encodedOptions
+        )
+        XCTAssertEqual(decodedOptions.includedVerdicts, options.includedVerdicts)
+        XCTAssertEqual(decodedOptions.timeoutSeconds, options.timeoutSeconds)
+        XCTAssertEqual(decodedOptions.maxGlobExpansionsPerRule, options.maxGlobExpansionsPerRule)
+        XCTAssertEqual(decodedOptions.maxEntriesPerPath, options.maxEntriesPerPath)
+        XCTAssertEqual(decodedOptions.excludedCandidatePathPrefixes,
+                       options.excludedCandidatePathPrefixes)
+
+        let hit = CommonAppCacheScanner.Hit(
+            ruleName: "Fixture",
+            bundleIDPrefix: "com.example",
+            source: "test",
+            url: URL(fileURLWithPath: "/tmp/cache"),
+            isDirectory: true,
+            verdict: .safe,
+            reason: "cache",
+            sizeBytes: 4096,
+            logicalSizeBytes: 2048,
+            entryCount: 3
+        )
+        let incomplete: [CommonAppCacheScanner.IncompletePath] = [
+            .init(path: "/tmp/pending", reason: .deadlineExceeded),
+            .init(path: "/tmp/launch", reason: .workerLaunchFailed),
+            .init(path: "/tmp/protocol", reason: .workerProtocolFailed),
+        ]
+        let checkpoint = CommonAppCacheScanner.Checkpoint(
+            hits: [hit],
+            incompletePaths: incomplete,
+            uniqueTotalBytes: 4096,
+            uniqueLogicalBytes: 2048,
+            uniqueEntryCount: 3,
+            completedGroupCount: 1
+        )
+        let progress = CommonAppCacheScanner.Progress(
+            phase: .measuringGroups,
+            completedGroups: 1,
+            totalGroups: 2,
+            currentVerdict: .confirm,
+            currentPath: "/tmp/current",
+            checkpoint: checkpoint,
+            pendingPaths: ["/tmp/current"]
+        )
+        let decodedProgress = try JSONDecoder().decode(
+            CommonAppCacheScanner.Progress.self,
+            from: JSONEncoder().encode(progress)
+        )
+        XCTAssertEqual(decodedProgress, progress)
+
+        let result = checkpoint.scanResult
+        let decodedResult = try JSONDecoder().decode(
+            CommonAppCacheScanner.ScanResult.self,
+            from: JSONEncoder().encode(result)
+        )
+        XCTAssertEqual(decodedResult.hits, [hit])
+        XCTAssertEqual(decodedResult.incompletePaths, incomplete)
+        XCTAssertEqual(decodedResult.uniqueTotalBytes, 4096)
+        XCTAssertEqual(decodedResult.uniqueLogicalBytes, 2048)
+        XCTAssertEqual(decodedResult.uniqueEntryCount, 3)
+        XCTAssertFalse(decodedResult.wasCancelled)
+    }
+
+    func testDetect_hardlinkAcrossParentChildBoundaryHasIndependentRowsAndUniqueUnion() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let parent = home.appendingPathComponent("Library/Caches/HardlinkApp", isDirectory: true)
+        let child = parent.appendingPathComponent("SafeChild", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        let original = parent.appendingPathComponent("shared.bin")
+        let childLink = child.appendingPathComponent("shared-link.bin")
+        try Data(repeating: 0xCC, count: 9_000).write(to: original)
+        XCTAssertEqual(Darwin.link(original.path, childLink.path), 0)
+        let allocated = allocatedSize(of: original)
+
+        let result = CommonAppCacheScanner.detect(vendors: [
+            VendorRule(
+                name: "Parent",
+                category: "common_app_cache",
+                paths: [PathRule(path: "~/Library/Caches/HardlinkApp", verdict: .confirm)]
+            ),
+            VendorRule(
+                name: "Child",
+                category: "common_app_cache",
+                paths: [PathRule(path: "~/Library/Caches/HardlinkApp/SafeChild", verdict: .safe)]
+            ),
+        ], home: home)
+
+        let byName = Dictionary(uniqueKeysWithValues: result.hits.map { ($0.ruleName, $0) })
+        XCTAssertEqual(byName["Parent"]?.sizeBytes, allocated,
+                       "父候选必须在自己的完整 subtree 内按 inode 去重")
+        XCTAssertEqual(byName["Child"]?.sizeBytes, allocated,
+                       "子候选拥有独立 inode 语义，不能被父候选先见顺序归零")
+        XCTAssertEqual(result.uniqueTotalBytes, allocated,
+                       "跨候选路径并集只能计一次 hardlink 的物理容量")
+        XCTAssertEqual(result.uniqueLogicalBytes, 9_000)
+        XCTAssertEqual(result.uniqueEntryCount, 3,
+                       "目录项数量按路径唯一；两个 hardlink 名称仍是两个 entry")
+    }
+
+    func testDetect_exactDuplicatePathUsesHighestPriorityRuleAndOpensOnce() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let cache = home.appendingPathComponent("Library/Caches/Duplicate", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try writeFile(in: cache, name: "cache.bin", bytes: 4_096)
+
+        let vendors = [
+            VendorRule(
+                name: "Confirm Duplicate",
+                category: "common_app_cache",
+                paths: [PathRule(path: "~/Library/Caches/Duplicate", verdict: .confirm)]
+            ),
+            VendorRule(
+                name: "Safe Duplicate",
+                category: "common_app_cache",
+                paths: [PathRule(path: "~/Library/Caches/Duplicate", verdict: .safe)]
+            ),
+        ]
+        var opens = 0
+        let result = CommonAppCacheScanner.detect(
+            vendors: vendors,
+            home: home,
+            options: .default,
+            shouldCancel: { false },
+            openDirectory: { path in
+                if path == cache.path { opens += 1 }
+                return Darwin.open(path, O_RDONLY)
+            }
+        )
+
+        XCTAssertEqual(result.hits.count, 1)
+        XCTAssertEqual(result.hits.first?.ruleName, "Safe Duplicate")
+        XCTAssertEqual(result.hits.first?.verdict, .safe)
+        XCTAssertEqual(opens, 1)
+        XCTAssertEqual(result.uniqueTotalBytes, result.hits.first?.sizeBytes)
+        XCTAssertEqual(result.uniqueEntryCount, 1)
+    }
+
+    func testDetect_sharedForestEntryLimitsRemainPerCandidate() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let parent = home.appendingPathComponent("Library/Caches/Limited", isDirectory: true)
+        let child = parent.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        try writeFile(in: child, name: "a.bin", bytes: 4_096)
+        try writeFile(in: child, name: "b.bin", bytes: 4_096)
+        let options = CommonAppCacheScanner.Options(maxEntriesPerPath: 1)
+
+        let result = CommonAppCacheScanner.detect(vendors: [
+            VendorRule(
+                name: "Limited Parent",
+                category: "common_app_cache",
+                paths: [PathRule(path: "~/Library/Caches/Limited", verdict: .confirm)]
+            ),
+            VendorRule(
+                name: "Limited Child",
+                category: "common_app_cache",
+                paths: [PathRule(path: "~/Library/Caches/Limited/Child", verdict: .safe)]
+            ),
+        ], home: home, options: options)
+
+        XCTAssertFalse(result.isComplete)
+        XCTAssertTrue(result.incompletePaths.contains(
+            .init(path: parent.path, reason: .entryLimitReached)
+        ))
+        XCTAssertTrue(result.incompletePaths.contains(
+            .init(path: child.path, reason: .entryLimitReached)
+        ))
+        XCTAssertLessThanOrEqual(result.hits.first(where: { $0.ruleName == "Limited Child" })?.entryCount ?? 0, 1)
+        XCTAssertLessThanOrEqual(result.uniqueTotalBytes,
+                                 result.hits.reduce(0) { $0 &+ $1.sizeBytes })
+    }
+
+    func testDetect_sharedForestCancellationDiscardsRowsAndUniqueTotals() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let parent = home.appendingPathComponent("Library/Caches/CancelledForest", isDirectory: true)
+        let child = parent.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        for index in 0..<128 {
+            try writeFile(in: child, name: "\(index).bin", bytes: 32)
+        }
+
+        var didOpenDirectory = false
+        var checksAfterOpen = 0
+        let result = CommonAppCacheScanner.detect(
+            vendors: [
+                VendorRule(
+                    name: "Parent",
+                    category: "common_app_cache",
+                    paths: [PathRule(path: "~/Library/Caches/CancelledForest", verdict: .confirm)]
+                ),
+                VendorRule(
+                    name: "Child",
+                    category: "common_app_cache",
+                    paths: [PathRule(path: "~/Library/Caches/CancelledForest/Child", verdict: .safe)]
+                ),
+            ],
+            home: home,
+            options: .default,
+            shouldCancel: {
+                guard didOpenDirectory else { return false }
+                checksAfterOpen += 1
+                return checksAfterOpen >= 6
+            },
+            openDirectory: { path in
+                didOpenDirectory = true
+                return Darwin.open(path, O_RDONLY)
+            }
+        )
+
+        XCTAssertTrue(result.wasCancelled)
+        XCTAssertTrue(result.hits.isEmpty)
+        XCTAssertEqual(result.uniqueTotalBytes, 0)
+        XCTAssertEqual(result.uniqueLogicalBytes, 0)
+        XCTAssertEqual(result.uniqueEntryCount, 0)
+        XCTAssertTrue(result.incompletePaths.isEmpty)
+    }
+
     private func makeTempDir() throws -> URL {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("CommonAppCacheScannerTests-\(UUID().uuidString)", isDirectory: true)
@@ -366,5 +896,22 @@ final class CommonAppCacheScannerTests: XCTestCase {
         var metadata = stat()
         guard lstat(url.path, &metadata) == 0 else { return -1 }
         return Int64(metadata.st_blocks) * 512
+    }
+}
+
+private final class CommonAppCacheProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [CommonAppCacheScanner.Progress] = []
+
+    func append(_ progress: CommonAppCacheScanner.Progress) {
+        lock.lock()
+        values.append(progress)
+        lock.unlock()
+    }
+
+    func snapshot() -> [CommonAppCacheScanner.Progress] {
+        lock.lock()
+        defer { lock.unlock() }
+        return values
     }
 }

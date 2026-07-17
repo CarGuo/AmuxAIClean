@@ -6,7 +6,8 @@
 
 ## 工程概览
 
-- **Swift 6.0 + SwiftUI + macOS 15**（strict concurrency / warnings-as-errors）
+- **Swift 6.0 + SwiftUI，产品部署下限 macOS 13.5**（strict concurrency / warnings-as-errors）
+  <!-- v2026.07.16：部署下限与开发机工具链解耦；本地开发仍统一使用 macOS 15+ / Xcode 16+。 -->
 - 工程描述：原生 Xcode 工程 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj)（直接入仓，无 xcodegen / project.yml）
 - 9 个独立 SwiftPM 包（AIKit / AppUI / BrewKit / FileSearchKit / HeuristicKit / LogKit / SafetyKit / ScanKit / TestHarness）+ 主 App，作为 Local SPM 在 Xcode UI 的 Package Dependencies 区域引用
 - 删除走 [TrashPipeline](../Packages/AppUI/Sources/AppUI/TrashPipeline.swift) 直接调 `NSWorkspace.recycle`，无特权进程
@@ -18,7 +19,7 @@
 
 | 工具 | 版本 | 备注 |
 |---|---|---|
-| macOS | 15 Sequoia 或更高 | |
+| macOS | 15 Sequoia 或更高 | 开发机要求；不是产品的 macOS 13.5 部署下限 |
 | Xcode | 16+ | 自带 Swift 6 toolchain |
 | Apple Developer 账号 | 企业账号 / 个人账号均可 | 当前仓库 Debug 默认使用 Apple Development 自动签名；Release 默认使用 Team `W6H34N9728` + Developer ID Application 手动签名；fork 需要替换为自己的 Team / signing 配置 |
 | Homebrew | optional | 仅 `xcbeautify` 装饰输出 / `create-dmg` 打 DMG 时需要 |

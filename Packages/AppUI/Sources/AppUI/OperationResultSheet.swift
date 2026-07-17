@@ -52,12 +52,19 @@ public struct OperationResultPayload: Identifiable {
         public var id: String { path }
         public let path: String
         public let itemTitle: String
+        public let itemTitlePresentation: LocalizedTextDescriptor
         public let appName: String
 
-        public init(path: String, itemTitle: String, appName: String) {
+        public init(path: String, itemTitle: String, appName: String,
+                    itemTitlePresentation: LocalizedTextDescriptor? = nil) {
             self.path = path
             self.itemTitle = itemTitle
+            self.itemTitlePresentation = itemTitlePresentation ?? .verbatim(itemTitle)
             self.appName = appName
+        }
+
+        public func displayItemTitle(locale: Locale) -> String {
+            itemTitlePresentation.localized(locale: locale)
         }
     }
 
@@ -548,7 +555,7 @@ public struct OperationResultSheet: View {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(payload.runningAppSkipped.prefix(20)) { item in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(item.itemTitle)
+                            Text(verbatim: item.displayItemTitle(locale: locale))
                                 .font(.caption.weight(.medium))
                             Text(item.path)
                                 .font(.system(.caption2, design: .monospaced))

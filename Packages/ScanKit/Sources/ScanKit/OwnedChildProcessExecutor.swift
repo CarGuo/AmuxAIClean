@@ -9,21 +9,27 @@ import Darwin
 /// competing waiter. A `.running` `waitpid(WNOHANG)` result proves that the PID still belongs to
 /// this child generation (a child that exits immediately afterwards remains a zombie until this
 /// owner reaps it). `ECHILD` permanently closes the signal path.
+///
+/// v2026.07.17: stdout can additionally be observed as bounded-reader chunks, and cooperative
+/// cancellation is a distinct terminal reason. Neither feature creates another waiter: this
+/// primitive still owns every `waitpid`, and every TERM/KILL remains gated by a fresh WNOHANG
+/// `.running` observation.
 enum OwnedChildProcessExecutor {
-    enum WaitState: Equatable {
+    enum WaitState: Equatable, Sendable {
         case reaped(status: Int32)
         case running
         case notOwned
     }
 
-    enum TerminalState: Equatable {
+    enum TerminalState: Equatable, Sendable {
         case exited(status: Int32)
         case timedOut(sentSIGKILL: Bool, reapTransferred: Bool)
+        case cancelled(sentSIGKILL: Bool, reapTransferred: Bool)
         case notOwned
         case launchFailed(message: String)
     }
 
-    struct ExecutionResult: Equatable {
+    struct ExecutionResult: Equatable, Sendable {
         let terminal: TerminalState
         let stdout: String
         let stderr: String
@@ -35,20 +41,52 @@ enum OwnedChildProcessExecutor {
 
     typealias Waiter = (_ pid: pid_t, _ timeout: TimeInterval) -> WaitState
     typealias Signaler = (_ pid: pid_t, _ signal: Int32) -> Void
+    typealias StdoutChunkHandler = @Sendable (_ chunk: Data) -> Void
+    typealias CancellationCheck = @Sendable () -> Bool
+
+    private enum BoundedWaitState: Equatable, Sendable {
+        case reaped(status: Int32)
+        case deadlineReachedWhileRunning
+        case cancellationRequestedWhileRunning
+        case notOwned
+    }
 
     static func run(
         path: String,
         arguments: [String],
+        standardInputFD: Int32? = nil,
         timeout: TimeInterval?,
         stallAfter: TimeInterval? = nil,
         terminationGrace: TimeInterval = 1,
         killGrace: TimeInterval = 1,
         outputLimitPerStream: Int,
         onSpawn: ((pid_t) -> Void)? = nil,
-        onStall: ((pid_t, TimeInterval) -> Void)? = nil
+        onStall: ((pid_t, TimeInterval) -> Void)? = nil,
+        onStdoutChunk: StdoutChunkHandler? = nil,
+        isCancelled: CancellationCheck? = nil
     ) -> ExecutionResult {
+        // v2026.07.17：已取消的调用绝不能先启动子进程再“补做取消”。这对未来可能承载
+        // 扫描 worker 的同一 primitive 尤其重要；取消先于 spawn 时没有 PID，也无需 signal。
+        if isCancelled?() == true {
+            return ExecutionResult(
+                terminal: .cancelled(sentSIGKILL: false, reapTransferred: false),
+                stdout: "",
+                stderr: "",
+                output: "",
+                stdoutWasTruncated: false,
+                stderrWasTruncated: false,
+                readersReachedEOF: true
+            )
+        }
+
         let child: SpawnedChild
-        switch spawn(path: path, arguments: arguments, outputLimitPerStream: outputLimitPerStream) {
+        switch spawn(
+            path: path,
+            arguments: arguments,
+            standardInputFD: standardInputFD,
+            outputLimitPerStream: outputLimitPerStream,
+            onStdoutChunk: onStdoutChunk
+        ) {
         case .success(let spawned):
             child = spawned
         case .failure(let message):
@@ -67,30 +105,78 @@ enum OwnedChildProcessExecutor {
 
         let terminal: TerminalState
         if let timeout {
-            let initial = waitForOwnedChild(child.pid, timeout: max(0, timeout))
-            terminal = resolveTimeout(
-                pid: child.pid,
-                initial: initial,
-                terminationGrace: terminationGrace,
-                killGrace: killGrace,
-                waiter: waitForOwnedChild,
-                signaler: { pid, signal in _ = Darwin.kill(pid, signal) }
-            )
-            if case .timedOut(_, let reapTransferred) = terminal, reapTransferred {
-                reapOwnedChildEventually(child.pid)
-            }
-        } else if let stallAfter {
-            switch waitForOwnedChild(child.pid, timeout: max(0, stallAfter)) {
+            switch waitForOwnedChild(
+                child.pid,
+                timeout: max(0, timeout),
+                isCancelled: isCancelled
+            ) {
             case .reaped(let status):
                 terminal = .exited(status: status)
             case .notOwned:
                 terminal = .notOwned
-            case .running:
+            case .deadlineReachedWhileRunning:
+                terminal = resolveTimeout(
+                    pid: child.pid,
+                    initial: .running,
+                    terminationGrace: terminationGrace,
+                    killGrace: killGrace,
+                    waiter: waitForOwnedChildWithoutCancellation,
+                    signaler: { pid, signal in _ = Darwin.kill(pid, signal) }
+                )
+            case .cancellationRequestedWhileRunning:
+                terminal = resolveCancellation(
+                    pid: child.pid,
+                    initial: .running,
+                    terminationGrace: terminationGrace,
+                    killGrace: killGrace,
+                    waiter: waitForOwnedChildWithoutCancellation,
+                    signaler: { pid, signal in _ = Darwin.kill(pid, signal) }
+                )
+            }
+        } else if let stallAfter {
+            switch waitForOwnedChild(
+                child.pid,
+                timeout: max(0, stallAfter),
+                isCancelled: isCancelled
+            ) {
+            case .reaped(let status):
+                terminal = .exited(status: status)
+            case .notOwned:
+                terminal = .notOwned
+            case .deadlineReachedWhileRunning:
                 onStall?(child.pid, stallAfter)
-                terminal = waitForOwnedChildUntilExit(child.pid)
+                terminal = waitForOwnedChildUntilExit(
+                    child.pid,
+                    terminationGrace: terminationGrace,
+                    killGrace: killGrace,
+                    isCancelled: isCancelled
+                )
+            case .cancellationRequestedWhileRunning:
+                terminal = resolveCancellation(
+                    pid: child.pid,
+                    initial: .running,
+                    terminationGrace: terminationGrace,
+                    killGrace: killGrace,
+                    waiter: waitForOwnedChildWithoutCancellation,
+                    signaler: { pid, signal in _ = Darwin.kill(pid, signal) }
+                )
             }
         } else {
-            terminal = waitForOwnedChildUntilExit(child.pid)
+            terminal = waitForOwnedChildUntilExit(
+                child.pid,
+                terminationGrace: terminationGrace,
+                killGrace: killGrace,
+                isCancelled: isCancelled
+            )
+        }
+
+        switch terminal {
+        case .timedOut(_, let reapTransferred), .cancelled(_, let reapTransferred):
+            if reapTransferred {
+                reapOwnedChildEventually(child.pid)
+            }
+        case .exited, .notOwned, .launchFailed:
+            break
         }
 
         let captured = child.finishReading()
@@ -128,6 +214,74 @@ enum OwnedChildProcessExecutor {
         waiter: Waiter,
         signaler: Signaler
     ) -> TerminalState {
+        resolveForcedTermination(
+            pid: pid,
+            initial: initial,
+            terminationGrace: terminationGrace,
+            killGrace: killGrace,
+            reason: .timeout,
+            waiter: waiter,
+            signaler: signaler
+        )
+    }
+
+    /// Deterministic cancellation state machine used by production and tests.
+    ///
+    /// SAFETY v2026.07.17: cancellation is only a request. Production reaches this method only
+    /// after a fresh `waitpid(WNOHANG)` returned `.running`; it never signals a cached PID merely
+    /// because a Swift task was cancelled. Timeout and cancellation keep separate terminal states
+    /// so callers can present and retry them correctly without weakening the sole-waiter contract.
+    static func resolveCancellation(
+        pid: pid_t,
+        initial: WaitState,
+        terminationGrace: TimeInterval,
+        killGrace: TimeInterval,
+        waiter: Waiter,
+        signaler: Signaler
+    ) -> TerminalState {
+        resolveForcedTermination(
+            pid: pid,
+            initial: initial,
+            terminationGrace: terminationGrace,
+            killGrace: killGrace,
+            reason: .cancellation,
+            waiter: waiter,
+            signaler: signaler
+        )
+    }
+
+    private enum ForcedTerminationReason {
+        case timeout
+        case cancellation
+
+        func terminal(sentSIGKILL: Bool, reapTransferred: Bool) -> TerminalState {
+            switch self {
+            case .timeout:
+                return .timedOut(
+                    sentSIGKILL: sentSIGKILL,
+                    reapTransferred: reapTransferred
+                )
+            case .cancellation:
+                return .cancelled(
+                    sentSIGKILL: sentSIGKILL,
+                    reapTransferred: reapTransferred
+                )
+            }
+        }
+    }
+
+    /// The only TERM -> KILL escalation path. `initial == .running` must come from an owned
+    /// `waitpid(WNOHANG)` observation; every later signal is likewise preceded by another owned
+    /// `.running` observation from `waiter`. `ECHILD` permanently closes the signal path.
+    private static func resolveForcedTermination(
+        pid: pid_t,
+        initial: WaitState,
+        terminationGrace: TimeInterval,
+        killGrace: TimeInterval,
+        reason: ForcedTerminationReason,
+        waiter: Waiter,
+        signaler: Signaler
+    ) -> TerminalState {
         switch initial {
         case .reaped(let status):
             return .exited(status: status)
@@ -139,18 +293,18 @@ enum OwnedChildProcessExecutor {
 
         switch waiter(pid, max(0, terminationGrace)) {
         case .reaped, .notOwned:
-            return .timedOut(sentSIGKILL: false, reapTransferred: false)
+            return reason.terminal(sentSIGKILL: false, reapTransferred: false)
         case .running:
             signaler(pid, SIGKILL)
         }
 
         switch waiter(pid, max(0, killGrace)) {
         case .reaped, .notOwned:
-            return .timedOut(sentSIGKILL: true, reapTransferred: false)
+            return reason.terminal(sentSIGKILL: true, reapTransferred: false)
         case .running:
             // The synchronous caller stops waiting, so ownership moves exactly once to the
             // background blocking waiter. No code is allowed to signal this PID afterwards.
-            return .timedOut(sentSIGKILL: true, reapTransferred: true)
+            return reason.terminal(sentSIGKILL: true, reapTransferred: true)
         }
     }
 
@@ -182,7 +336,8 @@ enum OwnedChildProcessExecutor {
             pid: pid_t,
             stdoutReadFD: Int32,
             stderrReadFD: Int32,
-            outputLimitPerStream: Int
+            outputLimitPerStream: Int,
+            onStdoutChunk: StdoutChunkHandler?
         ) {
             self.pid = pid
             stdoutHandle = FileHandle(fileDescriptor: stdoutReadFD, closeOnDealloc: true)
@@ -190,8 +345,13 @@ enum OwnedChildProcessExecutor {
             stdoutBuffer = LockedByteBuffer(limit: outputLimitPerStream)
             stderrBuffer = LockedByteBuffer(limit: outputLimitPerStream)
             readers = DispatchGroup()
-            Self.startReader(stdoutHandle, output: stdoutBuffer, group: readers)
-            Self.startReader(stderrHandle, output: stderrBuffer, group: readers)
+            Self.startReader(
+                stdoutHandle,
+                output: stdoutBuffer,
+                group: readers,
+                onChunk: onStdoutChunk
+            )
+            Self.startReader(stderrHandle, output: stderrBuffer, group: readers, onChunk: nil)
         }
 
         func finishReading() -> CapturedOutput {
@@ -215,7 +375,8 @@ enum OwnedChildProcessExecutor {
         private static func startReader(
             _ handle: FileHandle,
             output: LockedByteBuffer,
-            group: DispatchGroup
+            group: DispatchGroup,
+            onChunk: StdoutChunkHandler?
         ) {
             group.enter()
             DispatchQueue.global(qos: .utility).async {
@@ -225,6 +386,10 @@ enum OwnedChildProcessExecutor {
                         guard let chunk = try handle.read(upToCount: 64 * 1_024),
                               !chunk.isEmpty else { return }
                         output.append(chunk)
+                        // v2026.07.17：进度协议必须在 pipe reader 排空 stdout 时即可消费，
+                        // 不能等子进程退出后才一次性拿结果。回调显式 @Sendable 且在该
+                        // reader queue 串行调用；调用方必须快速返回，不能反向阻塞排空。
+                        onChunk?(chunk)
                     } catch {
                         return
                     }
@@ -241,7 +406,9 @@ enum OwnedChildProcessExecutor {
     private static func spawn(
         path: String,
         arguments: [String],
-        outputLimitPerStream: Int
+        standardInputFD: Int32?,
+        outputLimitPerStream: Int,
+        onStdoutChunk: StdoutChunkHandler?
     ) -> SpawnResult {
         var stdoutFDs = [Int32](repeating: -1, count: 2)
         var stderrFDs = [Int32](repeating: -1, count: 2)
@@ -262,7 +429,33 @@ enum OwnedChildProcessExecutor {
         }
         defer { posix_spawn_file_actions_destroy(&actions) }
 
-        guard posix_spawn_file_actions_adddup2(&actions, stdoutFDs[1], STDOUT_FILENO) == 0,
+        // SAFETY v2026.07.17: the child receives only descriptors declared below. In
+        // particular, a scan worker request is mapped from a caller-owned read-only descriptor
+        // to stdin; it is never named in argv and no ambient App descriptor is inherited.
+        let inputActionResult: Int32
+        if let standardInputFD {
+            guard standardInputFD > STDERR_FILENO else {
+                stdoutFDs.forEach { close($0) }
+                stderrFDs.forEach { close($0) }
+                return .failure("launch failed: standard input descriptor must not alias stdio")
+            }
+            inputActionResult = posix_spawn_file_actions_adddup2(
+                &actions,
+                standardInputFD,
+                STDIN_FILENO
+            )
+        } else {
+            inputActionResult = posix_spawn_file_actions_addopen(
+                &actions,
+                STDIN_FILENO,
+                "/dev/null",
+                O_RDONLY,
+                0
+            )
+        }
+
+        guard inputActionResult == 0,
+              posix_spawn_file_actions_adddup2(&actions, stdoutFDs[1], STDOUT_FILENO) == 0,
               posix_spawn_file_actions_adddup2(&actions, stderrFDs[1], STDERR_FILENO) == 0,
               posix_spawn_file_actions_addclose(&actions, stdoutFDs[0]) == 0,
               posix_spawn_file_actions_addclose(&actions, stderrFDs[0]) == 0,
@@ -271,6 +464,28 @@ enum OwnedChildProcessExecutor {
             stdoutFDs.forEach { close($0) }
             stderrFDs.forEach { close($0) }
             return .failure("launch failed: unable to configure spawn file actions")
+        }
+        if let standardInputFD,
+           posix_spawn_file_actions_addclose(&actions, standardInputFD) != 0 {
+            stdoutFDs.forEach { close($0) }
+            stderrFDs.forEach { close($0) }
+            return .failure("launch failed: unable to isolate standard input descriptor")
+        }
+
+        var attributes: posix_spawnattr_t?
+        guard posix_spawnattr_init(&attributes) == 0 else {
+            stdoutFDs.forEach { close($0) }
+            stderrFDs.forEach { close($0) }
+            return .failure("launch failed: unable to initialize spawn attributes")
+        }
+        defer { posix_spawnattr_destroy(&attributes) }
+        guard posix_spawnattr_setflags(
+            &attributes,
+            Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)
+        ) == 0 else {
+            stdoutFDs.forEach { close($0) }
+            stderrFDs.forEach { close($0) }
+            return .failure("launch failed: unable to enable close-on-exec isolation")
         }
 
         let values = [path] + arguments
@@ -289,7 +504,7 @@ enum OwnedChildProcessExecutor {
                 &pid,
                 path,
                 &actions,
-                nil,
+                &attributes,
                 argvBuffer.baseAddress,
                 environ
             )
@@ -305,7 +520,8 @@ enum OwnedChildProcessExecutor {
             pid: pid,
             stdoutReadFD: stdoutFDs[0],
             stderrReadFD: stderrFDs[0],
-            outputLimitPerStream: outputLimitPerStream
+            outputLimitPerStream: outputLimitPerStream,
+            onStdoutChunk: onStdoutChunk
         ))
     }
 
@@ -313,11 +529,17 @@ enum OwnedChildProcessExecutor {
         "launch failed: \(String(cString: strerror(errorNumber)))"
     }
 
-    /// The caller is the sole waiter. `.running` therefore proves this PID generation is still
-    /// reserved by the owned child, even if it exits and becomes a zombie immediately afterwards.
-    private static func waitForOwnedChild(_ pid: pid_t, timeout: TimeInterval) -> WaitState {
-        let seconds = min(max(0, timeout), Double(UInt64.max) / 1_000_000_000)
-        let timeoutNanos = UInt64(seconds * 1_000_000_000)
+    /// Polls the sole-owned child until exit, deadline, cancellation request, or ownership loss.
+    /// The caller is the sole waiter. A WNOHANG running result therefore proves this PID generation
+    /// is still reserved by the owned child, even if it exits immediately after the observation.
+    /// A cancellation request is reported only in the same iteration in which WNOHANG proved the
+    /// child is still `.running`, so the caller can safely enter the shared TERM -> KILL machine.
+    private static func waitForOwnedChild(
+        _ pid: pid_t,
+        timeout: TimeInterval,
+        isCancelled: CancellationCheck?
+    ) -> BoundedWaitState {
+        let timeoutNanos = normalizedTimeoutNanoseconds(timeout)
         let deadline = DispatchTime.now().uptimeNanoseconds.addingReportingOverflow(timeoutNanos)
         let maximum = deadline.overflow ? UInt64.max : deadline.partialValue
         while true {
@@ -328,12 +550,80 @@ enum OwnedChildProcessExecutor {
                 if errno == EINTR { continue }
                 return .notOwned
             }
-            if DispatchTime.now().uptimeNanoseconds >= maximum { return .running }
+            if isCancelled?() == true { return .cancellationRequestedWhileRunning }
+            if DispatchTime.now().uptimeNanoseconds >= maximum {
+                return .deadlineReachedWhileRunning
+            }
             usleep(2_000)
         }
     }
 
-    private static func waitForOwnedChildUntilExit(_ pid: pid_t) -> TerminalState {
+    private static func waitForOwnedChildWithoutCancellation(
+        _ pid: pid_t,
+        _ timeout: TimeInterval
+    ) -> WaitState {
+        switch waitForOwnedChild(pid, timeout: timeout, isCancelled: nil) {
+        case .reaped(let status):
+            return .reaped(status: status)
+        case .deadlineReachedWhileRunning:
+            return .running
+        case .notOwned:
+            return .notOwned
+        case .cancellationRequestedWhileRunning:
+            // A nil cancellation predicate makes this branch unreachable.
+            return .running
+        }
+    }
+
+    /// v2026.07.17：所有 subprocess timeout 最终都经过这里。公开/注入的 Double
+    /// 可以是 NaN、infinity 或超大有限值；直接 UInt64 转换会在超时保护代码自身崩溃。
+    /// 非正数/NaN 立即到期，正无穷与溢出值饱和，保持 waitpid owner 安全状态机不变。
+    static func normalizedTimeoutNanoseconds(_ seconds: TimeInterval) -> UInt64 {
+        guard !seconds.isNaN, seconds > 0 else { return 0 }
+        guard seconds.isFinite else { return UInt64.max }
+        let nanoseconds = seconds * 1_000_000_000
+        guard nanoseconds.isFinite, nanoseconds < Double(UInt64.max) else {
+            return UInt64.max
+        }
+        return UInt64(nanoseconds)
+    }
+
+    private static func waitForOwnedChildUntilExit(
+        _ pid: pid_t,
+        terminationGrace: TimeInterval,
+        killGrace: TimeInterval,
+        isCancelled: CancellationCheck?
+    ) -> TerminalState {
+        guard let isCancelled else {
+            return blockingWaitForOwnedChildUntilExit(pid)
+        }
+        switch waitForOwnedChild(pid, timeout: .infinity, isCancelled: isCancelled) {
+        case .reaped(let status):
+            return .exited(status: status)
+        case .notOwned:
+            return .notOwned
+        case .cancellationRequestedWhileRunning:
+            return resolveCancellation(
+                pid: pid,
+                initial: .running,
+                terminationGrace: terminationGrace,
+                killGrace: killGrace,
+                waiter: waitForOwnedChildWithoutCancellation,
+                signaler: { pid, signal in _ = Darwin.kill(pid, signal) }
+            )
+        case .deadlineReachedWhileRunning:
+            // Positive infinity normalizes to UInt64.max, so this is only a theoretical uptime
+            // saturation boundary. Re-observe ownership instead of signalling speculatively.
+            return waitForOwnedChildUntilExit(
+                pid,
+                terminationGrace: terminationGrace,
+                killGrace: killGrace,
+                isCancelled: isCancelled
+            )
+        }
+    }
+
+    private static func blockingWaitForOwnedChildUntilExit(_ pid: pid_t) -> TerminalState {
         var status: Int32 = 0
         while true {
             let result = waitpid(pid, &status, 0)

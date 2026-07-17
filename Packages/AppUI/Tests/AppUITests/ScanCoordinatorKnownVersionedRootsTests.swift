@@ -67,6 +67,16 @@ final class ScanCoordinatorKnownVersionedRootsTests: XCTestCase {
         let sparseVersion = try XCTUnwrap(
             coord.snapshot.rows.first(where: { $0.url.lastPathComponent == "15.0" })
         )
+        XCTAssertEqual(
+            sparseVersion.displayTitle(locale: Locale(identifier: "en")),
+            "iOS Device Support · 15.0"
+        )
+        XCTAssertEqual(
+            sparseVersion.displayTitle(locale: Locale(identifier: "zh-Hans")),
+            "iOS 设备支持文件 · 15.0"
+        )
+        XCTAssertEqual(sparseVersion.id, sparseVersion.url.path,
+                       "语言投影不能改变扫描/删除使用的稳定路径身份")
         XCTAssertLessThan(sparseVersion.bytes, 64 * 1_024 * 1_024,
                           "旧版本主值必须使用系统磁盘占用，不能显示 sparse 虚拟容量")
         XCTAssertGreaterThan(sparseVersion.logicalBytes, 1 * 1_024 * 1_024 * 1_024,

@@ -92,6 +92,303 @@ enum DuplicateDeletionSubmissionGate {
     }
 }
 
+/// Owner for the one Duplicate execution whose progress is allowed to reach this screen.
+/// Request ID is included in addition to scan identity because a user may review two different
+/// groups without rescanning; neither operation may consume the other's late progress.
+struct DuplicateDeletionExecutionOwner: Sendable, Equatable, Identifiable {
+    let id: UUID
+    let scanSessionID: UUID
+    let scanRevision: UInt64
+}
+
+struct DuplicateDeletionExecutionStatus: Sendable, Equatable {
+    enum Phase: Sendable, Equatable {
+        case preparing
+        case verifyingTargets
+        case verifyingRetainedReference
+        case finalizingVerification
+        case submittingToTrash
+        case cancelling
+
+        var rank: Int {
+            switch self {
+            case .preparing: return 0
+            case .verifyingTargets: return 1
+            case .verifyingRetainedReference: return 2
+            case .finalizingVerification: return 3
+            case .cancelling: return 4
+            // v2026.07.17 cancellation/submission race: the synchronous boundary is the safety
+            // authority, and a subsequent submission event must replace a possibly stale
+            // "stopping" presentation. Old verification frames still rank below cancelling.
+            case .submittingToTrash: return 5
+            }
+        }
+
+        var allowsCancellation: Bool {
+            switch self {
+            case .preparing, .verifyingTargets, .verifyingRetainedReference,
+                 .finalizingVerification:
+                return true
+            case .submittingToTrash, .cancelling:
+                return false
+            }
+        }
+
+        var showsVerificationFraction: Bool {
+            switch self {
+            case .verifyingTargets, .verifyingRetainedReference:
+                return true
+            case .preparing, .finalizingVerification, .submittingToTrash, .cancelling:
+                return false
+            }
+        }
+
+        func localizedTitle(locale: Locale) -> String {
+            let key: String
+            switch self {
+            case .preparing: key = "duplicate.execution.preparing"
+            case .verifyingTargets: key = "duplicate.execution.verifying_targets"
+            case .verifyingRetainedReference: key = "duplicate.execution.verifying_retained"
+            case .finalizingVerification: key = "duplicate.execution.finalizing"
+            case .submittingToTrash: key = "duplicate.execution.submitting"
+            case .cancelling: key = "duplicate.execution.cancelling"
+            }
+            return AppLocalization.string(key, locale: locale)
+        }
+    }
+
+    let phase: Phase
+    let completedItems: Int?
+    let totalItems: Int?
+    let currentPath: String?
+
+    static let preparing = DuplicateDeletionExecutionStatus(
+        phase: .preparing,
+        completedItems: nil,
+        totalItems: nil,
+        currentPath: nil
+    )
+
+    var allowsCancellation: Bool { phase.allowsCancellation }
+
+    func markingCancellationRequested() -> DuplicateDeletionExecutionStatus {
+        .init(
+            phase: .cancelling,
+            completedItems: completedItems,
+            totalItems: totalItems,
+            currentPath: currentPath
+        )
+    }
+}
+
+/// Synchronous, lock-protected record of the irreversible submission boundary. Progress is
+/// delivered to SwiftUI through an async stream, so the visible phase may briefly lag behind the
+/// worker. Navigation/cancel decisions must consult this source record instead of assuming the
+/// MainActor has already rendered `.submittingToTrash`.
+final class DuplicateDeletionExecutionBoundary: @unchecked Sendable {
+    let owner: DuplicateDeletionExecutionOwner
+
+    private let lock = NSLock()
+    private var crossedSubmissionBoundary = false
+
+    init(owner: DuplicateDeletionExecutionOwner) {
+        self.owner = owner
+    }
+
+    func observe(_ event: DeletionExecutionProgress) {
+        guard case .duplicate(let progress) = event,
+              progress.phase == .submittingToTrash else { return }
+        lock.lock()
+        crossedSubmissionBoundary = true
+        lock.unlock()
+    }
+
+    var hasCrossedSubmissionBoundary: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return crossedSubmissionBoundary
+    }
+}
+
+/// Navigation/disappearance follows the same irreversible boundary as the execution sheet.
+/// Before TrashPipeline publishes `.submittingToTrash`, cancellation is a real pre-submit
+/// request observed by the full-file verifier. Once submission begins, cancelling only the
+/// Swift task could orphan an in-flight NSWorkspace callback, so the operation stays owned and
+/// must reach its typed terminal result. (v2026.07.17 long-task lifecycle closure.)
+enum DuplicateDeletionDeparturePolicy {
+    enum Action: Sendable, Equatable {
+        case requestCancellation
+        case preserveTrackedTransaction
+        case none
+    }
+
+    static func action(
+        for status: DuplicateDeletionExecutionStatus?,
+        hasExecutionTask: Bool,
+        hasCrossedSubmissionBoundary: Bool
+    ) -> Action {
+        guard hasExecutionTask, let status else { return .none }
+        if hasCrossedSubmissionBoundary {
+            return .preserveTrackedTransaction
+        }
+        return status.allowsCancellation
+            ? .requestCancellation
+            : .preserveTrackedTransaction
+    }
+}
+
+/// Monotonic reducer for worker-queue progress. AsyncStream preserves the verifier's emission
+/// order, while this reducer additionally rejects stale owner/revision events and any numeric or
+/// phase regression. This is the UI-side half of the v2026.07.17 long-rehash regression closure.
+enum DuplicateDeletionExecutionProgressReducer {
+    static func reduce(
+        current: DuplicateDeletionExecutionStatus?,
+        event: DeletionExecutionProgress,
+        eventOwner: DuplicateDeletionExecutionOwner,
+        currentOwner: DuplicateDeletionExecutionOwner?,
+        currentSessionID: UUID,
+        currentRevision: UInt64
+    ) -> DuplicateDeletionExecutionStatus? {
+        guard currentOwner == eventOwner,
+              currentSessionID == eventOwner.scanSessionID,
+              currentRevision == eventOwner.scanRevision,
+              case .duplicate(let progress) = event,
+              progress.totalItems > 0,
+              (0...progress.totalItems).contains(progress.completedItems) else {
+            return current
+        }
+
+        let phase: DuplicateDeletionExecutionStatus.Phase
+        switch progress.phase {
+        case .verifyingTargets:
+            phase = .verifyingTargets
+        case .verifyingRetainedReference:
+            phase = .verifyingRetainedReference
+        case .submittingToTrash:
+            phase = .submittingToTrash
+        case .completed:
+            // Every read completed, but the verifier may still return identity/content
+            // rejections. Only TrashPipeline's later `.submittingToTrash` event may name the
+            // submission stage; progress never declares recycle success.
+            phase = .finalizingVerification
+        case .cancelled:
+            phase = .cancelling
+        }
+
+        if let current {
+            if current.phase.rank > phase.rank { return current }
+            if let currentTotal = current.totalItems,
+               currentTotal != progress.totalItems { return current }
+            if let currentCompleted = current.completedItems,
+               currentCompleted > progress.completedItems { return current }
+        }
+        return .init(
+            phase: phase,
+            completedItems: progress.completedItems,
+            totalItems: progress.totalItems,
+            currentPath: progress.currentPath
+        )
+    }
+}
+
+private struct DuplicateDeletionExecutionSheet: View {
+    @Environment(\.locale) private var locale
+
+    let status: DuplicateDeletionExecutionStatus
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                Image(systemName: "doc.on.doc.fill")
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("duplicate.execution.title", bundle: .module)
+                        .font(.title3.bold())
+                    Text("duplicate.execution.subtitle", bundle: .module)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                if status.phase.showsVerificationFraction,
+                   let completed = status.completedItems,
+                   let total = status.totalItems {
+                    ProgressView(
+                        value: Double(completed),
+                        total: Double(max(1, total))
+                    )
+                    HStack {
+                        Text(status.phase.localizedTitle(locale: locale))
+                            .font(.callout.weight(.medium))
+                        Spacer()
+                        Text("\(completed) / \(total)")
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                    HStack {
+                        Text(status.phase.localizedTitle(locale: locale))
+                            .font(.callout.weight(.medium))
+                        Spacer()
+                        if let completed = status.completedItems,
+                           let total = status.totalItems {
+                            Text("\(completed) / \(total)")
+                                .font(.callout.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                if let path = status.currentPath {
+                    Text(AppLocalization.format(
+                        "duplicate.execution.current_path",
+                        locale: locale,
+                        arguments: [URL(fileURLWithPath: path).lastPathComponent]
+                    ))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(path)
+                }
+            }
+            .padding(14)
+            .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+
+            Text("duplicate.execution.safety_note", bundle: .module)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Spacer()
+                if status.allowsCancellation {
+                    Button(role: .cancel, action: onCancel) {
+                        Text("duplicate.execution.stop", bundle: .module)
+                    }
+                    .keyboardShortcut(.cancelAction)
+                } else if status.phase == .cancelling {
+                    Text("duplicate.execution.stop_pending", bundle: .module)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+        }
+        .padding(22)
+        // v2026.07.17: Keep the review sheet's fixed width and minimum height in the
+        // flexible-frame overload; SwiftUI has no `frame(width:minHeight:)` overload.
+        .frame(minWidth: 540, maxWidth: 540, minHeight: 300)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("duplicates.execution-sheet")
+    }
+}
+
 /// v1.2 P2-1 重复文件去重屏。
 ///
 /// 与 [AppFootprintScreen.swift](AppFootprintScreen.swift) / [LaunchAgentScreen.swift] 同源约定：
@@ -158,6 +455,9 @@ public struct DuplicateScreen: View {
     /// separately from the footer projection so an unrelated unreadable sibling cannot
     /// disable every deletion action in the screen.
     @State private var scanIncompleteIssues: [ScanIncompleteIssue] = []
+    /// v2026.07.17 performance closure: preserve the array's stable presentation order while
+    /// making duplicate evidence insertion O(1), not an O(n²) `Array.contains` scan on MainActor.
+    @State private var scanIncompleteIssueIndex: Set<ScanIncompleteIssue> = []
     @State private var scanSessionID = UUID()
     @State private var scanRevision: UInt64 = 0
     @State private var activeSheet: ActiveSheet?
@@ -166,6 +466,10 @@ public struct DuplicateScreen: View {
     @State private var duplicateDeletionHandoff = ToolDeletionHandoff<DuplicateConfirmedDeletion>()
     @State private var duplicatePreflightTask: Task<Void, Never>?
     @State private var duplicatePreflightGate = ToolDeletionPreflightRequestGate<DuplicatePreflightContext>()
+    @State private var duplicateExecutionTask: Task<Void, Never>?
+    @State private var duplicateExecutionOwner: DuplicateDeletionExecutionOwner?
+    @State private var duplicateExecutionStatus: DuplicateDeletionExecutionStatus?
+    @State private var duplicateExecutionBoundary: DuplicateDeletionExecutionBoundary?
 
     private let pipeline: any DeletionPipeline
 
@@ -197,6 +501,7 @@ public struct DuplicateScreen: View {
     private enum ActiveSheet: Identifiable {
         case handle(DuplicateGroup)
         case confirm(DuplicateDeleteRequest)
+        case execution(DuplicateDeletionExecutionOwner)
         case preflightNotice(DeletionPreflightNotice)
         case result(OperationResultCompletion)
 
@@ -204,6 +509,7 @@ public struct DuplicateScreen: View {
             switch self {
             case .handle(let group): return "handle-\(group.id)"
             case .confirm(let request): return "confirm-\(request.id)"
+            case .execution(let owner): return "execution-\(owner.id.uuidString)"
             case .preflightNotice(let notice): return "preflightNotice-\(notice.id)"
             case .result(let payload): return "result-\(payload.id)"
             }
@@ -246,6 +552,7 @@ public struct DuplicateScreen: View {
         .onDisappear {
             scanTask?.cancel()
             cancelDuplicatePreflight()
+            handleDuplicateExecutionDeparture()
         }
         .sheet(
             isPresented: Binding(
@@ -296,6 +603,14 @@ public struct DuplicateScreen: View {
                             return true
                         }
                     )
+                case .execution(let owner):
+                    DuplicateDeletionExecutionSheet(
+                        status: duplicateExecutionStatus ?? .preparing,
+                        onCancel: {
+                            requestDuplicateExecutionCancellation(owner: owner)
+                        }
+                    )
+                    .interactiveDismissDisabled(true)
                 case .preflightNotice(let notice):
                     DeletionPreflightNoticeSheet(notice: notice) {
                         activeSheet = nil
@@ -407,6 +722,9 @@ public struct DuplicateScreen: View {
                         Image(systemName: "stop.circle")
                     }
                 }
+                // v2026.07.17 C4 contract: start/stop are one semantic control whose stable AX
+                // identity survives the state swap; this adds no test-only branch or layout.
+                .accessibilityIdentifier("duplicates.scan-control")
             } else {
                 Button {
                     startScan()
@@ -419,6 +737,7 @@ public struct DuplicateScreen: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(roots.isEmpty || isDeletionTransactionActive)
+                .accessibilityIdentifier("duplicates.scan-control")
             }
         }
         .padding(.horizontal, 14)
@@ -651,6 +970,26 @@ public struct DuplicateScreen: View {
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
+            } else if let duplicateExecutionStatus {
+                ProgressView().controlSize(.small)
+                if let completed = duplicateExecutionStatus.completedItems,
+                   let total = duplicateExecutionStatus.totalItems {
+                    Text(AppLocalization.format(
+                        "duplicate.footer.phase_progress",
+                        locale: locale,
+                        arguments: [
+                            duplicateExecutionStatus.phase.localizedTitle(locale: locale),
+                            Int64(completed),
+                            Int64(total)
+                        ]
+                    ))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(duplicateExecutionStatus.phase.localizedTitle(locale: locale))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             } else if !groups.isEmpty {
                 let totalReclaim = groups.map(\.reclaimableBytes).reduce(0, +)
                 Text(AppLocalization.format(
@@ -683,6 +1022,8 @@ public struct DuplicateScreen: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("duplicates.status")
     }
 
     // MARK: - Helpers
@@ -703,7 +1044,7 @@ public struct DuplicateScreen: View {
             return true
         }
         switch activeSheet {
-        case .handle, .confirm, .preflightNotice:
+        case .handle, .confirm, .execution, .preflightNotice:
             return true
         case .result, .none:
             return false
@@ -772,6 +1113,10 @@ public struct DuplicateScreen: View {
 
     private func prepareDuplicateDeletion(group: DuplicateGroup, paths: [String]) {
         guard DuplicateHandlingPlan.isValidDeleteTargets(paths, for: group),
+              let executionVerification = DuplicateDeletionVerificationRequest(
+                  group: group,
+                  targetPaths: paths
+              ),
               !isDeletingDuplicates,
               !duplicateDeletionHandoff.hasPending else { return }
         let sessionID = scanSessionID
@@ -816,7 +1161,8 @@ public struct DuplicateScreen: View {
                                 issues: relevantIssues
                             )
                         )
-                    }
+                    },
+                    executionVerification: .duplicate(executionVerification)
                 )
                 decision = await DuplicateDeletionPreparationPolicy.prepare(
                     pipeline: pipeline,
@@ -904,9 +1250,27 @@ public struct DuplicateScreen: View {
     private func executeDuplicateDeletion(_ submission: DuplicateConfirmedDeletion) {
         guard !isDeletingDuplicates,
               requireCurrentDuplicateRequest(submission.request) else { return }
+        let owner = DuplicateDeletionExecutionOwner(
+            id: submission.request.id,
+            scanSessionID: submission.request.scanSessionID,
+            scanRevision: submission.request.scanRevision
+        )
         isDeletingDuplicates = true
-        Task { @MainActor in
-            defer { isDeletingDuplicates = false }
+        duplicateExecutionOwner = owner
+        duplicateExecutionStatus = .preparing
+        let executionBoundary = DuplicateDeletionExecutionBoundary(owner: owner)
+        duplicateExecutionBoundary = executionBoundary
+        activeSheet = .execution(owner)
+        duplicateExecutionTask = Task { @MainActor in
+            defer {
+                isDeletingDuplicates = false
+                duplicateExecutionTask = nil
+                if duplicateExecutionOwner == owner {
+                    duplicateExecutionOwner = nil
+                    duplicateExecutionStatus = nil
+                    duplicateExecutionBoundary = nil
+                }
+            }
             guard requireCurrentDuplicateRequest(submission.request) else { return }
             let executionPlan = submission.executionPlan
             let coordinator = DeletionInteractionCoordinator(pipeline: pipeline)
@@ -918,6 +1282,7 @@ public struct DuplicateScreen: View {
             case .authorized(let value):
                 authorization = value
             case .cancelled:
+                activeSheet = nil
                 return
             case .blocked(let block):
                 activeSheet = .preflightNotice(DeletionPreflightNotice(
@@ -942,10 +1307,41 @@ public struct DuplicateScreen: View {
                 ))
                 return
             }
+            let progressPair = AsyncStream<DeletionExecutionProgress>.makeStream(
+                bufferingPolicy: .bufferingNewest(16)
+            )
+            let progressContinuation = progressPair.continuation
+            let progressConsumer = Task { @MainActor in
+                for await event in progressPair.stream {
+                    duplicateExecutionStatus = DuplicateDeletionExecutionProgressReducer.reduce(
+                        current: duplicateExecutionStatus,
+                        event: event,
+                        eventOwner: owner,
+                        currentOwner: duplicateExecutionOwner,
+                        currentSessionID: scanSessionID,
+                        currentRevision: scanRevision
+                    )
+                }
+            }
             let disposition = await coordinator.submit(
                 authorization,
-                accessDeniedPaths: frozenEvidencePaths
+                accessDeniedPaths: frozenEvidencePaths,
+                executionProgressObserver: { event in
+                    // The verifier emits on its hashing queue. AsyncStream is a Sendable,
+                    // bounded handoff; only the MainActor consumer above mutates SwiftUI state.
+                    // Record the irreversible boundary before enqueueing its presentation event;
+                    // otherwise navigation could cancel a recycle already submitted by a faster
+                    // worker while MainActor still displays the previous phase.
+                    executionBoundary.observe(event)
+                    progressContinuation.yield(event)
+                }
             )
+            progressContinuation.finish()
+            await progressConsumer.value
+            // A terminal belongs to the same request owner that presented this execution sheet.
+            // This guard does not decide success (the typed disposition below does); it only
+            // prevents a theoretically late old task from replacing a newer sheet.
+            guard duplicateExecutionOwner == owner else { return }
             let completed: DeletionCompletedInteraction
             switch disposition {
             case .completed(let value):
@@ -981,6 +1377,38 @@ public struct DuplicateScreen: View {
                 await pruneMovedDuplicatePaths(Set(succeededPaths))
             }
             activeSheet = .result(.deletion(completed))
+        }
+    }
+
+    private func requestDuplicateExecutionCancellation(
+        owner: DuplicateDeletionExecutionOwner
+    ) {
+        guard duplicateExecutionOwner == owner,
+              let status = duplicateExecutionStatus,
+              status.allowsCancellation,
+              duplicateExecutionBoundary?.owner == owner,
+              duplicateExecutionBoundary?.hasCrossedSubmissionBoundary == false else { return }
+        duplicateExecutionStatus = status.markingCancellationRequested()
+        duplicateExecutionTask?.cancel()
+    }
+
+    private func handleDuplicateExecutionDeparture() {
+        switch DuplicateDeletionDeparturePolicy.action(
+            for: duplicateExecutionStatus,
+            hasExecutionTask: duplicateExecutionTask != nil,
+            hasCrossedSubmissionBoundary:
+                duplicateExecutionBoundary?.hasCrossedSubmissionBoundary ?? false
+        ) {
+        case .requestCancellation:
+            guard let owner = duplicateExecutionOwner else { return }
+            requestDuplicateExecutionCancellation(owner: owner)
+        case .preserveTrackedTransaction:
+            // The owner/task/status intentionally remain attached to this view state. The typed
+            // recycle disposition may still arrive after navigation and is the only authority
+            // allowed to replace the execution sheet with a result/notice.
+            break
+        case .none:
+            break
         }
     }
 
@@ -1060,7 +1488,7 @@ public struct DuplicateScreen: View {
             stage: issue.stage,
             posixErrorCode: issue.posixErrorCode
         )
-        guard !scanIncompleteIssues.contains(normalized) else { return }
+        guard scanIncompleteIssueIndex.insert(normalized).inserted else { return }
         scanIncompleteIssues.append(normalized)
     }
 
@@ -1089,6 +1517,7 @@ public struct DuplicateScreen: View {
         selectedGroupID = nil
         tccSkippedRoots = []
         scanIncompleteIssues = []
+        scanIncompleteIssueIndex = []
         scanRevision &+= 1
         let revision = scanRevision
         let sessionID = UUID()
@@ -1172,7 +1601,7 @@ private struct DuplicateHandleSheet: View {
         self.onManual = onManual
         let defaultTargets = DuplicateHandlingPlan.defaultDeleteTargets(for: group)
         _manualTargets = State(initialValue: Set(defaultTargets))
-        _manualSelectedBytes = State(initialValue: group.reclaimableBytes)
+        _manualSelectedBytes = State(initialValue: group.allocatedBytes(for: defaultTargets))
         var bytesByPath: [String: Int64] = [:]
         bytesByPath.reserveCapacity(group.files.count)
         for file in group.files {
@@ -1253,7 +1682,7 @@ private struct DuplicateHandleSheet: View {
                 }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(isDeleting || group.files.count < 2)
+            .disabled(isDeleting || !DuplicateHandlingPlan.isExecutableGroup(group))
         }
     }
 
@@ -1280,7 +1709,7 @@ private struct DuplicateHandleSheet: View {
                         }
                     }
                     .toggleStyle(.checkbox)
-                    .disabled(isDeleting)
+                    .disabled(isDeleting || !DuplicateHandlingPlan.isExecutableGroup(group))
                 }
             }
             .listStyle(.inset)
@@ -1308,7 +1737,12 @@ private struct DuplicateHandleSheet: View {
             Button(AppLocalization.string("duplicate.handle.manual.button", locale: locale), role: .destructive) {
                 onManual(Array(manualTargets))
             }
-            .disabled(isDeleting || manualTargets.isEmpty || manualTargets.count >= group.files.count)
+            .disabled(
+                isDeleting
+                    || !DuplicateHandlingPlan.isExecutableGroup(group)
+                    || manualTargets.isEmpty
+                    || manualTargets.count >= group.files.count
+            )
             .keyboardShortcut(.defaultAction)
         }
         .padding(20)
@@ -1334,10 +1768,15 @@ private struct DuplicateHandleSheet: View {
 
 enum DuplicateHandlingPlan {
     static func defaultDeleteTargets(for group: DuplicateGroup) -> [String] {
-        group.files.dropFirst().map(\.path)
+        // v2026.07.17 重复文件安全回归：prefixOnly 只证明 size + 前 64KB
+        // 一致，绝不是可删除证明。警告文案不能代替执行闸门；在可取消的
+        // full-hash + 最终身份重验链路完成前，计划层直接不铸造任何删除目标。
+        guard isExecutableGroup(group) else { return [] }
+        return group.files.dropFirst().map(\.path)
     }
 
     static func isValidDeleteTargets(_ paths: [String], for group: DuplicateGroup) -> Bool {
+        guard isExecutableGroup(group) else { return false }
         let uniqueTargets = Set(paths)
         guard !uniqueTargets.isEmpty,
               uniqueTargets.count == paths.count,
@@ -1346,6 +1785,17 @@ enum DuplicateHandlingPlan {
         }
         let allPaths = Set(group.files.map(\.path))
         return uniqueTargets.isSubset(of: allPaths)
+    }
+
+    static func isExecutableGroup(_ group: DuplicateGroup) -> Bool {
+        guard group.reliability == .full,
+              let fingerprint = group.contentFingerprint,
+              fingerprint.logicalBytes == group.logicalBytes else { return false }
+        return group.files.count >= 2 && group.files.allSatisfy {
+            guard let identity = $0.snapshotIdentity else { return false }
+            return identity.isRegularFile
+                && identity.logicalBytes == fingerprint.logicalBytes
+        }
     }
 
     /// 纯数据投影，调用方可安全放到 detached utility task，避免大重复集在主线程重聚合。

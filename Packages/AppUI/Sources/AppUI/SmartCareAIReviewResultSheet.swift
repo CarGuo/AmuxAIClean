@@ -27,6 +27,7 @@ struct SmartCareAIReviewResultPresentation: Equatable, Sendable {
         let id: String
         let path: String
         let title: String
+        let titlePresentation: LocalizedTextDescriptor
         let bytes: Int64
         let localVerdict: SafetyVerdict
         let selectedAtStart: Bool
@@ -41,16 +42,22 @@ struct SmartCareAIReviewResultPresentation: Equatable, Sendable {
             localVerdict: SafetyVerdict,
             selectedAtStart: Bool,
             currentSelected: Bool,
-            result: Result
+            result: Result,
+            titlePresentation: LocalizedTextDescriptor? = nil
         ) {
             self.id = id
             self.path = path
             self.title = title
+            self.titlePresentation = titlePresentation ?? .verbatim(title)
             self.bytes = bytes
             self.localVerdict = localVerdict
             self.selectedAtStart = selectedAtStart
             self.currentSelected = currentSelected
             self.result = result
+        }
+
+        func displayTitle(locale: Locale) -> String {
+            titlePresentation.localized(locale: locale)
         }
     }
 
@@ -102,7 +109,8 @@ struct SmartCareAIReviewResultPresentation: Equatable, Sendable {
                 localVerdict: outcome.localVerdict,
                 selectedAtStart: outcome.selectedAtStart,
                 currentSelected: currentSelectedItemIDs.contains(outcome.item.id),
-                result: result
+                result: result,
+                titlePresentation: outcome.item.titlePresentation
             )
         }
         self.requestedCount = report.requestedCount
@@ -252,7 +260,10 @@ struct SmartCareAIReviewResultSheet: View {
             }
         }
         .frame(minWidth: 720, idealWidth: 820, minHeight: 590, idealHeight: 680)
-        .animation(.smooth(duration: reduceMotion ? 0.12 : 0.28), value: changedSelections.count)
+        .animation(
+            PlatformAnimationCompatibility.smooth(duration: reduceMotion ? 0.12 : 0.28),
+            value: changedSelections.count
+        )
     }
 
     // MARK: Header
@@ -269,7 +280,7 @@ struct SmartCareAIReviewResultSheet: View {
                 Image(systemName: statusIconName)
                     .font(.system(size: 23, weight: .semibold))
                     .foregroundStyle(statusTint)
-                    .symbolEffect(.pulse, options: reduceMotion ? .nonRepeating : .repeating)
+                    .pulsingSymbolEffect(repeats: !reduceMotion)
             }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -499,7 +510,7 @@ struct SmartCareAIReviewResultSheet: View {
                 resultSymbol(row.result)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(verbatim: row.title)
+                    Text(verbatim: row.displayTitle(locale: locale))
                         .font(.callout.weight(.semibold))
                         .lineLimit(1)
                     Text(verbatim: row.path)

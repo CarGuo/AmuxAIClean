@@ -3,6 +3,19 @@ import XCTest
 @testable import AppUI
 
 final class PortCleanerParserTests: XCTestCase {
+    func test_boundedProcessTimeoutConversionHandlesEveryDoubleClassWithoutTrap() {
+        XCTAssertEqual(PortCleanerBoundedProcessExecutor.normalizedTimeoutNanoseconds(.nan), 0)
+        XCTAssertEqual(PortCleanerBoundedProcessExecutor.normalizedTimeoutNanoseconds(-1), 0)
+        XCTAssertEqual(PortCleanerBoundedProcessExecutor.normalizedTimeoutNanoseconds(0), 0)
+        XCTAssertEqual(
+            PortCleanerBoundedProcessExecutor.normalizedTimeoutNanoseconds(0.25),
+            250_000_000
+        )
+        XCTAssertEqual(
+            PortCleanerBoundedProcessExecutor.normalizedTimeoutNanoseconds(.infinity),
+            .max
+        )
+    }
     private func identity(
         pid: Int32,
         path: String,

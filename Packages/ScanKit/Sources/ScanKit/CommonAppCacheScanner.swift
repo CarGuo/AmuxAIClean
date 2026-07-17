@@ -11,31 +11,100 @@ import SafetyKit
 /// deleting neighboring databases, profile roots, sync folders, or chat media.
 public actor CommonAppCacheScanner {
 
-    public struct Options: Sendable {
+    public struct Options: Sendable, Codable {
         public var category: String
         public var includedVerdicts: Set<SafetyVerdict>
         public var timeoutSeconds: TimeInterval
         public var maxGlobExpansionsPerRule: Int
         public var maxEntriesPerPath: Int
+        /// 在候选解析阶段排除这些路径及其后代。调用方可把同一轮冻结的白名单快照
+        /// 传进来，使 `ScanResult` 的路径并集 totals 与最终可见 rows 保持同一边界。
+        public var excludedCandidatePathPrefixes: Set<String>
 
         public init(
             category: String = "common_app_cache",
             includedVerdicts: Set<SafetyVerdict> = [.safe, .confirm],
             timeoutSeconds: TimeInterval = 12,
             maxGlobExpansionsPerRule: Int = 128,
-            maxEntriesPerPath: Int = 200_000
+            maxEntriesPerPath: Int = 200_000,
+            excludedCandidatePathPrefixes: Set<String> = []
         ) {
             self.category = category
             self.includedVerdicts = includedVerdicts
             self.timeoutSeconds = timeoutSeconds
             self.maxGlobExpansionsPerRule = max(1, maxGlobExpansionsPerRule)
             self.maxEntriesPerPath = max(1, maxEntriesPerPath)
+            self.excludedCandidatePathPrefixes = Set(
+                excludedCandidatePathPrefixes.map {
+                    URL(fileURLWithPath: $0).standardizedFileURL.path
+                }
+            )
         }
 
         public static let `default` = Options()
     }
 
-    public struct Hit: Sendable, Hashable, Identifiable {
+    /// Common-app-cache 扫描的有界进度快照。候选总数不是可信的工作量分母：同 verdict
+    /// 的父子候选会共享一次森林遍历，因此 UI 应展示这里的 group 进度，而不是自行按路径
+    /// 猜测进度。回调在扫描 worker 上同步触发，调用方只应冻结数据后再切回 MainActor。
+    ///
+    /// v2026.07.17：补上逐组进度与显式终态，避免同步目录访问较慢时界面只剩无期限 spinner。
+    public struct Progress: Sendable, Codable, Hashable {
+        public enum Phase: String, Sendable, Codable, Hashable {
+            case resolvingCandidates
+            case measuringGroups
+            case terminal
+        }
+
+        public enum TerminalOutcome: String, Sendable, Codable, Hashable {
+            case complete
+            case partial
+            case cancelled
+        }
+
+        public let phase: Phase
+        public let completedGroups: Int
+        public let totalGroups: Int
+        public let currentVerdict: SafetyVerdict?
+        public let currentPath: String?
+        public let terminalOutcome: TerminalOutcome?
+        /// 最近一个已经收敛到组边界的可信快照。正在访问当前 group 时不会改写它；
+        /// 即使外层因不可中断 syscall 终止 worker，也能只发布这里的已完成结果。
+        public let checkpoint: Checkpoint?
+        /// 尚未进入可信 checkpoint 的候选路径。外层硬超时后必须把这些路径标成
+        /// typed deadlineExceeded，而不能把它们误报为“不存在”或完整空结果。
+        public let pendingPaths: [String]
+
+        public var isTerminal: Bool { phase == .terminal }
+
+        public init(
+            phase: Phase,
+            completedGroups: Int,
+            totalGroups: Int,
+            currentVerdict: SafetyVerdict? = nil,
+            currentPath: String? = nil,
+            terminalOutcome: TerminalOutcome? = nil,
+            checkpoint: Checkpoint? = nil,
+            pendingPaths: [String] = []
+        ) {
+            self.phase = phase
+            self.completedGroups = max(0, completedGroups)
+            self.totalGroups = max(0, totalGroups)
+            self.currentVerdict = currentVerdict
+            self.currentPath = currentPath.map {
+                URL(fileURLWithPath: $0).standardizedFileURL.path
+            }
+            self.terminalOutcome = terminalOutcome
+            self.checkpoint = checkpoint
+            self.pendingPaths = pendingPaths.map {
+                URL(fileURLWithPath: $0).standardizedFileURL.path
+            }
+        }
+    }
+
+    public typealias ProgressHandler = @Sendable (Progress) -> Void
+
+    public struct Hit: Sendable, Codable, Hashable, Identifiable {
         public let ruleName: String
         public let bundleIDPrefix: String?
         public let source: String?
@@ -78,14 +147,20 @@ public actor CommonAppCacheScanner {
 
     /// 扫描无法证明完整的路径。任何 issue 都意味着对应路径（或其祖先）不能仅凭
     /// 本轮统计结果进入删除请求；`partial bytes` 只可用于展示，不能作为安全证明。
-    public struct IncompletePath: Sendable, Hashable {
-        public enum Reason: String, Sendable, Hashable {
+    public struct IncompletePath: Sendable, Codable, Hashable {
+        public enum Reason: String, Sendable, Codable, Hashable {
             case metadataUnavailable
+            case pathIdentityChanged
             case directoryOpenFailed
             case enumerationFailed
             case deadlineExceeded
             case entryLimitReached
             case globExpansionLimitReached
+            /// Isolated worker could not be started. Parent must publish typed partial evidence;
+            /// silently falling back to the same in-process syscall path would restore the hang.
+            case workerLaunchFailed
+            /// Worker output/checkpoint could not be decoded or violated the protocol contract.
+            case workerProtocolFailed
         }
 
         public let path: String
@@ -99,9 +174,17 @@ public actor CommonAppCacheScanner {
 
     /// Common-app-cache scanner 的完整结果。调用方必须同时消费 `hits` 与
     /// `incompletePaths`；后者是删除链路的一票否决上下文，而不是普通诊断日志。
-    public struct ScanResult: Sendable {
+    public struct ScanResult: Sendable, Codable {
         public let hits: [Hit]
         public let incompletePaths: [IncompletePath]
+        /// 所有候选路径的物理并集容量。`Hit.sizeBytes` 刻意保持 inclusive subtree
+        /// 语义，所以父/子规则同时存在时不能再把 rows 相加作为扫描总量。
+        public let uniqueTotalBytes: Int64
+        public let uniqueLogicalBytes: Int64
+        /// 路径并集内实际计量到的唯一目录项数量；hardlink 的不同路径仍是不同 entry，
+        /// 但 `uniqueTotalBytes` 按 `(device, inode)` 只计一次物理容量。partial 扫描时该值
+        /// 是不会重复计数的可信下界，不会为精确进度额外常驻每个完整路径。
+        public let uniqueEntryCount: Int
         /// 取消不是一种“可展示的部分扫描结果”。调用方看到该标记后必须丢弃整轮，
         /// 不能把空 hits 当成真实的“没有缓存”，也不能提交其中间统计。
         public let wasCancelled: Bool
@@ -114,11 +197,63 @@ public actor CommonAppCacheScanner {
         public init(
             hits: [Hit],
             incompletePaths: [IncompletePath],
-            wasCancelled: Bool = false
+            wasCancelled: Bool = false,
+            uniqueTotalBytes: Int64? = nil,
+            uniqueLogicalBytes: Int64? = nil,
+            uniqueEntryCount: Int? = nil
         ) {
             self.hits = hits
             self.incompletePaths = incompletePaths
             self.wasCancelled = wasCancelled
+            // 依赖注入测试与旧调用方通常只构造互不重叠的 hit；未显式传并集值时
+            // 保持源兼容。生产 detect 始终传入一次共享遍历得到的权威 totals。
+            var seenPaths = Set<String>()
+            let uniqueHits = hits.filter {
+                seenPaths.insert($0.url.standardizedFileURL.path).inserted
+            }
+            self.uniqueTotalBytes = uniqueTotalBytes
+                ?? uniqueHits.reduce(0) { $0 &+ $1.sizeBytes }
+            self.uniqueLogicalBytes = uniqueLogicalBytes
+                ?? uniqueHits.reduce(0) { $0 &+ $1.logicalSizeBytes }
+            self.uniqueEntryCount = uniqueEntryCount
+                ?? uniqueHits.reduce(0) { $0 &+ $1.entryCount }
+        }
+    }
+
+    /// 逐 group 交付的 worker checkpoint。它只包含已完成 group，不包含当前正在打开或
+    /// 枚举的路径，因此可以安全跨进程持久化；`pendingPaths` 由相邻 Progress 明确给出。
+    public struct Checkpoint: Sendable, Codable, Hashable {
+        public let hits: [Hit]
+        public let incompletePaths: [IncompletePath]
+        public let uniqueTotalBytes: Int64
+        public let uniqueLogicalBytes: Int64
+        public let uniqueEntryCount: Int
+        public let completedGroupCount: Int
+
+        public init(
+            hits: [Hit],
+            incompletePaths: [IncompletePath],
+            uniqueTotalBytes: Int64,
+            uniqueLogicalBytes: Int64,
+            uniqueEntryCount: Int,
+            completedGroupCount: Int
+        ) {
+            self.hits = hits
+            self.incompletePaths = incompletePaths
+            self.uniqueTotalBytes = uniqueTotalBytes
+            self.uniqueLogicalBytes = uniqueLogicalBytes
+            self.uniqueEntryCount = uniqueEntryCount
+            self.completedGroupCount = max(0, completedGroupCount)
+        }
+
+        public var scanResult: ScanResult {
+            ScanResult(
+                hits: hits,
+                incompletePaths: incompletePaths,
+                uniqueTotalBytes: uniqueTotalBytes,
+                uniqueLogicalBytes: uniqueLogicalBytes,
+                uniqueEntryCount: uniqueEntryCount
+            )
         }
     }
 
@@ -130,11 +265,17 @@ public actor CommonAppCacheScanner {
 
     public func discover(
         vendors: [VendorRule],
-        home: URL = URL(fileURLWithPath: NSHomeDirectory())
+        home: URL = URL(fileURLWithPath: NSHomeDirectory()),
+        onProgress: @escaping ProgressHandler = { _ in }
     ) async -> ScanResult {
         let opts = options
         let worker = Task.detached(priority: .utility) {
-            Self.detect(vendors: vendors, home: home, options: opts)
+            Self.detect(
+                vendors: vendors,
+                home: home,
+                options: opts,
+                onProgress: onProgress
+            )
         }
         return await withTaskCancellationHandler {
             await worker.value
@@ -148,19 +289,50 @@ public actor CommonAppCacheScanner {
         vendors: [VendorRule],
         home: URL,
         options: Options = .default,
-        shouldCancel: () -> Bool = { Task.isCancelled }
+        shouldCancel: () -> Bool = { Task.isCancelled },
+        onProgress: ProgressHandler = { _ in }
+    ) -> ScanResult {
+        detect(
+            vendors: vendors,
+            home: home,
+            options: options,
+            shouldCancel: shouldCancel,
+            openDirectory: safeOpenDirectory,
+            onProgress: onProgress
+        )
+    }
+
+    /// 同步 I/O 依赖边界。生产入口使用 `Darwin.open`；ScanKit 回归可统计每个目录
+    /// 的打开次数，锁住“父/子候选只能共享一次遍历”这一性能合同。
+    nonisolated static func detect(
+        vendors: [VendorRule],
+        home: URL,
+        options: Options,
+        shouldCancel: () -> Bool,
+        openDirectory: (String) -> Int32,
+        onProgress: ProgressHandler = { _ in }
     ) -> ScanResult {
         if shouldCancel() {
+            onProgress(Progress(
+                phase: .terminal,
+                completedGroups: 0,
+                totalGroups: 0,
+                terminalOutcome: .cancelled
+            ))
             return ScanResult(hits: [], incompletePaths: [], wasCancelled: true)
         }
         let homePath = home.standardizedFileURL.path
-        let deadline = Date().addingTimeInterval(options.timeoutSeconds)
+        let deadline = ScanDeadline.make(timeout: options.timeoutSeconds)
         let fm = FileManager.default
-        var hits: [Hit] = []
         var incompletePaths: [IncompletePath] = []
 
         let rules = vendors.filter { $0.category == options.category }
         GSYLog.info(.scan, "CommonAppCache scan start rules=\(rules.count) timeout=\(options.timeoutSeconds)s")
+        onProgress(Progress(
+            phase: .resolvingCandidates,
+            completedGroups: 0,
+            totalGroups: 0
+        ))
 
         let resolution = prioritizedCandidateResolution(
             rules: rules,
@@ -168,40 +340,53 @@ public actor CommonAppCacheScanner {
             homePath: homePath,
             fileManager: fm,
             maxGlobExpansionsPerRule: options.maxGlobExpansionsPerRule,
+            excludedCandidatePathPrefixes: options.excludedCandidatePathPrefixes,
             shouldCancel: shouldCancel
         )
         if resolution.wasCancelled || shouldCancel() {
             GSYLog.info(.scan, "CommonAppCache scan cancelled during candidate resolution")
+            onProgress(Progress(
+                phase: .terminal,
+                completedGroups: 0,
+                totalGroups: 0,
+                terminalOutcome: .cancelled
+            ))
             return ScanResult(hits: [], incompletePaths: [], wasCancelled: true)
         }
         let candidates = resolution.candidates
         incompletePaths.append(contentsOf: resolution.incompletePaths)
 
-        for (index, candidate) in candidates.enumerated() {
-            if shouldCancel() {
-                GSYLog.info(.scan, "CommonAppCache scan cancelled before sizing candidate index=\(index)")
-                return ScanResult(hits: [], incompletePaths: [], wasCancelled: true)
-            }
-            if Date() >= deadline {
-                incompletePaths.append(contentsOf: candidates[index...].map {
-                    IncompletePath(path: $0.path, reason: .deadlineExceeded)
-                })
-                break
-            }
-            let size = sizeOfPath(
-                candidate.path,
-                isDirectory: candidate.isDirectory,
-                deadline: deadline,
-                maxEntries: options.maxEntriesPerPath,
-                shouldCancel: shouldCancel
-            )
-            if size.wasCancelled || shouldCancel() {
-                GSYLog.info(.scan, "CommonAppCache scan cancelled while sizing path=\(candidate.path)")
-                return ScanResult(hits: [], incompletePaths: [], wasCancelled: true)
-            }
-            incompletePaths.append(contentsOf: size.incompletePaths)
-            let bytes = size.bytes
-            guard bytes > 0 else { continue }
+        // v2026.07.17：同 verdict 的父子候选按最外层候选组成共享森林，避免逐 candidate
+        // 重复递归。不同 verdict 必须严格按 safe → confirm 访问，不能让宽泛的 confirm
+        // 父目录抢在 safe 子目录之前阻塞；跨 verdict 的重叠遍历由全轮 inode/path 并集
+        // 去重。rows 继续是 inclusive subtree，ScanResult 单独发布路径并集唯一 totals。
+        let measurement = measureCandidates(
+            candidates,
+            deadline: deadline,
+            maxEntriesPerPath: options.maxEntriesPerPath,
+            initialIncompletePaths: incompletePaths,
+            shouldCancel: shouldCancel,
+            openDirectory: openDirectory,
+            onProgress: onProgress
+        )
+        if measurement.wasCancelled || shouldCancel() {
+            GSYLog.info(.scan, "CommonAppCache scan cancelled while measuring candidate forest")
+            onProgress(Progress(
+                phase: .terminal,
+                completedGroups: measurement.completedGroupCount,
+                totalGroups: measurement.totalGroupCount,
+                terminalOutcome: .cancelled,
+                checkpoint: measurement.checkpoint,
+                pendingPaths: measurement.pendingPaths
+            ))
+            return ScanResult(hits: [], incompletePaths: [], wasCancelled: true)
+        }
+        incompletePaths.append(contentsOf: measurement.incompletePaths)
+
+        var hits: [Hit] = []
+        hits.reserveCapacity(candidates.count)
+        for (candidate, size) in zip(candidates, measurement.candidateStats) {
+            guard size.bytes > 0 else { continue }
             hits.append(Hit(
                 ruleName: candidate.rule.name,
                 bundleIDPrefix: candidate.rule.bundleIDPrefix,
@@ -210,13 +395,21 @@ public actor CommonAppCacheScanner {
                 isDirectory: candidate.isDirectory,
                 verdict: candidate.pathRule.verdict,
                 reason: candidate.pathRule.reason,
-                sizeBytes: bytes,
+                sizeBytes: size.bytes,
                 logicalSizeBytes: size.logicalBytes,
                 entryCount: size.entryCount
             ))
         }
 
         if shouldCancel() {
+            onProgress(Progress(
+                phase: .terminal,
+                completedGroups: measurement.completedGroupCount,
+                totalGroups: measurement.totalGroupCount,
+                terminalOutcome: .cancelled,
+                checkpoint: measurement.checkpoint,
+                pendingPaths: measurement.pendingPaths
+            ))
             return ScanResult(hits: [], incompletePaths: [], wasCancelled: true)
         }
         let sortedHits = hits.sorted {
@@ -224,18 +417,57 @@ public actor CommonAppCacheScanner {
             return $0.sizeBytes > $1.sizeBytes
         }
         if shouldCancel() {
+            onProgress(Progress(
+                phase: .terminal,
+                completedGroups: measurement.completedGroupCount,
+                totalGroups: measurement.totalGroupCount,
+                terminalOutcome: .cancelled,
+                checkpoint: measurement.checkpoint,
+                pendingPaths: measurement.pendingPaths
+            ))
             return ScanResult(hits: [], incompletePaths: [], wasCancelled: true)
         }
         let uniqueIncompletePaths = deduplicatedIncompletePaths(incompletePaths)
         GSYLog.info(.scan, "CommonAppCache scan finished hits=\(sortedHits.count) complete=\(uniqueIncompletePaths.isEmpty) incompletePaths=\(uniqueIncompletePaths.count)")
-        return ScanResult(hits: sortedHits, incompletePaths: uniqueIncompletePaths)
+        onProgress(Progress(
+            phase: .terminal,
+            completedGroups: measurement.completedGroupCount,
+            totalGroups: measurement.totalGroupCount,
+            terminalOutcome: uniqueIncompletePaths.isEmpty ? .complete : .partial,
+            checkpoint: measurement.checkpoint,
+            pendingPaths: measurement.pendingPaths
+        ))
+        return ScanResult(
+            hits: sortedHits,
+            incompletePaths: uniqueIncompletePaths,
+            uniqueTotalBytes: measurement.uniqueTotalBytes,
+            uniqueLogicalBytes: measurement.uniqueLogicalBytes,
+            uniqueEntryCount: measurement.uniqueEntryCount
+        )
+    }
+
+    struct PathIdentity: Sendable, Equatable {
+        let device: UInt64
+        let inode: UInt64
+        let fileType: UInt16
+
+        init(_ metadata: stat) {
+            self.device = UInt64(bitPattern: Int64(metadata.st_dev))
+            self.inode = UInt64(metadata.st_ino)
+            self.fileType = UInt16(metadata.st_mode & mode_t(S_IFMT))
+        }
+
+        var isDirectory: Bool { fileType == UInt16(S_IFDIR) }
     }
 
     struct Candidate {
         let rule: VendorRule
         let pathRule: PathRule
         let path: String
-        let isDirectory: Bool
+        /// v2026.07.17：候选解析与实际计量之间必须绑定同一个目录项身份；否则路径被
+        /// symlink/rename 换件后，扫描可能计算另一个对象，却把原路径交给删除链路。
+        let identity: PathIdentity
+        var isDirectory: Bool { identity.isDirectory }
         let originalRuleIndex: Int
         let originalPathIndex: Int
     }
@@ -260,6 +492,7 @@ public actor CommonAppCacheScanner {
             homePath: homePath,
             fileManager: fileManager,
             maxGlobExpansionsPerRule: maxGlobExpansionsPerRule,
+            excludedCandidatePathPrefixes: [],
             shouldCancel: shouldCancel
         ).candidates
     }
@@ -270,6 +503,7 @@ public actor CommonAppCacheScanner {
         homePath: String,
         fileManager: FileManager,
         maxGlobExpansionsPerRule: Int,
+        excludedCandidatePathPrefixes: Set<String>,
         shouldCancel: () -> Bool
     ) -> CandidateResolution {
         var candidates: [Candidate] = []
@@ -314,8 +548,19 @@ public actor CommonAppCacheScanner {
                             wasCancelled: true
                         )
                     }
+                    guard !isExcludedCandidatePath(
+                        path,
+                        prefixes: excludedCandidatePathPrefixes
+                    ) else { continue }
                     var pathStat = stat()
-                    guard stat(path, &pathStat) == 0 else {
+                    // v2026.07.17 candidate-root symlink safety: `stat` followed a cache alias
+                    // and classified its target directory as the deletable candidate. The
+                    // traversal then counted the target subtree even though Trash would move
+                    // only the symlink pathname, severely overstating reclaimable bytes. Root
+                    // identity must use `lstat`, matching both descendant no-follow traversal
+                    // and the final path-based Trash operation. A symlink is therefore measured
+                    // as one non-directory entry (and commonly omitted when it occupies 0 B).
+                    guard lstat(path, &pathStat) == 0 else {
                         if errno != ENOENT {
                             incompletePaths.append(IncompletePath(
                                 path: path,
@@ -328,7 +573,7 @@ public actor CommonAppCacheScanner {
                         rule: rule,
                         pathRule: pathRule,
                         path: path,
-                        isDirectory: (pathStat.st_mode & S_IFMT) == S_IFDIR,
+                        identity: PathIdentity(pathStat),
                         originalRuleIndex: ruleIndex,
                         originalPathIndex: pathIndex
                     ))
@@ -354,8 +599,10 @@ public actor CommonAppCacheScanner {
             }
             return lhs.path < rhs.path
         }
+        var seenPaths = Set<String>()
+        let unique = sorted.filter { seenPaths.insert($0.path).inserted }
         return CandidateResolution(
-            candidates: sorted,
+            candidates: unique,
             incompletePaths: incompletePaths,
             wasCancelled: shouldCancel()
         )
@@ -367,6 +614,17 @@ public actor CommonAppCacheScanner {
         case .confirm: return 1
         case .forbid: return 2
         }
+    }
+
+    private static func isExcludedCandidatePath(
+        _ path: String,
+        prefixes: Set<String>
+    ) -> Bool {
+        for prefix in prefixes {
+            if path == prefix { return true }
+            if prefix == "/" || path.hasPrefix(prefix + "/") { return true }
+        }
+        return false
     }
 
     static func expandHome(_ path: String, home: String) -> String {
@@ -535,6 +793,832 @@ public actor CommonAppCacheScanner {
         return false
     }
 
+    // MARK: - Shared candidate forest measurement
+
+    private struct CandidateAccumulator {
+        let inodes = InodeSet()
+        var allocatedBytes: Int64 = 0
+        var logicalBytes: Int64 = 0
+        var entryCount: Int = 0
+        var entryLimitReached = false
+    }
+
+    private struct CandidateGroup {
+        let ownerIndex: Int
+        let indices: [Int]
+    }
+
+    private struct CandidateCoverageHierarchy {
+        let parentByIndex: [Int?]
+    }
+
+    private struct DirectoryWork {
+        let path: String
+        let rootDevice: UInt64
+        let expectedDevice: UInt64
+        let expectedInode: UInt64
+        let activeCandidateIndices: [Int]
+    }
+
+    private struct UnionAccumulator {
+        let inodes = InodeSet()
+        var allocatedBytes: Int64 = 0
+        var logicalBytes: Int64 = 0
+    }
+
+    private struct CandidateForestMeasurement {
+        let candidateStats: [SizeStat]
+        let uniqueTotalBytes: Int64
+        let uniqueLogicalBytes: Int64
+        let uniqueEntryCount: Int
+        let incompletePaths: [IncompletePath]
+        let wasCancelled: Bool
+        let completedGroupCount: Int
+        let totalGroupCount: Int
+        let checkpoint: Checkpoint
+        let pendingPaths: [String]
+    }
+
+    private struct TraversalOutcome {
+        let timedOut: Bool
+        let wasCancelled: Bool
+    }
+
+    private static func measureCandidates(
+        _ candidates: [Candidate],
+        deadline: Date,
+        maxEntriesPerPath: Int,
+        initialIncompletePaths: [IncompletePath],
+        shouldCancel: () -> Bool,
+        openDirectory: (String) -> Int32,
+        onProgress: ProgressHandler
+    ) -> CandidateForestMeasurement {
+        let initialCheckpoint = Checkpoint(
+            hits: [],
+            incompletePaths: deduplicatedIncompletePaths(initialIncompletePaths),
+            uniqueTotalBytes: 0,
+            uniqueLogicalBytes: 0,
+            uniqueEntryCount: 0,
+            completedGroupCount: 0
+        )
+        guard !candidates.isEmpty else {
+            onProgress(Progress(
+                phase: .measuringGroups,
+                completedGroups: 0,
+                totalGroups: 0,
+                checkpoint: initialCheckpoint,
+                pendingPaths: []
+            ))
+            return CandidateForestMeasurement(
+                candidateStats: [],
+                uniqueTotalBytes: 0,
+                uniqueLogicalBytes: 0,
+                uniqueEntryCount: 0,
+                incompletePaths: [],
+                wasCancelled: shouldCancel(),
+                completedGroupCount: 0,
+                totalGroupCount: 0,
+                checkpoint: initialCheckpoint,
+                pendingPaths: []
+            )
+        }
+
+        var accumulators = candidates.map { _ in CandidateAccumulator() }
+        var union = UnionAccumulator()
+        var incompletePaths: [IncompletePath] = []
+        let indexByPath = Dictionary(
+            uniqueKeysWithValues: candidates.indices.map { (candidates[$0].path, $0) }
+        )
+        let groups = candidateGroups(candidates)
+        let coverageHierarchy = candidateCoverageHierarchy(
+            candidates: candidates,
+            indexByPath: indexByPath
+        )
+        var completedGroupCount = 0
+        var completedCandidateIndices = Set<Int>()
+        var checkpoint = initialCheckpoint
+        var pendingPaths = candidatePaths(
+            in: groups[...],
+            candidates: candidates
+        )
+
+        for (groupPosition, group) in groups.enumerated() {
+            pendingPaths = candidatePaths(
+                in: groups[groupPosition...],
+                candidates: candidates
+            )
+            onProgress(Progress(
+                phase: .measuringGroups,
+                completedGroups: completedGroupCount,
+                totalGroups: groups.count,
+                currentVerdict: candidates[group.ownerIndex].pathRule.verdict,
+                currentPath: candidates[group.ownerIndex].path,
+                checkpoint: checkpoint,
+                pendingPaths: pendingPaths
+            ))
+            if shouldCancel() {
+                return cancelledForestMeasurement(
+                    candidateCount: candidates.count,
+                    completedGroupCount: completedGroupCount,
+                    totalGroupCount: groups.count,
+                    checkpoint: checkpoint,
+                    pendingPaths: pendingPaths
+                )
+            }
+            if Date() >= deadline {
+                for remainingGroup in groups[groupPosition...] {
+                    incompletePaths.append(contentsOf: remainingGroup.indices.map {
+                        IncompletePath(path: candidates[$0].path, reason: .deadlineExceeded)
+                    })
+                }
+                break
+            }
+
+            var started = Set<Int>()
+            let groupSet = Set(group.indices)
+            let traversalOrder = [group.ownerIndex] + group.indices
+                .filter { $0 != group.ownerIndex }
+                .sorted {
+                    let lhsDepth = NSString(string: candidates[$0].path).pathComponents.count
+                    let rhsDepth = NSString(string: candidates[$1].path).pathComponents.count
+                    if lhsDepth != rhsDepth { return lhsDepth < rhsDepth }
+                    return $0 < $1
+                }
+
+            for candidateIndex in traversalOrder where !started.contains(candidateIndex) {
+                let outcome = traverseCandidateRoot(
+                    candidateIndex,
+                    candidates: candidates,
+                    groupIndices: groupSet,
+                    indexByPath: indexByPath,
+                    deadline: deadline,
+                    maxEntriesPerPath: maxEntriesPerPath,
+                    shouldCancel: shouldCancel,
+                    openDirectory: openDirectory,
+                    started: &started,
+                    accumulators: &accumulators,
+                    union: &union,
+                    incompletePaths: &incompletePaths
+                )
+                if outcome.wasCancelled || shouldCancel() {
+                    return cancelledForestMeasurement(
+                        candidateCount: candidates.count,
+                        completedGroupCount: completedGroupCount,
+                        totalGroupCount: groups.count,
+                        checkpoint: checkpoint,
+                        pendingPaths: pendingPaths
+                    )
+                }
+                if outcome.timedOut {
+                    for remainingGroup in groups[groupPosition...] {
+                        incompletePaths.append(contentsOf: remainingGroup.indices.map {
+                            IncompletePath(path: candidates[$0].path, reason: .deadlineExceeded)
+                        })
+                    }
+                    let stats = makeCandidateStats(accumulators)
+                    return CandidateForestMeasurement(
+                        candidateStats: stats,
+                        uniqueTotalBytes: union.allocatedBytes,
+                        uniqueLogicalBytes: union.logicalBytes,
+                        uniqueEntryCount: uniqueEntryCount(
+                            candidates: candidates,
+                            accumulators: accumulators,
+                            hierarchy: coverageHierarchy
+                        ),
+                        incompletePaths: deduplicatedIncompletePaths(incompletePaths),
+                        wasCancelled: false,
+                        completedGroupCount: completedGroupCount,
+                        totalGroupCount: groups.count,
+                        checkpoint: checkpoint,
+                        pendingPaths: pendingPaths
+                    )
+                }
+            }
+            completedGroupCount &+= 1
+            completedCandidateIndices.formUnion(group.indices)
+            checkpoint = makeCheckpoint(
+                candidates: candidates,
+                accumulators: accumulators,
+                completedCandidateIndices: completedCandidateIndices,
+                incompletePaths: initialIncompletePaths + incompletePaths,
+                union: union,
+                coverageHierarchy: coverageHierarchy,
+                completedGroupCount: completedGroupCount
+            )
+            pendingPaths = groupPosition + 1 < groups.count
+                ? candidatePaths(
+                    in: groups[(groupPosition + 1)...],
+                    candidates: candidates
+                )
+                : []
+            onProgress(Progress(
+                phase: .measuringGroups,
+                completedGroups: completedGroupCount,
+                totalGroups: groups.count,
+                currentVerdict: candidates[group.ownerIndex].pathRule.verdict,
+                currentPath: candidates[group.ownerIndex].path,
+                checkpoint: checkpoint,
+                pendingPaths: pendingPaths
+            ))
+        }
+
+        if shouldCancel() {
+            return cancelledForestMeasurement(
+                candidateCount: candidates.count,
+                completedGroupCount: completedGroupCount,
+                totalGroupCount: groups.count,
+                checkpoint: checkpoint,
+                pendingPaths: pendingPaths
+            )
+        }
+        return CandidateForestMeasurement(
+            candidateStats: makeCandidateStats(accumulators),
+            uniqueTotalBytes: union.allocatedBytes,
+            uniqueLogicalBytes: union.logicalBytes,
+            uniqueEntryCount: uniqueEntryCount(
+                candidates: candidates,
+                accumulators: accumulators,
+                hierarchy: coverageHierarchy
+            ),
+            incompletePaths: deduplicatedIncompletePaths(incompletePaths),
+            wasCancelled: false,
+            completedGroupCount: completedGroupCount,
+            totalGroupCount: groups.count,
+            checkpoint: checkpoint,
+            pendingPaths: pendingPaths
+        )
+    }
+
+    private static func candidateGroups(_ candidates: [Candidate]) -> [CandidateGroup] {
+        // v2026.07.17 regression guard: candidate resolution already prioritizes safe paths,
+        // but the old forest owner selection ignored verdict. A confirm parent could therefore
+        // become the owner of a safe child and block the safe scan before its first open. Forest
+        // sharing is now deliberately scoped to one verdict; groups remain shared/deduplicated
+        // within that verdict and are then ordered safe → confirm → forbid.
+        let indexByPath = Dictionary(
+            uniqueKeysWithValues: candidates.indices.map { (candidates[$0].path, $0) }
+        )
+        var membersByOwner: [Int: [Int]] = [:]
+        for candidateIndex in candidates.indices {
+            var ownerIndex = candidateIndex
+            for ancestorIndex in ancestorCandidateIndices(
+                of: candidates[candidateIndex].path,
+                indexByPath: indexByPath
+            ) where candidates[ancestorIndex].isDirectory
+                && candidates[ancestorIndex].pathRule.verdict
+                    == candidates[candidateIndex].pathRule.verdict {
+                // Ancestors are yielded nearest-first; continuing to the root leaves the
+                // outermost same-verdict candidate as the one shared traversal owner.
+                ownerIndex = ancestorIndex
+            }
+            membersByOwner[ownerIndex, default: []].append(candidateIndex)
+        }
+        return membersByOwner.map { ownerIndex, members in
+            CandidateGroup(ownerIndex: ownerIndex, indices: members.sorted())
+        }.sorted { lhs, rhs in
+            let lhsVerdictPriority = verdictPriority(
+                candidates[lhs.ownerIndex].pathRule.verdict
+            )
+            let rhsVerdictPriority = verdictPriority(
+                candidates[rhs.ownerIndex].pathRule.verdict
+            )
+            if lhsVerdictPriority != rhsVerdictPriority {
+                return lhsVerdictPriority < rhsVerdictPriority
+            }
+            let lhsPriority = lhs.indices.min() ?? lhs.ownerIndex
+            let rhsPriority = rhs.indices.min() ?? rhs.ownerIndex
+            if lhsPriority != rhsPriority { return lhsPriority < rhsPriority }
+            return candidates[lhs.ownerIndex].path < candidates[rhs.ownerIndex].path
+        }
+    }
+
+    private static func candidateCoverageHierarchy(
+        candidates: [Candidate],
+        indexByPath: [String: Int]
+    ) -> CandidateCoverageHierarchy {
+        let parentByIndex = candidates.indices.map { candidateIndex -> Int? in
+            ancestorCandidateIndices(
+                of: candidates[candidateIndex].path,
+                indexByPath: indexByPath
+            ).first(where: { candidates[$0].isDirectory })
+        }
+        return CandidateCoverageHierarchy(parentByIndex: parentByIndex)
+    }
+
+    /// Returns existing candidate ancestors nearest-first without scanning the candidate array.
+    /// Path depth is small and bounded by the filesystem path, so group construction stays
+    /// O(candidate count × path depth) rather than O(candidate count²).
+    private static func ancestorCandidateIndices(
+        of path: String,
+        indexByPath: [String: Int]
+    ) -> [Int] {
+        var result: [Int] = []
+        var current = NSString(string: path).deletingLastPathComponent
+        while !current.isEmpty, current != path {
+            if let index = indexByPath[current] {
+                result.append(index)
+            }
+            if current == "/" { break }
+            let parent = NSString(string: current).deletingLastPathComponent
+            if parent == current { break }
+            current = parent
+        }
+        return result
+    }
+
+    private static func candidatePaths(
+        in groups: ArraySlice<CandidateGroup>,
+        candidates: [Candidate]
+    ) -> [String] {
+        groups.flatMap { group in
+            group.indices.sorted().map { candidates[$0].path }
+        }
+    }
+
+    private static func traverseCandidateRoot(
+        _ rootIndex: Int,
+        candidates: [Candidate],
+        groupIndices: Set<Int>,
+        indexByPath: [String: Int],
+        deadline: Date,
+        maxEntriesPerPath: Int,
+        shouldCancel: () -> Bool,
+        openDirectory: (String) -> Int32,
+        started: inout Set<Int>,
+        accumulators: inout [CandidateAccumulator],
+        union: inout UnionAccumulator,
+        incompletePaths: inout [IncompletePath]
+    ) -> TraversalOutcome {
+        guard started.insert(rootIndex).inserted else {
+            return TraversalOutcome(timedOut: false, wasCancelled: false)
+        }
+        if shouldCancel() {
+            return TraversalOutcome(timedOut: false, wasCancelled: true)
+        }
+        if Date() >= deadline {
+            return TraversalOutcome(timedOut: true, wasCancelled: false)
+        }
+
+        let rootCandidate = candidates[rootIndex]
+        guard rootCandidate.isDirectory else {
+            var metadata = stat()
+            guard lstat(rootCandidate.path, &metadata) == 0 else {
+                if errno != ENOENT {
+                    incompletePaths.append(IncompletePath(
+                        path: rootCandidate.path,
+                        reason: .metadataUnavailable
+                    ))
+                }
+                return TraversalOutcome(timedOut: false, wasCancelled: false)
+            }
+            guard PathIdentity(metadata) == rootCandidate.identity else {
+                incompletePaths.append(IncompletePath(
+                    path: rootCandidate.path,
+                    reason: .pathIdentityChanged
+                ))
+                return TraversalOutcome(timedOut: false, wasCancelled: false)
+            }
+            if shouldCancel() {
+                return TraversalOutcome(timedOut: false, wasCancelled: true)
+            }
+            let accepted = acceptEntry(
+                for: [rootIndex],
+                candidates: candidates,
+                maxEntriesPerPath: maxEntriesPerPath,
+                accumulators: &accumulators,
+                incompletePaths: &incompletePaths
+            )
+            if !accepted.isEmpty {
+                recordFileBytes(
+                    allocated: Int64(metadata.st_blocks) * 512,
+                    logical: Int64(metadata.st_size),
+                    device: UInt64(bitPattern: Int64(metadata.st_dev)),
+                    inode: UInt64(metadata.st_ino),
+                    acceptedCandidateIndices: accepted,
+                    accumulators: &accumulators,
+                    union: &union
+                )
+            }
+            return TraversalOutcome(timedOut: false, wasCancelled: false)
+        }
+
+        var rootStat = stat()
+        guard lstat(rootCandidate.path, &rootStat) == 0 else {
+            if errno != ENOENT {
+                incompletePaths.append(IncompletePath(
+                    path: rootCandidate.path,
+                    reason: .metadataUnavailable
+                ))
+            }
+            return TraversalOutcome(timedOut: false, wasCancelled: false)
+        }
+        let currentRootIdentity = PathIdentity(rootStat)
+        guard currentRootIdentity == rootCandidate.identity,
+              currentRootIdentity.isDirectory else {
+            incompletePaths.append(IncompletePath(
+                path: rootCandidate.path,
+                reason: .pathIdentityChanged
+            ))
+            return TraversalOutcome(timedOut: false, wasCancelled: false)
+        }
+        let rootDevice = currentRootIdentity.device
+        var stack = [DirectoryWork(
+            path: rootCandidate.path,
+            rootDevice: rootDevice,
+            expectedDevice: currentRootIdentity.device,
+            expectedInode: currentRootIdentity.inode,
+            activeCandidateIndices: [rootIndex]
+        )]
+        var entryClock = 0
+
+        while let work = stack.popLast() {
+            if shouldCancel() {
+                return TraversalOutcome(timedOut: false, wasCancelled: true)
+            }
+            if Date() >= deadline {
+                return TraversalOutcome(timedOut: true, wasCancelled: false)
+            }
+            let active = work.activeCandidateIndices.filter {
+                !accumulators[$0].entryLimitReached
+            }
+            guard !active.isEmpty else { continue }
+
+            let fd = openDirectory(work.path)
+            if fd < 0 {
+                if errno != ENOENT {
+                    incompletePaths.append(IncompletePath(
+                        path: work.path,
+                        reason: .directoryOpenFailed
+                    ))
+                }
+                continue
+            }
+            var openedMetadata = stat()
+            guard fstat(fd, &openedMetadata) == 0,
+                  (openedMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+                  UInt64(bitPattern: Int64(openedMetadata.st_dev)) == work.expectedDevice,
+                  UInt64(openedMetadata.st_ino) == work.expectedInode else {
+                Darwin.close(fd)
+                incompletePaths.append(IncompletePath(
+                    path: work.path,
+                    reason: .pathIdentityChanged
+                ))
+                continue
+            }
+
+            var queuedDirectories: [DirectoryWork] = []
+            var timedOut = false
+            var cancelled = false
+            var stoppedAfterEntryLimit = false
+            let outcome = BulkEnumerate.enumerate(
+                fd: fd,
+                dirPath: work.path,
+                shouldCancel: shouldCancel
+            ) { entry in
+                if shouldCancel() {
+                    cancelled = true
+                    return false
+                }
+                entryClock &+= 1
+                if entryClock & 0xFF == 0, Date() >= deadline {
+                    timedOut = true
+                    return false
+                }
+
+                let entryPath = appendPathComponent(entry.name, to: work.path)
+                let anyExactCandidateIndex = indexByPath[entryPath]
+                let exactCandidateIndex = anyExactCandidateIndex.flatMap {
+                    groupIndices.contains($0) ? $0 : nil
+                }
+                var accepted = acceptEntry(
+                    for: active,
+                    candidates: candidates,
+                    maxEntriesPerPath: maxEntriesPerPath,
+                    accumulators: &accumulators,
+                    incompletePaths: &incompletePaths
+                )
+
+                let traversableFromThisRoot = !entry.isSymlink
+                    && entry.device == work.rootDevice
+                if let anyExactCandidateIndex,
+                   !groupIndices.contains(anyExactCandidateIndex),
+                   !candidateIdentity(
+                       candidates[anyExactCandidateIndex].identity,
+                       matches: entry
+                   ) {
+                    // A higher-priority verdict may already have measured this candidate before
+                    // the broader group reached it. If the directory entry changed in between,
+                    // keep the earlier lower-bound row but fail the whole path closed for delete.
+                    incompletePaths.append(IncompletePath(
+                        path: entryPath,
+                        reason: .pathIdentityChanged
+                    ))
+                }
+                if entry.isDirectory {
+                    var childActive = active.filter {
+                        !accumulators[$0].entryLimitReached
+                    }
+                    if traversableFromThisRoot,
+                       let exactCandidateIndex,
+                       candidates[exactCandidateIndex].isDirectory,
+                       !started.contains(exactCandidateIndex) {
+                        started.insert(exactCandidateIndex)
+                        if candidateIdentity(
+                            candidates[exactCandidateIndex].identity,
+                            matches: entry
+                        ) {
+                            childActive.append(exactCandidateIndex)
+                        } else {
+                            // The parent row still owns the actual descendant it enumerated, but
+                            // the nested rule was reviewed against a different object and must
+                            // fail closed rather than inheriting the replacement's identity.
+                            incompletePaths.append(IncompletePath(
+                                path: entryPath,
+                                reason: .pathIdentityChanged
+                            ))
+                        }
+                    }
+                    if traversableFromThisRoot, !childActive.isEmpty {
+                        queuedDirectories.append(DirectoryWork(
+                            path: entryPath,
+                            rootDevice: work.rootDevice,
+                            expectedDevice: entry.device,
+                            expectedInode: entry.inode,
+                            activeCandidateIndices: childActive
+                        ))
+                    }
+                } else if traversableFromThisRoot {
+                    if let exactCandidateIndex,
+                       !candidates[exactCandidateIndex].isDirectory,
+                       !started.contains(exactCandidateIndex) {
+                        started.insert(exactCandidateIndex)
+                        if candidateIdentity(
+                            candidates[exactCandidateIndex].identity,
+                            matches: entry
+                        ) {
+                            accepted.append(contentsOf: acceptEntry(
+                                for: [exactCandidateIndex],
+                                candidates: candidates,
+                                maxEntriesPerPath: maxEntriesPerPath,
+                                accumulators: &accumulators,
+                                incompletePaths: &incompletePaths
+                            ))
+                        } else {
+                            incompletePaths.append(IncompletePath(
+                                path: entryPath,
+                                reason: .pathIdentityChanged
+                            ))
+                        }
+                    }
+                    if !accepted.isEmpty {
+                        recordFileBytes(
+                            allocated: entry.allocatedSize,
+                            logical: entry.logicalSize,
+                            device: entry.device,
+                            inode: entry.inode,
+                            acceptedCandidateIndices: accepted,
+                            accumulators: &accumulators,
+                            union: &union
+                        )
+                    }
+                }
+                // 所有当前祖先都触发独立 entry limit 后，继续枚举同一目录只会浪费
+                // I/O。尚未遇到的嵌套候选会在本 group 的后续 root traversal 中完成。
+                if active.allSatisfy({ accumulators[$0].entryLimitReached }) {
+                    stoppedAfterEntryLimit = true
+                    return false
+                }
+                return true
+            }
+            Darwin.close(fd)
+
+            if shouldCancel() || cancelled {
+                return TraversalOutcome(timedOut: false, wasCancelled: true)
+            }
+            if timedOut {
+                return TraversalOutcome(timedOut: true, wasCancelled: false)
+            }
+
+            switch outcome {
+            case .complete:
+                break
+            case .completeWithIssues(let issues):
+                incompletePaths.append(contentsOf: issues.map {
+                    IncompletePath(path: $0.path, reason: .enumerationFailed)
+                })
+            case .stoppedByConsumer:
+                if !stoppedAfterEntryLimit {
+                    incompletePaths.append(IncompletePath(
+                        path: work.path,
+                        reason: .enumerationFailed
+                    ))
+                }
+            case .failed:
+                incompletePaths.append(IncompletePath(
+                    path: work.path,
+                    reason: .enumerationFailed
+                ))
+            }
+            stack.append(contentsOf: queuedDirectories)
+        }
+        return TraversalOutcome(timedOut: false, wasCancelled: false)
+    }
+
+    private static func acceptEntry(
+        for candidateIndices: [Int],
+        candidates: [Candidate],
+        maxEntriesPerPath: Int,
+        accumulators: inout [CandidateAccumulator],
+        incompletePaths: inout [IncompletePath]
+    ) -> [Int] {
+        var accepted: [Int] = []
+        accepted.reserveCapacity(candidateIndices.count)
+        var seen = Set<Int>()
+        for index in candidateIndices where seen.insert(index).inserted {
+            if accumulators[index].entryLimitReached { continue }
+            if accumulators[index].entryCount >= maxEntriesPerPath {
+                accumulators[index].entryLimitReached = true
+                incompletePaths.append(IncompletePath(
+                    path: candidates[index].path,
+                    reason: .entryLimitReached
+                ))
+                continue
+            }
+            accumulators[index].entryCount &+= 1
+            accepted.append(index)
+        }
+        return accepted
+    }
+
+    private static func recordFileBytes(
+        allocated: Int64,
+        logical: Int64,
+        device: UInt64,
+        inode: UInt64,
+        acceptedCandidateIndices: [Int],
+        accumulators: inout [CandidateAccumulator],
+        union: inout UnionAccumulator
+    ) {
+        for index in acceptedCandidateIndices {
+            if accumulators[index].inodes.insertIfFirstSeen(device: device, inode: inode) {
+                accumulators[index].allocatedBytes &+= allocated
+                accumulators[index].logicalBytes &+= logical
+            }
+        }
+        if union.inodes.insertIfFirstSeen(device: device, inode: inode) {
+            union.allocatedBytes &+= allocated
+            union.logicalBytes &+= logical
+        }
+    }
+
+    private static func appendPathComponent(_ component: String, to directory: String) -> String {
+        directory == "/" ? "/\(component)" : "\(directory)/\(component)"
+    }
+
+    private static func candidateIdentity(
+        _ identity: PathIdentity,
+        matches entry: BulkEntry
+    ) -> Bool {
+        identity.device == entry.device
+            && identity.inode == entry.inode
+            && identity.isDirectory == entry.isDirectory
+    }
+
+    private static func makeCandidateStats(
+        _ accumulators: [CandidateAccumulator]
+    ) -> [SizeStat] {
+        accumulators.map {
+            SizeStat(
+                bytes: $0.allocatedBytes,
+                logicalBytes: $0.logicalBytes,
+                entryCount: $0.entryCount,
+                incompletePaths: [],
+                wasCancelled: false
+            )
+        }
+    }
+
+    /// Derives the entry union from candidate coverage rather than retaining every traversed
+    /// pathname. Complete outermost candidates are exact because their inclusive entryCount
+    /// covers all nested rules. On a partial traversal, overlapping parent/child lower bounds use
+    /// max while disjoint candidate branches sum, so the published value never double-counts and
+    /// memory remains O(candidate count), independent of millions of cache entries.
+    private static func uniqueEntryCount(
+        candidates: [Candidate],
+        accumulators: [CandidateAccumulator],
+        hierarchy: CandidateCoverageHierarchy,
+        includedCandidateIndices: Set<Int>? = nil
+    ) -> Int {
+        let included = includedCandidateIndices ?? Set(candidates.indices)
+        guard !included.isEmpty else { return 0 }
+
+        var children = Array(repeating: [Int](), count: candidates.count)
+        var roots: [Int] = []
+        for candidateIndex in included.sorted() {
+            var nearestIncludedParent = hierarchy.parentByIndex[candidateIndex]
+            while let parent = nearestIncludedParent, !included.contains(parent) {
+                nearestIncludedParent = hierarchy.parentByIndex[parent]
+            }
+            if let nearestIncludedParent {
+                children[nearestIncludedParent].append(candidateIndex)
+            } else {
+                roots.append(candidateIndex)
+            }
+        }
+
+        func coverage(_ candidateIndex: Int, isNested: Bool) -> Int {
+            let candidate = candidates[candidateIndex]
+            let measured = accumulators[candidateIndex].entryCount
+            guard candidate.isDirectory else {
+                // A nested file root is itself one directory entry. For an outermost file,
+                // retain the scanner's measured state so an unstarted deadline path stays 0.
+                return isNested ? max(1, measured) : measured
+            }
+            let nestedCoverage = children[candidateIndex].reduce(into: 0) { total, child in
+                total &+= coverage(child, isNested: true)
+            }
+            let descendantLowerBound = max(measured, nestedCoverage)
+            return isNested ? descendantLowerBound &+ 1 : descendantLowerBound
+        }
+
+        return roots.reduce(into: 0) { total, root in
+            total &+= coverage(root, isNested: false)
+        }
+    }
+
+    private static func makeCheckpoint(
+        candidates: [Candidate],
+        accumulators: [CandidateAccumulator],
+        completedCandidateIndices: Set<Int>,
+        incompletePaths: [IncompletePath],
+        union: UnionAccumulator,
+        coverageHierarchy: CandidateCoverageHierarchy,
+        completedGroupCount: Int
+    ) -> Checkpoint {
+        var hits: [Hit] = []
+        hits.reserveCapacity(completedCandidateIndices.count)
+        for index in completedCandidateIndices.sorted() {
+            let candidate = candidates[index]
+            let accumulator = accumulators[index]
+            guard accumulator.allocatedBytes > 0 else { continue }
+            hits.append(Hit(
+                ruleName: candidate.rule.name,
+                bundleIDPrefix: candidate.rule.bundleIDPrefix,
+                source: candidate.rule.source,
+                url: URL(fileURLWithPath: candidate.path),
+                isDirectory: candidate.isDirectory,
+                verdict: candidate.pathRule.verdict,
+                reason: candidate.pathRule.reason,
+                sizeBytes: accumulator.allocatedBytes,
+                logicalSizeBytes: accumulator.logicalBytes,
+                entryCount: accumulator.entryCount
+            ))
+        }
+        hits.sort {
+            if $0.sizeBytes == $1.sizeBytes { return $0.url.path < $1.url.path }
+            return $0.sizeBytes > $1.sizeBytes
+        }
+        return Checkpoint(
+            hits: hits,
+            incompletePaths: deduplicatedIncompletePaths(incompletePaths),
+            uniqueTotalBytes: union.allocatedBytes,
+            uniqueLogicalBytes: union.logicalBytes,
+            uniqueEntryCount: uniqueEntryCount(
+                candidates: candidates,
+                accumulators: accumulators,
+                hierarchy: coverageHierarchy,
+                includedCandidateIndices: completedCandidateIndices
+            ),
+            completedGroupCount: completedGroupCount
+        )
+    }
+
+    private static func cancelledForestMeasurement(
+        candidateCount: Int,
+        completedGroupCount: Int,
+        totalGroupCount: Int,
+        checkpoint: Checkpoint,
+        pendingPaths: [String]
+    ) -> CandidateForestMeasurement {
+        CandidateForestMeasurement(
+            candidateStats: Array(repeating: SizeStat(
+                bytes: 0,
+                entryCount: 0,
+                incompletePaths: [],
+                wasCancelled: true
+            ), count: candidateCount),
+            uniqueTotalBytes: 0,
+            uniqueLogicalBytes: 0,
+            uniqueEntryCount: 0,
+            incompletePaths: [],
+            wasCancelled: true,
+            completedGroupCount: completedGroupCount,
+            totalGroupCount: totalGroupCount,
+            checkpoint: checkpoint,
+            pendingPaths: pendingPaths
+        )
+    }
+
     struct SizeStat {
         /// on-disk allocated bytes；`bytes` 保留现有调用名，但语义固定为磁盘占用。
         let bytes: Int64
@@ -562,7 +1646,7 @@ public actor CommonAppCacheScanner {
         deadline: Date,
         maxEntries: Int,
         shouldCancel: () -> Bool = { Task.isCancelled },
-        openDirectory: (String) -> Int32 = { Darwin.open($0, O_RDONLY) }
+        openDirectory: (String) -> Int32 = safeOpenDirectory
     ) -> SizeStat {
         if shouldCancel() {
             return SizeStat(
@@ -626,7 +1710,7 @@ public actor CommonAppCacheScanner {
             )
         }
         var rootStat = stat()
-        guard stat(rootPath, &rootStat) == 0 else {
+        guard lstat(rootPath, &rootStat) == 0 else {
             let issues = errno == ENOENT
                 ? []
                 : [IncompletePath(path: rootPath, reason: .metadataUnavailable)]
@@ -634,6 +1718,15 @@ public actor CommonAppCacheScanner {
                 bytes: 0,
                 entryCount: 0,
                 incompletePaths: issues,
+                wasCancelled: false
+            )
+        }
+        let rootIdentity = PathIdentity(rootStat)
+        guard rootIdentity.isDirectory else {
+            return SizeStat(
+                bytes: 0,
+                entryCount: 0,
+                incompletePaths: [IncompletePath(path: rootPath, reason: .pathIdentityChanged)],
                 wasCancelled: false
             )
         }
@@ -645,9 +1738,15 @@ public actor CommonAppCacheScanner {
                 wasCancelled: true
             )
         }
-        let rootDevice = UInt64(bitPattern: Int64(rootStat.st_dev))
+        let rootDevice = rootIdentity.device
 
-        var stack = [rootPath]
+        var stack = [DirectoryWork(
+            path: rootPath,
+            rootDevice: rootDevice,
+            expectedDevice: rootIdentity.device,
+            expectedInode: rootIdentity.inode,
+            activeCandidateIndices: []
+        )]
         var allocatedTotal: Int64 = 0
         var logicalTotal: Int64 = 0
         var entries = 0
@@ -657,7 +1756,7 @@ public actor CommonAppCacheScanner {
         var incompletePaths: [IncompletePath] = []
         var wasCancelled = false
 
-        while let dir = stack.popLast() {
+        while let work = stack.popLast() {
             if shouldCancel() {
                 wasCancelled = true
                 break
@@ -670,17 +1769,29 @@ public actor CommonAppCacheScanner {
                 incompletePaths.append(IncompletePath(path: rootPath, reason: .entryLimitReached))
                 break
             }
-            let fd = openDirectory(dir)
+            let fd = openDirectory(work.path)
             if fd < 0 {
                 if errno != ENOENT {
-                    incompletePaths.append(IncompletePath(path: dir, reason: .directoryOpenFailed))
+                    incompletePaths.append(IncompletePath(path: work.path, reason: .directoryOpenFailed))
                 }
+                continue
+            }
+            var openedMetadata = stat()
+            guard fstat(fd, &openedMetadata) == 0,
+                  (openedMetadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+                  UInt64(bitPattern: Int64(openedMetadata.st_dev)) == work.expectedDevice,
+                  UInt64(openedMetadata.st_ino) == work.expectedInode else {
+                Darwin.close(fd)
+                incompletePaths.append(IncompletePath(
+                    path: work.path,
+                    reason: .pathIdentityChanged
+                ))
                 continue
             }
             var consumerStopReason: IncompletePath.Reason?
             let outcome = BulkEnumerate.enumerate(
                 fd: fd,
-                dirPath: dir,
+                dirPath: work.path,
                 shouldCancel: shouldCancel
             ) { entry in
                 if shouldCancel() {
@@ -698,7 +1809,13 @@ public actor CommonAppCacheScanner {
                 entries += 1
                 if entry.isSymlink || entry.device != rootDevice { return true }
                 if entry.isDirectory {
-                    stack.append("\(dir)/\(entry.name)")
+                    stack.append(DirectoryWork(
+                        path: appendPathComponent(entry.name, to: work.path),
+                        rootDevice: rootDevice,
+                        expectedDevice: entry.device,
+                        expectedInode: entry.inode,
+                        activeCandidateIndices: []
+                    ))
                 } else {
                     let isFirstLink = inodes.insertIfFirstSeen(
                         device: entry.device,
@@ -731,7 +1848,7 @@ public actor CommonAppCacheScanner {
                     reason: consumerStopReason ?? .enumerationFailed
                 ))
             case .failed:
-                incompletePaths.append(IncompletePath(path: dir, reason: .enumerationFailed))
+                incompletePaths.append(IncompletePath(path: work.path, reason: .enumerationFailed))
             }
             if consumerStopReason != nil { break }
         }
@@ -749,5 +1866,12 @@ public actor CommonAppCacheScanner {
     ) -> [IncompletePath] {
         var seen = Set<IncompletePath>()
         return incompletePaths.filter { seen.insert($0).inserted }
+    }
+
+    /// 生产目录句柄永不跟随最后一级 symlink，并要求内核打开对象本身就是目录。
+    /// `lstat → open → fstat` 的身份复核同时覆盖解析后 rename/symlink 换件；测试注入的
+    /// open closure 即使不带这些 flags，也必须通过同一 fstat 身份闸门。
+    private static func safeOpenDirectory(_ path: String) -> Int32 {
+        Darwin.open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
     }
 }

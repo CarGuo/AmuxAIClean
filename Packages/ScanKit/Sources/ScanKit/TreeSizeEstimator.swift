@@ -32,7 +32,7 @@ public enum TreeSizeEstimator {
     /// - 符号链接不递归：iCloud / Application Support 里大量 symlink，递归会指数爆炸
     public static func estimate(roots: [URL], timeout: TimeInterval = 4.0) async -> Int64? {
         guard !roots.isEmpty else { return nil }
-        let deadline = Date().addingTimeInterval(timeout)
+        let deadline = ScanDeadline.make(timeout: timeout)
 
         // Step 13A：5 根并发改造。每根独立 detached Task 跑 walkRoot，让总耗时趋近"最慢根"。
         //

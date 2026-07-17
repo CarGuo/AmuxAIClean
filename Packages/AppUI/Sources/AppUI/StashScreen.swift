@@ -31,13 +31,13 @@ struct StashScreen: View {
     /// 必须显式读取 View locale，不能让进程级字符串解析固化为启动语言。
     @Environment(\.locale) private var locale
 
-    /// 共享购物车 store。@Bindable 让 entries 变化自动驱动 List。
-    @Bindable var stash: StashStore
-    /// v2026.06.19 **一键 AI 队列引擎**。@Bindable 让 phase/processed/total/currentPath
+    /// 共享购物车 store。@ObservedObject 让 entries 变化自动驱动 List。
+    @ObservedObject var stash: StashStore
+    /// v2026.06.19 **一键 AI 队列引擎**。@ObservedObject 让 phase/processed/total/currentPath
     /// 实时驱动 footer 进度条与行内徽标刷新。
-    @Bindable var aiQueue: StashAIQueue
+    @ObservedObject var aiQueue: StashAIQueue
     /// 用于决定单独 AI 按钮是否可点（key 未配置 / 未开启 → 禁用）。
-    let aiSettings: AISettings
+    @ObservedObject var aiSettings: AISettings
     /// 关闭 sheet 回调（MainView 内置 isPresented binding）。
     let onClose: () -> Void
     /// 单独清理回调；交由 MainView 走主删除 pipeline。
@@ -131,7 +131,7 @@ struct StashScreen: View {
             Image(systemName: entry.isDirectory ? "folder.fill" : "doc.fill")
                 .foregroundStyle(.tint)
             VStack(alignment: .leading, spacing: 2) {
-                Text(entry.title)
+                Text(verbatim: entry.displayTitle(locale: locale))
                     .font(.body)
                     .lineLimit(1)
                     .truncationMode(.middle)

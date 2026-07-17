@@ -21,7 +21,7 @@ public struct LargeFilesView: View {
     @Environment(\.locale) private var locale
 
     let coordinator: ScanCoordinator
-    @Bindable var settings: AppSettings
+    @ObservedObject var settings: AppSettings
 
     /// 行内当前选中（用于右侧详情，也作为 .delete 快捷键的锚）。
     @Binding var selection: LargeFileItem?
@@ -45,10 +45,10 @@ public struct LargeFilesView: View {
     /// （单击行同步的单选项），造成"复选框勾了但底部按钮 disabled"的错觉，
     /// 以及 LargeFilesView 头部要额外画一个"移到废纸篓(N)"按钮兜底 → **两个批量入口共存**。
     ///
-    /// **现在**：`BatchSelection` 是 `@Observable class`，由 MainView 以 `@State` 持有
-    /// 单例引用；LargeFilesView 与 footerBar 共享同一实例。SwiftUI 通过 Observation 自动
+    /// **现在**：`BatchSelection` 是 `ObservableObject`，由 MainView 以 `@StateObject` 持有
+    /// 单例引用；LargeFilesView 与 footerBar 共享同一实例。SwiftUI 通过 Combine 自动
     /// 追踪 `selected` 变更 → 双端都能实时响应。删除入口统一到 footerBar 唯一按钮。
-    let batch: BatchSelection
+    @ObservedObject var batch: BatchSelection
 
     /// v1.5 P2 / Q1：当前列表排序键。
     ///
@@ -92,9 +92,9 @@ public struct LargeFilesView: View {
                 aiSettings: AISettings?,
                 onAskAI: @escaping (LargeFileItem) -> Void) {
         self.coordinator = coordinator
-        self.settings = settings
+        self._settings = ObservedObject(wrappedValue: settings)
         self._selection = selection
-        self.batch = batch
+        self._batch = ObservedObject(wrappedValue: batch)
         self.limit = limit
         self.onTrash = onTrash
         self.onVisibleItemsChange = onVisibleItemsChange
@@ -208,22 +208,12 @@ public struct LargeFilesView: View {
         .onReceive(coordinator.$storeRevision) { _ in
             syncDisplayedLargeFiles(force: true)
         }
-        .onChange(of: settings.minFileSizeMB) { _, _ in syncDisplayedLargeFiles(force: true) }
-        .onChange(of: settings.mtimeFilter) { _, _ in syncDisplayedLargeFiles(force: true) }
-        .onChange(of: settings.mainListSortKey) { _, _ in syncDisplayedLargeFiles(force: true) }
-        .onChange(of: kindFilter) { _, _ in syncDisplayedLargeFiles(force: true) }
-        // v1.2 P2-4：Spacebar 触发 Quick Look 预览当前选中。
-        // 注意 onKeyPress 必须挂在最外层 VStack，否则 AppKit table 焦点路径会吞掉外层快捷键。
-        .focusable()
-        // bug B：.focusable() 会让 macOS 画蓝色焦点环包整张大文件视图，关掉。
-        .focusEffectDisabled()
-        .onKeyPress(.space) {
-            if let item = selection {
-                QuickLookController.shared.preview(urls: [item.url])
-                return .handled
-            }
-            return .ignored
-        }
+        .onValueChange(of: settings.minFileSizeMB) { _, _ in syncDisplayedLargeFiles(force: true) }
+        .onValueChange(of: settings.mtimeFilter) { _, _ in syncDisplayedLargeFiles(force: true) }
+        .onValueChange(of: settings.mainListSortKey) { _, _ in syncDisplayedLargeFiles(force: true) }
+        .onValueChange(of: kindFilter) { _, _ in syncDisplayedLargeFiles(force: true) }
+        // v2026.07.16：Space/方向键/Delete 已由 AppKitLargeFilesTable.keyDown 统一处理。
+        // 移除 macOS 14+ 的重复 SwiftUI onKeyPress，Ventura 与新系统共享同一条命令链。
         // compactAfterScanPreservingCache 只缓存 size-desc Top N；在 Large Files 支持
         // store-backed 异步排序/过滤前，不在视图层自动 compact，避免返回错误子集。
     }
@@ -549,7 +539,9 @@ public struct LargeFilesView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
-        .background(.background.secondary)
+        // v2026.07.16：`.background.secondary` 是 macOS 14 ShapeStyle；AppKit 的
+        // controlBackgroundColor 在 Ventura 上提供同一层级的原生表头底色。
+        .background(Color(nsColor: .controlBackgroundColor))
     }
 
     private func columnButton(title: String, column: LargeFileSortKey.Column) -> some View {
@@ -706,6 +698,7 @@ private struct AppKitLargeFilesTable: NSViewRepresentable {
                 aiReady: parent.aiReady,
                 locale: parent.locale,
                 actions: LargeFilesRowActions(
+                    focus: { UserInitiatedTableFocus.request(for: tableView) },
                     select: { [weak self] in self?.select(item, in: tableView) },
                     togglePick: { [weak self] in self?.parent.onTogglePick(item.path) },
                     askAI: { [weak self] in self?.parent.onAskAI(item) },
@@ -746,6 +739,7 @@ private struct AppKitLargeFilesTable: NSViewRepresentable {
         }
 
         private func select(_ item: LargeFileItem, in table: NSTableView) {
+            UserInitiatedTableFocus.request(for: table)
             parent.selectedItem = item
             if let idx = parent.items.firstIndex(where: { $0.path == item.path }) {
                 table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
@@ -812,6 +806,7 @@ private enum LargeFilesTableMetrics {
 }
 
 private struct LargeFilesRowActions {
+    let focus: () -> Void
     let select: () -> Void
     let togglePick: () -> Void
     let askAI: () -> Void
@@ -897,6 +892,9 @@ private final class LargeFilesRowCanvas: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard let item, let actions else { return }
+        // v2026.07.16: the canvas consumes the click, so explicitly restore the native table's
+        // keyboard command chain. This is user initiated and cannot steal focus during scanning.
+        actions.focus()
         let point = convert(event.locationInWindow, from: nil)
         if checkboxRect.contains(point) {
             actions.togglePick()

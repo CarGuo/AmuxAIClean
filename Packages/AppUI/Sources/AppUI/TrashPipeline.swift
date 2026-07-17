@@ -323,6 +323,68 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         )
     }
 
+    private func duplicateVerificationPreSubmitFailure(
+        paths: [String],
+        rejections: [DeletionPreflight.Rejection]
+    ) -> PerformedMove {
+        let effectiveRejections = rejections.isEmpty
+            ? paths.map {
+                .init(
+                    path: $0,
+                    reason: DuplicateDeletionVerificationRejectionReason.invalidEvidence.rawValue
+                )
+            }
+            : rejections
+        let firstReason = effectiveRejections[0].reason
+        let failureSummary = TrashFailureSummary.safetyBlocked(
+            count: paths.count,
+            firstReason: firstReason,
+            preview: false
+        )
+        let outcome = TrashOutcome(
+            movedPairs: [],
+            failedPaths: [],
+            safetyRejected: effectiveRejections.map { ($0.path, $0.reason) },
+            missingPaths: [],
+            failureSummary: failureSummary
+        )
+        recordOutcome(outcome)
+        return PerformedMove(
+            payload: ((0, paths.count, failureSummary.legacyDiagnostic, []), outcome),
+            submissionDisposition: .preSubmitRejected(
+                .invalidDuplicateVerification(effectiveRejections)
+            )
+        )
+    }
+
+    /// Claim-fence failures use the pending-operation carrier while the serial submission queue
+    /// is deciding whether it may claim. If no earlier AppKit call occurred, recover the original
+    /// Duplicate-specific presentation type instead of mislabelling cancellation/survivor drift
+    /// as a recycle result.
+    private func duplicateClaimFenceRejections(
+        from rejection: TrashPendingOperationRejection
+    ) -> [DeletionPreflight.Rejection]? {
+        var mapped: [DeletionPreflight.Rejection] = []
+        mapped.reserveCapacity(rejection.reasonsByPath.count)
+        for path in rejection.reasonsByPath.keys.sorted() {
+            guard let reason = rejection.reasonsByPath[path] else { continue }
+            let duplicateReason: DuplicateDeletionVerificationRejectionReason
+            switch reason {
+            case .duplicateVerificationCancelled:
+                duplicateReason = .verificationCancelled
+            case .duplicateTargetIdentityChanged:
+                duplicateReason = .targetIdentityChanged
+            case .duplicateRetainedReferenceChanged:
+                duplicateReason = .retainedReferenceChanged
+            case .priorOperationPending, .identityChanged, .targetMissing, .ledgerUnavailable,
+                 .submissionQueueExpired, .freshReviewRequired:
+                return nil
+            }
+            mapped.append(.init(path: path, reason: duplicateReason.rawValue))
+        }
+        return mapped.isEmpty ? nil : mapped
+    }
+
     /// 删除批次统一按首次出现顺序去重。重复 URL 既不应让确认页计数膨胀，也不能被
     /// NSWorkspace.recycle 提交两次；vendor override 最终的路径顺序身份也以此为准。
     private static func stableUniquePaths(_ paths: [String]) -> [String] {
@@ -843,6 +905,59 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         return disposition
     }
 
+    /// v2026.07.17 observable execution overload. Progress never participates in Safety, ledger,
+    /// claim-fence or completion decisions; it only mirrors already-reached source-proof or
+    /// ordinary recycle phases to the revision-owned UI consumer.
+    public func submitToTrashReturningDisposition(
+        paths: [String],
+        accessDeniedPaths: Set<String>,
+        vendorOverrideRequest: VendorPathOverrideRequest?,
+        scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest?,
+        reviewIdentity: DeletionSnapshotIdentity?,
+        executionVerification: DeletionExecutionVerification?,
+        executionProgressObserver: DeletionExecutionProgressObserver?
+    ) async -> TrashSubmissionDisposition {
+        let performed = await performMoveToTrash(
+            paths: paths,
+            dryRun: false,
+            requestAccessDeniedPaths: accessDeniedPaths,
+            vendorOverrideRequest: vendorOverrideRequest,
+            scanIncompleteOverrideRequest: scanIncompleteOverrideRequest,
+            reviewIdentity: reviewIdentity,
+            executionVerification: executionVerification,
+            executionProgressObserver: executionProgressObserver
+        )
+        guard let disposition = performed.submissionDisposition else {
+            assertionFailure("Real trash submission finished without a typed boundary")
+            return .preSubmitRejected(.unsupportedPipeline)
+        }
+        return disposition
+    }
+
+    public func submitToTrashReturningDisposition(
+        paths: [String],
+        accessDeniedPaths: Set<String>,
+        vendorOverrideRequest: VendorPathOverrideRequest?,
+        scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest?,
+        reviewIdentity: DeletionSnapshotIdentity?,
+        executionVerification: DeletionExecutionVerification?
+    ) async -> TrashSubmissionDisposition {
+        let performed = await performMoveToTrash(
+            paths: paths,
+            dryRun: false,
+            requestAccessDeniedPaths: accessDeniedPaths,
+            vendorOverrideRequest: vendorOverrideRequest,
+            scanIncompleteOverrideRequest: scanIncompleteOverrideRequest,
+            reviewIdentity: reviewIdentity,
+            executionVerification: executionVerification
+        )
+        guard let disposition = performed.submissionDisposition else {
+            assertionFailure("Real trash submission finished without a typed boundary")
+            return .preSubmitRejected(.unsupportedPipeline)
+        }
+        return disposition
+    }
+
     /// 历史兼容入口。本方法不能泛化绕过 `.forbid`，与普通删除走完全相同的 vendor trie；
     /// vendorPathRule 的专业模式能力只能走类型化 override 请求与最终重验。保留符号只为
     /// 旧调用方源码兼容，不能作为“强制越过任意安全规则”的产品入口。
@@ -860,7 +975,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         requestAccessDeniedPaths: Set<String>? = nil,
         vendorOverrideRequest: VendorPathOverrideRequest? = nil,
         scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest? = nil,
-        reviewIdentity: DeletionSnapshotIdentity? = nil
+        reviewIdentity: DeletionSnapshotIdentity? = nil,
+        executionVerification: DeletionExecutionVerification? = nil,
+        executionProgressObserver: DeletionExecutionProgressObserver? = nil
     ) async -> PerformedMove {
         guard !paths.isEmpty else {
             let outcome = TrashOutcome(movedPairs: [], failedPaths: [], safetyRejected: [], missingPaths: [])
@@ -872,6 +989,21 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             )
         }
         GSYLog.info(.trash, "moveToTrash 开始 dryRun=\(dryRun) paths=\(paths.count)")
+
+        let trashExecutionProgress: (@Sendable (TrashExecutionProgress) -> Void)?
+        if executionVerification == nil, let executionProgressObserver {
+            trashExecutionProgress = { progress in
+                executionProgressObserver(.trash(progress))
+            }
+        } else {
+            trashExecutionProgress = nil
+        }
+        trashExecutionProgress?(.init(
+            phase: .finalValidation,
+            completedItems: 0,
+            totalItems: paths.count,
+            currentPath: nil
+        ))
 
         // M4 闸门：先按 SafetyEngine 切批。被 forbid 的不进入后续逻辑（既不 dryRun present
         // 计数、也不真 recycle），统一计入 skipped。
@@ -992,6 +1124,26 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             }
         }
 
+        let duplicateVerificationRequest: DuplicateDeletionVerificationRequest?
+        switch executionVerification {
+        case .some(.duplicate(let request)):
+            guard request.matchesExactTargets(allowed) else {
+                return duplicateVerificationPreSubmitFailure(
+                    paths: allowed,
+                    rejections: allowed.map {
+                        .init(
+                            path: $0,
+                            reason: DuplicateDeletionVerificationRejectionReason
+                                .invalidEvidence.rawValue
+                        )
+                    }
+                )
+            }
+            duplicateVerificationRequest = request
+        case .none:
+            duplicateVerificationRequest = nil
+        }
+
         if dryRun {
             var present = 0
             var missingPaths: [String] = []
@@ -1048,6 +1200,88 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             )
         }
 
+
+        // v2026.07.17 Duplicate TOCTOU closure: reserve first so every target has a frozen inode
+        // in the cross-process ledger, then re-open and fully hash selected targets plus one
+        // retained copy on a background dispatch queue. A failed/cancelled proof releases the
+        // unclaimed reservation and returns a typed pre-submit block; no AppKit recycle call has
+        // occurred. The resulting cheap claim fence is carried into every batch and single retry.
+        let duplicateClaimFence: DuplicateDeletionClaimFence?
+        let duplicateSubmissionObserver: (@Sendable () -> Void)?
+        if let duplicateVerificationRequest {
+            let cancellationToken = DuplicateDeletionVerificationCancellationToken()
+            let verificationProgress: (@Sendable (DuplicateDeletionVerificationProgress) -> Void)?
+            if let executionProgressObserver {
+                verificationProgress = { progress in
+                    executionProgressObserver(.duplicate(progress))
+                }
+            } else {
+                verificationProgress = nil
+            }
+            GSYLog.info(
+                .trash,
+                "Duplicate verification phase=start targets=\(reservedPaths.count) items=\(duplicateVerificationRequest.verificationItemCount)"
+            )
+            var rejections = await DuplicateDeletionFinalVerifier.verify(
+                request: duplicateVerificationRequest,
+                authorizedPaths: reservedPaths,
+                cancellationToken: cancellationToken,
+                progress: verificationProgress
+            )
+            if cancellationToken.isCancelled, rejections.isEmpty {
+                rejections = reservedPaths.map {
+                    .init(
+                        path: $0,
+                        reason: DuplicateDeletionVerificationRejectionReason
+                            .verificationCancelled.rawValue
+                    )
+                }
+            }
+            guard rejections.isEmpty else {
+                GSYLog.notice(
+                    .trash,
+                    "Duplicate verification phase=blocked targets=\(reservedPaths.count) rejections=\(rejections.count) cancelled=\(cancellationToken.isCancelled)"
+                )
+                let released = await Task.detached(priority: .utility) {
+                    ledger.finish(operationID: operationID, retainingPendingPaths: [])
+                }.value
+                if !released {
+                    GSYLog.error(
+                        .trash,
+                        "Duplicate verification reservation release failed operationID=\(operationID.uuidString)"
+                    )
+                }
+                return duplicateVerificationPreSubmitFailure(
+                    paths: reservedPaths,
+                    rejections: rejections
+                )
+            }
+            GSYLog.info(
+                .trash,
+                "Duplicate verification phase=complete targets=\(reservedPaths.count)"
+            )
+            duplicateClaimFence = DuplicateDeletionClaimFence(
+                request: duplicateVerificationRequest,
+                cancellationToken: cancellationToken
+            )
+            if let executionProgressObserver {
+                let progressGate = RecycleSubmissionProgressGate {
+                    executionProgressObserver(.duplicate(.init(
+                        phase: .submittingToTrash,
+                        completedItems: duplicateVerificationRequest.verificationItemCount,
+                        totalItems: duplicateVerificationRequest.verificationItemCount,
+                        currentPath: nil
+                    )))
+                }
+                duplicateSubmissionObserver = { progressGate.notifyOnce() }
+            } else {
+                duplicateSubmissionObserver = nil
+            }
+        } else {
+            duplicateClaimFence = nil
+            duplicateSubmissionObserver = nil
+        }
+
         // **v2026.06.16 修复 #2（system-images 删除拒绝）**：
         // 旧实现把 allowed 整批（可能 100+ 条、单条 1-3GB）一次性塞给 NSWorkspace.recycle。
         // NSWorkspace.recycle 在如下场景容易整批返回 "Some files could not be moved" 而不告知是哪条：
@@ -1057,10 +1291,26 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         //
         // 新实现：分批 → 批失败回退到单 URL 隔离重试，能精确捕获哪条 path 失败、不让一条坏路径拖垮整批。
         let allowedURLs = reservedPaths.map { URL(fileURLWithPath: $0) }
-        let recycleResult = await recycleInBatches(
-            urls: allowedURLs,
-            operationID: operationID
-        )
+        let recycleResult: RecycleBatchResult
+        if let duplicateClaimFence {
+            recycleResult = await withTaskCancellationHandler {
+                await recycleInBatches(
+                    urls: allowedURLs,
+                    operationID: operationID,
+                    duplicateClaimFence: duplicateClaimFence,
+                    duplicateSubmissionObserver: duplicateSubmissionObserver,
+                    progress: trashExecutionProgress
+                )
+            } onCancel: {
+                duplicateClaimFence.cancel()
+            }
+        } else {
+            recycleResult = await recycleInBatches(
+                urls: allowedURLs,
+                operationID: operationID,
+                progress: trashExecutionProgress
+            )
+        }
         let retainedUnknown = Set(
             recycleResult.pendingPaths + recycleResult.submissionUnknownPaths
         )
@@ -1074,6 +1324,12 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
         if recycleResult.attemptedPaths.isEmpty,
            let rejection = recycleResult.preSubmitRejection {
+            if let rejections = duplicateClaimFenceRejections(from: rejection) {
+                return duplicateVerificationPreSubmitFailure(
+                    paths: reservedPaths,
+                    rejections: rejections
+                )
+            }
             return pendingLedgerPreSubmitFailure(paths: reservedPaths, rejection: rejection)
         }
         if recycleResult.attemptedPaths.isEmpty {
@@ -1211,6 +1467,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     private func recycleInBatches(
         urls: [URL],
         operationID: UUID,
+        duplicateClaimFence: DuplicateDeletionClaimFence? = nil,
+        duplicateSubmissionObserver: (@Sendable () -> Void)? = nil,
+        progress: (@Sendable (TrashExecutionProgress) -> Void)? = nil,
         batchSize: Int = 32
     ) async -> RecycleBatchResult {
         // v2026.07.16：45 秒是整个请求的 UI 等待预算，不是每个子调用各 45 秒。
@@ -1223,6 +1482,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         return await Self.executeRecycleBatches(
             urls: urls,
             batchSize: batchSize,
+            progress: progress,
             recycle: { urls in
                 let now = DispatchTime.now().uptimeNanoseconds
                 guard now < deadline else {
@@ -1237,7 +1497,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                     urls: urls,
                     operationID: operationID,
                     timeoutSeconds: remainingSeconds,
-                    ledger: self.pendingOperationLedger
+                    ledger: self.pendingOperationLedger,
+                    duplicateClaimFence: duplicateClaimFence,
+                    submissionObserver: duplicateSubmissionObserver
                 )
             }
         )
@@ -1249,6 +1511,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     static func executeRecycleBatches(
         urls: [URL],
         batchSize: Int = 32,
+        progress: (@Sendable (TrashExecutionProgress) -> Void)? = nil,
         recycle: @Sendable ([URL]) async -> RecycleAttempt
     ) async -> RecycleBatchResult {
         precondition(batchSize > 0, "batchSize must be positive")
@@ -1260,6 +1523,24 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         var submissionUnknownPaths: [String] = []
         var notSubmittedPaths: [String] = []
         var preSubmitRejection: TrashPendingOperationRejection?
+        var progressCompletedPaths = Set<String>()
+
+        func emitProgress(_ phase: TrashExecutionProgress.Phase, currentPath: String? = nil) {
+            progress?(.init(
+                phase: phase,
+                completedItems: progressCompletedPaths.count,
+                totalItems: urls.count,
+                currentPath: currentPath
+            ))
+        }
+
+        func markProgressCompleted<S: Sequence>(_ paths: S) where S.Element == String {
+            progressCompletedPaths.formUnion(paths)
+        }
+
+        // v2026.07.17: every return path converges the observable side channel. This defer does
+        // not participate in recycle accounting and cannot manufacture a success result.
+        defer { emitProgress(.finalizing) }
 
         var idx = 0
         while idx < urls.count {
@@ -1267,6 +1548,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             let batch = Array(urls[idx..<end])
             idx = end
 
+            emitProgress(.submitting, currentPath: batch.first?.path)
             let batchAttempt = await recycle(batch)
             if case .notSubmittedBudgetExpired = batchAttempt.state {
                 notSubmittedPaths.append(contentsOf: batch.map(\.path))
@@ -1288,8 +1570,10 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
             attemptedPaths.append(contentsOf: batch.map(\.path))
             allMoved.append(contentsOf: batchAttempt.moved)
+            markProgressCompleted(batchAttempt.moved.map { $0.0 })
 
             if case .submissionUnknown(let operationID) = batchAttempt.state {
+                markProgressCompleted(batch.map(\.path))
                 submissionUnknownPaths.append(contentsOf: batch.map(\.path))
                 if idx < urls.count {
                     notSubmittedPaths.append(contentsOf: urls[idx...].map(\.path))
@@ -1299,6 +1583,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             }
 
             if case .callbackPending(let operationID) = batchAttempt.state {
+                markProgressCompleted(batch.map(\.path))
                 let movedSet = Set(batchAttempt.moved.map { $0.0 })
                 pendingPaths.append(contentsOf: batch.lazy.map(\.path).filter { !movedSet.contains($0) })
                 if idx < urls.count {
@@ -1316,7 +1601,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 GSYLog.warning(.trash, "moveToTrash 批次存在未移动项，回退到单 URL 隔离重试 batch=\(batch.count) unmoved=\(unmoved.count)")
             }
             for url in unmoved {
+                emitProgress(.diagnosingItems, currentPath: url.path)
                 let singleAttempt = await recycle([url])
+                markProgressCompleted([url.path])
                 if case .notSubmittedBudgetExpired = singleAttempt.state {
                     // 当前批已经收到确定的批量回调，只是没有剩余预算继续逐项诊断；
                     // 因此当前批仍按已提交失败核算，只有尚未开始的后续批次是 not-submitted。
@@ -1440,7 +1727,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         urls: [URL],
         operationID: UUID,
         timeoutSeconds: TimeInterval,
-        ledger: any TrashPendingOperationLedger
+        ledger: any TrashPendingOperationLedger,
+        duplicateClaimFence: DuplicateDeletionClaimFence? = nil,
+        submissionObserver: (@Sendable () -> Void)? = nil
     ) async -> RecycleAttempt {
         await executeRecycleOnce(
             urls: urls,
@@ -1460,7 +1749,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 Task { @MainActor in
                     Self.reconcileLateRecycle(pairs: pairs, operationID: operationID)
                 }
-            }
+            },
+            duplicateClaimFence: duplicateClaimFence,
+            submissionObserver: submissionObserver
         )
     }
 
@@ -1474,7 +1765,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         ledger: any TrashPendingOperationLedger,
         submissionQueue: DispatchQueue,
         workspaceRecycle: @escaping WorkspaceRecycleOperation,
-        lateHandler: @escaping LateRecycleHandler
+        lateHandler: @escaping LateRecycleHandler,
+        duplicateClaimFence: DuplicateDeletionClaimFence? = nil,
+        submissionObserver: (@Sendable () -> Void)? = nil
     ) async -> RecycleAttempt {
         await withCheckedContinuation { (cc: CheckedContinuation<RecycleAttempt, Never>) in
             let gate = RecycleOnceGate(cc: cc)
@@ -1496,6 +1789,18 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             // queue 回调。使用专用串行队列既遵守该合同，也不会把文件操作提交压到主线程。
             submissionQueue.async {
                 guard gate.beginClaim() else { return }
+                // v2026.07.17 Duplicate post-hash fence: this runs on the exact serial queue
+                // directly beside every batch and fallback single-item AppKit submission. It
+                // rechecks the retained survivor plus this attempt's target identities; the
+                // complete content hash is intentionally not repeated for every batch.
+                if let rejection = duplicateClaimFence?.rejection(blocking: normalizedPaths) {
+                    GSYLog.notice(
+                        .trash,
+                        "Duplicate claim fence blocked before ledger claim operationID=\(operationID.uuidString) targets=\(normalizedPaths.count)"
+                    )
+                    gate.resolvePreSubmitRejection(rejection)
+                    return
+                }
                 let claim = ledger.claim(
                     paths: normalizedPaths,
                     operationID: operationID,
@@ -1507,6 +1812,24 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                     gate.resolvePreSubmitRejection(rejection)
                     return
                 case .claimed:
+                    // `flock`/identity work itself can take time. Check the same source proof and
+                    // explicit cancellation token once more after ledger claim, then clear the
+                    // exact attempt if it changed. No `NSWorkspace.recycle` call has happened.
+                    if let rejection = duplicateClaimFence?.rejection(blocking: normalizedPaths) {
+                        let released = ledger.finish(
+                            paths: normalizedPaths,
+                            operationID: operationID,
+                            attemptID: attemptID
+                        )
+                        if !released {
+                            GSYLog.error(
+                                .trash,
+                                "Duplicate claim fence could not release exact attempt operationID=\(operationID.uuidString) attemptID=\(attemptID.uuidString)"
+                            )
+                        }
+                        gate.resolvePreSubmitRejection(rejection)
+                        return
+                    }
                     guard gate.finishClaim() else {
                         // The watchdog won while flock/identity verification was in progress.
                         // No AppKit call is allowed after that not-submitted result.
@@ -1519,6 +1842,12 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                     }
                 }
 
+                // v2026.07.17 exact progress boundary: full hashing, queue wait, both
+                // claim-fence checks and the durable ledger claim are still cancellable
+                // pre-submit work. Publish `.submittingToTrash` only beside the first actual
+                // NSWorkspace invocation. The operation-scoped gate keeps batch/fallback calls
+                // from producing duplicate boundary events.
+                submissionObserver?()
                 workspaceRecycle(urls) { pairs, errorDescription in
                     if let errorDescription {
                         GSYLog.warning(.trash, "NSWorkspace.recycle 单批失败 operationID=\(operationID.uuidString) batchSize=\(urls.count) moved=\(pairs.count) err=\(errorDescription)")
@@ -1641,6 +1970,30 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         outcomeLock.lock()
         defer { outcomeLock.unlock() }
         return _lastOutcome
+    }
+}
+
+/// One operation may use multiple recycle batches and single-item diagnostic retries. The UI
+/// needs one irreversible-boundary transition, not one event per AppKit call. Callback execution
+/// occurs outside the lock so observers may enqueue onto MainActor without lock inversion.
+private final class RecycleSubmissionProgressGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didNotify = false
+    private let callback: @Sendable () -> Void
+
+    init(callback: @escaping @Sendable () -> Void) {
+        self.callback = callback
+    }
+
+    func notifyOnce() {
+        lock.lock()
+        guard !didNotify else {
+            lock.unlock()
+            return
+        }
+        didNotify = true
+        lock.unlock()
+        callback()
     }
 }
 

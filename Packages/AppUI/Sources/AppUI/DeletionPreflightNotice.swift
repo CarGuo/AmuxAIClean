@@ -113,6 +113,12 @@ enum DeletionSafetyReasonPresentation {
                 return "op.result.reason.trash_submission_queue_expired"
             case .freshReviewRequired:
                 return "op.result.reason.trash_pending_fresh_review_required"
+            case .duplicateVerificationCancelled:
+                return "op.result.reason.preflight_cancelled"
+            case .duplicateTargetIdentityChanged:
+                return "op.result.reason.target_identity_changed"
+            case .duplicateRetainedReferenceChanged:
+                return "op.result.reason.target_identity_changed"
             }
         }
         if let targetReason = ScanIncompleteTargetRejectionReason(rawValue: raw) {
@@ -127,6 +133,16 @@ enum DeletionSafetyReasonPresentation {
                 return "op.result.reason.target_immutable"
             case .readOnlyVolume:
                 return "op.result.reason.target_read_only_volume"
+            }
+        }
+        if let duplicateReason = DuplicateDeletionVerificationRejectionReason(rawValue: raw) {
+            switch duplicateReason {
+            case .invalidEvidence:
+                return "op.result.reason.target_evidence_missing"
+            case .targetIdentityChanged, .targetContentChanged, .retainedReferenceChanged:
+                return "op.result.reason.target_identity_changed"
+            case .verificationCancelled:
+                return "op.result.reason.preflight_cancelled"
             }
         }
         guard let rejection = SafetyRejection(rawValue: raw) else {

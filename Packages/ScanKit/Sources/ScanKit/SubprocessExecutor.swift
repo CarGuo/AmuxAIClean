@@ -364,6 +364,15 @@ public struct SubprocessExecutor: Sendable {
                 exitCode: -2,
                 output: "timeout after \(timeout)s;\(suffix); partial=\(ownedResult.output)"
             )
+        case .cancelled(let sentSIGKILL, _):
+            // v2026.07.17：取消与 timeout / allowlist 拒绝 / 提交闸门拒绝是不同终态。
+            // 当前 public run 尚未注入取消检查，但底层 owned executor 已支持；若后续
+            // 调用链接入取消，不得把用户取消伪装成 timeout 或 commandRejected。
+            let suffix = sentSIGKILL ? " SIGKILL sent" : " terminated"
+            return Result(
+                exitCode: -5,
+                output: "cancelled;\(suffix); partial=\(ownedResult.output)"
+            )
         case .notOwned:
             return Result(
                 exitCode: -1,

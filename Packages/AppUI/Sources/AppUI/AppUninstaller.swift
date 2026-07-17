@@ -1,4 +1,5 @@
 import Darwin
+import Dispatch
 import Foundation
 import LogKit
 import SafetyKit
@@ -12,13 +13,46 @@ public struct UninstallCandidate: Hashable, Sendable {
     public let path: String
     public let bytes: Int64
     public let fileCount: Int
+    /// 来自扫描时的真实文件类型；删除链路不得再用 fileCount 猜测目录。
+    public let isDirectory: Bool
+    /// 候选容量快照是否穷尽。partial 只允许展示下界，不能作为普通删除证据。
+    public let snapshotCompletion: FSSnapshotCompletionStatus
+    /// 结构化保留预算、权限、枚举与 metadata 缺口，避免把 0B/部分 bytes 伪装成完整值。
+    public let snapshotIssues: [FSSnapshotIssue]
     public let matchReason: MatchReason
 
-    public init(path: String, bytes: Int64, fileCount: Int, matchReason: MatchReason) {
+    public init(
+        path: String,
+        bytes: Int64,
+        fileCount: Int,
+        isDirectory: Bool = false,
+        snapshotCompletion: FSSnapshotCompletionStatus = .complete,
+        snapshotIssues: [FSSnapshotIssue] = [],
+        matchReason: MatchReason
+    ) {
         self.path = path
         self.bytes = bytes
         self.fileCount = fileCount
+        self.isDirectory = isDirectory
+        self.snapshotCompletion = snapshotCompletion
+        self.snapshotIssues = snapshotIssues
         self.matchReason = matchReason
+    }
+
+    public init(path: String, snapshot: FSSnapshot, matchReason: MatchReason) {
+        self.init(
+            path: path,
+            bytes: snapshot.bytes,
+            fileCount: snapshot.fileCount,
+            isDirectory: snapshot.isDirectory,
+            snapshotCompletion: snapshot.completion,
+            snapshotIssues: snapshot.issues,
+            matchReason: matchReason
+        )
+    }
+
+    public var hasCompleteSnapshot: Bool {
+        snapshotCompletion == .complete && snapshotIssues.isEmpty
     }
 }
 
@@ -225,12 +259,8 @@ public struct AppUninstaller: Sendable {
                 guard let reason = matchReason(name: entry.name, scope: root.scope, meta: meta) else { continue }
                 let snap = fileManager.snapshot(at: entry.path)
                 seenPaths.insert(entry.path)
-                out.append(.init(
-                    path: entry.path,
-                    bytes: snap.bytes,
-                    fileCount: snap.fileCount,
-                    matchReason: reason
-                ))
+                guard snap.completion != .cancelled else { continue }
+                out.append(.init(path: entry.path, snapshot: snap, matchReason: reason))
             }
         }
 
@@ -243,13 +273,10 @@ public struct AppUninstaller: Sendable {
             for absPath in vendor.absolutePathPrefixes(home: homeDirectory) {
                 if !seenPaths.insert(absPath).inserted { continue }
                 let snap = fileManager.snapshot(at: absPath)
-                let isDirectory = fileManager.firstLevelEntries(at: absPath) != nil
-                let exists = isDirectory || snap.bytes > 0 || snap.fileCount > 0
-                guard exists else { continue }
+                guard snap.exists, snap.completion != .cancelled else { continue }
                 out.append(.init(
                     path: absPath,
-                    bytes: snap.bytes,
-                    fileCount: snap.fileCount,
+                    snapshot: snap,
                     matchReason: .vendorRule(vendor.name)
                 ))
             }
@@ -289,10 +316,10 @@ public struct AppUninstaller: Sendable {
                 // 文件存在性过滤：避免把 receipt 列表里 macOS 系统重装后已被清掉的死路径挂上去
                 guard fm.fileExists(atPath: absPath) else { continue }
                 let snap = fileManager.snapshot(at: absPath)
+                guard snap.exists, snap.completion != .cancelled else { continue }
                 out.append(.init(
                     path: absPath,
-                    bytes: snap.bytes,
-                    fileCount: snap.fileCount,
+                    snapshot: snap,
                     matchReason: .pkgReceipt(receipt.pkgID)
                 ))
             }
@@ -373,9 +400,9 @@ extension AppUninstaller {
     /// 串行递归，对每个候选目录都是一次重 IO；当 `Library/Caches` 等出现几十个
     /// 候选时，串行累计耗时会让 UI 体感卡顿。
     ///
-    /// 这里把 **匹配** 仍保持同步（CPU 廉价），只把 **`snapshot(at:)` 这种重 IO**
-    /// 丢给 `Task.detached` 并发执行，并用 8 个 in-flight 槽位的滑动窗口限流，
-    /// 避免对 50 个候选直接 spawn 50 个线程。
+    /// 这里把 **匹配** 仍保持同步（CPU 廉价），只把 **`snapshot(at:)` 这种阻塞 IO**
+    /// 交给 utility Dispatch queue，并用 8 个 in-flight 槽位的滑动窗口限流；这样既不会
+    /// 对 50 个候选直接 spawn 50 个 traversal，也不会占满 Swift cooperative executor。
     public func candidatesAsync(
         for meta: AppMetadata,
         includeFallbacks: Bool = true
@@ -411,74 +438,96 @@ extension AppUninstaller {
 
         let fm = self.fileManager
         let maxInFlight = 8
+        let cancellation = FSSnapshotCancellationToken()
         // vendor 路径需要"存在性"过滤；其余路径来自第一层 entries，必然存在。
         let vendorReasonPaths: Set<String> = Set(
             pendings.compactMap { p -> String? in
                 if case .vendorRule = p.reason { return p.path } else { return nil }
             }
         )
-        return await withTaskGroup(of: UninstallCandidate?.self) { group in
-            var collected: [UninstallCandidate] = []
-            collected.reserveCapacity(pendings.count)
-            var iterator = pendings.makeIterator()
-            var inFlight = 0
+        let primaryCandidates = await withTaskCancellationHandler {
+            await withTaskGroup(of: UninstallCandidate?.self) { group in
+                var collected: [UninstallCandidate] = []
+                collected.reserveCapacity(pendings.count)
+                var iterator = pendings.makeIterator()
+                var inFlight = 0
 
-            func makeTask(_ p: PendingMatch) -> @Sendable () async -> UninstallCandidate? {
-                {
-                    if Task.isCancelled { return nil }
-                    let snap = fm.snapshot(at: p.path)
-                    if Task.isCancelled { return nil }
-                    // vendor 路径如果实际不存在（snap 全 0 且 firstLevelEntries 为 nil），丢弃，
-                    // 否则会在 UI 上挂一堆 0B 假候选迷惑用户。
-                    if vendorReasonPaths.contains(p.path),
-                       snap.bytes == 0, snap.fileCount == 0,
-                       fm.firstLevelEntries(at: p.path) == nil {
-                        return nil
+                func makeTask(_ p: PendingMatch) -> @Sendable () async -> UninstallCandidate? {
+                    {
+                        if Task.isCancelled || cancellation.isCancelled { return nil }
+                        // FileManager traversal is synchronous blocking I/O. Running eight of
+                        // them directly as TaskGroup children can occupy the cooperative Swift
+                        // executor and starve the parent that must deliver cancellation. Dispatch
+                        // supplies the blocking-I/O threads; the typed token still owns shutdown.
+                        let snap = await withCheckedContinuation { continuation in
+                            DispatchQueue.global(qos: .utility).async {
+                                continuation.resume(returning: fm.snapshot(
+                                    at: p.path,
+                                    cancellationToken: cancellation
+                                ))
+                            }
+                        }
+                        if Task.isCancelled || cancellation.isCancelled { return nil }
+                        guard snap.completion != .cancelled else { return nil }
+                        // v2026.07.17：存在性和文件类型都来自同一次 typed snapshot。
+                        // 旧实现为 vendor 路径再做一次 firstLevelEntries，既重复 I/O，
+                        // 又会把“空目录”和“无权限目录”都误判成不存在。
+                        if vendorReasonPaths.contains(p.path), !snap.exists {
+                            return nil
+                        }
+                        return UninstallCandidate(path: p.path, snapshot: snap, matchReason: p.reason)
                     }
-                    return UninstallCandidate(
-                        path: p.path, bytes: snap.bytes, fileCount: snap.fileCount, matchReason: p.reason
-                    )
                 }
-            }
 
-            while inFlight < maxInFlight, let p = iterator.next() {
-                if Task.isCancelled {
-                    group.cancelAll()
-                    break
-                }
-                group.addTask(priority: .utility, operation: makeTask(p))
-                inFlight += 1
-            }
-
-            while let result = await group.next() {
-                if Task.isCancelled {
-                    group.cancelAll()
-                    break
-                }
-                if let c = result { collected.append(c) }
-                if let p = iterator.next() {
+                while inFlight < maxInFlight, let p = iterator.next() {
+                    if Task.isCancelled || cancellation.isCancelled {
+                        group.cancelAll()
+                        break
+                    }
                     group.addTask(priority: .utility, operation: makeTask(p))
+                    inFlight += 1
                 }
-            }
 
-            guard includeFallbacks else {
+                while let result = await group.next() {
+                    if Task.isCancelled || cancellation.isCancelled {
+                        group.cancelAll()
+                        break
+                    }
+                    if let c = result { collected.append(c) }
+                    if !Task.isCancelled,
+                       !cancellation.isCancelled,
+                       let p = iterator.next() {
+                        group.addTask(priority: .utility, operation: makeTask(p))
+                    }
+                }
                 return collected
             }
-
-            // Step 11A / 2026-06：Spotlight 兜底补刀。
-            // 主 12 root 漏掉的非典型路径（用户文档下、iCloud 同步盘等）由 Spotlight 索引补上。
-            // 严格谓词（bundleID 完全相等 / appName 严格相等忽略大小写）+ 与主路径 dedup +
-            // 二次校验 matchesStrictPrefix 防止 com.foo.bar 误命中 com.foo.barbarian。
-            if Task.isCancelled { return collected }
-            let spotlightCandidates = await spotlightFallback(meta: meta, seenPaths: Set(collected.map(\.path)))
-            collected.append(contentsOf: spotlightCandidates)
-            // M4-T3：pkgutil receipts 兜底补刀（系统级 pkg 安装的 app 的清单展开）
-            if Task.isCancelled { return collected }
-            var pkgSeen = Set(collected.map(\.path))
-            let pkgCandidates = pkgReceiptCandidates(for: meta, seenPaths: &pkgSeen)
-            collected.append(contentsOf: pkgCandidates)
-            return collected
+        } onCancel: {
+            // TaskGroup 本身要等同步 FileManager 调用返回才能退出；先通过共享 token
+            // 唤醒逐项 traversal，随后 group.next 才能收敛并 cancelAll。
+            cancellation.cancel()
         }
+
+        // v2026.07.17：取消轮是“不存在可信终态”，不是“返回已经抢先完成的部分候选”。
+        // 因此停止补任务后还要丢弃整轮收集值，避免旧 App 选择把 partial 候选覆盖到新页面。
+        guard !Task.isCancelled else { return [] }
+        guard includeFallbacks else { return primaryCandidates }
+
+        // Step 11A / 2026-06：Spotlight 兜底补刀。
+        // 主 12 root 漏掉的非典型路径（用户文档下、iCloud 同步盘等）由 Spotlight 索引补上。
+        // 严格谓词（bundleID 完全相等 / appName 严格相等忽略大小写）+ 与主路径 dedup +
+        // 二次校验 matchesStrictPrefix 防止 com.foo.bar 误命中 com.foo.barbarian。
+        var collected = primaryCandidates
+        let spotlightCandidates = await spotlightFallback(meta: meta, seenPaths: Set(collected.map(\.path)))
+        guard !Task.isCancelled else { return [] }
+        collected.append(contentsOf: spotlightCandidates)
+
+        // M4-T3：pkgutil receipts 兜底补刀（系统级 pkg 安装的 app 的清单展开）。
+        var pkgSeen = Set(collected.map(\.path))
+        let pkgCandidates = pkgReceiptCandidates(for: meta, seenPaths: &pkgSeen)
+        guard !Task.isCancelled else { return [] }
+        collected.append(contentsOf: pkgCandidates)
+        return collected
     }
 
     /// Step 11A / 2026-06：Spotlight 兜底补刀实现。
@@ -502,15 +551,16 @@ extension AppUninstaller {
         // 1. bundleID 严格相等查询
         let bidPaths = await spotlight.probeByBundleID(meta.bundleID, timeout: spotlightTimeout)
         for path in bidPaths where !seen.contains(path) {
+            if Task.isCancelled { return [] }
             // 仅接受 home / systemLibrary 子树下的路径，避免 spotlight 索引带出 /System 之类
             guard path.hasPrefix(homeDirectory) || path.hasPrefix(systemLibrary) else { continue }
             let snap = fileManager.snapshot(at: path)
-            guard snap.bytes > 0 || snap.fileCount > 0 else { continue }
+            if Task.isCancelled { return [] }
+            guard snap.exists, snap.completion != .cancelled else { continue }
             seen.insert(path)
             out.append(.init(
                 path: path,
-                bytes: snap.bytes,
-                fileCount: snap.fileCount,
+                snapshot: snap,
                 matchReason: .spotlight("bundleID")
             ))
         }
@@ -519,16 +569,18 @@ extension AppUninstaller {
         let trimmed = meta.appName.trimmingCharacters(in: .whitespacesAndNewlines)
         let isCommonNoise = ["app", "data", "test", "demo", "temp", "main", "user"].contains(trimmed.lowercased())
         if trimmed.count >= 4, !isCommonNoise {
+            if Task.isCancelled { return [] }
             let namePaths = await spotlight.probeByAppName(trimmed, timeout: spotlightTimeout)
             for path in namePaths where !seen.contains(path) {
+                if Task.isCancelled { return [] }
                 guard path.hasPrefix(homeDirectory) || path.hasPrefix(systemLibrary) else { continue }
                 let snap = fileManager.snapshot(at: path)
-                guard snap.bytes > 0 || snap.fileCount > 0 else { continue }
+                if Task.isCancelled { return [] }
+                guard snap.exists, snap.completion != .cancelled else { continue }
                 seen.insert(path)
                 out.append(.init(
                     path: path,
-                    bytes: snap.bytes,
-                    fileCount: snap.fileCount,
+                    snapshot: snap,
                     matchReason: .spotlight("appName")
                 ))
             }
@@ -543,6 +595,44 @@ extension AppUninstaller {
 public protocol FileManagerSnapshotting: Sendable {
     func firstLevelEntries(at path: String) -> [FSEntry]?
     func snapshot(at path: String) -> FSSnapshot
+    func snapshot(at path: String, cancellationToken: FSSnapshotCancellationToken) -> FSSnapshot
+}
+
+public extension FileManagerSnapshotting {
+    func snapshot(at path: String, cancellationToken: FSSnapshotCancellationToken) -> FSSnapshot {
+        guard !cancellationToken.isCancelled else {
+            return FSSnapshot(
+                bytes: 0,
+                fileCount: 0,
+                exists: false,
+                isDirectory: false,
+                completion: .cancelled,
+                issues: [.init(path: path, reason: .cancelled, stage: .cancellation)]
+            )
+        }
+        return snapshot(at: path)
+    }
+}
+
+/// 同步 FileManager traversal 无法 `await` actor；一个扫描轮共享此锁保护 token，
+/// 让 parent Task 的 onCancel 能在不等待 syscall/task-group 回收的情况下发出停止信号。
+public final class FSSnapshotCancellationToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    public init() {}
+
+    public var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    public func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
 }
 
 public struct FSEntry: Hashable, Sendable {
@@ -551,21 +641,122 @@ public struct FSEntry: Hashable, Sendable {
     public init(name: String, path: String) { self.name = name; self.path = path }
 }
 
+/// v2026.07.17：容量值与“是否看全”是两条独立事实。partial/cancelled 的 bytes
+/// 只能作为已观察下界，不能沿删除链路冒充完整快照。
+public enum FSSnapshotCompletionStatus: String, Hashable, Sendable {
+    case complete
+    case partial
+    case cancelled
+}
+
+public enum FSSnapshotIssueStage: String, Hashable, Sendable {
+    case rootMetadata
+    case enumeration
+    case entryMetadata
+    case budget
+    case cancellation
+}
+
+/// FileManager snapshot 自身的完整性原因。预算与取消不是底层 ScanKit 的文件系统
+/// 错误，因此在这里保持独立类型；进入删除边界时再映射为统一 access evidence。
+public enum FSSnapshotIssueReason: Hashable, Sendable {
+    case fileBudgetExceeded(limit: Int)
+    case timeBudgetExceeded(limitMilliseconds: Int64)
+    case permissionDenied
+    case enumerationFailed
+    case metadataUnavailable
+    case cancelled
+    /// 防止异常文件系统用海量逐项错误反过来耗尽内存；此项本身仍令快照保持 partial。
+    case issueCollectionLimitExceeded(limit: Int)
+}
+
+public struct FSSnapshotIssue: Hashable, Sendable {
+    public let path: String
+    public let reason: FSSnapshotIssueReason
+    public let stage: FSSnapshotIssueStage
+    public let posixErrorCode: Int32?
+
+    public init(
+        path: String,
+        reason: FSSnapshotIssueReason,
+        stage: FSSnapshotIssueStage,
+        posixErrorCode: Int32? = nil
+    ) {
+        self.path = path
+        self.reason = reason
+        self.stage = stage
+        self.posixErrorCode = posixErrorCode
+    }
+}
+
 public struct FSSnapshot: Hashable, Sendable {
     /// on-disk allocated bytes；所有清理/占用主值统一消费这一字段。
     public let bytes: Int64
     /// 文件逻辑长度之和；仅供 Finder 式详情或诊断展示。
     public let logicalBytes: Int64
     public let fileCount: Int
-    public init(bytes: Int64, logicalBytes: Int64? = nil, fileCount: Int) {
-        self.bytes = bytes
-        self.logicalBytes = logicalBytes ?? bytes
-        self.fileCount = fileCount
+    public let exists: Bool
+    public let isDirectory: Bool
+    public let completion: FSSnapshotCompletionStatus
+    public let issues: [FSSnapshotIssue]
+
+    public init(
+        bytes: Int64,
+        logicalBytes: Int64? = nil,
+        fileCount: Int,
+        exists: Bool? = nil,
+        isDirectory: Bool = false,
+        completion: FSSnapshotCompletionStatus = .complete,
+        issues: [FSSnapshotIssue] = []
+    ) {
+        self.bytes = max(0, bytes)
+        self.logicalBytes = max(0, logicalBytes ?? bytes)
+        self.fileCount = max(0, fileCount)
+        // 旧 fake snapshots 没有 exists 字段；非零值表示它们原本表达“存在”。
+        // 真实实现始终显式传值，所以空目录也不会被误判为不存在。
+        self.exists = exists ?? (bytes > 0 || fileCount > 0)
+        self.isDirectory = isDirectory
+        // 有 issue 的“complete”是自相矛盾状态，初始化边界直接收敛成 partial。
+        self.completion = completion == .complete && !issues.isEmpty ? .partial : completion
+        self.issues = issues
     }
 }
 
-/// 真实磁盘实现。第一层用 `contentsOfDirectory`，size 用浅递归（深度无限，但目录数量
-/// 通常很小）。如果担心性能，可换成 `BulkScanner`。
+/// v2026.07.17 live-hardlink accounting ledger shared by App Footprint and Uninstaller
+/// snapshots. Ordinary single-link files are counted without being retained, while identities
+/// first observed with multiple links remain remembered even if their `st_nlink` later drops
+/// during the same live enumeration. This prevents a second pathname from being counted again
+/// after another link is concurrently removed, without restoring O(all files) resident memory.
+/// The opposite race (a new hardlink created only after a single-link file was already counted)
+/// cannot be correlated without a real filesystem snapshot or retaining every inode.
+struct FSSnapshotHardlinkLedger {
+    private struct Identity: Hashable {
+        let device: UInt64
+        let inode: UInt64
+    }
+
+    private var retainedIdentities: Set<Identity> = []
+
+    mutating func shouldCount(
+        device: UInt64,
+        inode: UInt64,
+        linkCount: UInt64
+    ) -> Bool {
+        // An unknown inode is not a stable identity; conservatively count each observation.
+        guard inode != 0 else { return true }
+        let identity = Identity(device: device, inode: inode)
+        guard !retainedIdentities.contains(identity) else { return false }
+        if linkCount > 1 {
+            retainedIdentities.insert(identity)
+        }
+        return true
+    }
+
+    var retainedIdentityCount: Int { retainedIdentities.count }
+}
+
+/// 真实磁盘实现。第一层用 `contentsOfDirectory`，size 递归到子树，但受文件数/时长预算、
+/// cooperative cancellation 与 typed completeness 约束。
 ///
 /// **Step 14**：原 `try?` 全部改 do/catch + [IOErrorClassifier](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LogKit/Sources/LogKit/IOErrorClassifier.swift) 分类：
 /// - `.permissionDenied` → 调用 `permissionDeniedHandler`（默认 nil）+ GSYLog.debug
@@ -578,24 +769,55 @@ public struct DefaultFileManagerSnapshot: FileManagerSnapshotting {
     public let maxDescendantFiles: Int?
     /// 单个目录最多统计时长。nil 表示不按时间截断。
     public let maxSnapshotDuration: TimeInterval?
+    /// 生产默认读取当前 Task 的 cooperative cancellation；注入点让 fixture 能确定性
+    /// 验证“逐项停止”，无需靠创建几十万个文件制造竞态。
+    private let isCancellationRequested: @Sendable () -> Bool
+
+    private static let maxReportedIssues = 256
 
     public init(
         permissionDeniedHandler: (@Sendable (String) -> Void)? = nil,
         maxDescendantFiles: Int? = nil,
-        maxSnapshotDuration: TimeInterval? = nil
+        maxSnapshotDuration: TimeInterval? = nil,
+        isCancellationRequested: @escaping @Sendable () -> Bool = {
+            withUnsafeCurrentTask { $0?.isCancelled ?? false }
+        }
     ) {
         self.permissionDeniedHandler = permissionDeniedHandler
         self.maxDescendantFiles = maxDescendantFiles
-        self.maxSnapshotDuration = maxSnapshotDuration
+        // v2026.07.17 bounded-scan input contract: `TimeInterval` also admits NaN and
+        // infinities. A NaN comparison is always false, so the old code silently converted a
+        // requested time budget into an unbounded traversal. Invalid/non-positive values now
+        // expire at the first enumeration boundary; +infinity intentionally keeps the existing
+        // "no practical deadline" behavior. This is policy normalization, not a fallback result.
+        self.maxSnapshotDuration = Self.normalizedSnapshotDuration(maxSnapshotDuration)
+        self.isCancellationRequested = isCancellationRequested
+    }
+
+    static func normalizedSnapshotDuration(_ duration: TimeInterval?) -> TimeInterval? {
+        guard let duration else { return nil }
+        guard !duration.isNaN, duration > 0 else { return 0 }
+        return duration
     }
 
     public func firstLevelEntries(at path: String) -> [FSEntry]? {
         let fm = FileManager.default
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else { return nil }
+        var metadata = stat()
+        guard lstat(path, &metadata) == 0 else {
+            let code = errno
+            handle(
+                error: NSError(domain: NSPOSIXErrorDomain, code: Int(code)),
+                path: path,
+                op: "firstLevelMetadata"
+            )
+            return nil
+        }
+        guard (metadata.st_mode & S_IFMT) == S_IFDIR else { return nil }
         do {
             let names = try fm.contentsOfDirectory(atPath: path)
-            return names.map { FSEntry(name: $0, path: "\(path)/\($0)") }
+            return names.map {
+                FSEntry(name: $0, path: (path as NSString).appendingPathComponent($0))
+            }
         } catch {
             handle(error: error, path: path, op: "firstLevelEntries")
             return nil
@@ -603,52 +825,249 @@ public struct DefaultFileManagerSnapshot: FileManagerSnapshotting {
     }
 
     public func snapshot(at path: String) -> FSSnapshot {
+        snapshot(at: path, cancellationToken: nil)
+    }
+
+    public func snapshot(
+        at path: String,
+        cancellationToken: FSSnapshotCancellationToken
+    ) -> FSSnapshot {
+        snapshot(at: path, cancellationToken: Optional(cancellationToken))
+    }
+
+    private func snapshot(
+        at path: String,
+        cancellationToken: FSSnapshotCancellationToken?
+    ) -> FSSnapshot {
         let fm = FileManager.default
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: path, isDirectory: &isDir) else { return .init(bytes: 0, fileCount: 0) }
-        if !isDir.boolValue {
-            var metadata = stat()
-            guard lstat(path, &metadata) == 0 else { return .init(bytes: 0, fileCount: 0) }
+        func cancellationWasRequested() -> Bool {
+            isCancellationRequested() || cancellationToken?.isCancelled == true
+        }
+
+        if cancellationWasRequested() {
+            return cancelledSnapshot(path: path, exists: false, isDirectory: false)
+        }
+
+        var rootMetadata = stat()
+        guard lstat(path, &rootMetadata) == 0 else {
+            let code = errno
+            let issue = snapshotIssue(
+                posixErrorCode: code,
+                path: path,
+                stage: .rootMetadata,
+                defaultReason: .metadataUnavailable,
+                op: "rootMetadata"
+            )
             return .init(
-                bytes: Int64(metadata.st_blocks) * 512,
-                logicalBytes: Int64(metadata.st_size),
-                fileCount: 1
+                bytes: 0,
+                fileCount: 0,
+                exists: false,
+                isDirectory: false,
+                completion: .partial,
+                issues: [issue]
             )
         }
+
+        let rootIsDirectory = (rootMetadata.st_mode & S_IFMT) == S_IFDIR
+        if !rootIsDirectory {
+            return .init(
+                bytes: Int64(rootMetadata.st_blocks) * 512,
+                logicalBytes: Int64(rootMetadata.st_size),
+                fileCount: 1,
+                exists: true,
+                isDirectory: false
+            )
+        }
+
         var totalBytes: Int64 = 0
         var totalLogicalBytes: Int64 = 0
         var totalFiles: Int = 0
-        // 每次 snapshot 都拥有独立 inode 会话。不能跨 App/候选路径共享，否则并发
-        // 扫描时“谁先看到 hardlink”会改变各行大小；未知 inode 由 InodeSet 保守计入。
-        let inodes = InodeSet()
-        let startedAt = Date()
-        if let en = fm.enumerator(atPath: path) {
-            for case let rel as String in en {
-                if let maxDescendantFiles, totalFiles >= maxDescendantFiles {
-                    GSYLog.info(.scan, "FileManagerSnapshot truncated by file budget: \(path), files=\(totalFiles)")
-                    break
-                }
-                if let maxSnapshotDuration, Date().timeIntervalSince(startedAt) >= maxSnapshotDuration {
-                    GSYLog.info(.scan, "FileManagerSnapshot truncated by time budget: \(path), files=\(totalFiles)")
-                    break
-                }
-                let full = "\(path)/\(rel)"
-                var metadata = stat()
-                guard lstat(full, &metadata) == 0,
-                      (metadata.st_mode & S_IFMT) == S_IFREG else { continue }
-                totalFiles += 1
-                // 绝大多数普通文件只有一个目录项，不必把它们全部塞进去重表。
-                // 只有真实 hardlink（或 link count 异常未知）才需要保存 inode 身份。
-                let isFirstLink = metadata.st_nlink == 1 || inodes.insertIfFirstSeen(
-                    device: UInt64(bitPattern: Int64(metadata.st_dev)),
-                    inode: UInt64(metadata.st_ino)
-                )
-                guard isFirstLink else { continue }
-                totalBytes &+= Int64(metadata.st_blocks) * 512
-                totalLogicalBytes &+= Int64(metadata.st_size)
+        var issues: [FSSnapshotIssue] = []
+        var issueLimitWasRecorded = false
+
+        func record(_ issue: FSSnapshotIssue) {
+            guard !issues.contains(issue) else { return }
+            if issues.count < Self.maxReportedIssues {
+                issues.append(issue)
+            } else if !issueLimitWasRecorded {
+                issueLimitWasRecorded = true
+                issues.append(FSSnapshotIssue(
+                    path: path,
+                    reason: .issueCollectionLimitExceeded(limit: Self.maxReportedIssues),
+                    stage: .enumeration
+                ))
             }
         }
-        return .init(bytes: totalBytes, logicalBytes: totalLogicalBytes, fileCount: totalFiles)
+
+        // 每次 snapshot 都拥有独立 hardlink 会话。不能跨 App/候选路径共享，否则并发
+        // 扫描时“谁先看到 hardlink”会改变各行大小；未知 inode 由 ledger 保守计入。
+        var hardlinks = FSSnapshotHardlinkLedger()
+        let startedAt = Date()
+        let rootURL = URL(fileURLWithPath: path, isDirectory: true)
+        guard let enumerator = fm.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: nil,
+            options: [],
+            errorHandler: { url, error in
+                record(snapshotIssue(
+                    error: error,
+                    path: url.path,
+                    stage: .enumeration,
+                    defaultReason: .enumerationFailed,
+                    op: "enumerate"
+                ))
+                return true
+            }
+        ) else {
+            let issue = FSSnapshotIssue(
+                path: path,
+                reason: .enumerationFailed,
+                stage: .enumeration
+            )
+            GSYLog.warning(.scan, "FileManagerSnapshot could not create enumerator at \(path)")
+            return .init(
+                bytes: 0,
+                fileCount: 0,
+                exists: true,
+                isDirectory: true,
+                completion: .partial,
+                issues: [issue]
+            )
+        }
+
+        for case let url as URL in enumerator {
+            // v2026.07.17 根因修复：同步 FileManager 枚举本身不会替 Swift Task
+            // 响应取消；必须在每一个目录项边界显式检查，才能让切换 App 停止旧轮 I/O。
+            if cancellationWasRequested() {
+                record(FSSnapshotIssue(
+                    path: path,
+                    reason: .cancelled,
+                    stage: .cancellation
+                ))
+                return .init(
+                    bytes: totalBytes,
+                    logicalBytes: totalLogicalBytes,
+                    fileCount: totalFiles,
+                    exists: true,
+                    isDirectory: true,
+                    completion: .cancelled,
+                    issues: issues
+                )
+            }
+            if let maxDescendantFiles, totalFiles >= maxDescendantFiles {
+                record(FSSnapshotIssue(
+                    path: path,
+                    reason: .fileBudgetExceeded(limit: maxDescendantFiles),
+                    stage: .budget
+                ))
+                GSYLog.info(.scan, "FileManagerSnapshot truncated by file budget: \(path), files=\(totalFiles)")
+                break
+            }
+            if let maxSnapshotDuration, Date().timeIntervalSince(startedAt) >= maxSnapshotDuration {
+                let milliseconds = Self.millisecondsClamped(maxSnapshotDuration)
+                record(FSSnapshotIssue(
+                    path: path,
+                    reason: .timeBudgetExceeded(limitMilliseconds: milliseconds),
+                    stage: .budget
+                ))
+                GSYLog.info(.scan, "FileManagerSnapshot truncated by time budget: \(path), files=\(totalFiles)")
+                break
+            }
+
+            let full = url.path
+            var metadata = stat()
+            guard lstat(full, &metadata) == 0 else {
+                let code = errno
+                record(snapshotIssue(
+                    posixErrorCode: code,
+                    path: full,
+                    stage: .entryMetadata,
+                    defaultReason: .metadataUnavailable,
+                    op: "entryMetadata"
+                ))
+                continue
+            }
+            guard (metadata.st_mode & S_IFMT) == S_IFREG else { continue }
+
+            totalFiles += 1
+            // 绝大多数普通文件只有一个目录项，不必把它们全部塞进去重表；但必须先
+            // 查询已经登记的 multi-link identity，覆盖扫描中 link count 从 >1 降到 1
+            // 的动态变化，避免同一物理文件再次计量。
+            let isFirstLink = hardlinks.shouldCount(
+                device: UInt64(bitPattern: Int64(metadata.st_dev)),
+                inode: UInt64(metadata.st_ino),
+                linkCount: UInt64(metadata.st_nlink)
+            )
+            guard isFirstLink else { continue }
+            totalBytes = Self.saturatedAdd(totalBytes, Int64(metadata.st_blocks) * 512)
+            totalLogicalBytes = Self.saturatedAdd(totalLogicalBytes, Int64(metadata.st_size))
+        }
+
+        return .init(
+            bytes: totalBytes,
+            logicalBytes: totalLogicalBytes,
+            fileCount: totalFiles,
+            exists: true,
+            isDirectory: true,
+            completion: issues.isEmpty ? .complete : .partial,
+            issues: issues
+        )
+    }
+
+    private func cancelledSnapshot(path: String, exists: Bool, isDirectory: Bool) -> FSSnapshot {
+        .init(
+            bytes: 0,
+            fileCount: 0,
+            exists: exists,
+            isDirectory: isDirectory,
+            completion: .cancelled,
+            issues: [FSSnapshotIssue(path: path, reason: .cancelled, stage: .cancellation)]
+        )
+    }
+
+    private static func saturatedAdd(_ lhs: Int64, _ rhs: Int64) -> Int64 {
+        let result = lhs.addingReportingOverflow(rhs)
+        return result.overflow ? .max : result.partialValue
+    }
+
+    private static func millisecondsClamped(_ seconds: TimeInterval) -> Int64 {
+        guard seconds.isFinite else { return .max }
+        let value = max(0, seconds) * 1_000
+        guard value < Double(Int64.max) else { return .max }
+        return Int64(value)
+    }
+
+    private func snapshotIssue(
+        error: Error,
+        path: String,
+        stage: FSSnapshotIssueStage,
+        defaultReason: FSSnapshotIssueReason,
+        op: String
+    ) -> FSSnapshotIssue {
+        let ns = error as NSError
+        let code: Int32? = ns.domain == NSPOSIXErrorDomain ? Int32(ns.code) : nil
+        handle(error: error, path: path, op: op)
+        let reason: FSSnapshotIssueReason = IOErrorClassifier.classify(error) == .permissionDenied
+            ? .permissionDenied
+            : defaultReason
+        return .init(path: path, reason: reason, stage: stage, posixErrorCode: code)
+    }
+
+    private func snapshotIssue(
+        posixErrorCode: Int32,
+        path: String,
+        stage: FSSnapshotIssueStage,
+        defaultReason: FSSnapshotIssueReason,
+        op: String
+    ) -> FSSnapshotIssue {
+        let error = NSError(domain: NSPOSIXErrorDomain, code: Int(posixErrorCode))
+        return snapshotIssue(
+            error: error,
+            path: path,
+            stage: stage,
+            defaultReason: defaultReason,
+            op: op
+        )
     }
 
     /// 错误分类落点：EACCES 上报 + debug；ENOENT 仅 debug；其他 warning。

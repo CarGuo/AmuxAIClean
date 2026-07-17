@@ -1,5 +1,5 @@
+import Combine
 import Foundation
-import Observation
 import AIKit
 import SafetyKit
 
@@ -7,15 +7,16 @@ import SafetyKit
 ///
 /// 这里刻意不复用 `StashAIQueue`：购物车队列只需要逐行徽标，而 Normal 模式还需要
 /// 可持久展示的终态报告、失败项重试、取消语义和 summary revision 失效保护。
+/// v2026.07.16：只用 Combine 发布 phase/report；任务、运行快照和时钟保持内部状态，
+/// 以兼容 macOS 13.5 且避免无关刷新。
 @MainActor
-@Observable
-public final class SmartCareAIReviewSession {
-    public private(set) var phase: SmartCareAIReviewPhase = .idle
-    public private(set) var latestReport: SmartCareAIReviewReport?
+public final class SmartCareAIReviewSession: ObservableObject {
+    @Published public private(set) var phase: SmartCareAIReviewPhase = .idle
+    @Published public private(set) var latestReport: SmartCareAIReviewReport?
 
-    @ObservationIgnored private var runTask: Task<Void, Never>?
-    @ObservationIgnored private var activeRun: ActiveRun?
-    @ObservationIgnored private let now: @Sendable () -> Date
+    private var runTask: Task<Void, Never>?
+    private var activeRun: ActiveRun?
+    private let now: @Sendable () -> Date
 
     public init(now: @escaping @Sendable () -> Date = { Date() }) {
         self.now = now
@@ -446,13 +447,13 @@ public enum SmartCareAIReviewPhase: Sendable, Equatable {
 ///
 /// 这个 gate 把“准备凭证”也纳入单次运行互斥和取消语义，避免用户快速连点时并发
 /// 读取 Keychain / 启动两批复核。token 防止旧任务在取消后迟到完成，误清掉新任务状态。
+/// v2026.07.16：准备态使用 Combine 发布，任务/token 不参与观察，兼容 macOS 13.5。
 @MainActor
-@Observable
-final class SmartCareAIReviewPreparationGate {
-    private(set) var isPreparing = false
+final class SmartCareAIReviewPreparationGate: ObservableObject {
+    @Published private(set) var isPreparing = false
 
-    @ObservationIgnored private var task: Task<Void, Never>?
-    @ObservationIgnored private var activeToken: UUID?
+    private var task: Task<Void, Never>?
+    private var activeToken: UUID?
 
     @discardableResult
     func start(
@@ -804,8 +805,10 @@ public struct SmartCareAIReviewWorker: Sendable {
         try await operation(item)
     }
 
-    public static func openAI(client: OpenAIChatClient) -> Self {
-        Self { item in
+    public static func openAI(client: OpenAIChatClient, locale: Locale = .current) -> Self {
+        let localeIdentifier = locale.identifier
+        return Self { item in
+            let presentationLocale = Locale(identifier: localeIdentifier)
             let path = item.path
             let isDirectory = item.isDirectory
             let preview: [String] = await Task.detached(priority: .userInitiated) {
@@ -821,7 +824,7 @@ public struct SmartCareAIReviewWorker: Sendable {
                 modificationDate: nil,
                 verdict: item.verdict,
                 vendorName: nil,
-                vendorNote: item.riskNote,
+                vendorNote: item.displayRiskNote(locale: presentationLocale),
                 childPreview: preview
             ))
         }
@@ -833,9 +836,13 @@ public struct SmartCareAIReviewWorker: Sendable {
     /// `SmartCareAIReviewSession.failPreflight` 记录为 0 项已处理；不能等到第一条
     /// `ask` 才失败。loopback 端点允许没有凭证，仍保持 Ollama / vLLM 免鉴权兼容。
     @MainActor
-    public static func makeOpenAI(settings: AISettings) async throws -> Self {
+    public static func makeOpenAI(
+        settings: AISettings,
+        locale: Locale = .current
+    ) async throws -> Self {
         try await makeOpenAI(
             settings: settings,
+            locale: locale,
             credentialLoader: { try await KeychainAPIKeyStore.shared.load() }
         )
     }
@@ -844,6 +851,7 @@ public struct SmartCareAIReviewWorker: Sendable {
     @MainActor
     static func makeOpenAI(
         settings: AISettings,
+        locale: Locale = .current,
         credentialLoader: @escaping @Sendable () async throws -> String?
     ) async throws -> Self {
         guard settings.isReadyForUI else {
@@ -874,6 +882,6 @@ public struct SmartCareAIReviewWorker: Sendable {
         return .openAI(client: OpenAIChatClient(
             settings: snapshot,
             apiKey: apiKey
-        ))
+        ), locale: locale)
     }
 }

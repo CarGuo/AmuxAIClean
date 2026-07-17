@@ -1,3 +1,4 @@
+import Foundation
 import ScanKit
 import SafetyKit
 import XCTest
@@ -167,6 +168,30 @@ final class ScanCoordinatorCompletenessProjectionTests: XCTestCase {
         XCTAssertEqual(coordinator._testSubtreeCompleteness(for: root), .complete)
     }
 
+    func testRootFailedEventDoesNotPublishRawErrorText() {
+        struct DiagnosticOnlyFailure: Error, CustomStringConvertible {
+            let description = "RAW_SCAN_FAILURE_SHOULD_STAY_IN_LOGS"
+        }
+
+        // v2026.07.17 regression: TerminalFailure/lastError are long-lived presentation state.
+        // Raw Error descriptions belong only in structured logs, even when today's primary UI
+        // happens to consume the typed fatal flag instead of rendering the stored message.
+        let locale = Locale(identifier: "en")
+        let coordinator = ScanCoordinator(enableTreeDeepIndex: true)
+        coordinator.updatePresentationLocale(locale)
+
+        XCTAssertTrue(coordinator._testConsumeScanFailure(
+            DiagnosticOnlyFailure(),
+            rootPath: "/scan"
+        ))
+
+        let expected = AppLocalization.string("main.scan.incomplete", locale: locale)
+        XCTAssertEqual(coordinator.terminalFailure?.message, expected)
+        XCTAssertEqual(coordinator.lastError, expected)
+        XCTAssertFalse(coordinator.terminalFailure?.message.contains("RAW_SCAN_FAILURE") == true)
+        XCTAssertFalse(coordinator.lastError?.contains("RAW_SCAN_FAILURE") == true)
+    }
+
     func testMemoryTreeRowSynthesisKeepsDirectAccessAndSubtreeCompletenessOrthogonal() throws {
         let coordinator = ScanCoordinator(enableTreeDeepIndex: true)
         let root = "/scan"
@@ -301,5 +326,133 @@ final class ScanCoordinatorCompletenessProjectionTests: XCTestCase {
         XCTAssertEqual(row.subtreeCompleteness, .containsIncompleteDescendant)
         XCTAssertFalse(row.hasCompleteAccessEvidence)
         XCTAssertTrue(TreeBrowserView.canExpand(row))
+    }
+
+    /// v2026.07.17 performance-regression guard: companion dedupe must happen at the
+    /// issue-key index without dropping distinct rich diagnostics or rebuilding per event.
+    func testBufferedEvidenceKeepsRichSemanticsAndCommitsExactlyOnce() {
+        let coordinator = ScanCoordinator(enableTreeDeepIndex: true)
+        let generic = ScanIncompleteIssue(
+            path: "/scan/locked",
+            reason: .enumerationFailed
+        )
+        let rich = ScanIncompleteIssue(
+            path: generic.path,
+            reason: generic.reason,
+            stage: .enumerate,
+            posixErrorCode: 5
+        )
+        let secondRich = ScanIncompleteIssue(
+            path: generic.path,
+            reason: generic.reason,
+            stage: .enumerate,
+            posixErrorCode: 13
+        )
+        let rebuildsBefore = coordinator._testIncompleteEvidenceProjectionRebuildCount
+
+        coordinator._testRecordIncompleteEvidenceWithoutPublishing([
+            generic,
+            rich,
+            rich,
+            secondRich,
+            generic
+        ])
+
+        XCTAssertTrue(coordinator.incompleteScanIssues.isEmpty,
+                      "同一 throttle 窗口的逐事件记录不得逐条发布")
+        XCTAssertEqual(coordinator._testIncompleteEvidenceProjectionRebuildCount,
+                       rebuildsBefore)
+
+        coordinator._testCommitIncompleteEvidence()
+
+        XCTAssertEqual(coordinator.incompleteScanIssues, [rich, secondRich],
+                       "rich evidence 应原位替换 generic；exact duplicate 与迟到 generic 忽略，不同 errno 保留")
+        XCTAssertEqual(coordinator._testIncompleteEvidenceProjectionRebuildCount,
+                       rebuildsBefore + 1)
+    }
+
+    func testSafetyOverlapReadFlushesBufferedEvidenceBeforeDeletionPreflight() {
+        let coordinator = ScanCoordinator(enableTreeDeepIndex: true)
+        let issue = ScanIncompleteIssue(
+            path: "/scan/parent/locked",
+            reason: .permissionDenied,
+            stage: .open,
+            posixErrorCode: 13
+        )
+        let rebuildsBefore = coordinator._testIncompleteEvidenceProjectionRebuildCount
+        coordinator._testRecordIncompleteEvidenceWithoutPublishing([issue])
+
+        let overlapping = coordinator.incompleteIssues(overlappingAny: ["/scan/parent"])
+
+        XCTAssertEqual(overlapping, [issue])
+        XCTAssertEqual(coordinator.incompleteScanIssues, [issue])
+        XCTAssertEqual(coordinator._testIncompleteEvidenceProjectionRebuildCount,
+                       rebuildsBefore + 1,
+                       "删除安全读不能等待下一次 UI snapshot")
+    }
+
+    func testResetDropsUncommittedPreviousRevisionEvidence() {
+        let coordinator = ScanCoordinator(enableTreeDeepIndex: true)
+        let stale = ScanIncompleteIssue(
+            path: "/old-revision/locked",
+            reason: .enumerationFailed,
+            stage: .enumerate
+        )
+        let current = ScanIncompleteIssue(
+            path: "/current-revision/locked",
+            reason: .tccProtectedSkipped
+        )
+
+        coordinator._testRecordIncompleteEvidenceWithoutPublishing([stale])
+        coordinator._testResetIncompleteEvidence()
+        coordinator._testRecordIncompleteEvidenceWithoutPublishing([current])
+        coordinator._testCommitIncompleteEvidence()
+
+        XCTAssertEqual(coordinator.incompleteScanIssues, [current])
+        XCTAssertFalse(coordinator.incompleteScanPaths.contains(stale.path),
+                       "旧 generation 在 terminal 前被替换时，buffered evidence 不得越过 reset")
+    }
+
+    func testIssueHeavyBatchHasOneProjectionRebuildAndDepthBoundedTreeLookups() {
+        let coordinator = ScanCoordinator(enableTreeDeepIndex: true)
+        let issueCount = 5_000
+        let issues = (0..<issueCount).map { index in
+            ScanIncompleteIssue(
+                path: "/scan/issues/\(index)/locked",
+                reason: .enumerationFailed,
+                stage: .enumerate,
+                posixErrorCode: 5
+            )
+        }
+        let rebuildsBefore = coordinator._testIncompleteEvidenceProjectionRebuildCount
+
+        let recordStart = CFAbsoluteTimeGetCurrent()
+        coordinator._testRecordIncompleteEvidenceWithoutPublishing(issues)
+        let recordElapsed = CFAbsoluteTimeGetCurrent() - recordStart
+
+        XCTAssertEqual(coordinator._testIncompleteEvidenceProjectionRebuildCount,
+                       rebuildsBefore,
+                       "5,000 条事件只能更新哈希索引，不能逐条重建公开/Tree 投影")
+        XCTAssertLessThan(recordElapsed, 5.0,
+                          "该宽松上限用于阻止数组扫描 + 全投影重建的 O(n²) 回归")
+
+        coordinator._testCommitIncompleteEvidence()
+        XCTAssertEqual(coordinator.incompleteScanIssues.count, issueCount)
+        XCTAssertEqual(coordinator._testIncompleteEvidenceProjectionRebuildCount,
+                       rebuildsBefore + 1)
+
+        let projectionStart = CFAbsoluteTimeGetCurrent()
+        var mismatches = 0
+        for index in 0..<issueCount {
+            if coordinator._testAccessState(
+                for: "/scan/issues/\(index)/locked/child"
+            ) != .incomplete {
+                mismatches += 1
+            }
+        }
+        let projectionElapsed = CFAbsoluteTimeGetCurrent() - projectionStart
+        XCTAssertEqual(mismatches, 0)
+        XCTAssertLessThan(projectionElapsed, 5.0,
+                          "Tree row 投影应按路径深度哈希查找，不能恢复为 rows × issues")
     }
 }

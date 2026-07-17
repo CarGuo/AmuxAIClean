@@ -310,13 +310,17 @@ struct TrashActionCoordinator {
     /// model-notification and result projection path.  Callers must keep a
     /// pre-submit rejection inside their confirmation/explanation state
     /// machine; it is not a failed recycle operation.
+    // v2026.07.17: bounded source-typed progress is a read-only side channel. It cannot mint a
+    // receipt or alter completion accounting; the existing typed disposition remains terminal.
     func submitConfirmed(
         paths: [String],
         source: String,
         accessDeniedPaths: Set<String>,
         vendorOverrideRequest: VendorPathOverrideRequest? = nil,
         scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest? = nil,
-        reviewIdentity: DeletionSnapshotIdentity? = nil
+        reviewIdentity: DeletionSnapshotIdentity? = nil,
+        executionVerification: DeletionExecutionVerification? = nil,
+        executionProgressObserver: DeletionExecutionProgressObserver? = nil
     ) async -> ConfirmedSubmissionResult {
         let submissionID = UUID()
         let submittedAt = Date()
@@ -325,7 +329,9 @@ struct TrashActionCoordinator {
             accessDeniedPaths: accessDeniedPaths,
             vendorOverrideRequest: vendorOverrideRequest,
             scanIncompleteOverrideRequest: scanIncompleteOverrideRequest,
-            reviewIdentity: reviewIdentity
+            reviewIdentity: reviewIdentity,
+            executionVerification: executionVerification,
+            executionProgressObserver: executionProgressObserver
         ) {
         case .preSubmitRejected(let rejection):
             return .preSubmitRejected(rejection)
@@ -436,6 +442,8 @@ struct ProfessionalTrashSubmissionExecutor {
             // must not be silently reissued or downgraded to normal submission.
             return .blocked(.finalRevalidation(preflight.rejections))
         case .preSubmitRejected(.invalidScanIncompleteOverride(let rejections)):
+            return .blocked(.finalRevalidation(rejections))
+        case .preSubmitRejected(.invalidDuplicateVerification(let rejections)):
             return .blocked(.finalRevalidation(rejections))
         case .preSubmitRejected(.pendingOperation(let rejection)):
             // v2026.07.16: persistent duplicate/identity gates are pre-submit facts. They

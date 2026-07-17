@@ -1,7 +1,6 @@
 import Combine
 import Foundation
 import LogKit
-import Observation
 import ScanKit
 
 /// 一轮 Smart Care 扫描的可恢复 checkpoint。
@@ -122,9 +121,10 @@ private struct SmartCareScanCompletion: Sendable {
 /// 会话按顺序复用现有三个扫描入口，避免多个 `ScanCoordinator` 并发写同一份状态：
 /// 推荐清理 -> 常见应用缓存 -> 开发缓存。每一段完成后只复制最终 rows，
 /// 聚合与去重放到 detached task，主线程仅发布轻量进度和最终摘要。
+/// v2026.07.16：会话自己的可见状态及 `care` 子对象变化统一转发给 Combine，兼容 macOS 13.5；
+/// 扫描器、任务、checkpoint 与 revision 不作为发布状态。
 @MainActor
-@Observable
-public final class SmartCareSession {
+public final class SmartCareSession: ObservableObject {
     public static let defaultSources: [SmartCareCandidateSource] = [
         .recommended,
         .commonAppCache,
@@ -133,15 +133,15 @@ public final class SmartCareSession {
     public static let defaultStages = SmartCareScanStage.allCases
 
     public let care: SmartCareCoordinator
-    @ObservationIgnored public let scanCoordinator: ScanCoordinator
-    public private(set) var selectedStages: Set<SmartCareScanStage>
-    public private(set) var startedAt: Date?
-    public private(set) var finishedAt: Date?
+    public let scanCoordinator: ScanCoordinator
+    @Published public private(set) var selectedStages: Set<SmartCareScanStage>
+    @Published public private(set) var startedAt: Date?
+    @Published public private(set) var finishedAt: Date?
     /// 本轮所有已启动阶段累计的 permissionDenied / TCC 路径。
     /// 删除请求必须使用它，而不是 Professional scanner 的状态。
     public private(set) var deletionDeniedPaths: Set<String> = []
     /// 由后台从 `deletionDeniedPaths` 生成的有界展示投影。View 不得重新排序完整集合。
-    private(set) var scanLimitationProjection: SmartCareScanLimitationProjection = .empty
+    @Published private(set) var scanLimitationProjection: SmartCareScanLimitationProjection = .empty
 
     public var isBusy: Bool {
         switch care.phase {
@@ -152,12 +152,13 @@ public final class SmartCareSession {
         }
     }
 
-    @ObservationIgnored private var scanTask: Task<Void, Never>?
-    @ObservationIgnored private var scanGeneration = UUID()
-    @ObservationIgnored private var checkpoint: SmartCareScanCheckpoint?
-    @ObservationIgnored private var checkpointRevision: UInt64 = 0
-    @ObservationIgnored private var limitationProjectionGeneration = UUID()
-    @ObservationIgnored private let deletionAggregator: SmartCareCandidateDeletionAggregator
+    private var scanTask: Task<Void, Never>?
+    private var scanGeneration = UUID()
+    private var checkpoint: SmartCareScanCheckpoint?
+    private var checkpointRevision: UInt64 = 0
+    private var limitationProjectionGeneration = UUID()
+    private let deletionAggregator: SmartCareCandidateDeletionAggregator
+    private var careObservation: AnyCancellable?
 
     public convenience init(care: SmartCareCoordinator = SmartCareCoordinator(),
                             scanCoordinator: ScanCoordinator = ScanCoordinator()) {
@@ -182,6 +183,11 @@ public final class SmartCareSession {
         self.selectedStages = Set(Self.defaultStages)
         self.checkpoint = checkpoint
         self.deletionAggregator = deletionAggregator
+        // Combine 不会自动沿引用链观察子对象；把固定 `care` 的变化转发给 session，
+        // 保持 HUD 等只持有 session 的消费者与原 Observation 行为一致。
+        self.careObservation = care.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     public var orderedSelectedStages: [SmartCareScanStage] {

@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import AppUI
 import SafetyKit
@@ -14,6 +15,36 @@ final class OrphanScannerTests: XCTestCase {
         func installedAppNames() -> Set<String> { installedNames }
     }
 
+    /// 计数型 resolver：验证扫描边界不会把 /Applications 枚举退化成逐条 I/O。
+    private final class CountingResolver: BundleResolving, @unchecked Sendable {
+        private let lock = NSLock()
+        private let registeredBundles: Set<String>
+        private let installedNames: Set<String>
+        private var _installedAppNamesCallCount = 0
+
+        init(registeredBundles: Set<String>, installedNames: Set<String>) {
+            self.registeredBundles = registeredBundles
+            self.installedNames = installedNames
+        }
+
+        func isBundleIDRegistered(_ bundleID: String) -> Bool {
+            registeredBundles.contains(bundleID)
+        }
+
+        func installedAppNames() -> Set<String> {
+            lock.lock()
+            _installedAppNamesCallCount += 1
+            lock.unlock()
+            return installedNames
+        }
+
+        var installedAppNamesCallCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return _installedAppNamesCallCount
+        }
+    }
+
     /// 假 FS Snapshot —— 不动磁盘，给固定的 bytes/fileCount
     struct StubFM: FileManagerSnapshotting {
         let entriesByRoot: [String: [FSEntry]]
@@ -21,6 +52,12 @@ final class OrphanScannerTests: XCTestCase {
         let fileCount: Int
         func firstLevelEntries(at path: String) -> [FSEntry]? { entriesByRoot[path] }
         func snapshot(at path: String) -> FSSnapshot { .init(bytes: bytes, fileCount: fileCount) }
+    }
+
+    struct TypedSnapshotFM: FileManagerSnapshotting {
+        let snapshotValue: FSSnapshot
+        func firstLevelEntries(at path: String) -> [FSEntry]? { [] }
+        func snapshot(at path: String) -> FSSnapshot { snapshotValue }
     }
 
     /// 用真实临时目录构造 mtime 老一点的子目录，以便 minAgeDays 判断
@@ -101,6 +138,41 @@ final class OrphanScannerTests: XCTestCase {
         } else {
             XCTFail("expected .bundleIDNotRegistered")
         }
+    }
+
+    func test_partial容量快照保留typed证据且不可进入删除选择() throws {
+        let root = try makeOldTempDir(name: "com.partial.app", ageDays: 90)
+        let path = "\(root)/com.partial.app"
+        let issue = FSSnapshotIssue(
+            path: "\(path)/blocked",
+            reason: .permissionDenied,
+            stage: .enumeration,
+            posixErrorCode: EACCES
+        )
+        let scanner = OrphanScanner(
+            homeDirectory: "/H",
+            resolver: StubResolver(registeredBundles: [], installedNames: []),
+            safetyEngine: SafetyEngine(),
+            fileManager: TypedSnapshotFM(snapshotValue: FSSnapshot(
+                bytes: 4096,
+                fileCount: 2,
+                exists: true,
+                isDirectory: true,
+                completion: .partial,
+                issues: [issue]
+            )),
+            minAgeDays: 30
+        )
+
+        let candidate = try XCTUnwrap(scanner.evaluate(
+            entry: FSEntry(name: "com.partial.app", path: path),
+            root: root,
+            now: Date()
+        ))
+        XCTAssertEqual(candidate.snapshotCompletion, .partial)
+        XCTAssertEqual(candidate.snapshotIssues, [issue])
+        XCTAssertTrue(candidate.isDirectory)
+        XCTAssertFalse(OrphanDeletionSelectionPolicy.isSelectable(candidate))
     }
 
     // MARK: - 5. 未注册但太新（< minAge）→ 不报
@@ -260,6 +332,114 @@ final class OrphanScannerTests: XCTestCase {
         XCTAssertNotNil(cand)
         XCTAssertGreaterThanOrEqual(cand?.lastModifiedDays ?? 0, 30,
             "lastModifiedDays 至少要超过 minAgeDays，否则该项一开始就不该进候选")
+    }
+
+    // MARK: - v2026.07.17 一轮扫描共享已安装应用快照
+
+    func test_scan_多个普通名称只读取一次已安装应用且结果合同不变() {
+        let home = "/tmp/OrphanScannerSnapshot-\(UUID().uuidString)"
+        let appSupport = "\(home)/Library/Application Support"
+        let caches = "\(home)/Library/Caches"
+        let preferences = "\(home)/Library/Preferences"
+        let resolver = CountingResolver(
+            registeredBundles: ["com.live.product"],
+            installedNames: ["Spotify", "Visual Studio Code"]
+        )
+        let fileManager = StubFM(
+            entriesByRoot: [
+                appSupport: [
+                    FSEntry(name: "spotify", path: "\(appSupport)/spotify"),
+                    FSEntry(name: "GhostApp", path: "\(appSupport)/GhostApp")
+                ],
+                caches: [
+                    FSEntry(name: "Visual Studio Code", path: "\(caches)/Visual Studio Code"),
+                    FSEntry(name: "AnotherGhost", path: "\(caches)/AnotherGhost")
+                ],
+                preferences: [
+                    FSEntry(name: "com.live.product.plist", path: "\(preferences)/com.live.product.plist")
+                ]
+            ],
+            bytes: 256,
+            fileCount: 2
+        )
+        let scanner = OrphanScanner(
+            homeDirectory: home,
+            resolver: resolver,
+            safetyEngine: SafetyEngine(),
+            fileManager: fileManager,
+            minAgeDays: 0
+        )
+
+        let candidates = scanner.scan()
+
+        XCTAssertEqual(resolver.installedAppNamesCallCount, 1,
+            "同一轮 scan 必须冻结一次应用名快照，不能按普通条目重复扫描 /Applications")
+        XCTAssertEqual(Set(candidates.map(\.name)), ["GhostApp", "AnotherGhost"])
+        XCTAssertTrue(candidates.allSatisfy {
+            if case .appNameNotInstalled = $0.reason { return true }
+            return false
+        })
+    }
+
+    func test_evaluate独立调用_保留普通名称按需解析且bundleID不触发应用名扫描() {
+        let resolver = CountingResolver(
+            registeredBundles: ["com.live.product"],
+            installedNames: ["Spotify"]
+        )
+        let scanner = OrphanScanner(
+            homeDirectory: "/tmp",
+            resolver: resolver,
+            safetyEngine: SafetyEngine(),
+            fileManager: StubFM(entriesByRoot: [:], bytes: 1, fileCount: 1),
+            minAgeDays: 0
+        )
+
+        XCTAssertNil(scanner.evaluate(
+            entry: FSEntry(name: "spotify", path: "/tmp/spotify"),
+            root: "/tmp",
+            now: Date()
+        ))
+        XCTAssertEqual(resolver.installedAppNamesCallCount, 1,
+            "独立 evaluate 普通名称仍应按需读取 resolver")
+
+        XCTAssertNil(scanner.evaluate(
+            entry: FSEntry(name: "com.live.product", path: "/tmp/com.live.product"),
+            root: "/tmp",
+            now: Date()
+        ))
+        XCTAssertEqual(resolver.installedAppNamesCallCount, 1,
+            "bundleID 分支应保持旧合同，不需要枚举应用名称")
+    }
+
+    func test_scan_空根或全是bundleID时不枚举已安装应用名() {
+        let home = "/tmp/OrphanScannerLazySnapshot-\(UUID().uuidString)"
+        let preferences = "\(home)/Library/Preferences"
+        let resolver = CountingResolver(
+            registeredBundles: ["com.live.product"],
+            installedNames: ["Should Never Be Read"]
+        )
+        let scanner = OrphanScanner(
+            homeDirectory: home,
+            resolver: resolver,
+            safetyEngine: SafetyEngine(),
+            fileManager: StubFM(
+                entriesByRoot: [
+                    preferences: [
+                        FSEntry(
+                            name: "com.live.product.plist",
+                            path: "\(preferences)/com.live.product.plist"
+                        )
+                    ]
+                ],
+                bytes: 1,
+                fileCount: 1
+            ),
+            minAgeDays: 0
+        )
+
+        XCTAssertTrue(scanner.scan().isEmpty)
+        XCTAssertEqual(resolver.installedAppNamesCallCount, 0,
+                       "没有普通 app-name 条目时不应为了快照而额外扫 /Applications")
     }
 
     // MARK: - Step 14 静默失败修复：DefaultBundleResolver 错误分类

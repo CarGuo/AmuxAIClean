@@ -11,6 +11,7 @@ import SafetyKit
 struct DeletionInteractionCandidateSnapshot: Sendable, Equatable {
     let path: String
     let title: String
+    let titlePresentation: LocalizedTextDescriptor
     let isDirectory: Bool
     let bytes: Int64
     let fileCount: Int
@@ -24,10 +25,12 @@ struct DeletionInteractionCandidateSnapshot: Sendable, Equatable {
         bytes: Int64,
         fileCount: Int,
         runningBundleIDPrefix: String? = nil,
-        accessEvidence: DeletionAccessEvidence = .complete
+        accessEvidence: DeletionAccessEvidence = .complete,
+        titlePresentation: LocalizedTextDescriptor? = nil
     ) {
         self.path = path
         self.title = title
+        self.titlePresentation = titlePresentation ?? .verbatim(title)
         self.isDirectory = isDirectory
         self.bytes = max(0, bytes)
         self.fileCount = max(0, fileCount)
@@ -45,7 +48,8 @@ struct DeletionInteractionCandidateSnapshot: Sendable, Equatable {
             verdict: .safe,
             rejection: .ok,
             accessEvidence: accessEvidence,
-            runningBundleIDPrefix: runningBundleIDPrefix
+            runningBundleIDPrefix: runningBundleIDPrefix,
+            titlePresentation: titlePresentation
         )
     }
 }
@@ -64,7 +68,8 @@ struct DeletionPreparedInteraction: Sendable, Equatable {
             RunningAppGuard.Candidate(
                 path: item.candidate.rawPath,
                 title: item.candidate.title,
-                bundleIDPrefix: item.candidate.runningBundleIDPrefix
+                bundleIDPrefix: item.candidate.runningBundleIDPrefix,
+                titlePresentation: item.candidate.titlePresentation
             )
         }
     }
@@ -151,13 +156,15 @@ struct DeletionInteractionCoordinator {
         origin: DeleteRequestOrigin,
         mode: DeletionUserMode,
         snapshotIdentity: DeletionSnapshotIdentity,
-        candidates: [DeletionInteractionCandidateSnapshot]
+        candidates: [DeletionInteractionCandidateSnapshot],
+        executionVerification: DeletionExecutionVerification? = nil
     ) throws -> DeletionIntent {
         try DeletionIntent(
             origin: origin,
             mode: mode,
             snapshotIdentity: snapshotIdentity,
-            candidates: candidates.map(\.intentCandidate)
+            candidates: candidates.map(\.intentCandidate),
+            executionVerification: executionVerification
         )
     }
 
@@ -368,15 +375,42 @@ struct DeletionInteractionCoordinator {
     /// Executes one typed authorization.  A receipt is minted only after the
     /// pipeline returns `.recycleCompleted`; strict escalation and all final
     /// revalidation failures remain confirmation/explanation routes.
+    // v2026.07.17: carry optional execution progress beside, never instead of, the authorization
+    // and typed submission result. Non-Duplicate callers keep the nil/default path unchanged.
     func submit(
         _ confirmed: DeletionAuthorizedInteraction,
-        accessDeniedPaths: Set<String>
+        accessDeniedPaths: Set<String>,
+        executionProgressObserver: DeletionExecutionProgressObserver? = nil
     ) async -> DeletionInteractionSubmission {
         let authorization = confirmed.authorization
         let intent = confirmed.prepared.plan.intent
         guard authorization.intentID == intent.id,
               authorization.planID == confirmed.prepared.plan.id,
               authorization.snapshotIdentity == intent.snapshotIdentity else {
+            return .blocked(invariantBlock(intent: intent))
+        }
+
+        // v2026.07.17 Duplicate TOCTOU closure: a Duplicate origin can cross the shared Trash
+        // boundary only with full-hash proof frozen into its scan intent. Running-app filtering
+        // may narrow targets, so the proof is narrowed by the exact authorization paths.
+        let executionVerification: DeletionExecutionVerification?
+        switch (intent.origin, intent.executionVerification) {
+        case (.duplicate, .some(.duplicate(let request))):
+            guard let restricted = request.restricting(to: authorization.paths) else {
+                return .blocked(duplicateVerificationBlock(
+                    intent: intent,
+                    paths: authorization.paths
+                ))
+            }
+            executionVerification = .duplicate(restricted)
+        case (.duplicate, nil):
+            return .blocked(duplicateVerificationBlock(
+                intent: intent,
+                paths: authorization.paths
+            ))
+        case (_, nil):
+            executionVerification = nil
+        case (_, .some(_)):
             return .blocked(invariantBlock(intent: intent))
         }
 
@@ -392,7 +426,9 @@ struct DeletionInteractionCoordinator {
             // v2026.07.16: the persistent pending-operation ledger receives the exact
             // authorization snapshot. A path invalidated after restart cannot be retried by
             // reusing this token; only a newly scanned revision can replace its tombstone.
-            reviewIdentity: authorization.snapshotIdentity
+            reviewIdentity: authorization.snapshotIdentity,
+            executionVerification: executionVerification,
+            executionProgressObserver: executionProgressObserver
         )
 
         switch submission {
@@ -455,6 +491,14 @@ struct DeletionInteractionCoordinator {
             return .blocked(DeletionInteractionBlock(
                 intentID: intent.id,
                 rejections: rejections.isEmpty ? invariantBlock(intent: intent).rejections : rejections
+            ))
+
+        case .preSubmitRejected(.invalidDuplicateVerification(let rejections)):
+            return .blocked(DeletionInteractionBlock(
+                intentID: intent.id,
+                rejections: rejections.isEmpty
+                    ? duplicateVerificationBlock(intent: intent, paths: authorization.paths).rejections
+                    : rejections
             ))
 
         case .preSubmitRejected(.pendingOperation(let rejection)):
@@ -557,13 +601,39 @@ struct DeletionInteractionCoordinator {
         paths: [String]
     ) throws -> DeletionIntent {
         let selected = Set(paths.map(DeletionIntentCandidate.pathIdentity))
+        let restrictedVerification: DeletionExecutionVerification?
+        switch intent.executionVerification {
+        case .some(.duplicate(let request)):
+            guard let restricted = request.restricting(to: paths) else {
+                throw DeletionIntentValidationError.invalidExecutionVerification
+            }
+            restrictedVerification = .duplicate(restricted)
+        case .none:
+            restrictedVerification = nil
+        }
         return try DeletionIntent(
             id: intent.id,
             origin: intent.origin,
             mode: intent.mode,
             snapshotIdentity: intent.snapshotIdentity,
             candidates: intent.candidates.filter { selected.contains($0.standardizedPath) },
+            executionVerification: restrictedVerification,
             createdAt: intent.createdAt
+        )
+    }
+
+    private func duplicateVerificationBlock(
+        intent: DeletionIntent,
+        paths: [String]
+    ) -> DeletionInteractionBlock {
+        DeletionInteractionBlock(
+            intentID: intent.id,
+            rejections: paths.map {
+                .init(
+                    path: $0,
+                    reason: DuplicateDeletionVerificationRejectionReason.invalidEvidence.rawValue
+                )
+            }
         )
     }
 

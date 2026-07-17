@@ -20,7 +20,7 @@ struct AIAdviceSheet: View {
     @Environment(\.locale) private var locale
 
     let row: RowItem
-    let aiSettings: AISettings
+    @ObservedObject var aiSettings: AISettings
     let onClose: () -> Void
 
     @State private var state: PhaseState = .idle
@@ -101,7 +101,7 @@ struct AIAdviceSheet: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("ai.sheet.title", bundle: .module)
                     .font(.headline)
-                Text(row.title)
+                Text(verbatim: row.displayTitle(locale: locale))
                     .font(.subheadline)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -303,8 +303,10 @@ struct AIAdviceSheet: View {
             fileCount: row.fileCount,
             modificationDate: row.modificationDate,
             verdict: row.verdict,
-            vendorName: row.vendorName,
-            vendorNote: row.vendorNote,
+            // AI is a presentation consumer too: resolve locale-neutral rule metadata at request
+            // time instead of forwarding whichever language happened to be active during scan.
+            vendorName: row.displayVendorName(locale: locale),
+            vendorNote: row.displayVendorNote(locale: locale),
             childPreview: preview
         )
 

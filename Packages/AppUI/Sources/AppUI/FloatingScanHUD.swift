@@ -149,7 +149,7 @@ public final class FloatingScanHUDController {
 
     public func attach(coordinator: ScanCoordinator,
                        settings: AppSettings,
-                       smartCareSession: SmartCareSession? = nil) {
+                       smartCareSession: SmartCareSession) {
         self.coordinator = coordinator
         self.settings = settings
         self.smartCareSession = smartCareSession
@@ -158,10 +158,10 @@ public final class FloatingScanHUDController {
 
     /// 由 SwiftUI onChange 在 isScanning / hudEnabled / hudPersistent / hudPlacement 变化时调用。
     public func reconcile() {
-        guard let coordinator, let settings else { return }
+        guard let coordinator, let settings, let smartCareSession else { return }
         let baseVisible = settings.hudEnabled && (
             coordinator.isScanning
-                || smartCareSession?.isBusy == true
+                || smartCareSession.isBusy
                 || forceVisible
                 || settings.hudPersistent
         )
@@ -226,7 +226,7 @@ public final class FloatingScanHUDController {
 
     private func ensurePanel() {
         if panel != nil { return }
-        guard let coordinator, let settings else { return }
+        guard let coordinator, let settings, let smartCareSession else { return }
 
         let placement = settings.hudPlacement
         let panelSize = panelSize(for: placement)
@@ -917,8 +917,8 @@ struct IslandUnifiedShape: Shape {
 struct FloatingScanHUDView: View {
     @Environment(\.locale) private var locale
     @ObservedObject var coordinator: ScanCoordinator
-    let smartCareSession: SmartCareSession?
-    @Bindable var settings: AppSettings
+    @ObservedObject var smartCareSession: SmartCareSession
+    @ObservedObject var settings: AppSettings
     @ObservedObject var islandState: IslandHoverState
     let placement: AppSettings.HUDPlacement
     let onOpen: () -> Void
@@ -944,7 +944,7 @@ struct FloatingScanHUDView: View {
     @Namespace private var islandExpandedProbeNS
 
     init(coordinator: ScanCoordinator,
-         smartCareSession: SmartCareSession? = nil,
+         smartCareSession: SmartCareSession,
          settings: AppSettings,
          islandState: IslandHoverState,
          placement: AppSettings.HUDPlacement,
@@ -952,8 +952,8 @@ struct FloatingScanHUDView: View {
          onStartScan: @escaping () -> Void,
          onClose: @escaping () -> Void) {
         self.coordinator = coordinator
-        self.smartCareSession = smartCareSession
-        self.settings = settings
+        self._smartCareSession = ObservedObject(wrappedValue: smartCareSession)
+        self._settings = ObservedObject(wrappedValue: settings)
         self.islandState = islandState
         self.placement = placement
         self.onOpen = onOpen
@@ -970,7 +970,7 @@ struct FloatingScanHUDView: View {
         coordinator.volumeSnapshot?.availableBytes ?? 0
     }
 
-    /// `@Bindable settings` 让独立 NSHostingView 直接观察语言设置；切换后本 body
+    /// `@ObservedObject settings` 让独立 NSHostingView 直接观察语言设置；切换后本 body
     /// 当帧重算，不需要 Controller 重建 panel，更不会触碰 ScanCoordinator。
     private var liveLocale: Locale { settings.effectiveLocale }
 
@@ -980,25 +980,22 @@ struct FloatingScanHUDView: View {
     /// 作为**全项目可清理口径单一源**，与 sidebar 的 [VolumeCapacityCard](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/VolumeCapacityCard.swift) 同源，
     /// 杜绝主窗 / HUD 两条口径漂移。
     private var cleanableBytes: Int64 {
-        if let smartCareSession {
-            switch smartCareSession.care.phase {
-            case .scanning(let progress):
-                return progress.safeBytes
-            case .cleaning:
+        switch smartCareSession.care.phase {
+        case .scanning(let progress):
+            return progress.safeBytes
+        case .cleaning:
+            return smartCareSession.care.selectedBytes
+        case .reviewing, .confirming, .completed:
+            if !coordinator.isScanning {
                 return smartCareSession.care.selectedBytes
-            case .reviewing, .confirming, .completed:
-                if !coordinator.isScanning {
-                    return smartCareSession.care.selectedBytes
-                }
-            case .idle, .failed, .cancelled:
-                break
             }
+        case .idle, .failed, .cancelled:
+            break
         }
         return coordinator.snapshot.cleanableBytes
     }
 
     private var smartCareIsActive: Bool {
-        guard let smartCareSession else { return false }
         switch smartCareSession.care.phase {
         case .scanning, .cleaning: return true
         case .idle, .reviewing, .confirming, .completed, .failed, .cancelled: return false
@@ -1006,7 +1003,6 @@ struct FloatingScanHUDView: View {
     }
 
     private var smartCareIsCleaning: Bool {
-        guard let smartCareSession else { return false }
         if case .cleaning = smartCareSession.care.phase { return true }
         return false
     }
@@ -1020,8 +1016,7 @@ struct FloatingScanHUDView: View {
     private var phase: HUDPhase {
         if smartCareIsActive { return .scanning }
         if coordinator.isScanning { return .scanning }
-        if let smartCareSession,
-           !smartCareSession.care.summary.items.isEmpty {
+        if !smartCareSession.care.summary.items.isEmpty {
             switch smartCareSession.care.phase {
             case .reviewing, .confirming, .completed: return .finished
             case .idle, .scanning, .cleaning, .failed, .cancelled: break
@@ -1090,7 +1085,7 @@ struct FloatingScanHUDView: View {
     /// 扫描态时间标签——v2026.06.23 起仅显示已用时长（"已 0:14"）。
     /// 剩余时间不可信，已统一停用，避免"~ 4:00:00"这类误导文案。
     private func scanTimerText(at date: Date = Date()) -> String {
-        if smartCareIsActive, let smartCareSession {
+        if smartCareIsActive {
             return String(format: FloatingHUDLocalization.string("hud.time.elapsed %@", locale: liveLocale),
                           durationString(smartCareSession.elapsedForDisplay(referenceDate: date)))
         }
@@ -1099,7 +1094,7 @@ struct FloatingScanHUDView: View {
     }
     /// 同上，紧凑版（给灵动岛展开态用，节省横向空间）。
     private func scanTimerShortText(at date: Date = Date()) -> String {
-        if smartCareIsActive, let smartCareSession {
+        if smartCareIsActive {
             return String(format: FloatingHUDLocalization.string("hud.time.elapsed %@", locale: liveLocale),
                           durationShort(smartCareSession.elapsedForDisplay(referenceDate: date)))
         }
@@ -1206,10 +1201,10 @@ struct FloatingScanHUDView: View {
                 islandState.clusterMaxWidth = width
             }
         }
-        .onChange(of: phase) { _, _ in
+        .onValueChange(of: phase) { _, _ in
             triggerPop()
         }
-        .onChange(of: islandState.expanded) { _, newValue in
+        .onValueChange(of: islandState.expanded) { _, newValue in
             // 关键：从 ObservedObject 流入 view 时，用 withAnimation 显式包裹 @State 改值，
             // 才能让 spring transaction 穿透到 body 求值，驱动 frame / matchedGeometry / addon transition
             withAnimation(islandViewSpring) {
@@ -1485,7 +1480,6 @@ struct FloatingScanHUDView: View {
     }
 
     private var smartCareActivityTitle: String? {
-        guard let smartCareSession else { return nil }
         switch smartCareSession.care.phase {
         case .scanning(let progress):
             return FloatingHUDLocalization.string(

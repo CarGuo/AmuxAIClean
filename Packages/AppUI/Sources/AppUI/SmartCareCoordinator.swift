@@ -1,5 +1,5 @@
+import Combine
 import Foundation
-import Observation
 
 struct SmartCareSelectionMetrics: Sendable {
     let bytes: Int64
@@ -27,23 +27,24 @@ typealias SmartCareCleanRequestBuilder = @Sendable (
 ///
 /// 这个类型不直接扫描磁盘、不执行删除；它只维护普通模式首页需要的
 /// phase / summary / selection，并把当前 selection 转成清理请求。
+/// v2026.07.16：用户可见状态统一由 Combine 发布；revision、builder 和请求令牌仍是内部状态，
+/// 从而兼容 macOS 13.5 且不为非 UI 变化制造额外刷新。
 @MainActor
-@Observable
-public final class SmartCareCoordinator {
-    public private(set) var phase: SmartCarePhase
-    public private(set) var summary: SmartCareSummary
-    public private(set) var selection: SmartCareSelection
-    public private(set) var selectedBytes: Int64
-    public private(set) var selectedConfirmCount: Int
-    public private(set) var selectedBucketStats: [SmartCareBucketID: SmartCareBucketSelectionStats]
-    public private(set) var selectedSafeBucketStats: [SmartCareBucketID: SmartCareBucketSelectionStats]
+public final class SmartCareCoordinator: ObservableObject {
+    @Published public private(set) var phase: SmartCarePhase
+    @Published public private(set) var summary: SmartCareSummary
+    @Published public private(set) var selection: SmartCareSelection
+    @Published public private(set) var selectedBytes: Int64
+    @Published public private(set) var selectedConfirmCount: Int
+    @Published public private(set) var selectedBucketStats: [SmartCareBucketID: SmartCareBucketSelectionStats]
+    @Published public private(set) var selectedSafeBucketStats: [SmartCareBucketID: SmartCareBucketSelectionStats]
     /// 供跨 await 的后台重聚合检测读取后状态是否已变更。
     /// 摘要与选择分开计世代，避免单纯勾选导致删除摘要无意义重算。
-    @ObservationIgnored private(set) var summaryRevision: UInt64
-    @ObservationIgnored private(set) var selectionRevision: UInt64
-    @ObservationIgnored private let projectionBuilder: SmartCareSelectionProjectionBuilder
-    @ObservationIgnored private let cleanRequestBuilder: SmartCareCleanRequestBuilder
-    @ObservationIgnored private var bucketSelectionRequestRevision: [SmartCareBucketID: UInt64] = [:]
+    private(set) var summaryRevision: UInt64
+    private(set) var selectionRevision: UInt64
+    private let projectionBuilder: SmartCareSelectionProjectionBuilder
+    private let cleanRequestBuilder: SmartCareCleanRequestBuilder
+    private var bucketSelectionRequestRevision: [SmartCareBucketID: UInt64] = [:]
 
     public convenience init(summary: SmartCareSummary = .empty) {
         self.init(

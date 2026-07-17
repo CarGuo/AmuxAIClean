@@ -72,6 +72,23 @@ final class DuplicateScannerTests: XCTestCase {
         XCTAssertEqual(groups.first?.logicalBytes, 2 * 1024 * 1024)
         XCTAssertEqual(groups.first?.totalBytes, try allocatedBytes(of: a) + allocatedBytes(of: b))
         XCTAssertEqual(groups.first?.reclaimableBytes, try allocatedBytes(of: b))
+        let group = try XCTUnwrap(groups.first)
+        let fingerprint = try XCTUnwrap(group.contentFingerprint)
+        XCTAssertEqual(fingerprint.logicalBytes, group.logicalBytes)
+        XCTAssertTrue(group.files.allSatisfy { $0.snapshotIdentity != nil })
+        for file in group.files {
+            let identity = try XCTUnwrap(file.snapshotIdentity)
+            XCTAssertTrue(identity.isRegularFile)
+            XCTAssertEqual(identity.logicalBytes, group.logicalBytes)
+            XCTAssertEqual(
+                DuplicateScanner.verifyFullContent(
+                    path: file.path,
+                    expectedIdentity: identity,
+                    expectedFingerprint: fingerprint
+                ),
+                .verified
+            )
+        }
     }
 
     // MARK: - 2. 同 size 不同内容 → 不分组

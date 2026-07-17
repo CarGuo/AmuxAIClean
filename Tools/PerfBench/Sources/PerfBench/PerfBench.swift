@@ -71,12 +71,13 @@ struct PerfBench {
             case .failed(let err):
                 FileHandle.standardError.write(Data("PerfBench failed: \(err)\n".utf8))
                 exit(1)
-            case .incomplete(let issue):
-                FileHandle.standardError.write(Data(
-                    "PerfBench incomplete: \(issue.path) [\(issue.reason.rawValue)]\n".utf8
-                ))
-                exit(1)
-            case .node, .nodes, .progress, .permissionDenied, .tccProtectedSkipped,
+            // v2026.07.17: A scoped unreadable descendant is a valid partial scan, not a root
+            // failure. Exiting on the first `.incomplete` made this benchmark unusable under
+            // normal CLI TCC and discarded the authoritative terminal timing. The finished
+            // summary below remains explicit about incompleteness; only `.failed` aborts.
+            case .incomplete:
+                continue
+            case .heartbeat, .node, .nodes, .progress, .permissionDenied, .tccProtectedSkipped,
                  .cacheDirTagged:
                 continue
             }
@@ -92,13 +93,16 @@ struct PerfBench {
         let mb = 1024.0 * 1024.0
         let totalAllocatedMB = Double(summary.totalAllocatedBytes) / mb
         let dedupedHardlinkMB = Double(summary.dedupedHardlinkBytes) / mb
+        let completionStatus = summary.completionStatus == .complete ? "complete" : "partial"
 
         let line = String(
-            format: "(elapsed_ms=%.2f, fileCount=%d, totalAllocatedMB=%.2f, dedupedHardlinkMB=%.2f)",
+            format: "(elapsed_ms=%.2f, fileCount=%d, totalAllocatedMB=%.2f, dedupedHardlinkMB=%.2f, status=%@, incompleteIssues=%d)",
             elapsedMs,
             summary.fileCount,
             totalAllocatedMB,
-            dedupedHardlinkMB
+            dedupedHardlinkMB,
+            completionStatus,
+            summary.incompleteIssues.count
         )
         print(line)
     }
@@ -196,7 +200,7 @@ struct PerfBench {
                     "PerfBench: direct children incomplete: \(issue.path) [\(issue.reason.rawValue)]\n".utf8
                 ))
                 exit(1)
-            case .finished, .progress, .permissionDenied, .tccProtectedSkipped,
+            case .heartbeat, .finished, .progress, .permissionDenied, .tccProtectedSkipped,
                  .cacheDirTagged:
                 continue
             }

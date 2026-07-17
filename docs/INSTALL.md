@@ -6,7 +6,8 @@ GSYCleanMac 采用 ad-hoc 签名（不依赖 Apple Developer Program 99 美元/�
 
 ## 1. 系统要求
 
-- macOS 15 Sequoia 或更高
+<!-- v2026.07.16：产品最低版本改为经过兼容改造与发布合同约束的 Ventura 13.5；开发机要求仍见 DEVELOPMENT.md。 -->
+- macOS 13.5 Ventura 或更高
 - Apple Silicon 或 Intel x86_64（DMG 内为 universal binary）
 - 大约 30 MB 可用磁盘
 - 首次扫描需要"完全磁盘访问"权限（Full Disk Access）才能读取系统级目录与他人 Library
@@ -47,7 +48,7 @@ shasum -a 256 GSYCleanMac-1.1.0.dmg
 5. 弹出二次确认窗口，点 "仍要打开"，输入登录密码
 6. 之后双击 `GSYCleanMac.app` 即可正常启动
 
-### macOS 13–14（右键打开 fallback）
+### macOS 13.5–14（右键打开 fallback）
 
 1. 在 Finder 进入 `/Applications`
 2. 右键 `GSYCleanMac.app`，选 "打开"（不是双击）

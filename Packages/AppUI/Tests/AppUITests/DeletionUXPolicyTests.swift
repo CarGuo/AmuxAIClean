@@ -1,8 +1,26 @@
+import Foundation
 import SafetyKit
 import XCTest
 @testable import AppUI
 
 final class DeletionUXPolicyTests: XCTestCase {
+    private final class TrashProgressRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [TrashExecutionProgress] = []
+
+        func append(_ progress: TrashExecutionProgress) {
+            lock.lock()
+            storage.append(progress)
+            lock.unlock()
+        }
+
+        var snapshot: [TrashExecutionProgress] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+    }
+
     private actor ScriptedRecycleOperation {
         private var attempts: [TrashPipeline.RecycleAttempt]
         private var calls: [[String]] = []
@@ -496,6 +514,34 @@ final class DeletionUXPolicyTests: XCTestCase {
         XCTAssertTrue(result.failureReasons.isEmpty)
         let calls = await operation.recordedCalls()
         XCTAssertEqual(calls, [[first, recovered], [recovered]])
+    }
+
+    func test_recycleProgressMirrorsRealBatchAndDiagnosticBoundariesWithoutDeclaringSuccess() async {
+        let first = "/tmp/first"
+        let recovered = "/tmp/recovered"
+        let operation = ScriptedRecycleOperation(attempts: [
+            TrashPipeline.RecycleAttempt(
+                moved: [(first, "/Users/test/.Trash/first")],
+                errorDescription: "partial"
+            ),
+            TrashPipeline.RecycleAttempt(
+                moved: [(recovered, "/Users/test/.Trash/recovered")],
+                errorDescription: nil
+            )
+        ])
+        let recorder = TrashProgressRecorder()
+
+        _ = await TrashPipeline.executeRecycleBatches(
+            urls: [first, recovered].map(URL.init(fileURLWithPath:)),
+            progress: { recorder.append($0) },
+            recycle: { urls in await operation.run(urls: urls) }
+        )
+
+        let progress = recorder.snapshot
+        XCTAssertEqual(progress.map(\.phase), [.submitting, .diagnosingItems, .finalizing])
+        XCTAssertEqual(progress.map(\.completedItems), [0, 1, 2])
+        XCTAssertEqual(progress.map(\.totalItems), [2, 2, 2])
+        XCTAssertEqual(progress[1].currentPath, recovered)
     }
 
     func test_recyclePendingBatchStopsWithoutRetryingOrSubmittingLaterBatches() async {

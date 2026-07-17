@@ -98,19 +98,43 @@ public struct OrphanCandidate: Hashable, Sendable {
     public let name: String
     public let bytes: Int64
     public let fileCount: Int
+    /// v2026.07.17 全链路快照合同：容量下界与“是否完整看全”必须同时传播。
+    /// 孤儿扫描目前没有独立 UI，但未来消费方不得把 partial bytes 当可删除证据。
+    public let isDirectory: Bool
+    public let snapshotCompletion: FSSnapshotCompletionStatus
+    public let snapshotIssues: [FSSnapshotIssue]
     /// 距今最后修改天数（>=0），用来给用户判断"我多久没动它了"。
     public let lastModifiedDays: Int
     /// 反查依据：是按 bundleID 还是按 appName fallback 判定的孤儿。
     public let reason: OrphanReason
 
     public init(path: String, name: String, bytes: Int64, fileCount: Int,
+                isDirectory: Bool = false,
+                snapshotCompletion: FSSnapshotCompletionStatus = .complete,
+                snapshotIssues: [FSSnapshotIssue] = [],
                 lastModifiedDays: Int, reason: OrphanReason) {
         self.path = path
         self.name = name
         self.bytes = bytes
         self.fileCount = fileCount
+        self.isDirectory = isDirectory
+        self.snapshotCompletion = snapshotCompletion
+        self.snapshotIssues = snapshotIssues
         self.lastModifiedDays = lastModifiedDays
         self.reason = reason
+    }
+
+    public var hasCompleteSnapshot: Bool {
+        snapshotCompletion == .complete && snapshotIssues.isEmpty
+    }
+}
+
+/// Deletion consumers of the latent orphan API must fail closed on partial capacity.
+/// Keeping this policy next to the model prevents a future UI from re-inventing the
+/// `bytes > 0` heuristic that caused the Uninstaller snapshot regression.
+public enum OrphanDeletionSelectionPolicy {
+    public static func isSelectable(_ candidate: OrphanCandidate) -> Bool {
+        candidate.hasCompleteSnapshot
     }
 }
 
@@ -182,10 +206,30 @@ public struct OrphanScanner: Sendable {
     public func scan() -> [OrphanCandidate] {
         var out: [OrphanCandidate] = []
         let now = Date()
+
+        // v2026.07.17：一轮孤儿扫描共享同一份已安装应用名快照。旧实现会让每个普通名称
+        // 条目各自重扫 /Applications 并重复读取 Info.plist，条目数增长时产生乘法级 I/O。
+        // 在扫描边界冻结并预归一化后，整轮结果还基于同一时刻的应用集合，匹配也从逐项
+        // 遍历 Set 降为 O(1) 查询；单独调用 evaluate(entry:) 仍保留原有按需解析语义。
+        // 保持懒加载：空 root 或全是 bundleID 的会话根本不需要枚举
+        // /Applications。“每轮最多一次”不等于“每轮强制一次”。
+        var installedAppNameSnapshot: Set<String>?
         for root in searchRoots() {
             guard let entries = fileManager.firstLevelEntries(at: root) else { continue }
             for entry in entries {
-                if let cand = evaluate(entry: entry, root: root, now: now) {
+                if let cand = evaluate(
+                    entry: entry,
+                    root: root,
+                    now: now,
+                    installedAppNames: {
+                        if let installedAppNameSnapshot {
+                            return installedAppNameSnapshot
+                        }
+                        let loaded = normalizedInstalledAppNames(resolver.installedAppNames())
+                        installedAppNameSnapshot = loaded
+                        return loaded
+                    }
+                ) {
                     out.append(cand)
                 }
             }
@@ -195,6 +239,24 @@ public struct OrphanScanner: Sendable {
 
     /// 暴露给单测的纯函数判定逻辑。
     func evaluate(entry: FSEntry, root: String, now: Date) -> OrphanCandidate? {
+        evaluate(
+            entry: entry,
+            root: root,
+            now: now,
+            installedAppNames: {
+                normalizedInstalledAppNames(resolver.installedAppNames())
+            }
+        )
+    }
+
+    /// `scan()` 注入整轮懒加载且冻结的快照 provider；独立 evaluate
+    /// 每次按需读取 resolver，bundleID 分支不会触发 provider。
+    private func evaluate(
+        entry: FSEntry,
+        root: String,
+        now: Date,
+        installedAppNames: () -> Set<String>
+    ) -> OrphanCandidate? {
         let name = entry.name
 
         // 跳过隐藏（dotfile）和系统组件
@@ -215,9 +277,9 @@ public struct OrphanScanner: Sendable {
             }
         } else {
             // 普通目录名：和已安装 app 的名字集合做 case-insensitive 匹配
-            let installed = resolver.installedAppNames()
+            let installed = installedAppNames()
             let lowerName = stem.lowercased()
-            if installed.contains(where: { $0.lowercased() == lowerName }) {
+            if installed.contains(lowerName) {
                 reason = nil
             } else {
                 reason = .appNameNotInstalled(stem)
@@ -240,6 +302,9 @@ public struct OrphanScanner: Sendable {
             name: name,
             bytes: snap.bytes,
             fileCount: snap.fileCount,
+            isDirectory: snap.isDirectory,
+            snapshotCompletion: snap.completion,
+            snapshotIssues: snap.issues,
             lastModifiedDays: days,
             reason: resolvedReason
         )
@@ -272,6 +337,11 @@ public struct OrphanScanner: Sendable {
     }
 
     func stemOf(_ name: String) -> String { Self.stemOf(name) }
+
+    /// 与旧版逐项 `lowercased()` 比较保持相同的大小写无关合同，但只在快照边界做一次。
+    private func normalizedInstalledAppNames(_ names: Set<String>) -> Set<String> {
+        Set(names.map { $0.lowercased() })
+    }
 
     /// 取 mtime（lstat）。读不到返回 nil。
     func mtimeOf(path: String) -> Date? {

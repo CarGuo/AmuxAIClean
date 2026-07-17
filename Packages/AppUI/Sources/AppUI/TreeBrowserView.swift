@@ -193,7 +193,6 @@ public struct TreeBrowserView: View {
     /// 各节点是否展开（path -> Bool）；放在父视图集中管理，
     /// 才能让 h/l 键盘事件去操控"当前选中节点"的展开状态。
     @State private var expanded: [String: Bool] = [:]
-    @FocusState private var focused: Bool
 
     /// **v1.5.4 性能修复**：扁平化的可见行数组（包含 root 直接孩子 + 所有展开节点的子项）。
     /// 每行附带 [depth](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
@@ -221,9 +220,6 @@ public struct TreeBrowserView: View {
     /// AppKit 表格不再依赖 SwiftUI row body 自发重算，所以展开后看到 loading
     /// 占位时补一个很短的 trailing rebuild，作为 childrenCacheVersion 回调之外的兜底。
     @State private var pendingAsyncChildrenRebuild: DispatchWorkItem? = nil
-    /// 扫描完成后对顶层目录做一次限量预热，减少首次展开 `/Users` / `/Applications`
-    /// 这类大目录时的空等。key = `path|sortKey`，避免排序切换后误认为已预热。
-    @State private var prefetchedChildCacheKeys: Set<String> = []
 
     public init(coordinator: ScanCoordinator,
                 rootPath: String,
@@ -331,16 +327,12 @@ public struct TreeBrowserView: View {
                 )
             }
         }
-        .focusable()
-        .focused($focused)
-        .focusEffectDisabled()
         .onAppear {
             isScanningSnapshot = coordinator.isScanning
             rebuildFlatRows()
             if selectedPath == nil, let first = flatRows.first {
                 selectedPath = first.row.path
             }
-            focused = true
         }
         // v1.5.4：四个触发器覆盖所有可能改变 flatRows 内容的事件。
         // 缺一个就会出现"展开后没出现"或"删除后还在"。
@@ -356,16 +348,15 @@ public struct TreeBrowserView: View {
         // 只插/删受影响的那一段；多点变化 → fallback 走整树重建。
         // 增量路径下展开/折叠的成本从 O(N total) 降到 O(N new subtree)，
         // 90% 的卡感来源就在这里。
-        .onChange(of: expanded) { oldExp, newExp in
+        .onValueChange(of: expanded) { oldExp, newExp in
             applyExpandedChange(old: oldExp, new: newExp)
         }
         // v1.5 P2 / Q1：监听"生效排序键"——它内部已根据 globalSortKey/本地 @State 合流，
         // 两边任意一侧切换都会触发 rebuildFlatRows，保证树视图与全局排序图标同步。
-        .onChange(of: effectiveSortKey) { _, _ in rebuildFlatRows() }
-        .onChange(of: rootPath) { _, _ in
+        .onValueChange(of: effectiveSortKey) { _, _ in rebuildFlatRows() }
+        .onValueChange(of: rootPath) { _, _ in
             // 切扫描根：清掉旧 expanded 防止脏 path 残留撑起 flatRows
             expanded.removeAll(keepingCapacity: true)
-            prefetchedChildCacheKeys.removeAll(keepingCapacity: true)
             rebuildFlatRows()
         }
         // Step 2 P0-2 / 2026-06：从 `coordinator.treeRevision` 切到
@@ -387,7 +378,7 @@ public struct TreeBrowserView: View {
             isScanningSnapshot = nowScanning
             handleScanningToggle(nowScanning: nowScanning)
         }
-        .onChange(of: flatRows.first?.row.path) { _, _ in
+        .onValueChange(of: flatRows.first?.row.path) { _, _ in
             // 切排序 / 切扫描根 → 顶层第一行变化时把选中态拉回首行，避免选中飞走
             let visiblePathSet = Set(flatRows.map(\.row.path))
             if let cur = selectedPath, !visiblePathSet.contains(cur) {
@@ -396,76 +387,24 @@ public struct TreeBrowserView: View {
                 selectedPath = flatRows.first?.row.path
             }
         }
-        .onChange(of: selectedPath) { _, new in
+        .onValueChange(of: selectedPath) { _, new in
             guard let new else { return }
             let row = flatRows.first(where: { $0.row.path == new })?.row
                 ?? coordinator.row(for: new)
             guard let row else { return }
             onSelect?(row)
         }
-        .onKeyPress(keys: [KeyEquivalent("j"), .downArrow]) { _ in
-            moveSelection(by: 1); return .handled
+        .onDisappear {
+            // v2026.07.17 scan-ownership fix: Tree fetches belong to the visible
+            // Tree surface, not to the completed primary snapshot. Leaving the
+            // tab/window must stop shallow/deep disk work while preserving cached
+            // rows and the finished scan result for a later return.
+            cancelAsyncChildrenRebuild()
+            coordinator.cancelOnDemandTreeScansPreservingResults()
         }
-        .onKeyPress(keys: [KeyEquivalent("k"), .upArrow]) { _ in
-            moveSelection(by: -1); return .handled
-        }
-        .onKeyPress(keys: [KeyEquivalent("l"), .rightArrow]) { _ in
-            setExpansion(true); return .handled
-        }
-        .onKeyPress(keys: [KeyEquivalent("h"), .leftArrow]) { _ in
-            setExpansion(false); return .handled
-        }
-        .onKeyPress(.return) {
-            toggleExpansion(); return .handled
-        }
-        .onKeyPress(.space) {
-            // v1.2 P2-4：当前选中是叶子文件 → Quick Look 预览；
-            // 是目录 → 维持原行为（切展开/折叠）。
-            if let cur = selectedPath,
-               let flat = flatRows.first(where: { $0.row.path == cur }),
-               !flat.row.isDirectory {
-                QuickLookController.shared.preview(urls: [URL(fileURLWithPath: cur)])
-                return .handled
-            }
-            toggleExpansion()
-            return .handled
-        }
-        .onKeyPress(keys: [KeyEquivalent("r")]) { press in
-            if press.modifiers.contains(.command) {
-                revealInFinder(); return .handled
-            }
-            return .ignored
-        }
-        .onKeyPress(.delete) {
-            guard let cur = selectedPath, onTrash != nil else { return .ignored }
-            // v2026.06 Step 1：键盘 Delete 也走 verdict 缓存。如果当前选中行
-            // 在 flatRows 里能找到（应当总是能），直接读 verdict；找不到才 fallback
-            // 调一次 evaluate 兜底（极少数 race：选中态滞后于 flatRows 重建）。
-            let evaluation: (verdict: SafetyVerdict, rejection: SafetyRejection)
-            let deletionRow: TreeRow?
-            if let flat = flatRows.first(where: { $0.row.path == cur }) {
-                evaluation = (flat.verdict, flat.rejection)
-                deletionRow = flat.row
-            } else {
-                evaluation = Self.VerdictCache.evaluation(for: cur, coordinator: coordinator)
-                deletionRow = coordinator.row(for: cur)
-            }
-            guard let deletionRow else {
-                NSSound.beep()
-                return .handled
-            }
-            guard Self.canInitiateDeletion(
-                deletionRow,
-                verdict: evaluation.verdict,
-                rejection: evaluation.rejection,
-                allowsVendorPathOverride: allowsVendorPathOverride
-            ) else {
-                NSSound.beep()
-                return .handled
-            }
-            requestTrash(deletionRow)
-            return .handled
-        }
+        // v2026.07.16：键盘命令统一由下方原生 NSTableView.keyDown 处理。旧的
+        // SwiftUI onKeyPress（macOS 14+）与 AppKit 处理器重复，既阻断 Ventura，
+        // 又可能让同一按键经过两套状态路径。
     }
 
     /// Tree 只产生删除意图；确认、运行中 App 决策和最终执行统一由 MainView 的
@@ -517,7 +456,6 @@ public struct TreeBrowserView: View {
         let newIsFetching = topLevel.isEmpty
             && coordinator.isFetchingChildren(of: rootPath, sortedBy: effectiveSortKey)
         if flatRows == newFlatRows && maxBytes == newMax && isFetchingRoot == newIsFetching {
-            prefetchVisibleTopLevelChildrenIfNeeded()
             return
         }
         flatRows = newFlatRows
@@ -529,7 +467,6 @@ public struct TreeBrowserView: View {
         } else {
             cancelAsyncChildrenRebuild()
         }
-        prefetchVisibleTopLevelChildrenIfNeeded()
     }
 
     private func appendDescendantPairs(parent: String, depth: Int,
@@ -843,9 +780,7 @@ public struct TreeBrowserView: View {
     /// v2026.06.21：扫描结束边沿——把扫描期间合并的 rebuild 立刻 fire 拿到终态。
     /// 也兼容 isScanning 切回 true 的回边沿：进入扫描态不主动 rebuild（等 structural bump）。
     private func handleScanningToggle(nowScanning: Bool) {
-        if nowScanning {
-            prefetchedChildCacheKeys.removeAll(keepingCapacity: true)
-        } else {
+        if !nowScanning {
             rebuildFlatRows()
         }
     }
@@ -874,27 +809,6 @@ public struct TreeBrowserView: View {
         pendingAsyncChildrenRebuild = nil
     }
 
-    private func prefetchVisibleTopLevelChildrenIfNeeded() {
-        guard !isScanningSnapshot else { return }
-        let candidates = flatRows
-            .filter {
-                $0.depth == 0
-                    && Self.canExpand($0.row)
-            }
-            .prefix(4)
-        var paths: [String] = []
-        var keys: [String] = []
-        for flat in candidates {
-            let cacheKey = "\(flat.row.path)|\(effectiveSortKey.rawValue)"
-            guard !prefetchedChildCacheKeys.contains(cacheKey) else { continue }
-            paths.append(flat.row.path)
-            keys.append(cacheKey)
-        }
-        guard !paths.isEmpty else { return }
-        prefetchedChildCacheKeys.formUnion(keys)
-        coordinator.prefetchTreeChildren(paths: paths, sortedBy: effectiveSortKey, limit: 4)
-    }
-
     /// 行内三角 / 单击整行 / 右键菜单 / 双击 → 共用的展开切换入口。
     /// 不在乎 [TreeNodeRow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
     /// 内部的 canExpand 状态，外层这里仅 toggle expanded[path]——
@@ -908,63 +822,6 @@ public struct TreeBrowserView: View {
     private func toggleExpansionFor(path: String) {
         if isScanningSnapshot { return }
         expanded[path] = !(expanded[path] ?? false)
-    }
-
-    // MARK: - 键盘导航辅助（v1.5.4：全部读 flatRows，O(1) 索引）
-
-    private func moveSelection(by delta: Int) {
-        guard !flatRows.isEmpty else { return }
-        if let cur = selectedPath, let idx = flatRows.firstIndex(where: { $0.row.path == cur }) {
-            let next = max(0, min(flatRows.count - 1, idx + delta))
-            selectedPath = flatRows[next].row.path
-        } else {
-            selectedPath = flatRows.first?.row.path
-        }
-    }
-
-    private func setExpansion(_ open: Bool) {
-        guard let cur = selectedPath else { return }
-        // v2026.06.21：见 toggleExpansionFor 同名注释——扫描中拦截展开，仅允许选中移动。
-        if isScanningSnapshot {
-            // 但 h 在叶子上跳到父节点的"导航"语义保留（不改 expanded 状态，只移动选中）。
-            if !open, let flat = flatRows.first(where: { $0.row.path == cur }),
-               !(flat.row.isDirectory && flat.row.hasChildren),
-               let parent = parentVisible(of: cur) {
-                selectedPath = parent
-            }
-            return
-        }
-        if let flat = flatRows.first(where: { $0.row.path == cur }),
-           flat.row.isDirectory && flat.row.hasChildren {
-            expanded[cur] = open
-        } else if !open {
-            // h 在叶子上 → 跳到父节点（vim 风格"折叠到父"）
-            if let parent = parentVisible(of: cur) {
-                selectedPath = parent
-            }
-        }
-    }
-
-    private func toggleExpansion() {
-        guard let cur = selectedPath else { return }
-        // v2026.06.21：见 toggleExpansionFor 同名注释。
-        if isScanningSnapshot { return }
-        guard let flat = flatRows.first(where: { $0.row.path == cur }),
-              flat.row.isDirectory && flat.row.hasChildren else { return }
-        expanded[cur] = !(expanded[cur] ?? false)
-    }
-
-    /// 在已"可见"的行中找当前 path 的父节点路径（不在可见集合时返回 nil）。
-    /// 之所以限定可见，是因为 h 操作要"跳回当前可见的父"，跳到一个被折起来的父没意义。
-    private func parentVisible(of path: String) -> String? {
-        let parent = (path as NSString).deletingLastPathComponent
-        if parent == rootPath { return nil }
-        return flatRows.first(where: { $0.row.path == parent })?.row.path
-    }
-
-    private func revealInFinder() {
-        guard let cur = selectedPath else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: cur)])
     }
 
     // MARK: - SafetyEngine forbid 兜底（v1.5.3 仍保留为可测的 pure helper）
@@ -1189,6 +1046,9 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
         }
 
         func select(_ path: String, in table: NSTableView) {
+            // v2026.07.16: custom canvas clicks bypass NSTableView's default mouse handling.
+            // Focus here (a user gesture), never from async row publication.
+            UserInitiatedTableFocus.request(for: table)
             parent.selectedPath = path
             if let idx = parent.rows.firstIndex(where: { $0.row.path == path }) {
                 isSyncingSelection = true
@@ -1214,8 +1074,10 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
             }
             guard let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first else { return false }
             switch scalar {
-            case "\r", " ":
+            case "\r":
                 toggleSelectedExpansion(); return true
+            case " ":
+                previewOrToggleSelected(); return true
             default:
                 if event.modifierFlags.contains(.command), scalar == "r" {
                     revealSelected(); return true
@@ -1225,6 +1087,12 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
                 }
                 if scalar == "k" {
                     moveSelection(delta: -1); return true
+                }
+                if scalar == "h" {
+                    setExpansion(open: false); return true
+                }
+                if scalar == "l" {
+                    setExpansion(open: true); return true
                 }
                 return false
             }
@@ -1242,17 +1110,47 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
         }
 
         private func setExpansion(open: Bool) {
-            guard let flat = selectedFlat(),
-                  TreeBrowserView.canExpand(flat.row) else { return }
+            guard let flat = selectedFlat() else { return }
+            guard TreeBrowserView.canExpand(flat.row) else {
+                if !open {
+                    selectVisibleParent(of: flat)
+                }
+                return
+            }
             let isOpen = parent.expanded[flat.row.path] ?? false
             guard isOpen != open else { return }
             parent.onToggleExpand(flat.row.path)
+        }
+
+        /// Preserves the original Vim-style H behavior without a second SwiftUI key path:
+        /// pressing H/Left on a leaf selects its nearest visible parent.
+        private func selectVisibleParent(of flat: FlatTreeRow) {
+            guard flat.depth > 0,
+                  let index = parent.rows.firstIndex(where: { $0.row.path == flat.row.path }) else {
+                return
+            }
+            for candidate in parent.rows[..<index].reversed()
+            where !candidate.isLoadingPlaceholder && candidate.depth == flat.depth - 1 {
+                parent.selectedPath = candidate.row.path
+                return
+            }
         }
 
         private func toggleSelectedExpansion() {
             guard let flat = selectedFlat(),
                   TreeBrowserView.canExpand(flat.row) else { return }
             parent.onToggleExpand(flat.row.path)
+        }
+
+        private func previewOrToggleSelected() {
+            guard let flat = selectedFlat() else { return }
+            if flat.row.isDirectory {
+                toggleSelectedExpansion()
+            } else {
+                QuickLookController.shared.preview(
+                    urls: [URL(fileURLWithPath: flat.row.path)]
+                )
+            }
         }
 
         private func revealSelected() {
@@ -1641,7 +1539,7 @@ private final class TreeTableRowCanvas: NSView {
         let nameTextRect = self.nameTextRect(x: nameX,
                                              width: nameWidth,
                                              loadingChildren: flat.isLoadingChildren)
-        drawText(row.title.isEmpty ? row.path : row.title,
+        drawText(row.title.isEmpty ? row.path : row.displayTitle(locale: locale),
                  in: nameTextRect,
                  font: nameFont,
                  color: denied ? .tertiaryLabelColor : .labelColor,
@@ -1784,7 +1682,7 @@ private final class TreeTableRowCanvas: NSView {
         guard nameWidth > TreeTableMetrics.inlineProgressSide else { return nil }
 
         let font = NSFont.systemFont(ofSize: 13)
-        let text = flat.row.title.isEmpty ? flat.row.path : flat.row.title
+        let text = flat.row.title.isEmpty ? flat.row.path : flat.row.displayTitle(locale: locale)
         let textRect = nameTextRect(x: nameX, width: nameWidth, loadingChildren: true)
         let measured = ceil((text as NSString).size(withAttributes: [.font: font]).width)
         let side = TreeTableMetrics.inlineProgressSide
@@ -2456,7 +2354,7 @@ struct TreeBrowserRow: View {
                 }
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text(row.title.isEmpty ? row.path : row.title)
+                Text(verbatim: row.title.isEmpty ? row.path : row.displayTitle(locale: locale))
                     .font(.system(.body, design: .rounded))
                     .foregroundStyle(isAccessDenied ? .tertiary : .primary)
                     .lineLimit(1)

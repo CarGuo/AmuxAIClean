@@ -113,6 +113,46 @@ final class DeletionInteractionCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func test_duplicateOriginWithoutFrozenContentProofCannotReachPipelineSubmission() async throws {
+        let path = "/Users/test/Library/Caches/duplicate.bin"
+        let state = PipelineState(
+            preflights: [DeletionPreflight(allowedPaths: [path], rejections: [])],
+            submissions: []
+        )
+        let coordinator = makeCoordinator(state: state)
+        let identity = DeletionSnapshotIdentity(
+            sessionID: UUID(),
+            revision: 1,
+            categoryID: "duplicate"
+        )
+        let intent = try coordinator.makeIntent(
+            origin: .duplicate,
+            mode: .professional,
+            snapshotIdentity: identity,
+            candidates: [candidate(path)]
+        )
+        guard case .confirmation(let prepared) = await coordinator.prepare(
+            intent: intent,
+            currentSnapshotIdentity: identity
+        ), case .authorized(let authorization) = coordinator.authorize(
+            prepared: prepared,
+            executionPlan: ToolTrashExecutionPlan(paths: [path], runningAppSkipped: [])
+        ) else { return XCTFail("Expected an ordinary confirmation before final source proof") }
+
+        guard case .blocked(let block) = await coordinator.submit(
+            authorization,
+            accessDeniedPaths: []
+        ) else { return XCTFail("Duplicate without full-content proof must fail closed") }
+        XCTAssertEqual(
+            block.rejections.map(\.reason),
+            [DuplicateDeletionVerificationRejectionReason.invalidEvidence.rawValue]
+        )
+        let calls = await state.snapshot()
+        XCTAssertEqual(calls.submission, 0)
+        XCTAssertEqual(calls.legacy, 0)
+    }
+
+    @MainActor
     func test_prepareAllowedIntentProducesNormalPlanWithoutSubmission() async throws {
         let path = "/Users/test/Library/Caches/plain"
         let state = PipelineState(preflights: [
@@ -199,7 +239,11 @@ final class DeletionInteractionCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(state: state)
         let identity = DeletionSnapshotIdentity(sessionID: UUID(), revision: 2)
         let intent = try coordinator.makeIntent(
-            origin: .duplicate,
+            // Receipt accounting is source-agnostic. Duplicate now has an additional mandatory
+            // full-content proof and is covered by dedicated verification tests.
+            // v2026.07.17: Use the production workflow-filesystem origin; managed Simulator
+            // uninstall is intentionally not represented by the filesystem recycle pipeline.
+            origin: .workflowFilesystem,
             mode: .professional,
             snapshotIdentity: identity,
             candidates: [candidate(path)]

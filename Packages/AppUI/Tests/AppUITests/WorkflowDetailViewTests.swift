@@ -2553,4 +2553,19 @@ final class WorkflowDetailViewTests: XCTestCase {
         let bad = "/no/such/parent/dir/Foo*"
         XCTAssertEqual(WorkflowDetailViewModel._testing_expandGlob(bad), [])
     }
+
+    /// v2026.07.16：Workflow 卡的扫描根必须先折叠父子重叠。否则 npm 这类同时
+    /// 声明 `~/.npm` 与 `~/.npm/_cacache` 的卡会重复 IO、容量双计，而删除阶段
+    /// 最后又只保留父根，展示与执行语义不一致。
+    func test_workflowFilesystemRoots_foldNestedPathsBeforeMeasurement() {
+        let home = "/tmp/WorkflowRootFold"
+        let folded = WorkflowDetailViewModel.foldNestedPaths([
+            "\(home)/.npm/_cacache",
+            "\(home)/.npm/",
+            "\(home)/.npm",
+            "\(home)/.npm-other/cache",
+            "\(home)/.npm-other"
+        ])
+        XCTAssertEqual(folded, ["\(home)/.npm", "\(home)/.npm-other"])
+    }
 }

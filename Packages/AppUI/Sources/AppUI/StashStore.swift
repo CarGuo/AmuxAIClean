@@ -1,5 +1,5 @@
+import Combine
 import Foundation
-import Observation
 import SafetyKit
 
 /// v2026.06.18 **稍后处理（购物车）**：跨视图共享的"待处理路径集合"。
@@ -24,11 +24,10 @@ import SafetyKit
 ///    不做额外 stat —— 频繁 stat 在万级路径下会卡 UI；
 ///    [StashScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashScreen.swift)
 ///    展示时如有需要再懒校验。
-/// 5. **@Observable + @MainActor**：所有 mutation 都在主线程发生（contextMenu 回调 / toolbar 点击），
-///    @MainActor 把多线程访问拒之门外；@Observable 让 SwiftUI 自动订阅 `entries`。
+/// 5. **ObservableObject + @MainActor**：v2026.07.16 起用 Combine 发布状态以兼容 macOS 13.5；
+///    所有 mutation 仍在主线程发生，`entries` 是唯一 UI 发布源。
 @MainActor
-@Observable
-public final class StashStore {
+public final class StashStore: ObservableObject {
 
     /// 单条待处理。`id == path` 保证 List 复用 + diff 稳定。
     /// 把 size / isDirectory / addedAt 一并存下来：StashScreen 渲染时无需回查
@@ -37,6 +36,7 @@ public final class StashStore {
         public let id: String        // == path
         public let path: String
         public let title: String     // lastPathComponent，缓存避免每次重算
+        public let titlePresentation: LocalizedTextDescriptor
         public let bytes: Int64
         public let isDirectory: Bool
         public let fileCount: Int
@@ -55,16 +55,22 @@ public final class StashStore {
                     fileCount: Int = 1,
                     addedAt: Date = Date(),
                     accessDeniedPaths: Set<String> = [],
-                    aiVerdict: AIVerdictCache = .pending) {
+                    aiVerdict: AIVerdictCache = .pending,
+                    titlePresentation: LocalizedTextDescriptor? = nil) {
             self.id = path
             self.path = path
             self.title = title
+            self.titlePresentation = titlePresentation ?? .verbatim(title)
             self.bytes = bytes
             self.isDirectory = isDirectory
             self.fileCount = max(1, fileCount)
             self.addedAt = addedAt
             self.accessDeniedPaths = accessDeniedPaths
             self.aiVerdict = aiVerdict
+        }
+
+        public func displayTitle(locale: Locale) -> String {
+            titlePresentation.localized(locale: locale)
         }
     }
 
@@ -92,27 +98,21 @@ public final class StashStore {
 
     /// 当前所有待处理条目（按加入顺序排列）。
     /// SwiftUI 视图直接读这个数组拿 count / iterate；不要在外部再持一个 cached count，
-    /// 同步 mutation 自动通过 @Observable 触发刷新。
-    public private(set) var entries: [StashEntry] = []
+    /// 同步 mutation 自动通过 Combine 触发刷新。
+    @Published public private(set) var entries: [StashEntry] = []
 
     /// v2026.06.23 perf（Instruments 第六次取证 33334.md 703.80ms）：
     /// `contains(_:)` 是 row body 求值热路径（[MainView L1213](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1213)
     /// `isStashed: { path in stash.contains(path) }` 每行调一次），
     /// 旧实现 `entries.contains(where: { $0.id == path })` 是 O(N) 全扫 +
-    /// 每次还要 `ObservationRegistrar.access(\.entries)` 注册依赖
-    /// （trace 显示 closure #5 in MainView.results.getter → StashStore.contains
+    /// （旧 trace 显示 closure #5 in MainView.results.getter → StashStore.contains
     /// 2.5ms 在 hot path）。100 行可视 × 60fps × 50 条 stash = 每秒 30 万次
     /// 字符串相等比较 → 滚动卡顿。
     ///
     /// 修复：维护一个 `pathIndex: Set<String>` 镜像，跟 entries 在每个 mutation
-    /// 点同步。`contains` 改读这个 set → O(1) hash 查找 + 单次 Observation
-    /// 依赖注册（依赖 pathIndex 而非 entries，stash 内部条目顺序变化不再
-    /// invalidate 所有 row）。
-    ///
-    /// 注意 `@ObservationIgnored` **不能**用——这里恰恰要 Observation：
-    /// stash 增删时 `isStashed` 闭包需要重新求值翻转徽标。但订阅源从
-    /// `entries` 数组改成 `pathIndex` set，set mutation 与 row count
-    /// 无关，避免任何小变化都让所有 row body 重跑。
+    /// 点同步，`contains` 改读这个 set → O(1) hash 查找。它不是独立 UI 状态，
+    /// 因此不加 `@Published`；增删时由同一事务中的 `entries` 发布一次刷新，避免
+    /// 单次操作产生两次 `objectWillChange` 广播。
     public private(set) var pathIndex: Set<String> = []
 
     public init() {}
@@ -145,7 +145,8 @@ public final class StashStore {
                     fileCount: max(existing.fileCount, entry.fileCount),
                     addedAt: existing.addedAt,
                     accessDeniedPaths: existing.accessDeniedPaths.union(entry.accessDeniedPaths),
-                    aiVerdict: existing.aiVerdict
+                    aiVerdict: existing.aiVerdict,
+                    titlePresentation: existing.titlePresentation
                 )
             }
             return false
@@ -162,14 +163,16 @@ public final class StashStore {
                     bytes: Int64,
                     isDirectory: Bool,
                     fileCount: Int = 1,
-                    accessDeniedPaths: Set<String> = []) -> Bool {
+                    accessDeniedPaths: Set<String> = [],
+                    titlePresentation: LocalizedTextDescriptor? = nil) -> Bool {
         add(StashEntry(
             path: path,
             title: title,
             bytes: bytes,
             isDirectory: isDirectory,
             fileCount: fileCount,
-            accessDeniedPaths: accessDeniedPaths
+            accessDeniedPaths: accessDeniedPaths,
+            titlePresentation: titlePresentation
         ))
     }
 
@@ -200,7 +203,7 @@ public final class StashStore {
     }
 
     /// v2026.06.19 写入单条 AI 判断结果。由 [StashAIQueue](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)
-    /// 在每条 ask 完成后调用。`@Observable` 自动驱动 StashScreen 刷新对应行徽标。
+    /// 在每条 ask 完成后调用。`entries` 的 Combine 发布自动驱动 StashScreen 刷新对应行徽标。
     /// 若 path 已被用户在 sheet 内剔除，写入会 no-op（不复活已删条目）。
     public func setAIVerdict(path: String, verdict: AIVerdictCache) {
         guard let i = entries.firstIndex(where: { $0.id == path }) else { return }

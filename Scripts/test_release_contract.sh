@@ -8,6 +8,17 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="${ROOT}/Scripts/build_release.sh"
 DMG_TARGET="${ROOT}/Scripts/make_dmg.sh"
 VERIFY_TARGET="${ROOT}/Scripts/verify_dmg.sh"
+PROJECT="${ROOT}/GSYCleanMac.xcodeproj"
+INFO_PLIST="${ROOT}/App/Info.plist"
+DEPLOYMENT_TARGET="13.5"
+PACKAGE_DUMP=""
+guard_output=""
+
+cleanup() {
+  [ -z "$PACKAGE_DUMP" ] || rm -f "$PACKAGE_DUMP"
+  [ -z "$guard_output" ] || rm -f "$guard_output"
+}
+trap cleanup EXIT
 
 fail() {
   printf 'release contract failed: %s\n' "$*" >&2
@@ -42,6 +53,58 @@ last_line_of() {
 bash -n "$TARGET"
 bash -n "$DMG_TARGET"
 bash -n "$VERIFY_TARGET"
+
+# v2026.07.16: read the effective Xcode settings by configuration instead of
+# counting source-text lines in project.pbxproj. This does not build or start the app.
+for configuration in Debug Release; do
+  effective_target="$(
+    xcodebuild -project "$PROJECT" -scheme GSYCleanMac \
+      -configuration "$configuration" -showBuildSettings 2>/dev/null \
+      | awk '$1 == "MACOSX_DEPLOYMENT_TARGET" { print $3; exit }'
+  )"
+  [ "$effective_target" = "$DEPLOYMENT_TARGET" ] \
+    || fail "${configuration} effective deployment target is ${effective_target:-missing}, expected ${DEPLOYMENT_TARGET}"
+done
+
+info_minimum="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$INFO_PLIST")"
+[ "$info_minimum" = '$(MACOSX_DEPLOYMENT_TARGET)' ] \
+  || fail "Info.plist must inherit LSMinimumSystemVersion from MACOSX_DEPLOYMENT_TARGET"
+
+# Discover every first-party manifest dynamically, excluding generated build trees.
+# `dump-package` verifies SwiftPM semantics, so comments and formatting cannot pass it.
+PACKAGE_MANIFESTS=()
+while IFS= read -r -d '' manifest; do
+  PACKAGE_MANIFESTS+=("$manifest")
+done < <(
+  find "${ROOT}/Packages" "${ROOT}/Tools" \
+    -type d -name .build -prune -o -type f -name Package.swift -print0
+)
+[ "${#PACKAGE_MANIFESTS[@]}" -gt 0 ] || fail "no Swift package manifests discovered"
+
+PACKAGE_DUMP="$(mktemp -t amuxaiclean-package-dump)"
+for manifest in "${PACKAGE_MANIFESTS[@]}"; do
+  relative_manifest="${manifest#"${ROOT}/"}"
+  swift package --package-path "$(dirname "$manifest")" dump-package > "$PACKAGE_DUMP" \
+    || fail "could not evaluate ${relative_manifest}"
+
+  platform_index=0
+  macos_version=""
+  while platform_name="$(
+    /usr/bin/plutil -extract "platforms.${platform_index}.platformName" raw \
+      -o - "$PACKAGE_DUMP" 2>/dev/null
+  )"; do
+    if [ "$platform_name" = "macos" ]; then
+      macos_version="$(
+        /usr/bin/plutil -extract "platforms.${platform_index}.version" raw \
+          -o - "$PACKAGE_DUMP" 2>/dev/null
+      )"
+      break
+    fi
+    platform_index=$((platform_index + 1))
+  done
+  [ "$macos_version" = "$DEPLOYMENT_TARGET" ] \
+    || fail "${relative_manifest} declares macOS ${macos_version:-missing}, expected ${DEPLOYMENT_TARGET}"
+done
 
 # Artifact paths must be rooted once. This prevents DIST_DIR=dist from becoming
 # <repo>/dist/dist/... when DMG_PATH is derived later.
@@ -121,7 +184,6 @@ fi
 # This invalid option combination must fail before xcodebuild, so it is safe to
 # exercise as an injected behavioral check on every development machine.
 guard_output="$(mktemp -t amuxaiclean-release-contract)"
-trap 'rm -f "$guard_output"' EXIT
 assert_app_only_notarize_rejected() {
   if "$TARGET" "$@" >"$guard_output" 2>&1; then
     fail "$* unexpectedly succeeded"
@@ -132,4 +194,4 @@ assert_app_only_notarize_rejected() {
 assert_app_only_notarize_rejected --notarize --app-only
 assert_app_only_notarize_rejected --app-only --notarize
 
-printf 'release contract passed: DMG-only notary order, final-byte remount proof, NUL-safe provenance, and final SHA256 verified\n'
+printf 'release contract passed: macOS %s floor, DMG-only notary order, final-byte remount proof, NUL-safe provenance, and final SHA256 verified\n' "$DEPLOYMENT_TARGET"

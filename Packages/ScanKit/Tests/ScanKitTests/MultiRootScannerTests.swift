@@ -6,8 +6,9 @@ import XCTest
 /// 我们关心三件事，与 BulkScanner 单根测试解耦：
 /// 1. **每根都会 yield 自己的 .finished**：上层 ScanCoordinator 用此事件翻 perRootProgress.isFinished；
 /// 2. **rootPath 信封正确**：每条 MultiRootEvent.rootPath 必须能在传入 roots 里找到（不能串根）；
-/// 3. **多根字节合计与单根逐个扫的合计一致**：保证 InodeSet 独立 + 不漏不重；
-/// 4. **空 roots 立刻 finish**：边界。
+/// 3. **无共享 inode 时，多根字节合计与单根逐个扫一致**；
+/// 4. **跨根 hardlink 只计一份物理分配**：事务账本不能因根并行而重复占用；
+/// 5. **空 roots 立刻 finish**：边界。
 final class MultiRootScannerTests: XCTestCase {
 
     /// 在 /tmp 下造一个目录，写入 N 个内容固定的文件。
@@ -125,7 +126,7 @@ final class MultiRootScannerTests: XCTestCase {
         XCTAssertEqual(multiFiles, baselineFiles,
                        "多根合计文件数应等于逐根扫描相加")
         XCTAssertEqual(multiBytes, baselineBytes,
-                       "多根合计字节应等于逐根扫描相加（说明 InodeSet 独立 + 没漏没重）")
+                       "没有跨根共享 inode 时，多根事务合计应与逐根扫描相加一致")
     }
 
     func test_空roots立刻finish不挂死() async throws {
@@ -134,9 +135,9 @@ final class MultiRootScannerTests: XCTestCase {
         XCTAssertTrue(events.isEmpty, "空 roots 应立刻 finish stream，不应有任何事件")
     }
 
-    /// v1.3 review-fix P0-3：跨根 hardlink 必须各自计入字节，证明每根独立 InodeSet。
-    /// 若 InodeSet 跨根共享，第二根扫到的 hardlink 会被 dedupe 成 0，多根合计会少一份。
-    func test_跨根hardlink独立计入字节_证明InodeSet独立() async throws {
+    /// v2026.07.17：多根是一次物理容量事务，跨根 hardlink 必须只计一个 inode 的分配。
+    /// 每根各自去重会让全局容量翻倍；UI 再按路径猜测相减既无法处理并发，也会破坏投影。
+    func test_跨根hardlink通过事务账本只计一次物理分配() async throws {
         let (r1, _) = try makeFixture(prefix: "Glink-A", fileCount: 1, bytesPerFile: 4096)
         let (r2, _) = try makeFixture(prefix: "Glink-B", fileCount: 0, bytesPerFile: 0)
         defer {
@@ -153,19 +154,55 @@ final class MultiRootScannerTests: XCTestCase {
 
         let opts = ScanOptions(includeHidden: true,
                                concurrency: 2, maxConcurrency: 2, mediaAware: false)
-        let scanner = MultiRootScanner(options: opts)
-        let events = await collect(await scanner.scan(roots: [r1, r2]))
-
-        var totalBytes: Int64 = 0
-        for ev in events {
-            if case .finished(let summary) = ev.event {
-                totalBytes += summary.totalAllocatedBytes
+        var singleRootAllocated: Int64 = 0
+        for await event in BulkScanner(options: opts).scan(root: r1, delivery: .summaryOnly) {
+            if case .finished(let summary) = event {
+                singleRootAllocated = summary.totalAllocatedBytes
             }
         }
-        // 若 InodeSet 跨根共享，r2 的 hardlink 会被 dedupe → 总字节 ≈ 4096
-        // 独立 InodeSet 时 r1 与 r2 各自计入 4096 → 总字节 ≈ 8192
-        XCTAssertGreaterThanOrEqual(totalBytes, 8192,
-            "跨根 hardlink 应各自计入字节（实测 \(totalBytes)），低于 8192 说明 InodeSet 跨根共享了")
+        XCTAssertGreaterThan(singleRootAllocated, 0)
+
+        for delivery in [BulkScanner.EventDelivery.complete, .topLevel] {
+            let scanner = MultiRootScanner(options: opts)
+            let events = await collect(await scanner.scan(roots: [r1, r2], delivery: delivery))
+            let summaries = events.compactMap { event -> ScanSummary? in
+                guard case .finished(let summary) = event.event else { return nil }
+                return summary
+            }
+            XCTAssertEqual(summaries.count, 2)
+            XCTAssertEqual(
+                summaries.reduce(Int64(0)) { $0 + $1.totalAllocatedBytes },
+                singleRootAllocated,
+                "完整流和一级投影都必须在整个多根事务内只计算一份 hardlink 分配"
+            )
+            XCTAssertEqual(
+                summaries.reduce(Int64(0)) { $0 + $1.dedupedHardlinkBytes },
+                singleRootAllocated,
+                "跨根被吸收的那份分配必须进入 dedupedHardlinkBytes 证据"
+            )
+
+            if delivery == .complete {
+                let nodeBytes = events.reduce(Int64(0)) { partial, event in
+                    switch event.event {
+                    case .node(let node):
+                        return partial + node.allocatedSize
+                    case .nodes(let nodes):
+                        return partial + nodes.reduce(Int64(0)) { $0 + $1.allocatedSize }
+                    default:
+                        return partial
+                    }
+                }
+                XCTAssertEqual(nodeBytes, singleRootAllocated,
+                               "增量节点与事务 summary 必须使用同一份 allocation ledger")
+            } else {
+                let projectionBytes = summaries.reduce(Int64(0)) { partial, summary in
+                    guard case .topLevel(let rows) = summary.projection else { return partial }
+                    return partial + rows.reduce(Int64(0)) { $0 + $1.allocatedBytes }
+                }
+                XCTAssertEqual(projectionBytes, singleRootAllocated,
+                               "topLevel 投影与事务 summary 必须使用同一份 allocation ledger")
+            }
+        }
     }
 
     func test_timeoutSyntheticSummary_保留已观察到的partial进度() async throws {
@@ -211,7 +248,7 @@ final class MultiRootScannerTests: XCTestCase {
         let probe = MultiRootDeadlineProbe()
         let scanner = MultiRootScanner(
             options: .default,
-            rootScanOperation: { _, _, _, _, _ in
+            rootScanOperation: { _, _, _, _, _, _, _ in
                 await probe.recordStarted()
                 do {
                     try await Task.sleep(nanoseconds: 5_000_000_000)

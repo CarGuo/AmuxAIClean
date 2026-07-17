@@ -202,12 +202,12 @@ private struct RowContentView: View, Equatable {
             // 标题 + 体积条
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text(row.title)
+                    Text(verbatim: row.displayTitle(locale: locale))
                         .font(.system(.body, design: .rounded))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    if let vendor = row.vendorName {
-                        Text(vendor)
+                    if let vendor = row.displayVendorName(locale: locale) {
+                        Text(verbatim: vendor)
                             .font(.caption2)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
@@ -218,7 +218,7 @@ private struct RowContentView: View, Equatable {
                                 Capsule().stroke(Color.orange.opacity(0.5), lineWidth: 0.5)
                             )
                             .foregroundStyle(.orange)
-                            .help(row.vendorNote ?? vendor)
+                            .help(row.displayVendorNote(locale: locale) ?? vendor)
                     }
                     Spacer()
                     bytesLabel
@@ -308,8 +308,9 @@ private struct RowContentView: View, Equatable {
             && lhs.row.fileCount == rhs.row.fileCount
             && lhs.row.isActive == rhs.row.isActive
             && lhs.row.verdict == rhs.row.verdict
-            && lhs.row.vendorName == rhs.row.vendorName
-            && lhs.row.title == rhs.row.title
+            && lhs.row.vendorNamePresentation == rhs.row.vendorNamePresentation
+            && lhs.row.vendorNotePresentation == rhs.row.vendorNotePresentation
+            && lhs.row.titlePresentation == rhs.row.titlePresentation
             && lhs.row.modificationDate == rhs.row.modificationDate
     }
 }

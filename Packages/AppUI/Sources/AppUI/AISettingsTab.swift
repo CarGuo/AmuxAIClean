@@ -1,5 +1,6 @@
 import SwiftUI
 import AIKit
+import Combine
 
 /// v2026.07.15：AI 设置页保存语义反馈而不是已翻译 String。状态跨语言切换保持不变，
 /// View 每次按当前环境 locale 解析，避免“保存成功/Keychain 错误”停留在启动语言。
@@ -20,6 +21,70 @@ enum AISettingsAPIKeyFeedback: Equatable, Sendable {
     }
 }
 
+/// AI 设置页的瞬态编辑会话。
+///
+/// v2026.07.16：Ventura 兼容设置页使用 NavigationSplitView，未选中的 detail 会离开
+/// View 树。由 SettingsScene 以 StateObject 持有本对象，确保侧栏切换不丢未保存 Key、
+/// 不重复读取 Keychain，并让同步 Keychain I/O 始终停留在 AIKit actor 而非主线程。
+@MainActor
+final class AISettingsTabState: ObservableObject {
+    @Published var apiKeyInput = ""
+    @Published private(set) var storedKeyMasked = ""
+    @Published private(set) var feedback: AISettingsAPIKeyFeedback?
+    @Published private(set) var isKeychainBusy = false
+
+    private let keyStore: KeychainAPIKeyStore
+    private var hasAttemptedInitialLoad = false
+
+    init(keyStore: KeychainAPIKeyStore = .shared) {
+        self.keyStore = keyStore
+    }
+
+    func refreshMaskedKeyIfNeeded() async {
+        guard !hasAttemptedInitialLoad, !isKeychainBusy else { return }
+        hasAttemptedInitialLoad = true
+        isKeychainBusy = true
+        defer { isKeychainBusy = false }
+        do {
+            let raw = try await keyStore.load()
+            storedKeyMasked = KeychainAPIKeyStore.masked(raw)
+        } catch {
+            feedback = .failure(KeychainUserFacingError.presentation(for: error))
+        }
+    }
+
+    func saveKey() async {
+        guard !isKeychainBusy, !apiKeyInput.isEmpty else { return }
+        let submittedKey = apiKeyInput
+        isKeychainBusy = true
+        defer { isKeychainBusy = false }
+        do {
+            try await keyStore.save(submittedKey)
+            let raw = try await keyStore.load()
+            if apiKeyInput == submittedKey {
+                apiKeyInput = ""
+            }
+            storedKeyMasked = KeychainAPIKeyStore.masked(raw)
+            feedback = .saved
+        } catch {
+            feedback = .failure(KeychainUserFacingError.presentation(for: error))
+        }
+    }
+
+    func removeKey() async {
+        guard !isKeychainBusy else { return }
+        isKeychainBusy = true
+        defer { isKeychainBusy = false }
+        do {
+            try await keyStore.remove()
+            storedKeyMasked = ""
+            feedback = .removed
+        } catch {
+            feedback = .failure(KeychainUserFacingError.presentation(for: error))
+        }
+    }
+}
+
 /// M5 / 2026-06：AI 设置 Tab。
 ///
 /// 位置：[SettingsScene](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SettingsScene.swift)
@@ -35,14 +100,13 @@ enum AISettingsAPIKeyFeedback: Equatable, Sendable {
 struct AISettingsTab: View {
 
     @Environment(\.locale) private var locale
-    @Bindable var settings: AISettings
+    @ObservedObject var settings: AISettings
+    @ObservedObject var state: AISettingsTabState
 
-    @State private var apiKeyInput: String = ""
-    @State private var storedKeyMasked: String = ""
-    @State private var feedback: AISettingsAPIKeyFeedback?
-    @State private var isKeychainBusy = false
-
-    private let keyStore = KeychainAPIKeyStore.shared
+    init(settings: AISettings, state: AISettingsTabState) {
+        self._settings = ObservedObject(wrappedValue: settings)
+        self._state = ObservedObject(wrappedValue: state)
+    }
 
     var body: some View {
         Form {
@@ -124,33 +188,33 @@ struct AISettingsTab: View {
             // MARK: API Key
             Section {
                 LabeledContent {
-                    SecureField("", text: $apiKeyInput, prompt: Text(verbatim: "sk-..."))
+                    SecureField("", text: $state.apiKeyInput, prompt: Text(verbatim: "sk-..."))
                         .textFieldStyle(.roundedBorder)
                         .frame(minWidth: 280)
                 } label: {
                     Text("settings.ai.api_key.title", bundle: .module)
                 }
                 HStack {
-                    Text(storedKeyMasked.isEmpty
+                    Text(state.storedKeyMasked.isEmpty
                          ? AppLocalization.string("settings.ai.api_key.empty", locale: locale)
-                         : storedKeyMasked)
+                         : state.storedKeyMasked)
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button {
-                        Task { await saveKey() }
+                        Task { await state.saveKey() }
                     } label: {
                         Text("settings.ai.api_key.save", bundle: .module)
                     }
-                    .disabled(apiKeyInput.isEmpty || isKeychainBusy)
+                    .disabled(state.apiKeyInput.isEmpty || state.isKeychainBusy)
                     Button(role: .destructive) {
-                        Task { await removeKey() }
+                        Task { await state.removeKey() }
                     } label: {
                         Text("settings.ai.api_key.remove", bundle: .module)
                     }
-                    .disabled(storedKeyMasked.isEmpty || isKeychainBusy)
+                    .disabled(state.storedKeyMasked.isEmpty || state.isKeychainBusy)
                 }
-                if let feedback {
+                if let feedback = state.feedback {
                     Text(feedback.localizedMessage(locale: locale))
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -200,45 +264,6 @@ struct AISettingsTab: View {
         }
         .formStyle(.grouped)
         .padding()
-        .task { await refreshMaskedKey() }
-    }
-
-    // MARK: - Actions
-
-    private func refreshMaskedKey() async {
-        isKeychainBusy = true
-        defer { isKeychainBusy = false }
-        do {
-            let raw = try await keyStore.load()
-            storedKeyMasked = KeychainAPIKeyStore.masked(raw)
-        } catch {
-            feedback = .failure(KeychainUserFacingError.presentation(for: error))
-        }
-    }
-
-    private func saveKey() async {
-        isKeychainBusy = true
-        defer { isKeychainBusy = false }
-        do {
-            try await keyStore.save(apiKeyInput)
-            let raw = try await keyStore.load()
-            apiKeyInput = ""
-            storedKeyMasked = KeychainAPIKeyStore.masked(raw)
-            feedback = .saved
-        } catch {
-            feedback = .failure(KeychainUserFacingError.presentation(for: error))
-        }
-    }
-
-    private func removeKey() async {
-        isKeychainBusy = true
-        defer { isKeychainBusy = false }
-        do {
-            try await keyStore.remove()
-            storedKeyMasked = ""
-            feedback = .removed
-        } catch {
-            feedback = .failure(KeychainUserFacingError.presentation(for: error))
-        }
+        .task { await state.refreshMaskedKeyIfNeeded() }
     }
 }

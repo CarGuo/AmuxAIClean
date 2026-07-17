@@ -3,7 +3,8 @@ import PackageDescription
 
 let package = Package(
     name: "HeuristicKit",
-    platforms: [.macOS(.v15)],
+    // v2026.07.16: the product compatibility contract starts at Ventura 13.5.
+    platforms: [.macOS("13.5")],
     products: [
         .library(name: "HeuristicKit", targets: ["HeuristicKit"])
     ],

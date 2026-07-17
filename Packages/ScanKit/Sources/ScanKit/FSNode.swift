@@ -201,6 +201,94 @@ enum ScanFailureClassifier {
     }
 }
 
+/// 扫描器在后台完成的一级容量投影。
+///
+/// **v2026.07.16 性能回归根治：** UI 默认只展示扫描根的一级子项，更深层级本来就由
+/// TreeBrowser 按需加载。把每个 `FSNode` 先送到 MainActor、再在那里聚合，既不增加结果
+/// 信息量，又会在百万节点场景形成数分钟积压。该类型让 ScanKit 在 worker 侧完成同一份
+/// 无损聚合，MainActor 最终只接收“实际会显示的一级行”。物理/逻辑大小、文件数与 inode
+/// 去重后的 `ScanSummary` 使用同一轮枚举数据，不能用额外 `du`/估算值补齐。
+public struct ScanTopLevelEntry: Sendable, Equatable {
+    public let path: String
+    public let allocatedBytes: Int64
+    public let logicalBytes: Int64
+    public let fileCount: Int
+    public let isDirectory: Bool
+    /// 该一级目录下面是否实际发现过后代节点。不能只用 `fileCount > 0` 推断，
+    /// 因为空目录层级同样需要在 Tree 中保留可展开提示。
+    public let hasChildren: Bool
+    public let modificationDate: Date?
+
+    public init(
+        path: String,
+        allocatedBytes: Int64,
+        logicalBytes: Int64,
+        fileCount: Int,
+        isDirectory: Bool,
+        hasChildren: Bool,
+        modificationDate: Date?
+    ) {
+        self.path = path
+        self.allocatedBytes = allocatedBytes
+        self.logicalBytes = logicalBytes
+        self.fileCount = fileCount
+        self.isDirectory = isDirectory
+        self.hasChildren = hasChildren
+        self.modificationDate = modificationDate
+    }
+}
+
+/// 一级投影前使用的路径前缀规范化规则。
+///
+/// **v2026.07.16 全盘投影正确性修复：** macOS Data 卷上的真实路径（例如
+/// `/System/Volumes/Data/Users/...`）需要先映射回公开 firmlink 路径（`/Users/...`），
+/// 再决定根目录下的一级 bucket。若等 ScanKit 已经聚合成 `/System` 后才在 UI 映射，
+/// 原始后代路径已经丢失，无法恢复 `/Users`、`/Library` 等真实顶层分布。
+///
+/// 该类型只表达通用、边界安全的前缀替换；具体 firmlink 规则仍由 AppUI 从系统
+/// `/usr/share/firmlinks` 读取并传入，ScanKit 不硬编码 macOS 目录知识。
+public struct ScanPathPrefixMapping: Sendable, Equatable {
+    public let sourcePrefix: String
+    public let destinationPrefix: String
+
+    public init(sourcePrefix: String, destinationPrefix: String) {
+        self.sourcePrefix = Self.normalizedPrefix(sourcePrefix)
+        self.destinationPrefix = Self.normalizedPrefix(destinationPrefix)
+    }
+
+    func project(_ path: String) -> String? {
+        if path == sourcePrefix {
+            return destinationPrefix
+        }
+        guard path.hasPrefix(sourcePrefix + "/") else { return nil }
+        return destinationPrefix + String(path.dropFirst(sourcePrefix.count))
+    }
+
+    private static func normalizedPrefix(_ path: String) -> String {
+        var value = path
+        while value.count > 1, value.hasSuffix("/") {
+            value.removeLast()
+        }
+        return value
+    }
+}
+
+/// 可选的后台投影结果。
+///
+/// `.none` 保持传统完整 node stream / summary-only 合同；`.topLevel` 服务普通、推荐和
+/// 整盘结果页；`.largeFiles` 只携带固定上限 Top-N；`.fileCandidates` 服务
+/// 必须拿到全部达标文件才能做后续内容分析的后台消费者。投影结果永远附着在
+/// 权威终态 summary 上，因此 UI 丢掉任意中间 progress 帧都不会丢容量、候选或
+/// 完整性证据。
+public enum ScanProjectionResult: Sendable, Equatable {
+    case none
+    case topLevel([ScanTopLevelEntry])
+    case largeFiles([FSNode])
+    /// 无上限但先在 worker 侧过滤的文件候选。它不是 UI 列表投影；调用方本来
+    /// 就需要保留所有达标项（例如 DuplicateScanner 的 size bucket）。
+    case fileCandidates([FSNode])
+}
+
 /// 扫描汇总。
 public struct ScanSummary: Sendable {
     public let root: URL
@@ -217,6 +305,8 @@ public struct ScanSummary: Sendable {
     public let completionStatus: ScanCompletionStatus
     /// 本次扫描未完整覆盖的路径。非空时 completionStatus 强制为 `.partial`。
     public let incompleteIssues: [ScanIncompleteIssue]
+    /// ScanKit 后台生成的有界/预聚合 UI 投影。默认 `.none` 保持旧调用方语义。
+    public let projection: ScanProjectionResult
 
     public init(
         root: URL,
@@ -229,7 +319,8 @@ public struct ScanSummary: Sendable {
         permissionDeniedCount: Int = 0,
         tccProtectedSkippedCount: Int = 0,
         completionStatus: ScanCompletionStatus = .complete,
-        incompleteIssues: [ScanIncompleteIssue] = []
+        incompleteIssues: [ScanIncompleteIssue] = [],
+        projection: ScanProjectionResult = .none
     ) {
         self.root = root
         self.totalAllocatedBytes = totalAllocatedBytes
@@ -242,11 +333,17 @@ public struct ScanSummary: Sendable {
         self.tccProtectedSkippedCount = tccProtectedSkippedCount
         self.incompleteIssues = incompleteIssues
         self.completionStatus = incompleteIssues.isEmpty ? completionStatus : .partial
+        self.projection = projection
     }
 }
 
 /// 增量事件，UI 用 AsyncStream 实时消费——避免"扫完再展示"的假死。
 public enum ScanEvent: Sendable {
+    /// 低频“仍有真实枚举进展”信号，不携带容量数据。
+    ///
+    /// v2026.07.16：投影模式不会发送逐节点事件；超宽单目录在结束前也无法合并出
+    /// 权威绝对 progress。该事件只供 watchdog/UI 保活，禁止拿它累计文件数或字节数。
+    case heartbeat
     case progress(scannedBytes: Int64, fileCount: Int)
     case node(FSNode)
     /// Step 13B micro-batch：把"逐 entry yield .node"折叠成"按目录、有界批量 yield 数组"。

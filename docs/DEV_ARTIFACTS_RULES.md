@@ -2,7 +2,8 @@
 
 > 编写日期：2026-05-23
 > 版本基线：GSYCleanMac v1.2（基于 [SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 三档判定 + [vendors.yaml](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/vendors.yaml) 厂商规则体系）
-> 适用范围：macOS 15 Sequoia 或更高
+> 适用范围：macOS 13.5 Ventura 或更高
+> <!-- v2026.07.16：规则手册跟随产品部署合同下探到 Ventura 13.5，规则安全边界本身不随系统版本放宽。 -->
 > 目的：把"开发者机器上反复升级、版本切换沉淀下来的冗余产物"整合成一张**可落地、可 PR、可单测**的安全清理规则表，替换团队过去散落在脚本里的 `rm -rf` 经验。
 
 ---
@@ -387,7 +388,6 @@ JetBrains 的 [Toolbox 文档](https://www.jetbrains.com/help/idea/migrating-fro
 ---
 
 > **维护约定**：本文档与 [vendors.yaml](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/vendors.yaml) / [safe_paths.yaml](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/safe_paths.yaml) **双向同步**——任何规则改动必须同时更新 yaml 与本表，并在 [SafetyKitTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Tests/SafetyKitTests/SafetyKitTests.swift) 增补对应断言。
-
 
 
 

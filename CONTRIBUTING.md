@@ -10,7 +10,8 @@
 
 ## 1. 开发环境
 
-- macOS 15 Sequoia 或更高
+- macOS 15 Sequoia 或更高（开发机工具链要求；产品部署下限为 macOS 13.5）
+  <!-- v2026.07.16：保留 Swift 6/Xcode 16 的统一开发环境，同时避免把它误写成用户安装下限。 -->
 - Xcode 16+
 - Homebrew（可选，只在装 `xcbeautify` 装饰输出或 `create-dmg` 打 DMG 时需要；**不再需要 xcodegen** —— v1.5.x 起原生 [GSYCleanMac.xcodeproj](GSYCleanMac.xcodeproj) 已入仓）
 

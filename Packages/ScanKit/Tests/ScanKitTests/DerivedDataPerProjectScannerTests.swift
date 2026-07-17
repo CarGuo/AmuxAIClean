@@ -203,6 +203,11 @@ final class DerivedDataPerProjectScannerTests: XCTestCase {
         let projectBytes = try XCTUnwrap(snapshot.projects.hits.first?.sizeBytes)
         let rootBytes = try XCTUnwrap(snapshot.rootSizeBytes)
         XCTAssertGreaterThan(rootBytes, projectBytes, "整根容量必须包含共享缓存，但项目卡不能展示它们")
+        XCTAssertEqual(
+            snapshot.retainedHardlinkIdentityCount,
+            0,
+            "v2026.07.17 性能合同：普通单链接文件必须立即计量，不能全部驻留 inode 归属表"
+        )
     }
 
     /// **v2026.07.16 root-cause regression:** one physical inode can have pathnames in a
@@ -244,6 +249,11 @@ final class DerivedDataPerProjectScannerTests: XCTestCase {
             "project buckets 之间不得重复归属同一物理 inode"
         )
         XCTAssertEqual(snapshot.sharedDirectoryCount, 1)
+        XCTAssertEqual(
+            snapshot.retainedHardlinkIdentityCount,
+            1,
+            "真正跨路径的 hardlink 仍必须保留一条精确 inode 归属记录"
+        )
     }
 
     func test_detect_infoPlist元数据可识别非hash工程目录() throws {

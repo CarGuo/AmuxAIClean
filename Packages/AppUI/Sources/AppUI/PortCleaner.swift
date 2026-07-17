@@ -912,7 +912,7 @@ enum PortCleanerBoundedProcessExecutor {
         _ pid: pid_t,
         timeout: TimeInterval
     ) -> OwnedChildWait {
-        let timeoutNanos = UInt64(max(0, timeout) * 1_000_000_000)
+        let timeoutNanos = normalizedTimeoutNanoseconds(timeout)
         let start = DispatchTime.now().uptimeNanoseconds
         let deadline = start.addingReportingOverflow(timeoutNanos)
         let maximum = deadline.overflow ? UInt64.max : deadline.partialValue
@@ -927,6 +927,18 @@ enum PortCleanerBoundedProcessExecutor {
             if DispatchTime.now().uptimeNanoseconds >= maximum { return .running }
             usleep(2_000)
         }
+    }
+
+    /// v2026.07.17：`lsof`/`ps` 的超时是外部命令安全边界，不能让非有限 Double
+    /// 在转换纳秒时反过来 trap 宿主 App。语义与 ScanKit subprocess owner 一致。
+    static func normalizedTimeoutNanoseconds(_ seconds: TimeInterval) -> UInt64 {
+        guard !seconds.isNaN, seconds > 0 else { return 0 }
+        guard seconds.isFinite else { return UInt64.max }
+        let nanoseconds = seconds * 1_000_000_000
+        guard nanoseconds.isFinite, nanoseconds < Double(UInt64.max) else {
+            return UInt64.max
+        }
+        return UInt64(nanoseconds)
     }
 
     private static func reapOwnedChildEventually(_ pid: pid_t) {

@@ -30,12 +30,14 @@ public struct SmartCareItem: Identifiable, Sendable, Hashable {
     public let bucketID: SmartCareBucketID
     public let path: String
     public let title: String
+    public let titlePresentation: LocalizedTextDescriptor
     public let bytes: Int64
     public let logicalBytes: Int64
     public let fileCount: Int
     public let isDirectory: Bool
     public let verdict: SafetyVerdict
     public let riskNote: String?
+    public let riskNotePresentation: LocalizedTextDescriptor?
     public let runningBundleIDPrefix: String?
 
     public init(id: String,
@@ -48,18 +50,31 @@ public struct SmartCareItem: Identifiable, Sendable, Hashable {
                 isDirectory: Bool = true,
                 verdict: SafetyVerdict,
                 riskNote: String? = nil,
-                runningBundleIDPrefix: String? = nil) {
+                runningBundleIDPrefix: String? = nil,
+                titlePresentation: LocalizedTextDescriptor? = nil,
+                riskNotePresentation: LocalizedTextDescriptor? = nil) {
         self.id = id
         self.bucketID = bucketID
         self.path = path
         self.title = title
+        self.titlePresentation = titlePresentation ?? .verbatim(title)
         self.bytes = bytes
         self.logicalBytes = logicalBytes ?? bytes
         self.fileCount = fileCount
         self.isDirectory = isDirectory
         self.verdict = verdict
         self.riskNote = riskNote
+        self.riskNotePresentation = riskNotePresentation
+            ?? riskNote.map(LocalizedTextDescriptor.verbatim)
         self.runningBundleIDPrefix = runningBundleIDPrefix
+    }
+
+    public func displayTitle(locale: Locale) -> String {
+        titlePresentation.localized(locale: locale)
+    }
+
+    public func displayRiskNote(locale: Locale) -> String? {
+        riskNotePresentation?.localized(locale: locale)
     }
 
     public var isSelectable: Bool {
@@ -750,7 +765,9 @@ public struct SmartCareCleanRequest: Identifiable, Sendable, Hashable {
                 verdict: item.verdict,
                 rejection: .ok,
                 vendorNote: item.riskNote,
-                runningBundleIDPrefix: item.runningBundleIDPrefix
+                runningBundleIDPrefix: item.runningBundleIDPrefix,
+                titlePresentation: item.titlePresentation,
+                vendorNotePresentation: item.riskNotePresentation
             ))
             bytes &+= item.bytes
             if item.verdict == .confirm { confirmations &+= 1 }

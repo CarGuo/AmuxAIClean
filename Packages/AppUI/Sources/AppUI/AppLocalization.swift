@@ -46,8 +46,8 @@ public enum AppLocalization {
             if localized != key { return localized }
         }
 
-        // 项目最低支持 macOS 15.0；15.0–15.3 使用相同 bundle 的具体 `.lproj`
-        // 子 bundle。只处理产品实际 ship 的 zh-Hans / en，其他语言退回 bundle 默认。
+        // v2026.07.16：产品最低支持 macOS 13.5；Ventura 至 15.3 使用相同 bundle 的
+        // 具体 `.lproj` 子 bundle。只处理实际 ship 的 zh-Hans / en，其他语言退回默认。
         if let localization = shippedLocalization(for: locale),
            let path = bundle.path(forResource: localization, ofType: "lproj"),
            let localizedBundle = Bundle(path: path) {

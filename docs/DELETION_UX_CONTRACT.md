@@ -103,6 +103,13 @@ receipt 只能在以下事实同时成立后创建：
 
 receipt 至少绑定 intent revision、精确提交路径、提交时间和执行 request id。授权成功、开始加载动画、sheet 被 dismiss 或生成 Task 都不等于 receipt。
 
+**v2026.07.17 精确提交边界**：队列等待、Duplicate 全量 rehash、retained-copy 复核、claim 前后
+fence 和持久 ledger claim 都仍是 pre-submit；此时取消必须阻止系统调用并释放可安全释放的未提交
+attempt。只有上述步骤全部通过后，串行 worker 才能在第一次真实
+`NSWorkspace.recycle` 调用的紧邻位置同步记录/发布 `.submittingToTrash`。这个同步 worker 记录是
+导航和取消策略的权威边界；异步 UI phase 可能滞后，不能反向充当授权或提交证明。一旦跨界，
+页面离开不得取消并遗弃执行 owner，必须继续跟踪到 typed completed/pending/unknown/blocked/failed。
+
 **v2026.07.16 异步回调边界**：调用已交给 `NSWorkspace.recycle` 后仍可能长期不回调。
 应用等待窗口到期时必须返回独立 `pending` 状态，绝不能伪造成成功或失败，也不能对未知
 路径自动重试。当前已提交但未知的路径写入 `pendingPaths`；为避免扩大未知面而停止的后续
@@ -276,6 +283,21 @@ Normal 不自动获得 Professional 严格覆盖能力。若用户需要覆盖�
 | Uninstall | App 残留文件 | 详细审阅 | 简洁/严格按 plan 路由 | App bundle/残留必须分别判定，不得扩大删除范围 | ☐ | ☐ | ☐ |
 | Workflow 文件删除 | 单项、批量 | 详细审阅 | 简洁/严格按 plan 路由 | 只允许 Trash 类型节点进入本合同 | ☐ | ☐ | ☐ |
 
+**v2026.07.17 Duplicate 内容身份合同**：`.full` 只是展示可靠度，不能单独铸造删除能力。
+扫描结果必须从实际 hash 的同一个 `O_NOFOLLOW` 文件描述符冻结完整 SHA256、逻辑大小以及
+`device/inode/type/mtime/ctime`，并在路径层用 `lstat` 证明仍指向同一对象。删除 intent 必须绑定
+精确待移动项和至少一份明确保留项；最终执行在持久 ledger reserve 之后、任何 AppKit claim 之前，
+在后台重新完整 hash 两类文件。任一身份、内容、读取或 retained-copy 变化都返回 typed pre-submit
+block，释放尚未 claim 的 reservation，产生零次 `NSWorkspace.recycle`、零 receipt、零结果页。
+重验完成后，每个 batch 和 fallback 单项重试都必须在实际 AppKit claim 的邻接边界廉价重验：
+本次 targets 对照 full-hash descriptor 冻结的 identity，retained survivor 对照同一组
+`device/inode/type/size/mtime/ctime`；ledger claim 仍独立比较 reservation identity。调用方取消通过
+显式线程安全 token 传入每个 GCD read chunk，并在 claim 前后再次检查，不能依赖 GCD 上下文中的
+`Task.isCancelled`。claim 前任一失败释放/终止未提交 reservation，零 recycle、零 receipt。
+`.submittingToTrash` 只能由执行层在上述 claim/fence 全部成功后、紧邻实际 AppKit 调用时发布；
+full-hash “完成”事件仍是 pre-submit，不能把 UI 提前推进到不可取消状态。Duplicate 页面离开时
+必须读取同步 execution-boundary 记录：边界前请求 verifier 取消，边界后保留 transaction owner。
+
 ### 7.1 Simulator managed-resource 非 Trash 例外
 
 在 Workflow 清理候选中，唯一允许不走 `TrashPipeline` 的系统托管资源是封闭的
@@ -332,6 +354,12 @@ fail closed。旧 schema 使用稳定 migration identity，不能绕过上述单
 15. Simulator ledger 覆盖跨实例 reserve、owner PID+kernel start、attempt CAS/ABA、
     submitted/terminal/authority-absence 分类；Workflow 覆盖 stale revision 零提交、迟到终态不污染
     同 hitID 的新 revision、unknown 不伪装失败，以及 managed 成功不触发无关 card loading。
+16. Duplicate 覆盖：缺少 typed full-hash/identity 时不可选；目标或保留副本在确认后发生内容/
+    身份变化时 reservation 被释放、claim 次数为 0；最终证明必须与授权路径精确同序且不可扩张；
+    GCD full-hash 中途取消、batch claim 与 fallback single retry 的 target/retained identity fence
+    都必须断言 workspace 调用次数为 0；还要覆盖取消与提交竞争，证明 `.submittingToTrash` 只在
+    真实 workspace 调用的邻接边界出现，边界前离开可取消、边界后离开保留 owner（测试仅使用
+    临时 fixture 与 scripted workspace closure）。
 
 对应测试职责应落在：
 
@@ -361,6 +389,11 @@ fail closed。旧 schema 使用稳定 migration identity，不能绕过上述单
 - C4 必须让 App 保持运行并完成明确操作；启动后马上退出不构成运行交互验收。
 - C4/C5 真删只能使用预先创建的临时 fixture，禁止用真实 `$HOME` 数据制造证据。
 - 任何“统一确认已完成”“Professional 强制删除可用”的结论，至少需要相关矩阵行的 C4；最终 Release 结论还需要 C5。
+
+> **v2026.07.17 当前证据**：Duplicate 最终 rehash、同步提交边界、页面离开策略以及
+> Uninstaller typed execution progress 已完成实现与静态审阅，但遵循“先完整落地、后统一测试”，
+> 新增测试、九包全测、Debug build 和真实 App 均未运行；这些新增边界当前仅为 C1，矩阵中的
+> C2/C3/C4 复选框保持未勾选。
 
 ## 10. 当前已确认的违规点
 

@@ -1,5 +1,6 @@
 import XCTest
 import Combine
+import Darwin
 @testable import AppUI
 @testable import ScanKit
 
@@ -118,6 +119,376 @@ final class TreeBrowserStoreTests: XCTestCase {
         XCTAssertEqual(library?.bytes, 22_943_100_000)
         XCTAssertEqual(library?.fileCount, 1_204)
         XCTAssertTrue(library?.hasChildren == true)
+    }
+
+    /// v2026.07.17：完整 refresh 必须是“当前快照替换旧快照”，不能继续使用
+    /// max(old, new)。否则目录内容被外部清理后，Tree 容量会永久只增不减。
+    func test_完整子层refresh会让父行容量与数量同步缩小() {
+        let coord = ScanCoordinator(home: NSTemporaryDirectory())
+        let grandparent = "/Users/example"
+        let parent = grandparent + "/Library"
+        let oldParent = TreeRow(
+            path: parent,
+            title: "Library",
+            bytes: 9_000,
+            logicalBytes: 12_000,
+            fileCount: 90,
+            isDirectory: true,
+            hasChildren: true
+        )
+        coord._seedForTesting(
+            isScanning: false,
+            treeChildrenCache: [
+                "\(grandparent)|\(TreeSortKey.sizeDesc.rawValue)": [oldParent],
+                "\(grandparent)|\(TreeSortKey.nameAsc.rawValue)": [oldParent]
+            ]
+        )
+
+        coord._storeFetchedChildrenForTesting(
+            path: parent,
+            sortedBy: .sizeDesc,
+            rows: [
+                TreeRow(
+                    path: parent + "/Caches",
+                    title: "Caches",
+                    bytes: 700,
+                    logicalBytes: 900,
+                    fileCount: 7,
+                    isDirectory: true,
+                    hasChildren: true
+                ),
+                TreeRow(
+                    path: parent + "/state.db",
+                    title: "state.db",
+                    bytes: 100,
+                    logicalBytes: 150,
+                    fileCount: 1,
+                    isDirectory: false,
+                    hasChildren: false
+                )
+            ]
+        )
+
+        let cache = coord._treeChildrenCacheForTesting()
+        for sortKey in [TreeSortKey.sizeDesc, .nameAsc] {
+            let refreshed = cache["\(grandparent)|\(sortKey.rawValue)"]?.first {
+                $0.path == parent
+            }
+            XCTAssertEqual(refreshed?.bytes, 800)
+            XCTAssertEqual(refreshed?.logicalBytes, 1_050)
+            XCTAssertEqual(refreshed?.fileCount, 8)
+            XCTAssertEqual(refreshed?.hasChildren, true)
+            XCTAssertEqual(refreshed?.isSizePending, false)
+        }
+    }
+
+    func test_完整子层refresh为空时父行归零并移除展开状态() {
+        let coord = ScanCoordinator(home: NSTemporaryDirectory())
+        let grandparent = "/Users/example"
+        let parent = grandparent + "/Library"
+        coord._seedForTesting(
+            isScanning: false,
+            treeChildrenCache: [
+                "\(grandparent)|\(TreeSortKey.sizeDesc.rawValue)": [
+                    TreeRow(
+                        path: parent,
+                        title: "Library",
+                        bytes: 9_000,
+                        logicalBytes: 12_000,
+                        fileCount: 90,
+                        isDirectory: true,
+                        hasChildren: true
+                    )
+                ]
+            ]
+        )
+
+        coord._storeFetchedChildrenForTesting(path: parent, sortedBy: .sizeDesc, rows: [])
+
+        let refreshed = coord._treeChildrenCacheForTesting()[
+            "\(grandparent)|\(TreeSortKey.sizeDesc.rawValue)"
+        ]?.first
+        XCTAssertEqual(refreshed?.bytes, 0)
+        XCTAssertEqual(refreshed?.logicalBytes, 0)
+        XCTAssertEqual(refreshed?.fileCount, 0)
+        XCTAssertEqual(refreshed?.hasChildren, false)
+        XCTAssertEqual(refreshed?.isSizePending, false)
+    }
+
+    func test_shallow预览只提供下界不会把父行容量提前缩小() {
+        let coord = ScanCoordinator(home: NSTemporaryDirectory())
+        let grandparent = "/Users/example"
+        let parent = grandparent + "/Library"
+        coord._seedForTesting(
+            isScanning: false,
+            treeChildrenCache: [
+                "\(grandparent)|\(TreeSortKey.sizeDesc.rawValue)": [
+                    TreeRow(
+                        path: parent,
+                        title: "Library",
+                        bytes: 9_000,
+                        logicalBytes: 12_000,
+                        fileCount: 90,
+                        isDirectory: true,
+                        hasChildren: true
+                    )
+                ]
+            ]
+        )
+
+        coord._storeShallowFetchedChildrenForTesting(
+            path: parent,
+            sortedBy: .sizeDesc,
+            rows: [
+                TreeRow(
+                    path: parent + "/visible.bin",
+                    title: "visible.bin",
+                    bytes: 100,
+                    logicalBytes: 120,
+                    fileCount: 1,
+                    isDirectory: false,
+                    hasChildren: false
+                )
+            ]
+        )
+
+        let preview = coord._treeChildrenCacheForTesting()[
+            "\(grandparent)|\(TreeSortKey.sizeDesc.rawValue)"
+        ]?.first
+        XCTAssertEqual(preview?.bytes, 9_000)
+        XCTAssertEqual(preview?.logicalBytes, 12_000)
+        XCTAssertEqual(preview?.fileCount, 90)
+        XCTAssertEqual(preview?.isSizePending, true)
+    }
+
+    func test_partial深扫只提供下界不会把权限缺口误报为空间释放() {
+        let coord = ScanCoordinator(home: NSTemporaryDirectory())
+        let grandparent = "/Users/example"
+        let parent = grandparent + "/Library"
+        coord._seedForTesting(
+            isScanning: false,
+            treeChildrenCache: [
+                "\(grandparent)|\(TreeSortKey.sizeDesc.rawValue)": [
+                    TreeRow(
+                        path: parent,
+                        title: "Library",
+                        bytes: 9_000,
+                        logicalBytes: 12_000,
+                        fileCount: 90,
+                        isDirectory: true,
+                        hasChildren: true
+                    )
+                ]
+            ]
+        )
+
+        coord._storePartialFetchedChildrenForTesting(
+            path: parent,
+            sortedBy: .sizeDesc,
+            rows: [
+                TreeRow(
+                    path: parent + "/visible.bin",
+                    title: "visible.bin",
+                    bytes: 100,
+                    logicalBytes: 120,
+                    fileCount: 1,
+                    isDirectory: false,
+                    hasChildren: false,
+                    subtreeCompleteness: .containsIncompleteDescendant
+                )
+            ]
+        )
+
+        let partial = coord._treeChildrenCacheForTesting()[
+            "\(grandparent)|\(TreeSortKey.sizeDesc.rawValue)"
+        ]?.first
+        XCTAssertEqual(partial?.bytes, 9_000)
+        XCTAssertEqual(partial?.logicalBytes, 12_000)
+        XCTAssertEqual(partial?.fileCount, 90)
+        XCTAssertEqual(partial?.isSizePending, false)
+    }
+
+    func test_真实按需refresh在文件清空后把祖先cache容量降为零() async throws {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("TreeRefreshShrink-\(UUID().uuidString)", isDirectory: true)
+        let parent = root.appendingPathComponent("Cache", isDirectory: true)
+        let file = parent.appendingPathComponent("payload.bin")
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        try Data(repeating: 0x5A, count: 32 * 1_024).write(to: file)
+        defer { try? fm.removeItem(at: root) }
+
+        let coord = ScanCoordinator(home: root.path, enableTreeDeepIndex: false)
+        coord._seedForTesting(
+            snapshot: ScanSnapshot(
+                categoryID: "tree.refresh.shrink",
+                rows: [],
+                totalBytes: 32 * 1_024,
+                scannedFileCount: 1,
+                isFinished: true,
+                elapsed: 0
+            ),
+            currentRootPath: root.path,
+            isScanning: false,
+            treeChildrenCache: [
+                "\(root.path)|\(TreeSortKey.sizeDesc.rawValue)": [
+                    TreeRow(
+                        path: parent.path,
+                        title: parent.lastPathComponent,
+                        bytes: 32 * 1_024,
+                        fileCount: 1,
+                        isDirectory: true,
+                        hasChildren: true
+                    )
+                ]
+            ]
+        )
+
+        _ = coord.directChildren(of: parent.path, sortedBy: .sizeDesc)
+        await waitUntil(3) {
+            !coord._treeChildrenInFlightForTesting().contains {
+                $0.hasPrefix(parent.path + "|")
+            }
+        }
+        XCTAssertGreaterThan(
+            coord._treeChildrenCacheForTesting()[
+                "\(root.path)|\(TreeSortKey.sizeDesc.rawValue)"
+            ]?.first?.bytes ?? 0,
+            0
+        )
+
+        try fm.removeItem(at: file)
+        coord.rescanSubtree(at: parent.path)
+        _ = coord.directChildren(of: parent.path, sortedBy: .sizeDesc)
+        await waitUntil(3) {
+            let cache = coord._treeChildrenCacheForTesting()
+            let completed = !coord._treeChildrenInFlightForTesting().contains {
+                $0.hasPrefix(parent.path + "|")
+            }
+            return completed && cache["\(parent.path)|\(TreeSortKey.sizeDesc.rawValue)"] != nil
+        }
+
+        let refreshedParent = coord._treeChildrenCacheForTesting()[
+            "\(root.path)|\(TreeSortKey.sizeDesc.rawValue)"
+        ]?.first { $0.path == parent.path }
+        XCTAssertEqual(refreshedParent?.bytes, 0)
+        XCTAssertEqual(refreshedParent?.fileCount, 0)
+        XCTAssertEqual(refreshedParent?.hasChildren, false)
+        XCTAssertEqual(refreshedParent?.isSizePending, false)
+    }
+
+    func test_离开Tree只取消按需磁盘任务且保留完成快照() async throws {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("TreeOwnership-\(UUID().uuidString)", isDirectory: true)
+        let child = root.appendingPathComponent("child", isDirectory: true)
+        try fm.createDirectory(at: child, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let snapshot = ScanSnapshot(
+            categoryID: "tree.ownership",
+            rows: [],
+            totalBytes: 4_096,
+            scannedFileCount: 1,
+            isFinished: true,
+            elapsed: 0
+        )
+        let coordinator = ScanCoordinator(home: root.path, enableTreeDeepIndex: false)
+        coordinator._seedForTesting(
+            snapshot: snapshot,
+            currentRootPath: root.path,
+            isScanning: false,
+            treeChildrenCache: [
+                "\(root.path)|\(TreeSortKey.sizeDesc.rawValue)": [
+                    TreeRow(
+                        path: child.path,
+                        title: child.lastPathComponent,
+                        bytes: 4_096,
+                        fileCount: 1,
+                        isDirectory: true,
+                        hasChildren: true
+                    )
+                ]
+            ]
+        )
+
+        _ = coordinator.directChildren(of: child.path, sortedBy: .sizeDesc)
+        XCTAssertFalse(coordinator._treeChildrenInFlightForTesting().isEmpty)
+
+        coordinator.cancelOnDemandTreeScansPreservingResults()
+        await Task.yield()
+
+        XCTAssertTrue(coordinator._treeChildrenInFlightForTesting().isEmpty)
+        XCTAssertEqual(coordinator.snapshot, snapshot)
+        XCTAssertEqual(coordinator.currentRootPath, root.path)
+        XCTAssertFalse(coordinator.wasCancelled)
+    }
+
+    /// v2026.07.17 删除安全回归：Tree 展开后新发现的缺口不能只画在行上。
+    /// 它必须进入 ScanCoordinator 的 typed evidence，供统一删除预检做祖先/后代重叠判定；
+    /// 同一 fetch root 的新终态必须替换旧终态，且不得清掉主扫描的独立证据。
+    func test_按需Tree缺口进入删除预检且按fetchRoot替换() {
+        let coord = ScanCoordinator(home: "/Users/example")
+        let primary = ScanIncompleteIssue(
+            path: "/Users/example/Library/PrimaryLocked",
+            reason: .permissionDenied,
+            stage: .open,
+            posixErrorCode: EACCES
+        )
+        coord._testReplaceIncompleteEvidence([primary])
+
+        let treeRoot = "/Users/example/Library/Caches"
+        let oldTreeIssue = ScanIncompleteIssue(
+            path: treeRoot + "/OldLocked",
+            reason: .permissionDenied,
+            stage: .open,
+            posixErrorCode: EACCES
+        )
+        coord._replaceTreeIncompleteEvidenceForTesting(
+            rootPath: treeRoot,
+            issues: [
+                ScanIncompleteIssue(
+                    path: oldTreeIssue.path,
+                    reason: .permissionDenied
+                ),
+                oldTreeIssue
+            ]
+        )
+
+        XCTAssertEqual(
+            Set(coord.incompleteIssues(overlappingAny: [treeRoot])),
+            Set([oldTreeIssue]),
+            "Tree local issue 必须进入和删除目标同一条 typed overlap 链路"
+        )
+        XCTAssertEqual(coord._testAccessState(for: oldTreeIssue.path), .permissionDenied)
+        XCTAssertEqual(
+            coord.incompleteScanIssues.filter {
+                $0.path == oldTreeIssue.path && $0.reason == .permissionDenied
+            },
+            [oldTreeIssue],
+            "无 stage companion event 不得与丰富 typed issue 重复展示"
+        )
+        XCTAssertTrue(coord.incompleteScanIssues.contains(primary))
+
+        let refreshedIssue = ScanIncompleteIssue(
+            path: treeRoot + "/MetadataLost",
+            reason: .metadataUnavailable,
+            stage: .metadata
+        )
+        coord._replaceTreeIncompleteEvidenceForTesting(
+            rootPath: treeRoot,
+            issues: [refreshedIssue]
+        )
+        XCTAssertFalse(coord.incompleteScanIssues.contains(oldTreeIssue),
+                       "同 root 重扫不得只追加陈旧 issue")
+        XCTAssertTrue(coord.incompleteScanIssues.contains(refreshedIssue))
+        XCTAssertTrue(coord.incompleteScanIssues.contains(primary),
+                      "Tree 替换不得覆盖主扫描证据")
+
+        coord._replaceTreeIncompleteEvidenceForTesting(rootPath: treeRoot, issues: [])
+        XCTAssertFalse(coord.incompleteScanIssues.contains(refreshedIssue),
+                       "完整重扫应清除该 fetch root 的旧缺口")
+        XCTAssertEqual(coord.incompleteScanIssues, [primary])
     }
 
     // MARK: - ScanCoordinator 与 store 同步契约

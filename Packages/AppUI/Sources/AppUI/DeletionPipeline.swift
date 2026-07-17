@@ -127,6 +127,32 @@ public protocol DeletionPipeline: Sendable {
         reviewIdentity: DeletionSnapshotIdentity?
     ) async -> TrashSubmissionDisposition
 
+    /// v2026.07.17 source-proof boundary. Duplicate submissions carry their frozen full-content
+    /// evidence all the way into the production pipeline; compatibility implementations must
+    /// fail closed rather than silently discard a non-nil proof.
+    func submitToTrashReturningDisposition(
+        paths: [String],
+        accessDeniedPaths: Set<String>,
+        vendorOverrideRequest: VendorPathOverrideRequest?,
+        scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest?,
+        reviewIdentity: DeletionSnapshotIdentity?,
+        executionVerification: DeletionExecutionVerification?
+    ) async -> TrashSubmissionDisposition
+
+    /// v2026.07.17 observable long-task boundary. The optional observer mirrors typed progress
+    /// from either source-proof work or the ordinary recycle transaction. Compatibility
+    /// implementations fail closed when an observer is requested rather than presenting a
+    /// minutes-long opaque spinner while silently discarding updates.
+    func submitToTrashReturningDisposition(
+        paths: [String],
+        accessDeniedPaths: Set<String>,
+        vendorOverrideRequest: VendorPathOverrideRequest?,
+        scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest?,
+        reviewIdentity: DeletionSnapshotIdentity?,
+        executionVerification: DeletionExecutionVerification?,
+        executionProgressObserver: DeletionExecutionProgressObserver?
+    ) async -> TrashSubmissionDisposition
+
     /// 历史兼容入口。它不能泛化绕过 `.forbid`，因此实现只能等价于普通删除；
     /// vendorPathRule 的专业模式能力必须走上面的类型化请求与最终重验，不能复用本接口。
     func moveToTrashForce(paths: [String], dryRun: Bool) async -> (legacy: (Int, Int, String?, [(String, String)]), outcome: TrashOutcome?)
@@ -425,6 +451,7 @@ public enum TrashPreSubmitRejection: Sendable, Equatable {
     case safety(DeletionPreflight)
     case invalidVendorOverride(DeletionPreflight)
     case invalidScanIncompleteOverride([DeletionPreflight.Rejection])
+    case invalidDuplicateVerification([DeletionPreflight.Rejection])
     /// Persistent duplicate-submission / identity / queue-claim gate. This remains a
     /// confirmation-time typed block and can never construct an operation result.
     case pendingOperation(TrashPendingOperationRejection)
@@ -550,6 +577,30 @@ extension DeletionPipeline {
         accessDeniedPaths: Set<String>,
         vendorOverrideRequest: VendorPathOverrideRequest?,
         scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest?,
+        reviewIdentity: DeletionSnapshotIdentity?,
+        executionVerification: DeletionExecutionVerification?,
+        executionProgressObserver: DeletionExecutionProgressObserver?
+    ) async -> TrashSubmissionDisposition {
+        // Existing test/debug pipelines have no progress transport. Nil keeps their old behavior;
+        // a requested observer must fail closed so production UI cannot show a fabricated spinner.
+        guard executionProgressObserver == nil else {
+            return .preSubmitRejected(.unsupportedPipeline)
+        }
+        return await submitToTrashReturningDisposition(
+            paths: paths,
+            accessDeniedPaths: accessDeniedPaths,
+            vendorOverrideRequest: vendorOverrideRequest,
+            scanIncompleteOverrideRequest: scanIncompleteOverrideRequest,
+            reviewIdentity: reviewIdentity,
+            executionVerification: executionVerification
+        )
+    }
+
+    public func submitToTrashReturningDisposition(
+        paths: [String],
+        accessDeniedPaths: Set<String>,
+        vendorOverrideRequest: VendorPathOverrideRequest?,
+        scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest?,
         reviewIdentity: DeletionSnapshotIdentity?
     ) async -> TrashSubmissionDisposition {
         // v2026.07.16: compatibility stubs cannot persist a review capability themselves. Keep
@@ -560,6 +611,26 @@ extension DeletionPipeline {
             accessDeniedPaths: accessDeniedPaths,
             vendorOverrideRequest: vendorOverrideRequest,
             scanIncompleteOverrideRequest: scanIncompleteOverrideRequest
+        )
+    }
+
+    public func submitToTrashReturningDisposition(
+        paths: [String],
+        accessDeniedPaths: Set<String>,
+        vendorOverrideRequest: VendorPathOverrideRequest?,
+        scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest?,
+        reviewIdentity: DeletionSnapshotIdentity?,
+        executionVerification: DeletionExecutionVerification?
+    ) async -> TrashSubmissionDisposition {
+        guard executionVerification == nil else {
+            return .preSubmitRejected(.unsupportedPipeline)
+        }
+        return await submitToTrashReturningDisposition(
+            paths: paths,
+            accessDeniedPaths: accessDeniedPaths,
+            vendorOverrideRequest: vendorOverrideRequest,
+            scanIncompleteOverrideRequest: scanIncompleteOverrideRequest,
+            reviewIdentity: reviewIdentity
         )
     }
 

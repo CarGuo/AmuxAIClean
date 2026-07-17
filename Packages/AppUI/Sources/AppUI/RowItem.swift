@@ -6,15 +6,23 @@ import SafetyKit
 public struct RowItem: Identifiable, Hashable, Sendable {
     public let id: String          // = url.path（稳定 ID）
     public let url: URL
-    public let title: String       // = lastPathComponent
+    /// Stable fallback/debug text. Runtime UI must call `displayTitle(locale:)` so a long-lived
+    /// scan snapshot does not freeze the language active when the scan completed.
+    public let title: String
+    public let titlePresentation: LocalizedTextDescriptor
     public let isDirectory: Bool
     public let bytes: Int64        // allocatedSize 累计
     public let logicalBytes: Int64 // logicalSize 累计；与 bytes 偏差大表示 iCloud 占位
     public let fileCount: Int      // 子项总数
+    /// 是否实际发现过子项。它与 fileCount 正交：只含空目录的目录 fileCount 可以为 0，
+    /// 但 Tree 仍必须允许展开。
+    public let hasChildren: Bool
     public let verdict: SafetyVerdict
     public let rejection: SafetyRejection
     public let vendorName: String?
     public let vendorNote: String?
+    public let vendorNamePresentation: LocalizedTextDescriptor?
+    public let vendorNotePresentation: LocalizedTextDescriptor?
     /// 可选：该行归属 App 的 bundle id 前缀。仅用于删除前的运行中 App 防护。
     public let runningBundleIDPrefix: String?
     /// v1.3：该聚合行是否"正在被扫描"。
@@ -39,18 +47,30 @@ public struct RowItem: Identifiable, Hashable, Sendable {
                 vendorName: String? = nil, vendorNote: String? = nil,
                 runningBundleIDPrefix: String? = nil,
                 isActive: Bool = false,
-                modificationDate: Date? = nil) {
+                hasChildren: Bool? = nil,
+                modificationDate: Date? = nil,
+                titlePresentation: LocalizedTextDescriptor? = nil,
+                vendorNamePresentation: LocalizedTextDescriptor? = nil,
+                vendorNotePresentation: LocalizedTextDescriptor? = nil) {
         self.id = id
         self.url = url
         self.title = title
+        self.titlePresentation = titlePresentation ?? .verbatim(title)
         self.isDirectory = isDirectory
         self.bytes = bytes
         self.logicalBytes = logicalBytes
         self.fileCount = fileCount
+        // 兼容非扫描投影构造方：旧调用只提供 fileCount 时仍维持既有 disclosure。
+        // ScanCoordinator 的新投影路径会显式传入真实 hasChildren，从而覆盖“仅空目录”场景。
+        self.hasChildren = hasChildren ?? (isDirectory && fileCount > 0)
         self.verdict = verdict
         self.rejection = rejection
         self.vendorName = vendorName
         self.vendorNote = vendorNote
+        self.vendorNamePresentation = vendorNamePresentation
+            ?? vendorName.map(LocalizedTextDescriptor.verbatim)
+        self.vendorNotePresentation = vendorNotePresentation
+            ?? vendorNote.map(LocalizedTextDescriptor.verbatim)
         self.runningBundleIDPrefix = runningBundleIDPrefix
         self.isActive = isActive
         self.modificationDate = modificationDate
@@ -61,6 +81,18 @@ public struct RowItem: Identifiable, Hashable, Sendable {
 
     /// UI 默认是否勾上：仅 `.safe`。
     public var defaultSelected: Bool { verdict == .safe }
+
+    public func displayTitle(locale: Locale) -> String {
+        titlePresentation.localized(locale: locale)
+    }
+
+    public func displayVendorName(locale: Locale) -> String? {
+        vendorNamePresentation?.localized(locale: locale)
+    }
+
+    public func displayVendorNote(locale: Locale) -> String? {
+        vendorNotePresentation?.localized(locale: locale)
+    }
 }
 
 /// v1.3：主列表（推荐清理 / 自定义路径）排序键。
@@ -108,17 +140,27 @@ public enum MainListSortKey: String, CaseIterable, Sendable, Hashable, Identifia
     }
 
     /// 比较函数。主键相等时一律按 path 升序兜底，保证 ForEach 不抖。
-    public func lessThan(_ a: RowItem, _ b: RowItem) -> Bool {
+    public func lessThan(_ a: RowItem, _ b: RowItem, locale: Locale = .current) -> Bool {
         switch self {
         case .sizeDesc:
             if a.bytes != b.bytes { return a.bytes > b.bytes }
         case .sizeAsc:
             if a.bytes != b.bytes { return a.bytes < b.bytes }
         case .nameAsc:
-            let cmp = a.title.localizedCaseInsensitiveCompare(b.title)
+            let cmp = a.displayTitle(locale: locale).compare(
+                b.displayTitle(locale: locale),
+                options: [.caseInsensitive],
+                range: nil,
+                locale: locale
+            )
             if cmp != .orderedSame { return cmp == .orderedAscending }
         case .nameDesc:
-            let cmp = a.title.localizedCaseInsensitiveCompare(b.title)
+            let cmp = a.displayTitle(locale: locale).compare(
+                b.displayTitle(locale: locale),
+                options: [.caseInsensitive],
+                range: nil,
+                locale: locale
+            )
             if cmp != .orderedSame { return cmp == .orderedDescending }
         case .fileCountDesc:
             if a.fileCount != b.fileCount { return a.fileCount > b.fileCount }
@@ -151,6 +193,7 @@ public enum MainListSortKey: String, CaseIterable, Sendable, Hashable, Identifia
 public struct TreeRow: Identifiable, Hashable, Sendable {
     public let path: String
     public let title: String
+    public let titlePresentation: LocalizedTextDescriptor
     /// System Settings / `du` 语义的 on-disk allocated bytes。
     public let bytes: Int64
     /// Finder「显示简介」语义的文件逻辑长度；仅用于详情副值。
@@ -215,9 +258,11 @@ public struct TreeRow: Identifiable, Hashable, Sendable {
                 accessState: AccessState = .normal,
                 subtreeCompleteness: SubtreeCompleteness = .complete,
                 modificationDate: Date? = nil,
-                isSizePending: Bool = false) {
+                isSizePending: Bool = false,
+                titlePresentation: LocalizedTextDescriptor? = nil) {
         self.path = path
         self.title = title
+        self.titlePresentation = titlePresentation ?? .verbatim(title)
         self.bytes = bytes
         self.logicalBytes = logicalBytes ?? bytes
         self.fileCount = fileCount
@@ -227,6 +272,10 @@ public struct TreeRow: Identifiable, Hashable, Sendable {
         self.subtreeCompleteness = subtreeCompleteness
         self.modificationDate = modificationDate
         self.isSizePending = isSizePending
+    }
+
+    public func displayTitle(locale: Locale) -> String {
+        titlePresentation.localized(locale: locale)
     }
 }
 

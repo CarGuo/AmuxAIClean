@@ -43,7 +43,8 @@
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>15.0</string>
+	<!-- v2026.07.16: inherit the Xcode deployment target so packaging cannot publish a conflicting minimum. -->
+	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

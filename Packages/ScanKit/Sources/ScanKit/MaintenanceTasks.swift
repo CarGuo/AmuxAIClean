@@ -153,6 +153,14 @@ public struct DefaultMaintenanceRunner: MaintenanceCommandRunning {
                 exitCode: -2,
                 output: "timeout after \(timeout)s; partial=\(result.output)"
             )
+        case .cancelled(let sentSIGKILL, _):
+            // v2026.07.17：保持取消独立于超时与启动失败；-5 不与既有 -1/-2 合同
+            // 或 SubprocessExecutor 的 -3/-4 安全拒绝 sentinel 混用。
+            let suffix = sentSIGKILL ? " SIGKILL sent" : " terminated"
+            return MaintenanceCommandResult(
+                exitCode: -5,
+                output: "cancelled;\(suffix); partial=\(result.output)"
+            )
         case .notOwned:
             return MaintenanceCommandResult(
                 exitCode: -1,

@@ -1,5 +1,5 @@
+import Combine
 import Foundation
-import Observation
 
 /// v1.2 P1-5：大文件清单的批量选择状态。
 ///
@@ -8,13 +8,12 @@ import Observation
 ///    用 Set<String> 而非 Set<LargeFileItem> 才能跨重排稳定。
 /// 2. **与 visible 列表解耦**——批量选中是用户意图记录；当某条因筛选被隐藏，
 ///    我们不主动剔除它（用户切回筛选还想看到自己的勾），而是在 trash 时按 visible 求交集。
-/// 3. **@Observable 而不是 @Published**——和 AppSettings 风格一致，让 SwiftUI 自动追踪。
+/// 3. **Combine 状态发布**——v2026.07.16 起与 AppSettings 统一，兼容 macOS 13.5。
 /// 4. **isAllSelected / isPartiallySelected** 提供给 header checkbox 三态展示。
-@Observable
 @MainActor
-public final class BatchSelection {
+public final class BatchSelection: ObservableObject {
     /// 已勾选的 path 集合。空集 = 完全未选。
-    public private(set) var selected: Set<String> = []
+    @Published public private(set) var selected: Set<String> = []
 
     public init() {}
 

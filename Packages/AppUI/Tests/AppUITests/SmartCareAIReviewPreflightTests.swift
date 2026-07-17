@@ -1,4 +1,5 @@
 import AIKit
+import Foundation
 import XCTest
 @testable import AppUI
 
@@ -70,6 +71,24 @@ final class SmartCareAIReviewPreflightTests: XCTestCase {
         await Task.yield()
         await Task.yield()
         XCTAssertFalse(gate.isPreparing)
+    }
+
+    /// v2026.07.16：准备态是按钮 loading/cancel 的唯一信号。MainView 必须订阅 gate，
+    /// 防止以后把 `@StateObject` 退化回只保存 class 引用、但不观察发布值的 `@State`。
+    func test_mainView_observesPreparationGateBusyState() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageRoot.appendingPathComponent("Sources/AppUI/MainView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains(
+            "@StateObject private var smartCareAIPreparationGate"
+        ))
+        XCTAssertFalse(source.contains(
+            "@State private var smartCareAIPreparationGate"
+        ))
     }
 
     private func makeReadySettings(baseURL: String) -> AISettings {

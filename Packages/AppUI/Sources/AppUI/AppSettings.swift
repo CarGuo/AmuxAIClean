@@ -1,5 +1,5 @@
+import Combine
 import Foundation
-import Observation
 import ScanKit
 
 /// v1.0 用户偏好（隐藏文件 toggle / 大文件阈值 / 排序方式）。
@@ -7,7 +7,8 @@ import ScanKit
 /// 设计要点：
 /// 1. 走 `UserDefaults`（默认 `.standard`，单测可注入隔离 suite），
 ///    避开 `@AppStorage` 的 SwiftUI 属性包装器在跨 actor / 单测下的麻烦。
-/// 2. 用 `@Observable`（Swift 6.0 / macOS 15+ 原生），SwiftUI 视图直接 `@Bindable` 即可双向绑定。
+/// 2. v2026.07.16 起使用 Combine `ObservableObject` / `@Published`，统一覆盖 macOS 13.5+；
+///    SwiftUI 消费者通过 `@ObservedObject` / `@StateObject` 和 projected value 双向绑定。
 /// 3. 决策来源（v1.3 修订）：
 ///    - v1.0 原拍板"隐藏文件默认 OFF"被证明是错的产品决策——
 ///      ijkplayer 真实占盘 18.86 GB / 195,979 items（Finder），但默认 OFF 时只扫到
@@ -15,8 +16,7 @@ import ScanKit
 ///    - 业界惯例（DaisyDisk / CleanMyMac / Finder 文件夹大小 / `du` / `df`）默认全算隐藏。
 ///    - 故 v1.3 起 `showHidden` 默认 **ON**；用户仍可在设置面板显式关掉。
 @MainActor
-@Observable
-public final class AppSettings {
+public final class AppSettings: ObservableObject {
     public static let defaultMinFileSizeMB = 100
     public static let allowedMinFileSizeMB = 10
     public static let allowedMaxFileSizeMB = 10_240
@@ -251,28 +251,28 @@ public final class AppSettings {
 
     /// 是否在扫描结果中显示 `.` 开头的隐藏文件，并把它们计入体积统计。
     /// **默认 ON**（v1.3 修订；v1.0 原默认 OFF 已证明是错误决策，详见类型注释）。
-    public var showHidden: Bool {
+    @Published public var showHidden: Bool {
         didSet { defaults.set(showHidden, forKey: Keys.showHidden) }
     }
 
     /// 大文件模块阈值（单位 MB）。默认 100MB。
-    public var minFileSizeMB: Int {
+    @Published public var minFileSizeMB: Int {
         didSet { defaults.set(minFileSizeMB, forKey: Keys.minFileSizeMB) }
     }
 
     /// 当前列表排序方式。默认 `.sizeDesc`（按大小降序）。
-    public var sortKey: SortKey {
+    @Published public var sortKey: SortKey {
         didSet { defaults.set(sortKey.rawValue, forKey: Keys.sortKey) }
     }
 
     /// 启动时检查更新（v1.1）。默认 ON。
     /// 关掉后 App 启动 / Help 菜单的"立即检查更新"仍可用，但不会自动联网。
-    public var updateCheckEnabled: Bool {
+    @Published public var updateCheckEnabled: Bool {
         didSet { defaults.set(updateCheckEnabled, forKey: Keys.updateCheckEnabled) }
     }
 
     /// 用户对某个版本点了"跳过此版本"，记录 tag_name；下次启动若拉到的还是这个 tag 则不再提示。
-    public var skippedUpdateTag: String? {
+    @Published public var skippedUpdateTag: String? {
         didSet {
             if let tag = skippedUpdateTag {
                 defaults.set(tag, forKey: Keys.skippedUpdateTag)
@@ -283,7 +283,7 @@ public final class AppSettings {
     }
 
     /// 大文件 / 树视图按修改日期过滤（v1.2 P1-4）。默认 `.all`。
-    public var mtimeFilter: MtimeFilter {
+    @Published public var mtimeFilter: MtimeFilter {
         didSet { defaults.set(mtimeFilter.rawValue, forKey: Keys.mtimeFilter) }
     }
 
@@ -291,14 +291,14 @@ public final class AppSettings {
     /// 持久化存 raw string；通过 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
     /// / [MainView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
     /// onChange 实时同步到 [ScanCoordinator.mainListSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)。
-    public var mainListSortKey: MainListSortKey {
+    @Published public var mainListSortKey: MainListSortKey {
         didSet { defaults.set(mainListSortKey.rawValue, forKey: Keys.mainListSortKey) }
     }
 
     /// v1.3：扫描悬浮窗（HUD）开关，默认 `true`。
     /// 关掉就完全不会创建 [FloatingScanHUDController](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
     /// 的 NSPanel，零开销。
-    public var hudEnabled: Bool {
+    @Published public var hudEnabled: Bool {
         didSet { defaults.set(hudEnabled, forKey: Keys.hudEnabled) }
     }
 
@@ -309,7 +309,7 @@ public final class AppSettings {
     /// **v1.3.x 互斥兜底（与 hideFromDockWhenClosed 对偶）**：
     /// 关托盘的时候如果"关窗藏 Dock"还开着，关窗后 App 就彻底失踪了，
     /// 所以这里强制把 hideFromDockWhenClosed 也关掉，回到能看到 Dock 的安全态。
-    public var trayEnabled: Bool {
+    @Published public var trayEnabled: Bool {
         didSet {
             defaults.set(trayEnabled, forKey: Keys.trayEnabled)
             if !trayEnabled, hideFromDockWhenClosed {
@@ -324,14 +324,14 @@ public final class AppSettings {
     /// 显示"上次扫描可清理 X GB"等闲置态信息，并提供"立即扫描"按钮。
     /// 适合用户当作桌面/顶部小挂件长期挂着。
     /// 关掉则恢复原行为（仅扫描时弹出，结束 0.8s 后渐隐）。
-    public var hudPersistent: Bool {
+    @Published public var hudPersistent: Bool {
         didSet { defaults.set(hudPersistent, forKey: Keys.hudPersistent) }
     }
 
     /// v1.3：HUD 屏幕位置预设。默认 `.notchUnder`（顶部刘海下居中）。
     /// 切换到桌面级（topRight / bottomRight / bottomLeft）后会以"桌面挂件"姿态显示，
     /// App 窗口会盖在它上面，但桌面图标在它下面，类似 GeekTool / iStat Menus 桌面挂件。
-    public var hudPlacement: HUDPlacement {
+    @Published public var hudPlacement: HUDPlacement {
         didSet { defaults.set(hudPlacement.rawValue, forKey: Keys.hudPlacement) }
     }
 
@@ -348,7 +348,7 @@ public final class AppSettings {
     /// （关窗后 Dock 没图标 + 菜单栏没托盘 = 只能 Activity Monitor / kill 重开）。
     /// didSet 里在打开本开关时**强制把 trayEnabled 拉回 true**，
     /// 同时 trayEnabled 的 didSet 也做对偶约束（关托盘时强制关本开关），形成双向锁。
-    public var hideFromDockWhenClosed: Bool {
+    @Published public var hideFromDockWhenClosed: Bool {
         didSet {
             defaults.set(hideFromDockWhenClosed, forKey: Keys.hideFromDockWhenClosed)
             // 互斥兜底：开启本开关时托盘必须留着，否则 App 就完全失踪了。
@@ -370,7 +370,7 @@ public final class AppSettings {
     /// - **空集兜底**：若用户把所有规则都关掉，[DevArtifactScanner.discover](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DevArtifactScanner.swift)
     ///   会直接 warning 并返回空命中，[scanDeveloper](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
     ///   走 0 命中分支直接结束，不会卡 UI。
-    public var enabledDevArtifactRuleIDs: Set<String> {
+    @Published public var enabledDevArtifactRuleIDs: Set<String> {
         didSet { defaults.set(Array(enabledDevArtifactRuleIDs), forKey: Keys.enabledDevArtifactRuleIDs) }
     }
 
@@ -382,14 +382,14 @@ public final class AppSettings {
     /// 在 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
     /// `onChange(of: settings.sentinelEnabled)` 钩子里完成（避免 AppSettings 直接依赖
     /// ServiceManagement，保持配置层纯）。
-    public var sentinelEnabled: Bool {
+    @Published public var sentinelEnabled: Bool {
         didSet { defaults.set(sentinelEnabled, forKey: Keys.sentinelEnabled) }
     }
 
     /// v1.6：Sentinel 最近一次成功 register 的时间戳。
     /// register 成功后 [SentinelManager](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SentinelManager.swift)
     /// 调本属性 setter 写入 `Date()`；unregister 后写 nil。
-    public var sentinelLastEnabled: Date? {
+    @Published public var sentinelLastEnabled: Date? {
         didSet {
             if let date = sentinelLastEnabled {
                 defaults.set(date, forKey: Keys.sentinelLastEnabled)
@@ -403,7 +403,7 @@ public final class AppSettings {
     /// `didSet`：
     /// 1. 同步持久化（`.system` → 删 key）。
     /// 2. 同步把覆盖值写到 `AppleLanguages`（保持跨进程/系统资源选择一致）。
-    public var preferredLanguage: LanguageOverride {
+    @Published public var preferredLanguage: LanguageOverride {
         didSet {
             if preferredLanguage == .system {
                 defaults.removeObject(forKey: Keys.preferredLanguage)

@@ -209,7 +209,7 @@ final class FileSearchEngineExtendedFiltersTests: XCTestCase {
 
     /// 直接写底层 xattr `com.apple.metadata:_kMDItemUserTags`（binary plist 字符串数组），
     /// 等价于 Finder 设置标签。setter `URLResourceValues.tagNames =` 在 macOS 26+ 才可用，
-    /// 为兼容当前部署目标 macOS 15 采用 xattr 直写。
+    /// v2026.07.16：为兼容当前部署目标 macOS 13.5，采用 xattr 直写。
     private func setTags(_ tags: [String], for url: URL) throws {
         let data = try PropertyListSerialization.data(
             fromPropertyList: tags as NSArray, format: .binary, options: 0)

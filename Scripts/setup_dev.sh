@@ -5,7 +5,9 @@
 #   ./Scripts/setup_dev.sh
 #
 # Step 5.6 番外回归 Xcode 原生路径后，本脚本仅做环境检查 + 引导：
-#   1. 检查 macOS 版本（PITFALLS §1.2 锁 15+）
+# v2026.07.16：15+ 是 Swift 6/Xcode 16 的统一开发机门槛，不是产品的
+# macOS 13.5 部署下限；本脚本不用于判断用户机器能否运行产品。
+#   1. 检查开发机 macOS 版本（15+）
 #   2. 检查 Xcode CLT / Xcode 是否已装
 #   3. 安装 / 升级 Homebrew（可选；用于 brew install xcbeautify 等）
 #   4. 检查 .xcodeproj 是否已入仓
@@ -34,12 +36,12 @@ warn() { printf "${YELLOW}!! %s${NC}\n" "$*" >&2; }
 fail() { printf "${RED}xx %s${NC}\n" "$*" >&2; exit 1; }
 
 # ----- 1. macOS 版本检查 -----
-step "检查 macOS 版本（要求 ${MIN_MACOS_MAJOR}+，PITFALLS §1.2）"
+step "检查开发机 macOS 版本（工具链要求 ${MIN_MACOS_MAJOR}+；产品部署下限为 13.5）"
 MACOS_VER="$(sw_vers -productVersion)"
 MACOS_MAJOR="${MACOS_VER%%.*}"
 echo "    当前: macOS $MACOS_VER"
 if [ "$MACOS_MAJOR" -lt "$MIN_MACOS_MAJOR" ]; then
-  fail "macOS $MACOS_VER 低于最低要求 ${MIN_MACOS_MAJOR}.0；请升级到 Sequoia 或更高"
+  fail "macOS $MACOS_VER 低于本地开发环境要求 ${MIN_MACOS_MAJOR}.0；请升级到 Sequoia 或更高（产品运行下限仍为 13.5）"
 fi
 
 # ----- 2. Xcode CLT -----
