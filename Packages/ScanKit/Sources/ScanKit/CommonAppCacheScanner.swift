@@ -2051,9 +2051,14 @@ public actor CommonAppCacheScanner {
 }
 
 /// A scan HOME is the trusted boundary; only descendants below its frozen descriptor are opened
-/// component-by-component with no-follow semantics. This preserves macOS's legitimate absolute
-/// aliases (`/var -> /private/var`, `/tmp -> /private/tmp`) above a temp/custom HOME while still
-/// preventing an in-HOME glob/static ancestor from becoming a symlink into Containers.
+/// component-by-component with no-follow semantics. The root itself is opened once as a complete
+/// path so macOS-managed aliases above (or at) HOME remain usable; after that, every in-HOME
+/// component is resolved relative to the frozen descriptor and cannot become a symlink escape.
+///
+/// v2026.07.17: Foundation does not consistently expose `/var -> /private/var` through
+/// `resolvingSymlinksInPath()`. Re-opening its returned string component-by-component with
+/// `O_NOFOLLOW` therefore rejected normal `NSTemporaryDirectory()` roots. Freezing the trusted
+/// root in one `open(2)` call keeps that system alias valid without weakening descendant checks.
 private final class CommonAppCacheRootedPathResolver {
     private let logicalRoot: String
     private let rootFD: Int32
@@ -2063,11 +2068,10 @@ private final class CommonAppCacheRootedPathResolver {
         let normalizedLogicalRoot = URL(fileURLWithPath: logicalRoot)
             .standardizedFileURL
             .path
-        let canonicalRoot = URL(fileURLWithPath: normalizedLogicalRoot)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-            .path
-        let descriptor = Self.openCanonicalDirectory(canonicalRoot)
+        let descriptor = Darwin.open(
+            normalizedLogicalRoot,
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC
+        )
         guard descriptor >= 0 else { return nil }
         var metadata = stat()
         guard fstat(descriptor, &metadata) == 0,
@@ -2136,27 +2140,4 @@ private final class CommonAppCacheRootedPathResolver {
         }
     }
 
-    private static func openCanonicalDirectory(_ path: String) -> Int32 {
-        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
-        guard normalized.hasPrefix("/") else {
-            errno = EINVAL
-            return -1
-        }
-        let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
-        var currentFD = Darwin.open("/", flags)
-        guard currentFD >= 0 else { return -1 }
-        for component in NSString(string: normalized).pathComponents
-            where component != "/" && !component.isEmpty {
-            let nextFD = Darwin.openat(currentFD, component, flags, 0)
-            if nextFD < 0 {
-                let openError = errno
-                Darwin.close(currentFD)
-                errno = openError
-                return -1
-            }
-            Darwin.close(currentFD)
-            currentFD = nextFD
-        }
-        return currentFD
-    }
 }
