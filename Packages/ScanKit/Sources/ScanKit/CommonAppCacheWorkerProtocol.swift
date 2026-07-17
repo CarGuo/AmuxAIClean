@@ -744,9 +744,19 @@ public enum CommonAppCacheWorkerBridge {
     /// The designated requirement permits developer-approved updates; the unique signing digest
     /// additionally proves this parent/worker pair is the exact same running executable build.
     private static func codeIdentityDigest(_ code: SecCode) throws -> Data {
+        var staticCode: SecStaticCode?
+        let defaultFlags = SecCSFlags(rawValue: 0)
+        guard SecCodeCopyStaticCode(code, defaultFlags, &staticCode) == errSecSuccess,
+              let staticCode else {
+            throw WorkerAuthenticationError.codeIdentityUnavailable
+        }
         var information: CFDictionary?
         let flags = SecCSFlags(rawValue: UInt32(kSecCSSigningInformation))
-        guard SecCodeCopySigningInformation(code, flags, &information) == errSecSuccess,
+        // v2026.07.17 compile-boundary fix: the Swift Security overlay exposes signing-info
+        // lookup on SecStaticCode even though the C documentation describes Code or StaticCode.
+        // Convert the already dynamically validated process code explicitly; do not weaken the
+        // parent requirement or replace it with bundle-id/string comparison.
+        guard SecCodeCopySigningInformation(staticCode, flags, &information) == errSecSuccess,
               let information,
               let digest = (information as NSDictionary)[kSecCodeInfoUnique] as? Data,
               !digest.isEmpty else {
@@ -774,8 +784,10 @@ public enum CommonAppCacheWorkerBridge {
         let pathBytes = pathBuffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
         let executablePath = String(decoding: pathBytes, as: UTF8.self)
         var metadata = stat()
+        // `Darwin.stat` resolves to the imported struct initializer in Swift. `lstat` is the
+        // unambiguous no-follow identity primitive and binds the exact proc_pidpath object.
         guard !executablePath.isEmpty,
-              Darwin.stat(executablePath, &metadata) == 0,
+              lstat(executablePath, &metadata) == 0,
               (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
             throw WorkerAuthenticationError.processIdentityUnavailable
         }
