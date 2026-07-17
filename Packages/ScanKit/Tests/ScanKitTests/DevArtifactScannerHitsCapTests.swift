@@ -4,7 +4,8 @@ import XCTest
 /// v1.3 P0-D：DevArtifactScanner 命中上限截断 / 兄弟扩展名兜底 / 父路径后缀兜底 的端到端测试。
 ///
 /// 三件事必须真实落地：
-/// 1. 命中数到达 `Options.maxHits` 时立刻截断，`DiscoverResult.didTruncate=true`；
+/// 1. 最多保留 `Options.maxHits` 条；只有真实观察到第 N+1 条时才证明发生截断并置位
+///    `DiscoverResult.didTruncate=true`，恰好 N 条仍是完整结果；
 /// 2. `py.pycache` 在没有 setup.py 等精确 marker、但同级有 `.py` 文件时仍能被命中（兄弟扩展名兜底）；
 /// 3. `apple.xcuserdata` 在没有任何兄弟 marker、但父路径以 `.xcodeproj` 结尾时仍能被命中（父路径后缀兜底）。
 final class DevArtifactScannerHitsCapTests: XCTestCase {
@@ -41,7 +42,7 @@ final class DevArtifactScannerHitsCapTests: XCTestCase {
 
     /// 构造 50 个合法 node_modules 命中，把 maxHits 调到 10，断言：
     /// - hits.count == 10 严格等于上限
-    /// - didTruncate == true
+    /// - 因真实存在第 11 个候选，didTruncate == true
     /// - didTimeout == false（绝不能误把截断报成超时）
     func test_命中达硬上限_截断且didTruncate为真() async throws {
         // 50 个 fixture 项目，每个：proj_i/package.json + proj_i/node_modules/foo

@@ -274,6 +274,24 @@
   verdict 严格 `safe → confirm → forbid`；宽泛 confirm 父目录不得抢在具体 safe 子目录
   之前访问。运行状态不是扫描 admission gate，运行中 App 仍可扫描；它只参与既有删除前
   警告/强制确认合同。
+- **App Data 保护从候选解析就开始**。macOS 对其它开发者的 `~/Library/Containers` 与
+  `~/Library/Group Containers` 访问，可能在 glob、`lstat` 或 `open` 任一阶段同步弹系统窗；
+  把阻塞工作放进 worker 只保护主进程，不会绕过 TCC。FDA 未被正向证明时，必须在触碰
+  pattern 前按结构化 container boundary 形成 typed skip，继续扫描普通缓存；不得等 12s
+  hard timeout 后把系统授权等待伪装成普通 I/O partial。glob/static ancestor 必须逐组件
+  `openat + O_NOFOLLOW`，否则普通路径中的 symlink 仍可绕进 Containers。此边界同样与目标
+  App 是否运行无关；已白名单路径必须在 TCC boundary 前排除，不能制造假 partial。
+- DevArtifact 的“发现根”也是正式扫描热路径，不能用单线程 `FileManager.enumerator` 对 HOME
+  每个普通文件重复做 URL/resource-values bridge，再为 marker 二次读取父目录。v2026.07.17
+  真实 C4 在 1,636,452 entries 上仅 discovery 就耗时 51.49s。目录发现必须复用 descriptor
+  no-follow/frozen identity + `getattrlistbulk`，每个父目录一次批量读取同时得到 child directory
+  与 sibling marker，并由统一介质并发策略调度；媒体库 package 在入队前按既有 TCC 业务范围
+  剪枝。timeout/maxHits 仍只能产生明确 partial，不能用于制造“快”的完整结果。
+- 多根性能统计不能用“总耗时 - 最慢单根 `ScanSummary.elapsed`”推导 UI drain。Sliding window
+  排队的 root 尚未开始单根计时，Developer discovery 也发生在 MultiRoot 之前；两者会被错误
+  归责给 MainActor。root terminal 必须携带 producer 生成时冻结的绝对时间戳，协调器统一减去
+  同一 scan session 的 `startedAt`；不得拼接两个相对时钟。只有最终 terminal 生成到 UI publish
+  的尾差可记为 consumer drain；0-hit discovery 则使用 scanner 内部冻结的 elapsed 作为终态。
 - 所有公开 `TimeInterval`/timeout 输入必须先在共享边界规范化：`NaN`、负数与零立即到期，
   `+infinity` 明确表示无实际 deadline，换算纳秒时饱和而不是溢出。直接写
   `elapsed >= duration` 会因 NaN 比较恒 false 把“有限扫描”静默变成无界任务。

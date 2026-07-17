@@ -56,6 +56,12 @@ final class MultiRootScannerTests: XCTestCase {
         }
         XCTAssertEqual(Set(finishedRoots), Set([r1.path, r2.path]),
                        "两个根都必须 yield 各自的 .finished，缺一会让 UI perRootProgress 永远卡着 ●")
+        let producerTerminals = events.compactMap { event -> Date? in
+            guard case .finished = event.event else { return nil }
+            return event.producerCompletedAt
+        }
+        XCTAssertEqual(producerTerminals.count, 2)
+        XCTAssertTrue(producerTerminals.allSatisfy { $0 <= Date() })
     }
 
     func test_rootPath信封不会串根() async throws {

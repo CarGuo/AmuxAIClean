@@ -7,6 +7,74 @@ import XCTest
 @MainActor
 final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
 
+    func test_commonAppCacheProtectedAccessPolicy_preservesVenturaAndRequiresFDAOnSonoma() {
+        XCTAssertTrue(ScanCoordinator.commonAppCacheAllowsProtectedAppDataAccess(
+            fdaStatus: .denied,
+            scanHome: "/Users/fixture",
+            currentUserHome: "/Users/fixture",
+            macOSMajorVersion: 13
+        ))
+        XCTAssertFalse(ScanCoordinator.commonAppCacheAllowsProtectedAppDataAccess(
+            fdaStatus: .unknown,
+            scanHome: "/Users/fixture",
+            currentUserHome: "/Users/fixture",
+            macOSMajorVersion: 14
+        ))
+        XCTAssertFalse(ScanCoordinator.commonAppCacheAllowsProtectedAppDataAccess(
+            fdaStatus: .denied,
+            scanHome: "/Users/fixture",
+            currentUserHome: "/Users/fixture",
+            macOSMajorVersion: 14
+        ))
+        XCTAssertTrue(ScanCoordinator.commonAppCacheAllowsProtectedAppDataAccess(
+            fdaStatus: .granted,
+            scanHome: "/Users/fixture",
+            currentUserHome: "/Users/fixture",
+            macOSMajorVersion: 14
+        ))
+    }
+
+    func test_commonAppCacheProtectedAccessPolicy_doesNotMisclassifyCustomHomeAsTCC() {
+        XCTAssertTrue(ScanCoordinator.commonAppCacheAllowsProtectedAppDataAccess(
+            fdaStatus: .denied,
+            scanHome: "/tmp/custom-home",
+            currentUserHome: "/Users/fixture",
+            macOSMajorVersion: 14
+        ))
+    }
+
+    /// v2026.07.17 C4 regression: ScanKit proves that candidate resolution stops before protected
+    /// access; this integration test injects that typed result and locks the AppUI projection.
+    /// A temp HOME must not impersonate the OS-protected current HOME merely to exercise TCC.
+    func test_scanCommonAppCaches_projectsProtectedAppDataEvidenceAsTCCPartial() async throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let boundary = home.appendingPathComponent(
+            "Library/Containers",
+            isDirectory: true
+        ).standardizedFileURL.path
+        let coordinator = ScanCoordinator(home: home.path)
+        coordinator.commonAppCacheDetector = { _, _, _ in
+            CommonAppCacheScanner.ScanResult(
+                hits: [],
+                incompletePaths: [
+                    .init(path: boundary, reason: .protectedAppDataSkipped)
+                ]
+            )
+        }
+
+        coordinator.scanCommonAppCaches()
+        await waitScanFinished(coordinator)
+
+        XCTAssertTrue(coordinator.snapshot.rows.isEmpty)
+        XCTAssertTrue(coordinator.snapshot.isFinished)
+        XCTAssertFalse(coordinator.snapshot.isComplete)
+        XCTAssertEqual(coordinator.tccProtectedSkippedPaths, [boundary])
+        XCTAssertEqual(coordinator.commonAppCacheProgress?.phase, .terminal)
+        XCTAssertEqual(coordinator.commonAppCacheProgress?.terminalOutcome, .partial)
+    }
+
     func test_scanCommonAppCaches_publishesOnlyExistingNonEmptyRuleHits() async throws {
         let home = try makeTempHome()
         defer { try? FileManager.default.removeItem(at: home) }

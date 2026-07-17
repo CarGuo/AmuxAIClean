@@ -415,3 +415,32 @@ C4（Large Files、推荐扫描、Workflow、Uninstaller、Duplicate、切语言
 Debug build、双基准，并在一次持续 App 进程中复现相同受保护容器，验证 worker 的 FDA/TCC
 可见范围、12s 级硬终态、safe checkpoint 保留、后续扫描响应和完整 C4 矩阵。macOS 13.5
 真实设备/VM 与最终 DMG C5 仍未验证。
+
+### 9.8 第二次 C4 暴露的 Developer discovery / App Data 根因（v2026.07.17，当前 C1）
+
+- **隔离 worker 已取得局部 C4 证据**：同一持续 App 进程中 Common App Cache 在 12.31s
+  返回 typed partial，旧 368.47s 不可终止阻塞未再出现。该结果只证明 hard cutoff/checkpoint，
+  不代表 Common App Cache 整体通过。
+- **App Data 系统窗**：unified log 将系统窗定位到 common-app-cache worker 的
+  `kTCCServiceSystemPolicyAppData`，不是 DevArtifact、FDAProbe 或“目标 App 正在运行”。候选
+  resolution 的 glob/lstat 本身也会触碰 TCC，不能只给 measurement group 排 safe → confirm。
+  当前源码在 FDA 未被正向证明时，于 Container/App Group pattern 边界前形成 typed skip，
+  普通缓存继续扫描；FDA confirmed 后才允许进入。未修改受保护规则库或 Info.plist。
+- **Developer 真实分段**：HOME discovery 1,636,452 entries / 1,453 hits / 51.492s；随后
+  1,454 roots 约 7.074s。当前源码改为复用 ScanKit descriptor identity 与 `getattrlistbulk`，
+  每父目录单次读取并用统一介质 worker 策略；既有 rule/verdict、timeout/maxHits partial 和
+  no-follow/跨卷边界必须保持。
+- **指标纠错**：旧 `58.240s drainLag` 把 discovery 与 sliding-window root queueing 都归入
+  UI。MultiRootEvent 现在冻结 root producer terminal 的绝对时间戳，协调器统一减去同一轮
+  `startedAt`，只把最终 terminal 到 authoritative publish 的尾差记为 drain；0-hit discovery
+  使用 scanner 内冻结的 elapsed。新增 `CoordinatorBench --developer` 防止只测 BulkScanner/
+  Large Files 而漏掉 Developer 前置阶段。
+- **Debug 冷启动独立归因**：约 250.56s 均发生在第一条 App 日志前的 dyld `F_CHECK_LV`
+  冷校验；同一产物暖启动约 55ms，静态签名有效。当前没有证据支持修改业务代码、entitlement
+  或工程设置；需独立 DerivedData 的 `ENABLE_DEBUG_DYLIB=NO` 诊断构建与 Release 冷启动 A/B，
+  且禁止用反复快启停预热冒充 C4。
+
+**仍缺项**：本节修改按用户顺序尚未运行测试。提交推送后必须完成 ScanKit/AppUI 聚焦测试、
+九包全测、Debug build、三条 benchmark 与一次持续 C4。`web.dist` 命中已安装 Cursor extension
+的规则所有权风险需要规则库单独授权；`NSAppDataUsageDescription` 需要 Info.plist 单独授权；
+macOS 13.5 实机/VM 与最终 DMG C5 仍未验证。

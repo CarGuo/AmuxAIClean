@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 @testable import ScanKit
 
 /// DevArtifactScanner 在 fixture 目录上的命中 / 剪枝 / 兄弟兜底验证。
@@ -161,19 +162,49 @@ final class DevArtifactScannerTests: XCTestCase {
         )
     }
 
+    func testImmediateAndNaNTimeoutStopBeforeRootIO() async {
+        for timeout in [TimeInterval.zero, TimeInterval.nan] {
+            let missingRoot = FileManager.default.temporaryDirectory
+                .appendingPathComponent("DevArtifactDeadline-\(UUID().uuidString)")
+            let result = await DevArtifactScanner(options: .init(
+                enabledRuleIDs: ["web.node_modules"],
+                timeoutSeconds: timeout
+            )).discoverWithMetadata(home: missingRoot)
+
+            XCTAssertTrue(result.hits.isEmpty)
+            XCTAssertTrue(result.didTimeout)
+            XCTAssertFalse(result.didTruncate)
+            XCTAssertTrue(
+                result.incompleteIssues.isEmpty,
+                "立即 deadline 不得先触碰缺失 root 再伪造 I/O partial"
+            )
+            XCTAssertEqual(result.scannedEntryCount, 0)
+        }
+    }
+
+    func testSharedTruncationStopsWorkerBeforeStartingNextDirectoryIO() {
+        let stopState = DevArtifactStopState(deadline: nil)
+        stopState.markTruncated()
+
+        XCTAssertFalse(
+            DevArtifactScanner.shouldBeginDirectoryIO(stopState: stopState),
+            "另一 worker 已证明截断后，已 pop 的目录也不得再发起一次 open"
+        )
+    }
+
     func testDetachedWalkReceivesCallerCancellation() async {
-        let started = DispatchSemaphore(value: 0)
+        let started = DevArtifactStartProbe()
         let caller = Task {
             await DevArtifactScanner.runCancellableDetached {
-                started.signal()
+                await started.markStarted()
                 while !Task.isCancelled {
-                    Thread.sleep(forTimeInterval: 0.001)
+                    try? await Task.sleep(nanoseconds: 1_000_000)
                 }
                 return Task.isCancelled
             }
         }
 
-        XCTAssertEqual(started.wait(timeout: .now() + 2), .success)
+        await started.waitUntilStarted()
         caller.cancel()
 
         let callerWasCancelled = await caller.value
@@ -195,9 +226,175 @@ final class DevArtifactScannerTests: XCTestCase {
         XCTAssertFalse(result.didTruncate)
         XCTAssertEqual(
             result.incompleteIssues,
-            [ScanIncompleteIssue(path: missingRoot.path, reason: .enumerationFailed)]
+            [ScanIncompleteIssue(
+                path: missingRoot.path,
+                reason: .enumerationFailed,
+                stage: .open,
+                posixErrorCode: ENOENT
+            )]
         )
         XCTAssertFalse(result.isComplete, "I/O 后的空结果不能伪装成完整的 0 命中")
+    }
+
+    /// v2026.07.17 性能证据不能再拿 hits.count 冒充工作量。fixture 的 descriptor
+    /// 枚举会观察 project、node_modules 与 package.json 三个 entry，命中后不进入产物树。
+    func testDiscoveryReportsDescriptorEntryCountAndElapsed() async throws {
+        try mkdir("project/node_modules/dependency")
+        try touch("project/package.json")
+
+        let scanOptions = ScanOptions(
+            concurrency: 4,
+            maxConcurrency: 4,
+            staySingleVolume: false,
+            mediaAware: false,
+            respectTCCSkipList: true
+        )
+        let scanner = DevArtifactScanner(options: .init(
+            enabledRuleIDs: ["web.node_modules"],
+            staySingleVolume: false,
+            scanOptions: scanOptions
+        ))
+
+        let result = await scanner.discoverWithMetadata(home: tempRoot)
+
+        XCTAssertEqual(result.hits.map(\.ruleID), ["web.node_modules"])
+        XCTAssertEqual(
+            result.scannedEntryCount,
+            3,
+            "命中 node_modules 后必须剪枝，不能把 dependency 伪计为已扫描"
+        )
+        XCTAssertGreaterThanOrEqual(result.elapsed, 0)
+    }
+
+    /// TCC 媒体库 package 必须在打开其 descriptor 前剪枝；它与 ~/Library 一样属于
+    /// 开发者产物勘察的业务范围外目录，不应触发权限弹窗，也不应把结果误报成 I/O partial。
+    func testPrunesTCCMediaPackageBeforeEntering() async throws {
+        let package = try mkdir("Pictures.photoslibrary/project/node_modules/dependency")
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        try touch("Pictures.photoslibrary/project/package.json")
+        let packagePath = tempRoot.appendingPathComponent(
+            "Pictures.photoslibrary",
+            isDirectory: true
+        ).path
+        XCTAssertEqual(package.path, packagePath)
+
+        let scanOptions = ScanOptions(
+            concurrency: 4,
+            maxConcurrency: 4,
+            staySingleVolume: false,
+            mediaAware: false,
+            respectTCCSkipList: true
+        )
+        let result = await DevArtifactScanner(options: .init(
+            enabledRuleIDs: ["web.node_modules"],
+            skipLibrary: false,
+            staySingleVolume: false,
+            scanOptions: scanOptions
+        )).discoverWithMetadata(home: tempRoot)
+
+        XCTAssertTrue(result.hits.isEmpty)
+        XCTAssertTrue(result.incompleteIssues.isEmpty)
+        XCTAssertEqual(
+            result.scannedEntryCount,
+            1,
+            "媒体库包的后代不能被 descriptor walker 打开或计入已扫描 entry"
+        )
+        XCTAssertTrue(result.isComplete)
+    }
+
+    /// 恰好 N 个命中不代表发生截断；只有真实观察到第 N+1 个候选后才可置位。
+    func testExactHitCapDoesNotInventTruncation() async throws {
+        for index in 0..<3 {
+            try mkdir("exact-\(index)/node_modules/dependency")
+            try touch("exact-\(index)/package.json")
+        }
+        let result = await DevArtifactScanner(options: .init(
+            enabledRuleIDs: ["web.node_modules"],
+            staySingleVolume: false,
+            maxHits: 3,
+            scanOptions: ScanOptions(
+                concurrency: 4,
+                maxConcurrency: 4,
+                staySingleVolume: false,
+                mediaAware: false,
+                respectTCCSkipList: true
+            )
+        )).discoverWithMetadata(home: tempRoot)
+
+        XCTAssertEqual(result.hits.count, 3)
+        XCTAssertFalse(result.didTruncate)
+        XCTAssertTrue(result.isComplete)
+    }
+
+    /// descriptor walker 的默认合同不跟随 symlink；目标即便是合法开发项目，也不能
+    /// 绕过 frozen identity / no-follow 边界被扫描进来。
+    func testDoesNotFollowSymlinkedDirectory() async throws {
+        let external = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DevArtifactExternal-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: external) }
+        try FileManager.default.createDirectory(
+            at: external.appendingPathComponent("node_modules/dependency", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        FileManager.default.createFile(
+            atPath: external.appendingPathComponent("package.json").path,
+            contents: Data()
+        )
+        try FileManager.default.createSymbolicLink(
+            at: tempRoot.appendingPathComponent("linked-project"),
+            withDestinationURL: external
+        )
+
+        let result = await DevArtifactScanner(options: .init(
+            enabledRuleIDs: ["web.node_modules"],
+            staySingleVolume: false,
+            scanOptions: ScanOptions(
+                concurrency: 4,
+                maxConcurrency: 4,
+                staySingleVolume: false,
+                mediaAware: false,
+                respectTCCSkipList: true
+            )
+        )).discoverWithMetadata(home: tempRoot)
+
+        XCTAssertTrue(result.hits.isEmpty)
+        XCTAssertEqual(result.scannedEntryCount, 1, "只能观察 symlink 本身，不能进入目标")
+    }
+
+    /// 多 descriptor worker 可以同时发现命中，但 streamed callback 必须由 accumulator
+    /// 串行交付；每条 hit 只出现一次，最终残余 batch 也必须 flush。
+    func testStreamedPartialDeliveryIsSerializedAndLossless() async throws {
+        for index in 0..<24 {
+            try mkdir("project-\(index)/node_modules/dependency")
+            try touch("project-\(index)/package.json")
+        }
+        let recorder = DevArtifactPartialRecorder()
+        let scanner = DevArtifactScanner(options: .init(
+            enabledRuleIDs: ["web.node_modules"],
+            staySingleVolume: false,
+            scanOptions: ScanOptions(
+                concurrency: 8,
+                maxConcurrency: 8,
+                staySingleVolume: false,
+                mediaAware: false,
+                respectTCCSkipList: true
+            )
+        ))
+
+        let result = await scanner.discoverWithMetadataStreamed(
+            home: tempRoot,
+            flushEvery: 3
+        ) { batch in
+            recorder.record(batch)
+        }
+        let delivered = recorder.snapshot()
+
+        XCTAssertEqual(delivered.maximumConcurrentCallbacks, 1)
+        XCTAssertEqual(delivered.paths.count, 24)
+        XCTAssertEqual(Set(delivered.paths).count, delivered.paths.count)
+        XCTAssertEqual(Set(delivered.paths), Set(result.hits.map(\.url.path)))
     }
 
     func testIncompleteReasonRecognizesFoundationAndPOSIXPermissionErrors() {
@@ -222,5 +419,53 @@ final class DevArtifactScannerTests: XCTestCase {
             ),
             .metadataUnavailable
         )
+    }
+}
+
+private actor DevArtifactStartProbe {
+    private var didStart = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func markStarted() {
+        guard !didStart else { return }
+        didStart = true
+        let pending = waiters
+        waiters.removeAll(keepingCapacity: false)
+        pending.forEach { $0.resume() }
+    }
+
+    func waitUntilStarted() async {
+        if didStart { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+}
+
+/// 测试回调可能运行在任意 descriptor worker；显式加锁使测试本身不引入数据竞争。
+private final class DevArtifactPartialRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeCallbacks = 0
+    private var maximumConcurrentCallbacks = 0
+    private var paths: [String] = []
+
+    func record(_ hits: [DevArtifactScanner.Hit]) {
+        lock.lock()
+        activeCallbacks += 1
+        maximumConcurrentCallbacks = max(maximumConcurrentCallbacks, activeCallbacks)
+        lock.unlock()
+
+        Thread.sleep(forTimeInterval: 0.001)
+
+        lock.lock()
+        paths.append(contentsOf: hits.map(\.url.path))
+        activeCallbacks -= 1
+        lock.unlock()
+    }
+
+    func snapshot() -> (maximumConcurrentCallbacks: Int, paths: [String]) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (maximumConcurrentCallbacks, paths)
     }
 }

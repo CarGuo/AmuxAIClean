@@ -123,9 +123,19 @@ done
 ```bash
 ./Scripts/bench.sh ~/Downloads
 ./Scripts/bench.sh ~/Library/Caches
+
+# 生产协调器链路（不会启动 App）
+swift run -c release --package-path Tools/CoordinatorBench CoordinatorBench \
+  --root "$HOME/Library/Caches"
+swift run -c release --package-path Tools/CoordinatorBench CoordinatorBench \
+  --root "$HOME" --large-files
+swift run -c release --package-path Tools/CoordinatorBench CoordinatorBench \
+  --root "$HOME" --developer
 ```
 
-会跟 `du -h` 对比物理占用（含 firmlink / iCloud 占位 / 硬链接 / APFS clone 修正）。
+`bench.sh` 会跟 `du -h` 对比物理占用（含 firmlink / iCloud 占位 / 硬链接 / APFS clone
+修正）。CoordinatorBench 分别覆盖普通投影、HOME Large Files 与 Developer discovery +
+candidate forest 全链路；三者不能互相替代。
 
 ---
 

@@ -1512,6 +1512,15 @@ enum BulkEnumerate {
         case failed(ScanIncompleteIssue)
     }
 
+    /// Exact fallback needs every previously emitted name so descriptor re-enumeration can skip
+    /// duplicates. Discovery-only callers that may encounter extremely wide directories can
+    /// instead bound memory: if the bulk syscall fails after any record was observed, publish a
+    /// typed incomplete result rather than retaining O(all entries) names for a rare fallback.
+    enum FallbackPolicy: Sendable, Equatable {
+        case exactDeduplication
+        case boundedMemory
+    }
+
     /// 调用 callback 直到 `false`、任务请求取消或目录读完。
     ///
     /// `getattrlistbulk` 本身是同步系统调用，无法在 syscall 执行途中抢占；这里在每次
@@ -1523,6 +1532,7 @@ enum BulkEnumerate {
         fd: Int32,
         dirPath: String,
         shouldCancel: () -> Bool = { false },
+        fallbackPolicy: FallbackPolicy = .exactDeduplication,
         _ body: (BulkEntry) -> Bool
     ) -> Outcome {
         var attrList = attrlist()
@@ -1545,6 +1555,7 @@ enum BulkEnumerate {
         let buffer = UnsafeMutableRawPointer.allocate(byteCount: bufSize, alignment: 8)
         defer { buffer.deallocate() }
         var emittedNames: Set<String> = []
+        var observedAnyRecord = false
         var metadataIssues: [ScanIncompleteIssue] = []
 
         while true {
@@ -1560,6 +1571,15 @@ enum BulkEnumerate {
                 let err = errno
                 if err == EINTR {
                     continue
+                }
+                if fallbackPolicy == .boundedMemory, observedAnyRecord {
+                    let issue = ScanFailureClassifier.issue(
+                        path: dirPath,
+                        stage: .enumerate,
+                        posixErrorCode: err
+                    )
+                    GSYLog.warning(.scan, "getattrlistbulk errno=\(err) dir=\(dirPath) bounded-memory caller stopped after partial records")
+                    return .failed(issue)
                 }
                 // v2026.07.17 identity closure: fallback must stay anchored to the descriptor
                 // already opened and fstat-verified by BulkDirectoryOpener. Re-enumerating the
@@ -1665,6 +1685,7 @@ enum BulkEnumerate {
                     cursor = nextCursor
                     continue
                 }
+                observedAnyRecord = true
 
                 // v2026.07.17 uncommon-filesystem contract: the bulk API may legally omit a
                 // requested attribute. Directory identity/type and regular-file capacity cannot
@@ -1716,7 +1737,9 @@ enum BulkEnumerate {
                     device: device,
                     modificationDate: modDate
                 )
-                emittedNames.insert(name)
+                if fallbackPolicy == .exactDeduplication {
+                    emittedNames.insert(name)
+                }
                 if !body(entry) { return .stoppedByConsumer }
 
                 cursor = nextCursor

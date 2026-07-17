@@ -1989,6 +1989,17 @@ public final class ScanCoordinator: ObservableObject {
         let included: Set<SafetyVerdict> = includeConfirm ? [.safe, .confirm] : [.safe]
         var options = scannerOptions ?? CommonAppCacheScanner.Options()
         options.includedVerdicts = included
+        // v2026.07.17 C4 App Data regression: neither a worker process nor a hard timeout makes
+        // protected Container access non-interactive. On Sonoma+ the first glob/lstat/open may
+        // synchronously present a system consent sheet and block the scan. Only a positive FDA
+        // probe authorizes the non-interactive cache pass; denied/unknown keep scanning ordinary
+        // caches while the scanner returns typed protected-path evidence before touching TCC.
+        // This is independent from whether the owning App is running and must never become a
+        // running-process admission gate.
+        options.allowsProtectedAppDataAccess = Self.commonAppCacheAllowsProtectedAppDataAccess(
+            fdaStatus: fdaStatus,
+            scanHome: home
+        )
         let whitelistStore = self.whitelistStore
         let detectorOverride = commonAppCacheDetector
         let executionMode = commonAppCacheExecution
@@ -2202,6 +2213,32 @@ public final class ScanCoordinator: ObservableObject {
         return rules
     }
 
+    /// App Data consent was introduced after the Ventura deployment floor. Ventura should keep
+    /// the historical direct filesystem path and report any real errno; Sonoma+ must not trigger
+    /// a consent sheet from an automatic scan unless FDA has been positively established.
+    ///
+    /// v2026.07.17 static-review correction: the OS protects the signed-in user's real HOME,
+    /// not an arbitrary fixture/custom root that merely contains `Library/Containers`. Applying
+    /// the production TCC policy to `/tmp/...` made otherwise complete test/custom scans partial
+    /// because standard rules are appended independently of fixture vendors. Compare normalized
+    /// configured roots without filesystem resolution on MainActor, and only gate the normal
+    /// current-HOME session; custom roots keep reporting their real errno.
+    nonisolated static func commonAppCacheAllowsProtectedAppDataAccess(
+        fdaStatus: FDAProbe.Status,
+        scanHome: String,
+        currentUserHome: String = NSHomeDirectory(),
+        macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+    ) -> Bool {
+        let normalizedScanHome = URL(fileURLWithPath: scanHome)
+            .standardizedFileURL
+            .path
+        let normalizedCurrentHome = URL(fileURLWithPath: currentUserHome)
+            .standardizedFileURL
+            .path
+        guard normalizedScanHome == normalizedCurrentHome else { return true }
+        return macOSMajorVersion < 14 || fdaStatus == .granted
+    }
+
     nonisolated private static func commonAppCacheIncompleteIssue(
         _ issue: CommonAppCacheScanner.IncompletePath
     ) -> ScanIncompleteIssue {
@@ -2228,6 +2265,11 @@ public final class ScanCoordinator: ObservableObject {
                 path: issue.path,
                 reason: .enumerationFailed,
                 stage: .enumerate
+            )
+        case .protectedAppDataSkipped:
+            return ScanIncompleteIssue(
+                path: issue.path,
+                reason: .tccProtectedSkipped
             )
         case .workerLaunchFailed:
             return ScanIncompleteIssue(
@@ -2605,10 +2647,18 @@ public final class ScanCoordinator: ObservableObject {
                     }
                 }
             }
+            // Freeze the producer-side prefix before crossing into the scanner. `result.elapsed`
+            // is captured inside the detached descriptor walk, so adding these two values does
+            // not charge a delayed MainActor resume/final staging pass to filesystem production.
+            let discoveryProducerPrefix = Date().timeIntervalSince(activeStartedAt)
             let result = await scanner.discoverWithMetadataStreamed(
                 home: URL(fileURLWithPath: homeStr),
                 flushEvery: 20,
                 onPartial: onPartial
+            )
+            let discoveryProducerElapsed = max(
+                0,
+                discoveryProducerPrefix + result.elapsed
             )
             guard !Task.isCancelled else { return }
             let hits = result.hits.filter {
@@ -2691,6 +2741,11 @@ public final class ScanCoordinator: ObservableObject {
                     self.lastFinishedCategoryID = activeID
                     self.scanTask = nil
                     self.activeCategoryID = nil
+                    // No MultiRoot transaction exists for a 0-hit discovery, but the benchmark
+                    // still needs an authoritative producer terminal and true tail drain.
+                    self.recordTerminalPerformanceEvidence(
+                        producerElapsed: discoveryProducerElapsed
+                    )
                     self.refreshVolumeCapacity()
                     GSYLog.info(.scan, "DevArtifact 勘察 0 命中 直接结束扫描")
                     return
@@ -3000,7 +3055,13 @@ public final class ScanCoordinator: ObservableObject {
             if isDeletedTombstoned(rootPath) {
                 if case .finished(let summary) = wrapped.event {
                     finishedRootPaths.insert(rootPath)
-                    maximumProducerElapsed = max(maximumProducerElapsed ?? 0, summary.elapsed)
+                    let producerElapsed = wrapped.producerCompletedAt.map {
+                        max(0, $0.timeIntervalSince(startedAt))
+                    } ?? summary.elapsed
+                    maximumProducerElapsed = max(
+                        maximumProducerElapsed ?? 0,
+                        producerElapsed
+                    )
                     for issue in summary.incompleteIssues {
                         recordIncompleteIssue(issue)
                     }
@@ -3047,7 +3108,13 @@ public final class ScanCoordinator: ObservableObject {
                 }
             case .finished(let summary):
                 finishedRootPaths.insert(rootPath)
-                maximumProducerElapsed = max(maximumProducerElapsed ?? 0, summary.elapsed)
+                let producerElapsed = wrapped.producerCompletedAt.map {
+                    max(0, $0.timeIntervalSince(startedAt))
+                } ?? summary.elapsed
+                maximumProducerElapsed = max(
+                    maximumProducerElapsed ?? 0,
+                    producerElapsed
+                )
                 if usesProjection {
                     reconcileProjectedRootAccounting(
                         rootPath: rootPath,
@@ -3221,8 +3288,10 @@ public final class ScanCoordinator: ObservableObject {
     }
 
     /// Records both sides of the same scan revision only after the authoritative final snapshot
-    /// has been published. For multi-root scans the producer value is the slowest root terminal;
-    /// the remaining delta is coordinator scheduling/projection drain, not filesystem traversal.
+    /// has been published. Multi-root callers derive the elapsed value from the absolute producer
+    /// terminal frozen in `MultiRootEvent`; subtracting the slowest individual root duration or
+    /// adding two relative clocks would misclassify discovery, task hops and root queueing as
+    /// coordinator/UI drain.
     private func recordTerminalPerformanceEvidence(producerElapsed: TimeInterval?) {
         guard let producerElapsed else {
             lastProducerTerminalElapsed = nil

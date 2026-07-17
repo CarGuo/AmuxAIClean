@@ -35,9 +35,20 @@ import LogKit
 public struct MultiRootEvent: Sendable {
     public let rootPath: String
     public let event: ScanEvent
-    public init(rootPath: String, event: ScanEvent) {
+    /// Absolute wall-clock instant frozen by the producer immediately before yielding a root
+    /// terminal. The consumer subtracts its own scan-session origin, so discovery, task hops,
+    /// root normalization and sliding-window queueing cannot disappear between two unrelated
+    /// relative clocks. `ScanSummary.elapsed` still only covers one admitted root.
+    public let producerCompletedAt: Date?
+
+    public init(
+        rootPath: String,
+        event: ScanEvent,
+        producerCompletedAt: Date? = nil
+    ) {
         self.rootPath = rootPath
         self.event = event
+        self.producerCompletedAt = producerCompletedAt
     }
 }
 
@@ -256,7 +267,20 @@ public actor MultiRootScanner {
                     case .failed:
                         break
                     }
-                    continuation.yield(MultiRootEvent(rootPath: rootPath, event: ev))
+                    // Only a root terminal contributes to the producer clock.
+                    // Reading Date for every node/batch would put telemetry back on the hot
+                    // path that this metric exists to diagnose.
+                    let producerCompletedAt: Date?
+                    if case .finished = ev {
+                        producerCompletedAt = Date()
+                    } else {
+                        producerCompletedAt = nil
+                    }
+                    continuation.yield(MultiRootEvent(
+                        rootPath: rootPath,
+                        event: ev,
+                        producerCompletedAt: producerCompletedAt
+                    ))
                 }
                 _ = iterator
             }
@@ -313,7 +337,11 @@ public actor MultiRootScanner {
                     )
                 ))
             }
-            continuation.yield(MultiRootEvent(rootPath: rootPath, event: .finished(synthetic)))
+            continuation.yield(MultiRootEvent(
+                rootPath: rootPath,
+                event: .finished(synthetic),
+                producerCompletedAt: Date()
+            ))
             GSYLog.warning(.scan, "MultiRootScanner 合成 partial .finished 让上游收敛 root=\(rootPath) bytes=\(synthetic.totalAllocatedBytes) files=\(synthetic.fileCount) elapsed=\(String(format: "%.1f", synthetic.elapsed))s")
         }
     }

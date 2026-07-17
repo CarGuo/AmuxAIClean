@@ -99,6 +99,166 @@ final class CommonAppCacheScannerTests: XCTestCase {
         XCTAssertEqual(hits[0].logicalSizeBytes, 256)
     }
 
+    /// v2026.07.17 C4 regression: candidate resolution itself must not glob/lstat another
+    /// developer's Container before the caller has established FDA. The scanner returns one
+    /// stable protected boundary so the UI can stay responsive and deletion remains fail-closed.
+    func testProtectedAppDataPatternIsSkippedBeforeCandidateResolutionWithoutFDA() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+
+        let cache = home.appendingPathComponent(
+            "Library/Containers/com.example.Other/Data/Library/Caches/objects",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try writeFile(in: cache, name: "cache.bin", bytes: 64)
+        let rule = VendorRule(
+            name: "Protected Cache",
+            category: "common_app_cache",
+            paths: [
+                PathRule(
+                    path: "~/Library/Containers/com.example.Other/Data/Library/Caches/*",
+                    verdict: .safe
+                )
+            ]
+        )
+
+        let result = CommonAppCacheScanner.detect(vendors: [rule], home: home)
+        let boundary = home.appendingPathComponent(
+            "Library/Containers",
+            isDirectory: true
+        ).standardizedFileURL.path
+
+        XCTAssertTrue(result.hits.isEmpty)
+        XCTAssertEqual(
+            result.incompletePaths,
+            [.init(path: boundary, reason: .protectedAppDataSkipped)]
+        )
+        XCTAssertFalse(result.isComplete)
+    }
+
+    func testProtectedAppDataPatternCanBeMeasuredAfterCallerEstablishesAccess() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+
+        let cache = home.appendingPathComponent(
+            "Library/Group Containers/group.example.shared/Library/Caches/objects",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try writeFile(in: cache, name: "cache.bin", bytes: 64)
+        let rule = VendorRule(
+            name: "Protected Group Cache",
+            category: "common_app_cache",
+            paths: [
+                PathRule(
+                    path: "~/Library/Group Containers/group.example.shared/Library/Caches/*",
+                    verdict: .safe
+                )
+            ]
+        )
+        let options = CommonAppCacheScanner.Options(
+            allowsProtectedAppDataAccess: true
+        )
+
+        let result = CommonAppCacheScanner.detect(
+            vendors: [rule],
+            home: home,
+            options: options
+        )
+
+        XCTAssertTrue(result.isComplete)
+        XCTAssertEqual(result.hits.map(\.url.lastPathComponent), ["objects"])
+    }
+
+    func testWhitelistedProtectedPatternIsExcludedWithoutInventingTCCPartial() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let excluded = home.appendingPathComponent(
+            "Library/Containers/com.example.Other",
+            isDirectory: true
+        ).standardizedFileURL.path
+        let rule = VendorRule(
+            name: "Whitelisted Protected Cache",
+            category: "common_app_cache",
+            paths: [
+                PathRule(
+                    path: "~/Library/Containers/com.example.Other/Data/Library/Caches/*",
+                    verdict: .safe
+                )
+            ]
+        )
+        let options = CommonAppCacheScanner.Options(
+            excludedCandidatePathPrefixes: [excluded]
+        )
+
+        let result = CommonAppCacheScanner.detect(
+            vendors: [rule],
+            home: home,
+            options: options
+        )
+
+        XCTAssertTrue(result.hits.isEmpty)
+        XCTAssertTrue(result.incompletePaths.isEmpty)
+        XCTAssertTrue(result.isComplete)
+    }
+
+    func testProtectedAppDataBoundaryUsesPathComponents() {
+        let home = "/Users/fixture"
+        XCTAssertEqual(
+            CommonAppCacheScanner.protectedAppDataBoundary(
+                for: "/Users/fixture/Library/Containers/com.example/cache",
+                homePath: home
+            ),
+            "/Users/fixture/Library/Containers"
+        )
+        XCTAssertNil(
+            CommonAppCacheScanner.protectedAppDataBoundary(
+                for: "/Users/fixture/Library/ContainersBackup/com.example/cache",
+                homePath: home
+            )
+        )
+    }
+
+    /// A non-protected lexical base can still be a symlink into Containers. Glob expansion must
+    /// refuse that ancestor before enumerating its target; otherwise candidate resolution itself
+    /// can trigger the Sonoma App Data sheet even though the boundary string looked ordinary.
+    func testGlobBaseSymlinkCannotBypassProtectedBoundary() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let containers = home.appendingPathComponent("Library/Containers", isDirectory: true)
+        let support = home.appendingPathComponent("Library/Application Support", isDirectory: true)
+        let target = containers.appendingPathComponent("com.example.Other/cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        try writeFile(in: target, name: "cache.bin", bytes: 64)
+        let alias = support.appendingPathComponent("ContainerAlias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: containers)
+        let rule = VendorRule(
+            name: "Aliased Protected Cache",
+            category: "common_app_cache",
+            paths: [
+                PathRule(
+                    path: "~/Library/Application Support/ContainerAlias/*",
+                    verdict: .safe
+                )
+            ]
+        )
+
+        let result = CommonAppCacheScanner.detect(
+            vendors: [rule],
+            home: home,
+            options: .init(allowsProtectedAppDataAccess: false)
+        )
+
+        XCTAssertTrue(result.hits.isEmpty)
+        XCTAssertEqual(
+            result.incompletePaths,
+            [.init(path: alias.path, reason: .pathIdentityChanged)]
+        )
+        XCTAssertFalse(result.isComplete)
+    }
+
     func testDetectCanIncludeOnlySafeVerdicts() throws {
         let home = try makeTempDir()
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
@@ -656,6 +816,7 @@ final class CommonAppCacheScannerTests: XCTestCase {
             timeoutSeconds: 7.5,
             maxGlobExpansionsPerRule: 17,
             maxEntriesPerPath: 99,
+            allowsProtectedAppDataAccess: true,
             excludedCandidatePathPrefixes: ["/tmp/excluded"]
         )
         let encodedOptions = try JSONEncoder().encode(options)
@@ -667,6 +828,10 @@ final class CommonAppCacheScannerTests: XCTestCase {
         XCTAssertEqual(decodedOptions.timeoutSeconds, options.timeoutSeconds)
         XCTAssertEqual(decodedOptions.maxGlobExpansionsPerRule, options.maxGlobExpansionsPerRule)
         XCTAssertEqual(decodedOptions.maxEntriesPerPath, options.maxEntriesPerPath)
+        XCTAssertEqual(
+            decodedOptions.allowsProtectedAppDataAccess,
+            options.allowsProtectedAppDataAccess
+        )
         XCTAssertEqual(decodedOptions.excludedCandidatePathPrefixes,
                        options.excludedCandidatePathPrefixes)
 
@@ -686,6 +851,7 @@ final class CommonAppCacheScannerTests: XCTestCase {
             .init(path: "/tmp/pending", reason: .deadlineExceeded),
             .init(path: "/tmp/launch", reason: .workerLaunchFailed),
             .init(path: "/tmp/protocol", reason: .workerProtocolFailed),
+            .init(path: "/tmp/app-data", reason: .protectedAppDataSkipped),
         ]
         let checkpoint = CommonAppCacheScanner.Checkpoint(
             hits: [hit],

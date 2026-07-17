@@ -17,6 +17,16 @@ public actor CommonAppCacheScanner {
         public var timeoutSeconds: TimeInterval
         public var maxGlobExpansionsPerRule: Int
         public var maxEntriesPerPath: Int
+        /// Whether candidate resolution may touch another developer's sandbox/App Group
+        /// containers. macOS Sonoma and later can synchronously present an App Data consent
+        /// prompt as soon as glob expansion, `lstat`, or `open` reaches these roots.
+        ///
+        /// v2026.07.17 C4 regression record: Smart Care used to enter protected container
+        /// paths without an explicit user interaction. The isolated worker then blocked in
+        /// TCC until its 12-second hard deadline, while the system sheet obscured the App UI.
+        /// Defaulting to false keeps discovery non-interruptive; the App enables this only
+        /// after its FDA probe has positively established access.
+        public var allowsProtectedAppDataAccess: Bool
         /// 在候选解析阶段排除这些路径及其后代。调用方可把同一轮冻结的白名单快照
         /// 传进来，使 `ScanResult` 的路径并集 totals 与最终可见 rows 保持同一边界。
         public var excludedCandidatePathPrefixes: Set<String>
@@ -27,6 +37,7 @@ public actor CommonAppCacheScanner {
             timeoutSeconds: TimeInterval = 12,
             maxGlobExpansionsPerRule: Int = 128,
             maxEntriesPerPath: Int = 200_000,
+            allowsProtectedAppDataAccess: Bool = false,
             excludedCandidatePathPrefixes: Set<String> = []
         ) {
             self.category = category
@@ -34,6 +45,7 @@ public actor CommonAppCacheScanner {
             self.timeoutSeconds = timeoutSeconds
             self.maxGlobExpansionsPerRule = max(1, maxGlobExpansionsPerRule)
             self.maxEntriesPerPath = max(1, maxEntriesPerPath)
+            self.allowsProtectedAppDataAccess = allowsProtectedAppDataAccess
             self.excludedCandidatePathPrefixes = Set(
                 excludedCandidatePathPrefixes.map {
                     URL(fileURLWithPath: $0).standardizedFileURL.path
@@ -156,6 +168,10 @@ public actor CommonAppCacheScanner {
             case deadlineExceeded
             case entryLimitReached
             case globExpansionLimitReached
+            /// Candidate resolution deliberately stopped before touching another developer's
+            /// Container/App Group because the caller had not established FDA. This is typed
+            /// TCC scope evidence, not a missing path and not a generic I/O failure.
+            case protectedAppDataSkipped
             /// Isolated worker could not be started. Parent must publish typed partial evidence;
             /// silently falling back to the same in-process syscall path would restore the hang.
             case workerLaunchFailed
@@ -297,7 +313,7 @@ public actor CommonAppCacheScanner {
             home: home,
             options: options,
             shouldCancel: shouldCancel,
-            openDirectory: safeOpenDirectory,
+            openDirectory: nil,
             onProgress: onProgress
         )
     }
@@ -309,7 +325,7 @@ public actor CommonAppCacheScanner {
         home: URL,
         options: Options,
         shouldCancel: () -> Bool,
-        openDirectory: (String) -> Int32,
+        openDirectory: ((String) -> Int32)?,
         onProgress: ProgressHandler = { _ in }
     ) -> ScanResult {
         if shouldCancel() {
@@ -322,6 +338,27 @@ public actor CommonAppCacheScanner {
             return ScanResult(hits: [], incompletePaths: [], wasCancelled: true)
         }
         let homePath = home.standardizedFileURL.path
+        guard let pathResolver = CommonAppCacheRootedPathResolver(logicalRoot: homePath) else {
+            let issue = IncompletePath(path: homePath, reason: .directoryOpenFailed)
+            onProgress(Progress(
+                phase: .terminal,
+                completedGroups: 0,
+                totalGroups: 0,
+                terminalOutcome: .partial,
+                checkpoint: Checkpoint(
+                    hits: [],
+                    incompletePaths: [issue],
+                    uniqueTotalBytes: 0,
+                    uniqueLogicalBytes: 0,
+                    uniqueEntryCount: 0,
+                    completedGroupCount: 0
+                )
+            ))
+            return ScanResult(hits: [], incompletePaths: [issue])
+        }
+        let effectiveOpenDirectory: (String) -> Int32 = openDirectory ?? {
+            pathResolver.openDirectory($0)
+        }
         let deadline = ScanDeadline.make(timeout: options.timeoutSeconds)
         let fm = FileManager.default
         var incompletePaths: [IncompletePath] = []
@@ -340,7 +377,9 @@ public actor CommonAppCacheScanner {
             homePath: homePath,
             fileManager: fm,
             maxGlobExpansionsPerRule: options.maxGlobExpansionsPerRule,
+            allowsProtectedAppDataAccess: options.allowsProtectedAppDataAccess,
             excludedCandidatePathPrefixes: options.excludedCandidatePathPrefixes,
+            pathResolver: pathResolver,
             shouldCancel: shouldCancel
         )
         if resolution.wasCancelled || shouldCancel() {
@@ -365,8 +404,11 @@ public actor CommonAppCacheScanner {
             deadline: deadline,
             maxEntriesPerPath: options.maxEntriesPerPath,
             initialIncompletePaths: incompletePaths,
+            lstatPath: { path, metadata in
+                pathResolver.lstat(path, metadata: &metadata)
+            },
             shouldCancel: shouldCancel,
-            openDirectory: openDirectory,
+            openDirectory: effectiveOpenDirectory,
             onProgress: onProgress
         )
         if measurement.wasCancelled || shouldCancel() {
@@ -484,15 +526,21 @@ public actor CommonAppCacheScanner {
         homePath: String,
         fileManager: FileManager,
         maxGlobExpansionsPerRule: Int,
+        allowsProtectedAppDataAccess: Bool = false,
         shouldCancel: () -> Bool = { Task.isCancelled }
     ) -> [Candidate] {
-        prioritizedCandidateResolution(
+        guard let pathResolver = CommonAppCacheRootedPathResolver(
+            logicalRoot: homePath
+        ) else { return [] }
+        return prioritizedCandidateResolution(
             rules: rules,
             includedVerdicts: includedVerdicts,
             homePath: homePath,
             fileManager: fileManager,
             maxGlobExpansionsPerRule: maxGlobExpansionsPerRule,
+            allowsProtectedAppDataAccess: allowsProtectedAppDataAccess,
             excludedCandidatePathPrefixes: [],
+            pathResolver: pathResolver,
             shouldCancel: shouldCancel
         ).candidates
     }
@@ -503,12 +551,32 @@ public actor CommonAppCacheScanner {
         homePath: String,
         fileManager: FileManager,
         maxGlobExpansionsPerRule: Int,
+        allowsProtectedAppDataAccess: Bool,
         excludedCandidatePathPrefixes: Set<String>,
+        pathResolver: CommonAppCacheRootedPathResolver,
         shouldCancel: () -> Bool
     ) -> CandidateResolution {
         var candidates: [Candidate] = []
         var incompletePaths: [IncompletePath] = []
-        for (ruleIndex, rule) in rules.enumerated() {
+        // v2026.07.17 App Data prompt regression: sorting candidates only after resolution was
+        // too late. Glob expansion and lstat are themselves protected filesystem access, so a
+        // confirm rule in YAML order could block before the first safe candidate was measured.
+        // Resolve the same rule set in explicit verdict bands; original indices remain attached
+        // so the established deterministic order inside each band is unchanged.
+        let prioritizedRules = rules.enumerated().flatMap { ruleIndex, rule in
+            rule.paths.enumerated().compactMap { pathIndex, pathRule in
+                includedVerdicts.contains(pathRule.verdict)
+                    ? (ruleIndex, pathIndex, rule, pathRule)
+                    : nil
+            }
+        }.sorted { lhs, rhs in
+            let lhsRank = verdictPriority(lhs.3.verdict)
+            let rhsRank = verdictPriority(rhs.3.verdict)
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            if lhs.0 != rhs.0 { return lhs.0 < rhs.0 }
+            return lhs.1 < rhs.1
+        }
+        for (ruleIndex, pathIndex, rule, pathRule) in prioritizedRules {
             if shouldCancel() {
                 return CandidateResolution(
                     candidates: [],
@@ -516,8 +584,49 @@ public actor CommonAppCacheScanner {
                     wasCancelled: true
                 )
             }
-            for (pathIndex, pathRule) in rule.paths.enumerated()
-                where includedVerdicts.contains(pathRule.verdict) {
+            // The boundary check happens on the normalized pattern before glob expansion.
+            // Therefore a wildcard under Containers cannot trigger TCC merely while resolving
+            // candidate names. We report the stable container boundary rather than a fake path
+            // containing `*`, so deletion overlap checks remain valid POSIX path comparisons.
+            let normalizedPattern = URL(
+                fileURLWithPath: expandHome(pathRule.path, home: homePath)
+            ).standardizedFileURL.path
+            // v2026.07.17 static-review correction: an explicitly excluded/whitelisted pattern
+            // must disappear before either the protected-boundary check or filesystem access.
+            // Otherwise a whitelisted Container still emits a synthetic TCC partial for the
+            // whole Containers root even though this scan was never going to resolve it.
+            guard !isExcludedCandidatePath(
+                normalizedPattern,
+                prefixes: excludedCandidatePathPrefixes
+            ) else { continue }
+            if !allowsProtectedAppDataAccess,
+               let protectedBoundary = protectedAppDataBoundary(
+                   for: normalizedPattern,
+                   homePath: homePath
+               ) {
+                incompletePaths.append(IncompletePath(
+                    path: protectedBoundary,
+                    reason: .protectedAppDataSkipped
+                ))
+                continue
+            }
+            let expansion = expandPatternWithReport(
+                pathRule.path,
+                home: homePath,
+                fileManager: fileManager,
+                maxResults: maxGlobExpansionsPerRule,
+                pathResolver: pathResolver,
+                shouldCancel: shouldCancel
+            )
+            if expansion.wasCancelled {
+                return CandidateResolution(
+                    candidates: [],
+                    incompletePaths: [],
+                    wasCancelled: true
+                )
+            }
+            incompletePaths.append(contentsOf: expansion.incompletePaths)
+            for path in expansion.paths {
                 if shouldCancel() {
                     return CandidateResolution(
                         candidates: [],
@@ -525,59 +634,36 @@ public actor CommonAppCacheScanner {
                         wasCancelled: true
                     )
                 }
-                let expansion = expandPatternWithReport(
-                    pathRule.path,
-                    home: homePath,
-                    fileManager: fileManager,
-                    maxResults: maxGlobExpansionsPerRule,
-                    shouldCancel: shouldCancel
-                )
-                if expansion.wasCancelled {
-                    return CandidateResolution(
-                        candidates: [],
-                        incompletePaths: [],
-                        wasCancelled: true
-                    )
-                }
-                incompletePaths.append(contentsOf: expansion.incompletePaths)
-                for path in expansion.paths {
-                    if shouldCancel() {
-                        return CandidateResolution(
-                            candidates: [],
-                            incompletePaths: [],
-                            wasCancelled: true
-                        )
+                guard !isExcludedCandidatePath(
+                    path,
+                    prefixes: excludedCandidatePathPrefixes
+                ) else { continue }
+                var pathStat = stat()
+                // v2026.07.17 candidate-root symlink safety: `stat` followed a cache alias
+                // and classified its target directory as the deletable candidate. The
+                // traversal then counted the target subtree even though Trash would move
+                // only the symlink pathname, severely overstating reclaimable bytes. Root
+                // identity must use `lstat`, matching both descendant no-follow traversal
+                // and the final path-based Trash operation. A symlink is therefore measured
+                // as one non-directory entry (and commonly omitted when it occupies 0 B).
+                guard pathResolver.lstat(path, metadata: &pathStat) == 0 else {
+                    let metadataError = errno
+                    if metadataError != ENOENT {
+                        incompletePaths.append(IncompletePath(
+                            path: path,
+                            reason: metadataFailureReason(metadataError)
+                        ))
                     }
-                    guard !isExcludedCandidatePath(
-                        path,
-                        prefixes: excludedCandidatePathPrefixes
-                    ) else { continue }
-                    var pathStat = stat()
-                    // v2026.07.17 candidate-root symlink safety: `stat` followed a cache alias
-                    // and classified its target directory as the deletable candidate. The
-                    // traversal then counted the target subtree even though Trash would move
-                    // only the symlink pathname, severely overstating reclaimable bytes. Root
-                    // identity must use `lstat`, matching both descendant no-follow traversal
-                    // and the final path-based Trash operation. A symlink is therefore measured
-                    // as one non-directory entry (and commonly omitted when it occupies 0 B).
-                    guard lstat(path, &pathStat) == 0 else {
-                        if errno != ENOENT {
-                            incompletePaths.append(IncompletePath(
-                                path: path,
-                                reason: .metadataUnavailable
-                            ))
-                        }
-                        continue
-                    }
-                    candidates.append(Candidate(
-                        rule: rule,
-                        pathRule: pathRule,
-                        path: path,
-                        identity: PathIdentity(pathStat),
-                        originalRuleIndex: ruleIndex,
-                        originalPathIndex: pathIndex
-                    ))
+                    continue
                 }
+                candidates.append(Candidate(
+                    rule: rule,
+                    pathRule: pathRule,
+                    path: path,
+                    identity: PathIdentity(pathStat),
+                    originalRuleIndex: ruleIndex,
+                    originalPathIndex: pathIndex
+                ))
             }
         }
         if shouldCancel() {
@@ -616,6 +702,29 @@ public actor CommonAppCacheScanner {
         }
     }
 
+    /// Returns the stable TCC App Data boundary containing a candidate pattern.
+    ///
+    /// This is intentionally a structural boundary, not a vendor/app-name list: every other
+    /// developer container is protected by the same OS contract, including future apps that
+    /// are not present in vendors.yaml today. Prefix matching is component-delimited so a path
+    /// such as `Library/ContainersBackup` is never misclassified.
+    nonisolated static func protectedAppDataBoundary(
+        for normalizedPattern: String,
+        homePath: String
+    ) -> String? {
+        let roots = [
+            URL(fileURLWithPath: homePath)
+                .appendingPathComponent("Library/Containers", isDirectory: true)
+                .standardizedFileURL.path,
+            URL(fileURLWithPath: homePath)
+                .appendingPathComponent("Library/Group Containers", isDirectory: true)
+                .standardizedFileURL.path
+        ]
+        return roots.first { root in
+            normalizedPattern == root || normalizedPattern.hasPrefix(root + "/")
+        }
+    }
+
     private static func isExcludedCandidatePath(
         _ path: String,
         prefixes: Set<String>
@@ -640,11 +749,15 @@ public actor CommonAppCacheScanner {
         maxResults: Int,
         shouldCancel: () -> Bool = { Task.isCancelled }
     ) -> [String] {
-        expandPatternWithReport(
+        guard let pathResolver = CommonAppCacheRootedPathResolver(
+            logicalRoot: home
+        ) else { return [] }
+        return expandPatternWithReport(
             rawPattern,
             home: home,
             fileManager: fileManager,
             maxResults: maxResults,
+            pathResolver: pathResolver,
             shouldCancel: shouldCancel
         ).paths
     }
@@ -660,6 +773,7 @@ public actor CommonAppCacheScanner {
         home: String,
         fileManager: FileManager,
         maxResults: Int,
+        pathResolver: CommonAppCacheRootedPathResolver,
         shouldCancel: () -> Bool
     ) -> PatternExpansion {
         if shouldCancel() {
@@ -681,8 +795,8 @@ public actor CommonAppCacheScanner {
         var wasCancelled = false
         expandGlobComponents(
             NSString(string: pattern).pathComponents,
-            fileManager: fileManager,
             maxResults: maxResults,
+            pathResolver: pathResolver,
             output: &results,
             incompletePaths: &incompletePaths,
             didTruncate: &didTruncate,
@@ -711,8 +825,8 @@ public actor CommonAppCacheScanner {
 
     private static func expandGlobComponents(
         _ components: [String],
-        fileManager: FileManager,
         maxResults: Int,
+        pathResolver: CommonAppCacheRootedPathResolver,
         output: inout [String],
         incompletePaths: inout [IncompletePath],
         didTruncate: inout Bool,
@@ -736,12 +850,51 @@ public actor CommonAppCacheScanner {
         let glob = components[globIndex]
         let rest = Array(components[(globIndex + 1)...])
         let base = NSString.path(withComponents: baseComponents.isEmpty ? ["/"] : baseComponents)
-        let names: [String]
-        do {
-            names = try fileManager.contentsOfDirectory(atPath: base)
-        } catch {
-            if !isMissingPathError(error) {
-                incompletePaths.append(IncompletePath(path: base, reason: .directoryOpenFailed))
+        let fd = pathResolver.openDirectory(base)
+        guard fd >= 0 else {
+            let openError = errno
+            if openError != ENOENT {
+                incompletePaths.append(IncompletePath(
+                    path: base,
+                    reason: openError == ELOOP || openError == ENOTDIR
+                        ? .pathIdentityChanged
+                        : .directoryOpenFailed
+                ))
+            }
+            return
+        }
+        defer { Darwin.close(fd) }
+        var names: [String] = []
+        let enumerationOutcome = BulkEnumerate.enumerate(
+            fd: fd,
+            dirPath: base,
+            shouldCancel: shouldCancel,
+            fallbackPolicy: .boundedMemory
+        ) { entry in
+            names.append(entry.name)
+            return true
+        }
+        switch enumerationOutcome {
+        case .complete:
+            break
+        case .completeWithIssues(let issues):
+            incompletePaths.append(contentsOf: issues.map {
+                IncompletePath(path: $0.path, reason: .metadataUnavailable)
+            })
+        case .failed(let issue):
+            incompletePaths.append(IncompletePath(
+                path: issue.path,
+                reason: .enumerationFailed
+            ))
+            return
+        case .stoppedByConsumer:
+            if shouldCancel() {
+                wasCancelled = true
+            } else {
+                incompletePaths.append(IncompletePath(
+                    path: base,
+                    reason: .enumerationFailed
+                ))
             }
             return
         }
@@ -767,8 +920,8 @@ public actor CommonAppCacheScanner {
             }
             expandGlobComponents(
                 baseComponents + [name] + rest,
-                fileManager: fileManager,
                 maxResults: maxResults,
+                pathResolver: pathResolver,
                 output: &output,
                 incompletePaths: &incompletePaths,
                 didTruncate: &didTruncate,
@@ -777,20 +930,6 @@ public actor CommonAppCacheScanner {
             )
             if didTruncate || wasCancelled { return }
         }
-    }
-
-    private static func isMissingPathError(_ error: Error) -> Bool {
-        let nsError = error as NSError
-        if nsError.domain == NSCocoaErrorDomain,
-           CocoaError.Code(rawValue: nsError.code) == .fileNoSuchFile {
-            return true
-        }
-        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError,
-           underlying.domain == NSPOSIXErrorDomain,
-           underlying.code == Int(ENOENT) {
-            return true
-        }
-        return false
     }
 
     // MARK: - Shared candidate forest measurement
@@ -849,6 +988,7 @@ public actor CommonAppCacheScanner {
         deadline: Date,
         maxEntriesPerPath: Int,
         initialIncompletePaths: [IncompletePath],
+        lstatPath: (String, inout stat) -> Int32,
         shouldCancel: () -> Bool,
         openDirectory: (String) -> Int32,
         onProgress: ProgressHandler
@@ -953,6 +1093,7 @@ public actor CommonAppCacheScanner {
                     indexByPath: indexByPath,
                     deadline: deadline,
                     maxEntriesPerPath: maxEntriesPerPath,
+                    lstatPath: lstatPath,
                     shouldCancel: shouldCancel,
                     openDirectory: openDirectory,
                     started: &started,
@@ -1142,6 +1283,7 @@ public actor CommonAppCacheScanner {
         indexByPath: [String: Int],
         deadline: Date,
         maxEntriesPerPath: Int,
+        lstatPath: (String, inout stat) -> Int32,
         shouldCancel: () -> Bool,
         openDirectory: (String) -> Int32,
         started: inout Set<Int>,
@@ -1162,11 +1304,12 @@ public actor CommonAppCacheScanner {
         let rootCandidate = candidates[rootIndex]
         guard rootCandidate.isDirectory else {
             var metadata = stat()
-            guard lstat(rootCandidate.path, &metadata) == 0 else {
-                if errno != ENOENT {
+            guard lstatPath(rootCandidate.path, &metadata) == 0 else {
+                let metadataError = errno
+                if metadataError != ENOENT {
                     incompletePaths.append(IncompletePath(
                         path: rootCandidate.path,
-                        reason: .metadataUnavailable
+                        reason: metadataFailureReason(metadataError)
                     ))
                 }
                 return TraversalOutcome(timedOut: false, wasCancelled: false)
@@ -1203,11 +1346,12 @@ public actor CommonAppCacheScanner {
         }
 
         var rootStat = stat()
-        guard lstat(rootCandidate.path, &rootStat) == 0 else {
-            if errno != ENOENT {
+        guard lstatPath(rootCandidate.path, &rootStat) == 0 else {
+            let metadataError = errno
+            if metadataError != ENOENT {
                 incompletePaths.append(IncompletePath(
                     path: rootCandidate.path,
-                    reason: .metadataUnavailable
+                    reason: metadataFailureReason(metadataError)
                 ))
             }
             return TraversalOutcome(timedOut: false, wasCancelled: false)
@@ -1646,7 +1790,7 @@ public actor CommonAppCacheScanner {
         deadline: Date,
         maxEntries: Int,
         shouldCancel: () -> Bool = { Task.isCancelled },
-        openDirectory: (String) -> Int32 = safeOpenDirectory
+        openDirectory: ((String) -> Int32)? = nil
     ) -> SizeStat {
         if shouldCancel() {
             return SizeStat(
@@ -1656,12 +1800,35 @@ public actor CommonAppCacheScanner {
                 wasCancelled: true
             )
         }
+        let resolverRoot = isDirectory
+            ? path
+            : NSString(string: path).deletingLastPathComponent
+        guard let pathResolver = CommonAppCacheRootedPathResolver(
+            logicalRoot: resolverRoot.isEmpty ? "/" : resolverRoot
+        ) else {
+            return SizeStat(
+                bytes: 0,
+                entryCount: 0,
+                incompletePaths: [IncompletePath(
+                    path: path,
+                    reason: .directoryOpenFailed
+                )],
+                wasCancelled: false
+            )
+        }
+        let effectiveOpenDirectory: (String) -> Int32 = openDirectory ?? {
+            pathResolver.openDirectory($0)
+        }
         if !isDirectory {
             var st = stat()
-            guard lstat(path, &st) == 0 else {
-                let issues = errno == ENOENT
+            guard pathResolver.lstat(path, metadata: &st) == 0 else {
+                let metadataError = errno
+                let issues = metadataError == ENOENT
                     ? []
-                    : [IncompletePath(path: path, reason: .metadataUnavailable)]
+                    : [IncompletePath(
+                        path: path,
+                        reason: metadataFailureReason(metadataError)
+                    )]
                 return SizeStat(
                     bytes: 0,
                     entryCount: 0,
@@ -1689,8 +1856,11 @@ public actor CommonAppCacheScanner {
             path,
             deadline: deadline,
             maxEntries: maxEntries,
+            lstatPath: { candidatePath, metadata in
+                pathResolver.lstat(candidatePath, metadata: &metadata)
+            },
             shouldCancel: shouldCancel,
-            openDirectory: openDirectory
+            openDirectory: effectiveOpenDirectory
         )
     }
 
@@ -1698,6 +1868,7 @@ public actor CommonAppCacheScanner {
         _ rootPath: String,
         deadline: Date,
         maxEntries: Int,
+        lstatPath: (String, inout stat) -> Int32,
         shouldCancel: () -> Bool,
         openDirectory: (String) -> Int32
     ) -> SizeStat {
@@ -1710,10 +1881,14 @@ public actor CommonAppCacheScanner {
             )
         }
         var rootStat = stat()
-        guard lstat(rootPath, &rootStat) == 0 else {
-            let issues = errno == ENOENT
+        guard lstatPath(rootPath, &rootStat) == 0 else {
+            let metadataError = errno
+            let issues = metadataError == ENOENT
                 ? []
-                : [IncompletePath(path: rootPath, reason: .metadataUnavailable)]
+                : [IncompletePath(
+                    path: rootPath,
+                    reason: metadataFailureReason(metadataError)
+                )]
             return SizeStat(
                 bytes: 0,
                 entryCount: 0,
@@ -1868,10 +2043,120 @@ public actor CommonAppCacheScanner {
         return incompletePaths.filter { seen.insert($0).inserted }
     }
 
-    /// 生产目录句柄永不跟随最后一级 symlink，并要求内核打开对象本身就是目录。
-    /// `lstat → open → fstat` 的身份复核同时覆盖解析后 rename/symlink 换件；测试注入的
-    /// open closure 即使不带这些 flags，也必须通过同一 fstat 身份闸门。
-    private static func safeOpenDirectory(_ path: String) -> Int32 {
-        Darwin.open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    private static func metadataFailureReason(_ errorCode: Int32) -> IncompletePath.Reason {
+        errorCode == ELOOP || errorCode == ENOTDIR
+            ? .pathIdentityChanged
+            : .metadataUnavailable
+    }
+}
+
+/// A scan HOME is the trusted boundary; only descendants below its frozen descriptor are opened
+/// component-by-component with no-follow semantics. This preserves macOS's legitimate absolute
+/// aliases (`/var -> /private/var`, `/tmp -> /private/tmp`) above a temp/custom HOME while still
+/// preventing an in-HOME glob/static ancestor from becoming a symlink into Containers.
+private final class CommonAppCacheRootedPathResolver {
+    private let logicalRoot: String
+    private let rootFD: Int32
+    private let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+
+    init?(logicalRoot: String) {
+        let normalizedLogicalRoot = URL(fileURLWithPath: logicalRoot)
+            .standardizedFileURL
+            .path
+        let canonicalRoot = URL(fileURLWithPath: normalizedLogicalRoot)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        let descriptor = Self.openCanonicalDirectory(canonicalRoot)
+        guard descriptor >= 0 else { return nil }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0,
+              (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else {
+            Darwin.close(descriptor)
+            return nil
+        }
+        self.logicalRoot = normalizedLogicalRoot
+        self.rootFD = descriptor
+    }
+
+    deinit {
+        Darwin.close(rootFD)
+    }
+
+    func openDirectory(_ path: String) -> Int32 {
+        guard let components = relativeComponents(for: path) else {
+            errno = EPERM
+            return -1
+        }
+        var currentFD = Darwin.openat(rootFD, ".", flags, 0)
+        guard currentFD >= 0 else { return -1 }
+        for component in components {
+            let nextFD = Darwin.openat(currentFD, component, flags, 0)
+            if nextFD < 0 {
+                let openError = errno
+                Darwin.close(currentFD)
+                errno = openError
+                return -1
+            }
+            Darwin.close(currentFD)
+            currentFD = nextFD
+        }
+        return currentFD
+    }
+
+    func lstat(_ path: String, metadata: inout stat) -> Int32 {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        if normalized == logicalRoot {
+            return fstat(rootFD, &metadata)
+        }
+        let parent = NSString(string: normalized).deletingLastPathComponent
+        let name = NSString(string: normalized).lastPathComponent
+        let parentFD = openDirectory(parent.isEmpty ? logicalRoot : parent)
+        guard parentFD >= 0 else { return -1 }
+        let result = Darwin.fstatat(parentFD, name, &metadata, AT_SYMLINK_NOFOLLOW)
+        let metadataError = errno
+        Darwin.close(parentFD)
+        if result != 0 { errno = metadataError }
+        return result
+    }
+
+    private func relativeComponents(for path: String) -> [String]? {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        if normalized == logicalRoot { return [] }
+        let relative: String
+        if logicalRoot == "/" {
+            guard normalized.hasPrefix("/") else { return nil }
+            relative = String(normalized.dropFirst())
+        } else {
+            guard normalized.hasPrefix(logicalRoot + "/") else { return nil }
+            relative = String(normalized.dropFirst(logicalRoot.count + 1))
+        }
+        return NSString(string: relative).pathComponents.filter {
+            !$0.isEmpty && $0 != "/"
+        }
+    }
+
+    private static func openCanonicalDirectory(_ path: String) -> Int32 {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard normalized.hasPrefix("/") else {
+            errno = EINVAL
+            return -1
+        }
+        let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        var currentFD = Darwin.open("/", flags)
+        guard currentFD >= 0 else { return -1 }
+        for component in NSString(string: normalized).pathComponents
+            where component != "/" && !component.isEmpty {
+            let nextFD = Darwin.openat(currentFD, component, flags, 0)
+            if nextFD < 0 {
+                let openError = errno
+                Darwin.close(currentFD)
+                errno = openError
+                return -1
+            }
+            Darwin.close(currentFD)
+            currentFD = nextFD
+        }
+        return currentFD
     }
 }

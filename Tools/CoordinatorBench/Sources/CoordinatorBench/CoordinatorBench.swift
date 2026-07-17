@@ -6,6 +6,7 @@ import AppUI
 // 目的：在不依赖 SwiftUI Render 的情况下，复现 ScanCoordinator 全栈数据流耗时。
 // 用法：
 //   swift run -c release CoordinatorBench --root /Users/<you>/workspace
+//   swift run -c release CoordinatorBench --root /Users/<you> --developer
 //
 // 输出格式（机器可解析）：
 //   BENCH_RESULT path=<root> elapsed_ms=<int> producer_elapsed_ms=<int>
@@ -19,7 +20,13 @@ import AppUI
 //   - 二者差距小但 App 仍卡 → 病灶在 SwiftUI Render / Observation 层
 
 @MainActor
-func runBench(root: String, timeoutSeconds: Double, deepIndex: Bool, largeFiles: Bool) async {
+func runBench(
+    root: String,
+    timeoutSeconds: Double,
+    deepIndex: Bool,
+    largeFiles: Bool,
+    developer: Bool
+) async {
     let url = URL(fileURLWithPath: root)
     let category = largeFiles
         ? ScanCategory.largeFiles(home: root)
@@ -28,13 +35,21 @@ func runBench(root: String, timeoutSeconds: Double, deepIndex: Bool, largeFiles:
     // v1.3.z 性能开关：默认关闭 TreeBrowserView 用的深索引。
     // 这会跳过 ingest 中"沿祖先上溯字典累加"的热路径（占主线程 ~80% 时间）。
     // 不影响 buckets 主列表 / totalBytes / scannedFiles / largeFileLeaves。
-    let coordinator = ScanCoordinator(enableTreeDeepIndex: deepIndex)
+    let coordinator = ScanCoordinator(home: root, enableTreeDeepIndex: deepIndex)
     let started = Date()
 
-    coordinator.scan(
-        category: category,
-        largeFileMinBytes: largeFiles ? 100 * 1024 * 1024 : 0
-    )
+    if developer {
+        // v2026.07.17 full-chain regression mode: BulkScanner/Large Files can be healthy while
+        // the Developer pre-scan still spends a minute discovering candidate roots. Keep this
+        // mode in the same coordinator harness so discovery, root queueing and terminal drain
+        // are measured as one real product chain without launching the App.
+        coordinator.scanDeveloper()
+    } else {
+        coordinator.scan(
+            category: category,
+            largeFileMinBytes: largeFiles ? 100 * 1024 * 1024 : 0
+        )
+    }
 
     // 轮询 isFinished —— 用 50ms tick 既不浪费 CPU，也能拿到合理精度
     let pollInterval: UInt64 = 50_000_000  // 50ms
@@ -69,8 +84,11 @@ func runBench(root: String, timeoutSeconds: Double, deepIndex: Bool, largeFiles:
             FileHandle.standardError.write(Data("[bench] t=\(String(format: "%.1f", elapsed))s files=\(filesNow) bytes=\(totalNow / 1_048_576)MB quiet=\(quietTicks)\n".utf8))
         }
 
-        // 探测"完全卡死"：连续 60 秒没有新数据进来 → 提前退出
-        if quietTicks >= 1200 {
+        // Developer 的 descriptor discovery 在候选 forest 建立前不会改变 snapshot
+        // bytes/files；大型 HOME 合法扫描超过 60s 时，旧 snapshot-only watchdog 会把
+        // 性能回归工具自身误判成 STUCK。该模式由明确的总 timeout 收敛，真正的 App
+        // liveness 另由持续 C4 观察；普通/Large Files 保留旧的 60s 快速失败信号。
+        if !developer, quietTicks >= 1200 {
             print("BENCH_STUCK elapsed_ms=\(Int(elapsed * 1000)) totalBytes=\(totalNow) fileCount=\(filesNow) isFinished=false")
             FileHandle.standardError.write(Data("[bench] STUCK: no progress for 60s, aborting\n".utf8))
             coordinator.cancel()
@@ -91,12 +109,14 @@ func runBench(root: String, timeoutSeconds: Double, deepIndex: Bool, largeFiles:
     print("BENCH_RESULT path=\(root) elapsed_ms=\(Int(elapsed * 1000)) producer_elapsed_ms=\(producerElapsedMs) drain_lag_ms=\(drainLagMs) totalBytes=\(snap.totalBytes) fileCount=\(snap.scannedFileCount) candidateCount=\(candidateCount) isFinished=true isComplete=\(snap.isComplete)")
 }
 
-// 简单参数解析：--root <path>  [--timeout <seconds>] [--deep-index] [--large-files]
+// 简单参数解析：--root <path> [--timeout <seconds>] [--deep-index]
+//             [--large-files | --developer]
 let args = CommandLine.arguments
 var rootArg: String?
 var timeoutArg: Double = 600.0  // 默认 10 分钟兜底
 var deepIndexArg: Bool = false  // 默认关闭，对齐 PerfBench 测纯 ingest 路径
 var largeFilesArg: Bool = false
+var developerArg: Bool = false
 var i = 1
 while i < args.count {
     let a = args[i]
@@ -104,10 +124,15 @@ while i < args.count {
     if a == "--timeout", i + 1 < args.count { timeoutArg = Double(args[i + 1]) ?? 600.0; i += 2; continue }
     if a == "--deep-index" { deepIndexArg = true; i += 1; continue }
     if a == "--large-files" { largeFilesArg = true; i += 1; continue }
+    if a == "--developer" { developerArg = true; i += 1; continue }
     i += 1
 }
 guard let root = rootArg else {
-    FileHandle.standardError.write(Data("usage: CoordinatorBench --root <path> [--timeout <seconds>] [--deep-index] [--large-files]\n".utf8))
+    FileHandle.standardError.write(Data("usage: CoordinatorBench --root <path> [--timeout <seconds>] [--deep-index] [--large-files | --developer]\n".utf8))
+    exit(1)
+}
+guard !(largeFilesArg && developerArg) else {
+    FileHandle.standardError.write(Data("--large-files and --developer are mutually exclusive\n".utf8))
     exit(1)
 }
 
@@ -115,13 +140,15 @@ let capturedRoot = root
 let capturedTimeout = timeoutArg
 let capturedDeep = deepIndexArg
 let capturedLargeFiles = largeFilesArg
+let capturedDeveloper = developerArg
 let task = Task { @MainActor in
-    FileHandle.standardError.write(Data("[bench] config root=\(capturedRoot) timeout=\(Int(capturedTimeout))s deepIndex=\(capturedDeep) largeFiles=\(capturedLargeFiles)\n".utf8))
+    FileHandle.standardError.write(Data("[bench] config root=\(capturedRoot) timeout=\(Int(capturedTimeout))s deepIndex=\(capturedDeep) largeFiles=\(capturedLargeFiles) developer=\(capturedDeveloper)\n".utf8))
     await runBench(
         root: capturedRoot,
         timeoutSeconds: capturedTimeout,
         deepIndex: capturedDeep,
-        largeFiles: capturedLargeFiles
+        largeFiles: capturedLargeFiles,
+        developer: capturedDeveloper
     )
     exit(0)
 }
