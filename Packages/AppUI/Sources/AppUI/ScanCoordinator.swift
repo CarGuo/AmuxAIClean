@@ -1678,7 +1678,12 @@ public final class ScanCoordinator: ObservableObject {
         // 旧实现把快照加载与扫描并发启动，首帧可能短暂暴露甚至选中已加白路径。
         whitelistSnapshot = []
 
-        let rootURL = category.rootURL
+        // v2026.07.18 全盘正确性修复：`/` 是只读 System 卷视图，不是整台 Mac 的
+        // 数据枚举根。若物理扫描 `/`，staySingleVolume 会把 Data 卷挡在卷边界外，
+        // 最终只剩截图中的 System/usr 等小量结果。全盘会话必须从 Data 卷枚举，
+        // 同时继续用公开 `/` 作为 UI、Tree 与安全证据命名空间。
+        let rootURL = Self.physicalScanRootURL(for: category)
+        let displayRootPath = category.rootPath
         let categoryID = category.id
         let generation = scanGeneration
         GSYLog.notice(.flow, "scan.start category=\(category.id) root=\(rootURL.path) includeHidden=\(includeHidden) largeFileMinBytes=\(largeFileMinBytes)")
@@ -1710,7 +1715,10 @@ public final class ScanCoordinator: ObservableObject {
             guard let self,
                   self.ownsScan(categoryID: categoryID, generation: generation) else { return }
             self.whitelistSnapshot = whitelist
-            await self.runScan(rootURL: rootURL, categoryID: categoryID, generation: generation,
+            await self.runScan(rootURL: rootURL,
+                               displayRootPath: displayRootPath,
+                               categoryID: categoryID,
+                               generation: generation,
                                includeHidden: includeHidden, staySingleVolume: true,
                                largeFileTopNOnly: topNOnlyLargeFileScan)
         }
@@ -1720,6 +1728,14 @@ public final class ScanCoordinator: ObservableObject {
     /// MainView 路径栏输入 `/` 回车 / 整盘扫描按钮 都走这个 API，避免在多处硬编码 `ScanCategory.fullDisk`。
     public func scanFullDisk(includeHidden: Bool = true) {
         scan(category: .fullDisk, includeHidden: includeHidden)
+    }
+
+    /// 物理枚举根与公开 category 路径的唯一映射边界。保留为 internal 供入口合同测试，
+    /// 防止未来重构再次把整盘物理根退回只读 System 卷的 `/`。
+    nonisolated static func physicalScanRootURL(for category: ScanCategory) -> URL {
+        category.kind == .fullDisk
+            ? Firmlinks.recommendedDataVolumeRoot
+            : category.rootURL
     }
 
     /// M4-T2：版本化收集根扫描入口。
@@ -2779,12 +2795,15 @@ public final class ScanCoordinator: ObservableObject {
     }
 
     private func runScan(rootURL: URL,
+                         displayRootPath: String,
                          categoryID: String,
                          generation: UUID,
                          includeHidden: Bool,
                          staySingleVolume: Bool = true,
                          largeFileTopNOnly: Bool = false) async {
-        let rootPath = rootURL.path
+        // 物理枚举根与公开展示根在整盘会话中刻意不同：
+        // `/System/Volumes/Data` 提供完整数据，`/` 保持 Finder/用户熟悉的路径合同。
+        let rootPath = displayRootPath
         // v1.0 T2：把 AppSettings.showHidden 透传到 ScanOptions
         // v1.0 T5：整盘扫描时叠加 staySingleVolume=true（详见 ScanOptions 文档）
         // v1.3：FDA 已授予时关掉 TCC 硬 skip，让用户原本就有权限读的目录被正常下钻；
@@ -2834,7 +2853,8 @@ public final class ScanCoordinator: ObservableObject {
         for await event in scanner.scan(
             root: rootURL,
             delivery: delivery,
-            topLevelPathMappings: projectionMappings
+            topLevelPathMappings: projectionMappings,
+            topLevelProjectionRootPath: rootPath == "/" ? "/" : nil
         ) {
             if Task.isCancelled { break }
             guard await waitForPruneTransactionBarrier() else { break }
@@ -3724,7 +3744,7 @@ public final class ScanCoordinator: ObservableObject {
     }
 
     private static func makeFullDiskFirmlinkRules() -> [ScanPathPrefixMapping] {
-        return Firmlinks.load()
+        let firmlinkRules = Firmlinks.load()
             .map { source, target in
                 let publicPrefix = source.hasPrefix("/") ? source : "/" + source
                 let relativeTarget = target.hasPrefix("/") ? String(target.dropFirst()) : target
@@ -3733,7 +3753,14 @@ public final class ScanCoordinator: ObservableObject {
                     destinationPrefix: publicPrefix
                 )
             }
-            .sorted { lhs, rhs in
+        // 未出现在 `/usr/share/firmlinks` 的 Data 卷条目仍属于公开根的同名路径。
+        // 该最短 fallback 必须排在所有精确 firmlink 后面。
+        return (firmlinkRules + [
+            ScanPathPrefixMapping(
+                sourcePrefix: fullDiskDataRootPath,
+                destinationPrefix: "/"
+            )
+        ]).sorted { lhs, rhs in
                 lhs.sourcePrefix.count > rhs.sourcePrefix.count
             }
     }

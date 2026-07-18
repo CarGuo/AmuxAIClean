@@ -45,6 +45,22 @@ final class ScanCoordinatorFullDiskTests: XCTestCase {
         XCTAssertEqual(ScanCategory.fullDisk.id, "fulldisk.root")
     }
 
+    func test_fullDiskPhysicalRootUsesDataVolumeWhileDisplayRootRemainsSlash() {
+        XCTAssertEqual(
+            ScanCoordinator.physicalScanRootURL(for: .fullDisk).path,
+            "/System/Volumes/Data",
+            "全盘物理枚举必须从 Data 卷开始，否则 staySingleVolume 会漏掉真实用户数据"
+        )
+        XCTAssertEqual(ScanCategory.fullDisk.rootPath, "/")
+
+        let custom = ScanCategory.makeCustom(url: URL(fileURLWithPath: "/tmp/example"))
+        XCTAssertEqual(
+            ScanCoordinator.physicalScanRootURL(for: custom).path,
+            "/tmp/example",
+            "非全盘入口必须保留用户选择的物理根"
+        )
+    }
+
     func test_fullDiskBucketProjection_doesNotCreateDoubleSlash() {
         let app = ScanCoordinator.bucketProjection(nodePath: "/Applications/Xcode.app",
                                                    rootPath: "/")

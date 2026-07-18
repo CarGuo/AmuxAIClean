@@ -83,10 +83,6 @@ struct UndoHistoryScreen: View {
                 }
             }
         }
-        .onAppear {
-            // 视图打开时主动刷新一次：用户可能刚清空了系统废纸篓
-            store.cleanupStaleEntries()
-        }
         .alert(AppLocalization.string("undo_history.alert.title", locale: locale), isPresented: Binding(
             get: { alertPresentation != nil },
             set: { if !$0 { alertPresentation = nil } }

@@ -103,12 +103,14 @@ public actor BulkScanner {
     public nonisolated func scan(
         root: URL,
         delivery: EventDelivery = .complete,
-        topLevelPathMappings: [ScanPathPrefixMapping] = []
+        topLevelPathMappings: [ScanPathPrefixMapping] = [],
+        topLevelProjectionRootPath: String? = nil
     ) -> AsyncStream<ScanEvent> {
         scan(
             root: root,
             delivery: delivery,
             topLevelPathMappings: topLevelPathMappings,
+            topLevelProjectionRootPath: topLevelProjectionRootPath,
             allocationLedger: InodeSet()
         )
     }
@@ -123,6 +125,7 @@ public actor BulkScanner {
         root: URL,
         delivery: EventDelivery,
         topLevelPathMappings: [ScanPathPrefixMapping],
+        topLevelProjectionRootPath: String?,
         allocationLedger: InodeSet
     ) -> AsyncStream<ScanEvent> {
         // v1.3 P0 修复：原 `.bufferingNewest(8192)` 在 195k+ 文件场景会静默丢事件
@@ -308,7 +311,8 @@ public actor BulkScanner {
                                 rootDev: rootDev,
                                 continuation: continuation,
                                 delivery: delivery,
-                                topLevelPathMappings: projectionMappings
+                                topLevelPathMappings: projectionMappings,
+                                topLevelProjectionRootPath: topLevelProjectionRootPath
                             )
                         }
                     }
@@ -379,7 +383,8 @@ public actor BulkScanner {
         rootDev: UInt64,
         continuation: AsyncStream<ScanEvent>.Continuation,
         delivery: EventDelivery,
-        topLevelPathMappings: [ScanPathPrefixMapping]
+        topLevelPathMappings: [ScanPathPrefixMapping],
+        topLevelProjectionRootPath: String?
     ) async {
         while !Task.isCancelled {
             let nextOp = await queue.popOrFinish()
@@ -402,7 +407,8 @@ public actor BulkScanner {
                     rootDev: rootDev,
                     continuation: continuation,
                     delivery: delivery,
-                    topLevelPathMappings: topLevelPathMappings
+                    topLevelPathMappings: topLevelPathMappings,
+                    topLevelProjectionRootPath: topLevelProjectionRootPath
                 )
                 // 注意顺序：必须先把发现的子目录全部 push 完才 markCompleted，
                 // 否则可能出现"queue 空 + inFlight==0"假象 → 其他 worker 提前退出 → 漏扫。
@@ -424,7 +430,8 @@ public actor BulkScanner {
         rootDev: UInt64,
         continuation: AsyncStream<ScanEvent>.Continuation,
         delivery: EventDelivery,
-        topLevelPathMappings: [ScanPathPrefixMapping]
+        topLevelPathMappings: [ScanPathPrefixMapping],
+        topLevelProjectionRootPath: String?
     ) async {
         guard !Task.isCancelled else { return }
         let dirPath = work.path
@@ -523,13 +530,16 @@ public actor BulkScanner {
         // 才跨 actor 合并一次。不能在 entry callback 内逐文件 await，否则只是把
         // “MainActor 每节点一次”换成“projection actor 每节点一次”。
         var localTopLevel: [String: LocalTopLevelEntry] = [:]
+        // v2026.07.18：全盘扫描的物理根是 Data 卷，公开投影根是 `/`。两者不可
+        // 再隐式假设相同，否则路径映射完成后会因不再位于物理根前缀下而整批丢弃。
+        let projectionRootPath = topLevelProjectionRootPath ?? rootPath
         let fixedTopLevelBucketPath: String? = {
             guard delivery.collectsTopLevelProjection, dirPath != rootPath else { return nil }
             let projectedPath = projectedTopLevelPath(
                 dirPath,
                 mappings: topLevelPathMappings
             )
-            return topLevelBucketPath(for: projectedPath, rootPath: rootPath)
+            return topLevelBucketPath(for: projectedPath, rootPath: projectionRootPath)
         }()
         var fixedTopLevelEntry = fixedTopLevelBucketPath.map {
             LocalTopLevelEntry(path: $0, isDirectory: true)
@@ -673,7 +683,7 @@ public actor BulkScanner {
                 )
                 guard let bucketPath = topLevelBucketPath(
                     for: projectedPath,
-                    rootPath: rootPath
+                    rootPath: projectionRootPath
                 ) else { return true }
                 var aggregate = localTopLevel[bucketPath] ?? LocalTopLevelEntry(
                     path: bucketPath,

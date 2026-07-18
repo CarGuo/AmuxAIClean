@@ -10,7 +10,8 @@ import LogKit
 /// - 支持单条恢复：把 `trashedPath` mv 回 `originalPath`。
 /// - 若 `originalPath` 已存在，先生成显式冲突计划；只有用户选择“跳过”或“恢复为新名称”后才执行。
 ///   恢复链路本身永远不会移动、覆盖或删除用户后来创建的同名文件。
-/// - cleanupStaleEntries：用户清空了系统废纸篓后，若 trashedPath 已不存在则该批次自动从历史里剔除。
+/// - 最近操作记录与“当前仍可恢复”是两个不同事实：清空废纸篓后仍保留批次，恢复时再返回
+///   类型化 `trashedItemMissing`。禁止因恢复目标消失而静默删除操作历史。
 ///
 /// **设计参考**：[Pearcleaner UndoHistoryManager](file:///Users/guoshuyu/workspace/GSYCleanMac/tmp/competitors/Pearcleaner/Pearcleaner/Logic/UndoHistoryManager.swift)。
 ///
@@ -192,29 +193,6 @@ public final class UndoHistoryStore: ObservableObject {
         }
         saveHistory()
         GSYLog.info(.trash, "UndoHistory 写入 source=\(source) pairs=\(filePairs.count) total=\(history.count)")
-    }
-
-    /// 检查并移除"trashedPath 已不存在"的陈旧 pair（用户手动清空了系统废纸篓）。
-    /// **判定口径**：逐 pair 剔除不可恢复项；若 record 已没有任何可恢复 pair，才剔除整条 record。
-    public func cleanupStaleEntries() {
-        let oldHistory = history
-        history = history.compactMap { record in
-            let existingPairs = record.filePairs.filter { pair in
-                fm.fileExists(atPath: pair.trashed)
-            }
-            guard !existingPairs.isEmpty else { return nil }
-            if existingPairs.count == record.filePairs.count { return record }
-            return Record(
-                id: record.id,
-                timestamp: record.timestamp,
-                source: record.source,
-                filePairs: existingPairs
-            )
-        }
-        if history != oldHistory {
-            saveHistory()
-            GSYLog.info(.trash, "UndoHistory cleanupStaleEntries 更新 records \(oldHistory.count) → \(history.count)")
-        }
     }
 
     /// 后台检查一条记录，冻结恢复前的冲突 / 缺失快照。执行时仍会重新检查目标路径，
@@ -508,7 +486,6 @@ public final class UndoHistoryStore: ObservableObject {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             history = try decoder.decode([Record].self, from: data)
-            cleanupStaleEntries()
         } catch {
             GSYLog.error(.trash, "UndoHistory loadHistory 失败 err=\(error.localizedDescription) path=\(storeURL.path)")
         }

@@ -239,6 +239,7 @@ public actor MultiRootScanner {
                     root: root,
                     delivery: delivery,
                     topLevelPathMappings: [],
+                    topLevelProjectionRootPath: nil,
                     allocationLedger: allocationLedger
                 )
                 var iterator = stream.makeAsyncIterator()

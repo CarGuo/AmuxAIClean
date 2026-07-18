@@ -120,6 +120,9 @@ public struct PortCleanerScreen: View {
         static let userWidth: CGFloat = 90
         static let actionWidth: CGFloat = 90
         static let childTextIndent: CGFloat = 14
+        /// v2026.07.18：透明占位只负责列宽，必须冻结高度。`Color.clear` 若只约束宽度，
+        /// 会在纵向可伸缩的表头里吞掉 ScrollView 的剩余高度，把列名与首行拉开数百点。
+        static let columnPlaceholderHeight: CGFloat = 1
     }
 
     private let scanner: PortCleanerScanner
@@ -344,11 +347,14 @@ public struct PortCleanerScreen: View {
     private var tableHeader: some View {
         HStack(spacing: TableMetrics.columnSpacing) {
             Color.clear
-                .frame(width: TableMetrics.disclosureWidth)
+                .frame(width: TableMetrics.disclosureWidth,
+                       height: TableMetrics.columnPlaceholderHeight)
             Color.clear
-                .frame(width: TableMetrics.checkboxWidth)
+                .frame(width: TableMetrics.checkboxWidth,
+                       height: TableMetrics.columnPlaceholderHeight)
             Color.clear
-                .frame(width: TableMetrics.iconWidth)
+                .frame(width: TableMetrics.iconWidth,
+                       height: TableMetrics.columnPlaceholderHeight)
             Text("port_cleaner.column.process", bundle: .module)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Text("port_cleaner.column.local", bundle: .module)
@@ -385,7 +391,8 @@ public struct PortCleanerScreen: View {
             .buttonStyle(.plain)
 
             Color.clear
-                .frame(width: TableMetrics.checkboxWidth)
+                .frame(width: TableMetrics.checkboxWidth,
+                       height: TableMetrics.columnPlaceholderHeight)
 
             Image(systemName: "app.connected.to.app.below.fill")
                 .foregroundStyle(.tint)
@@ -439,7 +446,8 @@ public struct PortCleanerScreen: View {
     private func entryRow(_ entry: PortCleanerEntry, textIndent: CGFloat, showSelection: Bool) -> some View {
         HStack(spacing: TableMetrics.columnSpacing) {
             Color.clear
-                .frame(width: TableMetrics.disclosureWidth)
+                .frame(width: TableMetrics.disclosureWidth,
+                       height: TableMetrics.columnPlaceholderHeight)
             if showSelection {
                 Toggle("", isOn: Binding(
                     get: { selectedIDs.contains(entry.id) },

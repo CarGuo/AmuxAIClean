@@ -6,7 +6,7 @@ import XCTest
 /// 覆盖：
 /// 1. addRecord 头插 + LRU + 持久化到磁盘
 /// 2. loadHistory 跨实例读取（验 Codable + atomic write）
-/// 3. cleanupStaleEntries：所有 pair 的 trashedPath 都不存在 → 整条剔除；部分存在 → 保留
+/// 3. 历史与恢复能力分离：trashedPath 消失后仍保留最近操作记录
 /// 4. restoreRecord happy path：把 trashed 文件 mv 回 original，record 自动从 history 删除
 /// 5. 同名冲突先形成显式 plan；skip / restore-with-new-name 都不触碰现有文件
 @MainActor
@@ -89,8 +89,7 @@ final class UndoHistoryStoreTests: XCTestCase {
     func testReloadFromDiskAcrossInstances() throws {
         let dir = tempDir()
         let url = storeURL(in: dir)
-        // 准备一个真实存在的 trashed 路径，否则 loadHistory 会调 cleanupStaleEntries
-        // 把"trashedPath 全不存在"的记录擦掉。
+        // 准备一个真实存在的 trashed 路径，验证持久化 round-trip。
         let realTrashed = dir.appendingPathComponent("trashed.log").path
         try "x".write(toFile: realTrashed, atomically: true, encoding: .utf8)
 
@@ -107,7 +106,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         XCTAssertEqual(s2.history.first?.filePairs.first?.original, "/A/a.log")
     }
 
-    func testCleanupStaleEntriesRemovesOnlyFullyMissing() throws {
+    func testMissingTrashItemsDoNotEraseCleanupHistoryAfterReload() throws {
         let dir = tempDir()
         let url = storeURL(in: dir)
         // 准备两个真实存在的 trashed 文件 + 一个不存在的
@@ -134,13 +133,16 @@ final class UndoHistoryStoreTests: XCTestCase {
         ])
 
         XCTAssertEqual(store.history.count, 3)
-        store.cleanupStaleEntries()
-        // stale 整条被剔除，partial 和 alive 保留
-        XCTAssertEqual(store.history.count, 2)
-        XCTAssertEqual(Set(store.history.map { $0.source }), Set(["partial", "alive"]))
-        let partial = try XCTUnwrap(store.history.first { $0.source == "partial" })
-        XCTAssertEqual(partial.filePairs.count, 1, "partial record 里不可恢复的 ghost pair 应被逐项剔除")
-        XCTAssertEqual(partial.filePairs.first?.trashed, realA)
+
+        // v2026.07.18：重新加载不得把“废纸篓中已不存在”误判成“这次清理从未发生”。
+        // 可恢复性由 prepareRestore/restoreRecord 在操作时重验，历史页保留最近批次事实。
+        let reloaded = UndoHistoryStore(storeURL: url, maxHistoryCount: 10)
+        XCTAssertEqual(reloaded.history.count, 3)
+        XCTAssertEqual(Set(reloaded.history.map { $0.source }), Set(["stale", "partial", "alive"]))
+        let stale = try XCTUnwrap(reloaded.history.first { $0.source == "stale" })
+        XCTAssertEqual(stale.filePairs.count, 2)
+        let partial = try XCTUnwrap(reloaded.history.first { $0.source == "partial" })
+        XCTAssertEqual(partial.filePairs.count, 2)
     }
 
     func testRestoreRecordHappyPathMovesFileBackAndRemovesRecord() async throws {

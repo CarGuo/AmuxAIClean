@@ -154,6 +154,43 @@ final class ScanProjectionIntegrationTests: XCTestCase {
         XCTAssertEqual(entries.reduce(0) { $0 + $1.fileCount }, summary.fileCount)
     }
 
+    func test_topLevelPhysicalRootCanProjectIntoDifferentPublicRoot() async throws {
+        let fixture = try makeRoot(prefix: "ProjectionPhysicalVsPublicRoot")
+        addTeardownBlock { try FileManager.default.removeItem(at: fixture) }
+        let physicalRoot = fixture.appendingPathComponent("Data", isDirectory: true)
+        let userFile = physicalRoot.appendingPathComponent("Users/alice/cache.bin")
+        try FileManager.default.createDirectory(
+            at: userFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try writeFile(userFile, byteCount: 4 * 1_024, seed: 0x51)
+
+        let publicRoot = fixture.appendingPathComponent("Public", isDirectory: true).path
+        var terminalSummary: ScanSummary?
+        for await event in BulkScanner(options: deterministicOptions).scan(
+            root: physicalRoot,
+            delivery: .topLevel,
+            topLevelPathMappings: [
+                ScanPathPrefixMapping(
+                    sourcePrefix: physicalRoot.path,
+                    destinationPrefix: publicRoot
+                )
+            ],
+            topLevelProjectionRootPath: publicRoot
+        ) {
+            if case .finished(let summary) = event {
+                terminalSummary = summary
+            }
+        }
+
+        let summary = try XCTUnwrap(terminalSummary)
+        guard case .topLevel(let entries) = summary.projection else {
+            return XCTFail("物理根与公开根分离后仍必须产生 topLevel projection")
+        }
+        XCTAssertEqual(entries.map(\.path), [publicRoot + "/Users"])
+        XCTAssertEqual(entries.first?.fileCount, 1)
+    }
+
     func test_multiRootTopLevel不发布节点且每根summary投影精确() async throws {
         let rootA = try makeRoot(prefix: "ProjectionMultiRoot-A")
         let rootB = try makeRoot(prefix: "ProjectionMultiRoot-B")
