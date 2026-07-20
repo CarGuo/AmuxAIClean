@@ -90,6 +90,9 @@
 
 ## 3. 明确排除与暂缓
 
+> 本节保留 2026-07-14 当时的范围决策。Update/AI 网络与隐私合同已在 2026-07-18 获得实现
+> 授权；当前状态以第 9.9 节为准，下面的 `DEFERRED` 不得继续解释为现状。
+
 - `EXCLUDED`：Dock 中同时出现两个 App 图标的问题。用户已说明属于隔壁会话，不计入本任务。
 - `DEFERRED`：自动更新访问 GitHub 的 P1。
 - `DEFERRED`：远程 AI 访问 GitHub 的 P1。
@@ -147,6 +150,8 @@
   - 缺口：`SECURITY.md` 仍残留 ad-hoc、未公证、默认 GitHub Releases 的历史事实，和当前流程冲突。
 - 已有：顶层规则宣称零网络。
   - 缺口：源码已有可选远程 AI/自动更新方向；用户已要求 P1 暂缓，当前只能冻结扩张并记录决策缺口，不能假装冲突不存在。
+  - 历史状态说明：该冲突已由第 9.9 节的固定 Updater origin、用户配置 AI origin、隐私披露与
+    网络扩张门禁取代；本条只保留最初审计背景。
 
 ### 6.2 必须新增的可执行规则
 
@@ -297,6 +302,9 @@
 
 ### 9.4 尚未关闭与授权边界
 
+> 本节是 2026-07-16 的历史缺口快照。pkg receipt 与 Privacy Manifest 的当前状态由第 9.9 节
+> 覆盖；保留原文是为了说明问题来源，不得把“当时尚无清单/尚未授权”当成当前结论。
+
 - **P2 pkg receipt 完整性**：单个 `pkgutil --pkg-info/--files` 失败目前会 fail closed、漏掉该
   receipt 的卸载候选，但 `receipts(...)` 的旧数组接口没有把 scoped incomplete 证据带到卸载页。
   它不会扩大删除范围或解析截断输出；要正确展示需把 ScanKit 返回值和 AppUninstaller 状态合同
@@ -444,3 +452,188 @@ Debug build、双基准，并在一次持续 App 进程中复现相同受保护�
 九包全测、Debug build、三条 benchmark 与一次持续 C4。`web.dist` 命中已安装 Cursor extension
 的规则所有权风险需要规则库单独授权；`NSAppDataUsageDescription` 需要 Info.plist 单独授权；
 macOS 13.5 实机/VM 与最终 DMG C5 仍未验证。
+
+### 9.9 v2026.07.18 四个截图问题、日志与隐私合同收口（历史 C3；性能结论已由 9.11 重新打开）
+
+> 本节的 package tests 与 Debug build 仍是有效的历史 C3 证据，但不能证明真实 App 交互或
+> 性能已经收口。2026-07-19 的真实日志随后暴露开发者扫描 `12s → 78–221s`、Tree `/Users`
+> 浅层 `94.91ms` 后仍被 `32.94s` 深层 enrichment 持续标成 loading；因此“避免主线程重建大树”
+> 和“四个截图已收口”不得继续作为当前结论，根因、基线 A/B 与重新验证以第 9.11 节为准。
+
+- **四个截图的共享根因修复**：Port Cleaner 表格占位高度不再把少量端口行压到窗口底部；全盘
+  扫描统一物理路径与用户可见路径映射，TCC/FDA/元数据缺口保持 typed partial，不再把受保护根
+  当成完整的零结果；扫描 producer 的终止、取消与 revision 统一收敛，Tree verdict、排序、扁平
+  投影和宽 COW 释放移出 MainActor，选择索引改为 O(1)，避免扫描期在主线程重建大树；历史记录
+  改为后台 single-flight 加载，并把 durable completion journal 与当前内存投影按 revision 合并，
+  旧加载不能再把新历史覆盖成空白。上述修改都落在共享状态/证据边界，没有扩大删除权限。
+- **错误可观察性不是可选项**：App 启动早期日志进入 256 行有界 FIFO，文件 sink 就绪后按序落盘；
+  writer health 与 retention/export/enumerate/clear issue 分开维护，单个阶段成功只清除本阶段错误。
+  设置/帮助页展示本地化的阶段、错误域与错误码；导出使用 64 KiB 流式复制、0600 同目录临时文件、
+  `fsync + renameat` 原子替换，并复核精确文件名、no-follow 与 inode。API Key、Authorization、请求/
+  响应正文仍禁止进入日志，但扫描阶段、路径、errno 和类型化失败必须可见、可导出。
+- **隐私与网络边界**：App bundle 新增 `PrivacyInfo.xcprivacy`，声明 tracking=false、无 tracking
+  domains，并按真实本地功能披露 linked 的 Other User Content、Other Data Types 与 User ID，目的
+  均为 App Functionality；当前 macOS-only 产品没有填写不适用的 Required Reason API 条目。
+  Updater 只向固定 GitHub API origin 读取 release metadata，拒绝 redirect、cookie、credential、
+  cache 与跨仓库 asset；AI 只使用用户明确配置的 endpoint/key，限制 origin、body 大小和取消，
+  debug/custom mirror 不再泄露敏感字段。隐私文档、Security、README、安装/发布文档与产物合同同步。
+- **不可信本地元数据与恢复台账**：ScanKit 新增共享有界 reader，执行
+  `lstat → O_NOFOLLOW/O_NONBLOCK open → fstat → chunked read → identity/version fence`，拒绝 FIFO、
+  final-component symlink、超限和读取中替换；DerivedData、AppMetadata、LaunchAgent 与标准 App
+  cache discovery 使用同一失败分类。BrewKit 使用无跨包依赖的等价 reader。Trash pending ledger、
+  completion journal 与 Simulator ledger 增加字节数、记录数、schema/shape 上限并 fail closed，旧坏
+  文件不被空状态覆盖。Sentinel 第一条可执行语句拒绝 root 运行，新非特权 LaunchAgent 与旧 root
+  daemon 迁移边界均写入构建/发布合同。
+- **首次 AppUI 全量失败如实保留**：一次与其它包并发的运行中，20,000 行 prune 性能项为
+  `2.3706s > 2.0s`；另有一项测试读取宿主 `/Applications` 导致 fixture 污染，以及两个已无调用方的
+  String Catalog orphan。没有放宽性能阈值或削弱断言：隔离复跑性能项为 `1.436s`；目标 Smart Care
+  用例 `1/1`、整组 `22/22` 通过；测试显式注入完整空的标准 App discovery，两个 orphan 从 catalog
+  删除后 i18n 审计 `1/1` 通过。
+- **最终全包与构建证据（C3）**：AppUI `1,295` XCTest + `11` Swift Testing；ScanKit `523`
+  passed、`2` 个既有 `RUN_PERF` gate skip；SafetyKit `167`、HeuristicKit `11`、LogKit `37`、
+  BrewKit `54`、FileSearchKit `21`、AIKit `55`、TestHarness `8`，全部 exit 0。原生 Debug
+  `xcodebuild` 明确输出 `** BUILD SUCCEEDED **`。`git diff --check`、全部 plist/privacy manifest、
+  String Catalog JSON、全部 shell 脚本语法及 `test_release_contract.sh` 均通过；构建产物确认包含
+  privacy manifest、Sentinel、LaunchAgent/Daemon 与规则资源，所有 `Package.swift` 均未修改。
+- **只读扫描基准**：`~/Library/Caches` 通过生产 BulkScanner 扫描 `376,122` files、物理占用
+  `22.64 GB`，引擎阶段 `4.55s`；`du -sh` 对照约 `21G`。受保护目录逐项输出 permission-denied
+  与 scoped incomplete，没有伪装为完整结果。该基准没有移动或删除文件，也不能替代 UI 主线程
+  与窗口交互验证。
+- **当前证据边界与剩余风险**：本轮没有启动 App，因此仍是 **C3**，没有对彩虹光标、Tree
+  右键/展开、全盘 TCC/FDA、日志设置页和历史首次加载做持续 C4。还需在启用 orphan 删除前补齐
+  installed-app discovery completeness/有界 plist 合同；Brew 取消应做到聚合器级尽快收敛；Trash/
+  Undo 当前品牌常规读取的 pathname size preflight 仍需 fd-bound fence（旧品牌 Undo 迁移边界已由
+  第 9.10 节单独闭环）；Heuristic/CleanStats/Whitelist 的其它本地 JSON
+  仍需统一有界 reader。旧版本 root ServiceManagement 迁移、真实 provider/network volume、macOS
+  13.5 实机/VM、两进程断电恢复和签名公证 DMG C5 也未验证。
+
+### 9.10 v2026.07.19 Sentinel 默认关闭与 Undo legacy 迁移根因修复（当前 C2）
+
+- **Sentinel fresh/default-OFF 合同**：Toggle 默认 OFF 且没有成功注册时间、已注册系统状态或
+  持久化 shutdown-verification marker 等 authority 证据时，`.notFound` / `.unknown` 只保留
+  `.desiredOffUnverified` 状态与结构化本地日志，不弹“关闭失败”、不引导从未启用的用户
+  打开系统设置。用户显式 OFF 或已有 current/legacy authority 证据时仍 fail closed，且只有
+  current Agent 与两代 legacy identity 都明确 `.notRegistered` 才清核验证据。
+- **Undo legacy 持续对账**：移除 `attributes → Data(contentsOf:) → moveItem` 三次 pathname lookup，
+  也废弃“只复制一次、destination 永久优先”的模型。每次 bootstrap 都在 current stable `flock`
+  内对两边做 no-follow、同 fd、0…8 MiB 有界读取与版本栅栏；schema 4 保存各 50,000 上限的
+  observed record/receipt ID，只导入未见 UUID，对 current 仍保留的同 UUID 做单调终态/journal
+  合并，并阻止已 LRU、确认清理或未来显式清除的旧 ID 复活。current 通过 `0600` sibling temp、
+  file `fsync`、原子提交与 parent `fsync` 更新；首次创建仍 no-replace。legacy 保留，因为 Darwin
+  没有 identity-bound unlink；final source fence 后才开始的旧进程写入由下一次 bootstrap 收敛。
+- **状态不再伪空**：reconciliation 返回 typed outcome；symlink、hardlink、超限、损坏、源
+  replacement、current commit 或水位超限会投影为 read/corrupt/size/record/write failure，bootstrap
+  不得继续把失败读成 `.ready + empty`。
+- **已运行证据**：`UndoHistoryStoreTests` 52/52 通过，覆盖 safe initial copy、重复 bootstrap、
+  clear/receipt tombstone 不复活、后续 legacy 新 UUID 导入、同 UUID 终态单调合并、final fence 后
+  写入下一次收敛、symlink/FIFO/hardlink/replacement/8 MiB+1 与 corrupt typed-state；Trash action、
+  completion journal、pending ledger 相关测试 75/75 通过；`SentinelManagerTests` 41/41、`AppSettingsTests` 19/19、
+  `I18nIntegrityTests` 17/17 通过，默认 OFF/无 authority 不弹失败、证据持久化与中英文资源完整性
+  均有直接断言。
+  本节没有启动 App，因此没有 Sentinel 设置页和历史首次加载的 C4；也未将聚焦 C2 写成 C3。
+
+### 9.11 v2026.07.19 扫描与 Tree 性能回归重新打开并完成代码级根因修复（当前 C2 + Debug build）
+
+- **基线与根因**：以 `70fce59e4ca57552675adc249d107d7342ad153b` 为已知良好行为逐段对比。
+  `DevArtifactScanner` 遍历策略与基线一致；回归发生在 `ScanCoordinator` 的发布所有权：异步
+  projection worker 跨 `await` 保留 MainActor 上持续增长的 `perRootStaging` Dictionary，后续每
+  20 个 discovery hit 的写入都会触发越来越大的 COW 复制。Tree 的独立回归是直接子项已经提交后
+  仍持有 disclosure loading ownership，直到不影响下钻正确性的深层容量 enrichment 完成。
+- **修复边界**：开发者发现的 0.4 秒 partial 与 final flush 恢复 `70fce59e` 的单 turn 发布形状，
+  不再把 staging storage 交给跨 `await` worker；其它入口的有界后台 projection 保持不变。Tree 在
+  直接子项 identity terminal 时先清 in-flight/ownership 并发布 revision，深层容量继续后台补齐；
+  宽树 materialize、verdict 与 COW retirement 仍在后台 worker。未改变扫描候选、安全 verdict、
+  incomplete/partial 或删除合同。
+- **当前自动化证据**：developer 2,048-root ownership 聚焦测试 `1/1` 通过；全盘 96 个直接子项
+  shallow-terminal 与 20,000 行 Tree 非主线程 projection 两项 `2/2` 通过。当前完整源码的原生
+  Debug 构建输出 `** BUILD SUCCEEDED **`，产物位于 Xcode DerivedData 的
+  `Build/Products/Debug/AmuxAIClean.app`。`git diff --check` 通过。
+- **证据边界**：尚未重跑 AppUI 全包和九包全测，因此本节不能升级为 C3；没有启动 App，也没有
+  C4。真实开发者扫描总时长、彩虹光标、全盘宽目录首帧和 loading 消失时间必须由下一次持续运行
+  记录。Review 另发现 completion journal 的当前读取边界仍需同 fd/no-follow/shape 上限闭环，
+  所以当前整个脏树不满足提交闸门。
+
+### 9.12 v2026.07.20 Tree 精确终态与扫描进度 UI 隔离修正（当前 C2 + Debug build）
+
+> 本节废止 9.11 中“shallow identity 提交后立即清除 Tree loading”的判断。该行为与用户
+> 交互合同及已知良好提交 `70fce59e4ca57552675adc249d107d7342ad153b` 均不一致，属于再次回归，
+> 不能继续作为正确性能修复保留。
+
+- **Tree 工作量与正确终态**：`/Users` 的直接子项枚举约 `116ms`，但两个直接目录的精确递归
+  容量与排序仍需遍历 `3,130,624` 个后代文件，约 `31.4s`。因此直接子项 identity 继续立即显示；
+  同一 disclosure owner 则保留到 exact bytes、file count 与请求排序完成。精确行先写入 cache，
+  再清 ownership，并只发布一个 terminal revision，避免 pending rows 已显示 idle、或精确行仍
+  显示 loading 的撕裂状态。该 revision 保留所属 parent path，使 Tree 只 patch 当前连续 segment，
+  不因一次精确测量完成而重建全部可见行。取消、lease 未取得、stale generation 与扫描准入变化
+  也统一发布明确终态，避免 spinner 永久悬挂。
+- **全盘扫描 UI 卡顿根因**：生产 `.topLevel` 扫描终态前没有可展示 Tree rows，却仍每 `0.4s`
+  替换完整 `ScanSnapshot`；`MainView` 和 HUD 对整个 `ScanCoordinator` 的观察因此让 elapsed/bytes
+  单字段变化反复 invalidation 完整 `NavigationSplitView`、侧栏与结果区。当前 bytes/files/rate/
+  elapsed 进入独立 `ScanLiveProgressStore`，只有状态栏小子树与 HUD 订阅；权威 snapshot 和 Tree
+  revision 只在结构/终态 transaction 发布。per-root 兼容镜像仍保留，但不再作为宽 coordinator
+  的实时 `@Published` 广播源。
+- **聚焦证据**：`ScanCoordinatorProjectionIntegrationTests` `9/9` 通过，覆盖 shallow rows 立即
+  可见、loading 保留至 exact terminal，以及投影进度只更新窄 store、`objectWillChange` /
+  `$snapshot` / Tree tick 均不发布；`ScanCoordinatorPresentationWorkerTests` `26/26` 通过。当前
+  完整源码 Debug 构建输出 `** BUILD SUCCEEDED **`，`git diff --check` 通过。
+- **未升级为 C3**：已实际运行 AppUI 全包，但当前脏树仍有四组独立失败：primary admission
+  settlement 期间的 common-app-cache presentation 合同、测试 seed 未生成 terminal per-root Tree
+  cache、以及 Trash completion journal / receipt prune 两组闭环。四组均可单独稳定复现，且调用链
+  不经过本节的 Tree loading 或 live-progress 修改；不得为让本轮变绿而回退性能修复或放宽断言。
+  尚未启动 App，因此没有 C4；侧栏连续滚动、HUD 动画和 Tree loading 消失时机仍需用户在同一次
+  持续运行中验证。
+
+### 9.13 v2026.07.20 删除结果延迟的回执/模型边界修正（当前 C2 + Debug build）
+
+- **真实根因证据**：同一 trace 中 `NSWorkspace.recycle` 在约 `364ms` 返回 typed completion；随后
+  删除模型同步进入 `13,651` 行 snapshot、`11,872` 个 Tree cache entry 的 prune，plan 约
+  `11.45s`，旧顺序直到它完成才记录 `result_eligible`。因此“删除后十几秒才弹完成”不是系统
+  recycle 慢，而是 UI 错把模型 reconciliation 当成结果权限。
+- **双层修复**：Main Professional 删除在 receipt 到达后立即 route typed result，SwiftUI 获得
+  presentation turn 后再同步列表/Tree/统计/历史；日志明确区分 `result_eligible` 与
+  `model_sync_completed`。prune 同时改为按需构建 Tree-cache contribution fallback，并在
+  Developer terminal 没有全局 snapshot Tree projection 时保持为空，不再重建八套无消费者排序。
+- **聚焦证据**：`ProfessionalToolDeletionFlowTests` `21/21` 与 `PruneDeletedTests` `30/30`
+  通过。结果顺序测试证明慢 reconciliation 开始前结果已经呈现；宽 Developer fixture
+  覆盖 `1,484 roots × 8 sort keys`，证明单项删除不构建 `11,872`-entry contribution index、不恢复
+  全局排序，且 planner 保持后台执行；当前完整源码 Debug 构建输出 `** BUILD SUCCEEDED **`。
+  AppUI 全包仍被同一脏树中既存的 scan settlement、terminal per-root seed 与 Trash/Undo journal
+  红项阻断，尚未做真实 App 持续 C4，因此不能宣称实际弹框体感已经验收；本轮也未提交或推送。
+
+### 9.14 v2026.07.20 Trash 测试域污染、非模态预检与 Undo WAL 连续事务闭环（当前 C3）
+
+- **事故根因与 UI 边界**：包测试曾通过裸 `TrashPipeline()` 继承 production pending ledger / completion
+  journal，scripted Workflow 又可借默认 `.shared` 写入用户 Undo。真实 App 随后把未结算测试 callback
+  当成生产恢复事实，零提交的 ledger 校验失败再被错误画成 raw-key 阻塞结果框。当前五个入口统一把
+  pre-submit rejection 投影为页面内 typed banner；它不占 sheet/transaction，不吞掉真实确认，也不
+  阻止下一次审阅。只有取得真实 recycle receipt 的完成结果可进入 `OperationResultSheet`。
+- **生产/测试持久化域不可拆**：生产只经具名 `TrashPipeline.production`，裸 package initializer 每实例
+  创建 UUID 临时 ledger、journal、Undo、registry 与 single-flight identity。所有允许注入 pipeline 的
+  Main/Brew/Duplicate/Uninstall/Workflow View 同时强制注入 Undo owner；App composition root 显式选择
+  `.shared`，scripted caller 必须显式选择临时 store。production ledger/journal 无参构造已收为 private，
+  pending ledger 测试构造不再默认 shared registry。规则已同步到 `DELETION_UX_CONTRACT.md` 与
+  `PITFALLS.md`，关键转移均保留 `v2026.07.20` 原因注释。终审另外关闭了 Main 嵌套导航的两个 P1：
+  Uninstall 显式复用 Main 的 pipeline，UndoHistoryScreen 显式接收 Main 的 store；源码合同测试拒绝
+  后续重新引入 production prewarm 或 `.shared` 回退。
+- **Undo WAL 根因修复**：首次创建 Undo store 时，reserve slot 重写后已有新的 fingerprint/version，旧
+  代码却把重写前 version 写入 idle marker，导致下一笔 receipt-prune RMW 以 `transactionContract`
+  fail-closed。现在 marker 使用同一时点的 fresh evidence，并用 add → acknowledge → add 连续事务锁定。
+  同一 WAL 重构漏掉的 legacy `.UndoHistory.<UUID>.tmp` 清理也已恢复：只在稳定 flock 内通过 anchored
+  parent descriptor 执行 `readdir + fstatat(AT_SYMLINK_NOFOLLOW) + unlinkat + fsync`，仅删除当前用户
+  拥有的 canonical uppercase-UUID、regular single-link 文件；畸形名、额外后缀、hardlink 与 symlink
+  均保留。
+- **完整自动化证据**：删除交互/恢复聚焦集合 `179/179`；AppUI `1,379` XCTest 与 `11` Swift Testing
+  全部通过。ScanKit `525`、SafetyKit `167`、HeuristicKit `11`、LogKit `46`、BrewKit `54`、
+  FileSearchKit `21`、AIKit `55`、TestHarness `8` 均 exit 0。AppUI 首轮暴露的 common-cache typed
+  settlement 与 terminal-only per-root fixture 两项旧测试合同，仅更新测试以经过现有 `.settling` /
+  off-main terminal transaction，生产 ScanCoordinator 未改；对应聚焦 `3/3` 通过。原生 Debug
+  `xcodebuild` 输出 `** BUILD SUCCEEDED **`；全仓 `git diff --check`、String Catalog JSON、Info.plist 与
+  Privacy manifest 校验通过。
+- **终审增量证据**：上述两个嵌套导航 P1 修复后，依赖域聚焦测试 `15/15`、完整 AppUI package 和
+  原生 Debug build 再次 exit 0；Debug 输出 `** BUILD SUCCEEDED **`。三轮前后 production recovery
+  目录文件清单与 SHA-256 均一致。
+- **生产数据证明与剩余边界**：每轮删除相关测试、完整 AppUI 和 Debug build 前后均比较 production
+  ledger、journal、UndoHistory 的 SHA-256，全部保持不变；本轮没有启动 App。历史目录中已确认的 1 组
+  未结算测试事务与 UndoHistory 中 4 组旧测试记录尚未修改；现有 schema 没有可信 test provenance，
+  禁止按路径名自动猜删。必须在用户明确确认 exact IDs 后，以 durable quarantine + 锁内 CAS 执行一次
+  性隔离，且不移动或删除废纸篓文件。完成前不得启动 production recovery 做 C4，因此当前证据止于 C3。

@@ -26,6 +26,18 @@ private actor PruneRetirementGate {
     }
 }
 
+private actor PruneCompletionProbe {
+    private var completed = false
+
+    func markCompleted() {
+        completed = true
+    }
+
+    func isCompleted() -> Bool {
+        completed
+    }
+}
+
 /// Step 15：补 [pruneDeleted](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1379-L1484)
 /// 测试死角。
 ///
@@ -223,6 +235,99 @@ final class PruneDeletedTests: XCTestCase {
         XCTAssertEqual(coord.snapshot.rows.count, 1)
         XCTAssertEqual(coord.structuralRevision, revBefore,
             "空 paths 应早返，structuralRevision 不变")
+    }
+
+    func test_receiptPresentationTombstonePublishesBeforeAuthoritativePrune() async {
+        let coord = ScanCoordinator()
+        let moved = makeRow("/A/drop", bytes: 250)
+        let kept = makeRow("/A/dropbox", bytes: 100)
+        let original = ScanSnapshot(
+            categoryID: "test",
+            rows: [moved, kept],
+            totalBytes: 350,
+            scannedFileCount: 2,
+            isFinished: true,
+            elapsed: 1
+        )
+        coord._seedForTesting(
+            snapshot: original,
+            currentRootPath: "/A",
+            isScanning: false
+        )
+        let revision = coord.treeBrowser.deletionPresentationRevision
+
+        await coord.acknowledgeSuccessfulDeletionForPresentation(
+            paths: ["/A/drop", "/A/drop/child"]
+        )
+
+        XCTAssertEqual(coord.snapshot, original,
+                       "presentation tombstone must not mutate authoritative accounting")
+        XCTAssertTrue(coord._isDeletedTombstonedForTesting("/A/drop/late"))
+        XCTAssertFalse(coord._isDeletedTombstonedForTesting("/A/dropbox"))
+        XCTAssertEqual(coord.treeBrowser.deletionPresentationPaths, ["/A/drop"])
+        XCTAssertGreaterThan(coord.treeBrowser.deletionPresentationRevision, revision)
+
+        // v2026.07.20 production regression: presenting/dismissing the result sheet remounts the
+        // Tree and starts a full projection before the 10-second accounting prune completes. The
+        // raw terminal cache is intentionally still old here; the source-bound receipt matcher is
+        // what prevents that full rebuild from making the moved row actionable again.
+        let source = coord.makeTreeFlatProjectionSource(
+            rootPath: "/A",
+            sortedBy: .sizeDesc,
+            expandedPaths: []
+        )
+        XCTAssertEqual(Set(source.rootRows.map(\.path)), ["/A/drop", "/A/dropbox"])
+        XCTAssertTrue(source.receiptTombstones.contains("/A/drop/late"))
+        XCTAssertFalse(source.receiptTombstones.contains("/A/dropbox"))
+
+        let worker = TreeFlatProjectionWorker(
+            input: TreeFlatProjectionWorkerInput(
+                rootRows: source.rootRows,
+                childrenByParent: source.childrenByParent,
+                expandedPaths: [],
+                fetchingPaths: source.fetchingPaths,
+                isFetchingRoot: source.isFetchingRoot,
+                receiptTombstones: source.receiptTombstones,
+                evaluator: .init { _ in (.safe, .ok) }
+            ),
+            previous: .init(
+                rows: [],
+                rowIndexByPath: [:],
+                parentIndexByRow: [],
+                maxBytes: 0,
+                isFetchingRoot: false
+            )
+        )
+        let rebuilt = await worker.prepare()
+        XCTAssertEqual(rebuilt?.rows.map(\.row.path), ["/A/dropbox"])
+        XCTAssertNil(rebuilt?.rowIndexByPath["/A/drop"])
+        XCTAssertEqual(coord.snapshot, original, "receipt visibility must not forge accounting")
+        _ = await worker.retire()
+    }
+
+    func test_concurrentReceiptPresentationCASRetainsBothTombstoneSets() async {
+        let coord = ScanCoordinator()
+        coord._seedForTesting(
+            snapshot: ScanSnapshot(
+                categoryID: "test",
+                rows: [makeRow("/A/one"), makeRow("/A/two")],
+                totalBytes: 2_000,
+                scannedFileCount: 2,
+                isFinished: true,
+                elapsed: 1
+            )
+        )
+
+        await coord._acknowledgeSuccessfulDeletionForPresentationForTesting(
+            paths: ["/A/one"],
+            beforeCommit: {
+                await coord.acknowledgeSuccessfulDeletionForPresentation(paths: ["/A/two"])
+            }
+        )
+
+        XCTAssertTrue(coord._isDeletedTombstonedForTesting("/A/one/late"))
+        XCTAssertTrue(coord._isDeletedTombstonedForTesting("/A/two/late"))
+        XCTAssertEqual(coord.treeBrowser.deletionPresentationPaths, ["/A/one", "/A/two"])
     }
 
     func test_pruneDeleted_删除子项时snapshot祖先行与totalBytes同步扣减() async {
@@ -443,7 +548,7 @@ final class PruneDeletedTests: XCTestCase {
         )
 
         await coord.pruneDeleted(paths: ["/A/drop"])
-        coord._storeFetchedChildrenForTesting(
+        await coord._storeFetchedChildrenForTesting(
             path: "/A",
             sortedBy: .sizeDesc,
             rows: [
@@ -638,6 +743,91 @@ final class PruneDeletedTests: XCTestCase {
                       "目录边界 matcher 不能把 /R/dropbox 当成 /R/drop 的子孙")
     }
 
+    func test_pruneDeleted_开发者宽Tree删除单项不恢复全局排序或构建缓存贡献索引() async {
+        let coord = ScanCoordinator(enableTreeDeepIndex: false)
+        let rootCount = 1_484
+        let childrenPerRoot = 9
+        var snapshotRows: [RowItem] = []
+        var treeCache: [String: [TreeRow]] = [:]
+        var perRootStaging: [String: ScanCoordinator.PerRootProgress] = [:]
+        snapshotRows.reserveCapacity(rootCount * childrenPerRoot)
+        treeCache.reserveCapacity(rootCount * TreeSortKey.allCases.count)
+        perRootStaging.reserveCapacity(rootCount)
+
+        for rootIndex in 0..<rootCount {
+            let rootPath = "/developer/root-\(rootIndex)"
+            var children: [TreeRow] = []
+            children.reserveCapacity(childrenPerRoot)
+            for childIndex in 0..<childrenPerRoot {
+                let path = "\(rootPath)/child-\(childIndex)"
+                snapshotRows.append(makeRow(path, bytes: 1))
+                children.append(makeTreeRow(path, bytes: 1))
+            }
+            for sortKey in TreeSortKey.allCases {
+                treeCache["\(rootPath)|\(sortKey.rawValue)"] = children
+            }
+            perRootStaging[rootPath] = ScanCoordinator.PerRootProgress(
+                rootPath: rootPath,
+                title: "root-\(rootIndex)",
+                bytes: Int64(childrenPerRoot),
+                fileCount: childrenPerRoot,
+                isFinished: true
+            )
+        }
+
+        let removedPath = "/developer/root-0/child-0"
+        coord._seedForTesting(
+            snapshot: ScanSnapshot(
+                categoryID: ScanCoordinator.developerCategoryID,
+                rows: snapshotRows,
+                totalBytes: Int64(snapshotRows.count),
+                scannedFileCount: snapshotRows.count,
+                isFinished: true,
+                elapsed: 1
+            ),
+            treeChildrenCache: treeCache,
+            // Developer terminal owns per-root cache projections and intentionally has no
+            // 13k-row global Tree projection. Prune must preserve that representation.
+            snapshotTreeRows: [:],
+            perRootStaging: perRootStaging,
+            totalBytes: Int64(snapshotRows.count),
+            scannedFiles: snapshotRows.count
+        )
+
+        await coord.pruneDeleted(paths: [removedPath])
+
+        XCTAssertEqual(coord.snapshot.rows.count, snapshotRows.count - 1)
+        XCTAssertFalse(coord.snapshot.rows.contains { $0.id == removedPath })
+        XCTAssertEqual(coord.perRootProgress["/developer/root-0"]?.bytes,
+                       Int64(childrenPerRoot - 1))
+        XCTAssertEqual(coord.perRootProgress["/developer/root-0"]?.fileCount,
+                       childrenPerRoot - 1)
+        for sortKey in TreeSortKey.allCases {
+            XCTAssertTrue(coord._snapshotTreeRowsForTesting(sortKey).isEmpty)
+            XCTAssertEqual(
+                coord._treeChildrenCacheForTesting()[
+                    "/developer/root-0|\(sortKey.rawValue)"
+                ]?.count,
+                childrenPerRoot - 1
+            )
+        }
+        XCTAssertEqual(
+            coord._pruneTreeCacheContributionIndexBuiltForTesting(),
+            false,
+            "snapshot already owns the deleted row contribution; indexing 11,872 Tree caches is dead work"
+        )
+
+        let diagnostics = coord._prunePlanDiagnosticsForTesting()
+        let elapsed = Double(diagnostics.durationNanoseconds ?? .max) / 1_000_000_000
+        let isCI = ProcessInfo.processInfo.environment["CI"] == "true"
+            || ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true"
+        XCTAssertLessThan(
+            elapsed,
+            isCI ? 5.0 : 2.0,
+            "one developer item must not repeat the measured 11.45-second global Tree prune"
+        )
+    }
+
     func test_pruneDeleted_新扫描换代后旧plan不得覆盖新snapshot() async {
         let coord = ScanCoordinator()
         coord._seedForTesting(
@@ -725,6 +915,47 @@ final class PruneDeletedTests: XCTestCase {
         let lifecycle = coord._pruneLifecycleDiagnosticsForTesting()
         XCTAssertEqual(lifecycle.retirementRanOnMainThread, false,
                        "旧 COW storage 的最后引用必须在 prune worker executor 释放")
+        XCTAssertNotNil(lifecycle.retirementDurationNanoseconds)
+    }
+
+    func test_pruneDeleted_成功提交后生产路径不等待旧状态retirement() async {
+        let coord = ScanCoordinator()
+        coord._seedForTesting(snapshot: ScanSnapshot(
+            categoryID: "release-result",
+            rows: [makeRow("/release/drop")],
+            totalBytes: 1_000,
+            scannedFileCount: 1,
+            isFinished: true,
+            elapsed: 0
+        ))
+        let gate = PruneRetirementGate()
+        let completion = PruneCompletionProbe()
+        let pruneTask = Task { @MainActor in
+            await coord._pruneDeletedForTesting(
+                paths: ["/release/drop"],
+                beforeCommit: {},
+                beforeRetire: { await gate.pauseBeforeRelease() },
+                awaitSuccessfulRetirement: false
+            )
+            await completion.markCompleted()
+        }
+
+        await gate.waitUntilEntered()
+        let deadline = ContinuousClock.now + .seconds(1)
+        while !(await completion.isCompleted()), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        let completedBeforeRelease = await completion.isCompleted()
+        XCTAssertTrue(completedBeforeRelease,
+                      "权威 commit 已完成时，结果路径不得继续等待旧 COW storage 析构")
+        XCTAssertTrue(coord.snapshot.rows.isEmpty)
+
+        await gate.resumeRelease()
+        await coord._awaitPruneRetirementForTesting()
+        await pruneTask.value
+        let lifecycle = coord._pruneLifecycleDiagnosticsForTesting()
+        XCTAssertEqual(lifecycle.retirementRanOnMainThread, false,
+                       "异步 retirement 必须在 worker executor 释放旧 COW storage")
         XCTAssertNotNil(lifecycle.retirementDurationNanoseconds)
     }
 

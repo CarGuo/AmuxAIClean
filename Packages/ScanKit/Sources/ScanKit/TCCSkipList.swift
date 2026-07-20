@@ -103,14 +103,47 @@ public enum TCCSkipList {
         }
 
         // 3. home 相对路径
-        let home = NSHomeDirectory()
-        for rel in dangerousHomeRelative {
-            let full = "\(home)/\(rel)"
-            if absPath == full || absPath.hasPrefix(full + "/") {
-                return true
-            }
+        // v2026.07.18 整盘公开命名空间合同：NSHomeDirectory 只能识别运行用户。
+        // 从 `/` 扫描时还会看到 `/Users/<other-user>`，其 Mail/Messages 必须在
+        // 触碰物理文件系统前使用同一 hard-skip 合同。但不能只按后缀匹配，
+        // 否则 `/tmp/custom-home/Library/Mail` 这类 fixture/备份目录会被误当成 TCC home。
+        if let relative = relativePath(absPath, underHome: NSHomeDirectory()),
+           isDangerousHomeRelative(relative) {
+            return true
+        }
+        if let relative = relativePathInPublicUsersNamespace(absPath),
+           isDangerousHomeRelative(relative) {
+            return true
         }
 
         return false
+    }
+
+    private static func isDangerousHomeRelative(_ relativePath: String) -> Bool {
+        dangerousHomeRelative.contains { rule in
+            relativePath == rule || relativePath.hasPrefix(rule + "/")
+        }
+    }
+
+    private static func relativePath(_ path: String, underHome rawHome: String) -> String? {
+        var home = rawHome
+        while home.count > 1, home.hasSuffix("/") { home.removeLast() }
+        guard path.hasPrefix(home + "/") else { return nil }
+        return String(path.dropFirst(home.count + 1))
+    }
+
+    /// Returns the path below `/Users/<one-user-segment>` in the public namespace.
+    /// Nested backup paths such as `/tmp/custom-home` and `/Volumes/backup/Users/...` do not
+    /// qualify, which keeps namespace identity explicit instead of inferring a home from a suffix.
+    private static func relativePathInPublicUsersNamespace(_ path: String) -> String? {
+        let prefix = "/Users/"
+        guard path.hasPrefix(prefix) else { return nil }
+        let afterUsers = path.dropFirst(prefix.count)
+        guard let separator = afterUsers.firstIndex(of: "/") else { return nil }
+        let user = afterUsers[..<separator]
+        guard !user.isEmpty, user != ".", user != ".." else { return nil }
+        let relativeStart = afterUsers.index(after: separator)
+        guard relativeStart < afterUsers.endIndex else { return nil }
+        return String(afterUsers[relativeStart...])
     }
 }

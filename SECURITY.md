@@ -7,7 +7,7 @@
 
 ## 重要：v1.3.zzzz 路线 B 删除链路简化（2026-05-25 更新）
 
-原"App ↔ 特权 Helper" XPC 三道闸门设计已整段下线（[Helper/](file:///Users/guoshuyu/workspace/GSYCleanMac/Helper) / [Packages/XPCBridge/](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/XPCBridge) / [HelperClient.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift) / [HelperDecision.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/HelperDecision.swift)）。本产品只删 `$HOME` 下用户态文件，不需要 root；删除链路收敛为唯一一份 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)。
+原"App ↔ 特权删除 Helper" XPC 三道闸门设计已整段下线（[Helper/](file:///Users/guoshuyu/workspace/GSYCleanMac/Helper) / [Packages/XPCBridge/](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/XPCBridge) / [HelperClient.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift) / [HelperDecision.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/HelperDecision.swift)）。本产品只删 `$HOME` 下用户态文件，不需要 root；删除链路收敛为唯一一份 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)。可选 Sentinel 是默认关闭、只读发现用的非特权 Login Agent，不参与删除授权或执行。
 
 **安全原则保留**："永远不 unlink / dryRun 执行层默认安全 / SafetyEngine 三色判定 / 批级原子拒绝"仍由主 App 进程内 SafetyEngine + TrashPipeline 双层闸门保证；当前 Release 交互和专业覆盖边界以下文现行章节为准，不再沿用历史 Helper UI。
 
@@ -24,7 +24,7 @@
 3. **三色判定后才能删**：删除前必须经过 [SafetyEngine.evaluate](Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 的 `safe / confirm / forbid` 三色。普通模式的 `forbid` 一律拒绝；专业模式只有命中显式可覆盖 reason、取得类型化授权并完成严格确认后才能尝试。`hardForbid` 与结构性边界永不可覆盖。
 4. **批级原子拒绝**：普通请求中任意一条命中 `forbid`，整批拒绝并提示用户，不允许"删一半再回滚"。专业覆盖请求必须先把 normal / override-eligible / non-bypassable 分区并分别确认；执行前出现任意新的 non-bypassable 路径时整批拒绝。
 5. **确认上下文完整性**：类型化删除授权必须绑定精确路径、来源、扫描 revision、风险 reason 和用户选择；确认后路径身份变化或风险增加必须重新预检。历史 HMAC/XPC 设计不再属于当前链路。
-6. **能力最小化**：v1 不部署 Helper，所有操作以普通用户身份运行，依赖 Trash 机制做最后兜底。
+6. **能力最小化**：v1 不部署特权删除 Helper，所有删除操作以普通用户身份运行，依赖 Trash 机制做最后兜底。可选 Sentinel 同样只在登录用户域运行；包内旧 LaunchDaemon plist 仅用于注销历史 root 注册，代码不得重新注册它。
 
 ---
 
@@ -89,18 +89,92 @@
 
 ---
 
-## 4. 数据持久化、隐私与待决网络边界
+## 4. 数据持久化、隐私与受控网络边界
 
-本地扫描和删除链路不需要网络，也不得因网络状态改变安全判定。当前源码已存在可选远程 AI/自动更新方向，但它与项目原“完全离线/禁止 HTTP”定位冲突；该 P1 已由用户明确暂缓，本次审计不擅自放宽规则，也不再把现状描述成“已确认完全离线”。在形成单独决策前：
+<!-- v2026.07.18：按生产源码重建隐私合同，移除“完全离线/无路径持久化”的失实描述。 -->
 
-- 禁止新增或扩大网络请求；
-- 必须先定义允许的域名、显式用户授权、发送数据范围、超时/取消、凭据保存和审计日志；
-- 远程结果永远不能提高删除安全等级或绕过本地 `SafetyEngine`；
-- 不收集遥测、不上报崩溃
-- 唯一持久化文件：
-  - `~/Library/Application Support/AmuxAIClean/heuristic.json`：仅存 bundleID 维度的 `(deleted, restored, kept)` 三元组计数，无路径
-  - `~/Library/Preferences/com.amux.ai.Clean.plist`：UI 偏好（窗口大小、阈值等）
-- 不读取剪贴板、不读取通讯录、不读取浏览器历史
+本地安全判定和删除授权不依赖网络，也不得因网络状态改变。当前 App 源码允许主动创建的
+HTTP 请求只有：
+
+- 更新检查：只读取固定 GitHub Releases `latest` API，并验证同仓库、同 tag 的 Release 页面
+  与 asset 元数据；App 不自动请求 DMG、`*.sha256` 或其它 asset，也不跟随 HTTP redirect。
+  首次安装默认开启启动自动检查，每个 App 进程最多一次，用户可关闭或手动触发；
+- 可选 AI：默认关闭，只在用户配置端点并主动发起询问/审核时请求 OpenAI-compatible API。
+  非环回端点强制 HTTPS，环回开发端点可用 HTTP；base URL 禁止 userinfo/query/fragment，
+  客户端不跟随 HTTP redirect；默认会话为禁 Cookie、cache 和共享 credential storage 的
+  独立 ephemeral session。AI 技术日志只保留 endpoint host、stage、HTTP status/响应字节数
+  或 transport domain/code，不得保存请求正文、API Key、服务端错误正文或模型响应正文；
+  请求字段和接收方边界以
+  [PRIVACY.md](PRIVACY.md) 为准。
+
+“只有两类主动 HTTP”不等于文件系统永不联网。用户选择 SMB/NFS 网络卷、iCloud/FileProvider
+占位文件或 Quick Look 时，文件系统、提供方或 macOS 预览服务可能远端读取/下载；这类系统
+代办访问不得被文档伪装成完全离线，也不得在实现中自动转换成 AI 请求。
+
+任何新增或扩大网络请求都必须同时定义目标、触发授权、数据字段、超时/取消、凭据、日志脱敏、
+隐私声明和聚焦测试。远程结果永远不能提高删除安全等级、改变默认勾选、铸造删除授权或绕过本地
+`SafetyEngine`。项目不收集遥测，也不自动上报崩溃。
+
+本地持久化不是“只有两份且没有路径”。生产状态包括：
+
+- `~/Library/Application Support/AmuxAIClean/heuristic.json`：绝对路径及祖先前缀、
+  deleted/restored/kept 计数与时间；
+- 同目录的 `clean_stats.json`、`whitelist.json`、`UndoHistory.json`、
+  `trash-pending-operations.json`、`trash-completion-journal.json`、
+  `simulator-managed-operations.json`：分别保存本地清理统计、白名单、最近 10 批恢复身份、
+  操作对账状态，以及系统已完成移动但尚未耐久合并进撤销历史的短期交接事实；交接 journal
+  包含原路径/废纸篓路径、恢复范围、操作与尝试 UUID、时间和文件身份，只能在 Undo 与 pending
+  ledger 都收敛后移除，失败时留待启动重放；
+  `UndoHistory.json` 还会短期保存不含路径的 SHA-256 幂等 receipt；确认流程先在 journal
+  耐久标记 `receiptPrunePending`，再清 receipt，最后才移除 journal 项。任一阶段崩溃都由
+  启动恢复继续，不能在失去最后恢复证据后永久遗留 receipt；
+- 用户主动开启 Sentinel 后，同目录的 `sentinel-pending.json` 最多保存 100 条热点变化的
+  绝对路径、时间和可选大小；当前服务是用户域 `com.amux.ai.Clean.sentinel.agent`。
+  两代旧 root 服务 `com.guoshuyu.cleanmac.sentinel` 与 `com.amux.ai.Clean.sentinel` 各自使用
+  文件名/Label 对应的 migration-only
+  描述符并逐项验证 `notRegistered`；历史 helper 名、Bundle ID 与签名 Team ID 均发生过变化，
+  自动化不能保证真实旧注册必然可注销，升级机器上的 ServiceManagement 状态才是权威；关闭
+  当前 Agent 是降权动作，不得因旧描述符查询失败而被阻断，但
+  旧状态未验证时也不得显示“全部已停止”。ServiceManagement 另持有后台项目注册状态，
+  删除 defaults 不能代替 `SMAppService.unregister()`；
+- `~/Library/Preferences/com.amux.ai.Clean.plist`：UI/扫描/更新/AI 设置和自定义扫描路径；
+- macOS Keychain service `com.amux.ai.Clean.ai.apiKey`：AI 凭据，不同步；
+- `~/Library/Logs/AmuxAIClean/`：主 App 与用户态 Sentinel 以 7 天为目标滚动保留本地诊断日志，
+  可能包含业务阶段、结果、路径和技术错误，禁止记录 API Key、AI 请求正文、服务端错误正文或
+  模型响应正文；7 天是主 App 初始化/跨日写入/显式目录准备重试或 Sentinel 每小时检查驱动的
+  目标，不是硬实时过期。主 App
+  产品源码统一经过 `GSYLog`，另写由 macOS 管理的 privacy-hashed Unified Logging；文件 sink
+  的目录创建、打开和保留枚举必须在后台初始化，UI 启动路径只允许最多 256 行的有界内存缓冲，
+  旧初始化 revision 不得覆盖新配置。本地 sink 失败只允许独立公开白名单化的
+  `stage/domain/code`，设置页/Help 必须显示同一闭集，stderr 不得回显 raw Error/路径；writer
+  health 与 retention/enumerate/export 等 operation issue 必须独立，同阶段成功才清除对应问题。
+  枚举、导出、保留和清理只接受逐级 no-follow、精确日期名、普通且单链接的主 App 日志；合并
+  导出使用固定 64 KiB 块写入同目录 `0600` 临时文件并 `fsync + renameat`，不得构造无界聚合
+  `Data`；清理完成事件会进入新日志，不能宣称留下空文件；
+- Trash pending/completion 与 UndoHistory 使用 `0600` 随机临时文件做 fsync + rename；进程在
+  rename/unlink 前被强制终止时，遗留 `.trash-pending.<UUID>.tmp`、
+  `.trash-completion.<UUID>.tmp`、`.UndoHistory.<UUID>.tmp` 可能含路径。对应 store 必须在自身
+  稳定跨进程 flock 内按精确形状清理，禁止无锁 glob 或误删相似用户文件；
+- 用户可把大文件 JSON/TSV 或合并日志导出到任意选择位置；这类副本不受 App 的 7 天保留或
+  “清除日志”控制，必须由用户自行删除。完整字段与清除顺序以隐私政策为准。
+
+完整字段、保留和清除方法只在 [PRIVACY.md](PRIVACY.md) 维护，代码或 schema 改动必须同步更新。
+`PrivacyInfo.xcprivacy` 必须覆盖所有平台都适用的 collected-data、tracking 与 tracking-domain
+事实。可选 AI 的路径/名称、文件元数据和 Bearer API Key 分别按 `Other User Content`、
+`Other Data Types` 和 `User ID` 保守披露；允许自定义兼容端点意味着不能假设所有服务商都只在
+实时鉴权期间处理且立即丢弃账户凭据。三类都只能声明 App Functionality、linked、no tracking。
+Apple 当前把 Required Reason API 声明范围列为 iOS、iPadOS、tvOS、visionOS 和
+watchOS，不包含本项目唯一发行平台 macOS，因此当前清单不写 `NSPrivacyAccessedAPITypes`；
+禁止把移动平台理由码当作通用 API 清单，尤其不能用仅允许“展示磁盘空间”的 `85F4.1` 概括
+本项目还用于介质/只读卷分类的 `statfs`。目标平台或 Apple 适用范围变化时，必须重新按源码
+真实用途审计并同步清单、隐私政策和发行测试。
+App 不读取剪贴板或通讯录，也不解析浏览器历史数据库中的访问记录；用户明确点击复制时会把
+当前展示的路径/名称/结果/Bundle ID 写入系统通用剪贴板。普通磁盘占用扫描主要处理路径、
+类型、时间和占用等文件系统元数据；卸载、孤儿、启动项、开发者构建产物与 Brew 页面还会在
+本机解析 Info.plist、launchd plist、receipt/JWS JSON 等结构化记录，Quick Look 由用户主动
+触发并交给 macOS。重复文件扫描会额外在本机读取候选文件字节计算 SHA-256，删除前再次完整
+校验内容与身份。上述正文和重复哈希不由 App 上传或持久化；完整边界以
+[PRIVACY.md](PRIVACY.md) 为准。
 
 ---
 
@@ -108,7 +182,7 @@
 
 - 当前正式候选使用 Developer ID 签名，并只提交最终 DMG 公证；Notary、staple、Gatekeeper 与 SHA256 能证明来源和字节完整性，但不能证明业务逻辑没有缺陷
 - 本地构建/公证与上传 GitHub 是两个独立授权边界；安全文档不得假设 GitHub Releases 是唯一或默认分发渠道
-- v1 不启用 Helper -> 受 TCC 限制读不到的目录扫不到，这是预期；不会通过任何"曲线救国"绕过 TCC
+- v1 不启用特权删除 Helper -> 受 TCC 限制读不到的目录扫不到，这是预期；不会通过任何"曲线救国"绕过 TCC
 - vendors.yaml 在 bundle 内只读，但用户如果自己 mod app 资源后果自负
 
 ---

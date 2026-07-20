@@ -1,6 +1,58 @@
 import SwiftUI
 import ScanKit
 
+/// v2026.07.18：维护命令的用户可见投影边界。ScanKit 保留 raw stdout/stderr 作为
+/// 结构化诊断，主界面只消费稳定终态，避免中文界面暴露英文 CLI、errno 或内部 owner 状态。
+enum MaintenanceOutcomePresentation {
+    static func message(
+        for status: MaintenanceTasks.Outcome.Status,
+        locale: Locale
+    ) -> String {
+        switch status {
+        case .succeeded:
+            return AppLocalization.string("maintenance.outcome.succeeded", locale: locale)
+        case .exited(let code):
+            return AppLocalization.format(
+                "maintenance.outcome.failed_exit %lld",
+                locale: locale,
+                arguments: [Int64(code)]
+            )
+        case .timedOut:
+            return AppLocalization.string("maintenance.outcome.timed_out", locale: locale)
+        case .cancelled:
+            return AppLocalization.string("maintenance.outcome.cancelled", locale: locale)
+        case .ownershipLost:
+            return AppLocalization.string("maintenance.outcome.ownership_lost", locale: locale)
+        case .launchFailed:
+            return AppLocalization.string("maintenance.outcome.launch_failed", locale: locale)
+        }
+    }
+}
+
+/// v2026.07.18：维护命令和扫描一样需要“取消信号 + revision ownership”双保险。
+/// 同步子进程返回后只有当前身份可以发布，离页先 invalidate 再等待 worker settlement。
+struct MaintenanceRunIdentity: Sendable, Equatable {
+    let operationID: UUID
+    let revision: UInt64
+    let tasks: [MaintenanceTasks.Task]
+}
+
+struct MaintenanceRunGate: Sendable, Equatable {
+    private(set) var current: MaintenanceRunIdentity?
+
+    mutating func begin(_ identity: MaintenanceRunIdentity) { current = identity }
+    mutating func invalidate() { current = nil }
+
+    mutating func finishIfCurrent(
+        _ identity: MaintenanceRunIdentity,
+        taskWasCancelled: Bool
+    ) -> Bool? {
+        guard current == identity else { return nil }
+        current = nil
+        return !taskWasCancelled
+    }
+}
+
 /// M4-T4：维护任务屏（user-space，无 sudo）。
 ///
 /// 包 [MaintenanceTasks](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/MaintenanceTasks.swift)
@@ -12,6 +64,9 @@ import ScanKit
 /// - **不依赖 ScanCoordinator**：完全独立屏幕，本身是只读 + 用户主动触发。
 /// - **可注入** `tasks: MaintenanceTasks`：测试用注入 fake runner 即可绕开 Process.run。
 public struct MaintenanceScreen: View {
+    /// Shared across SwiftUI page instances. A newly constructed page must still wait until an
+    /// old page's cancelled owned child has reaped; local `@State` alone cannot enforce that.
+    @MainActor private static let executionSettlement = ScanProducerSettlementChain()
     /// v2026.07.15：任务本身与 outcome 只保存语义/命令原始日志；所有标题、说明和
     /// 按钮在当前 View locale 下投影，避免运行结果留在页面时语言无法同步切换。
     @Environment(\.locale) private var locale
@@ -20,6 +75,9 @@ public struct MaintenanceScreen: View {
 
     @State private var outcomes: [MaintenanceTasks.Outcome] = []
     @State private var runningTasks: Set<MaintenanceTasks.Task> = []
+    @State private var operationTask: Task<Void, Never>?
+    @State private var operationRevision: UInt64 = 0
+    @State private var operationGate = MaintenanceRunGate()
 
     public init(tasks: MaintenanceTasks = MaintenanceTasks()) {
         self.tasks = tasks
@@ -35,6 +93,7 @@ public struct MaintenanceScreen: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onDisappear { cancelOperationForDeparture() }
     }
 
     private var header: some View {
@@ -88,7 +147,7 @@ public struct MaintenanceScreen: View {
             } label: {
                 Text(AppLocalization.string("maintenance.button.run", locale: locale))
             }
-            .disabled(runningTasks.contains(task))
+            .disabled(!runningTasks.isEmpty)
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
@@ -123,13 +182,13 @@ public struct MaintenanceScreen: View {
                 .foregroundStyle(outcome.succeeded ? .green : .red)
             VStack(alignment: .leading, spacing: 2) {
                 Text(localizedTitle(for: outcome.task)).font(.subheadline.bold())
-                if !outcome.log.isEmpty {
-                    Text(outcome.log)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                        .textSelection(.enabled)
-                }
+                Text(MaintenanceOutcomePresentation.message(
+                    for: outcome.status,
+                    locale: locale
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
             }
             Spacer()
         }
@@ -141,28 +200,50 @@ public struct MaintenanceScreen: View {
     // MARK: - actions
 
     private func runTask(_ task: MaintenanceTasks.Task) {
-        runningTasks.insert(task)
+        startOperation([task])
+    }
+
+    private func runAll() {
+        startOperation(MaintenanceTasks.Task.allCases)
+    }
+
+    private func startOperation(_ requestedTasks: [MaintenanceTasks.Task]) {
+        guard operationTask == nil, runningTasks.isEmpty, !requestedTasks.isEmpty else { return }
+        operationRevision &+= 1
+        let identity = MaintenanceRunIdentity(
+            operationID: UUID(),
+            revision: operationRevision,
+            tasks: requestedTasks
+        )
+        operationGate.begin(identity)
+        runningTasks = Set(requestedTasks)
+
         let tasksRef = tasks
-        Task.detached { [task] in
-            let outcome = tasksRef.run(task)
+        let predecessor = Self.executionSettlement.barrier()
+        operationTask = Task.detached {
+            guard await ScanProducerSettlementChain.waitForSettlement(predecessor) else { return }
+            let batch = tasksRef.runAll(requestedTasks)
+            let taskWasCancelled = Task.isCancelled
             await MainActor.run {
-                outcomes.insert(outcome, at: 0)
-                runningTasks.remove(task)
+                guard let shouldPublish = operationGate.finishIfCurrent(
+                    identity,
+                    taskWasCancelled: taskWasCancelled
+                ) else { return }
+                operationTask = nil
+                runningTasks.removeAll()
+                guard shouldPublish else { return }
+                for o in batch { outcomes.insert(o, at: 0) }
             }
         }
     }
 
-    private func runAll() {
-        let all = MaintenanceTasks.Task.allCases
-        runningTasks.formUnion(all)
-        let tasksRef = tasks
-        Task.detached {
-            let batch = tasksRef.runAll(all)
-            await MainActor.run {
-                for o in batch { outcomes.insert(o, at: 0) }
-                runningTasks.removeAll()
-            }
+    private func cancelOperationForDeparture() {
+        operationGate.invalidate()
+        if let operationTask {
+            Self.executionSettlement.retire([operationTask])
         }
+        operationTask = nil
+        runningTasks.removeAll()
     }
 
     // MARK: - presentation helpers

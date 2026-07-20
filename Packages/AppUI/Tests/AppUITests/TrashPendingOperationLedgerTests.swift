@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import ScanKit
 import XCTest
 @testable import AppUI
 
@@ -28,11 +29,140 @@ final class TrashPendingOperationLedgerTests: XCTestCase {
             lock.unlock()
         }
 
+        func next() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            value += 1
+            return value
+        }
+
         func snapshot() -> Int {
             lock.lock()
             defer { lock.unlock() }
             return value
         }
+    }
+
+    func test_claimDurabilityFailureRejectsBeforeWorkspaceBoundary() async throws {
+        let fixture = try makeFixture()
+        let writes = LockedCounter()
+        let ledger = PersistentTrashPendingOperationLedger(
+            fileURL: fixture.ledgerURL,
+            activeOperationRegistry: fixture.registry,
+            processIdentityProvider: { Self.primaryProcess },
+            processLivenessProbe: { $0 == Self.primaryProcess ? .active : .inactive },
+            durableWriter: { data, url in
+                guard writes.next() == 1 else { return false }
+                return TrashDurableFileWriter.replace(
+                    data,
+                    at: url,
+                    temporaryPrefix: "ledger-test",
+                    logContext: "Ledger test"
+                )
+            }
+        )
+        let operationID = UUID()
+        guard case .reserved = ledger.reserve(
+            paths: [fixture.target.path],
+            operationID: operationID
+        ) else { return XCTFail("Durable reserve fixture must succeed") }
+        let workspaceCalls = LockedCounter()
+
+        let result = await TrashPipeline.executeRecycleOnce(
+            urls: [fixture.target],
+            operationID: operationID,
+            timeoutSeconds: 0.2,
+            ledger: ledger,
+            submissionQueue: DispatchQueue(label: "ledger.claim-durability"),
+            workspaceRecycle: { _, _ in workspaceCalls.increment() },
+            lateHandler: { _, _ in }
+        )
+
+        XCTAssertEqual(workspaceCalls.snapshot(), 0)
+        guard case .preSubmitRejected(let rejection) = result.state else {
+            return XCTFail("A non-durable claim must remain pre-submit")
+        }
+        XCTAssertEqual(
+            rejection.reasonsByPath[TrashPipeline.normalizePath(fixture.target.path)],
+            .ledgerUnavailable
+        )
+    }
+
+    func test_callbackTransitionWriteFailureIsStorageUnavailableNotStale() throws {
+        let fixture = try makeFixture()
+        let writes = LockedCounter()
+        let ledger = PersistentTrashPendingOperationLedger(
+            fileURL: fixture.ledgerURL,
+            activeOperationRegistry: fixture.registry,
+            processIdentityProvider: { Self.primaryProcess },
+            processLivenessProbe: { $0 == Self.primaryProcess ? .active : .inactive },
+            durableWriter: { data, url in
+                guard writes.next() <= 2 else { return false }
+                return TrashDurableFileWriter.replace(
+                    data,
+                    at: url,
+                    temporaryPrefix: "ledger-test",
+                    logContext: "Ledger test"
+                )
+            }
+        )
+        let operationID = UUID()
+        let attemptID = UUID()
+        guard case .reserved = ledger.reserve(paths: [fixture.target.path], operationID: operationID),
+              case .claimed = ledger.claim(
+                paths: [fixture.target.path],
+                operationID: operationID,
+                attemptID: attemptID
+              ) else { return XCTFail("Fixture must cross durable claim") }
+
+        XCTAssertEqual(ledger.markCallbackObserved(
+            paths: [fixture.target.path],
+            operationID: operationID,
+            attemptID: attemptID
+        ), .storageUnavailable)
+        XCTAssertTrue(ledger.ownsExactAttempt(
+            paths: [fixture.target.path],
+            operationID: operationID,
+            attemptID: attemptID
+        ), "A failed callback fsync cannot be interpreted as stale ownership")
+    }
+
+    func testReplayDispositionSkipsLiveOwnerAndAllowsExactDeadOwner() throws {
+        let fixture = try makeFixture()
+        let ownerLedger = makeLedger(fixture)
+        let operationID = UUID()
+        let attemptID = UUID()
+        guard case .reserved = ownerLedger.reserve(
+            paths: [fixture.target.path],
+            operationID: operationID
+        ), case .claimed = ownerLedger.claim(
+            paths: [fixture.target.path],
+            operationID: operationID,
+            attemptID: attemptID
+        ) else { return XCTFail("Fixture exact attempt must be durable") }
+
+        XCTAssertEqual(ownerLedger.replayDisposition(
+            paths: [fixture.target.path],
+            operationID: operationID,
+            attemptID: attemptID
+        ), .activeOwner)
+
+        let restarted = makeRestartedLedger(fixture)
+        XCTAssertEqual(restarted.replayDisposition(
+            paths: [fixture.target.path],
+            operationID: operationID,
+            attemptID: attemptID
+        ), .replayable)
+        XCTAssertEqual(restarted.acknowledgeExactAttempt(
+            paths: [fixture.target.path],
+            operationID: operationID,
+            attemptID: attemptID
+        ), .applied)
+        XCTAssertEqual(restarted.replayDisposition(
+            paths: [fixture.target.path],
+            operationID: operationID,
+            attemptID: attemptID
+        ), .stale)
     }
 
     private struct Fixture {
@@ -69,7 +199,13 @@ final class TrashPendingOperationLedgerTests: XCTestCase {
         _ fixture: Fixture,
         processIdentity: TrashLedgerProcessIdentity = TrashPendingOperationLedgerTests.primaryProcess,
         registry: TrashActiveOperationRegistry? = nil,
-        processLivenessProbe: PersistentTrashPendingOperationLedger.ProcessLivenessProbe? = nil
+        processLivenessProbe: PersistentTrashPendingOperationLedger.ProcessLivenessProbe? = nil,
+        storageLimits: PersistentTrashPendingOperationLedger.StorageLimits = .production,
+        boundedReader: @escaping PersistentTrashPendingOperationLedger.BoundedReader = {
+            url,
+            maximumBytes in
+            try BoundedLocalFileReader.read(at: url, maximumBytes: maximumBytes)
+        }
     ) -> PersistentTrashPendingOperationLedger {
         let liveness = processLivenessProbe ?? { expected in
             expected == processIdentity ? .active : .inactive
@@ -78,7 +214,9 @@ final class TrashPendingOperationLedgerTests: XCTestCase {
             fileURL: fixture.ledgerURL,
             activeOperationRegistry: registry ?? fixture.registry,
             processIdentityProvider: { processIdentity },
-            processLivenessProbe: liveness
+            processLivenessProbe: liveness,
+            storageLimits: storageLimits,
+            boundedReader: boundedReader
         )
     }
 
@@ -106,6 +244,140 @@ final class TrashPendingOperationLedgerTests: XCTestCase {
             revision: revision,
             categoryID: categoryID
         )
+    }
+
+    /// v2026.07.18 P1 regression: an oversized authority file is unreadable state, not an empty
+    /// first run. The reservation must fail before replacing any bytes on disk.
+    func test_oversizedLedgerFailsClosedWithoutReplacingExistingFile() throws {
+        let fixture = try makeFixture()
+        let existing = Data(repeating: 0x5A, count: 257)
+        try existing.write(to: fixture.ledgerURL)
+        let ledger = makeLedger(
+            fixture,
+            storageLimits: .init(maximumBytes: 256, maximumRecordCount: 10)
+        )
+
+        guard case .rejected(let rejection, _) = ledger.reserve(
+            paths: [fixture.target.path],
+            operationID: UUID()
+        ) else { return XCTFail("Oversized pending authority must fail closed") }
+        XCTAssertEqual(
+            rejection.reasonsByPath[TrashPipeline.normalizePath(fixture.target.path)],
+            .ledgerUnavailable
+        )
+        XCTAssertEqual(try Data(contentsOf: fixture.ledgerURL), existing)
+    }
+
+    /// The final ledger component is an authority file and must never follow a symlink to an
+    /// unrelated target, including on the write path after a failed read.
+    func test_symlinkLedgerFailsClosedWithoutTouchingDestination() throws {
+        let fixture = try makeFixture()
+        let destination = fixture.root.appendingPathComponent("ledger-destination.json")
+        let existing = Data("do-not-replace".utf8)
+        try existing.write(to: destination)
+        try FileManager.default.createSymbolicLink(
+            at: fixture.ledgerURL,
+            withDestinationURL: destination
+        )
+
+        guard case .rejected(let rejection, _) = makeLedger(fixture).reserve(
+            paths: [fixture.target.path],
+            operationID: UUID()
+        ) else { return XCTFail("Symlinked pending authority must fail closed") }
+        XCTAssertEqual(
+            rejection.reasonsByPath[TrashPipeline.normalizePath(fixture.target.path)],
+            .ledgerUnavailable
+        )
+        XCTAssertEqual(try Data(contentsOf: destination), existing)
+    }
+
+    /// Replacement and deletion after the initial pathname lookup are both integrity failures.
+    /// Only initial-path ENOENT may construct an empty envelope.
+    func test_readReplacementAndFinalDeletionFailClosedWithoutReplacingLedger() throws {
+        let fixture = try makeFixture()
+        let firstOperation = UUID()
+        guard case .reserved = makeLedger(fixture).reserve(
+            paths: [fixture.target.path],
+            operationID: firstOperation
+        ) else { return XCTFail("Fixture ledger must be created") }
+        let existing = try Data(contentsOf: fixture.ledgerURL)
+        let secondTarget = fixture.root.appendingPathComponent("second-target.bin")
+        try Data("second".utf8).write(to: secondTarget)
+
+        let scriptedErrors: [BoundedLocalFileReadError] = [
+            .changed,
+            .metadataUnavailable(stage: .finalPath, posixErrorCode: ENOENT),
+        ]
+        for error in scriptedErrors {
+            let ledger = makeLedger(
+                fixture,
+                boundedReader: { _, _ in throw error }
+            )
+            guard case .rejected(let rejection, _) = ledger.reserve(
+                paths: [secondTarget.path],
+                operationID: UUID()
+            ) else { return XCTFail("A read identity/version race must fail closed") }
+            XCTAssertEqual(
+                rejection.reasonsByPath[TrashPipeline.normalizePath(secondTarget.path)],
+                .ledgerUnavailable
+            )
+            XCTAssertEqual(try Data(contentsOf: fixture.ledgerURL), existing)
+        }
+    }
+
+    func test_recordCountWriteLimitRejectsWithoutReplacingExistingLedger() throws {
+        let fixture = try makeFixture()
+        guard case .reserved = makeLedger(fixture).reserve(
+            paths: [fixture.target.path],
+            operationID: UUID()
+        ) else { return XCTFail("Fixture ledger must be created") }
+        let existing = try Data(contentsOf: fixture.ledgerURL)
+        let secondTarget = fixture.root.appendingPathComponent("record-limit-target.bin")
+        try Data("second".utf8).write(to: secondTarget)
+        let ledger = makeLedger(
+            fixture,
+            storageLimits: .init(
+                maximumBytes: PersistentTrashPendingOperationLedger.StorageLimits.production.maximumBytes,
+                maximumRecordCount: 1
+            )
+        )
+
+        guard case .rejected(let rejection, _) = ledger.reserve(
+            paths: [secondTarget.path],
+            operationID: UUID()
+        ) else { return XCTFail("A second record must be rejected before write") }
+        XCTAssertEqual(
+            rejection.reasonsByPath[TrashPipeline.normalizePath(secondTarget.path)],
+            .ledgerUnavailable
+        )
+        XCTAssertEqual(try Data(contentsOf: fixture.ledgerURL), existing)
+    }
+
+    func test_encodedByteWriteLimitRejectsWithoutReplacingExistingLedger() throws {
+        let fixture = try makeFixture()
+        guard case .reserved = makeLedger(fixture).reserve(
+            paths: [fixture.target.path],
+            operationID: UUID()
+        ) else { return XCTFail("Fixture ledger must be created") }
+        let existing = try Data(contentsOf: fixture.ledgerURL)
+        let secondTarget = fixture.root.appendingPathComponent(
+            "encoded-byte-limit-target-with-a-longer-path.bin"
+        )
+        try Data("second".utf8).write(to: secondTarget)
+        let ledger = makeLedger(
+            fixture,
+            storageLimits: .init(maximumBytes: existing.count, maximumRecordCount: 2)
+        )
+
+        guard case .rejected(let rejection, _) = ledger.reserve(
+            paths: [secondTarget.path],
+            operationID: UUID()
+        ) else { return XCTFail("An oversized encoded envelope must be rejected before write") }
+        XCTAssertEqual(
+            rejection.reasonsByPath[TrashPipeline.normalizePath(secondTarget.path)],
+            .ledgerUnavailable
+        )
+        XCTAssertEqual(try Data(contentsOf: fixture.ledgerURL), existing)
     }
 
     func test_twoLedgerInstancesAtomicallyReserveOnlyOnce() async throws {
@@ -331,7 +603,7 @@ final class TrashPendingOperationLedgerTests: XCTestCase {
                   paths: [fixture.target.path],
                   operationID: operationID,
                   attemptID: firstAttemptID
-              ),
+              ) == .applied,
               original.markRetryReady(
                   paths: [fixture.target.path],
                   operationID: operationID,
@@ -381,7 +653,7 @@ final class TrashPendingOperationLedgerTests: XCTestCase {
                 paths: [fixture.target.path],
                 operationID: operationID,
                 attemptID: attemptID
-              ) else {
+              ) == .applied else {
             return XCTFail("Original operation must reach callbackObserved")
         }
 
@@ -614,11 +886,11 @@ final class TrashPendingOperationLedgerTests: XCTestCase {
         }
         XCTAssertEqual(rejection.reasonsByPath[fixture.target.path], .priorOperationPending)
         XCTAssertTrue(invalidated.isEmpty)
-        XCTAssertTrue(first.markCallbackObserved(
+        XCTAssertEqual(first.markCallbackObserved(
             paths: [fixture.target.path],
             operationID: operationID,
             attemptID: attemptID
-        ))
+        ), .applied)
         XCTAssertTrue(first.finish(
             paths: [fixture.target.path],
             operationID: operationID,
@@ -781,7 +1053,7 @@ final class TrashPendingOperationLedgerTests: XCTestCase {
             paths: [fixture.target.path],
             operationID: operationID,
             attemptID: attempt1
-        ), ledger.markRetryReady(
+        ) == .applied, ledger.markRetryReady(
             paths: [fixture.target.path],
             operationID: operationID,
             attemptID: attempt1
@@ -793,11 +1065,11 @@ final class TrashPendingOperationLedgerTests: XCTestCase {
             return XCTFail("Attempt 1 must release exactly one retry claim to attempt 2")
         }
 
-        XCTAssertFalse(ledger.markCallbackObserved(
+        XCTAssertEqual(ledger.markCallbackObserved(
             paths: [fixture.target.path],
             operationID: operationID,
             attemptID: attempt1
-        ), "A duplicate callback from attempt 1 is stale after attempt 2 claims")
+        ), .stale, "A duplicate callback from attempt 1 is stale after attempt 2 claims")
         XCTAssertFalse(ledger.markAPIReturned(
             paths: [fixture.target.path],
             operationID: operationID,
@@ -907,7 +1179,7 @@ final class TrashPendingOperationLedgerTests: XCTestCase {
             paths: [fixture.target.path],
             operationID: operationID,
             attemptID: attemptID
-        ) else {
+        ) == .applied else {
             return XCTFail("Fixture must reach callbackObserved")
         }
         XCTAssertTrue(fixture.registry.unregister(operationID), "Simulate process restart")
@@ -944,6 +1216,59 @@ final class TrashPendingOperationLedgerTests: XCTestCase {
         )
         XCTAssertEqual(flock(descriptor, LOCK_UN), 0)
         XCTAssertEqual(completed.wait(timeout: .now() + 2.0), .success)
+    }
+
+    func testCrashTempSweepWaitsForStableFlockAndPreservesLookalikes() throws {
+        let fixture = try makeFixture()
+        let ledger = makeLedger(fixture)
+        let stale = fixture.root.appendingPathComponent(
+            ".trash-pending.\(UUID().uuidString).tmp"
+        )
+        let malformed = fixture.root.appendingPathComponent(
+            ".trash-pending.not-a-uuid.tmp"
+        )
+        let extraSuffix = fixture.root.appendingPathComponent(
+            ".trash-pending.\(UUID().uuidString).tmp.backup"
+        )
+        let protectedTarget = fixture.root.appendingPathComponent("user-owned.json")
+        let exactLookingSymlink = fixture.root.appendingPathComponent(
+            ".trash-pending.\(UUID().uuidString).tmp"
+        )
+        try Data("stale".utf8).write(to: stale)
+        try Data("malformed".utf8).write(to: malformed)
+        try Data("keep".utf8).write(to: extraSuffix)
+        try Data("user".utf8).write(to: protectedTarget)
+        try FileManager.default.createSymbolicLink(
+            at: exactLookingSymlink,
+            withDestinationURL: protectedTarget
+        )
+
+        let descriptor = ledger.lockURLForTesting.path.withCString {
+            Darwin.open($0, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        }
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        guard descriptor >= 0 else { return }
+        defer { Darwin.close(descriptor) }
+        XCTAssertEqual(flock(descriptor, LOCK_EX), 0)
+
+        let completed = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = ledger.reserve(paths: [fixture.target.path], operationID: UUID())
+            completed.signal()
+        }
+        XCTAssertEqual(completed.wait(timeout: .now() + 0.10), .timedOut)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: stale.path),
+            "A competing store cannot sweep until it owns the stable ledger flock"
+        )
+
+        XCTAssertEqual(flock(descriptor, LOCK_UN), 0)
+        XCTAssertEqual(completed.wait(timeout: .now() + 2), .success)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: malformed.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: extraSuffix.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exactLookingSymlink.path))
+        XCTAssertEqual(try String(contentsOf: protectedTarget, encoding: .utf8), "user")
     }
 
     func test_queueWaitBudgetExpiresBeforeClaimAndNeverCallsWorkspace() async throws {

@@ -22,35 +22,32 @@ public struct MaintenanceTasks: Sendable {
     public enum Task: Sendable, Hashable, CaseIterable {
         case flushQuickLookCache
         case flushDNSCache
-
-        public var displayName: String {
-            switch self {
-            case .flushQuickLookCache:   return "清理 QuickLook 缓存"
-            case .flushDNSCache:         return "刷新 DNS 缓存"
-            }
-        }
-
-        /// 给 UI 用的解释：什么时候点这个、点了会发生什么。
-        public var subtitle: String {
-            switch self {
-            case .flushQuickLookCache:
-                return "Finder 预览图发白或不更新时执行"
-            case .flushDNSCache:
-                return "网站解析到旧 IP 时执行（无害）"
-            }
-        }
     }
 
     public struct Outcome: Sendable, Hashable {
-        public let task: Task
-        public let succeeded: Bool
-        public let log: String
-
-        public init(task: Task, succeeded: Bool, log: String) {
-            self.task = task
-            self.succeeded = succeeded
-            self.log = log
+        /// v2026.07.18：用户可见结果只保留稳定语义。命令 stdout/stderr、launch error
+        /// 和 owned-child 诊断仍写结构化日志，但不得直接进入主界面。
+        public enum Status: Sendable, Hashable {
+            case succeeded
+            case exited(code: Int32)
+            case timedOut
+            case cancelled
+            case ownershipLost
+            case launchFailed
         }
+
+        public let task: Task
+        public let status: Status
+        /// 仅供结构化日志/技术诊断；View 不得把它当用户文案。
+        public let diagnosticOutput: String
+
+        public init(task: Task, status: Status, diagnosticOutput: String) {
+            self.task = task
+            self.status = status
+            self.diagnosticOutput = diagnosticOutput
+        }
+
+        public var succeeded: Bool { status == .succeeded }
     }
 
     public let runner: MaintenanceCommandRunning
@@ -72,24 +69,50 @@ public struct MaintenanceTasks: Sendable {
 
     /// 批量调度（顺序执行，互不阻塞）。
     public func runAll(_ tasks: [Task] = Task.allCases) -> [Outcome] {
-        tasks.map { run($0) }
+        // v2026.07.18：批量任务属于同一 UI revision。离页取消后不能继续启动下一条
+        // 子进程；当前 owned child 会先收敛为 cancelled，再停止整个 batch。
+        var outcomes: [Outcome] = []
+        outcomes.reserveCapacity(tasks.count)
+        for task in tasks {
+            guard !withUnsafeCurrentTask(body: { $0?.isCancelled ?? false }) else { break }
+            let outcome = run(task)
+            outcomes.append(outcome)
+            if outcome.status == .cancelled { break }
+        }
+        return outcomes
     }
 
     private func execute(task: Task, command: MaintenanceCommand) -> Outcome {
         let result = runner.execute(command)
-        let ok = result.exitCode == 0
-        if !ok {
-            GSYLog.warning(.app,
-                "MaintenanceTasks 失败 task=\(task) exit=\(result.exitCode) log=\(result.output.prefix(200))")
+        let status: Outcome.Status
+        switch result.terminal {
+        case .exited(let code) where code == 0:
+            status = .succeeded
+        case .exited(let code):
+            status = .exited(code: code)
+        case .timedOut:
+            status = .timedOut
+        case .cancelled:
+            status = .cancelled
+        case .ownershipLost:
+            status = .ownershipLost
+        case .launchFailed:
+            status = .launchFailed
         }
-        return Outcome(task: task, succeeded: ok, log: result.output)
+        if status != .succeeded {
+            GSYLog.warning(.app,
+                "MaintenanceTasks 失败 task=\(task) terminal=\(String(describing: result.terminal)) diagnostic=\(result.diagnosticOutput.prefix(200))")
+        }
+        return Outcome(task: task, status: status, diagnosticOutput: result.diagnosticOutput)
     }
 
     // MARK: - 命令定义（独立 static，便于测试观测）
 
+    /// v2026.07.18: `qlmanage -r` only reloads the Generators list. The product task explicitly
+    /// promises a thumbnail-cache reset, whose documented command shape is `-r cache`.
     static let qlmanageCommand = MaintenanceCommand(
         launchPath: "/usr/bin/qlmanage",
-        arguments: ["-r"])
+        arguments: ["-r", "cache"])
 
     static let dnsFlushCommand = MaintenanceCommand(
         launchPath: "/usr/bin/dscacheutil",
@@ -109,12 +132,21 @@ public struct MaintenanceCommand: Sendable, Hashable {
 }
 
 public struct MaintenanceCommandResult: Sendable, Hashable {
-    public let exitCode: Int32
-    public let output: String
+    public enum Terminal: Sendable, Hashable {
+        case exited(code: Int32)
+        case timedOut
+        case cancelled
+        case ownershipLost
+        case launchFailed
+    }
 
-    public init(exitCode: Int32, output: String) {
-        self.exitCode = exitCode
-        self.output = output
+    public let terminal: Terminal
+    /// 原始 stdout/stderr/系统诊断，仅允许进入技术日志或显式技术详情。
+    public let diagnosticOutput: String
+
+    public init(terminal: Terminal, diagnosticOutput: String) {
+        self.terminal = terminal
+        self.diagnosticOutput = diagnosticOutput
     }
 }
 
@@ -140,34 +172,39 @@ public struct DefaultMaintenanceRunner: MaintenanceCommandRunning {
             path: command.launchPath,
             arguments: command.arguments,
             timeout: timeout,
-            outputLimitPerStream: SubprocessExecutor.outputCaptureLimitPerStream
+            outputLimitPerStream: SubprocessExecutor.outputCaptureLimitPerStream,
+            isCancelled: {
+                // v2026.07.18：UI Task cancellation must reach the sole waitpid owner. Without
+                // this bridge `.cancelled` existed only in the enum and the child kept running.
+                withUnsafeCurrentTask { $0?.isCancelled ?? false }
+            }
         )
         switch result.terminal {
         case .exited(let rawStatus):
             return MaintenanceCommandResult(
-                exitCode: OwnedChildProcessExecutor.decodedExitStatus(rawStatus),
-                output: result.output
+                terminal: .exited(code: OwnedChildProcessExecutor.decodedExitStatus(rawStatus)),
+                diagnosticOutput: result.output
             )
         case .timedOut:
             return MaintenanceCommandResult(
-                exitCode: -2,
-                output: "timeout after \(timeout)s; partial=\(result.output)"
+                terminal: .timedOut,
+                diagnosticOutput: result.output
             )
-        case .cancelled(let sentSIGKILL, _):
-            // v2026.07.17：保持取消独立于超时与启动失败；-5 不与既有 -1/-2 合同
-            // 或 SubprocessExecutor 的 -3/-4 安全拒绝 sentinel 混用。
-            let suffix = sentSIGKILL ? " SIGKILL sent" : " terminated"
+        case .cancelled:
             return MaintenanceCommandResult(
-                exitCode: -5,
-                output: "cancelled;\(suffix); partial=\(result.output)"
+                terminal: .cancelled,
+                diagnosticOutput: result.output
             )
         case .notOwned:
             return MaintenanceCommandResult(
-                exitCode: -1,
-                output: "child ownership lost before terminal status; \(result.output)"
+                terminal: .ownershipLost,
+                diagnosticOutput: result.output
             )
         case .launchFailed(let message):
-            return MaintenanceCommandResult(exitCode: -1, output: message)
+            return MaintenanceCommandResult(
+                terminal: .launchFailed,
+                diagnosticOutput: message
+            )
         }
     }
 }

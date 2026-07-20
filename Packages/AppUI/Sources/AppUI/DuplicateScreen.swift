@@ -396,6 +396,9 @@ private struct DuplicateDeletionExecutionSheet: View {
 /// - UI 层提供每组处理入口，删除动作统一走 TrashPipeline 移到废纸篓。
 /// - 顶部 banner 醒目提示「重复检测可能漏报或误报」，prefix-only 组建议手动核对。
 public struct DuplicateScreen: View {
+    /// Shared across view reconstruction so leaving and immediately re-entering the page cannot
+    /// create a second duplicate walker while the cancelled screen's producer is still draining.
+    @MainActor private static let scanProducerSettlement = ScanProducerSettlementChain()
     @Environment(\.locale) private var locale
 
     /// 顶栏「最小尺寸」滑杆挡位。
@@ -461,6 +464,7 @@ public struct DuplicateScreen: View {
     @State private var scanSessionID = UUID()
     @State private var scanRevision: UInt64 = 0
     @State private var activeSheet: ActiveSheet?
+    @State private var preflightNotice: DeletionPreflightNotice?
     @State private var isDeletingDuplicates: Bool = false
     @State private var isRootImporterPresented = false
     @State private var duplicateDeletionHandoff = ToolDeletionHandoff<DuplicateConfirmedDeletion>()
@@ -472,6 +476,8 @@ public struct DuplicateScreen: View {
     @State private var duplicateExecutionBoundary: DuplicateDeletionExecutionBoundary?
 
     private let pipeline: any DeletionPipeline
+    /// v2026.07.20 P0: never pair a scripted duplicate pipeline with production Undo history.
+    private let undoHistoryStore: UndoHistoryStore
 
     private struct DuplicateDeleteRequest: Identifiable, Sendable {
         let id = UUID()
@@ -502,7 +508,6 @@ public struct DuplicateScreen: View {
         case handle(DuplicateGroup)
         case confirm(DuplicateDeleteRequest)
         case execution(DuplicateDeletionExecutionOwner)
-        case preflightNotice(DeletionPreflightNotice)
         case result(OperationResultCompletion)
 
         var id: String {
@@ -510,14 +515,17 @@ public struct DuplicateScreen: View {
             case .handle(let group): return "handle-\(group.id)"
             case .confirm(let request): return "confirm-\(request.id)"
             case .execution(let owner): return "execution-\(owner.id.uuidString)"
-            case .preflightNotice(let notice): return "preflightNotice-\(notice.id)"
             case .result(let payload): return "result-\(payload.id)"
             }
         }
     }
 
-    public init(pipeline: any DeletionPipeline) {
+    public init(
+        pipeline: any DeletionPipeline,
+        undoHistoryStore: UndoHistoryStore
+    ) {
         self.pipeline = pipeline
+        self.undoHistoryStore = undoHistoryStore
     }
 
     public var body: some View {
@@ -549,8 +557,12 @@ public struct DuplicateScreen: View {
         // v1.3.ab：整个 VStack 也强制 maxWidth: .infinity，
         // 让 banner / topBar 内的 chip / 滑杆 即使 ideal width 较大也不会反推外层。
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // v2026.07.20 P0: preserve duplicate selection while the non-modal explanation floats.
+        .deletionPreflightNoticeOverlay(preflightNotice) {
+            preflightNotice = nil
+        }
         .onDisappear {
-            scanTask?.cancel()
+            cancelActiveScan()
             cancelDuplicatePreflight()
             handleDuplicateExecutionDeparture()
         }
@@ -611,10 +623,6 @@ public struct DuplicateScreen: View {
                         }
                     )
                     .interactiveDismissDisabled(true)
-                case .preflightNotice(let notice):
-                    DeletionPreflightNoticeSheet(notice: notice) {
-                        activeSheet = nil
-                    }
                 case .result(let completion):
                     OperationResultSheet(completion: completion) {
                         activeSheet = nil
@@ -714,7 +722,7 @@ public struct DuplicateScreen: View {
             // 开始 / 停止
             if isScanning {
                 Button(role: .cancel) {
-                    scanTask?.cancel()
+                    cancelActiveScan()
                 } label: {
                     Label {
                         Text("duplicate.topbar.stop", bundle: .module)
@@ -1044,7 +1052,7 @@ public struct DuplicateScreen: View {
             return true
         }
         switch activeSheet {
-        case .handle, .confirm, .execution, .preflightNotice:
+        case .handle, .confirm, .execution:
             return true
         case .result, .none:
             return false
@@ -1112,13 +1120,27 @@ public struct DuplicateScreen: View {
     }
 
     private func prepareDuplicateDeletion(group: DuplicateGroup, paths: [String]) {
+        guard !isDeletingDuplicates,
+              !duplicateDeletionHandoff.hasPending else { return }
+        // v2026.07.20: a prior rejection does not own deletion transaction state.
+        preflightNotice = nil
         guard DuplicateHandlingPlan.isValidDeleteTargets(paths, for: group),
               let executionVerification = DuplicateDeletionVerificationRequest(
                   group: group,
                   targetPaths: paths
-              ),
-              !isDeletingDuplicates,
-              !duplicateDeletionHandoff.hasPending else { return }
+              ) else {
+            // Invalid/stale duplicate evidence is still a zero-submission rejection. Do not
+            // silently ignore the click or promote it into an execution result presentation.
+            preflightNotice = DeletionPreflightNotice(
+                rejections: paths.map {
+                    .init(
+                        path: $0,
+                        reason: DuplicateDeletionVerificationRejectionReason.invalidEvidence.rawValue
+                    )
+                }
+            )
+            return
+        }
         let sessionID = scanSessionID
         let revision = scanRevision
         let relevantIssues = incompleteIssues(overlappingAny: paths)
@@ -1137,7 +1159,10 @@ public struct DuplicateScreen: View {
                 revision: revision,
                 categoryID: "duplicate"
             )
-            let coordinator = DeletionInteractionCoordinator(pipeline: pipeline)
+            let coordinator = DeletionInteractionCoordinator(
+                pipeline: pipeline,
+                undoHistoryStore: undoHistoryStore
+            )
             let decision: DeletionInteractionPreparation
             do {
                 let bytesByPath = duplicateBytesByPath(paths: paths, in: group)
@@ -1199,7 +1224,8 @@ public struct DuplicateScreen: View {
                     prepared: prepared
                 ))
             case .blocked(let block):
-                activeSheet = .preflightNotice(DeletionPreflightNotice(rejections: block.rejections))
+                activeSheet = nil
+                preflightNotice = DeletionPreflightNotice(rejections: block.rejections)
             case .cancelled:
                 return
             }
@@ -1234,7 +1260,8 @@ public struct DuplicateScreen: View {
                 .trash,
                 "Duplicate rejected stale deletion intent revision=\(request.scanRevision) current=\(scanRevision)"
             )
-            activeSheet = .preflightNotice(DeletionPreflightNotice(rejections: rejections))
+            activeSheet = nil
+            preflightNotice = DeletionPreflightNotice(rejections: rejections)
             return false
         }
     }
@@ -1273,7 +1300,10 @@ public struct DuplicateScreen: View {
             }
             guard requireCurrentDuplicateRequest(submission.request) else { return }
             let executionPlan = submission.executionPlan
-            let coordinator = DeletionInteractionCoordinator(pipeline: pipeline)
+            let coordinator = DeletionInteractionCoordinator(
+                pipeline: pipeline,
+                undoHistoryStore: undoHistoryStore
+            )
             let authorization: DeletionAuthorizedInteraction
             switch coordinator.authorize(
                 prepared: submission.request.prepared,
@@ -1285,9 +1315,10 @@ public struct DuplicateScreen: View {
                 activeSheet = nil
                 return
             case .blocked(let block):
-                activeSheet = .preflightNotice(DeletionPreflightNotice(
+                activeSheet = nil
+                preflightNotice = DeletionPreflightNotice(
                     rejections: block.rejections
-                ))
+                )
                 return
             }
             guard requireCurrentDuplicateRequest(
@@ -1296,7 +1327,8 @@ public struct DuplicateScreen: View {
             ) else { return }
             let frozenEvidencePaths = incompleteEvidencePaths(in: authorization)
             guard frozenEvidencePaths.isSubset(of: submission.request.accessEvidencePaths) else {
-                activeSheet = .preflightNotice(DeletionPreflightNotice(
+                activeSheet = nil
+                preflightNotice = DeletionPreflightNotice(
                     rejections: authorization.authorization.paths.map {
                         .init(
                             path: $0,
@@ -1304,7 +1336,7 @@ public struct DuplicateScreen: View {
                                 .missingTypedEvidence.rawValue
                         )
                     }
-                ))
+                )
                 return
             }
             let progressPair = AsyncStream<DeletionExecutionProgress>.makeStream(
@@ -1368,7 +1400,8 @@ public struct DuplicateScreen: View {
                 return
 
             case .blocked(let block):
-                activeSheet = .preflightNotice(DeletionPreflightNotice(rejections: block.rejections))
+                activeSheet = nil
+                preflightNotice = DeletionPreflightNotice(rejections: block.rejections)
                 return
             }
             let result = completed.result
@@ -1512,7 +1545,6 @@ public struct DuplicateScreen: View {
         guard !isScanning,
               !roots.isEmpty,
               !isDeletionTransactionActive else { return }
-        scanTask?.cancel()
         groups = []
         selectedGroupID = nil
         tccSkippedRoots = []
@@ -1528,40 +1560,59 @@ public struct DuplicateScreen: View {
         scanPhase = .enumerate
         isScanning = true
 
-        let scanner = DuplicateScanner(roots: roots, minBytes: minStep.bytes)
+        let rootsSnapshot = roots
+        let minimumBytes = minStep.bytes
+        let predecessor = Self.scanProducerSettlement.barrier()
         scanTask = Task { @MainActor in
-            for await event in scanner.scan() {
-                if Task.isCancelled { break }
-                guard scanSessionID == sessionID, scanRevision == revision else { break }
-                switch event {
-                case .sizingProgress(let n):
-                    scanPhase = .enumerate
-                    sizingFiles = n
-                case .hashingProgress(let done, let total):
-                    scanPhase = .prefixHash
-                    bucketsDone = done
-                    bucketsTotal = total
-                case .fullHashingProgress(let done, let total):
-                    scanPhase = .fullHash
-                    bucketsDone = done
-                    bucketsTotal = total
-                case .finished(let g):
-                    groups = g
-                case .cancelled:
-                    // 用户/上游 cancel：保留 groups 不动，仅退出 isScanning 状态。
-                    // 与「停止仅终止扫描、保留已有结果」UX 一致。
-                    break
-                case .tccProtectedSkipped(let path):
-                    if !tccSkippedRoots.contains(path) {
-                        tccSkippedRoots.append(path)
-                    }
-                    recordIncompleteIssue(ScanIncompleteIssue(
-                        path: path,
-                        reason: .tccProtectedSkipped
-                    ))
-                case .incomplete(let issue):
-                    recordIncompleteIssue(issue)
+            guard await ScanProducerSettlementChain.waitForSettlement(predecessor) else {
+                if scanSessionID == sessionID, scanRevision == revision {
+                    isScanning = false
+                    scanPhase = nil
+                    scanTask = nil
                 }
+                return
+            }
+
+            let scanner = DuplicateScanner(roots: rootsSnapshot, minBytes: minimumBytes)
+            let session = scanner.scanSession()
+            await withTaskCancellationHandler {
+                for await event in session.events {
+                    if Task.isCancelled { break }
+                    guard scanSessionID == sessionID, scanRevision == revision else { break }
+                    switch event {
+                    case .sizingProgress(let n):
+                        scanPhase = .enumerate
+                        sizingFiles = n
+                    case .hashingProgress(let done, let total):
+                        scanPhase = .prefixHash
+                        bucketsDone = done
+                        bucketsTotal = total
+                    case .fullHashingProgress(let done, let total):
+                        scanPhase = .fullHash
+                        bucketsDone = done
+                        bucketsTotal = total
+                    case .finished(let g):
+                        groups = g
+                    case .cancelled:
+                        // 用户/上游 cancel：保留 groups 不动，仅退出 isScanning 状态。
+                        // 与「停止仅终止扫描、保留已有结果」UX 一致。
+                        break
+                    case .tccProtectedSkipped(let path):
+                        if !tccSkippedRoots.contains(path) {
+                            tccSkippedRoots.append(path)
+                        }
+                        recordIncompleteIssue(ScanIncompleteIssue(
+                            path: path,
+                            reason: .tccProtectedSkipped
+                        ))
+                    case .incomplete(let issue):
+                        recordIncompleteIssue(issue)
+                    }
+                }
+                if Task.isCancelled { session.cancel() }
+                await session.waitForTermination()
+            } onCancel: {
+                session.cancel()
             }
             // 无论正常 finished 还是 cancel，退出循环时一并复位进度计数与标签，
             // 避免下次启动前 footer 闪显旧进度数字。
@@ -1571,8 +1622,16 @@ public struct DuplicateScreen: View {
                 bucketsDone = 0
                 bucketsTotal = 0
                 sizingFiles = 0
+                scanTask = nil
             }
         }
+    }
+
+    /// Cancellation is not settlement. The shared chain retains and joins this UI-owned task;
+    /// that task in turn joins `DuplicateScanner.ScanSession` and its nested BulkScanner session.
+    private func cancelActiveScan() {
+        guard let scanTask, !scanTask.isCancelled else { return }
+        Self.scanProducerSettlement.retire([scanTask])
     }
 }
 

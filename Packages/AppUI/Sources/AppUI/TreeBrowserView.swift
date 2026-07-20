@@ -5,6 +5,650 @@ import SafetyKit
 import AIKit
 import LogKit
 
+/// v2026.07.20：行内命令不拥有导航权。AI、暂存和删除只执行命令，只有正文/
+/// disclosure 点击才允许改变当前 selection；Tree AppKit、Tree SwiftUI 与 Large Files
+/// 共用这条规则，避免新增按钮时再次顺手打开右侧详情。
+enum InlineRowActionNavigationPolicy {
+    enum Action: Equatable, CaseIterable {
+        case askAI
+        case stash
+        case trash
+    }
+
+    static func shouldSelectRow(for action: Action) -> Bool {
+        switch action {
+        case .askAI, .stash, .trash:
+            return false
+        }
+    }
+
+    /// Inline actions keep keyboard routing on the Tree without taking navigation ownership.
+    static func shouldFocusTable(for action: Action) -> Bool { true }
+}
+
+/// Sendable rule-evaluation boundary used by the Tree projection worker. Production captures an
+/// immutable ScanCoordinator safety snapshot; tests can inject a deterministic evaluator without
+/// touching the filesystem.
+struct TreeFlatProjectionEvaluator: Sendable {
+    let evaluate: @Sendable (String) -> (verdict: SafetyVerdict, rejection: SafetyRejection)
+}
+
+struct TreeFlatProjectionWorkerInput: Sendable {
+    let rootRows: [TreeRow]
+    let childrenByParent: [String: [TreeRow]]
+    let expandedPaths: Set<String>
+    let fetchingPaths: Set<String>
+    let isFetchingRoot: Bool
+    let receiptTombstones: DeletionPresentationPathMatcher
+    let evaluator: TreeFlatProjectionEvaluator
+
+    init(
+        rootRows: [TreeRow],
+        childrenByParent: [String: [TreeRow]],
+        expandedPaths: Set<String>,
+        fetchingPaths: Set<String>,
+        isFetchingRoot: Bool,
+        receiptTombstones: DeletionPresentationPathMatcher = .init(
+            paths: EmptyCollection<String>()
+        ),
+        evaluator: TreeFlatProjectionEvaluator
+    ) {
+        self.rootRows = rootRows
+        self.childrenByParent = childrenByParent
+        self.expandedPaths = expandedPaths
+        self.fetchingPaths = fetchingPaths
+        self.isFetchingRoot = isFetchingRoot
+        self.receiptTombstones = receiptTombstones
+        self.evaluator = evaluator
+    }
+}
+
+struct TreeFlatProjectionPreviousSnapshot: Sendable {
+    let rows: [FlatTreeRow]
+    let rowIndexByPath: [String: Int]
+    let parentIndexByRow: [Int?]
+    let maxBytes: Int64
+    let isFetchingRoot: Bool
+}
+
+struct PreparedTreeFlatProjection: Sendable {
+    let rows: [FlatTreeRow]
+    let rowIndexByPath: [String: Int]
+    let parentIndexByRow: [Int?]
+    let maxBytes: Int64
+    let isFetchingRoot: Bool
+    let changed: Bool
+    let tableIdentityChanged: Bool
+    let ranOnMainThread: Bool
+    /// v2026.07.20: receipt-only Tree updates carry the exact old-table ranges that disappeared.
+    /// AppKit can then remove those rows without a full `reloadData()`; ordinary rebuilds leave
+    /// this nil and retain the existing full-reload contract.
+    let rowRemovalRanges: [Range<Int>]?
+}
+
+struct TreeTableRowRemovalDelta: Sendable, Equatable {
+    let baseIdentityRevision: UInt64
+    let nextIdentityRevision: UInt64
+    let baseRowCount: Int
+    let nextRowCount: Int
+    let ranges: [Range<Int>]
+}
+
+enum TreeTableStructuralUpdate: Equatable {
+    case reload
+    case removeRows([Range<Int>])
+    case redrawVisible
+}
+
+/// v2026.07.20: structural identity changes normally require a full reload, except for a
+/// receipt-backed deletion whose base revision and row counts still match the table on screen.
+/// Keeping this decision pure prevents a stale async delta from being applied to a newer Tree.
+enum TreeTableStructuralUpdatePolicy {
+    static func update(
+        renderedIdentityRevision: UInt64?,
+        renderedRowCount: Int,
+        nextIdentityRevision: UInt64,
+        nextRowCount: Int,
+        removalDelta: TreeTableRowRemovalDelta?
+    ) -> TreeTableStructuralUpdate {
+        guard renderedIdentityRevision != nextIdentityRevision else {
+            return .redrawVisible
+        }
+        guard let removalDelta,
+              renderedIdentityRevision == removalDelta.baseIdentityRevision,
+              nextIdentityRevision == removalDelta.nextIdentityRevision,
+              renderedRowCount == removalDelta.baseRowCount,
+              nextRowCount == removalDelta.nextRowCount,
+              !removalDelta.ranges.isEmpty,
+              removalDelta.ranges.allSatisfy({
+                  $0.lowerBound >= 0
+                      && $0.lowerBound < $0.upperBound
+                      && $0.upperBound <= removalDelta.baseRowCount
+              }) else {
+            return .reload
+        }
+        for index in removalDelta.ranges.indices.dropFirst() {
+            let previous = removalDelta.ranges[index - 1]
+            let current = removalDelta.ranges[index]
+            guard previous.upperBound <= current.lowerBound else { return .reload }
+        }
+        let removedCount = removalDelta.ranges.reduce(0) { $0 + $1.count }
+        guard removalDelta.baseRowCount - removedCount == removalDelta.nextRowCount else {
+            return .reload
+        }
+        return .removeRows(removalDelta.ranges)
+    }
+}
+
+@MainActor
+enum TreeTableStructuralUpdateApplier {
+    static func apply(
+        _ update: TreeTableStructuralUpdate,
+        to table: NSTableView,
+        in scrollView: NSScrollView,
+        redrawVisible: () -> Void
+    ) {
+        switch update {
+        case .reload:
+            table.reloadData()
+        case .removeRows(let ranges):
+            var indexes = IndexSet()
+            for range in ranges { indexes.insert(integersIn: range) }
+            let visibleOrigin = scrollView.contentView.bounds.origin
+            table.beginUpdates()
+            table.removeRows(at: indexes, withAnimation: [])
+            table.endUpdates()
+            scrollView.contentView.scroll(to: visibleOrigin)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        case .redrawVisible:
+            redrawVisible()
+        }
+    }
+}
+
+enum TreeSelectionViewportPolicy {
+    nonisolated static func shouldReveal(
+        pendingUserNavigationPath: String?,
+        selectedPath: String?
+    ) -> Bool {
+        guard let pendingUserNavigationPath else { return false }
+        return pendingUserNavigationPath == selectedPath
+    }
+}
+
+/// v2026.07.18 P1 root-cause fix: DFS flattening, wide array/Set materialization, loading-state
+/// projection and every SafetyEngine evaluation are one generic-executor transaction. The worker
+/// retains both the previous and next COW generations until MainActor has completed its O(1)
+/// publish, so replacing a 40k-row frame cannot synchronously tear it down on the UI thread.
+actor TreeFlatProjectionWorker {
+    private var input: TreeFlatProjectionWorkerInput?
+    private var previous: TreeFlatProjectionPreviousSnapshot?
+    private var prepared: PreparedTreeFlatProjection?
+
+    init(
+        input: TreeFlatProjectionWorkerInput,
+        previous: TreeFlatProjectionPreviousSnapshot
+    ) {
+        self.input = input
+        self.previous = previous
+    }
+
+    func prepare() -> PreparedTreeFlatProjection? {
+        guard let input, let previous, !Task.isCancelled else { return nil }
+        let ranOnMainThread = Thread.isMainThread
+        var rows: [FlatTreeRow] = []
+        rows.reserveCapacity(max(input.rootRows.count, previous.rows.count))
+        var rowIndexByPath: [String: Int] = [:]
+        rowIndexByPath.reserveCapacity(max(input.rootRows.count, previous.rowIndexByPath.count))
+        var parentIndexByRow: [Int?] = []
+        parentIndexByRow.reserveCapacity(max(input.rootRows.count, previous.parentIndexByRow.count))
+        var stack: [(row: TreeRow, depth: Int, parentIndex: Int?)] = []
+        stack.reserveCapacity(input.rootRows.count)
+        var maxBytes: Int64 = 0
+        for row in input.rootRows.reversed() {
+            stack.append((row, 0, nil))
+        }
+
+        while let entry = stack.popLast() {
+            if rows.count & 0xFF == 0, Task.isCancelled { return nil }
+            // v2026.07.20 production regression fix: the raw snapshot/cache can legitimately
+            // predate a successful recycle receipt while the authoritative prune is still
+            // calculating. Visibility follows the receipt tombstone, never the stale cache.
+            guard !input.receiptTombstones.contains(entry.row.path) else { continue }
+            // A filesystem tree must have one visible identity per public path. Treat a corrupt
+            // cycle/duplicate edge as non-present instead of recursing forever on a worker.
+            guard rowIndexByPath[entry.row.path] == nil else { continue }
+            let currentIndex = rows.count
+            if entry.depth == 0 { maxBytes = max(maxBytes, entry.row.bytes) }
+            rowIndexByPath[entry.row.path] = currentIndex
+            parentIndexByRow.append(entry.parentIndex)
+            let evaluation = input.evaluator.evaluate(entry.row.path)
+            let shouldTraverse = input.expandedPaths.contains(entry.row.path)
+                && entry.row.isDirectory
+                && entry.row.hasChildren
+                && entry.row.accessState == .normal
+            rows.append(FlatTreeRow(
+                row: entry.row,
+                depth: entry.depth,
+                verdict: evaluation.verdict,
+                rejection: evaluation.rejection,
+                isLoadingChildren: shouldTraverse
+                    && input.fetchingPaths.contains(entry.row.path)
+            ))
+            guard shouldTraverse,
+                  let children = input.childrenByParent[entry.row.path]
+            else { continue }
+            for child in children.reversed() {
+                stack.append((child, entry.depth + 1, currentIndex))
+            }
+        }
+
+        guard !Task.isCancelled else { return nil }
+        let tableIdentityChanged: Bool
+        if rows.count != previous.rows.count {
+            tableIdentityChanged = true
+        } else {
+            tableIdentityChanged = rows.indices.contains { index in
+                rows[index].id != previous.rows[index].id
+                    || rows[index].depth != previous.rows[index].depth
+            }
+        }
+        let output = PreparedTreeFlatProjection(
+            rows: rows,
+            rowIndexByPath: rowIndexByPath,
+            parentIndexByRow: parentIndexByRow,
+            maxBytes: maxBytes,
+            isFetchingRoot: input.rootRows.isEmpty && input.isFetchingRoot,
+            changed: rows != previous.rows
+                || rowIndexByPath != previous.rowIndexByPath
+                || parentIndexByRow != previous.parentIndexByRow
+                || maxBytes != previous.maxBytes
+                || (input.rootRows.isEmpty && input.isFetchingRoot) != previous.isFetchingRoot,
+            tableIdentityChanged: tableIdentityChanged,
+            ranOnMainThread: ranOnMainThread,
+            rowRemovalRanges: nil
+        )
+        prepared = output
+        return output
+    }
+
+    func retire() -> Bool {
+        let ranOnMainThread = Thread.isMainThread
+        prepared = nil
+        previous = nil
+        input = nil
+        return ranOnMainThread
+    }
+}
+
+struct TreeIncrementalProjectionWorkerInput: Sendable {
+    let togglePath: String
+    let isExpanding: Bool
+    let childrenByParent: [String: [TreeRow]]
+    let expandedPaths: Set<String>
+    let fetchingPaths: Set<String>
+    let receiptTombstones: DeletionPresentationPathMatcher
+    let evaluator: TreeFlatProjectionEvaluator
+
+    init(
+        togglePath: String,
+        isExpanding: Bool,
+        childrenByParent: [String: [TreeRow]],
+        expandedPaths: Set<String>,
+        fetchingPaths: Set<String>,
+        receiptTombstones: DeletionPresentationPathMatcher = .init(
+            paths: EmptyCollection<String>()
+        ),
+        evaluator: TreeFlatProjectionEvaluator
+    ) {
+        self.togglePath = togglePath
+        self.isExpanding = isExpanding
+        self.childrenByParent = childrenByParent
+        self.expandedPaths = expandedPaths
+        self.fetchingPaths = fetchingPaths
+        self.receiptTombstones = receiptTombstones
+        self.evaluator = evaluator
+    }
+}
+
+/// v2026.07.19 regression fix: one disclosure click patches only the affected contiguous segment.
+/// Array COW, descendant DFS, index rebuilding and new-row verdict evaluation all stay on this
+/// actor; a newer click cancels this worker and starts immediately instead of joining stale work.
+actor TreeIncrementalProjectionWorker {
+    private var input: TreeIncrementalProjectionWorkerInput?
+    private var previous: TreeFlatProjectionPreviousSnapshot?
+    private var prepared: PreparedTreeFlatProjection?
+
+    init(
+        input: TreeIncrementalProjectionWorkerInput,
+        previous: TreeFlatProjectionPreviousSnapshot
+    ) {
+        self.input = input
+        self.previous = previous
+    }
+
+    func prepare() -> PreparedTreeFlatProjection? {
+        guard let input, let previous, !Task.isCancelled else { return nil }
+
+        // A disclosure projection may start after the receipt patch or after a sheet has remounted
+        // the Tree from an older frame. Normalize that frame with the same receipt authority before
+        // touching the requested segment; this work remains on the worker actor.
+        let baselineRows: [FlatTreeRow]
+        let baselineIndexByPath: [String: Int]
+        if input.receiptTombstones.roots.isEmpty {
+            // Preserve the ordinary disclosure fast path: without any successful receipt there
+            // is nothing to normalize, so reuse both frozen COW roots instead of scanning the
+            // entire visible Tree for one expand/collapse click.
+            baselineRows = previous.rows
+            baselineIndexByPath = previous.rowIndexByPath
+        } else {
+            baselineRows = previous.rows.filter {
+                !input.receiptTombstones.contains($0.row.path)
+            }
+            var rebuiltIndex: [String: Int] = [:]
+            rebuiltIndex.reserveCapacity(baselineRows.count)
+            for (index, item) in baselineRows.enumerated() {
+                rebuiltIndex[item.row.path] = index
+            }
+            baselineIndexByPath = rebuiltIndex
+        }
+        guard let parentIndex = baselineIndexByPath[input.togglePath],
+              baselineRows.indices.contains(parentIndex) else {
+            return makeOutput(
+                rows: baselineRows,
+                previous: previous,
+                ranOnMainThread: Thread.isMainThread
+            )
+        }
+
+        let ranOnMainThread = Thread.isMainThread
+        let parentDepth = baselineRows[parentIndex].depth
+        var oldSegmentEnd = parentIndex + 1
+        while oldSegmentEnd < baselineRows.count,
+              baselineRows[oldSegmentEnd].depth > parentDepth {
+            oldSegmentEnd += 1
+            if oldSegmentEnd & 0xFF == 0, Task.isCancelled { return nil }
+        }
+
+        var rows = baselineRows
+        if oldSegmentEnd > parentIndex + 1 {
+            rows.removeSubrange((parentIndex + 1)..<oldSegmentEnd)
+        }
+        rows[parentIndex].isLoadingChildren = input.isExpanding
+            && input.fetchingPaths.contains(input.togglePath)
+
+        if input.isExpanding {
+            let parentRow = rows[parentIndex].row
+            guard parentRow.isDirectory,
+                  parentRow.hasChildren,
+                  parentRow.accessState == .normal
+            else {
+                return makeOutput(
+                    rows: rows,
+                    previous: previous,
+                    ranOnMainThread: ranOnMainThread
+                )
+            }
+
+            var inserted: [FlatTreeRow] = []
+            var insertedPaths = Set<String>()
+            let rootChildren = input.childrenByParent[input.togglePath] ?? []
+            var stack: [(row: TreeRow, depth: Int)] = []
+            stack.reserveCapacity(rootChildren.count)
+            for row in rootChildren.reversed() {
+                stack.append((row, parentDepth + 1))
+            }
+
+            while let entry = stack.popLast() {
+                if inserted.count & 0xFF == 0, Task.isCancelled { return nil }
+                guard !input.receiptTombstones.contains(entry.row.path) else { continue }
+                let oldIndex = baselineIndexByPath[entry.row.path]
+                let belongedToRemovedSegment = oldIndex.map {
+                    $0 > parentIndex && $0 < oldSegmentEnd
+                } ?? false
+                guard (oldIndex == nil || belongedToRemovedSegment),
+                      insertedPaths.insert(entry.row.path).inserted
+                else { continue }
+
+                let evaluation = input.evaluator.evaluate(entry.row.path)
+                let shouldTraverse = input.expandedPaths.contains(entry.row.path)
+                    && entry.row.isDirectory
+                    && entry.row.hasChildren
+                    && entry.row.accessState == .normal
+                inserted.append(FlatTreeRow(
+                    row: entry.row,
+                    depth: entry.depth,
+                    verdict: evaluation.verdict,
+                    rejection: evaluation.rejection,
+                    isLoadingChildren: shouldTraverse
+                        && input.fetchingPaths.contains(entry.row.path)
+                ))
+                guard shouldTraverse,
+                      let children = input.childrenByParent[entry.row.path]
+                else { continue }
+                for child in children.reversed() {
+                    stack.append((child, entry.depth + 1))
+                }
+            }
+            if !inserted.isEmpty {
+                rows.insert(contentsOf: inserted, at: parentIndex + 1)
+            }
+        }
+
+        guard !Task.isCancelled else { return nil }
+        return makeOutput(
+            rows: rows,
+            previous: previous,
+            ranOnMainThread: ranOnMainThread
+        )
+    }
+
+    private func makeOutput(
+        rows: [FlatTreeRow],
+        previous: TreeFlatProjectionPreviousSnapshot,
+        ranOnMainThread: Bool
+    ) -> PreparedTreeFlatProjection {
+        var rowIndexByPath: [String: Int] = [:]
+        rowIndexByPath.reserveCapacity(rows.count)
+        var parentIndexByRow: [Int?] = []
+        parentIndexByRow.reserveCapacity(rows.count)
+        var ancestorStack: [(depth: Int, index: Int)] = []
+        ancestorStack.reserveCapacity(32)
+
+        for (index, item) in rows.enumerated() {
+            while let last = ancestorStack.last, last.depth >= item.depth {
+                ancestorStack.removeLast()
+            }
+            rowIndexByPath[item.row.path] = index
+            parentIndexByRow.append(ancestorStack.last?.index)
+            ancestorStack.append((item.depth, index))
+        }
+
+        let output = PreparedTreeFlatProjection(
+            rows: rows,
+            rowIndexByPath: rowIndexByPath,
+            parentIndexByRow: parentIndexByRow,
+            maxBytes: previous.maxBytes,
+            isFetchingRoot: previous.isFetchingRoot,
+            changed: rows != previous.rows
+                || rowIndexByPath != previous.rowIndexByPath
+                || parentIndexByRow != previous.parentIndexByRow,
+            tableIdentityChanged: rows.count != previous.rows.count,
+            ranOnMainThread: ranOnMainThread,
+            rowRemovalRanges: nil
+        )
+        prepared = output
+        return output
+    }
+
+    func retire() -> Bool {
+        let ranOnMainThread = Thread.isMainThread
+        prepared = nil
+        previous = nil
+        input = nil
+        return ranOnMainThread
+    }
+}
+
+/// Receipt presentation patch: remove only already-visible deleted identities and descendants.
+/// It never re-DFSes the coordinator or re-evaluates Safety; wide array filtering/index rebuild
+/// stay on this actor while the authoritative prune continues independently.
+actor TreeDeletionPresentationWorker {
+    private var matcher: DeletionPresentationPathMatcher?
+    private var rootPath: String?
+    private var previous: TreeFlatProjectionPreviousSnapshot?
+    private var prepared: PreparedTreeFlatProjection?
+
+    init(
+        matcher: DeletionPresentationPathMatcher,
+        rootPath: String,
+        previous: TreeFlatProjectionPreviousSnapshot
+    ) {
+        self.matcher = matcher
+        self.rootPath = rootPath
+        self.previous = previous
+    }
+
+    func prepare() -> PreparedTreeFlatProjection? {
+        guard let matcher, let rootPath, let previous, !Task.isCancelled else { return nil }
+        let ranOnMainThread = Thread.isMainThread
+        let removalRanges: [Range<Int>]
+        if matcher.contains(rootPath) {
+            removalRanges = previous.rows.isEmpty ? [] : [0..<previous.rows.count]
+        } else {
+            // v2026.07.20: every visible descendant has its visible parent before it in the flat
+            // Tree. Therefore a receipt root either has one exact visible index followed by one
+            // contiguous descendant segment, or has no visible rows at all. Do not scan/match all
+            // 40k paths merely to discover those ranges.
+            var candidates: [Range<Int>] = []
+            candidates.reserveCapacity(matcher.roots.count)
+            for path in matcher.roots {
+                guard let start = previous.rowIndexByPath[path],
+                      previous.rows.indices.contains(start) else { continue }
+                let depth = previous.rows[start].depth
+                var end = start + 1
+                while end < previous.rows.count, previous.rows[end].depth > depth {
+                    end += 1
+                }
+                candidates.append(start..<end)
+            }
+            candidates.sort { $0.lowerBound < $1.lowerBound }
+            var merged: [Range<Int>] = []
+            merged.reserveCapacity(candidates.count)
+            for range in candidates {
+                if let last = merged.last, range.lowerBound <= last.upperBound {
+                    merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+                } else {
+                    merged.append(range)
+                }
+            }
+            removalRanges = merged
+        }
+
+        guard !removalRanges.isEmpty, !Task.isCancelled else {
+            return PreparedTreeFlatProjection(
+                rows: previous.rows,
+                rowIndexByPath: previous.rowIndexByPath,
+                parentIndexByRow: previous.parentIndexByRow,
+                maxBytes: previous.maxBytes,
+                isFetchingRoot: previous.isFetchingRoot,
+                changed: false,
+                tableIdentityChanged: false,
+                ranOnMainThread: ranOnMainThread,
+                rowRemovalRanges: nil
+            )
+        }
+
+        var rows: [FlatTreeRow] = []
+        let removedCount = removalRanges.reduce(0) { $0 + $1.count }
+        rows.reserveCapacity(max(0, previous.rows.count - removedCount))
+        var rangeIndex = 0
+        for (index, row) in previous.rows.enumerated() {
+            if index & 0xFF == 0, Task.isCancelled { return nil }
+            while rangeIndex < removalRanges.count,
+                  index >= removalRanges[rangeIndex].upperBound {
+                rangeIndex += 1
+            }
+            let isRemoved = rangeIndex < removalRanges.count
+                && removalRanges[rangeIndex].contains(index)
+            if !isRemoved { rows.append(row) }
+        }
+
+        var rowIndexByPath: [String: Int] = [:]
+        rowIndexByPath.reserveCapacity(rows.count)
+        var parentIndexByRow: [Int?] = []
+        parentIndexByRow.reserveCapacity(rows.count)
+        var ancestorStack: [(depth: Int, index: Int)] = []
+        ancestorStack.reserveCapacity(32)
+        for (index, item) in rows.enumerated() {
+            while let last = ancestorStack.last, last.depth >= item.depth {
+                ancestorStack.removeLast()
+            }
+            rowIndexByPath[item.row.path] = index
+            parentIndexByRow.append(ancestorStack.last?.index)
+            ancestorStack.append((item.depth, index))
+        }
+
+        let output = PreparedTreeFlatProjection(
+            rows: rows,
+            rowIndexByPath: rowIndexByPath,
+            parentIndexByRow: parentIndexByRow,
+            maxBytes: previous.maxBytes,
+            isFetchingRoot: previous.isFetchingRoot,
+            changed: true,
+            tableIdentityChanged: true,
+            ranOnMainThread: ranOnMainThread,
+            rowRemovalRanges: removalRanges
+        )
+        prepared = output
+        return output
+    }
+
+    func retire() {
+        prepared = nil
+        previous = nil
+        rootPath = nil
+        matcher = nil
+    }
+}
+
+/// A full NSTableView reload is required only when frozen row identity/order/depth changes.
+/// Value-only updates (bytes, loading, verdict), selection, expansion, locale and hover redraw the
+/// bounded visible row range instead of discarding the complete table on every SwiftUI update.
+enum TreeTableReloadPolicy {
+    static func requiresFullReload(previous: UInt64?, next: UInt64) -> Bool {
+        previous != next
+    }
+}
+
+/// Holds the prior NSTableView row generation until AppKit has swapped its parent snapshot, then
+/// drops the potentially wide COW buffer on a non-main actor. This closes the second half of the
+/// P1 boundary: background construction alone is insufficient if `updateNSView` releases the last
+/// 40k-row owner synchronously on MainActor.
+actor TreeFlatRowsRetirement {
+    private var rows: [FlatTreeRow]?
+    private var rowIndexByPath: [String: Int]?
+    private var parentIndexByRow: [Int?]?
+
+    init(
+        rows: [FlatTreeRow],
+        rowIndexByPath: [String: Int],
+        parentIndexByRow: [Int?]
+    ) {
+        self.rows = rows
+        self.rowIndexByPath = rowIndexByPath
+        self.parentIndexByRow = parentIndexByRow
+    }
+
+    func retire() -> Bool {
+        let ranOnMainThread = Thread.isMainThread
+        rows = nil
+        rowIndexByPath = nil
+        parentIndexByRow = nil
+        return ranOnMainThread
+    }
+}
+
 /// v1.0 T3 / T5：多层下钻浏览器 + 列排序 + 键盘导航。
 ///
 /// **v1.5.3 重构（用户反馈"选中 child 底部 delete 不可点击"）**：
@@ -41,6 +685,10 @@ public struct TreeBrowserView: View {
     /// structural / tick / treeRevision / childrenCacheVersion 失效。
     let treeBrowser: TreeBrowserStore
     let rootPath: String
+    /// Parent-owned reset channel. Tree keeps its selection local for AppKit performance, but a
+    /// closed detail pane must still clear that real selection/highlight and allow the same row to
+    /// be selected again immediately.
+    let selectionResetRevision: UInt64
     /// 选中行变化时的回调；MainView 用它把 TreeRow 喂给右侧详情面板。
     /// 设计 bug A：之前 selectedPath 只活在 TreeBrowserView 内部，
     /// 外层 detailPane 永远拿不到，导致"选中一行没有详情"。
@@ -91,7 +739,7 @@ public struct TreeBrowserView: View {
     nonisolated static let safety = SafetyEngine()
 
     /// Tree 的唯一展开资格合同。子树存在未完整后代不影响下钻；只有当前节点自身
-    /// 不可访问时才停止展开。AppKit、SwiftUI、全量重建和增量 patch 必须共用本方法，
+    /// 不可访问时才停止展开。AppKit、SwiftUI、后台投影和测试 helper 必须共用本方法，
     /// 避免再次出现“父行被锁但旧子项仍显示”的分裂状态。
     static func canExpand(_ row: TreeRow) -> Bool {
         row.isDirectory && row.hasChildren && row.accessState == .normal
@@ -118,6 +766,21 @@ public struct TreeBrowserView: View {
         )
     }
 
+    /// Flat-row authority gate. v2026.07.20 contract: direct-child identities may be selected and
+    /// revealed immediately, but `isLoadingChildren` remains true until exact subtree metrics and
+    /// the requested ordering commit. Destructive actions must wait for that same terminal.
+    static func canInitiateDeletion(
+        _ flat: FlatTreeRow,
+        allowsVendorPathOverride: Bool
+    ) -> Bool {
+        !flat.isLoadingChildren && canInitiateDeletion(
+            flat.row,
+            verdict: flat.verdict,
+            rejection: flat.rejection,
+            allowsVendorPathOverride: allowsVendorPathOverride
+        )
+    }
+
     static func shouldTraverseDescendants(of row: TreeRow, expanded: Bool) -> Bool {
         expanded && canExpand(row)
     }
@@ -134,20 +797,18 @@ public struct TreeBrowserView: View {
     /// 这些都是 path-only 输入 → 进程生命周期内**确定性输出**（SafetyEngine 规则
     /// 库是编译期常量 + home 也是常量），完美适合纯路径缓存。
     ///
-    /// 命中场景：扫描结束统一 rebuildFlatRows，或用户展开/排序触发局部重建时，上万节点的
-    /// 99%+ path 是上一帧出现过的；patch 路径（[applyChildrenPatch](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L561)）
-    /// 同理；选中态 fallback（[handleKeyboardSelectionMove](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L368)）
-    /// 也基本命中。理论上单 path 加速倍数 = 1000x（dict get vs URL standardize + realpath）。
+    /// 命中场景：扫描结束、展开或排序产生下一份后台 projection 时，上万节点的 99%+
+    /// path 已在上一帧出现。理论上单 path 加速倍数 = 1000x（dict get vs URL
+    /// standardize + realpath）。
     ///
-    /// 并发：computeVerdicts 调用者都在 MainActor 上，但为安全起见仍用 NSLock 保护
-    /// （后续可能从 BG queue 触发 [filterDeletableForbiddenPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L881)）。
-    /// NSLock 在无竞争场景接近 0 开销，完全 amortize。
+    /// 并发：生产调用者是 TreeFlatProjectionWorker，明确不在 MainActor；NSLock 只保护
+    /// 全局缓存字典，真正的 SafetyEngine 计算始终放在锁外。
     ///
     /// 容量上限 50k：dev 扫几百根 + 上万节点，按目录数估算 5w 上限足够覆盖；
     /// 超过 50k 直接 reset（不做 LRU 是因为 dev 工具单次会话规模可控，简洁优先）。
-    private enum VerdictCache {
+    fileprivate enum VerdictCache {
         private struct Key: Hashable {
-            let coordinatorID: ObjectIdentifier
+            let cacheNamespace: UUID
             let path: String
         }
 
@@ -160,12 +821,11 @@ public struct TreeBrowserView: View {
         private static let lock = NSLock()
         private static let maxEntries = 50_000
 
-        @MainActor
         static func evaluation(
             for path: String,
-            coordinator: ScanCoordinator
+            snapshot: TreeDeletionEvaluationSnapshot
         ) -> (verdict: SafetyVerdict, rejection: SafetyRejection) {
-            let key = Key(coordinatorID: ObjectIdentifier(coordinator), path: path)
+            let key = Key(cacheNamespace: snapshot.cacheNamespace, path: path)
             lock.lock()
             if let hit = cache[key] {
                 lock.unlock()
@@ -174,7 +834,7 @@ public struct TreeBrowserView: View {
             lock.unlock()
             // 真算放在锁外：SafetyEngine.evaluate 可能 100us+，
             // 锁内只做 dict 读写，避免阻塞并发评估。
-            let current = coordinator.deletionSafetyEvaluation(for: path)
+            let current = snapshot.evaluate(path: path)
             let value = Value(verdict: current.verdict, rejection: current.rejection)
             lock.lock()
             if cache.count >= maxEntries { cache.removeAll(keepingCapacity: true) }
@@ -202,10 +862,24 @@ public struct TreeBrowserView: View {
     /// 旧版 [TreeNodeView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
     /// 在每个节点 body 内递归调 `coordinator.directChildren(...)` + 嵌套自身，
     /// 一次操作（含键盘的 4 次 visibleRows）等于把整棵展开树重新拍平多次，
-    /// 4w 节点级 200~500ms 卡顿。改为 ForEach(flatRows) 顶层平铺后：
+    /// 4w 节点级 200~500ms 卡顿。改为冻结 flatRows + 原生 NSTableView 后：
     /// - 重算只发生在 expanded / sortKey / rootPath / coordinator.treeRevision 变化时
-    /// - SwiftUI diff 平铺数组比嵌套 view tree 快一个量级
+    /// - SwiftUI 只交换 COW 根，AppKit 仅在 snapshot revision 变化时 reload
     @State private var flatRows: [FlatTreeRow] = []
+    /// Worker materializes the identity/index map together with flatRows. Selection reconciliation
+    /// and AppKit keyboard/focus updates must never linearly rescan a 40k-row snapshot on MainActor.
+    @State private var flatRowIndexByPath: [String: Int] = [:]
+    @State private var flatRowParentIndexByRow: [Int?] = []
+    /// Content revision owns COW retirement; identity revision alone decides whether NSTableView
+    /// needs a structural reload. Size/verdict/loading-only changes redraw the bounded viewport.
+    @State private var flatRowsContentRevision: UInt64 = 0
+    @State private var flatRowsIdentityRevision: UInt64 = 0
+    @State private var pendingRowRemovalDelta: TreeTableRowRemovalDelta?
+    /// MainActor request ownership. A newer root/sort/expanded/cache revision cancels the previous
+    /// worker and starts immediately; source CAS below prevents a completed stale snapshot from
+    /// publishing. User interaction must never await obsolete presentation work.
+    @State private var flatProjectionRequestRevision: UInt64 = 0
+    @State private var flatProjectionTask: Task<Void, Never>? = nil
     /// 顶层根孩子的 maxBytes（决定体积条长度的归一化分母）。
     /// 只跟随 root 直接孩子最大值变化，与 expanded 解耦避免每次展开重算。
     @State private var maxBytes: Int64 = 0
@@ -216,13 +890,18 @@ public struct TreeBrowserView: View {
     /// 只订阅 `ScanCoordinator.$isScanning`，避免 `ScanCoordinator.objectWillChange`
     /// 的高频 snapshot/progress 发布把整棵 SwiftUI List 拖进刷新。
     @State private var isScanningSnapshot: Bool = false
-    /// 按需子树扫描首帧同步返回空时，`directChildren` 会在后台扫描当前目录。
-    /// AppKit 表格不再依赖 SwiftUI row body 自发重算，所以展开后看到 loading
-    /// 占位时补一个很短的 trailing rebuild，作为 childrenCacheVersion 回调之外的兜底。
-    @State private var pendingAsyncChildrenRebuild: DispatchWorkItem? = nil
-
+    /// Typed primary ownership snapshot. `isScanning` alone is false during settlement, so using
+    /// it for disclosure admission reintroduced Tree I/O/projection work while the predecessor was
+    /// still retiring. This narrow state is refreshed only by the two ownership publishers below.
+    @State private var hasActivePrimaryScanOwnershipSnapshot: Bool = false
+    /// v2026.07.19 settlement regression fix: the old finished Tree stays visible while a
+    /// cancelled primary producer settles, but it is disclosure-only. Cache the coordinator's
+    /// central action authority through narrow publishers so Tree does not subscribe to all scan
+    /// progress merely to hide destructive callbacks during that ownership gap.
+    @State private var resultActionsAuthorizedSnapshot: Bool = false
     public init(coordinator: ScanCoordinator,
                 rootPath: String,
+                selectionResetRevision: UInt64 = 0,
                 onSelect: ((TreeRow) -> Void)? = nil,
                 onSelectionCleared: (() -> Void)? = nil,
                 onTrash: ((TreeRow) -> Void)? = nil,
@@ -238,6 +917,7 @@ public struct TreeBrowserView: View {
         // ScanCoordinator.treeBrowser 是 `public let`，跨实例稳定，符合 ObservedObject 契约。
         self.treeBrowser = coordinator.treeBrowser
         self.rootPath = rootPath
+        self.selectionResetRevision = selectionResetRevision
         self.onSelect = onSelect
         self.onSelectionCleared = onSelectionCleared
         self.onTrash = onTrash
@@ -283,7 +963,7 @@ public struct TreeBrowserView: View {
             Divider()
             if flatRows.isEmpty {
                 VStack(spacing: 8) {
-                    if isScanningSnapshot {
+                    if hasActivePrimaryScanOwnershipSnapshot {
                         ProgressView()
                             .controlSize(.small)
                         Text("tree.loading.scanning", bundle: .module)
@@ -312,15 +992,24 @@ public struct TreeBrowserView: View {
                 // 保留现有 flatRows / selection / action 回调边界。
                 AppKitFlatTreeTable(
                     rows: flatRows,
+                    rowIndexByPath: flatRowIndexByPath,
+                    parentIndexByRow: flatRowParentIndexByRow,
+                    contentRevision: flatRowsContentRevision,
+                    identityRevision: flatRowsIdentityRevision,
+                    removalDelta: pendingRowRemovalDelta,
                     maxBytes: maxBytes,
                     locale: locale,
                     selectedPath: $selectedPath,
                     expanded: expanded,
                     onToggleExpand: { path in toggleExpansionFor(path: path) },
-                    onTrash: onTrash.map { _ in requestTrash(_:) },
+                    onTrash: resultActionsAuthorizedSnapshot
+                        ? onTrash.map { _ in requestTrash(_:) }
+                        : nil,
                     allowsVendorPathOverride: allowsVendorPathOverride,
                     onRefreshSubtree: onRefreshSubtree,
-                    onStash: onStash,
+                    onStash: resultActionsAuthorizedSnapshot
+                        ? onStash.map { _ in requestStash(_:) }
+                        : nil,
                     isStashed: { path in isStashed?(path) ?? false },
                     aiSettings: aiSettings,
                     onAskAI: onAskAI
@@ -329,25 +1018,17 @@ public struct TreeBrowserView: View {
         }
         .onAppear {
             isScanningSnapshot = coordinator.isScanning
+            hasActivePrimaryScanOwnershipSnapshot = coordinator.hasActivePrimaryScanOwnership
+            resultActionsAuthorizedSnapshot = coordinator.canUseCurrentScanResultsForActions
             rebuildFlatRows()
-            if selectedPath == nil, let first = flatRows.first {
-                selectedPath = first.row.path
-            }
         }
         // v1.5.4：四个触发器覆盖所有可能改变 flatRows 内容的事件。
         // 缺一个就会出现"展开后没出现"或"删除后还在"。
         //
-        // **v1.5.6 性能优化**（用户反馈"tree 展开还是好卡"）：
-        // expanded 变化是**最高频**的 flatRows 重建触发源（每点一次 chevron / 单击行 / l 键
-        // 都会 bump）。旧实现走 [rebuildFlatRows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L296)
-        // 整树重算——已展开 200 个目录、每个 50 子项的场景下，每次单点切换都要
-        // 重新跑 200 次 directChildren + 200 次 sort + N 次 verdict 计算。
-        //
-        // 新实现走 diff：把 oldValue/newValue 用 SwiftUI 6 的双参 onChange 拿到，
-        // 单点切换（最常见）→ [applyExpansionDiff](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L382)
-        // 只插/删受影响的那一段；多点变化 → fallback 走整树重建。
-        // 增量路径下展开/折叠的成本从 O(N total) 降到 O(N new subtree)，
-        // 90% 的卡感来源就在这里。
+        // v2026.07.18 P1：expanded 是最高频触发源，但不能再走旧的 MainActor 增量
+        // patch。旧 patch 仍会递归 DFS、构造宽数组并逐行算 Safety verdict，只是缩小了
+        // 输入规模，无法保证 UI 线程边界。所有展开变化现在统一生成不可变 source，交给
+        // TreeFlatProjectionWorker；请求 revision + coordinator source CAS 防止旧结果覆盖。
         .onValueChange(of: expanded) { oldExp, newExp in
             applyExpandedChange(old: oldExp, new: newExp)
         }
@@ -358,6 +1039,14 @@ public struct TreeBrowserView: View {
             // 切扫描根：清掉旧 expanded 防止脏 path 残留撑起 flatRows
             expanded.removeAll(keepingCapacity: true)
             rebuildFlatRows()
+        }
+        .onValueChange(of: selectionResetRevision) { _, _ in
+            // v2026.07.20: closing/resetting the parent detail pane is a real selection reset,
+            // not a cosmetic hide. Clearing the binding also deselects NSTableView on its next
+            // representable update, so the same row can immediately reopen detail.
+            guard selectedPath != nil else { return }
+            selectedPath = Self.selectionAfterExternalReset(current: selectedPath)
+            onSelectionCleared?()
         }
         // Step 2 P0-2 / 2026-06：从 `coordinator.treeRevision` 切到
         // `coordinator.structuralRevision` —— 只在节点新增/删除/排序键变化时重建 flatRows，
@@ -371,25 +1060,35 @@ public struct TreeBrowserView: View {
         .onReceive(treeBrowser.$structuralRevision.removeDuplicates()) { _ in
             handleStructuralBump()
         }
+        .onReceive(treeBrowser.$deletionPresentationRevision.removeDuplicates()) { _ in
+            applyDeletionPresentation()
+        }
         .onReceive(treeBrowser.$childrenCacheVersion.removeDuplicates()) { _ in
             handleChildrenCacheBump()
         }
         .onReceive(coordinator.$isScanning.removeDuplicates()) { nowScanning in
             isScanningSnapshot = nowScanning
+            hasActivePrimaryScanOwnershipSnapshot = coordinator.hasActivePrimaryScanOwnership
+            resultActionsAuthorizedSnapshot = coordinator.canUseCurrentScanResultsForActions
             handleScanningToggle(nowScanning: nowScanning)
         }
-        .onValueChange(of: flatRows.first?.row.path) { _, _ in
-            // 切排序 / 切扫描根 → 顶层第一行变化时把选中态拉回首行，避免选中飞走
-            let visiblePathSet = Set(flatRows.map(\.row.path))
-            if let cur = selectedPath, !visiblePathSet.contains(cur) {
-                selectedPath = flatRows.first?.row.path
-            } else if selectedPath == nil {
-                selectedPath = flatRows.first?.row.path
+        .onReceive(coordinator.$scanPhase.removeDuplicates()) { _ in
+            hasActivePrimaryScanOwnershipSnapshot = coordinator.hasActivePrimaryScanOwnership
+            resultActionsAuthorizedSnapshot = coordinator.canUseCurrentScanResultsForActions
+            if coordinator.scanPhase == .idle, !coordinator.isScanning {
+                rebuildFlatRows()
             }
+        }
+        .onReceive(coordinator.$snapshot.map(\.isFinished).removeDuplicates()) { _ in
+            // `cancel()` can clear an already-idle snapshot without changing scanPhase or
+            // isScanning. Keep destructive affordances in sync through this narrow Bool stream;
+            // event-time guards remain the final authority.
+            resultActionsAuthorizedSnapshot = coordinator.canUseCurrentScanResultsForActions
         }
         .onValueChange(of: selectedPath) { _, new in
             guard let new else { return }
-            let row = flatRows.first(where: { $0.row.path == new })?.row
+            let row = flatRowIndexByPath[new]
+                .flatMap { flatRows.indices.contains($0) ? flatRows[$0].row : nil }
                 ?? coordinator.row(for: new)
             guard let row else { return }
             onSelect?(row)
@@ -399,7 +1098,7 @@ public struct TreeBrowserView: View {
             // Tree surface, not to the completed primary snapshot. Leaving the
             // tab/window must stop shallow/deep disk work while preserving cached
             // rows and the finished scan result for a later return.
-            cancelAsyncChildrenRebuild()
+            cancelFlatProjection()
             coordinator.cancelOnDemandTreeScansPreservingResults()
         }
         // v2026.07.16：键盘命令统一由下方原生 NSTableView.keyDown 处理。旧的
@@ -410,247 +1109,326 @@ public struct TreeBrowserView: View {
     /// Tree 只产生删除意图；确认、运行中 App 决策和最终执行统一由 MainView 的
     /// DeleteSheet 路由负责，避免 Tree 自己先弹一次、Large Files 又完全不弹。
     private func requestTrash(_ row: TreeRow) {
+        // The narrow published snapshot controls presentation, but a queued AppKit menu/keyboard
+        // event can arrive before SwiftUI replaces an old callback. Re-check the same central
+        // authority at event time so a predecessor Tree can never act during settlement.
+        guard coordinator.canUseCurrentScanResultsForActions else { return }
         onTrash?(row)
+    }
+
+    private func requestStash(_ row: TreeRow) {
+        guard coordinator.canUseCurrentScanResultsForActions else { return }
+        onStash?(row)
     }
 
     // MARK: - flatRows 重建（v1.5.4 性能修复）
 
     /// 把 root 直接孩子 + 所有展开节点的子项按 DFS 顺序拍平到 [flatRows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
     /// 由 onChange / onAppear 显式触发；body 不再做这件事。
-    /// 4w 节点级一次重建 < 10ms（实测，主 bottleneck 是 `directChildren` 内部 sort，
-    /// 但每个 path 只调 1 次而不是 N 次）。
+    /// v2026.07.18 P1：本方法只冻结每个 expanded parent 的 COW child array 和 request
+    /// revision。DFS、FlatTreeRow/Set 构造、SafetyEngine verdict 以及宽快照比较全部由
+    /// TreeFlatProjectionWorker 完成；MainActor 最终只做 revision/CAS 与 O(1) storage swap。
     private func rebuildFlatRows() {
-        let topLevel = coordinator.directChildren(of: rootPath, sortedBy: effectiveSortKey)
-        // v2026.06 Step 1：先把 (row, depth) 拍扁，再走 computeVerdicts
-        // 一次性把 verdict 算好——SafetyEngine.evaluate 只在这里调，每行 1 次。
-        var pairs: [(TreeRow, Int)] = []
-        pairs.reserveCapacity(topLevel.count * 2)
-        for kid in topLevel {
-            pairs.append((kid, 0))
-            if Self.shouldTraverseDescendants(
-                of: kid,
-                expanded: expanded[kid.path] == true
-            ) {
-                appendDescendantPairs(parent: kid.path, depth: 1, into: &pairs)
+        // v2026.07.19: settlement keeps the predecessor presentation frozen. Never launch a wide
+        // DFS/verdict projection just because isScanning flipped false; the idle edge below will
+        // rebuild once the replacement owns a real frame.
+        if case .settling = coordinator.scanPhase { return }
+        flatProjectionRequestRevision &+= 1
+        let requestRevision = flatProjectionRequestRevision
+        flatProjectionTask?.cancel()
+        let expandedPaths = Set(expanded.lazy.compactMap { $0.value ? $0.key : nil })
+        let source = coordinator.makeTreeFlatProjectionSource(
+            rootPath: rootPath,
+            sortedBy: effectiveSortKey,
+            expandedPaths: expandedPaths
+        )
+        let requestStartedAt = ProcessInfo.processInfo.systemUptime
+        GSYLog.info(
+            .scan,
+            "tree.projection stage=request kind=full request_revision=\(requestRevision) "
+                + "source_revision=\(source.revision.sourceRevision) root_rows=\(source.rootRows.count) "
+                + "expanded_count=\(expandedPaths.count) fetching_count=\(source.fetchingPaths.count)"
+        )
+        let previous = TreeFlatProjectionPreviousSnapshot(
+            rows: flatRows,
+            rowIndexByPath: flatRowIndexByPath,
+            parentIndexByRow: flatRowParentIndexByRow,
+            maxBytes: maxBytes,
+            isFetchingRoot: isFetchingRoot
+        )
+        let deletionSnapshot = source.deletionEvaluation
+        let input = TreeFlatProjectionWorkerInput(
+            rootRows: source.rootRows,
+            childrenByParent: source.childrenByParent,
+            expandedPaths: expandedPaths,
+            fetchingPaths: source.fetchingPaths,
+            isFetchingRoot: source.isFetchingRoot,
+            receiptTombstones: source.receiptTombstones,
+            evaluator: TreeFlatProjectionEvaluator { path in
+                Self.VerdictCache.evaluation(for: path, snapshot: deletionSnapshot)
+            }
+        )
+        let worker = TreeFlatProjectionWorker(input: input, previous: previous)
+        let task = Task { @MainActor in
+            guard requestRevision == flatProjectionRequestRevision, !Task.isCancelled else {
+                GSYLog.notice(
+                    .scan,
+                    "tree.projection stage=drop kind=full reason=superseded_before_prepare "
+                        + "request_revision=\(requestRevision) current_revision=\(flatProjectionRequestRevision)"
+                )
+                _ = await worker.retire()
+                return
+            }
+            var prepared = await worker.prepare()
+            let sourceIsCurrent = coordinator.treeFlatProjectionSourceIsCurrent(source.revision)
+            guard requestRevision == flatProjectionRequestRevision,
+                  !Task.isCancelled,
+                  sourceIsCurrent else {
+                GSYLog.notice(
+                    .scan,
+                    "tree.projection stage=drop kind=full reason=stale_after_prepare "
+                        + "request_revision=\(requestRevision) current_revision=\(flatProjectionRequestRevision) "
+                        + "source_current=\(sourceIsCurrent) cancelled=\(Task.isCancelled)"
+                )
+                prepared = nil
+                _ = await worker.retire()
+                return
+            }
+            guard let prepared else {
+                GSYLog.warning(
+                    .scan,
+                    "tree.projection stage=drop kind=full reason=worker_no_output request_revision=\(requestRevision)"
+                )
+                _ = await worker.retire()
+                if requestRevision == flatProjectionRequestRevision {
+                    flatProjectionTask = nil
+                }
+                return
+            }
+
+            publishPreparedFlatProjection(prepared)
+            let elapsedMilliseconds = Int(
+                (max(0, ProcessInfo.processInfo.systemUptime - requestStartedAt) * 1_000).rounded()
+            )
+            GSYLog.info(
+                .scan,
+                "tree.projection stage=commit kind=full request_revision=\(requestRevision) "
+                    + "row_count=\(prepared.rows.count) changed=\(prepared.changed) "
+                    + "identity_changed=\(prepared.tableIdentityChanged) elapsed_ms=\(elapsedMilliseconds)"
+            )
+            flatProjectionTask = nil
+            Task { @MainActor in
+                // Let SwiftUI/AppKit consume the new COW roots before the worker drops the old
+                // generation on its generic executor.
+                await Task.yield()
+                _ = await worker.retire()
             }
         }
-        let base = Self.computeDeletionEvaluations(for: pairs) {
-            Self.VerdictCache.evaluation(for: $0, coordinator: coordinator)
-        }
-        // v2026.06.23：把"已展开且孩子仍在异步补齐"的目录标成 inline loading，
-        // AppKit 行会在名字后面画一个 mini spinner，不再插整行占位。
-        let newFlatRows = markLoadingChildren(in: base)
-        // v2026.06.22 perf：等值短路。
-        //
-        // 为什么需要：rebuildFlatRows 仍会被多处调用（onAppear / sortKey change /
-        // scanning false 边沿 / childrenCacheBump 等）。如果 newFlatRows 与
-        // 上一次完全相等却仍然 `flatRows = newFlatRows` 赋值，SwiftUI 会因为
-        // @State 被写入而让 body invalidate → List diff → OutlineListCoordinator
-        // 166ms 跟着跑（Instruments Hangs 实测）。FlatTreeRow 是 Hashable
-        // （隐式 Equatable），先比 == 拒绝等价帧。
-        //
-        // 复杂度：N 几万时 == 也是 O(N)，但内部是简单值 hash 比较，比 SwiftUI
-        // 全树 diff + RowView body 重 render 便宜一个量级；并且多数重复 rebuild
-        // 内容真就不变，命中率高。
-        let newMax = topLevel.map(\.bytes).max() ?? 0
-        let newIsFetching = topLevel.isEmpty
-            && coordinator.isFetchingChildren(of: rootPath, sortedBy: effectiveSortKey)
-        if flatRows == newFlatRows && maxBytes == newMax && isFetchingRoot == newIsFetching {
-            return
-        }
-        flatRows = newFlatRows
-        maxBytes = newMax
-        // 顶层空 + isFetchingChildren 才算"拉取中"；否则维持 false 让 view 走 isScanning / 真空两态。
-        isFetchingRoot = newIsFetching
-        if newFlatRows.contains(where: \.isLoadingChildren) || newIsFetching {
-            scheduleAsyncChildrenRebuild()
-        } else {
-            cancelAsyncChildrenRebuild()
-        }
+        flatProjectionTask = task
     }
 
-    private func appendDescendantPairs(parent: String, depth: Int,
-                                       into out: inout [(TreeRow, Int)]) {
-        let kids = coordinator.directChildren(of: parent, sortedBy: effectiveSortKey)
-        for k in kids {
-            out.append((k, depth))
-            if Self.shouldTraverseDescendants(
-                of: k,
-                expanded: expanded[k.path] == true
-            ) {
-                appendDescendantPairs(parent: k.path, depth: depth + 1, into: &out)
-            }
-        }
-    }
-
-    /// v2026.06.23 **子节点加载状态标记**。
-    ///
-    /// 触发场景：用户展开一个目录 → 该目录 directChildren 当前还在异步拉（按需子树扫描
-    /// 在 BG queue 起的 Task 没回写 [treeChildrenCache](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L283-L283)）
-    /// → directChildren 暂时返回 []。旧版表现：chevron 已经翻成"↓"但下面什么都没有，
-    /// 用户以为"展开了空目录"，几百 ms 后突然出来一堆子项，体验割裂。
-    ///
-    /// 新策略：对 base 数组按顺序扫一遍，每个"isDirectory + 展开 + ScanCoordinator 报告 isFetching"
-    /// 的行打上 `isLoadingChildren`。AppKit 自绘行会在名字后面放一个 mini spinner；
-    /// 不再插入整行 loading，避免展开时列表高度抖动，也避免用户误以为多了一个子节点。
-    ///
-    /// 性能：base 数组遍历 1 次，每行 O(1) 字典查询，不 O(N²)。
-    private func markLoadingChildren(in base: [FlatTreeRow]) -> [FlatTreeRow] {
-        var out: [FlatTreeRow] = []
-        out.reserveCapacity(base.count)
-        for item in base {
-            var nextItem = item
-            // 仅对"可展开 + 已展开 + 实际可访问"的目录考虑插占位
-            guard Self.shouldTraverseDescendants(
-                      of: item.row,
-                      expanded: expanded[item.row.path] == true
-                  ),
-                  coordinator.isFetchingChildren(of: item.row.path, sortedBy: effectiveSortKey)
-            else {
-                out.append(nextItem)
-                continue
-            }
-            nextItem.isLoadingChildren = true
-            out.append(nextItem)
-        }
-        return out
-    }
-
-    // MARK: - flatRows 增量 patch（v1.5.6 性能优化）
-
-    /// expanded 字典变化时的 dispatcher：
-    /// - 单 key 翻转（最常见：点击 chevron / l / h / 单击行）→ 走增量 patch
-    /// - 多 key 变化 / 出现新 key（极少：测试代码 / 未来批量展开）→ fallback 整树重建
-    ///
-    /// 这里有意**不**碰 maxBytes 与 isFetchingRoot：增量是"子树插入/删除"层面，
-    /// 顶层第一行没动 → 顶层 maxBytes 也没动；isFetchingRoot 只在顶层为空时有意义，
-    /// 而增量场景一定是 flatRows 非空（至少有 root 直接孩子）。
-    ///
-    /// 安全网：若 patch 路径上发现 `path` 不在当前 flatRows（例如 path 来自折叠态以下的
-    /// 一层、用户在折叠的子目录里点击展开），就 fallback 整树重建。这种"看不见的展开"
-    /// 在 keyboard 导航里偶尔出现，正确性优先于性能。
+    /// v2026.07.19：单点 disclosure 恢复基线的增量语义，但宽数组 patch、DFS 和新增行
+    /// verdict 全部移到 worker。多点变化或不可见 path 才回退到完整后台 projection。
     private func applyExpandedChange(old: [String: Bool], new: [String: Bool]) {
-        // 用 truthy（== true）集合做 diff——key 存在但值为 false 等价于"未展开"。
+        if case .settling = coordinator.scanPhase { return }
         let oldOpen = Set(old.compactMap { $1 ? $0 : nil })
         let newOpen = Set(new.compactMap { $1 ? $0 : nil })
         let added = newOpen.subtracting(oldOpen)
         let removed = oldOpen.subtracting(newOpen)
-
-        // 只支持单点切换走增量；多点 / 同时增删 → 整树重建。
         guard added.count + removed.count == 1 else {
             rebuildFlatRows()
             return
         }
-        if let path = added.first {
-            incrementalExpand(path: path)
-        } else if let path = removed.first {
-            incrementalCollapse(path: path)
-        }
-    }
-
-    /// 单点展开：在 flatRows 里找到 `path` 那一行，把它的子树（按当前 expanded
-    /// 状态递归）插到它后面。若 path 不在当前 flatRows（罕见）→ fallback 整树重建。
-    ///
-    /// 复杂度：O(N find + M new subtree)，N=当前 flatRows 行数，M=新展开子树行数。
-    /// 旧实现是 O(N total + 整树 directChildren 调用)。
-    ///
-    /// v2026.06.23：展开后若子项大小仍在后台补齐，只在父行名字后显示 mini spinner，
-    /// 不再插入整行 loading，避免列表高度跳动。
-    private func incrementalExpand(path: String) {
-        guard let idx = flatRows.firstIndex(where: { $0.row.path == path }) else {
-            rebuildFlatRows(); return
-        }
-        guard Self.canExpand(flatRows[idx].row) else {
+        let path = added.first ?? removed.first!
+        guard flatRowIndexByPath[path] != nil else {
             rebuildFlatRows()
             return
         }
-        flatRows[idx].isLoadingChildren = false
-        let parentDepth = flatRows[idx].depth
-        var pairs: [(TreeRow, Int)] = []
-        appendDescendantPairs(parent: path, depth: parentDepth + 1, into: &pairs)
-        let inserted = Self.computeDeletionEvaluations(for: pairs) {
-            Self.VerdictCache.evaluation(for: $0, coordinator: coordinator)
-        }
-        let parentRow = flatRows[idx].row
-        let isFetchingChildren = Self.canExpand(parentRow)
-            && coordinator.isFetchingChildren(of: path, sortedBy: effectiveSortKey)
-        flatRows[idx].isLoadingChildren = isFetchingChildren
-        if !inserted.isEmpty {
-            flatRows.insert(contentsOf: inserted, at: idx + 1)
-            if isFetchingChildren { scheduleAsyncChildrenRebuild() }
-            return
-        }
-        if isFetchingChildren { scheduleAsyncChildrenRebuild() }
+        startIncrementalProjection(
+            path: path,
+            isExpanding: added.first != nil,
+            expandedPaths: newOpen
+        )
     }
 
-    /// 单点折叠：在 flatRows 里找到 `path`，删掉它**之后**所有 depth > path.depth 的
-    /// 连续行（用 depth 边界扫描，遇到 depth <= path.depth 即停）。
-    ///
-    /// 与 incrementalExpand 对称，复杂度 O(N find + K removed subtree)。
-    private func incrementalCollapse(path: String) {
-        guard let idx = flatRows.firstIndex(where: { $0.row.path == path }) else {
-            rebuildFlatRows(); return
-        }
-        flatRows[idx].isLoadingChildren = false
-        let parentDepth = flatRows[idx].depth
-        var end = idx + 1
-        while end < flatRows.count && flatRows[end].depth > parentDepth {
-            end += 1
-        }
-        if end > idx + 1 {
-            flatRows.removeSubrange((idx + 1)..<end)
-        }
-    }
+    private func startIncrementalProjection(
+        path: String,
+        isExpanding: Bool,
+        expandedPaths: Set<String>
+    ) {
+        flatProjectionRequestRevision &+= 1
+        let requestRevision = flatProjectionRequestRevision
+        flatProjectionTask?.cancel()
 
-    /// v1.5.7：prune 增量 patch —— 只从当前 flatRows 移除被删 path 自身及其子孙行，
-    /// 不重新调 [directChildren](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1054)
-    /// 也不重新跑 SafetyEngine.evaluate。复杂度 O(flatRows.count) 一遍扫，
-    /// 对万级目录场景下，从老路径 O(N total + safety) → O(N flat) 直降一档。
-    ///
-    /// 兜底：若移除后某个被删 path 的祖先目录（flatRows 里仍存在）原本是叶子
-    /// 节点已不再有可见孩子，view 行内 chevron 自然反映为 0；bytes/fileCount 由
-    /// ScanCoordinator [prune 祖先减法](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1422-L1497)
-    /// + RowView 重新读保证。
-    ///
-    /// 安全网：若 flatRows 为空（理论不会，prune 不会从 0 行走到这里），fallback 整树重建。
-    private func applyPrunePatch(deletedPaths: [String]) {
-        if flatRows.isEmpty { rebuildFlatRows(); return }
-        // 把 deletedPaths 拍成"前缀匹配集"：path 自身或子孙都算命中。
-        // 用 dropLast("/") 归一，与 ScanCoordinator.pruneDeleted 的 normalized 对齐。
-        let normalized: [String] = deletedPaths.map {
-            ($0.hasSuffix("/") && $0.count > 1) ? String($0.dropLast()) : $0
-        }
-        let prunedSet = Set(normalized)
-        func isUnderDeleted(_ p: String) -> Bool {
-            if prunedSet.contains(p) { return true }
-            for d in normalized {
-                if p.hasPrefix(d + "/") { return true }
+        let subtreePrefix = path == "/" ? "/" : path + "/"
+        let relevantExpandedPaths = Set(expandedPaths.filter {
+            $0 == path || $0.hasPrefix(subtreePrefix)
+        })
+        let source = coordinator.makeTreeFlatProjectionSource(
+            rootPath: path,
+            sortedBy: effectiveSortKey,
+            expandedPaths: relevantExpandedPaths
+        )
+        let requestStartedAt = ProcessInfo.processInfo.systemUptime
+        GSYLog.info(
+            .scan,
+            "tree.projection stage=request kind=incremental request_revision=\(requestRevision) "
+                + "source_revision=\(source.revision.sourceRevision) expanding=\(isExpanding) "
+                + "root_rows=\(source.rootRows.count) expanded_count=\(relevantExpandedPaths.count)"
+        )
+        var childrenByParent = source.childrenByParent
+        childrenByParent[path] = source.rootRows
+        var fetchingPaths = source.fetchingPaths
+        if source.isFetchingRoot { fetchingPaths.insert(path) }
+
+        let previous = TreeFlatProjectionPreviousSnapshot(
+            rows: flatRows,
+            rowIndexByPath: flatRowIndexByPath,
+            parentIndexByRow: flatRowParentIndexByRow,
+            maxBytes: maxBytes,
+            isFetchingRoot: isFetchingRoot
+        )
+        let deletionSnapshot = source.deletionEvaluation
+        let worker = TreeIncrementalProjectionWorker(
+            input: TreeIncrementalProjectionWorkerInput(
+                togglePath: path,
+                isExpanding: isExpanding,
+                childrenByParent: childrenByParent,
+                expandedPaths: relevantExpandedPaths,
+                fetchingPaths: fetchingPaths,
+                receiptTombstones: source.receiptTombstones,
+                evaluator: TreeFlatProjectionEvaluator { candidatePath in
+                    Self.VerdictCache.evaluation(
+                        for: candidatePath,
+                        snapshot: deletionSnapshot
+                    )
+                }
+            ),
+            previous: previous
+        )
+        let task = Task { @MainActor in
+            guard requestRevision == flatProjectionRequestRevision, !Task.isCancelled else {
+                GSYLog.notice(
+                    .scan,
+                    "tree.projection stage=drop kind=incremental reason=superseded_before_prepare "
+                        + "request_revision=\(requestRevision) current_revision=\(flatProjectionRequestRevision)"
+                )
+                _ = await worker.retire()
+                return
             }
-            return false
+            var prepared = await worker.prepare()
+            let sourceIsCurrent = coordinator.treeFlatProjectionSourceIsCurrent(source.revision)
+            guard requestRevision == flatProjectionRequestRevision,
+                  !Task.isCancelled,
+                  sourceIsCurrent else {
+                GSYLog.notice(
+                    .scan,
+                    "tree.projection stage=drop kind=incremental reason=stale_after_prepare "
+                        + "request_revision=\(requestRevision) current_revision=\(flatProjectionRequestRevision) "
+                        + "source_current=\(sourceIsCurrent) cancelled=\(Task.isCancelled)"
+                )
+                prepared = nil
+                _ = await worker.retire()
+                return
+            }
+            guard let prepared else {
+                GSYLog.warning(
+                    .scan,
+                    "tree.projection stage=drop kind=incremental reason=worker_no_output "
+                        + "request_revision=\(requestRevision)"
+                )
+                _ = await worker.retire()
+                if requestRevision == flatProjectionRequestRevision {
+                    flatProjectionTask = nil
+                    rebuildFlatRows()
+                }
+                return
+            }
+
+            publishPreparedFlatProjection(prepared)
+            let elapsedMilliseconds = Int(
+                (max(0, ProcessInfo.processInfo.systemUptime - requestStartedAt) * 1_000).rounded()
+            )
+            GSYLog.info(
+                .scan,
+                "tree.projection stage=commit kind=incremental request_revision=\(requestRevision) "
+                    + "row_count=\(prepared.rows.count) changed=\(prepared.changed) "
+                    + "identity_changed=\(prepared.tableIdentityChanged) elapsed_ms=\(elapsedMilliseconds)"
+            )
+            flatProjectionTask = nil
+            Task { @MainActor in
+                await Task.yield()
+                _ = await worker.retire()
+            }
         }
-        let before = flatRows.count
-        flatRows.removeAll { isUnderDeleted($0.row.path) }
-        // maxBytes 重算：删的可能是顶层最大行，重新取一遍 max 保进度条比例正确。
-        let topLevel = flatRows.filter { $0.depth == 0 }
-        if !topLevel.isEmpty {
-            maxBytes = topLevel.map(\.row.bytes).max() ?? 0
-        }
-        if let cur = selectedPath, isUnderDeleted(cur) || !flatRows.contains(where: { $0.row.path == cur }) {
-            if let next = flatRows.first(where: { !$0.isLoadingPlaceholder }) {
-                selectedPath = next.row.path
-                onSelect?(next.row)
+        flatProjectionTask = task
+    }
+
+    private func publishPreparedFlatProjection(_ prepared: PreparedTreeFlatProjection) {
+        guard prepared.changed else { return }
+        let previousRowCount = flatRows.count
+        let previousIdentityRevision = flatRowsIdentityRevision
+        flatRows = prepared.rows
+        flatRowIndexByPath = prepared.rowIndexByPath
+        flatRowParentIndexByRow = prepared.parentIndexByRow
+        maxBytes = prepared.maxBytes
+        isFetchingRoot = prepared.isFetchingRoot
+        flatRowsContentRevision &+= 1
+        if prepared.tableIdentityChanged {
+            let nextIdentityRevision = previousIdentityRevision &+ 1
+            if let ranges = prepared.rowRemovalRanges, !ranges.isEmpty {
+                pendingRowRemovalDelta = TreeTableRowRemovalDelta(
+                    baseIdentityRevision: previousIdentityRevision,
+                    nextIdentityRevision: nextIdentityRevision,
+                    baseRowCount: previousRowCount,
+                    nextRowCount: prepared.rows.count,
+                    ranges: ranges
+                )
             } else {
-                selectedPath = nil
-                onSelectionCleared?()
+                pendingRowRemovalDelta = nil
             }
+            flatRowsIdentityRevision = nextIdentityRevision
+        } else {
+            pendingRowRemovalDelta = nil
         }
-        _ = before
+
+        // v2026.07.19 deletion/viewport regression: projection publication must never invent a
+        // selection. If the selected row disappeared, clear it; otherwise retain it verbatim.
+        // Auto-selecting the first row coupled an async data refresh to table scrolling and made a
+        // successful deletion jump back to the top of a large Tree.
+        let reconciledSelection = Self.selectionAfterProjection(
+            current: selectedPath,
+            rowIndexByPath: prepared.rowIndexByPath
+        )
+        if selectedPath != nil, reconciledSelection == nil {
+            selectedPath = nil
+            onSelectionCleared?()
+        }
+    }
+
+    nonisolated static func selectionAfterProjection(
+        current: String?,
+        rowIndexByPath: [String: Int]
+    ) -> String? {
+        guard let current, rowIndexByPath[current] != nil else { return nil }
+        return current
+    }
+
+    nonisolated static func selectionAfterExternalReset(current: String?) -> String? {
+        _ = current
+        return nil
+    }
+
+    private func cancelFlatProjection() {
+        flatProjectionRequestRevision &+= 1
+        flatProjectionTask?.cancel()
+        flatProjectionTask = nil
     }
 
     /// **可测的 pure helper**：把"老 flatRows + 单点 expand/collapse"映射成"新 flatRows"。
     ///
-    /// 单测用它对比"增量结果" vs "整树重建结果"，钉死等价性契约——
-    /// 任何未来对 incrementalExpand / incrementalCollapse 的优化只要不破等价就能落地。
+    /// 单测用它保留旧“增量结果 vs 整树结果”的等价性样本；生产已在 v2026.07.18
+    /// 统一迁到 TreeFlatProjectionWorker，禁止把此递归 helper 重新接回 MainActor。
     ///
     /// - parameters:
     ///   - old: 老 flatRows
@@ -696,8 +1474,8 @@ public struct TreeBrowserView: View {
         }
     }
 
-    /// pure helper：递归收集子树 (row, depth)，与 [appendDescendantPairs](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L308)
-    /// 对应但不依赖 `coordinator`，让单测能用 mock provider。
+    /// 仅供上方等价性测试 helper：递归收集子树 (row, depth)，不依赖 coordinator。
+    /// 生产 DFS 只能使用可取消的 TreeFlatProjectionWorker 迭代栈。
     private static func collectDescendantPairs(
         parent: String, depth: Int,
         sortKey: TreeSortKey,
@@ -726,9 +1504,8 @@ public struct TreeBrowserView: View {
     /// 传 [CountingEvaluator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/FlatTreeRowVerdictCacheTests.swift)
     /// 计调用次数。这是把 SafetyEngine 从 SwiftUI hot path 拆下来的契约接缝。
     ///
-    /// 关键点 2：每行 evaluator 只调一次。后续 SwiftUI 重绘读 `flat.verdict` 不再回 SafetyEngine。
-    /// 4w 行从"重绘×4w 次 trie 查找"降到"rebuild×4w 次"，rebuild 仅在
-    /// expanded/sortKey/rootPath/treeRevision 变更时发生（4 个事件总和）。
+    /// 关键点 2：每行 evaluator 只调一次。生产的 4w 行计算现在由 worker 后台完成；
+    /// 后续 AppKit/SwiftUI 重绘只读冻结 verdict，不再回 SafetyEngine。
     static func computeVerdicts(
         for pairs: [(TreeRow, Int)],
         using evaluator: (String) -> SafetyVerdict
@@ -759,17 +1536,16 @@ public struct TreeBrowserView: View {
         return out
     }
 
-    /// v2026.06.21：structuralRevision bump 入口（从 body onChange 抽出来避免类型推断超时）。
-    /// 流程：
-    ///   1. 优先消费 pruneDeleted hint → 走"只剔被删 path 子树"的 patch（避免大树整 rebuild）。
-    ///   2. 扫描中：冻结 flatRows，不让 List 持续 diffRows/endUpdates。
-    ///   3. 扫描外：立刻 rebuild 拿到最新视图。
+    /// v2026.07.18 P1：structural bump 只消费 prune hint，不再在 MainActor 做 O(N)
+    /// removeAll/max/selection 扫描。非扫描态统一交给 worker 生成新冻结快照；扫描中仍冻结，
+    /// 结束边沿再收敛到终态。
     private func handleStructuralBump() {
-        if let pruned = coordinator.consumeLastPrunedPaths(), !pruned.isEmpty {
-            applyPrunePatch(deletedPaths: pruned)
-            return
-        }
-        if isScanningSnapshot {
+        _ = coordinator.consumeLastPrunedPaths()
+        // v2026.07.19 regression fix: `.settling` intentionally exposes
+        // `isScanning == false` while the old producer is still retiring.  Treating that Boolean
+        // edge as idle launched a terminal-width DFS/verdict projection on MainActor handoff.
+        // Only the typed idle phase may converge the frozen Tree presentation.
+        guard coordinator.scanPhase == .idle, !isScanningSnapshot else {
             // 扫描中不要让树形 List 持续 diffRows/endUpdates。用户此时主要在看
             // statusBar 进度和滚动已有结果；最终结构在扫描结束边沿统一刷新。
             return
@@ -777,36 +1553,94 @@ public struct TreeBrowserView: View {
         rebuildFlatRows()
     }
 
+    /// v2026.07.20：receipt 到达后先对当前 frozen rows 做窄删除 patch，
+    /// 不等待全量 prune，也不重新读取 Tree/Safety。新 revision 会拒绝旧 patch，
+    /// 新扫描清空 paths 后旧 worker 无权发布到新会话。
+    private func applyDeletionPresentation() {
+        let presentationRevision = treeBrowser.deletionPresentationRevision
+        let paths = treeBrowser.deletionPresentationPaths
+        guard !paths.isEmpty else { return }
+
+        flatProjectionRequestRevision &+= 1
+        let requestRevision = flatProjectionRequestRevision
+        flatProjectionTask?.cancel()
+        let previous = TreeFlatProjectionPreviousSnapshot(
+            rows: flatRows,
+            rowIndexByPath: flatRowIndexByPath,
+            parentIndexByRow: flatRowParentIndexByRow,
+            maxBytes: maxBytes,
+            isFetchingRoot: isFetchingRoot
+        )
+        let worker = TreeDeletionPresentationWorker(
+            matcher: treeBrowser.deletionPresentationMatcher,
+            rootPath: rootPath,
+            previous: previous
+        )
+        let task = Task { @MainActor in
+            var prepared = await worker.prepare()
+            guard requestRevision == flatProjectionRequestRevision,
+                  presentationRevision == treeBrowser.deletionPresentationRevision,
+                  !Task.isCancelled else {
+                prepared = nil
+                await worker.retire()
+                return
+            }
+            guard let prepared else {
+                await worker.retire()
+                return
+            }
+            publishPreparedFlatProjection(prepared)
+            flatProjectionTask = nil
+            Task { @MainActor in
+                await Task.yield()
+                await worker.retire()
+            }
+        }
+        flatProjectionTask = task
+    }
+
     /// v2026.06.21：扫描结束边沿——把扫描期间合并的 rebuild 立刻 fire 拿到终态。
     /// 也兼容 isScanning 切回 true 的回边沿：进入扫描态不主动 rebuild（等 structural bump）。
     private func handleScanningToggle(nowScanning: Bool) {
-        if !nowScanning {
-            rebuildFlatRows()
-        }
+        guard !nowScanning, coordinator.scanPhase == .idle else { return }
+        rebuildFlatRows()
     }
 
     /// v2026.06.21：directChildren 异步写回路径只 bump childrenCacheVersion（不再 bump
     /// structuralRevision），这里独立监听；扫描中同样冻结，扫描结束统一刷新。
     private func handleChildrenCacheBump() {
-        guard !isScanningSnapshot else { return }
-        cancelAsyncChildrenRebuild()
+        guard coordinator.scanPhase == .idle, !isScanningSnapshot else { return }
+        let expandedPaths = Set(expanded.lazy.compactMap { $0.value ? $0.key : nil })
+        if let path = Self.incrementalCachePatchPath(
+            changedPath: treeBrowser.lastChildrenCacheChangedPath,
+            expandedPaths: expandedPaths,
+            visibleRowIndexByPath: flatRowIndexByPath
+        ) {
+            // v2026.07.19 first-frame contract: shallow identity rows are already authoritative.
+            // Patch only this disclosure segment immediately; a full-root DFS would re-evaluate
+            // every professional result row and can hide a 20–77 ms shallow terminal behind
+            // seconds of unrelated projection work. The same path handles the later deep-metric
+            // replacement without clearing the identities already on screen.
+            startIncrementalProjection(
+                path: path,
+                isExpanding: true,
+                expandedPaths: expandedPaths
+            )
+            return
+        }
         rebuildFlatRows()
     }
 
-    private func scheduleAsyncChildrenRebuild() {
-        guard !isScanningSnapshot else { return }
-        pendingAsyncChildrenRebuild?.cancel()
-        let work = DispatchWorkItem {
-            pendingAsyncChildrenRebuild = nil
-            rebuildFlatRows()
-        }
-        pendingAsyncChildrenRebuild = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
-    }
-
-    private func cancelAsyncChildrenRebuild() {
-        pendingAsyncChildrenRebuild?.cancel()
-        pendingAsyncChildrenRebuild = nil
+    static func incrementalCachePatchPath(
+        changedPath: String?,
+        expandedPaths: Set<String>,
+        visibleRowIndexByPath: [String: Int]
+    ) -> String? {
+        guard let changedPath,
+              expandedPaths.contains(changedPath),
+              visibleRowIndexByPath[changedPath] != nil
+        else { return nil }
+        return changedPath
     }
 
     /// 行内三角 / 单击整行 / 右键菜单 / 双击 → 共用的展开切换入口。
@@ -820,7 +1654,9 @@ public struct TreeBrowserView: View {
     /// 体感卡顿急剧放大。扫描中保留 row 显示但拦截 expansion，等扫完再让用户展开。
     /// 已展开状态不主动收起（保留用户当前视图），仅拒绝**新的展开请求**与折叠请求。
     private func toggleExpansionFor(path: String) {
-        if isScanningSnapshot { return }
+        // v2026.07.19 regression fix: settlement owns the primary filesystem handoff even though
+        // its legacy `isScanning` flag is false. Do not admit disclosure I/O from that gap.
+        if hasActivePrimaryScanOwnershipSnapshot { return }
         expanded[path] = !(expanded[path] ?? false)
     }
 
@@ -912,6 +1748,11 @@ enum TreeBrowserLiveLocalization {
 
 private struct AppKitFlatTreeTable: NSViewRepresentable {
     let rows: [FlatTreeRow]
+    let rowIndexByPath: [String: Int]
+    let parentIndexByRow: [Int?]
+    let contentRevision: UInt64
+    let identityRevision: UInt64
+    let removalDelta: TreeTableRowRemovalDelta?
     let maxBytes: Int64
     let locale: Locale
     @Binding var selectedPath: String?
@@ -947,10 +1788,13 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
         }
 
         let column = NSTableColumn(identifier: TreeTableMetrics.columnIdentifier)
-        column.resizingMask = .autoresizingMask
+        // v2026.07.20: TreeViewportScrollView is the sole geometry owner. Leaving AppKit's
+        // independent autoresizer enabled recreates two competing width writers.
+        column.resizingMask = []
+        table.columnAutoresizingStyle = .noColumnAutoresizing
         table.addTableColumn(column)
 
-        let scroll = NSScrollView()
+        let scroll = TreeViewportScrollView()
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
         scroll.autohidesScrollers = true
@@ -960,19 +1804,56 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        let contentChanged = context.coordinator.parent.contentRevision != contentRevision
+        let previousRows = contentChanged
+            ? context.coordinator.parent.rows
+            : nil
+        let previousRowIndex = contentChanged
+            ? context.coordinator.parent.rowIndexByPath
+            : nil
+        let previousParentIndex = contentChanged
+            ? context.coordinator.parent.parentIndexByRow
+            : nil
         context.coordinator.parent = self
-        guard let table = scrollView.documentView as? NSTableView else { return }
-        if let column = table.tableColumns.first {
-            column.width = max(scrollView.contentSize.width, 100)
+        if let previousRows, let previousRowIndex, let previousParentIndex {
+            context.coordinator.retirePreviousRows(
+                previousRows,
+                rowIndexByPath: previousRowIndex,
+                parentIndexByRow: previousParentIndex
+            )
         }
-        table.reloadData()
+        guard let table = scrollView.documentView as? NSTableView else { return }
+        let structuralUpdate = TreeTableStructuralUpdatePolicy.update(
+            renderedIdentityRevision: context.coordinator.renderedIdentityRevision,
+            // v2026.07.20: use AppKit's actual cached row count as the final invalid-update gate.
+            // A SwiftUI re-mount/coalesced update may invalidate any manually mirrored count.
+            renderedRowCount: table.numberOfRows,
+            nextIdentityRevision: identityRevision,
+            nextRowCount: rows.count,
+            removalDelta: removalDelta
+        )
+        // v2026.07.20: a successful recycle receipt already identifies the exact vanished rows.
+        // Apply that delta instead of a 40k-row reload while authoritative accounting continues.
+        TreeTableStructuralUpdateApplier.apply(
+            structuralUpdate,
+            to: table,
+            in: scrollView,
+            redrawVisible: {
+                context.coordinator.reloadVisibleRows(in: table)
+            }
+        )
+        context.coordinator.renderedIdentityRevision = identityRevision
         context.coordinator.syncSelection(in: table)
     }
 
     @MainActor
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         var parent: AppKitFlatTreeTable
+        var renderedIdentityRevision: UInt64?
         private var isSyncingSelection = false
+        /// Only explicit keyboard navigation may move the viewport. Async projection publication,
+        /// deletion pruning and passive selection re-indexing must preserve the user's scroll.
+        private var pendingUserNavigationRevealPath: String?
 
         init(parent: AppKitFlatTreeTable) {
             self.parent = parent
@@ -980,6 +1861,35 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
 
         func numberOfRows(in tableView: NSTableView) -> Int {
             parent.rows.count
+        }
+
+        /// Non-structural SwiftUI updates (selection, locale, expansion icon, AI/stash state)
+        /// only invalidate the bounded viewport. `reloadData()` is reserved for a new frozen row
+        /// generation so AppKit retains row identity and scroll/selection state between updates.
+        func reloadVisibleRows(in table: NSTableView) {
+            let visible = table.rows(in: table.visibleRect)
+            guard visible.location != NSNotFound, visible.length > 0 else { return }
+            let rowIndexes = IndexSet(integersIn: visible.location..<(visible.location + visible.length))
+            let columnIndexes = IndexSet(integersIn: 0..<table.numberOfColumns)
+            table.reloadData(forRowIndexes: rowIndexes, columnIndexes: columnIndexes)
+        }
+
+        func retirePreviousRows(
+            _ rows: [FlatTreeRow],
+            rowIndexByPath: [String: Int],
+            parentIndexByRow: [Int?]
+        ) {
+            let retirement = TreeFlatRowsRetirement(
+                rows: rows,
+                rowIndexByPath: rowIndexByPath,
+                parentIndexByRow: parentIndexByRow
+            )
+            Task {
+                // `parent` above already points at the new generation. Yield once so AppKit can
+                // finish the current representable update, then make the actor the last owner.
+                await Task.yield()
+                _ = await retirement.retire()
+            }
         }
 
         func tableView(_ tableView: NSTableView,
@@ -1003,7 +1913,14 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
                 hasAI: parent.onAskAI != nil,
                 aiReady: parent.aiSettings?.isReadyForUI == true,
                 actions: TreeTableRowActions(
-                    select: { [weak self] in self?.select(flat.row.path, in: tableView) },
+                    focus: { [weak tableView] in
+                        guard let tableView else { return }
+                        tableView.window?.makeFirstResponder(tableView)
+                    },
+                    select: { [weak self, weak tableView] in
+                        guard let tableView else { return }
+                        self?.select(flat.row.path, in: tableView)
+                    },
                     toggle: { [weak self] in self?.parent.onToggleExpand(flat.row.path) },
                     trash: { [weak self] in self?.parent.onTrash?(flat.row) },
                     stash: { [weak self] in self?.parent.onStash?(flat.row) },
@@ -1028,8 +1945,11 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
         }
 
         func syncSelection(in table: NSTableView) {
+            let pendingRevealPath = pendingUserNavigationRevealPath
+            pendingUserNavigationRevealPath = nil
             guard let selectedPath = parent.selectedPath,
-                  let idx = parent.rows.firstIndex(where: { $0.row.path == selectedPath }) else {
+                  let idx = parent.rowIndexByPath[selectedPath],
+                  parent.rows.indices.contains(idx) else {
                 if table.selectedRow >= 0 {
                     isSyncingSelection = true
                     table.deselectAll(nil)
@@ -1040,8 +1960,13 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
             if table.selectedRow != idx {
                 isSyncingSelection = true
                 table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
-                table.scrollRowToVisible(idx)
                 isSyncingSelection = false
+            }
+            if TreeSelectionViewportPolicy.shouldReveal(
+                pendingUserNavigationPath: pendingRevealPath,
+                selectedPath: selectedPath
+            ) {
+                table.scrollRowToVisible(idx)
             }
         }
 
@@ -1050,7 +1975,7 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
             // Focus here (a user gesture), never from async row publication.
             UserInitiatedTableFocus.request(for: table)
             parent.selectedPath = path
-            if let idx = parent.rows.firstIndex(where: { $0.row.path == path }) {
+            if let idx = parent.rowIndexByPath[path], parent.rows.indices.contains(idx) {
                 isSyncingSelection = true
                 table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
                 isSyncingSelection = false
@@ -1101,12 +2026,13 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
         private func moveSelection(delta: Int) {
             guard !parent.rows.isEmpty else { return }
             let current = parent.selectedPath
-                .flatMap { selected in parent.rows.firstIndex { $0.row.path == selected } }
+                .flatMap { parent.rowIndexByPath[$0] }
                 ?? -1
             let next = max(0, min(parent.rows.count - 1, current + delta))
             let flat = parent.rows[next]
             guard !flat.isLoadingPlaceholder else { return }
             parent.selectedPath = flat.row.path
+            pendingUserNavigationRevealPath = flat.row.path
         }
 
         private func setExpansion(open: Bool) {
@@ -1126,14 +2052,16 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
         /// pressing H/Left on a leaf selects its nearest visible parent.
         private func selectVisibleParent(of flat: FlatTreeRow) {
             guard flat.depth > 0,
-                  let index = parent.rows.firstIndex(where: { $0.row.path == flat.row.path }) else {
+                  let index = parent.rowIndexByPath[flat.row.path],
+                  parent.parentIndexByRow.indices.contains(index),
+                  let parentIndex = parent.parentIndexByRow[index],
+                  parent.rows.indices.contains(parentIndex) else {
                 return
             }
-            for candidate in parent.rows[..<index].reversed()
-            where !candidate.isLoadingPlaceholder && candidate.depth == flat.depth - 1 {
-                parent.selectedPath = candidate.row.path
-                return
-            }
+            let candidate = parent.rows[parentIndex]
+            guard !candidate.isLoadingPlaceholder else { return }
+            parent.selectedPath = candidate.row.path
+            pendingUserNavigationRevealPath = candidate.row.path
         }
 
         private func toggleSelectedExpansion() {
@@ -1161,9 +2089,7 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
         private func trashSelected() {
             guard let flat = selectedFlat(), parent.onTrash != nil else { return }
             guard TreeBrowserView.canInitiateDeletion(
-                flat.row,
-                verdict: flat.verdict,
-                rejection: flat.rejection,
+                flat,
                 allowsVendorPathOverride: parent.allowsVendorPathOverride
             ) else {
                 NSSound.beep()
@@ -1173,8 +2099,11 @@ private struct AppKitFlatTreeTable: NSViewRepresentable {
         }
 
         private func selectedFlat() -> FlatTreeRow? {
-            guard let selectedPath = parent.selectedPath else { return nil }
-            return parent.rows.first { $0.row.path == selectedPath && !$0.isLoadingPlaceholder }
+            guard let selectedPath = parent.selectedPath,
+                  let index = parent.rowIndexByPath[selectedPath],
+                  parent.rows.indices.contains(index),
+                  !parent.rows[index].isLoadingPlaceholder else { return nil }
+            return parent.rows[index]
         }
     }
 }
@@ -1187,6 +2116,29 @@ private final class TreeNSTableView: NSTableView {
     override func keyDown(with event: NSEvent) {
         if keyHandler?(event) == true { return }
         super.keyDown(with: event)
+    }
+}
+
+/// v2026.07.20: the Tree's sole column follows the real AppKit clip viewport after layout.
+/// SwiftUI business-state updates can arrive before or after geometry settles, so `updateNSView`
+/// must not own column width; otherwise AI/stash/trash state can suddenly apply a stale/new width
+/// and move the whole right-anchored operation area. A real viewport change (including opening or
+/// closing the selected row's detail pane) still updates the column through this layout owner.
+@MainActor
+final class TreeViewportScrollView: NSScrollView {
+    override func layout() {
+        super.layout()
+        synchronizeSingleColumnWidthToViewport()
+    }
+
+    func synchronizeSingleColumnWidthToViewport() {
+        guard let table = documentView as? NSTableView,
+              table.tableColumns.count == 1 else { return }
+        let viewportWidth = contentView.bounds.width
+        guard viewportWidth.isFinite,
+              viewportWidth > 0,
+              table.tableColumns[0].width != viewportWidth else { return }
+        table.tableColumns[0].width = viewportWidth
     }
 }
 
@@ -1214,6 +2166,7 @@ private enum TreeTableMetrics {
 }
 
 private struct TreeTableRowActions {
+    let focus: () -> Void
     let select: () -> Void
     let toggle: () -> Void
     let trash: () -> Void
@@ -1360,21 +2313,40 @@ private final class TreeTableRowCanvas: NSView {
     override func mouseDown(with event: NSEvent) {
         guard let flat, !flat.isLoadingPlaceholder, let actions else { return }
         let point = convert(event.locationInWindow, from: nil)
-        actions.select()
         if hitTestAction(point) == .ai {
+            if InlineRowActionNavigationPolicy.shouldFocusTable(for: .askAI) {
+                actions.focus()
+            }
+            if InlineRowActionNavigationPolicy.shouldSelectRow(for: .askAI) {
+                actions.select()
+            }
             GSYLog.notice(.operation, "tree.row.ai path=\(flat.row.path)")
             actions.askAI(); return
         }
         if hitTestAction(point) == .stash {
+            if InlineRowActionNavigationPolicy.shouldFocusTable(for: .stash) {
+                actions.focus()
+            }
             guard !isStashed else { NSSound.beep(); return }
+            if InlineRowActionNavigationPolicy.shouldSelectRow(for: .stash) {
+                actions.select()
+            }
             GSYLog.notice(.operation, "tree.row.stash path=\(flat.row.path)")
             actions.stash(); return
         }
         if hitTestAction(point) == .trash {
+            if InlineRowActionNavigationPolicy.shouldFocusTable(for: .trash) {
+                actions.focus()
+            }
             guard isTrashable(flat) else { NSSound.beep(); return }
+            if InlineRowActionNavigationPolicy.shouldSelectRow(for: .trash) {
+                actions.select()
+            }
             GSYLog.notice(.operation, "tree.row.trash path=\(flat.row.path)")
             actions.trash(); return
         }
+        actions.focus()
+        actions.select()
         if disclosureRect(for: flat).contains(point) {
             if canExpand(flat) {
                 GSYLog.notice(.operation, "tree.row.toggle path=\(flat.row.path) expanded=\(!isExpanded)")
@@ -1723,10 +2695,10 @@ private final class TreeTableRowCanvas: NSView {
     }
 
     private func isTrashable(_ flat: FlatTreeRow) -> Bool {
+        // v2026.07.20: shallow identity publication never authorizes deletion. Keep it disabled
+        // through deep exact-capacity enrichment and the requested-sort terminal.
         hasTrash && TreeBrowserView.canInitiateDeletion(
-            flat.row,
-            verdict: flat.verdict,
-            rejection: flat.rejection,
+            flat,
             allowsVendorPathOverride: allowsVendorPathOverride
         )
     }
@@ -1888,7 +2860,7 @@ struct TreeColumnHeader: View {
 /// 改为 [rebuildFlatRows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
 /// 一次性算好塞到这里，body 只读字段，evaluator 调用次数 == 行数（不再随重绘倍增）。
 /// 回归契约见 [FlatTreeRowVerdictCacheTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/FlatTreeRowVerdictCacheTests.swift)。
-struct FlatTreeRow: Identifiable, Hashable {
+struct FlatTreeRow: Identifiable, Hashable, Sendable {
     let row: TreeRow
     let depth: Int
     let verdict: SafetyVerdict
@@ -1900,7 +2872,9 @@ struct FlatTreeRow: Identifiable, Hashable {
     /// 不响应点击 / 不算入选中态 / 不进入键盘导航候选集。
     var isLoadingPlaceholder: Bool = false
     /// 已展开目录的子节点深度聚合还在后台进行时为 true。
-    /// AppKit 行会在名称后显示一个 mini spinner；不影响 selection / path identity。
+    /// AppKit 行会在名称后显示一个 mini spinner；v2026.07.20 起浅层 identity 出现后仍
+    /// 保持为 true，直到 deep 精确容量、文件数和当前排序原子提交。selection 只表达
+    /// path identity，destructive action 必须等它变回 false。
     var isLoadingChildren: Bool = false
 
     init(
@@ -1969,9 +2943,7 @@ struct TreeNodeRow: View {
     private var isTrashable: Bool {
         guard onTrash != nil else { return false }
         return TreeBrowserView.canInitiateDeletion(
-            row,
-            verdict: flat.verdict,
-            rejection: flat.rejection,
+            flat,
             allowsVendorPathOverride: allowsVendorPathOverride
         )
     }
@@ -1983,6 +2955,10 @@ struct TreeNodeRow: View {
             Group {
                 if canExpand {
                     Button {
+                        // v2026.07.20: Disclosure is navigation, unlike the adjacent inline
+                        // commands. Keep the SwiftUI fallback aligned with AppKit: select the row,
+                        // then expand it.
+                        onSelect()
                         onToggleExpand()
                     } label: {
                         // bug 1：22x22 hit area，与 Finder/DaisyDisk 看齐。
@@ -2001,6 +2977,18 @@ struct TreeNodeRow: View {
                 }
             }
             TreeBrowserRow(row: row, maxBytes: maxBytes)
+                // v2026.07.20: only the content region owns navigation. Keeping gestures off the
+                // parent HStack makes the adjacent AI/stash/trash Buttons mutually exclusive with
+                // row selection even in this SwiftUI fallback implementation.
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) {
+                    guard canExpand else { return }
+                    onToggleExpand()
+                }
+                .onTapGesture(count: 1) {
+                    onSelect()
+                    if canExpand { onToggleExpand() }
+                }
             // v2026.06.21 反馈修复：在数据 Row 与「操作」按钮组之间也插入与表头
             // 一致的 12pt 间隙（表头 mtime 与 actions 同样间隔 12pt），避免行内
             // mtime 数字与三枚按钮贴在一起，跟表头列宽完全对齐。
@@ -2025,7 +3013,9 @@ struct TreeNodeRow: View {
             if let onStash {
                 Button {
                     guard !isStashed else { NSSound.beep(); return }
-                    onSelect()
+                    if InlineRowActionNavigationPolicy.shouldSelectRow(for: .stash) {
+                        onSelect()
+                    }
                     onStash(row)
                 } label: {
                     Image(systemName: isStashed ? "tray.full.fill" : "tray.and.arrow.down")
@@ -2044,7 +3034,9 @@ struct TreeNodeRow: View {
             if let onTrash {
                 Button {
                     guard isTrashable else { NSSound.beep(); return }
-                    onSelect()
+                    if InlineRowActionNavigationPolicy.shouldSelectRow(for: .trash) {
+                        onSelect()
+                    }
                     onTrash(row)
                 } label: {
                     Image(systemName: "trash")
@@ -2082,27 +3074,13 @@ struct TreeNodeRow: View {
                                       lineWidth: 1)
                 )
         )
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            guard canExpand else { return }
-            onToggleExpand()
-        }
-        .onTapGesture(count: 1) {
-            // 单击整行：选中 + 切展开（仅可展开行）；与旧版行为一致。
-            onSelect()
-            if canExpand {
-                onToggleExpand()
-            }
-        }
         .contextMenu {
             if let onTrash {
                 // v2026.06 Step 1：contextMenu 也走 verdict 缓存。
                 // contextMenu 在右键弹出时才求值（不算最 hot path），但既然已经算好就一起复用，
                 // 一致性比微优化重要：后续维护者看到一处就知道全局都不再调 evaluate。
                 let canInitiate = TreeBrowserView.canInitiateDeletion(
-                    row,
-                    verdict: flat.verdict,
-                    rejection: flat.rejection,
+                    flat,
                     allowsVendorPathOverride: allowsVendorPathOverride
                 )
                 let requiresOverride = DeletionEntryPolicy.requiresVendorPathOverride(
@@ -2272,7 +3250,9 @@ struct TreeNodeRow: View {
             Button {
                 // v1.5 P2 / Q3：未就绪时不再 beep（用户无感知）——直接回调上层，
                 // MainView 负责弹"AI 未配置，前往设置？"alert，给用户明确引导。
-                onSelect()
+                if InlineRowActionNavigationPolicy.shouldSelectRow(for: .askAI) {
+                    onSelect()
+                }
                 onAskAI(row)
             } label: {
                 Image(systemName: "sparkles")

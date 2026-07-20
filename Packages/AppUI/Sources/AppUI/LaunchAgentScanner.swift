@@ -1,45 +1,32 @@
+import Darwin
 import Foundation
 import LogKit
+import ScanKit
 
-/// v1.2 P1-7 启动项查看屏 —— 数据模型与扫描器。
+/// 传统 launchd plist 的只读扫描合同。
 ///
-/// 设计原则（与 [AppFootprint.swift](AppFootprint.swift) 同源）：
-/// - **只读、不删** —— 这一屏只展示 ~/Library/LaunchAgents、/Library/LaunchAgents、
-///   /Library/LaunchDaemons 三个目录下注册的 plist 文件，**不附带任何"清理"按钮**。
-///   要禁用某个启动项请走 `launchctl bootout`，本 App 不代劳。
-/// - **跳过损坏 plist** —— 任何解析失败的 plist 都直接 skip，不影响其他条目；
-///   不抛出错误中断整次扫描（用户磁盘上偶尔有半截 plist 是常态）。
-/// - **不写不删** —— scanner 只调 `Data(contentsOf:)` + `PropertyListSerialization` +
-///   `attributesOfItem(atPath:)`，没有任何 `removeItem` / `recycle` / `unlink` 调用。
-/// - **Step 14 静默失败修复**：错误经 [IOErrorClassifier](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LogKit/Sources/LogKit/IOErrorClassifier.swift)
-///   分类，EACCES 通过 `permissionDeniedHandler` 上报，ENOENT 静默到 GSYLog.debug，
-///   其他错误 GSYLog.warning 落盘但不打扰用户。
+/// v2026.07.18：旧实现把目录/文件权限失败、竞态消失和解析失败都压成 nil/空数组，
+/// UI 因而把“没有发现”与“没有读到”混为一谈。现在文件系统层返回类型化失败，扫描层
+/// 聚合 `items + issues`，由界面明确呈现完整、部分和失败三种状态。
 
-// MARK: - 数据模型
+// MARK: - 展示模型
 
-/// 启动项 plist 的作用域（用来在 UI 上分段展示）。
 public enum LaunchAgentScope: String, Hashable, Sendable, CaseIterable {
-    /// `~/Library/LaunchAgents` —— 用户级 agent，登录后随用户启动。
     case user
-    /// `/Library/LaunchAgents` —— 系统级 agent，所有用户登录后启动。
     case system
-    /// `/Library/LaunchDaemons` —— 系统级 daemon，开机即起，不依赖用户登录。
     case daemon
 
-    /// 该 scope 对应的目录绝对路径（user 需注入 home 目录）。
     public func directoryPath(home: String) -> String {
         switch self {
-        case .user:   return "\(home)/Library/LaunchAgents"
+        case .user: return "\(home)/Library/LaunchAgents"
         case .system: return "/Library/LaunchAgents"
         case .daemon: return "/Library/LaunchDaemons"
         }
     }
 
-    /// v2026.07.15：scope 保留语义 key，View 显式传当前 locale，避免切语言后标题
-    /// 仍停在进程启动语言。
     public var localizationKey: String {
         switch self {
-        case .user:   return "launch_agent.scope.user"
+        case .user: return "launch_agent.scope.user"
         case .system: return "launch_agent.scope.system"
         case .daemon: return "launch_agent.scope.daemon"
         }
@@ -49,32 +36,17 @@ public enum LaunchAgentScope: String, Hashable, Sendable, CaseIterable {
         AppLocalization.string(localizationKey, locale: locale)
     }
 
-    /// 兼容非界面调用；用户可见 View 必须调用 `displayName(locale:)`。
-    public var displayName: String {
-        displayName(locale: .current)
-    }
+    /// 非界面兼容入口；用户可见 View 必须显式传当前 locale。
+    public var displayName: String { displayName(locale: .current) }
 }
 
-/// 单个 launchd plist 的展示模型。
-///
-/// 字段对应 launchd plist 标准 key：
-/// - `Label`：必选；plist 缺它就视为损坏（会被 scanner 跳过）。
-/// - `ProgramArguments`：可选；缺失时为空数组。某些 plist 用 `Program` 单字符串字段，
-///   也会被归并到这里（首位 = Program，其余 = ProgramArguments[1...]）。
-/// - `RunAtLoad`：可选 bool；缺失视为 false。
 public struct LaunchAgentItem: Hashable, Sendable, Identifiable {
     public var id: String { path }
-    /// plist 文件绝对路径（如 `~/Library/LaunchAgents/com.foo.bar.plist`）。
     public let path: String
-    /// plist 内 `Label`（如 `com.foo.bar`）。
     public let label: String
-    /// 合并后的 ProgramArguments —— 含可执行文件路径与全部参数。
     public let programArguments: [String]
-    /// `RunAtLoad`（缺失视为 false）。
     public let runAtLoad: Bool
-    /// plist 文件本身的字节数（FileManager attributes，不递归）。
     public let fileSize: Int64
-    /// 该项所属作用域。
     public let scope: LaunchAgentScope
 
     public init(
@@ -94,95 +66,343 @@ public struct LaunchAgentItem: Hashable, Sendable, Identifiable {
     }
 }
 
-// MARK: - 文件系统抽象（便于测试注入）
+// MARK: - 类型化 IO 与完整性证据
 
-/// 仅暴露本扫描所需的最小 IO 接口；实际生产用 [DefaultLaunchAgentFS]，
-/// 测试用内存假实现（见 LaunchAgentScannerTests）。
-///
-/// **契约**：实现方必须保证所有方法都是只读 —— 不允许写、不允许删。
-public protocol LaunchAgentFS: Sendable {
-    /// 列出目录下的直接子项（返回绝对路径数组）。目录不存在时返回 nil。
-    func listDirectory(_ path: String) -> [String]?
-    /// 读取整个文件内容；失败返回 nil（权限不足、损坏等）。
-    func readFile(_ path: String) -> Data?
-    /// 取文件字节数；失败返回 0（不应让大小读取失败影响主流程）。
-    func fileSize(_ path: String) -> Int64
+public enum LaunchAgentIOOperation: String, Hashable, Sendable {
+    case listDirectory
+    case readFile
+    case readMetadata
 }
 
-/// 生产实现 —— 直接打 `FileManager` 与 `Data(contentsOf:)`。
+public enum LaunchAgentIOFailureReason: String, Hashable, Sendable {
+    case permissionDenied
+    case notFound
+    case changedDuringRead
+    case unsafeFileType
+    case tooLarge
+    case cancelled
+    case other
+}
+
+public struct LaunchAgentIOFailure: Hashable, Sendable {
+    public let path: String
+    public let operation: LaunchAgentIOOperation
+    public let reason: LaunchAgentIOFailureReason
+    /// 仅供结构化日志和测试诊断；不得直接展示给用户。
+    public let technicalDetail: String?
+
+    public init(
+        path: String,
+        operation: LaunchAgentIOOperation,
+        reason: LaunchAgentIOFailureReason,
+        technicalDetail: String? = nil
+    ) {
+        self.path = path
+        self.operation = operation
+        self.reason = reason
+        self.technicalDetail = technicalDetail
+    }
+}
+
+public enum LaunchAgentIOResult<Value: Sendable>: Sendable {
+    case value(Value)
+    case failure(LaunchAgentIOFailure)
+}
+
+/// One plist payload plus the size that belongs to that payload generation.
 ///
-/// **Step 14**：原 `try?` 全部改 do/catch，按 [IOErrorClassifier](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LogKit/Sources/LogKit/IOErrorClassifier.swift) 分类：
-/// - `.permissionDenied` → 调用 `permissionDeniedHandler`（默认 nil 不打扰）+ GSYLog.debug
-/// - `.notFound` → GSYLog.debug 静默（路径不存在是常态）
-/// - `.other` → GSYLog.warning 落盘
-/// 三种情况下方法签名仍返回 nil，**不破坏旧调用方契约**。
+/// `metadataFailure` exists only for the legacy/default protocol seam used by injected test file
+/// systems: it preserves the previous “parsed item + metadata issue” behavior. Production
+/// `DefaultLaunchAgentFS` overrides `readFileSnapshot` with one identity-validated bounded read, so
+/// its size is always `data.count` and its metadata failure is nil.
+public struct LaunchAgentFileSnapshot: Sendable {
+    public let data: Data
+    public let fileSize: Int64
+    public let metadataFailure: LaunchAgentIOFailure?
+
+    public init(
+        data: Data,
+        fileSize: Int64,
+        metadataFailure: LaunchAgentIOFailure? = nil
+    ) {
+        self.data = data
+        self.fileSize = fileSize
+        self.metadataFailure = metadataFailure
+    }
+}
+
+public enum LaunchAgentScanIssueReason: String, Hashable, Sendable {
+    case permissionDenied
+    case changedDuringScan
+    case readFailed
+    case invalidPropertyList
+    case missingLabel
+    case metadataUnavailable
+}
+
+public struct LaunchAgentScanIssue: Hashable, Sendable, Identifiable {
+    public var id: String { "\(scope.rawValue)|\(path)|\(reason.rawValue)" }
+    public let scope: LaunchAgentScope
+    public let path: String
+    public let reason: LaunchAgentScanIssueReason
+
+    public init(scope: LaunchAgentScope, path: String, reason: LaunchAgentScanIssueReason) {
+        self.scope = scope
+        self.path = path
+        self.reason = reason
+    }
+}
+
+public struct LaunchAgentScanResult: Equatable, Sendable {
+    public let items: [LaunchAgentItem]
+    public let issues: [LaunchAgentScanIssue]
+    /// Cancellation is caller control flow, not a synthetic filesystem issue. Keeping it separate
+    /// prevents logs/UI from presenting an intentional reload cancellation as a read failure.
+    public let wasCancelled: Bool
+
+    public init(
+        items: [LaunchAgentItem],
+        issues: [LaunchAgentScanIssue],
+        wasCancelled: Bool = false
+    ) {
+        self.items = items
+        self.issues = issues
+        self.wasCancelled = wasCancelled
+    }
+
+    public var isComplete: Bool { issues.isEmpty && !wasCancelled }
+}
+
+/// Collection conformance keeps item-centric consumers concise while the enclosing value still
+/// carries mandatory completeness evidence. User-facing callers must inspect `issues` as well.
+extension LaunchAgentScanResult: RandomAccessCollection {
+    public typealias Index = Array<LaunchAgentItem>.Index
+
+    public var startIndex: Index { items.startIndex }
+    public var endIndex: Index { items.endIndex }
+    public subscript(position: Index) -> LaunchAgentItem { items[position] }
+    public func index(after index: Index) -> Index { items.index(after: index) }
+    public func index(before index: Index) -> Index { items.index(before: index) }
+}
+
+/// 只读文件系统边界。调用方不能通过本协议写入、删除或切换 launchd 服务。
+public protocol LaunchAgentFS: Sendable {
+    func listDirectory(_ path: String) -> LaunchAgentIOResult<[String]>
+    func readFile(_ path: String) -> LaunchAgentIOResult<Data>
+    func fileSize(_ path: String) -> LaunchAgentIOResult<Int64>
+    func readFileSnapshot(_ path: String) -> LaunchAgentIOResult<LaunchAgentFileSnapshot>
+}
+
+public extension LaunchAgentFS {
+    /// Compatibility/test-injection seam. It intentionally preserves the old two-call behavior so
+    /// existing fake filesystems do not need production fd semantics. This default is not an inode
+    /// identity guarantee; production must override it with one bounded snapshot transaction.
+    func readFileSnapshot(_ path: String) -> LaunchAgentIOResult<LaunchAgentFileSnapshot> {
+        let data: Data
+        switch readFile(path) {
+        case .value(let value): data = value
+        case .failure(let failure): return .failure(failure)
+        }
+        switch fileSize(path) {
+        case .value(let size):
+            return .value(LaunchAgentFileSnapshot(data: data, fileSize: size))
+        case .failure(let failure):
+            return .value(LaunchAgentFileSnapshot(
+                data: data,
+                fileSize: 0,
+                metadataFailure: failure
+            ))
+        }
+    }
+}
+
 public struct DefaultLaunchAgentFS: LaunchAgentFS {
-    /// 当 listDirectory / readFile 因 EACCES 拿不到内容时被调用一次，参数是无权限路径。
-    /// 默认 nil 表示不上报（保留旧静默语义）；UI 层应注入 closure 把 path 累加到 banner 列表。
-    public let permissionDeniedHandler: (@Sendable (String) -> Void)?
+    typealias BoundedReader = @Sendable (
+        URL,
+        Int,
+        @Sendable () -> Bool
+    ) throws -> Data
 
-    public init(permissionDeniedHandler: (@Sendable (String) -> Void)? = nil) {
-        self.permissionDeniedHandler = permissionDeniedHandler
+    /// `launchd.plist(5)` defines a declarative job dictionary (Label, executable/arguments,
+    /// scheduling and resource keys), not a payload container. One MiB leaves ample room for very
+    /// large argument/trigger arrays while placing a hard bound far above ordinary KiB-scale job
+    /// definitions. ScanKit's generic 16 MiB ceiling is intentionally broader than this format.
+    static let maximumPropertyListBytes = 1 * 1_024 * 1_024
+
+    private let shouldCancel: @Sendable () -> Bool
+    private let boundedReader: BoundedReader
+
+    public init() {
+        shouldCancel = { Task.isCancelled }
+        boundedReader = { url, maximumBytes, shouldCancel in
+            try BoundedLocalFileReader.read(
+                at: url,
+                maximumBytes: maximumBytes,
+                shouldCancel: shouldCancel
+            )
+        }
     }
 
-    public func listDirectory(_ path: String) -> [String]? {
-        let fm = FileManager.default
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else {
-            // 目录不存在 → 静默（与 ENOENT 等价语义）
-            return nil
-        }
+    /// Deterministic seam for proving cancellation/error mapping and exactly-one snapshot read.
+    init(
+        shouldCancel: @escaping @Sendable () -> Bool,
+        boundedReader: @escaping BoundedReader
+    ) {
+        self.shouldCancel = shouldCancel
+        self.boundedReader = boundedReader
+    }
+
+    public func listDirectory(_ path: String) -> LaunchAgentIOResult<[String]> {
         do {
-            let names = try fm.contentsOfDirectory(atPath: path)
-            return names.map { (path as NSString).appendingPathComponent($0) }
+            // v2026.07.18: call the authoritative read directly. A fileExists preflight can return
+            // false for TCC/EACCES and would collapse “denied” back into “missing”; it also creates
+            // a needless TOCTOU window between the probe and the real directory read.
+            let names = try FileManager.default.contentsOfDirectory(atPath: path)
+            return .value(names.map { (path as NSString).appendingPathComponent($0) })
         } catch {
-            handle(error: error, path: path, op: "listDirectory")
-            return nil
+            return classifiedFailure(error, path: path, operation: .listDirectory)
         }
     }
 
-    public func readFile(_ path: String) -> Data? {
+    public func readFile(_ path: String) -> LaunchAgentIOResult<Data> {
+        switch readFileSnapshot(path) {
+        case .value(let snapshot): return .value(snapshot.data)
+        case .failure(let failure): return .failure(failure)
+        }
+    }
+
+    /// v2026.07.18 P1 root fix: the shared reader lstat/open/fstat checks one regular-file
+    /// generation, rejects a final symlink/FIFO, enforces the plist-specific cap, checks
+    /// cancellation between chunks, and validates the path again before returning. `Data.count`
+    /// therefore belongs to exactly the bytes parsed by the scanner; no second path stat follows.
+    public func readFileSnapshot(
+        _ path: String
+    ) -> LaunchAgentIOResult<LaunchAgentFileSnapshot> {
         do {
-            return try Data(contentsOf: URL(fileURLWithPath: path))
+            let data = try boundedReader(
+                URL(fileURLWithPath: path),
+                Self.maximumPropertyListBytes,
+                shouldCancel
+            )
+            return .value(LaunchAgentFileSnapshot(
+                data: data,
+                fileSize: Int64(data.count)
+            ))
+        } catch let error as BoundedLocalFileReadError {
+            return .failure(boundedFailure(error, path: path))
         } catch {
-            handle(error: error, path: path, op: "readFile")
-            return nil
+            return classifiedFailure(error, path: path, operation: .readFile)
         }
     }
 
-    public func fileSize(_ path: String) -> Int64 {
-        // size 取不到不应影响主流程：保留 try? 语义但额外按错误类别落 GSYLog 不静默。
+    public func fileSize(_ path: String) -> LaunchAgentIOResult<Int64> {
         do {
-            let attrs = try FileManager.default.attributesOfItem(atPath: path)
-            if let n = attrs[.size] as? NSNumber {
-                return n.int64Value
+            let attributes = try FileManager.default.attributesOfItem(atPath: path)
+            guard let number = attributes[.size] as? NSNumber else {
+                return .failure(.init(
+                    path: path,
+                    operation: .readMetadata,
+                    reason: .other,
+                    technicalDetail: "size attribute missing"
+                ))
             }
-            return 0
+            return .value(number.int64Value)
         } catch {
-            handle(error: error, path: path, op: "fileSize")
-            return 0
+            return classifiedFailure(error, path: path, operation: .readMetadata)
         }
     }
 
-    /// 错误分类共享路径：EACCES 上报 + debug 落盘；ENOENT 仅 debug；其他 warning。
-    private func handle(error: Error, path: String, op: String) {
+    private func classifiedFailure<Value: Sendable>(
+        _ error: Error,
+        path: String,
+        operation: LaunchAgentIOOperation
+    ) -> LaunchAgentIOResult<Value> {
+        let reason: LaunchAgentIOFailureReason
         switch IOErrorClassifier.classify(error) {
         case .permissionDenied:
-            permissionDeniedHandler?(path)
-            GSYLog.debug(.scan, "LaunchAgentFS \(op) permission denied: \(path)")
+            reason = .permissionDenied
+            GSYLog.debug(.scan, "LaunchAgentFS \(operation.rawValue) permission denied: \(path)")
         case .notFound:
-            GSYLog.debug(.scan, "LaunchAgentFS \(op) not found: \(path)")
+            reason = .notFound
+            GSYLog.debug(.scan, "LaunchAgentFS \(operation.rawValue) not found: \(path)")
         case .other:
-            GSYLog.warning(.scan, "LaunchAgentFS \(op) failed at \(path): \(error.localizedDescription)")
+            reason = .other
+            GSYLog.warning(
+                .scan,
+                "LaunchAgentFS \(operation.rawValue) failed at \(path): \(error.localizedDescription)"
+            )
         }
+        return .failure(.init(
+            path: path,
+            operation: operation,
+            reason: reason,
+            technicalDetail: String(describing: error)
+        ))
+    }
+
+    private func boundedFailure(
+        _ error: BoundedLocalFileReadError,
+        path: String
+    ) -> LaunchAgentIOFailure {
+        let reason: LaunchAgentIOFailureReason
+        switch error {
+        case .invalidFileURL:
+            reason = .other
+        case .metadataUnavailable(let stage, let code):
+            if Self.isPermissionError(code) {
+                reason = .permissionDenied
+            } else if code == ENOENT, stage == .initialPath {
+                reason = .notFound
+            } else if code == ENOENT {
+                reason = .changedDuringRead
+            } else {
+                reason = .other
+            }
+        case .openFailed(let code):
+            if Self.isPermissionError(code) {
+                reason = .permissionDenied
+            } else if code == ENOENT || code == ELOOP {
+                // Initial lstat already succeeded, so disappearance/symlink replacement before
+                // open is a generation change rather than an originally missing file.
+                reason = .changedDuringRead
+            } else {
+                reason = .other
+            }
+        case .readFailed(let code):
+            reason = Self.isPermissionError(code) ? .permissionDenied : .other
+        case .tooLarge:
+            reason = .tooLarge
+        case .unsafeType:
+            reason = .unsafeFileType
+        case .changed:
+            reason = .changedDuringRead
+        case .cancelled:
+            reason = .cancelled
+        }
+        // v2026.07.18: cancellation is an expected reload control-flow outcome, not a filesystem
+        // fault. The scanner carries it as `wasCancelled`; do not emit a misleading warning.
+        if reason != .cancelled {
+            GSYLog.warning(
+                .scan,
+                "LaunchAgentFS bounded read rejected path=\(path) reason=\(reason.rawValue) "
+                    + "detail=\(String(describing: error))"
+            )
+        }
+        return LaunchAgentIOFailure(
+            path: path,
+            operation: .readFile,
+            reason: reason,
+            technicalDetail: String(describing: error)
+        )
+    }
+
+    private static func isPermissionError(_ code: Int32) -> Bool {
+        code == EACCES || code == EPERM
     }
 }
 
 // MARK: - 扫描器
 
-/// 把三个 launchd 目录下的 .plist 文件聚合成 `[LaunchAgentItem]`。
-///
-/// 串行处理，因为 plist 单个就是几 KB，IO 不是瓶颈，并发反而引入复杂度。
 public actor LaunchAgentScanner {
     private let fs: any LaunchAgentFS
     private let homeDirectory: String
@@ -195,75 +415,194 @@ public actor LaunchAgentScanner {
         self.homeDirectory = homeDirectory
     }
 
-    /// 主入口：扫描三个作用域，按 path 升序返回所有可解析 plist。
-    ///
-    /// 跳过策略（任一即跳，不影响其他条目）：
-    /// - 目录不存在 / 不可读
-    /// - 文件不是 `.plist` 后缀
-    /// - 文件读取失败
-    /// - plist 反序列化失败
-    /// - plist 顶层不是 dict
-    /// - 缺少 `Label` 或 Label 为空
-    public func scanAll() -> [LaunchAgentItem] {
-        var out: [LaunchAgentItem] = []
+    /// 扫描三个传统 launchd plist 目录。现代 Login & Background Items 不在公开可枚举
+    /// 合同内，UI 必须始终披露该覆盖边界，不得把本结果称为“全部启动项”。
+    public func scanAll() -> LaunchAgentScanResult {
+        var items: [LaunchAgentItem] = []
+        var issues: [LaunchAgentScanIssue] = []
+        var wasCancelled = false
         for scope in LaunchAgentScope.allCases {
-            out.append(contentsOf: scan(scope: scope))
-        }
-        out.sort { $0.path < $1.path }
-        return out
-    }
-
-    /// 单 scope 扫描 —— 包内可见以便测试。
-    func scan(scope: LaunchAgentScope) -> [LaunchAgentItem] {
-        let dir = scope.directoryPath(home: homeDirectory)
-        guard let children = fs.listDirectory(dir) else { return [] }
-        var out: [LaunchAgentItem] = []
-        out.reserveCapacity(children.count)
-        for path in children {
-            guard path.hasSuffix(".plist") else { continue }
-            if let item = parsePlist(at: path, scope: scope) {
-                out.append(item)
+            // v2026.07.18: revision gating normally discards a cancelled result, but the scanner's
+            // own value must still be truthful when consumed directly or during a late race.
+            // Cancellation before the next scope is incomplete evidence, never a complete empty.
+            guard !Task.isCancelled else {
+                wasCancelled = true
+                break
+            }
+            let scoped = scan(scope: scope)
+            items.append(contentsOf: scoped.items)
+            issues.append(contentsOf: scoped.issues)
+            if scoped.wasCancelled || Task.isCancelled {
+                wasCancelled = true
+                break
             }
         }
-        return out
-    }
-
-    /// 解析单个 plist —— 包内可见以便测试。
-    /// 任何错误情况都返回 nil（视为损坏，跳过）。
-    func parsePlist(at path: String, scope: LaunchAgentScope) -> LaunchAgentItem? {
-        guard let data = fs.readFile(path) else { return nil }
-        guard
-            let raw = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
-            let dict = raw as? [String: Any]
-        else {
-            return nil
+        items.sort { $0.path < $1.path }
+        issues.sort {
+            if $0.path == $1.path { return $0.reason.rawValue < $1.reason.rawValue }
+            return $0.path < $1.path
         }
-        guard let label = dict["Label"] as? String, !label.isEmpty else {
-            return nil
-        }
-        let runAtLoad = (dict["RunAtLoad"] as? Bool) ?? false
-        let args = Self.extractProgramArguments(from: dict)
-        let size = fs.fileSize(path)
-        return LaunchAgentItem(
-            path: path,
-            label: label,
-            programArguments: args,
-            runAtLoad: runAtLoad,
-            fileSize: size,
-            scope: scope
+        return LaunchAgentScanResult(
+            items: items,
+            issues: issues,
+            wasCancelled: wasCancelled
         )
     }
 
-    /// 合并 launchd 两种 program 写法：
-    /// - `ProgramArguments`：`[String]` 完整参数列表。
-    /// - `Program`：单 `String`，仅可执行路径，无参数。
-    /// 两者并存时以 ProgramArguments 为准（launchd 实际行为）。
-    static func extractProgramArguments(from dict: [String: Any]) -> [String] {
-        if let argv = dict["ProgramArguments"] as? [String] {
-            return argv
+    func scan(scope: LaunchAgentScope) -> LaunchAgentScanResult {
+        let directory = scope.directoryPath(home: homeDirectory)
+        guard !Task.isCancelled else {
+            return LaunchAgentScanResult(items: [], issues: [], wasCancelled: true)
         }
-        if let prog = dict["Program"] as? String, !prog.isEmpty {
-            return [prog]
+        let children: [String]
+        switch fs.listDirectory(directory) {
+        case .value(let values):
+            children = values
+        case .failure(let failure):
+            guard let issueReason = issueReason(for: failure) else {
+                return LaunchAgentScanResult(items: [], issues: [], wasCancelled: true)
+            }
+            // A missing standard directory is a valid empty scope. Every other failure is evidence
+            // that the scope is incomplete and must survive to presentation.
+            guard failure.reason != .notFound else {
+                return LaunchAgentScanResult(items: [], issues: [])
+            }
+            return LaunchAgentScanResult(
+                items: [],
+                issues: [.init(
+                    scope: scope,
+                    path: directory,
+                    reason: issueReason
+                )]
+            )
+        }
+
+        var items: [LaunchAgentItem] = []
+        var issues: [LaunchAgentScanIssue] = []
+        items.reserveCapacity(children.count)
+        for path in children where path.hasSuffix(".plist") {
+            guard !Task.isCancelled else {
+                return LaunchAgentScanResult(
+                    items: items,
+                    issues: issues,
+                    wasCancelled: true
+                )
+            }
+            let parsed = parsePlist(at: path, scope: scope)
+            if let item = parsed.item { items.append(item) }
+            issues.append(contentsOf: parsed.issues)
+            if parsed.wasCancelled || Task.isCancelled {
+                return LaunchAgentScanResult(
+                    items: items,
+                    issues: issues,
+                    wasCancelled: true
+                )
+            }
+        }
+        return LaunchAgentScanResult(items: items, issues: issues)
+    }
+
+    private func parsePlist(
+        at path: String,
+        scope: LaunchAgentScope
+    ) -> (
+        item: LaunchAgentItem?,
+        issues: [LaunchAgentScanIssue],
+        wasCancelled: Bool
+    ) {
+        let snapshot: LaunchAgentFileSnapshot
+        switch fs.readFileSnapshot(path) {
+        case .value(let value):
+            snapshot = value
+        case .failure(let failure):
+            guard let issueReason = issueReason(for: failure) else {
+                return (nil, [], true)
+            }
+            return (
+                nil,
+                [.init(scope: scope, path: path, reason: issueReason)],
+                false
+            )
+        }
+
+        let dictionary: [String: Any]
+        do {
+            let raw = try PropertyListSerialization.propertyList(
+                from: snapshot.data,
+                options: [],
+                format: nil
+            )
+            guard let parsed = raw as? [String: Any] else {
+                GSYLog.warning(.scan, "LaunchAgent plist root is not a dictionary: \(path)")
+                return (
+                    nil,
+                    [.init(scope: scope, path: path, reason: .invalidPropertyList)],
+                    false
+                )
+            }
+            dictionary = parsed
+        } catch {
+            GSYLog.warning(.scan, "LaunchAgent plist decode failed at \(path): \(error.localizedDescription)")
+            return (
+                nil,
+                [.init(scope: scope, path: path, reason: .invalidPropertyList)],
+                false
+            )
+        }
+
+        guard let label = dictionary["Label"] as? String, !label.isEmpty else {
+            return (nil, [.init(scope: scope, path: path, reason: .missingLabel)], false)
+        }
+
+        var issues: [LaunchAgentScanIssue] = []
+        var wasCancelled = false
+        if let failure = snapshot.metadataFailure {
+            if let issueReason = issueReason(for: failure) {
+                issues.append(.init(
+                    scope: scope,
+                    path: path,
+                    // v2026.07.18：metadata 与 directory/readFile 必须保留同一套权限来源；
+                    // 旧分支把 permissionDenied 压成 metadataUnavailable，UI 无法给出正确引导。
+                    reason: issueReason
+                ))
+            } else {
+                wasCancelled = true
+            }
+        }
+
+        return (
+            LaunchAgentItem(
+                path: path,
+                label: label,
+                programArguments: Self.extractProgramArguments(from: dictionary),
+                runAtLoad: (dictionary["RunAtLoad"] as? Bool) ?? false,
+                fileSize: snapshot.fileSize,
+                scope: scope
+            ),
+            issues,
+            wasCancelled
+        )
+    }
+
+    /// `nil` is deliberate caller control flow for cancellation; it must never be projected into
+    /// the issue collection that drives read-failure logging and UI.
+    private func issueReason(
+        for failure: LaunchAgentIOFailure
+    ) -> LaunchAgentScanIssueReason? {
+        switch failure.reason {
+        case .permissionDenied: return .permissionDenied
+        case .notFound, .changedDuringRead: return .changedDuringScan
+        case .unsafeFileType, .tooLarge, .other: return .readFailed
+        case .cancelled: return nil
+        }
+    }
+
+    static func extractProgramArguments(from dictionary: [String: Any]) -> [String] {
+        if let arguments = dictionary["ProgramArguments"] as? [String] {
+            return arguments
+        }
+        if let program = dictionary["Program"] as? String, !program.isEmpty {
+            return [program]
         }
         return []
     }

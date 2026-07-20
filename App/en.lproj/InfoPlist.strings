@@ -1,2 +1,10 @@
 CFBundleDisplayName = "AmuxAIClean";
 CFBundleName = "AmuxAIClean";
+/* v2026.07.18: localized macOS privacy prompts for the read/inspect workflows. */
+NSAppBundlesUsageDescription = "AmuxAIClean reads installed-app metadata such as Info.plist; duplicate scanning also reads candidate bytes to compute SHA-256. File contents are not uploaded.";
+NSAppDataUsageDescription = "AmuxAIClean reads app-data metadata and supported local configuration records; duplicate scanning also reads candidate bytes to compute SHA-256. File contents are not uploaded.";
+NSDesktopFolderUsageDescription = "AmuxAIClean reads Desktop metadata and, for duplicate-file scans, candidate bytes locally to compute SHA-256. File contents are not uploaded.";
+NSDocumentsFolderUsageDescription = "AmuxAIClean reads Documents metadata and, for duplicate-file scans, candidate bytes locally to compute SHA-256. File contents are not uploaded.";
+NSDownloadsFolderUsageDescription = "AmuxAIClean reads Downloads metadata and, for duplicate-file scans, candidate bytes locally to compute SHA-256. File contents are not uploaded.";
+NSRemovableVolumesUsageDescription = "AmuxAIClean reads removable-volume metadata and, for duplicate-file scans, candidate bytes locally to compute SHA-256. File contents are not uploaded.";
+NSNetworkVolumesUsageDescription = "AmuxAIClean reads metadata and duplicate candidates from the selected network server to analyze them on this Mac. File contents are not uploaded elsewhere.";

@@ -35,7 +35,7 @@ public protocol DeletionPipeline: Sendable {
     /// `trashedPairs` 是 `[(originalPath, trashedPath)]`，仅在 `dryRun=false` 且
     /// NSWorkspace.recycle 真正把文件移入用户废纸篓后才有非空内容；其余路径
     /// （dryRun / 全 forbid 拦截 / recycle 失败）一律返回空数组。Step 7
-    /// UndoHistory 用这份 pair 写入 `~/Library/Application Support/GSYCleanMac/UndoHistory.json`
+    /// UndoHistory 用这份 pair 写入 `~/Library/Application Support/AmuxAIClean/UndoHistory.json`
     /// 以支持"最近清理 → 恢复"。
     func moveToTrash(paths: [String], dryRun: Bool) async -> (Int, Int, String?, [(String, String)])
 
@@ -59,7 +59,8 @@ public protocol DeletionPipeline: Sendable {
     /// 旧协议返回的 4 元组 `(moved, skipped, err?, pairs)` 只能用一行文案拼接
     /// "Trash: X succeeded / Y skipped\nError: ..."，UI 没法做"展开失败列表 / 重试失败项"。
     /// 改协议返回值的代价过大（≥10 处生产 + ≥10 处测试），故走"外挂结构体"模式：
-    /// 每次 `moveToTrash` 内部记录到 lastOutcome，UI 在 await 之后立刻 `snapshotLastOutcome()` 读。
+    /// 历史实现会把 `moveToTrash` 结果记录到 lastOutcome；生产 UI 已禁止读取这个进程级槽位，
+    /// 只能消费当前调用返回的 typed disposition/result。
     ///
     /// 协议给默认 nil 实现——历史 stub / dry-run pipeline 不强制提供。
     ///
@@ -471,6 +472,15 @@ public struct TrashRecycleCompletion: Sendable {
     public let attemptedPaths: [String]
     public let legacy: (Int, Int, String?, [(String, String)])
     public let outcome: TrashOutcome?
+    /// Non-nil only for the production TrashPipeline. Callers must durably merge these exact
+    /// journal rows into UndoHistory before consuming the capability.
+    let undoCommit: TrashUndoCommitCapability?
+    /// Moved paths whose callback fact could not cross the completion-journal boundary. They are
+    /// intentionally retained in the pending ledger and surfaced as typed storage failure.
+    let undoJournalFailedPaths: [String]
+    /// Exact operation generations authoritatively retained by the ledger for those failures.
+    /// Empty for compatibility pipelines and for completions with a healthy journal boundary.
+    let undoJournalBlockedAttempts: Set<TrashPendingAttemptIdentity>
 
     public init(
         attemptedPaths: [String],
@@ -481,6 +491,26 @@ public struct TrashRecycleCompletion: Sendable {
         self.attemptedPaths = attemptedPaths
         self.legacy = legacy
         self.outcome = outcome
+        self.undoCommit = nil
+        self.undoJournalFailedPaths = []
+        self.undoJournalBlockedAttempts = []
+    }
+
+    init(
+        attemptedPaths: [String],
+        legacy: (Int, Int, String?, [(String, String)]),
+        outcome: TrashOutcome?,
+        undoCommit: TrashUndoCommitCapability?,
+        undoJournalFailedPaths: [String],
+        undoJournalBlockedAttempts: Set<TrashPendingAttemptIdentity> = []
+    ) {
+        precondition(!attemptedPaths.isEmpty, "A recycle completion requires attempted paths")
+        self.attemptedPaths = attemptedPaths
+        self.legacy = legacy
+        self.outcome = outcome
+        self.undoCommit = undoCommit
+        self.undoJournalFailedPaths = undoJournalFailedPaths
+        self.undoJournalBlockedAttempts = undoJournalBlockedAttempts
     }
 }
 

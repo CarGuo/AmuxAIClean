@@ -4,7 +4,7 @@ import XCTest
 /// Mole 对齐 M3-T5：MaintenanceTasks 行为契约。
 final class MaintenanceTasksTests: XCTestCase {
 
-    // MARK: - Task 元数据
+    // MARK: - Task 语义
 
     func test_allCases_包含_2_个_user_space_任务() {
         XCTAssertEqual(Set(MaintenanceTasks.Task.allCases), [
@@ -12,19 +12,16 @@ final class MaintenanceTasksTests: XCTestCase {
         ])
     }
 
-    func test_displayName_subtitle_非空() {
-        for t in MaintenanceTasks.Task.allCases {
-            XCTAssertFalse(t.displayName.isEmpty)
-            XCTAssertFalse(t.subtitle.isEmpty)
-        }
-    }
-
     // MARK: - 命令路径契约（防止有人不小心改成 sudo）
 
-    func test_qlmanage_路径正确_只跑_r() {
+    func test_qlmanage_路径正确_重置缩略图磁盘缓存() {
         let cmd = MaintenanceTasks.qlmanageCommand
         XCTAssertEqual(cmd.launchPath, "/usr/bin/qlmanage")
-        XCTAssertEqual(cmd.arguments, ["-r"])
+        XCTAssertEqual(
+            cmd.arguments,
+            ["-r", "cache"],
+            "`-r` alone only reloads generators and does not satisfy the cache-reset task"
+        )
     }
 
     func test_dscacheutil_路径正确_只跑_flushcache() {
@@ -36,26 +33,32 @@ final class MaintenanceTasksTests: XCTestCase {
     // MARK: - 编排（fake runner）
 
     func test_run_单任务_把_exit0_映射为_succeeded_true() {
-        let fake = FakeMaintenanceRunner(results: [.init(exitCode: 0, output: "ok")])
+        let fake = FakeMaintenanceRunner(results: [
+            .init(terminal: .exited(code: 0), diagnosticOutput: "ok")
+        ])
         let outcome = MaintenanceTasks(runner: fake).run(.flushDNSCache)
         XCTAssertEqual(outcome.task, .flushDNSCache)
         XCTAssertTrue(outcome.succeeded)
-        XCTAssertEqual(outcome.log, "ok")
+        XCTAssertEqual(outcome.status, .succeeded)
+        XCTAssertEqual(outcome.diagnosticOutput, "ok")
         XCTAssertEqual(fake.executedCommands.count, 1)
         XCTAssertEqual(fake.executedCommands[0].launchPath, "/usr/bin/dscacheutil")
     }
 
     func test_run_单任务_非零_exit_映射为_succeeded_false() {
-        let fake = FakeMaintenanceRunner(results: [.init(exitCode: 1, output: "boom")])
+        let fake = FakeMaintenanceRunner(results: [
+            .init(terminal: .exited(code: 1), diagnosticOutput: "boom")
+        ])
         let outcome = MaintenanceTasks(runner: fake).run(.flushQuickLookCache)
         XCTAssertFalse(outcome.succeeded)
-        XCTAssertEqual(outcome.log, "boom")
+        XCTAssertEqual(outcome.status, .exited(code: 1))
+        XCTAssertEqual(outcome.diagnosticOutput, "boom")
     }
 
     func test_runAll_按顺序执行_默认全部_2_任务() {
         let fake = FakeMaintenanceRunner(results: [
-            .init(exitCode: 0, output: "ql"),
-            .init(exitCode: 0, output: "dns")
+            .init(terminal: .exited(code: 0), diagnosticOutput: "ql"),
+            .init(terminal: .exited(code: 0), diagnosticOutput: "dns")
         ])
         let outcomes = MaintenanceTasks(runner: fake).runAll()
         XCTAssertEqual(outcomes.map(\.task),
@@ -66,8 +69,8 @@ final class MaintenanceTasksTests: XCTestCase {
 
     func test_runAll_部分失败_其他任务继续执行() {
         let fake = FakeMaintenanceRunner(results: [
-            .init(exitCode: 7, output: "ql failed"),
-            .init(exitCode: 0, output: "ok")
+            .init(terminal: .exited(code: 7), diagnosticOutput: "ql failed"),
+            .init(terminal: .exited(code: 0), diagnosticOutput: "ok")
         ])
         let outcomes = MaintenanceTasks(runner: fake).runAll()
         XCTAssertEqual(outcomes.count, 2, "中间失败不应中断后续任务")
@@ -77,8 +80,8 @@ final class MaintenanceTasksTests: XCTestCase {
 
     func test_runAll_指定子集_只跑指定任务() {
         let fake = FakeMaintenanceRunner(results: [
-            .init(exitCode: 0, output: "ok"),
-            .init(exitCode: 0, output: "ok")
+            .init(terminal: .exited(code: 0), diagnosticOutput: "ok"),
+            .init(terminal: .exited(code: 0), diagnosticOutput: "ok")
         ])
         let outcomes = MaintenanceTasks(runner: fake)
             .runAll([.flushQuickLookCache, .flushDNSCache])
@@ -101,22 +104,39 @@ final class MaintenanceTasksTests: XCTestCase {
             arguments: ["-c", script]
         ))
 
-        XCTAssertEqual(result.exitCode, 0)
-        XCTAssertEqual(result.output.utf8.count, 8_192)
-        XCTAssertFalse(result.output.contains("output incomplete"))
+        XCTAssertEqual(result.terminal, .exited(code: 0))
+        XCTAssertEqual(result.diagnosticOutput.utf8.count, 8_192)
+        XCTAssertFalse(result.diagnosticOutput.contains("output incomplete"))
     }
 
     /// v2026.07.16：timeout fixture 使用单一 `/bin/sleep` child，验证共享 owned waiter
-    /// 返回明确 -2；不运行 qlmanage、dscacheutil 或 simctl。
-    func test_defaultRunner_超时收敛为minus2() {
+    /// 返回类型化 timeout；不运行 qlmanage、dscacheutil 或 simctl。
+    func test_defaultRunner_超时收敛为类型化终态() {
         let startedAt = Date()
         let result = DefaultMaintenanceRunner(timeout: 0.05).execute(MaintenanceCommand(
             launchPath: "/bin/sleep",
             arguments: ["30"]
         ))
 
-        XCTAssertEqual(result.exitCode, -2)
-        XCTAssertTrue(result.output.contains("timeout"))
+        XCTAssertEqual(result.terminal, .timedOut)
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 3)
+    }
+
+    /// v2026.07.18：真实 Task.cancel 必须穿透到 owned-child，而不是只留下一个永远
+    /// 不可达的 `.cancelled` enum case。fixture 只启动受控 sleep。
+    func test_defaultRunner_Task取消会终止ownedChild() async {
+        let startedAt = Date()
+        let worker = Task.detached {
+            DefaultMaintenanceRunner(timeout: 30).execute(MaintenanceCommand(
+                launchPath: "/bin/sleep",
+                arguments: ["30"]
+            ))
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+        worker.cancel()
+
+        let result = await worker.value
+        XCTAssertEqual(result.terminal, .cancelled)
         XCTAssertLessThan(Date().timeIntervalSince(startedAt), 3)
     }
 }
@@ -134,7 +154,10 @@ private final class FakeMaintenanceRunner: MaintenanceCommandRunning, @unchecked
     func execute(_ command: MaintenanceCommand) -> MaintenanceCommandResult {
         executedCommands.append(command)
         guard !results.isEmpty else {
-            return MaintenanceCommandResult(exitCode: -99, output: "no result configured")
+            return MaintenanceCommandResult(
+                terminal: .launchFailed,
+                diagnosticOutput: "no result configured"
+            )
         }
         return results.removeFirst()
     }

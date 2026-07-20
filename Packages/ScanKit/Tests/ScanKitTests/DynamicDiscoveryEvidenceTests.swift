@@ -82,6 +82,186 @@ final class DynamicDiscoveryEvidenceTests: XCTestCase {
         ])
     }
 
+    /// v2026.07.18 regression：缺失 info.plist 由稳定 hash 形状识别，不产生虚假 incomplete。
+    func test_derivedData_infoPlist缺失_哈希目录仍是完整工程结果() throws {
+        let home = try makeHome()
+        let project = home.appendingPathComponent(
+            "Library/Developer/Xcode/DerivedData/Healthy-abc",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(at: project, withIntermediateDirectories: true)
+
+        let result = DerivedDataPerProjectScanner.detectWithEvidence(
+            home: home,
+            includeSizes: false
+        )
+
+        XCTAssertEqual(result.hits.map(\.url), [project])
+        XCTAssertEqual(result.incompleteIssues, [])
+    }
+
+    func test_derivedData_infoPlist缺失_非哈希目录是普通共享目录而非缺口() throws {
+        let home = try makeHome()
+        let sharedDirectory = home.appendingPathComponent(
+            "Library/Developer/Xcode/DerivedData/SharedCache",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(at: sharedDirectory, withIntermediateDirectories: true)
+
+        let result = DerivedDataPerProjectScanner.detectWithEvidence(
+            home: home,
+            includeSizes: false
+        )
+
+        XCTAssertEqual(result.hits, [])
+        XCTAssertEqual(result.incompleteIssues, [])
+    }
+
+    func test_derivedData_infoPlist权限拒绝_非哈希目录返回typedIncomplete() throws {
+        let home = try makeHome()
+        let project = home.appendingPathComponent(
+            "Library/Developer/Xcode/DerivedData/CustomLocation",
+            isDirectory: true
+        )
+        let marker = project.appendingPathComponent("info.plist")
+        try fileManager.createDirectory(at: project, withIntermediateDirectories: true)
+        let fileSystem = FaultInjectingDynamicFileSystem(
+            dataFailures: [marker.path: posixError(EACCES)]
+        )
+
+        let result = try DerivedDataPerProjectScanner.detectWithEvidence(
+            home: home,
+            includeSizes: false,
+            fileSystem: fileSystem,
+            cancellationCheck: {}
+        )
+
+        XCTAssertEqual(result.hits, [])
+        XCTAssertEqual(result.incompleteIssues, [
+            ScanIncompleteIssue(
+                path: marker.path,
+                reason: .permissionDenied,
+                stage: .metadata,
+                posixErrorCode: EACCES
+            )
+        ])
+    }
+
+    func test_derivedData_infoPlist损坏_非哈希目录返回metadataIncomplete() throws {
+        let home = try makeHome()
+        let project = home.appendingPathComponent(
+            "Library/Developer/Xcode/DerivedData/CustomLocation",
+            isDirectory: true
+        )
+        let marker = project.appendingPathComponent("info.plist")
+        try fileManager.createDirectory(at: project, withIntermediateDirectories: true)
+        try Data("not a plist".utf8).write(to: marker)
+
+        let result = DerivedDataPerProjectScanner.detectWithEvidence(
+            home: home,
+            includeSizes: false
+        )
+
+        XCTAssertEqual(result.hits, [])
+        XCTAssertEqual(result.incompleteIssues, [
+            ScanIncompleteIssue(
+                path: marker.path,
+                reason: .metadataUnavailable,
+                stage: .metadata
+            )
+        ])
+    }
+
+    func test_derivedData_infoPlist超限_非哈希目录返回metadataIncomplete() throws {
+        let home = try makeHome()
+        let project = home.appendingPathComponent(
+            "Library/Developer/Xcode/DerivedData/CustomOversize",
+            isDirectory: true
+        )
+        let marker = project.appendingPathComponent("info.plist")
+        try fileManager.createDirectory(at: project, withIntermediateDirectories: true)
+        XCTAssertTrue(fileManager.createFile(atPath: marker.path, contents: Data()))
+        let handle = try FileHandle(forWritingTo: marker)
+        try handle.truncate(atOffset: UInt64(BoundedLocalFileReader.defaultMaximumBytes + 1))
+        try handle.close()
+
+        let result = DerivedDataPerProjectScanner.detectWithEvidence(
+            home: home,
+            includeSizes: false
+        )
+
+        XCTAssertEqual(result.hits, [])
+        XCTAssertEqual(result.incompleteIssues, [
+            ScanIncompleteIssue(path: marker.path, reason: .metadataUnavailable, stage: .metadata)
+        ])
+    }
+
+    func test_derivedData_infoPlist符号链接_非哈希目录返回metadataIncomplete() throws {
+        let home = try makeHome()
+        let project = home.appendingPathComponent(
+            "Library/Developer/Xcode/DerivedData/CustomLinked",
+            isDirectory: true
+        )
+        let marker = project.appendingPathComponent("info.plist")
+        let external = home.appendingPathComponent("external.plist")
+        try fileManager.createDirectory(at: project, withIntermediateDirectories: true)
+        let plist = try PropertyListSerialization.data(
+            fromPropertyList: ["WorkspacePath": "/tmp/Outside.xcworkspace"],
+            format: .xml,
+            options: 0
+        )
+        try plist.write(to: external)
+        try fileManager.createSymbolicLink(at: marker, withDestinationURL: external)
+
+        let result = DerivedDataPerProjectScanner.detectWithEvidence(
+            home: home,
+            includeSizes: false
+        )
+
+        XCTAssertEqual(result.hits, [])
+        XCTAssertEqual(result.incompleteIssues, [
+            ScanIncompleteIssue(path: marker.path, reason: .metadataUnavailable, stage: .metadata)
+        ])
+    }
+
+    func test_derivedData_infoPlist非普通文件_非哈希目录返回metadataIncomplete() throws {
+        let home = try makeHome()
+        let project = home.appendingPathComponent(
+            "Library/Developer/Xcode/DerivedData/CustomDirectoryMarker",
+            isDirectory: true
+        )
+        let marker = project.appendingPathComponent("info.plist", isDirectory: true)
+        try fileManager.createDirectory(at: marker, withIntermediateDirectories: true)
+
+        let result = DerivedDataPerProjectScanner.detectWithEvidence(
+            home: home,
+            includeSizes: false
+        )
+
+        XCTAssertEqual(result.hits, [])
+        XCTAssertEqual(result.incompleteIssues, [
+            ScanIncompleteIssue(path: marker.path, reason: .metadataUnavailable, stage: .metadata)
+        ])
+    }
+
+    func test_derivedData_infoPlist损坏_哈希身份独立成立不破坏完整容量证据() throws {
+        let home = try makeHome()
+        let project = home.appendingPathComponent(
+            "Library/Developer/Xcode/DerivedData/Healthy-abc",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(at: project, withIntermediateDirectories: true)
+        try Data("not a plist".utf8).write(to: project.appendingPathComponent("info.plist"))
+
+        let result = DerivedDataPerProjectScanner.detectWithEvidence(
+            home: home,
+            includeSizes: false
+        )
+
+        XCTAssertEqual(result.hits.map(\.url), [project])
+        XCTAssertEqual(result.incompleteIssues, [])
+    }
+
     func test_derivedData_异步取消_抛CancellationError且不伪造IncompleteIssue() async throws {
         let home = try makeHome()
         let scanner = DerivedDataPerProjectScanner()
@@ -266,13 +446,16 @@ final class DynamicDiscoveryEvidenceTests: XCTestCase {
 private struct FaultInjectingDynamicFileSystem: DynamicDiscoveryFileSystem {
     let metadataFailures: [String: NSError]
     let enumerationFailures: [String: NSError]
+    let dataFailures: [String: NSError]
 
     init(
         metadataFailures: [String: NSError] = [:],
-        enumerationFailures: [String: NSError] = [:]
+        enumerationFailures: [String: NSError] = [:],
+        dataFailures: [String: NSError] = [:]
     ) {
         self.metadataFailures = metadataFailures
         self.enumerationFailures = enumerationFailures
+        self.dataFailures = dataFailures
     }
 
     func attributesOfItem(atPath path: String) throws -> [FileAttributeKey: Any] {
@@ -287,5 +470,19 @@ private struct FaultInjectingDynamicFileSystem: DynamicDiscoveryFileSystem {
 
     func canonicalPath(for url: URL) -> String {
         FileManager.default.canonicalPath(for: url)
+    }
+
+    func dataContents(
+        of url: URL,
+        maximumBytes: Int,
+        shouldCancel: @Sendable () -> Bool
+    ) throws -> Data {
+        if shouldCancel() { throw BoundedLocalFileReadError.cancelled }
+        if let error = dataFailures[url.path] { throw error }
+        return try BoundedLocalFileReader.read(
+            at: url,
+            maximumBytes: maximumBytes,
+            shouldCancel: shouldCancel
+        )
     }
 }

@@ -13,8 +13,12 @@ final class SmartCareSessionTests: XCTestCase {
             [.recommended, .commonAppCache, .developer]
         )
         XCTAssertEqual(
-            SmartCareSession.defaultStages,
+            SmartCareSession.stageOrder,
             [.core, .appCaches, .developerCaches]
+        )
+        XCTAssertEqual(
+            SmartCareSession.defaultStages,
+            [.core, .appCaches]
         )
     }
 
@@ -33,6 +37,7 @@ final class SmartCareSessionTests: XCTestCase {
             SmartCareSnapshotCompletionPolicy.decision(
                 snapshot: partial,
                 isScanning: false,
+                scanPhase: .idle,
                 terminalFailure: nil,
                 hasDeletionDeniedEvidence: true,
                 fallbackError: "14 locations were incomplete"
@@ -57,6 +62,7 @@ final class SmartCareSessionTests: XCTestCase {
             SmartCareSnapshotCompletionPolicy.decision(
                 snapshot: partial,
                 isScanning: false,
+                scanPhase: .idle,
                 terminalFailure: nil,
                 hasDeletionDeniedEvidence: false,
                 fallbackError: "producer omitted incomplete-path evidence"
@@ -81,6 +87,7 @@ final class SmartCareSessionTests: XCTestCase {
             SmartCareSnapshotCompletionPolicy.decision(
                 snapshot: partial,
                 isScanning: false,
+                scanPhase: .idle,
                 terminalFailure: failure,
                 hasDeletionDeniedEvidence: true,
                 fallbackError: "incomplete"
@@ -104,6 +111,7 @@ final class SmartCareSessionTests: XCTestCase {
             SmartCareSnapshotCompletionPolicy.decision(
                 snapshot: unfinished,
                 isScanning: false,
+                scanPhase: .idle,
                 terminalFailure: nil,
                 hasDeletionDeniedEvidence: false,
                 fallbackError: "scanner stopped unexpectedly"
@@ -127,11 +135,53 @@ final class SmartCareSessionTests: XCTestCase {
             SmartCareSnapshotCompletionPolicy.decision(
                 snapshot: failed,
                 isScanning: false,
+                scanPhase: .idle,
                 terminalFailure: nil,
                 hasDeletionDeniedEvidence: false,
                 fallbackError: "I/O failed"
             ),
             .fail("I/O failed")
+        )
+    }
+
+    func testFinishedFrameWaitsUntilProducerReachesAuthoritativeIdle() {
+        let finished = ScanSnapshot(
+            categoryID: ScanCoordinator.commonAppCacheCategoryID,
+            rows: [],
+            totalBytes: 42,
+            scannedFileCount: 1,
+            isFinished: true,
+            elapsed: 1
+        )
+        let settlement = ScanCoordinator.ScanSettlementState(
+            intent: .commonAppCaches,
+            predecessorGeneration: UUID(),
+            intentID: UUID()
+        )
+
+        XCTAssertEqual(
+            SmartCareSnapshotCompletionPolicy.decision(
+                snapshot: finished,
+                isScanning: false,
+                scanPhase: .settling(settlement),
+                terminalFailure: nil,
+                hasDeletionDeniedEvidence: false,
+                fallbackError: nil
+            ),
+            .wait,
+            "交接期保留的是 predecessor 终态，不能推进 replacement 的 Smart Care checkpoint"
+        )
+        XCTAssertEqual(
+            SmartCareSnapshotCompletionPolicy.decision(
+                snapshot: finished,
+                isScanning: true,
+                scanPhase: .scanning,
+                terminalFailure: nil,
+                hasDeletionDeniedEvidence: false,
+                fallbackError: nil
+            ),
+            .wait,
+            "producer 清理和权威 idle 尚未收敛时，terminal-looking frame 不能提前提交"
         )
     }
 
@@ -143,6 +193,12 @@ final class SmartCareSessionTests: XCTestCase {
         let cache = home.appendingPathComponent("Library/Caches/com.example.Partial", isDirectory: true)
 
         let scanner = ScanCoordinator(vendors: [], home: home.path)
+        // v2026.07.18：本用例只验证 Smart Care 透传 scanner 给出的 cache partial 证据。
+        // 标准 App 发现必须固定为完整空结果，不能让宿主机 /Applications 的坏元数据
+        // 额外改变 limitation 数量；真实发现失败仍由 CommonAppCache 集成测试覆盖。
+        scanner.standardInstalledAppCacheRuleDiscovery = {
+            StandardInstalledAppCacheRuleDiscoveryResult(rules: [])
+        }
         scanner.commonAppCacheDetector = { _, _, _ in
             CommonAppCacheScanner.ScanResult(
                 hits: [CommonAppCacheScanner.Hit(
@@ -205,6 +261,35 @@ final class SmartCareSessionTests: XCTestCase {
         XCTAssertEqual(session.orderedSelectedStages, [.core, .developerCaches])
     }
 
+    func testCoreOnlyScanConsumesAuthoritativeIdleAfterTerminalSnapshot() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("smart-care-core-terminal-\(UUID().uuidString)", isDirectory: true)
+        let logs = home.appendingPathComponent("Library/Logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        try Data(repeating: 0x41, count: 4_096).write(to: logs.appendingPathComponent("fixture.log"))
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+
+        let scanner = ScanCoordinator(vendors: [], home: home.path)
+        let session = SmartCareSession(scanCoordinator: scanner)
+        session.setStage(.appCaches, selected: false)
+        session.setStage(.developerCaches, selected: false)
+
+        session.startScan(
+            includeHidden: true,
+            enabledDeveloperRuleIDs: [],
+            home: home.path
+        )
+        try await waitForSmartCareTerminal(session)
+
+        guard case .reviewing = session.care.phase else {
+            return XCTFail("core terminal snapshot must advance after coordinator reaches idle")
+        }
+        XCTAssertFalse(scanner.isScanning)
+        XCTAssertEqual(scanner.scanPhase, .idle)
+        XCTAssertEqual(scanner.snapshot.categoryID, ScanCoordinator.smartCareCoreCategoryID)
+        XCTAssertTrue(scanner.snapshot.isFinished)
+    }
+
     func testScanDoesNotStartWhenEveryScopeIsDisabled() {
         let scanner = ScanCoordinator(vendors: [])
         let session = SmartCareSession(scanCoordinator: scanner)
@@ -224,12 +309,34 @@ final class SmartCareSessionTests: XCTestCase {
         care.beginScan()
         care.finishScan(.empty)
         let scanner = ScanCoordinator(vendors: [])
+        scanner._seedForTesting(snapshot: ScanSnapshot(
+            categoryID: ScanCoordinator.developerCategoryID,
+            rows: [RowItem(
+                id: "/tmp/DerivedData",
+                url: URL(fileURLWithPath: "/tmp/DerivedData"),
+                title: "DerivedData",
+                isDirectory: true,
+                bytes: 1_024,
+                logicalBytes: 1_024,
+                fileCount: 10,
+                verdict: .safe,
+                rejection: .ok
+            )],
+            totalBytes: 1_024,
+            scannedFileCount: 10,
+            isFinished: true,
+            elapsed: 1
+        ))
         let session = SmartCareSession(care: care, scanCoordinator: scanner)
+        session.setStage(.developerCaches, selected: true)
+        XCTAssertTrue(session.orderedSelectedStages.contains(.developerCaches))
 
         session.prepareForRescan()
 
         XCTAssertEqual(care.phase, .idle)
         XCTAssertFalse(scanner.isScanning)
+        XCTAssertTrue(scanner.snapshot.rows.isEmpty,
+                      "returning to setup must retire the hidden scanner's prior wide result")
         XCTAssertEqual(session.orderedSelectedStages, SmartCareSession.defaultStages)
     }
 
@@ -469,15 +576,82 @@ final class SmartCareSessionTests: XCTestCase {
                                verdict: .safe)
         ])
         let care = SmartCareCoordinator(summary: summary)
-        let session = SmartCareSession(care: care, scanCoordinator: ScanCoordinator(vendors: []))
+        let scanner = ScanCoordinator(vendors: [])
+        scanner._seedForTesting(snapshot: ScanSnapshot(
+            categoryID: ScanCoordinator.developerCategoryID,
+            rows: [RowItem(
+                id: parent,
+                url: URL(fileURLWithPath: parent),
+                title: "App",
+                isDirectory: true,
+                bytes: 100,
+                logicalBytes: 100,
+                fileCount: 1,
+                verdict: .safe,
+                rejection: .ok
+            )],
+            totalBytes: 100,
+            scannedFileCount: 1,
+            isFinished: true,
+            elapsed: 1
+        ))
+        let session = SmartCareSession(care: care, scanCoordinator: scanner)
 
         await session.applySuccessfulDeletion(paths: [parent + "/child/cache.bin"])
 
+        XCTAssertTrue(scanner.snapshot.rows.isEmpty,
+                      "Smart Care stage scanner is stale after deletion and must be invalidated, not fully pruned")
         XCTAssertEqual(care.summary.items.map(\.path), [sibling])
         guard case .reviewing(let revised) = care.phase else {
             return XCTFail("Expected reviewing phase after external deletion")
         }
         XCTAssertEqual(revised.items.map(\.path), [sibling])
+    }
+
+    func testInactiveSmartCareInvalidationClearsEveryVisibleAuthority() {
+        let path = "/Users/test/Library/Caches/Old"
+        let summary = SmartCareSummaryBuilder.build(candidates: [
+            SmartCareCandidate(
+                source: .developer,
+                bucketID: .developerCache,
+                path: path,
+                title: "Old",
+                bytes: 42,
+                verdict: .safe
+            )
+        ])
+        let care = SmartCareCoordinator(summary: summary)
+        let scanner = ScanCoordinator(vendors: [])
+        scanner._seedForTesting(snapshot: ScanSnapshot(
+            categoryID: ScanCoordinator.developerCategoryID,
+            rows: [RowItem(
+                id: path,
+                url: URL(fileURLWithPath: path),
+                title: "Old",
+                isDirectory: true,
+                bytes: 42,
+                logicalBytes: 42,
+                fileCount: 1,
+                verdict: .safe,
+                rejection: .ok
+            )],
+            totalBytes: 42,
+            scannedFileCount: 1,
+            isFinished: true,
+            elapsed: 1
+        ))
+        let session = SmartCareSession(care: care, scanCoordinator: scanner)
+        session.recordDeniedPaths([path + "/Denied"])
+
+        session.invalidateAfterExternalDeletion()
+
+        XCTAssertTrue(scanner.snapshot.rows.isEmpty)
+        XCTAssertTrue(care.summary.items.isEmpty)
+        XCTAssertTrue(care.selection.selectedIDs.isEmpty)
+        XCTAssertTrue(session.deletionDeniedPaths.isEmpty)
+        guard case .idle = care.phase else {
+            return XCTFail("Inactive Smart Care must require a fresh scan after external deletion")
+        }
     }
 
     func testConcurrentExternalDeletionsCommitLinearlyWithoutResurrectingCheckpointItems() async {

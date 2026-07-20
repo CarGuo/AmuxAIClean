@@ -74,7 +74,7 @@ final class TreeBrowserStoreTests: XCTestCase {
         XCTAssertEqual(store.tickRevision, 0, "cache 写入不应升 tick")
     }
 
-    func test_子层cache写回会同步修正父层聚合避免父目录0KB() {
+    func test_子层cache写回会同步修正父层聚合避免父目录0KB() async {
         let coord = ScanCoordinator(home: NSTemporaryDirectory())
         let parentPath = "/Users/guoshuyu"
         let libraryPath = parentPath + "/Library"
@@ -94,7 +94,7 @@ final class TreeBrowserStoreTests: XCTestCase {
             ]
         )
 
-        coord._storeFetchedChildrenForTesting(
+        await coord._storeFetchedChildrenForTesting(
             path: libraryPath,
             sortedBy: .sizeDesc,
             rows: [
@@ -123,7 +123,7 @@ final class TreeBrowserStoreTests: XCTestCase {
 
     /// v2026.07.17：完整 refresh 必须是“当前快照替换旧快照”，不能继续使用
     /// max(old, new)。否则目录内容被外部清理后，Tree 容量会永久只增不减。
-    func test_完整子层refresh会让父行容量与数量同步缩小() {
+    func test_完整子层refresh会让父行容量与数量同步缩小() async {
         let coord = ScanCoordinator(home: NSTemporaryDirectory())
         let grandparent = "/Users/example"
         let parent = grandparent + "/Library"
@@ -144,7 +144,7 @@ final class TreeBrowserStoreTests: XCTestCase {
             ]
         )
 
-        coord._storeFetchedChildrenForTesting(
+        await coord._storeFetchedChildrenForTesting(
             path: parent,
             sortedBy: .sizeDesc,
             rows: [
@@ -182,7 +182,7 @@ final class TreeBrowserStoreTests: XCTestCase {
         }
     }
 
-    func test_完整子层refresh为空时父行归零并移除展开状态() {
+    func test_完整子层refresh为空时父行归零并移除展开状态() async {
         let coord = ScanCoordinator(home: NSTemporaryDirectory())
         let grandparent = "/Users/example"
         let parent = grandparent + "/Library"
@@ -203,7 +203,7 @@ final class TreeBrowserStoreTests: XCTestCase {
             ]
         )
 
-        coord._storeFetchedChildrenForTesting(path: parent, sortedBy: .sizeDesc, rows: [])
+        await coord._storeFetchedChildrenForTesting(path: parent, sortedBy: .sizeDesc, rows: [])
 
         let refreshed = coord._treeChildrenCacheForTesting()[
             "\(grandparent)|\(TreeSortKey.sizeDesc.rawValue)"
@@ -215,7 +215,7 @@ final class TreeBrowserStoreTests: XCTestCase {
         XCTAssertEqual(refreshed?.isSizePending, false)
     }
 
-    func test_shallow预览只提供下界不会把父行容量提前缩小() {
+    func test_shallow完整直接子项终态不会把未知父容量提前缩小() async {
         let coord = ScanCoordinator(home: NSTemporaryDirectory())
         let grandparent = "/Users/example"
         let parent = grandparent + "/Library"
@@ -236,7 +236,7 @@ final class TreeBrowserStoreTests: XCTestCase {
             ]
         )
 
-        coord._storeShallowFetchedChildrenForTesting(
+        await coord._storeShallowFetchedChildrenForTesting(
             path: parent,
             sortedBy: .sizeDesc,
             rows: [
@@ -252,16 +252,16 @@ final class TreeBrowserStoreTests: XCTestCase {
             ]
         )
 
-        let preview = coord._treeChildrenCacheForTesting()[
+        let shallowTerminal = coord._treeChildrenCacheForTesting()[
             "\(grandparent)|\(TreeSortKey.sizeDesc.rawValue)"
         ]?.first
-        XCTAssertEqual(preview?.bytes, 9_000)
-        XCTAssertEqual(preview?.logicalBytes, 12_000)
-        XCTAssertEqual(preview?.fileCount, 90)
-        XCTAssertEqual(preview?.isSizePending, true)
+        XCTAssertEqual(shallowTerminal?.bytes, 9_000)
+        XCTAssertEqual(shallowTerminal?.logicalBytes, 12_000)
+        XCTAssertEqual(shallowTerminal?.fileCount, 90)
+        XCTAssertEqual(shallowTerminal?.isSizePending, true)
     }
 
-    func test_partial深扫只提供下界不会把权限缺口误报为空间释放() {
+    func test_partial深扫只提供下界不会把权限缺口误报为空间释放() async {
         let coord = ScanCoordinator(home: NSTemporaryDirectory())
         let grandparent = "/Users/example"
         let parent = grandparent + "/Library"
@@ -282,7 +282,7 @@ final class TreeBrowserStoreTests: XCTestCase {
             ]
         )
 
-        coord._storePartialFetchedChildrenForTesting(
+        await coord._storePartialFetchedChildrenForTesting(
             path: parent,
             sortedBy: .sizeDesc,
             rows: [
@@ -358,7 +358,7 @@ final class TreeBrowserStoreTests: XCTestCase {
         )
 
         try fm.removeItem(at: file)
-        coord.rescanSubtree(at: parent.path)
+        await coord.rescanSubtree(at: parent.path)
         _ = coord.directChildren(of: parent.path, sortedBy: .sizeDesc)
         await waitUntil(3) {
             let cache = coord._treeChildrenCacheForTesting()

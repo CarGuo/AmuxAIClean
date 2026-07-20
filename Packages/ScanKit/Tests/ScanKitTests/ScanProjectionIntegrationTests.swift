@@ -32,7 +32,7 @@ final class ScanProjectionIntegrationTests: XCTestCase {
         )
     }
 
-    func test_topLevel真实遍历先映射Data嵌套路径再生成一级bucket() async throws {
+    func test_topLevel真实遍历先投影Data物理根再生成公开一级bucket() async throws {
         let root = try makeRoot(prefix: "ProjectionPathMapping")
         addTeardownBlock { try FileManager.default.removeItem(at: root) }
 
@@ -42,20 +42,12 @@ final class ScanProjectionIntegrationTests: XCTestCase {
             .appendingPathComponent("Data", isDirectory: true)
         let dataUsers = dataRoot.appendingPathComponent("Users", isDirectory: true)
         let dataLibrary = dataRoot.appendingPathComponent("Library", isDirectory: true)
-        let systemLibrary = root
-            .appendingPathComponent("System", isDirectory: true)
-            .appendingPathComponent("Library", isDirectory: true)
-
         try FileManager.default.createDirectory(
             at: dataUsers.appendingPathComponent("alice", isDirectory: true),
             withIntermediateDirectories: true
         )
         try FileManager.default.createDirectory(
             at: dataLibrary.appendingPathComponent("Caches", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        try FileManager.default.createDirectory(
-            at: systemLibrary,
             withIntermediateDirectories: true
         )
         try writeFile(
@@ -68,33 +60,21 @@ final class ScanProjectionIntegrationTests: XCTestCase {
             byteCount: 5 * 1_024,
             seed: 0x22
         )
-        try writeFile(
-            systemLibrary.appendingPathComponent("system.bin"),
-            byteCount: 7 * 1_024,
-            seed: 0x33
+        let pathNamespace = ScanPathNamespace(
+            physicalRoot: dataRoot.path,
+            publicRoot: root.path
         )
-
-        let mappings = [
-            ScanPathPrefixMapping(
-                sourcePrefix: dataUsers.path,
-                destinationPrefix: root.appendingPathComponent("Users").path
-            ),
-            ScanPathPrefixMapping(
-                sourcePrefix: dataLibrary.path,
-                destinationPrefix: root.appendingPathComponent("Library").path
-            )
-        ]
 
         // 同一只读 fixture 的完整流是无损基线；不能把 APFS allocated block rounding
         // 或透明压缩假设硬编码进测试。
-        let baseline = try await captureComplete(root: root)
+        let baseline = try await captureComplete(root: dataRoot)
 
         var nodeEventCount = 0
         var terminalSummary: ScanSummary?
         for await event in BulkScanner(options: deterministicOptions).scan(
-            root: root,
+            root: dataRoot,
             delivery: .topLevel,
-            topLevelPathMappings: mappings
+            pathNamespace: pathNamespace
         ) {
             switch event {
             case .heartbeat, .progress:
@@ -119,7 +99,7 @@ final class ScanProjectionIntegrationTests: XCTestCase {
 
         let summary = try XCTUnwrap(terminalSummary)
         XCTAssertEqual(nodeEventCount, 0, ".topLevel 不能把映射工作重新推回 UI node 流")
-        XCTAssertEqual(summary.fileCount, 3)
+        XCTAssertEqual(summary.fileCount, 2)
         XCTAssertEqual(summary.completionStatus, .complete)
         XCTAssertEqual(summary.totalAllocatedBytes, baseline.summary.totalAllocatedBytes)
         XCTAssertEqual(summary.totalLogicalBytes, baseline.summary.totalLogicalBytes)
@@ -130,23 +110,18 @@ final class ScanProjectionIntegrationTests: XCTestCase {
         let byPath = Dictionary(uniqueKeysWithValues: entries.map { ($0.path, $0) })
         let usersPath = root.appendingPathComponent("Users").path
         let libraryPath = root.appendingPathComponent("Library").path
-        let systemPath = root.appendingPathComponent("System").path
 
-        XCTAssertEqual(Set(byPath.keys), Set([usersPath, libraryPath, systemPath]),
-                       "若先折叠 bucket 再映射，Users/Library 会错误地全部落进 System")
+        XCTAssertEqual(Set(byPath.keys), Set([usersPath, libraryPath]),
+                       "若先折叠物理 bucket 再投影，Data 前缀会泄漏到公开一级行")
         XCTAssertEqual(byPath[usersPath]?.fileCount, 1)
         XCTAssertEqual(byPath[libraryPath]?.fileCount, 1)
-        XCTAssertEqual(byPath[systemPath]?.fileCount, 1)
         let baselineByPath = Dictionary(uniqueKeysWithValues: baseline.nodes.map { ($0.path, $0) })
         let userFile = try XCTUnwrap(baselineByPath[dataUsers.appendingPathComponent("alice/user.bin").path])
         let libraryFile = try XCTUnwrap(baselineByPath[dataLibrary.appendingPathComponent("Caches/cache.bin").path])
-        let systemFile = try XCTUnwrap(baselineByPath[systemLibrary.appendingPathComponent("system.bin").path])
         XCTAssertEqual(byPath[usersPath]?.allocatedBytes, userFile.allocatedSize)
         XCTAssertEqual(byPath[usersPath]?.logicalBytes, userFile.logicalSize)
         XCTAssertEqual(byPath[libraryPath]?.allocatedBytes, libraryFile.allocatedSize)
         XCTAssertEqual(byPath[libraryPath]?.logicalBytes, libraryFile.logicalSize)
-        XCTAssertEqual(byPath[systemPath]?.allocatedBytes, systemFile.allocatedSize)
-        XCTAssertEqual(byPath[systemPath]?.logicalBytes, systemFile.logicalSize)
         XCTAssertEqual(entries.reduce(Int64(0)) { $0 + $1.allocatedBytes },
                        summary.totalAllocatedBytes)
         XCTAssertEqual(entries.reduce(Int64(0)) { $0 + $1.logicalBytes },
@@ -170,12 +145,10 @@ final class ScanProjectionIntegrationTests: XCTestCase {
         for await event in BulkScanner(options: deterministicOptions).scan(
             root: physicalRoot,
             delivery: .topLevel,
-            topLevelPathMappings: [
-                ScanPathPrefixMapping(
-                    sourcePrefix: physicalRoot.path,
-                    destinationPrefix: publicRoot
-                )
-            ],
+            pathNamespace: ScanPathNamespace(
+                physicalRoot: physicalRoot.path,
+                publicRoot: publicRoot
+            ),
             topLevelProjectionRootPath: publicRoot
         ) {
             if case .finished(let summary) = event {
@@ -189,6 +162,161 @@ final class ScanProjectionIntegrationTests: XCTestCase {
         }
         XCTAssertEqual(entries.map(\.path), [publicRoot + "/Users"])
         XCTAssertEqual(entries.first?.fileCount, 1)
+    }
+
+    /// v2026.07.18 regression: the Data-root fallback used to concatenate `/` with an already
+    /// slash-prefixed suffix, yielding `//System`. Top-level bucketing then observed an empty first
+    /// component and silently dropped every non-firmlink Data directory.
+    func test_pathNamespaceRootFallbackIsBidirectionalAndNeverCreatesDoubleSlash() {
+        let namespace = ScanPathNamespace(
+            physicalRoot: "/System/Volumes/Data",
+            publicRoot: "/",
+            mappings: [
+                ScanPathPrefixMapping(
+                    sourcePrefix: "/System/Volumes/Data/usr/local",
+                    destinationPrefix: "/usr/local"
+                )
+            ]
+        )
+
+        XCTAssertEqual(namespace.publicPath(forPhysicalPath: "/System/Volumes/Data"), "/")
+        XCTAssertEqual(
+            namespace.publicPath(forPhysicalPath: "/System/Volumes/Data/System/Library"),
+            "/System/Library"
+        )
+        XCTAssertEqual(
+            namespace.physicalPath(forPublicPath: "/System/Library"),
+            "/System/Volumes/Data/System/Library"
+        )
+        XCTAssertEqual(
+            namespace.physicalPath(forPublicPath: "/usr/local/bin"),
+            "/System/Volumes/Data/usr/local/bin",
+            "longest public prefix must beat the root fallback"
+        )
+        XCTAssertEqual(
+            BulkScanner.topLevelBucketPath(
+                for: namespace.publicPath(
+                    forPhysicalPath: "/System/Volumes/Data/MobileSoftwareUpdate/a.pkg"
+                ),
+                rootPath: "/"
+            ),
+            "/MobileSoftwareUpdate"
+        )
+    }
+
+    func test_pathNamespaceRejectsNonRootRelativeAliasInsteadOfGuessingReverseIdentity() {
+        let ambiguous = ScanPathPrefixMapping(
+            sourcePrefix: "/Data/A",
+            destinationPrefix: "/X"
+        )
+        let namespace = ScanPathNamespace(
+            physicalRoot: "/Data",
+            publicRoot: "/",
+            mappings: [ambiguous]
+        )
+
+        XCTAssertEqual(namespace.rejectedMappings, [ambiguous])
+        XCTAssertEqual(namespace.publicPath(forPhysicalPath: "/Data/A/file"), "/A/file")
+        XCTAssertEqual(namespace.physicalPath(forPublicPath: "/X/file"), "/Data/X/file")
+        XCTAssertEqual(
+            namespace.physicalPath(
+                forPublicPath: namespace.publicPath(forPhysicalPath: "/Data/A/file")
+            ),
+            "/Data/A/file",
+            "fail-closed 后必须保留唯一可逆的物理 identity"
+        )
+    }
+
+    func test_pathNamespaceRejectsConflictingPublicAliasesButAcceptsRedundantFirmlinkRule() {
+        let first = ScanPathPrefixMapping(
+            sourcePrefix: "/Data/A",
+            destinationPrefix: "/Shared"
+        )
+        let second = ScanPathPrefixMapping(
+            sourcePrefix: "/Data/B",
+            destinationPrefix: "/Shared"
+        )
+        let firmlink = ScanPathPrefixMapping(
+            sourcePrefix: "/Data/usr/local",
+            destinationPrefix: "/usr/local"
+        )
+        let namespace = ScanPathNamespace(
+            physicalRoot: "/Data",
+            publicRoot: "/",
+            mappings: [first, second, firmlink]
+        )
+
+        XCTAssertEqual(namespace.rejectedMappings, [first, second])
+        XCTAssertTrue(namespace.mappings.contains(firmlink))
+        XCTAssertEqual(namespace.publicPath(forPhysicalPath: "/Data/usr/local/bin"), "/usr/local/bin")
+        XCTAssertEqual(namespace.physicalPath(forPublicPath: "/usr/local/bin"), "/Data/usr/local/bin")
+    }
+
+    func test_physicalDataStylePathUsesPublicNamespaceForTCCSkipAndEvidence() async throws {
+        let physicalRoot = try makeRoot(prefix: "ProjectionTCCPhysicalRoot")
+        addTeardownBlock { try FileManager.default.removeItem(at: physicalRoot) }
+        let mail = physicalRoot.appendingPathComponent("Library/Mail", isDirectory: true)
+        try FileManager.default.createDirectory(at: mail, withIntermediateDirectories: true)
+        try writeFile(mail.appendingPathComponent("message.emlx"), byteCount: 1_024, seed: 0x61)
+
+        let publicRoot = NSHomeDirectory()
+        let namespace = ScanPathNamespace(
+            physicalRoot: physicalRoot.path,
+            publicRoot: publicRoot
+        )
+        let options = ScanOptions(
+            includeHidden: true,
+            concurrency: 1,
+            maxConcurrency: 1,
+            mediaAware: false,
+            respectTCCSkipList: true
+        )
+
+        var summary: ScanSummary?
+        var tccPaths: [String] = []
+        for await event in BulkScanner(options: options).scan(
+            root: physicalRoot,
+            delivery: .topLevel,
+            pathNamespace: namespace,
+            topLevelProjectionRootPath: publicRoot
+        ) {
+            if case .tccProtectedSkipped(let path) = event { tccPaths.append(path) }
+            if case .finished(let value) = event { summary = value }
+        }
+
+        let terminal = try XCTUnwrap(summary)
+        XCTAssertEqual(tccPaths, [publicRoot + "/Library/Mail"])
+        XCTAssertEqual(terminal.tccProtectedSkippedCount, 1)
+        XCTAssertEqual(terminal.fileCount, 0, "TCC subtree must be skipped before reading its file")
+        XCTAssertEqual(terminal.incompleteIssues.map(\.path), [publicRoot + "/Library/Mail"])
+    }
+
+    func test_rootFailureIsPublishedInPublicNamespace() async throws {
+        let fixture = try makeRoot(prefix: "ProjectionMissingPhysicalRoot")
+        addTeardownBlock { try FileManager.default.removeItem(at: fixture) }
+        let missingPhysicalRoot = fixture.appendingPathComponent("missing", isDirectory: true)
+        let publicRoot = "/public-test-root"
+        let namespace = ScanPathNamespace(
+            physicalRoot: missingPhysicalRoot.path,
+            publicRoot: publicRoot
+        )
+
+        var failedPaths: [String] = []
+        var summary: ScanSummary?
+        for await event in BulkScanner(options: deterministicOptions).scan(
+            root: missingPhysicalRoot,
+            delivery: .topLevel,
+            pathNamespace: namespace,
+            topLevelProjectionRootPath: publicRoot
+        ) {
+            if case .failed(.cannotEnumerate(let path, _, _)) = event {
+                failedPaths.append(path)
+            }
+            if case .finished(let value) = event { summary = value }
+        }
+
+        XCTAssertEqual(failedPaths, [publicRoot])
+        XCTAssertEqual(summary?.incompleteIssues.map(\.path), [publicRoot])
     }
 
     func test_multiRootTopLevel不发布节点且每根summary投影精确() async throws {
@@ -278,7 +406,7 @@ final class ScanProjectionIntegrationTests: XCTestCase {
         let root = try makeCancellationFixture(topLevelDirectoryCount: 512, depth: 3)
         addTeardownBlock { try FileManager.default.removeItem(at: root) }
 
-        let stream = BulkScanner(options: deterministicOptions).scan(
+        let session = BulkScanner(options: deterministicOptions).scanSession(
             root: root,
             delivery: .topLevel
         )
@@ -291,17 +419,22 @@ final class ScanProjectionIntegrationTests: XCTestCase {
             let clock = ContinuousClock()
             var cancellationStartedAt: ContinuousClock.Instant?
             var sawFinished = false
-            for await event in stream {
-                switch event {
-                case .progress where cancellationStartedAt == nil:
-                    cancellationStartedAt = clock.now
-                    withUnsafeCurrentTask { $0?.cancel() }
-                case .finished:
-                    sawFinished = true
-                default:
-                    break
+            await withTaskCancellationHandler {
+                for await event in session.events {
+                    switch event {
+                    case .progress where cancellationStartedAt == nil:
+                        cancellationStartedAt = clock.now
+                        withUnsafeCurrentTask { $0?.cancel() }
+                    case .finished:
+                        sawFinished = true
+                    default:
+                        break
+                    }
                 }
+            } onCancel: {
+                session.cancel()
             }
+            await session.waitForTermination()
             let latency = cancellationStartedAt.map { $0.duration(to: clock.now) }
             await recorder.store(
                 CancellationOutcome(

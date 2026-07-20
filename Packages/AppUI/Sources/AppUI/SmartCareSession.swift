@@ -49,6 +49,39 @@ typealias SmartCareCandidateDeletionAggregator = @Sendable (
     _ candidates: [SmartCareCandidate]
 ) async -> SmartCareAggregationResult
 
+/// Keeps the invalidated Smart Care generation alive until its wide COW storage can be released
+/// on the worker actor. Resetting an inactive mode must be O(1) on MainActor even after a large
+/// developer scan left candidates, summary projections and selection sets behind.
+private actor SmartCareInvalidatedStateRetirementWorker {
+    private var checkpoint: SmartCareScanCheckpoint?
+    private var summary: SmartCareSummary?
+    private var selection: SmartCareSelection?
+    private var deletionDeniedPaths: Set<String>?
+    private var phase: SmartCarePhase?
+
+    init(
+        checkpoint: SmartCareScanCheckpoint?,
+        summary: SmartCareSummary,
+        selection: SmartCareSelection,
+        deletionDeniedPaths: Set<String>,
+        phase: SmartCarePhase
+    ) {
+        self.checkpoint = checkpoint
+        self.summary = summary
+        self.selection = selection
+        self.deletionDeniedPaths = deletionDeniedPaths
+        self.phase = phase
+    }
+
+    func retire() {
+        checkpoint = nil
+        summary = nil
+        selection = nil
+        deletionDeniedPaths = nil
+        phase = nil
+    }
+}
+
 /// Smart Care 对 ScanCoordinator 终态的解释必须区分两类事实：
 /// - `isFinished && !isComplete`：扫描器已产生可用的部分结果，并给出了精确的
 ///   incomplete paths；这些路径会进入删除硬拒绝，但其它结果仍应继续展示。
@@ -71,12 +104,17 @@ enum SmartCareSnapshotCompletionPolicy {
     static func decision(
         snapshot: ScanSnapshot,
         isScanning: Bool,
+        scanPhase: ScanCoordinator.ScanPhase,
         terminalFailure: ScanCoordinator.TerminalFailure?,
         hasDeletionDeniedEvidence: Bool,
         fallbackError: String?
     ) -> SmartCareSnapshotTerminalDecision {
+        // v2026.07.19 settlement regression fix: a predecessor's finished snapshot deliberately
+        // remains visible while ownership is handed to a replacement. It is not the new stage's
+        // terminal result. Likewise, a terminal-looking frame published before the coordinator's
+        // synchronous cleanup reaches `.idle` must not advance the Smart Care checkpoint.
+        guard scanPhase == .idle, !isScanning else { return .wait }
         guard snapshot.isFinished else {
-            if isScanning { return .wait }
             return .fail(
                 terminalFailure.map { _ in .unexpectedFailure }
                     ?? fallbackError.map { _ in SmartCareFailureDetail.unexpectedFailure }
@@ -130,7 +168,11 @@ public final class SmartCareSession: ObservableObject {
         .commonAppCache,
         .developer
     ]
-    public static let defaultStages = SmartCareScanStage.allCases
+    /// v2026.07.20：普通模式默认只扫描常规范围。开发缓存仍保留在稳定展示/执行顺序中，
+    /// 但必须由用户显式开启；不能再把“所有可用范围”与“默认选中范围”共用一个数组，
+    /// 否则取消默认选中会连卡片和后续执行顺序一起删掉。
+    public static let stageOrder = SmartCareScanStage.allCases
+    public static let defaultStages: [SmartCareScanStage] = [.core, .appCaches]
 
     public let care: SmartCareCoordinator
     public let scanCoordinator: ScanCoordinator
@@ -191,7 +233,7 @@ public final class SmartCareSession: ObservableObject {
     }
 
     public var orderedSelectedStages: [SmartCareScanStage] {
-        Self.defaultStages.filter(selectedStages.contains)
+        Self.stageOrder.filter(selectedStages.contains)
     }
 
     public func setStage(_ stage: SmartCareScanStage, selected: Bool) {
@@ -205,12 +247,63 @@ public final class SmartCareSession: ObservableObject {
 
     public func prepareForRescan() {
         guard !isBusy else { return }
+        // v2026.07.20: "Scan Again" starts a fresh setup, not a repeat of the previous plan.
+        // Restore the Normal defaults (developer cache off) and retire the prior wide developer
+        // result away from MainActor so returning to the start page remains immediate.
+        // The dedicated ScanCoordinator owns another wide snapshot/Tree/index generation; reset
+        // it through its established cancellation/retirement transaction before hiding the result.
+        scanCoordinator.cancel()
+        resetPresentationForFreshSetup(resetSelectedStages: true)
+    }
+
+    /// v2026.07.19 deletion performance regression: a Professional cleanup must not run an exact
+    /// O(N) prune over this hidden mode's previous developer scan. The disk changed outside Smart
+    /// Care, so its old scan/checkpoint is no longer authoritative; invalidate it atomically and
+    /// require a rescan when the user returns to Normal mode.
+    public func invalidateAfterExternalDeletion() {
+        let retirementWorker = SmartCareInvalidatedStateRetirementWorker(
+            checkpoint: checkpoint,
+            summary: care.summary,
+            selection: care.selection,
+            deletionDeniedPaths: deletionDeniedPaths,
+            phase: care.phase
+        )
+        scanGeneration = UUID()
+        scanTask?.cancel()
+        scanTask = nil
+        scanCoordinator.cancel()
+        resetPresentationForFreshSetup(
+            resetSelectedStages: false,
+            retirementWorker: retirementWorker
+        )
+    }
+
+    private func resetPresentationForFreshSetup(
+        resetSelectedStages: Bool,
+        retirementWorker suppliedRetirementWorker: SmartCareInvalidatedStateRetirementWorker? = nil
+    ) {
+        let retirementWorker = suppliedRetirementWorker
+            ?? SmartCareInvalidatedStateRetirementWorker(
+                checkpoint: checkpoint,
+                summary: care.summary,
+                selection: care.selection,
+                deletionDeniedPaths: deletionDeniedPaths,
+                phase: care.phase
+            )
         startedAt = nil
         finishedAt = nil
         setCheckpoint(nil)
         deletionDeniedPaths = []
         resetScanLimitationProjection()
         care.reset()
+        if resetSelectedStages {
+            selectedStages = Set(Self.defaultStages)
+        }
+
+        Task { @MainActor in
+            await Task.yield()
+            await retirementWorker.retire()
+        }
     }
 
     public func elapsedForDisplay(referenceDate: Date = Date()) -> TimeInterval {
@@ -391,7 +484,11 @@ public final class SmartCareSession: ObservableObject {
     public func applySuccessfulDeletion(paths: [String]) async {
         guard !paths.isEmpty else { return }
         cancelActiveScanForDeletionIfNeeded()
-        await scanCoordinator.pruneDeleted(paths: paths)
+        // The checkpoint + care summary are the Normal-mode authority. The stage scanner is only
+        // an ingestion backing store and becomes stale after a filesystem mutation; rotating it
+        // to empty is exact and O(1), while pruning its 10k+ Tree sort cache duplicated the summary
+        // reconciliation and delayed the result sheet by 15–18 seconds in real-App traces.
+        scanCoordinator.cancel()
 
         // MainActor 只提供状态读取/提交边界，CPU 重聚合在 worker 执行。
         // await 期间其它功能的删除或新扫描可以先提交；世代不一致时
@@ -716,10 +813,15 @@ public final class SmartCareSession: ObservableObject {
                                          completedFileCount: Int,
                                          completedSummary: SmartCareSummary,
                                          completedStages: Set<SmartCareScanStage>) async throws -> ScanSnapshot {
-        let stateStream = scanCoordinator.$snapshot
-            .combineLatest(scanCoordinator.$isScanning)
-            .values
-        for await (snapshot, isScanning) in stateStream {
+        // v2026.07.19 Smart Care terminal-settlement regression fix:
+        // `snapshot`, `isScanning` and `scanPhase` are three separate @Published writes in one
+        // MainActor terminal transaction. AsyncPublisher is not a lossless transaction log, so a
+        // captured combineLatest tuple can remain at `(finished, false, .scanning)` after the
+        // subsequent `.idle` emission was coalesced. Observe the authoritative payload only, then
+        // read the two ownership fields live after the coordinator's actor turn has completed.
+        // A predecessor frame is still rejected because its live phase remains `.settling`.
+        let snapshotStream = scanCoordinator.$snapshot.values
+        for await snapshot in snapshotStream {
             try Task.checkCancellation()
             guard snapshot.categoryID == expectedCategoryID else { continue }
 
@@ -737,7 +839,8 @@ public final class SmartCareSession: ObservableObject {
 
             switch SmartCareSnapshotCompletionPolicy.decision(
                 snapshot: snapshot,
-                isScanning: isScanning,
+                isScanning: scanCoordinator.isScanning,
+                scanPhase: scanCoordinator.scanPhase,
                 terminalFailure: scanCoordinator.terminalFailure,
                 hasDeletionDeniedEvidence: !scanCoordinator.permissionDeniedPaths.isEmpty
                     || !scanCoordinator.incompleteScanPaths.isEmpty

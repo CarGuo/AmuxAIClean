@@ -239,46 +239,94 @@ final class DeletionUXPolicyTests: XCTestCase {
                        "该对照证明执行层若回读切换后的 live denial，会错误放行原请求")
     }
 
-    func test_deleteSubmissionHandoffWaitsForDismissalAndCannotBeOverwritten() throws {
+    func test_professionalConfirmationBeginsSubmissionImmediatelyAndIsOneShot() throws {
         let firstRow = makeRow(title: "First", path: "/tmp/first", bundlePrefix: nil)
         let secondRow = makeRow(title: "Second", path: "/tmp/second", bundlePrefix: nil)
-        let first = DeleteSubmission.professional(
-            request: DeleteSheetRequest(
-                items: [firstRow],
-                accessDeniedPaths: [],
-                preparedInteraction: try makePreparedInteraction(
-                    rows: [firstRow],
-                    categoryID: "first"
-                )
-            ),
-            executionPlan: ToolTrashExecutionPlan(
-                paths: [firstRow.url.path],
-                runningAppSkipped: []
+        let firstRequest = DeleteSheetRequest(
+            items: [firstRow],
+            accessDeniedPaths: [],
+            preparedInteraction: try makePreparedInteraction(
+                rows: [firstRow],
+                categoryID: "first"
             )
         )
-        let second = DeleteSubmission.professional(
-            request: DeleteSheetRequest(
-                items: [secondRow],
-                accessDeniedPaths: [],
-                preparedInteraction: try makePreparedInteraction(
-                    rows: [secondRow],
-                    categoryID: "second"
-                )
-            ),
-            executionPlan: ToolTrashExecutionPlan(
-                paths: [secondRow.url.path],
-                runningAppSkipped: []
+        let firstPlan = ToolTrashExecutionPlan(
+            paths: [firstRow.url.path],
+            runningAppSkipped: []
+        )
+        let secondRequest = DeleteSheetRequest(
+            items: [secondRow],
+            accessDeniedPaths: [],
+            preparedInteraction: try makePreparedInteraction(
+                rows: [secondRow],
+                categoryID: "second"
             )
+        )
+        let secondPlan = ToolTrashExecutionPlan(
+            paths: [secondRow.url.path],
+            runningAppSkipped: []
         )
         var handoff = DeleteSubmissionHandoff()
 
-        XCTAssertTrue(handoff.schedule(first))
-        XCTAssertTrue(handoff.hasPending)
-        XCTAssertFalse(handoff.schedule(second))
-        XCTAssertEqual(handoff.pending, first)
-        XCTAssertEqual(handoff.takeAfterSheetDismissal(), first)
-        XCTAssertFalse(handoff.hasPending)
+        let accepted = try XCTUnwrap(handoff.beginProfessionalSubmission(
+            request: firstRequest,
+            executionPlan: firstPlan
+        ))
+        XCTAssertEqual(accepted.request, firstRequest)
+        XCTAssertEqual(accepted.executionPlan, firstPlan)
+        XCTAssertTrue(handoff.professionalSubmissionIsActive)
+        XCTAssertTrue(handoff.blocksNewSubmission)
+        XCTAssertFalse(handoff.hasPending, "Professional submission must not wait in onDismiss storage")
         XCTAssertNil(handoff.takeAfterSheetDismissal())
+        XCTAssertNil(
+            handoff.beginProfessionalSubmission(request: secondRequest, executionPlan: secondPlan),
+            "A repeated confirmation cannot cross the one-shot authorization boundary"
+        )
+        XCTAssertTrue(handoff.finishProfessionalSubmission())
+        XCTAssertFalse(handoff.blocksNewSubmission)
+        XCTAssertFalse(handoff.finishProfessionalSubmission())
+        XCTAssertNotNil(
+            handoff.beginProfessionalSubmission(request: secondRequest, executionPlan: secondPlan),
+            "A typed re-confirmation may begin after the preceding submission reaches a terminal state"
+        )
+        XCTAssertTrue(handoff.finishProfessionalSubmission())
+    }
+
+    func test_professionalResultPresentationWaitsForConfirmationSheetDismissal() {
+        var handoff = ProfessionalDeletePresentationHandoff<String>()
+
+        XCTAssertTrue(handoff.beginSheetDismissal())
+        XCTAssertEqual(
+            handoff.routeNextPresentation("result"),
+            .deferUntilSheetDismissal
+        )
+        XCTAssertEqual(handoff.deferredPresentation, "result")
+        XCTAssertEqual(handoff.routeNextPresentation("duplicate"), .rejectDuplicate)
+
+        XCTAssertEqual(handoff.finishSheetDismissal(), "result")
+        XCTAssertFalse(handoff.isAwaitingSheetDismissal)
+        XCTAssertNil(handoff.deferredPresentation)
+        XCTAssertEqual(handoff.routeNextPresentation("later"), .presentNow)
+        XCTAssertNil(handoff.finishSheetDismissal())
+    }
+
+    func test_professionalSlowCompletionPresentsImmediatelyAfterSheetAlreadyDismissed() {
+        var handoff = ProfessionalDeletePresentationHandoff<String>()
+
+        XCTAssertTrue(handoff.beginSheetDismissal())
+        XCTAssertNil(handoff.finishSheetDismissal())
+        XCTAssertFalse(handoff.isAwaitingSheetDismissal)
+        XCTAssertEqual(handoff.routeNextPresentation("result"), .presentNow)
+        XCTAssertNil(handoff.deferredPresentation)
+    }
+
+    func test_professionalCancellationLeavesNoPresentationBarrier() {
+        var handoff = ProfessionalDeletePresentationHandoff<String>()
+
+        XCTAssertNil(handoff.finishSheetDismissal())
+        XCTAssertTrue(handoff.canBeginSheetDismissal)
+        XCTAssertFalse(handoff.isAwaitingSheetDismissal)
+        XCTAssertNil(handoff.deferredPresentation)
     }
 
     func test_skipDecisionUsesLatestRunningApplicationSnapshot() {

@@ -4,13 +4,13 @@ import Foundation
 import LogKit
 import ServiceManagement
 
-/// v1.6 Sentinel 管理器：唯一负责 [SMAppService.daemon](https://developer.apple.com/documentation/servicemanagement/smappservice)
+/// v1.6 Sentinel 管理器：唯一负责用户态 [SMAppService.agent](https://developer.apple.com/documentation/servicemanagement/smappservice)
 /// 的 register / unregister + 状态查询，把 ServiceManagement 的副作用从
 /// [AppSettings](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
 /// 中剥离，配置层保持纯 UserDefaults。
 ///
 /// **整体职责**（详见 [docs/SENTINEL_DESIGN.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/SENTINEL_DESIGN.md) §5.2）：
-/// - `enable()`：调 `SMAppService.daemon(plistName:).register()`，成功后写 `sentinelLastEnabled = Date()`
+/// - `enable()`：调 `SMAppService.agent(plistName:).register()`，成功后写 `sentinelLastEnabled = Date()`
 /// - `disable()`：调 `service.unregister()`，权威状态确认未注册后才清掉 `sentinelLastEnabled`
 /// - `currentStatus()`：读 `service.status` 给 UI 展示
 /// - 失败兜底：识别 `requiresApproval`，弹原生 NSAlert + 引导用户跳「系统设置 → 通用 → 登录项」
@@ -24,11 +24,12 @@ public final class SentinelManager: ObservableObject {
 
     /// v2026.07.16：启动与用户开关都必须把持久化期望和 SMAppService 权威状态对账。
     /// OFF + 未注册是 no-op，避免默认启动无条件 unregister；OFF + 实际仍启用才注销，
-    /// 防止 UI 显示关闭但遗留 daemon 继续运行。ON 的细分由 `enable()` 再紧邻重验。
+    /// 防止 UI 显示关闭但遗留 service 继续运行。ON 的细分由 `enable()` 再紧邻重验。
     public enum ReconciliationAction: Equatable, Sendable {
         case none
         case enable
         case disable
+        case unavailable
     }
 
     /// 持久化开关为 ON 时，仍必须先读取 SMAppService 的权威状态。重复 register 在
@@ -68,17 +69,72 @@ public final class SentinelManager: ObservableObject {
         switch currentStatus {
         case .enabled, .requiresApproval:
             return .disable
-        case .notRegistered, .notFound, .unknown:
+        case .notRegistered:
             return .none
+        case .notFound, .unknown:
+            // v2026.07.18 P1: `notFound` means ServiceManagement could not resolve the
+            // service, not that launchd authoritatively reports it unregistered. Unknown
+            // future states have the same proof gap. An OFF intent must therefore fail
+            // closed instead of clearing state or reporting a verified stop.
+            return .unavailable
         }
     }
 
-    /// 与 [com.guoshuyu.cleanmac.sentinel.plist](file:///Users/guoshuyu/workspace/GSYCleanMac/App/LaunchDaemons/com.guoshuyu.cleanmac.sentinel.plist)
-    /// 文件名严格一致（SMAppService 用文件名定位 plist）。
-    /// v2026.07.16：plist 文件名是不可变、可跨 actor 安全读取的产品常量。
+    /// One-way policy for registrations created by historical root-daemon builds.
+    /// Only `.notRegistered` proves that one migration identity is complete. `.notFound` is
+    /// an SMAppService lookup/configuration error and must never authorize the new Agent.
+    enum LegacyMigrationAction: Equatable, Sendable {
+        case alreadyCleared
+        case unregister
+        case unavailable
+    }
+
+    nonisolated static func legacyMigrationAction(for status: Status) -> LegacyMigrationAction {
+        switch status {
+        case .notRegistered:
+            return .alreadyCleared
+        case .enabled, .requiresApproval:
+            return .unregister
+        case .notFound, .unknown:
+            return .unavailable
+        }
+    }
+
+    /// 与当前用户 Agent 描述符文件名严格一致（SMAppService 用文件名定位 plist）。
+    /// v2026.07.18：当前 Agent 与旧 Daemon 使用不同文件名和 Label；旧服务注销尚未
+    /// 完成时，也不会与新服务的 launchd identity 冲突。
     /// 明确声明 `nonisolated`，让非 UI 的 ServiceManagement 适配器无需错误地继承
     /// `SentinelManager` 的 MainActor 隔离，也不需要用 unchecked 绕过并发检查。
-    public nonisolated static let plistName = "com.guoshuyu.cleanmac.sentinel.plist"
+    public nonisolated static let agentPlistName = "com.amux.ai.Clean.sentinel.agent.plist"
+
+    /// v2026.07.18 P1：品牌迁移前后曾产生两个不同 Label 的 root LaunchDaemon。
+    /// 单个 plist 不能在保持自身 Label 的同时代表两份 launchd authority，因此每代注册
+    /// 都保留文件名与 Label 对应的独立迁移描述符。代码只能查询/注销，永不重新注册。
+    struct LegacyDaemonDescriptor: Equatable, Hashable, Sendable {
+        let plistName: String
+        let label: String
+    }
+
+    public nonisolated static let originalBrandLegacyDaemonPlistName =
+        "com.guoshuyu.cleanmac.sentinel.plist"
+    public nonisolated static let renamedBrandLegacyDaemonPlistName =
+        "com.amux.ai.Clean.sentinel.plist"
+
+    nonisolated static let legacyDaemonDescriptors: [LegacyDaemonDescriptor] = [
+        LegacyDaemonDescriptor(
+            plistName: originalBrandLegacyDaemonPlistName,
+            label: "com.guoshuyu.cleanmac.sentinel"
+        ),
+        LegacyDaemonDescriptor(
+            plistName: renamedBrandLegacyDaemonPlistName,
+            label: "com.amux.ai.Clean.sentinel"
+        ),
+    ]
+
+    /// v2026.07.18：Sentinel 读取登录用户的 Trash/Home 热点，注册域必须是 user agent。
+    /// 该语义常量由单测和 release contract 锁定，防止再次退回 root LaunchDaemon。
+    enum RegistrationDomain: Equatable, Sendable { case userAgent }
+    nonisolated static let registrationDomain: RegistrationDomain = .userAgent
 
     /// 简化后的对外状态枚举，避开直接暴露 `SMAppService.Status` 给 UI 层。
     public enum Status: Equatable, Sendable {
@@ -148,12 +204,29 @@ public final class SentinelManager: ObservableObject {
         }
     }
 
+    /// v2026.07.18: the current Agent status alone cannot prove that the historical root
+    /// Daemon is gone. Keep this as a separate authority dimension so a later Settings refresh
+    /// cannot turn a failed migration into a misleading "verified" presentation.
+    enum LegacyMigrationState: Equatable, Sendable {
+        case unverified
+        case verifiedCleared
+    }
+
     /// Stable product failures. Raw `Error`/NSError stays in logs; alerts and settings only
     /// retain this semantic value and localize at presentation time.
     public enum OperationFailure: Equatable, Sendable {
         case registrationUnavailable(Status)
         case registrationFailed
+        /// Status lookup failed before an OFF operation could be attempted. This is deliberately
+        /// distinct from `unregistrationFailed`: user copy must not claim a close operation ran.
+        case shutdownVerificationUnavailable(Status)
         case unregistrationFailed
+        /// Historical privileged daemon authority is independent from the current user Agent.
+        /// The associated desired state keeps enable-blocked and disable-incomplete copy honest.
+        case legacyMigrationFailed(requestedEnabled: Bool)
+        /// ON migration failed and the already-existing current Agent also could not be
+        /// authoritatively stopped. Keep this distinct so UI never claims safe shutdown.
+        case legacyMigrationSafetyShutdownFailed
 
         public func localizedTitle(locale: Locale) -> String {
             let key: String
@@ -162,33 +235,54 @@ public final class SentinelManager: ObservableObject {
                 key = "sentinel.alert.status_unavailable.title"
             case .registrationFailed:
                 key = "sentinel.alert.register_failed.title"
+            case .shutdownVerificationUnavailable:
+                key = "sentinel.alert.shutdown_verification_unavailable.title"
             case .unregistrationFailed:
                 key = "sentinel.alert.unregister_failed.title"
+            case .legacyMigrationFailed:
+                key = "sentinel.alert.legacy_migration_failed.title"
+            case .legacyMigrationSafetyShutdownFailed:
+                key = "sentinel.alert.legacy_migration_shutdown_failed.title"
             }
             return AppLocalization.string(key, locale: locale)
         }
 
         public func localizedBody(
             locale: Locale,
-            logHint: String,
             trigger: ReconciliationTrigger = .user
         ) -> String {
             let key: String
             switch (self, trigger) {
             case (.registrationUnavailable, .startup):
-                key = "sentinel.alert.status_unavailable.startup.body %@"
+                key = "sentinel.alert.status_unavailable.startup.body"
             case (.registrationFailed, .startup):
-                key = "sentinel.alert.register_failed.startup.body %@"
+                key = "sentinel.alert.register_failed.startup.body"
+            case (.shutdownVerificationUnavailable, .startup):
+                key = "sentinel.alert.shutdown_verification_unavailable.startup.body"
             case (.unregistrationFailed, .startup):
-                key = "sentinel.alert.unregister_failed.startup.body %@"
+                key = "sentinel.alert.unregister_failed.startup.body"
+            case (.legacyMigrationFailed(requestedEnabled: true), .startup):
+                key = "sentinel.alert.legacy_migration_failed.enable.startup.body"
+            case (.legacyMigrationFailed(requestedEnabled: false), .startup):
+                key = "sentinel.alert.legacy_migration_failed.disable.body"
+            case (.legacyMigrationSafetyShutdownFailed, .startup):
+                key = "sentinel.alert.legacy_migration_shutdown_failed.startup.body"
             case (.registrationUnavailable, .user):
-                key = "sentinel.alert.status_unavailable.body %@"
+                key = "sentinel.alert.status_unavailable.body"
             case (.registrationFailed, .user):
-                key = "sentinel.alert.register_failed.body %@"
+                key = "sentinel.alert.register_failed.body"
+            case (.shutdownVerificationUnavailable, .user):
+                key = "sentinel.alert.shutdown_verification_unavailable.body"
             case (.unregistrationFailed, .user):
-                key = "sentinel.alert.unregister_failed.body %@"
+                key = "sentinel.alert.unregister_failed.body"
+            case (.legacyMigrationFailed(requestedEnabled: true), .user):
+                key = "sentinel.alert.legacy_migration_failed.enable.body"
+            case (.legacyMigrationFailed(requestedEnabled: false), .user):
+                key = "sentinel.alert.legacy_migration_failed.disable.body"
+            case (.legacyMigrationSafetyShutdownFailed, .user):
+                key = "sentinel.alert.legacy_migration_shutdown_failed.body"
             }
-            return AppLocalization.format(key, locale: locale, arguments: [logHint])
+            return AppLocalization.string(key, locale: locale)
         }
     }
 
@@ -229,19 +323,52 @@ public final class SentinelManager: ObservableObject {
     @MainActor
     protocol ServiceControlling: AnyObject {
         var status: Status { get }
+        /// Each historical Label is a separate authority dimension. The manager reads and
+        /// re-reads every one before allowing the current Agent registration path to proceed.
+        func legacyDaemonStatus(for descriptor: LegacyDaemonDescriptor) -> Status
+        func unregisterLegacyDaemon(_ descriptor: LegacyDaemonDescriptor) throws
         func register() throws
         func unregister() throws
+    }
+
+    private enum LegacyServiceMigrationError: Error {
+        case incomplete
     }
 
     @MainActor
     private final class SystemService: ServiceControlling {
         private let service: SMAppService
+        private let legacyDaemons: [LegacyDaemonDescriptor: SMAppService]
 
         init() {
-            service = SMAppService.daemon(plistName: SentinelManager.plistName)
+            // v2026.07.18 P1：LaunchDaemon runs in the system/root domain, so
+            // `homeDirectoryForCurrentUser` resolves the wrong Trash/Downloads. Sentinel is a
+            // non-privileged per-login monitor and must use Contents/Library/LaunchAgents.
+            service = SMAppService.agent(plistName: SentinelManager.agentPlistName)
+            legacyDaemons = Dictionary(
+                uniqueKeysWithValues: SentinelManager.legacyDaemonDescriptors.map { descriptor in
+                    (
+                        descriptor,
+                        SMAppService.daemon(plistName: descriptor.plistName)
+                    )
+                }
+            )
         }
 
         var status: Status { Status(service.status) }
+        func legacyDaemonStatus(for descriptor: LegacyDaemonDescriptor) -> Status {
+            guard let daemon = legacyDaemons[descriptor] else {
+                // v2026.07.18 P1：内部 descriptor/service 映射丢失也不能被解释为已注销。
+                return .notFound
+            }
+            return Status(daemon.status)
+        }
+        func unregisterLegacyDaemon(_ descriptor: LegacyDaemonDescriptor) throws {
+            guard let daemon = legacyDaemons[descriptor] else {
+                throw LegacyServiceMigrationError.incomplete
+            }
+            try daemon.unregister()
+        }
         func register() throws { try service.register() }
         func unregister() throws { try service.unregister() }
     }
@@ -259,9 +386,9 @@ public final class SentinelManager: ObservableObject {
             }
         }
         switch status {
-        case .notRegistered, .notFound: return .disabledVerified
+        case .notRegistered: return .disabledVerified
         case .enabled, .requiresApproval: return .desiredOffStillRegistered
-        case .unknown: return .desiredOffUnverified
+        case .notFound, .unknown: return .desiredOffUnverified
         }
     }
 
@@ -278,9 +405,10 @@ public final class SentinelManager: ObservableObject {
     private var pendingProgrammaticToggleTransaction: ProgrammaticToggleTransaction?
 
     /// Latest desired/actual projection shown by Settings. It changes only after an explicit
-    /// authoritative status read, never by assuming the toggle itself proves daemon state.
+    /// authoritative status read, never by assuming the toggle itself proves service state.
     @Published public private(set) var presentationState: PresentationState
     @Published public private(set) var lastFailure: OperationFailure?
+    private var legacyMigrationState: LegacyMigrationState
 
     public init(settings: AppSettings) {
         let service = SystemService()
@@ -292,11 +420,11 @@ public final class SentinelManager: ObservableObject {
         self.approvalPresenter = { locale in
             SentinelManager.presentApprovalAlert(locale: locale)
         }
-        self.presentationState = Self.presentationState(
-            desiredEnabled: settings.sentinelEnabled,
-            status: service.status
-        )
+        self.presentationState = settings.sentinelEnabled
+            ? .desiredOnUnverified
+            : .desiredOffUnverified
         self.lastFailure = nil
+        self.legacyMigrationState = .unverified
         self.pendingProgrammaticToggleTransaction = nil
     }
 
@@ -310,11 +438,11 @@ public final class SentinelManager: ObservableObject {
         self.settings = settings
         self.failurePresenter = failurePresenter
         self.approvalPresenter = approvalPresenter
-        self.presentationState = Self.presentationState(
-            desiredEnabled: settings.sentinelEnabled,
-            status: service.status
-        )
+        self.presentationState = settings.sentinelEnabled
+            ? .desiredOnUnverified
+            : .desiredOffUnverified
         self.lastFailure = nil
+        self.legacyMigrationState = .unverified
         self.pendingProgrammaticToggleTransaction = nil
     }
 
@@ -327,10 +455,49 @@ public final class SentinelManager: ObservableObject {
     /// an external Login Items change does not leave a stale status chip.
     public func refreshPresentation() {
         let desiredEnabled = settings?.sentinelEnabled ?? false
-        presentationState = Self.presentationState(
+        presentationState = projectPresentation(
             desiredEnabled: desiredEnabled,
             status: currentStatus()
         )
+    }
+
+    private func projectPresentation(
+        desiredEnabled: Bool,
+        status: Status
+    ) -> PresentationState {
+        guard legacyMigrationState == .verifiedCleared else {
+            return desiredEnabled ? .desiredOnUnverified : .desiredOffUnverified
+        }
+        return Self.presentationState(desiredEnabled: desiredEnabled, status: status)
+    }
+
+    /// v2026.07.19 P1：系统明确报告某个 current authority 已注册时，持久化关闭核验证据。
+    /// `.notFound` / `.unknown` 不是 active 证据；fresh/default-OFF 不能仅凭查询失败被要求
+    /// 进入系统设置。相反，一旦见过 enabled/requiresApproval，证据只能在三身份全部明确
+    /// notRegistered 后清除。
+    private func recordCurrentAuthorityEvidenceIfNeeded(_ status: Status) {
+        guard status == .enabled || status == .requiresApproval else { return }
+        settings?.sentinelRequiresShutdownVerification = true
+    }
+
+    /// A user-initiated OFF is always actionable. Startup lookup failures are actionable only
+    /// when a prior successful registration/active system status supplied durable evidence.
+    private func shouldSurfaceUnavailableShutdown(
+        trigger: ReconciliationTrigger
+    ) -> Bool {
+        trigger == .user || settings?.sentinelRequiresShutdownVerification == true
+    }
+
+    /// Clear durable evidence only after the current Agent and both historical identities have
+    /// independently converged. This prevents a current-Agent success from erasing a legacy
+    /// authority gap, while keeping never-enabled fresh installs quiet.
+    private func clearShutdownVerificationEvidenceIfFullyConverged(
+        currentStatus: Status
+    ) {
+        guard currentStatus == .notRegistered,
+              legacyMigrationState == .verifiedCleared else { return }
+        settings?.sentinelLastEnabled = nil
+        settings?.sentinelRequiresShutdownVerification = false
     }
 
     /// App 的 Sentinel `onChange` 唯一入口。
@@ -367,11 +534,13 @@ public final class SentinelManager: ObservableObject {
     /// **v2026.07.16 root-cause fix:** desired preference, authoritative service status and
     /// operation outcome are committed as one state transition. The old App-level switch
     /// discarded `disable()`'s Bool after the Toggle had already persisted OFF, so an
-    /// unregister error could leave UI OFF while launchd still ran the daemon.
+    /// unregister error could leave UI OFF while launchd still ran the service.
     ///
-    /// Interactive failures restore the pre-gesture Toggle (`!requestedEnabled`). Startup
-    /// failures retain the persisted intent but publish an explicit mismatch/unverified state.
-    /// Both paths present a typed localized failure; no raw NSError crosses the UI boundary.
+    /// Current-Agent interactive failures restore the pre-gesture Toggle (`!requestedEnabled`).
+    /// v2026.07.18 P1: a successful current-Agent OFF must never be reversed merely because a
+    /// historical descriptor remains unverified; OFF stays persisted and receives a separate
+    /// typed migration failure. Startup failures retain persisted intent. No raw NSError crosses
+    /// the UI boundary.
     @discardableResult
     public func reconcile(trigger: ReconciliationTrigger) -> ReconciliationResult {
         reconcile(
@@ -384,8 +553,47 @@ public final class SentinelManager: ObservableObject {
         requestedEnabled: Bool,
         trigger: ReconciliationTrigger
     ) -> ReconciliationResult {
-        let initialStatus = currentStatus()
         let locale = settings?.effectiveLocale ?? .current
+        // v2026.07.18 P1：ON 是能力增加，必须先证明两代 root identity 都已退出；OFF 是
+        // 能力减少，必须优先注销 current Agent，不能被无关 legacy lookup 故障阻断。
+        if requestedEnabled {
+            do {
+                try reconcileLegacyDaemons()
+                legacyMigrationState = .verifiedCleared
+            } catch {
+                legacyMigrationState = .unverified
+                GSYLog.error(.sentinel, "legacy root daemon migration blocked enable: \(error)")
+                let safetyShutdown = stopCurrentAgentAfterBlockedEnable()
+                let current = safetyShutdown.status
+                let failure: OperationFailure = safetyShutdown.isStopped
+                    ? .legacyMigrationFailed(requestedEnabled: true)
+                    : .legacyMigrationSafetyShutdownFailed
+                let effectiveToggleEnabled = trigger == .user ? false : true
+                if settings?.sentinelEnabled != effectiveToggleEnabled {
+                    writeToggleProgrammatically(
+                        effectiveToggleEnabled,
+                        reason: trigger == .user ? .failureRollback : .directAPICommit
+                    )
+                }
+                let presentation = projectPresentation(
+                    desiredEnabled: effectiveToggleEnabled,
+                    status: current
+                )
+                presentationState = presentation
+                lastFailure = failure
+                failurePresenter(failure, trigger, locale)
+                return ReconciliationResult(
+                    requestedEnabled: requestedEnabled,
+                    effectiveToggleEnabled: effectiveToggleEnabled,
+                    status: current,
+                    presentation: presentation,
+                    failure: failure
+                )
+            }
+        }
+
+        let initialStatus = currentStatus()
+        recordCurrentAuthorityEvidenceIfNeeded(initialStatus)
         var finalStatus = initialStatus
         var failure: OperationFailure?
 
@@ -397,8 +605,7 @@ public final class SentinelManager: ObservableObject {
             if requestedEnabled, initialStatus == .enabled,
                settings?.sentinelLastEnabled == nil {
                 settings?.sentinelLastEnabled = Date()
-            } else if !requestedEnabled,
-                      initialStatus == .notRegistered || initialStatus == .notFound {
+            } else if !requestedEnabled, initialStatus == .notRegistered {
                 settings?.sentinelLastEnabled = nil
             }
         case .enable:
@@ -416,6 +623,7 @@ public final class SentinelManager: ObservableObject {
                 do {
                     try service.register()
                     finalStatus = currentStatus()
+                    recordCurrentAuthorityEvidenceIfNeeded(finalStatus)
                     GSYLog.info(.sentinel, "register returned; authoritativeStatus=\(finalStatus)")
                     switch finalStatus {
                     case .enabled:
@@ -429,35 +637,93 @@ public final class SentinelManager: ObservableObject {
                     GSYLog.error(.sentinel, "register failed: \(error)")
                     failure = .registrationFailed
                     finalStatus = currentStatus()
+                    recordCurrentAuthorityEvidenceIfNeeded(finalStatus)
                 }
+            }
+        case .unavailable:
+            // v2026.07.19 P1 root fix：status lookup failed before unregister was attempted, so
+            // calling this `unregistrationFailed` is factually wrong. Fresh/default-OFF users
+            // have no authority evidence and receive a structured diagnostic only; explicit OFF
+            // gestures or durable registration evidence remain fail-closed and actionable.
+            if shouldSurfaceUnavailableShutdown(trigger: trigger) {
+                failure = .shutdownVerificationUnavailable(initialStatus)
+                GSYLog.error(
+                    .sentinel,
+                    "shutdown verification unavailable; status=\(initialStatus) "
+                        + "trigger=\(trigger) evidence=true unregisterAttempted=false"
+                )
+            } else {
+                GSYLog.warning(
+                    .sentinel,
+                    "default-off status unavailable; status=\(initialStatus) "
+                        + "evidence=false unregisterAttempted=false userActionRequired=false"
+                )
             }
         case .disable:
             do {
                 try service.unregister()
                 finalStatus = currentStatus()
+                recordCurrentAuthorityEvidenceIfNeeded(finalStatus)
                 GSYLog.info(.sentinel, "unregister returned; authoritativeStatus=\(finalStatus)")
                 switch finalStatus {
-                case .notRegistered, .notFound:
+                case .notRegistered:
                     settings?.sentinelLastEnabled = nil
-                case .enabled, .requiresApproval, .unknown:
+                case .enabled, .requiresApproval, .notFound, .unknown:
                     failure = .unregistrationFailed
                 }
             } catch {
                 GSYLog.error(.sentinel, "unregister failed: \(error)")
-                failure = .unregistrationFailed
                 finalStatus = currentStatus()
+                recordCurrentAuthorityEvidenceIfNeeded(finalStatus)
+                if finalStatus == .notRegistered {
+                    // The API error is not authority. If the post-call read proves OFF, preserve
+                    // the user's least-privilege intent and clear the enabled timestamp.
+                    settings?.sentinelLastEnabled = nil
+                    GSYLog.notice(
+                        .sentinel,
+                        "unregister returned error but authoritative status converged to notRegistered"
+                    )
+                } else {
+                    failure = .unregistrationFailed
+                }
             }
         }
 
+        let currentAgentFailure = failure
+        if !requestedEnabled {
+            do {
+                try reconcileLegacyDaemons()
+                legacyMigrationState = .verifiedCleared
+            } catch {
+                legacyMigrationState = .unverified
+                GSYLog.error(.sentinel, "legacy root daemon migration incomplete after Agent OFF: \(error)")
+                if failure == nil,
+                   settings?.sentinelRequiresShutdownVerification == true {
+                    failure = .legacyMigrationFailed(requestedEnabled: false)
+                } else if failure == nil {
+                    // No persisted/current/legacy active evidence exists. Keep the status visible
+                    // as unverified and retain the structured log, but do not instruct a fresh
+                    // default-OFF user to repair a service they never enabled.
+                    GSYLog.warning(
+                        .sentinel,
+                        "legacy migration unavailable without authority evidence; "
+                            + "userActionRequired=false"
+                    )
+                }
+            }
+            clearShutdownVerificationEvidenceIfFullyConverged(currentStatus: finalStatus)
+        }
+
         let effectiveToggleEnabled: Bool
-        if failure != nil, trigger == .user {
+        let shouldRollbackUserGesture = currentAgentFailure != nil && trigger == .user
+        if shouldRollbackUserGesture {
             effectiveToggleEnabled = !requestedEnabled
         } else {
             effectiveToggleEnabled = requestedEnabled
         }
         if settings?.sentinelEnabled != effectiveToggleEnabled {
             let reason: ProgrammaticToggleTransaction.Reason =
-                failure != nil && trigger == .user
+                shouldRollbackUserGesture
                     ? .failureRollback
                     : .directAPICommit
             writeToggleProgrammatically(
@@ -465,7 +731,7 @@ public final class SentinelManager: ObservableObject {
                 reason: reason
             )
         }
-        let presentation = Self.presentationState(
+        let presentation = projectPresentation(
             desiredEnabled: effectiveToggleEnabled,
             status: finalStatus
         )
@@ -481,6 +747,125 @@ public final class SentinelManager: ObservableObject {
             presentation: presentation,
             failure: failure
         )
+    }
+
+    /// Migrate every historical root identity as one admission barrier for the current Agent.
+    ///
+    /// The loop deliberately does not fail fast: an unavailable original-brand descriptor must
+    /// not prevent us from unregistering the renamed-brand daemon if that second job is still
+    /// active. Conversely, the aggregate succeeds only when *every* final status is explicitly
+    /// `.notRegistered`; `.notFound`, future unknown states and a still-registered service all
+    /// fail closed.
+    private func reconcileLegacyDaemons() throws {
+        var hasUnsettledIdentity = false
+
+        for descriptor in Self.legacyDaemonDescriptors {
+            let initialStatus = service.legacyDaemonStatus(for: descriptor)
+            if initialStatus == .enabled || initialStatus == .requiresApproval {
+                // v2026.07.19 P1：即使本地 defaults 丢失，系统明确报告 active 仍是可信
+                // authority 证据；在其它 identity 查询失败时必须继续保留并提示用户。
+                settings?.sentinelRequiresShutdownVerification = true
+            }
+            switch Self.legacyMigrationAction(for: initialStatus) {
+            case .alreadyCleared:
+                GSYLog.notice(
+                    .sentinel,
+                    "legacy root daemon migration verified; label=\(descriptor.label) status=notRegistered"
+                )
+
+            case .unavailable:
+                hasUnsettledIdentity = true
+                GSYLog.error(
+                    .sentinel,
+                    "legacy root daemon migration status unavailable; label=\(descriptor.label) status=\(initialStatus)"
+                )
+
+            case .unregister:
+                do {
+                    try service.unregisterLegacyDaemon(descriptor)
+                } catch {
+                    // Do not decide from the API error alone. A final authoritative read is the
+                    // only proof, and remaining descriptors still need their own migration pass.
+                    GSYLog.error(
+                        .sentinel,
+                        "legacy root daemon unregister returned error; label=\(descriptor.label) error=\(error)"
+                    )
+                }
+
+                let finalStatus = service.legacyDaemonStatus(for: descriptor)
+                if finalStatus == .enabled || finalStatus == .requiresApproval {
+                    settings?.sentinelRequiresShutdownVerification = true
+                }
+                if finalStatus == .notRegistered {
+                    GSYLog.notice(
+                        .sentinel,
+                        "legacy root daemon migration converged; label=\(descriptor.label) status=notRegistered"
+                    )
+                } else {
+                    hasUnsettledIdentity = true
+                    GSYLog.error(
+                        .sentinel,
+                        "legacy root daemon migration did not converge; label=\(descriptor.label) status=\(finalStatus)"
+                    )
+                }
+            }
+        }
+
+        guard !hasUnsettledIdentity else {
+            throw LegacyServiceMigrationError.incomplete
+        }
+    }
+
+    /// ON migration failure is an admission failure, but a previously registered current Agent
+    /// may already be running. Reduce capability before returning: unregister enabled/approval
+    /// states and always re-read authority. Only `.notRegistered` proves the safety shutdown;
+    /// lookup failures and future states remain explicitly unverified.
+    private func stopCurrentAgentAfterBlockedEnable() -> (status: Status, isStopped: Bool) {
+        var status = currentStatus()
+        recordCurrentAuthorityEvidenceIfNeeded(status)
+        switch Self.reconciliationAction(isEnabled: false, currentStatus: status) {
+        case .none:
+            settings?.sentinelLastEnabled = nil
+            return (status, true)
+
+        case .disable:
+            do {
+                try service.unregister()
+            } catch {
+                GSYLog.error(
+                    .sentinel,
+                    "current Agent safety shutdown returned error after legacy migration failure: \(error)"
+                )
+            }
+            status = currentStatus()
+            recordCurrentAuthorityEvidenceIfNeeded(status)
+            if status == .notRegistered {
+                settings?.sentinelLastEnabled = nil
+                GSYLog.notice(
+                    .sentinel,
+                    "current Agent safety shutdown converged after legacy migration failure"
+                )
+                return (status, true)
+            }
+            GSYLog.error(
+                .sentinel,
+                "current Agent safety shutdown did not converge; status=\(status)"
+            )
+            return (status, false)
+
+        case .unavailable:
+            GSYLog.error(
+                .sentinel,
+                "current Agent safety shutdown status unavailable; status=\(status)"
+            )
+            return (status, false)
+
+        case .enable:
+            // OFF reconciliation never returns `.enable`; retain fail-closed behavior if the
+            // policy changes in a future SDK/refactor.
+            GSYLog.error(.sentinel, "current Agent safety shutdown reached invalid enable action")
+            return (status, false)
+        }
     }
 
     private func writeToggleProgrammatically(
@@ -535,17 +920,15 @@ public final class SentinelManager: ObservableObject {
     ) {
         let alert = NSAlert()
         alert.messageText = failure.localizedTitle(locale: locale)
-        let logHint = GSYLog.currentLogFileURL()?.path
-            ?? AppLocalization.string("sentinel.alert.register_failed.log_hint_fallback", locale: locale)
-        // v2026.07.16：NSError/errno 只写结构化日志，用户界面给稳定的产品说明与日志位置。
-        // 原始 localizedDescription 可能未本地化、携带实现细节，不能直接进入产品文案。
+        // v2026.07.19 P1：状态/errno/路径继续进入结构化日志；用户只看到具体动作与
+        // App 内“设置 → 存储 → 日志”入口。裸目录路径既不可操作，也会泄露账户名，不能再
+        // 作为所谓“技术详情”塞进 modal。
         alert.informativeText = failure.localizedBody(
             locale: locale,
-            logHint: logHint,
             trigger: trigger
         )
         alert.addButton(withTitle: AppLocalization.string("sentinel.alert.button.open_settings", locale: locale))
-        alert.addButton(withTitle: AppLocalization.string("sentinel.alert.button.ok", locale: locale))
+        alert.addButton(withTitle: AppLocalization.string("sentinel.alert.button.keep_current", locale: locale))
         alert.alertStyle = .warning
         let resp = alert.runModal()
         if resp == .alertFirstButtonReturn {

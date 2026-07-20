@@ -49,6 +49,9 @@ final class BrewRegistryTests: XCTestCase {
         let registry = BrewRegistry.load(cacheDirectory: root)
         XCTAssertTrue(registry.formulaLatest.isEmpty)
         XCTAssertTrue(registry.caskLatest.isEmpty)
+        XCTAssertEqual(registry.formulaStatus, .missing)
+        XCTAssertEqual(registry.caskStatus, .missing)
+        XCTAssertEqual(registry.diagnostics, [], "缺失 cache 是预期离线状态，不应生成故障诊断")
     }
 
     func test_load_nil目录_返回空() {
@@ -64,6 +67,10 @@ final class BrewRegistryTests: XCTestCase {
         try bad.write(to: root.appendingPathComponent("formula.jws.json"))
         let registry = BrewRegistry.load(cacheDirectory: root)
         XCTAssertTrue(registry.formulaLatest.isEmpty)
+        XCTAssertEqual(registry.diagnostics.count, 1)
+        XCTAssertEqual(registry.diagnostics.first?.source, .formulaRegistry)
+        XCTAssertEqual(registry.diagnostics.first?.stage, .decodeDocument)
+        XCTAssertEqual(registry.diagnostics.first?.reason, .malformed)
     }
 
     func test_parseFormula_payload非字符串_返回空() throws {
@@ -91,6 +98,37 @@ final class BrewRegistryTests: XCTestCase {
         try writeJWS(payload: inner, to: root.appendingPathComponent("formula.jws.json"))
         let registry = BrewRegistry.load(cacheDirectory: root)
         XCTAssertEqual(registry.formulaLatest, ["ok": "1.0"])
+        XCTAssertEqual(registry.diagnostics.count, 1)
+        XCTAssertEqual(registry.diagnostics.first?.stage, .decodeEntry)
+        XCTAssertEqual(registry.diagnostics.first?.rejectedEntryCount, 2)
+    }
+
+    /// v2026.07.18 regression：权限拒绝必须区别于 cache 尚不存在，并保持全程只读。
+    func test_load_formula权限拒绝_cask缺失_只返回权限诊断() {
+        let formulaPath = root.appendingPathComponent("formula.jws.json").path
+        let reader = BrewFileReader(read: { url in
+            if url.path == formulaPath {
+                throw NSError(
+                    domain: NSCocoaErrorDomain,
+                    code: CocoaError.fileReadNoPermission.rawValue
+                )
+            }
+            throw NSError(
+                domain: NSCocoaErrorDomain,
+                code: CocoaError.fileNoSuchFile.rawValue
+            )
+        })
+
+        let registry = BrewRegistry.load(cacheDirectory: root, fileReader: reader)
+
+        XCTAssertEqual(registry.formulaLatest, [:])
+        XCTAssertEqual(registry.caskLatest, [:])
+        XCTAssertEqual(registry.diagnostics.count, 1)
+        XCTAssertEqual(registry.diagnostics.first?.source, .formulaRegistry)
+        XCTAssertEqual(registry.diagnostics.first?.stage, .read)
+        XCTAssertEqual(registry.diagnostics.first?.reason, .permissionDenied)
+        XCTAssertEqual(registry.formulaStatus, .unavailable)
+        XCTAssertEqual(registry.caskStatus, .missing)
     }
 
     // MARK: - 契约 6：latestVersion(for:kind:) 按 kind 路由查找

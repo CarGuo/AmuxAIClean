@@ -55,13 +55,83 @@ public struct BrewOutdated: Sendable, Equatable {
     }
 }
 
+/// Injectable, Sendable facts for the package-size traversal. Foundation dictionaries never cross
+/// this boundary, and tests can make one exact subtree enumeration/metadata failure deterministic.
+struct BrewPackageSizeEntryFacts: Sendable, Equatable {
+    enum Kind: Sendable, Equatable {
+        case regularFile
+        case directory
+        case symbolicLink
+        case other
+    }
+
+    let kind: Kind
+    let allocatedBytes: Int64?
+}
+
+struct BrewPackageSizeFileSystem: Sendable {
+    let contentsOfDirectory: @Sendable (URL) throws -> [String]
+    let entryFacts: @Sendable (URL) throws -> BrewPackageSizeEntryFacts
+
+    static let live = BrewPackageSizeFileSystem(
+        contentsOfDirectory: { url in
+            try FileManager.default.contentsOfDirectory(atPath: url.path)
+        },
+        entryFacts: { url in
+            let keys: Set<URLResourceKey> = [
+                .isRegularFileKey,
+                .isDirectoryKey,
+                .isSymbolicLinkKey,
+                .totalFileAllocatedSizeKey,
+                .fileAllocatedSizeKey,
+            ]
+            let values = try url.resourceValues(forKeys: keys)
+            let kind: BrewPackageSizeEntryFacts.Kind
+            if values.isSymbolicLink == true {
+                kind = .symbolicLink
+            } else if values.isRegularFile == true {
+                kind = .regularFile
+            } else if values.isDirectory == true {
+                kind = .directory
+            } else {
+                kind = .other
+            }
+            return BrewPackageSizeEntryFacts(
+                kind: kind,
+                allocatedBytes: values.totalFileAllocatedSize
+                    .map(Int64.init)
+                    ?? values.fileAllocatedSize.map(Int64.init)
+            )
+        }
+    )
+}
+
+private struct BrewPackageSizeEvidence {
+    let bytes: Int64
+    let diagnostics: [BrewDiagnostic]
+}
+
 public struct BrewController: Sendable {
 
     /// brew 安装 prefix（一般 /opt/homebrew 或 /usr/local）。
     public let prefix: URL
+    private let fileReader: BrewFileReader
+    private let packageSizeFileSystem: BrewPackageSizeFileSystem
 
     public init(prefix: URL) {
         self.prefix = prefix
+        self.fileReader = .live
+        self.packageSizeFileSystem = .live
+    }
+
+    init(
+        prefix: URL,
+        fileReader: BrewFileReader,
+        packageSizeFileSystem: BrewPackageSizeFileSystem = .live
+    ) {
+        self.prefix = prefix
+        self.fileReader = fileReader
+        self.packageSizeFileSystem = packageSizeFileSystem
     }
 
     /// 标准检测：先看 `/opt/homebrew`，再 `/usr/local`；nil 表示未安装 brew。
@@ -80,18 +150,40 @@ public struct BrewController: Sendable {
     // MARK: - 公开 API
 
     public func listFormulae() -> [BrewPackage] {
+        listFormulaeWithDiagnostics().packages
+    }
+
+    public func listFormulaeWithDiagnostics() -> BrewPackageListResult {
         let cellar = prefix.appendingPathComponent("Cellar", isDirectory: true)
         return enumeratePackages(at: cellar, kind: .formula)
     }
 
     public func listCasks() -> [BrewPackage] {
+        listCasksWithDiagnostics().packages
+    }
+
+    public func listCasksWithDiagnostics() -> BrewPackageListResult {
         let casks = prefix.appendingPathComponent("Caskroom", isDirectory: true)
         return enumeratePackages(at: casks, kind: .cask)
     }
 
     /// 一次性列出全部 formula + cask。
     public func listAll() -> [BrewPackage] {
-        return listFormulae() + listCasks()
+        listAllWithDiagnostics().packages
+    }
+
+    public func listAllWithDiagnostics() -> BrewPackageListResult {
+        let formulae = listFormulaeWithDiagnostics()
+        let casks = listCasksWithDiagnostics()
+        let packages = formulae.packages + casks.packages
+        return BrewPackageListResult(
+            packages: packages,
+            diagnostics: formulae.diagnostics + casks.diagnostics,
+            status: BrewEvidenceStatus.combining(
+                [formulae.status, casks.status],
+                hasValues: !packages.isEmpty
+            )
+        )
     }
 
     /// 用 [BrewRegistry](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/BrewKit/Sources/BrewKit/BrewRegistry.swift)
@@ -100,8 +192,14 @@ public struct BrewController: Sendable {
     /// 升级判定：installed != latest（字符串严格不等；不做 semver 解析以求稳）。
     /// 同名多 version 时，每个 version 各自比对（与 brew 行为一致）。
     public func outdated(using registry: BrewRegistry) -> [BrewOutdated] {
-        let all = listAll()
-        return all.compactMap { pkg in
+        outdated(installedPackages: listAll(), using: registry)
+    }
+
+    public func outdated(
+        installedPackages: [BrewPackage],
+        using registry: BrewRegistry
+    ) -> [BrewOutdated] {
+        installedPackages.compactMap { pkg in
             guard let latest = registry.latestVersion(for: pkg.name, kind: pkg.kind),
                   latest != pkg.version else { return nil }
             return BrewOutdated(package: pkg, latestVersion: latest)
@@ -110,19 +208,54 @@ public struct BrewController: Sendable {
 
     // MARK: - 内部
 
-    private func enumeratePackages(at root: URL, kind: BrewPackageKind) -> [BrewPackage] {
+    private func enumeratePackages(
+        at root: URL,
+        kind: BrewPackageKind
+    ) -> BrewPackageListResult {
         let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: root.path) else {
-            return []
+        let source: BrewDiagnostic.Source = kind == .formula
+            ? .formulaInstallations
+            : .caskInstallations
+        let names: [String]
+        do {
+            names = try fileReader.contentsOfDirectory(root)
+        } catch {
+            guard let diagnostic = brewLocalFileFailureDiagnostic(
+                error,
+                source: source,
+                stage: .enumerateRoot,
+                path: root.path
+            ) else {
+                // v2026.07.18 P2: Cellar/Caskroom are optional independent roots. ENOENT is a
+                // trustworthy absence, not the same terminal state as a denied enumeration.
+                return BrewPackageListResult(packages: [], status: .missing)
+            }
+            return BrewPackageListResult(
+                packages: [],
+                diagnostics: [diagnostic],
+                status: .unavailable
+            )
         }
         var out: [BrewPackage] = []
+        var diagnostics: [BrewDiagnostic] = []
         for name in names where !name.hasPrefix(".") {
             let nameDir = root.appendingPathComponent(name, isDirectory: true)
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: nameDir.path, isDirectory: &isDir),
                   isDir.boolValue else { continue }
             // 每个 name 下可能有多个 version 目录，全列出（与 brew list --versions 一致）
-            guard let versions = try? fm.contentsOfDirectory(atPath: nameDir.path) else {
+            let versions: [String]
+            do {
+                versions = try fileReader.contentsOfDirectory(nameDir)
+            } catch {
+                if let diagnostic = brewLocalFileFailureDiagnostic(
+                    error,
+                    source: source,
+                    stage: .enumerateVersions,
+                    path: nameDir.path
+                ) {
+                    diagnostics.append(diagnostic)
+                }
                 continue
             }
             for version in versions where !version.hasPrefix(".") {
@@ -130,44 +263,151 @@ public struct BrewController: Sendable {
                 var verIsDir: ObjCBool = false
                 guard fm.fileExists(atPath: verDir.path, isDirectory: &verIsDir),
                       verIsDir.boolValue else { continue }
-                let pkg = build(name: name, version: version, kind: kind, verDir: verDir)
-                out.append(pkg)
+                let built = build(
+                    name: name,
+                    version: version,
+                    kind: kind,
+                    verDir: verDir,
+                    diagnosticSource: source
+                )
+                out.append(built.package)
+                diagnostics.append(contentsOf: built.diagnostics)
             }
         }
-        return out.sorted { ($0.name, $0.version) < ($1.name, $1.version) }
-    }
-
-    private func build(name: String, version: String, kind: BrewPackageKind,
-                       verDir: URL) -> BrewPackage {
-        let receipt = verDir.appendingPathComponent("INSTALL_RECEIPT.json")
-        let info = parseReceipt(at: receipt)
-        return BrewPackage(
-            name: name,
-            version: version,
-            kind: kind,
-            installedAt: info?.installedAt,
-            installedOnRequest: info?.installedOnRequest ?? (kind == .cask),
-            tap: info?.tap,
-            path: verDir,
-            sizeBytes: directoryAllocatedSize(at: verDir)
+        return BrewPackageListResult(
+            packages: out.sorted { ($0.name, $0.version) < ($1.name, $1.version) },
+            diagnostics: diagnostics,
+            status: diagnostics.isEmpty ? .complete : .partial
         )
     }
 
-    private func directoryAllocatedSize(at url: URL) -> Int64 {
-        let keys: [URLResourceKey] = [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileAllocatedSizeKey]
-        guard let enumerator = FileManager.default.enumerator(
-            at: url,
-            includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles],
-            errorHandler: nil
-        ) else { return 0 }
+    private func build(
+        name: String,
+        version: String,
+        kind: BrewPackageKind,
+        verDir: URL,
+        diagnosticSource: BrewDiagnostic.Source
+    ) -> (package: BrewPackage, diagnostics: [BrewDiagnostic]) {
+        let receipt = verDir.appendingPathComponent("INSTALL_RECEIPT.json")
+        let parsed = parseReceipt(at: receipt)
+        let size = directoryAllocatedSize(at: verDir, source: diagnosticSource)
+        let package = BrewPackage(
+            name: name,
+            version: version,
+            kind: kind,
+            installedAt: parsed.info?.installedAt,
+            installedOnRequest: parsed.info?.installedOnRequest ?? (kind == .cask),
+            tap: parsed.info?.tap,
+            path: verDir,
+            sizeBytes: size.bytes
+        )
+        return (package, parsed.diagnostics + size.diagnostics)
+    }
+
+    /// v2026.07.18: bytes and completeness are produced by one traversal. The former implementation
+    /// used `errorHandler: nil` plus `try?`, turning an unreadable subtree into authoritative 0 B.
+    /// Every enumeration/metadata gap now leaves a typed diagnostic and makes the package list
+    /// partial while preserving the trustworthy lower-bound bytes already measured.
+    private func directoryAllocatedSize(
+        at url: URL,
+        source: BrewDiagnostic.Source
+    ) -> BrewPackageSizeEvidence {
+        var pending = [url]
         var total: Int64 = 0
-        for case let fileURL as URL in enumerator {
-            let values = try? fileURL.resourceValues(forKeys: Set(keys))
-            guard values?.isRegularFile == true else { continue }
-            total &+= Int64(values?.totalFileAllocatedSize ?? values?.fileAllocatedSize ?? 0)
+        var diagnostics: [BrewDiagnostic] = []
+        while let directory = pending.popLast() {
+            if Task.isCancelled {
+                diagnostics.append(BrewDiagnostic(
+                    source: source,
+                    stage: .enumeratePackageSize,
+                    reason: .cancelled,
+                    path: directory.path
+                ))
+                break
+            }
+            let names: [String]
+            do {
+                names = try packageSizeFileSystem.contentsOfDirectory(directory).sorted()
+            } catch {
+                diagnostics.append(packageSizeDiagnostic(
+                    error,
+                    source: source,
+                    stage: .enumeratePackageSize,
+                    path: directory.path
+                ))
+                continue
+            }
+
+            for name in names where !name.hasPrefix(".") {
+                if Task.isCancelled {
+                    diagnostics.append(BrewDiagnostic(
+                        source: source,
+                        stage: .inspectPackageSize,
+                        reason: .cancelled,
+                        path: directory.path
+                    ))
+                    return BrewPackageSizeEvidence(bytes: total, diagnostics: diagnostics)
+                }
+                let child = directory.appendingPathComponent(name)
+                let facts: BrewPackageSizeEntryFacts
+                do {
+                    facts = try packageSizeFileSystem.entryFacts(child)
+                } catch {
+                    diagnostics.append(packageSizeDiagnostic(
+                        error,
+                        source: source,
+                        stage: .inspectPackageSize,
+                        path: child.path
+                    ))
+                    continue
+                }
+                switch facts.kind {
+                case .directory:
+                    pending.append(child)
+                case .regularFile:
+                    guard let bytes = facts.allocatedBytes, bytes >= 0 else {
+                        diagnostics.append(BrewDiagnostic(
+                            source: source,
+                            stage: .inspectPackageSize,
+                            reason: .missingMetadata,
+                            path: child.path
+                        ))
+                        continue
+                    }
+                    let next = total.addingReportingOverflow(bytes)
+                    guard !next.overflow else {
+                        diagnostics.append(BrewDiagnostic(
+                            source: source,
+                            stage: .inspectPackageSize,
+                            reason: .tooLarge,
+                            path: child.path
+                        ))
+                        continue
+                    }
+                    total = next.partialValue
+                case .symbolicLink, .other:
+                    continue
+                }
+            }
         }
-        return total
+        return BrewPackageSizeEvidence(bytes: total, diagnostics: diagnostics)
+    }
+
+    private func packageSizeDiagnostic(
+        _ error: Error,
+        source: BrewDiagnostic.Source,
+        stage: BrewDiagnostic.Stage,
+        path: String
+    ) -> BrewDiagnostic {
+        if BrewFileErrorClassifier.isMissing(error) {
+            return BrewDiagnostic(source: source, stage: stage, reason: .changed, path: path)
+        }
+        return brewLocalFileFailureDiagnostic(
+            error,
+            source: source,
+            stage: stage,
+            path: path
+        ) ?? BrewDiagnostic(source: source, stage: stage, reason: .unreadable, path: path)
     }
 
     private struct ReceiptInfo {
@@ -176,10 +416,40 @@ public struct BrewController: Sendable {
         var tap: String?
     }
 
-    private func parseReceipt(at url: URL) -> ReceiptInfo? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
+    private func parseReceipt(
+        at url: URL
+    ) -> (info: ReceiptInfo?, diagnostics: [BrewDiagnostic]) {
+        let data: Data
+        switch readBrewLocalFile(at: url, source: .installReceipt, reader: fileReader) {
+        case .missing:
+            return (nil, [])
+        case .failure(let diagnostic):
+            return (nil, [diagnostic])
+        case .contents(let contents):
+            data = contents
+        }
+
+        let json: [String: Any]
+        do {
+            guard let dictionary = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return (nil, [BrewDiagnostic(
+                    source: .installReceipt,
+                    stage: .decodeDocument,
+                    reason: .malformed,
+                    path: url.path
+                )])
+            }
+            json = dictionary
+        } catch {
+            let nsError = error as NSError
+            return (nil, [BrewDiagnostic(
+                source: .installReceipt,
+                stage: .decodeDocument,
+                reason: .malformed,
+                path: url.path,
+                errorDomain: nsError.domain,
+                errorCode: nsError.code
+            )])
         }
         var info = ReceiptInfo(installedAt: nil, installedOnRequest: false, tap: nil)
         if let time = json["time"] as? TimeInterval {
@@ -192,6 +462,6 @@ public struct BrewController: Sendable {
            let tap = source["tap"] as? String {
             info.tap = tap
         }
-        return info
+        return (info, [])
     }
 }

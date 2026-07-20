@@ -16,12 +16,15 @@
 		5A1B0011000000000000B001 /* BrewKit in Frameworks */ = {isa = PBXBuildFile; productRef = 5A1B0014000000000000B004 /* BrewKit */; };
 		5A1B0021000000000000C001 /* AIKit in Frameworks */ = {isa = PBXBuildFile; productRef = 5A1B0024000000000000C004 /* AIKit */; };
 		7E6A84ABC756B0F07C35C63B /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = F74FB5762A1E3FC026FA94BC /* InfoPlist.strings */; };
+		A17A00010000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A17A00020000000000000002 /* PrivacyInfo.xcprivacy */; };
 		809E0552B37329DA1D6DA483 /* SafetyKit in Frameworks */ = {isa = PBXBuildFile; productRef = AC93BBF658D8303974FC7762 /* SafetyKit */; };
 		830A3D28FFEF7066DA1D0A50 /* AppUI in Frameworks */ = {isa = PBXBuildFile; productRef = 269F7078D84D8EA818521F88 /* AppUI */; };
 		922FBAF195DAE3DEAE29336B /* GSYCleanMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1AC343FA0785D39B6C91BD3 /* GSYCleanMacApp.swift */; };
 		AA01E001000000000000S001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA01F001000000000000S001 /* main.swift */; };
 		AA01E002000000000000S002 /* amuxaiclean-sentinel in Embed Helper Tools */ = {isa = PBXBuildFile; fileRef = AA01F002000000000000S002 /* amuxaiclean-sentinel */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
-		AA01J001000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist in Embed LaunchDaemons */ = {isa = PBXBuildFile; fileRef = AA01J002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */; };
+		AA01J001000000000000S001 /* com.amux.ai.Clean.sentinel.agent.plist in Embed LaunchAgents */ = {isa = PBXBuildFile; fileRef = AA01J002000000000000S001 /* com.amux.ai.Clean.sentinel.agent.plist */; };
+		AA01K001000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist in Embed Legacy LaunchDaemon Migration Descriptor */ = {isa = PBXBuildFile; fileRef = AA01K002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */; };
+		AA01K005000000000000S001 /* com.amux.ai.Clean.sentinel.plist in Embed Legacy LaunchDaemon Migration Descriptor */ = {isa = PBXBuildFile; fileRef = AA01K006000000000000S001 /* com.amux.ai.Clean.sentinel.plist */; };
 		E0963A3E20D365A7E7DA8DE5 /* LogKit in Frameworks */ = {isa = PBXBuildFile; productRef = 869DB7788784E9203F564909 /* LogKit */; };
 /* End PBXBuildFile section */
 
@@ -47,15 +50,27 @@
 			name = "Embed Helper Tools";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		AA01J004000000000000S001 /* Embed LaunchDaemons */ = {
+		AA01J004000000000000S001 /* Embed LaunchAgents */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/LaunchAgents;
+			dstSubfolderSpec = 1;
+			files = (
+				AA01J001000000000000S001 /* com.amux.ai.Clean.sentinel.agent.plist in Embed LaunchAgents */,
+			);
+			name = "Embed LaunchAgents";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA01K004000000000000S001 /* Embed Legacy LaunchDaemon Migration Descriptor */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = Contents/Library/LaunchDaemons;
 			dstSubfolderSpec = 1;
 			files = (
-				AA01J001000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist in Embed LaunchDaemons */,
+				AA01K001000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist in Embed Legacy LaunchDaemon Migration Descriptor */,
+				AA01K005000000000000S001 /* com.amux.ai.Clean.sentinel.plist in Embed Legacy LaunchDaemon Migration Descriptor */,
 			);
-			name = "Embed LaunchDaemons";
+			name = "Embed Legacy LaunchDaemon Migration Descriptor";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -75,11 +90,14 @@
 		8172DA6157D4CAFB06EB4D81 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		887444FA009A4A5D18CE4E54 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		93739B16F64B55C9EA98583F /* SafetyKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = SafetyKit; path = Packages/SafetyKit; sourceTree = SOURCE_ROOT; };
+		A17A00020000000000000002 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		A1AC343FA0785D39B6C91BD3 /* GSYCleanMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GSYCleanMacApp.swift; sourceTree = "<group>"; };
 		AA01F001000000000000S001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		AA01F002000000000000S002 /* amuxaiclean-sentinel */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "amuxaiclean-sentinel"; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA01F003000000000000S003 /* Sentinel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Sentinel.entitlements; sourceTree = "<group>"; };
-		AA01J002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.guoshuyu.cleanmac.sentinel.plist; sourceTree = "<group>"; };
+		AA01J002000000000000S001 /* com.amux.ai.Clean.sentinel.agent.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.amux.ai.Clean.sentinel.agent.plist; sourceTree = "<group>"; };
+		AA01K002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.guoshuyu.cleanmac.sentinel.plist; sourceTree = "<group>"; };
+		AA01K006000000000000S001 /* com.amux.ai.Clean.sentinel.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.amux.ai.Clean.sentinel.plist; sourceTree = "<group>"; };
 		DF808A7550415E3DB686B545 /* HeuristicKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = HeuristicKit; path = Packages/HeuristicKit; sourceTree = SOURCE_ROOT; };
 		F4112C6CEEEE50474D0CB590 /* GSYCleanMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GSYCleanMac.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -168,10 +186,19 @@
 			path = Sentinel;
 			sourceTree = "<group>";
 		};
-		AA01J003000000000000S001 /* LaunchDaemons */ = {
+		AA01J003000000000000S001 /* LaunchAgents */ = {
 			isa = PBXGroup;
 			children = (
-				AA01J002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */,
+				AA01J002000000000000S001 /* com.amux.ai.Clean.sentinel.agent.plist */,
+			);
+			path = LaunchAgents;
+			sourceTree = "<group>";
+		};
+		AA01K003000000000000S001 /* LaunchDaemons */ = {
+			isa = PBXGroup;
+			children = (
+				AA01K002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */,
+				AA01K006000000000000S001 /* com.amux.ai.Clean.sentinel.plist */,
 			);
 			path = LaunchDaemons;
 			sourceTree = "<group>";
@@ -189,10 +216,12 @@
 			isa = PBXGroup;
 			children = (
 				F74FB5762A1E3FC026FA94BC /* InfoPlist.strings */,
+				A17A00020000000000000002 /* PrivacyInfo.xcprivacy */,
 				F4112C6CEEEE50474D0CB590 /* GSYCleanMac.entitlements */,
 				A1AC343FA0785D39B6C91BD3 /* GSYCleanMacApp.swift */,
 				7E48C094BFCC4AB8A1DD91EF /* Info.plist */,
-				AA01J003000000000000S001 /* LaunchDaemons */,
+				AA01J003000000000000S001 /* LaunchAgents */,
+				AA01K003000000000000S001 /* LaunchDaemons */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -234,7 +263,8 @@
 				88E7C9A4619484B52FA021B7 /* Resources */,
 				73F5C9E92640168B6A99A2CE /* Frameworks */,
 				AA01H001000000000000S001 /* Embed Helper Tools */,
-				AA01J004000000000000S001 /* Embed LaunchDaemons */,
+				AA01J004000000000000S001 /* Embed LaunchAgents */,
+				AA01K004000000000000S001 /* Embed Legacy LaunchDaemon Migration Descriptor */,
 			);
 			buildRules = (
 			);
@@ -312,6 +342,7 @@
 				4B62D5DF2FDAB0B100E44F76 /* vendors.yaml in Resources */,
 				4B62D5E02FDAB0B100E44F76 /* safe_paths.yaml in Resources */,
 				7E6A84ABC756B0F07C35C63B /* InfoPlist.strings in Resources */,
+				A17A00010000000000000001 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -442,7 +473,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.1;
+				MARKETING_VERSION = 1.6.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.amux.ai.Clean;
 				PRODUCT_NAME = AmuxAIClean;
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -563,7 +594,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.6.1;
+				MARKETING_VERSION = 1.6.2;
 				OTHER_CODE_SIGN_FLAGS = "$(inherited) --timestamp";
 				PRODUCT_BUNDLE_IDENTIFIER = com.amux.ai.Clean;
 				PRODUCT_NAME = AmuxAIClean;

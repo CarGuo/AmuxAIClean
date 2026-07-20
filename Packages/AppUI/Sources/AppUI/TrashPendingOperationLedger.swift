@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import LogKit
+import ScanKit
 
 /// Stable `lstat(2)` identity frozen before a request may enter `NSWorkspace.recycle`.
 ///
@@ -8,11 +9,7 @@ import LogKit
 /// window or even after the App restarts. A path string alone is therefore not a safe
 /// duplicate-submission key: the same path may now name a different inode. The persistent
 /// ledger always binds a normalized path to `(device, inode, file type)`.
-struct TrashPendingPathIdentity: Codable, Hashable, Sendable {
-    let device: UInt64
-    let inode: UInt64
-    let fileType: UInt16
-}
+typealias TrashPendingPathIdentity = TrashObjectIdentity
 
 /// Kernel-stable owner identity for one App process.
 ///
@@ -43,6 +40,10 @@ enum TrashPendingOperationStage: String, Codable, Hashable, Sendable {
     /// The normal callback has resumed its caller, so that caller may start one diagnostic
     /// retry. Keeping the prior attempt ID closes the ABA window until the new claim replaces it.
     case retryReady
+    /// AppKit confirmed a move, but its exact callback fact could not cross the durable Undo
+    /// journal boundary. This generation survives restart because the trashed pair cannot be
+    /// reconstructed safely from a pathname later.
+    case undoJournalBlocked
     /// The old path identity disappeared or was replaced after an unresolved operation. This
     /// tombstone is durable and can only be cleared by a future typed fresh-review capability.
     case needsFreshReview
@@ -102,8 +103,57 @@ enum TrashPendingLedgerClaim: Sendable, Equatable {
     case rejected(TrashPendingOperationRejection, invalidatedPaths: [String])
 }
 
+/// Result of acknowledging an AppKit callback against the exact durable attempt. A failed lock,
+/// read or fsync is not evidence that the callback is stale (v2026.07.18 journal-loss fix).
+enum TrashPendingLedgerCallbackObservation: Sendable, Equatable {
+    case applied
+    case stale
+    case storageUnavailable
+}
+
+/// Exact ledger acknowledgment after Undo has crossed its own durable boundary.
+enum TrashPendingLedgerAckResult: Sendable, Equatable {
+    case applied
+    case alreadyAbsent
+    case conflict
+    case storageUnavailable
+}
+
+/// Startup/late replay may act only after proving that the exact attempt's owner is dead.
+enum TrashPendingLedgerReplayDisposition: Sendable, Equatable {
+    case activeOwner
+    case replayable
+    case stale
+    case storageUnavailable
+}
+
+/// Stable identity for one exact AppKit submission generation. Journal-health presentation uses
+/// this capability instead of a process-local Boolean so an unrelated successful callback cannot
+/// clear a different operation's durable Undo failure (v2026.07.18 transaction fix).
+struct TrashPendingAttemptIdentity: Codable, Hashable, Sendable {
+    let operationID: UUID
+    let attemptID: UUID
+}
+
 struct TrashPendingLedgerReconciliation: Sendable, Equatable {
     let invalidatedPaths: [String]
+    let undoJournalBlockedPaths: [String]
+    let undoJournalBlockedAttempts: Set<TrashPendingAttemptIdentity>
+    /// False means the flock/read/write authority was unavailable. Callers must retain their
+    /// previous health projection rather than interpreting an empty fallback as "no blocks".
+    let storageAvailable: Bool
+
+    init(
+        invalidatedPaths: [String],
+        undoJournalBlockedPaths: [String] = [],
+        undoJournalBlockedAttempts: Set<TrashPendingAttemptIdentity> = [],
+        storageAvailable: Bool = true
+    ) {
+        self.invalidatedPaths = invalidatedPaths
+        self.undoJournalBlockedPaths = undoJournalBlockedPaths
+        self.undoJournalBlockedAttempts = undoJournalBlockedAttempts
+        self.storageAvailable = storageAvailable
+    }
 }
 
 protocol TrashPendingOperationLedger: Sendable {
@@ -116,14 +166,42 @@ protocol TrashPendingOperationLedger: Sendable {
     @discardableResult
     func markAPIReturned(paths: [String], operationID: UUID, attemptID: UUID) -> Bool
     @discardableResult
-    func markCallbackObserved(paths: [String], operationID: UUID, attemptID: UUID) -> Bool
+    func markCallbackObserved(
+        paths: [String],
+        operationID: UUID,
+        attemptID: UUID,
+        undoJournalBlockedPaths: Set<String>
+    ) -> TrashPendingLedgerCallbackObservation
     @discardableResult
     func markRetryReady(paths: [String], operationID: UUID, attemptID: UUID) -> Bool
     @discardableResult
     func finish(operationID: UUID, retainingPendingPaths: Set<String>) -> Bool
     @discardableResult
     func finish(paths: [String], operationID: UUID, attemptID: UUID) -> Bool
+    /// Returns the exact identities frozen by `reserve`. Production callbacks use this immutable
+    /// snapshot rather than probing a Trash pathname after the move has already completed.
+    func frozenIdentities(
+        paths: [String],
+        operationID: UUID
+    ) -> [String: TrashObjectIdentity]?
+    /// Recovery of a journal row must prove that its exact ledger generation still exists. A
+    /// stale callback may have appended a deterministic row just before losing the transition.
+    func ownsExactAttempt(paths: [String], operationID: UUID, attemptID: UUID) -> Bool
+    func replayDisposition(
+        paths: [String],
+        operationID: UUID,
+        attemptID: UUID
+    ) -> TrashPendingLedgerReplayDisposition
+    @discardableResult
+    func acknowledgeExactAttempt(
+        paths: [String],
+        operationID: UUID,
+        attemptID: UUID
+    ) -> TrashPendingLedgerAckResult
     func reconcilePersistedRecords() -> TrashPendingLedgerReconciliation
+    /// Full authoritative snapshot used to clear UI health only after every exact durable block
+    /// has actually disappeared. Nil means storage could not be inspected and must fail closed.
+    func undoJournalBlockedAttempts() -> Set<TrashPendingAttemptIdentity>?
 }
 
 extension TrashPendingOperationLedger {
@@ -133,6 +211,41 @@ extension TrashPendingOperationLedger {
     func reserve(paths: [String], operationID: UUID) -> TrashPendingLedgerReservation {
         reserve(paths: paths, operationID: operationID, reviewIdentity: nil)
     }
+
+    func frozenIdentities(
+        paths: [String],
+        operationID: UUID
+    ) -> [String: TrashObjectIdentity]? { nil }
+
+    func ownsExactAttempt(paths: [String], operationID: UUID, attemptID: UUID) -> Bool { false }
+
+    func replayDisposition(
+        paths: [String],
+        operationID: UUID,
+        attemptID: UUID
+    ) -> TrashPendingLedgerReplayDisposition { .storageUnavailable }
+
+    func acknowledgeExactAttempt(
+        paths: [String],
+        operationID: UUID,
+        attemptID: UUID
+    ) -> TrashPendingLedgerAckResult { .storageUnavailable }
+
+    func markCallbackObserved(
+        paths: [String],
+        operationID: UUID,
+        attemptID: UUID
+    ) -> TrashPendingLedgerCallbackObservation {
+        markCallbackObserved(
+            paths: paths,
+            operationID: operationID,
+            attemptID: attemptID,
+            undoJournalBlockedPaths: []
+        )
+    }
+
+    func undoJournalBlockedAttempts() -> Set<TrashPendingAttemptIdentity>? { nil }
+
 }
 
 /// Process-wide ownership for operations that may still receive an AppKit callback.
@@ -189,6 +302,20 @@ final class TrashActiveOperationRegistry: @unchecked Sendable {
 /// overwritten and silently permitting a duplicate recycle request.
 final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
                                                    @unchecked Sendable {
+    /// v2026.07.18 P1: the duplicate-submission authority must have a hard admission bound on
+    /// both sides of its RMW transaction. The limits are intentionally independent: 10,000 caps
+    /// logical/CAS work for a five-digit batch, while 16 MiB caps physical JSON memory. A batch
+    /// dominated by pathological long paths reaches the byte boundary first. Neither truncates.
+    struct StorageLimits: Sendable, Equatable {
+        let maximumBytes: Int
+        let maximumRecordCount: Int
+
+        static let production = StorageLimits(
+            maximumBytes: 16 * 1_024 * 1_024,
+            maximumRecordCount: 10_000
+        )
+    }
+
     private struct Record: Codable, Sendable, Equatable {
         let normalizedPath: String
         /// Parent request shared by the batch and its at-most-once diagnostic retries.
@@ -227,6 +354,8 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
     typealias ProcessLivenessProbe = @Sendable (
         TrashLedgerProcessIdentity
     ) -> TrashLedgerProcessLiveness
+    typealias DurableWriter = @Sendable (Data, URL) -> Bool
+    typealias BoundedReader = @Sendable (URL, Int) throws -> Data
 
     static let shared = PersistentTrashPendingOperationLedger()
 
@@ -238,22 +367,30 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
     private let activeOperationRegistry: TrashActiveOperationRegistry
     private let processIdentityProvider: ProcessIdentityProvider
     private let processLivenessProbe: ProcessLivenessProbe
+    private let durableWriter: DurableWriter
+    private let storageLimits: StorageLimits
+    private let boundedReader: BoundedReader
 
-    convenience init() {
+    /// v2026.07.20 P0: only `shared` may open the production ledger. Keeping this initializer
+    /// private prevents a test/helper from reaching Application Support by merely omitting a URL.
+    private convenience init() {
         let support = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support", isDirectory: true)
-        self.init(fileURL: support
-            .appendingPathComponent("AmuxAIClean", isDirectory: true)
-            .appendingPathComponent("trash-pending-operations.json", isDirectory: false))
+        self.init(
+            fileURL: support
+                .appendingPathComponent("AmuxAIClean", isDirectory: true)
+                .appendingPathComponent("trash-pending-operations.json", isDirectory: false),
+            activeOperationRegistry: .shared
+        )
     }
 
     /// Injectable only for isolated tests; production uses the Application Support location.
     convenience init(
         fileURL: URL,
-        activeOperationRegistry: TrashActiveOperationRegistry = .shared
+        activeOperationRegistry: TrashActiveOperationRegistry
     ) {
         self.init(
             fileURL: fileURL,
@@ -270,6 +407,14 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
                 case .unavailable:
                     return .unavailable
                 }
+            },
+            durableWriter: { data, url in
+                TrashDurableFileWriter.replace(
+                    data,
+                    at: url,
+                    temporaryPrefix: "trash-pending",
+                    logContext: "Trash pending ledger"
+                )
             }
         )
     }
@@ -280,13 +425,30 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
         fileURL: URL,
         activeOperationRegistry: TrashActiveOperationRegistry,
         processIdentityProvider: @escaping ProcessIdentityProvider,
-        processLivenessProbe: @escaping ProcessLivenessProbe
+        processLivenessProbe: @escaping ProcessLivenessProbe,
+        durableWriter: @escaping DurableWriter = { data, url in
+            TrashDurableFileWriter.replace(
+                data,
+                at: url,
+                temporaryPrefix: "trash-pending",
+                logContext: "Trash pending ledger"
+            )
+        },
+        storageLimits: StorageLimits = .production,
+        boundedReader: @escaping BoundedReader = { url, maximumBytes in
+            try BoundedLocalFileReader.read(at: url, maximumBytes: maximumBytes)
+        }
     ) {
+        precondition(storageLimits.maximumBytes >= 0)
+        precondition(storageLimits.maximumRecordCount >= 0)
         self.fileURL = fileURL
         self.lockFileURL = fileURL.appendingPathExtension("lock")
         self.activeOperationRegistry = activeOperationRegistry
         self.processIdentityProvider = processIdentityProvider
         self.processLivenessProbe = processLivenessProbe
+        self.durableWriter = durableWriter
+        self.storageLimits = storageLimits
+        self.boundedReader = boundedReader
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -418,6 +580,11 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
                         // tombstone after a crash, but it cannot duplicate a destructive request.
                         reasons[path] = .priorOperationPending
 
+                    case .undoJournalBlocked:
+                        // The move is terminal but its exact Trash destination was never durably
+                        // recorded. A fresh scan cannot recreate that lost Undo capability.
+                        reasons[path] = .ledgerUnavailable
+
                     case .callbackObserved, .retryReady:
                         // The exact attempt already has an authoritative terminal callback. It
                         // cannot act on a future occupant, so clear it and evaluate this request
@@ -541,7 +708,7 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
                     reasons[path] = .freshReviewRequired
                     invalidated.append(path)
                     ledgerChanged = true
-                case .present(let current) where current != record.identity:
+                case .present(let current) where !record.identity.matches(current):
                     Self.invalidate(record: &record, reason: .identityChanged)
                     envelope.records[path] = record
                     reasons[path] = .freshReviewRequired
@@ -572,6 +739,7 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
                     if record.stage != .submissionUnknown,
                        record.stage != .callbackPending,
                        record.stage != .callbackObserved,
+                       record.stage != .undoJournalBlocked,
                        record.stage != .needsFreshReview {
                         envelope.records.removeValue(forKey: path)
                         ledgerChanged = true
@@ -619,7 +787,8 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
                 guard let record = envelope.records[path] else { return false }
                 return record.operationID == operationID
                     && record.activeAttemptID == attemptID
-                    && [.submissionUnknown, .callbackObserved, .retryReady].contains(record.stage)
+                    && [.submissionUnknown, .callbackObserved, .retryReady, .undoJournalBlocked]
+                        .contains(record.stage)
             }) else {
                 return .value(false)
             }
@@ -642,14 +811,54 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
         }
     }
 
-    func markCallbackObserved(paths: [String], operationID: UUID, attemptID: UUID) -> Bool {
-        transition(
-            paths: paths,
-            operationID: operationID,
-            attemptID: attemptID,
-            allowedStages: [.submissionUnknown, .callbackPending],
-            to: .callbackObserved
-        )
+    func markCallbackObserved(
+        paths: [String],
+        operationID: UUID,
+        attemptID: UUID,
+        undoJournalBlockedPaths: Set<String>
+    ) -> TrashPendingLedgerCallbackObservation {
+        let normalized = Self.stableUnique(paths.map(Self.normalize))
+        let blocked = Set(undoJournalBlockedPaths.map(Self.normalize))
+        guard !normalized.isEmpty,
+              normalized.count == paths.count,
+              blocked.count == undoJournalBlockedPaths.count,
+              blocked.isSubset(of: Set(normalized)) else { return .stale }
+        return withTransaction(fallback: .storageUnavailable) { envelope in
+            guard normalized.allSatisfy({ path in
+                guard let record = envelope.records[path] else { return false }
+                return record.operationID == operationID
+                    && record.activeAttemptID == attemptID
+                    && record.stage != .needsFreshReview
+            }) else {
+                return .value(.stale)
+            }
+            // v2026.07.18 transaction invariant: callback observation and the exact paths whose
+            // Undo journal failed are one ledger commit. Persisting `.callbackObserved` first and
+            // `.undoJournalBlocked` in a second RMW left a crash window where startup cleared the
+            // only failure evidence. Later exact duplicate deliveries are monotonic: a durable
+            // block is never downgraded merely because a subsequent append happened to succeed.
+            let now = Date()
+            var changed = false
+            for path in normalized {
+                guard var record = envelope.records[path] else { continue }
+                let shouldBlockUndo = blocked.contains(path)
+                switch record.stage {
+                case .submissionUnknown, .callbackPending:
+                    record.stage = shouldBlockUndo ? .undoJournalBlocked : .callbackObserved
+                case .callbackObserved, .retryReady:
+                    guard shouldBlockUndo else { continue }
+                    record.stage = .undoJournalBlocked
+                case .undoJournalBlocked:
+                    continue
+                case .reserved, .needsFreshReview:
+                    return .value(.stale)
+                }
+                record.updatedAt = now
+                envelope.records[path] = record
+                changed = true
+            }
+            return changed ? .persistThen(.applied) : .value(.applied)
+        }
     }
 
     func markRetryReady(paths: [String], operationID: UUID, attemptID: UUID) -> Bool {
@@ -704,47 +913,166 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
     }
 
     func finish(paths: [String], operationID: UUID, attemptID: UUID) -> Bool {
+        acknowledgeExactAttempt(
+            paths: paths,
+            operationID: operationID,
+            attemptID: attemptID
+        ) == .applied
+    }
+
+    func acknowledgeExactAttempt(
+        paths: [String],
+        operationID: UUID,
+        attemptID: UUID
+    ) -> TrashPendingLedgerAckResult {
         struct FinishMutation {
-            let succeeded: Bool
+            let result: TrashPendingLedgerAckResult
             let shouldUnregister: Bool
         }
 
-        let normalized = Set(paths.map(Self.normalize))
+        let normalizedList = Self.stableUnique(paths.map(Self.normalize))
+        guard !normalizedList.isEmpty, normalizedList.count == paths.count else {
+            return .conflict
+        }
+        let normalized = Set(normalizedList)
         let mutation = withTransaction(fallback: FinishMutation(
-            succeeded: false,
+            result: .storageUnavailable,
             shouldUnregister: false
         )) { envelope in
+            var matchingCount = 0
+            var hasConflict = false
+            for path in normalized {
+                guard let record = envelope.records[path] else { continue }
+                guard record.operationID == operationID,
+                      record.activeAttemptID == attemptID else {
+                    hasConflict = true
+                    break
+                }
+                matchingCount += 1
+            }
+            if matchingCount == 0 {
+                // v2026.07.18 recovery-generation fix: a newer reservation at the same pathname
+                // is not ownership by this old exact attempt. Treat the old attempt as absent and
+                // leave every newer row untouched. Only a partial exact match is a split-brain
+                // conflict, because clearing that subset could strand sibling rows.
+                let hasActiveRecords = envelope.records.values.contains {
+                    $0.operationID == operationID && $0.stage != .needsFreshReview
+                }
+                return .value(FinishMutation(
+                    result: .alreadyAbsent,
+                    shouldUnregister: !hasActiveRecords
+                ))
+            }
+            if hasConflict || matchingCount != normalized.count {
+                return .value(FinishMutation(result: .conflict, shouldUnregister: false))
+            }
             var changed = false
-            var removedOwnedRecord = false
             for path in normalized {
                 guard let record = envelope.records[path],
                       record.operationID == operationID,
                       record.activeAttemptID == attemptID else { continue }
                 envelope.records.removeValue(forKey: path)
                 changed = true
-                removedOwnedRecord = true
             }
             let hasActiveRecords = envelope.records.values.contains {
                 $0.operationID == operationID && $0.stage != .needsFreshReview
             }
             let result = FinishMutation(
-                succeeded: removedOwnedRecord,
-                shouldUnregister: removedOwnedRecord && !hasActiveRecords
+                result: .applied,
+                shouldUnregister: !hasActiveRecords
             )
             return changed ? .persistThen(result) : .value(result)
         }
-        if mutation.succeeded, mutation.shouldUnregister {
+        if mutation.result != .storageUnavailable, mutation.shouldUnregister {
             _ = activeOperationRegistry.unregister(operationID)
         }
-        return mutation.succeeded
+        return mutation.result
+    }
+
+    func frozenIdentities(
+        paths: [String],
+        operationID: UUID
+    ) -> [String: TrashObjectIdentity]? {
+        let normalized = Self.stableUnique(paths.map(Self.normalize))
+        return withTransaction(fallback: nil as [String: TrashObjectIdentity]?) { envelope in
+            var result: [String: TrashObjectIdentity] = [:]
+            for path in normalized {
+                guard let record = envelope.records[path],
+                      record.operationID == operationID,
+                      record.stage != .needsFreshReview else { return .value(nil) }
+                result[path] = record.identity
+            }
+            return .value(result)
+        }
+    }
+
+    func ownsExactAttempt(paths: [String], operationID: UUID, attemptID: UUID) -> Bool {
+        let normalized = Self.stableUnique(paths.map(Self.normalize))
+        return withTransaction(fallback: false) { envelope in
+            .value(normalized.allSatisfy { path in
+                guard let record = envelope.records[path] else { return false }
+                return record.operationID == operationID
+                    && record.activeAttemptID == attemptID
+                    && record.stage != .needsFreshReview
+            })
+        }
+    }
+
+    func replayDisposition(
+        paths: [String],
+        operationID: UUID,
+        attemptID: UUID
+    ) -> TrashPendingLedgerReplayDisposition {
+        let normalized = Self.stableUnique(paths.map(Self.normalize))
+        guard !normalized.isEmpty, normalized.count == paths.count else { return .stale }
+        return withTransaction(fallback: .storageUnavailable) { envelope in
+            var sawUnavailable = false
+            for path in normalized {
+                guard let record = envelope.records[path],
+                      record.operationID == operationID,
+                      record.activeAttemptID == attemptID,
+                      record.stage != .needsFreshReview else {
+                    return .value(.stale)
+                }
+                switch ownerLiveness(for: record) {
+                case .active:
+                    return .value(.activeOwner)
+                case .unavailable:
+                    sawUnavailable = true
+                case .inactive:
+                    break
+                }
+            }
+            return .value(sawUnavailable ? .storageUnavailable : .replayable)
+        }
     }
 
     func reconcilePersistedRecords() -> TrashPendingLedgerReconciliation {
-        return withTransaction(fallback: .init(invalidatedPaths: [])) { envelope in
+        return withTransaction(fallback: .init(
+            invalidatedPaths: [],
+            storageAvailable: false
+        )) { envelope in
             var invalidated: [String] = []
+            var undoJournalBlocked: [String] = []
+            var undoJournalBlockedAttempts: Set<TrashPendingAttemptIdentity> = []
+            var blockedAttemptAuthorityComplete = true
             var changed = false
             for path in Array(envelope.records.keys) {
                 guard var record = envelope.records[path] else { continue }
+                if record.stage == .undoJournalBlocked {
+                    undoJournalBlocked.append(path)
+                    if let attemptID = record.activeAttemptID {
+                        undoJournalBlockedAttempts.insert(.init(
+                            operationID: record.operationID,
+                            attemptID: attemptID
+                        ))
+                    } else {
+                        // An unkeyed block cannot participate in operation-scoped health. Treat
+                        // the snapshot as unavailable rather than projecting a false empty set.
+                        blockedAttemptAuthorityComplete = false
+                    }
+                    continue
+                }
                 // v2026.07.16 cross-process root-cause fix: classification happens while this
                 // exact envelope is protected by flock. The local registry closes the tiny
                 // register->persist window; persisted PID + kernel start time is the authority
@@ -771,7 +1099,7 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
                     switch Self.probe(path) {
                     case .absent:
                         invalidated.append(path)
-                    case .present(let current) where current != record.identity:
+                    case .present(let current) where !record.identity.matches(current):
                         invalidated.append(path)
                     case .present, .unavailable:
                         break
@@ -786,14 +1114,31 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
                     // of being rewritten merely because another App instance started.
                     break
 
+                case .undoJournalBlocked:
+                    break
+
                 case .needsFreshReview:
                     break
                 }
             }
             let result = TrashPendingLedgerReconciliation(
-                invalidatedPaths: Self.stableUnique(invalidated)
+                invalidatedPaths: Self.stableUnique(invalidated),
+                undoJournalBlockedPaths: Self.stableUnique(undoJournalBlocked),
+                undoJournalBlockedAttempts: undoJournalBlockedAttempts,
+                storageAvailable: blockedAttemptAuthorityComplete
             )
             return changed ? .persistThen(result) : .value(result)
+        }
+    }
+
+    func undoJournalBlockedAttempts() -> Set<TrashPendingAttemptIdentity>? {
+        withTransaction(fallback: nil as Set<TrashPendingAttemptIdentity>?) { envelope in
+            var attempts: Set<TrashPendingAttemptIdentity> = []
+            for record in envelope.records.values where record.stage == .undoJournalBlocked {
+                guard let attemptID = record.activeAttemptID else { return .value(nil) }
+                attempts.insert(.init(operationID: record.operationID, attemptID: attemptID))
+            }
+            return .value(attempts)
         }
     }
 
@@ -851,17 +1196,41 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
     }
 
     private func loadEnvelope() -> Envelope? {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            return Envelope(schemaVersion: 2, records: [:])
-        }
+        let data: Data
         do {
-            let data = try Data(contentsOf: fileURL, options: [.mappedIfSafe])
+            data = try boundedReader(fileURL, storageLimits.maximumBytes)
+        } catch let error as BoundedLocalFileReadError {
+            if case .metadataUnavailable(stage: .initialPath, posixErrorCode: ENOENT) = error {
+                return Envelope(schemaVersion: 2, records: [:])
+            }
+            logBoundedReadFailure(error)
+            return nil
+        } catch {
+            let diagnostic = error as NSError
+            GSYLog.error(
+                .trash,
+                "trash.pending_ledger.read_failed stage=boundedRead reason=unexpected domain=\(diagnostic.domain) code=\(diagnostic.code) maxBytes=\(storageLimits.maximumBytes) path=\(fileURL.path)"
+            )
+            return nil
+        }
+
+        do {
             let decoded = try decoder.decode(Envelope.self, from: data)
+            guard decoded.records.count <= storageLimits.maximumRecordCount else {
+                GSYLog.error(
+                    .trash,
+                    "trash.pending_ledger.read_failed stage=validate reason=recordLimit recordCount=\(decoded.records.count) maxRecords=\(storageLimits.maximumRecordCount) path=\(fileURL.path)"
+                )
+                return nil
+            }
             guard (decoded.schemaVersion == 1 || decoded.schemaVersion == 2),
                   decoded.records.allSatisfy({ key, record in
                       key == record.normalizedPath && Self.isStructurallyValid(record)
                   }) else {
-                GSYLog.error(.trash, "Trash pending ledger schema or key identity is invalid")
+                GSYLog.error(
+                    .trash,
+                    "trash.pending_ledger.read_failed stage=validate reason=invalidEnvelope schema=\(decoded.schemaVersion) recordCount=\(decoded.records.count) path=\(fileURL.path)"
+                )
                 return nil
             }
             // Schema 1 predates cross-process owner identity. Optional decoding preserves those
@@ -870,24 +1239,125 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
             // the unresolved generation.
             return Envelope(schemaVersion: 2, records: decoded.records)
         } catch {
-            GSYLog.error(.trash, "Trash pending ledger read failed path=\(fileURL.path) error=\(error)")
+            let diagnostic = error as NSError
+            GSYLog.error(
+                .trash,
+                "trash.pending_ledger.read_failed stage=decode reason=malformed domain=\(diagnostic.domain) code=\(diagnostic.code) bytes=\(data.count) path=\(fileURL.path)"
+            )
             return nil
         }
     }
 
     private func persist(_ envelope: Envelope) -> Bool {
+        guard envelope.schemaVersion == 2 else {
+            GSYLog.error(
+                .trash,
+                "trash.pending_ledger.write_rejected stage=validate reason=unsupportedSchema schema=\(envelope.schemaVersion) path=\(fileURL.path)"
+            )
+            return false
+        }
+        guard envelope.records.count <= storageLimits.maximumRecordCount else {
+            GSYLog.error(
+                .trash,
+                "trash.pending_ledger.write_rejected stage=validate reason=recordLimit recordCount=\(envelope.records.count) maxRecords=\(storageLimits.maximumRecordCount) path=\(fileURL.path)"
+            )
+            return false
+        }
+        guard envelope.records.allSatisfy({ key, record in
+            key == record.normalizedPath && Self.isStructurallyValid(record)
+        }) else {
+            GSYLog.error(
+                .trash,
+                "trash.pending_ledger.write_rejected stage=validate reason=invalidEnvelope recordCount=\(envelope.records.count) path=\(fileURL.path)"
+            )
+            return false
+        }
+
+        let data: Data
+        do {
+            data = try encoder.encode(envelope)
+        } catch {
+            let diagnostic = error as NSError
+            GSYLog.error(
+                .trash,
+                "trash.pending_ledger.write_failed stage=encode reason=serialization domain=\(diagnostic.domain) code=\(diagnostic.code) recordCount=\(envelope.records.count) path=\(fileURL.path)"
+            )
+            return false
+        }
+        guard data.count <= storageLimits.maximumBytes else {
+            GSYLog.error(
+                .trash,
+                "trash.pending_ledger.write_rejected stage=encode reason=byteLimit bytes=\(data.count) maxBytes=\(storageLimits.maximumBytes) recordCount=\(envelope.records.count) path=\(fileURL.path)"
+            )
+            return false
+        }
+
         do {
             try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            let data = try encoder.encode(envelope)
-            try data.write(to: fileURL, options: [.atomic])
-            return true
         } catch {
-            GSYLog.error(.trash, "Trash pending ledger atomic write failed path=\(fileURL.path) error=\(error)")
+            let diagnostic = error as NSError
+            GSYLog.error(
+                .trash,
+                "trash.pending_ledger.write_failed stage=createDirectory reason=io domain=\(diagnostic.domain) code=\(diagnostic.code) path=\(fileURL.path)"
+            )
             return false
         }
+        guard durableWriter(data, fileURL) else {
+            GSYLog.error(
+                .trash,
+                "trash.pending_ledger.write_failed stage=durableReplace reason=writerRejected bytes=\(data.count) path=\(fileURL.path)"
+            )
+            return false
+        }
+        return true
+    }
+
+    private func logBoundedReadFailure(_ error: BoundedLocalFileReadError) {
+        let stage: String
+        let reason: String
+        let details: String
+        switch error {
+        case .invalidFileURL:
+            stage = "validateURL"
+            reason = "invalidFileURL"
+            details = ""
+        case .metadataUnavailable(let metadataStage, let code):
+            stage = metadataStage.rawValue
+            reason = code == ENOENT ? "changed" : "metadataUnavailable"
+            details = ""
+        case .openFailed(let code):
+            stage = "open"
+            reason = code == ENOENT ? "changed" : "openFailed"
+            details = ""
+        case .readFailed:
+            stage = "read"
+            reason = "readFailed"
+            details = ""
+        case .tooLarge(let limit, let observedSize):
+            stage = "initialOrStreamingSize"
+            reason = "tooLarge"
+            details = " limit=\(limit) observedBytes=\(observedSize)"
+        case .unsafeType(let kind):
+            stage = "fileType"
+            reason = "unsafeType"
+            details = " fileKind=\(kind.rawValue)"
+        case .changed:
+            stage = "identityVersion"
+            reason = "changed"
+            details = ""
+        case .cancelled:
+            stage = "read"
+            reason = "cancelled"
+            details = ""
+        }
+        let code = error.posixErrorCode.map(String.init) ?? "none"
+        GSYLog.error(
+            .trash,
+            "trash.pending_ledger.read_failed stage=\(stage) reason=\(reason) domain=\(error.posixErrorCode == nil ? "none" : NSPOSIXErrorDomain) code=\(code) maxBytes=\(storageLimits.maximumBytes)\(details) path=\(fileURL.path)"
+        )
     }
 
     private func withCrossProcessLock<T>(_ body: () -> T) -> T? {
@@ -913,6 +1383,13 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
             return nil
         }
         defer { _ = flock(descriptor, LOCK_UN) }
+        // v2026.07.18 P2: only this stable flock proves that no pending-ledger writer still owns
+        // one of the exact `.trash-pending.<UUID>.tmp` siblings left before atomic rename.
+        TrashDurableFileWriter.removeAbandonedTemporaryFiles(
+            nextTo: fileURL,
+            temporaryPrefix: "trash-pending",
+            logContext: "Trash pending ledger"
+        )
         return body()
     }
 
@@ -961,11 +1438,7 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
         guard lstat(path, &metadata) == 0 else {
             return errno == ENOENT || errno == ENOTDIR ? .absent : .unavailable
         }
-        return .present(.init(
-            device: UInt64(bitPattern: Int64(metadata.st_dev)),
-            inode: UInt64(metadata.st_ino),
-            fileType: UInt16(metadata.st_mode & mode_t(S_IFMT))
-        ))
+        return .present(TrashObjectIdentity(metadata: metadata))
     }
 
     private static func invalidate(
@@ -991,7 +1464,8 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
         switch record.stage {
         case .reserved:
             return record.activeAttemptID == nil && record.invalidationReason == nil
-        case .submissionUnknown, .callbackPending, .callbackObserved, .retryReady:
+        case .submissionUnknown, .callbackPending, .callbackObserved, .retryReady,
+             .undoJournalBlocked:
             return record.activeAttemptID != nil && record.invalidationReason == nil
         case .needsFreshReview:
             return record.activeAttemptID == nil && record.invalidationReason != nil

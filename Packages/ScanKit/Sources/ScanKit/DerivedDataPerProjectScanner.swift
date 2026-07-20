@@ -48,7 +48,17 @@ public actor DerivedDataPerProjectScanner {
         } catch is CancellationError {
             return []
         } catch {
-            GSYLog.error(.scan, "DerivedData discovery unexpected error: \(error)")
+            let diagnostic = ScanFailureDiagnostic(
+                source: .derivedData,
+                stage: .discovery,
+                reason: .unexpectedFailure,
+                error: error
+            )
+            GSYLog.error(
+                .scan,
+                "derived_data.failure \(diagnostic.logFields) "
+                    + "root=\(Self.derivedDataRoot(home: home).path)"
+            )
             return []
         }
     }
@@ -126,7 +136,17 @@ public actor DerivedDataPerProjectScanner {
             )
         } catch {
             // 空 cancellationCheck 不会抛；保留类型安全的不可达分支并留下诊断。
-            GSYLog.error(.scan, "DerivedData synchronous discovery unexpected error: \(error)")
+            let diagnostic = ScanFailureDiagnostic(
+                source: .derivedData,
+                stage: .discovery,
+                reason: .unexpectedFailure,
+                error: error
+            )
+            GSYLog.error(
+                .scan,
+                "derived_data.failure \(diagnostic.logFields) "
+                    + "root=\(derivedDataRoot(home: home).path)"
+            )
             return DiscoveryEvidence(hits: [], incompleteIssues: [
                 ScanIncompleteIssue(path: derivedDataRoot(home: home).path, reason: .enumerationFailed)
             ])
@@ -143,7 +163,16 @@ public actor DerivedDataPerProjectScanner {
             )
         } catch {
             let root = derivedDataRoot(home: home)
-            GSYLog.error(.scan, "DerivedData snapshot unexpected error root=\(root.path): \(error)")
+            let diagnostic = ScanFailureDiagnostic(
+                source: .derivedData,
+                stage: .snapshot,
+                reason: .unexpectedFailure,
+                error: error
+            )
+            GSYLog.error(
+                .scan,
+                "derived_data.failure \(diagnostic.logFields) root=\(root.path)"
+            )
             let issue = ScanIncompleteIssue(path: root.path, reason: .enumerationFailed)
             return DerivedDataScanSnapshot(
                 rootURL: root,
@@ -401,8 +430,19 @@ public actor DerivedDataPerProjectScanner {
                 continue
             }
             guard type == .typeDirectory else { continue }
-            guard isProjectDirectory(name: name, at: child) else {
-                sharedDirectoryCount += 1
+            let classification = try classifyProjectDirectory(
+                name: name,
+                at: child,
+                fileSystem: fileSystem,
+                shouldCancel: { Task.isCancelled }
+            )
+            if let issue = classification.incompleteIssue {
+                incompleteIssues.append(issue)
+            }
+            guard classification.isProject else {
+                if classification.incompleteIssue == nil {
+                    sharedDirectoryCount += 1
+                }
                 continue
             }
             let modificationDate = attributes[.modificationDate] as? Date
@@ -433,13 +473,125 @@ public actor DerivedDataPerProjectScanner {
     /// This intentionally avoids a growing deny-list of cache product names: new shared
     /// caches are excluded by shape, including CompilationCache.noindex and
     /// SDKStatCaches.noindex, without adding either spelling to production logic.
-    private nonisolated static func isProjectDirectory(name: String, at url: URL) -> Bool {
+    private struct ProjectDirectoryClassification {
+        let isProject: Bool
+        let incompleteIssue: ScanIncompleteIssue?
+    }
+
+    /// v2026.07.18：`info.plist` 缺失是正常布局；已有文件不可读/损坏不能再被静默当成
+    /// “不是工程”。若目录名的 hash 形状已能独立证明工程身份，保留完整结果并仅写本地
+    /// 诊断；否则通过现有 DiscoveryEvidence 暴露 typed incomplete。
+    private nonisolated static func classifyProjectDirectory(
+        name: String,
+        at url: URL,
+        fileSystem: any DynamicDiscoveryFileSystem,
+        shouldCancel: @Sendable () -> Bool
+    ) throws -> ProjectDirectoryClassification {
         if url.pathExtension.caseInsensitiveCompare("noindex") == .orderedSame {
-            return false
+            return ProjectDirectoryClassification(isProject: false, incompleteIssue: nil)
         }
-        if hasWorkspaceMetadata(at: url.appendingPathComponent("info.plist")) {
-            return true
+        let hasHashedIdentity = hasProjectHashSuffix(name)
+        let plistURL = url.appendingPathComponent("info.plist")
+
+        let data: Data
+        do {
+            data = try fileSystem.dataContents(
+                of: plistURL,
+                maximumBytes: BoundedLocalFileReader.defaultMaximumBytes,
+                shouldCancel: shouldCancel
+            )
+        } catch {
+            if error as? BoundedLocalFileReadError == .cancelled {
+                throw CancellationError()
+            }
+            if DiscoveryFileErrorClassifier.isMissing(error) {
+                return ProjectDirectoryClassification(
+                    isProject: hasHashedIdentity,
+                    incompleteIssue: nil
+                )
+            }
+            let boundedError = error as? BoundedLocalFileReadError
+            let reason: ScanIncompleteReason = {
+                guard let code = boundedError?.posixErrorCode else {
+                    return DiscoveryFileErrorClassifier.incompleteReason(
+                        for: error,
+                        fallback: .metadataUnavailable
+                    )
+                }
+                return code == EACCES || code == EPERM
+                    ? .permissionDenied
+                    : .metadataUnavailable
+            }()
+            let issue = ScanIncompleteIssue(
+                path: plistURL.path,
+                reason: reason,
+                stage: .metadata,
+                posixErrorCode: boundedError?.posixErrorCode
+                    ?? DiscoveryFileErrorClassifier.posixErrorCode(for: error)
+            )
+            logWorkspaceMarkerFailure(
+                path: plistURL.path,
+                kind: reason == .permissionDenied ? "permissionDenied" : "unreadable",
+                fallbackAccepted: hasHashedIdentity,
+                posixErrorCode: issue.posixErrorCode
+            )
+            return ProjectDirectoryClassification(
+                isProject: hasHashedIdentity,
+                incompleteIssue: hasHashedIdentity ? nil : issue
+            )
         }
+
+        let propertyList: Any
+        do {
+            propertyList = try PropertyListSerialization.propertyList(
+                from: data,
+                options: [],
+                format: nil
+            )
+        } catch {
+            let issue = ScanIncompleteIssue(
+                path: plistURL.path,
+                reason: .metadataUnavailable,
+                stage: .metadata
+            )
+            logWorkspaceMarkerFailure(
+                path: plistURL.path,
+                kind: "malformed",
+                fallbackAccepted: hasHashedIdentity,
+                posixErrorCode: nil
+            )
+            return ProjectDirectoryClassification(
+                isProject: hasHashedIdentity,
+                incompleteIssue: hasHashedIdentity ? nil : issue
+            )
+        }
+        guard let dictionary = propertyList as? [String: Any] else {
+            let issue = ScanIncompleteIssue(
+                path: plistURL.path,
+                reason: .metadataUnavailable,
+                stage: .metadata
+            )
+            logWorkspaceMarkerFailure(
+                path: plistURL.path,
+                kind: "invalidRoot",
+                fallbackAccepted: hasHashedIdentity,
+                posixErrorCode: nil
+            )
+            return ProjectDirectoryClassification(
+                isProject: hasHashedIdentity,
+                incompleteIssue: hasHashedIdentity ? nil : issue
+            )
+        }
+        if dictionary["WorkspacePath"] is String || dictionary["ProjectPath"] is String {
+            return ProjectDirectoryClassification(isProject: true, incompleteIssue: nil)
+        }
+        return ProjectDirectoryClassification(
+            isProject: hasHashedIdentity,
+            incompleteIssue: nil
+        )
+    }
+
+    private nonisolated static func hasProjectHashSuffix(_ name: String) -> Bool {
         guard let dash = name.lastIndex(of: "-"), dash != name.startIndex else { return false }
         let suffix = name[name.index(after: dash)...]
         guard suffix.count >= 3 else { return false }
@@ -449,16 +601,19 @@ public actor DerivedDataPerProjectScanner {
         }
     }
 
-    private nonisolated static func hasWorkspaceMetadata(at plistURL: URL) -> Bool {
-        guard let data = try? Data(contentsOf: plistURL),
-              let dictionary = try? PropertyListSerialization.propertyList(
-                from: data,
-                options: [],
-                format: nil
-              ) as? [String: Any] else {
-            return false
-        }
-        return dictionary["WorkspacePath"] is String || dictionary["ProjectPath"] is String
+    private nonisolated static func logWorkspaceMarkerFailure(
+        path: String,
+        kind: String,
+        fallbackAccepted: Bool,
+        posixErrorCode: Int32?
+    ) {
+        let errnoValue = posixErrorCode.map { String($0) } ?? "none"
+        GSYLog.warning(
+            .scan,
+            "derived_data.workspace_marker_failure kind=\(kind) path=\(path) "
+                + "hashed_fallback=\(fallbackAccepted) "
+                + "errno=\(errnoValue)"
+        )
     }
 
     /// One recursive enumeration for both aggregate bytes and all project buckets.
@@ -713,7 +868,16 @@ public actor DerivedDataPerProjectScanner {
             ).sizeBytes
         } catch {
             // 空 cancellationCheck 不会抛；保留不可达分支的诊断，兼容 API 仍以 nil 表示未知。
-            GSYLog.error(.scan, "DerivedData size estimation unexpected error path=\(path): \(error)")
+            let diagnostic = ScanFailureDiagnostic(
+                source: .derivedData,
+                stage: .sizeEstimation,
+                reason: .unexpectedFailure,
+                error: error
+            )
+            GSYLog.error(
+                .scan,
+                "derived_data.failure \(diagnostic.logFields) path=\(path)"
+            )
             return nil
         }
     }

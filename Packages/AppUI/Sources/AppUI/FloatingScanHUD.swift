@@ -160,7 +160,8 @@ public final class FloatingScanHUDController {
     public func reconcile() {
         guard let coordinator, let settings, let smartCareSession else { return }
         let baseVisible = settings.hudEnabled && (
-            coordinator.isScanning
+            coordinator.hasActivePrimaryScanOwnership
+                || smartCareSession.scanCoordinator.hasActivePrimaryScanOwnership
                 || smartCareSession.isBusy
                 || forceVisible
                 || settings.hudPersistent
@@ -206,7 +207,8 @@ public final class FloatingScanHUDController {
                 guard let self else { return }
                 guard let coord = self.coordinator, let s = self.settings else { return }
                 let stillVisible = s.hudEnabled && (
-                    coord.isScanning
+                    coord.hasActivePrimaryScanOwnership
+                        || self.smartCareSession?.scanCoordinator.hasActivePrimaryScanOwnership == true
                         || self.smartCareSession?.isBusy == true
                         || self.forceVisible
                         || s.hudPersistent
@@ -917,6 +919,10 @@ struct IslandUnifiedShape: Shape {
 struct FloatingScanHUDView: View {
     @Environment(\.locale) private var locale
     @ObservedObject var coordinator: ScanCoordinator
+    /// v2026.07.20: scan counters have a narrow observation root. Keeping the coordinator for
+    /// low-frequency phase/terminal state is intentional; live progress must not be republished
+    /// through it or the main window and HUD will hitch in lockstep again.
+    @ObservedObject private var liveProgress: ScanLiveProgressStore
     @ObservedObject var smartCareSession: SmartCareSession
     @ObservedObject var settings: AppSettings
     @ObservedObject var islandState: IslandHoverState
@@ -952,6 +958,7 @@ struct FloatingScanHUDView: View {
          onStartScan: @escaping () -> Void,
          onClose: @escaping () -> Void) {
         self.coordinator = coordinator
+        self._liveProgress = ObservedObject(wrappedValue: coordinator.liveProgress)
         self._smartCareSession = ObservedObject(wrappedValue: smartCareSession)
         self._settings = ObservedObject(wrappedValue: settings)
         self.islandState = islandState
@@ -963,7 +970,8 @@ struct FloatingScanHUDView: View {
 
     /// 总容量；优先用 coordinator.volumeSnapshot（系统真实磁盘），缺失时按已扫总和兜底（避免 0 除）。
     private var totalBytes: Int64 {
-        coordinator.volumeSnapshot?.totalBytes ?? max(coordinator.snapshot.totalBytes, 1)
+        coordinator.volumeSnapshot?.totalBytes
+            ?? max(liveProgress.frame.totalBytes, coordinator.snapshot.totalBytes, 1)
     }
 
     private var availableBytes: Int64 {
@@ -986,7 +994,7 @@ struct FloatingScanHUDView: View {
         case .cleaning:
             return smartCareSession.care.selectedBytes
         case .reviewing, .confirming, .completed:
-            if !coordinator.isScanning {
+            if !coordinator.hasActivePrimaryScanOwnership {
                 return smartCareSession.care.selectedBytes
             }
         case .idle, .failed, .cancelled:
@@ -1014,8 +1022,12 @@ struct FloatingScanHUDView: View {
         case idle
     }
     private var phase: HUDPhase {
+        if settlementStatusText != nil { return .scanning }
         if smartCareIsActive { return .scanning }
-        if coordinator.isScanning { return .scanning }
+        if coordinator.hasActivePrimaryScanOwnership
+            || smartCareSession.scanCoordinator.hasActivePrimaryScanOwnership {
+            return .scanning
+        }
         if !smartCareSession.care.summary.items.isEmpty {
             switch smartCareSession.care.phase {
             case .reviewing, .confirming, .completed: return .finished
@@ -1072,7 +1084,12 @@ struct FloatingScanHUDView: View {
     }
     /// 速度文案——"2.4 MB/s"，速率不足时显示"估算中…"。
     private var speedText: String {
-        let bps = coordinator.snapshot.bytesPerSecond
+        let bps: Double
+        if case .scanning = phase {
+            bps = liveProgress.frame.bytesPerSecond
+        } else {
+            bps = coordinator.snapshot.bytesPerSecond
+        }
         if bps > 1024 {
             let mbps = bps / 1_000_000
             if mbps >= 10 {
@@ -1449,7 +1466,8 @@ struct FloatingScanHUDView: View {
     private var compactHeroContent: FloatingHUDHeroContent {
         FloatingHUDContentPolicy.compact(
             activity: compactActivity,
-            scanningTitle: FloatingHUDLocalization.string("hud.scanning", locale: liveLocale),
+            scanningTitle: settlementStatusText
+                ?? FloatingHUDLocalization.string("hud.scanning", locale: liveLocale),
             cleaningTitle: FloatingHUDLocalization.string("hud.cleaning", locale: liveLocale),
             regular: expandedHeroContent
         )
@@ -1458,7 +1476,9 @@ struct FloatingScanHUDView: View {
     private var expandedHeroMainTitle: String {
         switch phase {
         case .scanning:
-            return smartCareActivityTitle ?? FloatingHUDLocalization.string("hud.scanning", locale: liveLocale)
+            return settlementStatusText
+                ?? smartCareActivityTitle
+                ?? FloatingHUDLocalization.string("hud.scanning", locale: liveLocale)
         case .finished:
             return FloatingHUDLocalization.severityLabel(cleanableSeverity, locale: liveLocale)
         case .idle: return idleLeadingText
@@ -1466,14 +1486,18 @@ struct FloatingScanHUDView: View {
     }
 
     private var expandedHeroLeftSub: String? {
+        if settlementStatusText != nil { return nil }
         if case .scanning = phase { return scanTimerShortText() }
         return nil
     }
 
     private var heroRightValueText: String {
+        if settlementStatusText != nil { return "—" }
         switch phase {
         case .scanning:
-            return bytesString(smartCareIsActive ? cleanableBytes : coordinator.snapshot.totalBytes)
+            return bytesString(
+                smartCareIsActive ? cleanableBytes : liveProgress.frame.totalBytes
+            )
         case .finished: return bytesString(cleanableBytes)
         case .idle: return bytesString(availableBytes)
         }
@@ -1491,6 +1515,15 @@ struct FloatingScanHUDView: View {
         case .idle, .reviewing, .confirming, .completed, .failed, .cancelled:
             return nil
         }
+    }
+
+    /// The two UI coordinators share one admission domain, but each exposes its own typed pending
+    /// intent. Prefer that presentation over a false "scanning" label while the predecessor still
+    /// owns filesystem teardown.
+    private var settlementStatusText: String? {
+        let descriptor = coordinator.scanPhase.settlementStatusPresentation
+            ?? smartCareSession.scanCoordinator.scanPhase.settlementStatusPresentation
+        return descriptor?.localized(locale: liveLocale)
     }
 
     private var heroRightValueColor: Color {

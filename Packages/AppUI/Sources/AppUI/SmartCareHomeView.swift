@@ -199,6 +199,28 @@ enum SmartCarePresentation {
     }
 }
 
+/// 普通模式范围卡的选择决策。开发缓存首次开启必须先让用户确认耗时，
+/// 其它选择与取消都立即生效；专业模式不经过这条策略。
+enum SmartCareStageSelectionPolicy {
+    enum Decision: Equatable {
+        case apply
+        case confirmDeveloperCacheDuration
+    }
+
+    static func decision(
+        stage: SmartCareScanStage,
+        selected: Bool,
+        developerWarningAcknowledged: Bool
+    ) -> Decision {
+        if stage == .developerCaches,
+           selected,
+           !developerWarningAcknowledged {
+            return .confirmDeveloperCacheDuration
+        }
+        return .apply
+    }
+}
+
 public struct SmartCareHomeView: View {
     public let coordinator: SmartCareCoordinator
 
@@ -210,6 +232,7 @@ public struct SmartCareHomeView: View {
     private let aiError: String?
     private let aiItemStates: [String: SmartCareAIItemState]
     private let aiReportAvailable: Bool
+    private let onStageSelectionChange: (SmartCareScanStage, Bool) -> Void
     private let onPrimaryAction: (SmartCarePrimaryAction) -> Void
     private let onAIReview: () -> Void
     private let onAICancel: () -> Void
@@ -224,6 +247,7 @@ public struct SmartCareHomeView: View {
                 aiError: String? = nil,
                 aiItemStates: [String: SmartCareAIItemState] = [:],
                 aiReportAvailable: Bool = false,
+                onStageSelectionChange: @escaping (SmartCareScanStage, Bool) -> Void = { _, _ in },
                 onPrimaryAction: @escaping (SmartCarePrimaryAction) -> Void = { _ in },
                 onAIReview: @escaping () -> Void = {},
                 onAICancel: @escaping () -> Void = {},
@@ -237,6 +261,7 @@ public struct SmartCareHomeView: View {
         self.aiError = aiError
         self.aiItemStates = aiItemStates
         self.aiReportAvailable = aiReportAvailable
+        self.onStageSelectionChange = onStageSelectionChange
         self.onPrimaryAction = onPrimaryAction
         self.onAIReview = onAIReview
         self.onAICancel = onAICancel
@@ -254,6 +279,7 @@ public struct SmartCareHomeView: View {
             aiError: aiError,
             aiItemStates: aiItemStates,
             aiReportAvailable: aiReportAvailable,
+            onStageSelectionChange: onStageSelectionChange,
             onPrimaryAction: onPrimaryAction,
             onAIReview: onAIReview,
             onAICancel: onAICancel,

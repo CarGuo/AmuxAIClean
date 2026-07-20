@@ -24,7 +24,7 @@
 适合快速验证 release 构建、内部传递候选包，不能等价为 Gatekeeper 公共分发闭环。
 
 ```bash
-VERSION=1.6.0 ./Scripts/build_release.sh --no-notarize
+./Scripts/build_release.sh --no-notarize
 ```
 
 产物：
@@ -49,7 +49,6 @@ VERSION=1.6.0 ./Scripts/build_release.sh --no-notarize
 适合正式对外分发候选包。提交前应确认 app bundle 内没有测试数据、私密配置或不该上传给 Apple 的文件。
 
 ```bash
-VERSION=1.6.0 \
 AMUX_CLEAN_NOTARY_KEYCHAIN_PROFILE=amux-notary \
 ./Scripts/build_release.sh --notarize
 ```
@@ -71,11 +70,11 @@ AMUX_CLEAN_NOTARY_KEYCHAIN_PROFILE=amux-notary \
 可配置环境变量：
 
 ```bash
-VERSION=1.6.0
+VERSION=x.y.z                     # 可选；默认读取工程 MARKETING_VERSION
 BUILD_NUMBER=1234
 BUILD_DIR=build/release
 DIST_DIR=dist
-DMG_PATH=dist/AmuxAIClean-1.6.0.dmg
+DMG_PATH=dist/AmuxAIClean-x.y.z.dmg
 AMUX_CLEAN_NOTARY_KEYCHAIN_PROFILE=amux-notary
 NOTARY_TIMEOUT=45m
 ```
@@ -106,7 +105,7 @@ NOTARY_TIMEOUT=45m
 
 ## 三、GitHub Actions release 当前停用
 
-当前 [.github/workflows/release.yml](../.github/workflows/release.yml) 只有 `workflow_dispatch` 入口，且 `build-dmg` job 配置为 `if: false`。因此：
+当前 [.github/workflows/release.yml](../.github/workflows/release.yml) 只有 `workflow_dispatch` 入口，且 `release-disabled` job 配置为 `if: false`。因此：
 
 - push `v1.x.y` tag **不会**触发 release；
 - 手动 dispatch 也不会执行被停用的 job；
@@ -115,8 +114,9 @@ NOTARY_TIMEOUT=45m
 tag 目前只应在本地产物完成验证并准备发布时，作为对应提交的版本标记：
 
 ```bash
-git tag v1.6.0 -m "Release 1.6.0"
-git push origin v1.6.0
+RELEASE_VERSION=x.y.z
+git tag "v${RELEASE_VERSION}" -m "Release ${RELEASE_VERSION}"
+git push origin "v${RELEASE_VERSION}"
 ```
 
 若未来恢复 CI 发版，必须先移除禁用条件、明确触发策略，并接入 Developer ID 私钥、Notary 凭据及 secrets 管理；恢复前不能把该 workflow 描述为发布来源。
@@ -128,7 +128,7 @@ git push origin v1.6.0
 维护者发布 DMG 与对应 `.sha256` 文件后，用户下载可在终端：
 
 ```bash
-shasum -a 256 AmuxAIClean-1.6.0.dmg
+shasum -a 256 AmuxAIClean-x.y.z.dmg
 ```
 
 把命令输出与 release 中 `*.sha256` 文件首列做比对，一致即代表下载完整、未被中间网络替换。

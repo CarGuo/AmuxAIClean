@@ -106,6 +106,25 @@ final class SurfaceGroupALiveLocalizationTests: XCTestCase {
         )
     }
 
+    /// v2026.07.18 P1 privacy regression: rolling-file diagnostics must never stringify an
+    /// arbitrary provider/system Error. Known AI errors retain only stable typed facts.
+    @MainActor
+    func test_stashQueue_loggingFactsNeverContainProviderPayloadOrCredentials() {
+        let httpFacts = StashAIQueue.loggingFacts(
+            for: OpenAIChatClient.Error.http(status: 503, responseBytes: 4_096)
+        )
+        XCTAssertEqual(
+            httpFacts,
+            "OpenAIChatClient.Error.http(status=503, responseBytes=4096)"
+        )
+
+        let unknownFacts = StashAIQueue.loggingFacts(for: SensitiveAIProviderError())
+        XCTAssertEqual(unknownFacts, "OpenAIChatClient.Error.unexpected")
+        XCTAssertFalse(unknownFacts.contains("sk-provider-secret"))
+        XCTAssertFalse(unknownFacts.contains("provider-payload"))
+        XCTAssertFalse(unknownFacts.contains("/Users/alice"))
+    }
+
     func test_largeFileLabels_useExplicitViewLocale() {
         XCTAssertEqual(FileKind.video.label(locale: english), "Video")
         XCTAssertEqual(FileKind.video.label(locale: simplifiedChinese), "视频")
@@ -153,5 +172,11 @@ final class SurfaceGroupALiveLocalizationTests: XCTestCase {
             )
         }
         return url
+    }
+}
+
+private struct SensitiveAIProviderError: Error, CustomStringConvertible {
+    var description: String {
+        "sk-provider-secret provider-payload /Users/alice/private"
     }
 }

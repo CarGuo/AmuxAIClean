@@ -8,6 +8,11 @@ import ScanKit
 /// No test in this file starts a real `simctl` process. Normal execution tests inject a dry-run
 /// executor; the stall contract uses only `/bin/sleep` to prove detaching never kills a process.
 final class SimulatorDeleteCoordinatorTests: XCTestCase {
+    private static let boundedLedgerProcess = SimulatorLedgerProcessIdentity(
+        pid: 52_001,
+        startTimeSeconds: 300,
+        startTimeMicroseconds: 3
+    )
     private let deviceUUID = "11111111-2222-3333-4444-555555555555"
     private let runtimeUUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     private let secondRuntimeUUID = "12345678-1234-1234-1234-123456789abc"
@@ -1433,6 +1438,178 @@ final class SimulatorDeleteCoordinatorTests: XCTestCase {
         )
     }
 
+    /// v2026.07.18 P1 regression: malformed/oversized managed-operation authority can never be
+    /// interpreted as an empty first run or overwritten while minting a new Process.run permit.
+    func test_persistentLedger_oversizedReadFailsClosedAndPreservesExistingBytes() throws {
+        let fixture = try makeBoundedLedgerFixture("Oversized")
+        let existing = Data(repeating: 0x4D, count: 129)
+        try existing.write(to: fixture.fileURL)
+        let ledger = makeBoundedLedger(
+            fileURL: fixture.fileURL,
+            storageLimits: .init(maximumBytes: 128, maximumRecordCount: 10)
+        )
+
+        XCTAssertEqual(
+            ledger.observation(identifier: runtimeUUID, kind: .simulatorRuntime),
+            .init(state: .unavailable, attemptID: nil)
+        )
+        XCTAssertEqual(
+            ledger.reserve(
+                identifier: runtimeUUID,
+                kind: .simulatorRuntime,
+                reviewIdentity: reviewIdentity
+            ),
+            .persistenceFailed
+        )
+        XCTAssertEqual(try Data(contentsOf: fixture.fileURL), existing)
+    }
+
+    func test_persistentLedger_symlinkReadFailsClosedAndPreservesDestination() throws {
+        let fixture = try makeBoundedLedgerFixture("Symlink")
+        let destination = fixture.directory.appendingPathComponent("destination.json")
+        let existing = Data("do-not-replace".utf8)
+        try existing.write(to: destination)
+        try FileManager.default.createSymbolicLink(
+            at: fixture.fileURL,
+            withDestinationURL: destination
+        )
+        let ledger = makeBoundedLedger(fileURL: fixture.fileURL)
+
+        XCTAssertEqual(
+            ledger.observation(identifier: runtimeUUID, kind: .simulatorRuntime),
+            .init(state: .unavailable, attemptID: nil)
+        )
+        XCTAssertEqual(
+            ledger.reserve(
+                identifier: runtimeUUID,
+                kind: .simulatorRuntime,
+                reviewIdentity: reviewIdentity
+            ),
+            .persistenceFailed
+        )
+        XCTAssertEqual(try Data(contentsOf: destination), existing)
+    }
+
+    /// A replacement or deletion found after initial metadata is never equivalent to the sole
+    /// empty-ledger case (`initialPath + ENOENT`). Both races preserve the prior authority bytes.
+    func test_persistentLedger_readReplacementAndFinalDeletionFailClosed() throws {
+        let fixture = try makeBoundedLedgerFixture("ReadRace")
+        let owner = makeBoundedLedger(fileURL: fixture.fileURL)
+        guard case .reserved = owner.reserve(
+            identifier: runtimeUUID,
+            kind: .simulatorRuntime,
+            reviewIdentity: reviewIdentity
+        ) else { return XCTFail("Fixture ledger must be created") }
+        let existing = try Data(contentsOf: fixture.fileURL)
+
+        let scriptedErrors: [BoundedLocalFileReadError] = [
+            .changed,
+            .metadataUnavailable(stage: .finalPath, posixErrorCode: ENOENT),
+        ]
+        for error in scriptedErrors {
+            let ledger = makeBoundedLedger(
+                fileURL: fixture.fileURL,
+                boundedReader: { _, _ in throw error }
+            )
+            XCTAssertEqual(
+                ledger.observation(identifier: secondRuntimeUUID, kind: .simulatorRuntime),
+                .init(state: .unavailable, attemptID: nil)
+            )
+            XCTAssertEqual(
+                ledger.reserve(
+                    identifier: secondRuntimeUUID,
+                    kind: .simulatorRuntime,
+                    reviewIdentity: reviewIdentity
+                ),
+                .persistenceFailed
+            )
+            XCTAssertEqual(try Data(contentsOf: fixture.fileURL), existing)
+        }
+    }
+
+    func test_persistentLedger_recordCountWriteLimitPreservesExistingLedger() throws {
+        let fixture = try makeBoundedLedgerFixture("RecordLimit")
+        guard case .reserved = makeBoundedLedger(fileURL: fixture.fileURL).reserve(
+            identifier: runtimeUUID,
+            kind: .simulatorRuntime,
+            reviewIdentity: reviewIdentity
+        ) else { return XCTFail("Fixture ledger must be created") }
+        let existing = try Data(contentsOf: fixture.fileURL)
+        let ledger = makeBoundedLedger(
+            fileURL: fixture.fileURL,
+            storageLimits: .init(
+                maximumBytes: PersistentSimulatorManagedOperationLedger.StorageLimits
+                    .production.maximumBytes,
+                maximumRecordCount: 1
+            )
+        )
+
+        XCTAssertEqual(
+            ledger.reserve(
+                identifier: secondRuntimeUUID,
+                kind: .simulatorRuntime,
+                reviewIdentity: reviewIdentity
+            ),
+            .persistenceFailed
+        )
+        XCTAssertEqual(try Data(contentsOf: fixture.fileURL), existing)
+    }
+
+    func test_persistentLedger_encodedByteWriteLimitPreservesExistingLedger() throws {
+        let fixture = try makeBoundedLedgerFixture("EncodedByteLimit")
+        guard case .reserved = makeBoundedLedger(fileURL: fixture.fileURL).reserve(
+            identifier: runtimeUUID,
+            kind: .simulatorRuntime,
+            reviewIdentity: reviewIdentity
+        ) else { return XCTFail("Fixture ledger must be created") }
+        let existing = try Data(contentsOf: fixture.fileURL)
+        let ledger = makeBoundedLedger(
+            fileURL: fixture.fileURL,
+            storageLimits: .init(maximumBytes: existing.count, maximumRecordCount: 2)
+        )
+
+        XCTAssertEqual(
+            ledger.reserve(
+                identifier: secondRuntimeUUID,
+                kind: .simulatorRuntime,
+                reviewIdentity: reviewIdentity
+            ),
+            .persistenceFailed
+        )
+        XCTAssertEqual(try Data(contentsOf: fixture.fileURL), existing)
+    }
+
+    private func makeBoundedLedgerFixture(
+        _ label: String
+    ) throws -> (directory: URL, fileURL: URL) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "SimulatorLedger\(label)-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return (directory, directory.appendingPathComponent("ledger.json"))
+    }
+
+    private func makeBoundedLedger(
+        fileURL: URL,
+        storageLimits: PersistentSimulatorManagedOperationLedger.StorageLimits = .production,
+        boundedReader: @escaping PersistentSimulatorManagedOperationLedger.BoundedReader = {
+            url,
+            maximumBytes in
+            try BoundedLocalFileReader.read(at: url, maximumBytes: maximumBytes)
+        }
+    ) -> PersistentSimulatorManagedOperationLedger {
+        let process = Self.boundedLedgerProcess
+        return PersistentSimulatorManagedOperationLedger(
+            fileURL: fileURL,
+            processIdentityProvider: { process },
+            processLivenessProbe: { $0 == process ? .active : .inactive },
+            storageLimits: storageLimits,
+            boundedReader: boundedReader
+        )
+    }
+
     private var deviceCardID: String { "card.test.simulator-devices" }
     private var runtimeCardID: String { "card.test.simulator-runtimes" }
     private var filesystemCardID: String { "card.test.filesystem" }
@@ -1744,6 +1921,14 @@ final class WorkflowManagedUninstallViewModelTests: XCTestCase {
                 executor: SubprocessExecutor(timeout: 1, dryRun: true),
                 isSimulatorRunning: { false },
                 bootedDeviceProbe: { .safeToSubmit }
+            ),
+            // v2026.07.20: even a managed-only ViewModel test must not inherit production Undo;
+            // future fixture changes may add filesystem moved pairs to the same model.
+            undoHistoryStore: UndoHistoryStore(
+                storeURL: home.appendingPathComponent(
+                    ".SimulatorDeleteCoordinatorTests-\(UUID().uuidString)-UndoHistory.json"
+                ),
+                allowedRestoreRoots: [home.path]
             )
         )
     }

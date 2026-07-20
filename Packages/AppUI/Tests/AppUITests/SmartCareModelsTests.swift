@@ -192,7 +192,7 @@ final class SmartCareModelsTests: XCTestCase {
             from: .normal,
             to: .professional,
             smartCareIsScanning: true,
-            professionalIsScanning: true,
+            professionalHasActivePrimaryScan: true,
             cancelSmartCare: { smartCareCancelCount += 1 },
             cancelProfessional: { professionalCancelCount += 1 },
             cancelProfessionalTransientWork: { transientProfessionalCancelCount += 1 }
@@ -205,7 +205,7 @@ final class SmartCareModelsTests: XCTestCase {
             from: .professional,
             to: .normal,
             smartCareIsScanning: true,
-            professionalIsScanning: false,
+            professionalHasActivePrimaryScan: false,
             cancelSmartCare: { smartCareCancelCount += 1 },
             cancelProfessional: { professionalCancelCount += 1 },
             cancelProfessionalTransientWork: { transientProfessionalCancelCount += 1 }
@@ -215,6 +215,19 @@ final class SmartCareModelsTests: XCTestCase {
                        "已完成的离开侧结果必须保留，不能把模式切换误当清空结果")
         XCTAssertEqual(transientProfessionalCancelCount, 1,
                        "保留完成结果时仍必须停止离开页面后的按需 Tree 磁盘遍历")
+
+        MainScanOwnershipPolicy.relinquishDepartingMode(
+            from: .professional,
+            to: .normal,
+            smartCareIsScanning: false,
+            professionalHasActivePrimaryScan: true,
+            cancelSmartCare: { smartCareCancelCount += 1 },
+            cancelProfessional: { professionalCancelCount += 1 },
+            cancelProfessionalTransientWork: { transientProfessionalCancelCount += 1 }
+        )
+        XCTAssertEqual(professionalCancelCount, 1,
+                       "settling 的主扫描尚持有待启动 intent，离开专业模式必须取消")
+        XCTAssertEqual(transientProfessionalCancelCount, 1)
     }
 
     @MainActor

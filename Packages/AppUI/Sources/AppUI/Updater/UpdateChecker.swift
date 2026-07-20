@@ -6,9 +6,9 @@ import SwiftUI
 /// v1.1 更新检查器：手写 GitHub Releases API 路线（不引入 Sparkle）。
 ///
 /// **为什么不用 Sparkle 2？**
-/// - 我们走 ad-hoc 签名（无 Apple Developer Program），Sparkle 2 默认要求 EdDSA 签名 + 公证更新包
-/// - 我们没有 appcast.xml 服务器，GitHub Release 的 tag_name 已经是事实上的 SemVer 源
-/// - 用户决策：不自动下载 / 不自动安装，只做"提示 + 跳转 Release 页"，避免任何沉默升级风险
+/// - v2026.07.18 真实发行边界是 Developer ID + 公证 DMG，但产品没有 appcast 或自动安装合同；
+/// - GitHub Release 的 tag_name 是当前显式版本源；
+/// - 客户端只做“提示 + 跳转已验证 Release 页”，不自动下载或安装，避免静默升级能力扩张。
 ///
 /// **流程**：
 /// 1. 启动时（如果 settings.updateCheckEnabled）调一次 `GET https://api.github.com/repos/CarGuo/GSYCleanMac/releases/latest`
@@ -16,20 +16,26 @@ import SwiftUI
 /// 3. 远端更新且未被"跳过此版本"标记 → MainActor 上设 `availableUpdate`，UI sheet 显示
 /// 4. 用户三选一：跳过此版本（写 skippedUpdateTag）/ 稍后提醒（什么都不做）/ 前往下载（NSWorkspace.open html_url）
 ///
-/// **隐私 / 流量承诺**：
-/// - 只在启动时打 **一次** API（约 2 KB JSON）
+/// **隐私 / 流量合同**：
+/// - 每个 App 进程最多自动检查一次（约 2 KB JSON），重建主窗口不重试
 /// - 用户可在设置里关闭（"启动检查更新" toggle，默认 ON）
 /// - 不发任何 telemetry / 不带任何 query 参数
+/// - v2026.07.18 起不再自动请求 Release asset：GitHub 官方只承诺 asset
+///   下载可返回 200/302，未对 302 最终 host 给出可稳定验证的仓库归属合同。
+///   在不能证明重定向边界时，优先取消该请求，不使用推测的 CDN allowlist。
 public struct ReleaseInfo: Sendable, Equatable {
     public let tagName: String
     public let name: String
     public let htmlURL: URL
     public let body: String
     public let publishedAt: Date?
-    /// v1.5.7：Release assets 列表，用于（1）展示给用户已发布的产物（2）拉 `*.sha256` 做完整性提示。
+    /// v2026.07.18：只保留经仓库归属验证的 Release asset 元数据。
+    /// 不会由 App 自动请求 `downloadURL`，避免未受证明的 302 落点扩大网络边界。
     public let assets: [ReleaseAsset]
 
-    public init(tagName: String, name: String, htmlURL: URL, body: String, publishedAt: Date?, assets: [ReleaseAsset] = []) {
+    /// v2026.07.18：构造器保持 internal，防止 AppUI 外部绕过 parser 伪造任意
+    /// `htmlURL` 再交给 `NSWorkspace.open`。对外只暴露已验证完成的不可变值。
+    init(tagName: String, name: String, htmlURL: URL, body: String, publishedAt: Date?, assets: [ReleaseAsset] = []) {
         self.tagName = tagName
         self.name = name
         self.htmlURL = htmlURL
@@ -39,17 +45,28 @@ public struct ReleaseInfo: Sendable, Equatable {
     }
 }
 
-/// v1.5.7：GitHub Release asset 简化模型。
+/// v2026.07.18：GitHub Release asset 简化模型。`downloadURL` 已经验证为
+/// `https://github.com/<owner>/<repo>/releases/download/<tag>/<name>`，
+/// 但仅作为 Release 元数据，不构成自动跟随其重定向的授权。
 public struct ReleaseAsset: Sendable, Equatable {
     public let name: String
     public let downloadURL: URL
     public let sizeBytes: Int
 
-    public init(name: String, downloadURL: URL, sizeBytes: Int) {
+    /// 同 ReleaseInfo，禁止外部伪造跨仓库 asset URL。
+    init(name: String, downloadURL: URL, sizeBytes: Int) {
         self.name = name
         self.downloadURL = downloadURL
         self.sizeBytes = sizeBytes
     }
+}
+
+/// v2026.07.18：校验文件自动拉取策略是类型化的产品/安全合同，
+/// 避免以后在 View 里因“想显示 hash”就重新打开任意 asset redirect。
+public enum AutomaticChecksumFetchPolicy: Sendable, Equatable {
+    /// GitHub 文档允许 asset API/browser URL 返回 302，但不承诺稳定的
+    /// 最终 origin 集合；因此 App 不自动拉取 checksum asset。
+    case disabledBecauseRedirectDestinationIsUnverifiable
 }
 
 /// v2026.07.15：更新检查失败保存稳定事实，不在网络任务结束时固化进程首选语言。
@@ -58,6 +75,9 @@ public enum UpdateCheckFailure: Sendable, Equatable {
     case invalidRequestURL(String)
     case httpStatus(Int)
     case invalidReleaseURL
+    /// API 重定向、最终响应 URL 偏离固定 endpoint，或 Release/asset URL
+    /// 不属于配置的 GitHub 仓库。该事实与 JSON 语法错误分开保存。
+    case untrustedResponseSource
     case invalidResponse
     case requestFailed(domain: String, code: Int)
 
@@ -80,6 +100,9 @@ public enum UpdateCheckFailure: Sendable, Equatable {
                 "updater.error.html_url_parse_failed",
                 locale: locale
             )
+        case .untrustedResponseSource:
+            // 用户只需知道返回不可信；host/path 细节仅进入脱敏日志。
+            return AppLocalization.string("updater.error.invalid_response", locale: locale)
         case .invalidResponse:
             return AppLocalization.string("updater.error.invalid_response", locale: locale)
         case .requestFailed(let domain, let code):
@@ -137,12 +160,204 @@ public enum SemVer {
 
 private enum UpdateReleaseParsingError: Error {
     case invalidReleaseURL
+    case untrustedResponseSource
+}
+
+/// v2026.07.18：更新请求的唯一 URL 信任边界。
+///
+/// 不依赖字符串 prefix：先拒绝 userinfo/port/query/fragment，再按解码后的
+/// path component 精确匹配 owner/repo/tag/name，避免子域、编码斜杠和前缀仓库混淆。
+struct UpdateRepositoryNetworkBoundary: Sendable {
+    let owner: String
+    let repo: String
+
+    init?(owner: String, repo: String) {
+        guard Self.isOwner(owner), Self.isRepository(repo) else { return nil }
+        self.owner = owner
+        self.repo = repo
+    }
+
+    var latestReleaseAPIURL: URL {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "api.github.com"
+        components.path = "/repos/\(owner)/\(repo)/releases/latest"
+        // owner/repo 在 init 已经收窄到 ASCII path component，构造必定成功。
+        return components.url!
+    }
+
+    func ownsLatestReleaseAPIURL(_ url: URL) -> Bool {
+        guard let components = trustedHTTPSComponents(url, host: "api.github.com") else {
+            return false
+        }
+        return decodedPathComponents(components) == [
+            "repos", owner, repo, "releases", "latest",
+        ]
+    }
+
+    func ownsReleasePageURL(_ url: URL, tag: String) -> Bool {
+        guard Self.isReleaseTag(tag),
+              let components = trustedHTTPSComponents(url, host: "github.com") else {
+            return false
+        }
+        let path = decodedPathComponents(components)
+        guard path.count == 5 else { return false }
+        return path[0].caseInsensitiveCompare(owner) == .orderedSame
+            && path[1].caseInsensitiveCompare(repo) == .orderedSame
+            && path[2] == "releases"
+            && path[3] == "tag"
+            && path[4] == tag
+    }
+
+    func ownsReleaseAssetURL(_ url: URL, tag: String, assetName: String) -> Bool {
+        guard Self.isReleaseTag(tag), Self.isAssetName(assetName),
+              let components = trustedHTTPSComponents(url, host: "github.com") else {
+            return false
+        }
+        let path = decodedPathComponents(components)
+        guard path.count == 6 else { return false }
+        return path[0].caseInsensitiveCompare(owner) == .orderedSame
+            && path[1].caseInsensitiveCompare(repo) == .orderedSame
+            && path[2] == "releases"
+            && path[3] == "download"
+            && path[4] == tag
+            && path[5] == assetName
+    }
+
+    private func trustedHTTPSComponents(_ url: URL, host: String) -> URLComponents? {
+        guard !url.isFileURL,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme?.lowercased() == "https",
+              components.host?.lowercased() == host,
+              components.port == nil,
+              components.user == nil,
+              components.password == nil,
+              components.query == nil,
+              components.fragment == nil else {
+            return nil
+        }
+        return components
+    }
+
+    private func decodedPathComponents(_ components: URLComponents) -> [String] {
+        guard let url = components.url else { return [] }
+        var path = url.pathComponents
+        if path.first == "/" { path.removeFirst() }
+        return path
+    }
+
+    private static func isOwner(_ value: String) -> Bool {
+        guard (1...39).contains(value.utf8.count),
+              value.first != "-", value.last != "-" else { return false }
+        return value.unicodeScalars.allSatisfy {
+            isASCIIAlphanumeric($0) || $0 == "-"
+        }
+    }
+
+    private static func isRepository(_ value: String) -> Bool {
+        guard (1...100).contains(value.utf8.count), value != ".", value != ".." else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy {
+            isASCIIAlphanumeric($0) || "._-".unicodeScalars.contains($0)
+        }
+    }
+
+    private static func isReleaseTag(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 100,
+              value != ".", value != "..", !value.contains("/") else { return false }
+        return value.unicodeScalars.allSatisfy {
+            isASCIIAlphanumeric($0) || ".+_-".unicodeScalars.contains($0)
+        }
+    }
+
+    private static func isAssetName(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 255,
+              value != ".", value != "..",
+              !value.contains("/"), !value.contains("\\") else { return false }
+        return !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+    }
+
+    private static func isASCIIAlphanumeric(_ scalar: UnicodeScalar) -> Bool {
+        switch scalar.value {
+        case 48...57, 65...90, 97...122:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+/// v2026.07.18：ephemeral session 的 redirect/auth 闸门。更新 API 只有一个
+/// 固定 endpoint，而 checksum 自动拉取已关闭，因此任何 HTTP redirect
+/// 都没有业务必要；返回 nil 同时防止 header/body 被 URLSession 复用到新 origin。
+enum UpdateRedirectPolicy {
+    static func requestAfterRedirect(_ request: URLRequest) -> URLRequest? {
+        nil
+    }
+}
+
+final class UpdateSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        completionHandler(UpdateRedirectPolicy.requestAfterRedirect(request))
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust {
+            completionHandler(.performDefaultHandling, nil)
+        } else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+        }
+    }
+}
+
+/// v2026.07.18：生产与 URLProtocol 测试共用同一个 session 工厂。
+/// 测试只替换底层 protocol class，不复制或放宽网络策略。
+@MainActor
+enum UpdateSessionFactory {
+    static func configuration(protocolClasses: [AnyClass]?) -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 30
+        configuration.waitsForConnectivity = false
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.urlCredentialStorage = nil
+        configuration.allowsCellularAccess = true
+        if let protocolClasses { configuration.protocolClasses = protocolClasses }
+        return configuration
+    }
+
+    static func makeSession(protocolClasses: [AnyClass]?) -> URLSession {
+        URLSession(
+            configuration: configuration(protocolClasses: protocolClasses),
+            delegate: UpdateSessionDelegate(),
+            delegateQueue: nil
+        )
+    }
 }
 
 /// MainActor 持有的状态对象。v2026.07.16 起通过 Combine 发布用户可见检查状态，
 /// 网络 session、仓库标识和 settings 引用不参与发布，以兼容 macOS 13.5。
 @MainActor
 public final class UpdateChecker: ObservableObject {
+    public static let automaticChecksumFetchPolicy: AutomaticChecksumFetchPolicy =
+        .disabledBecauseRedirectDestinationIsUnverifiable
+
     /// 当前需要展示的可用新版本；nil 表示没有需要提示的更新。
     @Published public var availableUpdate: ReleaseInfo?
     /// 上次检查的结果（设置面板里"立即检查"按钮可看到详情）。
@@ -152,37 +367,51 @@ public final class UpdateChecker: ObservableObject {
 
     private let owner: String
     private let repo: String
+    private let networkBoundary: UpdateRepositoryNetworkBoundary?
     private let session: URLSession
     private weak var settings: AppSettings?
+    /// WindowGroup 的 `.task` 会在主窗口重建时再次执行。该 latch 属于
+    /// UpdateChecker 进程级实例，把“启动检查”收敛为每进程最多一轮。
+    private var hasStartedAutomaticCheck = false
 
-    public init(owner: String = "CarGuo", repo: String = "GSYCleanMac",
-                session: URLSession? = nil, settings: AppSettings? = nil) {
+    public convenience init(
+        owner: String = "CarGuo",
+        repo: String = "GSYCleanMac",
+        settings: AppSettings? = nil
+    ) {
+        self.init(owner: owner, repo: repo, protocolClasses: nil, settings: settings)
+    }
+
+    /// v2026.07.18：仅供 `@testable AppUI` 的 URLProtocol 确定性测试入口。
+    /// 测试只能注入 protocol class，不能替换整个 URLSession；因此依然经过
+    /// 与生产一致的 ephemeral/cookie/cache/credential/redirect 策略。
+    init(
+        owner: String = "CarGuo",
+        repo: String = "GSYCleanMac",
+        protocolClasses: [AnyClass]?,
+        settings: AppSettings? = nil
+    ) {
         self.owner = owner
         self.repo = repo
-        // v1.5.7：默认自建 ephemeral session —— 不持久化 cookie / cache / credentials，
+        self.networkBoundary = UpdateRepositoryNetworkBoundary(owner: owner, repo: repo)
+        // v2026.07.18：始终自建 ephemeral session，不再接受可绕过策略的
+        // public URLSession 注入。不持久化 cookie / cache / credentials，
         // 防止 GitHub 把同一 host 的其他登录态 cookie 串扰到 update 请求里。
         // - timeoutIntervalForRequest=10s 单包请求超时（避免单个 socket hang 拖死）
         // - timeoutIntervalForResource=30s 整个传输上限（默认 7 天，对 2KB JSON 太宽松）
         // - waitsForConnectivity=false 离线时立即失败而不是排队等到联网（避免 App 退出时还在排队）
-        if let session {
-            self.session = session
-        } else {
-            let cfg = URLSessionConfiguration.ephemeral
-            cfg.timeoutIntervalForRequest = 10
-            cfg.timeoutIntervalForResource = 30
-            cfg.waitsForConnectivity = false
-            cfg.httpCookieAcceptPolicy = .never
-            cfg.httpShouldSetCookies = false
-            cfg.allowsCellularAccess = true
-            cfg.urlCache = nil
-            self.session = URLSession(configuration: cfg)
-        }
+        self.session = UpdateSessionFactory.makeSession(protocolClasses: protocolClasses)
         self.settings = settings
     }
 
     /// 启动入口：尊重 settings.updateCheckEnabled，关掉就什么都不做。
     public func checkOnLaunch() {
         guard let s = settings, s.updateCheckEnabled else { return }
+        guard !hasStartedAutomaticCheck else {
+            GSYLog.debug(.updater, "checkOnLaunch 跳过：本进程已发起过自动检查")
+            return
+        }
+        hasStartedAutomaticCheck = true
         Task { [weak self] in await self?.runCheck(force: false) }
     }
 
@@ -207,27 +436,43 @@ public final class UpdateChecker: ObservableObject {
         isChecking = true
         defer { isChecking = false }
 
-        let urlStr = "https://api.github.com/repos/\(owner)/\(repo)/releases/latest"
-        GSYLog.info(.updater, "runCheck 开始 force=\(force) url=\(urlStr)")
-        guard let url = URL(string: urlStr) else {
-            GSYLog.error(.updater, "URL 构造失败 url=\(urlStr)")
-            lastResult = .failed(.invalidRequestURL(urlStr))
+        let configuredRoute = "\(owner)/\(repo)"
+        guard let networkBoundary else {
+            GSYLog.error(.updater, "更新仓库路由非法 route=\(configuredRoute)")
+            lastResult = .failed(.invalidRequestURL(configuredRoute))
             return
         }
+        let url = networkBoundary.latestReleaseAPIURL
+        GSYLog.info(.updater, "runCheck 开始 force=\(force) url=\(url.absoluteString)")
         var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.httpBody = nil
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        req.httpShouldHandleCookies = false
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.setValue("GSYCleanMac/\(Self.currentVersion)", forHTTPHeaderField: "User-Agent")
         req.timeoutInterval = 10
 
         do {
             let (data, resp) = try await session.data(for: req)
-            guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            guard let http = resp as? HTTPURLResponse else {
+                lastResult = .failed(.invalidResponse)
+                return
+            }
+            guard let responseURL = http.url,
+                  networkBoundary.ownsLatestReleaseAPIURL(responseURL),
+                  !(300...399).contains(http.statusCode) else {
+                GSYLog.warning(.updater, "拒绝更新响应来源 code=\(http.statusCode)")
+                lastResult = .failed(.untrustedResponseSource)
+                return
+            }
+            guard http.statusCode == 200 else {
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
                 GSYLog.warning(.updater, "HTTP 状态码非 200 code=\(code)")
                 lastResult = .failed(.httpStatus(code))
                 return
             }
-            let release = try parseRelease(data)
+            let release = try parseRelease(data, boundary: networkBoundary)
             // 比对版本
             let local = Self.currentVersion
             if SemVer.isOlder(local, than: release.tagName) {
@@ -248,6 +493,8 @@ public final class UpdateChecker: ObservableObject {
             switch error {
             case UpdateReleaseParsingError.invalidReleaseURL:
                 lastResult = .failed(.invalidReleaseURL)
+            case UpdateReleaseParsingError.untrustedResponseSource:
+                lastResult = .failed(.untrustedResponseSource)
             case is DecodingError:
                 lastResult = .failed(.invalidResponse)
             default:
@@ -260,7 +507,10 @@ public final class UpdateChecker: ObservableObject {
         }
     }
 
-    private func parseRelease(_ data: Data) throws -> ReleaseInfo {
+    private func parseRelease(
+        _ data: Data,
+        boundary: UpdateRepositoryNetworkBoundary
+    ) throws -> ReleaseInfo {
         struct RawRelease: Decodable {
             struct RawAsset: Decodable {
                 let name: String
@@ -278,11 +528,23 @@ public final class UpdateChecker: ObservableObject {
         guard let url = URL(string: raw.html_url) else {
             throw UpdateReleaseParsingError.invalidReleaseURL
         }
+        guard boundary.ownsReleasePageURL(url, tag: raw.tag_name) else {
+            throw UpdateReleaseParsingError.untrustedResponseSource
+        }
         let date: Date? = raw.published_at.flatMap {
             ISO8601DateFormatter().date(from: $0)
         }
-        let assets: [ReleaseAsset] = (raw.assets ?? []).compactMap { a in
-            guard let u = URL(string: a.browser_download_url) else { return nil }
+        let assets: [ReleaseAsset] = try (raw.assets ?? []).map { a in
+            guard a.size >= 0, let u = URL(string: a.browser_download_url) else {
+                throw UpdateReleaseParsingError.invalidReleaseURL
+            }
+            guard boundary.ownsReleaseAssetURL(
+                u,
+                tag: raw.tag_name,
+                assetName: a.name
+            ) else {
+                throw UpdateReleaseParsingError.untrustedResponseSource
+            }
             return ReleaseAsset(name: a.name, downloadURL: u, sizeBytes: a.size)
         }
         return ReleaseInfo(
@@ -293,45 +555,6 @@ public final class UpdateChecker: ObservableObject {
             publishedAt: date,
             assets: assets
         )
-    }
-
-    /// v1.5.7：从 release assets 里挑出 `*.dmg.sha256` 文件并把内容拉下来。
-    ///
-    /// 返回一个 `[filename: sha256-hex-lowercase]` 字典，UI 上展示给用户做手动比对。
-    /// 这里**不**自动下载主 dmg 然后跑哈希；理由：
-    /// - 自动下载需引入 NSSavePanel / 进度条 / 失败重试 / 续传 等大量 UI，超出本次 patch 范畴
-    /// - 跳浏览器下载是当前用户决策（避免任何"沉默升级"风险）
-    /// - 哪怕 UI 自动比对成功，仍需用户手动把校验后的 .dmg 拖到 Applications，不可省略 GUI 干预
-    /// 所以这里只做一件事：**把 GitHub 服务器上的预期 SHA256 拉下来，UI 显式展示给用户**。
-    public func fetchExpectedSHA256(for release: ReleaseInfo) async -> [String: String] {
-        let sha256Assets = release.assets.filter { $0.name.hasSuffix(".sha256") }
-        guard !sha256Assets.isEmpty else { return [:] }
-        var result: [String: String] = [:]
-        for asset in sha256Assets {
-            // 单个 .sha256 文件 < 200 字节，串行下载足够。
-            var req = URLRequest(url: asset.downloadURL)
-            req.setValue("text/plain", forHTTPHeaderField: "Accept")
-            req.setValue("GSYCleanMac/\(Self.currentVersion)", forHTTPHeaderField: "User-Agent")
-            req.timeoutInterval = 10
-            do {
-                let (data, resp) = try await session.data(for: req)
-                guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else { continue }
-                guard data.count <= 4096,
-                      let text = String(data: data, encoding: .utf8) else { continue }
-                // shasum 输出格式："<64 hex>  <filename>" —— 取头 64 位 hex
-                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                let firstField = trimmed.split(separator: " ", maxSplits: 1).first.map(String.init) ?? trimmed
-                let hex = firstField.lowercased()
-                guard hex.count == 64,
-                      hex.allSatisfy({ "0123456789abcdef".contains($0) }) else { continue }
-                // 关联到对应的原文件名（剥掉 .sha256 后缀）
-                let originalName = String(asset.name.dropLast(".sha256".count))
-                result[originalName] = hex
-            } catch {
-                GSYLog.warning(.updater, "fetchExpectedSHA256 拉取失败 asset=\(asset.name) err=\(error.localizedDescription)")
-            }
-        }
-        return result
     }
 
     /// 当前 App 版本号（从 Info.plist 读 CFBundleShortVersionString）。
@@ -346,10 +569,6 @@ public struct UpdatePromptView: View {
     @Environment(\.locale) private var locale
     @ObservedObject public var checker: UpdateChecker
     public let release: ReleaseInfo
-
-    /// v1.5.7：从 release assets 拉到的 [filename: sha256-hex] 字典。
-    @State private var expectedHashes: [String: String] = [:]
-    @State private var hashesLoaded: Bool = false
 
     public init(checker: UpdateChecker, release: ReleaseInfo) {
         self._checker = ObservedObject(wrappedValue: checker)
@@ -391,25 +610,6 @@ public struct UpdatePromptView: View {
                 Text("updater.prompt.no_notes", bundle: .module)
                     .font(.callout).foregroundStyle(.secondary)
             }
-            if hashesLoaded && !expectedHashes.isEmpty {
-                Divider()
-                VStack(alignment: .leading, spacing: 4) {
-                    Label {
-                        Text("updater.prompt.sha256_label", bundle: .module)
-                    } icon: {
-                        Image(systemName: "checkmark.seal")
-                    }
-                        .font(.caption).foregroundStyle(.secondary)
-                    ForEach(expectedHashes.sorted(by: { $0.key < $1.key }), id: \.key) { name, hex in
-                        HStack(alignment: .top, spacing: 6) {
-                            Text(name).font(.caption.monospaced()).foregroundStyle(.secondary)
-                            Text(hex).font(.caption.monospaced())
-                                .textSelection(.enabled)
-                                .lineLimit(1).truncationMode(.middle)
-                        }
-                    }
-                }
-            }
             Divider()
             HStack {
                 Button(AppLocalization.string("updater.prompt.button.skip", locale: locale)) {
@@ -431,11 +631,5 @@ public struct UpdatePromptView: View {
         }
         .padding(20)
         .frame(width: 520)
-        .task {
-            // 异步拉 SHA256；失败或没有 .sha256 asset 静默隐藏，不阻塞 UI。
-            let h = await checker.fetchExpectedSHA256(for: release)
-            expectedHashes = h
-            hashesLoaded = true
-        }
     }
 }

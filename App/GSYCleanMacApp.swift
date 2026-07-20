@@ -143,7 +143,7 @@ struct GSYCleanMacApp: App {
     /// 关闭时永远保持 .regular，与现行行为完全一致。
     @State private var activationPolicy = ActivationPolicyController()
 
-    /// v1.6：Sentinel 守护管理器（SMAppService.daemon 包装）。
+    /// v1.6：Sentinel 用户态后台管理器（SMAppService.agent 包装）。
     /// 在 init 阶段构造，启动钩子里按 [settings.sentinelEnabled](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
     /// 做幂等 register；v2026.07.16 起用户 toggle 先经过 typed change-source 边界，
     /// 程序性失败回滚不会再由 `.onChange` 重复驱动 enable / disable。
@@ -152,20 +152,35 @@ struct GSYCleanMacApp: App {
     private let tccDismissedKey = "tcc.onboarding.dismissed"
 
     init() {
-        // v1.3.zzzz Phase 6：进程一启动就接通 GSYLog 文件 sink。
-        // 落盘位置 ~/Library/Logs/AmuxAIClean/，按天滚动保留 7 天；构造失败时降级到仅 OSLog。
-        // Debug 默认 .debug 阈值（最详细），Release 默认 .info；不再额外区分。
-        do {
-            let logDir = try LogFileSink.defaultDirectory()
-            let sink = try LogFileSink(directory: logDir)
-            #if DEBUG
-            GSYLog.configure(minimumLevel: .debug, fileSink: sink)
-            #else
-            GSYLog.configure(minimumLevel: .info, fileSink: sink)
-            #endif
-            GSYLog.notice(.app, "App 启动 logDir=\(sink.directory.path)")
-        } catch {
-            NSLog("[AmuxAIClean] LogFileSink 初始化失败：\(error)（仅 OSLog 可用）")
+        // v2026.07.18 P1 root fix: directory traversal, retention enumeration and active-file open
+        // are filesystem work, so App.init must never perform them on the UI thread. GSYLog first
+        // opens a filesystem-free 256-line memory revision; the detached utility task installs the
+        // sink and flushes those lines in order, or publishes a typed initialization failure.
+        #if DEBUG
+        let logBootstrap = GSYLog.beginFileSinkBootstrap(minimumLevel: .debug)
+        #else
+        let logBootstrap = GSYLog.beginFileSinkBootstrap(minimumLevel: .info)
+        #endif
+        Task.detached(priority: .utility) {
+            do {
+                let logDirectory = try LogFileSink.defaultDirectory()
+                let sink = try LogFileSink(directory: logDirectory)
+                guard GSYLog.completeFileSinkBootstrap(sink, revision: logBootstrap) else {
+                    return
+                }
+                GSYLog.notice(.app, "App 启动 logDir=\(sink.directory.path)")
+            } catch {
+                let diagnostic = error as NSError
+                guard GSYLog.reportFileSinkInitializationFailure(
+                    error,
+                    revision: logBootstrap
+                ) else { return }
+                GSYLog.error(
+                    .app,
+                    "LogFileSink initialization failed domain=\(diagnostic.domain) "
+                        + "code=\(diagnostic.code); OSLog only"
+                )
+            }
         }
 
         let loadedVendors = Self.loadBundledVendors()
@@ -185,16 +200,27 @@ struct GSYCleanMacApp: App {
         // 深索引仍默认关闭：祖先字典维护是扫描期主线程卡顿的历史根因。开发者可用
         // GSY_DEEP_INDEX=1 做 A/B，但正式用户走无数据库、按需后台下钻方案。
         let deepIndex = (ProcessInfo.processInfo.environment["GSY_DEEP_INDEX"] ?? "0") != "0"
+        // v2026.07.19 cross-mode performance contract: Professional and Smart Care keep separate
+        // presentation state and client identities, but share one active-producer registry.
+        // The registry sees producers before they start, so a second coordinator cannot mistake
+        // an active scan for an empty retired-task tail and overlap its filesystem walk.
+        let primaryScanAdmissionRegistry = PrimaryScanAdmissionRegistry()
+        let professionalAdmissionClientID = PrimaryScanAdmissionRegistry.ClientID()
+        let smartCareAdmissionClientID = PrimaryScanAdmissionRegistry.ClientID()
         let professionalCoordinator = ScanCoordinator(
             vendors: loadedVendors,
             enableTreeDeepIndex: deepIndex,
-            commonAppCacheExecution: .isolated(executableURL: Bundle.main.executableURL)
+            commonAppCacheExecution: .isolated(executableURL: Bundle.main.executableURL),
+            primaryScanAdmissionRegistry: primaryScanAdmissionRegistry,
+            primaryScanAdmissionClientID: professionalAdmissionClientID
         )
         self._coordinator = StateObject(wrappedValue: professionalCoordinator)
         let smartCareScanner = ScanCoordinator(
             vendors: loadedVendors,
             enableTreeDeepIndex: false,
-            commonAppCacheExecution: .isolated(executableURL: Bundle.main.executableURL)
+            commonAppCacheExecution: .isolated(executableURL: Bundle.main.executableURL),
+            primaryScanAdmissionRegistry: primaryScanAdmissionRegistry,
+            primaryScanAdmissionClientID: smartCareAdmissionClientID
         )
         self._smartCareSession = StateObject(wrappedValue: SmartCareSession(
             scanCoordinator: smartCareScanner
@@ -209,7 +235,10 @@ struct GSYCleanMacApp: App {
             AppLocalization.string("app.name", locale: settings.effectiveLocale),
             id: Self.mainWindowID
         ) {
+            // v2026.07.20 P0: this composition root is the only UI layer that selects the
+            // production Undo owner; injected/preview pipelines must provide an isolated store.
             MainView(vendors: vendors,
+                     undoHistoryStore: .shared,
                      settings: settings,
                      pathStore: pathStore,
                      coordinator: coordinator,
@@ -274,22 +303,28 @@ struct GSYCleanMacApp: App {
                 // M5（交互更便捷）：弹菜单时同步查询扫描状态，
                 // 让"开始推荐扫描"在已经在扫时自动 disable + 标题转"扫描中…"。
                 statusItem.onQueryScanState = { [coordinator, smartCareSession] in
-                    coordinator.isScanning || smartCareSession.isBusy
+                    coordinator.hasActivePrimaryScanOwnership
+                        || smartCareSession.scanCoordinator.hasActivePrimaryScanOwnership
+                        || smartCareSession.isBusy
                 }
                 // v1.3：根据 settings.trayEnabled 注册 / 移除菜单栏图标
                 reconcileTray()
                 // v1.3.x：首启即按用户偏好把激活策略就位（默认 false → regular，行为不变）。
                 reconcileActivationPolicy()
-                // v1.6：Sentinel 启动钩子——若用户已 ON，进程拉起时立刻幂等 register，
-                // 兜住升级 / 重装 / SMAppService bundle 路径变化等场景。默认 OFF 时跳过。
+                // v2026.07.19 P1：启动对账始终读取权威状态，以便清理明确 active 的旧服务；
+                // fresh/default-OFF 且没有历史 authority 证据时，notFound/unknown 只写诊断，
+                // 不弹 modal、不要求用户修复从未启用的登录项。ON 与可信历史证据仍 fail-closed。
                 reconcileSentinelAtStartup()
 
                 // v2026.07.16：移除所有环境变量驱动的 App 内测试/自动扫盘入口。
                 // 反复启动并 exit 不能验证 UI；未授权的启动时自动扫描也不应进入 Release。
                 // 逻辑回归使用 package tests，性能使用 ScanKit CLI，真实交互只做持续 C4。
             }
-            .onValueChange(of: coordinator.isScanning) { _, _ in
-                // v1.3：扫描开始 → HUD 弹出；扫描结束 → 非常驻模式下 0.8s 后渐隐
+            .onValueChange(of: coordinator.scanPhase) { _, _ in
+                // v2026.07.19: settling is active ownership even though isScanning=false.
+                hud.reconcile()
+            }
+            .onValueChange(of: smartCareSession.scanCoordinator.scanPhase) { _, _ in
                 hud.reconcile()
             }
             .onValueChange(of: smartCareSession.isBusy) { _, _ in
@@ -335,7 +370,7 @@ struct GSYCleanMacApp: App {
                 applyLiveLocale()
             }
             .onOpenURL { url in
-                // v1.6：daemon 通过 `amuxaiclean://` 把候选传回主 App。
+                // v1.6：用户态 Agent 通过 `amuxaiclean://` 把候选传回主 App。
                 // 拉主窗口 + 路由分发由 SentinelURLRouter 完成（NotificationCenter 广播）。
                 Self.bringMainWindowToFront()
                 _ = SentinelURLRouter.handle(url)
@@ -576,8 +611,13 @@ struct GSYCleanMacApp: App {
         // createsNewApplicationInstance 默认 false，会触发已运行实例的 reopen 而不是双开。
         NSWorkspace.shared.open(bundleURL, configuration: config) { _, error in
             if let error {
-                // 兜底诊断日志（极罕见：只有 Bundle 被 ad-hoc 签或权限被剥夺时才会失败）。
-                NSLog("[AmuxAIClean] bringMainWindowToFront fallback open failed: \(error)")
+                // v2026.07.18: keep technical detail in the user-owned file log while the same
+                // message is privacy-hashed in Unified Logging; never bypass via NSLog.
+                let diagnostic = error as NSError
+                GSYLog.error(
+                    .app,
+                    "bringMainWindowToFront fallback failed domain=\(diagnostic.domain) code=\(diagnostic.code)"
+                )
             }
         }
     }
@@ -601,15 +641,19 @@ struct GSYCleanMacApp: App {
                                         subdirectory: "Rules")
             ?? Bundle.main.url(forResource: "vendors", withExtension: "yaml")
         else {
-            NSLog("[AmuxAIClean] vendors.yaml 未找到，跳过 vendor 规则加载")
+            GSYLog.error(.safety, "bundled vendors.yaml missing; vendor rules unavailable")
             return []
         }
         do {
             let rules = try RuleLoader.loadVendors(from: url)
-            NSLog("[AmuxAIClean] 已加载 \(rules.count) 条 vendor 规则")
+            GSYLog.info(.safety, "loaded \(rules.count) vendor rules")
             return rules
         } catch {
-            NSLog("[AmuxAIClean] vendor 规则加载失败：\(error)")
+            let diagnostic = error as NSError
+            GSYLog.error(
+                .safety,
+                "vendor rules failed domain=\(diagnostic.domain) code=\(diagnostic.code)"
+            )
             return []
         }
     }
@@ -624,7 +668,9 @@ struct GSYCleanMacApp: App {
     fileprivate static func openExternal(_ urlString: String) {
         guard let url = URL(string: urlString),
               url.scheme == "https" else {
-            NSLog("[AmuxAIClean] openExternal 拒绝非 https URL: \(urlString)")
+            // Do not persist the rejected input: a malformed URL may contain userinfo, query
+            // tokens or a local path. The semantic reason is sufficient for diagnosis.
+            GSYLog.warning(.app, "openExternal rejected a non-HTTPS or malformed URL")
             return
         }
         NSWorkspace.shared.open(url)
@@ -637,19 +683,48 @@ struct GSYCleanMacApp: App {
     /// [GSYCleanCommands](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
     /// 可以复用（理由同 [openExternal](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)）。
     @MainActor
-    fileprivate static func revealLogsInFinder() {
-        let fm = FileManager.default
-        let logDir = fm.urls(for: .libraryDirectory, in: .userDomainMask)
-            .first?
-            .appendingPathComponent("Logs/AmuxAIClean", isDirectory: true)
-        guard let logDir else {
-            NSLog("[AmuxAIClean] revealLogsInFinder 找不到 ~/Library/Logs 目录")
-            return
+    fileprivate static func revealLogsInFinder(locale: Locale) {
+        Task { @MainActor in
+            // Directory creation, identity checks, fsync and retention enumeration execute on
+            // LogFileSink's utility queue; only Finder/NSAlert work resumes on MainActor.
+            switch await GSYLog.prepareLogDirectoryForAccess() {
+            case .success(let logDir):
+                GSYLog.notice(.operation, "menu.log.open_directory path=\(logDir.path)")
+                NSWorkspace.shared.activateFileViewerSelecting([logDir])
+                let maintenanceFailures = GSYLog.fileSinkIssues.failures
+                if !maintenanceFailures.isEmpty {
+                    presentLogFailures(maintenanceFailures, locale: locale)
+                }
+            case .failure(let failure):
+                // The local sink cannot carry this fact. Its normalized stage/domain/code tuple
+                // already went to the dedicated public OSLog fallback; show the same closed detail.
+                GSYLog.error(
+                    .app,
+                    "revealLogsInFinder failed stage=\(failure.stage.rawValue) "
+                        + "domain=\(failure.errorDomain) code=\(failure.errorCode)"
+                )
+                let failures = [failure] + GSYLog.fileSinkIssues.failures.filter { $0 != failure }
+                presentLogFailures(failures, locale: locale)
+            }
         }
-        if !fm.fileExists(atPath: logDir.path) {
-            try? fm.createDirectory(at: logDir, withIntermediateDirectories: true)
-        }
-        NSWorkspace.shared.activateFileViewerSelecting([logDir])
+    }
+
+    /// Help and Settings share one localized stage/domain/code projection. This is intentionally
+    /// independent of the local log file, because the warning must remain available when that
+    /// file cannot be opened or when retention maintenance failed while writing stayed healthy.
+    @MainActor
+    private static func presentLogFailures(
+        _ failures: [LogFileSinkFailure],
+        locale: Locale
+    ) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = SettingsLogFailurePresentation.title(locale: locale)
+        alert.informativeText = failures.map {
+            SettingsLogFailurePresentation.localized($0, locale: locale)
+        }.joined(separator: "\n")
+        alert.addButton(withTitle: AppLocalization.string("common.button.ok", locale: locale))
+        alert.runModal()
     }
 }
 
@@ -701,7 +776,7 @@ private struct GSYCleanCommands: Commands {
                 GSYCleanMacApp.openExternal("https://github.com/CarGuo/GSYCleanMac/issues/new/choose")
             }
             Button(AppLocalization.string("menu.help.revealLogs", locale: locale)) {
-                GSYCleanMacApp.revealLogsInFinder()
+                GSYCleanMacApp.revealLogsInFinder(locale: locale)
             }
         }
     }

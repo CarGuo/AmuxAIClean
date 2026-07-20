@@ -171,10 +171,11 @@ public final class StashAIQueue: ObservableObject {
                     // 用户点了取消——保留本条 .pending（不写 verdict），跳出循环
                     break
                 } catch {
-                    // v2026.07.16：单条失败只把类型化语义留给 UI；raw transport/body/Error
-                    // 经 PathRedactor 去敏后进入技术日志，不能写入 tooltip 状态。
+                    // v2026.07.18 P1 privacy fix: both UI state and rolling logs receive only
+                    // typed facts. Redaction is not a sufficient boundary for arbitrary provider
+                    // bodies or Error descriptions because secrets need not look like paths.
                     let failure = StashAIQueue.itemFailure(error)
-                    let diagnostic = PathRedactor().redact(String(describing: error))
+                    let diagnostic = StashAIQueue.loggingFacts(for: error)
                     stash.setAIVerdict(path: entry.path, verdict: .error(failure))
                     GSYLog.warning(.settings, "[StashAIQueue] ask failed: \(diagnostic)")
                 }
@@ -258,6 +259,16 @@ public final class StashAIQueue: ObservableObject {
         currentPath = nil
         phase = .idle
         runTask = nil
+    }
+
+    /// v2026.07.18 P1 logging contract: never stringify an arbitrary Error. Known AI errors
+    /// already expose a stable body-free description; unknown failures collapse to one constant
+    /// category so provider payloads, credentials and paths cannot reach the rolling file.
+    static func loggingFacts(for error: any Error) -> String {
+        guard let clientError = error as? OpenAIChatClient.Error else {
+            return "OpenAIChatClient.Error.unexpected"
+        }
+        return clientError.description
     }
 
     /// v2026.07.16：把任意 Error 压成稳定语义。这里刻意不返回 String，避免异步状态

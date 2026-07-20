@@ -39,12 +39,12 @@ public struct ScanOptions: Sendable {
     /// 默认 true。关闭后回退到固定 `actualConcurrency`。
     public var mediaAware: Bool
 
-    /// v1.3 修 banner 误报：是否硬 skip [TCCSkipList](TCCSkipList.swift) 列出的雷区。
-    /// - **未授予 FDA**（`FDAProbe.probe() != .granted`）：必须保持 true，
-    ///   否则一次扫描会触发 Mail/Messages/Photos 多个系统弹窗。
-    /// - **已授予 FDA**：建议设 false。绕过硬 skip 后这些目录会被正常下钻、
-    ///   .tccProtectedSkipped 事件不再 yield，banner 自然消失。
-    /// 默认 true（保守）。UI 层在 `ScanCoordinator` 里读 FDAProbe 后自动透传。
+    /// 是否硬 skip [TCCSkipList](TCCSkipList.swift) 列出的隐私边界。
+    ///
+    /// v2026.07.18 产品合同：所有 App 扫描入口无论 FDA 是 granted/unknown/denied
+    /// 都必须保持 true。FDA 只描述 macOS 会允许什么，不能扩大 App 选择读取
+    /// 的数据范围。false 仅供不包含真实用户数据的受控 ScanKit fixture 验证枚举机制。
+    /// 默认 true。
     public var respectTCCSkipList: Bool
 
     /// 实际生效的 worker 数量（cap 在 maxConcurrency）。

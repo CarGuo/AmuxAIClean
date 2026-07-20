@@ -52,6 +52,7 @@ final class ServiceLocalizationProjectionTests: XCTestCase {
             SmartCareSnapshotCompletionPolicy.decision(
                 snapshot: snapshot,
                 isScanning: false,
+                scanPhase: .idle,
                 terminalFailure: nil,
                 hasDeletionDeniedEvidence: false,
                 fallbackError: nil

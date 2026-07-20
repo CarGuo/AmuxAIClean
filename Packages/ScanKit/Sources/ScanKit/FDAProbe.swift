@@ -2,10 +2,9 @@ import Foundation
 
 /// v1.3：探测当前进程是否已被授予 **完全磁盘访问 (Full Disk Access, FDA)** 权限。
 ///
-/// 背景：[TCCSkipList](TCCSkipList.swift) 是"硬编码 skip 列表"——无论用户授没授权，
-/// 扫描器都不下钻 Mail/Messages/Photos 等敏感目录，源头杜绝系统弹窗。这在用户**没**
-/// 授权时是必要的（避免一次扫描弹十次 prompt），但在用户**已经手动授予 FDA** 之后，
-/// 这套硬 skip 反而会让 banner 永远显示"权限受阻 N 项"——明明用户已经授权了。
+/// 背景：[TCCSkipList](TCCSkipList.swift) 是无条件产品隐私边界——无论用户授没授权，
+/// 扫描器都不下钻 Mail/Messages/Photos 等敏感目录。FDA 探测只用于准确区分
+/// macOS 权限状态与展示技术原因，不能用来关闭 hard skip 或扩大扫描范围。
 ///
 /// 业界做法：CleanMyMac / DaisyDisk 启动时 silently 试读一个**只有 FDA 才能开**的
 /// 探针文件，成功 = 已授权，失败 = 未授权。我们采用同样思路。

@@ -26,6 +26,68 @@ public struct BrewCleanupPlan: Sendable, Equatable {
     public var isEmpty: Bool { stalePaths.isEmpty }
 }
 
+/// v2026.07.18 P2 evidence-bearing cleanup result. `dryRun()` remains as the compatibility value
+/// API, while production UI consumes this result so an unreadable cache can never be presented as
+/// an authoritative empty plan. `bytesByPath` is captured in the same filesystem pass as the plan;
+/// AppUI must not re-read attributes and silently invent zero-byte metadata later.
+public struct BrewCleanupResult: Sendable, Equatable {
+    public let plan: BrewCleanupPlan
+    public let bytesByPath: [String: Int64]
+    public let status: BrewEvidenceStatus
+    public let diagnostics: [BrewDiagnostic]
+
+    public init(
+        plan: BrewCleanupPlan,
+        bytesByPath: [String: Int64],
+        status: BrewEvidenceStatus,
+        diagnostics: [BrewDiagnostic] = []
+    ) {
+        self.plan = plan
+        self.bytesByPath = bytesByPath
+        self.status = status
+        self.diagnostics = diagnostics
+    }
+
+    public var isAuthoritativeEmpty: Bool {
+        plan.isEmpty && status.isAuthoritative
+    }
+}
+
+/// Injectable filesystem facts keep permission, malformed-attribute and symlink failures
+/// deterministic in tests without chmod/TCC assumptions. The live adapter converts Foundation's
+/// `[FileAttributeKey: Any]` at the boundary and never sends that non-Sendable dictionary across
+/// concurrency domains.
+struct BrewCleanupEntryAttributes: Sendable, Equatable {
+    let isSymbolicLink: Bool?
+    let modificationDate: Date?
+    let size: Int64?
+}
+
+struct BrewCleanupFileSystem: Sendable {
+    let contentsOfDirectory: @Sendable (URL) throws -> [String]
+    let attributes: @Sendable (URL) throws -> BrewCleanupEntryAttributes
+    let symlinkDestination: @Sendable (URL) throws -> String
+
+    static let live = BrewCleanupFileSystem(
+        contentsOfDirectory: { url in
+            try FileManager.default.contentsOfDirectory(atPath: url.path)
+        },
+        attributes: { url in
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            return BrewCleanupEntryAttributes(
+                isSymbolicLink: (attributes[.type] as? FileAttributeType).map {
+                    $0 == .typeSymbolicLink
+                },
+                modificationDate: attributes[.modificationDate] as? Date,
+                size: (attributes[.size] as? NSNumber)?.int64Value
+            )
+        },
+        symlinkDestination: { url in
+            try FileManager.default.destinationOfSymbolicLink(atPath: url.path)
+        }
+    )
+}
+
 public struct BrewCleanup: Sendable {
 
     /// 默认阈值：mtime ≥ 30 天前；冷却 7 天；建议执行 50 MB。
@@ -35,20 +97,37 @@ public struct BrewCleanup: Sendable {
 
     /// brew cache 根（一般 `~/Library/Caches/Homebrew`）。
     public let cacheRoot: URL
+    private let fileSystem: BrewCleanupFileSystem
 
     public init(cacheRoot: URL) {
         self.cacheRoot = cacheRoot
+        self.fileSystem = .live
     }
 
-    /// 默认根 `~/Library/Caches/Homebrew`；目录缺失时返回 nil。
-    public static func detectDefault() -> BrewCleanup? {
+    init(cacheRoot: URL, fileSystem: BrewCleanupFileSystem) {
+        self.cacheRoot = cacheRoot
+        self.fileSystem = fileSystem
+    }
+
+    /// v2026.07.18 P2: returns the deterministic user cache location without claiming the root is
+    /// readable or even present. Production UI uses this candidate and lets `dryRunWithEvidence`
+    /// distinguish missing from unreadable instead of collapsing both into a nil controller.
+    public static func defaultCacheCandidate() -> BrewCleanup? {
         let fm = FileManager.default
         guard let cache = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else {
             return nil
         }
         let root = cache.appendingPathComponent("Homebrew", isDirectory: true)
-        guard fm.fileExists(atPath: root.path) else { return nil }
         return BrewCleanup(cacheRoot: root)
+    }
+
+    /// Compatibility API: detects an existing default root as before. New production consumers
+    /// that need typed absence/failure evidence should use `defaultCacheCandidate()` and scan it.
+    public static func detectDefault() -> BrewCleanup? {
+        guard let candidate = defaultCacheCandidate() else { return nil }
+        let root = candidate.cacheRoot
+        guard FileManager.default.fileExists(atPath: root.path) else { return nil }
+        return candidate
     }
 
     /// 计算可清理列表（dryRun）。
@@ -57,32 +136,113 @@ public struct BrewCleanup: Sendable {
     ///   - pruneDays: 早于 `now - pruneDays` 视作 stale
     public func dryRun(now: Date = Date(),
                        pruneDays: Int = BrewCleanup.defaultPruneDays) -> BrewCleanupPlan {
+        dryRunWithEvidence(now: now, pruneDays: pruneDays).plan
+    }
+
+    /// v2026.07.18 P2 root fix: every failure remains typed. Cache/download roots that are truly
+    /// absent are a normal authoritative empty state; unreadable roots are unavailable; per-entry
+    /// failures yield partial evidence and the affected entry is never admitted to the plan.
+    public func dryRunWithEvidence(
+        now: Date = Date(),
+        pruneDays: Int = BrewCleanup.defaultPruneDays
+    ) -> BrewCleanupResult {
         let downloads = cacheRoot.appendingPathComponent("downloads", isDirectory: true)
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: downloads.path) else {
-            return BrewCleanupPlan(stalePaths: [], totalBytes: 0)
+        let rootEntries: [String]
+        do {
+            rootEntries = try fileSystem.contentsOfDirectory(cacheRoot)
+        } catch {
+            guard let diagnostic = brewLocalFileFailureDiagnostic(
+                error,
+                source: .cleanup,
+                stage: .enumerateRoot,
+                path: cacheRoot.path
+            ) else {
+                return emptyResult(status: .missing)
+            }
+            return emptyResult(status: .unavailable, diagnostics: [diagnostic])
         }
 
-        let activeNames = collectActiveDownloadFilenames()
+        let aliases = collectActiveDownloadFilenames(rootEntries: rootEntries)
+        guard aliases.diagnostics.isEmpty else {
+            // A root entry whose type/target cannot be inspected may alias any download. No
+            // candidate is trustworthy until the active-reference set is complete.
+            return emptyResult(status: .unavailable, diagnostics: aliases.diagnostics)
+        }
+
+        let entries: [String]
+        do {
+            entries = try fileSystem.contentsOfDirectory(downloads)
+        } catch {
+            guard let diagnostic = brewLocalFileFailureDiagnostic(
+                error,
+                source: .cleanup,
+                stage: .enumerateDownloads,
+                path: downloads.path
+            ) else {
+                return emptyResult(status: .missing)
+            }
+            return emptyResult(status: .unavailable, diagnostics: [diagnostic])
+        }
+
         let pruneBefore = now.addingTimeInterval(-Double(pruneDays) * 86400)
 
         var stale: [URL] = []
+        var bytesByPath: [String: Int64] = [:]
+        var diagnostics: [BrewDiagnostic] = []
         var bytes: Int64 = 0
-        guard let entries = try? fm.contentsOfDirectory(atPath: downloads.path) else {
-            return BrewCleanupPlan(stalePaths: [], totalBytes: 0)
-        }
         for name in entries where !name.hasPrefix(".") {
-            if activeNames.contains(name) { continue }
+            if aliases.names.contains(name) { continue }
             let url = downloads.appendingPathComponent(name)
-            let attrs = try? fm.attributesOfItem(atPath: url.path)
-            let mtime = (attrs?[.modificationDate] as? Date) ?? Date(timeIntervalSince1970: 0)
+            let attributes: BrewCleanupEntryAttributes
+            do {
+                attributes = try fileSystem.attributes(url)
+            } catch {
+                if let diagnostic = brewLocalFileFailureDiagnostic(
+                    error,
+                    source: .cleanup,
+                    stage: .inspectEntry,
+                    path: url.path
+                ) {
+                    diagnostics.append(diagnostic)
+                }
+                // A disappeared entry no longer needs cleanup; every other failure is partial.
+                continue
+            }
+
+            guard let mtime = attributes.modificationDate,
+                  let size = attributes.size,
+                  size >= 0 else {
+                diagnostics.append(BrewDiagnostic(
+                    source: .cleanup,
+                    stage: .inspectEntry,
+                    reason: .missingMetadata,
+                    path: url.path
+                ))
+                continue
+            }
             guard mtime < pruneBefore else { continue }
-            let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+
+            let total = bytes.addingReportingOverflow(size)
+            guard !total.overflow else {
+                diagnostics.append(BrewDiagnostic(
+                    source: .cleanup,
+                    stage: .inspectEntry,
+                    reason: .malformed,
+                    path: url.path
+                ))
+                continue
+            }
             stale.append(url)
-            bytes += size
+            bytesByPath[url.path] = size
+            bytes = total.partialValue
         }
         stale.sort { $0.lastPathComponent < $1.lastPathComponent }
-        return BrewCleanupPlan(stalePaths: stale, totalBytes: bytes)
+        return BrewCleanupResult(
+            plan: BrewCleanupPlan(stalePaths: stale, totalBytes: bytes),
+            bytesByPath: bytesByPath,
+            status: diagnostics.isEmpty ? .complete : .partial,
+            diagnostics: diagnostics
+        )
     }
 
     /// 建议是否执行 cleanup：
@@ -104,18 +264,53 @@ public struct BrewCleanup: Sendable {
 
     /// 枚举 cacheRoot 顶层的 symlink，把 target 文件名（downloads/<name>）收集起来。
     /// 这些文件不算 stale，因为仍有"活跃 bottle 别名"指向。
-    private func collectActiveDownloadFilenames() -> Set<String> {
-        let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: cacheRoot.path) else {
-            return []
-        }
+    private func collectActiveDownloadFilenames(
+        rootEntries: [String]
+    ) -> (names: Set<String>, diagnostics: [BrewDiagnostic]) {
         var active = Set<String>()
-        for name in names where !name.hasPrefix(".") {
+        var diagnostics: [BrewDiagnostic] = []
+        for name in rootEntries where !name.hasPrefix(".") {
             let entry = cacheRoot.appendingPathComponent(name)
             // 仅看 symlink；普通文件 / 目录不算 alias
-            guard let attrs = try? fm.attributesOfItem(atPath: entry.path),
-                  (attrs[.type] as? FileAttributeType) == .typeSymbolicLink else { continue }
-            guard let dest = try? fm.destinationOfSymbolicLink(atPath: entry.path) else { continue }
+            let attributes: BrewCleanupEntryAttributes
+            do {
+                attributes = try fileSystem.attributes(entry)
+            } catch {
+                if let diagnostic = brewLocalFileFailureDiagnostic(
+                    error,
+                    source: .cleanup,
+                    stage: .inspectEntry,
+                    path: entry.path
+                ) {
+                    diagnostics.append(diagnostic)
+                }
+                continue
+            }
+            guard let isSymbolicLink = attributes.isSymbolicLink else {
+                diagnostics.append(BrewDiagnostic(
+                    source: .cleanup,
+                    stage: .inspectEntry,
+                    reason: .missingMetadata,
+                    path: entry.path
+                ))
+                continue
+            }
+            guard isSymbolicLink else { continue }
+
+            let dest: String
+            do {
+                dest = try fileSystem.symlinkDestination(entry)
+            } catch {
+                if let diagnostic = brewLocalFileFailureDiagnostic(
+                    error,
+                    source: .cleanup,
+                    stage: .resolveSymlink,
+                    path: entry.path
+                ) {
+                    diagnostics.append(diagnostic)
+                }
+                continue
+            }
             // dest 形如 "downloads/<hash>--xxx.tar.gz"
             let url = URL(fileURLWithPath: dest)
             let comp = url.pathComponents
@@ -126,6 +321,18 @@ public struct BrewCleanup: Sendable {
                 active.insert(dest)
             }
         }
-        return active
+        return (active, diagnostics)
+    }
+
+    private func emptyResult(
+        status: BrewEvidenceStatus,
+        diagnostics: [BrewDiagnostic] = []
+    ) -> BrewCleanupResult {
+        BrewCleanupResult(
+            plan: BrewCleanupPlan(stalePaths: [], totalBytes: 0),
+            bytesByPath: [:],
+            status: status,
+            diagnostics: diagnostics
+        )
     }
 }

@@ -10,6 +10,198 @@ import XCTest
 /// 这条 test 把"非 recycle 路径必返回空 pairs"作为契约钉住，避免后续重构误改语义。
 final class TrashPipelinePairTests: XCTestCase {
 
+    func test_defaultPipelinesOwnUniqueTemporaryRecoveryDomains() throws {
+        let first = TrashPipeline()
+        let second = TrashPipeline()
+        let firstLocations = try XCTUnwrap(first.recoveryStorageLocationsForTesting)
+        let secondLocations = try XCTUnwrap(second.recoveryStorageLocationsForTesting)
+
+        let applicationSupport = try XCTUnwrap(FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first).resolvingSymlinksInPath().standardizedFileURL
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+
+        for locations in [firstLocations, secondLocations] {
+            let root = locations.root.resolvingSymlinksInPath().standardizedFileURL
+            XCTAssertTrue(
+                root.path == temporaryDirectory.path
+                    || root.path.hasPrefix(temporaryDirectory.path + "/"),
+                "Default test recovery storage must stay under the process temporary directory"
+            )
+            XCTAssertFalse(
+                root.path == applicationSupport.path
+                    || root.path.hasPrefix(applicationSupport.path + "/"),
+                "A package test must never resolve recovery storage inside Application Support"
+            )
+            XCTAssertFalse(
+                root.path.contains("/Application Support/AmuxAIClean"),
+                "v2026.07.20 regression: test recovery must never touch the production brand root"
+            )
+            for file in [
+                locations.pendingOperationLedger,
+                locations.completionJournal,
+                locations.undoHistory
+            ] {
+                XCTAssertTrue(
+                    file.standardizedFileURL.path.hasPrefix(locations.root.path + "/"),
+                    "Every durable Trash owner must belong to the same isolated root"
+                )
+            }
+        }
+
+        XCTAssertNotEqual(firstLocations.root, secondLocations.root)
+        XCTAssertNotEqual(
+            firstLocations.pendingOperationLedger,
+            secondLocations.pendingOperationLedger
+        )
+        XCTAssertNotEqual(firstLocations.completionJournal, secondLocations.completionJournal)
+        XCTAssertNotEqual(firstLocations.undoHistory, secondLocations.undoHistory)
+    }
+
+    func test_productionSurfacesUseTheNamedProductionFactory() throws {
+        // v2026.07.20: the internal bare initializer deliberately means isolated test storage.
+        // Lock the two production assembly surfaces to the named factory so a future refactor
+        // cannot silently ship a temporary recovery owner or make tests use the shared owner.
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/AppUI", isDirectory: true)
+        for filename in ["MainView.swift", "UninstallScreen.swift"] {
+            let source = try String(
+                contentsOf: sourceRoot.appendingPathComponent(filename),
+                encoding: .utf8
+            )
+            XCTAssertTrue(source.contains("TrashPipeline.production("), filename)
+            XCTAssertFalse(source.contains("?? TrashPipeline(vendors:"), filename)
+        }
+
+        let pipelineSource = try String(
+            contentsOf: sourceRoot.appendingPathComponent("TrashPipeline.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(
+            pipelineSource.contains("public convenience init("),
+            "External production callers must not gain access to the isolated test initializer"
+        )
+
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(
+            at: sourceRoot,
+            includingPropertiesForKeys: nil
+        ))
+        for case let sourceURL as URL in enumerator
+            where sourceURL.pathExtension == "swift"
+                && sourceURL.lastPathComponent != "TrashPipeline.swift" {
+            let source = try String(contentsOf: sourceURL, encoding: .utf8)
+            XCTAssertNil(
+                source.range(of: #"TrashPipeline\s*\("#, options: .regularExpression),
+                "\(sourceURL.lastPathComponent) must select the named production factory"
+            )
+        }
+    }
+
+    func test_undoPersistenceDependenciesHaveNoSharedDefault() throws {
+        // v2026.07.20: a compatibility stub may produce moved pairs without a journal receipt.
+        // Requiring the caller to choose the Undo owner makes production/test storage selection
+        // a compile-time decision instead of an implicit write to user Application Support.
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/AppUI", isDirectory: true)
+        let dependencyOwnerFiles = [
+            "TrashActionCoordinator.swift",
+            "DeletionInteractionCoordinator.swift",
+            "WorkflowDetailView.swift",
+            "MainView.swift",
+            "BrewScreen.swift",
+            "DuplicateScreen.swift",
+            "UninstallScreen.swift",
+            "UndoHistoryScreen.swift",
+        ]
+        for filename in dependencyOwnerFiles {
+            let source = try String(
+                contentsOf: sourceRoot.appendingPathComponent(filename),
+                encoding: .utf8
+            )
+            XCTAssertFalse(
+                source.contains("undoHistoryStore: UndoHistoryStore = .shared"),
+                "\(filename) must require an explicit production or fixture Undo owner"
+            )
+        }
+        let pipelineOwnerViewFiles = [
+            "WorkflowDetailView.swift",
+            "MainView.swift",
+            "BrewScreen.swift",
+            "DuplicateScreen.swift",
+            "UninstallScreen.swift",
+        ]
+        for filename in pipelineOwnerViewFiles {
+            let source = try String(
+                contentsOf: sourceRoot.appendingPathComponent(filename),
+                encoding: .utf8
+            )
+            XCTAssertTrue(
+                source.contains("undoHistoryStore: UndoHistoryStore"),
+                "\(filename) pipeline injection must carry an explicit Undo owner"
+            )
+            XCTAssertFalse(
+                source.contains("undoHistoryStore: .shared"),
+                "\(filename) must not silently redirect an injected pipeline into user history"
+            )
+        }
+
+        let main = try String(
+            contentsOf: sourceRoot.appendingPathComponent("MainView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(
+            main.contains("pipeline: uninstallPipeline"),
+            "MainView must not let the uninstall surface construct a production pipeline"
+        )
+        XCTAssertTrue(
+            main.contains("UndoHistoryScreen(store: undoHistoryStore)"),
+            "MainView must keep recent cleanup inside its explicit Undo persistence domain"
+        )
+
+        let undoHistoryScreen = try String(
+            contentsOf: sourceRoot.appendingPathComponent("UndoHistoryScreen.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(undoHistoryScreen.contains("init(store: UndoHistoryStore)"))
+        XCTAssertFalse(
+            undoHistoryScreen.contains("UndoHistoryStore.shared"),
+            "UndoHistoryScreen must not bypass the composition root's explicit store"
+        )
+    }
+
+    func test_productionLedgerAndJournalPathsAreNotPublicBareInitializers() throws {
+        // v2026.07.20: omitting a test URL must be a compile-time impossible way to reach the
+        // user's Application Support recovery files. The pending ledger's active registry is
+        // part of the same isolated domain and therefore has no shared default either.
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/AppUI", isDirectory: true)
+        let ledger = try String(
+            contentsOf: sourceRoot.appendingPathComponent("TrashPendingOperationLedger.swift"),
+            encoding: .utf8
+        )
+        let journal = try String(
+            contentsOf: sourceRoot.appendingPathComponent("TrashCompletionJournal.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(ledger.contains("private convenience init()"))
+        XCTAssertTrue(journal.contains("private convenience init()"))
+        XCTAssertFalse(
+            ledger.contains("activeOperationRegistry: TrashActiveOperationRegistry = .shared")
+        )
+    }
+
     func test_dryRun返回空trashedPairs() async throws {
         let dir = NSTemporaryDirectory() + "GSYCleanTrashPair-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)

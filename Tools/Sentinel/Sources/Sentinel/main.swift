@@ -1,20 +1,21 @@
+import Darwin
 import Foundation
 import CoreServices
 
-/// AmuxAIClean Sentinel Daemon
+/// AmuxAIClean Sentinel Login Agent
 ///
-/// 后台守护进程，负责两个场景的发现：
+/// 登录用户态后台进程，负责两个场景的发现。必须以登录用户身份运行，确保
+/// `homeDirectoryForCurrentUser` 指向该用户的 Trash/Downloads，而不是 `/var/root`：
 ///
 /// **场景 1 · 卸载残留发现**：
 ///   FSEventStream 监听 `~/.Trash`，检测 `.app` / `.bundle` 进入废纸篓，
 ///   触发 `amuxaiclean://uninstall?path=...` 唤起主 App 跳到 UninstallScreen。
 ///
 /// **场景 2 · 推荐清理发现**：
-///   FSEventStream 监听 4 个清理热点：
+///   FSEventStream 监听 3 个清理热点：
 ///   - `~/Downloads`
 ///   - `~/Library/Caches`
 ///   - `~/Library/Developer/Xcode/DerivedData`
-///   - 配置中追加的 node_modules / Pods 等
 ///   累积事件到 rolling top-100 ringbuffer，写到
 ///   `~/Library/Application Support/AmuxAIClean/sentinel-pending.json`，
 ///   持续 5GB 增量阈值后触发 `amuxaiclean://action/scan/full`。
@@ -26,11 +27,27 @@ import CoreServices
 /// - 目标 RSS < 5 MB / CPU < 1%（静默期）
 /// - 单文件 main.swift 可独立 `swift run amuxaiclean-sentinel` 验证逻辑
 
+// v2026.07.18 P1 root-domain boundary: this must remain the first executable statement.
+// Historical LaunchDaemons are migration-only; a stale root job must not initialize a Home
+// path, log sink, persistence file or listener from the current user-Agent implementation.
+if geteuid() == 0 {
+    let diagnostic = "AmuxAIClean Sentinel refuses privileged execution\n"
+    diagnostic.withCString { bytes in
+        _ = Darwin.write(STDERR_FILENO, bytes, strlen(bytes))
+    }
+    _exit(EX_NOPERM)
+}
+
 let log = SentinelLog.shared
-log.info("Sentinel daemon starting (pid=\(getpid()))")
+log.info("Sentinel user agent starting (pid=\(getpid())) home=\(FileManager.default.homeDirectoryForCurrentUser.path)")
 
 let supportDir = SentinelPaths.supportDirectory
-try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+do {
+    try FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+} catch {
+    // v2026.07.18：持久化目录失败会让候选证据丢失，不能用 try? 静默伪装成功。
+    log.error("Sentinel support directory creation failed: \(error)")
+}
 
 let pendingPath = supportDir.appendingPathComponent("sentinel-pending.json").path
 let ringBuffer = HotspotRingBuffer(capacity: 100, persistPath: pendingPath)
@@ -43,7 +60,7 @@ let hotspotListener = HotspotListener(ringBuffer: ringBuffer, dispatcher: dispat
 trashListener.start()
 hotspotListener.start()
 
-log.info("Sentinel daemon ready, entering run loop")
+log.info("Sentinel user agent ready, entering run loop")
 CFRunLoopRun()
 
 // MARK: - 路径常量
@@ -70,11 +87,42 @@ enum SentinelPaths {
     }
 }
 
-// MARK: - 简易日志（os.log 太重，daemon 极简打印 stderr 即可）
+// MARK: - 用户态本地日志
 
+/// `@unchecked Sendable` synchronization basis: `queue` exclusively owns the timer callback,
+/// retention timestamp and every filesystem write. Immutable path/timing constants are fixed
+/// before the singleton is published.
 final class SentinelLog: @unchecked Sendable {
     static let shared = SentinelLog()
     private let queue = DispatchQueue(label: "com.amux.ai.Clean.sentinel.log")
+    private let directory = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/AmuxAIClean", isDirectory: true)
+    private static let retention: TimeInterval = 7 * 24 * 60 * 60
+    private static let pruneCheckInterval: TimeInterval = 60 * 60
+    // v2026.07.18 build fix: DispatchSourceTimer accepts a TimeInterval for cadence but its
+    // leeway uses DispatchTimeInterval, which has no `.minutes` case on supported toolchains.
+    private static let pruneLeewaySeconds = 10 * 60
+    private let retentionTimer: DispatchSourceTimer
+    /// Accessed only on `queue`; the timer and emit path share the same serialization boundary.
+    private var lastPruneCheck = Date.distantPast
+
+    private init() {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        retentionTimer = timer
+        queue.sync { pruneExpiredLogsIfNeeded(now: Date(), force: true) }
+        // v2026.07.18: a Login Agent may stay alive for weeks. Startup-only pruning violates the
+        // seven-day privacy contract, so both an hourly timer and the next write after wake check
+        // retention. The serial queue owns every mutable field behind @unchecked Sendable.
+        timer.schedule(
+            deadline: .now() + Self.pruneCheckInterval,
+            repeating: Self.pruneCheckInterval,
+            leeway: .seconds(Self.pruneLeewaySeconds)
+        )
+        timer.setEventHandler { [weak self] in
+            self?.pruneExpiredLogsIfNeeded(now: Date())
+        }
+        timer.resume()
+    }
 
     func info(_ message: @autoclosure @escaping () -> String) {
         emit("INFO ", message())
@@ -90,10 +138,70 @@ final class SentinelLog: @unchecked Sendable {
 
     private func emit(_ level: String, _ message: String) {
         queue.async {
+            let now = Date()
+            self.pruneExpiredLogsIfNeeded(now: now)
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            let ts = formatter.string(from: Date())
-            FileHandle.standardError.write(Data("[\(ts)] [\(level)] \(message)\n".utf8))
+            let ts = formatter.string(from: now)
+            let data = Data("[\(ts)] [\(level)] \(message)\n".utf8)
+            do {
+                let url = self.dailyLogURL(for: now)
+                if !FileManager.default.fileExists(atPath: url.path) {
+                    guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+                        throw CocoaError(.fileWriteUnknown)
+                    }
+                }
+                let handle = try FileHandle(forWritingTo: url)
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+                try handle.close()
+            } catch {
+                // v2026.07.18 privacy boundary: stderr is system managed and has no retention
+                // contract we control. Do not mirror the original message because it commonly
+                // contains absolute paths; emit only a stable failure marker.
+                FileHandle.standardError.write(Data("Sentinel local log write failed\n".utf8))
+            }
+        }
+    }
+
+    private func dailyLogURL(for date: Date) -> URL {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return directory.appendingPathComponent(
+            "AmuxAIClean-Sentinel-\(formatter.string(from: date)).log"
+        )
+    }
+
+    private func pruneExpiredLogsIfNeeded(now: Date, force: Bool = false) {
+        guard force || now.timeIntervalSince(lastPruneCheck) >= Self.pruneCheckInterval else {
+            return
+        }
+        lastPruneCheck = now
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            let keys: Set<URLResourceKey> = [.contentModificationDateKey, .isRegularFileKey]
+            let files = try FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: Array(keys),
+                options: [.skipsHiddenFiles]
+            )
+            let cutoff = now.addingTimeInterval(-Self.retention)
+            for file in files where file.lastPathComponent.hasPrefix("AmuxAIClean-Sentinel-") {
+                let values = try file.resourceValues(forKeys: keys)
+                guard values.isRegularFile == true,
+                      let modified = values.contentModificationDate,
+                      modified < cutoff else { continue }
+                try FileManager.default.removeItem(at: file)
+            }
+        } catch {
+            // Best-effort retention cleanup: preserve monitor behavior and expose only a local
+            // technical diagnostic. No user data or raw error crosses into the App UI.
+            FileHandle.standardError.write(Data("Sentinel log setup failed\n".utf8))
         }
     }
 }
@@ -232,12 +340,19 @@ final class HotspotRingBuffer: @unchecked Sendable {
 
     func loadFromDisk() {
         queue.sync {
-            guard let data = try? Data(contentsOf: URL(fileURLWithPath: persistPath)) else { return }
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            if let decoded = try? decoder.decode([HotspotEvent].self, from: data) {
+            let url = URL(fileURLWithPath: persistPath)
+            guard FileManager.default.fileExists(atPath: url.path) else { return }
+            do {
+                let data = try Data(contentsOf: url)
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                let decoded = try decoder.decode([HotspotEvent].self, from: data)
                 events = decoded
                 SentinelLog.shared.info("RingBuffer loaded \(decoded.count) events from disk")
+            } catch {
+                // v2026.07.18：损坏或不可读的候选文件保留在原位，记录错误供诊断；
+                // 不用空数组覆盖它，也不把读取失败伪装成“没有历史事件”。
+                SentinelLog.shared.error("RingBuffer load failed: \(error)")
             }
         }
     }
@@ -379,13 +494,16 @@ final class HotspotListener: @unchecked Sendable {
 
 // MARK: - URL Scheme dispatcher（拉起主 App）
 
-final class URLSchemeDispatcher: @unchecked Sendable {
+final class URLSchemeDispatcher: Sendable {
     func openUninstall(path: String) {
-        guard let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
-            SentinelLog.shared.warn("openUninstall percent-encoding failed: \(path)")
-            return
-        }
-        guard let url = URL(string: "amuxaiclean://uninstall?path=\(encoded)") else {
+        // v2026.07.18: `.urlQueryAllowed` still contains delimiters such as `&`; hand-built query
+        // text therefore truncates legal filenames. URLQueryItem owns escaping and round-trips
+        // ampersands, hashes, question marks, plus signs, spaces and Unicode as one value.
+        var components = URLComponents()
+        components.scheme = "amuxaiclean"
+        components.host = "uninstall"
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        guard let url = components.url else {
             SentinelLog.shared.warn("openUninstall URL construct failed: \(path)")
             return
         }
@@ -399,7 +517,7 @@ final class URLSchemeDispatcher: @unchecked Sendable {
         Self.openURL(url)
     }
 
-    /// 用 `/usr/bin/open` 间接拉起主 App，避免 daemon 直接 link AppKit。
+    /// 用 `/usr/bin/open` 间接拉起主 App，避免后台 Agent 直接 link AppKit。
     private static func openURL(_ url: URL) {
         let task = Process()
         task.launchPath = "/usr/bin/open"

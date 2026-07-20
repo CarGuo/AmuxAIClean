@@ -1,22 +1,22 @@
 # 使用条款 / Terms of Use
 
-最后更新：2026-07-16
-适用版本：GSYCleanMac v1.6.1+
+最后更新：2026-07-18
+适用版本：AmuxAIClean（项目仓库名仍为 GSYCleanMac）v1.6.1+
 
 ## 0. 接受条款
 
-下载、安装或运行 GSYCleanMac 即表示你已阅读并同意本条款。如不同意，请勿安装或立即卸载（卸载方式见 [README.md](README.md)）。
+下载、安装或运行 AmuxAIClean 即表示你已阅读并同意本条款。如不同意，请勿安装或立即卸载（卸载方式见 [README.md](README.md)）。
 
 ## 1. 许可协议
 
-GSYCleanMac 基于 **MIT License** 发布，完整许可文本见仓库根目录 [LICENSE](LICENSE)。
+AmuxAIClean 基于 **MIT License** 发布，完整许可文本见仓库根目录 [LICENSE](LICENSE)。
 
 > 简要说明：你可以免费使用、复制、修改、合并、出版、分发、再授权及/或销售本软件副本，唯一的要求是在所有副本中保留原版权声明与本许可声明。
 
 ## 2. 软件性质
 
-- GSYCleanMac 是一款本地 macOS 清理 / 优化工具
-- 完全在用户本机运行，不依赖任何服务端
+- AmuxAIClean 是一款本地 macOS 清理 / 优化工具
+- 核心分析、安全判定和清理在用户本机运行；App 主动 HTTP 仅包括访问 GitHub 的更新检查，以及用户主动启用后访问其配置模型服务的 AI 助手。用户选择网络卷、云端占位文件或 Quick Look 时，macOS 或存储提供方仍可能远端读取/下载
 - 不收取费用，不内购，无广告
 - 详细隐私政策见 [PRIVACY.md](PRIVACY.md)
 
@@ -24,7 +24,7 @@ GSYCleanMac 基于 **MIT License** 发布，完整许可文本见仓库根目录
 
 ### 3.1 移入废纸篓与恢复边界
 
-GSYCleanMac 的文件清理统一调用 macOS 系统回收接口，将项目**移入废纸篓**；
+AmuxAIClean 的文件清理统一调用 macOS 系统回收接口，将项目**移入废纸篓**；
 软件不提供“直接抹除”或绕过废纸篓的删除模式。
 
 移入废纸篓后，在你清倒废纸篓之前，通常可通过软件的「最近删除」面板或 Finder
@@ -36,7 +36,7 @@ GSYCleanMac 的文件清理统一调用 macOS 系统回收接口，将项目**�
 
 ### 3.2 启发式扫描的局限
 
-GSYCleanMac 的「可清理项」基于公开的、社区维护的 [Vendor Rules](Resources/Rules/vendors.yaml) 和启发式规则推断，**无法保证 100% 准确**：
+AmuxAIClean 的「可清理项」基于公开的、社区维护的 [Vendor Rules](Resources/Rules/vendors.yaml) 和启发式规则推断，**无法保证 100% 准确**：
 
 - 极少数情况下可能把仍在使用的缓存识别为可清理
 - 第三方 App 的私有数据格式如发生变化，旧规则可能误判
@@ -71,19 +71,20 @@ GSYCleanMac 的「可清理项」基于公开的、社区维护的 [Vendor Rules
 使用本软件即表示你确认：
 
 - ✅ 你拥有被扫描磁盘上数据的合法访问权
-- ✅ 你已理解删除操作的不可逆性并自行承担风险
+- ✅ 你已理解恢复窗口有条件：只有匹配的废纸篓项目仍存在且身份可验证时才能尝试恢复；清倒废纸篓后不保证可恢复
 - ✅ 你不会在生产服务器、关键业务系统上未经备份地运行删除操作
 - ✅ 你已知晓本软件不附带商业级 SLA、不保证 7×24 可用
 - ✅ 你不会将本软件用于任何违反所在地法律法规的目的
 
 ## 5. 第三方内容
 
-- App 内未嵌入任何第三方静态库、动态库或 Swift Package
+- 主程序只链接 Apple 系统框架和仓库内第一方 Swift Packages，不嵌入第三方 SDK、静态库或动态库
 - 检查更新功能访问 GitHub Releases API，使用即表示同意 [GitHub 服务条款](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service)
+- AI 助手默认关闭；用户启用并配置第三方或自托管模型端点后，相应请求受该服务商条款与隐私政策约束。具体发送字段见 [PRIVACY.md](PRIVACY.md)
 
 ## 6. 商标
 
-- "GSYCleanMac" 仅为项目名称，无商标注册
+- “AmuxAIClean”是当前产品名，“GSYCleanMac”是项目仓库名；二者均不主张已注册商标
 - "macOS"、"Apple"、"Finder"、"Sequoia"、"Apple Silicon" 等是 Apple Inc. 的注册商标，本项目仅做指称性使用，与 Apple Inc. 无任何关联或背书
 
 ## 7. 终止
@@ -102,4 +103,4 @@ GSYCleanMac 的「可清理项」基于公开的、社区维护的 [Vendor Rules
 
 **English Summary**
 
-GSYCleanMac is released under the MIT License and provided "AS IS" without warranty of any kind. **Deletion is irreversible** when "Direct Erase" mode is chosen — back up first. You are solely responsible for verifying scan results before deleting any file. The author is not liable for any data loss or consequential damages. By installing the software you accept these terms.
+AmuxAIClean (repository name: GSYCleanMac) is released under the MIT License and provided "AS IS" without warranty of any kind. Cleanup moves items to the macOS Trash; there is no Direct Erase mode. Restoration is not guaranteed after the Trash is emptied or an item is otherwise removed, so back up important data and verify every preview. Update checks use GitHub, and the optional user-configured AI feature is governed by the selected provider's terms. Accessing a network share, cloud placeholder, or Quick Look preview may cause macOS or the storage provider to read remotely. The author is not liable for data loss or consequential damages. By installing the software you accept these terms.

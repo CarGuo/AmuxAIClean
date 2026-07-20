@@ -5,7 +5,7 @@
 #   ./Scripts/build_release.sh                 # 默认：Developer ID 签名 + DMG，不公证
 #   ./Scripts/build_release.sh --notarize      # Developer ID 签 App/DMG，只公证最终 DMG
 #   ./Scripts/build_release.sh --app-only      # 只构建 .app，不生成 DMG
-#   VERSION=1.0.0 ./Scripts/build_release.sh   # 指定版本号写进 Info.plist 与产物文件名
+#   VERSION=x.y.z ./Scripts/build_release.sh   # 可选：覆盖工程版本并写进产物文件名
 #
 # 设计原则（Step 5.6 番外回归 Xcode 原生路径）：
 #   - 不再做签名身份决议；签名完全由 .xcodeproj 里的 Release Manual + Developer ID Application 决定
@@ -129,17 +129,17 @@ usage() {
   --app-only      只构建 .app，不生成 DMG；可与 --no-notarize 一起用于快速验证
 
 常用环境变量:
-  VERSION=1.6.0
+  VERSION=x.y.z    # 可选；默认使用工程 MARKETING_VERSION
   BUILD_NUMBER=1234
   BUILD_DIR=build/release
   DIST_DIR=dist
-  DMG_PATH=dist/AmuxAIClean-1.6.0.dmg
+  DMG_PATH=dist/AmuxAIClean-x.y.z.dmg
   AMUX_CLEAN_NOTARY_KEYCHAIN_PROFILE=amux-notary
   NOTARY_TIMEOUT=45m
 
 示例:
-  VERSION=1.6.0 $0 --no-notarize
-  VERSION=1.6.0 AMUX_CLEAN_NOTARY_KEYCHAIN_PROFILE=amux-notary $0 --notarize
+  $0 --no-notarize
+  AMUX_CLEAN_NOTARY_KEYCHAIN_PROFILE=amux-notary $0 --notarize
 EOF
 }
 

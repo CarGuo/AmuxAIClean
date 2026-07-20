@@ -151,6 +151,10 @@ public struct LargeFilesView: View {
     }
 
     private func syncDisplayedLargeFiles(force: Bool) {
+        // v2026.07.19 settlement regression fix: keep the previous frozen projection. Computing
+        // `currentItems/currentKindCounts` is O(N) and `.settling` deliberately reports
+        // isScanning=false, so the old boolean gate caused a terminal-width rebuild on handoff.
+        if case .settling = coordinator.scanPhase { return }
         let latest = currentItems
         let latestCounts = currentKindCounts
         if force || !coordinator.isScanning || latest.isEmpty {
@@ -196,8 +200,8 @@ public struct LargeFilesView: View {
         .onReceive(coordinator.$snapshot) { _ in
             syncDisplayedLargeFiles(force: false)
         }
-        .onReceive(coordinator.$isScanning.removeDuplicates()) { scanning in
-            if !scanning {
+        .onReceive(coordinator.$scanPhase.removeDuplicates()) { phase in
+            if phase == .idle, !coordinator.isScanning {
                 syncDisplayedLargeFiles(force: true)
             }
         }
@@ -492,7 +496,7 @@ public struct LargeFilesView: View {
             Image(systemName: "tray")
                 .font(.system(size: 36))
                 .foregroundStyle(.tertiary)
-            if coordinator.isScanning {
+            if coordinator.hasActivePrimaryScanOwnership {
                 Text("largefiles.empty.scanning", bundle: .module)
                     .foregroundStyle(.secondary)
             } else if coordinator.isFinished && !coordinator.snapshot.isComplete {
@@ -900,16 +904,25 @@ private final class LargeFilesRowCanvas: NSView {
             actions.togglePick()
             return
         }
-        actions.select()
         switch hitTestAction(point) {
         case .ai:
+            if InlineRowActionNavigationPolicy.shouldSelectRow(for: .askAI) {
+                actions.select()
+            }
             actions.askAI()
         case .stash:
             guard !isStashed else { NSSound.beep(); return }
+            if InlineRowActionNavigationPolicy.shouldSelectRow(for: .stash) {
+                actions.select()
+            }
             actions.stash()
         case .trash:
+            if InlineRowActionNavigationPolicy.shouldSelectRow(for: .trash) {
+                actions.select()
+            }
             actions.trash()
         case .none:
+            actions.select()
             if event.clickCount >= 2 {
                 QuickLookController.shared.preview(urls: [item.url])
             }

@@ -296,6 +296,31 @@ public actor DuplicateScanner {
     private let roots: [URL]
     private let minBytes: Int64
     private let scanOptions: ScanOptions
+    typealias BulkSessionFactory = @Sendable (
+        _ root: URL,
+        _ minimumLogicalBytes: Int64,
+        _ options: ScanOptions
+    ) -> BulkScanner.ScanSession
+    private let bulkSessionFactory: BulkSessionFactory
+
+    /// Owns the event stream together with every detached producer below it.
+    ///
+    /// v2026.07.18 producer-ownership fix: cancelling an `AsyncStream` consumer only requests
+    /// cancellation; it does not prove the filesystem walkers and hash readers have exited.
+    /// Replaceable UI scans must cancel and await this handle before starting another round.
+    public struct ScanSession: Sendable {
+        public let events: AsyncStream<DuplicateScanEvent>
+        private let producer: Task<Void, Never>
+
+        fileprivate init(events: AsyncStream<DuplicateScanEvent>,
+                         producer: Task<Void, Never>) {
+            self.events = events
+            self.producer = producer
+        }
+
+        public func cancel() { producer.cancel() }
+        public func waitForTermination() async { await producer.value }
+    }
 
     public init(
         roots: [URL],
@@ -308,6 +333,25 @@ public actor DuplicateScanner {
         self.roots = Self.minimalNonOverlappingRoots(roots)
         self.minBytes = max(0, minBytes)
         self.scanOptions = scanOptions
+        self.bulkSessionFactory = { root, minimumLogicalBytes, options in
+            BulkScanner(options: options).scanSession(
+                root: root,
+                delivery: .fileCandidates(minimumLogicalBytes: minimumLogicalBytes)
+            )
+        }
+    }
+
+    /// Deterministic test boundary for proving that outer termination joins a child walker.
+    init(
+        roots: [URL],
+        minBytes: Int64,
+        scanOptions: ScanOptions = .default,
+        bulkSessionFactory: @escaping BulkSessionFactory
+    ) {
+        self.roots = Self.minimalNonOverlappingRoots(roots)
+        self.minBytes = max(0, minBytes)
+        self.scanOptions = scanOptions
+        self.bulkSessionFactory = bulkSessionFactory
     }
 
     // MARK: - Public API
@@ -317,29 +361,39 @@ public actor DuplicateScanner {
     /// 调用方 `for await` 直到收到 `.finished(groups:)`；提前 break 会通过
     /// `onTermination` cancel 内部 `Task.detached`。
     public nonisolated func scan() -> AsyncStream<DuplicateScanEvent> {
+        scanSession().events
+    }
+
+    /// Preferred boundary for any caller whose scan can be replaced or cancelled.
+    public nonisolated func scanSession() -> ScanSession {
         // v2026.07.17 安全回归：`.incomplete` 与可合并 progress 共用
         // bufferingNewest 会在消费者稍慢时静默淘汰权限证据。生产者现已是低频
         // progress + 终态候选投影，lossless stream 不再堆积逐文件事件。
-        AsyncStream(bufferingPolicy: .unbounded) { continuation in
-            let task = Task.detached(priority: .userInitiated) { [roots, minBytes, scanOptions] in
-                await DuplicateScanner.runScan(
-                    roots: roots,
-                    minBytes: minBytes,
-                    scanOptions: scanOptions,
-                    continuation: continuation
-                )
-            }
-            continuation.onTermination = { _ in task.cancel() }
+        let pair = AsyncStream<DuplicateScanEvent>.makeStream(bufferingPolicy: .unbounded)
+        let producer = Task.detached(priority: .userInitiated) {
+            [roots, minBytes, scanOptions, bulkSessionFactory] in
+            await DuplicateScanner.runScan(
+                roots: roots,
+                minBytes: minBytes,
+                scanOptions: scanOptions,
+                bulkSessionFactory: bulkSessionFactory,
+                continuation: pair.continuation
+            )
         }
+        pair.continuation.onTermination = { _ in producer.cancel() }
+        return ScanSession(events: pair.stream, producer: producer)
     }
 
     /// 阻塞式便捷 API：返回最终结果（仅供测试用）。
     public nonisolated func scanToCompletion() async -> [DuplicateGroup] {
-        for await event in scan() {
+        let session = scanSession()
+        for await event in session.events {
             if case let .finished(groups) = event {
+                await session.waitForTermination()
                 return groups
             }
         }
+        await session.waitForTermination()
         return []
     }
 
@@ -373,6 +427,7 @@ public actor DuplicateScanner {
         roots: [URL],
         minBytes: Int64,
         scanOptions: ScanOptions,
+        bulkSessionFactory: BulkSessionFactory,
         continuation: AsyncStream<DuplicateScanEvent>.Continuation
     ) async {
         // ===== 阶段 1：枚举所有文件，按 size 分桶 =====
@@ -392,12 +447,9 @@ public actor DuplicateScanner {
                 continuation.yield(.incomplete(issue))
                 continue
             }
-            let scanner = BulkScanner(options: scanOptions)
+            let session = bulkSessionFactory(root, minBytes, scanOptions)
             var rootSummary: ScanSummary?
-            for await event in scanner.scan(
-                root: root,
-                delivery: .fileCandidates(minimumLogicalBytes: minBytes)
-            ) {
+            for await event in session.events {
                 if Task.isCancelled { break }
                 switch event {
                 case .heartbeat:
@@ -416,6 +468,11 @@ public actor DuplicateScanner {
                     continue
                 }
             }
+
+            // The outer duplicate producer must not report termination while a child walker
+            // is still draining. This makes `DuplicateScanner.ScanSession` a transitive join.
+            if Task.isCancelled { session.cancel() }
+            await session.waitForTermination()
 
             guard !Task.isCancelled, let rootSummary else { break }
             for issue in rootSummary.incompleteIssues {

@@ -17,6 +17,7 @@ struct DeletionInteractionCandidateSnapshot: Sendable, Equatable {
     let fileCount: Int
     let runningBundleIDPrefix: String?
     let accessEvidence: DeletionAccessEvidence
+    let sourceObjectIdentity: TrashObjectIdentity?
 
     init(
         path: String,
@@ -26,6 +27,7 @@ struct DeletionInteractionCandidateSnapshot: Sendable, Equatable {
         fileCount: Int,
         runningBundleIDPrefix: String? = nil,
         accessEvidence: DeletionAccessEvidence = .complete,
+        sourceObjectIdentity: TrashObjectIdentity? = nil,
         titlePresentation: LocalizedTextDescriptor? = nil
     ) {
         self.path = path
@@ -36,6 +38,7 @@ struct DeletionInteractionCandidateSnapshot: Sendable, Equatable {
         self.fileCount = max(0, fileCount)
         self.runningBundleIDPrefix = runningBundleIDPrefix
         self.accessEvidence = accessEvidence
+        self.sourceObjectIdentity = sourceObjectIdentity
     }
 
     fileprivate var intentCandidate: DeletionIntentCandidate {
@@ -49,6 +52,7 @@ struct DeletionInteractionCandidateSnapshot: Sendable, Equatable {
             rejection: .ok,
             accessEvidence: accessEvidence,
             runningBundleIDPrefix: runningBundleIDPrefix,
+            sourceObjectIdentity: sourceObjectIdentity,
             titlePresentation: titlePresentation
         )
     }
@@ -146,7 +150,10 @@ struct DeletionInteractionCoordinator {
 
     init(
         pipeline: any DeletionPipeline,
-        undoHistoryStore: UndoHistoryStore = .shared
+        // v2026.07.20: Keep the persistent Undo owner explicit. Compatibility pipelines can
+        // return moved pairs without a durable journal capability, so a hidden `.shared`
+        // default let tests contaminate production Application Support.
+        undoHistoryStore: UndoHistoryStore
     ) {
         self.pipeline = pipeline
         self.undoHistoryStore = undoHistoryStore
@@ -403,8 +410,21 @@ struct DeletionInteractionCoordinator {
                 ))
             }
             executionVerification = .duplicate(restricted)
+        case (.uninstall, .some(.uninstall(let request))):
+            guard let restricted = request.restricting(to: authorization.paths) else {
+                return .blocked(uninstallVerificationBlock(
+                    intent: intent,
+                    paths: authorization.paths
+                ))
+            }
+            executionVerification = .uninstall(restricted)
         case (.duplicate, nil):
             return .blocked(duplicateVerificationBlock(
+                intent: intent,
+                paths: authorization.paths
+            ))
+        case (.uninstall, nil):
+            return .blocked(uninstallVerificationBlock(
                 intent: intent,
                 paths: authorization.paths
             ))
@@ -608,6 +628,11 @@ struct DeletionInteractionCoordinator {
                 throw DeletionIntentValidationError.invalidExecutionVerification
             }
             restrictedVerification = .duplicate(restricted)
+        case .some(.uninstall(let request)):
+            guard let restricted = request.restricting(to: paths) else {
+                throw DeletionIntentValidationError.invalidExecutionVerification
+            }
+            restrictedVerification = .uninstall(restricted)
         case .none:
             restrictedVerification = nil
         }
@@ -633,6 +658,18 @@ struct DeletionInteractionCoordinator {
                     path: $0,
                     reason: DuplicateDeletionVerificationRejectionReason.invalidEvidence.rawValue
                 )
+            }
+        )
+    }
+
+    private func uninstallVerificationBlock(
+        intent: DeletionIntent,
+        paths: [String]
+    ) -> DeletionInteractionBlock {
+        DeletionInteractionBlock(
+            intentID: intent.id,
+            rejections: paths.map {
+                .init(path: $0, reason: "uninstallVerification.invalidEvidence")
             }
         )
     }

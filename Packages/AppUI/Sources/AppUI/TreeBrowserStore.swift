@@ -1,5 +1,64 @@
 import Foundation
 
+/// Receipt-backed deletion presentation matcher shared by the Main list and Tree projection.
+/// Paths are normalized and parent/child overlaps collapse to a minimal root set off the render
+/// path; this is presentation-only. Authoritative byte/count reconciliation remains in
+/// `ScanCoordinator.pruneDeleted`.
+struct DeletionPresentationPathMatcher: Sendable, Equatable {
+    let roots: [String]
+    private let rootSet: Set<String>
+
+    init<S: Sequence>(paths: S) where S.Element == String {
+        let unique = Set(paths.lazy.map(Self.normalize).filter { !$0.isEmpty })
+        let sorted = unique.sorted()
+        var minimal: [String] = []
+        var minimalSet: Set<String> = []
+        minimal.reserveCapacity(sorted.count)
+        minimalSet.reserveCapacity(sorted.count)
+        for path in sorted where !Self.hasAncestor(of: path, in: minimalSet) {
+            minimal.append(path)
+            minimalSet.insert(path)
+        }
+        roots = minimal
+        rootSet = minimalSet
+    }
+
+    func contains(_ candidate: String) -> Bool {
+        // Empty is the dominant steady-state. Keep ordinary full/incremental Tree projection at
+        // O(1) per matcher instead of walking every row's ancestor chain when no receipt exists.
+        guard !rootSet.isEmpty, !candidate.isEmpty else { return false }
+        if rootSet.contains("/"), candidate.hasPrefix("/") { return true }
+        var cursor = Self.normalize(candidate)
+        while !cursor.isEmpty {
+            if rootSet.contains(cursor) { return true }
+            if cursor == "/" { break }
+            let parent = String._gsyParentPath(of: cursor)
+            if parent == cursor { break }
+            cursor = parent
+        }
+        return false
+    }
+
+    private static func normalize(_ path: String) -> String {
+        var value = path
+        while value.count > 1, value.hasSuffix("/") { value.removeLast() }
+        return value
+    }
+
+    private static func hasAncestor(of candidate: String, in roots: Set<String>) -> Bool {
+        if roots.contains("/"), candidate.hasPrefix("/") { return true }
+        var cursor = candidate
+        while !cursor.isEmpty {
+            if roots.contains(cursor) { return true }
+            if cursor == "/" { break }
+            let parent = String._gsyParentPath(of: cursor)
+            if parent == cursor { break }
+            cursor = parent
+        }
+        return false
+    }
+}
+
 /// Step 10b / 2026-06：树形浏览状态 SSOT 接口外壳。
 ///
 /// 把 [ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
@@ -30,6 +89,10 @@ public final class TreeBrowserStore: ObservableObject {
     /// removeAll / patch-by-prune 都需要 bump。订阅者通常**不需要**直接订阅
     /// （由 [structuralRevision](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift#L57-L57) 覆盖），保留它给单测 / 未来细粒度刷新留 hook。
     @Published public private(set) var childrenCacheVersion: UInt64 = 0
+    /// Exact parent whose direct-child projection changed. Set before publishing the version so
+    /// TreeBrowserView can patch only that contiguous expanded segment. `nil` means a session-wide
+    /// invalidation/locale/prune transaction and therefore requires a complete projection.
+    public private(set) var lastChildrenCacheChangedPath: String?
 
     /// 树形扁平化重算的"统一脏标"。任何可能改变 directChildren 输出的入口必须 bump。
     /// 老订阅者（外部代码 / 测试）继续读这个；新代码优先订阅 [structuralRevision](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift#L57-L57)。
@@ -43,11 +106,20 @@ public final class TreeBrowserStore: ObservableObject {
     /// 订阅它的 view **不需要**重建 flatRows，仅 RowView 内部读最新值。
     @Published public private(set) var tickRevision: UInt64 = 0
 
+    /// v2026.07.20：successful recycle receipt 的窄展示信号。完整 roots 留在 store，
+    /// revision 仅负责唤醒 Tree；每个订阅者都可读取，不能用单消费者 consume 语义。
+    @Published public private(set) var deletionPresentationRevision: UInt64 = 0
+    public private(set) var deletionPresentationPaths: [String] = []
+    private(set) var deletionPresentationMatcher = DeletionPresentationPathMatcher(
+        paths: EmptyCollection<String>()
+    )
+
     public init() {}
 
     /// 单点收敛：cache 写入 → version &+= 1。
     @inline(__always)
-    public func bumpChildrenCacheVersion() {
+    public func bumpChildrenCacheVersion(changedPath: String? = nil) {
+        lastChildrenCacheChangedPath = changedPath
         childrenCacheVersion &+= 1
     }
 
@@ -67,5 +139,22 @@ public final class TreeBrowserStore: ObservableObject {
     public func bumpTickRevision() {
         tickRevision &+= 1
         treeRevision &+= 1
+    }
+
+    /// v2026.07.20: the coordinator's background tombstone worker owns normalization. Publishing
+    /// the frozen matcher keeps sheet remounts and receipt patches O(1) on MainActor.
+    func publishDeletionPresentation(matcher: DeletionPresentationPathMatcher) {
+        deletionPresentationMatcher = matcher
+        deletionPresentationPaths = matcher.roots
+        deletionPresentationRevision &+= 1
+    }
+
+    public func resetDeletionPresentation() {
+        guard !deletionPresentationPaths.isEmpty else { return }
+        deletionPresentationPaths = []
+        deletionPresentationMatcher = DeletionPresentationPathMatcher(
+            paths: EmptyCollection<String>()
+        )
+        deletionPresentationRevision &+= 1
     }
 }

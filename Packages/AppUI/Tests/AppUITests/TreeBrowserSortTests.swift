@@ -6,14 +6,12 @@ import XCTest
 /// 排出来的顺序对不对，与 deepIndex on/off 的 fetch 策略无关。
 ///
 /// 为什么所有 `ScanCoordinator(enableTreeDeepIndex: true)`：
-/// v1.3.z 起 `enableTreeDeepIndex` 默认 false，意味着同步 directChildren 在内存索引
-/// 不命中时会**返空 + 派后台 task 按需扫描当前目录 → cache hit 后下次 view body 才能拿到**。
-/// 这是产品上的"懒加载"策略，但单元测试只想验证排序——开 deepIndex=on 让内存里
-/// 直接构造好整棵 childEdges 索引，directChildren 同步返非空，**测试意图与排序逻辑强相关**。
+/// v2026.07.18 起 deepIndex on/off 都遵守同一后台 presentation 合同：cache miss 先返空，
+/// actor 从冻结索引生成所有排序投影后再发布。测试等待该 cache 边界，只验证最终排序，
+/// 不把主线程同步 materialize 当成前置条件。
 ///
-/// 这不是"测试为了 pass 而绕过实际行为"——deepIndex=on 路径的排序代码与 deepIndex=off
-/// 路径完全共用（都走 [materializeFromMemory + 排序闭包](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)），
-/// 排序正确性只测一份。按需扫描缓存路径的回归保护在 TreeDownDrillTests / FullDisk tests。
+/// deepIndex=on 从内存索引投影，off 从按需磁盘测量投影；二者最终都写入同一份全排序
+/// Tree cache。按需扫描生产者回归另由 TreeDownDrillTests / FullDisk tests 保护。
 @MainActor
 final class TreeBrowserSortTests: XCTestCase {
 
@@ -73,6 +71,22 @@ final class TreeBrowserSortTests: XCTestCase {
         }
     }
 
+    private func waitChildren(
+        _ coord: ScanCoordinator,
+        path: String,
+        sortedBy key: TreeSortKey,
+        expectedCount: Int = 2,
+        timeout: TimeInterval = 5
+    ) async -> [TreeRow] {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let rows = coord.directChildren(of: path, sortedBy: key)
+            if rows.count == expectedCount { return rows }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        return coord.directChildren(of: path, sortedBy: key)
+    }
+
     func test_directChildren_sizeDesc_默认与显式一致() async throws {
         let root = try makeFixture()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -82,7 +96,11 @@ final class TreeBrowserSortTests: XCTestCase {
         coord.scan(category: cat)
         await waitFinished(coord)
 
-        let defaultKids = coord.directChildren(of: root.path)
+        let defaultKids = await waitChildren(
+            coord,
+            path: root.path,
+            sortedBy: .sizeDesc
+        )
         let descKids = coord.directChildren(of: root.path, sortedBy: .sizeDesc)
         XCTAssertEqual(defaultKids.map(\.path), descKids.map(\.path),
                        "directChildren(of:) 必须等价于 directChildren(of:sortedBy:.sizeDesc)")
@@ -98,7 +116,7 @@ final class TreeBrowserSortTests: XCTestCase {
         coord.scan(category: cat)
         await waitFinished(coord)
 
-        let kids = coord.directChildren(of: root.path, sortedBy: .sizeAsc)
+        let kids = await waitChildren(coord, path: root.path, sortedBy: .sizeAsc)
         XCTAssertEqual(kids.map(\.title), ["B", "A"], "B(4K) < A(10K)，升序应 B 在前")
     }
 
@@ -111,7 +129,7 @@ final class TreeBrowserSortTests: XCTestCase {
         coord.scan(category: cat)
         await waitFinished(coord)
 
-        let asc = coord.directChildren(of: root.path, sortedBy: .nameAsc)
+        let asc = await waitChildren(coord, path: root.path, sortedBy: .nameAsc)
         XCTAssertEqual(asc.map(\.title), ["A", "B"])
 
         let desc = coord.directChildren(of: root.path, sortedBy: .nameDesc)
@@ -128,7 +146,7 @@ final class TreeBrowserSortTests: XCTestCase {
         await waitFinished(coord)
 
         // A 含 2 个文件，B 含 1 个文件
-        let descByCount = coord.directChildren(of: root.path, sortedBy: .countDesc)
+        let descByCount = await waitChildren(coord, path: root.path, sortedBy: .countDesc)
         XCTAssertEqual(descByCount.first?.title, "A")
         let ascByCount = coord.directChildren(of: root.path, sortedBy: .countAsc)
         XCTAssertEqual(ascByCount.first?.title, "B")
@@ -152,7 +170,7 @@ final class TreeBrowserSortTests: XCTestCase {
         coord.scan(category: cat)
         await waitFinished(coord)
 
-        let kids = coord.directChildren(of: root.path, sortedBy: .sizeDesc)
+        let kids = await waitChildren(coord, path: root.path, sortedBy: .sizeDesc)
         XCTAssertEqual(kids.map(\.title), ["A", "Z"],
                        "size 相同时按 path 升序兜底，A 应排在 Z 前面")
     }

@@ -5,6 +5,239 @@ import LogKit
 import ScanKit
 import SafetyKit
 
+/// FIFO bridge from synchronous callback/retry code into MainActor health projection. Creating
+/// unrelated `Task { @MainActor }` blocks does not preserve source order; this queue snapshots a
+/// predecessor under NSLock, so a terminal retry always executes after its earlier pending event.
+/// `flush()` is the proof required before terminal revision tombstones may be evicted.
+final class TrashCompletionHealthTransitionQueue: @unchecked Sendable {
+    static let shared = TrashCompletionHealthTransitionQueue()
+
+    private let lock = NSLock()
+    private var tail: Task<Void, Never>?
+
+    func enqueue(
+        _ operation: @escaping @MainActor @Sendable () -> Void
+    ) {
+        lock.lock()
+        let predecessor = tail
+        let next = Task.detached(priority: .utility) {
+            if let predecessor { await predecessor.value }
+            await operation()
+        }
+        tail = next
+        lock.unlock()
+    }
+
+    func flush() async {
+        await snapshotTail()?.value
+    }
+
+    private func snapshotTail() -> Task<Void, Never>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return tail
+    }
+}
+
+enum TrashStartupRecoveryTerminal: Sendable, Equatable {
+    case ready
+    case blocked
+}
+
+enum TrashRecoveryReservation: Sendable, Equatable {
+    case recoveryBlocked
+    case ledger(TrashPendingLedgerReservation)
+}
+
+/// Same-process single-flight owner for startup/new-delete recovery. The durable journal also
+/// supplies a cross-process flock lease; this actor prevents redundant tasks within one App while
+/// deliberately forgetting each terminal run so a later real-delete request can retry a transient
+/// storage failure or observe a journal row appended after the previous proof.
+actor TrashStartupRecoveryCoordinator {
+    static let shared = TrashStartupRecoveryCoordinator()
+
+    private struct Run: Sendable {
+        let id: UUID
+        let task: Task<TrashStartupRecoveryTerminal, Never>
+    }
+
+    private var runs: [String: Run] = [:]
+
+    func recover(
+        key: String,
+        operation: @escaping @Sendable () async -> TrashStartupRecoveryTerminal
+    ) async -> TrashStartupRecoveryTerminal {
+        if let existing = runs[key] {
+            return await existing.task.value
+        }
+        let id = UUID()
+        let task = Task.detached(priority: .utility, operation: operation)
+        runs[key] = Run(id: id, task: task)
+        let terminal = await task.value
+        if runs[key]?.id == id {
+            runs.removeValue(forKey: key)
+        }
+        return terminal
+    }
+}
+
+/// One indivisible owner for every durable side of a Trash transaction.
+///
+/// **v2026.07.18 recovery-domain root-cause fix**: injecting only a ledger used to leave the
+/// completion journal and Undo projection pointed at their production singletons. Besides
+/// contaminating deterministic tests, two pipeline instances could then join the same startup
+/// single-flight while disagreeing about which ledger/Undo store the result authorized. Keep the
+/// ledger, callback journal, Undo store and same-process coordination identity in one value so no
+/// construction path can mix owners. The journal's flock remains the cross-process authority.
+struct TrashRecoveryDependencyDomain: Sendable {
+    typealias UndoHistoryStoreProvider = @MainActor @Sendable () -> UndoHistoryStore
+
+    let pendingOperationLedger: any TrashPendingOperationLedger
+    let completionJournal: any TrashCompletionJournaling
+    let recoveryCoordinationKey: String
+    private let undoHistoryStoreProvider: UndoHistoryStoreProvider
+    private let temporaryStorageLifetime: TrashTemporaryRecoveryStorageLifetime?
+    let storageLocationsForTesting: TrashRecoveryStorageLocations?
+
+    /// Every production `TrashPipeline` copy shares this exact dependency domain. The provider is
+    /// MainActor-isolated so constructing a pipeline from a background caller never reaches the
+    /// UI-observed store outside its actor.
+    fileprivate static let production = TrashRecoveryDependencyDomain(
+        pendingOperationLedger: PersistentTrashPendingOperationLedger.shared,
+        completionJournal: PersistentTrashCompletionJournal.shared,
+        recoveryCoordinationKey: "production:\(PersistentTrashCompletionJournal.shared.recoveryCoordinationKey)",
+        undoHistoryStoreProvider: { UndoHistoryStore.shared },
+        temporaryStorageLifetime: nil,
+        storageLocationsForTesting: nil
+    )
+
+    /// v2026.07.20: A bare pipeline is a test/preview dependency and must never inherit the
+    /// production Application Support recovery owners. Build one complete, per-instance domain
+    /// under the process temporary directory instead of guessing whether XCTest is running.
+    /// Production is selected only by the explicitly named `TrashPipeline.production` factory.
+    static func isolatedTemporary() -> TrashRecoveryDependencyDomain {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AmuxAIClean-TrashRecoveryTests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let locations = TrashRecoveryStorageLocations(
+            root: root,
+            pendingOperationLedger: root.appendingPathComponent(
+                "trash-pending-operations.json",
+                isDirectory: false
+            ),
+            completionJournal: root.appendingPathComponent(
+                "trash-completion-journal.json",
+                isDirectory: false
+            ),
+            undoHistory: root.appendingPathComponent("UndoHistory.json", isDirectory: false)
+        )
+        let lifetime = TrashTemporaryRecoveryStorageLifetime(root: root)
+        let undoStoreProvider = TrashLazyURLBackedUndoHistoryStoreProvider(
+            storeURL: locations.undoHistory,
+            allowedRestoreRoots: [FileManager.default.temporaryDirectory.path]
+        )
+        let journal = PersistentTrashCompletionJournal(fileURL: locations.completionJournal)
+        return TrashRecoveryDependencyDomain(
+            pendingOperationLedger: PersistentTrashPendingOperationLedger(
+                fileURL: locations.pendingOperationLedger,
+                activeOperationRegistry: TrashActiveOperationRegistry()
+            ),
+            completionJournal: journal,
+            recoveryCoordinationKey: "isolated:\(journal.recoveryCoordinationKey):\(UUID().uuidString)",
+            undoHistoryStoreProvider: { undoStoreProvider.resolve() },
+            temporaryStorageLifetime: lifetime,
+            storageLocationsForTesting: locations
+        )
+    }
+
+    /// Explicit isolated-domain initializer used by tests and future non-production stores. A
+    /// random identity is intentional: only copies of this same value may share a single-flight;
+    /// equal-looking but independently assembled owners must still execute their own recovery.
+    init(
+        pendingOperationLedger: any TrashPendingOperationLedger,
+        completionJournal: any TrashCompletionJournaling,
+        undoHistoryStore: UndoHistoryStore,
+        coordinationID: UUID = UUID()
+    ) {
+        self.pendingOperationLedger = pendingOperationLedger
+        self.completionJournal = completionJournal
+        self.recoveryCoordinationKey =
+            "\(completionJournal.recoveryCoordinationKey):domain:\(coordinationID.uuidString)"
+        self.undoHistoryStoreProvider = { undoHistoryStore }
+        self.temporaryStorageLifetime = nil
+        self.storageLocationsForTesting = nil
+    }
+
+    private init(
+        pendingOperationLedger: any TrashPendingOperationLedger,
+        completionJournal: any TrashCompletionJournaling,
+        recoveryCoordinationKey: String,
+        undoHistoryStoreProvider: @escaping UndoHistoryStoreProvider,
+        temporaryStorageLifetime: TrashTemporaryRecoveryStorageLifetime?,
+        storageLocationsForTesting: TrashRecoveryStorageLocations?
+    ) {
+        self.pendingOperationLedger = pendingOperationLedger
+        self.completionJournal = completionJournal
+        self.recoveryCoordinationKey = recoveryCoordinationKey
+        self.undoHistoryStoreProvider = undoHistoryStoreProvider
+        self.temporaryStorageLifetime = temporaryStorageLifetime
+        self.storageLocationsForTesting = storageLocationsForTesting
+    }
+
+    func resolveUndoHistoryStore() async -> UndoHistoryStore {
+        await undoHistoryStoreProvider()
+    }
+}
+
+/// Observable test evidence for the complete isolated recovery owner. Keeping the four URLs in
+/// one value prevents a regression where only the ledger moves to a fixture while journal or Undo
+/// silently falls back to Application Support.
+struct TrashRecoveryStorageLocations: Sendable, Equatable {
+    let root: URL
+    let pendingOperationLedger: URL
+    let completionJournal: URL
+    let undoHistory: URL
+}
+
+/// Owns deletion of one UUID-scoped temporary recovery tree. The pipeline and its detached
+/// prewarm both retain the enclosing domain, so cleanup cannot race the recovery task.
+private final class TrashTemporaryRecoveryStorageLifetime: @unchecked Sendable {
+    let root: URL
+
+    init(root: URL) {
+        self.root = root
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: root)
+    }
+}
+
+/// UndoHistoryStore is MainActor-isolated, while a pipeline may be assembled from any actor.
+/// Retain the URL eagerly and instantiate the store lazily on its owning actor; every resolve in
+/// the same recovery domain returns the identical projection owner.
+private final class TrashLazyURLBackedUndoHistoryStoreProvider: @unchecked Sendable {
+    private let storeURL: URL
+    private let allowedRestoreRoots: [String]
+    private var store: UndoHistoryStore?
+
+    init(storeURL: URL, allowedRestoreRoots: [String]) {
+        self.storeURL = storeURL
+        self.allowedRestoreRoots = allowedRestoreRoots
+    }
+
+    @MainActor
+    func resolve() -> UndoHistoryStore {
+        if let store { return store }
+        let created = UndoHistoryStore(
+            storeURL: storeURL,
+            allowedRestoreRoots: allowedRestoreRoots
+        )
+        store = created
+        return created
+    }
+}
+
 /// v0 主链路：把文件移到废纸篓，不需要 root，不需要 Helper，不需要 Apple Developer Program。
 ///
 /// **设计原则**（PITFALLS §5.9）：
@@ -51,15 +284,29 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         }
 
         let moved: [(String, String)]
+        /// Durable callback facts, frozen from the pre-submit object identity. Empty for scripted
+        /// tests and for callbacks whose journal write failed closed.
+        let undoJournalEntries: [TrashUndoJournalEntry]
+        let undoJournalFailedPaths: [String]
+        /// Exact durable generations whose callback moved at least one item but could not record
+        /// every moved pair in the Undo journal. This capability is propagated instead of a
+        /// process-global Boolean so unrelated acknowledgements cannot clear the warning.
+        let undoJournalBlockedAttempts: Set<TrashPendingAttemptIdentity>
         let errorDescription: String?
         let state: State
 
         init(
             moved: [(String, String)],
+            undoJournalEntries: [TrashUndoJournalEntry] = [],
+            undoJournalFailedPaths: [String] = [],
+            undoJournalBlockedAttempts: Set<TrashPendingAttemptIdentity> = [],
             errorDescription: String?,
             state: State = .callbackCompleted
         ) {
             self.moved = moved
+            self.undoJournalEntries = undoJournalEntries
+            self.undoJournalFailedPaths = undoJournalFailedPaths
+            self.undoJournalBlockedAttempts = undoJournalBlockedAttempts
             self.errorDescription = errorDescription
             self.state = state
         }
@@ -67,6 +314,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
     struct RecycleBatchResult: Sendable {
         let moved: [(String, String)]
+        let undoJournalEntries: [TrashUndoJournalEntry]
+        let undoJournalFailedPaths: [String]
+        let undoJournalBlockedAttempts: Set<TrashPendingAttemptIdentity>
         let failureReasons: [String: String]
         /// 真正交给 `NSWorkspace.recycle` 的去重输入（含尚待系统回调的批次）。
         let attemptedPaths: [String]
@@ -105,7 +355,13 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     /// 的 T/C 目录放在 `/var/folders`，因此只额外接受 `confstr(3)` 返回的当前用户
     /// 精确根，绝不接受 `/var/folders` 总根或其它用户/外置卷。
     private let externalDeletionRoots: [String]
-    private let pendingOperationLedger: any TrashPendingOperationLedger
+    private let recoveryDependencyDomain: TrashRecoveryDependencyDomain
+    private var pendingOperationLedger: any TrashPendingOperationLedger {
+        recoveryDependencyDomain.pendingOperationLedger
+    }
+    private var completionJournal: any TrashCompletionJournaling {
+        recoveryDependencyDomain.completionJournal
+    }
 
     /// v1.3.zzzz：上层一票否决集合（`permissionDenied` / `tccProtected` 路径），
     /// `moveToTrash` 内部用 NSLock 保护读写，调用方通过 [setAccessDeniedPaths](#) 注入最新快照。
@@ -122,29 +378,52 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     private let accessDeniedLock = NSLock()
     private var _accessDeniedPaths: Set<String> = []
 
-    public convenience init(safety: SafetyEngine = SafetyEngine(),
-                            vendors: [VendorRule] = [],
-                            home: String = NSHomeDirectory(),
-                            whitelistStore: WhitelistStore? = nil,
-                            externalDeletionRoots: [String]? = nil) {
+    /// Production assembly is deliberately named. App code cannot obtain the shared durable
+    /// stores through a bare initializer, which makes accidental test pollution visible at the
+    /// call site and review boundary.
+    public static func production(
+        safety: SafetyEngine = SafetyEngine(),
+        vendors: [VendorRule] = [],
+        home: String = NSHomeDirectory(),
+        whitelistStore: WhitelistStore? = nil,
+        externalDeletionRoots: [String]? = nil
+    ) -> TrashPipeline {
+        TrashPipeline(
+            safety: safety,
+            vendors: vendors,
+            home: home,
+            whitelistStore: whitelistStore,
+            externalDeletionRoots: externalDeletionRoots,
+            recoveryDependencyDomain: .production
+        )
+    }
+
+    /// Internal default for package tests and previews. Each instance owns a unique temporary
+    /// ledger/journal/Undo domain; no runtime XCTest detection or production-path fallback exists.
+    convenience init(safety: SafetyEngine = SafetyEngine(),
+                     vendors: [VendorRule] = [],
+                     home: String = NSHomeDirectory(),
+                     whitelistStore: WhitelistStore? = nil,
+                     externalDeletionRoots: [String]? = nil) {
         self.init(
             safety: safety,
             vendors: vendors,
             home: home,
             whitelistStore: whitelistStore,
             externalDeletionRoots: externalDeletionRoots,
-            pendingOperationLedger: PersistentTrashPendingOperationLedger.shared
+            recoveryDependencyDomain: .isolatedTemporary()
         )
     }
 
-    /// Internal injection keeps deterministic tests away from the real Application Support
-    /// ledger while every production construction path receives the shared persistent gate.
+    /// Internal injection accepts only a complete recovery domain. This intentionally has no
+    /// ledger-only or journal-default overload: a partial dependency override can otherwise read
+    /// or mutate production recovery state before the first deletion call.
     init(safety: SafetyEngine = SafetyEngine(),
          vendors: [VendorRule] = [],
          home: String = NSHomeDirectory(),
          whitelistStore: WhitelistStore? = nil,
          externalDeletionRoots: [String]? = nil,
-         pendingOperationLedger: any TrashPendingOperationLedger) {
+         recoveryDependencyDomain: TrashRecoveryDependencyDomain) {
         self.safety = safety
         self.trie = vendors.isEmpty ? nil : VendorTrie.build(vendors: vendors, home: home)
         self.whitelistStore = whitelistStore
@@ -152,20 +431,34 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         let usesCurrentUserHome = Self.scopeNormalize(home) == Self.scopeNormalize(NSHomeDirectory())
         self.externalDeletionRoots = externalDeletionRoots
             ?? (usesCurrentUserHome ? Self.currentUserDarwinDeletionRoots() : [])
-        self.pendingOperationLedger = pendingOperationLedger
+        self.recoveryDependencyDomain = recoveryDependencyDomain
 
-        // v2026.07.16: startup/new-surface reconciliation is read/identity work and must never
-        // block SwiftUI construction. Only claimed-but-unresolved same-inode records remain
-        // pending. Absent/replaced or pre-claim interrupted records become durable fresh-review
-        // tombstones; an ephemeral notification can invalidate views but can never clear them.
-        let ledger = pendingOperationLedger
+        // v2026.07.18 P1/P2: construction only prewarms recovery; every real deletion joins the
+        // same single-flight terminal before reserve. Dry-run never waits. The recovery operation
+        // itself acquires the journal's stable cross-process lease before inspecting either store.
+        let recoveryDomain = recoveryDependencyDomain
         Task.detached(priority: .utility) {
-            let reconciliation = ledger.reconcilePersistedRecords()
-            Self.publishLedgerInvalidation(
-                paths: reconciliation.invalidatedPaths,
-                operationID: UUID()
-            )
+            let undoHistoryStore = await recoveryDomain.resolveUndoHistoryStore()
+            let terminal = await TrashStartupRecoveryCoordinator.shared.recover(
+                key: recoveryDomain.recoveryCoordinationKey
+            ) {
+                await Self.recoverDurableTrashState(
+                    journal: recoveryDomain.completionJournal,
+                    ledger: recoveryDomain.pendingOperationLedger,
+                    undoHistoryStore: undoHistoryStore
+                )
+            }
+            if terminal == .blocked {
+                // The underlying journal/ledger/store branch logs its concrete storage evidence;
+                // retain this transaction-level stage so support logs also explain why later real
+                // deletion authorization remains closed.
+                GSYLog.error(.trash, "Trash startup recovery blocked stage=prewarm")
+            }
         }
+    }
+
+    var recoveryStorageLocationsForTesting: TrashRecoveryStorageLocations? {
+        recoveryDependencyDomain.storageLocationsForTesting
     }
 
     public func preflight(
@@ -701,6 +994,21 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             }
         }
 
+        /// Returns the most specific root that authorized this exact deletion target. The value
+        /// is persisted with Undo so restore never has to infer a broader capability from a path.
+        func restoreRoot(rawPath: String) -> String? {
+            guard contains(rawPath: rawPath) else { return nil }
+            let identities = Self.pathIdentities(rawPath)
+            return allowedRoots
+                .filter { root in
+                    identities.contains { candidate in
+                        candidate.hasPrefix(root.path == "/" ? "/" : root.path + "/")
+                    }
+                }
+                .max { $0.path.count < $1.path.count }?
+                .path
+        }
+
         private static func rootIdentities(_ path: String) -> Set<String> {
             pathIdentities(path)
         }
@@ -990,8 +1298,14 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         }
         GSYLog.info(.trash, "moveToTrash 开始 dryRun=\(dryRun) paths=\(paths.count)")
 
+        let isDuplicateVerification: Bool
+        if case .some(.duplicate) = executionVerification {
+            isDuplicateVerification = true
+        } else {
+            isDuplicateVerification = false
+        }
         let trashExecutionProgress: (@Sendable (TrashExecutionProgress) -> Void)?
-        if executionVerification == nil, let executionProgressObserver {
+        if !isDuplicateVerification, let executionProgressObserver {
             trashExecutionProgress = { progress in
                 executionProgressObserver(.trash(progress))
             }
@@ -1125,6 +1439,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         }
 
         let duplicateVerificationRequest: DuplicateDeletionVerificationRequest?
+        let uninstallVerificationRequest: UninstallCandidateVerificationRequest?
         switch executionVerification {
         case .some(.duplicate(let request)):
             guard request.matchesExactTargets(allowed) else {
@@ -1140,8 +1455,21 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 )
             }
             duplicateVerificationRequest = request
+            uninstallVerificationRequest = nil
+        case .some(.uninstall(let request)):
+            guard request.matchesExactTargets(allowed) else {
+                let rejection = TrashPendingOperationRejection(
+                    reasonsByPath: Dictionary(uniqueKeysWithValues: allowed.map {
+                        ($0, .freshReviewRequired)
+                    })
+                )
+                return pendingLedgerPreSubmitFailure(paths: allowed, rejection: rejection)
+            }
+            duplicateVerificationRequest = nil
+            uninstallVerificationRequest = request
         case .none:
             duplicateVerificationRequest = nil
+            uninstallVerificationRequest = nil
         }
 
         if dryRun {
@@ -1174,19 +1502,31 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             )
         }
 
+        // Recovery is part of real-delete authorization, not background housekeeping. A blocked
+        // or unreadable completion boundary fails before the ledger reserve, so reserve
+        // can never retire the dead owner's callbackObserved evidence first.
         // **v2026.07.16 pending duplicate root-cause fix**：reserve the complete normalized
         // request in one flock-protected RMW before any AppKit call can be queued. Every
         // TrashPipeline instance/process shares this boundary; a prior unknown operation or
         // changed inode remains a typed pre-submit rejection rather than a duplicate retry.
         let operationID = UUID()
         let ledger = pendingOperationLedger
-        let reservation = await Task.detached(priority: .userInitiated) {
-            ledger.reserve(
+        let gatedReservation = await Self.reserveAfterRecovery(
+            paths: allowed,
+            operationID: operationID,
+            reviewIdentity: reviewIdentity,
+            recoveryDependencyDomain: recoveryDependencyDomain
+        )
+        guard case .ledger(let reservation) = gatedReservation else {
+            return pendingLedgerPreSubmitFailure(
                 paths: allowed,
-                operationID: operationID,
-                reviewIdentity: reviewIdentity
+                rejection: TrashPendingOperationRejection(
+                    reasonsByPath: Dictionary(uniqueKeysWithValues: allowed.map {
+                        ($0, .ledgerUnavailable)
+                    })
+                )
             )
-        }.value
+        }
         let reservedPaths: [String]
         switch reservation {
         case .reserved(let normalizedPaths, let invalidatedPaths):
@@ -1198,6 +1538,62 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 paths: allowed,
                 rejection: rejection
             )
+        }
+
+        guard let frozenIdentities = await Task.detached(priority: .userInitiated, operation: {
+            ledger.frozenIdentities(paths: reservedPaths, operationID: operationID)
+        }).value else {
+            let rejection = TrashPendingOperationRejection(
+                reasonsByPath: Dictionary(uniqueKeysWithValues: reservedPaths.map {
+                    ($0, .ledgerUnavailable)
+                })
+            )
+            _ = await Task.detached(priority: .utility) {
+                ledger.finish(operationID: operationID, retainingPendingPaths: [])
+            }.value
+            return pendingLedgerPreSubmitFailure(paths: reservedPaths, rejection: rejection)
+        }
+
+        // v2026.07.18: the selected `.app` identity proves which product was scanned; it does
+        // not prove that each residual pathname still names the object reviewed by the user.
+        // Compare those scan-time identities with the durable ledger reservation before any
+        // AppKit claim. The ledger's existing claim fence repeats the comparison beside every
+        // concrete recycle call, so later replacements remain blocked as well.
+        if let uninstallVerificationRequest {
+            let changedPaths = uninstallVerificationRequest.changedPaths(
+                comparedTo: frozenIdentities
+            )
+            guard changedPaths.isEmpty else {
+                let changed = Set(changedPaths)
+                let rejection = TrashPendingOperationRejection(
+                    reasonsByPath: Dictionary(uniqueKeysWithValues: reservedPaths.map {
+                        ($0, changed.contains($0) ? .identityChanged : .freshReviewRequired)
+                    })
+                )
+                _ = await Task.detached(priority: .utility) {
+                    ledger.finish(operationID: operationID, retainingPendingPaths: [])
+                }.value
+                return pendingLedgerPreSubmitFailure(
+                    paths: reservedPaths,
+                    rejection: rejection
+                )
+            }
+        }
+
+        let deletionScope = DeletionScope(home: home, externalRoots: externalDeletionRoots)
+        let frozenRestoreRoots = Dictionary(uniqueKeysWithValues: reservedPaths.compactMap { path in
+            deletionScope.restoreRoot(rawPath: path).map { (path, $0) }
+        })
+        guard frozenRestoreRoots.count == reservedPaths.count else {
+            let rejection = TrashPendingOperationRejection(
+                reasonsByPath: Dictionary(uniqueKeysWithValues: reservedPaths.map {
+                    ($0, .freshReviewRequired)
+                })
+            )
+            _ = await Task.detached(priority: .utility) {
+                ledger.finish(operationID: operationID, retainingPendingPaths: [])
+            }.value
+            return pendingLedgerPreSubmitFailure(paths: reservedPaths, rejection: rejection)
         }
 
 
@@ -1297,6 +1693,8 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 await recycleInBatches(
                     urls: allowedURLs,
                     operationID: operationID,
+                    frozenIdentities: frozenIdentities,
+                    frozenRestoreRoots: frozenRestoreRoots,
                     duplicateClaimFence: duplicateClaimFence,
                     duplicateSubmissionObserver: duplicateSubmissionObserver,
                     progress: trashExecutionProgress
@@ -1308,11 +1706,15 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             recycleResult = await recycleInBatches(
                 urls: allowedURLs,
                 operationID: operationID,
+                frozenIdentities: frozenIdentities,
+                frozenRestoreRoots: frozenRestoreRoots,
                 progress: trashExecutionProgress
             )
         }
         let retainedUnknown = Set(
             recycleResult.pendingPaths + recycleResult.submissionUnknownPaths
+                + recycleResult.undoJournalEntries.map(\.originalPath)
+                + recycleResult.undoJournalFailedPaths
         )
         let ledgerFinalized = await Task.detached(priority: .utility) {
             ledger.finish(operationID: operationID, retainingPendingPaths: retainedUnknown)
@@ -1399,12 +1801,19 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         let err = failureSummary?.legacyDiagnostic
         GSYLog.info(.trash, "moveToTrash 返回 moved=\(movedCount) failed=\(failedPaths.count) pending=\(recycleResult.pendingPaths.count) submissionUnknown=\(recycleResult.submissionUnknownPaths.count) notSubmitted=\(recycleResult.notSubmittedPaths.count) safetyRejected=\(rejected.count) totalSkipped=\(totalSkipped) pairs=\(movedPairs.count)")
         let payload: MovePayload = ((movedCount, totalSkipped, err, movedPairs), outcome)
-        return PerformedMove(
+            return PerformedMove(
             payload: payload,
             submissionDisposition: .recycleCompleted(TrashRecycleCompletion(
                 attemptedPaths: recycleResult.attemptedPaths,
                 legacy: payload.legacy,
-                outcome: payload.outcome
+                outcome: payload.outcome,
+                undoCommit: recycleResult.undoJournalEntries.isEmpty ? nil : TrashUndoCommitCapability(
+                    entries: recycleResult.undoJournalEntries,
+                    journal: completionJournal,
+                    ledger: pendingOperationLedger
+                ),
+                undoJournalFailedPaths: recycleResult.undoJournalFailedPaths,
+                undoJournalBlockedAttempts: recycleResult.undoJournalBlockedAttempts
             ))
         )
     }
@@ -1428,7 +1837,11 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             missingPaths: [],
             failureSummary: summary
         )
-        recordOutcome(outcome)
+        // v2026.07.20: this branch proves that zero paths crossed NSWorkspace.recycle. Keep the
+        // typed rejection in the returned payload for compatibility, but never publish it into
+        // the legacy `_lastOutcome` side channel. Production UI consumes the typed disposition;
+        // mixing these lifecycles caused a ledger verification warning to look like a failed
+        // cleanup result and made later presentation refactors dangerously easy to regress.
         return PerformedMove(
             payload: ((0, paths.count, summary.legacyDiagnostic, []), outcome),
             submissionDisposition: .preSubmitRejected(.pendingOperation(rejection))
@@ -1467,6 +1880,8 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     private func recycleInBatches(
         urls: [URL],
         operationID: UUID,
+        frozenIdentities: [String: TrashObjectIdentity],
+        frozenRestoreRoots: [String: String],
         duplicateClaimFence: DuplicateDeletionClaimFence? = nil,
         duplicateSubmissionObserver: (@Sendable () -> Void)? = nil,
         progress: (@Sendable (TrashExecutionProgress) -> Void)? = nil,
@@ -1479,6 +1894,10 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         let deadline = started > UInt64.max - budgetNanoseconds
             ? UInt64.max
             : started + budgetNanoseconds
+        // v2026.07.18 recovery-domain fix: callback settlement, late Undo commit and startup
+        // recovery must project into the same store. Resolve it once for the whole request so no
+        // callback can fall back to the process singleton after an isolated-domain reservation.
+        let undoHistoryStore = await recoveryDependencyDomain.resolveUndoHistoryStore()
         return await Self.executeRecycleBatches(
             urls: urls,
             batchSize: batchSize,
@@ -1498,6 +1917,10 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                     operationID: operationID,
                     timeoutSeconds: remainingSeconds,
                     ledger: self.pendingOperationLedger,
+                    completionJournal: self.completionJournal,
+                    undoHistoryStore: undoHistoryStore,
+                    frozenIdentities: frozenIdentities,
+                    frozenRestoreRoots: frozenRestoreRoots,
                     duplicateClaimFence: duplicateClaimFence,
                     submissionObserver: duplicateSubmissionObserver
                 )
@@ -1517,6 +1940,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         precondition(batchSize > 0, "batchSize must be positive")
         var allMoved: [(String, String)] = []
         allMoved.reserveCapacity(urls.count)
+        var undoJournalEntries: [TrashUndoJournalEntry] = []
+        var undoJournalFailedPaths: [String] = []
+        var undoJournalBlockedAttempts: Set<TrashPendingAttemptIdentity> = []
         var failureReasons: [String: String] = [:]
         var attemptedPaths: [String] = []
         var pendingPaths: [String] = []
@@ -1570,6 +1996,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
             attemptedPaths.append(contentsOf: batch.map(\.path))
             allMoved.append(contentsOf: batchAttempt.moved)
+            undoJournalEntries.append(contentsOf: batchAttempt.undoJournalEntries)
+            undoJournalFailedPaths.append(contentsOf: batchAttempt.undoJournalFailedPaths)
+            undoJournalBlockedAttempts.formUnion(batchAttempt.undoJournalBlockedAttempts)
             markProgressCompleted(batchAttempt.moved.map { $0.0 })
 
             if case .submissionUnknown(let operationID) = batchAttempt.state {
@@ -1617,6 +2046,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                     GSYLog.warning(.trash, "moveToTrash 整体等待预算在单项诊断前耗尽；停止后续批次")
                     return RecycleBatchResult(
                         moved: Self.stableUniqueMovedPairs(allMoved),
+                        undoJournalEntries: Self.stableUniqueJournalEntries(undoJournalEntries),
+                        undoJournalFailedPaths: Self.stableUniquePaths(undoJournalFailedPaths),
+                        undoJournalBlockedAttempts: undoJournalBlockedAttempts,
                         failureReasons: failureReasons,
                         attemptedPaths: Self.stableUniquePaths(attemptedPaths),
                         pendingPaths: Self.stableUniquePaths(pendingPaths),
@@ -1639,6 +2071,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                     }
                     return RecycleBatchResult(
                         moved: Self.stableUniqueMovedPairs(allMoved),
+                        undoJournalEntries: Self.stableUniqueJournalEntries(undoJournalEntries),
+                        undoJournalFailedPaths: Self.stableUniquePaths(undoJournalFailedPaths),
+                        undoJournalBlockedAttempts: undoJournalBlockedAttempts,
                         failureReasons: failureReasons,
                         attemptedPaths: Self.stableUniquePaths(attemptedPaths),
                         pendingPaths: Self.stableUniquePaths(pendingPaths),
@@ -1649,6 +2084,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 }
                 attemptedPaths.append(url.path)
                 allMoved.append(contentsOf: singleAttempt.moved)
+                undoJournalEntries.append(contentsOf: singleAttempt.undoJournalEntries)
+                undoJournalFailedPaths.append(contentsOf: singleAttempt.undoJournalFailedPaths)
+                undoJournalBlockedAttempts.formUnion(singleAttempt.undoJournalBlockedAttempts)
                 if case .submissionUnknown(let operationID) = singleAttempt.state {
                     submissionUnknownPaths.append(url.path)
                     for remaining in unmoved where remaining.path != url.path {
@@ -1661,6 +2099,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                     GSYLog.warning(.trash, "NSWorkspace.recycle 单项同步调用终态未知 operationID=\(operationID.uuidString) path=\(url.path)")
                     return RecycleBatchResult(
                         moved: Self.stableUniqueMovedPairs(allMoved),
+                        undoJournalEntries: Self.stableUniqueJournalEntries(undoJournalEntries),
+                        undoJournalFailedPaths: Self.stableUniquePaths(undoJournalFailedPaths),
+                        undoJournalBlockedAttempts: undoJournalBlockedAttempts,
                         failureReasons: failureReasons,
                         attemptedPaths: Self.stableUniquePaths(attemptedPaths),
                         pendingPaths: Self.stableUniquePaths(pendingPaths),
@@ -1683,6 +2124,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                     GSYLog.warning(.trash, "NSWorkspace.recycle 单项回调待定 operationID=\(operationID.uuidString) path=\(url.path)；停止隔离重试与后续批次")
                     return RecycleBatchResult(
                         moved: Self.stableUniqueMovedPairs(allMoved),
+                        undoJournalEntries: Self.stableUniqueJournalEntries(undoJournalEntries),
+                        undoJournalFailedPaths: Self.stableUniquePaths(undoJournalFailedPaths),
+                        undoJournalBlockedAttempts: undoJournalBlockedAttempts,
                         failureReasons: failureReasons,
                         attemptedPaths: Self.stableUniquePaths(attemptedPaths),
                         pendingPaths: Self.stableUniquePaths(pendingPaths),
@@ -1700,6 +2144,9 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         }
         return RecycleBatchResult(
             moved: Self.stableUniqueMovedPairs(allMoved),
+            undoJournalEntries: Self.stableUniqueJournalEntries(undoJournalEntries),
+            undoJournalFailedPaths: Self.stableUniquePaths(undoJournalFailedPaths),
+            undoJournalBlockedAttempts: undoJournalBlockedAttempts,
             failureReasons: failureReasons,
             attemptedPaths: Self.stableUniquePaths(attemptedPaths),
             pendingPaths: Self.stableUniquePaths(pendingPaths),
@@ -1723,11 +2170,35 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     ) -> Void
     typealias LateRecycleHandler = @Sendable ([(String, String)], UUID) -> Void
 
+    /// Immutable callback fact reused by the immediate ledger transition and any same-process
+    /// persistence retry. Retrying this value may settle durable state, but must never invoke
+    /// `NSWorkspace.recycle` a second time (v2026.07.18 storage-unavailable fix).
+    private struct RecycleCallbackSettlement: Sendable {
+        let normalizedPaths: [String]
+        let movedPairs: [(String, String)]
+        let acceptedJournalEntries: [TrashUndoJournalEntry]
+        let journalFailedPaths: [String]
+        let errorDescription: String?
+        let operationID: UUID
+        let attemptID: UUID
+
+        var movedOriginals: Set<String> { Set(movedPairs.map(\.0)) }
+        var blockedAttemptIdentities: Set<TrashPendingAttemptIdentity> {
+            journalFailedPaths.isEmpty
+                ? []
+                : [.init(operationID: operationID, attemptID: attemptID)]
+        }
+    }
+
     private static func recycleOnce(
         urls: [URL],
         operationID: UUID,
         timeoutSeconds: TimeInterval,
         ledger: any TrashPendingOperationLedger,
+        completionJournal: any TrashCompletionJournaling,
+        undoHistoryStore: UndoHistoryStore,
+        frozenIdentities: [String: TrashObjectIdentity],
+        frozenRestoreRoots: [String: String],
         duplicateClaimFence: DuplicateDeletionClaimFence? = nil,
         submissionObserver: (@Sendable () -> Void)? = nil
     ) async -> RecycleAttempt {
@@ -1736,6 +2207,10 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             operationID: operationID,
             timeoutSeconds: timeoutSeconds,
             ledger: ledger,
+            completionJournal: completionJournal,
+            undoHistoryStore: undoHistoryStore,
+            frozenIdentities: frozenIdentities,
+            frozenRestoreRoots: frozenRestoreRoots,
             submissionQueue: recycleSubmissionQueue,
             workspaceRecycle: { urls, callback in
                 NSWorkspace.shared.recycle(urls) { trashed, error in
@@ -1746,7 +2221,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 }
             },
             lateHandler: { pairs, operationID in
-                Task { @MainActor in
+                Task.detached(priority: .utility) {
                     Self.reconcileLateRecycle(pairs: pairs, operationID: operationID)
                 }
             },
@@ -1763,11 +2238,22 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         attemptID: UUID = UUID(),
         timeoutSeconds: TimeInterval,
         ledger: any TrashPendingOperationLedger,
+        completionJournal: (any TrashCompletionJournaling)? = nil,
+        /// The UI health/history owner paired with `completionJournal`. Scripted tests that omit
+        /// both durable ownership and late-commit assertions may leave this nil; nil never falls
+        /// back to `UndoHistoryStore.shared`.
+        undoHistoryStore: UndoHistoryStore? = nil,
+        frozenIdentities: [String: TrashObjectIdentity] = [:],
+        frozenRestoreRoots: [String: String] = [:],
         submissionQueue: DispatchQueue,
         workspaceRecycle: @escaping WorkspaceRecycleOperation,
         lateHandler: @escaping LateRecycleHandler,
         duplicateClaimFence: DuplicateDeletionClaimFence? = nil,
-        submissionObserver: (@Sendable () -> Void)? = nil
+        submissionObserver: (@Sendable () -> Void)? = nil,
+        /// Nil selects the bounded exponential production cadence indefinitely. Tests may inject
+        /// a finite sequence (including empty) to prove exact retry behavior without background
+        /// work escaping the fixture lifetime.
+        callbackSettlementRetryDelays: [TimeInterval]? = nil
     ) async -> RecycleAttempt {
         await withCheckedContinuation { (cc: CheckedContinuation<RecycleAttempt, Never>) in
             let gate = RecycleOnceGate(cc: cc)
@@ -1849,62 +2335,93 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 // from producing duplicate boundary events.
                 submissionObserver?()
                 workspaceRecycle(urls) { pairs, errorDescription in
+                    // v2026.07.18 duplicate-callback root fix: fact admission happens before any
+                    // journal or ledger mutation. The gate retains this bit after finalization, so
+                    // a callback arriving after journal removal cannot recreate the same row.
+                    guard gate.admitCallbackFact() else {
+                        GSYLog.warning(
+                            .trash,
+                            "NSWorkspace.recycle duplicate callback ignored before durable mutation operationID=\(operationID.uuidString) attemptID=\(attemptID.uuidString)"
+                        )
+                        return
+                    }
                     if let errorDescription {
                         GSYLog.warning(.trash, "NSWorkspace.recycle 单批失败 operationID=\(operationID.uuidString) batchSize=\(urls.count) moved=\(pairs.count) err=\(errorDescription)")
                     }
-                    guard ledger.markCallbackObserved(
-                        paths: normalizedPaths,
-                        operationID: operationID,
-                        attemptID: attemptID
-                    ) else {
-                        // **v2026.07.16 exact-attempt gate**: duplicate/late events from an old
-                        // generation must not resume a continuation, clear the current attempt,
-                        // write Undo, or invalidate a replacement path.
-                        GSYLog.warning(.trash, "Trash pending ledger callback transition was stale or already terminal operationID=\(operationID.uuidString) attemptID=\(attemptID.uuidString)")
-                        return
+
+                    // v2026.07.18: turn the callback into durable facts before advancing or
+                    // clearing its ledger generation. The object identity comes from reserve,
+                    // not from a mutable pathname in Trash after AppKit returns.
+                    let callbackPairs = stableUniqueMovedPairs(pairs).map {
+                        (normalizePath($0.0), normalizePath($0.1))
                     }
-                    let callbackValue = RecycleAttempt(
-                        moved: pairs,
-                        errorDescription: errorDescription
-                    )
-                    let resolution = gate.claimCallback()
-                    switch resolution {
-                    case .resumed:
-                        if !ledger.markRetryReady(
-                            paths: normalizedPaths,
-                            operationID: operationID,
-                            attemptID: attemptID
-                        ) {
-                            GSYLog.error(.trash, "Trash pending ledger retry-ready transition failed operationID=\(operationID.uuidString) attemptID=\(attemptID.uuidString)")
-                        }
-                        // Persist the retry ownership state before resuming. Otherwise the
-                        // awaiting batch loop can race ahead and have its legitimate retry
-                        // rejected while the callback thread is still writing `retryReady`.
-                        gate.resumeClaimedCallback(callbackValue)
-
-                    case .lateAfterTimeout:
-                        GSYLog.info(.trash, "NSWorkspace.recycle 延迟回调 operationID=\(operationID.uuidString) moved=\(pairs.count)；执行一次迟到结果对账")
-                        guard ledger.finish(
-                            paths: normalizedPaths,
-                            operationID: operationID,
-                            attemptID: attemptID
-                        ) else {
-                            // A concurrent exact-attempt terminal already won. Never replay its
-                            // side effects from this callback.
-                            GSYLog.error(.trash, "Trash pending ledger late terminal clear failed operationID=\(operationID.uuidString) attemptID=\(attemptID.uuidString)")
-                            return
-                        }
-                        lateHandler(pairs, operationID)
-
-                    case .ignoredDuplicate:
-                        // This branch is unreachable after an accepted first callback, but clear
-                        // the exact generation fail-closed if the gate and ledger ever diverge.
-                        _ = ledger.finish(
-                            paths: normalizedPaths,
-                            operationID: operationID,
-                            attemptID: attemptID
+                    let requestedPathSet = Set(normalizedPaths)
+                    let unexpectedPairCount = callbackPairs.lazy.filter {
+                        !requestedPathSet.contains($0.0)
+                    }.count
+                    if unexpectedPairCount > 0 {
+                        // v2026.07.18 callback scope fence: an AppKit adapter or stale callback
+                        // cannot introduce paths that were never frozen by this ledger attempt.
+                        // Such pairs have no valid identity/scope capability and are ignored.
+                        GSYLog.error(
+                            .trash,
+                            "NSWorkspace.recycle callback returned out-of-attempt pairs operationID=\(operationID.uuidString) count=\(unexpectedPairCount)"
                         )
                     }
+                    let normalizedPairs = stableUniqueMovedPairs(
+                        callbackPairs.filter { requestedPathSet.contains($0.0) }
+                    )
+                    let movedOriginals = Set(normalizedPairs.map(\.0))
+                    var acceptedJournalEntries: [TrashUndoJournalEntry] = []
+                    var journalFailedPaths: [String] = []
+                    if let completionJournal {
+                        let candidateEntries: [TrashUndoJournalEntry] = normalizedPairs.compactMap {
+                            pair -> TrashUndoJournalEntry? in
+                            let (original, trashed) = pair
+                            guard let identity = frozenIdentities[original],
+                                  let restoreScopeRoot = frozenRestoreRoots[original] else {
+                                return nil
+                            }
+                            return TrashUndoJournalEntry(
+                                operationID: operationID,
+                                attemptID: attemptID,
+                                originalPath: original,
+                                trashedPath: trashed,
+                                originalIdentity: identity,
+                                restoreScopeRoot: restoreScopeRoot
+                            )
+                        }
+                        let mappedPaths = Set(candidateEntries.map(\.originalPath))
+                        journalFailedPaths = Array(movedOriginals.subtracting(mappedPaths)).sorted()
+                        if completionJournal.append(candidateEntries) {
+                            acceptedJournalEntries = candidateEntries
+                        } else {
+                            // The callback says the item moved, so it must not be retried even
+                            // when persistence is unavailable. Retain the exact ledger generation
+                            // and expose a typed Undo storage failure instead.
+                            acceptedJournalEntries = []
+                            journalFailedPaths = Array(movedOriginals).sorted()
+                        }
+                    }
+
+                    observeRecycleCallbackInLedger(
+                        RecycleCallbackSettlement(
+                            normalizedPaths: normalizedPaths,
+                            movedPairs: normalizedPairs,
+                            acceptedJournalEntries: acceptedJournalEntries,
+                            journalFailedPaths: journalFailedPaths,
+                            errorDescription: errorDescription,
+                            operationID: operationID,
+                            attemptID: attemptID
+                        ),
+                        ledger: ledger,
+                        completionJournal: completionJournal,
+                        undoHistoryStore: undoHistoryStore,
+                        gate: gate,
+                        lateHandler: lateHandler,
+                        retryDelays: callbackSettlementRetryDelays,
+                        retryIndex: 0
+                    )
                 }
                 if ledger.markAPIReturned(
                     paths: normalizedPaths,
@@ -1922,30 +2439,534 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         }
     }
 
-    /// timeout 后系统仍可能给出真实成功 pair。v2026.07.16 起只对第一份迟到回调做
-    /// exactly-once 对账：补写 Undo 并广播原路径变化；没有 pair 时仅保留日志。
-    @MainActor
+    /// Applies one already-observed AppKit callback to the exact durable generation. A transient
+    /// lock/read/fsync failure retries only this ledger RMW in the same process; the immutable
+    /// callback fact is never routed back through `workspaceRecycle`.
+    private static func observeRecycleCallbackInLedger(
+        _ settlement: RecycleCallbackSettlement,
+        ledger: any TrashPendingOperationLedger,
+        completionJournal: (any TrashCompletionJournaling)?,
+        undoHistoryStore: UndoHistoryStore?,
+        gate: RecycleOnceGate,
+        lateHandler: @escaping LateRecycleHandler,
+        retryDelays: [TimeInterval]?,
+        retryIndex: Int
+    ) {
+        let observation = ledger.markCallbackObserved(
+            paths: settlement.normalizedPaths,
+            operationID: settlement.operationID,
+            attemptID: settlement.attemptID,
+            undoJournalBlockedPaths: Set(settlement.journalFailedPaths)
+        )
+        switch observation {
+        case .applied:
+            let exactAttempt = TrashPendingAttemptIdentity(
+                operationID: settlement.operationID,
+                attemptID: settlement.attemptID
+            )
+            if !settlement.blockedAttemptIdentities.isEmpty, let undoHistoryStore {
+                TrashCompletionHealthTransitionQueue.shared.enqueue {
+                    undoHistoryStore.resolveCompletionJournalSettlement(
+                        attempts: [exactAttempt],
+                        durablyBlocked: true,
+                        revision: retryIndex + 1
+                    )
+                    undoHistoryStore.retireCompletionJournalSettlementRevisions(
+                        attempts: [exactAttempt]
+                    )
+                }
+            } else if !settlement.acceptedJournalEntries.isEmpty, let undoHistoryStore {
+                TrashCompletionHealthTransitionQueue.shared.enqueue {
+                    undoHistoryStore.reportCompletionJournalSettlementPending(
+                        attempts: [exactAttempt],
+                        revision: retryIndex + 1
+                    )
+                }
+            } else if retryIndex > 0, let undoHistoryStore {
+                TrashCompletionHealthTransitionQueue.shared.enqueue {
+                    undoHistoryStore.resolveCompletionJournalSettlement(
+                        attempts: [exactAttempt],
+                        durablyBlocked: false,
+                        revision: retryIndex + 1
+                    )
+                    undoHistoryStore.retireCompletionJournalSettlementRevisions(
+                        attempts: [exactAttempt]
+                    )
+                }
+            }
+            settleObservedRecycleCallback(
+                settlement,
+                ledger: ledger,
+                completionJournal: completionJournal,
+                undoHistoryStore: undoHistoryStore,
+                gate: gate,
+                lateHandler: lateHandler
+            )
+
+        case .stale:
+            // Exact attempt mismatch is authoritative under the ledger lock. It cannot resume a
+            // continuation or clear the current generation. Best-effort row removal is safe;
+            // any surviving row will be proven stale again during replay.
+            GSYLog.warning(
+                .trash,
+                "Trash pending ledger callback transition was proven stale operationID=\(settlement.operationID.uuidString) attemptID=\(settlement.attemptID.uuidString)"
+            )
+            // v2026.07.18 P1: stale ledger ownership does not invalidate a callback fact that
+            // already crossed the journal fsync. Keep it for exact recovery; deleting it here can
+            // lose the only Undo capability after an owner-generation race.
+            let exactAttempt = TrashPendingAttemptIdentity(
+                operationID: settlement.operationID,
+                attemptID: settlement.attemptID
+            )
+            if let undoHistoryStore {
+                TrashCompletionHealthTransitionQueue.shared.enqueue {
+                    undoHistoryStore.reportCompletionJournalSettlementPending(
+                        attempts: [exactAttempt],
+                        revision: retryIndex + 1
+                    )
+                }
+            }
+
+        case .storageUnavailable:
+            // v2026.07.18 P2: storage failure is not stale-attempt evidence. Keep any durable
+            // journal rows and retry only the exact settlement while this owner remains alive.
+            if retryIndex == 0, let undoHistoryStore {
+                let unsettled: Set<TrashPendingAttemptIdentity> = [
+                    TrashPendingAttemptIdentity(
+                        operationID: settlement.operationID,
+                        attemptID: settlement.attemptID
+                    )
+                ]
+                TrashCompletionHealthTransitionQueue.shared.enqueue {
+                    undoHistoryStore.reportCompletionJournalSettlementPending(
+                        attempts: unsettled,
+                        revision: retryIndex
+                    )
+                }
+            }
+            guard let delay = callbackSettlementRetryDelay(
+                retryIndex: retryIndex,
+                configuredDelays: retryDelays
+            ) else {
+                GSYLog.error(
+                    .trash,
+                    "Trash callback ledger settlement retries exhausted; exact generation retained operationID=\(settlement.operationID.uuidString) attemptID=\(settlement.attemptID.uuidString)"
+                )
+                return
+            }
+            GSYLog.error(
+                .trash,
+                "Trash callback ledger settlement storage unavailable; retrying exact generation operationID=\(settlement.operationID.uuidString) attemptID=\(settlement.attemptID.uuidString) retry=\(retryIndex + 1)"
+            )
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) {
+                observeRecycleCallbackInLedger(
+                    settlement,
+                    ledger: ledger,
+                    completionJournal: completionJournal,
+                    undoHistoryStore: undoHistoryStore,
+                    gate: gate,
+                    lateHandler: lateHandler,
+                    retryDelays: retryDelays,
+                    retryIndex: retryIndex + 1
+                )
+            }
+        }
+    }
+
+    private static func callbackSettlementRetryDelay(
+        retryIndex: Int,
+        configuredDelays: [TimeInterval]?
+    ) -> TimeInterval? {
+        if let configuredDelays {
+            guard configuredDelays.indices.contains(retryIndex) else { return nil }
+            return max(0, configuredDelays[retryIndex])
+        }
+        // Production keeps the live owner convergent without a busy loop. The cap avoids
+        // unbounded wakeup growth during a persistent disk/permission failure.
+        let exponent = min(max(0, retryIndex), 10)
+        return min(30, 0.05 * pow(2, Double(exponent)))
+    }
+
+    /// Consumes the callback gate only after the exact ledger transition is durable. This helper
+    /// is shared by the immediate path and same-process retry so both preserve the same ordering.
+    private static func settleObservedRecycleCallback(
+        _ settlement: RecycleCallbackSettlement,
+        ledger: any TrashPendingOperationLedger,
+        completionJournal: (any TrashCompletionJournaling)?,
+        undoHistoryStore: UndoHistoryStore?,
+        gate: RecycleOnceGate,
+        lateHandler: @escaping LateRecycleHandler
+    ) {
+        let movedOriginals = settlement.movedOriginals
+        let callbackValue = RecycleAttempt(
+            moved: settlement.movedPairs,
+            undoJournalEntries: settlement.acceptedJournalEntries,
+            undoJournalFailedPaths: settlement.journalFailedPaths,
+            undoJournalBlockedAttempts: settlement.blockedAttemptIdentities,
+            errorDescription: settlement.errorDescription
+        )
+        switch gate.claimCallback() {
+        case .resumed:
+            let retryablePaths = settlement.normalizedPaths.filter {
+                !movedOriginals.contains($0)
+            }
+            if !retryablePaths.isEmpty,
+               !ledger.markRetryReady(
+                   paths: retryablePaths,
+                   operationID: settlement.operationID,
+                   attemptID: settlement.attemptID
+               ) {
+                GSYLog.error(
+                    .trash,
+                    "Trash pending ledger retry-ready transition failed operationID=\(settlement.operationID.uuidString) attemptID=\(settlement.attemptID.uuidString) paths=\(retryablePaths.count)"
+                )
+            }
+            // Persist retry ownership before resuming so the batch loop cannot outrun the exact
+            // generation transition and accidentally reinterpret a rejection as a new submission.
+            gate.resumeClaimedCallback(callbackValue)
+
+        case .lateAfterTimeout:
+            GSYLog.info(
+                .trash,
+                "NSWorkspace.recycle 延迟回调 operationID=\(settlement.operationID.uuidString) moved=\(settlement.movedPairs.count)；执行一次迟到结果对账"
+            )
+            // Production journal rows/blocks retain moved paths until their exact durable
+            // capability settles. Scripted compatibility tests inject no journal and may clear.
+            let durableMovedPaths = completionJournal == nil ? [] : movedOriginals
+            let terminalUnmoved = settlement.normalizedPaths.filter {
+                !durableMovedPaths.contains($0)
+            }
+            if !terminalUnmoved.isEmpty,
+               !ledger.finish(
+                   paths: terminalUnmoved,
+                   operationID: settlement.operationID,
+                   attemptID: settlement.attemptID
+               ) {
+                GSYLog.error(
+                    .trash,
+                    "Trash pending ledger late unmoved clear failed operationID=\(settlement.operationID.uuidString) attemptID=\(settlement.attemptID.uuidString)"
+                )
+            }
+            if let completionJournal, !settlement.acceptedJournalEntries.isEmpty {
+                let capability = TrashUndoCommitCapability(
+                    entries: settlement.acceptedJournalEntries,
+                    journal: completionJournal,
+                    ledger: ledger
+                )
+                commitLateJournalEntries(
+                    settlement.acceptedJournalEntries,
+                    capability: capability,
+                    operationID: settlement.operationID,
+                    undoHistoryStore: undoHistoryStore
+                )
+            }
+            if !settlement.blockedAttemptIdentities.isEmpty, let undoHistoryStore {
+                let blocked = settlement.blockedAttemptIdentities
+                Task { @MainActor in
+                    undoHistoryStore.reportCompletionJournalFailure(
+                        blockedAttempts: blocked
+                    )
+                }
+            }
+            // Use only the scope-fenced normalized pairs. Raw adapter output may contain an
+            // out-of-attempt pair and can never reach model invalidation.
+            lateHandler(settlement.movedPairs, settlement.operationID)
+
+        case .ignoredDuplicate:
+            // Journal/ledger facts remain durable for replay. Clearing either side here would
+            // turn a duplicate callback into silent Undo loss.
+            GSYLog.error(
+                .trash,
+                "Trash callback gate diverged after durable journal operationID=\(settlement.operationID.uuidString) attemptID=\(settlement.attemptID.uuidString)"
+            )
+        }
+    }
+
+    /// timeout 后系统仍可能给出真实成功 pair。Undo 写入已由 durable journal 完成；这个
+    /// handler 只广播模型失效，禁止再次通过 Trash 路径探测身份或制造第二条历史记录。
     private static func reconcileLateRecycle(
         pairs: [(String, String)],
         operationID: UUID
     ) {
         guard !pairs.isEmpty else { return }
         let unique = stableUniqueMovedPairs(pairs)
-        let undoPairs = unique.map {
-            UndoHistoryStore.Record.FilePair(original: $0.0, trashed: $0.1)
+        Task { @MainActor in
+            NotificationCenter.default.post(
+                name: .gsyTrashDidMove,
+                object: nil,
+                userInfo: [
+                    "paths": unique.map(\.0),
+                    "source": "NSWorkspace",
+                    "operationID": operationID.uuidString
+                ]
+            )
         }
-        UndoHistoryStore.shared.addRecord(
-            source: "NSWorkspace",
-            filePairs: undoPairs
+    }
+
+    /// Late callbacks have no awaiting coordinator. Their durable journal capability therefore
+    /// owns the full merge/ack cycle and may safely finish only after the cross-process Undo RMW
+    /// reports success.
+    private static func commitLateJournalEntries(
+        _ entries: [TrashUndoJournalEntry],
+        capability: TrashUndoCommitCapability,
+        operationID: UUID,
+        undoHistoryStore: UndoHistoryStore?
+    ) {
+        // A nil owner is valid only for scripted low-level tests. Durable production callbacks
+        // always carry their recovery domain's store; silently selecting `.shared` here would
+        // recreate the cross-domain corruption fixed in v2026.07.18.
+        guard let undoHistoryStore else { return }
+        Task { @MainActor in
+            let persisted = await undoHistoryStore.addJournalEntriesDurably(
+                source: "NSWorkspace",
+                entries: entries
+            )
+            guard persisted else {
+                GSYLog.error(
+                    .trash,
+                    "Late Trash Undo durable commit remains pending operationID=\(operationID.uuidString) entries=\(entries.count)"
+                )
+                return
+            }
+            guard await capability.finishDurablyAfterUndoPersisted(
+                pruningReceiptsIn: undoHistoryStore
+            ) else {
+                GSYLog.error(
+                    .trash,
+                    "Late Trash Undo acknowledgement remains pending operationID=\(operationID.uuidString) entries=\(entries.count)"
+                )
+                return
+            }
+        }
+    }
+
+    /// Complete recovery boundary used by init prewarm and by every real deletion before reserve.
+    /// The cross-process lease spans both files and every async Undo mutation; a per-file JSON lock
+    /// alone cannot prevent two processes from both observing `replayable` before either one adds.
+    static func recoverDurableTrashState(
+        journal: any TrashCompletionJournaling,
+        ledger: any TrashPendingOperationLedger,
+        undoHistoryStore: UndoHistoryStore
+    ) async -> TrashStartupRecoveryTerminal {
+        let healthToken = await undoHistoryStore.beginCompletionJournalRecovery()
+        guard let recoveryLease = journal.acquireRecoveryLease() else {
+            await undoHistoryStore.finishCompletionJournalRecovery(
+                token: healthToken,
+                blockedAttempts: nil,
+                reachedSuccessfulEmptyTerminal: false
+            )
+            return .blocked
+        }
+        defer { recoveryLease.release() }
+
+        let replay = await reconcileDurableUndoJournal(
+            journal: journal,
+            ledger: ledger,
+            undoHistoryStore: undoHistoryStore
         )
-        NotificationCenter.default.post(
-            name: .gsyTrashDidMove,
-            object: nil,
-            userInfo: [
-                "paths": unique.map(\.0),
-                "source": "NSWorkspace",
-                "operationID": operationID.uuidString
-            ]
+        if !replay.settledAttempts.isEmpty {
+            await TrashCompletionHealthTransitionQueue.shared.flush()
+            await undoHistoryStore.resolveCompletionJournalSettlement(
+                attempts: replay.settledAttempts,
+                durablyBlocked: false
+            )
+            await undoHistoryStore.retireCompletionJournalSettlementRevisions(
+                attempts: replay.settledAttempts
+            )
+        }
+
+        var authoritativeBlockedAttempts: Set<TrashPendingAttemptIdentity>?
+        var reachedSuccessfulEmptyTerminal = false
+        var invalidatedPaths: [String] = []
+        if replay.allGroupsSettled,
+           let afterReplay = journal.snapshot(),
+           afterReplay.entries.isEmpty {
+            // Generic reconciliation may retire dead reservations only after every callback row is
+            // gone. A second journal read closes the append-during-ledger-reconcile window.
+            let reconciliation = ledger.reconcilePersistedRecords()
+            if reconciliation.storageAvailable,
+               let finalSnapshot = journal.snapshot(),
+               finalSnapshot.entries.isEmpty {
+                authoritativeBlockedAttempts = reconciliation.undoJournalBlockedAttempts
+                invalidatedPaths = reconciliation.invalidatedPaths
+                reachedSuccessfulEmptyTerminal = true
+            }
+        }
+
+        await undoHistoryStore.finishCompletionJournalRecovery(
+            token: healthToken,
+            blockedAttempts: authoritativeBlockedAttempts,
+            reachedSuccessfulEmptyTerminal: reachedSuccessfulEmptyTerminal
+        )
+        if !invalidatedPaths.isEmpty {
+            publishLedgerInvalidation(paths: invalidatedPaths, operationID: UUID())
+        }
+        let health = await undoHistoryStore.completionJournalState
+        return reachedSuccessfulEmptyTerminal && health == .ready ? .ready : .blocked
+    }
+
+    /// The production reserve boundary is kept as one operation so tests can prove ordering
+    /// without invoking NSWorkspace. No caller can accidentally move `ledger.reserve` above the
+    /// recovery terminal while refactoring `performMoveToTrash`.
+    static func reserveAfterRecovery(
+        paths: [String],
+        operationID: UUID,
+        reviewIdentity: DeletionSnapshotIdentity?,
+        recoveryDependencyDomain: TrashRecoveryDependencyDomain
+    ) async -> TrashRecoveryReservation {
+        let journal = recoveryDependencyDomain.completionJournal
+        let ledger = recoveryDependencyDomain.pendingOperationLedger
+        let undoHistoryStore = await recoveryDependencyDomain.resolveUndoHistoryStore()
+        let recoveryTerminal = await TrashStartupRecoveryCoordinator.shared.recover(
+            key: recoveryDependencyDomain.recoveryCoordinationKey
+        ) {
+            await recoverDurableTrashState(
+                journal: journal,
+                ledger: ledger,
+                undoHistoryStore: undoHistoryStore
+            )
+        }
+        guard recoveryTerminal == .ready else {
+            GSYLog.error(
+                .trash,
+                "Trash deletion authorization blocked stage=startupRecovery paths=\(paths.count)"
+            )
+            return .recoveryBlocked
+        }
+        let reservation = await Task.detached(priority: .userInitiated) {
+            ledger.reserve(
+                paths: paths,
+                operationID: operationID,
+                reviewIdentity: reviewIdentity
+            )
+        }.value
+        return .ledger(reservation)
+    }
+
+    private struct DurableUndoReplayResult: Sendable {
+        var allGroupsSettled: Bool
+        var settledAttempts: Set<TrashPendingAttemptIdentity>
+    }
+
+    /// Phase-aware, idempotent replay. `awaitingUndoCommit` is never discarded merely because its
+    /// old ledger row is absent: the fsynced callback entry is the remaining Undo fact. Once a row
+    /// reaches `receiptPrunePending`, recovery prunes the receipt first and removes the row last.
+    private static func reconcileDurableUndoJournal(
+        journal: any TrashCompletionJournaling,
+        ledger: any TrashPendingOperationLedger,
+        undoHistoryStore: UndoHistoryStore
+    ) async -> DurableUndoReplayResult {
+        guard let snapshot = journal.snapshot() else {
+            return DurableUndoReplayResult(allGroupsSettled: false, settledAttempts: [])
+        }
+        let pending = snapshot.entries
+        guard !pending.isEmpty else {
+            return DurableUndoReplayResult(allGroupsSettled: true, settledAttempts: [])
+        }
+        let groups = Dictionary(grouping: pending) { entry in
+            "\(entry.operationID.uuidString):\(entry.attemptID.uuidString)"
+        }
+        var replayedCount = 0
+        var allGroupsSettled = true
+        var settledAttempts = Set<TrashPendingAttemptIdentity>()
+        for key in groups.keys.sorted() {
+            guard let group = groups[key], let first = group.first else { continue }
+            let ids = Set(group.map(\.id))
+            let attempt = TrashPendingAttemptIdentity(
+                operationID: first.operationID,
+                attemptID: first.attemptID
+            )
+            let phaseIDs = ids.intersection(snapshot.receiptPrunePendingIDs)
+            if !phaseIDs.isEmpty {
+                // A group phase transition is one journal RMW. A subset indicates corruption or
+                // a future incompatible writer; never guess which sibling receipts are safe.
+                guard phaseIDs == ids else {
+                    allGroupsSettled = false
+                    GSYLog.error(
+                        .trash,
+                        "Startup Trash Undo journal has split prune phase operationID=\(first.operationID.uuidString) attemptID=\(first.attemptID.uuidString)"
+                    )
+                    continue
+                }
+                let receiptsPruned = await undoHistoryStore.acknowledgeCompletionJournal(ids: ids)
+                guard receiptsPruned, journal.remove(ids: ids) else {
+                    allGroupsSettled = false
+                    continue
+                }
+                settledAttempts.insert(attempt)
+                continue
+            }
+
+            switch ledger.replayDisposition(
+                paths: group.map(\.originalPath),
+                operationID: first.operationID,
+                attemptID: first.attemptID
+            ) {
+            case .activeOwner:
+                // Another live App instance may still be between callback journal append and
+                // ledger transition. Consuming its rows here would steal its acknowledgment.
+                allGroupsSettled = false
+                continue
+            case .storageUnavailable:
+                allGroupsSettled = false
+                GSYLog.error(
+                    .trash,
+                    "Startup Trash Undo replay could not classify exact owner operationID=\(first.operationID.uuidString) attemptID=\(first.attemptID.uuidString)"
+                )
+                continue
+            case .stale:
+                // The ledger generation may have been retired by a new reserve after process
+                // death. The journal still proves a scope-fenced system callback, so merge it
+                // idempotently instead of deleting the last Undo fact.
+                break
+            case .replayable:
+                break
+            }
+
+            let persisted = await undoHistoryStore.addJournalEntriesDurably(
+                source: "NSWorkspace",
+                entries: group
+            )
+            guard persisted else {
+                allGroupsSettled = false
+                GSYLog.error(
+                    .trash,
+                    "Startup Trash Undo exact group remains pending operationID=\(first.operationID.uuidString) attemptID=\(first.attemptID.uuidString) entries=\(group.count)"
+                )
+                continue
+            }
+            let capability = TrashUndoCommitCapability(
+                entries: group,
+                journal: journal,
+                ledger: ledger
+            )
+            let pruneIDs = capability.prepareReceiptPruneAfterUndoPersisted()
+            guard pruneIDs == ids else {
+                allGroupsSettled = false
+                GSYLog.error(
+                    .trash,
+                    "Startup Trash Undo exact ack remains pending operationID=\(first.operationID.uuidString) attemptID=\(first.attemptID.uuidString) entries=\(group.count)"
+                )
+                continue
+            }
+            let receiptsPruned = await undoHistoryStore.acknowledgeCompletionJournal(ids: ids)
+            guard receiptsPruned, capability.finishAfterReceiptPruned(ids: ids) else {
+                allGroupsSettled = false
+                GSYLog.error(
+                    .trash,
+                    "Startup Trash Undo receipt prune remains pending operationID=\(first.operationID.uuidString) attemptID=\(first.attemptID.uuidString) entries=\(group.count)"
+                )
+                continue
+            }
+            settledAttempts.insert(attempt)
+            replayedCount += group.count
+        }
+        if replayedCount > 0 {
+            GSYLog.info(.trash, "Startup Trash Undo journal replayed entries=\(replayedCount)")
+        }
+        return DurableUndoReplayResult(
+            allGroupsSettled: allGroupsSettled,
+            settledAttempts: settledAttempts
         )
     }
 
@@ -1954,7 +2975,14 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         return pairs.filter { seen.insert($0.0).inserted }
     }
 
-    // MARK: - lastOutcome 快照（OperationResultSheet 消费）
+    private static func stableUniqueJournalEntries(
+        _ entries: [TrashUndoJournalEntry]
+    ) -> [TrashUndoJournalEntry] {
+        var seen = Set<String>()
+        return entries.filter { seen.insert($0.id).inserted }
+    }
+
+    // MARK: - lastOutcome legacy compatibility snapshot
 
     private let outcomeLock = NSLock()
     private var _lastOutcome: TrashOutcome?
@@ -1965,7 +2993,8 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         outcomeLock.unlock()
     }
 
-    /// 暴露最后一次 moveToTrash 的结构化结果。UI 在 await 后立刻读。
+    /// Legacy compatibility only. Production UI must use the per-call typed disposition/result;
+    /// this process-wide slot cannot prove that an operation crossed the recycle boundary.
     public func snapshotLastOutcome() -> TrashOutcome? {
         outcomeLock.lock()
         defer { outcomeLock.unlock() }
@@ -2019,6 +3048,9 @@ private final class RecycleOnceGate: @unchecked Sendable {
 
     private let lock = NSLock()
     private var phase: Phase = .waiting
+    /// Admission is independent from continuation phase because the watchdog may time out while
+    /// the first callback is crossing journal/ledger fsync. It is monotonic for the gate lifetime.
+    private var didAdmitCallbackFact = false
     private let cc: CheckedContinuation<TrashPipeline.RecycleAttempt, Never>
 
     init(cc: CheckedContinuation<TrashPipeline.RecycleAttempt, Never>) {
@@ -2067,6 +3099,22 @@ private final class RecycleOnceGate: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Only the first callback may create durable facts. This claim deliberately precedes journal
+    /// append; `claimCallback()` below still waits until the ledger transition is durable before it
+    /// resumes or performs late reconciliation.
+    func admitCallbackFact() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !didAdmitCallbackFact else { return false }
+        switch phase {
+        case .apiClaimed, .apiReturned, .timedOutSubmissionUnknown, .timedOutCallbackPending:
+            didAdmitCallbackFact = true
+            return true
+        case .waiting, .claiming, .callbackCompleted, .timedOutNotSubmitted, .lateReconciled:
+            return false
+        }
+    }
+
     @discardableResult
     func resolveTimeout(operationID: UUID) -> TrashPipeline.RecycleAttempt.State? {
         let state: TrashPipeline.RecycleAttempt.State
@@ -2100,6 +3148,10 @@ private final class RecycleOnceGate: @unchecked Sendable {
     /// resumed batch loop cannot outrun the ledger transaction.
     func claimCallback() -> CallbackResolution {
         lock.lock()
+        guard didAdmitCallbackFact else {
+            lock.unlock()
+            return .ignoredDuplicate
+        }
         switch phase {
         case .apiClaimed, .apiReturned:
             phase = .callbackCompleted

@@ -44,14 +44,24 @@ final class DuplicateDeletionVerificationTests: XCTestCase {
         private var reserveCount = 0
         private var claimCount = 0
         private var finishCount = 0
+        private var frozenIdentitiesByOperation: [UUID: [String: TrashObjectIdentity]] = [:]
 
         func reserve(
             paths: [String],
             operationID: UUID,
             reviewIdentity: DeletionSnapshotIdentity?
         ) -> TrashPendingLedgerReservation {
+            let identities: [String: TrashObjectIdentity] = Dictionary(
+                uniqueKeysWithValues: paths.compactMap { path in
+                    guard case .present(let identity) = TrashObjectIdentity.probe(path: path) else {
+                        return nil
+                    }
+                    return (path, identity)
+                }
+            )
             lock.lock()
             reserveCount += 1
+            frozenIdentitiesByOperation[operationID] = identities
             lock.unlock()
             return .reserved(normalizedPaths: paths, invalidatedPaths: [])
         }
@@ -68,7 +78,12 @@ final class DuplicateDeletionVerificationTests: XCTestCase {
         }
 
         func markAPIReturned(paths: [String], operationID: UUID, attemptID: UUID) -> Bool { true }
-        func markCallbackObserved(paths: [String], operationID: UUID, attemptID: UUID) -> Bool { true }
+        func markCallbackObserved(
+            paths: [String],
+            operationID: UUID,
+            attemptID: UUID,
+            undoJournalBlockedPaths: Set<String>
+        ) -> TrashPendingLedgerCallbackObservation { .applied }
         func markRetryReady(paths: [String], operationID: UUID, attemptID: UUID) -> Bool { true }
 
         func finish(operationID: UUID, retainingPendingPaths: Set<String>) -> Bool {
@@ -79,6 +94,19 @@ final class DuplicateDeletionVerificationTests: XCTestCase {
         }
 
         func finish(paths: [String], operationID: UUID, attemptID: UUID) -> Bool { true }
+
+        func frozenIdentities(
+            paths: [String],
+            operationID: UUID
+        ) -> [String: TrashObjectIdentity]? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let frozen = frozenIdentitiesByOperation[operationID],
+                  paths.allSatisfy({ frozen[$0] != nil }) else { return nil }
+            return Dictionary(uniqueKeysWithValues: paths.compactMap { path in
+                frozen[path].map { (path, $0) }
+            })
+        }
 
         func reconcilePersistedRecords() -> TrashPendingLedgerReconciliation {
             TrashPendingLedgerReconciliation(invalidatedPaths: [])
@@ -110,6 +138,27 @@ final class DuplicateDeletionVerificationTests: XCTestCase {
     private func scanGroup(root: URL) async throws -> DuplicateGroup {
         let groups = await DuplicateScanner(roots: [root], minBytes: 1).scanToCompletion()
         return try XCTUnwrap(groups.first)
+    }
+
+    /// v2026.07.18 regression owner: a scripted ledger must never inherit the real user's
+    /// completion journal or Undo projection. Construct all three durable dependencies under the
+    /// same fixture root and pass them as one recovery domain.
+    private func makeRecoveryDomain(
+        root: URL,
+        ledger: any TrashPendingOperationLedger
+    ) async -> TrashRecoveryDependencyDomain {
+        await MainActor.run {
+            TrashRecoveryDependencyDomain(
+                pendingOperationLedger: ledger,
+                completionJournal: PersistentTrashCompletionJournal(
+                    fileURL: root.appendingPathComponent("trash-completion-journal.json")
+                ),
+                undoHistoryStore: UndoHistoryStore(
+                    storeURL: root.appendingPathComponent("UndoHistory.json"),
+                    allowedRestoreRoots: [root.path]
+                )
+            )
+        }
     }
 
     func testScannerFreezesFullHashAndDescriptorIdentityForEveryFile() async throws {
@@ -579,10 +628,11 @@ final class DuplicateDeletionVerificationTests: XCTestCase {
             options: .atomic
         )
         let ledger = LedgerSpy()
+        let recoveryDomain = await makeRecoveryDomain(root: fixture.root, ledger: ledger)
         let pipeline = TrashPipeline(
             home: fixture.root.path,
             externalDeletionRoots: [],
-            pendingOperationLedger: ledger
+            recoveryDependencyDomain: recoveryDomain
         )
 
         let disposition = await pipeline.submitToTrashReturningDisposition(
@@ -608,5 +658,50 @@ final class DuplicateDeletionVerificationTests: XCTestCase {
         XCTAssertEqual(ledgerState.claimed, 0, "Zero claim proves NSWorkspace was never invoked")
         XCTAssertTrue(FileManager.default.fileExists(atPath: target))
         XCTAssertTrue(FileManager.default.fileExists(atPath: request.retainedReference.path))
+    }
+
+    func testUninstallExpectedIdentity在DurableReserve后阻止同路径替换且不ClaimRecycle() async throws {
+        let fixture = try makeFixture()
+        let measured = DefaultFileManagerSnapshot().snapshot(at: fixture.first.path)
+        let candidate = UninstallCandidate(
+            path: fixture.first.path,
+            snapshot: measured,
+            matchReason: .bundleID("com.acme.fixture")
+        )
+        let request = try XCTUnwrap(UninstallCandidateVerificationRequest(candidates: [candidate]))
+
+        let displaced = fixture.root.appendingPathComponent("displaced-original")
+        try FileManager.default.moveItem(at: fixture.first, to: displaced)
+        try Data("replacement".utf8).write(to: fixture.first)
+
+        let ledger = LedgerSpy()
+        let recoveryDomain = await makeRecoveryDomain(root: fixture.root, ledger: ledger)
+        let pipeline = TrashPipeline(
+            home: fixture.root.path,
+            externalDeletionRoots: [],
+            recoveryDependencyDomain: recoveryDomain
+        )
+        let disposition = await pipeline.submitToTrashReturningDisposition(
+            paths: [fixture.first.path],
+            accessDeniedPaths: [],
+            vendorOverrideRequest: nil,
+            scanIncompleteOverrideRequest: nil,
+            reviewIdentity: DeletionSnapshotIdentity(
+                sessionID: UUID(),
+                revision: 1,
+                categoryID: "uninstall"
+            ),
+            executionVerification: .uninstall(request)
+        )
+
+        guard case .preSubmitRejected(.pendingOperation(let rejection)) = disposition else {
+            return XCTFail("same-path replacement must remain a typed pre-submit rejection")
+        }
+        XCTAssertEqual(rejection.reasonsByPath[fixture.first.path], .identityChanged)
+        let ledgerState = ledger.snapshot()
+        XCTAssertEqual(ledgerState.reserved, 1)
+        XCTAssertEqual(ledgerState.finished, 1)
+        XCTAssertEqual(ledgerState.claimed, 0, "zero claim proves NSWorkspace was never invoked")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.first.path))
     }
 }

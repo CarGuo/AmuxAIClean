@@ -15,10 +15,10 @@ import LogKit
 /// - 必须不包含 `..` 段（防 traversal）
 /// - 校验失败 → 仅广播 `.gsySentinelOpenUninstall` 不带 path（让 UI 走默认 fallback）
 public extension Notification.Name {
-    /// daemon 通过 `amuxaiclean://uninstall?path=...` 拉起，主 App 监听后跳卸载页。
+    /// 用户态 Agent 通过 `amuxaiclean://uninstall?path=...` 拉起，主 App 监听后跳卸载页。
     /// `userInfo[SentinelURLRouter.uninstallPathKey]` = `String?`（绝对路径，已校验）。
     static let gsySentinelOpenUninstall = Notification.Name("AmuxAIClean.sentinel.openUninstall")
-    /// daemon 通过 `amuxaiclean://action/scan/full` 拉起，主 App 监听后触发完整扫描。
+    /// 用户态 Agent 通过 `amuxaiclean://action/scan/full` 拉起，主 App 监听后触发完整扫描。
     static let gsySentinelStartFullScan = Notification.Name("AmuxAIClean.sentinel.startFullScan")
 }
 

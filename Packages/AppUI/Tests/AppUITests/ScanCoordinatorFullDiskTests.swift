@@ -90,6 +90,104 @@ final class ScanCoordinatorFullDiskTests: XCTestCase {
         XCTAssertEqual(bucket?.tail, "Library/Caches/com.example/a.bin")
     }
 
+    func test_fullDiskTreePublicPathReverseProjectsToDataVolume() {
+        let coord = ScanCoordinator()
+        XCTAssertEqual(
+            coord._physicalPathForFullDiskTreeForTesting("/System/Library"),
+            "/System/Volumes/Data/System/Library"
+        )
+        XCTAssertEqual(
+            coord._physicalPathForFullDiskTreeForTesting("/usr/bin"),
+            "/System/Volumes/Data/usr/bin"
+        )
+    }
+
+    func test_fullDiskTreeOnDemandScansPhysicalRootButReturnsPublicRows() async throws {
+        let fixture = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FullDiskTreeNamespace-\(UUID().uuidString)", isDirectory: true)
+        let physicalSystem = fixture.appendingPathComponent("System", isDirectory: true)
+        let physicalLibrary = physicalSystem.appendingPathComponent("Library", isDirectory: true)
+        try FileManager.default.createDirectory(at: physicalLibrary, withIntermediateDirectories: true)
+        try Data(repeating: 0xA5, count: 4_096).write(
+            to: physicalLibrary.appendingPathComponent("payload.bin")
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: fixture) }
+
+        let publicRoot = "/virtual-full-disk"
+        let namespace = ScanPathNamespace(
+            physicalRoot: fixture.path,
+            publicRoot: publicRoot
+        )
+        let measurement = await ScanCoordinator._scanDirectChildrenOnDemandForTesting(
+            publicRootPath: publicRoot + "/System",
+            pathNamespace: namespace
+        )
+
+        XCTAssertTrue(measurement.isComplete)
+        XCTAssertTrue(measurement.issues.isEmpty)
+        XCTAssertEqual(measurement.rows.map(\.path), [publicRoot + "/System/Library"])
+        XCTAssertEqual(measurement.rows.first?.fileCount, 1)
+        XCTAssertGreaterThan(measurement.rows.first?.bytes ?? 0, 0)
+    }
+
+    func test_tccHardSkipPolicyCannotBeDisabledByGrantedOrUnknownFDA() {
+        for status in [FDAProbe.Status.granted, .unknown, .denied] {
+            XCTAssertTrue(
+                ScanCoordinator._shouldRespectTCCSkipListForTesting(fdaStatus: status),
+                "FDA=\(status.rawValue) 只能影响权限错误展示，不得扩大产品隐私扫描边界"
+            )
+        }
+    }
+
+    func test_treeShallowAndDeepApplyPublicTCCHardSkipBeforePhysicalFilesystemTouch() async {
+        let missingPhysicalRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Missing-TCC-Physical-\(UUID().uuidString)", isDirectory: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missingPhysicalRoot.path))
+
+        let namespace = ScanPathNamespace(
+            physicalRoot: missingPhysicalRoot.path,
+            publicRoot: NSHomeDirectory()
+        )
+        let publicMailPath = NSHomeDirectory() + "/Library/Mail"
+
+        let shallow = ScanCoordinator._scanDirectChildrenShallowForTesting(
+            publicRootPath: publicMailPath,
+            pathNamespace: namespace
+        )
+        XCTAssertTrue(shallow.rows.isEmpty)
+        XCTAssertEqual(shallow.parentAccessState, .tccProtected)
+        XCTAssertEqual(shallow.issues, [ScanIncompleteIssue(
+            path: publicMailPath,
+            reason: .tccProtectedSkipped,
+            stage: .open
+        )])
+
+        let deep = await ScanCoordinator._scanDirectChildrenOnDemandForTesting(
+            publicRootPath: publicMailPath,
+            pathNamespace: namespace
+        )
+        XCTAssertTrue(deep.rows.isEmpty)
+        XCTAssertFalse(deep.isComplete)
+        XCTAssertEqual(deep.parentAccessState, .tccProtected)
+        XCTAssertEqual(deep.issues.map(\.reason), [.tccProtectedSkipped],
+                       "若先触碰不存在的物理根，这里会错误变成 metadataUnavailable")
+        XCTAssertEqual(deep.issues.map(\.path), [publicMailPath])
+
+        let fullDiskNamespace = ScanPathNamespace(
+            physicalRoot: missingPhysicalRoot.path,
+            publicRoot: "/"
+        )
+        let otherUserMail = "/Users/another-user/Library/Mail"
+        let otherUser = await ScanCoordinator._scanDirectChildrenOnDemandForTesting(
+            publicRootPath: otherUserMail,
+            pathNamespace: fullDiskNamespace
+        )
+        XCTAssertEqual(otherUser.parentAccessState, .tccProtected)
+        XCTAssertEqual(otherUser.issues.map(\.reason), [.tccProtectedSkipped])
+        XCTAssertEqual(otherUser.issues.map(\.path), [otherUserMail],
+                       "整盘扫描不得只保护运行 App 的当前用户 home")
+    }
+
     func test_nonFullDiskScan_doesNotRewriteDataVolumePath() {
         let coord = ScanCoordinator()
         let path = "/System/Volumes/Data/Library/Caches/com.example/a.bin"

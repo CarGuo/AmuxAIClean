@@ -494,6 +494,23 @@
         }
       }
     },
+    "appfootprint.discovery.partial": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App locations not read completely: %lld. The visible list is partial."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 个应用位置未能完整读取，当前列表为部分结果。"
+          }
+        }
+      }
+    },
     "appfootprint.empty.no_apps": {
       "extractionState": "manual",
       "localizations": {
@@ -507,6 +524,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "没有发现任何应用"
+          }
+        }
+      }
+    },
+    "appfootprint.empty.partial": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No apps were confirmed in the readable locations"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在已读取的位置中未确认到应用"
           }
         }
       }
@@ -953,6 +987,23 @@
         }
       }
     },
+    "brew.cleanup.incomplete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some Homebrew cache entries could not be inspected. Only verified items are shown; an empty result is not conclusive."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分 Homebrew 缓存项目无法检查。当前仅显示已验证项目；空结果不代表没有可清理项。"
+          }
+        }
+      }
+    },
     "brew.cleanup.review_note": {
       "extractionState": "manual",
       "localizations": {
@@ -1089,6 +1140,23 @@
         }
       }
     },
+    "brew.installed.incomplete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Homebrew installations could not be read completely. The list may be incomplete; refresh after checking local permissions or damaged metadata."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Homebrew 安装信息未能完整读取，当前列表可能不完整。请检查本地权限或损坏的元数据后刷新。"
+          }
+        }
+      }
+    },
     "brew.not_installed.body": {
       "extractionState": "manual",
       "localizations": {
@@ -1153,6 +1221,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "全部已是最新。"
+          }
+        }
+      }
+    },
+    "brew.outdated.registry_incomplete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Homebrew update data could not be read completely. Run brew update, then refresh."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Homebrew 更新数据未能完整读取。请运行 brew update 后刷新。"
+          }
+        }
+      }
+    },
+    "brew.outdated.registry_missing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Homebrew update data is unavailable. Run brew update, then refresh."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚无 Homebrew 更新数据。请运行 brew update 后刷新。"
           }
         }
       }
@@ -2730,13 +2832,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Move to Trash Anyway"
+            "value": "Force Move to Trash"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "仍然移到废纸篓"
+            "value": "强制移到废纸篓"
           }
         }
       }
@@ -2782,8 +2884,8 @@
     "delete.scan_incomplete_override.action": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Recheck and Move to Trash" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "重新核验并移到废纸篓" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Force Move to Trash" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "强制移到废纸篓" } }
       }
     },
     "delete.scan_incomplete_override.body %lld": {
@@ -2887,6 +2989,13 @@
             "value": "将移到废纸篓"
           }
         }
+      }
+    },
+    "detail.action.close": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Close details" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "关闭详情" } }
       }
     },
     "detail.bool.no": {
@@ -5502,7 +5611,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "没有发现任何启动项"
+            "value": "没有发现传统启动代理"
           }
         }
       }
@@ -5519,7 +5628,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "没有匹配的启动项"
+            "value": "没有匹配的启动代理"
           }
         }
       }
@@ -5530,13 +5639,30 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld items · %@"
+            "value": "Items: %lld · %@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "总计 %lld 项 · %@"
+          }
+        }
+      }
+    },
+    "launchagent.footer.partial": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Items read: %lld · at least %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已读取 %lld 项 · 至少 %@"
           }
         }
       }
@@ -5570,7 +5696,75 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "启动项"
+            "value": "启动代理"
+          }
+        }
+      }
+    },
+    "launchagent.coverage.classic_only": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This page covers classic launchd plist directories only. Manage modern Login & Background Items in System Settings."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此页面只覆盖传统 launchd plist 目录；现代“登录项与扩展”请在系统设置中管理。"
+          }
+        }
+      }
+    },
+    "launchagent.coverage.open_settings": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Login Items Settings"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开登录项设置"
+          }
+        }
+      }
+    },
+    "launchagent.issue.empty %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No complete result. Locations not read or parsed: %lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有完整结果：%lld 个位置无法读取或解析"
+          }
+        }
+      }
+    },
+    "launchagent.issue.partial %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Partial result. Locations not read or parsed: %lld."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结果不完整：%lld 个位置无法读取或解析。"
           }
         }
       }
@@ -5621,7 +5815,194 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "正在扫描启动项…"
+            "value": "正在扫描启动代理…"
+          }
+        }
+      }
+    },
+    "log.failure.detail %@ %@ %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Operation: %@. Error: %@/%lld. Copy these technical details when reporting the issue."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "操作：%@。错误：%@/%lld。反馈问题时请附上这些技术信息。"
+          }
+        }
+      }
+    },
+    "log.failure.stage.clear": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear main App logs"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理主 App 日志"
+          }
+        }
+      }
+    },
+    "log.failure.stage.disabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "File logging is explicitly disabled"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件日志已被明确停用"
+          }
+        }
+      }
+    },
+    "log.failure.stage.enumerate": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Read the main App log list"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "读取主 App 日志列表"
+          }
+        }
+      }
+    },
+    "log.failure.stage.export": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export main App logs"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导出主 App 日志"
+          }
+        }
+      }
+    },
+    "log.failure.stage.initialization": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Initialize the main App log"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "初始化主 App 日志"
+          }
+        }
+      }
+    },
+    "log.failure.stage.open": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open the daily main App log"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开主 App 今日日志"
+          }
+        }
+      }
+    },
+    "log.failure.stage.prepare_access": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Validate the main App log directory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "验证主 App 日志目录"
+          }
+        }
+      }
+    },
+    "log.failure.stage.retention": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apply main App log retention"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "执行主 App 日志保留清理"
+          }
+        }
+      }
+    },
+    "log.failure.stage.write": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Write the main App log"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "写入主 App 日志"
+          }
+        }
+      }
+    },
+    "log.failure.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Log Operation Needs Attention"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "日志操作需要处理"
           }
         }
       }
@@ -5843,6 +6224,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "部分完成 · %1$lld 文件 · %2$@ · %3$@"
+          }
+        }
+      }
+    },
+    "main.scan.settling": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finishing the previous scan. The new scan will start automatically…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在结束上一次扫描，随后会自动开始新扫描…"
           }
         }
       }
@@ -6166,6 +6564,108 @@
           "stringUnit": {
             "state": "translated",
             "value": "尚未执行任何任务。"
+          }
+        }
+      }
+    },
+    "maintenance.outcome.cancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The task was cancelled."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务已取消。"
+          }
+        }
+      }
+    },
+    "maintenance.outcome.failed_exit %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The task failed (exit code %1$lld)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务失败（退出码 %1$lld）。"
+          }
+        }
+      }
+    },
+    "maintenance.outcome.launch_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The system maintenance command could not be started."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法启动系统维护命令。"
+          }
+        }
+      }
+    },
+    "maintenance.outcome.ownership_lost": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The task result could not be verified. Please run it again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法验证任务结果，请重新执行。"
+          }
+        }
+      }
+    },
+    "maintenance.outcome.succeeded": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Completed successfully."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "执行成功。"
+          }
+        }
+      }
+    },
+    "maintenance.outcome.timed_out": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The task timed out before completion."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务未在限定时间内完成。"
           }
         }
       }
@@ -9825,13 +10325,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Open Login Items in System Settings and enable “AmuxAIClean”."
+            "value": "Open System Settings → General → Login Items & Extensions and enable AmuxAIClean."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请前往「系统设置 → 登录项」启用「AmuxAIClean」。"
+            "value": "请打开「系统设置 → 通用 → 登录项与扩展」，启用 AmuxAIClean。"
           }
         }
       }
@@ -9870,19 +10370,19 @@
         }
       }
     },
-    "sentinel.alert.button.ok": {
+    "sentinel.alert.button.keep_current": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "OK"
+            "value": "Keep Current Setting"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "好"
+            "value": "保持当前设置"
           }
         }
       }
@@ -9893,56 +10393,39 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Open Settings"
+            "value": "Open Login Items"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "打开设置"
+            "value": "打开登录项"
           }
         }
       }
     },
-    "sentinel.alert.register_failed.body %@": {
+    "sentinel.alert.register_failed.body": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The background helper could not be enabled, so the switch was restored. Review Login Items in System Settings, then try again. Technical details: %@"
+            "value": "Background monitoring could not be enabled, so the switch remains off. Open System Settings → General → Login Items & Extensions, check AmuxAIClean, then return and try again. Diagnostics were saved in App Settings → Storage → Logs."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "无法启用后台守护任务，开关已恢复。请检查「系统设置」中的登录项后重试。技术详情：%@"
+            "value": "未能启用后台监控，开关会保持关闭。请打开「系统设置 → 通用 → 登录项与扩展」，检查 AmuxAIClean 后返回重试。诊断已保存在 App 的「设置 → 存储 → 日志」中。"
           }
         }
       }
     },
-    "sentinel.alert.register_failed.log_hint_fallback": {
+    "sentinel.alert.register_failed.startup.body": {
       "extractionState": "manual",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Check Console.app for details."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "请打开「控制台」查看详细日志。"
-          }
-        }
-      }
-    },
-    "sentinel.alert.register_failed.startup.body %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "The saved request to enable the background sentinel was kept, but the helper is not running. Review Login Items in System Settings, then try again. Technical details: %@" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已保留开启后台守护的期望，但守护任务当前未运行。请检查「系统设置」中的登录项后重试。技术详情：%@" } }
+        "en": { "stringUnit": { "state": "translated", "value": "You previously chose to enable background monitoring, but it is not running. Open System Settings → General → Login Items & Extensions, check AmuxAIClean, then return and try again. If you do not need this feature, keep it off. Diagnostics were saved in App Settings → Storage → Logs." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "你之前选择开启后台监控，但它当前没有运行。请打开「系统设置 → 通用 → 登录项与扩展」，检查 AmuxAIClean 后返回重试；不需要此功能可保持关闭。诊断已保存在 App 的「设置 → 存储 → 日志」中。" } }
       }
     },
     "sentinel.alert.register_failed.title": {
@@ -9962,18 +10445,18 @@
         }
       }
     },
-    "sentinel.alert.status_unavailable.body %@": {
+    "sentinel.alert.status_unavailable.body": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "macOS could not verify the background sentinel's actual state, so the switch was restored. Review Login Items in System Settings and try again. Technical details: %@" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "macOS 无法验证后台守护的实际状态，因此开关已恢复。请检查「系统设置」中的登录项后重试。技术详情：%@" } }
+        "en": { "stringUnit": { "state": "translated", "value": "macOS could not verify whether background monitoring can be enabled, so the switch remains off. Open System Settings → General → Login Items & Extensions, check AmuxAIClean, then return and try again. Diagnostics were saved in App Settings → Storage → Logs." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "macOS 无法确认后台监控是否可以启用，因此开关会保持关闭。请打开「系统设置 → 通用 → 登录项与扩展」，检查 AmuxAIClean 后返回重试。诊断已保存在 App 的「设置 → 存储 → 日志」中。" } }
       }
     },
-    "sentinel.alert.status_unavailable.startup.body %@": {
+    "sentinel.alert.status_unavailable.startup.body": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "The saved background sentinel preference was kept, but macOS could not verify its actual state. The settings page will show the requested and actual states separately. Technical details: %@" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已保留后台守护的期望设置，但 macOS 无法验证实际状态；设置页会分别显示期望与实际状态。技术详情：%@" } }
+        "en": { "stringUnit": { "state": "translated", "value": "You previously chose to enable background monitoring, but macOS could not verify its current state. Open System Settings → General → Login Items & Extensions and check AmuxAIClean. If you do not need this feature, keep it off. Diagnostics were saved in App Settings → Storage → Logs." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "你之前选择开启后台监控，但 macOS 无法确认当前状态。请打开「系统设置 → 通用 → 登录项与扩展」检查 AmuxAIClean；不需要此功能可保持关闭。诊断已保存在 App 的「设置 → 存储 → 日志」中。" } }
       }
     },
     "sentinel.alert.status_unavailable.title": {
@@ -9983,18 +10466,88 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "守护状态尚未验证" } }
       }
     },
-    "sentinel.alert.unregister_failed.body %@": {
+    "sentinel.alert.shutdown_verification_unavailable.body": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "The background sentinel could not be disabled, so the switch was restored. Review Login Items in System Settings, then try again. Technical details: %@" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法关闭后台守护任务，开关已恢复。请检查「系统设置」中的登录项后重试。技术详情：%@" } }
+        "en": { "stringUnit": { "state": "translated", "value": "AmuxAIClean could not read the background monitoring state, so no close operation was attempted. Because this feature was previously enabled or you just asked to turn it off, open System Settings → General → Login Items & Extensions, turn off AmuxAIClean, then return and try again. Diagnostics were saved in App Settings → Storage → Logs." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AmuxAIClean 无法读取后台监控状态，因此本次没有执行关闭操作。由于该功能曾启用或你刚刚要求关闭，请打开「系统设置 → 通用 → 登录项与扩展」，关闭 AmuxAIClean 后返回重试。诊断已保存在 App 的「设置 → 存储 → 日志」中。" } }
       }
     },
-    "sentinel.alert.unregister_failed.startup.body %@": {
+    "sentinel.alert.shutdown_verification_unavailable.startup.body": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "The saved request to disable the background sentinel was kept, but macOS could not confirm that it stopped. It may still be registered or running. Review Login Items in System Settings, then try again. Technical details: %@" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已保留关闭后台守护的期望，但 macOS 无法确认它已经停止，守护任务仍可能处于已注册或运行状态。请检查「系统设置」中的登录项后重试。技术详情：%@" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Background monitoring was previously enabled, but AmuxAIClean could not verify whether it stopped. Open System Settings → General → Login Items & Extensions, turn off AmuxAIClean, then return and try again. Diagnostics were saved in App Settings → Storage → Logs." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "后台监控此前有启用记录，但 AmuxAIClean 无法确认它是否已经停止。请打开「系统设置 → 通用 → 登录项与扩展」，关闭 AmuxAIClean 后返回重试。诊断已保存在 App 的「设置 → 存储 → 日志」中。" } }
+      }
+    },
+    "sentinel.alert.shutdown_verification_unavailable.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Background Status Not Verified" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "后台状态无法确认" } }
+      }
+    },
+    "sentinel.alert.legacy_migration_failed.disable.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The current login agent is off, but one or more background items from an older AmuxAIClean version could not be verified. Open System Settings → General → Login Items & Extensions, turn off every AmuxAIClean item, then return and try again. Diagnostics were saved in App Settings → Storage → Logs." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前登录代理已关闭，但旧版本留下的一个或多个后台项无法确认。请打开「系统设置 → 通用 → 登录项与扩展」，关闭所有 AmuxAIClean 项后返回重试。诊断已保存在 App 的「设置 → 存储 → 日志」中。" } }
+      }
+    },
+    "sentinel.alert.legacy_migration_failed.enable.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "A background item from an older version could not be confirmed off, so current background monitoring was not enabled and the switch remains off. Open System Settings → General → Login Items & Extensions, turn off every AmuxAIClean item, then return and try again. Diagnostics were saved in App Settings → Storage → Logs." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "旧版本的后台项无法确认已关闭，因此当前后台监控没有启用，开关会保持关闭。请打开「系统设置 → 通用 → 登录项与扩展」，关闭所有 AmuxAIClean 项后返回重试。诊断已保存在 App 的「设置 → 存储 → 日志」中。" } }
+      }
+    },
+    "sentinel.alert.legacy_migration_failed.enable.startup.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "You previously chose to enable background monitoring, but an older AmuxAIClean background item could not be confirmed off, so the current login agent was not enabled. Open System Settings → General → Login Items & Extensions, turn off every AmuxAIClean item, then return and try again. Diagnostics were saved in App Settings → Storage → Logs." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "你之前选择开启后台监控，但旧版本的 AmuxAIClean 后台项无法确认已关闭，因此当前登录代理没有启用。请打开「系统设置 → 通用 → 登录项与扩展」，关闭所有 AmuxAIClean 项后返回重试。诊断已保存在 App 的「设置 → 存储 → 日志」中。" } }
+      }
+    },
+    "sentinel.alert.legacy_migration_failed.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Historical Sentinel Status Not Verified" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "历史守护状态尚未验证" } }
+      }
+    },
+    "sentinel.alert.legacy_migration_shutdown_failed.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Neither the current login agent nor an older background item could be confirmed off. Open System Settings → General → Login Items & Extensions now and turn off every AmuxAIClean item. Diagnostics were saved in App Settings → Storage → Logs." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前登录代理和旧版本后台项都无法确认已关闭。请立即打开「系统设置 → 通用 → 登录项与扩展」，关闭所有 AmuxAIClean 项。诊断已保存在 App 的「设置 → 存储 → 日志」中。" } }
+      }
+    },
+    "sentinel.alert.legacy_migration_shutdown_failed.startup.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Background monitoring was previously enabled, but neither the current login agent nor an older background item could be confirmed off. Open System Settings → General → Login Items & Extensions now and turn off every AmuxAIClean item. Diagnostics were saved in App Settings → Storage → Logs." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "后台监控此前有启用记录，但当前登录代理和旧版本后台项都无法确认已关闭。请立即打开「系统设置 → 通用 → 登录项与扩展」，关闭所有 AmuxAIClean 项。诊断已保存在 App 的「设置 → 存储 → 日志」中。" } }
+      }
+    },
+    "sentinel.alert.legacy_migration_shutdown_failed.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Sentinel Safety Shutdown Not Verified" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Sentinel 安全停机尚未验证" } }
+      }
+    },
+    "sentinel.alert.unregister_failed.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AmuxAIClean tried to stop background monitoring, but macOS still reports that it may be active, so the switch returned to its previous state. Open System Settings → General → Login Items & Extensions, turn off AmuxAIClean, then return and try again. Diagnostics were saved in App Settings → Storage → Logs." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AmuxAIClean 已尝试停止后台监控，但 macOS 仍显示它可能处于活动状态，因此开关恢复到操作前状态。请打开「系统设置 → 通用 → 登录项与扩展」，关闭 AmuxAIClean 后返回重试。诊断已保存在 App 的「设置 → 存储 → 日志」中。" } }
+      }
+    },
+    "sentinel.alert.unregister_failed.startup.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Background monitoring was previously enabled, and AmuxAIClean tried to stop it, but macOS still reports that it may be active. Open System Settings → General → Login Items & Extensions, turn off AmuxAIClean, then return and try again. Diagnostics were saved in App Settings → Storage → Logs." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "后台监控此前有启用记录，AmuxAIClean 已尝试停止它，但 macOS 仍显示它可能处于活动状态。请打开「系统设置 → 通用 → 登录项与扩展」，关闭 AmuxAIClean 后返回重试。诊断已保存在 App 的「设置 → 存储 → 日志」中。" } }
       }
     },
     "sentinel.alert.unregister_failed.title": {
@@ -10191,13 +10744,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Passively watches Trash and a few hot caches when the system is idle. When 5GB+ of cumulative noise is detected over 30s, the main app is pinged via amuxaiclean:// to surface candidates. Off by default; toggle off any time."
+            "value": "Optional and off by default. When enabled, AmuxAIClean watches changes in Trash, Downloads, and a few cache folders, then reminds you to scan after a large increase. It never scans or deletes automatically. Leave it off if you do not want proactive reminders."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "仅在系统空闲时被动监听废纸篓与少量缓存目录。30 秒内累计噪音超过 5GB 时通过 amuxaiclean:// 唤起主 App 提示候选项。默认关闭，随时可关。"
+            "value": "这是默认关闭的可选功能。开启后，AmuxAIClean 会观察废纸篓、下载和少量缓存目录的变化；发现大量新增数据时只提醒你扫描，不会自动扫描或删除。不需要主动提醒可一直保持关闭。"
           }
         }
       }
@@ -10208,13 +10761,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "First enable may require approval in System Settings → General → Login Items & Extensions. The helper consumes < 10MB RAM and exits cleanly when disabled."
+            "value": "Enable this only if you want proactive reminders. First enable may require approval in System Settings → General → Login Items & Extensions. You can turn it off here at any time."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "首次启用可能需要在「系统设置 → 通用 → 登录项与扩展」中授权。守护进程内存占用 < 10MB，关闭后立即干净退出。"
+            "value": "只有需要主动提醒时才开启。首次启用可能需要在「系统设置 → 通用 → 登录项与扩展」中授权；之后可随时在这里关闭。"
           }
         }
       }
@@ -10242,13 +10795,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Background Sentinel"
+            "value": "Background reminders"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "后台守护"
+            "value": "后台提醒"
           }
         }
       }
@@ -10266,13 +10819,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Enable background sentinel"
+            "value": "Enable background change reminders"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "启用后台守护进程"
+            "value": "启用后台变化提醒"
           }
         }
       }
@@ -11388,13 +11941,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Clear logs"
+            "value": "Clear main App logs"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "清理日志"
+            "value": "清理主 App 日志"
           }
         }
       }
@@ -11405,13 +11958,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Clear logs"
+            "value": "Clear main App logs"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "清理日志"
+            "value": "清理主 App 日志"
           }
         }
       }
@@ -11439,13 +11992,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Existing log files will be removed. A new empty log file will be created for today."
+            "value": "Only the main App rolling log files will be removed, and today's main App log will restart. Sentinel background logs, macOS Unified Logging, and previously exported files are not changed. The clear event itself is retained in the new main App log."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "现有日志文件会被删除，并重新创建今天的空日志文件。"
+            "value": "只会移除主 App 的滚动日志，并重新开始今天的主 App 日志。Sentinel 后台日志、macOS 统一日志和此前导出的文件均不受影响；清理操作本身会保留在新的主 App 日志中。"
           }
         }
       }
@@ -11456,13 +12009,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Clear runtime logs?"
+            "value": "Clear main App runtime logs?"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "清理运行日志？"
+            "value": "清理主 App 运行日志？"
           }
         }
       }
@@ -11473,30 +12026,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cleared %d log files"
+            "value": "Cleared %d main App log files"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已清理 %d 个日志文件"
-          }
-        }
-      }
-    },
-    "settings.storage.log.clear.failed": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The logs could not be cleared. Technical details remain in the current log file."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "无法清理日志，技术详情已保留在当前日志文件中。"
+            "value": "已清理 %d 个主 App 日志文件"
           }
         }
       }
@@ -11507,13 +12043,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Log directory"
+            "value": "Main App log directory"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "日志目录"
+            "value": "主 App 日志目录"
           }
         }
       }
@@ -11524,13 +12060,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Export logs"
+            "value": "Export main App logs"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "导出日志"
+            "value": "导出主 App 日志"
           }
         }
       }
@@ -11552,19 +12088,19 @@
         }
       }
     },
-    "settings.storage.log.export.failed": {
+    "settings.storage.log.initializing": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The logs could not be exported. Choose another destination and try again."
+            "value": "(initializing the main App file log…)"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "无法导出日志，请选择其他位置后重试。"
+            "value": "（正在初始化主 App 文件日志…）"
           }
         }
       }
@@ -11575,13 +12111,30 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "(file sink disabled)"
+            "value": "(main App file logging is explicitly disabled)"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "（未启用文件落盘）"
+            "value": "（主 App 文件日志已被明确停用）"
+          }
+        }
+      }
+    },
+    "settings.storage.log.unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "(main App file log unavailable)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "（主 App 文件日志不可用）"
           }
         }
       }
@@ -11592,13 +12145,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Open log directory"
+            "value": "Open main App log directory"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "打开日志目录"
+            "value": "打开主 App 日志目录"
           }
         }
       }
@@ -11609,13 +12162,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "View today's log"
+            "value": "View today's main App log"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "查看今日日志"
+            "value": "查看主 App 今日日志"
           }
         }
       }
@@ -11626,13 +12179,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Runtime log"
+            "value": "Main App runtime log"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "运行日志"
+            "value": "主 App 运行日志"
           }
         }
       }
@@ -11643,13 +12196,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Rolls daily and keeps the last 7 days. Debug builds include the debug level by default; release builds only info and above. Attach the log to your bug report when needed."
+            "value": "The main App log rolls daily with a target retention of 7 days; cleanup runs during initialization and day rollover, and retries after a reported maintenance failure. Logs can contain absolute paths and other technical details. Debug builds include debug level by default; release builds include info and above. Clear affects only these main App rolling logs, not Sentinel background logs, macOS Unified Logging, or previously exported files."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "按天滚动，保留最近 7 天。Debug 构建默认含 debug 级，Release 构建仅 info 及以上。遇到问题可把日志附给开发者。"
+            "value": "主 App 日志按天滚动，目标保留 7 天；初始化和跨天时执行清理，维护失败会明确显示并在后续重试。日志可能包含绝对路径等技术信息。Debug 构建默认包含 debug 级，Release 构建包含 info 及以上。清理只影响这些主 App 滚动日志，不影响 Sentinel 后台日志、macOS 统一日志或此前导出的文件。"
           }
         }
       }
@@ -12096,6 +12649,227 @@
         }
       }
     },
+    "delete.preflight.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Request not submitted"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请求未提交"
+          }
+        }
+      }
+    },
+    "delete.preflight.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Safety checks rejected this request. Nothing was moved; you can adjust the selection and continue browsing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安全检查拒绝了本次请求，未移动任何项目；你可以调整选择并继续浏览。"
+          }
+        }
+      }
+    },
+    "delete.preflight.dismiss": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dismiss notice"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭提示"
+          }
+        }
+      }
+    },
+    "delete.preflight.more %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld more rejected items"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另有 %lld 个被拒绝项目"
+          }
+        }
+      }
+    },
+    "delete.preflight.reason.busy": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A previous Trash request for this item is still pending."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此项目之前的废纸篓请求仍在处理中。"
+          }
+        }
+      }
+    },
+    "delete.preflight.reason.target_changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The item changed after it was reviewed. Review the current item again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "项目在检查后发生变化，请重新检查当前项目。"
+          }
+        }
+      }
+    },
+    "delete.preflight.reason.unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The item cannot be safely verified or moved right now."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目前无法安全验证或移动此项目。"
+          }
+        }
+      }
+    },
+    "delete.preflight.reason.review_required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current typed evidence is insufficient. Refresh or scan again before retrying."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前类型化证据不足，请刷新或重新扫描后再试。"
+          }
+        }
+      }
+    },
+    "delete.preflight.reason.cancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The safety review did not reach a trusted completion."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安全检查未得到可信终态。"
+          }
+        }
+      }
+    },
+    "delete.preflight.reason.access_denied": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS denied access to this item."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 拒绝访问此项目。"
+          }
+        }
+      }
+    },
+    "delete.preflight.reason.batch_atomic": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The batch contains a protected item, so the entire request was rejected."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "批次包含受保护项目，因此整批请求被拒绝。"
+          }
+        }
+      }
+    },
+    "delete.preflight.reason.protected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This item is protected by the deletion safety policy."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除安全策略保护此项目。"
+          }
+        }
+      }
+    },
+    "delete.preflight.reason.generic": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The request did not pass the deletion safety check."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本次请求未通过删除安全检查。"
+          }
+        }
+      }
+    },
     "sidebar.row.app_footprint": {
       "extractionState": "manual",
       "localizations": {
@@ -12153,13 +12927,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Login Items"
+            "value": "Launch Agents"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "启动项"
+            "value": "启动代理"
           }
         }
       }
@@ -14558,6 +15332,57 @@
         }
       }
     },
+    "undo.err.destination_unavailable %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The original location could not be checked safely, so this item was not restored: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法安全检查原位置，因此未恢复此项目：%@"
+          }
+        }
+      }
+    },
+    "undo.err.destination_outside_scope": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The original location is outside the restore scope authorized when the item was removed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原位置超出了项目删除时授权的恢复范围。"
+          }
+        }
+      }
+    },
+    "undo.err.history_record_unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This cleanup record changed before the restore could start. Review the current history and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "恢复开始前，这条清理记录已发生变化。请查看当前历史记录后重试。"
+          }
+        }
+      }
+    },
     "undo.err.move_item_failed": {
       "extractionState": "manual",
       "localizations": {
@@ -14588,6 +15413,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "已跳过，因为原位置已有项目：%@"
+          }
+        }
+      }
+    },
+    "undo.err.restore_in_progress": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This cleanup batch is already being restored. Wait for the current operation to finish."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这批清理记录正在恢复，请等待当前操作完成。"
+          }
+        }
+      }
+    },
+    "undo.err.trashed_identity_changed %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The item at this Trash location is not the item recorded by this cleanup, so it was not restored: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此废纸篓位置的项目已不是本次清理记录的原项目，因此未恢复：%@"
+          }
+        }
+      }
+    },
+    "undo.err.trashed_identity_unavailable %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The recorded Trash item cannot be verified safely and was not restored: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法安全验证记录中的废纸篓项目，因此未恢复：%@"
           }
         }
       }
@@ -14996,6 +15872,125 @@
         }
       }
     },
+    "undo_history.storage.corrupt": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "History data is damaged. It was not treated as an empty history or overwritten."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "历史数据已损坏；应用没有把它当成空历史，也不会覆盖原文件。"
+          }
+        }
+      }
+    },
+    "undo_history.storage.journal_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some confirmed Trash moves could not be added to the recovery journal. Their operation state remains locked for safety."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分已确认的废纸篓移动无法写入恢复日志；为保证安全，其操作状态仍保持锁定。"
+          }
+        }
+      }
+    },
+    "undo_history.storage.loading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading cleanup history…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载清理历史…"
+          }
+        }
+      }
+    },
+    "undo_history.storage.read_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cleanup history cannot be read. Check access to Application Support and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取清理历史，请检查“应用支持”目录访问权限后重试。"
+          }
+        }
+      }
+    },
+    "undo_history.storage.record_rejected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A cleanup batch exceeded the recovery-history safety limit and was not truncated."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一个清理批次超过恢复历史的安全上限；应用没有静默截断它。"
+          }
+        }
+      }
+    },
+    "undo_history.storage.too_large": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cleanup history exceeds the safe file-size limit and was not loaded or overwritten."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理历史超过安全文件大小上限；应用没有加载或覆盖它。"
+          }
+        }
+      }
+    },
+    "undo_history.storage.write_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cleanup history could not be saved. Confirmed moves remain pending for durable recovery."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法保存清理历史；已确认的移动仍保持待处理，等待可靠恢复。"
+          }
+        }
+      }
+    },
     "undo_history.row.count %lld": {
       "extractionState": "manual",
       "localizations": {
@@ -15013,6 +16008,108 @@
         }
       }
     },
+    "undo_history.state.available": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Available"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可恢复"
+          }
+        }
+      }
+    },
+    "undo_history.state.checking": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查"
+          }
+        }
+      }
+    },
+    "undo_history.state.identity_changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Different Item"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "项目已变化"
+          }
+        }
+      }
+    },
+    "undo_history.state.missing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Missing from Trash"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "废纸篓中已缺失"
+          }
+        }
+      }
+    },
+    "undo_history.state.restored": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restored"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已恢复"
+          }
+        }
+      }
+    },
+    "undo_history.state.unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cannot Verify"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法验证"
+          }
+        }
+      }
+    },
     "uninstall.apps.title": {
       "extractionState": "manual",
       "localizations": {
@@ -15026,6 +16123,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "已安装应用"
+          }
+        }
+      }
+    },
+    "uninstall.apps.partial": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App locations not read completely: %lld. Other detected apps remain available."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 个应用位置未能完整读取，其他已发现应用仍可查看。"
           }
         }
       }
@@ -15171,6 +16285,23 @@
         }
       }
     },
+    "uninstall.placeholder.partial.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No related files were confirmed from the sources that completed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在已完成的来源中未确认到关联文件"
+          }
+        }
+      }
+    },
     "uninstall.placeholder.scanning": {
       "extractionState": "manual",
       "localizations": {
@@ -15218,6 +16349,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "pkg 安装清单 · %@"
+          }
+        }
+      }
+    },
+    "uninstall.discovery.partial": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Related-file discovery is incomplete in %lld places. Results are a lower bound, and deletion is disabled until a complete rescan."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关联文件发现有 %lld 处未完成；当前结果仅为下界，完整重扫前不会开放删除。"
           }
         }
       }
@@ -15524,23 +16672,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "没有提供更新说明，请前往 Release 页查看变更。"
-          }
-        }
-      }
-    },
-    "updater.prompt.sha256_label": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Expected SHA256 (after download, verify with `shasum -a 256 <file>`)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "预期 SHA256（下载后用 `shasum -a 256 <文件>` 比对）"
           }
         }
       }
@@ -18619,6 +19750,34 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "App Cache" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "应用缓存" } }
+      }
+    },
+    "smart_care.developer_cache_warning.cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Not Now" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "暂不选择" } }
+      }
+    },
+    "smart_care.developer_cache_warning.enable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Include Developer Cache" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "选择开发缓存" } }
+      }
+    },
+    "smart_care.developer_cache_warning.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Developer caches can contain many build and dependency files. Including them may make this scan take considerably longer." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开发缓存可能包含大量构建与依赖文件。选择后，本次扫描可能需要明显更长时间。" } }
+      }
+    },
+    "smart_care.developer_cache_warning.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Include Developer Cache?" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "选择开发缓存？" } }
       }
     },
     "smart_care.scope.developer.subtitle": {

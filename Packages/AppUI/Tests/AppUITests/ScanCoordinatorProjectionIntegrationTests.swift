@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import AppUI
 @testable import ScanKit
@@ -28,6 +29,53 @@ final class ScanCoordinatorProjectionIntegrationTests: XCTestCase {
                 return message
             }
         }
+    }
+
+    /// v2026.07.20 UI-hitch regression contract: production projection progress is not a result
+    /// snapshot and must not wake broad coordinator/Tree observers. Only the status/HUD store may
+    /// publish until the authoritative terminal transaction commits.
+    func test_投影扫描实时进度只发布窄通道不广播MainView或Tree() {
+        let coordinator = ScanCoordinator(home: NSTemporaryDirectory())
+        let initialSnapshot = coordinator.snapshot
+        let initialTick = coordinator.treeBrowser.tickRevision
+        var coordinatorChanges = 0
+        var snapshotChanges = 0
+        var treeTickChanges = 0
+        var liveProgressChanges = 0
+
+        let coordinatorCancellable = coordinator.objectWillChange.sink {
+            coordinatorChanges += 1
+        }
+        let snapshotCancellable = coordinator.$snapshot.dropFirst().sink { _ in
+            snapshotChanges += 1
+        }
+        let treeCancellable = coordinator.treeBrowser.$tickRevision.dropFirst().sink { _ in
+            treeTickChanges += 1
+        }
+        let liveCancellable = coordinator.liveProgress.$frame.dropFirst().sink { _ in
+            liveProgressChanges += 1
+        }
+        defer {
+            coordinatorCancellable.cancel()
+            snapshotCancellable.cancel()
+            treeCancellable.cancel()
+            liveCancellable.cancel()
+        }
+
+        coordinator._publishLiveProgressForTesting(
+            categoryID: ScanCategory.fullDisk.id,
+            totalBytes: 512 * 1_024 * 1_024,
+            scannedFiles: 42_000
+        )
+
+        XCTAssertEqual(liveProgressChanges, 1)
+        XCTAssertEqual(coordinatorChanges, 0)
+        XCTAssertEqual(snapshotChanges, 0)
+        XCTAssertEqual(treeTickChanges, 0)
+        XCTAssertEqual(coordinator.snapshot, initialSnapshot)
+        XCTAssertEqual(coordinator.treeBrowser.tickRevision, initialTick)
+        XCTAssertEqual(coordinator.liveProgress.frame.totalBytes, 512 * 1_024 * 1_024)
+        XCTAssertEqual(coordinator.liveProgress.frame.scannedFileCount, 42_000)
     }
 
     private var deterministicOptions: ScanOptions {
@@ -218,6 +266,101 @@ final class ScanCoordinatorProjectionIntegrationTests: XCTestCase {
     }
 
     // MARK: - Tree on-demand cache
+
+    func test_Tree浅层子项立即发布且loading保留到精确排序终态() async throws {
+        let root = try makeTemporaryRoot(prefix: "TreePreviewTerminal")
+        addTeardownBlock { try FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("Parent", isDirectory: true)
+        let nested = parent.appendingPathComponent("Nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try Data(repeating: 0x31, count: 4 * 1_024)
+            .write(to: nested.appendingPathComponent("payload.bin"))
+
+        let coordinator = ScanCoordinator(home: root.path, enableTreeDeepIndex: false)
+        let initialVersion = coordinator.childrenCacheVersion
+        let shallowPublished = expectation(description: "direct-child identity frame")
+        let exactPublished = expectation(description: "exact metrics and sort terminal")
+        var fetchingAtShallowPublication: Bool?
+        var fetchingAtExactPublication: Bool?
+        var rootFetchingAtShallowPublication: Bool?
+        var coordinatorVersionAtShallowPublication: UInt64?
+        var projectionWasCurrentAtShallowPublication: Bool?
+        var changedPathAtShallowPublication: String?
+        var changedPathAtExactPublication: String?
+        var didCaptureShallow = false
+        var didCaptureExact = false
+        var cancellable: AnyCancellable?
+        cancellable = coordinator.treeBrowser.$childrenCacheVersion
+            .dropFirst()
+            .sink { @MainActor _ in
+                let rows = coordinator._treeChildrenCacheForTesting()[
+                    "\(parent.path)|\(TreeSortKey.sizeDesc.rawValue)"
+                ] ?? []
+                let fetching = coordinator._treeChildrenInFlightForTesting().contains {
+                    $0.hasPrefix(parent.path + "|")
+                }
+                if !didCaptureShallow,
+                   !rows.isEmpty,
+                   rows.allSatisfy(\.isSizePending) {
+                    didCaptureShallow = true
+                    fetchingAtShallowPublication = fetching
+                    coordinatorVersionAtShallowPublication = coordinator.childrenCacheVersion
+                    changedPathAtShallowPublication = coordinator.treeBrowser
+                        .lastChildrenCacheChangedPath
+                    let source = coordinator.makeTreeFlatProjectionSource(
+                        rootPath: parent.path,
+                        sortedBy: .sizeDesc,
+                        expandedPaths: [parent.path]
+                    )
+                    rootFetchingAtShallowPublication = source.isFetchingRoot
+                    projectionWasCurrentAtShallowPublication = coordinator
+                        .treeFlatProjectionSourceIsCurrent(source.revision)
+                    shallowPublished.fulfill()
+                } else if didCaptureShallow,
+                          !didCaptureExact,
+                          !rows.isEmpty,
+                          rows.allSatisfy({ !$0.isSizePending }) {
+                    didCaptureExact = true
+                    fetchingAtExactPublication = fetching
+                    changedPathAtExactPublication = coordinator.treeBrowser
+                        .lastChildrenCacheChangedPath
+                    exactPublished.fulfill()
+                }
+            }
+
+        XCTAssertTrue(
+            coordinator.directChildren(of: parent.path, sortedBy: .sizeDesc).isEmpty,
+            "cache miss starts one background measurement"
+        )
+        await fulfillment(of: [shallowPublished, exactPublished], timeout: 3)
+
+        XCTAssertEqual(fetchingAtShallowPublication, true)
+        XCTAssertEqual(rootFetchingAtShallowPublication, true)
+        XCTAssertEqual(fetchingAtExactPublication, false)
+        XCTAssertEqual(coordinatorVersionAtShallowPublication, initialVersion + 1)
+        XCTAssertEqual(changedPathAtShallowPublication, parent.path)
+        XCTAssertEqual(
+            changedPathAtExactPublication,
+            parent.path,
+            "exact terminal must preserve the disclosure path for an incremental segment patch"
+        )
+        XCTAssertEqual(
+            projectionWasCurrentAtShallowPublication,
+            true,
+            "shallow rows and their loading ownership must share a current projection revision"
+        )
+        let exactRow = try XCTUnwrap(
+            coordinator._treeChildrenCacheForTesting()[
+                "\(parent.path)|\(TreeSortKey.sizeDesc.rawValue)"
+            ]?.first
+        )
+        XCTAssertEqual(exactRow.title, nested.lastPathComponent)
+        XCTAssertFalse(exactRow.isSizePending)
+        XCTAssertGreaterThanOrEqual(exactRow.bytes, 4 * 1_024)
+
+        cancellable?.cancel()
+        coordinator.cancelOnDemandTreeScansPreservingResults()
+    }
 
     func test_Tree首次测量后切换排序只做内存投影且不发起第二轮扫描() async throws {
         let root = try makeTemporaryRoot(prefix: "TreeSortCache")

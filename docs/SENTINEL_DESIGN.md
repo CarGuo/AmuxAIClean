@@ -1,318 +1,244 @@
-# GSYCleanMac Sentinel daemon 设计文档
+# AmuxAIClean Sentinel 用户态 Agent 设计合同
 
-> Step 6 子专题。父文档：[docs/AUDIT_2026_06.md#L302-L319](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/AUDIT_2026_06.md#L302-L319)。
-> 决策日期：2026-06-03。
-> 状态：v1 spec，已实施 step6_design_spec / step6_daemon_core / step6_target，待做 step6_main_app + step6_verify。
+> 首版决策：2026-06-03。按生产实现重建：2026-07-18。
+>
+> 本文描述当前代码合同，不再把历史 root LaunchDaemon 草案当成现状。旧任务名
+> `step6_daemon_core` 仅作为历史标识保留。
 
----
+## 1. 目标与非目标
 
-## 1. 背景与问题
+Sentinel 是默认关闭的本地发现能力。用户在“设置 → 高级”明确开启后，它监听当前登录
+用户的文件系统变化，并通过 `amuxaiclean://` 深链接把意图交给主 App：
 
-GSYCleanMac 当前是纯前台 App：用户主动 `⌘O` 才会扫描。两个场景下用户体验不及格：
+1. `~/.Trash` 中出现 `.app` / `.bundle` 后，邀请用户进入应用卸载分析；
+2. `~/Downloads`、`~/Library/Caches`、
+   `~/Library/Developer/Xcode/DerivedData` 发生变化后，记录本地热点事件；累计的
+   `st_size` 提示达到 5 GiB 时，邀请用户重新进行全盘扫描。
 
-1. **卸载残留场景**：用户把 `Foo.app` 拖进废纸篓后，`~/Library/Application Support/Foo` 等残留依然在硬盘上。要清掉这些残留，用户必须主动想起来开 GSYCleanMac → 找到 Uninstall 入口 → 输入 Foo → 走一遍。摩擦点 ≥ 4 步，结果是大部分用户根本不会做。
-2. **推荐清理场景**：`~/Downloads` 累积一年的 dmg/zip、`~/Library/Caches` 几十 GB、Xcode `DerivedData` 几百 GB —— 这些目录用户**不知道自己有多少**，所以从不主动扫描。
+它不执行扫描、不判定 Safety verdict、不生成删除授权，也不移动或删除任何候选。它没有
+网络请求，不能绕过 TCC，也不是特权删除 Helper。
 
-竞品 Pearcleaner 用一个 80 行的 Sentinel daemon（[PearcleanerSentinel/main.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/tmp/competitors/Pearcleaner/PearcleanerSentinel/main.swift)）解决了场景 1。CleanMyMac Smart Care 模块解决了场景 2。GSYCleanMac v1.6 把两者用同一个 daemon 进程合并实现。
+## 2. 为什么必须是用户 Agent
 
----
+监听目标都位于登录用户的 Home。`FileManager.default.homeDirectoryForCurrentUser` 只有在
+登录用户域执行时才会指向正确账户。旧实现使用 `SMAppService.daemon`，进程进入系统/root
+域后 Home 会解析为 `/var/root`，因此监听到的不是产品 UI 所属用户的 Trash、Downloads 和
+Application Support。这是身份域错误，不是通过写死用户名或猜测 `/Users/<name>` 可以修复
+的问题。
 
-## 2. 设计原则（克制）
+当前实现使用 `SMAppService.agent`：
 
-| 原则 | 落地 |
-|---|---|
-| **不打扰** | 默认 OFF。用户必须显式在「设置 → 高级 → 后台守护」勾选启用 |
-| **不上报** | 0 网络请求。所有发现的清理候选只写本地 ringbuffer |
-| **不上瘾** | 不做"今日为您节省 X GB"成长式 UI。candidate 出现就是出现了，用户点了就清，不做日报 |
-| **不臃肿** | helper 二进制目标 RSS < 5 MB / CPU < 1% / 仅依赖 Foundation + CoreServices（FSEvents 在此 framework） |
-| **不破坏** | 主 App 启用/禁用 Sentinel 不影响主 App 的任何现有功能。卸载主 App 时 SMAppService 自动清理 helper |
+- 以当前登录用户身份运行；
+- 不设置 `UserName`，不要求 root；
+- 仍由 ServiceManagement 管理注册、审批和状态；
+- Helper 只依赖 Foundation 与 CoreServices。
 
----
+## 3. App Bundle 布局与三描述符迁移
 
-## 3. 架构总览
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  AmuxAIClean.app                                                      │
-│                                                                       │
-│  Contents/MacOS/AmuxAIClean          ← 主 App 二进制 (SwiftUI)        │
-│  Contents/MacOS/amuxaiclean-sentinel ← Sentinel helper 二进制          │
-│  Contents/Library/LaunchDaemons/                                      │
-│    com.guoshuyu.cleanmac.sentinel.plist  ← SMAppService 注册的 plist  │
-│  Contents/Info.plist                                                  │
-│    + CFBundleURLTypes: amuxaiclean://                                 │
-└──────────────────────────────────────────────────────────────────────┘
-                            ↑                              ↓
-                            │ launchctl bootstrap          │ /usr/bin/open -g
-                            │ (SMAppService.daemon)        │ (avoid linking AppKit)
-                            │                              │
-┌──────────────────────────────────────────────────────────────────────┐
-│  amuxaiclean-sentinel daemon (常驻后台)                               │
-│                                                                       │
-│  - FSEventStream 监听 ~/.Trash       (场景 1: 卸载发现)               │
-│  - FSEventStream 监听热点目录        (场景 2: 推荐清理)               │
-│      ~/Downloads                                                      │
-│      ~/Library/Caches                                                 │
-│      ~/Library/Developer/Xcode/DerivedData                            │
-│      [glob 命中的 node_modules]                                       │
-│  - rolling top-100 ringbuffer 写到                                    │
-│      ~/Library/Application Support/AmuxAIClean/sentinel-pending.json  │
-│  - 检测到事件后 /usr/bin/open -g 唤起主 App URL                        │
-│      amuxaiclean://uninstall?path=...    (场景 1)                     │
-│      amuxaiclean://action/scan/full       (场景 2)                    │
-└──────────────────────────────────────────────────────────────────────┘
+```text
+AmuxAIClean.app/
+└── Contents/
+    ├── MacOS/
+    │   ├── AmuxAIClean
+    │   └── amuxaiclean-sentinel
+    └── Library/
+        ├── LaunchAgents/
+        │   └── com.amux.ai.Clean.sentinel.agent.plist
+        └── LaunchDaemons/
+            ├── com.guoshuyu.cleanmac.sentinel.plist
+            └── com.amux.ai.Clean.sentinel.plist
 ```
 
----
+三个 plist 的职责严格分离：
 
-## 4. 关键技术决策（与用户对齐落定）
-
-| 项 | 决策 | 备选未选原因 |
+| 描述符 | Label | 唯一允许动作 |
 |---|---|---|
-| **运行仓运** | SMAppService.daemon (macOS 13+) | LaunchAgent plist 是上一代 API，SMAppService 是 Apple 官方推荐的现代替代，卸载 App 时自动清理 helper |
-| **场景** | 卸载 + 推荐双场景 (v1) | 不分两版本是因为 daemon 进程已经起来了，加一组 FSEventStream stream 几乎零成本 |
-| **Helper target 形式** | 独立 PBXNativeTarget Command Line Tool + 主 App 加 Embed Helper Tools build phase（Apple 官方 [Embedding a command-line tool in a sandboxed app](https://developer.apple.com/documentation/Xcode/embedding-a-helper-tool-in-a-sandboxed-app) 路径） | SwiftPM executable + Copy Phase 路径在 Apple Developer Forum 2026-02 thread 814686 archive 阶段会撞 "Multiple commands produce .o" 冲突；scheme pre-action 子项目独立 xcodebuild 路径与现有项目风格反 |
-| **URL Scheme** | 路由型 `amuxaiclean://uninstall + amuxaiclean://action/scan/full` | scheme 前缀 `amuxaiclean` 与品牌名对齐；`gsyclean` / `gsycleanmac` 是旧 spec 草案弃用 |
-| **发现策略** | 轻手版 FSEvents + rolling top-100 | 重量版定时全屏扫描太贵（30s CPU + IO）；混合版 v1 不上 |
-| **默认开关** | 默认 OFF | 避免存量用户升级后 "多了个守护进程" 反感；新用户首启不弹 onboarding 弹窗，把 Sentinel 藏在「设置 → 高级」里 |
-| **本地存储** | `~/Library/Application Support/AmuxAIClean/sentinel-pending.json` | ringbuffer top-100；主 App 启动时读取此文件展示「最近被 Sentinel 发现的候选」（场景 2 落地形式） |
+| 当前 `LaunchAgents/com.amux.ai.Clean.sentinel.agent.plist` | `com.amux.ai.Clean.sentinel.agent` | `status`、`register`、`unregister` |
+| 原品牌迁移专用 `LaunchDaemons/com.guoshuyu.cleanmac.sentinel.plist` | `com.guoshuyu.cleanmac.sentinel` | `status`、`unregister` |
+| 改品牌后迁移专用 `LaunchDaemons/com.amux.ai.Clean.sentinel.plist` | `com.amux.ai.Clean.sentinel` | `status`、`unregister` |
 
----
+`c8a57e8` 品牌迁移曾在原文件
+`com.guoshuyu.cleanmac.sentinel.plist` 内直接把 Label 从
+`com.guoshuyu.cleanmac.sentinel` 改为 `com.amux.ai.Clean.sentinel`。这会让同一个 descriptor
+在不同版本代表两份 authority，当前版本无法证明“查询新 Label”也能注销早期旧 Label。
+v2026.07.18 P1 修复因此把两代 root 注册拆成稳定、独立、文件名与 Label 对应的迁移描述符；
+`SMAppService.daemon(plistName:)` 对两项分别构造 service、分别查询和注销，不能再通过改写单个
+plist 的 Label 猜测另一代注册已经退出。
 
-## 5. 模块切片
+两个 root 描述符都不是现行服务，生产代码没有调用其 `register()` 的入口；它们的
+`BundleProgram` 指向当前包内已签名 helper，仅保持 descriptor 可解析，不能被当成重新部署
+root daemon 的许可。`/tmp/com.{guoshuyu.cleanmac,amux.ai.Clean}.sentinel.{out,err}.log`
+也只是对应历史身份的兼容字段，当前 Agent 不使用这些位置。迁移窗口结束且确认不再需要升级
+任一历史安装后，可在后续版本整体删除两个描述符、两个 `SMAppService.daemon` 适配器和相应
+release contract，但同一身份的文件、代码、测试和合同必须同批删除。
 
-### 5.1 Helper target: `GSYCleanMacSentinel`
+这里存在自动化不能消除的真实升级边界：原品牌已安装 descriptor 历史上使用
+`Contents/MacOS/gsycleanmac-sentinel`，当前迁移 descriptor 使用包内实际存在的
+`Contents/MacOS/amuxaiclean-sentinel`；`c8a57e8` 同时把签名 Team ID 从 `39PK4PKRP3` 切换为
+`W6H34N9728`。当前包没有、也不得为了测试臆造旧二进制 alias。单测与 release contract 只能
+证明“两份 Label 对应的注销通道已入包、代码永不注册它们”，不能证明当前签名身份一定能注销
+历史系统数据库中的真实注册；必须用两代已注册旧版分别升级做 C4。
 
-落地路径（按 Apple 官方文档 [Embedding a command-line tool in a sandboxed app](https://developer.apple.com/documentation/Xcode/embedding-a-helper-tool-in-a-sandboxed-app) 实施）：
+## 4. 注册与状态事务
 
-- **独立 PBXNativeTarget**，类型 = `com.apple.product-type.tool`（Command Line Tool / macOS）
-- 二进制名：`amuxaiclean-sentinel`（`PRODUCT_NAME`，小写连字符与 LaunchDaemon plist label 对齐）
-- Bundle ID: `com.amux.ai.Clean.sentinel`（`PRODUCT_BUNDLE_IDENTIFIER`，与 `OTHER_CODE_SIGN_FLAGS = $(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)` 联动确保 codesign identifier 一致）
-- 入口：[Tools/Sentinel/Sources/Sentinel/main.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/Sentinel/Sources/Sentinel/main.swift) —— top-level code（`main.swift` 文件名 Swift 默认走 top-level，不能再用 `@main`）
-- 仅依赖 Foundation + CoreServices（FSEvents 来自 CoreServices）
-- Entitlements：[Tools/Sentinel/Sentinel.entitlements](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/Sentinel/Sentinel.entitlements) —— 极简空 plist + Hardened Runtime ON。**不上 sandbox**（`com.apple.security.app-sandbox = false`）以跨 sandbox 边界监听 `~/.Trash`
-- 关键 build settings（按 Apple 文档强制）：
-  - `SKIP_INSTALL = YES`（避免 archive 时产生独立 helper 副本）
-  - `CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO`（避免与 `com.apple.security.inherit` 冲突）
-  - `OTHER_CODE_SIGN_FLAGS = $(inherited) -i $(PRODUCT_BUNDLE_IDENTIFIER)`
-  - `ENABLE_HARDENED_RUNTIME = YES`
-  - Release: `DEVELOPMENT_TEAM = W6H34N9728` / `CODE_SIGN_STYLE = Manual` / `CODE_SIGN_IDENTITY = Developer ID Application: SentenceEnd Inc (W6H34N9728)`
-- 主 App target 接入：
-  - 加 `PBXTargetDependency` → `GSYCleanMacSentinel`，确保 helper build 在前
-  - 加 `PBXCopyFilesBuildPhase` 名为 `Embed Helper Tools`，`dstSubfolderSpec = 6`（Executables → `Contents/MacOS/`），引用 helper product 的 PBXBuildFile（`ATTRIBUTES = (CodeSignOnCopy, )` 在 copy 阶段重签）
-- 二进制路径（落地）：`AmuxAIClean.app/Contents/MacOS/amuxaiclean-sentinel`
-- 实测体积：~248 KB（无 SwiftUI / 无扫描数据库 / 无 AppUI 依赖，arm64 单架构 Debug build）
-- LaunchDaemon plist embed `Contents/Library/LaunchDaemons/com.guoshuyu.cleanmac.sentinel.plist`：留待 step6_main_app 阶段，在主 App target 加第二个 `Copy Files Build Phase`（`dstSubfolderSpec = 1` Wrapper + `dstPath = Contents/Library/LaunchDaemons`）
+唯一协调者是
+[`SentinelManager`](../Packages/AppUI/Sources/AppUI/SentinelManager.swift)。开启是能力增加，
+关闭是能力减少，两者不能机械套用同一顺序。v2026.07.19 P1 另把“用户期望”与“历史
+authority 证据”拆开：`sentinelEnabled` 只表示期望；持久化的
+`sentinelRequiresShutdownVerification` 只表示某代服务曾成功注册、系统曾明确报告 active，或旧
+ON/启用时间迁移得出的可信证据。该证据只有三份 identity 都明确 `.notRegistered` 才能清除。
 
-> **结构兼容说明**：plist 文件名仍保留 `com.guoshuyu.cleanmac.sentinel.plist`，避免移动工程文件和 Copy Files 引用；plist 内部 `Label`、helper 二进制名、codesign identifier 与主 App bundle id 已切到 `com.amux.ai.Clean` 命名空间。
-
-> **历史失真说明**：原 spec v1 草案曾设想"主 App target 里插 Build Phase 生成 helper"或"SwiftPM executableTarget + .pbxproj copy phase embed binary"，落地时发现：（1）Build Phase 生成 helper 路径需要 Run Script 调用 swiftc 自治编译，与"原生 Xcode 路径"原则相违；（2）SwiftPM executable embed 路径在 [Apple Developer Forum thread 814686](https://developer.apple.com/forums/thread/814686)（2026-02）archive 阶段会撞 "Multiple commands produce .o" 冲突。最终回归 Apple 官方 PBXNativeTarget Command Line Tool 路径。
-
-### 5.2 SMAppService 注册流程
-
-主 App 在 [GSYCleanMacApp.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift) 启动时：
-
-```swift
-@MainActor
-func registerSentinelIfEnabled() {
-    guard AppSettings.shared.sentinelEnabled else { return }
-
-    let service = SMAppService.daemon(
-        plistName: "com.guoshuyu.cleanmac.sentinel.plist"
-    )
-    do {
-        try service.register()
-    } catch {
-        Log.warn("[Sentinel] register failed: \(error)")
-    }
-}
+```text
+读取持久化期望 + authority 证据
+  ├─ 期望 ON（增加能力）
+  │    → 逐项查询/注销/复读两代旧 Daemon
+  │    → 两项未全部明确 notRegistered：阻断新注册；若 current Agent 已经存在，尝试注销并复读
+  │    → current Agent 已权威停止：发布 typed legacyMigrationFailed(ON)
+  │    → current Agent 也未能权威停止：发布 typed legacyMigrationSafetyShutdownFailed，
+  │      user 手势回滚 OFF；startup 仅保留 ON 期望，实际状态仍投影 unverified
+  │    → 两项均收敛：查询当前 Agent，执行 no-op / register / 请求审批，再复读
+  └─ 期望 OFF（减少能力）
+       → 先查询当前 Agent；enabled/requiresApproval 本身会建立 authority 证据，随后 unregister 并复读
+       → 当前 Agent 已明确 notRegistered：开关保持 OFF，清 sentinelLastEnabled
+       → current status 为 notFound/unknown：
+          · 用户刚主动关闭，或已有 authority 证据：发布 shutdownVerificationUnavailable，
+            明确说明“未执行关闭操作”并引导检查登录项
+          · fresh/default-OFF 且无证据：只写结构化诊断，不弹窗、不要求用户打开系统设置
+       → 随后逐项查询/注销/复读两代旧 Daemon
+       → legacy 未全部收敛：不回滚 ON，发布 typed legacyMigrationFailed(OFF)，
+         presentation 为 desiredOffUnverified，且不宣称所有历史后台项已停；但三项均只返回
+         notFound/unknown 且没有任何 authority 证据时仍仅记录诊断，不制造用户任务
+       → 只有当前 Agent 自身未能权威关闭时，交互手势才沿用失败回滚合同
+       → current + 两代 legacy 全部明确 notRegistered 后，才清持久化 authority 证据
+  → 一次性提交 Toggle、时间戳、presentation 与 typed failure
 ```
 
-`com.guoshuyu.cleanmac.sentinel.plist` 内容（embed 在 `Contents/Library/LaunchDaemons/`）：
+关键不变量：
 
-```xml
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.amux.ai.Clean.sentinel</string>
-    <key>BundleProgram</key>
-    <string>Contents/MacOS/amuxaiclean-sentinel</string>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <false/>
-    <key>ProcessType</key>
-    <string>Background</string>
-    <key>LowPriorityIO</key>
-    <true/>
-    <key>Nice</key>
-    <integer>10</integer>
-</dict>
-</plist>
-```
+- 默认值是 OFF；fresh/default-OFF 且没有历史 authority 证据时，即使开发构建或
+  ServiceManagement 对三份 descriptor 都返回 `.notFound`，也只能记结构化诊断，不得弹启动
+  modal、不得要求用户修复从未启用的登录项；
+- 两代旧 Daemon 必须逐项明确确认 `.notRegistered`，才允许注册/保留 ON 的新 Agent；`.notFound` 表示
+  ServiceManagement 无法定位服务，是配置/查询错误，不是“已经注销”的证明，也不是“仍在运行”的
+  证明；不能在没有执行 `unregister()` 时把它包装成“关闭失败”；
+- ON 迁移失败时不能只阻止新的 `register()`：已经 enabled/requiresApproval 的 current Agent
+  也必须按最小权限尝试注销并复读；注销失败必须保留真实 status 和独立 typed failure，不能
+  因为 Toggle 已回写 OFF 就声称 Agent 已停；
+- 某代旧服务的 `unregister()` 抛错后仍复读该项权威状态：若已是 `.notRegistered` 可视为
+  收敛，否则失败关闭；同时继续检查另一代，最后统一决定迁移是否完整；
+- 当前 Agent 的用户手势失败时，Toggle 回到手势前值；当前 Agent 已权威关闭但 legacy
+  migration 失败时，OFF 是最小权限意图，不能回滚 ON。启动修复失败保留持久化意图，UI
+  必须明确显示“期望与系统状态不一致”；
+- 用户主动关闭、系统明确 active 或持久化 authority 证据存在时，状态查询失败仍 fail-closed；
+  用户提示必须说明具体动作“系统设置 → 通用 → 登录项与扩展 → 关闭 AmuxAIClean”，并指向
+  App 内“设置 → 存储 → 日志”，不得裸露账户路径、raw Error 或 errno；
+- `requiresApproval` 是独立状态，交给“系统设置 → 通用 → 登录项”处理；
+- raw `NSError` 只进入结构化日志，UI 使用类型化、本地化错误；
+- SwiftUI `onChange` 的程序性回写携带事务 ID，不能再次触发注册或注销；
+- 清除产品数据前必须先调用同一关闭事务。删除 defaults、JSON 或日志不能证明系统服务已停止。
 
-关闭 Sentinel 时调用 `try service.unregister()`，launchctl 会清掉。
+macOS 在用户把 `.app` 直接拖入废纸篓时不提供本 App 可依赖的卸载回调。因此产品不能承诺
+“删除 App 时自动注销”。真实清除流程是：App 仍可运行时关闭 Sentinel，确认状态为
+“未注册”，再删除本地数据或 App。若未来增加产品内“清除全部数据”入口，该入口必须先调用
+上述事务，并在新 Agent 或任一代旧 Daemon 注销失败时阻止清除。
 
-### 5.3 Daemon core 逻辑（伪码）
+## 5. Helper 运行合同
 
-```swift
-// main.swift (~150 行预算)
-import Foundation
-import CoreServices
+入口是 [`Tools/Sentinel/Sources/Sentinel/main.swift`](../Tools/Sentinel/Sources/Sentinel/main.swift)。
 
-let trashPath = NSString("~/.Trash").expandingTildeInPath
-let hotspots = [
-    "~/Downloads",
-    "~/Library/Caches",
-    "~/Library/Developer/Xcode/DerivedData",
-].map { ($0 as NSString).expandingTildeInPath }
+v2026.07.18 起，Helper 的第一条可执行语句必须检查 `geteuid()`。root 身份只向 stderr
+写入固定、无路径的拒绝标记，随即以 `EX_NOPERM` 退出；在此之前不得初始化 Home
+路径、日志、持久化文件或任何监听器。这是对旧 root LaunchDaemon 残留的进程级
+fail-closed 边界，不依赖主 App 迁移成功才能保证当前 Agent 逻辑不会在 `/var/root` 下运行。
 
-let trashStream = FSEventStreamCreate(
-    paths: [trashPath],
-    callback: handleTrashEvent,  // 解析 .app 删除 → 写 sentinel-pending.json + open URL
-    flags: .fileEvents
-)
+### 5.1 监听与去抖
 
-let hotspotStream = FSEventStreamCreate(
-    paths: hotspots,
-    callback: handleHotspotEvent,  // ringbuffer 累积，达阈值（如 5 GB 新增）后 open URL
-    flags: .fileEvents
-)
+- `TrashListener` 使用 file-events FSEvents，接收 created / renamed 的 `.app`、`.bundle`；
+- `HotspotListener` 使用 file-events FSEvents，接收 created / modified；
+- 两类事件各自在 utility serial queue 上进行 30 秒去抖；
+- Spotlight、`.fseventsd`、DocumentRevisions 和 `.tmp` 路径被忽略；
+- FSEvents 只形成发现信号。主 App 收到深链接后仍走自己的扫描、安全和确认合同。
 
-CFRunLoopRun()
-```
+### 5.2 本地状态
 
-事件去抖：每个事件入 `DispatchQueue.main.asyncAfter(deadline: .now() + 30s)` debounce，避免 dmg 解压时 200 个事件刷屏。
+热点事件以 `{ path, detectedAt, sizeHint }` 保存到
+`~/Library/Application Support/AmuxAIClean/sentinel-pending.json`：
 
-### 5.4 Main App URL routing
+- 相同路径保留最新一条；
+- 最多 100 条，超出后移除最旧事件；
+- 原子覆盖写入；
+- 关闭 Sentinel 不自动删除该文件；
+- 文件损坏或不可读时保留原文件并记录错误，不用空数组覆盖。
 
-在 [GSYCleanMacApp.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift) `Scene` 上加：
+当前主 App 尚未读取该 JSON 展示历史列表；现有用户可见行为来自深链接。该文件是本地待处理
+证据，不得在文档中宣称已经实现“最近候选”页面。
 
-```swift
-.onOpenURL { url in
-    switch url.host {
-    case "uninstall":
-        // 场景 1: amuxaiclean://uninstall?path=/Applications/Foo.app
-        if let path = url.queryParameter("path") {
-            navigationCoordinator.openUninstall(prefilling: path)
-        }
-    case "action":
-        // 场景 2: amuxaiclean://action/scan/full
-        switch url.path {
-        case "/scan/full":
-            navigationCoordinator.startFullScan()
-        default:
-            Log.warn("[URLScheme] unknown action: \(url.path)")
-        }
-    default:
-        Log.warn("[URLScheme] unknown host: \(url.host ?? "nil")")
-    }
-}
-```
+### 5.3 日志
 
-`Info.plist` 里 `CFBundleURLTypes`：
+当前 Agent 写入
+`~/Library/Logs/AmuxAIClean/AmuxAIClean-Sentinel-YYYY-MM-DD.log`，可能包含监听路径和技术
+错误。Agent 启动时、之后每小时定时检查，并在休眠唤醒后的下一次写入再次检查，按修改时间
+清理超过 7 天的 Sentinel 日志；不能把只在进程启动时清理描述成长期保留策略。日志失败只
+回退到 stderr，不能停止 FSEvents；stderr 只允许写固定失败标记，不能回显原始路径或技术消息。
+不得记录 API Key、AI 响应正文或文件内容。完整披露和清除步骤以 [`PRIVACY.md`](../PRIVACY.md)
+为准。
 
-```xml
-<key>CFBundleURLTypes</key>
-<array>
-    <dict>
-        <key>CFBundleURLName</key>
-        <string>com.amux.ai.Clean.scheme</string>
-        <key>CFBundleURLSchemes</key>
-        <array>
-            <string>amuxaiclean</string>
-        </array>
-    </dict>
-</array>
-```
+### 5.4 深链接边界
 
-### 5.5 [AppSettings](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift) 新增字段
+- `amuxaiclean://uninstall?path=...`：由主 App 的 `SentinelURLRouter` 校验后进入卸载页面；
+- `amuxaiclean://action/scan/full`：只形成邀请，由主 App 交互决定是否开始扫描；
+- Helper 通过 `/usr/bin/open -g` 发送 URL，不链接 AppKit；
+- 未知 scheme、host、action 和越界路径必须拒绝，不能转成删除意图。
 
-```swift
-@AppStorage("sentinelEnabled") public var sentinelEnabled: Bool = false
-@AppStorage("sentinelLastEnabled") public var sentinelLastEnabled: Date?  // 给「最近被 Sentinel 发现的候选」面板做时间戳
-```
+## 6. 构建与发布合同
 
-设置面板加 `SentinelSettingsView`：
-- Toggle 「启用后台守护」（ON → register；OFF → unregister）
-- 状态 chip：launchctl list 检查实时状态（绿点 / 灰点）
-- 「立即查看候选」按钮 → 读 `sentinel-pending.json` 并打开 `MainView`
+- Helper 是独立 `PBXNativeTarget` Command Line Tool；
+- 主 App 依赖 Helper target，并以 `CodeSignOnCopy` 嵌入 `Contents/MacOS`；
+- 当前 Agent plist 嵌入 `Contents/Library/LaunchAgents`；
+- 两代旧 Daemon plist 只作为迁移描述符嵌入 `Contents/Library/LaunchDaemons`；
+- `Scripts/test_release_contract.sh` 锁定三个文件名、三个不同 Label、两份 root plist 的
+  文件名/Label 对应关系、BundleProgram、Copy Phase、`SMAppService.agent` 当前注册路径、
+  逐项 legacy `unregister` 和 never-register 静态合同；
+- 任何删除某一旧迁移描述符的版本都必须提供该身份的迁移窗口证据，不能只删文件而留下代码、
+  测试或合同，反之亦然。
 
----
+## 7. 验证边界
 
-## 6. 测试矩阵
+自动化应覆盖：
 
-### 6.1 单元测试（新增）
+- 默认 OFF、幂等状态决策、审批与未知状态；其中 fresh/default-OFF + 无 authority 证据 +
+  current/legacy 全部 notFound 必须无 modal，而明确 active 仍必须注销；
+- ON 时两代旧 Daemon 都在新 Agent register 之前逐项查询；OFF 时 current Agent 必须先注销，
+  再迁移两代 root，legacy lookup 不能阻断降权动作；
+- 一代查询失败时仍清理另一代，但整体阻断新注册并产生 typed failure；
+- ON 迁移失败且 current Agent 早已存在时，覆盖 user/startup × 安全注销成功/失败矩阵；
+- current Agent 已权威 OFF、legacy 仍失败时保持 Toggle OFF、清时间戳并投影
+  `desiredOffUnverified`；只有 current Agent 自身关闭失败才执行交互回滚；
+- 持久化 authority 证据由成功 register、明确 active 和旧 ON/启用时间迁移建立；仅三 identity
+  全部 notRegistered 时清除。交互 OFF 或可信证据下的 lookup failure 必须使用
+  `shutdownVerificationUnavailable`，不能冒充执行过 unregister；
+- 当前 Agent 与两代旧 Daemon 使用三个不同文件名/Label；release contract 同时核对 root
+  descriptor 的文件名与 Label 相同；
+- 用户手势失败回滚不会形成 `onChange` 反馈循环；
+- URL 路由、事件过滤、ring buffer 容量与损坏文件行为；
+- AppUI 包测试、目标 Debug 构建与 release contract。
 
-- [Packages/AppUI/Tests/AppUITests/SentinelURLSchemeTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/SentinelURLSchemeTests.swift)
-  - `test_uninstall合法url解析为UninstallIntent`：`amuxaiclean://uninstall?path=/Applications/Foo.app` → `UninstallIntent(path: "/Applications/Foo.app")`
-  - `test_action合法url解析为ScanIntent`：`amuxaiclean://action/scan/full` → `ScanIntent.fullScan`
-  - `test_非法scheme返回nil`：`gsyclean://uninstall?path=...` （前缀不对）→ nil
-  - `test_非法host返回nil`：`amuxaiclean://hack?cmd=rm` → nil
-  - `test_注入payload被过滤`：`amuxaiclean://uninstall?path=../../etc/passwd` → 校验后 nil
+包测试和 Debug 构建最多构成 C3，不能证明真实 ServiceManagement 授权、登录项 UI、TCC、
+FSEvents 或 24 小时资源占用。下列动作只允许用户明确授权后在一次持续 C4 中完成：
 
-- [Packages/AppUI/Tests/AppUITests/SentinelTrashDetectionTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/SentinelTrashDetectionTests.swift)
-  - `test_isInTrash用URLRelationship判定`：FixtureFS 在 `~/.Trash/Foo.app` 模拟，断言 isInTrash = true
-  - `test_只识别app后缀`：`~/.Trash/foo.txt` 应被忽略
-  - `test_去抖30秒内重复事件聚合为一次`
+1. 分别从 `com.guoshuyu.cleanmac.sentinel` 与 `com.amux.ai.Clean.sentinel` 已启用的旧版升级，
+   覆盖旧 `gsycleanmac-sentinel` BundleProgram、改品牌后 BundleProgram 与 Team ID 变化，验证
+   对应 root Label 被真实注销、另一项也被查询，且新 Agent 不自动启用；
+2. 在设置中开启当前 Agent，处理系统审批，验证进程的 UID 和 Home 是登录用户；
+3. 对 Trash 与三个热点各做一次真实事件，观察去抖、深链接和 UI；
+4. 关闭并确认当前 Agent 与两代 root 服务均未注册；
+5. 持续观察 CPU、RSS、日志轮换和 24 小时稳定性。
 
-- step6_verify 阶段会在 [Packages/AppUI/Tests/AppUITests/](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests) 下重写 step6_daemon_core 阶段已写过的 14 个 SPM 单测（`TrashListenerTests` / `HotspotBlacklistTests` / `HotspotRingBufferTests` / `URLSchemeDispatcherTests`）。理由：step6_target 落地时为遵循 Apple 官方 PBXNativeTarget Command Line Tool 路径，删掉了 [Tools/Sentinel/Package.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/Sentinel/Package.swift) SPM 子包（避免"同源 main.swift 被两处引用"风险）。这 14 个单测验证的纯逻辑（`isAppBundle` / `isBlacklisted` / RingBuffer 容量 / URL percent-encode）在 step6_verify 重写到 AppUI 测试包并通过 `@testable import` 访问 helper 内部符号 —— 实际执行因 helper 是独立 target，要么把这些纯函数提取到 [Packages/SafetyKit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit) 共享，要么直接复制到 AppUITests 文件里（无外部依赖、纯 Foundation 函数）。
+在 C4 完成前只能表述“代码与构建合同已验证”，不能表述“真实后台监控已验收”。
 
-### 6.2 系统服务验收边界
+## 8. 仍未完成
 
-v2026.07.16 起不再保留快速启动/退出 App 的 regression case，也不允许自动化反复
-`register()` / `unregister()` 污染真实登录项状态。纯状态机与失败回滚进入 AppUI package tests；
-系统服务的真实授权流只在用户明确批准的一次持续 C4 中操作并观察。
-
-### 6.3 真实场景验证（手动）
-
-1. **卸载场景**：复制 `/Applications/Calculator.app` → `/tmp/Foo.app` → 拖到废纸篓 → 验证主 App 自动唤醒并跳到 UninstallScreen 预填 `/tmp/Foo.app`
-2. **推荐场景**：往 `~/Downloads` 拖一个 5 GB 的 dmg → 等 30s（debounce） → 验证菜单栏托盘有红点（数字 1）
-3. **资源占用**：`top -pid $(pgrep amuxaiclean-sentinel)` → 验证 RSS < 5 MB / CPU 静默期 < 1%
-4. **稳定性**：跑 24h → 检查 `log show --predicate 'subsystem == "com.amux.ai.Clean.sentinel"'` → 不应有 crash 或 EXC_BAD_ACCESS
-
----
-
-## 7. 实施步骤映射
-
-对应 Todo:
-
-| Todo | 内容 | 输出 | 状态 |
-|---|---|---|---|
-| step6_design_spec | 写本文档 | [docs/SENTINEL_DESIGN.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/SENTINEL_DESIGN.md) | ✅ commit `9dae711` |
-| step6_daemon_core | main.swift FSEvents listener + ringbuffer | [Tools/Sentinel/Sources/Sentinel/main.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/Sentinel/Sources/Sentinel/main.swift) | ✅ commit `2376078`（SPM 子包形态，14 单测全绿；step6_target 阶段 SPM 子包被删，仅留 main.swift） |
-| step6_target | Xcode 加 GSYCleanMacSentinel PBXNativeTarget Command Line Tool + Embed Helper Tools build phase + Sentinel.entitlements | .pbxproj diff (~140 行) + [Tools/Sentinel/Sentinel.entitlements](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/Sentinel/Sentinel.entitlements) | ✅ Step 6.2（本 commit） |
-| step6_main_app | SMAppService register + URL routing + AppSettings + 设置面板 + LaunchDaemon plist embed | App/ + Packages/AppUI/ diff | ⏳ 待做 |
-| step6_verify | 单测集中到 AppUITests + 一次持续 C4 + 手动 24h 烧测 | package test 结果 + C4 记录 | ⏳ 待做 |
-
----
-
-## 8. 风险与回滚
-
-| 风险 | 缓解 |
-|---|---|
-| **SMAppService 在某些 macOS 版本注册失败** | try/catch + 降级到「主 App 进程内 Timer 轮询」非守护态 |
-| **FSEventStream 误报（Spotlight / TimeMachine 触发）** | 30s debounce + 黑名单（`.fseventsd` / `.Spotlight-V100`） |
-| **TCC 弹窗「允许 GSYCleanMacSentinel 访问 Downloads」干扰用户** | 文档提示用户首次启用 Sentinel 时会有系统弹窗；第二次起 cdhash 稳定后不再弹 |
-| **用户卸载主 App 但 helper 还在跑** | SMAppService 自动清理；额外提供 `Scripts/uninstall_sentinel.sh` 兜底 |
-| **大量并发 FSEvents 事件冲爆 daemon** | DispatchQueue serial + ring buffer 上限 100 + 内存 watermark > 50 MB 自杀重启 |
-
----
-
-## 9. 验收标准
-
-- [ ] Sentinel AppUITests 全绿；不得用反复启动/退出 App 的壳替代真实交互
-- [ ] AppUITests SentinelURLSchemeTests + SentinelTrashDetectionTests 全绿
-- [ ] 手动验证场景 1 + 场景 2 各 1 次成功
-- [ ] `top` 24h 后 RSS < 5 MB
-- [ ] 默认 OFF：升级用户从 v1.5.5 → v1.6.0 不会出现新进程
-- [ ] 设置面板「启用后台守护」开关 ON/OFF 正确触发 register/unregister
-
----
-
-## 10. 不在本期范围
-
-- IPC（XPC / unix socket）—— v1 Daemon 只用 URL Scheme 单向通知主 App
-- 智能推荐引擎（基于历史清理习惯学习）—— v2
-- 多设备同步候选清单 —— 永不
-- App Store 提交 —— 永不（SMAppService.daemon 在 sandboxed App 受限多）
+- 主 App 没有 `sentinel-pending.json` 历史列表；
+- 没有可依赖的 App 拖拽卸载回调，用户必须在删除 App 前主动关闭并验证；
+- 两代旧 root 描述符仍处于迁移窗口，后续分别移除都需要版本分布证据；
+- 两代真实升级迁移、系统审批、TCC、持续资源占用与 24 小时烧测仍需 C4。

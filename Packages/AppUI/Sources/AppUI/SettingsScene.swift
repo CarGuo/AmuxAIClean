@@ -32,9 +32,7 @@ enum SettingsPathImportNotice: Equatable {
 
 enum SettingsLogActionNotice: Equatable {
     case exported(path: String)
-    case exportFailed
     case cleared(count: Int)
-    case clearFailed
 
     func localized(locale: Locale) -> String {
         switch self {
@@ -44,16 +42,72 @@ enum SettingsLogActionNotice: Equatable {
                 locale: locale,
                 arguments: [path]
             )
-        case .exportFailed:
-            return AppLocalization.string("settings.storage.log.export.failed", locale: locale)
         case .cleared(let count):
             return AppLocalization.format(
                 "settings.storage.log.clear.done %d",
                 locale: locale,
                 arguments: [count]
             )
-        case .clearFailed:
-            return AppLocalization.string("settings.storage.log.clear.failed", locale: locale)
+        }
+    }
+}
+
+/// v2026.07.18 P2 diagnostics contract: every sink stage has a localized semantic name while the
+/// stable domain/code remain selectable technical detail. Raw Error text and paths never cross
+/// into the user-facing warning.
+public enum SettingsLogFailurePresentation {
+    public static func title(locale: Locale) -> String {
+        AppLocalization.string("log.failure.title", locale: locale)
+    }
+
+    public static func localized(
+        _ failure: LogFileSinkFailure,
+        locale: Locale
+    ) -> String {
+        AppLocalization.format(
+            "log.failure.detail %@ %@ %lld",
+            locale: locale,
+            arguments: [
+                AppLocalization.string(stageKey(failure.stage), locale: locale),
+                failure.errorDomain,
+                Int64(failure.errorCode)
+            ]
+        )
+    }
+
+    private static func stageKey(_ stage: LogFileSinkFailure.Stage) -> String {
+        switch stage {
+        case .initialization: "log.failure.stage.initialization"
+        case .open: "log.failure.stage.open"
+        case .write: "log.failure.stage.write"
+        case .prepareAccess: "log.failure.stage.prepare_access"
+        case .enumerate: "log.failure.stage.enumerate"
+        case .export: "log.failure.stage.export"
+        case .clear: "log.failure.stage.clear"
+        case .retention: "log.failure.stage.retention"
+        case .disabled: "log.failure.stage.disabled"
+        }
+    }
+}
+
+/// Directory copy is a projection of the typed lifecycle, not a nil/non-nil guess. In particular,
+/// background initialization must never be described as an explicit user/test disable.
+public enum SettingsLogDirectoryPresentation {
+    public static func localized(
+        health: LogFileSinkHealth,
+        directory: URL?,
+        locale: Locale
+    ) -> String {
+        switch health {
+        case .initializing:
+            return AppLocalization.string("settings.storage.log.initializing", locale: locale)
+        case .ready:
+            return directory?.path
+                ?? AppLocalization.string("settings.storage.log.unavailable", locale: locale)
+        case .unavailable:
+            return AppLocalization.string("settings.storage.log.unavailable", locale: locale)
+        case .disabled:
+            return AppLocalization.string("settings.storage.log.no_file_sink", locale: locale)
         }
     }
 }
@@ -125,6 +179,15 @@ public struct SettingsScene: View {
     /// 路径列表的 UI 镜像。actor 数据要在 SwiftUI 里显示必须先快照。
     @State private var pathsMirror: [URL] = []
     @State private var logActionNotice: SettingsLogActionNotice?
+    /// v2026.07.18 P2 diagnostics fix: a computed GSYLog snapshot does not invalidate SwiftUI
+    /// when a later write/open fails. Keep the stream projection at scene lifetime so the warning
+    /// appears while the page is already open and disappears only after a verified reopen.
+    @State private var logSinkHealth = GSYLog.fileSinkHealth
+    /// Writer availability and maintenance outcomes are independent: retention/export failure
+    /// must stay visible even while appends remain healthy.
+    @State private var logSinkIssues = GSYLog.fileSinkIssues
+    @State private var logFilesSnapshot: [URL] = []
+    @State private var isLogOperationInProgress = false
     @State private var confirmClearLogs = false
     @State private var isPathImporterPresented = false
     @State private var pathImportNotice: SettingsPathImportNotice?
@@ -191,6 +254,24 @@ public struct SettingsScene: View {
             for await paths in snapshots {
                 guard !Task.isCancelled else { return }
                 pathsMirror = paths
+            }
+        }
+        .task {
+            for await health in GSYLog.fileSinkHealthUpdates() {
+                guard !Task.isCancelled else { return }
+                logSinkHealth = health
+                // v2026.07.18: Settings may be opened while the background bootstrap is still
+                // initializing. The ready transition must populate inventory in this same scene;
+                // otherwise Open Today/Export remain disabled until the user closes and reopens it.
+                if case .ready = health {
+                    await refreshLogInventory()
+                }
+            }
+        }
+        .task {
+            for await issues in GSYLog.fileSinkIssueUpdates() {
+                guard !Task.isCancelled else { return }
+                logSinkIssues = issues
             }
         }
     }
@@ -689,8 +770,11 @@ extension SettingsScene {
             Section {
                 LabeledContent {
                     Text(
-                        GSYLog.currentLogDirectory?.path
-                            ?? AppLocalization.string("settings.storage.log.no_file_sink", locale: currentEnvironmentLocale)
+                        SettingsLogDirectoryPresentation.localized(
+                            health: logSinkHealth,
+                            directory: GSYLog.currentLogDirectory,
+                            locale: currentEnvironmentLocale
+                        )
                     )
                         .font(.caption)
                         .lineLimit(2)
@@ -709,7 +793,9 @@ extension SettingsScene {
                             Image(systemName: "folder")
                         }
                     }
-                    .disabled(GSYLog.currentLogDirectory == nil)
+                    // Keep the revalidation/retry entry available when a configured writer became
+                    // unavailable. Initialization failure/explicit disable have no directory.
+                    .disabled(GSYLog.currentLogDirectory == nil || isLogOperationInProgress)
                     Spacer()
                     Button {
                         openTodayLogFile()
@@ -720,7 +806,7 @@ extension SettingsScene {
                             Image(systemName: "doc.text")
                         }
                     }
-                    .disabled(GSYLog.currentLogFileURL() == nil)
+                    .disabled(!isLogSinkReady || logFilesSnapshot.isEmpty || isLogOperationInProgress)
                 }
                 HStack {
                     Button {
@@ -732,7 +818,7 @@ extension SettingsScene {
                             Image(systemName: "square.and.arrow.up")
                         }
                     }
-                    .disabled(GSYLog.currentLogFiles().isEmpty)
+                    .disabled(!isLogSinkReady || logFilesSnapshot.isEmpty || isLogOperationInProgress)
                     Spacer()
                     Button(role: .destructive) {
                         confirmClearLogs = true
@@ -743,12 +829,30 @@ extension SettingsScene {
                             Image(systemName: "trash")
                         }
                     }
-                    .disabled(GSYLog.currentLogDirectory == nil)
+                    .disabled(!isLogSinkReady || isLogOperationInProgress)
                 }
                 if let logActionNotice {
                     Text(logActionNotice.localized(locale: currentEnvironmentLocale))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                if case .unavailable(let failure) = logSinkHealth {
+                    Text(SettingsLogFailurePresentation.localized(
+                        failure,
+                        locale: currentEnvironmentLocale
+                    ))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .textSelection(.enabled)
+                }
+                ForEach(visibleLogIssues, id: \.stage) { failure in
+                    Text(SettingsLogFailurePresentation.localized(
+                        failure,
+                        locale: currentEnvironmentLocale
+                    ))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                         .textSelection(.enabled)
                 }
             } header: {
@@ -761,6 +865,9 @@ extension SettingsScene {
         }
         .formStyle(.grouped)
         .padding()
+        .task {
+            await refreshLogInventory()
+        }
         .confirmationDialog(
             AppLocalization.string("settings.storage.log.clear.confirm.title", locale: currentEnvironmentLocale),
             isPresented: $confirmClearLogs,
@@ -779,21 +886,67 @@ extension SettingsScene {
 
     // MARK: 日志行为
 
+    private var isLogSinkReady: Bool {
+        if case .ready = logSinkHealth { return true }
+        return false
+    }
+
+    private var visibleLogIssues: [LogFileSinkFailure] {
+        guard case .unavailable(let writerFailure) = logSinkHealth else {
+            return logSinkIssues.failures
+        }
+        return logSinkIssues.failures.filter { $0 != writerFailure }
+    }
+
     fileprivate func openLogDirectory() {
-        guard let dir = GSYLog.currentLogDirectory else { return }
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        GSYLog.notice(.operation, "settings.log.open_directory path=\(dir.path)")
-        NSWorkspace.shared.open(dir)
+        // File-system validation and fsync run on LogFileSink's utility queue. This Task only
+        // resumes on the UI actor to open Finder or publish the typed result.
+        Task { @MainActor in
+            guard !isLogOperationInProgress else { return }
+            isLogOperationInProgress = true
+            defer { isLogOperationInProgress = false }
+            switch await GSYLog.prepareLogDirectoryForAccess() {
+            case .success(let dir):
+                GSYLog.notice(.operation, "settings.log.open_directory path=\(dir.path)")
+                NSWorkspace.shared.open(dir)
+                logActionNotice = nil
+                await refreshLogInventory()
+            case .failure(let failure):
+                GSYLog.error(
+                    .operation,
+                    "settings.log.open_directory_failed stage=\(failure.stage.rawValue) "
+                        + "domain=\(failure.errorDomain) code=\(failure.errorCode)"
+                )
+                logActionNotice = nil
+                synchronizeLogDiagnostics()
+            }
+        }
     }
 
     fileprivate func openTodayLogFile() {
-        guard let url = GSYLog.currentLogFileURL() else { return }
-        GSYLog.notice(.operation, "settings.log.open_today path=\(url.path)")
-        if FileManager.default.fileExists(atPath: url.path) {
-            NSWorkspace.shared.open(url)
-        } else {
-            // 没有今日日志（启动后从未写过）：退到目录。
-            openLogDirectory()
+        Task { @MainActor in
+            guard !isLogOperationInProgress else { return }
+            isLogOperationInProgress = true
+            defer { isLogOperationInProgress = false }
+            switch await GSYLog.prepareLogDirectoryForAccess() {
+            case .success(let directory):
+                guard let url = await GSYLog.currentLogFileURL() else {
+                    NSWorkspace.shared.open(directory)
+                    return
+                }
+                GSYLog.notice(.operation, "settings.log.open_today path=\(url.path)")
+                NSWorkspace.shared.open(url)
+                logActionNotice = nil
+                await refreshLogInventory()
+            case .failure(let failure):
+                GSYLog.error(
+                    .operation,
+                    "settings.log.open_today_failed stage=\(failure.stage.rawValue) "
+                        + "domain=\(failure.errorDomain) code=\(failure.errorCode)"
+                )
+                logActionNotice = nil
+                synchronizeLogDiagnostics()
+            }
         }
     }
 
@@ -803,26 +956,64 @@ extension SettingsScene {
         panel.allowedContentTypes = [.plainText]
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try GSYLog.exportLogs(to: url)
-            GSYLog.notice(.operation, "settings.log.export path=\(url.path) files=\(GSYLog.currentLogFiles().count)")
-            logActionNotice = .exported(path: url.path)
-        } catch {
-            GSYLog.error(.operation, "settings.log.export_failed path=\(url.path) error=\(error)")
-            // v2026.07.16：原始文件系统 Error 已写日志；用户提示只保留稳定语义。
-            logActionNotice = .exportFailed
+        Task { @MainActor in
+            guard !isLogOperationInProgress else { return }
+            isLogOperationInProgress = true
+            defer { isLogOperationInProgress = false }
+            switch await GSYLog.exportLogs(to: url) {
+            case .success(let count):
+                GSYLog.notice(.operation, "settings.log.export path=\(url.path) files=\(count)")
+                logActionNotice = .exported(path: url.path)
+                synchronizeLogDiagnostics()
+            case .failure(let failure):
+                GSYLog.error(
+                    .operation,
+                    "settings.log.export_failed stage=\(failure.stage.rawValue) "
+                        + "domain=\(failure.errorDomain) code=\(failure.errorCode)"
+                )
+                logActionNotice = nil
+                synchronizeLogDiagnostics()
+            }
         }
     }
 
     fileprivate func clearLogs() {
-        do {
-            let count = try GSYLog.clearLogs()
-            GSYLog.notice(.operation, "settings.log.clear count=\(count)")
-            logActionNotice = .cleared(count: count)
-        } catch {
-            GSYLog.error(.operation, "settings.log.clear_failed error=\(error)")
-            logActionNotice = .clearFailed
+        Task { @MainActor in
+            guard !isLogOperationInProgress else { return }
+            isLogOperationInProgress = true
+            defer { isLogOperationInProgress = false }
+            switch await GSYLog.clearLogs() {
+            case .success(let count):
+                GSYLog.notice(.operation, "settings.log.clear count=\(count)")
+                logActionNotice = .cleared(count: count)
+                await refreshLogInventory()
+            case .failure(let failure):
+                GSYLog.error(
+                    .operation,
+                    "settings.log.clear_failed stage=\(failure.stage.rawValue) "
+                        + "domain=\(failure.errorDomain) code=\(failure.errorCode)"
+                )
+                logActionNotice = nil
+                synchronizeLogDiagnostics()
+            }
         }
+    }
+
+    @MainActor
+    private func refreshLogInventory() async {
+        switch await GSYLog.currentLogFiles() {
+        case .success(let files):
+            logFilesSnapshot = files
+        case .failure:
+            logFilesSnapshot = []
+        }
+        synchronizeLogDiagnostics()
+    }
+
+    @MainActor
+    private func synchronizeLogDiagnostics() {
+        logSinkHealth = GSYLog.fileSinkHealth
+        logSinkIssues = GSYLog.fileSinkIssues
     }
 
 }
@@ -879,7 +1070,7 @@ extension SettingsScene {
         .padding(.top, 4)
         .onAppear {
             // v2026.07.16：设置页每次出现都重新读取 SMAppService 权威状态；Toggle
-            // 只表达用户意图，不能被当成“daemon 已启用”的事实来源。
+            // 只表达用户意图，不能被当成“后台 Agent 已启用”的事实来源。
             sentinelManager.refreshPresentation()
         }
     }

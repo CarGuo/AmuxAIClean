@@ -192,7 +192,44 @@ final class ScanCoordinatorCompletenessProjectionTests: XCTestCase {
         XCTAssertFalse(coordinator.lastError?.contains("RAW_SCAN_FAILURE") == true)
     }
 
-    func testMemoryTreeRowSynthesisKeepsDirectAccessAndSubtreeCompletenessOrthogonal() throws {
+    func testProjectionRootFailureDefersWideEvidenceProjectionUntilTerminalTransaction() {
+        let coordinator = ScanCoordinator(enableTreeDeepIndex: true)
+        let root = "/scan"
+        var issues: [ScanIncompleteIssue] = []
+        issues.reserveCapacity(2_048)
+        for index in 0..<2_048 {
+            issues.append(ScanIncompleteIssue(
+                path: root + "/child-\(index)",
+                reason: .metadataUnavailable,
+                stage: .metadata
+            ))
+        }
+        coordinator._testRecordIncompleteEvidenceWithoutPublishing(issues)
+        let rebuildCount = coordinator._testIncompleteEvidenceProjectionRebuildCount
+
+        XCTAssertTrue(coordinator._testConsumeScanFailure(
+            ScanError.cannotEnumerate(
+                path: root,
+                stage: .open,
+                posixErrorCode: 5
+            ),
+            rootPath: root,
+            publishPresentationImmediately: false
+        ))
+
+        XCTAssertNil(coordinator.terminalFailure)
+        XCTAssertNil(coordinator.lastError)
+        XCTAssertTrue(coordinator.incompleteScanIssues.isEmpty)
+        XCTAssertEqual(coordinator._testIncompleteEvidenceProjectionRebuildCount, rebuildCount,
+                       "projection failure must not rebuild a wide Tree/evidence DTO on MainActor")
+
+        // The typed source was deferred, not lost; terminal worker consumes this same source.
+        coordinator._testCommitIncompleteEvidence()
+        XCTAssertEqual(coordinator.incompleteScanIssues.count, issues.count + 1)
+        XCTAssertEqual(coordinator.incompleteScanIssues.last?.path, root)
+    }
+
+    func testMemoryTreeRowSynthesisKeepsDirectAccessAndSubtreeCompletenessOrthogonal() async throws {
         let coordinator = ScanCoordinator(enableTreeDeepIndex: true)
         let root = "/scan"
         let affected = "/scan/A"
@@ -217,12 +254,22 @@ final class ScanCoordinatorCompletenessProjectionTests: XCTestCase {
             )
         ])
 
-        let rows = coordinator.directChildren(of: root, sortedBy: .nameAsc)
+        var rows: [TreeRow] = []
+        for _ in 0..<500 {
+            rows = coordinator.directChildren(of: root, sortedBy: .nameAsc)
+            if rows.count == 2 { break }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
         let affectedRow = try XCTUnwrap(rows.first(where: { $0.path == affected }))
         let siblingRow = try XCTUnwrap(rows.first(where: { $0.path == sibling }))
+        var affectedChildren: [TreeRow] = []
+        for _ in 0..<500 {
+            affectedChildren = coordinator.directChildren(of: affected, sortedBy: .nameAsc)
+            if affectedChildren.count == 1 { break }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
         let lockedRow = try XCTUnwrap(
-            coordinator.directChildren(of: affected, sortedBy: .nameAsc)
-                .first(where: { $0.path == locked })
+            affectedChildren.first(where: { $0.path == locked })
         )
 
         XCTAssertEqual(affectedRow.accessState, .normal)
@@ -296,9 +343,13 @@ final class ScanCoordinatorCompletenessProjectionTests: XCTestCase {
         ))
     }
 
-    func testPartialMultiRootUsesSubtreeMarkerWithoutLockingTopLevelRow() throws {
+    func testPartialMultiRootUsesSubtreeMarkerWithoutLockingTopLevelRow() async throws {
         let coordinator = ScanCoordinator(enableTreeDeepIndex: true)
         let root = "/scan/A"
+        let categoryID = "partial-multi-root-terminal"
+        let generation = coordinator._beginTerminalPreparationSessionForTesting(
+            categoryID: categoryID
+        )
         coordinator._seedForTesting(
             currentRootPath: ScanCoordinator.multiRootSentinelPath,
             isScanning: false,
@@ -313,6 +364,16 @@ final class ScanCoordinatorCompletenessProjectionTests: XCTestCase {
                 )
             ]
         )
+        // v2026.07.20: directChildren reads the immutable terminal Tree projection. Seeded live
+        // progress alone is intentionally insufficient; drive the same off-main terminal
+        // transaction used by production instead of reintroducing synchronous row synthesis.
+        let terminal = await coordinator._prepareTerminalProjectionForTesting(
+            entries: [],
+            rootPath: ScanCoordinator.multiRootSentinelPath,
+            categoryID: categoryID,
+            generation: generation
+        )
+        XCTAssertTrue(terminal.committed)
 
         let row = try XCTUnwrap(
             coordinator.directChildren(

@@ -1,4 +1,5 @@
 import AppKit
+import LogKit
 import Metal
 import QuartzCore
 import SwiftUI
@@ -232,7 +233,9 @@ final class SmartCareBackgroundShaderHostView: NSView {
         ])
 
         guard let device = MTLCreateSystemDefaultDevice() else {
-            NSLog("[SmartCareBackground] Metal device unavailable")
+            // v2026.07.18 privacy boundary: direct NSLog bypasses GSYLog's Unified Logging
+            // privacy mask and the user-controlled rolling-log lifecycle.
+            GSYLog.warning(.app, "Smart Care background Metal device unavailable")
             return
         }
         surfaceView.configure(device: device)
@@ -301,7 +304,11 @@ final class SmartCareBackgroundShaderHostView: NSView {
             } catch is CancellationError {
                 return
             } catch {
-                NSLog("[SmartCareBackground] shader setup failed: %@", error.localizedDescription)
+                let diagnostic = error as NSError
+                GSYLog.error(
+                    .app,
+                    "Smart Care shader setup failed domain=\(diagnostic.domain) code=\(diagnostic.code)"
+                )
             }
         }
     }

@@ -1,4 +1,5 @@
 import CoreServices
+import os
 import XCTest
 import SafetyKit
 @testable import AIKit
@@ -9,6 +10,41 @@ final class OpenAIChatClientTests: XCTestCase {
 
     // MARK: - URL 构造
 
+    /// v2026.07.18 privacy regression: the production default must not silently inherit
+    /// URLSession.shared's disk cache, shared cookies or credential storage.
+    func test_publicInitializers_useIsolatedRedirectRejectingSession() throws {
+        let settings = OpenAIChatClient.SettingsSnapshot(
+            baseURL: "https://api.openai.com",
+            model: "gpt-4o-mini",
+            temperature: 0.2,
+            redactPaths: true
+        )
+        let clients: [OpenAIChatClient] = [
+            OpenAIChatClient(settings: settings, apiKey: "sk-test"),
+            OpenAIChatClient(settings: settings, apiKeyProvider: { "sk-test" }),
+            OpenAIChatClient(settings: settings, asyncAPIKeyProvider: { "sk-test" }),
+        ]
+
+        for client in clients {
+            let session = try XCTUnwrap(
+                Mirror(reflecting: client).children.first(where: { $0.label == "session" })?.value
+                    as? URLSession
+            )
+            defer { session.invalidateAndCancel() }
+            let configuration = session.configuration
+
+            XCTAssertNil(configuration.identifier)
+            XCTAssertNil(configuration.urlCache)
+            XCTAssertNil(configuration.httpCookieStorage)
+            XCTAssertEqual(configuration.httpCookieAcceptPolicy, .never)
+            XCTAssertFalse(configuration.httpShouldSetCookies)
+            XCTAssertNil(configuration.urlCredentialStorage)
+            XCTAssertEqual(configuration.requestCachePolicy, .reloadIgnoringLocalCacheData)
+            XCTAssertFalse(configuration.waitsForConnectivity)
+            XCTAssertTrue(session.delegate is OpenAIChatRedirectRejectingDelegate)
+        }
+    }
+
     func test_endpoint_url_appends_v1_chat() throws {
         let u1 = try OpenAIChatClient.endpointURL(baseURL: "https://api.openai.com")
         XCTAssertEqual(u1.absoluteString, "https://api.openai.com/v1/chat/completions")
@@ -16,6 +52,177 @@ final class OpenAIChatClientTests: XCTestCase {
         XCTAssertEqual(u2.absoluteString, "https://api.openai.com/v1/chat/completions")
         let u3 = try OpenAIChatClient.endpointURL(baseURL: "http://localhost:11434/v1")
         XCTAssertEqual(u3.absoluteString, "http://localhost:11434/v1/chat/completions")
+
+        let prefixed = try OpenAIChatClient.endpointURL(
+            baseURL: "https://gateway.example/openai/v1"
+        )
+        XCTAssertEqual(
+            prefixed.absoluteString,
+            "https://gateway.example/openai/v1/chat/completions"
+        )
+
+        let complete = try OpenAIChatClient.endpointURL(
+            baseURL: "https://gateway.example/openai/v1/chat/completions"
+        )
+        XCTAssertEqual(
+            complete.absoluteString,
+            "https://gateway.example/openai/v1/chat/completions"
+        )
+    }
+
+    /// v2026.07.18 P2 origin regression: URLComponents that can alter authority or endpoint
+    /// semantics are rejected before any credential lookup or URLSession task is created.
+    func test_endpoint_url_拒绝模糊origin与endpoint组件() {
+        let invalidBases = [
+            "",
+            " https://api.openai.com",
+            "https://api.openai.com ",
+            "https://",
+            "https:///v1",
+            "https://user@api.openai.com",
+            "https://user:password@api.openai.com/v1",
+            "https://api.openai.com?v=1",
+            "https://api.openai.com?",
+            "https://api.openai.com#provider",
+            "https://api.openai.com#",
+            "https://api.openai.com:",
+            "https://api.openai.com:65536",
+            "https://api.openai.com/a//b",
+            "https://api.openai.com/a/../b",
+            "https://api.openai.com/a/%2F/b",
+            "https://api.openai.com/a\\@other.example",
+        ]
+
+        for invalidBase in invalidBases {
+            XCTAssertThrowsError(
+                try OpenAIChatClient.endpointURL(baseURL: invalidBase),
+                "baseURL=\(invalidBase) 必须在发送前被拒"
+            ) { error in
+                XCTAssertEqual(error as? OpenAIChatClient.Error, .invalidBaseURL)
+            }
+        }
+    }
+
+    /// v2026.07.18 P2 redirect regression: both same-origin and cross-origin redirects must
+    /// receive a nil follow-up request. This is a pre-follow policy, not a response-origin check.
+    func test_defaultSession_发送前拒绝所有HTTP重定向() throws {
+        let session = OpenAIChatClient.makeIsolatedSession()
+        defer { session.invalidateAndCancel() }
+        let delegate = try XCTUnwrap(
+            session.delegate as? OpenAIChatRedirectRejectingDelegate
+        )
+        let originalURL = try XCTUnwrap(URL(string: "https://api.openai.com/v1/chat/completions"))
+        let task = session.dataTask(with: originalURL)
+        defer { task.cancel() }
+
+        for (status, destination) in [
+            (307, "https://api.openai.com/v2/chat/completions"),
+            (302, "https://attacker.example/collect"),
+        ] {
+            let destinationURL = try XCTUnwrap(URL(string: destination))
+            let response = try XCTUnwrap(
+                HTTPURLResponse(
+                    url: originalURL,
+                    statusCode: status,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Location": destination]
+                )
+            )
+            let decision = RedirectDecisionBox()
+
+            delegate.urlSession(
+                session,
+                task: task,
+                willPerformHTTPRedirection: response,
+                newRequest: URLRequest(url: destinationURL)
+            ) { proposedRequest in
+                decision.record(proposedRequest)
+            }
+
+            let snapshot = decision.snapshot()
+            XCTAssertTrue(snapshot.called, "redirect delegate 必须同步给出拒绝决定")
+            XCTAssertNil(snapshot.request, "status=\(status) destination=\(destination) 不得跟随")
+        }
+    }
+
+    /// v2026.07.18 P1 log-schema regression: diagnostics keep endpoint host + typed numeric
+    /// facts, while authority credentials, path, query, fragment and payload text are excluded.
+    func test_networkLogFacts_只保留hostStage与类型化诊断() throws {
+        let endpoint = try XCTUnwrap(URL(
+            string: "https://user:sk-url-secret@api.openai.com/private/prompt"
+                + "?payload=provider-body#fragment"
+        ))
+        let httpFacts = OpenAIChatClient.networkLogFacts(
+            endpoint: endpoint,
+            stage: .http,
+            status: 503,
+            responseBytes: 4_096
+        )
+        XCTAssertEqual(
+            httpFacts,
+            "endpointHost=api.openai.com stage=http status=503 responseBytes=4096"
+        )
+
+        let transportFacts = OpenAIChatClient.networkLogFacts(
+            endpoint: endpoint,
+            stage: .transport,
+            transportDomain: NSURLErrorDomain,
+            transportCode: URLError.notConnectedToInternet.rawValue
+        )
+        XCTAssertEqual(
+            transportFacts,
+            "endpointHost=api.openai.com stage=transport "
+                + "transportDomain=NSURLErrorDomain transportCode=-1009"
+        )
+
+        let responseLimitFacts = OpenAIChatClient.networkLogFacts(
+            endpoint: endpoint,
+            stage: .responseLimit,
+            responseBytes: 1_048_577,
+            responseLimitBytes: 1_048_576
+        )
+        XCTAssertEqual(
+            responseLimitFacts,
+            "endpointHost=api.openai.com stage=response-limit "
+                + "responseBytes=1048577 responseLimitBytes=1048576"
+        )
+
+        for facts in [httpFacts, transportFacts, responseLimitFacts] {
+            XCTAssertFalse(facts.contains("sk-url-secret"))
+            XCTAssertFalse(facts.contains("/private/prompt"))
+            XCTAssertFalse(facts.contains("provider-body"))
+            XCTAssertFalse(facts.contains("fragment"))
+        }
+    }
+
+    /// v2026.07.18 P2 ordering regression: invalid origin input must fail before Keychain access
+    /// and before a URLSession task exists. Validation after either boundary is already too late.
+    func test_ask_模糊baseURL在凭据读取与请求创建前失败() async {
+        let keyReads = IntegerBox()
+        StubURLProtocol.observedRequests = []
+        let client = OpenAIChatClient(
+            settings: OpenAIChatClient.SettingsSnapshot(
+                baseURL: "https://user@api.openai.com?destination=other",
+                model: "gpt-4o-mini",
+                temperature: 0.2,
+                redactPaths: true
+            ),
+            apiKeyProvider: {
+                keyReads.increment()
+                return "sk-must-not-be-read"
+            },
+            testingSession: stubSession()
+        )
+
+        do {
+            _ = try await client.ask(makeInquiry())
+            XCTFail("模糊 baseURL 必须拒绝")
+        } catch OpenAIChatClient.Error.invalidBaseURL {
+            XCTAssertEqual(keyReads.value, 0)
+            XCTAssertTrue(StubURLProtocol.observedRequests.isEmpty)
+        } catch {
+            XCTFail("意外错误：\(error)")
+        }
     }
 
     /// Review fix-soon #7，2026-06-15：scheme 白名单——明文 http:// 远端被拒。
@@ -134,35 +341,156 @@ final class OpenAIChatClientTests: XCTestCase {
     }
 
     func test_ask_http_error_surfaces() async {
-        StubURLProtocol.nextResponse = .success(status: 401, data: Data("unauthorized".utf8))
+        let responseBody = Data("unauthorized".utf8)
+        StubURLProtocol.nextResponse = .success(status: 401, data: responseBody)
         let client = makeClient()
         do {
             _ = try await client.ask(makeInquiry())
             XCTFail("应抛 http error")
-        } catch let OpenAIChatClient.Error.http(status, body) {
+        } catch let OpenAIChatClient.Error.http(status, responseBytes) {
             XCTAssertEqual(status, 401)
-            XCTAssertTrue(body.contains("unauthorized"))
+            XCTAssertEqual(responseBytes, responseBody.count)
         } catch {
             XCTFail("意外错误类型: \(error)")
         }
     }
 
-    /// **v2026.06.22 (P0-4)**：4xx/5xx body 中如果服务端 echo 了用户绝对路径
-    /// （`/Users/<name>/...`），抛给 UI 之前必须先经 [PathRedactor](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PathRedactor.swift)
-    /// 去敏；否则 UI 直接展示就把用户名泄漏到错误弹窗 / 截图 / 日志里。
-    func test_ask_http_error_body_经过PathRedactor去敏() async {
-        let leaky = #"{"error":{"message":"path /Users/guoshuyu/Library/Caches/x not allowed"}}"#
+    /// v2026.07.18 P2 response-boundary regression: a declared Content-Length over the cap must
+    /// be rejected from the response callback before the fixture sends any provider body.
+    func test_ask_已知ContentLength超限时在body前取消() async {
+        let limit = OpenAIChatClient.maximumResponseBytes
+        StubURLProtocol.resetStopLoadingCount()
+        StubURLProtocol.nextResponse = .streamThenHang(
+            status: 200,
+            headers: [
+                "Content-Type": "application/json",
+                "Content-Length": String(limit + 1),
+            ],
+            chunks: []
+        )
+
+        do {
+            _ = try await makeClient().ask(makeInquiry())
+            XCTFail("声明长度超限必须在接收 body 前失败")
+        } catch let OpenAIChatClient.Error.transport(domain, code) {
+            XCTAssertEqual(domain, OpenAIChatClient.responseLimitTransportDomain)
+            XCTAssertEqual(code, OpenAIChatClient.responseLimitTransportCode)
+        } catch {
+            XCTFail("必须投影为稳定 typed transport error，实际：\(error)")
+        }
+
+        await waitForStopLoading()
+        XCTAssertGreaterThanOrEqual(
+            StubURLProtocol.stopLoadingCount,
+            1,
+            "已知长度超限必须取消底层 URLProtocol load"
+        )
+    }
+
+    /// v2026.07.18 P2 response-boundary regression: without Content-Length the first bytes up to
+    /// the cap are admissible, but the next byte must cancel the task instead of being appended.
+    func test_ask_未知ContentLength在刚超过硬上限时取消() async {
+        let limit = OpenAIChatClient.maximumResponseBytes
+        StubURLProtocol.resetStopLoadingCount()
+        StubURLProtocol.nextResponse = .streamThenHang(
+            status: 200,
+            headers: ["Content-Type": "application/json"],
+            chunks: [
+                Data(repeating: 0x41, count: limit),
+                Data([0x42]),
+            ]
+        )
+
+        do {
+            _ = try await makeClient().ask(makeInquiry())
+            XCTFail("未知长度响应刚超过硬上限时必须失败")
+        } catch let error as OpenAIChatClient.Error {
+            XCTAssertEqual(
+                error,
+                .transport(
+                    domain: OpenAIChatClient.responseLimitTransportDomain,
+                    code: OpenAIChatClient.responseLimitTransportCode
+                )
+            )
+            let description = String(describing: error)
+            XCTAssertFalse(description.contains("provider"))
+            XCTAssertFalse(description.contains("AAAA"))
+        } catch {
+            XCTFail("必须投影为稳定 typed transport error，实际：\(error)")
+        }
+
+        await waitForStopLoading()
+        XCTAssertGreaterThanOrEqual(
+            StubURLProtocol.stopLoadingCount,
+            1,
+            "未知长度超限必须取消底层 URLProtocol load"
+        )
+    }
+
+    /// v2026.07.18 P1 privacy regression: redacting path-shaped substrings is insufficient.
+    /// Provider text may echo arbitrary payloads or credentials, so it must never enter Error.
+    func test_ask_http_error_只保留status与字节数_不保留provider正文() async {
+        let leaky = #"{"error":{"message":"Bearer sk-secret payload /Users/alice/private"}}"#
         StubURLProtocol.nextResponse = .success(status: 400, data: Data(leaky.utf8))
         let client = makeClient()
         do {
             _ = try await client.ask(makeInquiry())
             XCTFail("应抛 http error")
-        } catch let OpenAIChatClient.Error.http(status, body) {
-            XCTAssertEqual(status, 400)
-            XCTAssertFalse(body.contains("guoshuyu"),
-                           "Error.http body 必须先经 PathRedactor 去敏，不允许泄漏用户名，实际:\n\(body)")
-            XCTAssertTrue(body.contains("<USER>"),
-                          "PathRedactor 应把 /Users/<name>/ 替换为 /Users/<USER>/，实际:\n\(body)")
+        } catch let error as OpenAIChatClient.Error {
+            XCTAssertEqual(
+                error,
+                .http(status: 400, responseBytes: Data(leaky.utf8).count)
+            )
+            let description = String(describing: error)
+            XCTAssertEqual(
+                description,
+                "OpenAIChatClient.Error.http(status=400, responseBytes=\(Data(leaky.utf8).count))"
+            )
+            XCTAssertFalse(description.contains("sk-secret"))
+            XCTAssertFalse(description.contains("payload"))
+            XCTAssertFalse(description.contains("/Users/alice"))
+        } catch {
+            XCTFail("意外错误类型: \(error)")
+        }
+    }
+
+    func test_ask_decoding_error_不保留provider正文() async {
+        let leaky = "not-json Bearer sk-decoding-secret /Users/alice/private"
+        StubURLProtocol.nextResponse = .success(status: 200, data: Data(leaky.utf8))
+        do {
+            _ = try await makeClient().ask(makeInquiry())
+            XCTFail("应抛 decoding error")
+        } catch let error as OpenAIChatClient.Error {
+            XCTAssertEqual(error, .decoding)
+            let description = String(describing: error)
+            XCTAssertEqual(description, "OpenAIChatClient.Error.decoding")
+            XCTAssertFalse(description.contains("sk-decoding-secret"))
+            XCTAssertFalse(description.contains("/Users/alice"))
+        } catch {
+            XCTFail("意外错误类型: \(error)")
+        }
+    }
+
+    func test_ask_unknownTransportError_只保留稳定类型不保留底层描述() async {
+        let underlying = SensitiveTransportError()
+        let underlyingNSError = underlying as NSError
+        StubURLProtocol.nextResponse = .transport(underlying)
+        do {
+            _ = try await makeClient().ask(makeInquiry())
+            XCTFail("应抛 transport error")
+        } catch let error as OpenAIChatClient.Error {
+            XCTAssertEqual(
+                error,
+                .transport(domain: underlyingNSError.domain, code: underlyingNSError.code)
+            )
+            let description = String(describing: error)
+            XCTAssertEqual(
+                description,
+                "OpenAIChatClient.Error.transport(domain=\(underlyingNSError.domain), "
+                    + "code=\(underlyingNSError.code))"
+            )
+            XCTAssertFalse(description.contains("sk-transport-secret"))
+            XCTAssertFalse(description.contains("payload"))
         } catch {
             XCTFail("意外错误类型: \(error)")
         }
@@ -177,7 +505,7 @@ final class OpenAIChatClientTests: XCTestCase {
                 baseURL: "https://api.openai.com",
                 model: "gpt-4o-mini", temperature: 0.2, redactPaths: true),
             apiKey: "sk-supersecret-DEADBEEF",
-            session: stubSession()
+            testingSession: stubSession()
         )
         // 1. debugDescription
         let desc = String(reflecting: client)
@@ -191,6 +519,57 @@ final class OpenAIChatClientTests: XCTestCase {
             XCTAssertFalse(dumped.contains("sk-supersecret"),
                            "Mirror child \(child.label ?? "?") 泄漏 apiKey: \(dumped)")
         }
+    }
+
+    /// v2026.07.18 P1 regression: SettingsSnapshot is untrusted construction input. A malicious
+    /// endpoint/model must not escape through debugDescription, String reflection or Mirror before
+    /// endpointURL validates the network boundary in ask().
+    func test_未校验恶意Settings_调试与Mirror只暴露稳定脱敏状态() {
+        let secrets = [
+            "userinfo-secret",
+            "password-secret",
+            "query-secret",
+            "fragment-secret",
+            "model-secret",
+            "sk-settings-secret",
+        ]
+        let client = OpenAIChatClient(
+            settings: OpenAIChatClient.SettingsSnapshot(
+                baseURL: "https://userinfo-secret:password-secret@example.invalid/v1"
+                    + "?token=query-secret#fragment-secret",
+                model: "model-secret?token=query-secret#fragment-secret",
+                temperature: 0.2,
+                redactPaths: true
+            ),
+            apiKey: "sk-settings-secret",
+            testingSession: stubSession()
+        )
+
+        let expected = "OpenAIChatClient(settings=<configured>, apiKey=<redacted>)"
+        XCTAssertEqual(client.debugDescription, expected)
+        XCTAssertEqual(String(describing: client), expected)
+        XCTAssertEqual(String(reflecting: client), expected)
+
+        let mirror = Mirror(reflecting: client)
+        let reflectedSettings = mirror.children.first(where: { $0.label == "settings" })?.value
+        XCTAssertEqual(reflectedSettings as? String, "<configured>")
+
+        var dumpText = ""
+        dump(client, to: &dumpText)
+        let introspectionOutputs = [
+            client.debugDescription,
+            String(describing: client),
+            String(reflecting: client),
+            dumpText,
+        ] + mirror.children.map { String(reflecting: $0.value) }
+
+        for output in introspectionOutputs {
+            for secret in secrets {
+                XCTAssertFalse(output.contains(secret), "自省输出泄漏未校验设置: \(secret)\n\(output)")
+            }
+        }
+        XCTAssertTrue(dumpText.contains("<configured>"))
+        XCTAssertTrue(dumpText.contains("<redacted>"))
     }
 
     /// **v2026.06.22 (P0-4)**：apiKeyProvider 按需闭包入口——构造 client 时
@@ -208,7 +587,7 @@ final class OpenAIChatClientTests: XCTestCase {
                 baseURL: "https://api.openai.com",
                 model: "gpt-4o-mini", temperature: 0.2, redactPaths: true),
             apiKeyProvider: { counter.bump(); return "" },
-            session: stubSession()
+            testingSession: stubSession()
         )
         XCTAssertEqual(counter.value, 0, "构造时不应触发 apiKeyProvider")
         // ask 内会取 key，取到空字符串 → 抛 missingAPIKey
@@ -234,7 +613,7 @@ final class OpenAIChatClientTests: XCTestCase {
                 redactPaths: true
             ),
             asyncAPIKeyProvider: { throw expected },
-            session: stubSession()
+            testingSession: stubSession()
         )
 
         do {
@@ -256,7 +635,7 @@ final class OpenAIChatClientTests: XCTestCase {
                 redactPaths: true
             ),
             asyncAPIKeyProvider: { throw CancellationError() },
-            session: stubSession()
+            testingSession: stubSession()
         )
 
         do {
@@ -276,7 +655,11 @@ final class OpenAIChatClientTests: XCTestCase {
             temperature: 0.2,
             redactPaths: true
         )
-        let client = OpenAIChatClient(settings: snapshot, apiKey: "", session: stubSession())
+        let client = OpenAIChatClient(
+            settings: snapshot,
+            apiKey: "",
+            testingSession: stubSession()
+        )
         do {
             _ = try await client.ask(makeInquiry())
             XCTFail()
@@ -300,7 +683,11 @@ final class OpenAIChatClientTests: XCTestCase {
             temperature: 0.2,
             redactPaths: true
         )
-        let client = OpenAIChatClient(settings: snapshot, apiKey: "", session: stubSession())
+        let client = OpenAIChatClient(
+            settings: snapshot,
+            apiKey: "",
+            testingSession: stubSession()
+        )
         let advice = try await client.ask(makeInquiry())
         XCTAssertEqual(advice.summary, "local")
         let req = try XCTUnwrap(StubURLProtocol.observedRequests.first)
@@ -347,6 +734,45 @@ final class OpenAIChatClientTests: XCTestCase {
         }
     }
 
+    /// v2026.07.18 P2 deterministic interleaving: exercise the exact schedule that the old
+    /// unsynchronized TaskBox could not represent safely—onCancel wins before task installation.
+    func test_cancellationOwnership_cancel先于install_只取消一次() {
+        let ownership = OpenAIChatTaskCancellationOwnership()
+        let cancelCount = OSAllocatedUnfairLock(initialState: 0)
+
+        ownership.requestCancellation()
+        XCTAssertEqual(
+            ownership.install {
+                cancelCount.withLock { $0 += 1 }
+            },
+            .cancelledBeforeInstallation
+        )
+        ownership.requestCancellation()
+        ownership.finish()
+        ownership.requestCancellation()
+
+        XCTAssertEqual(cancelCount.withLock { $0 }, 1)
+    }
+
+    /// The inverse schedule is also one-shot: install wins, then any number of cancellation
+    /// notifications still invokes the URLSession cancellation action exactly once.
+    func test_cancellationOwnership_install先于cancel_只取消一次() {
+        let ownership = OpenAIChatTaskCancellationOwnership()
+        let cancelCount = OSAllocatedUnfairLock(initialState: 0)
+
+        XCTAssertEqual(
+            ownership.install {
+                cancelCount.withLock { $0 += 1 }
+            },
+            .installed
+        )
+        ownership.requestCancellation()
+        ownership.requestCancellation()
+        ownership.finish()
+
+        XCTAssertEqual(cancelCount.withLock { $0 }, 1)
+    }
+
     // MARK: - Review fix-soon：transport 错误路径
 
     /// URLSession 抛 transport 错误（如断网）→ 必须翻译为 OpenAIChatClient.Error.transport，
@@ -357,10 +783,9 @@ final class OpenAIChatClientTests: XCTestCase {
         do {
             _ = try await client.ask(makeInquiry())
             XCTFail("应抛 transport error")
-        } catch OpenAIChatClient.Error.transport(let desc) {
-            // 描述里能看到 notConnectedToInternet 关键字即可——细节由 URLError 决定
-            XCTAssertTrue(desc.contains("notConnectedToInternet") || desc.contains("-1009"),
-                          "transport desc 应包含底层错误标识，实际: \(desc)")
+        } catch OpenAIChatClient.Error.transport(let domain, let code) {
+            XCTAssertEqual(domain, NSURLErrorDomain)
+            XCTAssertEqual(code, URLError.notConnectedToInternet.rawValue)
         } catch {
             XCTFail("意外: \(error)")
         }
@@ -382,13 +807,63 @@ final class OpenAIChatClientTests: XCTestCase {
             temperature: 0.2,
             redactPaths: true
         )
-        return OpenAIChatClient(settings: snapshot, apiKey: apiKey, session: stubSession())
+        return OpenAIChatClient(
+            settings: snapshot,
+            apiKey: apiKey,
+            testingSession: stubSession()
+        )
     }
 
     private func stubSession() -> URLSession {
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.protocolClasses = [StubURLProtocol.self]
-        return URLSession(configuration: cfg)
+        OpenAIChatClient.makeIsolatedSession(protocolClasses: [StubURLProtocol.self])
+    }
+
+    private func waitForStopLoading() async {
+        for _ in 0..<100 where StubURLProtocol.stopLoadingCount == 0 {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+    }
+}
+
+private struct SensitiveTransportError: Error, CustomStringConvertible {
+    var description: String {
+        "sk-transport-secret payload /Users/alice/private"
+    }
+}
+
+private final class RedirectDecisionBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var called = false
+    private var request: URLRequest?
+
+    func record(_ request: URLRequest?) {
+        lock.lock()
+        called = true
+        self.request = request
+        lock.unlock()
+    }
+
+    func snapshot() -> (called: Bool, request: URLRequest?) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (called, request)
+    }
+}
+
+private final class IntegerBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func increment() {
+        lock.lock()
+        storage += 1
+        lock.unlock()
     }
 }
 
@@ -404,11 +879,23 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
         /// **Review fix-soon #6 测试支持**：startLoading 后什么也不发，永不完成。
         /// 用于验证上层 cancel 能真正打断飞行中的 dataTask。
         case hang
+        /// Sends a response and zero or more chunks but deliberately never finishes. The
+        /// production delegate must cancel the underlying load once its hard boundary is hit.
+        case streamThenHang(status: Int, headers: [String: String], chunks: [Data])
     }
 
     nonisolated(unsafe) static var nextResponse: Stub = .success(status: 200, data: Data())
     nonisolated(unsafe) static var observedRequests: [URLRequest] = []
     nonisolated(unsafe) static var observedBodies: [Data] = []
+    private static let stopCounter = OSAllocatedUnfairLock(initialState: 0)
+
+    static var stopLoadingCount: Int {
+        stopCounter.withLock { $0 }
+    }
+
+    static func resetStopLoadingCount() {
+        stopCounter.withLock { $0 = 0 }
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -446,15 +933,30 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
         case .hang:
             // 故意什么也不做——由调用方 cancel() 触发 stopLoading()。
             break
+        case let .streamThenHang(status, headers, chunks):
+            let resp = HTTPURLResponse(
+                url: request.url!,
+                statusCode: status,
+                httpVersion: "HTTP/1.1",
+                headerFields: headers
+            )!
+            client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+            for chunk in chunks {
+                client?.urlProtocol(self, didLoad: chunk)
+            }
         }
     }
 
     override func stopLoading() {
+        Self.stopCounter.withLock { $0 += 1 }
         // hang 模式下，URLSession 会在 dataTask.cancel() 时调 stopLoading；
         // 此时主动以 URLError.cancelled 完成，触发 OpenAIChatClient 的
         // CancellationError 翻译路径。
-        if case .hang = Self.nextResponse {
+        switch Self.nextResponse {
+        case .hang, .streamThenHang:
             client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
+        case .success, .transport:
+            break
         }
     }
 }

@@ -1,3 +1,8 @@
+> **历史快照（GSYCleanMac v1.0）**：本文保留早期产品与发布背景，不是当前合同。
+> 当前产品名、系统下限、Developer ID/Notary 发行、Sentinel、AI、联网与本地数据事实以
+> [README.md](README.md)、[PRIVACY.md](PRIVACY.md)、[SECURITY.md](SECURITY.md) 和
+> [docs/RELEASE.md](docs/RELEASE.md) 为准。
+
 <div align="center">
 
 <img src="docs/assets/logo.png" width="128" alt="GSYCleanMac" />

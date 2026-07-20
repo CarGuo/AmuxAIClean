@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 @testable import BrewKit
 
 /// Step 16-B3 —— BrewCleanup dryRun + shouldRun（7d 冷却 + 50MB 阈值）契约。
@@ -68,8 +69,177 @@ final class BrewCleanupTests: XCTestCase {
     func test_dryRun_缺downloads目录_空plan() throws {
         try FileManager.default.removeItem(at: downloads)
         let cleanup = BrewCleanup(cacheRoot: root)
-        let plan = cleanup.dryRun()
-        XCTAssertTrue(plan.isEmpty)
+        let result = cleanup.dryRunWithEvidence()
+        XCTAssertTrue(result.plan.isEmpty)
+        XCTAssertEqual(result.status, .missing)
+        XCTAssertTrue(result.isAuthoritativeEmpty)
+        XCTAssertEqual(result.diagnostics, [])
+    }
+
+    // MARK: - v2026.07.18 regression: absence and incomplete evidence are distinct
+
+    func test_dryRun_cacheRoot权限拒绝_返回unavailable而不是权威空plan() {
+        let rootPath = root.path
+        let live = BrewCleanupFileSystem.live
+        let fileSystem = BrewCleanupFileSystem(
+            contentsOfDirectory: { url in
+                if url.path == rootPath {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))
+                }
+                return try live.contentsOfDirectory(url)
+            },
+            attributes: live.attributes,
+            symlinkDestination: live.symlinkDestination
+        )
+
+        let result = BrewCleanup(cacheRoot: root, fileSystem: fileSystem)
+            .dryRunWithEvidence()
+
+        XCTAssertTrue(result.plan.isEmpty)
+        XCTAssertEqual(result.status, .unavailable)
+        XCTAssertFalse(result.isAuthoritativeEmpty)
+        XCTAssertEqual(result.diagnostics.count, 1)
+        XCTAssertEqual(result.diagnostics.first?.source, .cleanup)
+        XCTAssertEqual(result.diagnostics.first?.stage, .enumerateRoot)
+        XCTAssertEqual(result.diagnostics.first?.reason, .permissionDenied)
+        XCTAssertEqual(result.diagnostics.first?.errorDomain, NSPOSIXErrorDomain)
+        XCTAssertEqual(result.diagnostics.first?.errorCode, Int(EACCES))
+    }
+
+    func test_dryRun_downloads权限拒绝_返回unavailable而不是权威空plan() {
+        let downloadsPath = downloads.path
+        let live = BrewCleanupFileSystem.live
+        let fileSystem = BrewCleanupFileSystem(
+            contentsOfDirectory: { url in
+                if url.path == downloadsPath {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))
+                }
+                return try live.contentsOfDirectory(url)
+            },
+            attributes: live.attributes,
+            symlinkDestination: live.symlinkDestination
+        )
+
+        let result = BrewCleanup(cacheRoot: root, fileSystem: fileSystem)
+            .dryRunWithEvidence()
+
+        XCTAssertTrue(result.plan.isEmpty)
+        XCTAssertEqual(result.status, .unavailable)
+        XCTAssertFalse(result.isAuthoritativeEmpty)
+        XCTAssertEqual(result.diagnostics.count, 1)
+        XCTAssertEqual(result.diagnostics.first?.stage, .enumerateDownloads)
+        XCTAssertEqual(result.diagnostics.first?.reason, .permissionDenied)
+    }
+
+    func test_dryRun_symlink目标读取失败_不发布任何可能仍活跃的清理候选() throws {
+        let old = try writeFile(
+            into: downloads,
+            name: "abc--active.tar.gz",
+            bytes: 4_096,
+            mtime: Date(timeIntervalSinceNow: -60 * 86400)
+        )
+        let link = root.appendingPathComponent("active--1.0")
+        try FileManager.default.createSymbolicLink(
+            atPath: link.path,
+            withDestinationPath: "downloads/abc--active.tar.gz"
+        )
+        let linkPath = link.path
+        let live = BrewCleanupFileSystem.live
+        let fileSystem = BrewCleanupFileSystem(
+            contentsOfDirectory: live.contentsOfDirectory,
+            attributes: live.attributes,
+            symlinkDestination: { url in
+                if url.path == linkPath {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))
+                }
+                return try live.symlinkDestination(url)
+            }
+        )
+
+        let result = BrewCleanup(cacheRoot: root, fileSystem: fileSystem)
+            .dryRunWithEvidence()
+
+        XCTAssertEqual(result.status, .unavailable)
+        XCTAssertEqual(result.plan.stalePaths, [])
+        XCTAssertFalse(result.plan.stalePaths.contains(old))
+        XCTAssertEqual(result.bytesByPath, [:])
+        XCTAssertEqual(result.diagnostics.first?.stage, .resolveSymlink)
+        XCTAssertEqual(result.diagnostics.first?.reason, .unreadable)
+    }
+
+    func test_dryRun_条目mtime缺失_不会用1970误判为stale() throws {
+        let old = try writeFile(
+            into: downloads,
+            name: "missing-mtime.tar.gz",
+            bytes: 8_192,
+            mtime: Date(timeIntervalSinceNow: -60 * 86400)
+        )
+        let oldPath = old.path
+        let live = BrewCleanupFileSystem.live
+        let fileSystem = BrewCleanupFileSystem(
+            contentsOfDirectory: live.contentsOfDirectory,
+            attributes: { url in
+                if url.path == oldPath {
+                    return BrewCleanupEntryAttributes(
+                        isSymbolicLink: false,
+                        modificationDate: nil,
+                        size: 8_192
+                    )
+                }
+                return try live.attributes(url)
+            },
+            symlinkDestination: live.symlinkDestination
+        )
+
+        let result = BrewCleanup(cacheRoot: root, fileSystem: fileSystem)
+            .dryRunWithEvidence()
+
+        XCTAssertEqual(result.status, .partial)
+        XCTAssertEqual(result.plan.stalePaths, [])
+        XCTAssertEqual(result.plan.totalBytes, 0)
+        XCTAssertEqual(result.bytesByPath, [:])
+        XCTAssertEqual(result.diagnostics.first?.stage, .inspectEntry)
+        XCTAssertEqual(result.diagnostics.first?.reason, .missingMetadata)
+        XCTAssertEqual(result.diagnostics.first?.path, oldPath)
+    }
+
+    func test_dryRun_单条目属性权限失败_排除该条目但保留其它可信候选() throws {
+        let denied = try writeFile(
+            into: downloads,
+            name: "denied.tar.gz",
+            bytes: 1_024,
+            mtime: Date(timeIntervalSinceNow: -60 * 86400)
+        )
+        let healthy = try writeFile(
+            into: downloads,
+            name: "healthy.tar.gz",
+            bytes: 2_048,
+            mtime: Date(timeIntervalSinceNow: -60 * 86400)
+        )
+        let deniedPath = denied.path
+        let live = BrewCleanupFileSystem.live
+        let fileSystem = BrewCleanupFileSystem(
+            contentsOfDirectory: live.contentsOfDirectory,
+            attributes: { url in
+                if url.path == deniedPath {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))
+                }
+                return try live.attributes(url)
+            },
+            symlinkDestination: live.symlinkDestination
+        )
+
+        let result = BrewCleanup(cacheRoot: root, fileSystem: fileSystem)
+            .dryRunWithEvidence()
+
+        XCTAssertEqual(result.status, .partial)
+        XCTAssertEqual(result.plan.stalePaths, [healthy])
+        XCTAssertEqual(result.plan.totalBytes, 2_048)
+        XCTAssertEqual(result.bytesByPath, [healthy.path: 2_048])
+        XCTAssertFalse(result.plan.stalePaths.contains(denied))
+        XCTAssertEqual(result.diagnostics.count, 1)
+        XCTAssertEqual(result.diagnostics.first?.reason, .permissionDenied)
+        XCTAssertEqual(result.diagnostics.first?.path, deniedPath)
     }
 
     // MARK: - 契约 5：混合多文件 — 活跃 + stale + 新文件并存

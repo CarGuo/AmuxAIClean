@@ -73,12 +73,31 @@ final class SentinelURLRouterTests: XCTestCase {
             captured.set(note.userInfo)
             return true
         }
-        let encoded = tmp.path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? tmp.path
-        let url = URL(string: "amuxaiclean://uninstall?path=\(encoded)")!
+        let url = try makeUninstallURL(path: tmp.path)
         let outcome = SentinelURLRouter.handle(url)
         XCTAssertEqual(outcome, .openUninstall(path: tmp.path))
         wait(for: [exp], timeout: 1.0)
         XCTAssertEqual(captured.info?[SentinelURLRouter.uninstallPathKey] as? String, tmp.path)
+    }
+
+    /// v2026.07.18: Sentinel used to interpolate `.urlQueryAllowed` text, but that character set
+    /// leaves `&` as a query delimiter. Lock the sender/receiver URLComponents contract with
+    /// every delimiter class plus Unicode in one real filesystem path.
+    func test_handle_uninstall特殊字符path_作为单一QueryItem完整往返() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("Sentinel URL & # ? + 中文 \(UUID().uuidString).app")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = try makeUninstallURL(path: directory.path)
+        let outcome = SentinelURLRouter.handle(url)
+
+        XCTAssertEqual(outcome, .openUninstall(path: directory.path))
+        XCTAssertEqual(
+            URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.filter { $0.name == SentinelURLRouter.uninstallPathKey }.count,
+            1
+        )
     }
 
     func test_handle_uninstall相对path_应被拒_广播nil() {
@@ -145,5 +164,16 @@ final class SentinelURLRouterTests: XCTestCase {
             .appendingPathComponent("gsy-sentinel-router-test-\(UUID().uuidString).bin")
         try Data("ok".utf8).write(to: url)
         return url
+    }
+
+    private func makeUninstallURL(path: String) throws -> URL {
+        var components = URLComponents()
+        components.scheme = SentinelURLRouter.scheme
+        components.host = "uninstall"
+        components.queryItems = [URLQueryItem(
+            name: SentinelURLRouter.uninstallPathKey,
+            value: path
+        )]
+        return try XCTUnwrap(components.url)
     }
 }

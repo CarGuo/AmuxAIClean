@@ -2,6 +2,7 @@ import Darwin
 import XCTest
 @testable import AppUI
 import SafetyKit
+import ScanKit
 
 /// AppUninstaller —— 残留扫描器测试
 ///
@@ -276,17 +277,83 @@ final class AppUninstallerTests: XCTestCase {
                           "取消必须在逐项边界停住，不能继续遍历完整目录")
     }
 
-    func test_DefaultFileManagerSnapshot_根metadata失败保留结构化partial证据() {
+    func test_DefaultFileManagerSnapshot_ENOENT是确认不存在而非metadata缺口() {
         let missing = "/tmp/AppUninstaller-missing-\(UUID().uuidString)"
 
         let snapshot = DefaultFileManagerSnapshot().snapshot(at: missing)
 
         XCTAssertFalse(snapshot.exists)
-        XCTAssertEqual(snapshot.completion, .partial)
-        XCTAssertEqual(snapshot.issues.first?.path, missing)
-        XCTAssertEqual(snapshot.issues.first?.reason, .metadataUnavailable)
-        XCTAssertEqual(snapshot.issues.first?.stage, .rootMetadata)
-        XCTAssertEqual(snapshot.issues.first?.posixErrorCode, ENOENT)
+        XCTAssertEqual(snapshot.completion, .complete)
+        XCTAssertTrue(snapshot.issues.isEmpty)
+    }
+
+    func test_vendor推测路径不存在不阻断真实primary候选() throws {
+        let fixture = try makeTempDir("vendor-missing-is-clean")
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let home = fixture.appendingPathComponent("home", isDirectory: true)
+        let systemLibrary = fixture.appendingPathComponent("SystemLibrary", isDirectory: true)
+        let caches = home.appendingPathComponent("Library/Caches", isDirectory: true)
+        let realCandidate = caches.appendingPathComponent("com.acme.demo", isDirectory: true)
+        try FileManager.default.createDirectory(at: realCandidate, withIntermediateDirectories: true)
+        try Data([0x1]).write(to: realCandidate.appendingPathComponent("state.bin"))
+
+        let meta = AppMetadata(
+            bundleID: "com.acme.demo",
+            bundleVendor: "com.acme",
+            appName: "AcmeDemo",
+            executableName: nil
+        )
+        let result = AppUninstaller(
+            homeDirectory: home.path,
+            systemLibrary: systemLibrary.path,
+            fileManager: DefaultFileManagerSnapshot(),
+            vendorRules: [VendorRule(
+                name: "Acme",
+                bundleIDPrefix: "com.acme",
+                appSupportSubdir: "Definitely-Missing-Acme"
+            )]
+        ).candidates(for: meta)
+
+        XCTAssertEqual(result.candidates.map(\.path), [realCandidate.path])
+        XCTAssertTrue(result.incompleteIssues.isEmpty)
+        XCTAssertTrue(result.isDiscoveryComplete)
+        XCTAssertTrue(UninstallCandidateDiscoveryPresentation.allowsDeletion(
+            candidates: result.candidates,
+            issues: result.incompleteIssues
+        ))
+    }
+
+    func test_firstLevel身份快照拒绝排队root替换且不遍历symlink目标() throws {
+        let fixture = try makeTempDir("first-level-root-replacement")
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let root = fixture.appendingPathComponent("Caches", isDirectory: true)
+        let displaced = fixture.appendingPathComponent("Caches-Original", isDirectory: true)
+        let outside = fixture.appendingPathComponent("Outside", isDirectory: true)
+        let child = root.appendingPathComponent("com.acme.demo", isDirectory: true)
+        let outsideChild = outside.appendingPathComponent("com.acme.demo", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outsideChild, withIntermediateDirectories: true)
+        try Data([0x1]).write(to: child.appendingPathComponent("small.bin"))
+        try Data(repeating: 0xA5, count: 256 * 1_024)
+            .write(to: outsideChild.appendingPathComponent("outside.bin"))
+
+        let snapshotter = DefaultFileManagerSnapshot()
+        guard case .entries(let entries) = snapshotter.firstLevelDiscovery(at: root.path),
+              let entry = entries.first(where: { $0.name == "com.acme.demo" }) else {
+            return XCTFail("expected identity-bound first-level entry")
+        }
+        XCTAssertNotNil(entry.identityProof)
+        try FileManager.default.moveItem(at: root, to: displaced)
+        try FileManager.default.createSymbolicLink(at: root, withDestinationURL: outside)
+
+        let snapshot = snapshotter.snapshot(
+            entry: entry,
+            cancellationToken: FSSnapshotCancellationToken()
+        )
+
+        XCTAssertNotEqual(snapshot.completion, .complete)
+        XCTAssertEqual(snapshot.bytes, 0, "replacement target must never be traversed")
+        XCTAssertTrue(snapshot.issues.contains { $0.reason == .metadataUnavailable })
     }
 
     func test_DefaultFileManagerSnapshot_稀疏文件主值应对齐系统磁盘占用() throws {
@@ -373,6 +440,52 @@ final class AppUninstallerTests: XCTestCase {
         try data.write(to: contents.appendingPathComponent("Info.plist"))
 
         XCTAssertThrowsError(try AppMetadata.read(appURL: appURL))
+    }
+
+    func test_AppMetadata_oversizeInfoPlistUsesSharedBoundedReader() throws {
+        let tmp = try makeTempDir("plist-oversize")
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
+        let appURL = tmp.appendingPathComponent("Huge.app", isDirectory: true)
+        let contents = appURL.appendingPathComponent("Contents", isDirectory: true)
+        let plist = contents.appendingPathComponent("Info.plist")
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        XCTAssertTrue(FileManager.default.createFile(atPath: plist.path, contents: Data()))
+        let handle = try FileHandle(forWritingTo: plist)
+        try handle.truncate(atOffset: UInt64(BoundedLocalFileReader.defaultMaximumBytes + 1))
+        try handle.close()
+
+        XCTAssertThrowsError(try AppMetadata.read(appURL: appURL)) {
+            XCTAssertEqual(
+                $0 as? BoundedLocalFileReadError,
+                .tooLarge(
+                    limit: BoundedLocalFileReader.defaultMaximumBytes,
+                    observedSize: Int64(BoundedLocalFileReader.defaultMaximumBytes + 1)
+                )
+            )
+        }
+    }
+
+    func test_AppMetadata_finalInfoPlistSymlinkIsRejected() throws {
+        let tmp = try makeTempDir("plist-symlink")
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
+        let appURL = tmp.appendingPathComponent("Linked.app", isDirectory: true)
+        let contents = appURL.appendingPathComponent("Contents", isDirectory: true)
+        let target = tmp.appendingPathComponent("outside.plist")
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: ["CFBundleIdentifier": "com.example.linked"],
+            format: .xml,
+            options: 0
+        )
+        try data.write(to: target)
+        try FileManager.default.createSymbolicLink(
+            at: contents.appendingPathComponent("Info.plist"),
+            withDestinationURL: target
+        )
+
+        XCTAssertThrowsError(try AppMetadata.read(appURL: appURL)) {
+            XCTAssertEqual($0 as? BoundedLocalFileReadError, .unsafeType(.symbolicLink))
+        }
     }
 
     func test_AppMetadata_fallsBackToFilenameStem() throws {
@@ -762,6 +875,11 @@ final class AppUninstallerTests: XCTestCase {
             bytes: 10,
             fileCount: 1,
             isDirectory: true,
+            objectIdentity: TrashObjectIdentity(
+                device: 1,
+                inode: 2,
+                fileType: UInt16(S_IFDIR)
+            ),
             matchReason: .bundleID("com.acme.demo")
         )
         XCTAssertTrue(UninstallDeletionSelectionPolicy.canSubmit([completeDirectory]))
@@ -772,6 +890,79 @@ final class AppUninstallerTests: XCTestCase {
         XCTAssertTrue(completeInteraction.isDirectory,
                       "删除 intent 必须使用真实类型，不能再用 fileCount != 1 猜目录")
         XCTAssertEqual(completeInteraction.accessEvidence, .complete)
+    }
+
+    func test_统一发现权威_identity根失败与partial都显示缺口并阻断删除() {
+        let completeCandidate = UninstallCandidate(
+            path: "/H/Library/Caches/com.acme.demo",
+            bytes: 10,
+            fileCount: 1,
+            isDirectory: true,
+            matchReason: .bundleID("com.acme.demo")
+        )
+        let identityIssue = UninstallDiscoveryIssue(
+            source: .selectedAppIdentity,
+            stage: .identityValidation,
+            path: "/Applications/Demo.app",
+            reason: .identityMismatch(
+                claimedBundleID: "com.acme.demo",
+                actualBundleID: "com.other.app"
+            )
+        )
+        let primaryIssue = UninstallDiscoveryIssue(
+            source: .primaryRoot,
+            stage: .rootEnumeration,
+            path: "/H/Library/Containers",
+            reason: .permissionDenied
+        )
+
+        for issue in [identityIssue, primaryIssue] {
+            let result = UninstallCandidateDiscoveryResult(
+                candidates: [],
+                incompleteIssues: [issue]
+            )
+            XCTAssertEqual(
+                UninstallCandidateDiscoveryPresentation.emptyState(
+                    candidates: result.candidates,
+                    issues: result.incompleteIssues
+                ),
+                .incompleteEmpty
+            )
+            XCTAssertEqual(
+                UninstallCandidateDiscoveryPresentation.noticeCount(result.incompleteIssues),
+                1
+            )
+            XCTAssertFalse(UninstallCandidateDiscoveryPresentation.allowsDeletion(
+                candidates: [completeCandidate],
+                issues: result.incompleteIssues
+            ))
+        }
+
+        let snapshotIssue = FSSnapshotIssue(
+            path: completeCandidate.path,
+            reason: .timeBudgetExceeded(limitMilliseconds: 10),
+            stage: .budget
+        )
+        let partialCandidate = UninstallCandidate(
+            path: completeCandidate.path,
+            bytes: 10,
+            fileCount: 1,
+            isDirectory: true,
+            snapshotCompletion: .partial,
+            snapshotIssues: [snapshotIssue],
+            matchReason: .bundleID("com.acme.demo")
+        )
+        let partialResult = UninstallCandidateDiscoveryResult(candidates: [partialCandidate])
+        XCTAssertFalse(partialResult.isDiscoveryComplete)
+        XCTAssertEqual(
+            UninstallCandidateDiscoveryPresentation.noticeCount(partialResult.incompleteIssues),
+            1,
+            "candidate snapshot 缺口必须进入统一 notice，而非只在行内静默显示"
+        )
+        XCTAssertFalse(UninstallCandidateDiscoveryPresentation.allowsDeletion(
+            candidates: partialResult.candidates,
+            issues: partialResult.incompleteIssues
+        ))
     }
 
     func test_candidatesAsync与同步版本结果集相同() async {
@@ -1108,6 +1299,37 @@ final class AppUninstallerTests: XCTestCase {
         XCTAssertEqual(snapshot.completion, .partial)
         XCTAssertTrue(snapshot.issues.contains { $0.reason == .permissionDenied },
                       "snapshot 不能只写日志；权限错误必须进入 typed issues")
+    }
+
+    func test_primary第一层readdir使用整轮entry预算并保留typedIncomplete() throws {
+        let fixture = try makeTempDir("primary-entry-budget")
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let caches = fixture.appendingPathComponent("Library/Caches", isDirectory: true)
+        try FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: caches.appendingPathComponent("com.acme.demo.one", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: caches.appendingPathComponent("com.acme.demo.two", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let uninstaller = AppUninstaller(
+            homeDirectory: fixture.path,
+            systemLibrary: fixture.appendingPathComponent("SystemLibrary").path,
+            primaryDiscoveryLimits: .init(maxVisitedEntries: 1, maxDuration: 2)
+        )
+
+        let result = uninstaller.candidates(for: AppMetadata(
+            bundleID: "com.acme.demo",
+            bundleVendor: "com.acme",
+            appName: "AcmeDemo",
+            executableName: "AcmeDemo"
+        ))
+
+        XCTAssertTrue(result.candidates.isEmpty)
+        XCTAssertEqual(result.incompleteIssues.first?.source, .primaryRoot)
+        XCTAssertEqual(result.incompleteIssues.first?.reason, .fileBudgetExceeded(limit: 1))
     }
 
     /// 不存在的目录静默不上报

@@ -66,6 +66,7 @@ struct SmartCareDashboardView: View {
     let aiError: String?
     let aiItemStates: [String: SmartCareAIItemState]
     let aiReportAvailable: Bool
+    let onStageSelectionChange: (SmartCareScanStage, Bool) -> Void
     let onPrimaryAction: (SmartCarePrimaryAction) -> Void
     let onAIReview: () -> Void
     let onAICancel: () -> Void
@@ -130,9 +131,7 @@ struct SmartCareDashboardView: View {
         SmartCareIdleVisual(
             selectedStages: session.selectedStages,
             reduceMotion: reduceMotion,
-            onToggleStage: { stage, selected in
-                session.setStage(stage, selected: selected)
-            },
+            onToggleStage: onStageSelectionChange,
             onScan: { onPrimaryAction(.startScan) }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -822,7 +821,7 @@ private struct SmartCareIdleVisual: View {
             .frame(width: 280, height: 280)
 
             HStack(spacing: 12) {
-                ForEach(Array(SmartCareSession.defaultStages.enumerated()), id: \.element) { index, stage in
+                ForEach(Array(SmartCareSession.stageOrder.enumerated()), id: \.element) { index, stage in
                     SmartCareScopeButton(
                         stage: stage,
                         selected: selectedStages.contains(stage),

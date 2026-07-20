@@ -13,6 +13,27 @@
 5. **确认上下文冻结，安全证据单调增加**：用户确认时冻结精确路径、原因、扫描 session 和运行中 App；执行前重新评估，新的风险只能增加，不能因旧快照而消失。
 6. **强制是“严格尝试”，不是权限承诺**：专业模式允许覆盖的是产品风险策略，不会授予 macOS 权限，也不承诺 `NSWorkspace.recycle` 一定成功。
 7. **肯定操作必须有真实效果**：Professional 普通确认中的“是/移到废纸篓”必须进入真实提交；不得隐式切换 dry-run，也不得在关闭确认页时假装完成。
+8. **零提交拒绝不得占用窗口**：预提交安全、身份或恢复账本校验失败时，删除能力继续
+   fail-closed，但说明只能作为当前页面内的非模态 typed notice；不得使用 sheet/alert 阻塞浏览、
+   调整选择、重新扫描或发起新的审阅。只有已经跨过系统提交边界并取得 receipt 的操作，才可进入
+   结果 presentation。
+
+**v2026.07.20 生产恢复域隔离规则**：生产删除入口必须显式构造 production recovery domain；
+测试、Preview 和 scripted pipeline 必须拥有 UUID 隔离的临时 ledger、completion journal 与 Undo
+store。禁止通过运行时猜测 XCTest 环境，也禁止任一测试默认访问
+`~/Library/Application Support/AmuxAIClean`。这三类持久状态必须作为同一个 dependency domain
+注入，不能只替换其中一个后让其余部分回落到生产 singleton。任何允许注入
+`DeletionPipeline` 的 View / Preview / scripted 入口，都必须同时要求显式 `UndoHistoryStore`；
+生产 composition root 明确传 `.shared`，测试明确传临时 store。注入 pipeline 时不得在后台另行
+构造 production pipeline 或启动 production recovery prewarm。组合根的嵌套导航页面同样必须
+透传这对 owner；即使页面只读取/恢复历史而不提交删除，也不得在内部重新选择 `.shared`。
+
+**v2026.07.20 WAL 跨重启身份规则**：Darwin `st_dev` 是本次挂载实例编号，不是跨重启稳定的
+卷身份。读取持久化 marker/bootstrap 时必须先按原始字段验证 checksum，再证明同一 generation
+内的 marker、stage、reserve 与 destination identity 属于同一个 persisted-device domain；只有在
+固定父目录 descriptor、inode、birth time、generation 与文件类型全部一致后，才允许把该 domain
+原子 rebase 到本次挂载编号。rebase 之后的 marker/stage/path/descriptor CAS 仍必须完整比较当前
+`st_dev`，禁止把“忽略 device”扩散到运行期安全判定。
 
 ## 2. 唯一状态机与呈现路由
 
@@ -215,6 +236,8 @@ Normal 不自动获得 Professional 严格覆盖能力。若用户需要覆盖�
 
 - 展示精确目标、可覆盖原因、不可恢复的业务影响和仍受 macOS 权限约束的事实；
 - 要求输入与本次 intent 绑定的确认词或等价严格凭证；
+- 只要目标仍属于 `strictOverrideEligible`，确认页就必须提供明确的“强制移到废纸篓”主操作；
+  不得只给关闭按钮，也不得把该能力藏到失败结果页；
 - 明确区分“严格尝试移到废纸篓”与“永久删除”；
 - normal siblings 可以与本次严格授权一起提交，但授权必须绑定完整精确路径集；
 - 最终重验新增的风险必须重新规划，旧确认不得沿用。
@@ -245,6 +268,16 @@ Normal 不自动获得 Professional 严格覆盖能力。若用户需要覆盖�
 - Professional 的普通和严格确认在任何构建中都不显示 dry-run；肯定操作就是实际移到废纸篓。
 - Debug 诊断预览如保留，只能位于 Normal 的明确诊断路径，且与正式确认状态隔离。
 - 同一 intent 只能有一个活动 presentation route；sheet 关闭、下一 route 和结果页之间必须确定性交接，不能 sibling sheet 竞争。
+- **v2026.07.19 性能防回归**：Professional 的肯定操作必须在确认回调内同步领取一次性
+  submission 并立即启动执行，不能等待 confirmation sheet 的 `onDismiss`。`onDismiss` 只作为
+  后续 confirmation / typed notice / result presentation 的退场屏障；否则 Tree/layout 负载会被
+  串到第一次 `NSWorkspace.recycle` 之前，形成数秒“点了删除却没开始”的假 I/O 延迟。必须用
+  无路径结构化日志分别记录 confirm-to-submit、recycle、model sync 与 result-eligible 耗时。
+- **v2026.07.20 回执优先合同**：执行层返回 typed completion 与
+  `DeletionSubmissionReceipt` 后，结果页即具备呈现资格；扫描快照、Tree cache、选中项、统计和
+  历史记录的模型同步属于回执后的 reconciliation，不能阻塞结果页。若 confirmation sheet 尚未
+  退场，只允许等待该唯一 presentation 屏障；不得等待 prune、排序、全局 Tree projection 或缓存
+  析构。结构化日志必须让 `result_eligible` 与 `model_sync_completed` 成为两个可独立观测的阶段。
 
 ## 6. 结果页
 
@@ -266,6 +299,10 @@ Normal 不自动获得 Professional 严格覆盖能力。若用户需要覆盖�
 - 实际 recycle 失败 → 重试同一精确 intent 或查看技术详情。
 
 结果页不得再承担 vendor override、首次强制授权或“关闭即视为已删除”。没有 receipt 时，结果页在类型层和 UI 层都必须不可构造。
+
+结果页显示也不得反向依赖删除后的列表/Tree 已完成重算。receipt 是“系统已完成哪些提交”的
+权威证据，模型同步只负责让底层页面最终与 receipt 收敛；同步失败或变慢时应保留日志和继续修复
+模型链路，不能把已经取得的结果再次扣留十几秒。
 
 ## 7. 逐入口验收矩阵
 
@@ -360,6 +397,15 @@ fail closed。旧 schema 使用稳定 migration identity，不能绕过上述单
     都必须断言 workspace 调用次数为 0；还要覆盖取消与提交竞争，证明 `.submittingToTrash` 只在
     真实 workspace 调用的邻接边界出现，边界前离开可取消、边界后离开保留 owner（测试仅使用
     临时 fixture 与 scripted workspace closure）。
+17. 纯 pre-submit rejection 在 Main、Brew、Duplicate、Uninstall、Workflow 五个入口只能投影为
+    非模态 notice；它不属于 active sheet/transaction，不能构造 receipt/result，也不能阻止后续
+    浏览和新审阅。反例测试必须证明已有提交或部分提交仍进入 receipt-bearing result。
+18. 每个默认测试 pipeline 必须证明 ledger、completion journal、Undo store 都位于同一 UUID 临时
+    根且不在用户 Application Support；两个实例不得共享恢复域。所有会写 Undo 的 coordinator /
+    ViewModel 测试也必须显式注入临时 store，禁止依赖 `.shared` 默认值。
+19. 所有 public/scripted View 的 pipeline 注入与 Undo owner 必须成对；源码合同测试必须拒绝 View
+    内部硬编码 `undoHistoryStore: .shared`。production ledger/journal 的路径型 convenience init
+    只能由其 `shared` owner 调用；测试初始化必须显式提供临时 URL 和独立 active registry。
 
 对应测试职责应落在：
 

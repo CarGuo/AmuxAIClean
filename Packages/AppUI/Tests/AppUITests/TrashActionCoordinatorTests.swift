@@ -30,6 +30,7 @@ final class TrashActionCoordinatorTests: XCTestCase {
         var vendorOverrideCalls: [(paths: [String], dryRun: Bool, denied: Set<String>)] = []
         var submissionCalls: [(paths: [String], denied: Set<String>, hasOverride: Bool)] = []
         var submissionRejection: TrashPreSubmitRejection?
+        var submissionCompletion: TrashRecycleCompletion?
         var submissionLegacy: (Int, Int, String?, [(String, String)]) = (0, 0, nil, [])
         var submissionOutcome: TrashOutcome?
 
@@ -87,6 +88,9 @@ final class TrashActionCoordinatorTests: XCTestCase {
             submissionCalls.append((paths, accessDeniedPaths, vendorOverrideRequest != nil))
             if let submissionRejection {
                 return .preSubmitRejected(submissionRejection)
+            }
+            if let submissionCompletion {
+                return .recycleCompleted(submissionCompletion)
             }
             return .recycleCompleted(TrashRecycleCompletion(
                 attemptedPaths: paths,
@@ -247,6 +251,109 @@ final class TrashActionCoordinatorTests: XCTestCase {
         XCTAssertEqual(pipe.forceCalls.count, 0)
         XCTAssertEqual(result.succeededPaths, ["/tmp/forced"])
         XCTAssertEqual(undo.history.first?.source, "force")
+    }
+
+    func test_confirmedCompletionPersistsFrozenJournalBeforeAcknowledgingLedger() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TrashActionCoordinatorDurable-\(UUID().uuidString)")
+        let original = root.appendingPathComponent("original")
+        let trashed = root.appendingPathComponent("trash/original")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("recorded".utf8).write(to: original)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let processIdentity = TrashLedgerProcessIdentity(
+            pid: 91_001,
+            startTimeSeconds: 800,
+            startTimeMicroseconds: 1
+        )
+        let ledger = PersistentTrashPendingOperationLedger(
+            fileURL: root.appendingPathComponent("pending.json"),
+            activeOperationRegistry: TrashActiveOperationRegistry(),
+            processIdentityProvider: { processIdentity },
+            processLivenessProbe: { $0 == processIdentity ? .active : .inactive }
+        )
+        let journal = PersistentTrashCompletionJournal(
+            fileURL: root.appendingPathComponent("completion.json")
+        )
+        let operationID = UUID()
+        let attemptID = UUID()
+        guard case .reserved = ledger.reserve(
+            paths: [original.path],
+            operationID: operationID
+        ) else { return XCTFail("Fixture reservation must succeed") }
+        let frozen = try XCTUnwrap(ledger.frozenIdentities(
+            paths: [original.path],
+            operationID: operationID
+        )?[TrashPipeline.normalizePath(original.path)])
+        guard case .claimed = ledger.claim(
+            paths: [original.path],
+            operationID: operationID,
+            attemptID: attemptID
+        ) else { return XCTFail("Fixture claim must succeed") }
+        try FileManager.default.createDirectory(
+            at: trashed.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.moveItem(at: original, to: trashed)
+        XCTAssertEqual(ledger.markCallbackObserved(
+            paths: [original.path],
+            operationID: operationID,
+            attemptID: attemptID
+        ), .applied)
+        let entry = TrashUndoJournalEntry(
+            operationID: operationID,
+            attemptID: attemptID,
+            originalPath: original.path,
+            trashedPath: trashed.path,
+            originalIdentity: frozen,
+            restoreScopeRoot: root.path
+        )
+        XCTAssertTrue(journal.append([entry]))
+
+        let outcome = TrashOutcome(
+            movedPairs: [(original.path, trashed.path)],
+            failedPaths: [],
+            safetyRejected: [],
+            missingPaths: []
+        )
+        let pipe = StubPipeline()
+        pipe.submissionCompletion = TrashRecycleCompletion(
+            attemptedPaths: [original.path],
+            legacy: (1, 0, nil, [(original.path, trashed.path)]),
+            outcome: outcome,
+            undoCommit: TrashUndoCommitCapability(
+                entries: [entry],
+                journal: journal,
+                ledger: ledger
+            ),
+            undoJournalFailedPaths: []
+        )
+        let undo = UndoHistoryStore(
+            storeURL: root.appendingPathComponent("UndoHistory.json"),
+            allowedRestoreRoots: [root.path]
+        )
+
+        let result = await TrashActionCoordinator(
+            pipeline: pipe,
+            undoHistoryStore: undo
+        ).submitConfirmed(
+            paths: [original.path],
+            source: "clean",
+            accessDeniedPaths: []
+        )
+
+        guard case .recycleCompleted = result else {
+            return XCTFail("A valid durable completion must cross the typed boundary")
+        }
+        XCTAssertEqual(undo.history.first?.filePairs.first?.journalID, entry.id)
+        XCTAssertEqual(undo.history.first?.filePairs.first?.trashedIdentity, frozen)
+        XCTAssertEqual(journal.pendingEntries(), [])
+        XCTAssertFalse(ledger.ownsExactAttempt(
+            paths: [original.path],
+            operationID: operationID,
+            attemptID: attemptID
+        ))
     }
 
     func test_run_vendorOverride使用typed入口并传递requestScopedDenied() async throws {
@@ -426,7 +533,10 @@ final class TrashActionCoordinatorTests: XCTestCase {
             vendorOverrideRequest: request
         )
 
-        let disposition = await ProfessionalTrashSubmissionExecutor(pipeline: pipe).submit(
+        let disposition = await ProfessionalTrashSubmissionExecutor(
+            pipeline: pipe,
+            undoHistoryStore: makeUndoStore().0
+        ).submit(
             plan: plan,
             source: "tree",
             accessDeniedPaths: []
@@ -442,7 +552,10 @@ final class TrashActionCoordinatorTests: XCTestCase {
 
     func test_professionalEmptyPlanNeverCrossesSubmissionBoundary() async {
         let pipe = StubPipeline()
-        let disposition = await ProfessionalTrashSubmissionExecutor(pipeline: pipe).submit(
+        let disposition = await ProfessionalTrashSubmissionExecutor(
+            pipeline: pipe,
+            undoHistoryStore: makeUndoStore().0
+        ).submit(
             plan: ToolTrashExecutionPlan(paths: [], runningAppSkipped: []),
             source: "tree",
             accessDeniedPaths: []
@@ -469,7 +582,10 @@ final class TrashActionCoordinatorTests: XCTestCase {
         let pipe = StubPipeline()
         pipe.submissionRejection = .safety(preflight)
 
-        let disposition = await ProfessionalTrashSubmissionExecutor(pipeline: pipe).submit(
+        let disposition = await ProfessionalTrashSubmissionExecutor(
+            pipeline: pipe,
+            undoHistoryStore: makeUndoStore().0
+        ).submit(
             plan: ToolTrashExecutionPlan(paths: [path], runningAppSkipped: []),
             source: "tree",
             accessDeniedPaths: []
@@ -494,7 +610,10 @@ final class TrashActionCoordinatorTests: XCTestCase {
             rejections: [rejection]
         ))
 
-        let disposition = await ProfessionalTrashSubmissionExecutor(pipeline: pipe).submit(
+        let disposition = await ProfessionalTrashSubmissionExecutor(
+            pipeline: pipe,
+            undoHistoryStore: makeUndoStore().0
+        ).submit(
             plan: ToolTrashExecutionPlan(paths: [path], runningAppSkipped: []),
             source: "tree",
             accessDeniedPaths: []
@@ -512,7 +631,10 @@ final class TrashActionCoordinatorTests: XCTestCase {
         pipe.submissionLegacy = (0, 1, "system failure", [])
         pipe.submissionOutcome = nil
 
-        let disposition = await ProfessionalTrashSubmissionExecutor(pipeline: pipe).submit(
+        let disposition = await ProfessionalTrashSubmissionExecutor(
+            pipeline: pipe,
+            undoHistoryStore: makeUndoStore().0
+        ).submit(
             plan: ToolTrashExecutionPlan(paths: [path], runningAppSkipped: []),
             source: "tree",
             accessDeniedPaths: []
@@ -534,7 +656,10 @@ final class TrashActionCoordinatorTests: XCTestCase {
             missingPaths: []
         )
 
-        let disposition = await ProfessionalTrashSubmissionExecutor(pipeline: pipe).submit(
+        let disposition = await ProfessionalTrashSubmissionExecutor(
+            pipeline: pipe,
+            undoHistoryStore: makeUndoStore().0
+        ).submit(
             plan: ToolTrashExecutionPlan(paths: [path], runningAppSkipped: []),
             source: "tree",
             accessDeniedPaths: []
@@ -550,7 +675,8 @@ final class TrashActionCoordinatorTests: XCTestCase {
     func test_professionalNeverInfersRecycleBoundaryFromLegacyOutcome() async {
         let path = "/tmp/legacy-only"
         let disposition = await ProfessionalTrashSubmissionExecutor(
-            pipeline: LegacyOnlyPipeline()
+            pipeline: LegacyOnlyPipeline(),
+            undoHistoryStore: makeUndoStore().0
         ).submit(
             plan: ToolTrashExecutionPlan(paths: [path], runningAppSkipped: []),
             source: "tree",

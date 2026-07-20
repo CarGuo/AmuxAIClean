@@ -8,6 +8,8 @@ import XCTest
 /// 为什么所有 `ScanCoordinator(enableTreeDeepIndex: true)`：
 /// v1.3.z 起 `enableTreeDeepIndex` 默认 false，同步 directChildren 内存索引未命中时
 /// **返空 + 派后台 task 按需扫描当前目录**。本测试只关心"按内存索引下钻形态"是否正确。
+/// v2026.07.18 起内存索引本身也由后台 worker 生成 presentation cache；测试等待发布，
+/// 不再要求宽 `kids.map + sort` 同步发生在 MainActor。
 @MainActor
 final class TreeDownDrillTests: XCTestCase {
 
@@ -34,6 +36,21 @@ final class TreeDownDrillTests: XCTestCase {
         }
     }
 
+    private func waitChildren(
+        _ coord: ScanCoordinator,
+        path: String,
+        expectedCount: Int,
+        timeout: TimeInterval = 5
+    ) async -> [TreeRow] {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let rows = coord.directChildren(of: path)
+            if rows.count == expectedCount { return rows }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        return coord.directChildren(of: path)
+    }
+
     func test_顶层directChildren按size降序排好() async throws {
         let root = try makeFixture()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -43,7 +60,7 @@ final class TreeDownDrillTests: XCTestCase {
         coord.scan(category: cat)
         await waitFinished(coord)
 
-        let kids = coord.directChildren(of: root.path)
+        let kids = await waitChildren(coord, path: root.path, expectedCount: 2)
         XCTAssertEqual(kids.count, 2, "顶层应只有 A / B 两个目录")
         XCTAssertEqual(kids[0].title, "A", "A 总和 10KB > B 4KB，应排第一")
         XCTAssertEqual(kids[1].title, "B")
@@ -62,7 +79,7 @@ final class TreeDownDrillTests: XCTestCase {
         await waitFinished(coord)
 
         let aPath = root.path + "/A"
-        let aKids = coord.directChildren(of: aPath)
+        let aKids = await waitChildren(coord, path: aPath, expectedCount: 2)
         XCTAssertEqual(aKids.count, 2, "A 下应有 big.bin / small.bin")
         XCTAssertEqual(aKids[0].title, "big.bin", "big.bin (8K) 应排第一")
         XCTAssertFalse(aKids[0].isDirectory)

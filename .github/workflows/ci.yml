@@ -1,11 +1,9 @@
 name: CI
 
-# v1.6 / 2026-06：CI 默认不跑，省 Actions 额度。
-# 本仓库只在「发 release」时才跑工程化校验：
-#   - 平时 push / pull_request 都不触发，避免每次提交都吃免费分钟数
-#   - 需要主动验测试时，去 Actions 页面手动 Run workflow（workflow_dispatch）
-#   - 真正的发版校验链路落在 release.yml 的 build-dmg 里（强制 swift test 前置不在此处，
-#     是因为 release.yml 的 xcodebuild 已经会把所有 SPM target 编译一遍，编译期错误会兜底）
+# v2026.07.18：仓库 CI 当前完全停用。`workflow_dispatch` 只保留 Actions 页面入口，
+# 但下面所有 job 都有 `if: false`，点击 Run workflow 也不会执行测试或构建。
+# 当前权威验证与发布链路只在本地，分别以 AGENTS.md 完成门槛和 docs/RELEASE.md 为准；
+# release.yml 同样停用，不能把它描述成真实发版兜底。
 # 旧自动触发器（已禁用，保留以便日后想恢复时无需翻历史）：
 # on:
 #   push:
@@ -24,7 +22,7 @@ jobs:
     name: Swift Package Tests
     runs-on: macos-15
     timeout-minutes: 25
-    # 2026-06-23：临时完全屏蔽 GitHub Actions，避免误触发消耗 runner 时长。
+    # v2026.07.18：显式停用；恢复前必须重新审计工具链、九包 gate 与签名边界。
     if: false
 
     steps:
@@ -51,7 +49,9 @@ jobs:
         run: |
           set -euo pipefail
           fails=0
-          for pkg in ScanKit SafetyKit LogKit AppUI HeuristicKit TestHarness; do
+          # v2026.07.18: keep the dormant workflow aligned with the repository-wide
+          # nine-package gate so re-enabling CI cannot silently omit newer packages.
+          for pkg in ScanKit SafetyKit AppUI HeuristicKit LogKit BrewKit FileSearchKit AIKit TestHarness; do
             echo "::group::swift test - $pkg"
             if ! (cd "Packages/$pkg" && swift test --parallel); then
               fails=$((fails + 1))
@@ -68,9 +68,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 25
     needs: swift-test
-    # Step 5.6 番外：CI 暂时屏蔽 xcodebuild job（Personal Team 签名只能本机用，
-    # GitHub runner 上没 keychain，要么走 ad-hoc 要么上传 Developer ID p12，
-    # 用户决定先省 Actions 额度，等需要发 Release 时再单独跑 release.yml）
+    # v2026.07.18：显式停用。release.yml 也不会运行，公开产物只来自维护者本地流程。
     if: false
 
     steps:

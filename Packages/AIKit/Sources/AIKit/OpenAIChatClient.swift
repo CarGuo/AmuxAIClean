@@ -1,6 +1,263 @@
 import Foundation
 import LogKit
+import os
 import SafetyKit
+
+/// v2026.07.18 P2 response-boundary fix: a completion-handler data task buffers the complete
+/// provider response inside Foundation before AIKit can inspect its size. The bounded delegate
+/// below owns every in-flight transfer and admits bytes incrementally, so both declared and
+/// chunked responses are rejected before AIKit retains more than the configured hard limit.
+enum OpenAIChatBoundedResponseError: Swift.Error, Equatable, Sendable {
+    case exceedsLimit(limitBytes: Int, observedBytes: Int)
+}
+
+/// v2026.07.18 P2 cancellation fix: cancellation and task creation are two independently
+/// scheduled operations. This one-shot state machine serializes their ownership transition with
+/// `OSAllocatedUnfairLock` (available on the product's macOS 13.5 floor) instead of sharing an
+/// unsynchronized optional task behind `@unchecked Sendable`.
+struct OpenAIChatTaskCancellationOwnership: Sendable {
+    enum Installation: Equatable, Sendable {
+        case installed
+        case cancelledBeforeInstallation
+    }
+
+    private enum State: Sendable {
+        case awaitingInstallation(cancellationRequested: Bool)
+        case installed(cancel: @Sendable () -> Void)
+        case cancelled
+        case finished
+    }
+
+    private let state = OSAllocatedUnfairLock<State>(
+        initialState: .awaitingInstallation(cancellationRequested: false)
+    )
+
+    /// Installs exactly one cancellation action. If cancellation won the race, the action is
+    /// invoked once after releasing the lock; callers may then start/resume the already-cancelled
+    /// URLSession task solely to let its completion path settle the checked continuation.
+    func install(cancel: @escaping @Sendable () -> Void) -> Installation {
+        let (result, action) = state.withLock { state -> (Installation, (@Sendable () -> Void)?) in
+            switch state {
+            case .awaitingInstallation(cancellationRequested: false):
+                state = .installed(cancel: cancel)
+                return (.installed, nil)
+            case .awaitingInstallation(cancellationRequested: true):
+                state = .cancelled
+                return (.cancelledBeforeInstallation, cancel)
+            case .installed, .cancelled, .finished:
+                preconditionFailure("OpenAI data task cancellation ownership installed twice")
+            }
+        }
+        action?()
+        return result
+    }
+
+    /// May race with `install(cancel:)`. The installed action is extracted under the lock and
+    /// executed outside it, so task cancellation is idempotent and cannot re-enter locked state.
+    func requestCancellation() {
+        let action = state.withLock { state -> (@Sendable () -> Void)? in
+            switch state {
+            case .awaitingInstallation(cancellationRequested: false):
+                state = .awaitingInstallation(cancellationRequested: true)
+                return nil
+            case .awaitingInstallation(cancellationRequested: true), .cancelled, .finished:
+                return nil
+            case .installed(let cancel):
+                state = .cancelled
+                return cancel
+            }
+        }
+        action?()
+    }
+
+    /// Releases the cancellation closure after the continuation reaches a terminal result.
+    func finish() {
+        state.withLock { state in
+            state = .finished
+        }
+    }
+}
+
+/// v2026.07.18 P2 origin boundary fix: redirects are rejected before URL Loading System
+/// creates the follow-up request. A response-origin check would be too late because the
+/// Authorization header and AI payload may already have crossed to another endpoint.
+///
+/// v2026.07.18: this same delegate is also the single capped streaming path for production and
+/// URLProtocol-injected tests. Its registry is protected by `OSAllocatedUnfairLock`; continuations
+/// are always resumed after releasing the lock. Keeping redirect and byte admission in one
+/// session delegate prevents either policy from being bypassed by a second transport path.
+final class OpenAIChatRedirectRejectingDelegate: NSObject, URLSessionDataDelegate {
+    typealias ResponseContinuation = CheckedContinuation<(Data, URLResponse), Swift.Error>
+
+    private struct TaskKey: Hashable, Sendable {
+        let session: ObjectIdentifier
+        let taskIdentifier: Int
+    }
+
+    private struct Transfer: Sendable {
+        let limitBytes: Int
+        let continuation: ResponseContinuation
+        var response: URLResponse?
+        var data = Data()
+    }
+
+    private struct Registry: Sendable {
+        var transfers: [TaskKey: Transfer] = [:]
+    }
+
+    private enum Admission: Sendable {
+        case accepted
+        case rejected(ResponseContinuation, OpenAIChatBoundedResponseError)
+        case inactive
+    }
+
+    static let shared = OpenAIChatRedirectRejectingDelegate()
+    private let registry = OSAllocatedUnfairLock<Registry>(initialState: Registry())
+
+    private override init() {
+        super.init()
+    }
+
+    private func key(session: URLSession, task: URLSessionTask) -> TaskKey {
+        TaskKey(
+            session: ObjectIdentifier(session),
+            taskIdentifier: task.taskIdentifier
+        )
+    }
+
+    /// Registration happens while the data task is suspended, before `resume()`, so no delegate
+    /// callback can outrun the continuation's registry entry.
+    func register(
+        session: URLSession,
+        task: URLSessionDataTask,
+        limitBytes: Int,
+        continuation: ResponseContinuation
+    ) -> Bool {
+        precondition(limitBytes > 0)
+        let taskKey = key(session: session, task: task)
+        return registry.withLock { registry in
+            guard registry.transfers[taskKey] == nil else { return false }
+            registry.transfers[taskKey] = Transfer(
+                limitBytes: limitBytes,
+                continuation: continuation,
+                response: nil
+            )
+            return true
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void
+    ) {
+        let taskKey = key(session: session, task: dataTask)
+        let admission = registry.withLock { registry -> Admission in
+            guard var transfer = registry.transfers.removeValue(forKey: taskKey) else {
+                return .inactive
+            }
+
+            let declaredBytes = response.expectedContentLength
+            if declaredBytes > Int64(transfer.limitBytes) {
+                let observedBytes = declaredBytes > Int64(Int.max)
+                    ? Int.max
+                    : Int(declaredBytes)
+                return .rejected(
+                    transfer.continuation,
+                    .exceedsLimit(
+                        limitBytes: transfer.limitBytes,
+                        observedBytes: observedBytes
+                    )
+                )
+            }
+
+            transfer.response = response
+            if declaredBytes > 0 {
+                transfer.data.reserveCapacity(Int(declaredBytes))
+            }
+            registry.transfers[taskKey] = transfer
+            return .accepted
+        }
+
+        switch admission {
+        case .accepted:
+            completionHandler(.allow)
+        case .rejected(let continuation, let error):
+            completionHandler(.cancel)
+            // Refuse the body before URL Loading System delivers its first data callback.
+            dataTask.cancel()
+            continuation.resume(throwing: error)
+        case .inactive:
+            completionHandler(.cancel)
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive data: Data
+    ) {
+        let taskKey = key(session: session, task: dataTask)
+        let admission = registry.withLock { registry -> Admission in
+            guard var transfer = registry.transfers.removeValue(forKey: taskKey) else {
+                return .inactive
+            }
+
+            let (observedBytes, overflow) = transfer.data.count.addingReportingOverflow(data.count)
+            if overflow || observedBytes > transfer.limitBytes {
+                // Do not append the chunk that crosses the boundary. The retained aggregate can
+                // therefore never exceed `limitBytes`, even for unknown/chunked responses.
+                return .rejected(
+                    transfer.continuation,
+                    .exceedsLimit(
+                        limitBytes: transfer.limitBytes,
+                        observedBytes: overflow ? Int.max : observedBytes
+                    )
+                )
+            }
+
+            transfer.data.append(data)
+            registry.transfers[taskKey] = transfer
+            return .accepted
+        }
+
+        if case .rejected(let continuation, let error) = admission {
+            dataTask.cancel()
+            continuation.resume(throwing: error)
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Swift.Error?
+    ) {
+        let taskKey = key(session: session, task: task)
+        let transfer = registry.withLock { registry in
+            registry.transfers.removeValue(forKey: taskKey)
+        }
+        guard let transfer else { return }
+
+        if let error {
+            transfer.continuation.resume(throwing: error)
+        } else if let response = transfer.response {
+            transfer.continuation.resume(returning: (transfer.data, response))
+        } else {
+            transfer.continuation.resume(throwing: URLError(.badServerResponse))
+        }
+    }
+}
 
 /// M5 / 2026-06：OpenAI 协议 chat completions 客户端（**非流式**）。
 ///
@@ -12,10 +269,15 @@ import SafetyKit
 /// - 不做缓存 / 不做 rate limiter——用户自控点击次数（[PathInquiry](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PathInquiry.swift) 已克制 prompt 大小）；
 /// - 后置 [AIAdviceClamp](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PromptBuilder.swift)
 ///   把 AI 输出与本地 SafetyEngine 红线做强制对齐；
-/// - 可注入 [URLSession]——单测用 URLProtocol fake 拦截，不打真接口。
+/// - 生产 public API 只能使用隔离且拒绝重定向的会话；单测通过 internal
+///   `testingSession` 注入 URLProtocol fake，不打真接口。
 public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomReflectable {
 
-    public enum Error: Swift.Error, Equatable {
+    /// v2026.07.18 P1 privacy boundary: this public error is safe to retain or stringify.
+    /// Provider response text, request payloads, API keys and arbitrary Foundation error
+    /// descriptions never enter the value. User-facing layers only need stable categories and
+    /// HTTP status; logs may additionally retain response byte count or a numeric transport code.
+    public enum Error: Swift.Error, Equatable, Sendable, CustomStringConvertible {
         case missingAPIKey
         case invalidBaseURL
         /// **Review fix-soon #7，2026-06-15**：用户配的 baseURL scheme 不在白名单内
@@ -23,11 +285,28 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
         /// 本地端点）。明文 `http://` 远端会让 `Authorization: Bearer <key>` 中间节点
         /// 可见，必须拒绝。
         case insecureBaseURL(scheme: String, host: String)
-        /// **v2026.06.22 (P0-4)**：`body` 已经过 [PathRedactor.redact](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PathRedactor.swift)
-        /// 处理。请上层 UI/日志直接展示——不要再加任何去敏，也不要再原样 log raw body。
-        case http(status: Int, body: String)
-        case decoding(String)
-        case transport(String)
+        case http(status: Int, responseBytes: Int)
+        case decoding
+        case transport(domain: String, code: Int)
+
+        /// Stable logging projection. Host names, provider bodies and arbitrary system error
+        /// descriptions are intentionally omitted even though some are useful in live UI state.
+        public var description: String {
+            switch self {
+            case .missingAPIKey:
+                return "OpenAIChatClient.Error.missingAPIKey"
+            case .invalidBaseURL:
+                return "OpenAIChatClient.Error.invalidBaseURL"
+            case .insecureBaseURL(let scheme, _):
+                return "OpenAIChatClient.Error.insecureBaseURL(scheme=\(scheme))"
+            case .http(let status, let responseBytes):
+                return "OpenAIChatClient.Error.http(status=\(status), responseBytes=\(responseBytes))"
+            case .decoding:
+                return "OpenAIChatClient.Error.decoding"
+            case .transport(let domain, let code):
+                return "OpenAIChatClient.Error.transport(domain=\(domain), code=\(code))"
+            }
+        }
     }
 
     private let settings: SettingsSnapshot
@@ -41,6 +320,27 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
     private let session: URLSession
     private let redactor: PathRedactor
     private let prompts: PromptBuilder
+
+    /// v2026.07.18 P2 availability boundary: the requested schema contains at most an 80-character
+    /// summary, a 200-character reason and short side-effect phrases. A normal compatible
+    /// Chat Completions envelope is therefore KiB-scale. One MiB leaves orders of magnitude for
+    /// provider metadata and nonconforming-but-diagnosable text while placing a hard upper bound
+    /// on response memory retained from a user-configured endpoint.
+    static let maximumResponseBytes = 1 * 1_024 * 1_024
+    static let responseLimitTransportDomain = "OpenAIChatClient.ResponseLimit"
+    static let responseLimitTransportCode = 1
+
+    /// v2026.07.18 P1 diagnostic schema: stage values are closed and locale-neutral so logs stay
+    /// queryable without accepting arbitrary provider/system text.
+    enum NetworkLogStage: String, Sendable {
+        case transport
+        case responseLimit = "response-limit"
+        case responseType = "response-type"
+        case http
+        case envelopeDecode = "envelope-decode"
+        case emptyContent = "empty-content"
+        case adviceDecode = "advice-decode"
+    }
 
     /// 不可变 settings 快照——避免持有 @MainActor 的 [AISettings](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/AISettings.swift)
     /// 跨 actor 传递；UI 在调用 ask 前把当前值打成快照即可。
@@ -60,55 +360,150 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
     /// **v2026.06.22 (P0-4)**：apiKey 走闭包按需读取——典型 prod 用例：
     /// `OpenAIChatClient(settings: ..., apiKeyProvider: { try AISettings.keychainReadAPIKey() })`。
     /// 测试可注入 `{ "test-key" }`。闭包 throws 视为 missingAPIKey。
+    ///
+    /// v2026.07.18 P2 origin boundary fix: production callers cannot inject a URLSession and
+    /// bypass the cookie, credential, cache or redirect policy. Tests use the internal
+    /// `testingSession` initializer below.
     public init(settings: SettingsSnapshot,
                 apiKeyProvider: @escaping @Sendable () throws -> String,
-                session: URLSession = .shared,
                 redactor: PathRedactor = PathRedactor(),
                 prompts: PromptBuilder = PromptBuilder()) {
-        self.settings = settings
-        self.apiKeyProvider = { try apiKeyProvider() }
-        self.session = session
-        self.redactor = redactor
-        self.prompts = prompts
+        self.init(
+            settings: settings,
+            resolvedAPIKeyProvider: { try apiKeyProvider() },
+            session: Self.makeIsolatedSession(),
+            redactor: redactor,
+            prompts: prompts
+        )
     }
 
     /// 异步凭证入口。Keychain 等同步系统 API 应由其独立 actor 包装后从这里 `await`，
     /// 不能在 SwiftUI / MainActor 上直接执行。
     public init(settings: SettingsSnapshot,
                 asyncAPIKeyProvider: @escaping @Sendable () async throws -> String,
-                session: URLSession = .shared,
                 redactor: PathRedactor = PathRedactor(),
                 prompts: PromptBuilder = PromptBuilder()) {
-        self.settings = settings
-        self.apiKeyProvider = asyncAPIKeyProvider
-        self.session = session
-        self.redactor = redactor
-        self.prompts = prompts
+        self.init(
+            settings: settings,
+            resolvedAPIKeyProvider: asyncAPIKeyProvider,
+            session: Self.makeIsolatedSession(),
+            redactor: redactor,
+            prompts: prompts
+        )
     }
 
     /// 兼容旧 callsite：直接传字符串 apiKey。新代码请用 `apiKeyProvider:` 闭包入口。
     public init(settings: SettingsSnapshot,
                 apiKey: String,
-                session: URLSession = .shared,
                 redactor: PathRedactor = PathRedactor(),
                 prompts: PromptBuilder = PromptBuilder()) {
         self.init(settings: settings,
                   apiKeyProvider: { apiKey },
-                  session: session,
                   redactor: redactor,
                   prompts: prompts)
     }
 
-    /// **v2026.06.22 (P0-4)**：屏蔽 `String(describing:)` 暴露 apiKeyProvider 闭包 capture。
-    public var debugDescription: String {
-        "OpenAIChatClient(baseURL=\(settings.baseURL), model=\(settings.model), apiKey=<redacted>)"
+    /// v2026.07.18 P2 test seam: URLSession injection is intentionally internal so an
+    /// `@testable` target can install URLProtocol fixtures without exporting a production policy
+    /// bypass. Callers outside AIKit cannot select this overload.
+    init(settings: SettingsSnapshot,
+         apiKeyProvider: @escaping @Sendable () throws -> String,
+         testingSession: URLSession,
+         redactor: PathRedactor = PathRedactor(),
+         prompts: PromptBuilder = PromptBuilder()) {
+        self.init(
+            settings: settings,
+            resolvedAPIKeyProvider: { try apiKeyProvider() },
+            session: testingSession,
+            redactor: redactor,
+            prompts: prompts
+        )
     }
 
-    /// **v2026.06.22 (P0-4)**：屏蔽 Mirror 反射 dump apiKeyProvider 闭包内部捕获的 key。
-    /// `Mirror(reflecting: client).children` 将只看到 settings / session / redactor / prompts。
+    /// Internal async-credential counterpart of the URLProtocol test seam above.
+    init(settings: SettingsSnapshot,
+         asyncAPIKeyProvider: @escaping @Sendable () async throws -> String,
+         testingSession: URLSession,
+         redactor: PathRedactor = PathRedactor(),
+         prompts: PromptBuilder = PromptBuilder()) {
+        self.init(
+            settings: settings,
+            resolvedAPIKeyProvider: asyncAPIKeyProvider,
+            session: testingSession,
+            redactor: redactor,
+            prompts: prompts
+        )
+    }
+
+    /// Internal literal-key counterpart of the URLProtocol test seam above.
+    init(settings: SettingsSnapshot,
+         apiKey: String,
+         testingSession: URLSession,
+         redactor: PathRedactor = PathRedactor(),
+         prompts: PromptBuilder = PromptBuilder()) {
+        self.init(
+            settings: settings,
+            apiKeyProvider: { apiKey },
+            testingSession: testingSession,
+            redactor: redactor,
+            prompts: prompts
+        )
+    }
+
+    private init(
+        settings: SettingsSnapshot,
+        resolvedAPIKeyProvider: @escaping @Sendable () async throws -> String,
+        session: URLSession,
+        redactor: PathRedactor,
+        prompts: PromptBuilder
+    ) {
+        self.settings = settings
+        self.apiKeyProvider = resolvedAPIKeyProvider
+        self.session = session
+        self.redactor = redactor
+        self.prompts = prompts
+    }
+
+    /// v2026.07.18 privacy root fix: `URLSession.shared` inherits the process-wide default
+    /// cookie, credential and on-disk cache stores. A user-configured model host could therefore
+    /// create local network state outside the AI settings/Keychain removal contract or attach a
+    /// response cookie to a later request. The production default is now isolated, refuses
+    /// cookies/cache/credential persistence, and rejects every HTTP redirect before a follow-up
+    /// request is created. Injected protocol classes keep deterministic URLProtocol testing
+    /// available without weakening the production session policy.
+    static func makeIsolatedSession(protocolClasses: [AnyClass]? = nil) -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.httpShouldSetCookies = false
+        configuration.urlCredentialStorage = nil
+        configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 45
+        if let protocolClasses {
+            configuration.protocolClasses = protocolClasses
+        }
+        return URLSession(
+            configuration: configuration,
+            delegate: OpenAIChatRedirectRejectingDelegate.shared,
+            delegateQueue: nil
+        )
+    }
+
+    /// v2026.07.18 P1 introspection boundary: `SettingsSnapshot` is caller-controlled and remains
+    /// untrusted until `ask()` validates it. Debug output therefore exposes only a stable state
+    /// marker, never raw baseURL/model/userinfo/query/fragment or credential-provider captures.
+    public var debugDescription: String {
+        "OpenAIChatClient(settings=<configured>, apiKey=<redacted>)"
+    }
+
+    /// v2026.07.18 P1: Mirror keeps the session seam used by policy tests, but replaces the whole
+    /// unvalidated settings snapshot with a stable marker and never reflects the key provider.
     public var customMirror: Mirror {
         Mirror(self, children: [
-            "settings": settings,
+            "settings": "<configured>",
             "apiKey": "<redacted>",
             "session": session,
             "redactor": redactor,
@@ -175,27 +570,79 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
         do {
             (data, response) = try await Self.dataWithCancellation(
                 session: session,
-                request: request
+                request: request,
+                responseLimitBytes: Self.maximumResponseBytes
             )
         } catch is CancellationError {
             throw CancellationError()
+        } catch let boundedError as OpenAIChatBoundedResponseError {
+            let limitBytes: Int
+            let observedBytes: Int
+            switch boundedError {
+            case .exceedsLimit(let limit, let observed):
+                limitBytes = limit
+                observedBytes = observed
+            }
+            let facts = Self.networkLogFacts(
+                endpoint: url,
+                stage: .responseLimit,
+                responseBytes: observedBytes,
+                responseLimitBytes: limitBytes
+            )
+            GSYLog.warning(
+                .settings,
+                "[AIKit] response rejected \(facts)"
+            )
+            // Preserve the established public error surface. The stable domain/code pair is a
+            // typed, body-free category that AppUI already handles as a transport failure.
+            throw Error.transport(
+                domain: Self.responseLimitTransportDomain,
+                code: Self.responseLimitTransportCode
+            )
         } catch {
-            throw Error.transport(String(describing: error))
+            let underlying = error as NSError
+            let facts = Self.networkLogFacts(
+                endpoint: url,
+                stage: .transport,
+                transportDomain: underlying.domain,
+                transportCode: underlying.code
+            )
+            GSYLog.warning(
+                .settings,
+                "[AIKit] request failed \(facts)"
+            )
+            throw Error.transport(domain: underlying.domain, code: underlying.code)
         }
         guard let http = response as? HTTPURLResponse else {
-            throw Error.transport("non-http response")
+            let domain = "OpenAIChatClient.Response"
+            let code = 1
+            let facts = Self.networkLogFacts(
+                endpoint: url,
+                stage: .responseType,
+                transportDomain: domain,
+                transportCode: code
+            )
+            GSYLog.warning(
+                .settings,
+                "[AIKit] request failed \(facts)"
+            )
+            throw Error.transport(domain: domain, code: code)
         }
         guard (200..<300).contains(http.statusCode) else {
-            // **Review fix-soon log 隐私**：不再把 body 截 200 字符落盘——
-            // 服务端 4xx/5xx 的 message 字段可能 echo 用户路径 / model 名 / 部分
-            // payload。只 log status code + body 长度，不 log body 内容。
-            // **v2026.06.22 (P0-4)**：完整 body 也必须先经 PathRedactor.redact 去敏
-            // 再抛给 UI 层——否则 UI 直接展示就把绝对路径泄漏到弹窗 / 日志 / 截图里。
-            GSYLog.warning(.settings,
-                           "[AIKit] http \(http.statusCode), body=\(data.count)B")
-            let bodyRaw = String(data: data, encoding: .utf8) ?? ""
-            let bodySafe = redactor.redact(bodyRaw)
-            throw Error.http(status: http.statusCode, body: bodySafe)
+            // v2026.07.18 P1 privacy fix: provider text may echo the prompt, API key or paths.
+            // Do not decode or attach it to Error at all; status and byte count are sufficient
+            // typed diagnostics and remain safe if a caller persists String(describing: error).
+            let facts = Self.networkLogFacts(
+                endpoint: url,
+                stage: .http,
+                status: http.statusCode,
+                responseBytes: data.count
+            )
+            GSYLog.warning(
+                .settings,
+                "[AIKit] request failed \(facts)"
+            )
+            throw Error.http(status: http.statusCode, responseBytes: data.count)
         }
 
         // 5. 解析 chat 响应
@@ -203,11 +650,29 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
         do {
             envelope = try JSONDecoder().decode(ChatResponse.self, from: data)
         } catch {
-            throw Error.decoding("envelope: \(error)")
+            let facts = Self.networkLogFacts(
+                endpoint: url,
+                stage: .envelopeDecode,
+                responseBytes: data.count
+            )
+            GSYLog.warning(
+                .settings,
+                "[AIKit] response failed \(facts)"
+            )
+            throw Error.decoding
         }
         guard let raw = envelope.choices.first?.message.content,
               !raw.isEmpty else {
-            throw Error.decoding("empty content")
+            let facts = Self.networkLogFacts(
+                endpoint: url,
+                stage: .emptyContent,
+                responseBytes: data.count
+            )
+            GSYLog.warning(
+                .settings,
+                "[AIKit] response failed \(facts)"
+            )
+            throw Error.decoding
         }
 
         // 6. 解析 AIAdvice JSON（模型可能多包一层 ```json...```，做一次剥离）
@@ -216,7 +681,15 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
         if let parsed = Self.tryDecodeAdvice(cleaned) {
             advice = parsed
         } else {
-            GSYLog.warning(.settings, "[AIKit] advice decode fallback, raw=\(raw.utf8.count)B")
+            let facts = Self.networkLogFacts(
+                endpoint: url,
+                stage: .adviceDecode,
+                responseBytes: raw.utf8.count
+            )
+            GSYLog.warning(
+                .settings,
+                "[AIKit] response degraded \(facts)"
+            )
             advice = .unparsable(rawText: raw)
         }
 
@@ -226,35 +699,121 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
 
     // MARK: - 工具
 
+    /// Builds the only network diagnostic format used by this client. It extracts the validated
+    /// host but never authority user info, query, path, fragment, request payload or response
+    /// body. Optional fields are numeric or NSError's stable domain/code pair.
+    static func networkLogFacts(
+        endpoint: URL,
+        stage: NetworkLogStage,
+        status: Int? = nil,
+        responseBytes: Int? = nil,
+        responseLimitBytes: Int? = nil,
+        transportDomain: String? = nil,
+        transportCode: Int? = nil
+    ) -> String {
+        let host = URLComponents(
+            url: endpoint,
+            resolvingAgainstBaseURL: false
+        )?.host?.lowercased() ?? "unknown"
+        var fields = ["endpointHost=\(host)", "stage=\(stage.rawValue)"]
+        if let status { fields.append("status=\(status)") }
+        if let responseBytes { fields.append("responseBytes=\(responseBytes)") }
+        if let responseLimitBytes { fields.append("responseLimitBytes=\(responseLimitBytes)") }
+        if let transportDomain { fields.append("transportDomain=\(transportDomain)") }
+        if let transportCode { fields.append("transportCode=\(transportCode)") }
+        return fields.joined(separator: " ")
+    }
+
     /// 拼 base URL → `/v1/chat/completions`。兼容尾部带不带 `/`、带不带 `/v1`。
     ///
     /// **Review fix-soon #7，2026-06-15**：scheme 白名单。
     /// 拒绝任何非 `https://` 的远端端点；只对 `localhost` / `127.0.0.1` / `[::1]`
     /// 开 `http://` 例外（让用户能跑本地 Ollama / vLLM / LM Studio）。其它 `http://`
     /// 一律抛 `insecureBaseURL`——`Authorization: Bearer <key>` 走明文链路风险过高。
+    ///
+    /// v2026.07.18 P2 origin boundary fix: parse and validate the configured base as a complete
+    /// origin before appending endpoint path components. User info, query, fragment, an empty
+    /// host, ambiguous path separators and invalid ports are rejected rather than normalized;
+    /// otherwise a visually plausible setting can send the API key or payload somewhere the
+    /// user did not configure.
     public static func endpointURL(baseURL: String) throws -> URL {
-        let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: " /"))
-        guard !trimmed.isEmpty else { throw Error.invalidBaseURL }
-        let withV1 = trimmed.contains("/v1") ? trimmed : trimmed + "/v1"
-        let full = withV1 + "/chat/completions"
-        guard let url = URL(string: full),
-              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let scheme = comps.scheme?.lowercased() else {
+        guard !baseURL.isEmpty,
+              baseURL.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+              baseURL.rangeOfCharacter(from: .controlCharacters) == nil,
+              !baseURL.contains("\\"),
+              var components = URLComponents(string: baseURL),
+              let schemeValue = components.scheme,
+              let hostValue = components.host,
+              !hostValue.isEmpty,
+              components.user == nil,
+              components.password == nil,
+              components.percentEncodedQuery == nil,
+              components.percentEncodedFragment == nil,
+              components.url != nil else {
             throw Error.invalidBaseURL
         }
-        let host = (comps.host ?? "").lowercased()
+
+        let scheme = schemeValue.lowercased()
+        let host = hostValue.lowercased()
+        if let port = components.port, !(1...65_535).contains(port) {
+            throw Error.invalidBaseURL
+        }
+
+        // URLComponents accepts `https://host:` as a URL with a nil port. Keep the authority
+        // contract explicit instead of letting different URL stacks interpret the empty port.
+        guard let schemeSeparator = baseURL.range(of: "://") else {
+            throw Error.invalidBaseURL
+        }
+        let authorityAndPath = baseURL[schemeSeparator.upperBound...]
+        let authorityEnd = authorityAndPath.firstIndex { character in
+            character == "/" || character == "?" || character == "#"
+        } ?? authorityAndPath.endIndex
+        let authority = authorityAndPath[..<authorityEnd]
+        guard !authority.isEmpty, !authority.hasSuffix(":") else {
+            throw Error.invalidBaseURL
+        }
+
         switch scheme {
         case "https":
-            return url
+            break
         case "http":
             // 只放行本机环回地址
-            if Self.loopbackHosts.contains(host) {
-                return url
+            guard Self.loopbackHosts.contains(host) else {
+                throw Error.insecureBaseURL(scheme: scheme, host: host)
             }
-            throw Error.insecureBaseURL(scheme: scheme, host: host)
         default:
             throw Error.insecureBaseURL(scheme: scheme, host: host)
         }
+
+        let encodedPath = components.percentEncodedPath.lowercased()
+        let decodedPath = components.path
+        guard decodedPath.isEmpty || decodedPath.hasPrefix("/"),
+              !decodedPath.contains("//"),
+              !encodedPath.contains("%2f"),
+              !encodedPath.contains("%5c") else {
+            throw Error.invalidBaseURL
+        }
+
+        var pathSegments = decodedPath.split(separator: "/").map(String.init)
+        guard !pathSegments.contains(where: { $0 == "." || $0 == ".." }) else {
+            throw Error.invalidBaseURL
+        }
+
+        let completeEndpoint = ["v1", "chat", "completions"]
+        if !pathSegments.suffix(completeEndpoint.count).elementsEqual(completeEndpoint) {
+            if pathSegments.last == "v1" {
+                pathSegments.append(contentsOf: ["chat", "completions"])
+            } else {
+                pathSegments.append(contentsOf: completeEndpoint)
+            }
+        }
+
+        components.scheme = scheme
+        components.path = "/" + pathSegments.joined(separator: "/")
+        guard let endpoint = components.url else {
+            throw Error.invalidBaseURL
+        }
+        return endpoint
     }
 
     /// 本机环回 host 白名单（用于 baseURL scheme 校验放行 http://localhost）。
@@ -273,55 +832,54 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
         return loopbackHosts.contains(host)
     }
 
-    /// **Review fix-soon #6**：用 `URLSessionDataTask` + `withTaskCancellationHandler`
-    /// 把 Swift Concurrency 的 Task 取消信号真正桥到底层 HTTP 连接 cancel。
-    ///
-    /// 实现要点：
-    /// - 用 `withCheckedThrowingContinuation` 把 `URLSessionDataTask` 完成回调
-    ///   桥成 async；
-    /// - `withTaskCancellationHandler` 在外层 Task 被 cancel 时调用
-    ///   `dataTask.cancel()`，让底层 URLSession 立刻断连接、不再等服务端响应；
-    /// - cancellation 路径把 `URLError.cancelled` 翻译为 Swift 的
-    ///   `CancellationError`，便于上层用 `catch is CancellationError` 精确处理。
-    /// - **continuation 单 resume 保证**：用 `resumed` 计数器防止 cancel 与
-    ///   completion 竞争时双 resume crash（Swift Concurrency 严格要求恰好 resume 一次）。
-    private static func dataWithCancellation(
+    /// v2026.07.18 P2 root fix: the session's data delegate receives and caps chunks; this method
+    /// only owns the cancellation bridge. `OpenAIChatTaskCancellationOwnership` linearizes the
+    /// cancel-before-install and install-before-cancel schedules, and the delegate registry owns
+    /// the checked continuation until exactly one terminal callback or size rejection removes it.
+    static func dataWithCancellation(
         session: URLSession,
-        request: URLRequest
+        request: URLRequest,
+        responseLimitBytes: Int
     ) async throws -> (Data, URLResponse) {
-        // 用引用包一下，让 cancellation handler 能访问到 dataTask。
-        final class TaskBox: @unchecked Sendable {
-            var task: URLSessionDataTask?
-        }
-        let box = TaskBox()
+        precondition(responseLimitBytes > 0)
+        let cancellationOwnership = OpenAIChatTaskCancellationOwnership()
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<(Data, URLResponse), Swift.Error>) in
-                let dataTask = session.dataTask(with: request) { data, response, error in
-                    if let error {
-                        // URLError.cancelled → 翻译成 CancellationError
-                        if (error as? URLError)?.code == .cancelled {
-                            cont.resume(throwing: CancellationError())
-                        } else {
-                            cont.resume(throwing: error)
-                        }
+            defer { cancellationOwnership.finish() }
+            do {
+                return try await withCheckedThrowingContinuation { continuation in
+                    guard let delegate = session.delegate as? OpenAIChatRedirectRejectingDelegate else {
+                        continuation.resume(throwing: URLError(.unsupportedURL))
                         return
                     }
-                    guard let data, let response else {
-                        cont.resume(throwing: URLError(.badServerResponse))
+
+                    let dataTask = session.dataTask(with: request)
+                    guard delegate.register(
+                        session: session,
+                        task: dataTask,
+                        limitBytes: responseLimitBytes,
+                        continuation: continuation
+                    ) else {
+                        dataTask.cancel()
+                        continuation.resume(throwing: URLError(.badServerResponse))
                         return
                     }
-                    cont.resume(returning: (data, response))
+
+                    _ = cancellationOwnership.install {
+                        dataTask.cancel()
+                    }
+                    // A task cancelled while still suspended needs one resume to drive the URL
+                    // loading completion callback that settles the registered continuation.
+                    dataTask.resume()
                 }
-                box.task = dataTask
-                // 如果 Task 已经被 cancel（race：cancel 在 dataTask 启动前到达），
-                // 立即 cancel（dataTask.cancel 是幂等的）。
-                if Task.isCancelled {
-                    dataTask.cancel()
-                }
-                dataTask.resume()
+            } catch let error as URLError where error.code == .cancelled {
+                throw CancellationError()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                throw error
             }
         } onCancel: {
-            box.task?.cancel()
+            cancellationOwnership.requestCancellation()
         }
     }
 

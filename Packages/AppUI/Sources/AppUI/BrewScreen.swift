@@ -1,6 +1,79 @@
 import SwiftUI
 import BrewKit
+import LogKit
 import SafetyKit
+
+/// v2026.07.18：BrewKit 保持零依赖并返回稳定字段；AppUI 作为消费边界统一写入本地日志。
+/// 不记录 JSON 原文或 localizedDescription，避免诊断意外携带缓存内容。
+private enum BrewLocalDiagnosticLogger {
+    static func record(_ diagnostics: [BrewDiagnostic]) {
+        for diagnostic in diagnostics {
+            let errorDomain = diagnostic.errorDomain ?? "none"
+            let errorCode = diagnostic.errorCode.map { String($0) } ?? "none"
+            let rejectedEntryCount = diagnostic.rejectedEntryCount.map { String($0) } ?? "none"
+            GSYLog.warning(
+                .app,
+                "brew.local_evidence_issue source=\(diagnostic.source.rawValue) "
+                    + "stage=\(diagnostic.stage.rawValue) reason=\(diagnostic.reason.rawValue) "
+                    + "path=\(diagnostic.path) error_domain=\(errorDomain) "
+                    + "error_code=\(errorCode) rejected_entries=\(rejectedEntryCount)"
+            )
+        }
+    }
+}
+
+/// v2026.07.18 P2 UI contract: a zero count is not an empty state by itself. Installed and
+/// Cleanup use this same projection so only `.complete`/`.missing` evidence can authorize empty
+/// copy; partial/unavailable results must remain visibly incomplete.
+enum BrewEvidencePresentation: Sendable, Equatable {
+    case idle
+    case authoritativeEmpty
+    case incompleteEmpty
+    case content(incomplete: Bool)
+
+    static func evaluate(
+        itemCount: Int,
+        status: BrewEvidenceStatus?
+    ) -> BrewEvidencePresentation {
+        guard let status else { return .idle }
+        if itemCount == 0 {
+            return status.isAuthoritative ? .authoritativeEmpty : .incompleteEmpty
+        }
+        return .content(incomplete: status.isIncomplete)
+    }
+}
+
+/// “没有可升级项”只有在相关 registry 完整时才是权威结论；cache 缺失或损坏是不同终态。
+enum BrewOutdatedEvidenceState: Sendable, Equatable {
+    case idle
+    case complete
+    case cacheMissing
+    case incomplete
+
+    static func evaluate(
+        installed: BrewPackageListResult,
+        registry: BrewRegistry
+    ) -> BrewOutdatedEvidenceState {
+        guard installed.status.isAuthoritative else { return .incomplete }
+        var statuses: [BrewRegistrySourceStatus] = []
+        if installed.packages.contains(where: { $0.kind == .formula }) {
+            statuses.append(registry.formulaStatus)
+        }
+        if installed.packages.contains(where: { $0.kind == .cask }) {
+            statuses.append(registry.caskStatus)
+        }
+        if statuses.isEmpty {
+            statuses = [registry.formulaStatus, registry.caskStatus]
+        }
+        if statuses.contains(where: { $0 == .unavailable || $0 == .partial }) {
+            return .incomplete
+        }
+        if statuses.contains(.missing) {
+            return .cacheMissing
+        }
+        return .complete
+    }
+}
 
 /// Orders the post-submission UI transition for Professional file tools.
 ///
@@ -57,6 +130,44 @@ enum BrewCleanupTerminalProjection {
     }
 }
 
+/// Brew 的三个只读刷新入口共用一个 owner。`Task.cancel()` 只发出停止请求，真正决定
+/// 谁能写 packages/outdated/cleanupPlan 和关闭 spinner 的是这条 revision 身份。
+enum BrewReloadKind: String, Sendable, Equatable {
+    case installed
+    case outdated
+    case cleanup
+}
+
+struct BrewReloadIdentity: Sendable, Equatable {
+    let ownerID: UUID
+    let revision: UInt64
+    let kind: BrewReloadKind
+}
+
+struct BrewReloadGate: Sendable, Equatable {
+    private(set) var current: BrewReloadIdentity?
+
+    mutating func begin(_ identity: BrewReloadIdentity) {
+        current = identity
+    }
+
+    mutating func invalidate() {
+        current = nil
+    }
+
+    /// nil 表示迟到的旧 owner，无权触碰任何 UI 状态；false 表示当前 owner 已收敛，
+    /// 但因为取消或 tab 已变化不能发布结果。只有 true 可以提交值模型。
+    mutating func finishIfCurrent(
+        _ identity: BrewReloadIdentity,
+        visibleKind: BrewReloadKind,
+        taskWasCancelled: Bool
+    ) -> Bool? {
+        guard current == identity else { return nil }
+        current = nil
+        return !taskWasCancelled && visibleKind == identity.kind
+    }
+}
+
 /// F-2-4 / 2026-06：Homebrew 包管理屏（sidebar 入口接入）。
 ///
 /// dev 期 MVP（直接读 Cellar / Caskroom，不执行 brew 命令）：
@@ -72,15 +183,24 @@ public struct BrewScreen: View {
     private let controller: BrewController?
     private let cleanup: BrewCleanup?
     private let pipeline: any DeletionPipeline
+    /// v2026.07.20 P0: injected pipelines must carry their explicit Undo persistence owner.
+    private let undoHistoryStore: UndoHistoryStore
 
     @State private var packages: [BrewPackage] = []
+    @State private var installedEvidenceStatus: BrewEvidenceStatus?
     @State private var outdated: [BrewOutdated] = []
+    @State private var outdatedEvidenceState: BrewOutdatedEvidenceState = .idle
     @State private var cleanupPlan: BrewCleanupPlan?
     @State private var cleanupBytesByPath: [String: Int64] = [:]
+    @State private var cleanupEvidenceStatus: BrewEvidenceStatus?
     @State private var selectedTab: Tab = .installed
     @State private var isLoading: Bool = false
+    @State private var reloadTask: Task<Void, Never>?
+    @State private var reloadRevision: UInt64 = 0
+    @State private var reloadGate = BrewReloadGate()
     @State private var isCleaning: Bool = false
     @State private var activeSheet: ActiveSheet?
+    @State private var preflightNotice: DeletionPreflightNotice?
     @State private var cleanupDeletionHandoff = ToolDeletionHandoff<CleanupConfirmedDeletion>()
     @State private var cleanupPreflightTask: Task<Void, Never>?
     @State private var cleanupPreflightGate = ToolDeletionPreflightRequestGate<[String]>()
@@ -108,13 +228,11 @@ public struct BrewScreen: View {
 
     private enum ActiveSheet: Identifiable {
         case confirm(CleanupDeleteRequest)
-        case preflightNotice(DeletionPreflightNotice)
         case result(OperationResultCompletion)
 
         var id: String {
             switch self {
             case .confirm(let request): return "confirm-\(request.id)"
-            case .preflightNotice(let notice): return "preflightNotice-\(notice.id)"
             case .result(let payload): return "result-\(payload.id)"
             }
         }
@@ -140,11 +258,13 @@ public struct BrewScreen: View {
     }
 
     public init(controller: BrewController? = BrewController.detectDefault(),
-                cleanup: BrewCleanup? = BrewCleanup.detectDefault(),
-                pipeline: any DeletionPipeline) {
+                cleanup: BrewCleanup? = BrewCleanup.defaultCacheCandidate(),
+                pipeline: any DeletionPipeline,
+                undoHistoryStore: UndoHistoryStore) {
         self.controller = controller
         self.cleanup = cleanup
         self.pipeline = pipeline
+        self.undoHistoryStore = undoHistoryStore
     }
 
     public var body: some View {
@@ -161,6 +281,10 @@ public struct BrewScreen: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // v2026.07.20 P0: rejection evidence must not insert a persistent row into tool content.
+        .deletionPreflightNoticeOverlay(preflightNotice) {
+            preflightNotice = nil
+        }
         .task { reloadInstalled() }
         .sheet(item: $activeSheet, onDismiss: completeCleanupSheetDismissal) { sheet in
             switch sheet {
@@ -180,10 +304,6 @@ public struct BrewScreen: View {
                         return true
                     }
                 )
-            case .preflightNotice(let notice):
-                DeletionPreflightNoticeSheet(notice: notice) {
-                    activeSheet = nil
-                }
             case .result(let completion):
                 OperationResultSheet(completion: completion) {
                     activeSheet = nil
@@ -191,6 +311,7 @@ public struct BrewScreen: View {
             }
         }
         .onDisappear {
+            cancelReloadForDeparture()
             cancelCleanupPreflight()
         }
     }
@@ -280,12 +401,27 @@ public struct BrewScreen: View {
 
     @ViewBuilder
     private var installedSection: some View {
-        if packages.isEmpty && !isLoading {
+        switch BrewEvidencePresentation.evaluate(
+            itemCount: packages.count,
+            status: installedEvidenceStatus
+        ) {
+        case .idle:
+            EmptyView()
+        case .authoritativeEmpty:
             Text("brew.installed.empty", bundle: .module)
                 .font(.callout)
                 .foregroundStyle(.tertiary)
-        } else {
+        case .incompleteEmpty:
+            Text("brew.installed.incomplete", bundle: .module)
+                .font(.callout)
+                .foregroundStyle(.orange)
+        case .content(let incomplete):
             VStack(alignment: .leading, spacing: 6) {
+                if incomplete {
+                    Text("brew.installed.incomplete", bundle: .module)
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                }
                 Text(verbatim: AppLocalization.format(
                     "brew.installed.count %lld",
                     locale: locale,
@@ -344,12 +480,20 @@ public struct BrewScreen: View {
     @ViewBuilder
     private var outdatedSection: some View {
         if outdated.isEmpty && !isLoading {
-            // dev 期不下载 jws；用户主动点 Refresh 才尝试。
-            Text("brew.outdated.empty_hint", bundle: .module)
+            Text(outdatedEvidenceState == .complete
+                 ? "brew.outdated.empty_hint"
+                 : outdatedEvidenceState == .incomplete
+                    ? "brew.outdated.registry_incomplete"
+                    : "brew.outdated.registry_missing", bundle: .module)
                 .font(.callout)
                 .foregroundStyle(.tertiary)
         } else {
             VStack(alignment: .leading, spacing: 6) {
+                if outdatedEvidenceState == .incomplete {
+                    Text("brew.outdated.registry_incomplete", bundle: .module)
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                }
                 Text(verbatim: AppLocalization.format(
                     "brew.outdated.count %lld",
                     locale: locale,
@@ -390,51 +534,25 @@ public struct BrewScreen: View {
     @ViewBuilder
     private var cleanupSection: some View {
         if let plan = cleanupPlan {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Label {
-                        Text(verbatim: AppLocalization.format(
-                            "brew.cleanup.summary %lld %@",
-                            locale: locale,
-                            arguments: [Int64(plan.stalePaths.count), byteString(plan.totalBytes)]
-                        ))
-                    } icon: {
-                        Image(systemName: "trash")
-                    }
-                        .font(.subheadline)
-                        .foregroundStyle(plan.isEmpty ? Color.secondary : Color.orange)
-                    Spacer()
-                    if isCleaning {
-                        ProgressView().controlSize(.small)
-                    }
-                    Button {
-                        prepareCleanupForTrash(plan)
-                    } label: {
-                        Label(AppLocalization.string("brew.cleanup.move_to_trash", locale: locale),
-                              systemImage: "trash")
-                    }
-                    .disabled(plan.isEmpty || isCleaning)
-                }
-                Text("brew.cleanup.review_note", bundle: .module)
-                    .font(.caption)
+            if cleanupEvidenceStatus == .missing {
+                Text("brew.cleanup.cache_missing", bundle: .module)
+                    .font(.callout)
                     .foregroundStyle(.tertiary)
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 4) {
-                        ForEach(plan.stalePaths, id: \.self) { url in
-                            HStack(spacing: 6) {
-                                Image(systemName: "doc")
-                                    .foregroundStyle(.secondary)
-                                Text(verbatim: url.lastPathComponent)
-                                    .font(.system(.body, design: .monospaced))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Spacer()
-                            }
-                            .padding(.vertical, 3)
-                            .padding(.horizontal, 6)
-                            .background(RoundedRectangle(cornerRadius: 5).fill(Color.secondary.opacity(0.05)))
-                        }
-                    }
+            } else {
+                switch BrewEvidencePresentation.evaluate(
+                    itemCount: plan.stalePaths.count,
+                    status: cleanupEvidenceStatus
+                ) {
+                case .idle:
+                    EmptyView()
+                case .incompleteEmpty:
+                    Text("brew.cleanup.incomplete", bundle: .module)
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                case .authoritativeEmpty:
+                    cleanupPlanContent(plan, incomplete: false)
+                case .content(let incomplete):
+                    cleanupPlanContent(plan, incomplete: incomplete)
                 }
             }
         } else if isLoading {
@@ -452,6 +570,65 @@ public struct BrewScreen: View {
         }
     }
 
+    @ViewBuilder
+    private func cleanupPlanContent(
+        _ plan: BrewCleanupPlan,
+        incomplete: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if incomplete {
+                Text("brew.cleanup.incomplete", bundle: .module)
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
+            HStack {
+                Label {
+                    Text(verbatim: AppLocalization.format(
+                        "brew.cleanup.summary %lld %@",
+                        locale: locale,
+                        arguments: [Int64(plan.stalePaths.count), byteString(plan.totalBytes)]
+                    ))
+                } icon: {
+                    Image(systemName: "trash")
+                }
+                    .font(.subheadline)
+                    .foregroundStyle(plan.isEmpty ? Color.secondary : Color.orange)
+                Spacer()
+                if isCleaning {
+                    ProgressView().controlSize(.small)
+                }
+                Button {
+                    prepareCleanupForTrash(plan)
+                } label: {
+                    Label(AppLocalization.string("brew.cleanup.move_to_trash", locale: locale),
+                          systemImage: "trash")
+                }
+                .disabled(plan.isEmpty || isCleaning)
+            }
+            Text("brew.cleanup.review_note", bundle: .module)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    ForEach(plan.stalePaths, id: \.self) { url in
+                        HStack(spacing: 6) {
+                            Image(systemName: "doc")
+                                .foregroundStyle(.secondary)
+                            Text(verbatim: url.lastPathComponent)
+                                .font(.system(.body, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer()
+                        }
+                        .padding(.vertical, 3)
+                        .padding(.horizontal, 6)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(Color.secondary.opacity(0.05)))
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - actions
 
     private func refresh() {
@@ -464,28 +641,70 @@ public struct BrewScreen: View {
 
     private func reloadInstalled() {
         guard let ctl = controller else { return }
-        isLoading = true
-        Task.detached {
-            let pkgs = ctl.listAll()
-            await MainActor.run {
-                packages = pkgs
-                isLoading = false
+        let (identity, previousOwner) = beginReload(kind: .installed)
+        reloadTask = Task { @MainActor in
+            if let previousOwner { await previousOwner.value }
+            guard reloadGate.current == identity, !Task.isCancelled else { return }
+            let worker = Task.detached(priority: .userInitiated) {
+                let result = ctl.listAllWithDiagnostics()
+                BrewLocalDiagnosticLogger.record(result.diagnostics)
+                return result
             }
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard let shouldPublish = reloadGate.finishIfCurrent(
+                identity,
+                visibleKind: selectedReloadKind,
+                taskWasCancelled: Task.isCancelled
+            ) else { return }
+            reloadTask = nil
+            isLoading = false
+            guard shouldPublish else { return }
+            // v2026.07.18 P2: diagnostics are not merely logged; the evidence status is committed
+            // with the same reload identity and controls whether the empty copy is authoritative.
+            packages = result.packages
+            installedEvidenceStatus = result.status
         }
     }
 
     private func reloadOutdated() {
         guard let ctl = controller else { return }
-        isLoading = true
-        Task.detached {
-            // BrewRegistry 用户本地 brew api cache（brew update 一下就有）。
-            // 完全离线场景下 registry 是空的，outdated == [] 是合理结果。
-            let registry = BrewRegistry.loadDefault()
-            let result = ctl.outdated(using: registry)
-            await MainActor.run {
-                outdated = result
-                isLoading = false
+        let (identity, previousOwner) = beginReload(kind: .outdated)
+        reloadTask = Task { @MainActor in
+            if let previousOwner { await previousOwner.value }
+            guard reloadGate.current == identity, !Task.isCancelled else { return }
+            let worker = Task.detached(priority: .userInitiated) {
+                // BrewRegistry 只读用户本地 brew api cache；缺失与损坏都不能被解释为
+                // “全部已是最新”，终态由 BrewOutdatedEvidenceState 单独承载。
+                let installed = ctl.listAllWithDiagnostics()
+                let registry = BrewRegistry.loadDefault()
+                BrewLocalDiagnosticLogger.record(installed.diagnostics + registry.diagnostics)
+                return (
+                    ctl.outdated(installedPackages: installed.packages, using: registry),
+                    BrewOutdatedEvidenceState.evaluate(
+                        installed: installed,
+                        registry: registry
+                    )
+                )
             }
+            let (result, evidenceState) = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard let shouldPublish = reloadGate.finishIfCurrent(
+                identity,
+                visibleKind: selectedReloadKind,
+                taskWasCancelled: Task.isCancelled
+            ) else { return }
+            reloadTask = nil
+            isLoading = false
+            guard shouldPublish else { return }
+            outdated = result
+            outdatedEvidenceState = evidenceState
         }
     }
 
@@ -495,38 +714,75 @@ public struct BrewScreen: View {
         cleanupScanRevision &+= 1
         let scanRevision = cleanupScanRevision
         guard let c = cleanup else {
+            cancelReloadForDeparture()
             cleanupPlan = nil
             cleanupBytesByPath = [:]
-            isLoading = false
+            cleanupEvidenceStatus = .missing
             return
         }
-        isLoading = true
-        Task.detached {
-            let plan = c.dryRun()
-            let bytesByPath = Dictionary(uniqueKeysWithValues: plan.stalePaths.map { url in
-                let bytes: Int64
-                do {
-                    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-                    bytes = (attributes[.size] as? NSNumber)?.int64Value ?? 0
-                } catch {
-                    // Per-item bytes are presentation metadata only.  The aggregate from
-                    // BrewCleanup remains authoritative when a file disappears between
-                    // enumeration and this snapshot, so a missing value is not a cleanup
-                    // failure and must not abort the refresh.
-                    bytes = 0
-                }
-                return (url.path, max(0, bytes))
-            })
-            await MainActor.run {
-                // v2026.07.16: an older detached scan must not overwrite a newer result set or
-                // lend its review identity to paths that the user never reviewed together.
-                guard cleanupScanSessionID == scanSessionID,
-                      cleanupScanRevision == scanRevision else { return }
-                cleanupPlan = plan
-                cleanupBytesByPath = bytesByPath
-                isLoading = false
+        let (identity, previousOwner) = beginReload(kind: .cleanup)
+        reloadTask = Task { @MainActor in
+            if let previousOwner { await previousOwner.value }
+            guard reloadGate.current == identity, !Task.isCancelled else { return }
+            let worker = Task.detached(priority: .userInitiated) {
+                // v2026.07.18 P2: plan, per-path bytes, completeness and diagnostics are produced
+                // by one filesystem snapshot. AppUI never re-reads attributes with a zero fallback.
+                let result = c.dryRunWithEvidence()
+                BrewLocalDiagnosticLogger.record(result.diagnostics)
+                return result
             }
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard let shouldPublish = reloadGate.finishIfCurrent(
+                identity,
+                visibleKind: selectedReloadKind,
+                taskWasCancelled: Task.isCancelled
+            ) else { return }
+            reloadTask = nil
+            isLoading = false
+            // 删除能力 identity 与 UI reload owner 双重绑定；任一变化都拒绝旧结果。
+            guard shouldPublish,
+                  cleanupScanSessionID == scanSessionID,
+                  cleanupScanRevision == scanRevision else { return }
+            cleanupPlan = result.plan
+            cleanupBytesByPath = result.bytesByPath
+            cleanupEvidenceStatus = result.status
         }
+    }
+
+    private var selectedReloadKind: BrewReloadKind {
+        switch selectedTab {
+        case .installed: return .installed
+        case .outdated: return .outdated
+        case .cleanup: return .cleanup
+        }
+    }
+
+    private func beginReload(
+        kind: BrewReloadKind
+    ) -> (identity: BrewReloadIdentity, previousOwner: Task<Void, Never>?) {
+        let previousOwner = reloadTask
+        previousOwner?.cancel()
+        reloadRevision &+= 1
+        let identity = BrewReloadIdentity(
+            ownerID: UUID(),
+            revision: reloadRevision,
+            kind: kind
+        )
+        reloadGate.begin(identity)
+        isLoading = true
+        return (identity, previousOwner)
+    }
+
+    private func cancelReloadForDeparture() {
+        // 先失效 owner，再取消任务；即使同步 FileManager 调用随后才返回，也不能写回。
+        reloadGate.invalidate()
+        reloadTask?.cancel()
+        reloadTask = nil
+        isLoading = false
     }
 
     private func prepareCleanupForTrash(_ plan: BrewCleanupPlan) {
@@ -534,6 +790,8 @@ public struct BrewScreen: View {
               !isCleaning,
               !cleanupDeletionHandoff.hasPending,
               activeSheet == nil else { return }
+        // v2026.07.20: non-modal rejection evidence never owns the sheet slot.
+        preflightNotice = nil
         let paths = plan.stalePaths.map(\.path)
         cleanupPreflightTask?.cancel()
         let token = cleanupPreflightGate.begin(context: paths)
@@ -544,7 +802,10 @@ public struct BrewScreen: View {
         )
         isCleaning = true
         cleanupPreflightTask = Task { @MainActor in
-            let coordinator = DeletionInteractionCoordinator(pipeline: pipeline)
+            let coordinator = DeletionInteractionCoordinator(
+                pipeline: pipeline,
+                undoHistoryStore: undoHistoryStore
+            )
             let decision: DeletionInteractionPreparation
             do {
                 let intent = try coordinator.makeIntent(
@@ -589,7 +850,7 @@ public struct BrewScreen: View {
                     prepared: prepared
                 ))
             case .blocked(let block):
-                activeSheet = .preflightNotice(DeletionPreflightNotice(rejections: block.rejections))
+                preflightNotice = DeletionPreflightNotice(rejections: block.rejections)
             case .cancelled:
                 return
             }
@@ -614,7 +875,10 @@ public struct BrewScreen: View {
         isCleaning = true
         Task { @MainActor in
             defer { isCleaning = false }
-            let coordinator = DeletionInteractionCoordinator(pipeline: pipeline)
+            let coordinator = DeletionInteractionCoordinator(
+                pipeline: pipeline,
+                undoHistoryStore: undoHistoryStore
+            )
             let authorization: DeletionAuthorizedInteraction
             switch coordinator.authorize(
                 prepared: confirmed.request.prepared,
@@ -625,9 +889,10 @@ public struct BrewScreen: View {
             case .cancelled:
                 return
             case .blocked(let block):
-                activeSheet = .preflightNotice(DeletionPreflightNotice(
+                activeSheet = nil
+                preflightNotice = DeletionPreflightNotice(
                     rejections: block.rejections
-                ))
+                )
                 return
             }
             let submission = await coordinator.submit(authorization, accessDeniedPaths: [])
@@ -643,7 +908,8 @@ public struct BrewScreen: View {
                 ))
                 return
             case .blocked(let block):
-                activeSheet = .preflightNotice(DeletionPreflightNotice(rejections: block.rejections))
+                activeSheet = nil
+                preflightNotice = DeletionPreflightNotice(rejections: block.rejections)
                 return
             }
             let result = completed.result

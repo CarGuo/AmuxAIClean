@@ -35,6 +35,17 @@ final class SmartCarePresentationTests: XCTestCase {
         }
     }
 
+    func test_scanAgainDispatchReturnsToSetupWithoutStartingScan() {
+        XCTAssertEqual(
+            SmartCarePrimaryActionDispatch.resolve(.scanAgain),
+            .returnToSetup
+        )
+        XCTAssertEqual(
+            SmartCarePrimaryActionDispatch.resolve(.startScan),
+            .startScan
+        )
+    }
+
     func test_primaryActionPresentation_清理入口始终使用预览授权文案() {
         XCTAssertEqual(
             SmartCarePresentation.primaryActionTitleKey(for: .cleanSafeItems, requiresConfirmation: false),
@@ -66,6 +77,41 @@ final class SmartCarePresentationTests: XCTestCase {
         XCTAssertEqual(
             SmartCarePresentation.durationBadgeKey(for: .developerCaches),
             "smart_care.scope.may_take_longer"
+        )
+    }
+
+    func test_developerCacheSelection_首次开启要求确认_其余变化直接应用() {
+        XCTAssertEqual(
+            SmartCareStageSelectionPolicy.decision(
+                stage: .developerCaches,
+                selected: true,
+                developerWarningAcknowledged: false
+            ),
+            .confirmDeveloperCacheDuration
+        )
+        XCTAssertEqual(
+            SmartCareStageSelectionPolicy.decision(
+                stage: .developerCaches,
+                selected: true,
+                developerWarningAcknowledged: true
+            ),
+            .apply
+        )
+        XCTAssertEqual(
+            SmartCareStageSelectionPolicy.decision(
+                stage: .developerCaches,
+                selected: false,
+                developerWarningAcknowledged: false
+            ),
+            .apply
+        )
+        XCTAssertEqual(
+            SmartCareStageSelectionPolicy.decision(
+                stage: .core,
+                selected: true,
+                developerWarningAcknowledged: false
+            ),
+            .apply
         )
     }
 

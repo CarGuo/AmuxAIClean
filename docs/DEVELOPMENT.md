@@ -11,7 +11,7 @@
 - 工程描述：原生 Xcode 工程 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj)（直接入仓，无 xcodegen / project.yml）
 - 9 个独立 SwiftPM 包（AIKit / AppUI / BrewKit / FileSearchKit / HeuristicKit / LogKit / SafetyKit / ScanKit / TestHarness）+ 主 App，作为 Local SPM 在 Xcode UI 的 Package Dependencies 区域引用
 - 删除走 [TrashPipeline](../Packages/AppUI/Sources/AppUI/TrashPipeline.swift) 直接调 `NSWorkspace.recycle`，无特权进程
-- CI 用 GitHub Actions macos-15 runner（v1.5.x 起 `xcode-build` job 暂时屏蔽以省 Actions 额度，保留 9 包 `swift test`）
+- GitHub Actions 配置当前只保留手动入口，CI 与 Release job 都以 `if: false` 显式停用；提交质量证据来自本地 9 包测试和目标 Xcode 构建
 
 ---
 
@@ -80,11 +80,13 @@ Debug 签名由 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 里的 `CODE_S
 ## Release 打包 + DMG
 
 ```bash
-VERSION=1.5.6 ./Scripts/build_release.sh --no-notarize
-VERSION=1.5.6 AMUX_CLEAN_NOTARY_KEYCHAIN_PROFILE=amux-notary ./Scripts/build_release.sh --notarize
+./Scripts/build_release.sh --no-notarize
+AMUX_CLEAN_NOTARY_KEYCHAIN_PROFILE=amux-notary ./Scripts/build_release.sh --notarize
 ```
 
 [Scripts/build_release.sh](../Scripts/build_release.sh) 走 `xcodebuild -configuration Release`。Release 签名由 [project.pbxproj](../GSYCleanMac.xcodeproj/project.pbxproj) 里的 Manual + Developer ID Application 配置决定；`--notarize` 会额外执行 Apple Notary、staple 与 Gatekeeper 校验。
+未传 `VERSION` 时脚本使用工程当前 `MARKETING_VERSION`；只有明确制作另一个版本候选时才传入
+`VERSION=x.y.z`，避免文档示例固化并回写过期版本。
 
 ---
 
@@ -153,7 +155,7 @@ GSYCleanMac/
 │  ├─ LogKit/                    # 结构化日志
 │  ├─ BrewKit/                   # Homebrew 集成
 │  ├─ FileSearchKit/             # 通用文件搜索
-│  ├─ AIKit/                     # 可选 AI 建议（零网络硬约束由 UI 层守）
+│  ├─ AIKit/                     # 可选 AI 建议（默认关闭；仅用户主动请求时访问其配置端点）
 │  └─ TestHarness/               # 测试基础设施
 ├─ Resources/
 │  └─ Rules/
@@ -180,8 +182,8 @@ GSYCleanMac/
 │  ├─ COMPETITORS.md             # 竞品总览
 │  └─ competitors/               # 单家竞品分析
 ├─ .github/workflows/
-│  ├─ ci.yml                     # push/PR -> 9 包 swift test（xcode-build job 暂屏蔽）
-│  └─ release.yml                # workflow_dispatch 手动触发 -> Release + DMG + sha256（push tag 自动触发暂关）
+│  ├─ ci.yml                     # 仅保留 workflow_dispatch；全部 job 当前 if: false
+│  └─ release.yml                # 仅保留 workflow_dispatch；release job 当前 if: false
 ├─ GSYCleanMac.xcodeproj/        # 原生 Xcode 工程（v1.5.x 后入仓，xcuserdata 仍 ignore）
 ├─ PITFALLS.md                   # 避坑手册（开工必读）
 ├─ SECURITY.md                   # 安全模型与威胁模型说明
@@ -194,46 +196,38 @@ GSYCleanMac/
 
 ## CI / Release 工作流
 
+<!-- v2026.07.18：按 workflow 的真实触发器和 job 条件重写，禁止把停用配置描述成可执行发布链。 -->
+
 ### CI（[.github/workflows/ci.yml](../.github/workflows/ci.yml)）
 
-- 触发：push 到 main / PR 到 main
-- runner：macos-15
-- 步骤：actions/cache@v4 缓存 SwiftPM build → 跑 9 个包 `swift test --parallel` → `xcodebuild Debug` job 暂用 `if: false` 屏蔽（省 GitHub Actions 额度，将来可一键打开）
-- 全部包测试通过才算绿（具体数以运行时 `swift test` 输出为准）
+- 仅声明 `workflow_dispatch`；push / pull request 不触发。
+- `swift-test` 和 `xcode-build` 两个 job 当前都为 `if: false`，手动 Run workflow 也不会分配 runner 或产生测试结果。
+- 因此 GitHub 上没有可称为“CI 绿”的自动证据。提交前必须按根目录 [AGENTS.md](../AGENTS.md) 在本地跑对应包测试；跨主链路改动跑全部 9 包，再做目标 Debug 构建。
 
 ### Release（[.github/workflows/release.yml](../.github/workflows/release.yml)）
 
-- 触发：**仅 `workflow_dispatch` 手动触发**（push tag 自动触发已暂时关掉省额度）
-- runner：macos-15
-- 步骤：inline `xcodebuild`（CI 需要注入对应企业证书和 provisioning profile）→ [Scripts/make_dmg.sh](../Scripts/make_dmg.sh) → `shasum -a 256` → upload-artifact + softprops/action-gh-release@v2 自动建 Release
+- 仅声明 `workflow_dispatch`，但 `release-disabled` job 当前为 `if: false`。
+- push tag 不触发；手动 dispatch 也不会构建、上传 artifact 或创建 GitHub Release。
+- 当前有效发布路径是维护者本地 Developer ID 构建和最终 DMG-only Notary 链路。
 
 ### 发版步骤
 
-```bash
-# 1. 改 App/Info.plist 里 CFBundleShortVersionString，跟 git tag 对齐
-# 2. 提交、合并到 main
-git push origin main
-
-# 3. 打 tag（仅做版本标记，不触发 CI 自动打包）
-git tag -a v1.5.6 -m "v1.5.6 - <change summary>"
-git push origin v1.5.6
-
-# 4. 去 GitHub Actions UI 里 release.yml 点 "Run workflow" 手动触发
-# 5. 几分钟后 Releases 页会自动出现 GSYCleanMac-1.5.6.dmg + .sha256
-gh release view v1.5.6 --repo CarGuo/GSYCleanMac
-```
+版本、签名、公证、staple、Gatekeeper、最终 SHA256 及 tag 顺序只以
+[RELEASE.md](RELEASE.md) 为准，本开发文档不复制易漂移的命令。构建本地 Release/DMG 不等于已上传
+GitHub；commit、tag、push 和创建 Release 是分别授权的外部操作。
 
 ---
 
 ## 安全模型简述
 
-GSYCleanMac 的删除链路设计上**永远拒绝 unlink**，所有"删除"都走废纸篓，用户保留最后一次反悔窗口。完整威胁模型与红线见 [SECURITY.md](../SECURITY.md)。
+GSYCleanMac 的删除链路设计上**永远拒绝 unlink**，所有候选只在用户确认后通过
+`NSWorkspace.recycle` 移入废纸篓。完整威胁模型与红线见 [SECURITY.md](../SECURITY.md)。
 
 三道闸门：
 
-1. **连接级**：Helper 走 `NSXPCListener` + `mach service` 名字白名单
-2. **消息级**：每条 DeletionToken 都带 HMAC，Helper 启动读 `GSYCLEAN_ALLOW_REAL_DELETE`，缺省永远 dry-run
-3. **语义级**：[SafetyEngine.evaluate](../Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 三色判定，hardForbid 黑名单写死不可配置；vendor 命中后强制降为 confirm
+1. **候选级**：[SafetyEngine.evaluate](../Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 对路径、解析后身份、HOME/系统卷边界和 hard-forbid 做三色判定；
+2. **授权级**：确认状态机把精确路径、扫描 revision、风险 reason 和用户选择冻结为类型化 intent，View 不能自行决定 force；
+3. **执行级**：[TrashPipeline](../Packages/AppUI/Sources/AppUI/TrashPipeline.swift) 在提交前重新验证身份、Safety、白名单、权限与完整性证据，最终只调用 `NSWorkspace.recycle`。当前无特权 Helper/XPC。
 
 ---
 

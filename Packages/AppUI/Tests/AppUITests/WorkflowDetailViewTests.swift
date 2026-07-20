@@ -22,7 +22,7 @@ final class WorkflowDetailViewTests: XCTestCase {
         let emptyHome = makeTempHome()
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: emptyHome)) }
 
-        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: emptyHome)
+        let vm = WorkflowDetailViewModel(testingWorkflow: AppleWorkflow(), home: emptyHome)
         XCTAssertTrue(vm.cards.isEmpty, "未 bootstrap 前 cards 必须为空")
         XCTAssertFalse(vm.isAnyLoading)
 
@@ -43,7 +43,7 @@ final class WorkflowDetailViewTests: XCTestCase {
         let xcode = home.appendingPathComponent("Library/Developer/Xcode/DerivedData", isDirectory: true)
         try FileManager.default.createDirectory(at: xcode, withIntermediateDirectories: true)
 
-        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        let vm = WorkflowDetailViewModel(testingWorkflow: AppleWorkflow(), home: home)
         await vm.bootstrap()
 
         XCTAssertFalse(vm.cards.isEmpty, "造了 DerivedData 后必有 derived-data 卡")
@@ -60,7 +60,7 @@ final class WorkflowDetailViewTests: XCTestCase {
         let home = makeTempHome()
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
 
-        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        let vm = WorkflowDetailViewModel(testingWorkflow: AppleWorkflow(), home: home)
         await vm.bootstrap()
         let snapshot1 = vm.cardLoading
         await vm.bootstrap()
@@ -74,7 +74,7 @@ final class WorkflowDetailViewTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: home) }
         let gate = CardScanGate()
         let vm = WorkflowDetailViewModel(
-            workflow: FourDynamicCardsWorkflow(),
+            testingWorkflow: FourDynamicCardsWorkflow(),
             home: home,
             dynamicDiscovery: { scannerID, _, _ in
                 await gate.wait(scannerID)
@@ -120,7 +120,7 @@ final class WorkflowDetailViewTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: home) }
         let probe = WorkflowCancellationProbe()
         let vm = WorkflowDetailViewModel(
-            workflow: CancellationReentryWorkflow(),
+            testingWorkflow: CancellationReentryWorkflow(),
             home: home,
             versionedRootDiscovery: { _ in
                 await probe.discoverVersionedRoots()
@@ -182,8 +182,9 @@ final class WorkflowDetailViewTests: XCTestCase {
     }
 
     /// **v2026.07.16 root-cause regression:** row Retry is a card-scoped transaction. It
-    /// must preserve sibling phase/items and the full-scan revision. A second Retry supersedes
-    /// an uncooperative first provider, whose late result must never overwrite attempt two.
+    /// must preserve sibling phase/items and the full-scan revision. A second Retry cancels and
+    /// then joins an uncooperative first provider before attempt two acquires producer ownership;
+    /// the old result must still never overwrite the replacement.
     func test_单卡连续retry_其他卡与全局revision不变_旧任务晚到不能覆盖() async throws {
         let home = makeTempHome()
         defer { try? FileManager.default.removeItem(at: home) }
@@ -193,7 +194,7 @@ final class WorkflowDetailViewTests: XCTestCase {
         let siblingCard = try XCTUnwrap(cards.first { $0.id == "card.retry.sibling" })
         let probe = CardRetryProbe()
         let vm = WorkflowDetailViewModel(
-            workflow: workflow,
+            testingWorkflow: workflow,
             home: home,
             dynamicDiscovery: { scannerID, _, _ in
                 await probe.discover(scannerID: scannerID)
@@ -234,6 +235,13 @@ final class WorkflowDetailViewTests: XCTestCase {
         XCTAssertEqual(vm.scanEvidence.sessionID, originalSessionID)
 
         let secondRetry = Task { await vm.refreshCard(cardID: targetCard.id) }
+        try await Task.sleep(for: .milliseconds(100))
+        let callsBeforeOldSettlement = await probe.callCount()
+        XCTAssertEqual(callsBeforeOldSettlement, 1,
+                       "旧 retry producer 未退出前不得启动第二轮磁盘工作")
+
+        await probe.releaseFirstAttempt()
+        await firstRetry.value
         await secondRetry.value
         XCTAssertEqual(vm.cardHits[targetCard.id]?.first?.displayName, "attempt-2")
         XCTAssertEqual(vm.cardScanPhase(for: targetCard.id), .completed)
@@ -242,8 +250,6 @@ final class WorkflowDetailViewTests: XCTestCase {
         XCTAssertEqual(vm.scanEvidence.revision, 77)
         XCTAssertEqual(vm.scanEvidence.sessionID, originalSessionID)
 
-        await probe.releaseFirstAttempt()
-        await firstRetry.value
         XCTAssertEqual(vm.cardHits[targetCard.id]?.first?.displayName, "attempt-2",
                        "superseded attempt must not publish after its continuation resumes")
         XCTAssertEqual(vm.cardHits[siblingCard.id], [siblingHit])
@@ -262,7 +268,7 @@ final class WorkflowDetailViewTests: XCTestCase {
         let card = try XCTUnwrap(workflow.cards(home: home).first)
         let probe = ManagedWorkflowLifetimeProbe()
         let vm = WorkflowDetailViewModel(
-            workflow: workflow,
+            testingWorkflow: workflow,
             home: home,
             dynamicDiscovery: { scannerID, _, _ in
                 await probe.discover(scannerID: scannerID)
@@ -302,7 +308,7 @@ final class WorkflowDetailViewTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: home) }
         let probe = ManagedWorkflowLifetimeProbe()
         let vm = WorkflowDetailViewModel(
-            workflow: SingleManagedCardWorkflow(),
+            testingWorkflow: SingleManagedCardWorkflow(),
             home: home,
             dynamicDiscovery: { scannerID, _, _ in
                 await probe.discover(scannerID: scannerID)
@@ -351,7 +357,7 @@ final class WorkflowDetailViewTests: XCTestCase {
         let snapshotProbe = DerivedSnapshotProbe(snapshot: snapshot)
         let dynamicProbe = CallCounter()
         let vm = WorkflowDetailViewModel(
-            workflow: AppleWorkflow(),
+            testingWorkflow: AppleWorkflow(),
             home: home,
             dynamicDiscovery: { _, _, _ in
                 await dynamicProbe.increment()
@@ -381,7 +387,7 @@ final class WorkflowDetailViewTests: XCTestCase {
 
     /// PR-5：toggleSelection / clearAlert 这些纯函数路径不依赖磁盘，独立验证。
     func test_PR5_toggleSelection_clearAlert_纯逻辑_v17() async {
-        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: makeTempHome())
+        let vm = WorkflowDetailViewModel(testingWorkflow: AppleWorkflow(), home: makeTempHome())
         vm.toggleSelection(hitID: "a", on: true)
         vm.toggleSelection(hitID: "b", on: true)
         XCTAssertEqual(vm.selected, ["a", "b"])
@@ -418,7 +424,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             displayName: "ProjectB",
             note: nil
         )
-        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        let vm = WorkflowDetailViewModel(testingWorkflow: AppleWorkflow(), home: home)
         vm.setTestCards([rootCard, projectCard])
         vm.setTestHits([
             rootCard.id: [parent],
@@ -465,7 +471,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             note: nil
         )
         let vm = WorkflowDetailViewModel(
-            workflow: ParentChildDynamicWorkflow(),
+            testingWorkflow: ParentChildDynamicWorkflow(),
             home: home,
             dynamicDiscovery: { scannerID, _, _ in
                 if scannerID == "scanner.test.parent" {
@@ -1066,7 +1072,7 @@ final class WorkflowDetailViewTests: XCTestCase {
         let card = makeFilesystemCard(id: "card.android")
         let denied: Set<String> = ["/Denied"]
         let vm = WorkflowDetailViewModel(
-            workflow: AndroidWorkflow(),
+            testingWorkflow: AndroidWorkflow(),
             home: home
         )
         vm.setTestCards([card])
@@ -1087,17 +1093,35 @@ final class WorkflowDetailViewTests: XCTestCase {
 
         XCTAssertEqual(pipe.preflightPathsReceived, [hit.url.path])
         XCTAssertEqual(pipe.preflightDeniedReceived, denied)
-        guard case let .preflightNotice(_, rejections) = vm.activeSheet else {
+        guard let rejections = vm.preflightNotice?.rejections else {
             return XCTFail("尚未提交的安全拒绝必须进入 typed notice，而不是伪造执行结果")
         }
+        XCTAssertNil(vm.activeSheet, "pre-submit notice 不得占用 activeSheet")
+        XCTAssertFalse(
+            vm.isDeletionTransactionActive,
+            "v2026.07.20: inline notice must not lock the Workflow deletion transaction"
+        )
         XCTAssertEqual(rejections.first?.path, hit.url.path)
         XCTAssertNil(vm.lastDeleteResult)
         XCTAssertNil(vm.takePendingConfirmedDeleteIntent())
+
+        pipe.stubPreflight = DeletionPreflight(
+            allowedPaths: [hit.url.path],
+            rejections: []
+        )
+        await vm.requestDeleteConfirmation(pipeline: pipe)
+        guard case .deleteConfirm = vm.activeSheet else {
+            return XCTFail("A new review must proceed while the old inline notice is visible")
+        }
     }
 
     func test_vendorPathRule_专业模式进入严格确认并用类型化override执行() async throws {
         let home = makeTempHome()
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        // v2026.07.20: this stub publishes a moved pair and therefore writes Undo history.
+        // Keep that side effect in the test fixture; the production shared store is never test DI.
+        let (undoHistoryStore, undoHistoryURL) = try makeUndoStore()
+        defer { try? FileManager.default.removeItem(at: undoHistoryURL) }
         let path = "/Android/sdk/system-images"
         let hit = WorkflowScanHit(
             url: URL(fileURLWithPath: path),
@@ -1109,7 +1133,11 @@ final class WorkflowDetailViewTests: XCTestCase {
             id: "card.android.vendor",
             runningBundleIDPrefix: AndroidWorkflow.studioBundleIDPrefix
         )
-        let vm = WorkflowDetailViewModel(workflow: AndroidWorkflow(), home: home)
+        let vm = WorkflowDetailViewModel(
+            testingWorkflow: AndroidWorkflow(),
+            home: home,
+            undoHistoryStore: undoHistoryStore
+        )
         vm.setTestCards([card])
         vm.setTestHits([card.id: [hit]])
         vm.setTestSelection([hit.id])
@@ -1172,7 +1200,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             note: nil
         )
         let card = makeFilesystemCard(id: "card.android.vendor.final")
-        let vm = WorkflowDetailViewModel(workflow: AndroidWorkflow(), home: home)
+        let vm = WorkflowDetailViewModel(testingWorkflow: AndroidWorkflow(), home: home)
         vm.setTestCards([card])
         vm.setTestHits([card.id: [hit]])
         vm.setTestSelection([hit.id])
@@ -1216,7 +1244,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             note: nil
         )
         let card = makeFilesystemCard(id: "card.running")
-        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        let vm = WorkflowDetailViewModel(testingWorkflow: AppleWorkflow(), home: home)
         vm.setTestCards([card])
         vm.setTestHits([card.id: [hit]])
         vm.setTestSelection([hit.id])
@@ -1267,7 +1295,7 @@ final class WorkflowDetailViewTests: XCTestCase {
         let filesystemCard = makeFilesystemCard(id: "card.running")
         let managedCard = makeManagedCard(id: "card.managed")
         let vm = WorkflowDetailViewModel(
-            workflow: AppleWorkflow(),
+            testingWorkflow: AppleWorkflow(),
             home: home,
             simulatorCoordinator: SimulatorDeleteCoordinator(
                 executor: SubprocessExecutor(timeout: 1, dryRun: true),
@@ -1332,7 +1360,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             note: nil
         )
         let card = makeFilesystemCard(id: "card.cache")
-        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        let vm = WorkflowDetailViewModel(testingWorkflow: AppleWorkflow(), home: home)
         vm.setTestCards([card])
         vm.setTestHits([card.id: [hit]])
         vm.setTestSelection([hit.id])
@@ -1371,7 +1399,7 @@ final class WorkflowDetailViewTests: XCTestCase {
         }
 
         let vm = WorkflowDetailViewModel(
-            workflow: LiteralFilesystemWorkflow(path: target.path),
+            testingWorkflow: LiteralFilesystemWorkflow(path: target.path),
             home: home
         )
         await vm.bootstrap()
@@ -1402,7 +1430,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             ]
         ))
         let vm = WorkflowDetailViewModel(
-            workflow: VersionedOnlyWorkflow(ruleID: "android.sdk-platforms.versioned"),
+            testingWorkflow: VersionedOnlyWorkflow(ruleID: "android.sdk-platforms.versioned"),
             home: home,
             versionedRootDiscovery: { home in
                 await probe.discover(home: home)
@@ -1446,7 +1474,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             note: target.path
         )
         let vm = WorkflowDetailViewModel(
-            workflow: DynamicOnlyWorkflow(),
+            testingWorkflow: DynamicOnlyWorkflow(),
             home: home,
             dynamicDiscovery: { _, _, _ in
                 DiscoveryEvidence(
@@ -1479,7 +1507,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             withIntermediateDirectories: true
         )
         let vm = WorkflowDetailViewModel(
-            workflow: LiteralFilesystemWorkflow(path: emptyArchives.path),
+            testingWorkflow: LiteralFilesystemWorkflow(path: emptyArchives.path),
             home: home
         )
 
@@ -1512,7 +1540,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             note: target.path
         )
         let vm = WorkflowDetailViewModel(
-            workflow: DynamicOnlyWorkflow(),
+            testingWorkflow: DynamicOnlyWorkflow(),
             home: home,
             dynamicDiscovery: { _, _, _ in
                 DiscoveryEvidence(hits: [sourceHit], incompleteIssues: [issue])
@@ -1533,7 +1561,7 @@ final class WorkflowDetailViewTests: XCTestCase {
         let home = makeTempHome()
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
         let vm = WorkflowDetailViewModel(
-            workflow: DynamicOnlyWorkflow(),
+            testingWorkflow: DynamicOnlyWorkflow(),
             home: home,
             dynamicDiscovery: { _, _, _ in
                 throw InjectedDynamicDiscoveryError.failedWithoutScopedPath
@@ -1583,7 +1611,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             note: nil
         )
         let card = makeFilesystemCard(id: "card.sibling-incomplete")
-        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        let vm = WorkflowDetailViewModel(testingWorkflow: AppleWorkflow(), home: home)
         vm.setTestCards([card])
         vm.setTestHits([card.id: [hit]])
         vm.setTestSelection([hit.id])
@@ -1623,7 +1651,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             note: nil
         )
         let card = makeFilesystemCard(id: "card.selected-incomplete")
-        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        let vm = WorkflowDetailViewModel(testingWorkflow: AppleWorkflow(), home: home)
         vm.setTestCards([card])
         vm.setTestHits([card.id: [hit]])
         vm.setTestSelection([hit.id])
@@ -1685,7 +1713,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             note: nil
         )
         let card = makeFilesystemCard(id: "card.direct-target-block")
-        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        let vm = WorkflowDetailViewModel(testingWorkflow: AppleWorkflow(), home: home)
         vm.setTestCards([card])
         vm.setTestHits([card.id: [hit]])
         vm.setTestSelection([hit.id])
@@ -1701,9 +1729,11 @@ final class WorkflowDetailViewTests: XCTestCase {
 
         await vm.requestDeleteConfirmation(pipeline: TrashPipeline(home: home.path))
 
-        guard case let .preflightNotice(_, rejections) = vm.activeSheet else {
+        guard let rejections = vm.preflightNotice?.rejections else {
             return XCTFail("A target whose parent cannot mutate must be blocked before confirmation")
         }
+        XCTAssertNil(vm.activeSheet)
+        XCTAssertFalse(vm.isDeletionTransactionActive)
         XCTAssertEqual(
             rejections.first?.reason,
             ScanIncompleteTargetRejectionReason.posixPermissionDenied.rawValue
@@ -1714,6 +1744,10 @@ final class WorkflowDetailViewTests: XCTestCase {
     func test_Trash意图只冻结filesystem_不携带managed且确认后不回读可变cards() async throws {
         let home = makeTempHome()
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        // v2026.07.20: a successful stub completion must not append `/old/cache` to the user's
+        // production UndoHistory. Production and tests now both select their owner explicitly.
+        let (undoHistoryStore, undoHistoryURL) = try makeUndoStore()
+        defer { try? FileManager.default.removeItem(at: undoHistoryURL) }
         let filesystemCard = makeFilesystemCard(id: "card.filesystem")
         let managedCard = makeManagedCard(id: "card.managed")
         let oldFile = WorkflowScanHit(
@@ -1727,7 +1761,11 @@ final class WorkflowDetailViewTests: XCTestCase {
             displayName: "old simulator",
             identifier: "11111111-2222-3333-4444-555555555555"
         )
-        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        let vm = WorkflowDetailViewModel(
+            testingWorkflow: AppleWorkflow(),
+            home: home,
+            undoHistoryStore: undoHistoryStore
+        )
         vm.setTestCards([filesystemCard, managedCard])
         vm.setTestHits([
             filesystemCard.id: [oldFile],
@@ -1795,7 +1833,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             identifier: "11111111-2222-3333-4444-555555555555"
         )
         let vm = WorkflowDetailViewModel(
-            workflow: AppleWorkflow(),
+            testingWorkflow: AppleWorkflow(),
             home: home,
             simulatorCoordinator: SimulatorDeleteCoordinator(
                 executor: SubprocessExecutor(timeout: 1, dryRun: true),
@@ -1825,9 +1863,11 @@ final class WorkflowDetailViewTests: XCTestCase {
 
         XCTAssertNil(vm.simulatorUninstallState,
                      "filesystem 安全拒绝后不能偷偷开始 managed 卸载")
-        guard case let .preflightNotice(_, rejections) = vm.activeSheet else {
+        guard let rejections = vm.preflightNotice?.rejections else {
             return XCTFail("最终重验拒绝必须回 typed notice，不能伪造成执行结果")
         }
+        XCTAssertNil(vm.activeSheet)
+        XCTAssertFalse(vm.isDeletionTransactionActive)
         XCTAssertEqual(rejections, [rejection])
         XCTAssertNil(vm.lastDeleteResult)
         XCTAssertEqual(vm.selected, [file.id, managed.id])
@@ -1857,7 +1897,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             note: nil
         )
         let vm = WorkflowDetailViewModel(
-            workflow: AppleWorkflow(),
+            testingWorkflow: AppleWorkflow(),
             home: home,
             simulatorCoordinator: SimulatorDeleteCoordinator(
                 executor: SubprocessExecutor(timeout: 1, dryRun: true),
@@ -1951,7 +1991,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             identifier: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
         )
         let vm = WorkflowDetailViewModel(
-            workflow: AppleWorkflow(),
+            testingWorkflow: AppleWorkflow(),
             home: home,
             simulatorCoordinator: SimulatorDeleteCoordinator(
                 executor: SubprocessExecutor(timeout: 1, dryRun: true),
@@ -2053,7 +2093,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             identifier: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
         )
         let vm = WorkflowDetailViewModel(
-            workflow: AppleWorkflow(),
+            testingWorkflow: AppleWorkflow(),
             home: home,
             simulatorCoordinator: SimulatorDeleteCoordinator(
                 executor: SubprocessExecutor(timeout: 1, dryRun: true),
@@ -2104,7 +2144,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             sizeBytes: 8_000
         )
         let vm = WorkflowDetailViewModel(
-            workflow: AppleWorkflow(),
+            testingWorkflow: AppleWorkflow(),
             home: home,
             simulatorCoordinator: SimulatorDeleteCoordinator(
                 executor: SubprocessExecutor(timeout: 1, dryRun: true),
@@ -2140,7 +2180,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             identifier: "11111111-2222-3333-4444-555555555555"
         )
         let vm = WorkflowDetailViewModel(
-            workflow: AppleWorkflow(),
+            testingWorkflow: AppleWorkflow(),
             home: home,
             simulatorCoordinator: SimulatorDeleteCoordinator(
                 executor: SubprocessExecutor(
@@ -2183,7 +2223,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             identifier: "11111111-2222-3333-4444-555555555555"
         )
         let vm = WorkflowDetailViewModel(
-            workflow: AppleWorkflow(),
+            testingWorkflow: AppleWorkflow(),
             home: home,
             simulatorCoordinator: SimulatorDeleteCoordinator(
                 executor: SubprocessExecutor(
@@ -2226,7 +2266,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             displayName: "cache",
             note: nil
         )
-        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        let vm = WorkflowDetailViewModel(testingWorkflow: AppleWorkflow(), home: home)
         vm.setTestCards([card])
         vm.setTestHits([card.id: [hit]])
         vm.setTestSelection([hit.id])
@@ -2271,7 +2311,7 @@ final class WorkflowDetailViewTests: XCTestCase {
 
         let denied: Set<String> = ["/Forbidden/secret"]
         let vm = WorkflowDetailViewModel(
-            workflow: AppleWorkflow(), home: home,
+            testingWorkflow: AppleWorkflow(), home: home,
             undoHistoryStore: undo
         )
         vm.setTestCards([card])
@@ -2328,7 +2368,7 @@ final class WorkflowDetailViewTests: XCTestCase {
                                   sizeBytes: 0, displayName: "x", note: nil)
         let card = makeFilesystemCard(id: "card.test")
         let vm = WorkflowDetailViewModel(
-            workflow: AppleWorkflow(), home: home,
+            testingWorkflow: AppleWorkflow(), home: home,
             undoHistoryStore: undo
         )
         vm.setTestCards([card])
@@ -2368,7 +2408,7 @@ final class WorkflowDetailViewTests: XCTestCase {
                                       sizeBytes: 200, displayName: "cache", note: nil)
         let card = makeFilesystemCard(id: "card.test")
         let vm = WorkflowDetailViewModel(
-            workflow: AppleWorkflow(), home: home,
+            testingWorkflow: AppleWorkflow(), home: home,
             undoHistoryStore: undo
         )
         vm.setTestCards([card])
@@ -2398,7 +2438,7 @@ final class WorkflowDetailViewTests: XCTestCase {
                                    sizeBytes: 100, displayName: "cache duplicate", note: nil)
         let card1 = makeFilesystemCard(id: "card.one")
         let card2 = makeFilesystemCard(id: "card.two")
-        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        let vm = WorkflowDetailViewModel(testingWorkflow: AppleWorkflow(), home: home)
         vm.setTestCards([card1, card2])
         vm.setTestHits([card1.id: [hit1], card2.id: [hit2]])
         vm.setTestSelection([hit1.id])
@@ -2411,7 +2451,7 @@ final class WorkflowDetailViewTests: XCTestCase {
         let home = makeTempHome()
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
         let card = makeFilesystemCard(id: "card.capacity.contract")
-        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        let vm = WorkflowDetailViewModel(testingWorkflow: AppleWorkflow(), home: home)
         vm.setTestCards([card])
 
         vm.setTestHits([card.id: []])
@@ -2455,7 +2495,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             displayName: "unknown",
             note: nil
         )
-        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        let vm = WorkflowDetailViewModel(testingWorkflow: AppleWorkflow(), home: home)
         vm.setTestCards([card])
         vm.setTestHits([card.id: [hit]])
         vm.setTestSelection([hit.id])
@@ -2506,7 +2546,7 @@ final class WorkflowDetailViewTests: XCTestCase {
     func test_默认managedExecutor_等待系统事务自然终态而非固定timeout() {
         let home = makeTempHome()
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
-        let vm = WorkflowDetailViewModel(workflow: AppleWorkflow(), home: home)
+        let vm = WorkflowDetailViewModel(testingWorkflow: AppleWorkflow(), home: home)
         XCTAssertEqual(vm.testingSimulatorTerminalWaitPolicy, .waitUntilExit)
     }
 
@@ -2567,5 +2607,42 @@ final class WorkflowDetailViewTests: XCTestCase {
             "\(home)/.npm-other"
         ])
         XCTAssertEqual(folded, ["\(home)/.npm", "\(home)/.npm-other"])
+    }
+}
+
+/// v2026.07.20 regression boundary: Workflow compatibility stubs can report moved pairs without
+/// a durable journal capability. Every test ViewModel therefore receives a store rooted in its
+/// own temporary HOME; the production initializer has no `.shared` default for tests to inherit.
+@MainActor
+private extension WorkflowDetailViewModel {
+    convenience init(
+        testingWorkflow workflow: any DeveloperWorkflow,
+        home: URL,
+        simulatorCoordinator: SimulatorDeleteCoordinator? = nil,
+        undoHistoryStore: UndoHistoryStore? = nil,
+        versionedRootDiscovery: (@Sendable (URL) async -> KnownVersionedRoots.ScanResult)? = nil,
+        dynamicDiscovery: (@Sendable (
+            String,
+            URL,
+            Bool
+        ) async throws -> DiscoveryEvidence<WorkflowScanHit>)? = nil,
+        derivedDataSnapshotDiscovery: (@Sendable (
+            URL
+        ) async throws -> DerivedDataScanSnapshot)? = nil
+    ) {
+        self.init(
+            workflow: workflow,
+            home: home,
+            simulatorCoordinator: simulatorCoordinator,
+            undoHistoryStore: undoHistoryStore ?? UndoHistoryStore(
+                storeURL: home.appendingPathComponent(
+                    ".WorkflowDetailViewTests-\(UUID().uuidString)-UndoHistory.json"
+                ),
+                allowedRestoreRoots: [home.path]
+            ),
+            versionedRootDiscovery: versionedRootDiscovery,
+            dynamicDiscovery: dynamicDiscovery,
+            derivedDataSnapshotDiscovery: derivedDataSnapshotDiscovery
+        )
     }
 }

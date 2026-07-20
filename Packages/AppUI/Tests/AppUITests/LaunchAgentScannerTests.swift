@@ -1,5 +1,8 @@
+import Darwin
+import Foundation
 import XCTest
 @testable import AppUI
+import ScanKit
 
 /// v1.2 P1-7 启动项查看屏 —— 扫描器单元测试。
 ///
@@ -21,15 +24,162 @@ final class LaunchAgentScannerTests: XCTestCase {
         let directories: [String: [String]]
         let files: [String: Data]
         let sizes: [String: Int64]
+        let failures: [String: LaunchAgentIOFailureReason]
+        let metadataFailures: [String: LaunchAgentIOFailureReason]
 
-        func listDirectory(_ path: String) -> [String]? {
-            directories[path]
+        init(
+            directories: [String: [String]],
+            files: [String: Data],
+            sizes: [String: Int64],
+            failures: [String: LaunchAgentIOFailureReason] = [:],
+            metadataFailures: [String: LaunchAgentIOFailureReason] = [:]
+        ) {
+            self.directories = directories
+            self.files = files
+            self.sizes = sizes
+            self.failures = failures
+            self.metadataFailures = metadataFailures
         }
-        func readFile(_ path: String) -> Data? {
-            files[path]
+
+        func listDirectory(_ path: String) -> LaunchAgentIOResult<[String]> {
+            if let reason = failures[path] {
+                return .failure(.init(path: path, operation: .listDirectory, reason: reason))
+            }
+            guard let children = directories[path] else {
+                return .failure(.init(path: path, operation: .listDirectory, reason: .notFound))
+            }
+            return .value(children)
         }
-        func fileSize(_ path: String) -> Int64 {
-            sizes[path] ?? Int64(files[path]?.count ?? 0)
+        func readFile(_ path: String) -> LaunchAgentIOResult<Data> {
+            if let reason = failures[path] {
+                return .failure(.init(path: path, operation: .readFile, reason: reason))
+            }
+            guard let data = files[path] else {
+                return .failure(.init(path: path, operation: .readFile, reason: .notFound))
+            }
+            return .value(data)
+        }
+        func fileSize(_ path: String) -> LaunchAgentIOResult<Int64> {
+            if let reason = metadataFailures[path] {
+                return .failure(.init(path: path, operation: .readMetadata, reason: reason))
+            }
+            if let reason = failures[path] {
+                return .failure(.init(path: path, operation: .readMetadata, reason: reason))
+            }
+            guard files[path] != nil || sizes[path] != nil else {
+                return .failure(.init(path: path, operation: .readMetadata, reason: .notFound))
+            }
+            return .value(sizes[path] ?? Int64(files[path]?.count ?? 0))
+        }
+    }
+
+    /// v2026.07.18: synchronized probes are test-only witnesses for the Sendable filesystem seam.
+    private final class SnapshotCallProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var boundedReads = 0
+        private var legacyReads = 0
+        private var metadataReads = 0
+        private var observedLimit: Int?
+        private var observedCancellation = false
+
+        func recordBoundedRead(limit: Int, wasCancelled: Bool) {
+            lock.lock()
+            boundedReads += 1
+            observedLimit = limit
+            observedCancellation = wasCancelled
+            lock.unlock()
+        }
+
+        func recordLegacyRead() {
+            lock.lock()
+            legacyReads += 1
+            lock.unlock()
+        }
+
+        func recordMetadataRead() {
+            lock.lock()
+            metadataReads += 1
+            lock.unlock()
+        }
+
+        var boundedReadCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return boundedReads
+        }
+
+        var legacyReadCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return legacyReads
+        }
+
+        var metadataReadCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return metadataReads
+        }
+
+        var limit: Int? {
+            lock.lock()
+            defer { lock.unlock() }
+            return observedLimit
+        }
+
+        var cancellationValue: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return observedCancellation
+        }
+    }
+
+    private struct SnapshotOnlyFS: LaunchAgentFS {
+        let directory: String
+        let path: String
+        let snapshot: LaunchAgentFileSnapshot
+        let probe: SnapshotCallProbe
+
+        func listDirectory(_ requestedPath: String) -> LaunchAgentIOResult<[String]> {
+            guard requestedPath == directory else {
+                return .failure(.init(
+                    path: requestedPath,
+                    operation: .listDirectory,
+                    reason: .notFound
+                ))
+            }
+            return .value([path])
+        }
+
+        func readFile(_ requestedPath: String) -> LaunchAgentIOResult<Data> {
+            probe.recordLegacyRead()
+            return .failure(.init(
+                path: requestedPath,
+                operation: .readFile,
+                reason: .other
+            ))
+        }
+
+        func fileSize(_ requestedPath: String) -> LaunchAgentIOResult<Int64> {
+            probe.recordMetadataRead()
+            return .failure(.init(
+                path: requestedPath,
+                operation: .readMetadata,
+                reason: .other
+            ))
+        }
+
+        func readFileSnapshot(
+            _ requestedPath: String
+        ) -> LaunchAgentIOResult<LaunchAgentFileSnapshot> {
+            guard requestedPath == path else {
+                return .failure(.init(
+                    path: requestedPath,
+                    operation: .readFile,
+                    reason: .notFound
+                ))
+            }
+            probe.recordBoundedRead(limit: -1, wasCancelled: false)
+            return .value(snapshot)
         }
     }
 
@@ -302,16 +452,8 @@ final class LaunchAgentScannerTests: XCTestCase {
 
     // MARK: - 11. Step 14 静默失败修复：DefaultLaunchAgentFS 错误分类
 
-    /// 线程安全的 String 收集器，用于在 @Sendable handler 内累计路径
-    private final class PathCollector: @unchecked Sendable {
-        private let lock = NSLock()
-        private var paths: [String] = []
-        func append(_ p: String) { lock.lock(); paths.append(p); lock.unlock() }
-        var snapshot: [String] { lock.lock(); defer { lock.unlock() }; return paths }
-    }
-
-    /// chmod 000 子目录后 listDirectory 应触发 permissionDenied handler
-    func test_DefaultFS_无权限目录listDirectory应上报permissionDenied() throws {
+    /// chmod 000 子目录后 listDirectory 应返回类型化 permissionDenied
+    func test_DefaultFS_无权限目录listDirectory应返回类型化失败() throws {
         if getuid() == 0 {
             throw XCTSkip("以 root 身份运行时 chmod 0000 不会阻止 open，跳过此用例")
         }
@@ -325,24 +467,26 @@ final class LaunchAgentScannerTests: XCTestCase {
             try? FileManager.default.removeItem(at: tmp)
         }
 
-        let collector = PathCollector()
-        let fs = DefaultLaunchAgentFS(permissionDeniedHandler: { collector.append($0) })
-
-        // listDirectory 仍然返回 nil（兼容旧调用方），同时 handler 收到这个无权限路径
+        let fs = DefaultLaunchAgentFS()
         let result = fs.listDirectory(tmp.path)
-        XCTAssertNil(result, "无权限目录 listDirectory 必须返回 nil")
-        XCTAssertEqual(collector.snapshot, [tmp.path], "permissionDeniedHandler 必须被调用一次，参数是无权限目录路径")
+        guard case .failure(let failure) = result else {
+            return XCTFail("无权限目录必须返回类型化失败")
+        }
+        XCTAssertEqual(failure.path, tmp.path)
+        XCTAssertEqual(failure.operation, .listDirectory)
+        XCTAssertEqual(failure.reason, .permissionDenied)
     }
 
     /// 不存在的目录 listDirectory 应返回 nil 但 **不** 触发 permissionDenied
     func test_DefaultFS_不存在目录listDirectory静默不上报() throws {
         let nonexistent = "/Users/__nope__/__no_such_dir__/\(UUID().uuidString)"
-        let collector = PathCollector()
-        let fs = DefaultLaunchAgentFS(permissionDeniedHandler: { collector.append($0) })
+        let fs = DefaultLaunchAgentFS()
 
         let result = fs.listDirectory(nonexistent)
-        XCTAssertNil(result)
-        XCTAssertTrue(collector.snapshot.isEmpty, "ENOENT 必须静默到 GSYLog.debug，不调用 permissionDeniedHandler")
+        guard case .failure(let failure) = result else {
+            return XCTFail("不存在目录必须保留 notFound 语义")
+        }
+        XCTAssertEqual(failure.reason, .notFound)
     }
 
     /// readFile：无权限读 → permissionDenied handler；不存在 → 静默
@@ -360,11 +504,271 @@ final class LaunchAgentScannerTests: XCTestCase {
             try? FileManager.default.removeItem(at: tmp)
         }
 
-        let collector = PathCollector()
-        let fs = DefaultLaunchAgentFS(permissionDeniedHandler: { collector.append($0) })
+        let fs = DefaultLaunchAgentFS()
 
         let result = fs.readFile(tmp.path)
-        XCTAssertNil(result)
-        XCTAssertEqual(collector.snapshot, [tmp.path])
+        guard case .failure(let failure) = result else {
+            return XCTFail("无权限文件必须返回类型化失败")
+        }
+        XCTAssertEqual(failure.path, tmp.path)
+        XCTAssertEqual(failure.operation, .readFile)
+        XCTAssertEqual(failure.reason, .permissionDenied)
+    }
+
+    // MARK: - 12. 有界单快照与 no-follow 合同
+
+    func test_DefaultFS_单次bounded读取同时冻结payload与size() throws {
+        let payload = makePlist(label: "same-generation")
+        let probe = SnapshotCallProbe()
+        let fs = DefaultLaunchAgentFS(
+            shouldCancel: { false },
+            boundedReader: { _, limit, shouldCancel in
+                probe.recordBoundedRead(
+                    limit: limit,
+                    wasCancelled: shouldCancel()
+                )
+                return payload
+            }
+        )
+
+        guard case .value(let snapshot) = fs.readFileSnapshot("/fixture/job.plist") else {
+            return XCTFail("稳定 plist 必须返回单次快照")
+        }
+
+        XCTAssertEqual(probe.boundedReadCount, 1)
+        XCTAssertEqual(probe.limit, DefaultLaunchAgentFS.maximumPropertyListBytes)
+        XCTAssertFalse(probe.cancellationValue)
+        XCTAssertEqual(snapshot.data, payload)
+        XCTAssertEqual(snapshot.fileSize, Int64(payload.count))
+        XCTAssertNil(snapshot.metadataFailure)
+    }
+
+    func test_scanner只消费snapshot_不回退readFile加fileSize() async {
+        let path = "\(userDir)/single-generation.plist"
+        let payload = makePlist(label: "single-generation")
+        let probe = SnapshotCallProbe()
+        let fs = SnapshotOnlyFS(
+            directory: userDir,
+            path: path,
+            snapshot: LaunchAgentFileSnapshot(
+                data: payload,
+                fileSize: Int64(payload.count)
+            ),
+            probe: probe
+        )
+
+        let result = await LaunchAgentScanner(fs: fs, homeDirectory: home).scan(scope: .user)
+
+        XCTAssertEqual(result.items.map(\.label), ["single-generation"])
+        XCTAssertEqual(result.items.first?.fileSize, Int64(payload.count))
+        XCTAssertEqual(probe.boundedReadCount, 1)
+        XCTAssertEqual(probe.legacyReadCount, 0)
+        XCTAssertEqual(probe.metadataReadCount, 0)
+        XCTAssertTrue(result.isComplete)
+    }
+
+    func test_DefaultFS_oversize_symlink_FIFO均保留typed不完整证据且不阻塞() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LaunchAgentBoundedRead-\(UUID().uuidString)", isDirectory: true)
+        let launchAgents = root
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("LaunchAgents", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: launchAgents,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let oversize = launchAgents.appendingPathComponent("oversize.plist")
+        XCTAssertTrue(FileManager.default.createFile(atPath: oversize.path, contents: Data()))
+        let handle = try FileHandle(forWritingTo: oversize)
+        try handle.truncate(atOffset: UInt64(DefaultLaunchAgentFS.maximumPropertyListBytes + 1))
+        try handle.close()
+
+        let target = launchAgents.appendingPathComponent("target.plist")
+        try makePlist(label: "target").write(to: target)
+        let symlink = launchAgents.appendingPathComponent("symlink.plist")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: target)
+
+        let fifo = launchAgents.appendingPathComponent("fifo.plist")
+        let fifoResult = fifo.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return Darwin.mkfifo(path, S_IRUSR | S_IWUSR)
+        }
+        XCTAssertEqual(fifoResult, 0)
+
+        let fs = DefaultLaunchAgentFS()
+        assertReadFailure(fs.readFileSnapshot(oversize.path), reason: .tooLarge)
+        assertReadFailure(fs.readFileSnapshot(symlink.path), reason: .unsafeFileType)
+        assertReadFailure(fs.readFileSnapshot(fifo.path), reason: .unsafeFileType)
+
+        let scan = await LaunchAgentScanner(
+            fs: fs,
+            homeDirectory: root.path
+        ).scan(scope: .user)
+        XCTAssertEqual(scan.items.map(\.label), ["target"])
+        XCTAssertEqual(Set(scan.issues), Set([
+            .init(scope: .user, path: oversize.path, reason: .readFailed),
+            .init(scope: .user, path: symlink.path, reason: .readFailed),
+            .init(scope: .user, path: fifo.path, reason: .readFailed)
+        ]))
+        XCTAssertFalse(scan.wasCancelled)
+        XCTAssertFalse(scan.isComplete)
+    }
+
+    func test_changed与cancelled进入不同扫描控制流() async {
+        let changedDefaultFS = DefaultLaunchAgentFS(
+            shouldCancel: { false },
+            boundedReader: { _, _, _ in throw BoundedLocalFileReadError.changed }
+        )
+        assertReadFailure(
+            changedDefaultFS.readFileSnapshot("/fixture/replaced.plist"),
+            reason: .changedDuringRead
+        )
+
+        let cancelledDefaultFS = DefaultLaunchAgentFS(
+            shouldCancel: { true },
+            boundedReader: { _, _, shouldCancel in
+                if shouldCancel() { throw BoundedLocalFileReadError.cancelled }
+                return Data()
+            }
+        )
+        assertReadFailure(
+            cancelledDefaultFS.readFileSnapshot("/fixture/cancelled.plist"),
+            reason: .cancelled
+        )
+
+        let changedPath = "\(userDir)/changed.plist"
+        let changedFS = FakeFS(
+            directories: [userDir: [changedPath]],
+            files: [:],
+            sizes: [:],
+            failures: [changedPath: .changedDuringRead]
+        )
+        let changed = await LaunchAgentScanner(
+            fs: changedFS,
+            homeDirectory: home
+        ).scan(scope: .user)
+
+        XCTAssertEqual(changed.issues, [
+            .init(scope: .user, path: changedPath, reason: .changedDuringScan)
+        ])
+        XCTAssertFalse(changed.wasCancelled)
+
+        let cancelledPath = "\(userDir)/cancelled.plist"
+        let cancelledFS = FakeFS(
+            directories: [userDir: [cancelledPath]],
+            files: [:],
+            sizes: [:],
+            failures: [cancelledPath: .cancelled]
+        )
+        let cancelled = await LaunchAgentScanner(
+            fs: cancelledFS,
+            homeDirectory: home
+        ).scan(scope: .user)
+
+        XCTAssertTrue(cancelled.issues.isEmpty)
+        XCTAssertTrue(cancelled.wasCancelled)
+        XCTAssertFalse(cancelled.isComplete)
+    }
+
+    private func assertReadFailure(
+        _ result: LaunchAgentIOResult<LaunchAgentFileSnapshot>,
+        reason: LaunchAgentIOFailureReason,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard case .failure(let failure) = result else {
+            return XCTFail("必须返回类型化读取失败", file: file, line: line)
+        }
+        XCTAssertEqual(failure.operation, .readFile, file: file, line: line)
+        XCTAssertEqual(failure.reason, reason, file: file, line: line)
+    }
+
+    // MARK: - 13. 不完整证据必须进入扫描结果
+
+    func test_scanAll_目录权限失败不能伪装成空结果() async {
+        let fs = FakeFS(
+            directories: [:],
+            files: [:],
+            sizes: [:],
+            failures: [userDir: .permissionDenied]
+        )
+        let result = await LaunchAgentScanner(fs: fs, homeDirectory: home).scanAll()
+
+        XCTAssertTrue(result.items.isEmpty)
+        XCTAssertFalse(result.isComplete)
+        let expected: [LaunchAgentScanIssue] = [
+            .init(scope: .user, path: userDir, reason: .permissionDenied)
+        ]
+        XCTAssertEqual(result.issues, expected)
+    }
+
+    func test_scanAll_损坏plist保留issue且不影响正常条目() async {
+        let badPath = "\(userDir)/broken.plist"
+        let goodPath = "\(userDir)/good.plist"
+        let fs = FakeFS(
+            directories: [userDir: [badPath, goodPath]],
+            files: [
+                badPath: Data([0xFF, 0x00]),
+                goodPath: makePlist(label: "good")
+            ],
+            sizes: [:]
+        )
+        let result = await LaunchAgentScanner(fs: fs, homeDirectory: home).scanAll()
+
+        XCTAssertEqual(result.items.map(\.label), ["good"])
+        let expected: [LaunchAgentScanIssue] = [
+            .init(scope: .user, path: badPath, reason: .invalidPropertyList)
+        ]
+        XCTAssertEqual(result.issues, expected)
+    }
+
+    /// v2026.07.18：metadata 权限失败不能退化成 generic metadataUnavailable。
+    func test_scanAll_元数据权限失败保留permissionDenied来源() async {
+        let path = "\(userDir)/permission.plist"
+        let fs = FakeFS(
+            directories: [userDir: [path]],
+            files: [path: makePlist(label: "permission")],
+            sizes: [:],
+            metadataFailures: [path: .permissionDenied]
+        )
+
+        let result = await LaunchAgentScanner(fs: fs, homeDirectory: home).scanAll()
+
+        XCTAssertEqual(result.items.map(\.label), ["permission"])
+        XCTAssertEqual(result.items.first?.fileSize, 0)
+        XCTAssertEqual(result.issues, [
+            .init(scope: .user, path: path, reason: .permissionDenied)
+        ])
+    }
+
+    func test_reloadGate_旧轮不能完成新revision() {
+        let old = LaunchAgentReloadIdentity(operationID: UUID(), revision: 1)
+        let current = LaunchAgentReloadIdentity(operationID: UUID(), revision: 2)
+        var gate = LaunchAgentReloadGate()
+        gate.begin(old)
+        gate.begin(current)
+
+        XCTAssertNil(gate.finishIfCurrent(old, taskWasCancelled: false))
+        XCTAssertEqual(gate.current, current)
+        XCTAssertEqual(gate.finishIfCurrent(current, taskWasCancelled: false), true)
+        XCTAssertNil(gate.current)
+    }
+
+    func test_reloadGate_当前轮取消后不能发布() {
+        let identity = LaunchAgentReloadIdentity(operationID: UUID(), revision: 7)
+        var gate = LaunchAgentReloadGate()
+        gate.begin(identity)
+
+        XCTAssertEqual(gate.finishIfCurrent(identity, taskWasCancelled: true), false)
+        XCTAssertNil(gate.current)
+    }
+
+    func test_metricProjection_任一缺口都使总量成为部分结果() {
+        XCTAssertTrue(LaunchAgentMetricProjection.isComplete(issues: []))
+        XCTAssertFalse(LaunchAgentMetricProjection.isComplete(issues: [
+            .init(scope: .system, path: systemDir, reason: .permissionDenied)
+        ]))
     }
 }

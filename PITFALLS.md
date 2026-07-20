@@ -37,6 +37,13 @@
  - 注册前先 `service.status` 判断；只有 `notRegistered` 才调用 `register()`。
  - **开发用一个 Bundle ID，发布用另一个 Bundle ID**（DTS 工程师 Quinn 明确建议），否则 LaunchServices 会"记仇"。
  - 调试遇到无解时执行 `sudo sfltool resetbtm` 后重启（这个命令仅给开发者用，绝不能让用户跑）。
+ - **v2026.07.19 P1 防回归**：`.notFound` 表示查询失败且找不到 service；它既不是
+   `.notRegistered`，也不是“仍在运行”，更不是一次 `unregister()` 失败。fresh/default-OFF 且
+   没有任何历史 authority 证据时只能写结构化日志，不得在启动时弹“关闭失败”或要求用户打开
+   登录项。用户主动关闭、系统明确 `.enabled/.requiresApproval`，或持久化证据表明曾注册时仍
+   fail-closed；证据必须独立于 Toggle/最近启用时间，并且只有 current Agent 与所有 legacy
+   identity 都明确 `.notRegistered` 后才能清除。用户提示写具体系统设置路径并指向 App 内日志，
+   禁止裸露账户目录、raw Error 或 errno。
 
 ### 1.2 [阻塞] `Codesigning failure loading plist code: -67054 (errSecCSBadResource)`
 - **现象**：仅在 macOS 13.0/13.1 出现，13.5+ 正常。
@@ -237,8 +244,28 @@
   正式扫描并发重走同一棵树。
 - Tree 终态不自动 prefetch，只在用户显式展开时读直接子项；切换排序必须
   复用同一份测量结果，不得把 sort key 变化当 cache miss 重扫磁盘。
-- 同一个全盘会话的 firmlink 容量行与 incomplete/permission 证据必须映射到
-  同一公开路径命名空间；否则 `/Users` 行无法命中 Data 卷后代的删除拒绝。
+- **v2026.07.20 Tree 展开终态合同**：真实事故日志显示 `/Users` 的直接子项枚举约
+  116ms，后续 3,130,624 文件的精确容量与排序则耗时 31.4s。浅层 identity 必须立即发布，
+  不能用 deep 工作阻塞首帧；但 fetching/loading ownership 必须保留到 exact bytes、file count
+  与当前排序原子提交，不能在指标仍 pending 时提前消失。普通全盘和开发者构建产物入口必须
+  强制 `deepIndex=false`：浅层帧一次发布全部直接子项，不能泄漏到下面的 64 行预览分支；超过
+  64 个直接子项的产品入口 fixture 必须同时证明完整行数、`fetching=true` 且后台 enrichment
+  仍由同一 owner 持有，并在 exact 终态证明 `fetching=false`。仅显式 deep-index 基准/fixture
+  的已有 `childEdges` 完成索引第一帧
+  必须非空，但 SwiftUI getter 也不得因此遍历、materialize 或 sort 任意宽
+  `childEdges[parent]`：cache miss 最多检查 128 个 identity、生成 64 个真实预览行，并把预览
+  独立于权威 children cache；同 path/sort/source revision/generation/locale 的后续 getter 必须
+  O(1)。父节点在后台完整投影提交前保持 loading，不能进入删除等破坏性动作；切换 sort 的
+  exact-cache miss 只能暂时复用已有完整顺序并派发后台排序，禁止在 getter 对宽数组 `.sorted`。
+  单点展开/收起只 patch 对应连续 segment，且新交互不得等待被取消的旧 projection。任务
+  ownership 只能影响所属 path，无关 path 的开始/结束不得让当前 Tree projection 判 stale。
+  回归测试必须覆盖 100k fan-out heartbeat、有界首帧/重复 getter、切 sort、终态全局排序、
+  revision/cancel 与删除 authority，禁止用定时轮询弥补丢失的终态通知。
+- 同一个全盘会话必须冻结一份可双向投影的物理/公开路径合同：容量、TCC、Tree、
+  incomplete/permission 都使用公开命名空间，真正枚举前才逆投影到 Data 卷。
+  禁止各层自行拼接前缀；尤其 Data 根 fallback 到 `/` 时必须走 POSIX join，不能产生
+  `//System` 后被一级 bucket 静默丢弃。否则 `/Users` 行既无法命中 Data 卷后代的删除拒绝，
+  `/System` Tree 还会重新进入错误物理根。
 
 #### 生命周期与生产者所有权（v2026.07.17 补充）
 
@@ -250,6 +277,20 @@
   revision 改变时，应取消这些 transient task，并同时旋转 generation 阻止迟到写回；
   已完成的主扫描 snapshot、completeness evidence 和可复用 cache 必须保留。若下一轮
   会复用同一重 I/O producer，则还必须等待上一轮收敛后再启动，禁止两轮叠加扫盘。
+- `AsyncStream` consumer Task 结束不等于 detached filesystem producer 已退出。可替换的
+  扫描流必须显式持有 producer session：取消时同时 cancel producer，并在释放下一轮所有权前
+  await producer termination；只等待 coordinator consumer 仍可能让旧 walker 与新扫描重叠。
+- **v2026.07.19 Tree 租约回归红线**：Tree 测量身份只包含 standardized public path 与
+  physical path，sort 纯属展示，不得生成另一轮磁盘测量。shallow 直接子项、deep
+  `ScanSession` 和显式 indexed-subtree refresh 都必须在创建真实 producer 前登记路径租约，
+  并以组件边界判断 same/ancestor/descendant；`/Users2` 绝不能被 `/Users` 误伤。只有重叠路径
+  等待真实 producer termination，无关路径可并发；Tree-to-Tree 禁止重新接入全局 primary
+  settlement。cache 写回、TreeRow 映射、排序、locale/verdict 投影和 COW retirement 必须在租约
+  外；浅层完整枚举写回后 identity 立即可见，但 loading 必须与 deep exact measurement 同生共灭。
+  primary cancel 必须
+  原子关闭新租约准入、取消 pending/active producer 并等待快照内真实生产者退出；presentation
+  owner 不得成为 barrier。对应回归至少覆盖不同 sort、祖先/后代、物理别名、无关路径、字符串
+  前缀、pending cancellation、gate permit、cancel-all drain 与 presentation-only owner。
 - 专业页面若自行拥有 producer（例如应用占用、卸载残留或工作流扫描），重新加载、
   离开页面或开始下一轮前必须先 `cancel` 并 `await` 上一 producer 收敛，再启动新的
   重 I/O。只递增 revision 而放任旧 producer 在后台继续遍历，不是生命周期隔离。
@@ -317,6 +358,11 @@
   使用系统明确允许跨线程读取的 API，在受控 utility worker 中加载，并只把冻结的结果交回
   UI。缓存、pending queue、active loads 都必须有硬上限、页面级生命周期和 reload generation
   失效；无界全局字典或无界预取只是把滚动卡顿换成内存/I/O 增长。
+- **任何 MainActor 元数据 cache miss 都不能用“通常是亚毫秒”合理化同步 I/O**（v2026.07.18）。
+  `FileManager.attributesOfItem`、`fileExists`、`lstat/stat` 在慢盘、卸载卷或系统服务等待时没有
+  UI 延迟上限。Tree/list/detail 同步投影只能读缓存；miss 必须进入有硬上限且去重的后台 producer，
+  在首次物理 touch 前执行 TCC hard-skip，并用 session generation + source revision CAS 拒绝迟到
+  结果。旧/新宽 COW cache 的最终析构同样要由后台 owner 完成，不能只把 syscall 移出去。
 - `.topLevel` 的空间复杂度是 `O(真实一级可见行数)`，不是固定 Top-N。它已经与全部后代
   inode 数解耦，但若根目录自身有百万个直接子项，当前 `ScanSummary.topLevel([row])`
   完整数组仍必须承载百万行。没有先建立分页游标、稳定排序、完整容量与删除证据如何跨页
@@ -329,6 +375,11 @@
   投影只允许在 snapshot throttle、per-root publish、Tree 权威批次或删除安全读取边界提交。
   Tree 行查找使用 issue path `Set` 加预计算 strict-ancestor `Set`，复杂度按路径深度而不是
   `rows × issues` 增长。禁止为省一次 commit 让 SwiftUI row synthesis 反向写 `@Published`。
+- 后台 presentation worker 若跨 `await` 读取 staging/COW 快照，**每一条直接 mutation 路径都必须
+  推进同一个 source revision**（v2026.07.18）。不能只在常规 ingest helper 里 bump，而漏掉
+  discovery partial/final、progress reconcile、finished/failed/fallback 等旁路；否则旧 DTO 会通过
+  CAS 并短暂覆盖新状态。commit 至少复核 session generation、source revision 与相关 locale/sort
+  token，且必须有确定性 stale-write 回归，而不能依赖下一次 throttle “稍后会补回来”。
 
 #### 严禁的“提速”方法
 
@@ -416,6 +467,31 @@
  - preflight rejection 是 confirmation plan，不是执行结果；`OperationResultSheet` 只能在用户确认并实际提交后呈现。
  - 禁止保留名称为 force、实现却回落 normal 或静默丢弃回调的空心 API。
  - 每次修改跑 `ProfessionalToolDeletionFlowTests`、`DeletionUXPolicyTests`，并维护删除入口矩阵。
+
+### 3.9.1 [P0] 包测试不得继承生产 Trash 恢复域
+
+- **现象**：`swift test` 的真实临时文件回收用例使用裸 `TrashPipeline()`，却继承 production
+  pending ledger、completion journal 与 `UndoHistoryStore.shared`。测试 callback 于是留在用户
+  Application Support；下一次真实删除在提交前被恢复闸门阻止，UI 又把它错误呈现成阻塞结果框。
+- **根因**：只把被删除文件放进 `NSTemporaryDirectory()`，没有隔离删除事务自身的持久化 owner；
+  coordinator/ViewModel 的 `.shared` 默认参数还允许 scripted moved pairs 直接写用户 Undo。
+- **v2026.07.20 防复发规则**：
+  - 生产只能经具名 `TrashPipeline.production(...)` 取得共享恢复域；裸 package initializer 只创建
+    每实例 UUID 临时域。
+  - ledger、completion journal、Undo store、active registry 与 recovery single-flight identity 是
+    一个不可拆分 dependency domain，测试不得只替换其中一部分。
+  - 所有可能持久化 moved pairs 的 coordinator / ViewModel 都必须显式接收 Undo store；禁止
+    `.shared` 默认值。生产调用显式传 `.shared`，测试显式传临时 store。
+  - public View 若允许注入 pipeline，必须把 Undo owner 作为同一个无默认依赖同时注入；不得在
+    View 内硬编码 `.shared`，也不得在 scripted pipeline 旁边偷偷构造 production pipeline 并触发
+    recovery prewarm。组合根的嵌套卸载、最近清理等导航页面必须继续透传同一对 owner；只读/恢复
+    页面也不能自行回落到 `.shared`。App composition root 是唯一显式选择 `.shared` 的 UI 入口。
+  - production ledger / completion journal 的无参构造只能由各自 `shared` owner 私有调用；测试
+    必须显式提供临时 URL，pending ledger 还必须显式提供独立 active registry。
+  - 回归必须同时断言测试 URL 位于 temp、完全不在任何 Application Support、两个 pipeline 的三套
+    URL 全不同，并在测试前后核对生产恢复文件快照未变化。
+  - 不得用 `ProcessInfo`、环境变量或 XCTest 类名猜测运行环境；构造 API 本身必须表达 production /
+    isolated 的选择。
 
 ### 3.10 [阻塞] 扫描不完整被误当删除权限，污染整棵 HOME 子树
 - **现象**：一个 descendant 目录无法枚举，扫描器同时发 scoped incomplete 和全局 failed；上层再把整个 scan root 加入 incomplete。删除预检按祖先重叠后，所有 sibling 都变成 `accessDenied`，真实 vendor override 消失，UI 还错误提示 Full Disk Access。
@@ -1133,3 +1209,360 @@ v2026.07.17 本轮已完成 descriptor 传播与静态调用点审阅，新增�
 遵循“先完整落地、后统一测试”，这些测试、全包 build 与真实 App 切语言尚未运行，当前只能记为
 C1。受保护 rules 数据的双语迁移也仍待单独授权，不能把 catalog 路径通过等同于所有 vendor
 原文已有英文。
+
+---
+
+## 10. v2026.07.18：Trash completion 与 Undo 不是两个松散异步步骤
+
+### 事故根因
+
+`NSWorkspace.recycle` 返回的 path pair 只说明系统回调观察到一次移动。若此后再从废纸篓路径
+`lstat` 生成身份，callback 与 probe 之间的同名替换会把另一对象铸造成恢复能力；若先清 pending
+ledger、再异步写 Undo，进程崩溃会留下“文件已经移动、历史和 pending 都没有”的不可恢复空窗。
+旧 Undo JSON 又缺少跨进程 RMW，`open -n` 的两个实例会按各自旧快照 last-writer-wins。
+
+### 长期协议
+
+1. 删除 reservation 冻结统一 `TrashObjectIdentity` 与恢复 scope root；callback 只能把这份身份
+   连同系统 pair 写入 deterministic-ID completion journal，禁止事后从 Trash pathname 重新铸造。
+2. pending ledger、completion journal 与 UndoHistory 共用同一 durable replacement 原语，各自用
+   独立稳定 `<file>.lock` 串行 RMW。`reserve` 与尤其是进入 AppKit 前的 `claim` 都必须完成
+   temp-fd full write、file `fsync`、atomic rename、parent-directory `fsync`；仅有
+   `Data.write(.atomic)` 不足以证明断电后仍能看到 claim，未耐久 claim 永远不能调用 recycle。
+3. UndoHistory 使用独立稳定 `<history>.lock` 做 read-modify-write 合并；完成协议必须严格按
+   `record + replay receipt → exact-attempt ledger ack → journal receiptPrunePending → receipt prune
+   → journal remove` 单调推进。journal row/ID 是 receipt prune 完成前的最后证据，禁止先删 row 再做
+   best-effort prune，否则固定上限会被 crash window 永久耗尽。任一步崩溃都由 journal 幂等重放，
+   不能用“写失败也先解除 pending”换取表面可用。receipt ID 必须绑定 operation、attempt、
+   normalized original 与 trashed path 的 opaque SHA-256，Undo pair 必须另存
+   attempt ID 并在 decode 时重算验证；禁止把绝对路径写入可能长期残留的字典 key。旧 path-bearing
+   ID 可严格迁移；缺 attempt 的旧 opaque pair 只能保留为无 receipt 的历史事实，等 exact pending
+   journal 升级，不能猜测 capability。旧 plaintext receipt 要在 read/RMW 时清除。
+4. callback ledger transition 必须返回 `applied / stale / storageUnavailable`；`stale` 只否定旧 ledger
+   ownership，不能否定已经 fsync 的 callback journal fact，禁止据此删 journal。启动 replay 先按 exact
+   operation+attempt 分组：live owner 跳过，dead/stale owner 都从 journal 幂等合并。整个
+   `snapshot → Undo merge → exact ack → phase → receipt prune → remove → empty proof` 必须持有稳定
+   `<journal>.recovery.lock`，不能只锁单次 JSON RMW；否则两个 App 进程会同时读到 replayable，迟到者
+   重新制造 receipt。任一 journal group 未收敛时禁止运行可能清 ledger 的通用 reconciliation。
+5. Undo 的普通 snapshot、journal merge 与 receipt prune 必须进入同一实例 FIFO persistence queue，
+   每次都在 history flock 内把本次 mutation 应用到最新磁盘 union，再做全局 recency 与稳定 tie-break。
+   禁止 stale 十条快照先占满 LRU 后把另一实例的新记录截成第十一条；revision 只用于拒绝旧 UI 投影，
+   不能代替 mutation 串行化。
+6. corrupt、permission/read failure、file-size 超限、单 record pair 超限与 journal write failure 都是
+   类型化 UI 状态，绝不能投影成“暂无历史”。completion-journal blocked 与 history storage 状态正交，
+   普通成功 save/bootstrap 或单个 receipt ack 不得清除；只有 journal 已证明为空、所有 replay/ack/remove
+   完成、ledger authority 可读且 durable/local blocked 集合都为空的完整 terminal 才能恢复 ready。
+   生产初始化、品牌迁移、读取、JSON decode 与 late-bootstrap 大合并在 utility task 完成；
+   8 MiB store 与 10,000 pairs/record 是拒绝而非静默截断合同。
+7. 恢复目标必须仍是删除时 scope root 的严格后代。逐级目录通过 fd-relative `openat` +
+   `O_NOFOLLOW` 打开/创建并复核设备，最终提交用 `renameatx_np(RENAME_EXCL)`，永不覆盖后来出现的
+   同名项目。
+8. callback 已观察与 `undoJournalBlocked` 不是两个可分离的 ledger 步骤。callback journal 写失败时，
+   `callbackObserved + journalBlocked 精确路径` 必须在同一把 ledger 锁、同一次 RMW、同一次 durable
+   replace 中提交；禁止先写 callbackObserved 再补第二次 transition，否则两次写之间崩溃会永久丢失
+   Undo 失败证据。
+9. completion-journal health 必须由所有 `operationID + attemptID` 的权威 blocked 集合推导，禁止用全局
+   Bool，也禁止让操作 B 的 save、receipt prune 或 ack 清除操作 A。ledger 无法完整读取时是 authority
+   unavailable，只能保持 blocked；进程内 callback settlement 另有 local-unsettled 集合，空 ledger
+   snapshot 不能清它。非结构化 MainActor 投影必须携带单调 revision，较新的 terminal 永远不能被迟到
+   pending 覆盖；重启后再从 reconciliation 的完整集合恢复 durable 投影。
+10. callback transition 返回 `storageUnavailable` 时，活 owner 不能等待进程重启才收敛。必须在同进程按
+    exact operation+attempt 重试**结算持久化**并保留 journal/gate；重试路径绝不能再次调用
+    `NSWorkspace.recycle`。瞬时失败恢复后，无论回调仍在等待窗内还是已经迟到，都只能结算一次。
+11. startup recovery 是真实删除授权的一部分：init 只可在 utility task 预热；每次 `dryRun=false` 都必须
+    在 `ledger.reserve` 前 join 同进程 single-flight recovery terminal，blocked 就类型化拒绝。`dryRun`
+    不进入此 barrier。single-flight 不能替代第 4 条跨进程 flock，且每轮终态后必须允许后续请求重新
+    证明，以观察刚追加的 journal 或重试瞬时存储失败。
+12. durable replace 在 temp `open(O_EXCL)` 后、atomic rename 前崩溃会留下私有 JSON sibling。v2026.07.18
+    起 pending ledger、completion journal 与 UndoHistory 只能在各自稳定跨进程 flock 已持有后，清理
+    本 store 的 `.trash-pending.<UUID>.tmp`、`.trash-completion.<UUID>.tmp`、
+    `.UndoHistory.<UUID>.tmp`。匹配必须是 writer 实际生成的 canonical UUID 完整语法，并用 no-follow
+    metadata 只移除普通文件；相似前缀、额外 suffix、目录和 symlink 一律保留。禁止在通用 writer 内或
+    flock 外做目录级 sweep，否则另一个活 writer 的仍打开 temp 会被当成 crash 遗留删除。清理后 parent
+    directory fsync 失败只记录并留给下一锁 owner 重试，不能把非权威垃圾回收伪装成 store RMW 失败。
+
+### 不可消除的 Darwin 边界
+
+`renameatx_np(RENAME_EXCL)` 提供的是**目标 no-replace**，不是 source inode compare-and-swap。
+Darwin 没有“按已打开 source fd 原子 rename”的公开 API，所以 source parent fd 上相邻的
+`fstatat` 与 `renameatx_np` 之间仍有极小 name-to-inode 竞态。实现会在目标 fd 上立即复核身份，
+不匹配时执行 best-effort `RENAME_EXCL` 回滚并报告 identity changed；不得把这描述成已获得真正
+source CAS。要完全消除此边界只能由系统提供新的原子 API，而不是继续增加 pathname probe。
+
+### 防回归证据
+
+- callback path ABA 必须证明 journal 保存 reservation 身份而非 replacement 身份；重复 callback
+  的 timestamp 变化不构成 deterministic-ID collision。
+- crash-after-Undo-fsync/before-phase 与 phase-after-ledger-ack/before-receipt-prune 都必须重放为同一
+  record/pair；后一窗口必须保留 `receiptPrunePending` journal 证据，重启后 receipt 与 row 都收敛为空。
+  两个 recovery 实例强制重叠时，第二个必须阻塞在稳定 recovery flock，最终 Undo pair 单份、journal
+  空、receipt 空；旧 journal/history 的 path-bearing ID 迁移也必须有测试。
+- corrupt、chmod 读失败、8 MiB 超限、wide record、durable-writer 失败和稳定 lock 阻塞均须有测试。
+- callback 返回本 attempt 以外的 pair 必须被 scope fence 拒绝；任意两个 pair 复用同一 non-nil
+  journal ID 或 receipt 出现非 ASCII lowercase hex 都属于损坏数据，必须 fail-closed。
+- claim durable-writer failure 必须证明 AppKit 调用次数为零；callback journal 已 durable 后的 ledger
+  写失败必须返回 storageUnavailable 并保留 journal。mark-prune、receipt-prune、journal-remove 三处
+  失败都必须保留 exact health block；remove 失败后的 finalizer 从 prune-pending 阶段继续。live-owner
+  replay 不得写 Undo，dead/stale-owner 组独立收敛。
+- journal writer 失败必须证明 callbackObserved 与 blocked 精确路径只产生一次 ledger replace，重启仍
+  恢复 exact attempt；操作 B 的真实 receipt ack 后 A 仍 blocked，只有完整集合移除 A 才 ready。
+- callback ledger 的一次瞬时 durable-writer 失败必须在同进程重试成功，并断言 workspace recycle 调用
+  始终为一次；逆序执行 terminal/pending health 投影仍必须 ready，空 ledger snapshot 不得清 local
+  unsettled；不能靠重启测试掩盖 live-owner 不会被 replay 的事实。
+- 两个都预载 10 条历史的实例并发各新增一条后，两条新记录必须都在最终 10 条中；snapshot 被钩子
+  阻塞时 journal mutation 不得越过 FIFO。duplicate record UUID、duplicate journal row/ID 必须返回
+  typed corruption，禁止 `Dictionary(uniqueKeysWithValues:)` trap。
+- 三个 store 都必须用 integration fixture 证明：持有其稳定 flock 的活 writer 期间 temp sweep 不运行；
+  释放后只清 canonical `<prefix>.<UUID>.tmp` 普通文件，malformed UUID、额外 suffix 与 exact-looking
+  symlink 仍保留且 symlink target 内容不变。
+- check→move 测试在 source `fstatat` 后替换 pathname，必须检测目标身份不符、no-replace 回滚，
+  且不得在原目标留下 replacement。
+
+---
+
+## 11. v2026.07.18：卸载扫描的 App 身份不能代替残留候选身份
+
+### 事故根因
+
+选中 `.app` 的 device/inode 只能证明“扫描的是哪个产品”。残留目录从扫描到确认再到
+`NSWorkspace.recycle` 仍可能被同路径替换；若 intent 只保存 pathname，后来对象会继承旧候选的
+匹配理由与用户确认。与此同时，12 个 root 的第一层 `readdir` 与 Spotlight result extraction 即使
+放在异步函数里，未绑定 owner、预算、逐项取消或 MainActor 小批次 yield，仍会让旧轮扫盘叠加或
+单次占满主线程。
+
+### 长期合同
+
+1. 每个可删除残留必须保存扫描时 no-follow `TrashObjectIdentity`，并通过 interaction snapshot、
+   `DeletionIntent` 与 source-specific execution verification 进入 Trash。durable reservation 冻结
+   当前 identity 后、任何 AppKit claim 前必须比较；后续继续复用 ledger 的 claim-adjacent fence。
+   选中 App identity 永远不能替代这份逐候选能力，partial、缺 identity 与特殊文件只能展示。
+2. App Footprint 的 bundle bytes 必须与 `InstalledApp.fileIdentity` 匹配。路径已替换、identity 缺失
+   或根不再是目录时，发布 typed incomplete 的 0 下界，禁止把 App B 的字节标成 App A。
+3. 残留第一层枚举与后代 snapshot 共用一轮 cancellation token、全局 entry/deadline 预算；页面/store
+   只允许一个 producer。新选择必须 `cancel` 并 `await` 旧 producer terminal 后再启动，revision gate
+   只管发布权，不能代替 I/O 结算。
+4. `NSMetadataQuery.result(at:)` 属于 MainActor 工作，数量上限不是响应性保证。必须以小批次读取、
+   每项检查 deadline/cancellation、批间 `Task.yield()`；timeout/cancel 要能在批间停止 query 与
+   extraction。路径规范化和去重继续放后台，partial paths 与 typed incomplete 同时保留。
+
+### 防回归证据
+
+- 候选扫描后同路径换 inode，必须在 durable reserve 后返回 typed identity-changed，ledger claim 与
+  workspace recycle 调用次数都为零。
+- 快速切换 App 时旧 residual producer 带结算尾巴退出，最大并发 producer 仍为 1；entry/time budget
+  命中必须形成 typed incomplete。
+- Spotlight 虚拟时钟要证明 deadline 在少于一个 32-item chunk 内生效；batch yield 后取消不得再读
+  下一项。App Footprint replacement fixture 不得发布 replacement bytes。
+
+---
+
+## 12. v2026.07.18：日志文件名不是删除、导出或健康证明
+
+### 事故根因
+
+滚动日志曾以 `AmuxAIClean-` 前缀和 `.log` 后缀筛选，再交给
+`FileManager.removeItem` / `Data(contentsOf:)`。同名目录会被递归删除，同名 symlink 会把导出读取
+带到目标文件；活跃文件被 rename、路径被 replacement 或目录被 unlink 后，旧 fd 仍可能写成功，
+但 Finder 看不到任何新日志。若只把 raw Error 写 stderr，用户界面也无法解释“为什么没有日志”。
+
+### 长期合同
+
+1. 只有精确 `AmuxAIClean-YYYY-MM-DD.log`、no-follow `lstat/fstatat` 证明为普通文件且满足链接数
+   合同的目录项，才是本 sink 的枚举候选；前缀、扩展名、URL 或 `fileExists` 都不是 ownership。
+2. 打开使用 directory fd + `openat(O_NOFOLLOW)`，随后比较 path 与 fd 的 device/inode。清理使用不带
+   `AT_REMOVEDIR` 的 `unlinkat`，导出从重新验证的只读 fd 读取；目录、symlink、hardlink、malformed
+   date 和 identity replacement 一律不递归、不跟随、不猜测。
+3. 写入只可使用与同一次 no-follow 打开事务绑定的已验证 directory fd + file fd。打开、跨日滚动和
+   显式 `prepareDirectoryForAccess` 必须完整重验可见 path identity；append 热路径复用这两个稳定
+   descriptor，并以“每 256 条或 1 秒（先到者）”作为可见路径重验边界。v2026.07.19 曾把完整路径
+   遍历放到每一条结构化日志前，1500 条 append 因而产生 9020 次 `lstat/fstat/fstatat`，直接把扫描
+   日志放大为元数据 I/O；稳定 fd 不会因 pathname replacement 被重定向，所以逐行重验没有增加写入
+   安全。自上次可见 identity 证明后接受的行必须同时保留在最多 4 MiB 的 visibility window；边界前
+   只能写原冻结 inode，绝不能写 replacement/symlink 目标。边界发现 unlink、普通 replacement 或目录
+   换位时，必须先关闭两个 descriptor，通过 `O_NOFOLLOW` 重绑，再把窗口按原序回放到新的可见 inode；
+   超过字节上限要写 `dropped_lines/dropped_bytes` marker，不能静默清空。symlink/越界路径失败时保持
+   typed unavailable 与有界窗口，安全普通路径恢复后再回放。被移位的旧文件可能仍保留同一窗口副本，
+   但当前约定路径中的每条接受行必须恰好一次；不可继续向旧 inode 写完后把 health 标回 ready。
+   此基准只证明 file-sink append 的独立 hot-path 回归；不得据此宣称真实 App 中 78–221 秒的
+   DevArtifact 扫描根因已经闭合，端到端结论必须另有同构 scanner/App 证据。
+4. `GSYLog.emit` 与 sink replacement/disable 的配置锁只负责确定 ingress 顺序，不能持锁等待文件队列。
+   append block 必须强持有已接受它的 sink；配置切换后由独立 retirement owner 在锁外把 terminal close
+   排到旧 sink 串行队列尾部，先 drain 所有已接受行、完成可见性重验/回放并关闭 descriptor，再释放
+   生命周期。弱持有 append、只 detach observer 或直接清全局引用都会让排队日志无 marker 消失。
+5. create、enumerate、fsync、retention、export 和 clear 都是文件 I/O，不得从 SwiftUI body、
+   `App.init` 或 MainActor 同步执行。启动只能先建立无文件 I/O 的有界内存缓冲，再由后台 revision
+   构造 sink；安装时必须先按序 flush 缓冲，溢出留计数，旧 revision 永远不能覆盖新配置。
+6. writer health 与 maintenance/operation issue 是两份合同：open/write/prepare/clear 可使 writer
+   unavailable；retention/enumerate/export 失败即使仍可 append 也必须独立可观察。问题按 stage 保留，
+   只有同 stage 的完整成功才能清除；初始化中不得伪装为“文件日志已禁用”。所有失败以本地化操作名
+   和闭集 `stage/domain/code` 展示，并另写只包含白名单字段的独立 Unified Logging 事件。
+7. 合并导出不得把所有日志 materialize 成一个 `Data`。源文件继续做 no-follow + identity 重验，目标
+   使用固定大小块流式写入用户所选目标的同目录 `0600` 随机临时文件，`fsync`、关闭后以 `renameat`
+   原子替换；失败只能清理自己的精确临时项，不能破坏既有目标。
+8. 业务日志继续写入用户可读的本地滚动文件。隐私收紧只要求 API Key、网络正文等敏感负载不落盘，
+   不能借此删除扫描、删除、规则和存储错误；否则“没有敏感日志”会退化成“没有诊断能力”。
+
+### 防回归证据
+
+- matching-name directory 内 marker、matching-name symlink target、hardlink sibling 和 malformed-name
+  普通文件在 purge/clear 后必须原样存在；export 不得包含 symlink/hardlink target 内容。
+- 活跃日志被 rename/replacement、目录被删除或 final component 变 symlink 后，下一次写/prepare 必须
+  在固定重验边界重新绑定可见 identity 或进入 typed unavailable；边界前的窗口必须有界保留，普通
+  路径恢复后按序回放，不得跟随 replacement。unlink、普通 replacement、symlink fail-closed/恢复、
+  父目录换向与 replay 超限 marker 都要分别覆盖。
+- 1500 条 append 必须逐条保留，并断言路径重验次数按固定批次增长（当前 256 条边界为 5 次），禁止
+  回归为 O(日志行数) 的完整路径校验；受控 syscall 基准必须同时记录耗时与 `lstat/fstat/fstatat` 数量。
+- disable/reconfigure 竞态测试必须在旧 sink 队列前放 barrier、释放测试侧强引用，再证明全部已接受行
+  只进入交接两侧之一且恰好一次；配置 API 必须立即返回，测试通过显式 retirement wait 等待 drain。
+- Settings 已打开后制造 write/open failure，health stream 必须主动更新；Help/Settings 的准备、枚举、
+  导出和清理测试必须证明文件工作不在 MainActor，错误不得降为空列表或成功计数 0。
+- 启动缓冲测试必须证明初始化态与 disabled 不同、溢出 marker 在保留早期行之前、早期/晚期日志顺序
+  不变且旧 bootstrap revision 被拒绝；retention fixture 必须证明 writer 仍 ready、问题可见且只被同
+  阶段成功重试清除。
+- 导出复制 seam 必须以小于内容体量的固定块验证最大驻留 chunk、字节顺序、既有目标原子替换、`0600`
+  权限和失败/成功后无随机临时文件遗留。
+
+---
+
+## 13. v2026.07.19：Undo 品牌迁移不能用 pathname preflight 授权最终对象
+
+### 事故根因
+
+旧迁移先对 `GSYCleanMac/UndoHistory.json` 读 attributes，再用 `Data(contentsOf:)`
+解码，最后 `moveItem` 到新品牌路径。这是三次独立 pathname lookup：大小、解码和最终
+迁移的可能不是同一 inode，final symlink、hardlink、原地改写或同名 replacement 都可以
+穿过其中的窗口。更严重的是，迁移失败后 bootstrap 继续读不存在的新路径，会把
+“旧历史仍在但无法安全迁移”伪装成 `.ready` 的空历史。
+
+### 长期合同
+
+1. legacy 最终文件必须通过 source parent fd 上的 `openat(O_NOFOLLOW | O_NONBLOCK)`
+   打开；只接受普通、单链接、0…8 MiB 文件。symlink、目录、FIFO、hardlink 和超限必须
+   fail closed，不能回退 `Data(contentsOf:)`。
+2. 数据只能从同一 fd 分块有界读取；读前、读后与 commit 紧邻边界都要比较
+   device/inode/type/link-count/size/mtime/ctime/birthtime/generation，并用 source-parent
+   `fstatat(AT_SYMLINK_NOFOLLOW)` 证明可见名仍是该完整版本。任一改写或替换都拒绝。
+3. legacy 被保留后，就不能再使用“一次复制、以后 destination 单独权威”的模型。每次 bootstrap
+   都必须在 current store 的稳定 `flock` 内，对 current 与 legacy 分别做 fd-bound、no-follow、
+   8 MiB 有界读取；schema 4 持久化 `observedRecordIDs` 与 `observedReceiptIDs`，只导入尚未见过的
+   legacy UUID/receipt。当前仍保留的同 UUID 记录只允许按单调终态与 journal 前缀合并；已经从
+   current 删除或确认清理的 UUID/receipt 必须由水位阻止复活。两类水位各最多 50,000，溢出必须
+   返回 typed failure，禁止静默裁剪后重新导入旧数据。
+4. current 提交只能在它的 directory fd 上创建 `0600` 随机 sibling temp，full write 后 file
+   `fsync`，再原子替换，并验证目标 identity、对 parent directory `fsync`；首次创建仍使用
+   `renameatx_np(RENAME_EXCL)`，不得覆盖并发出现的目标。读、合并和写入必须全部处于同一 current
+   `flock` 临界区。
+5. 成功后也不自动删除 legacy 源文件。Darwin 没有 unlink-by-fd/identity-CAS，
+   `fstatat(name) → unlinkat(name)` 仍有最后一跳 replacement 竞态，禁止把它写成“已绑定 inode
+   删除”。最终 source fence 只能证明本次提交包含的快照；不合作的旧进程若在 fence 后写入，
+   该记录必须由下一次 bootstrap 对账导入，而不能声称同一次启动已让两个 pathname 原子静止。
+6. 对账必须返回 typed outcome。symlink/replacement/解码/大小/水位/写入失败必须映射到
+   `.readFailed` / `.corrupt` / `.storeTooLarge` / `.recordRejected` / `.writeFailed`；bootstrap
+   不得在 rejected 后继续把 destination 当成权威空文件。
+
+### 防回归证据
+
+- 成功用例必须证明 destination 可完整解码且 legacy 源仍存在；重复 bootstrap 不重复导入，
+  current 已删除的旧记录和已确认清理的 receipt 不得从 legacy 复活，而 legacy 后续新增 UUID/receipt
+  必须在下一次 bootstrap 导入。
+- final symlink 与 hardlink 必须拒绝且不读/不删 target；FIFO 必须通过 `O_NONBLOCK`
+  及时拒绝而不能卡住启动；8 MiB + 1 sparse 文件必须在 decode 前拒绝并保留源文件。
+- 在读取后、commit 前用钩子把 source 换 inode，必须保留原对象与 replacement、不发布
+  destination；在同一边界抢占 destination，`RENAME_EXCL` 必须保留已有目标与 legacy。
+- 在最终 source fence 后写入 legacy 的新记录，本轮允许不包含，但下一次 bootstrap 必须收敛；
+  current 已有 receipt 与记录终态在对账中不得被旧快照降级或覆盖。
+- 损坏 legacy 通过生产 bootstrap 时必须显示 typed corrupt，不能只测静态迁移函数后仍让
+  History 页显示“暂无记录”。
+
+---
+
+## 14. v2026.07.20：扫描进度必须隔离 UI 广播，Tree 首帧与精确终态不能混为一谈
+
+### 事故根因
+
+`70fce59e` 之后，开发者构建产物的发现结果改为把 MainActor 上持续增长的
+`perRootStaging` Dictionary 交给异步 projection worker。worker 跨 `await` 保留同一份 COW
+storage 后，下一批发现结果每 20 项写入都会在 MainActor 复制越来越大的 Dictionary；扫描器遍历
+本身没有变慢，变慢的是进度发布所有权。真实症状从约 12 秒退化到 78–221 秒，并伴随 UI 卡顿。
+
+Tree 随后一轮修改把“直接子项已经完整提交”错误解释成“整个 item 已完成”，在 shallow rows
+出现时提前清除了 `treeChildrenInFlight`。因此用户能看到名称，但 exact bytes/count 和当前排序
+仍在运行时 spinner 已消失。正确合同不是阻塞首帧，也不是伪装完成：identity 立即可见，loading
+持续到精确测量与排序终态。
+
+全盘 `.topLevel` 的另一个独立 UI 卡顿来自发布边界：ScanKit 只上报绝对 progress，终态前没有
+可见 rows，但 `ScanCoordinator` 仍每 0.4 秒替换一次完整 `ScanSnapshot`。`MainView` 与 HUD 都观察
+整个 coordinator，elapsed 的单字段变化也会让 NavigationSplitView、侧栏和 HUD 广域重算。
+进度节流没有解决观察范围错误；应让小状态栏/HUD 独占一个窄 ObservableObject。
+
+同一轮修复后又暴露出第二层 Tree 回归：浅层 cache 虽然已在 20–77ms 内写回，但通用
+`childrenCacheVersion` 监听把每次写回都升级成整棵可见 Tree 的 DFS、索引和 Safety 投影；随后
+deep 指标写回还会取消上一轮 worker。结果是“数据已经有了”，界面仍长时间没有子项。开发者扫描
+还把 primary `.topLevel` 已经测得的直接子项 cache 在终态后立即清空，首次展开又重复扫盘。
+
+开发者扫描的另一个独立尾部回归来自终态批处理：`70fce59e` 会在 root 完成和 0.4 秒发布边界内
+逐批填充 verdict cache；后续实现把全部 projection 留到 producer 结束后，才一次串行执行所有
+`SafetyEngine.evaluate`（包含 symlink 解析）和八套全局 Tree 排序。真实 14,159 行现场因此出现
+16.900s terminal drain；磁盘 producer 本身并不是这段尾差。
+
+### 长期合同
+
+1. MainActor 持续突变的 Array/Dictionary/Set 不得以完整 COW value 交给跨 `await` 的长生命周期
+   worker。开发者发现进度沿用 `70fce59e` 的单 turn 发布所有权：0.4 秒节流边界内完成一次排序与
+   publish，不允许在下一批写入窗口继续保留 staging storage。若未来要移出排序，后台 actor 必须
+   成为 staging 的唯一所有者并接收增量，不能再次传完整 MainActor Dictionary。
+2. 直接子项 identity 集合提交即发布 shallow frame，允许立即显示、选择和继续下钻；不得清除
+   `treeChildrenInFlight`/ownership。后代精确容量、文件数、incomplete 与当前排序提交后，先清
+   ownership 再发布唯一 exact terminal revision。删除等破坏性动作必须等待该终态。
+3. Tree 的 DFS、宽数组/索引 materialize、Safety verdict 和旧 COW generation 释放必须留在后台
+   worker；MainActor 只做有 revision/CAS 保护的 O(1) snapshot 交换和可见行刷新。
+4. 扫描器耗时、进度发布耗时和 UI/Tree 投影耗时必须分开记录。不得因为扫描 stream 尚未 terminal
+   就把所有卡顿归因于磁盘 I/O，也不得用单元测试耗时冒充真实 App C4。
+5. children cache revision 必须携带发生变化的 parent path。已展开且可见的单一 parent 只允许
+   后台 patch 自己的连续 segment；shallow identity 发布后 deep 更新只能替换大小、数量和排序值，
+   不得清空 identity，也不得触发无关根的全局 DFS/Safety 投影。
+6. Developer primary `.topLevel` 是本轮扫描的权威直接子项证据。终态必须按 producer root 保存为
+   Tree cache，scan-end 清理不得把它和扫描期临时 cache 一起丢弃。Developer sentinel 不消费的
+   全局 Tree 排序不得构建；需要的兄弟排序按 root 生成。
+7. 终态仍有未缓存 Safety 判定时，必须在非 MainActor 的有界 worker 中执行并保持完整 evaluator、
+   最终排序和 CAS 合同。日志至少分开记录 projection merge、Safety、主列表排序、Tree 投影/分组
+   与 total，且只写数量和耗时，不写用户路径。
+8. 生产 `.topLevel` 扫描的实时 bytes/files/rate/elapsed 只能写独立 progress store；不得替换完整
+   `ScanSnapshot`，也不得 bump Tree revision。主窗口状态栏和 HUD 用小子视图观察该 store，侧栏、
+   结果区和 Tree 不得订阅。终态 transaction 才发布权威 snapshot。
+
+### 防回归证据
+
+- 2,048 个 developer roots 的进度发布后，必须没有 active/pending async projection worker，也不能
+  增加 live worker build count；该测试保护 COW ownership，不以放宽时间阈值代替。
+- 全盘 Tree 的宽目录 fixture 必须证明 shallow identity 立即可见且 `fetching=true`；deep exact
+  终态再证明容量不 pending、排序正确且 `fetching=false`。
+- 投影扫描 progress fixture 必须证明 live store 有更新，而 `ScanCoordinator.objectWillChange`、
+  `$snapshot` 与 Tree tick 在终态前均不发布。
+- 20,000 行 Tree projection 必须证明 materialize 与 verdict evaluation 不在主线程。
+- 大量无关可见行 + 单 parent cache bump 的 fixture 必须证明只评估新增 segment；deep 替换保持
+  相同 identity revision。Developer terminal fixture 必须经过真实 scan-end finalization 后仍为
+  cache hit，且没有新 task、in-flight 或 filesystem lease。
+- 当前聚焦测试与 Debug build 只到 C2/C3；真实机器仍须一次持续 C4，记录开发者扫描总耗时、主线程
+  卡顿、宽目录首帧与 loading 消失时间。没有这组证据不得宣称性能回归最终关闭。
+
+## 15. v2026.07.20：删除结果不得等待宽 Tree prune
+
+真实 Professional 删除日志把一次 10 秒以上的“系统删除慢”拆成了两个阶段：
+`NSWorkspace.recycle` 对单项的 submit 约 `364ms`，随后 `ScanCoordinator.pruneDeleted` 对
+`13,651` 行 snapshot 与 `11,872` 个 Tree cache entry 的 plan 却用了约 `11.45s`。旧调用顺序先
+等待 `applyProfessionalDeletionSuccess` 完成，最后才 route 结果页，所以用户看到的延迟来自模型
+整理，不是废纸篓 I/O，也不是结果 sheet 动画。
+
+长期合同：
+
+1. typed completion/receipt 是结果页的权威边界。先 route 结果并给 SwiftUI 一次 presentation
+   调度机会，再执行扫描快照、Tree、选中项、统计与历史记录 reconciliation；后者不得成为结果
+   可见性的前置条件。
+2. Developer terminal 只拥有 per-root Tree projection 时，删除不能凭空重建八套全局 Tree 排序。
+   `snapshotTreeRows` 为空是有效的表示边界，不是 cache miss。
+3. Tree cache 贡献索引只能作为 snapshot、dir index、bucket、per-root、large-file 等权威来源均
+   缺失后的 fallback。不得为了删除一个已存在于 snapshot 的 item，先扫描所有 sort cache。
+4. 日志必须分别记录 recycle completion、result eligibility 与 model-sync completion；性能测试
+   同时锁定“结果不等待 reconciliation”的顺序，以及宽 Developer Tree prune 不恢复全局投影、
+   不构建全缓存贡献索引。不能仅通过提前弹框掩盖后台 11 秒浪费。

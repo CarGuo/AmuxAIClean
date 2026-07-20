@@ -41,6 +41,29 @@ protocol DynamicDiscoveryFileSystem {
     func attributesOfItem(atPath path: String) throws -> [FileAttributeKey: Any]
     func contentsOfDirectory(atPath path: String) throws -> [String]
     func canonicalPath(for url: URL) -> String
+    func dataContents(
+        of url: URL,
+        maximumBytes: Int,
+        shouldCancel: @Sendable () -> Bool
+    ) throws -> Data
+}
+
+extension DynamicDiscoveryFileSystem {
+    /// v2026.07.18: dynamic metadata reads share AppUI's bounded, final-component no-follow
+    /// contract. Stable symlinks in parent components retain normal POSIX resolution.
+    /// Conformers used by tests may inject failures, but production never falls back to an
+    /// unbounded `Data(contentsOf:)` implementation.
+    func dataContents(
+        of url: URL,
+        maximumBytes: Int,
+        shouldCancel: @Sendable () -> Bool
+    ) throws -> Data {
+        try BoundedLocalFileReader.read(
+            at: url,
+            maximumBytes: maximumBytes,
+            shouldCancel: shouldCancel
+        )
+    }
 }
 
 extension FileManager: DynamicDiscoveryFileSystem {
@@ -51,7 +74,14 @@ extension FileManager: DynamicDiscoveryFileSystem {
 
 enum DiscoveryFileErrorClassifier {
     static func isMissing(_ error: Error) -> Bool {
-        contains(error) { domain, code in
+        // v2026.07.18: only an ENOENT from the reader's initial pathname snapshot is normal
+        // absence. ENOENT after a successful lstat/open is a generation change and must remain
+        // incomplete instead of being collapsed into "not present".
+        if let bounded = error as? BoundedLocalFileReadError,
+           case .metadataUnavailable(stage: .initialPath, posixErrorCode: ENOENT) = bounded {
+            return true
+        }
+        return contains(error) { domain, code in
             (domain == NSCocoaErrorDomain && code == CocoaError.fileNoSuchFile.rawValue)
                 || (domain == NSPOSIXErrorDomain && code == Int(ENOENT))
         }
@@ -65,6 +95,18 @@ enum DiscoveryFileErrorClassifier {
             (domain == NSCocoaErrorDomain && code == CocoaError.fileReadNoPermission.rawValue)
                 || (domain == NSPOSIXErrorDomain && (code == Int(EACCES) || code == Int(EPERM)))
         } ? .permissionDenied : fallback
+    }
+
+    static func posixErrorCode(for error: Error) -> Int32? {
+        let nsError = error as NSError
+        if nsError.domain == NSPOSIXErrorDomain,
+           let code = Int32(exactly: nsError.code) {
+            return code
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return posixErrorCode(for: underlying)
+        }
+        return nil
     }
 
     private static func contains(

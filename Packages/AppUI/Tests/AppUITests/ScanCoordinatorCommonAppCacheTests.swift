@@ -1,3 +1,4 @@
+import Darwin
 import Dispatch
 import SafetyKit
 import ScanKit
@@ -6,6 +7,157 @@ import XCTest
 
 @MainActor
 final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
+
+    func test_standardInstalledAppCacheRuleDiscovery_normalResultCarriesRulesWithoutIssues() async {
+        let applicationsRoot = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        let fileSystem = StandardInstalledAppCacheRuleFileSystem(
+            contentsOfDirectory: { _ in ["Notes.txt", "Demo.app"] },
+            readMetadata: { _, shouldCancel in
+                XCTAssertFalse(shouldCancel())
+                return AppMetadata(
+                    bundleID: "com.example.Demo",
+                    bundleVendor: "com.example",
+                    appName: "Demo",
+                    executableName: "Demo"
+                )
+            }
+        )
+
+        let result = await ScanCoordinator.discoverStandardInstalledAppCacheRules(
+            applicationsRoot: applicationsRoot,
+            fileSystem: fileSystem
+        )
+
+        XCTAssertFalse(result.wasCancelled)
+        XCTAssertTrue(result.issues.isEmpty)
+        XCTAssertEqual(result.rules.count, 1)
+        XCTAssertEqual(result.rules.first?.name, "Demo")
+        XCTAssertEqual(result.rules.first?.bundleIDPrefix, "com.example.Demo")
+        XCTAssertEqual(result.rules.first?.source, "standard-macos-cache")
+        XCTAssertEqual(result.rules.first?.paths.map(\.path), [
+            "~/Library/Caches/com.example.Demo",
+            "~/Library/Containers/com.example.Demo/Data/Library/Caches",
+            "~/Library/HTTPStorages/com.example.Demo",
+        ])
+    }
+
+    func test_standardInstalledAppCacheRuleDiscovery_rootFailuresHaveStableEvidence() async {
+        let deniedRoot = URL(fileURLWithPath: "/Applications-Denied", isDirectory: true)
+        let failedRoot = URL(fileURLWithPath: "/Applications-Failed", isDirectory: true)
+        let fileSystem = StandardInstalledAppCacheRuleFileSystem(
+            contentsOfDirectory: { url in
+                let code = url == deniedRoot ? EACCES : EIO
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+            },
+            readMetadata: { _, _ in
+                XCTFail("root enumeration failure must not attempt app metadata")
+                return AppMetadata(
+                    bundleID: "unused",
+                    bundleVendor: nil,
+                    appName: "unused",
+                    executableName: nil
+                )
+            }
+        )
+
+        let denied = await ScanCoordinator.discoverStandardInstalledAppCacheRules(
+            applicationsRoot: deniedRoot,
+            fileSystem: fileSystem
+        )
+        let failed = await ScanCoordinator.discoverStandardInstalledAppCacheRules(
+            applicationsRoot: failedRoot,
+            fileSystem: fileSystem
+        )
+
+        XCTAssertEqual(denied.issues, [StandardInstalledAppCacheRuleDiscoveryIssue(
+            path: deniedRoot.path,
+            stage: .rootEnumeration,
+            reason: .permissionDenied,
+            posixErrorCode: EACCES
+        )])
+        XCTAssertEqual(failed.issues, [StandardInstalledAppCacheRuleDiscoveryIssue(
+            path: failedRoot.path,
+            stage: .rootEnumeration,
+            reason: .enumerationFailed,
+            posixErrorCode: EIO
+        )])
+        XCTAssertEqual(denied.issues.first?.scanIncompleteIssue, ScanIncompleteIssue(
+            path: deniedRoot.path,
+            reason: .permissionDenied,
+            stage: .enumerate,
+            posixErrorCode: EACCES
+        ))
+    }
+
+    func test_standardInstalledAppCacheRuleDiscovery_metadataFailuresAreTypedAndKeepHealthyRules() async {
+        let applicationsRoot = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        let fileSystem = StandardInstalledAppCacheRuleFileSystem(
+            contentsOfDirectory: { _ in [
+                "Permission.app",
+                "Oversize.app",
+                "Unsafe.app",
+                "Changed.app",
+                "Malformed.app",
+                "Healthy.app",
+            ] },
+            readMetadata: { appURL, _ in
+                switch appURL.deletingPathExtension().lastPathComponent {
+                case "Permission":
+                    throw BoundedLocalFileReadError.metadataUnavailable(
+                        stage: .initialPath,
+                        posixErrorCode: EACCES
+                    )
+                case "Oversize":
+                    throw BoundedLocalFileReadError.tooLarge(
+                        limit: 16,
+                        observedSize: 17
+                    )
+                case "Unsafe":
+                    throw BoundedLocalFileReadError.unsafeType(.symbolicLink)
+                case "Changed":
+                    throw BoundedLocalFileReadError.changed
+                case "Malformed":
+                    throw AppMetadataReadError.missingBundleIdentifier
+                case "Healthy":
+                    return AppMetadata(
+                        bundleID: "com.example.Healthy",
+                        bundleVendor: "com.example",
+                        appName: "Healthy",
+                        executableName: nil
+                    )
+                default:
+                    throw AppMetadataReadError.propertyListIsNotDictionary
+                }
+            }
+        )
+
+        let result = await ScanCoordinator.discoverStandardInstalledAppCacheRules(
+            applicationsRoot: applicationsRoot,
+            fileSystem: fileSystem
+        )
+
+        XCTAssertEqual(result.rules.map(\.bundleIDPrefix), ["com.example.Healthy"])
+        XCTAssertEqual(result.issues.count, 5)
+        func issue(for appName: String) -> StandardInstalledAppCacheRuleDiscoveryIssue? {
+            result.issues.first { $0.path.contains("/\(appName).app/") }
+        }
+        XCTAssertEqual(issue(for: "Permission")?.stage, .metadataRead)
+        XCTAssertEqual(issue(for: "Permission")?.reason, .permissionDenied)
+        XCTAssertEqual(issue(for: "Permission")?.posixErrorCode, EACCES)
+        XCTAssertEqual(issue(for: "Oversize")?.reason, .tooLarge)
+        XCTAssertEqual(issue(for: "Unsafe")?.reason, .unsafeType)
+        XCTAssertEqual(issue(for: "Changed")?.reason, .changed)
+        XCTAssertEqual(issue(for: "Malformed")?.stage, .metadataDecode)
+        XCTAssertEqual(issue(for: "Malformed")?.reason, .malformedMetadata)
+        XCTAssertEqual(issue(for: "Oversize")?.scanIncompleteIssue.reason, .metadataUnavailable)
+        XCTAssertEqual(issue(for: "Oversize")?.scanIncompleteIssue.stage, .metadata)
+        XCTAssertEqual(
+            issue(for: "Permission")?.logFields,
+            "stage=metadata-read reason=permission-denied "
+                + "domain=NSPOSIXErrorDomain code=13 "
+                + "path=/Applications/Permission.app/Contents/Info.plist"
+        )
+    }
 
     func test_commonAppCacheProtectedAccessPolicy_preservesVenturaAndRequiresFDAOnSonoma() {
         XCTAssertTrue(ScanCoordinator.commonAppCacheAllowsProtectedAppDataAccess(
@@ -64,6 +216,7 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
             )
         }
 
+        isolateLiveStandardAppDiscovery(coordinator)
         coordinator.scanCommonAppCaches()
         await waitScanFinished(coordinator)
 
@@ -73,6 +226,146 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         XCTAssertEqual(coordinator.tccProtectedSkippedPaths, [boundary])
         XCTAssertEqual(coordinator.commonAppCacheProgress?.phase, .terminal)
         XCTAssertEqual(coordinator.commonAppCacheProgress?.terminalOutcome, .partial)
+    }
+
+    func test_scanCommonAppCaches_standardRootFailureMakesTerminalPartialAndProjectsEvidence() async throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let applicationsRoot = "/Applications"
+        let discovery = StandardInstalledAppCacheRuleDiscoveryResult(
+            rules: [],
+            issues: [StandardInstalledAppCacheRuleDiscoveryIssue(
+                path: applicationsRoot,
+                stage: .rootEnumeration,
+                reason: .permissionDenied,
+                posixErrorCode: EACCES
+            )]
+        )
+        let coordinator = ScanCoordinator(home: home.path)
+        coordinator.standardInstalledAppCacheRuleDiscovery = { discovery }
+        coordinator.commonAppCacheDetector = { _, _, _ in
+            CommonAppCacheScanner.ScanResult(hits: [], incompletePaths: [])
+        }
+
+        isolateLiveStandardAppDiscovery(coordinator)
+        coordinator.scanCommonAppCaches()
+        await waitScanFinished(coordinator)
+
+        XCTAssertTrue(coordinator.snapshot.isFinished)
+        XCTAssertFalse(coordinator.snapshot.isComplete)
+        XCTAssertEqual(coordinator.commonAppCacheProgress?.terminalOutcome, .partial)
+        XCTAssertEqual(coordinator.incompleteScanIssues, [ScanIncompleteIssue(
+            path: applicationsRoot,
+            reason: .permissionDenied,
+            stage: .enumerate,
+            posixErrorCode: EACCES
+        )])
+        XCTAssertEqual(coordinator._testAccessState(for: applicationsRoot), .permissionDenied)
+        XCTAssertEqual(
+            coordinator.incompleteIssues(overlappingAny: [applicationsRoot]),
+            coordinator.incompleteScanIssues
+        )
+    }
+
+    func test_scanCommonAppCaches_metadataIssueMakesRoundPartialWithoutBlockingUnrelatedCacheRow() async throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let cache = home.appendingPathComponent(
+            "Library/Caches/com.example.Healthy",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let metadataPath = "/Applications/Broken.app/Contents/Info.plist"
+        let discovery = StandardInstalledAppCacheRuleDiscoveryResult(
+            rules: [],
+            issues: [StandardInstalledAppCacheRuleDiscoveryIssue(
+                path: metadataPath,
+                stage: .metadataRead,
+                reason: .tooLarge,
+                posixErrorCode: nil
+            )]
+        )
+        let coordinator = ScanCoordinator(vendors: [VendorRule(
+            name: "Healthy Cache",
+            category: "common_app_cache",
+            paths: [PathRule(
+                path: "~/Library/Caches/com.example.Healthy",
+                verdict: .safe
+            )]
+        )], home: home.path)
+        coordinator.standardInstalledAppCacheRuleDiscovery = { discovery }
+        coordinator.commonAppCacheDetector = { _, _, _ in
+            CommonAppCacheScanner.ScanResult(
+                hits: [CommonAppCacheScanner.Hit(
+                    ruleName: "Healthy Cache",
+                    bundleIDPrefix: "com.example.Healthy",
+                    source: "fixture",
+                    url: cache,
+                    isDirectory: true,
+                    verdict: .safe,
+                    reason: "fixture",
+                    sizeBytes: 4_096,
+                    logicalSizeBytes: 128,
+                    entryCount: 1
+                )],
+                incompletePaths: []
+            )
+        }
+
+        isolateLiveStandardAppDiscovery(coordinator)
+        coordinator.scanCommonAppCaches()
+        await waitScanFinished(coordinator)
+
+        XCTAssertTrue(coordinator.snapshot.isFinished)
+        XCTAssertFalse(coordinator.snapshot.isComplete)
+        XCTAssertEqual(coordinator.commonAppCacheProgress?.terminalOutcome, .partial)
+        XCTAssertEqual(coordinator.snapshot.rows.map(\.verdict), [.safe],
+                       "metadata discovery gap is not an overlap with the measured cache row")
+        XCTAssertEqual(coordinator.incompleteScanIssues, [ScanIncompleteIssue(
+            path: metadataPath,
+            reason: .metadataUnavailable,
+            stage: .metadata
+        )])
+        XCTAssertEqual(coordinator._testAccessState(for: metadataPath), .incomplete)
+        XCTAssertTrue(coordinator.incompleteIssues(overlappingAny: [cache.path]).isEmpty,
+                      "request-scoped deletion evidence must use path overlap, not global partial")
+        XCTAssertEqual(
+            coordinator.incompleteIssues(overlappingAny: [metadataPath]),
+            coordinator.incompleteScanIssues
+        )
+    }
+
+    func test_scanCommonAppCaches_cancelDuringStandardDiscoveryDoesNotRunDetectorOrPublishTerminal() async throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let discoveryStarted = DispatchSemaphore(value: 0)
+        let detectorStarted = DispatchSemaphore(value: 0)
+        let coordinator = ScanCoordinator(home: home.path)
+        coordinator.standardInstalledAppCacheRuleDiscovery = {
+            discoveryStarted.signal()
+            while !Task.isCancelled {
+                await Task.yield()
+            }
+            return .cancelled
+        }
+        coordinator.commonAppCacheDetector = { _, _, _ in
+            detectorStarted.signal()
+            return CommonAppCacheScanner.ScanResult(hits: [], incompletePaths: [])
+        }
+
+        isolateLiveStandardAppDiscovery(coordinator)
+        coordinator.scanCommonAppCaches()
+        let didStartDiscovery = await waitForSignal(discoveryStarted, timeout: 2)
+        XCTAssertTrue(didStartDiscovery)
+        coordinator.cancel()
+        try await Task.sleep(for: .milliseconds(50))
+
+        let didStartDetector = await waitForSignal(detectorStarted, timeout: 0.05)
+        XCTAssertFalse(didStartDetector)
+        XCTAssertFalse(coordinator.isScanning)
+        XCTAssertFalse(coordinator.snapshot.isFinished)
+        XCTAssertTrue(coordinator.incompleteScanIssues.isEmpty)
+        XCTAssertNil(coordinator.commonAppCacheProgress)
     }
 
     func test_scanCommonAppCaches_publishesOnlyExistingNonEmptyRuleHits() async throws {
@@ -138,6 +431,7 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         ]
 
         let coord = ScanCoordinator(vendors: vendors, home: home.path)
+        isolateLiveStandardAppDiscovery(coord)
         coord.scanCommonAppCaches()
         await waitScanFinished(coord)
 
@@ -193,6 +487,7 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         ]
 
         let coord = ScanCoordinator(vendors: vendors, home: home.path)
+        isolateLiveStandardAppDiscovery(coord)
         coord.scanCommonAppCaches()
         await waitScanFinished(coord)
 
@@ -235,6 +530,7 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         ]
 
         let coord = ScanCoordinator(vendors: vendors, home: home.path)
+        isolateLiveStandardAppDiscovery(coord)
         coord.scanCommonAppCaches(includeConfirm: false)
         await waitScanFinished(coord)
 
@@ -260,6 +556,7 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
             paths: [PathRule(path: "~/Library/Caches/com.example.Partial", verdict: .safe)]
         )]
         let coord = ScanCoordinator(vendors: vendors, home: home.path)
+        isolateLiveStandardAppDiscovery(coord)
         coord.scanCommonAppCaches(
             scannerOptions: CommonAppCacheScanner.Options(maxEntriesPerPath: 1)
         )
@@ -298,7 +595,7 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
                        "不完整子树必须阻止 Smart Care/统一删除入口移除其父根")
     }
 
-    func test_scanCommonAppCaches_旧轮晚返回不能覆盖同类别继续扫描() async throws {
+    func test_scanCommonAppCaches_取消旧轮后新轮等待Producer退出且旧结果不能覆盖() async throws {
         let home = try makeTempHome()
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
         let cache = home.appendingPathComponent("Library/Caches/com.example.Generation",
@@ -351,19 +648,34 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
             )
         }
 
+        isolateLiveStandardAppDiscovery(coord)
         coord.scanCommonAppCaches(
             scannerOptions: CommonAppCacheScanner.Options(timeoutSeconds: 101)
         )
-        XCTAssertEqual(oldStarted.wait(timeout: .now() + 2), .success)
+        let didStartOld = await waitForSignal(oldStarted, timeout: 2)
+        XCTAssertTrue(didStartOld)
 
+        isolateLiveStandardAppDiscovery(coord)
         coord.scanCommonAppCaches(
             scannerOptions: CommonAppCacheScanner.Options(timeoutSeconds: 202)
         )
-        XCTAssertEqual(newStarted.wait(timeout: .now() + 2), .success)
+        // v2026.07.20：同类别续扫必须先等待不协作取消的旧 producer 真正退出；等待期
+        // 是 typed `.settling`，不是伪造中的扫描。旧稳定 frame 可继续显示，但不再拥有
+        // active category 或删除授权；只有 admission 完成后新 intent 才进入 `.scanning`。
+        let didStartNewTooSoon = await waitForSignal(newStarted, timeout: 0.15)
+        XCTAssertFalse(didStartNewTooSoon, "旧 producer 未退出前不得启动新一轮重扫描")
+        XCTAssertFalse(coord.isScanning)
+        XCTAssertFalse(coord.snapshot.isFinished)
+        XCTAssertNil(coord.activeCategoryID)
+        guard case .settling(let settlement) = coord.scanPhase else {
+            return XCTFail("等待旧 producer 退出时必须暴露 typed settlement")
+        }
+        XCTAssertEqual(settlement.intent, .commonAppCaches)
 
         releaseOld.signal()
         releasedOld = true
-        try await Task.sleep(for: .milliseconds(150))
+        let didStartNew = await waitForSignal(newStarted, timeout: 2)
+        XCTAssertTrue(didStartNew, "旧 producer 退出后，新 generation 必须继续启动")
         XCTAssertTrue(coord.isScanning,
                       "旧轮返回时，新 generation 仍必须保有扫描状态与最终提交权")
         XCTAssertFalse(coord.snapshot.isFinished)
@@ -412,6 +724,7 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
                 )]
             ),
         ], home: home.path)
+        isolateLiveStandardAppDiscovery(coord)
         coord.scanCommonAppCaches()
         await waitScanFinished(coord)
 
@@ -462,6 +775,7 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
                 paths: [PathRule(path: "~/Library/Caches/Visible", verdict: .safe)]
             ),
         ], home: home.path, whitelistStore: whitelist)
+        isolateLiveStandardAppDiscovery(coord)
         coord.scanCommonAppCaches()
         await waitScanFinished(coord)
 
@@ -480,6 +794,7 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
             commonAppCacheExecution: .isolated(executableURL: nil)
         )
 
+        isolateLiveStandardAppDiscovery(coord)
         coord.scanCommonAppCaches()
         await waitScanFinished(coord)
 
@@ -511,6 +826,7 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
             )
         ], home: home.path)
 
+        isolateLiveStandardAppDiscovery(coord)
         coord.scanCommonAppCaches()
         await waitScanFinished(coord)
         await Task.yield()
@@ -522,6 +838,15 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         XCTAssertEqual(progress.totalGroups, 1)
         XCTAssertTrue(progress.pendingPaths.isEmpty)
         XCTAssertEqual(progress.checkpoint?.completedGroupCount, 1)
+    }
+
+    /// v2026.07.18：这些 fixture 验证 Common App Cache 状态机，不应被测试宿主机
+    /// `/Applications` 中碰巧存在的损坏 App 元数据改变终态；显式 discovery 用例会先注入自己的证据。
+    private func isolateLiveStandardAppDiscovery(_ coordinator: ScanCoordinator) {
+        guard coordinator.standardInstalledAppCacheRuleDiscovery == nil else { return }
+        coordinator.standardInstalledAppCacheRuleDiscovery = {
+            StandardInstalledAppCacheRuleDiscoveryResult(rules: [])
+        }
     }
 
     private func makeTempHome() throws -> URL {
@@ -551,5 +876,25 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
                 return
             }
         }
+    }
+
+    /// 让出 MainActor 等待后台 producer 信号，避免测试自己的 semaphore wait
+    /// 阻断扫描状态机完成取消收敛和下一代启动。
+    private func waitForSignal(_ semaphore: DispatchSemaphore,
+                               timeout: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if consumeSignalIfAvailable(semaphore) {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return consumeSignalIfAvailable(semaphore)
+    }
+
+    private nonisolated func consumeSignalIfAvailable(
+        _ semaphore: DispatchSemaphore
+    ) -> Bool {
+        semaphore.wait(timeout: .now()) == .success
     }
 }

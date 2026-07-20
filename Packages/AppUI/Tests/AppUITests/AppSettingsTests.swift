@@ -35,6 +35,22 @@ final class AppSettingsTests: XCTestCase {
     }
 
     @MainActor
+    func test_普通模式开发缓存耗时提示_首次未确认且确认后跨启动持久化() throws {
+        let suite = freshSuite()
+        let first = AppSettings(testSuite: suite)
+        XCTAssertFalse(first.smartCareDeveloperCacheWarningAcknowledged)
+
+        first.smartCareDeveloperCacheWarningAcknowledged = true
+        let restored = AppSettings(testSuite: suite)
+        XCTAssertTrue(restored.smartCareDeveloperCacheWarningAcknowledged)
+
+        restored._testReset()
+        XCTAssertFalse(
+            AppSettings(testSuite: suite).smartCareDeveloperCacheWarningAcknowledged
+        )
+    }
+
+    @MainActor
     func test_v11_skipped设置nil应清除() throws {
         let suite = freshSuite()
         do {
@@ -89,12 +105,36 @@ final class AppSettingsTests: XCTestCase {
         s.showHidden = false
         s.minFileSizeMB = 999
         s.sortKey = .nameAsc
+        s.sentinelLastEnabled = Date(timeIntervalSince1970: 1_780_000_000)
         s._testReset()
         // fresh 一份验证（应回到 v1.3 默认值：showHidden ON）
         let s2 = AppSettings(testSuite: suite)
         XCTAssertTrue(s2.showHidden)
         XCTAssertEqual(s2.minFileSizeMB, 100)
         XCTAssertEqual(s2.sortKey, .sizeDesc)
+        XCTAssertFalse(s2.sentinelRequiresShutdownVerification)
+    }
+
+    @MainActor
+    func test_sentinelAuthority证据_跨启动保留且全收敛清理后回到默认() throws {
+        let suite = freshSuite()
+        let first = AppSettings(testSuite: suite)
+        XCTAssertFalse(first.sentinelRequiresShutdownVerification)
+
+        first.sentinelLastEnabled = Date(timeIntervalSince1970: 1_780_000_000)
+        XCTAssertTrue(first.sentinelRequiresShutdownVerification)
+        let afterRegistration = AppSettings(testSuite: suite)
+        XCTAssertTrue(
+            afterRegistration.sentinelRequiresShutdownVerification,
+            "成功注册证据不能随进程退出丢失"
+        )
+
+        // SentinelManager 只会在 current + 两代 legacy 全部权威 notRegistered 后按此顺序清理。
+        afterRegistration.sentinelLastEnabled = nil
+        afterRegistration.sentinelRequiresShutdownVerification = false
+        let afterConvergence = AppSettings(testSuite: suite)
+        XCTAssertFalse(afterConvergence.sentinelRequiresShutdownVerification)
+        XCTAssertNil(afterConvergence.sentinelLastEnabled)
     }
 
     // MARK: - v1.3.x：hideFromDockWhenClosed（关窗藏 Dock）

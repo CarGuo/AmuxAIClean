@@ -4,6 +4,98 @@ import XCTest
 @testable import AppUI
 
 final class DeletionPreflightPresentationTests: XCTestCase {
+    func testPreSubmitSafetyReasonsUseDedicatedLocalizationNamespace() {
+        XCTAssertTrue(DeletionPreflightNotice.Message.rejected.rawValue
+            .hasPrefix("delete.preflight."))
+        XCTAssertTrue(DeletionPreflightNotice.Message.scanChanged.rawValue
+            .hasPrefix("delete.preflight."))
+        XCTAssertTrue(DeletionPreflightNotice.Message.scanInProgress.rawValue
+            .hasPrefix("delete.preflight."))
+        let rejections: [SafetyRejection] = [
+            .relativePath, .dotDotInPath, .rootOrAboveHome, .outsideUserDeletionScope,
+            .preflightCancelled, .hardForbidPrefix, .userDocumentsRoot, .systemVolume,
+            .insideAppBundle, .sensitiveCredential, .vendorPathRule, .accessDenied,
+            .userWhitelisted, .batchContainsForbidden, .bundleSystemCritical,
+            .bundleDataProtected, .ok,
+        ]
+        for rejection in rejections {
+            let key = DeletionPreflightReasonPresentation.localizationKey(
+                for: rejection.rawValue
+            )
+            XCTAssertTrue(key.hasPrefix("delete.preflight.reason."))
+            XCTAssertFalse(key.hasPrefix("op.result."))
+        }
+        XCTAssertEqual(
+            DeletionPreflightReasonPresentation.localizationKey(for: "future-reason"),
+            "delete.preflight.reason.generic"
+        )
+    }
+
+    func testFiveProfessionalSurfacesRoutePreSubmitNoticeThroughSharedFloatingOverlay() throws {
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/AppUI")
+        let names = [
+            "MainView.swift",
+            "BrewScreen.swift",
+            "DuplicateScreen.swift",
+            "UninstallScreen.swift",
+            "WorkflowDetailView.swift",
+        ]
+        let sources = try Dictionary(uniqueKeysWithValues: names.map { name in
+            (name, try String(
+                contentsOf: sourceRoot.appendingPathComponent(name),
+                encoding: .utf8
+            ))
+        })
+
+        for name in names {
+            let source = try XCTUnwrap(sources[name])
+            XCTAssertTrue(source.contains(".deletionPreflightNoticeOverlay("), name)
+            XCTAssertFalse(source.contains("DeletionPreflightNoticeBanner"), name)
+            XCTAssertFalse(
+                source.contains(".safeAreaInset(edge: .top, spacing: 0)"),
+                "删除预检不得重新占用顶部 safe area：\(name)"
+            )
+            XCTAssertTrue(source.contains("OperationResultSheet"),
+                          "真实提交结果仍必须保留共享 result sheet：\(name)")
+        }
+        XCTAssertFalse(try XCTUnwrap(sources["MainView.swift"])
+            .contains(".sheet(item: $deletePreflightNotice)"))
+        XCTAssertFalse(try XCTUnwrap(sources["MainView.swift"])
+            .contains(".message(AppLocalization.string(\"delete.preflight."),
+            "Main 的预提交状态变化也不得回退到 modal message")
+        XCTAssertFalse(try XCTUnwrap(sources["MainView.swift"])
+            .contains("deleteResult = AppLocalization.string(\"delete.preflight."),
+            "Main 的扫描中预提交状态也必须留在非模态 notice")
+        for name in ["BrewScreen.swift", "DuplicateScreen.swift", "UninstallScreen.swift"] {
+            XCTAssertFalse(try XCTUnwrap(sources[name]).contains("case preflightNotice("), name)
+        }
+        XCTAssertFalse(try XCTUnwrap(sources["WorkflowDetailView.swift"])
+            .contains("case preflightNotice(id:"))
+    }
+
+    func testSharedPreflightCalloutIsBoundedAndDoesNotOwnModalPresentation() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/AppUI/DeletionPreflightNotice.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertEqual(DeletionPreflightNoticeCalloutMetrics.maxWidth, 420)
+        XCTAssertGreaterThan(DeletionPreflightNoticeCalloutMetrics.bottomActionClearance, 0)
+        XCTAssertTrue(source.contains(".overlay(alignment: .bottomTrailing)"))
+        XCTAssertTrue(source.contains("DeletionPreflightNoticeCallout"))
+        XCTAssertTrue(source.contains("accessibilityIdentifier(\"delete.preflight.callout\")"))
+        XCTAssertFalse(source.contains("safeAreaInset"))
+        XCTAssertFalse(source.contains(".sheet("))
+        XCTAssertFalse(source.contains(".alert("))
+        XCTAssertFalse(source.contains(".confirmationDialog("))
+    }
+
     func testEveryKnownSafetyRejectionUsesAnExplicitTypedPresentation() {
         let expected: [(SafetyRejection, String)] = [
             (.relativePath, "op.result.reason.outside_user_scope"),

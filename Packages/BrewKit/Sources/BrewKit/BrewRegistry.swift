@@ -17,17 +17,37 @@ import Foundation
 /// 设计原则：
 /// - **不执行 brew**：纯 JSON 解析，与 BrewController 同款约束。
 /// - **只读 name + version**，其余字段（desc/homepage/url）忽略以减少内存。
-/// - **解析失败容错**：返回空 map 而不抛错；调用方按 nil/missing 视作"无更新信息"。
+/// - **解析失败容错**：保留可用条目，并把不可读/损坏以结构化 diagnostic 返回；文件缺失
+///   仍是 Homebrew 尚未生成 cache 的正常状态。
+public enum BrewRegistrySourceStatus: String, Sendable, Equatable {
+    case missing
+    case complete
+    case partial
+    case unavailable
+}
+
 public struct BrewRegistry: Sendable {
 
     /// formula.jws.json 解析结果：name → latest stable version
     public let formulaLatest: [String: String]
     /// cask.jws.json 解析结果：token → latest version
     public let caskLatest: [String: String]
+    public let formulaStatus: BrewRegistrySourceStatus
+    public let caskStatus: BrewRegistrySourceStatus
+    public let diagnostics: [BrewDiagnostic]
 
-    public init(formulaLatest: [String: String], caskLatest: [String: String]) {
+    public init(
+        formulaLatest: [String: String],
+        caskLatest: [String: String],
+        formulaStatus: BrewRegistrySourceStatus = .complete,
+        caskStatus: BrewRegistrySourceStatus = .complete,
+        diagnostics: [BrewDiagnostic] = []
+    ) {
         self.formulaLatest = formulaLatest
         self.caskLatest = caskLatest
+        self.formulaStatus = formulaStatus
+        self.caskStatus = caskStatus
+        self.diagnostics = diagnostics
     }
 
     /// 用户默认 cache 路径下加载：
@@ -43,14 +63,32 @@ public struct BrewRegistry: Sendable {
     /// 从指定 cache 目录加载（测试可注入 fixture 目录）。
     /// cacheDirectory 为 nil 或文件缺失时返回空 registry。
     public static func load(cacheDirectory: URL?) -> BrewRegistry {
+        load(cacheDirectory: cacheDirectory, fileReader: .live)
+    }
+
+    static func load(
+        cacheDirectory: URL?,
+        fileReader: BrewFileReader
+    ) -> BrewRegistry {
         guard let dir = cacheDirectory else {
-            return BrewRegistry(formulaLatest: [:], caskLatest: [:])
+            return BrewRegistry(
+                formulaLatest: [:],
+                caskLatest: [:],
+                formulaStatus: .missing,
+                caskStatus: .missing
+            )
         }
         let formulaPath = dir.appendingPathComponent("formula.jws.json")
         let caskPath = dir.appendingPathComponent("cask.jws.json")
-        let formula = parseFormula(at: formulaPath)
-        let cask = parseCask(at: caskPath)
-        return BrewRegistry(formulaLatest: formula, caskLatest: cask)
+        let formula = parseFormulaResult(at: formulaPath, fileReader: fileReader)
+        let cask = parseCaskResult(at: caskPath, fileReader: fileReader)
+        return BrewRegistry(
+            formulaLatest: formula.values,
+            caskLatest: cask.values,
+            formulaStatus: formula.status,
+            caskStatus: cask.status,
+            diagnostics: formula.diagnostics + cask.diagnostics
+        )
     }
 
     // MARK: - Lookup
@@ -62,43 +100,191 @@ public struct BrewRegistry: Sendable {
         }
     }
 
+    public func status(for kind: BrewPackageKind) -> BrewRegistrySourceStatus {
+        switch kind {
+        case .formula: return formulaStatus
+        case .cask: return caskStatus
+        }
+    }
+
     // MARK: - Parsing
 
     static func parseFormula(at url: URL) -> [String: String] {
-        let items = parsePayload(at: url)
-        var out: [String: String] = [:]
-        for item in items {
-            guard let name = item["name"] as? String,
-                  let versions = item["versions"] as? [String: Any],
-                  let stable = versions["stable"] as? String else { continue }
-            out[name] = stable
-        }
-        return out
+        parseFormulaResult(at: url, fileReader: .live).values
     }
 
     static func parseCask(at url: URL) -> [String: String] {
-        let items = parsePayload(at: url)
-        var out: [String: String] = [:]
-        for item in items {
-            guard let token = item["token"] as? String,
-                  let version = item["version"] as? String else { continue }
-            out[token] = version
-        }
-        return out
+        parseCaskResult(at: url, fileReader: .live).values
     }
 
-    private static func parsePayload(at url: URL) -> [[String: Any]] {
-        guard let data = try? Data(contentsOf: url) else { return [] }
-        guard let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return []
+    private struct RegistryParseResult {
+        let values: [String: String]
+        let diagnostics: [BrewDiagnostic]
+        let status: BrewRegistrySourceStatus
+    }
+
+    private struct PayloadParseResult {
+        let items: [[String: Any]]
+        let diagnostics: [BrewDiagnostic]
+        let status: BrewRegistrySourceStatus
+        let rejectedEntryCount: Int
+    }
+
+    private static func parseFormulaResult(
+        at url: URL,
+        fileReader: BrewFileReader
+    ) -> RegistryParseResult {
+        let parsed = parsePayload(at: url, source: .formulaRegistry, fileReader: fileReader)
+        var out: [String: String] = [:]
+        var rejectedEntryCount = parsed.rejectedEntryCount
+        for item in parsed.items {
+            guard let name = item["name"] as? String,
+                  let versions = item["versions"] as? [String: Any],
+                  let stable = versions["stable"] as? String else {
+                rejectedEntryCount += 1
+                continue
+            }
+            out[name] = stable
+        }
+        return RegistryParseResult(
+            values: out,
+            diagnostics: parsed.diagnostics + entryDiagnostic(
+                source: .formulaRegistry,
+                url: url,
+                rejectedEntryCount: rejectedEntryCount
+            ),
+            status: rejectedEntryCount > 0 ? .partial : parsed.status
+        )
+    }
+
+    private static func parseCaskResult(
+        at url: URL,
+        fileReader: BrewFileReader
+    ) -> RegistryParseResult {
+        let parsed = parsePayload(at: url, source: .caskRegistry, fileReader: fileReader)
+        var out: [String: String] = [:]
+        var rejectedEntryCount = parsed.rejectedEntryCount
+        for item in parsed.items {
+            guard let token = item["token"] as? String,
+                  let version = item["version"] as? String else {
+                rejectedEntryCount += 1
+                continue
+            }
+            out[token] = version
+        }
+        return RegistryParseResult(
+            values: out,
+            diagnostics: parsed.diagnostics + entryDiagnostic(
+                source: .caskRegistry,
+                url: url,
+                rejectedEntryCount: rejectedEntryCount
+            ),
+            status: rejectedEntryCount > 0 ? .partial : parsed.status
+        )
+    }
+
+    private static func parsePayload(
+        at url: URL,
+        source: BrewDiagnostic.Source,
+        fileReader: BrewFileReader
+    ) -> PayloadParseResult {
+        let data: Data
+        switch readBrewLocalFile(at: url, source: source, reader: fileReader) {
+        case .missing:
+            return PayloadParseResult(
+                items: [],
+                diagnostics: [],
+                status: .missing,
+                rejectedEntryCount: 0
+            )
+        case .failure(let diagnostic):
+            return PayloadParseResult(
+                items: [],
+                diagnostics: [diagnostic],
+                status: .unavailable,
+                rejectedEntryCount: 0
+            )
+        case .contents(let contents):
+            data = contents
+        }
+
+        let envelope: [String: Any]
+        do {
+            guard let dictionary = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return malformedPayloadResult(source: source, stage: .decodeDocument, url: url)
+            }
+            envelope = dictionary
+        } catch {
+            return malformedPayloadResult(
+                source: source,
+                stage: .decodeDocument,
+                url: url,
+                error: error
+            )
         }
         guard let payloadString = envelope["payload"] as? String,
               let payloadData = payloadString.data(using: .utf8) else {
-            return []
+            return malformedPayloadResult(source: source, stage: .decodePayload, url: url)
         }
-        guard let array = try? JSONSerialization.jsonObject(with: payloadData) as? [[String: Any]] else {
-            return []
+        let rawItems: [Any]
+        do {
+            guard let array = try JSONSerialization.jsonObject(with: payloadData) as? [Any] else {
+                return malformedPayloadResult(source: source, stage: .decodePayload, url: url)
+            }
+            rawItems = array
+        } catch {
+            return malformedPayloadResult(
+                source: source,
+                stage: .decodePayload,
+                url: url,
+                error: error
+            )
         }
-        return array
+
+        let items = rawItems.compactMap { $0 as? [String: Any] }
+        let rejectedContainerCount = rawItems.count - items.count
+        return PayloadParseResult(
+            items: items,
+            diagnostics: [],
+            status: rejectedContainerCount > 0 ? .partial : .complete,
+            rejectedEntryCount: rejectedContainerCount
+        )
+    }
+
+    private static func malformedPayloadResult(
+        source: BrewDiagnostic.Source,
+        stage: BrewDiagnostic.Stage,
+        url: URL,
+        error: Error? = nil
+    ) -> PayloadParseResult {
+        let nsError = error.map { $0 as NSError }
+        return PayloadParseResult(
+            items: [],
+            diagnostics: [BrewDiagnostic(
+                source: source,
+                stage: stage,
+                reason: .malformed,
+                path: url.path,
+                errorDomain: nsError?.domain,
+                errorCode: nsError?.code
+            )],
+            status: .unavailable,
+            rejectedEntryCount: 0
+        )
+    }
+
+    private static func entryDiagnostic(
+        source: BrewDiagnostic.Source,
+        url: URL,
+        rejectedEntryCount: Int
+    ) -> [BrewDiagnostic] {
+        guard rejectedEntryCount > 0 else { return [] }
+        return [BrewDiagnostic(
+            source: source,
+            stage: .decodeEntry,
+            reason: .malformed,
+            path: url.path,
+            rejectedEntryCount: rejectedEntryCount
+        )]
     }
 }

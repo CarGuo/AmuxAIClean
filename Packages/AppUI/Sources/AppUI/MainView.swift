@@ -18,6 +18,132 @@ private struct MainDeletionAccounting: Sendable {
     let movedBytes: Int64
 }
 
+struct MainDeletionPresentationProjection: Sendable, Equatable {
+    let snapshot: ScanSnapshot
+    let remainingSelection: Set<String>
+    let shouldCloseListDetail: Bool
+}
+
+struct MainDeletionPresentationSourceIdentity: Sendable, Equatable {
+    let scanSessionID: UUID
+    let sourceRevision: UInt64
+    let sourceCategoryID: String
+    let selectedCategoryID: String?
+    let interfaceMode: String
+}
+
+enum MainDeletionPresentationCommitDecision: Equatable {
+    case commit
+    case retryLatestSource
+    case discard
+}
+
+enum MainDeletionPresentationCommitPolicy {
+    static func decision(
+        frozen: MainDeletionPresentationSourceIdentity,
+        current: MainDeletionPresentationSourceIdentity,
+        requestRevisionMatches: Bool
+    ) -> MainDeletionPresentationCommitDecision {
+        guard requestRevisionMatches,
+              frozen.scanSessionID == current.scanSessionID,
+              frozen.sourceCategoryID == current.sourceCategoryID,
+              frozen.selectedCategoryID == current.selectedCategoryID,
+              frozen.interfaceMode == current.interfaceMode else {
+            return .discard
+        }
+        return frozen.sourceRevision == current.sourceRevision
+            ? .commit
+            : .retryLatestSource
+    }
+}
+
+/// Holds the old wide list snapshot across the MainActor COW swap, then releases it on the actor
+/// executor. Receipt presentation must be fast even when the prior list contains tens of
+/// thousands of rows; the last Array release cannot be charged to the UI frame.
+private actor MainDeletionPresentationRetirement {
+    private var snapshots: [ScanSnapshot]?
+
+    init(snapshot: ScanSnapshot) {
+        snapshots = [snapshot]
+    }
+
+    func retain(_ snapshot: ScanSnapshot) {
+        snapshots?.append(snapshot)
+    }
+
+    func retire() {
+        snapshots = nil
+    }
+}
+
+enum MainDeletionModelSurface: String, Sendable, Equatable {
+    case professional
+    case smartCare = "smart_care"
+}
+
+struct MainDeletionModelSynchronizationPlan: Sendable, Equatable {
+    let exactSurface: MainDeletionModelSurface
+    let invalidatedSurface: MainDeletionModelSurface
+}
+
+enum MainDeletionModelSynchronizationPolicy {
+    nonisolated static func plan(
+        authoritativeSurface: MainDeletionModelSurface
+    ) -> MainDeletionModelSynchronizationPlan {
+        switch authoritativeSurface {
+        case .professional:
+            return MainDeletionModelSynchronizationPlan(
+                exactSurface: .professional,
+                invalidatedSurface: .smartCare
+            )
+        case .smartCare:
+            return MainDeletionModelSynchronizationPlan(
+                exactSurface: .smartCare,
+                invalidatedSurface: .professional
+            )
+        }
+    }
+}
+
+/// Follow-up UI is deliberately separate from Professional deletion execution. A fast recycle may
+/// finish while the confirmation sheet is still animating out; its payload is retained here and
+/// becomes eligible only from that sheet's `onDismiss` callback.
+private enum ProfessionalDeleteDeferredPresentation: Sendable {
+    case confirmation(DeleteSheetRequest)
+    case preflightNotice(DeletionPreflightNotice)
+    case result(OperationResultCompletion)
+}
+
+private struct ProfessionalDeleteTiming: Sendable {
+    let traceID: UUID
+    let confirmedAtUptime: TimeInterval
+    let itemCount: Int
+
+    static func milliseconds(from start: TimeInterval, to end: TimeInterval) -> Int {
+        Int((max(0, end - start) * 1_000).rounded())
+    }
+}
+
+/// Receipt-first result acknowledgement for MainView deletion flows.
+///
+/// v2026.07.20 regression fix: a real deletion of one developer artifact completed in 364 ms,
+/// but the result sheet waited another 11.45 s for a 13,651-row / 11,872-cache Tree prune. A typed
+/// recycle receipt is the result authority; scan/Tree reconciliation must continue afterwards and
+/// cannot gate user feedback. The explicit yield gives SwiftUI a presentation turn before a wide
+/// model worker is admitted.
+@MainActor
+enum DeletionResultAcknowledgementOrdering {
+    static func acknowledgeThenReconcile<Payload>(
+        makePayload: () -> Payload,
+        present: (Payload) -> Void,
+        reconcileModel: () async -> Void
+    ) async {
+        present(makePayload())
+        await Task.yield()
+        await reconcileModel()
+    }
+}
+
 /// Smart Care 自己的互斥 sheet 路由。
 /// AI 报告必须先 dismiss，才能进入既有清理预览，避免 macOS sheet 叠 sheet。
 private enum SmartCareSheetRoute: Identifiable {
@@ -90,6 +216,30 @@ enum SmartCareAIReviewDeferredActionPolicy {
     }
 }
 
+enum SmartCarePrimaryActionDispatch: Equatable {
+    case startScan
+    case returnToSetup
+    case retry
+    case continueScan
+    case stopScan
+    case presentCleanup
+    case none
+
+    /// v2026.07.20: keep the Dashboard action contract outside the View switch. In particular,
+    /// `.scanAgain` is reset-only; it must never be wired back to an immediate scan start.
+    static func resolve(_ action: SmartCarePrimaryAction) -> SmartCarePrimaryActionDispatch {
+        switch action {
+        case .startScan: return .startScan
+        case .scanAgain: return .returnToSetup
+        case .retry: return .retry
+        case .continueScan: return .continueScan
+        case .stopScan: return .stopScan
+        case .cleanSafeItems, .confirmClean: return .presentCleanup
+        case .cleaning: return .none
+        }
+    }
+}
+
 private struct SmartCareAIReportObserverModifier: ViewModifier {
     let latestReport: SmartCareAIReviewReport?
     let canPresentPendingReport: Bool
@@ -126,12 +276,167 @@ private enum MainDeletionAccountingExecutor {
     }
 }
 
+/// v2026.07.20：receipt 后的可见清单窄投影。只过滤已成功路径及其后代，
+/// 不改 total/count；权威统计仍由 ScanCoordinator 的完整 prune 一次性收敛。
+/// 宽 Array/Set 工作必须离开 MainActor，UI 只交换 frozen snapshot。
+enum MainDeletionPresentationExecutor {
+    static func run(
+        snapshot: ScanSnapshot,
+        succeededPaths: [String],
+        selection: Set<String>,
+        listDetailPath: String?
+    ) async -> MainDeletionPresentationProjection {
+        await Task.detached(priority: .userInitiated) {
+            let matcher = DeletionPresentationPathMatcher(paths: succeededPaths)
+            let rows = snapshot.rows.filter { !matcher.contains($0.id) }
+            let nextSnapshot = ScanSnapshot(
+                categoryID: snapshot.categoryID,
+                rows: rows,
+                totalBytes: snapshot.totalBytes,
+                scannedFileCount: snapshot.scannedFileCount,
+                isFinished: snapshot.isFinished,
+                elapsed: snapshot.elapsed,
+                isComplete: snapshot.isComplete,
+                bytesPerSecond: snapshot.bytesPerSecond,
+                estimatedRemaining: snapshot.estimatedRemaining
+            )
+            return MainDeletionPresentationProjection(
+                snapshot: nextSnapshot,
+                remainingSelection: selection.filter { !matcher.contains($0) },
+                shouldCloseListDetail: listDetailPath.map(matcher.contains) ?? false
+            )
+        }.value
+    }
+}
+
 private struct SidebarTitleStyle: ViewModifier {
     func body(content: Content) -> some View {
         content
             .font(.system(.body, design: .rounded))
             .lineLimit(1)
             .truncationMode(.tail)
+    }
+}
+
+/// v2026.07.20 scan-progress isolation: this small subtree is the only main-window observer of
+/// `ScanLiveProgressStore`. Progress frames must never invalidate `MainView` itself; doing so
+/// re-runs the complete NavigationSplitView/sidebar graph while a full-disk scan is active.
+private struct MainScanLiveProgressView: View {
+    @ObservedObject var progress: ScanLiveProgressStore
+    let expectedTotalBytes: Int64?
+    let locale: Locale
+    let multiRootMaxHeight: CGFloat
+
+    var body: some View {
+        let frame = progress.frame
+        if frame.perRootRows.isEmpty {
+            singleRoot(frame)
+        } else {
+            multiRoot(frame.perRootRows)
+        }
+    }
+
+    @ViewBuilder
+    private func singleRoot(_ frame: ScanLiveProgressFrame) -> some View {
+        let scanned = frame.totalBytes
+        let estimateOvershoot = expectedTotalBytes.map { scanned > $0 } ?? false
+        let fraction: Double? = {
+            guard let expectedTotalBytes,
+                  expectedTotalBytes > 0,
+                  !estimateOvershoot
+            else { return nil }
+            return max(0, Double(scanned) / Double(expectedTotalBytes))
+        }()
+
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                if let fraction {
+                    ProgressView(value: fraction)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: 180)
+                }
+                Text(AppLocalization.format(
+                    "main.scan.progress.single",
+                    locale: locale,
+                    arguments: [frame.scannedFileCount, formattedBytes(scanned)]
+                ))
+                    .font(.callout)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            HStack(spacing: 10) {
+                if let fraction, let expectedTotalBytes {
+                    Text(AppLocalization.format(
+                        "main.scan.progress.percent",
+                        locale: locale,
+                        arguments: [
+                            Int(fraction * 100),
+                            formattedBytes(scanned),
+                            formattedBytes(expectedTotalBytes),
+                        ]
+                    ))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help(Text("main.scan.progress.percent.tooltip", bundle: .module))
+                }
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(AppLocalization.format(
+                        "main.scan.progress.elapsed",
+                        locale: locale,
+                        arguments: [formatDuration(frame.elapsedForDisplay(referenceDate: context.date))]
+                    ))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func multiRoot(_ rows: [ScanCoordinator.PerRootProgress]) -> some View {
+        ProgressView().controlSize(.small)
+        ScrollView(.vertical, showsIndicators: true) {
+            LazyVStack(alignment: .leading, spacing: 2) {
+                ForEach(rows, id: \.rootPath) { row in
+                    HStack(spacing: 4) {
+                        let statusSymbol = row.isPartial ? "!" : (row.isFinished ? "✓" : "●")
+                        let statusColor: Color = row.isPartial
+                            ? .orange
+                            : (row.isFinished ? .green : .accentColor)
+                        Text(statusSymbol)
+                            .font(.caption.bold())
+                            .foregroundStyle(statusColor)
+                        let bytesText = row.bytes <= 0 && row.fileCount <= 0
+                            ? AppLocalization.string("progress.size.placeholder", locale: locale)
+                            : formattedBytes(row.bytes)
+                        Text(AppLocalization.format(
+                            "main.scan.progress.multi.row",
+                            locale: locale,
+                            arguments: [row.displayTitle(locale: locale), bytesText, row.fileCount]
+                        ))
+                            .font(.callout)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+            }
+        }
+        .frame(maxHeight: multiRootMaxHeight)
+    }
+
+    private func formattedBytes(_ bytes: Int64) -> String {
+        AppLocalization.byteCount(bytes, locale: locale)
+    }
+
+    private func formatDuration(_ seconds: TimeInterval) -> String {
+        guard seconds.isFinite, seconds > 0 else { return "0s" }
+        let total = max(1, Int(seconds.rounded(.up)))
+        let hours = total / 3_600
+        let minutes = (total % 3_600) / 60
+        let remainder = total % 60
+        if hours > 0 { return String(format: "%dh %02dm %02ds", hours, minutes, remainder) }
+        if minutes > 0 { return String(format: "%dm %02ds", minutes, remainder) }
+        return String(format: "%ds", remainder)
     }
 }
 
@@ -176,7 +481,7 @@ enum MainScanOwnershipPolicy {
         from oldMode: SmartCareInterfaceMode,
         to newMode: SmartCareInterfaceMode,
         smartCareIsScanning: Bool,
-        professionalIsScanning: Bool,
+        professionalHasActivePrimaryScan: Bool,
         cancelSmartCare: () -> Void,
         cancelProfessional: () -> Void,
         cancelProfessionalTransientWork: () -> Void
@@ -184,7 +489,7 @@ enum MainScanOwnershipPolicy {
         switch departingProducer(from: oldMode, to: newMode) {
         case .smartCare where smartCareIsScanning:
             cancelSmartCare()
-        case .professional where professionalIsScanning:
+        case .professional where professionalHasActivePrimaryScan:
             cancelProfessional()
         case .professional:
             // A completed Professional snapshot is preserved across mode switches,
@@ -212,6 +517,9 @@ public struct MainView: View {
     @State private var interfaceMode: SmartCareInterfaceMode = MainView.defaultInterfaceMode
     @StateObject private var smartCareSession: SmartCareSession
     @State private var smartCareSheetRoute: SmartCareSheetRoute?
+    /// v2026.07.20：仅普通模式首次启用开发缓存时占用。确认前不修改选择，
+    /// 取消后仍保持未选中，避免提示状态与实际扫描计划分叉。
+    @State private var showSmartCareDeveloperCacheWarning = false
     @State private var pendingSmartCareAIReport: SmartCareAIReviewReport? = nil
     /// Smart Care 删除 preview 的跨 await 单事务门。快速双击只能拿到一个 token；
     /// summary/selection 或 modal occupancy 变化后，旧投影绝不能覆盖新界面。
@@ -255,6 +563,10 @@ public struct MainView: View {
     @State private var detail: String?
     @State private var deleteSheetRequest: DeleteSheetRequest?
     @State private var deleteSubmissionHandoff = DeleteSubmissionHandoff()
+    /// v2026.07.19 performance regression closure: Professional execution starts from the confirm
+    /// callback, while only its follow-up presentation waits for the sheet dismissal animation.
+    @State private var professionalDeletePresentationHandoff =
+        ProfessionalDeletePresentationHandoff<ProfessionalDeleteDeferredPresentation>()
     /// v2026.06.21：切换 category 前若已有扫描结果，弹确认对话框。
     /// v2026.06.22 修订：确认必须发生在写入 `selectedCategory` 之前。
     /// SwiftUI `List(selection:)` 的默认 binding 会先切屏、后触发 `.onChange`，用户看到的就是
@@ -312,6 +624,11 @@ public struct MainView: View {
     /// 外层 detailPane 永远拿不到，详情面板因此长期空白。现在通过 onSelect 回调
     /// 同步到这里，detailPane 优先用 treeSelection 渲染（语义上"看哪个就显哪个"）。
     @State private var treeSelection: TreeRow?
+    /// Parent-to-Tree selection reset channel. Tree owns its AppKit selection locally for
+    /// performance, so clearing only `treeSelection` would hide detail while leaving the row
+    /// highlighted and unable to reopen on the next identical click.
+    @State private var treeSelectionResetRevision: UInt64 = 0
+    @State private var deletionPresentationRequestRevision: UInt64 = 0
     /// v1.0 T4：大文件入口类目。固定一项，放在侧边"大文件"独立 section。
     private let largeFilesCategory: ScanCategory = .largeFiles()
     /// v1.0 T5：路径栏临时输入（"/" + Enter 扫整盘；任意已存在目录路径也可直扫）。
@@ -328,7 +645,7 @@ public struct MainView: View {
     /// Dynamic Type 缩放，避免大字号下能看到的行数减半。
     @ScaledMetric(relativeTo: .caption) private var multiRootProgressScrollMaxHeight: CGFloat = 120
 
-    /// v1.6 Sentinel：daemon 通过 `amuxaiclean://action/scan/full` 唤起主 App 时，
+    /// v1.6 Sentinel：用户态 Agent 通过 `amuxaiclean://action/scan/full` 唤起主 App 时，
     /// 不自动开扫（用户在 Step 6.4 决策中选了 C：避免突袭式 IO 抢占），而是弹一个引导 alert，
     /// 用户点「立即扫描」才走 ScanCoordinator.scanRecommended。
     @State private var sentinelScanInvitationVisible: Bool = false
@@ -357,6 +674,11 @@ public struct MainView: View {
     private let vendors: [VendorRule]
     private let duplicatePipeline: any DeletionPipeline
     private let brewPipeline: any DeletionPipeline
+    private let uninstallPipeline: any DeletionPipeline
+    /// v2026.07.20 P0: a scripted pipeline and its Undo owner form one persistence domain.
+    /// Keeping the store beside the pipeline prevents Preview/tests from exercising an injected
+    /// pipeline while silently committing its synthetic moved pairs to the user's shared history.
+    private let undoHistoryStore: UndoHistoryStore
     private let recorder: HeuristicRecorder
     @ObservedObject private var settings: AppSettings
     private let pathStore: UserPathStore
@@ -398,6 +720,7 @@ public struct MainView: View {
 
     public init(pipeline: (any DeletionPipeline)? = nil,
                 vendors: [VendorRule],
+                undoHistoryStore: UndoHistoryStore,
                 recorder: HeuristicRecorder = HeuristicRecorder(),
                 settings: AppSettings? = nil,
                 pathStore: UserPathStore? = nil,
@@ -410,9 +733,31 @@ public struct MainView: View {
         // 用户撤销可以走 Finder → 显示废纸篓 → 放回原位
         // M4-P0 修复：把 vendors 透传到 TrashPipeline，让最后闸门启用 vendor 路径树判定
         self.vendors = vendors
-        self.pipeline = pipeline ?? TrashPipeline(vendors: vendors, whitelistStore: .shared)
-        self.duplicatePipeline = TrashPipeline(vendors: vendors, whitelistStore: .shared)
-        self.brewPipeline = TrashPipeline(vendors: vendors, whitelistStore: .shared)
+        let primaryPipeline = pipeline ?? TrashPipeline.production(
+            vendors: vendors,
+            whitelistStore: .shared
+        )
+        self.pipeline = primaryPipeline
+        // An injected pipeline is an isolated test/Preview domain. Reuse it for nested tools so
+        // constructing MainView cannot prewarm production recovery stores behind the caller's
+        // back. Production omits the injection and retains independent pipelines per surface.
+        self.duplicatePipeline = pipeline ?? TrashPipeline.production(
+            vendors: vendors,
+            whitelistStore: .shared
+        )
+        self.brewPipeline = pipeline ?? TrashPipeline.production(
+            vendors: vendors,
+            whitelistStore: .shared
+        )
+        // v2026.07.20 P1: the uninstall surface belongs to the same explicit
+        // pipeline + Undo persistence domain as its MainView owner. Reusing an
+        // injected pipeline prevents tests/Previews from initializing production
+        // recovery stores simply by navigating to the uninstall screen.
+        self.uninstallPipeline = pipeline ?? TrashPipeline.production(
+            vendors: vendors,
+            whitelistStore: .shared
+        )
+        self.undoHistoryStore = undoHistoryStore
         self.recorder = recorder
         _settings = ObservedObject(wrappedValue: settings ?? AppSettings())
         self.pathStore = pathStore ?? UserPathStore()
@@ -421,9 +766,27 @@ public struct MainView: View {
         )
         // v1.3：coordinator 允许从 App 层注入，让 [FloatingScanHUD](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
         // 与主窗口共享同一个 ScanCoordinator 实例（订阅同一份 snapshot/isScanning），避免双扫。
-        _coordinator = StateObject(wrappedValue: coordinator ?? ScanCoordinator(vendors: vendors))
+        let sharedAdmissionRegistry = coordinator?.primaryScanAdmissionRegistry
+            ?? smartCareSession?.scanCoordinator.primaryScanAdmissionRegistry
+            ?? PrimaryScanAdmissionRegistry()
+        // Preview/test fallback coordinators share physical admission but never share client
+        // identity. Latest-wins invalidation can therefore distinguish a same-surface rescan from
+        // a cross-mode replacement and revoke only the presentation that actually departed.
+        let professionalAdmissionClientID = coordinator?.primaryScanAdmissionClientID
+            ?? PrimaryScanAdmissionRegistry.ClientID()
+        let smartCareAdmissionClientID = smartCareSession?.scanCoordinator.primaryScanAdmissionClientID
+            ?? PrimaryScanAdmissionRegistry.ClientID()
+        _coordinator = StateObject(wrappedValue: coordinator ?? ScanCoordinator(
+            vendors: vendors,
+            primaryScanAdmissionRegistry: sharedAdmissionRegistry,
+            primaryScanAdmissionClientID: professionalAdmissionClientID
+        ))
         _smartCareSession = StateObject(wrappedValue: smartCareSession ?? SmartCareSession(
-            scanCoordinator: ScanCoordinator(vendors: vendors)
+            scanCoordinator: ScanCoordinator(
+                vendors: vendors,
+                primaryScanAdmissionRegistry: sharedAdmissionRegistry,
+                primaryScanAdmissionClientID: smartCareAdmissionClientID
+            )
         ))
         _smartCareAIReviewSession = StateObject(
             wrappedValue: smartCareAIReviewSession ?? SmartCareAIReviewSession()
@@ -507,9 +870,40 @@ public struct MainView: View {
         } message: {
             Text("mainview.switch_category.confirm.message", bundle: .module)
         }
+        .alert(
+            AppLocalization.string(
+                "smart_care.developer_cache_warning.title",
+                locale: locale
+            ),
+            isPresented: $showSmartCareDeveloperCacheWarning
+        ) {
+            Button(
+                AppLocalization.string(
+                    "smart_care.developer_cache_warning.enable",
+                    locale: locale
+                )
+            ) {
+                settings.smartCareDeveloperCacheWarningAcknowledged = true
+                smartCareSession.setStage(.developerCaches, selected: true)
+            }
+            Button(
+                AppLocalization.string(
+                    "smart_care.developer_cache_warning.cancel",
+                    locale: locale
+                ),
+                role: .cancel
+            ) {}
+        } message: {
+            Text(
+                AppLocalization.string(
+                    "smart_care.developer_cache_warning.message",
+                    locale: locale
+                )
+            )
+        }
         .sheet(
             item: $deleteSheetRequest,
-            onDismiss: runPendingDeleteSubmissionAfterSheetDismissal
+            onDismiss: finishProfessionalDeleteSheetDismissal
         ) { request in
             ToolTrashConfirmationSheet(
                 items: request.preparedInteraction.confirmationCandidates,
@@ -520,9 +914,22 @@ public struct MainView: View {
                     deleteSheetRequest = nil
                 },
                 onConfirm: { executionPlan in
-                    guard deleteSubmissionHandoff.schedule(
-                        .professional(request: request, executionPlan: executionPlan)
-                    ) else { return false }
+                    let confirmedAt = ProcessInfo.processInfo.systemUptime
+                    guard professionalDeletePresentationHandoff.canBeginSheetDismissal,
+                          let submission = deleteSubmissionHandoff.beginProfessionalSubmission(
+                            request: request,
+                            executionPlan: executionPlan
+                          ) else { return false }
+                    guard professionalDeletePresentationHandoff.beginSheetDismissal() else {
+                        _ = deleteSubmissionHandoff.finishProfessionalSubmission()
+                        return false
+                    }
+                    let timing = ProfessionalDeleteTiming(
+                        traceID: UUID(),
+                        confirmedAtUptime: confirmedAt,
+                        itemCount: executionPlan.paths.count
+                    )
+                    startProfessionalDeleteSubmission(submission, timing: timing)
                     deleteSheetRequest = nil
                     return true
                 }
@@ -648,11 +1055,11 @@ public struct MainView: View {
                 onDismiss: { deleteResultCompletion = nil }
             )
         }
-        .sheet(item: $deletePreflightNotice) { notice in
-            DeletionPreflightNoticeSheet(
-                notice: notice,
-                onDismiss: { deletePreflightNotice = nil }
-            )
+        // v2026.07.20 P0: pre-submit feedback floats above results instead of becoming a second
+        // top banner beside the independent scan-permission banner. It does not change split-view
+        // geometry or modal occupancy, so selection and a corrected retry remain available.
+        .deletionPreflightNoticeOverlay(deletePreflightNotice) {
+            deletePreflightNotice = nil
         }
         .onValueChange(of: viewMode) { _, _ in
             // bug A：清单 ↔ 树形 切换时各清各的选中态，避免两条选中互相覆盖。
@@ -666,7 +1073,7 @@ public struct MainView: View {
             // 若新阈值更大，largeFiles(...) 在视图层就能直接二次过滤，省一次 IO。
             guard let id = selectedCategory,
                   id == largeFilesCategory.id,
-                  !coordinator.isScanning else { return }
+                  !coordinator.hasActivePrimaryScanOwnership else { return }
             let newScanBytes = Int64(max(0, settings.minFileSizeMB)) * 1024 * 1024
             if newScanBytes < coordinator.largeFileScanThresholdBytes {
                 startScan(category: largeFilesCategory)
@@ -719,16 +1126,19 @@ public struct MainView: View {
                   let paths = notification.userInfo?["paths"] as? [String],
                   !paths.isEmpty else { return }
             Task { @MainActor in
-                await synchronizeSuccessfulDeletion(paths: paths)
+                await synchronizeSuccessfulDeletion(
+                    paths: paths,
+                    authoritativeSurface: interfaceMode == .normal ? .smartCare : .professional
+                )
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .gsySentinelStartFullScan)) { _ in
-            // v1.6 Sentinel 场景 2：daemon 通过 `amuxaiclean://action/scan/full` 唤起。
+            // v1.6 Sentinel 场景 2：用户态 Agent 通过 `amuxaiclean://action/scan/full` 唤起。
             // 用户决策 C：不自动开扫，弹引导 alert，让用户主动确认。
             enqueueSentinelPresentation(.inviteFullScan)
         }
         .onReceive(NotificationCenter.default.publisher(for: .gsySentinelOpenUninstall)) { note in
-            // v1.6 Sentinel 场景 1：daemon 通过 `amuxaiclean://uninstall?path=...` 唤起卸载页。
+            // v1.6 Sentinel 场景 1：用户态 Agent 通过 `amuxaiclean://uninstall?path=...` 唤起卸载页。
             // path 已由 [SentinelURLRouter](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SentinelURLRouter.swift) 校验过；
             // 这里把侧栏定位到 uninstall sentinel row，让 UninstallScreen 显示。
             // 注：path 当前不直接 deep-link 到具体卸载条目（候选展示在 UninstallScreen 列表里），
@@ -790,7 +1200,7 @@ public struct MainView: View {
             from: interfaceMode,
             to: newMode,
             smartCareIsScanning: smartCareIsScanning,
-            professionalIsScanning: coordinator.isScanning,
+            professionalHasActivePrimaryScan: coordinator.hasActivePrimaryScanOwnership,
             cancelSmartCare: { smartCareSession.cancelScan() },
             cancelProfessional: { coordinator.cancel() },
             cancelProfessionalTransientWork: {
@@ -811,6 +1221,7 @@ public struct MainView: View {
             aiError: smartCareAIErrorText,
             aiItemStates: smartCareAIItemStates,
             aiReportAvailable: smartCareAIReviewSession.latestReport != nil,
+            onStageSelectionChange: handleSmartCareStageSelectionChange,
             onPrimaryAction: handleSmartCarePrimaryAction,
             onAIReview: runSmartCareAIReview,
             onAICancel: cancelSmartCareAIReview,
@@ -944,7 +1355,7 @@ public struct MainView: View {
     private var hasConflictingMainModalPresentation: Bool {
         hasOtherMainModalPresentation
             || deleteSheetRequest != nil
-            || deleteSubmissionHandoff.hasPending
+            || deleteSubmissionHandoff.blocksNewSubmission
             || smartCareDeletePreviewGate.isInFlight
             || isPreparingDeletion
             || isDeleting
@@ -962,16 +1373,17 @@ public struct MainView: View {
             smartCareIsPresented = true
         }
         return smartCareIsPresented
+            || professionalDeletePresentationHandoff.isAwaitingSheetDismissal
             || aiAskingRow != nil
             || isStashScreenPresented
             || deleteResultCompletion != nil
-            || deletePreflightNotice != nil
             || aiUnconfiguredAlert
             || deleteResult != nil
             || customPathImportNotice != nil
             || isCustomPathImporterPresented
             || sentinelScanInvitationVisible
             || showSwitchCategoryConfirm
+            || showSmartCareDeveloperCacheWarning
     }
 
     /// Sentinel 事件只入队，并在窗口真正空闲后的下一次 MainActor 调度机会消费。这样既不会在
@@ -1215,12 +1627,11 @@ public struct MainView: View {
     }
 
     private func handleSmartCarePrimaryAction(_ action: SmartCarePrimaryAction) {
-        switch action {
+        switch SmartCarePrimaryActionDispatch.resolve(action) {
         case .startScan:
             startSmartCareScan()
-        case .scanAgain:
+        case .returnToSetup:
             smartCareSession.prepareForRescan()
-            startSmartCareScan()
         case .retry:
             retrySmartCareFailure()
         case .continueScan:
@@ -1231,12 +1642,29 @@ public struct MainView: View {
             )
         case .stopScan:
             smartCareSession.cancelScan()
-        case .cleanSafeItems, .confirmClean:
+        case .presentCleanup:
             Task { @MainActor in
                 await presentSmartCareDeleteRequest()
             }
-        case .cleaning:
+        case .none:
             break
+        }
+    }
+
+    private func handleSmartCareStageSelectionChange(
+        _ stage: SmartCareScanStage,
+        selected: Bool
+    ) {
+        switch SmartCareStageSelectionPolicy.decision(
+            stage: stage,
+            selected: selected,
+            developerWarningAcknowledged:
+                settings.smartCareDeveloperCacheWarningAcknowledged
+        ) {
+        case .apply:
+            smartCareSession.setStage(stage, selected: selected)
+        case .confirmDeveloperCacheDuration:
+            showSmartCareDeveloperCacheWarning = true
         }
     }
 
@@ -1262,6 +1690,7 @@ public struct MainView: View {
     @MainActor
     private func presentSmartCareDeleteRequest(expectedSummaryRevision: UInt64? = nil) async {
         guard interfaceMode == .normal,
+              smartCareSession.scanCoordinator.canUseCurrentScanResultsForActions,
               !hasConflictingMainModalPresentation else { return }
 
         let frozenSummaryRevision = smartCareSession.care.summaryRevision
@@ -1291,13 +1720,14 @@ public struct MainView: View {
                 )
             )
             guard !request.items.isEmpty,
+                  smartCareSession.scanCoordinator.canUseCurrentScanResultsForActions,
                   smartCareSession.scanCoordinator.currentScanSessionID == frozenScanSessionID else {
                 return
             }
             let modalAvailable = interfaceMode == .normal
                 && !hasOtherMainModalPresentation
                 && deleteSheetRequest == nil
-                && !deleteSubmissionHandoff.hasPending
+                && !deleteSubmissionHandoff.blocksNewSubmission
                 && !isPreparingDeletion
                 && !isDeleting
                 && pendingStashDeletion == nil
@@ -1337,7 +1767,8 @@ public struct MainView: View {
                                         accessDeniedPaths: Set<String>) async {
         // 从提交开始而不是从真正 recycle 才加锁：后台投影也是同一删除事务的一部分，
         // 快速重复确认不能让两份相同 frozen request 同时越过第一个 await。
-        guard !isDeleting else { return }
+        guard !isDeleting,
+              smartCareSession.scanCoordinator.canUseCurrentScanResultsForActions else { return }
         isDeleting = true
         defer { isDeleting = false }
 
@@ -1353,6 +1784,7 @@ public struct MainView: View {
             assertionFailure("Unexpected Smart Care deletion projection error: \(error)")
             return
         }
+        guard smartCareSession.scanCoordinator.canUseCurrentScanResultsForActions else { return }
         let execution = projection.execution
         let finalDeniedPaths = DeletionDeniedPathPolicy.final(
             frozen: accessDeniedPaths,
@@ -1379,6 +1811,7 @@ public struct MainView: View {
         }
 
         guard let reviewIdentity = request.sourceDeletionSnapshotIdentity,
+              smartCareSession.scanCoordinator.canUseCurrentScanResultsForActions,
               reviewIdentity.sessionID == smartCareSession.scanCoordinator.currentScanSessionID,
               reviewIdentity.revision == request.sourceSummaryRevision,
               reviewIdentity.categoryID == "smart-care",
@@ -1406,7 +1839,10 @@ public struct MainView: View {
             return
         }
 
-        let submission = await TrashActionCoordinator(pipeline: pipeline).submitConfirmed(
+        let submission = await TrashActionCoordinator(
+            pipeline: pipeline,
+            undoHistoryStore: undoHistoryStore
+        ).submitConfirmed(
             paths: execution.paths,
             source: "smart-care",
             accessDeniedPaths: finalDeniedPaths,
@@ -1430,6 +1866,9 @@ public struct MainView: View {
 
         case .preSubmitRejected(.emptyRequest):
             smartCareSession.care.resumeReviewAfterUnsubmittedClean()
+            // v2026.07.20: even an empty typed submission is a pre-submit terminal. Keep Smart
+            // Care usable, but do not silently swallow the reason or manufacture a result sheet.
+            deletePreflightNotice = DeletionPreflightNotice(rejections: [])
             return
 
         case .preSubmitRejected(.safety(let preflight)),
@@ -1472,7 +1911,10 @@ public struct MainView: View {
             await recorder.recordTrashed(paths: succeededPaths)
             // Set 差集已在 accounting worker 完成；MainActor 只替换 storage。
             selection = accounting.remainingProfessionalSelection
-            await synchronizeSuccessfulDeletion(paths: succeededPaths)
+            await synchronizeSuccessfulDeletion(
+                paths: succeededPaths,
+                authoritativeSurface: .smartCare
+            )
         }
 
         let releasedBytes = accounting.releasedBytes
@@ -1527,18 +1969,78 @@ public struct MainView: View {
         )
     }
 
-    /// macOS 不保证一张 sheet 的 state 置 nil 后立刻允许另一张 sheet 呈现。
-    /// 统一从 onDismiss 取出事务，确保瞬时的“全部跳过”结果也不会和关闭动画竞争。
+    /// v2026.07.19: accept and enqueue Professional deletion before changing sheet state. The
+    /// one-shot handoff remains active until the async transaction ends, closing the synchronous
+    /// double-confirm window before `isDeleting` can be set by the new task.
+    private func startProfessionalDeleteSubmission(
+        _ submission: ProfessionalDeleteSubmission,
+        timing: ProfessionalDeleteTiming
+    ) {
+        GSYLog.info(
+            .trash,
+            "professional_delete stage=confirmation_accepted trace_id=\(timing.traceID.uuidString) item_count=\(timing.itemCount)"
+        )
+        Task { [submission, timing] in
+            defer {
+                if !deleteSubmissionHandoff.finishProfessionalSubmission() {
+                    GSYLog.error(
+                        .trash,
+                        "professional_delete stage=handoff_finish_failed trace_id=\(timing.traceID.uuidString)"
+                    )
+                }
+            }
+            await performProfessionalDelete(
+                request: submission.request,
+                executionPlan: submission.executionPlan,
+                timing: timing
+            )
+        }
+    }
+
+    /// Only follow-up UI waits for `onDismiss`; filesystem execution never does. This preserves
+    /// reliable result-sheet presentation without making Tree/layout work a deletion dependency.
+    private func finishProfessionalDeleteSheetDismissal() {
+        guard let presentation = professionalDeletePresentationHandoff.finishSheetDismissal() else {
+            return
+        }
+        applyProfessionalDeletePresentation(presentation)
+    }
+
+    /// Returns true when the payload is retained until the confirmation sheet finishes dismissing.
+    @discardableResult
+    private func routeProfessionalDeletePresentation(
+        _ presentation: ProfessionalDeleteDeferredPresentation
+    ) -> Bool {
+        switch professionalDeletePresentationHandoff.routeNextPresentation(presentation) {
+        case .presentNow:
+            applyProfessionalDeletePresentation(presentation)
+            return false
+        case .deferUntilSheetDismissal:
+            return true
+        case .rejectDuplicate:
+            GSYLog.error(.trash, "professional_delete stage=duplicate_terminal_presentation_rejected")
+            return true
+        }
+    }
+
+    private func applyProfessionalDeletePresentation(
+        _ presentation: ProfessionalDeleteDeferredPresentation
+    ) {
+        switch presentation {
+        case .confirmation(let request):
+            deleteSheetRequest = request
+        case .preflightNotice(let notice):
+            deletePreflightNotice = notice
+        case .result(let completion):
+            deleteResultCompletion = completion
+        }
+    }
+
+    /// Smart Care keeps its existing sheet-to-execution handoff. Professional submissions are
+    /// intentionally absent from `DeleteSubmission`, so they cannot regress back to this callback.
     private func runPendingDeleteSubmissionAfterSheetDismissal() {
         guard let submission = deleteSubmissionHandoff.takeAfterSheetDismissal() else { return }
         switch submission {
-        case .professional(let request, let executionPlan):
-            Task { [request, executionPlan] in
-                await performProfessionalDelete(
-                    request: request,
-                    executionPlan: executionPlan
-                )
-            }
         case .smartCare(let request, let action, let accessDeniedPaths):
             Task { [request, action, accessDeniedPaths] in
                 await performSmartCareDelete(
@@ -2135,39 +2637,53 @@ public struct MainView: View {
             } else if isUninstallMode {
                 // 「卸载残留」整段独立：UninstallScreen 自带 SafetyEngine + dryRun + 二次确认，
                 // 外层不能再叠 statusBar / footerBar / 删除按钮，避免重复或绕过安全契约。
-                UninstallScreen(vendors: vendors)
+                UninstallScreen(
+                    pipeline: uninstallPipeline,
+                    vendors: vendors,
+                    undoHistoryStore: undoHistoryStore
+                )
             } else if isDuplicateMode {
                 // 「重复文件」整段独立：只读视图，没有勾选 / 删除按钮，
                 // 也不复用 statusBar / footerBar（它有自己的 banner + 进度 + footer）。
-                DuplicateScreen(pipeline: duplicatePipeline)
+                DuplicateScreen(
+                    pipeline: duplicatePipeline,
+                    undoHistoryStore: undoHistoryStore
+                )
             } else if isUndoHistoryMode {
                 // Step 7：「最近清理」整段独立 —— 只读+恢复按钮，不复用扫描状态栏。
-                UndoHistoryScreen()
+                UndoHistoryScreen(store: undoHistoryStore)
             } else if isMaintenanceMode {
                 // M4-T4 / 2026-06：「系统维护」整段独立 —— 三按钮 + outcome list，
                 // 自带 detached Task 执行 / 状态指示，不复用扫描进度 / 删除 UI。
                 MaintenanceScreen()
             } else if isBrewMode {
                 // F-2-4 / 2026-06：Homebrew 包管理 —— 直接读 Cellar / Caskroom，不执行 brew。
-                BrewScreen(pipeline: brewPipeline)
+                BrewScreen(
+                    pipeline: brewPipeline,
+                    undoHistoryStore: undoHistoryStore
+                )
             } else if isWorkflowAppleMode {
                 // v1.7 M1 PR-5：Apple 工作流（Xcode / Simulator / DerivedData per-project / DeviceSupport）
                 // 复用 WorkflowDetailView 通用渲染壳，数据源 AppleWorkflow.cards + WorkflowRegistry.resolve。
                 // pipeline 透传 MainView 持有的 TrashPipeline 实例，删除走 NSWorkspace.recycle。
                 WorkflowDetailView(workflow: AppleWorkflow(),
-                                   pipeline: pipeline)
+                                   pipeline: pipeline,
+                                   undoHistoryStore: undoHistoryStore)
             } else if isWorkflowAndroidMode {
                 // v1.7 M1 PR-5：Android 工作流（gradle / .android / AVD / SDK / Android Studio）。
                 WorkflowDetailView(workflow: AndroidWorkflow(),
-                                   pipeline: pipeline)
+                                   pipeline: pipeline,
+                                   undoHistoryStore: undoHistoryStore)
             } else if isWorkflowWebNodeMode {
                 // v1.7 M1 PR-5：Web / Node 工作流（pnpm-store / yarn / npm / electron / node-gyp / scattered node_modules）。
                 WorkflowDetailView(workflow: WebNodeWorkflow(),
-                                   pipeline: pipeline)
+                                   pipeline: pipeline,
+                                   undoHistoryStore: undoHistoryStore)
             } else if isWorkflowBackendMode {
                 // v1.9：Backend 工作流（JVM / Go / Rust / Zig / Bazel / CMake）。
                 WorkflowDetailView(workflow: BackendWorkflow(),
-                                   pipeline: pipeline)
+                                   pipeline: pipeline,
+                                   undoHistoryStore: undoHistoryStore)
             } else {
                 statusBar
                 Divider()
@@ -2238,6 +2754,7 @@ public struct MainView: View {
                                     TreeBrowserView(
                                         coordinator: coordinator,
                                         rootPath: root,
+                                        selectionResetRevision: treeSelectionResetRevision,
                                         onSelect: { row in
                                             // bug A：树形选中 → 详情面板。同时清掉清单视图的 detail，
                                             // 避免两条选中态打架（detailPane 先看 treeSelection）。
@@ -2262,9 +2779,12 @@ public struct MainView: View {
                                         },
                                         allowsVendorPathOverride: true,
                                         onRefreshSubtree: { path in
-                                            // v2026.06 #1：右键"刷新此目录"。仅清按需子树缓存，
-                                            // 不重启 BulkScanner（成本太高），详见 ScanCoordinator.rescanSubtree。
-                                            coordinator.rescanSubtree(at: path)
+                                            // v2026.07.18 Tree P2：右键刷新拥有独立的后台子树
+                                            // BulkScanner，会原子替换索引/证据；View 不自行清 cache，
+                                            // 也不在 MainActor 枚举目录。
+                                            Task { @MainActor in
+                                                await coordinator.rescanSubtree(at: path)
+                                            }
                                         },
                                         onStash: { row in
                                             // v2026.06.18：把 TreeRow 装进购物车。
@@ -2356,7 +2876,10 @@ public struct MainView: View {
         .layoutSandbox()
         .navigationSplitViewColumnWidth(min: 560, ideal: 760)
         .onValueChange(of: coordinator.snapshot.rows.count) { _, newCount in
-            guard !coordinator.isScanning else { return }
+            // v2026.07.19 regression fix: the predecessor frame remains visible while a producer
+            // settles, but it is disclosure-only. Never bind its rows to the incoming selection
+            // session merely because the legacy Boolean is already false.
+            guard coordinator.canUseCurrentScanResultsForActions else { return }
             // 默认勾选：仅勾 .safe（PITFALLS §5.5）
             // 用 union：用户已经手动改过的不要被覆盖
             //
@@ -2398,9 +2921,10 @@ public struct MainView: View {
         .onValueChange(of: coordinator.snapshot) { _, _ in
             syncThrottledListSnapshotIfNeeded(force: false)
         }
-        .onValueChange(of: coordinator.isScanning) { _, nowScanning in
-            // 扫描结束立刻补齐 latest（force=true 绕过扫描中冻结）
-            if !nowScanning {
+        .onValueChange(of: coordinator.scanPhase) { _, phase in
+            // v2026.07.19: `.settling` also has isScanning=false but still discloses the old
+            // frozen frame. Only authoritative idle may materialize/select the terminal list.
+            if phase == .idle, !coordinator.isScanning {
                 syncThrottledListSnapshotIfNeeded(force: true)
                 applyDefaultSelectionForCurrentSnapshot()
             }
@@ -2596,39 +3120,25 @@ public struct MainView: View {
             // 默认值改为 .max（实际永远不截断），devArtifactDidTruncate /
             // devArtifactDidTimeout 字段仅保留作内部诊断，UI 不再读。
             HStack {
-                if coordinator.isScanning {
-                    // v2026.06.22 perf：直接读 coordinator.perRootProgressSorted（已在
-                    // syncPerRootPublished 里按 rootPath 字典序预排序，throttle 0.4s 一次）。
-                    let rows = coordinator.perRootProgressSorted
-                    if rows.isEmpty {
-                        singleRootProgress
+                if let settlement = coordinator.scanPhase.settlementStatusPresentation {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(settlement.localized(locale: locale))
+                        .foregroundStyle(.secondary)
+                        .font(.callout)
+                } else if coordinator.isScanning {
+                    if coordinator.activeCategoryID == ScanCoordinator.commonAppCacheCategoryID,
+                       let progress = coordinator.commonAppCacheProgress {
+                        commonAppCacheGroupProgress(progress)
                     } else {
-                        ProgressView().controlSize(.small)
-                        ScrollView(.vertical, showsIndicators: true) {
-                            LazyVStack(alignment: .leading, spacing: 2) {
-                                ForEach(rows, id: \.rootPath) { p in
-                                    HStack(spacing: 4) {
-                                        let statusSymbol = p.isPartial ? "!" : (p.isFinished ? "✓" : "●")
-                                        let statusColor: Color = p.isPartial ? .orange : (p.isFinished ? .green : .accentColor)
-                                        Text(statusSymbol)
-                                            .font(.caption.bold())
-                                            .foregroundStyle(statusColor)
-                                        let bytesText: String = (p.bytes <= 0 && p.fileCount <= 0)
-                                            ? AppLocalization.string("progress.size.placeholder", locale: locale)
-                                            : formattedBytes(p.bytes)
-                                        Text(AppLocalization.format(
-                                            "main.scan.progress.multi.row",
-                                            locale: locale,
-                                            arguments: [p.displayTitle(locale: locale), bytesText, p.fileCount]
-                                        ))
-                                            .font(.callout)
-                                            .lineLimit(1)
-                                            .truncationMode(.middle)
-                                    }
-                                }
-                            }
-                        }
-                        .frame(maxHeight: multiRootProgressScrollMaxHeight)
+                        // Only this small child observes the 0.4-second progress channel. MainView
+                        // remains stable while the sidebar is being scrolled during full-disk IO.
+                        MainScanLiveProgressView(
+                            progress: coordinator.liveProgress,
+                            expectedTotalBytes: coordinator.expectedTotalBytes,
+                            locale: locale,
+                            multiRootMaxHeight: multiRootProgressScrollMaxHeight
+                        )
                     }
                 } else if coordinator.snapshot.isFinished {
                     if coordinator.snapshot.isComplete {
@@ -2693,7 +3203,9 @@ public struct MainView: View {
     /// - 已扫完且行为空 → `.finishedEmpty`（携带刚扫的目录路径）
     /// - 否则（含初始态、用户切类目还没开始）→ `.notStarted`
     var placeholderState: PlaceholderState {
-        if coordinator.isScanning {
+        // `.settling` still owns an incoming scan. Showing the predecessor's empty terminal frame
+        // as "finished empty" makes the replacement look complete before admission.
+        if coordinator.hasActivePrimaryScanOwnership {
             return .scanning
         }
         if coordinator.isFinished, let root = coordinator.currentRootPath {
@@ -2870,8 +3382,7 @@ public struct MainView: View {
                     (!hasPicked && largeFileSelection == nil)
                         || isDeleting
                         || isPreparingDeletion
-                        || coordinator.isScanning
-                        || !coordinator.snapshot.isFinished
+                        || !coordinator.canUseCurrentScanResultsForActions
                 )
                 .keyboardShortcut(.delete, modifiers: .command)
             } else {
@@ -2894,8 +3405,7 @@ public struct MainView: View {
                     selectedRowsEmpty
                         || isDeleting
                         || isPreparingDeletion
-                        || coordinator.isScanning
-                        || !coordinator.snapshot.isFinished
+                        || !coordinator.canUseCurrentScanResultsForActions
                 )
                 .keyboardShortcut(.delete, modifiers: .command)
             }
@@ -2921,6 +3431,8 @@ public struct MainView: View {
                         .font(.title2.bold())
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    closeInlineDetailButton
                 }
                 Text(item.url.path)
                     .font(.system(.callout, design: .monospaced))
@@ -2952,6 +3464,8 @@ public struct MainView: View {
                         .font(.title2.bold())
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    closeInlineDetailButton
                 }
                 Text(row.path)
                     .font(.system(.callout, design: .monospaced))
@@ -2989,6 +3503,28 @@ public struct MainView: View {
             }
             .detailPaneStyle()
         }
+    }
+
+    private var closeInlineDetailButton: some View {
+        Button {
+            closeInlineDetail()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(AppLocalization.string("detail.action.close", locale: locale))
+        .accessibilityLabel(Text("detail.action.close", bundle: .module))
+    }
+
+    /// v2026.07.20：详情列有两个互斥 owner。关闭必须在同一事务清空二者，
+    /// 不能只清当前分支，否则下一帧会立刻显示另一份陈旧详情。
+    private func closeInlineDetail() {
+        detail = nil
+        treeSelection = nil
+        treeSelectionResetRevision &+= 1
     }
 
     // MARK: - Toolbar
@@ -3116,7 +3652,7 @@ public struct MainView: View {
     /// 不能光靠 `coordinator.snapshot.isFinished` 判定：batch 扫描在 sidebar
     /// 留存的不是 snapshot.rows，而是 perRootFinishedSlim。
     private var shouldConfirmCategorySwitch: Bool {
-        if coordinator.isScanning { return true }
+        if coordinator.hasActivePrimaryScanOwnership { return true }
         if !coordinator.snapshot.rows.isEmpty { return true }
         if !coordinator.perRootProgressActive.isEmpty { return true }
         if coordinator.perRootFinishedCount > 0 { return true }
@@ -3335,7 +3871,7 @@ public struct MainView: View {
     /// 现有的"停止 / 重新扫描"按钮，按当前状态二选一。
     @ViewBuilder
     private var scanControlButton: some View {
-        if coordinator.isScanning {
+        if coordinator.hasActivePrimaryScanOwnership {
             Button(role: .cancel) {
                 coordinator.cancel()
             } label: {
@@ -3456,6 +3992,7 @@ public struct MainView: View {
         largeFileSelection = nil
         detail = nil
         treeSelection = nil
+        treeSelectionResetRevision &+= 1
     }
 
     /// v1.5 P2 / Q3：统一的"用户请求问 AI"入口。
@@ -3486,6 +4023,10 @@ public struct MainView: View {
     /// 只读 listResults 一处使用，不会影响 statusBar / TreeBrowserView /
     /// footerBar / sidebar 任一其他面（它们继续按 0.4s/帧 跟手）。
     private func syncThrottledListSnapshotIfNeeded(force: Bool) {
+        // The predecessor snapshot is intentionally frozen while a replacement settles. Treating
+        // `isScanning == false` as idle here would force a wide list/materialization pass exactly
+        // when the user reported the rainbow cursor.
+        if case .settling = coordinator.scanPhase { return }
         let latest = coordinator.snapshot
         // 切到新分类 / 重扫导致 rows 清空时：throttle 闸毫无意义，立刻同步
         let isEmptyReset = latest.rows.isEmpty
@@ -3590,95 +4131,6 @@ public struct MainView: View {
         return String(format: "%ds", s)
     }
 
-    /// **v2026.06.18**：单根扫描态信息区。
-    /// 三段式：
-    ///   行1（顶部）：进度条（有分母 → 真比例条；无分母 → 不确定 ProgressView）
-    ///   行2（主行）：扫描中… N 个文件 · X MB（与旧版完全一致，保证不回归）
-    ///   行3（副行）：百分比 + 已扫/预计 + 已用/剩余时间（按数据可用程度逐步显示）
-    /// 没有 expectedTotalBytes 时 行1 / 行3 仍然展示，给出"已用时间 · 估算中…"，
-    /// 让用户看得到"系统还在算"，不会以为程序卡了。
-    ///
-    /// v2026.06.20 修：用户反馈"扫 workspace 进度条直接 100%，但后续还要扫好久"。
-    /// 根因：[TreeSizeEstimator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/TreeSizeEstimator.swift)
-    /// 4s 软超时；走完不了的根（含 `~/workspace` / `~/Library/Caches` 这种几十万 inode 的根）
-    /// 拿到一个**严重低估**的 expectedTotalBytes。BulkScanner 真实 ingest 字节很快就把这个数顶穿，
-    /// 旧版用 `min(1.0, ...)` 把 fraction 钳在 1.0，UI 表现为"100% 卡很久"。
-    ///
-    /// 新策略：把"已扫 > 估算分母"识别为"估算不可靠"，分两层处理：
-    /// 1. 比率层：当 `scanned > expected` 时，**抛弃** expected 退化成不确定进度条
-    ///    （ProgressView() 的 spinner），而不是钉在 100%。
-    /// 2. 文案层：仍然显示 `已扫 X · 已用 T`，但不再骗用户"还有 N MB"，
-    ///    改为"估算偏小，仍在扫描…"提示，鼓励用户耐心等待。
-    /// 同时 ETA 在 ScanCoordinator [publishSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
-    /// 那侧也加了同样的"denom > scanned"卫语：分母穿透时本帧不出 ETA（旧版 ETA 必然算成负值再被钳成 0，
-    /// UI 上"剩余 0s"持续闪烁，体验同样误导）。
-    @ViewBuilder
-    private var singleRootProgress: some View {
-        if coordinator.activeCategoryID == ScanCoordinator.commonAppCacheCategoryID,
-           let progress = coordinator.commonAppCacheProgress {
-            commonAppCacheGroupProgress(progress)
-        } else {
-            let scanned = coordinator.snapshot.totalBytes
-            let expected = coordinator.expectedTotalBytes
-
-            // 0~1 比例。expected 缺失 / scanned > expected（估算偏小）时退化为 nil → **隐藏进度条**。
-            //
-            // v2026.06.23 产品决策：剩余时间根本算不准（速率窗口噪声 + 多根 stall + estimator 偏小都会
-            // 让 ETA 严重失真），整段 ETA 文案不再展示。同理，没分母时也不再用 indeterminate spinner
-            // 假装"在前进"——直接只显示已扫字节 + 已用时间，让用户看到的每个数字都是真实可信的。
-            let estimateOvershoot = (expected.map { scanned > $0 } ?? false)
-            let fraction: Double? = {
-                guard let exp = expected, exp > 0, !estimateOvershoot else { return nil }
-                return max(0.0, Double(scanned) / Double(exp))
-            }()
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    // 仅当能估出 fraction 时才显示进度条；否则不画 spinner（避免"还在估算"的错觉）。
-                    if let f = fraction {
-                        ProgressView(value: f)
-                            .progressViewStyle(.linear)
-                            .frame(maxWidth: 180)
-                    }
-                    Text(AppLocalization.format(
-                        "main.scan.progress.single",
-                        locale: locale,
-                        arguments: [coordinator.snapshot.scannedFileCount, formattedBytes(scanned)]
-                    ))
-                        .font(.callout)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                HStack(spacing: 10) {
-                    if let f = fraction, let exp = expected {
-                        Text(AppLocalization.format(
-                            "main.scan.progress.percent",
-                            locale: locale,
-                            arguments: [Int(f * 100), formattedBytes(scanned), formattedBytes(exp)]
-                        ))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .help(Text("main.scan.progress.percent.tooltip", bundle: .module))
-                    }
-                    // v2026.06.23：仅展示「已用时间」，不再展示「剩余时间」。
-                    // ETA 计算在长扫场景下不可信，已在 ScanCoordinator 侧停止下发；
-                    // 这里 UI 也不再读 estimatedRemaining，避免任何残留入口偷渡回来。
-                    // v2026.07.16 性能回归复盘：String Catalog 同步改成纯“已用 %@”，
-                    // 不能再用“剩余时间估算中”暗示一个已经不存在且会触发重复遍历的 ETA。
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Text(AppLocalization.format(
-                            "main.scan.progress.elapsed",
-                            locale: locale,
-                            arguments: [formatDuration(coordinator.elapsedForDisplay(referenceDate: context.date))]
-                        ))
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-        }
-    }
-
     /// v2026.07.17 Common App Cache does not have a trustworthy byte denominator. Its scanner
     /// publishes completed forest groups and the exact current path instead; this view reports
     /// those facts and elapsed time without fabricating ETA or treating an indeterminate spinner
@@ -3761,7 +4213,10 @@ public struct MainView: View {
         source: String,
         accessDeniedPaths: Set<String>
     ) async -> TrashRunResult {
-        let action = TrashActionCoordinator(pipeline: pipeline)
+        let action = TrashActionCoordinator(
+            pipeline: pipeline,
+            undoHistoryStore: undoHistoryStore
+        )
         let result = await action.run(TrashActionCoordinator.Request(
             paths: paths,
             dryRun: true,
@@ -3784,13 +4239,46 @@ public struct MainView: View {
     }
 #endif
 
-    /// 所有真实删除入口的统一状态提交：专业扫描与 Smart Care scanner/summary
-    /// 同时失效并刷新容量，避免模式切换后重复展示已经移入废纸篓的路径。
+    /// 所有真实删除入口的统一状态提交。当前界面做精确 reconcile；非当前界面的扫描
+    /// 已因磁盘变化而失去权威性，O(1) 失效并要求重扫，禁止对两份宽状态串行全量 prune。
     @MainActor
-    private func synchronizeSuccessfulDeletion(paths: [String]) async {
+    private func synchronizeSuccessfulDeletion(
+        paths: [String],
+        authoritativeSurface: MainDeletionModelSurface,
+        traceID: UUID? = nil
+    ) async {
         guard !paths.isEmpty else { return }
-        await coordinator.pruneDeleted(paths: paths)
-        await smartCareSession.applySuccessfulDeletion(paths: paths)
+        let plan = MainDeletionModelSynchronizationPolicy.plan(
+            authoritativeSurface: authoritativeSurface
+        )
+        let trace = traceID.map { " trace_id=\($0.uuidString)" } ?? ""
+        let exactStartedAt = ProcessInfo.processInfo.systemUptime
+        GSYLog.info(
+            .trash,
+            "deletion_model_sync stage=exact_start surface=\(plan.exactSurface.rawValue) item_count=\(paths.count)\(trace)"
+        )
+        switch plan.exactSurface {
+        case .professional:
+            await coordinator.pruneDeleted(paths: paths)
+        case .smartCare:
+            await smartCareSession.applySuccessfulDeletion(paths: paths)
+        }
+        GSYLog.info(
+            .trash,
+            "deletion_model_sync stage=exact_complete surface=\(plan.exactSurface.rawValue) elapsed_ms=\(ProfessionalDeleteTiming.milliseconds(from: exactStartedAt, to: ProcessInfo.processInfo.systemUptime))\(trace)"
+        )
+
+        let invalidationStartedAt = ProcessInfo.processInfo.systemUptime
+        switch plan.invalidatedSurface {
+        case .professional:
+            coordinator.cancel()
+        case .smartCare:
+            smartCareSession.invalidateAfterExternalDeletion()
+        }
+        GSYLog.info(
+            .trash,
+            "deletion_model_sync stage=inactive_invalidated surface=\(plan.invalidatedSurface.rawValue) elapsed_ms=\(ProfessionalDeleteTiming.milliseconds(from: invalidationStartedAt, to: ProcessInfo.processInfo.systemUptime))\(trace)"
+        )
         smartCareAIReviewSession.synchronizeSummaryRevision(
             smartCareSession.care.summaryRevision
         )
@@ -3815,21 +4303,40 @@ public struct MainView: View {
 
     private func performProfessionalDelete(
         request: DeleteSheetRequest,
-        executionPlan: ToolTrashExecutionPlan
+        executionPlan: ToolTrashExecutionPlan,
+        timing: ProfessionalDeleteTiming
     ) async {
-        guard !isDeleting else { return }
-        guard !coordinator.isScanning,
-              coordinator.snapshot.isFinished,
+        guard !isDeleting else {
+            GSYLog.warning(
+                .trash,
+                "professional_delete stage=execution_rejected trace_id=\(timing.traceID.uuidString) reason=deletion_active"
+            )
+            return
+        }
+        guard coordinator.canUseCurrentScanResultsForActions,
               coordinator.snapshot.categoryID == request.sourceCategoryID,
               coordinator.currentScanSessionID == request.scanSessionID,
               coordinator.storeRevision == request.preparedInteraction.plan.intent.snapshotIdentity.revision else {
-            deleteResult = AppLocalization.string("delete.preflight.scan_changed", locale: locale)
+            let now = ProcessInfo.processInfo.systemUptime
+            let presentationDeferred = routeProfessionalDeletePresentation(
+                .preflightNotice(DeletionPreflightNotice(
+                    message: .scanChanged,
+                    rejections: []
+                ))
+            )
+            GSYLog.notice(
+                .trash,
+                "professional_delete stage=execution_aborted trace_id=\(timing.traceID.uuidString) reason=scan_changed confirm_to_abort_ms=\(ProfessionalDeleteTiming.milliseconds(from: timing.confirmedAtUptime, to: now)) presentation_deferred=\(presentationDeferred)"
+            )
             return
         }
         isDeleting = true
         defer { isDeleting = false }
 
-        let interactionCoordinator = DeletionInteractionCoordinator(pipeline: pipeline)
+        let interactionCoordinator = DeletionInteractionCoordinator(
+            pipeline: pipeline,
+            undoHistoryStore: undoHistoryStore
+        )
         let authorization: DeletionAuthorizedInteraction
         switch interactionCoordinator.authorize(
             prepared: request.preparedInteraction,
@@ -3839,9 +4346,19 @@ public struct MainView: View {
             authorization = value
         case .cancelled:
             // 用户跳过了全部运行中项：未跨过 recycle 提交边界，不生成结果页。
+            GSYLog.info(
+                .trash,
+                "professional_delete stage=authorization_cancelled trace_id=\(timing.traceID.uuidString)"
+            )
             return
         case .blocked(let block):
-            deletePreflightNotice = DeletionPreflightNotice(rejections: block.rejections)
+            let presentationDeferred = routeProfessionalDeletePresentation(
+                .preflightNotice(DeletionPreflightNotice(rejections: block.rejections))
+            )
+            GSYLog.notice(
+                .trash,
+                "professional_delete stage=authorization_blocked trace_id=\(timing.traceID.uuidString) rejection_count=\(block.rejections.count) presentation_deferred=\(presentationDeferred)"
+            )
             return
         }
 
@@ -3849,44 +4366,186 @@ public struct MainView: View {
             frozen: request.accessDeniedPaths,
             current: accessDeniedPathsSnapshot()
         )
+        let submitStartedAt = ProcessInfo.processInfo.systemUptime
+        GSYLog.info(
+            .trash,
+            "professional_delete stage=submit_start trace_id=\(timing.traceID.uuidString) confirm_to_submit_ms=\(ProfessionalDeleteTiming.milliseconds(from: timing.confirmedAtUptime, to: submitStartedAt)) item_count=\(timing.itemCount)"
+        )
         let disposition = await interactionCoordinator.submit(
             authorization,
             accessDeniedPaths: finalDeniedPaths
         )
+        let submitReturnedAt = ProcessInfo.processInfo.systemUptime
+        let submitDuration = ProfessionalDeleteTiming.milliseconds(
+            from: submitStartedAt,
+            to: submitReturnedAt
+        )
         switch disposition {
         case .requiresConfirmation(let prepared):
             // 最终重验发现新的专业风险时，回到同一张严格确认页；不伪装成执行失败。
-            deleteSheetRequest = DeleteSheetRequest(
-                items: request.items,
-                accessDeniedPaths: finalDeniedPaths,
-                preparedInteraction: prepared
+            let presentationDeferred = routeProfessionalDeletePresentation(
+                .confirmation(DeleteSheetRequest(
+                    items: request.items,
+                    accessDeniedPaths: finalDeniedPaths,
+                    preparedInteraction: prepared
+                ))
+            )
+            GSYLog.notice(
+                .trash,
+                "professional_delete stage=submit_terminal trace_id=\(timing.traceID.uuidString) disposition=requires_confirmation submit_ms=\(submitDuration) presentation_deferred=\(presentationDeferred)"
             )
             return
 
         case .blocked(let block):
-            deletePreflightNotice = DeletionPreflightNotice(rejections: block.rejections)
+            let presentationDeferred = routeProfessionalDeletePresentation(
+                .preflightNotice(DeletionPreflightNotice(rejections: block.rejections))
+            )
+            GSYLog.notice(
+                .trash,
+                "professional_delete stage=submit_terminal trace_id=\(timing.traceID.uuidString) disposition=blocked submit_ms=\(submitDuration) rejection_count=\(block.rejections.count) presentation_deferred=\(presentationDeferred)"
+            )
             return
 
         case .completed(let completed):
+            let recycleCompletedAt = submitReturnedAt
             let result = completed.result
-            let submittedPaths = Set(completed.receipt.submittedPaths)
-            await applyProfessionalDeletionSuccess(
-                request: request,
-                rows: request.items.filter { submittedPaths.contains($0.url.path) },
-                succeededPaths: result.succeededPaths
+            GSYLog.info(
+                .trash,
+                "professional_delete stage=recycle_completed trace_id=\(timing.traceID.uuidString) submit_ms=\(submitDuration) moved_count=\(result.moved) skipped_count=\(result.skipped)"
             )
-
-            // Only after the model/prune commit has reached its terminal state may a
-            // result sheet be presented. Otherwise a fast recycle can say "complete"
-            // while the Tree still renders the deleted row.
-            deleteResultCompletion = .deletion(completed)
+            let submittedPaths = Set(completed.receipt.submittedPaths)
+            let submittedRows = request.items.filter {
+                submittedPaths.contains($0.url.path)
+            }
+            var modelSyncStartedAt = recycleCompletedAt
+            var modelSyncCompletedAt = recycleCompletedAt
+            await DeletionResultAcknowledgementOrdering.acknowledgeThenReconcile(
+                makePayload: { OperationResultCompletion.deletion(completed) },
+                present: { completion in
+                    let resultEligibleAt = ProcessInfo.processInfo.systemUptime
+                    let presentationDeferred = routeProfessionalDeletePresentation(
+                        .result(completion)
+                    )
+                    GSYLog.info(
+                        .trash,
+                        "professional_delete stage=result_eligible trace_id=\(timing.traceID.uuidString) recycle_to_result_eligible_ms=\(ProfessionalDeleteTiming.milliseconds(from: recycleCompletedAt, to: resultEligibleAt)) presentation_deferred=\(presentationDeferred) model_sync_pending=true"
+                    )
+                },
+                reconcileModel: {
+                    modelSyncStartedAt = ProcessInfo.processInfo.systemUptime
+                    await applyProfessionalDeletionPresentation(
+                        succeededPaths: result.succeededPaths,
+                        expectedScanSessionID: request.scanSessionID
+                    )
+                    await applyProfessionalDeletionSuccess(
+                        request: request,
+                        rows: submittedRows,
+                        succeededPaths: result.succeededPaths,
+                        traceID: timing.traceID
+                    )
+                    modelSyncCompletedAt = ProcessInfo.processInfo.systemUptime
+                }
+            )
+            GSYLog.info(
+                .trash,
+                "professional_delete stage=model_sync_completed trace_id=\(timing.traceID.uuidString) recycle_to_model_sync_complete_ms=\(ProfessionalDeleteTiming.milliseconds(from: recycleCompletedAt, to: modelSyncCompletedAt)) model_sync_ms=\(ProfessionalDeleteTiming.milliseconds(from: modelSyncStartedAt, to: modelSyncCompletedAt)) result_already_eligible=true"
+            )
         }
+    }
+
+    /// Receipt-backed visibility commit. The result is already eligible at this point; publish a
+    /// narrow list/tree tombstone before admitting the expensive authoritative prune so moved
+    /// items cannot remain actionable for another 10+ seconds.
+    private func applyProfessionalDeletionPresentation(
+        succeededPaths: [String],
+        expectedScanSessionID: UUID
+    ) async {
+        guard !succeededPaths.isEmpty,
+              coordinator.currentScanSessionID == expectedScanSessionID else { return }
+        await coordinator.acknowledgeSuccessfulDeletionForPresentation(
+            paths: succeededPaths
+        )
+        guard coordinator.currentScanSessionID == expectedScanSessionID else { return }
+        deletionPresentationRequestRevision &+= 1
+        let requestRevision = deletionPresentationRequestRevision
+        while requestRevision == deletionPresentationRequestRevision {
+            guard coordinator.currentScanSessionID == expectedScanSessionID else { return }
+            let source = throttledListSnapshot ?? coordinator.snapshot
+            let frozenIdentity = currentDeletionPresentationSourceIdentity(source: source)
+            let retirement = MainDeletionPresentationRetirement(snapshot: source)
+            let projection = await MainDeletionPresentationExecutor.run(
+                snapshot: source,
+                succeededPaths: succeededPaths,
+                selection: selection,
+                listDetailPath: detail
+            )
+            await retirement.retain(projection.snapshot)
+            let currentSource = throttledListSnapshot ?? coordinator.snapshot
+            let currentIdentity = currentDeletionPresentationSourceIdentity(source: currentSource)
+            let decision = MainDeletionPresentationCommitPolicy.decision(
+                frozen: frozenIdentity,
+                current: currentIdentity,
+                requestRevisionMatches: requestRevision == deletionPresentationRequestRevision
+            )
+            switch decision {
+            case .discard:
+                scheduleMainDeletionPresentationRetirement(retirement)
+                return
+            case .retryLatestSource:
+                // v2026.07.20: a same-session Tree/cache publication is not a reason to abandon
+                // receipt visibility. Retire this attempt and recompute from the latest frozen
+                // source; only an identity/page change may discard the request.
+                scheduleMainDeletionPresentationRetirement(retirement)
+                continue
+            case .commit:
+                throttledListSnapshot = projection.snapshot
+                selection = projection.remainingSelection
+                if projection.shouldCloseListDetail {
+                    detail = nil
+                }
+
+                let matcher = DeletionPresentationPathMatcher(paths: succeededPaths)
+                if let selected = treeSelection, matcher.contains(selected.path) {
+                    treeSelection = nil
+                }
+                if let selected = largeFileSelection, matcher.contains(selected.path) {
+                    largeFileSelection = nil
+                }
+                scheduleMainDeletionPresentationRetirement(retirement)
+                return
+            }
+        }
+    }
+
+    private func scheduleMainDeletionPresentationRetirement(
+        _ retirement: MainDeletionPresentationRetirement
+    ) {
+        // Do not await retirement from the publishing stack. The Task cannot run until this
+        // MainActor turn yields/returns, so old/prepared wide arrays never lose their final owner
+        // on the UI executor even on CAS retry/discard paths.
+        Task { @MainActor in
+            await Task.yield()
+            await retirement.retire()
+        }
+    }
+
+    private func currentDeletionPresentationSourceIdentity(
+        source: ScanSnapshot
+    ) -> MainDeletionPresentationSourceIdentity {
+        MainDeletionPresentationSourceIdentity(
+            scanSessionID: coordinator.currentScanSessionID,
+            sourceRevision: coordinator.deletionPresentationSourceRevision,
+            sourceCategoryID: source.categoryID,
+            selectedCategoryID: selectedCategory,
+            interfaceMode: interfaceMode.rawValue
+        )
     }
 
     private func applyProfessionalDeletionSuccess(
         request: DeleteSheetRequest,
         rows: [RowItem],
-        succeededPaths: [String]
+        succeededPaths: [String],
+        traceID: UUID
     ) async {
         guard !succeededPaths.isEmpty else { return }
         let accounting = await MainDeletionAccountingExecutor.run(
@@ -3914,7 +4573,11 @@ public struct MainView: View {
         if request.origin == .stash {
             stash.remove(paths: succeededPaths)
         }
-        await synchronizeSuccessfulDeletion(paths: succeededPaths)
+        await synchronizeSuccessfulDeletion(
+            paths: succeededPaths,
+            authoritativeSurface: .professional,
+            traceID: traceID
+        )
         treeSelection = TreeSelectionReconciler.afterSuccessfulDeletion(
             selected: treeSelection,
             succeededPaths: succeededPaths,
@@ -3930,18 +4593,25 @@ public struct MainView: View {
         origin: DeleteRequestOrigin,
         accessDeniedPaths suppliedDeniedPaths: Set<String>? = nil
     ) {
-        guard !coordinator.isScanning, coordinator.snapshot.isFinished else {
-            deleteResult = AppLocalization.string("delete.preflight.scan_in_progress", locale: locale)
+        guard coordinator.canUseCurrentScanResultsForActions else {
+            // v2026.07.20: this is a zero-submission state, not an operation result. Keep the
+            // page interactive while the current scan becomes action-authoritative.
+            deletePreflightNotice = DeletionPreflightNotice(
+                message: .scanInProgress,
+                rejections: []
+            )
             return
         }
         guard !rows.isEmpty,
               !isDeleting,
               !isPreparingDeletion,
-              !deleteSubmissionHandoff.hasPending,
+              !deleteSubmissionHandoff.blocksNewSubmission,
               deleteSheetRequest == nil,
               deleteResultCompletion == nil,
-              deletePreflightNotice == nil,
               !hasOtherMainModalPresentation else { return }
+        // v2026.07.20: a previous pre-submit rejection is page evidence only. A new
+        // attempt replaces it and must not be blocked by a stale non-modal notice.
+        deletePreflightNotice = nil
         let deniedSnapshot = suppliedDeniedPaths ?? accessDeniedPathsSnapshot()
         let categoryID = coordinator.snapshot.categoryID
         let scanSessionID = coordinator.currentScanSessionID
@@ -3955,7 +4625,10 @@ public struct MainView: View {
         isPreparingDeletion = true
         Task { @MainActor in
             defer { isPreparingDeletion = false }
-            let interactionCoordinator = DeletionInteractionCoordinator(pipeline: pipeline)
+            let interactionCoordinator = DeletionInteractionCoordinator(
+                pipeline: pipeline,
+                undoHistoryStore: undoHistoryStore
+            )
             let intent: DeletionIntent
             do {
                 intent = try interactionCoordinator.makeIntent(
@@ -4006,18 +4679,19 @@ public struct MainView: View {
                     preparation: targetPreparation
                 )
             }
-            guard !coordinator.isScanning,
-                  coordinator.snapshot.isFinished,
+            guard coordinator.canUseCurrentScanResultsForActions,
                   coordinator.snapshot.categoryID == categoryID,
                   coordinator.currentScanSessionID == scanSessionID,
                   coordinator.storeRevision == snapshotIdentity.revision else {
-                deleteResult = AppLocalization.string("delete.preflight.scan_changed", locale: locale)
+                deletePreflightNotice = DeletionPreflightNotice(
+                    message: .scanChanged,
+                    rejections: []
+                )
                 return
             }
             guard deleteSheetRequest == nil,
-                  !deleteSubmissionHandoff.hasPending,
+                  !deleteSubmissionHandoff.blocksNewSubmission,
                   deleteResultCompletion == nil,
-                  deletePreflightNotice == nil,
                   !hasOtherMainModalPresentation else { return }
             switch decision {
             case .confirmation(let prepared):
@@ -4159,8 +4833,11 @@ public struct MainView: View {
         fileCount: Int,
         titlePresentation: LocalizedTextDescriptor? = nil
     ) {
-        guard !coordinator.isScanning, coordinator.snapshot.isFinished else {
-            deleteResult = AppLocalization.string("delete.preflight.scan_in_progress", locale: locale)
+        guard coordinator.canUseCurrentScanResultsForActions else {
+            deletePreflightNotice = DeletionPreflightNotice(
+                message: .scanInProgress,
+                rejections: []
+            )
             return
         }
         stash.add(

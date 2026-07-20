@@ -3,6 +3,19 @@ import XCTest
 @testable import AppUI
 
 final class TreeDeletionIntentTests: XCTestCase {
+    func test_inlineCommandsNeverTakeRowSelectionOrDetailOwnership() {
+        // v2026.07.20: this is the whole inline operation area, not a delete-only exception.
+        // CaseIterable makes every future operation join the same navigation contract by default.
+        for action in InlineRowActionNavigationPolicy.Action.allCases {
+            XCTAssertFalse(InlineRowActionNavigationPolicy.shouldSelectRow(for: action))
+            XCTAssertTrue(InlineRowActionNavigationPolicy.shouldFocusTable(for: action))
+        }
+    }
+
+    func test_externalDetailCloseClearsRealTreeSelection() {
+        XCTAssertNil(TreeBrowserView.selectionAfterExternalReset(current: "/tmp/selected"))
+    }
+
     func test_lazyTreeRowSnapshotPreservesDisplayedFactsWithoutIndexFallback() throws {
         let modified = Date(timeIntervalSince1970: 1_720_000_000)
         let row = TreeRow(
@@ -65,6 +78,39 @@ final class TreeDeletionIntentTests: XCTestCase {
     }
 
     @MainActor
+    func test_loadingParentPreviewCannotInitiateDeletionUntilAuthoritativeCommit() {
+        let row = TreeRow(
+            path: "/tmp/wide-parent",
+            title: "wide-parent",
+            bytes: 1_024,
+            fileCount: 64,
+            isDirectory: true,
+            hasChildren: true
+        )
+        let loading = FlatTreeRow(
+            row: row,
+            depth: 0,
+            verdict: .safe,
+            isLoadingChildren: true
+        )
+        let complete = FlatTreeRow(
+            row: row,
+            depth: 0,
+            verdict: .safe,
+            isLoadingChildren: false
+        )
+
+        XCTAssertFalse(TreeBrowserView.canInitiateDeletion(
+            loading,
+            allowsVendorPathOverride: true
+        ))
+        XCTAssertTrue(TreeBrowserView.canInitiateDeletion(
+            complete,
+            allowsVendorPathOverride: true
+        ))
+    }
+
+    @MainActor
     func test_survivingSelectedAncestorUsesPostPruneAggregate() {
         let selected = TreeRow(
             path: "/tmp/root/parent",
@@ -120,6 +166,41 @@ final class TreeDeletionIntentTests: XCTestCase {
 
         XCTAssertNil(result)
         XCTAssertFalse(didRefresh)
+    }
+
+    func test_projectionDoesNotInventASelectionWhenNothingWasSelected() {
+        let result = TreeBrowserView.selectionAfterProjection(
+            current: nil,
+            rowIndexByPath: ["/A/first": 0, "/A/second": 1]
+        )
+
+        XCTAssertNil(result, "异步 Tree 刷新不得自动选中第一行并把视口带回顶部")
+    }
+
+    func test_projectionClearsOnlyASelectionThatDisappeared() {
+        XCTAssertNil(TreeBrowserView.selectionAfterProjection(
+            current: "/A/deleted",
+            rowIndexByPath: ["/A/keep": 0]
+        ))
+        XCTAssertEqual(TreeBrowserView.selectionAfterProjection(
+            current: "/A/keep",
+            rowIndexByPath: ["/A/keep": 0]
+        ), "/A/keep", "删除其他行时必须保留当前选择")
+    }
+
+    func test_passiveProjectionNeverRequestsViewportReveal() {
+        XCTAssertFalse(TreeSelectionViewportPolicy.shouldReveal(
+            pendingUserNavigationPath: nil,
+            selectedPath: "/A/keep"
+        ))
+        XCTAssertFalse(TreeSelectionViewportPolicy.shouldReveal(
+            pendingUserNavigationPath: "/A/old",
+            selectedPath: "/A/keep"
+        ))
+        XCTAssertTrue(TreeSelectionViewportPolicy.shouldReveal(
+            pendingUserNavigationPath: "/A/keep",
+            selectedPath: "/A/keep"
+        ), "只有显式键盘导航到当前行时才允许移动视口")
     }
 
     @MainActor

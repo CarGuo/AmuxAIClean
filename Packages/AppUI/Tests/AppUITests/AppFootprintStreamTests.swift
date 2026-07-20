@@ -22,7 +22,10 @@ final class AppFootprintStreamTests: XCTestCase {
             entriesByRoot[path]
         }
         func snapshot(at path: String) -> FSSnapshot {
-            snapshots[path] ?? .init(bytes: 0, fileCount: 0)
+            appFootprintIdentityBoundSnapshot(
+                snapshots[path] ?? .init(bytes: 0, fileCount: 0),
+                path: path
+            )
         }
     }
 
@@ -36,7 +39,10 @@ final class AppFootprintStreamTests: XCTestCase {
             if path == slowPath {
                 Thread.sleep(forTimeInterval: 0.25)
             }
-            return snapshots[path] ?? .init(bytes: 0, fileCount: 0)
+            return appFootprintIdentityBoundSnapshot(
+                snapshots[path] ?? .init(bytes: 0, fileCount: 0),
+                path: path
+            )
         }
     }
 
@@ -53,7 +59,10 @@ final class AppFootprintStreamTests: XCTestCase {
             if path == slowPath {
                 Thread.sleep(forTimeInterval: 0.25)
             }
-            return snapshots[path] ?? .init(bytes: 0, fileCount: 0)
+            return appFootprintIdentityBoundSnapshot(
+                snapshots[path] ?? .init(bytes: 0, fileCount: 0),
+                path: path
+            )
         }
     }
 
@@ -69,8 +78,21 @@ final class AppFootprintStreamTests: XCTestCase {
                 bundleVendor: AppMetadata.vendorPrefix(of: bundleID),
                 appName: name,
                 executableName: name
-            )
+            ),
+            fileIdentity: appFootprintTestIdentity(for: path)
         )
+    }
+
+    private func metadataReader(
+        for apps: [InstalledApp]
+    ) -> @Sendable (URL) throws -> AppMetadata {
+        let byPath = Dictionary(uniqueKeysWithValues: apps.map { ($0.appURL.path, $0.metadata) })
+        return { url in
+            guard let metadata = byPath[url.path] else {
+                throw AppMetadataReadError.missingBundleIdentifier
+            }
+            return metadata
+        }
     }
 
     private func makeScanner(apps: [InstalledApp]) -> (AppFootprintScanner, [InstalledApp]) {
@@ -79,10 +101,20 @@ final class AppFootprintStreamTests: XCTestCase {
         var snaps: [String: FSSnapshot] = [:]
         for (idx, app) in apps.enumerated() {
             // 让字节数互不相同 + 可预测（按 idx），便于排序断言
-            snaps[app.appURL.path] = .init(bytes: Int64((idx + 1) * 1_000_000), fileCount: 1)
+            snaps[app.appURL.path] = .init(
+                bytes: Int64((idx + 1) * 1_000_000),
+                fileCount: 1,
+                exists: true,
+                isDirectory: true
+            )
         }
         let fm = FakeFM(entriesByRoot: [cachesPath: []], snapshots: snaps)
-        let unins = AppUninstaller(homeDirectory: home, fileManager: fm, vendorRules: [])
+        let unins = AppUninstaller(
+            homeDirectory: home,
+            fileManager: fm,
+            vendorRules: [],
+            appMetadataReader: metadataReader(for: apps)
+        )
         let scanner = AppFootprintScanner(uninstaller: unins, snapshot: fm)
         return (scanner, apps)
     }
@@ -114,7 +146,12 @@ final class AppFootprintStreamTests: XCTestCase {
             ],
             slowPath: slow.appURL.path
         )
-        let unins = AppUninstaller(homeDirectory: "/H", fileManager: fm, vendorRules: [])
+        let unins = AppUninstaller(
+            homeDirectory: "/H",
+            fileManager: fm,
+            vendorRules: [],
+            appMetadataReader: metadataReader(for: [slow, fast])
+        )
         let scanner = AppFootprintScanner(uninstaller: unins, snapshot: fm)
 
         var first: AppFootprintItem?
@@ -127,8 +164,10 @@ final class AppFootprintStreamTests: XCTestCase {
                        "首个 app 很慢时，stream 应允许后续轻量 app 先返回，避免 UI 长时间全 0KB")
     }
 
-    func test_scanProgressiveStream_先yieldBundle阶段再yield完整关联数据() async {
-        let app = makeApp(bundleID: "com.demo.app", name: "Demo", atPath: "/Demo.app")
+    func test_scanProgressiveStream_先yieldBundle阶段再yield完整关联数据() async throws {
+        let fixture = try makeRealAppFootprintTestApp(bundleID: "com.demo.app", name: "Demo")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let app = fixture.app
         let home = "/H"
         let cachesPath = "\(home)/Library/Caches"
         let relatedPath = "\(cachesPath)/com.demo.app"
@@ -137,12 +176,21 @@ final class AppFootprintStreamTests: XCTestCase {
                 cachesPath: [FSEntry(name: "com.demo.app", path: relatedPath)]
             ],
             snapshots: [
-                app.appURL.path: .init(bytes: 100, fileCount: 1),
+                app.appURL.path: appFootprintBundleSnapshot(
+                    bytes: 100,
+                    fileCount: 1,
+                    app: app
+                ),
                 relatedPath: .init(bytes: 900, fileCount: 9)
             ],
             slowPath: relatedPath
         )
-        let unins = AppUninstaller(homeDirectory: home, fileManager: fm, vendorRules: [])
+        let unins = AppUninstaller(
+            homeDirectory: home,
+            fileManager: fm,
+            vendorRules: [],
+            appMetadataReader: metadataReader(for: [app])
+        )
         let scanner = AppFootprintScanner(uninstaller: unins, snapshot: fm)
 
         var yielded: [AppFootprintItem] = []

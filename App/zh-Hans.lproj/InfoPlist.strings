@@ -1,2 +1,10 @@
 CFBundleDisplayName = "AmuxAIClean";
 CFBundleName = "AmuxAIClean";
+/* v2026.07.18：为只读检查流程提供本地化的 macOS 隐私权限说明。 */
+NSAppBundlesUsageDescription = "AmuxAIClean 会读取已安装 App 的 Info.plist 等元数据；重复扫描还会读取候选字节计算 SHA-256，不会上传文件内容。";
+NSAppDataUsageDescription = "AmuxAIClean 会读取 App 数据元数据及支持的本地配置记录；重复扫描还会读取候选字节计算 SHA-256，不会上传文件内容。";
+NSDesktopFolderUsageDescription = "AmuxAIClean 会读取桌面元数据；重复文件扫描还会在本机读取候选文件字节计算 SHA-256，不会上传文件内容。";
+NSDocumentsFolderUsageDescription = "AmuxAIClean 会读取文稿元数据；重复文件扫描还会在本机读取候选文件字节计算 SHA-256，不会上传文件内容。";
+NSDownloadsFolderUsageDescription = "AmuxAIClean 会读取下载元数据；重复文件扫描还会在本机读取候选文件字节计算 SHA-256，不会上传文件内容。";
+NSRemovableVolumesUsageDescription = "AmuxAIClean 会读取可移动卷元数据；重复文件扫描还会在本机读取候选文件字节计算 SHA-256，不会上传文件内容。";
+NSNetworkVolumesUsageDescription = "AmuxAIClean 会从所选网络服务器读取元数据和重复候选并在本机分析，不会把文件内容上传到其它服务。";

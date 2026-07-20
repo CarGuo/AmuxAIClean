@@ -44,7 +44,8 @@ cd GSYCleanMac
      -derivedDataPath build/dd build
    ```
 
-6. 提交 PR，CI 必须全绿
+6. 提交 PR 前保留本地测试与构建摘要。当前 GitHub Actions job 全部显式停用，不能把
+   Actions 页面或“未运行”状态当作质量证据；恢复 CI 前以 `AGENTS.md` 完成门槛为准。
 
 ---
 
@@ -60,7 +61,12 @@ cd GSYCleanMac
 6. **不允许在 actor / Sendable 上偷懒**：Swift 6 strict concurrency 必须严格满足，warnings-as-errors 不能放过
 7. **新加 vendor 规则必须有 BundleID 严格前缀**：不允许只用 appName 模糊匹配
 8. **新加 hardForbid 路径必须有真实事故来源链接**：不允许"我觉得这条路径危险"就加进去
-9. **不允许引入网络请求**：本项目零网络是 hard rule，违反者必拒
+9. **不允许新增或扩大网络请求**：当前只允许 GitHub Release 更新检查，以及默认关闭、
+   用户主动发起的 OpenAI-compatible AI 请求。任何新 host、触发方式、发送字段或后台重试
+   都必须先定义用户授权、HTTPS/loopback 边界、超时取消、凭据、日志脱敏、隐私披露和测试；
+   AI base URL 不得携带 userinfo/query/fragment，客户端不得跟随 redirect；远程结果不得改变
+   SafetyEngine verdict、默认勾选或删除授权。网络卷/FileProvider/Quick Look 的系统代办读取
+   也必须在隐私合同中单独披露，不能把“仅两类 App HTTP”写成“整个扫描绝不联网”
 
 ---
 
@@ -127,7 +133,9 @@ feat(scankit): BulkScanner 多 worker 并行（4~6 worker work-stealing）
 ...
 
 ## 日志 / 截图
-（可附 Console.app 中过滤 com.guoshuyu.cleanmac 的日志）
+（可附 App 内“在 Finder 中显示日志”导出的本地文件；若文件 sink 不可用，可在
+Console.app 中过滤当前 subsystem `com.amux.ai.Clean`，并附上界面显示的
+`stage / domain / code`。请先移除不愿公开的路径或用户名。）
 ```
 
 如果是**误命中类**（建议删了不该删的）：请额外注明被建议删除的路径、命中规则名（截图 MatchReason 行）、对应 app 的 bundleID。

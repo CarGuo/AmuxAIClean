@@ -1,5 +1,6 @@
 import Foundation
 import Dispatch
+import Darwin
 import SafetyKit
 
 /// v1.2 P1-6 应用占用排行榜 —— 数据模型与扫描器。
@@ -281,10 +282,14 @@ public actor AppFootprintScanner {
                     inFlight += 1
                     group.addTask(priority: .utility) { [self] in
                         guard !Task.isCancelled, !cancellationToken.isCancelled else { return nil }
-                        let bundleSnap = await Self.snapshotOffCooperativeExecutor(
+                        let measuredBundleSnap = await Self.snapshotOffCooperativeExecutor(
                             snapshot,
                             at: app.appURL.path,
                             cancellationToken: cancellationToken
+                        )
+                        let bundleSnap = Self.identityBoundBundleSnapshot(
+                            measuredBundleSnap,
+                            app: app
                         )
                         guard !Task.isCancelled,
                               !cancellationToken.isCancelled,
@@ -365,9 +370,13 @@ public actor AppFootprintScanner {
                         inFlight += 1
                         group.addTask(priority: .utility) { [self] in
                             if Task.isCancelled { return }
-                            let bundleSnap = await Self.snapshotOffCooperativeExecutor(
+                            let measuredBundleSnap = await Self.snapshotOffCooperativeExecutor(
                                 snapshot,
                                 at: app.appURL.path
+                            )
+                            let bundleSnap = Self.identityBoundBundleSnapshot(
+                                measuredBundleSnap,
+                                app: app
                             )
                             guard bundleSnap.completion != .cancelled else { return }
                             let partial = AppFootprintScanner.makeItem(
@@ -420,10 +429,11 @@ public actor AppFootprintScanner {
     /// 单个 app 的聚合 —— 包内可见以便测试。
     nonisolated func scanOne(app: InstalledApp) async -> AppFootprintItem {
         // (1) bundle 自身
-        let bundleSnap = await Self.snapshotOffCooperativeExecutor(
+        let measuredBundleSnap = await Self.snapshotOffCooperativeExecutor(
             snapshot,
             at: app.appURL.path
         )
+        let bundleSnap = Self.identityBoundBundleSnapshot(measuredBundleSnap, app: app)
         let related = await relatedBuckets(for: app)
         return Self.makeItem(
             app: app,
@@ -439,7 +449,12 @@ public actor AppFootprintScanner {
     }
 
     private nonisolated func relatedBuckets(for app: InstalledApp) async -> RelatedBucketsResult {
-        let cands = await uninstaller.candidatesAsync(for: app.metadata)
+        // URL and metadata are one claim. AppUninstaller re-reads Info.plist at this production
+        // boundary; a replaced bundle yields a typed identity issue and no related candidates.
+        guard let selectedIdentity = UninstallSelectedAppIdentity(installedApp: app) else {
+            return RelatedBucketsResult(buckets: [], isComplete: false)
+        }
+        let cands = await uninstaller.candidatesAsync(for: selectedIdentity)
         var relatedBuckets: [AppFootprintBucket] = []
         relatedBuckets.reserveCapacity(cands.count)
         for c in cands {
@@ -455,12 +470,47 @@ public actor AppFootprintScanner {
         relatedBuckets.sort { $0.bytes > $1.bytes }
         return RelatedBucketsResult(
             buckets: relatedBuckets,
-            isComplete: cands.allSatisfy(\.hasCompleteSnapshot)
+            isComplete: cands.isDiscoveryComplete && cands.allSatisfy(\.hasCompleteSnapshot)
         )
     }
 
     private static func isComplete(_ snapshot: FSSnapshot) -> Bool {
-        snapshot.completion == .complete && snapshot.issues.isEmpty
+        // A bundle that disappeared after installed-App discovery is not a precise 0-byte App.
+        // Candidate discovery may treat exact ENOENT as a complete absence, but footprint rows must
+        // retain the distinction between "clean path missing" and "installed bundle measured".
+        snapshot.exists && snapshot.completion == .complete && snapshot.issues.isEmpty
+    }
+
+    /// v2026.07.18: a pathname measurement cannot be labelled with metadata from a different
+    /// installed bundle. A missing scan-time capability, missing measured identity, non-directory
+    /// root, or replacement publishes an incomplete zero lower bound instead of App B's bytes as A.
+    private static func identityBoundBundleSnapshot(
+        _ measured: FSSnapshot,
+        app: InstalledApp
+    ) -> FSSnapshot {
+        guard let expected = app.fileIdentity,
+              let observed = measured.objectIdentity,
+              expected.matches(observed),
+              observed.fileType == UInt16(S_IFDIR) else {
+            var issues = measured.issues
+            let issue = FSSnapshotIssue(
+                path: app.appURL.path,
+                reason: .metadataUnavailable,
+                stage: .rootMetadata
+            )
+            if !issues.contains(issue) { issues.append(issue) }
+            return FSSnapshot(
+                bytes: 0,
+                logicalBytes: 0,
+                fileCount: 0,
+                exists: measured.exists,
+                isDirectory: true,
+                objectIdentity: measured.objectIdentity,
+                completion: measured.completion == .cancelled ? .cancelled : .partial,
+                issues: issues
+            )
+        }
+        return measured
     }
 
     /// v2026.07.17：`FileManager.enumerator` / `stat` 遍历是同步阻塞 I/O，不能直接占用

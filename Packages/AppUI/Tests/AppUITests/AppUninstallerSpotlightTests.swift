@@ -55,6 +55,46 @@ final class AppUninstallerSpotlightTests: XCTestCase {
         }
     }
 
+    private struct FailedSpotlight: SpotlightProbing {
+        let paths: [String]
+        let failure: SpotlightProbeFailure
+
+        init(paths: [String] = [], failure: SpotlightProbeFailure) {
+            self.paths = paths
+            self.failure = failure
+        }
+
+        func probeByBundleID(_ bundleID: String, timeout: TimeInterval) async -> [String] { [] }
+        func probeByAppName(_ appName: String, timeout: TimeInterval) async -> [String] { [] }
+        func probeByBundleIDEvidence(
+            _ bundleID: String,
+            timeout: TimeInterval
+        ) async -> SpotlightProbeResult {
+            SpotlightProbeResult(paths: paths, failure: failure)
+        }
+        func probeByAppNameEvidence(
+            _ appName: String,
+            timeout: TimeInterval
+        ) async -> SpotlightProbeResult {
+            SpotlightProbeResult(paths: paths, failure: failure)
+        }
+    }
+
+    private struct TypedRootFM: FileManagerSnapshotting {
+        let incompleteRoot: String?
+
+        func firstLevelEntries(at path: String) -> [FSEntry]? { nil }
+        func firstLevelDiscovery(at path: String) -> FSFirstLevelDiscoveryResult {
+            if path == incompleteRoot {
+                return .incomplete(stage: .enumeration, reason: .permissionDenied)
+            }
+            return .missing
+        }
+        func snapshot(at path: String) -> FSSnapshot {
+            .init(bytes: 0, fileCount: 0, exists: false)
+        }
+    }
+
     private let demoMeta = AppMetadata(
         bundleID: "com.acme.demo",
         bundleVendor: "com.acme",
@@ -252,5 +292,218 @@ final class AppUninstallerSpotlightTests: XCTestCase {
         } else {
             XCTFail("matchReason 应为 .spotlight(\"appName\")")
         }
+    }
+
+    func test_主根不存在是完整零结果_权限失败是typedIncomplete() async {
+        let missing = AppUninstaller(
+            homeDirectory: "/H",
+            systemLibrary: "/Library",
+            fileManager: TypedRootFM(incompleteRoot: nil)
+        )
+        let missingResult = await missing.candidatesAsync(for: demoMeta, fallbacks: [])
+        XCTAssertTrue(missingResult.candidates.isEmpty)
+        XCTAssertTrue(missingResult.isDiscoveryComplete)
+
+        let deniedRoot = "/H/Library/Containers"
+        let denied = AppUninstaller(
+            homeDirectory: "/H",
+            systemLibrary: "/Library",
+            fileManager: TypedRootFM(incompleteRoot: deniedRoot)
+        )
+        let deniedResult = await denied.candidatesAsync(for: demoMeta, fallbacks: [])
+        XCTAssertTrue(deniedResult.candidates.isEmpty)
+        XCTAssertFalse(deniedResult.isDiscoveryComplete)
+        XCTAssertEqual(deniedResult.incompleteIssues, [UninstallDiscoveryIssue(
+            source: .primaryRoot,
+            stage: .rootEnumeration,
+            path: deniedRoot,
+            reason: .permissionDenied
+        )])
+    }
+
+    func test_Spotlight启动失败与超时不是成功空结果() async {
+        for (failure, expectedStage, expectedReason) in [
+            (SpotlightProbeFailure.startFailed,
+             UninstallDiscoveryIssue.Stage.queryStart,
+             UninstallDiscoveryIssue.Reason.queryStartFailed),
+            (.timedOut, .queryGathering, .timedOut),
+            (.resultCountLimitExceeded(limit: 4_096),
+             .queryGathering,
+             .resultCountLimitExceeded(limit: 4_096)),
+            (.extractionTimeLimitExceeded(limitMilliseconds: 25),
+             .queryGathering,
+             .extractionTimeLimitExceeded(limitMilliseconds: 25)),
+            (.cancelled, .cancellation, .cancelled),
+        ] {
+            let uninstaller = AppUninstaller(
+                homeDirectory: "/H",
+                systemLibrary: "/Library",
+                fileManager: TypedRootFM(incompleteRoot: nil),
+                spotlight: FailedSpotlight(failure: failure)
+            )
+            let result = await uninstaller.candidatesAsync(
+                for: demoMeta,
+                fallbacks: [.spotlight]
+            )
+            XCTAssertTrue(result.candidates.isEmpty)
+            XCTAssertFalse(result.isDiscoveryComplete)
+            XCTAssertEqual(result.incompleteIssues, [UninstallDiscoveryIssue(
+                source: .spotlightBundleID,
+                stage: expectedStage,
+                reason: expectedReason
+            )])
+        }
+    }
+
+    func test_Spotlight结果预算与后台路径规范化保持确定合同() {
+        let budget = SpotlightResultBudget(
+            maximumResultCount: 2,
+            maximumMainActorExtractionNanoseconds: 1_000_000
+        )
+
+        XCTAssertNil(budget.countFailure(totalResultCount: 2))
+        XCTAssertEqual(
+            budget.countFailure(totalResultCount: 3),
+            .resultCountLimitExceeded(limit: 2)
+        )
+        XCTAssertNil(budget.timeFailureIfExceeded(startedAt: 10, now: 1_000_009))
+        XCTAssertEqual(
+            budget.timeFailureIfExceeded(startedAt: 10, now: 1_000_010),
+            .extractionTimeLimitExceeded(limitMilliseconds: 1)
+        )
+        XCTAssertEqual(
+            SpotlightPathNormalizer.normalize([
+                "/H/B",
+                "/H/./A",
+                "/H/A",
+                "relative/path",
+                "/H/invalid\0path",
+            ]),
+            ["/H/A", "/H/B"]
+        )
+    }
+
+    @MainActor
+    func test_SpotlightMainActor提取逐项检查deadline而非每32项一次() async {
+        let budget = SpotlightResultBudget(
+            maximumResultCount: 100,
+            maximumMainActorExtractionNanoseconds: 10
+        )
+        var clock: UInt64 = 0
+        var accessed: [Int] = []
+        let projection = await SpotlightBatchedPathExtractor.extract(
+            totalResultCount: 50,
+            budget: budget,
+            batchSize: 8,
+            pathAtIndex: { index in
+                accessed.append(index)
+                return "/H/\(index)"
+            },
+            now: {
+                defer { clock += 4 }
+                return clock
+            },
+            cancellationRequested: { false },
+            yieldBetweenBatches: {}
+        )
+
+        XCTAssertEqual(accessed, [0, 1])
+        XCTAssertEqual(projection.paths, ["/H/0", "/H/1"])
+        XCTAssertEqual(
+            projection.failure,
+            .extractionTimeLimitExceeded(limitMilliseconds: 0)
+        )
+    }
+
+    @MainActor
+    func test_SpotlightMainActor提取小批量yield后可立即取消() async {
+        let budget = SpotlightResultBudget(
+            maximumResultCount: 100,
+            maximumMainActorExtractionNanoseconds: .max
+        )
+        var cancelled = false
+        var yields = 0
+        var accessed: [Int] = []
+        let projection = await SpotlightBatchedPathExtractor.extract(
+            totalResultCount: 10,
+            budget: budget,
+            batchSize: 2,
+            pathAtIndex: { index in
+                accessed.append(index)
+                return "/H/\(index)"
+            },
+            now: { 0 },
+            cancellationRequested: { cancelled },
+            yieldBetweenBatches: {
+                yields += 1
+                cancelled = true
+                await Task.yield()
+            }
+        )
+
+        XCTAssertEqual(yields, 1)
+        XCTAssertEqual(accessed, [0, 1])
+        XCTAssertEqual(projection.failure, .cancelled)
+    }
+
+    func test_Spotlight预算截断保留已冻结路径并贯穿typedIncomplete() async {
+        let path = "/H/Documents/AcmeData"
+        let uninstaller = AppUninstaller(
+            homeDirectory: "/H",
+            systemLibrary: "/Library",
+            fileManager: FakeFM(
+                entriesByRoot: [:],
+                snapshots: [path: .init(bytes: 321, fileCount: 2)]
+            ),
+            spotlight: FailedSpotlight(
+                paths: [path],
+                failure: .resultCountLimitExceeded(limit: 4_096)
+            )
+        )
+
+        let result = await uninstaller.candidatesAsync(
+            for: demoMeta,
+            fallbacks: [.spotlight]
+        )
+
+        XCTAssertEqual(result.candidates.map(\.path), [path])
+        XCTAssertFalse(result.isDiscoveryComplete)
+        XCTAssertEqual(result.incompleteIssues, [UninstallDiscoveryIssue(
+            source: .spotlightBundleID,
+            stage: .queryGathering,
+            reason: .resultCountLimitExceeded(limit: 4_096)
+        )])
+    }
+
+    func test_primary父路径与Spotlight子路径按组件边界去重且容量不重叠() async {
+        let home = "/H"
+        let caches = "\(home)/Library/Caches"
+        let parent = "\(caches)/com.acme.demo"
+        let child = "\(parent)/profile"
+        let fileManager = FakeFM(
+            entriesByRoot: [caches: [FSEntry(name: "com.acme.demo", path: parent)]],
+            snapshots: [
+                parent: .init(bytes: 1_000, fileCount: 10, exists: true, isDirectory: true),
+                child: .init(bytes: 20, fileCount: 2, exists: true, isDirectory: true),
+            ]
+        )
+        let spotlight = FakeSpotlight(
+            byBundleID: [demoMeta.bundleID: [child]],
+            byAppName: [:]
+        )
+        let uninstaller = AppUninstaller(
+            homeDirectory: home,
+            systemLibrary: "/Library",
+            fileManager: fileManager,
+            spotlight: spotlight
+        )
+
+        let result = await uninstaller.candidatesAsync(
+            for: demoMeta,
+            fallbacks: [.spotlight]
+        )
+
+        XCTAssertEqual(result.candidates.map(\.path), [child])
+        XCTAssertEqual(result.candidates.reduce(Int64(0)) { $0 + $1.bytes }, 20)
     }
 }

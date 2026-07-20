@@ -140,7 +140,7 @@ final class SmartCareAIReviewSessionTests: XCTestCase {
             using: SmartCareAIReviewWorker { item in
                 await counter.increment()
                 if item.id == "good" { return Self.advice(marker: "good") }
-                throw OpenAIChatClient.Error.http(status: 401, body: "must not be stored")
+                throw OpenAIChatClient.Error.http(status: 401, responseBytes: 18)
             }
         )
 
@@ -542,7 +542,10 @@ final class SmartCareAIReviewSessionTests: XCTestCase {
     func test_failure只保留结构化诊断不保存任意provider内容() {
         let body = "Bearer secret-token-value sk-abcdefghijk /Users/alice/" + String(repeating: "x", count: 3_000)
         let failure = SmartCareAIReviewFailure(
-            error: OpenAIChatClient.Error.http(status: 500, body: body)
+            error: OpenAIChatClient.Error.http(
+                status: 500,
+                responseBytes: Data(body.utf8).count
+            )
         )
 
         XCTAssertEqual(failure.kind, .server)
@@ -557,7 +560,7 @@ final class SmartCareAIReviewSessionTests: XCTestCase {
     func test_HTTP配置错误映射为设置动作并触发停批() {
         for status in [400, 404, 422] {
             let failure = SmartCareAIReviewFailure(
-                error: OpenAIChatClient.Error.http(status: status, body: "provider body")
+                error: OpenAIChatClient.Error.http(status: status, responseBytes: 13)
             )
             XCTAssertEqual(failure.kind, .configuration)
             XCTAssertEqual(failure.httpStatus, status)

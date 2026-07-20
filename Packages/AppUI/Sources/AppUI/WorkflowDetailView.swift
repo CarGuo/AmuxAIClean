@@ -95,12 +95,17 @@ public struct WorkflowDetailView: View {
 
     public init(workflow: any DeveloperWorkflow,
                 pipeline: any DeletionPipeline,
+                undoHistoryStore: UndoHistoryStore,
                 home: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.workflow = workflow
         self.pipeline = pipeline
         _viewModel = StateObject(wrappedValue: WorkflowDetailViewModel(
             workflow: workflow,
-            home: home
+            home: home,
+            // v2026.07.20 P0: the caller must provide the Undo owner together with its pipeline.
+            // Production passes `.shared`; scripted callers must pass a temporary store, so a
+            // compatibility pipeline can never commit synthetic moved pairs to user history.
+            undoHistoryStore: undoHistoryStore
         ))
     }
 
@@ -115,6 +120,11 @@ public struct WorkflowDetailView: View {
             }
             Divider()
             footer
+        }
+        // v2026.07.20 P0: workflow cards and footer retain their layout and selection while the
+        // shared non-modal callout explains why no Trash submission was created.
+        .deletionPreflightNoticeOverlay(viewModel.preflightNotice) {
+            viewModel.preflightNotice = nil
         }
         .task {
             await viewModel.bootstrap()
@@ -151,12 +161,6 @@ public struct WorkflowDetailView: View {
                         )
                     }
                 )
-            case .preflightNotice(let id, let rejections):
-                DeletionPreflightNoticeSheet(
-                    notice: DeletionPreflightNotice(id: id, rejections: rejections)
-                ) {
-                    viewModel.activeSheet = nil
-                }
             case .simulatorUninstall:
                 simulatorUninstallSheet
                     // 系统管理卸载准备/执行期间必须保留进度和终态。执行开始后不能用
@@ -1298,13 +1302,15 @@ public final class WorkflowDetailViewModel: ObservableObject {
     /// 单一 sheet 路由。Trash 与 managed uninstall 是两种独立事务，但共享一个
     /// SwiftUI presentation slot，避免多个 `.sheet` 竞争。
     @Published var activeSheet: ActiveSheet?
+    /// v2026.07.20: rejected pre-submit evidence is non-modal page state and never
+    /// participates in the active transaction/sheet route.
+    @Published var preflightNotice: DeletionPreflightNotice?
 
     /// 当前正在显示的 sheet 类型。
     /// - `.simulatorUninstall`：Simulator 系统管理卸载的完整状态 sheet
     /// - `.result(payload)`：OperationResultSheet（trash 完成后展示结构化结果）
     enum ActiveSheet: Identifiable, Equatable {
         case deleteConfirm(WorkflowDeleteConfirmation)
-        case preflightNotice(id: UUID, rejections: [DeletionPreflight.Rejection])
         case simulatorUninstall
         case result(OperationResultCompletion)
 
@@ -1312,8 +1318,6 @@ public final class WorkflowDetailViewModel: ObservableObject {
             switch self {
             case .deleteConfirm(let confirmation):
                 return "deleteConfirm-\(confirmation.id.uuidString)"
-            case .preflightNotice(let id, _):
-                return "preflightNotice-\(id.uuidString)"
             case .simulatorUninstall: return "simulatorUninstall"
             case .result(let p): return "result-\(p.id.uuidString)"
             }
@@ -1479,8 +1483,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
     private let workflow: any DeveloperWorkflow
     private let home: URL
     private let simulatorCoordinator: SimulatorDeleteCoordinator
-    /// **v2026.06.22 (P0-1)**：UndoHistory 写入入口。默认 `UndoHistoryStore.shared`，
-    /// 测试可注入临时目录 store。
+    /// **v2026.07.20**：UndoHistory 写入 owner 必须显式注入；生产 View 选择 `.shared`，
+    /// 测试选择临时 store，禁止 compatibility moved-pair 结果污染用户历史。
     private let undoHistoryStore: UndoHistoryStore
     /// One immutable discovery result per Workflow scan revision. Tests inject this
     /// boundary to prove an empty hit list is not confused with an unreadable root.
@@ -1512,6 +1516,10 @@ public final class WorkflowDetailViewModel: ObservableObject {
     /// rather than relying only on late publication guards.
     private var activeScanTask: Task<Bool, Never>?
     private var activeScanOperationID: UUID?
+    /// Revision checks protect publication; this chain separately joins cancelled filesystem
+    /// producers before any replacement revision may acquire disk/CPU ownership.
+    private let scanProducerSettlement = ScanProducerSettlementChain()
+    private var scanReplacementRequestID = UUID()
     /// Button actions are synchronous UI events. Their async continuations must be registered
     /// before work starts so page disappearance can cancel every outstanding caller lifetime.
     private var scheduledFullRefreshTask: Task<Void, Never>?
@@ -1529,7 +1537,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
     public init(workflow: any DeveloperWorkflow,
                 home: URL,
                 simulatorCoordinator: SimulatorDeleteCoordinator? = nil,
-                undoHistoryStore: UndoHistoryStore = .shared,
+                undoHistoryStore: UndoHistoryStore,
                 versionedRootDiscovery: (@Sendable (URL) async -> KnownVersionedRoots.ScanResult)? = nil,
                 dynamicDiscovery: (@Sendable (
                     String,
@@ -1609,7 +1617,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
             return true
         }
         switch activeSheet {
-        case .deleteConfirm, .preflightNotice, .simulatorUninstall:
+        case .deleteConfirm, .simulatorUninstall:
             return true
         case .result, .none:
             return false
@@ -1898,14 +1906,21 @@ public final class WorkflowDetailViewModel: ObservableObject {
     public func cancelVisibleScanWork() {
         guard hasActiveViewScanLifetime else { return }
         hasActiveViewScanLifetime = false
-        activeScanTask?.cancel()
+        var settlementTasks: [Task<Void, Never>] = []
+        if let activeScanTask {
+            settlementTasks.append(Self.makeSettlementTask(activeScanTask))
+        }
+        for task in cardRetryTasks.values {
+            settlementTasks.append(Self.makeSettlementTask(task))
+        }
+        scanProducerSettlement.retire(settlementTasks)
         activeScanTask = nil
         activeScanOperationID = nil
+        scanReplacementRequestID = UUID()
         scheduledFullRefreshTask?.cancel()
         scheduledFullRefreshTask = nil
         scheduledFullRefreshOperationID = nil
         cancelScheduledCardRefreshes()
-        cardRetryTasks.values.forEach { $0.cancel() }
         cardRetryTasks.removeAll()
         convergeCancelledScan(
             revision: scanRevision,
@@ -1949,7 +1964,16 @@ public final class WorkflowDetailViewModel: ObservableObject {
         let sessionID = scanEvidence.sessionID
         let retryRevision = (cardRetryRevisions[cardID] ?? 0) &+ 1
         cardRetryRevisions[cardID] = retryRevision
-        cardRetryTasks[cardID]?.cancel()
+        if let predecessorTask = cardRetryTasks.removeValue(forKey: cardID) {
+            scanProducerSettlement.retire([Self.makeSettlementTask(predecessorTask)])
+        }
+        let predecessor = scanProducerSettlement.barrier()
+        guard await ScanProducerSettlementChain.waitForSettlement(predecessor),
+              cardRetryRevisions[cardID] == retryRevision,
+              scanRevision == globalRevision,
+              scanEvidence.sessionID == sessionID else {
+            return
+        }
 
         clearCardForRetry(cardID: cardID, revision: globalRevision, sessionID: sessionID)
         let work: CardScanWork = card.sharedScanRole == nil
@@ -2007,6 +2031,17 @@ public final class WorkflowDetailViewModel: ObservableObject {
             sharedScanIncompleteIssues = sharedIssues
         }
         publish(result, for: card, revision: globalRevision, sessionID: sessionID)
+    }
+
+    /// Convert a typed producer owner into the chain's `Void` join handle. Cancellation is
+    /// forwarded before registration; the wrapper exists only to await true termination.
+    private nonisolated static func makeSettlementTask<Success: Sendable>(
+        _ task: Task<Success, Never>
+    ) -> Task<Void, Never> {
+        task.cancel()
+        return Task.detached(priority: .userInitiated) {
+            _ = await task.value
+        }
     }
 
     public func toggleExpanded(cardID: String, open: Bool) {
@@ -2096,6 +2131,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
               !isPreparingDeletion,
               pendingConfirmedDeleteIntent == nil,
               activeSheet == nil else { return }
+        preflightNotice = nil
         let cardsSnapshot = cards
         let cardHitsSnapshot = cardHits
         let evidenceSnapshot = scanEvidence
@@ -2175,14 +2211,13 @@ public final class WorkflowDetailViewModel: ObservableObject {
                     preparedInteraction = prepared
                     deletionInteractionCoordinator = coordinator
                 case .blocked(let block):
-                    activeSheet = .preflightNotice(id: UUID(), rejections: block.rejections)
+                    preflightNotice = DeletionPreflightNotice(rejections: block.rejections)
                     return
                 case .cancelled:
                     return
                 }
             } catch {
-                activeSheet = .preflightNotice(
-                    id: UUID(),
+                preflightNotice = DeletionPreflightNotice(
                     rejections: filesystem.paths.map {
                         .init(path: $0, reason: SafetyRejection.preflightCancelled.rawValue)
                     }
@@ -2196,6 +2231,10 @@ public final class WorkflowDetailViewModel: ObservableObject {
               scanEvidence.sessionID == evidenceSnapshot.sessionID,
               selectedHitIDs(forManagedUninstall: false) == selectionSnapshot else {
             GSYLog.notice(.trash, "Workflow 删除预检完成时扫描或选择已变化，丢弃旧意图")
+            preflightNotice = DeletionPreflightNotice(
+                message: .scanChanged,
+                rejections: []
+            )
             return
         }
 
@@ -2236,10 +2275,34 @@ public final class WorkflowDetailViewModel: ObservableObject {
         executionPlan: ToolTrashExecutionPlan
     ) -> Bool {
         guard case let .deleteConfirm(current) = activeSheet,
-              current.id == confirmation.id,
-              current.intent.scanRevision == scanEvidence.revision,
-              current.intent.scanSessionID == scanEvidence.sessionID,
-              pendingConfirmedDeleteIntent == nil else { return false }
+              current.id == confirmation.id else { return false }
+        guard current.intent.scanRevision == scanEvidence.revision,
+              current.intent.scanSessionID == scanEvidence.sessionID else {
+            // v2026.07.20: stale confirmation is a non-modal pre-submit rejection.
+            // Close the obsolete sheet, preserve fail-closed authorization, and let the
+            // user continue with the current page instead of trapping them in a modal.
+            deletionInteractionCoordinator = nil
+            activeSheet = nil
+            preflightNotice = DeletionPreflightNotice(
+                message: .scanChanged,
+                rejections: []
+            )
+            return false
+        }
+        guard pendingConfirmedDeleteIntent == nil else {
+            deletionInteractionCoordinator = nil
+            activeSheet = nil
+            preflightNotice = DeletionPreflightNotice(
+                rejections: current.intent.filesystemPaths.map {
+                    .init(
+                        path: $0,
+                        reason: TrashPendingOperationRejection.Reason
+                            .priorOperationPending.rawValue
+                    )
+                }
+            )
+            return false
+        }
 
         let originalIntent = confirmation.intent
         let authorizedInteraction: DeletionAuthorizedInteraction?
@@ -2249,6 +2312,12 @@ public final class WorkflowDetailViewModel: ObservableObject {
             guard let prepared = originalIntent.preparedInteraction,
                   let coordinator = deletionInteractionCoordinator else {
                 GSYLog.error(.trash, "Workflow 删除确认缺少统一协调器快照")
+                activeSheet = nil
+                preflightNotice = DeletionPreflightNotice(
+                    rejections: originalIntent.filesystemPaths.map {
+                        .init(path: $0, reason: SafetyRejection.preflightCancelled.rawValue)
+                    }
+                )
                 return false
             }
             switch coordinator.authorize(
@@ -2262,7 +2331,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 activeSheet = nil
                 return true
             case .blocked(let block):
-                activeSheet = .preflightNotice(id: UUID(), rejections: block.rejections)
+                activeSheet = nil
+                preflightNotice = DeletionPreflightNotice(rejections: block.rejections)
                 return false
             }
         }
@@ -2276,6 +2346,13 @@ public final class WorkflowDetailViewModel: ObservableObject {
               submittedPaths.isDisjoint(with: skippedPaths),
               submittedPaths.union(skippedPaths) == originalPaths else {
             GSYLog.error(.trash, "Workflow 删除确认计划未完整覆盖冻结路径，拒绝执行")
+            deletionInteractionCoordinator = nil
+            activeSheet = nil
+            preflightNotice = DeletionPreflightNotice(
+                rejections: originalIntent.filesystemPaths.map {
+                    .init(path: $0, reason: SafetyRejection.preflightCancelled.rawValue)
+                }
+            )
             return false
         }
         let strictAccessEvidencePaths = authorizedInteraction.map(
@@ -2291,8 +2368,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
         }
         guard frozenAccessEvidencePaths.isSubset(of: originalIntent.accessDeniedPaths) else {
             GSYLog.error(.trash, "Workflow 删除确认丢失冻结的 typed incomplete evidence")
-            activeSheet = .preflightNotice(
-                id: UUID(),
+            activeSheet = nil
+            preflightNotice = DeletionPreflightNotice(
                 rejections: executionPlan.paths.map {
                     .init(
                         path: $0,
@@ -2366,8 +2443,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
         if !fsPaths.isEmpty {
             guard let authorized = intent.authorizedInteraction else {
                 GSYLog.error(.trash, "Workflow 文件删除缺少统一授权")
-                activeSheet = .preflightNotice(
-                    id: UUID(),
+                activeSheet = nil
+                preflightNotice = DeletionPreflightNotice(
                     rejections: fsPaths.map {
                         .init(path: $0, reason: SafetyRejection.preflightCancelled.rawValue)
                     }
@@ -2414,7 +2491,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 return
 
             case .blocked(let block):
-                activeSheet = .preflightNotice(id: UUID(), rejections: block.rejections)
+                activeSheet = nil
+                preflightNotice = DeletionPreflightNotice(rejections: block.rejections)
                 return
             }
             let result = completed.result
@@ -2792,16 +2870,30 @@ public final class WorkflowDetailViewModel: ObservableObject {
     @discardableResult
     private func runScan() async -> Bool {
         didBootstrap = false
-        // A revision owns exactly one full-scan body. Cancel before rotating the revision so
-        // providers observe cancellation promptly; revision/session checks remain the final
-        // publication boundary for uncooperative providers.
-        activeScanTask?.cancel()
+        // v2026.07.18 producer-ownership fix: generation checks stop stale UI writes, but they
+        // do not stop detached walkers. Only the latest replacement request may proceed after
+        // every cancelled full/card task (which transitively joins BulkScanner) has exited.
+        let replacementRequestID = UUID()
+        scanReplacementRequestID = replacementRequestID
+        activeScanOperationID = replacementRequestID
+        var settlementTasks: [Task<Void, Never>] = []
+        if let activeScanTask {
+            settlementTasks.append(Self.makeSettlementTask(activeScanTask))
+        }
+        for task in cardRetryTasks.values {
+            settlementTasks.append(Self.makeSettlementTask(task))
+        }
+        scanProducerSettlement.retire(settlementTasks)
         activeScanTask = nil
-        activeScanOperationID = nil
         cancelScheduledCardRefreshes()
-        for task in cardRetryTasks.values { task.cancel() }
         cardRetryTasks.removeAll()
         cardRetryRevisions.removeAll()
+        let predecessor = scanProducerSettlement.barrier()
+        guard await ScanProducerSettlementChain.waitForSettlement(predecessor),
+              scanReplacementRequestID == replacementRequestID,
+              activeScanOperationID == replacementRequestID else {
+            return false
+        }
         sharedScanIncompleteIssues.removeAll()
         scanRevision &+= 1
         let revision = scanRevision
@@ -2820,19 +2912,17 @@ public final class WorkflowDetailViewModel: ObservableObject {
         for card in cards where card.risk == .safe {
             expanded.insert(card.id)
         }
-        let operationID = UUID()
         let scanTask = Task { [weak self] in
             guard let self else { return false }
             return await self.loadAllCards(revision: revision, sessionID: sessionID)
         }
-        activeScanOperationID = operationID
         activeScanTask = scanTask
         let completed = await withTaskCancellationHandler {
             await scanTask.value
         } onCancel: {
             scanTask.cancel()
         }
-        if activeScanOperationID == operationID {
+        if activeScanOperationID == replacementRequestID {
             activeScanTask = nil
             activeScanOperationID = nil
         }
@@ -3198,7 +3288,13 @@ public final class WorkflowDetailViewModel: ObservableObject {
         } catch is CancellationError {
             return nil
         } catch {
-            GSYLog.error(.scan, "Workflow scan work failed without scoped evidence: \(error)")
+            let diagnostic = ScanFailureDiagnostic(
+                source: .workflow,
+                stage: .cardResolution,
+                reason: .unexpectedFailure,
+                error: error
+            )
+            GSYLog.error(.scan, "workflow.failure \(diagnostic.logFields)")
             return CardScanWorkOutput(results: Dictionary(
                 uniqueKeysWithValues: work.cards.map {
                     ($0.id, CardScanResult(hits: [], terminalFailure: true))
@@ -3490,7 +3586,13 @@ public final class WorkflowDetailViewModel: ObservableObject {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                GSYLog.error(.scan, "Workflow 动态发现异常 scannerID=\(scannerID) error=\(error)")
+                let diagnostic = ScanFailureDiagnostic(
+                    source: .workflow,
+                    stage: .dynamicDiscovery,
+                    reason: .unexpectedFailure,
+                    error: error
+                )
+                GSYLog.error(.scan, "workflow.failure \(diagnostic.logFields)")
                 // `WorkflowRegistry.resolveWithEvidence` returns filesystem failures as scoped
                 // ScanIncompleteIssue values and throws only for cancellation/unexpected provider
                 // failures. A generic Error has no trustworthy path scope, so fabricating HOME
@@ -3608,7 +3710,16 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 stage: .metadata,
                 posixErrorCode: posixErrorCode(from: error)
             )
-            GSYLog.warning(.scan, "Workflow 根路径 metadata 读取失败 path=\(url.path) error=\(error)")
+            let diagnostic = ScanFailureDiagnostic(
+                source: .workflow,
+                stage: .rootMetadata,
+                reason: .init(issue.reason),
+                error: error
+            )
+            GSYLog.warning(
+                .scan,
+                "workflow.failure \(diagnostic.logFields) path=\(url.path)"
+            )
             return FilesystemScanResult(
                 sizeBytes: nil,
                 fileCount: 0,
@@ -3623,82 +3734,104 @@ public final class WorkflowDetailViewModel: ObservableObject {
         var incompleteIssues: [ScanIncompleteIssue] = []
         var didFinish = false
         var terminalFailure = false
-        for await event in scanner.scan(root: url, delivery: .summaryWithProgress) {
-            try Task.checkCancellation()
-            switch event {
-            case .heartbeat:
-                continue
-            case .progress(let scannedBytes, let enumeratedFiles):
-                progress(FilesystemScanProgress(
-                    scannedBytes: max(0, scannedBytes),
-                    fileCount: max(0, enumeratedFiles),
-                    currentPath: url.path
-                ))
-            case .permissionDenied(let path):
-                incompleteIssues.append(ScanIncompleteIssue(
-                    path: path,
-                    reason: .permissionDenied,
-                    stage: .open
-                ))
-            case .tccProtectedSkipped(let path):
-                incompleteIssues.append(ScanIncompleteIssue(
-                    path: path,
-                    reason: .tccProtectedSkipped,
-                    stage: .open
-                ))
-            case .failed(let error):
-                terminalFailure = true
-                let issue: ScanIncompleteIssue
-                switch error {
-                case .cannotEnumerate(let path, let stage, let posixErrorCode):
-                    issue = scanIncompleteIssue(
-                        path: path,
-                        stage: stage,
-                        posixErrorCode: posixErrorCode
-                    )
-                }
-                incompleteIssues.append(issue)
-                GSYLog.warning(.scan, "Workflow BulkScanner 失败 root=\(url.path) error=\(error)")
-            case .incomplete(let issue):
-                incompleteIssues.append(issue)
-            case .finished(let summary):
-                didFinish = true
-                sizeBytes = summary.totalAllocatedBytes
-                fileCount = summary.fileCount
-                progress(FilesystemScanProgress(
-                    scannedBytes: max(0, summary.totalAllocatedBytes),
-                    fileCount: max(0, summary.fileCount),
-                    currentPath: url.path
-                ))
-                incompleteIssues.append(contentsOf: summary.incompleteIssues)
-                if summary.completionStatus == .partial,
-                   summary.incompleteIssues.isEmpty {
-                    incompleteIssues.append(ScanIncompleteIssue(
-                        path: url.path,
-                        reason: .enumerationFailed,
-                        stage: .enumerate
+        let session = scanner.scanSession(root: url, delivery: .summaryWithProgress)
+        do {
+            for await event in session.events {
+                try Task.checkCancellation()
+                switch event {
+                case .heartbeat:
+                    continue
+                case .progress(let scannedBytes, let enumeratedFiles):
+                    progress(FilesystemScanProgress(
+                        scannedBytes: max(0, scannedBytes),
+                        fileCount: max(0, enumeratedFiles),
+                        currentPath: url.path
                     ))
-                }
-                if summary.permissionDeniedCount > 0,
-                   !incompleteIssues.contains(where: { $0.reason == .permissionDenied }) {
+                case .permissionDenied(let path):
                     incompleteIssues.append(ScanIncompleteIssue(
-                        path: url.path,
+                        path: path,
                         reason: .permissionDenied,
                         stage: .open
                     ))
-                }
-                if summary.tccProtectedSkippedCount > 0,
-                   !incompleteIssues.contains(where: { $0.reason == .tccProtectedSkipped }) {
+                case .tccProtectedSkipped(let path):
                     incompleteIssues.append(ScanIncompleteIssue(
-                        path: url.path,
+                        path: path,
                         reason: .tccProtectedSkipped,
                         stage: .open
                     ))
+                case .failed(let error):
+                    terminalFailure = true
+                    let issue: ScanIncompleteIssue
+                    let failurePath: String
+                    let failureCode: Int32?
+                    switch error {
+                    case .cannotEnumerate(let path, let stage, let posixErrorCode):
+                        failurePath = path
+                        failureCode = posixErrorCode
+                        issue = scanIncompleteIssue(
+                            path: path,
+                            stage: stage,
+                            posixErrorCode: posixErrorCode
+                        )
+                    }
+                    incompleteIssues.append(issue)
+                    let diagnostic = ScanFailureDiagnostic(
+                        source: .workflow,
+                        stage: .bulkScan,
+                        reason: .init(issue.reason),
+                        posixErrorCode: failureCode
+                    )
+                    GSYLog.warning(
+                        .scan,
+                        "workflow.failure \(diagnostic.logFields) "
+                            + "path=\(failurePath) root=\(url.path)"
+                    )
+                case .incomplete(let issue):
+                    incompleteIssues.append(issue)
+                case .finished(let summary):
+                    didFinish = true
+                    sizeBytes = summary.totalAllocatedBytes
+                    fileCount = summary.fileCount
+                    progress(FilesystemScanProgress(
+                        scannedBytes: max(0, summary.totalAllocatedBytes),
+                        fileCount: max(0, summary.fileCount),
+                        currentPath: url.path
+                    ))
+                    incompleteIssues.append(contentsOf: summary.incompleteIssues)
+                    if summary.completionStatus == .partial,
+                       summary.incompleteIssues.isEmpty {
+                        incompleteIssues.append(ScanIncompleteIssue(
+                            path: url.path,
+                            reason: .enumerationFailed,
+                            stage: .enumerate
+                        ))
+                    }
+                    if summary.permissionDeniedCount > 0,
+                       !incompleteIssues.contains(where: { $0.reason == .permissionDenied }) {
+                        incompleteIssues.append(ScanIncompleteIssue(
+                            path: url.path,
+                            reason: .permissionDenied,
+                            stage: .open
+                        ))
+                    }
+                    if summary.tccProtectedSkippedCount > 0,
+                       !incompleteIssues.contains(where: { $0.reason == .tccProtectedSkipped }) {
+                        incompleteIssues.append(ScanIncompleteIssue(
+                            path: url.path,
+                            reason: .tccProtectedSkipped,
+                            stage: .open
+                        ))
+                    }
+                case .node, .nodes, .cacheDirTagged:
+                    break
                 }
-            case .node, .nodes, .cacheDirTagged:
-                break
             }
+        } catch {
+            session.cancel()
+            await session.waitForTermination()
+            throw error
         }
+        await session.waitForTermination()
         try Task.checkCancellation()
         if !didFinish {
             incompleteIssues.append(ScanIncompleteIssue(
@@ -3749,14 +3882,24 @@ public final class WorkflowDetailViewModel: ObservableObject {
         do {
             entries = try fm.contentsOfDirectory(atPath: parent)
         } catch {
-            GSYLog.warning(.scan, "Workflow glob 展开失败 parent=\(parent) error=\(error)")
+            let issue = scanIncompleteIssue(
+                path: parent,
+                stage: .enumerate,
+                posixErrorCode: posixErrorCode(from: error)
+            )
+            let diagnostic = ScanFailureDiagnostic(
+                source: .workflow,
+                stage: .globExpansion,
+                reason: .init(issue.reason),
+                error: error
+            )
+            GSYLog.warning(
+                .scan,
+                "workflow.failure \(diagnostic.logFields) parent=\(parent)"
+            )
             return PathExpansionResult(
                 paths: [],
-                incompleteIssues: [scanIncompleteIssue(
-                    path: parent,
-                    stage: .enumerate,
-                    posixErrorCode: posixErrorCode(from: error)
-                )]
+                incompleteIssues: [issue]
             )
         }
         let paths = entries.compactMap { name -> String? in

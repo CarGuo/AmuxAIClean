@@ -12,7 +12,7 @@ final class AppFootprintReloadModelTests: XCTestCase {
         let app = makeApp(bundleID: "old", path: "/Old.app")
         let probe = ControlledAppFootprintSessionProbe()
         let model = AppFootprintReloadModel(
-            loader: { [app] in [app] },
+            loader: { [app] in InstalledAppDiscoveryResult(apps: [app]) },
             streamFactory: { probe.session(key: $0[0].metadata.bundleID) }
         )
 
@@ -40,7 +40,7 @@ final class AppFootprintReloadModelTests: XCTestCase {
         let loader = AppFootprintSequenceLoader(rounds: [[old], [fresh]])
         let probe = ControlledAppFootprintSessionProbe()
         let model = AppFootprintReloadModel(
-            loader: { await loader.load() },
+            loader: { InstalledAppDiscoveryResult(apps: await loader.load()) },
             streamFactory: { probe.session(key: $0[0].metadata.bundleID) }
         )
 
@@ -75,7 +75,7 @@ final class AppFootprintReloadModelTests: XCTestCase {
         }
         let probe = ControlledAppFootprintSessionProbe()
         let model = AppFootprintReloadModel(
-            loader: { apps },
+            loader: { InstalledAppDiscoveryResult(apps: apps) },
             streamFactory: { _ in probe.session(key: "batch") },
             batchLimit: 8,
             flushDelayNanoseconds: 1_000_000_000
@@ -103,7 +103,7 @@ final class AppFootprintReloadModelTests: XCTestCase {
         let app = makeApp(bundleID: "progressive", path: "/Progressive.app")
         let probe = ControlledAppFootprintSessionProbe()
         let model = AppFootprintReloadModel(
-            loader: { [app] in [app] },
+            loader: { [app] in InstalledAppDiscoveryResult(apps: [app]) },
             streamFactory: { _ in probe.session(key: "progressive") },
             batchLimit: 1
         )
@@ -152,7 +152,7 @@ final class AppFootprintReloadModelTests: XCTestCase {
         let app = makeApp(bundleID: "monotonic", path: "/Monotonic.app")
         let probe = ControlledAppFootprintSessionProbe()
         let model = AppFootprintReloadModel(
-            loader: { [app] in [app] },
+            loader: { [app] in InstalledAppDiscoveryResult(apps: [app]) },
             streamFactory: { _ in probe.session(key: "monotonic") },
             batchLimit: 1
         )
@@ -179,6 +179,55 @@ final class AppFootprintReloadModelTests: XCTestCase {
         XCTAssertEqual(model.items.first?.totalBytes, 200)
         XCTAssertEqual(model.items.first?.deliveryPhase, .terminal)
         XCTAssertEqual(model.progressDone, 1)
+    }
+
+    func test_应用根缺口与App列表属于同一revision并贯穿到页面模型() async {
+        let app = makeApp(bundleID: "partial", path: "/Applications/Partial.app")
+        let issue = InstalledAppDiscoveryIssue(
+            rootPath: "/Users/me/Applications",
+            path: "/Users/me/Applications",
+            reason: .permissionDenied
+        )
+        let probe = ControlledAppFootprintSessionProbe()
+        let model = AppFootprintReloadModel(
+            loader: {
+                InstalledAppDiscoveryResult(apps: [app], incompleteIssues: [issue])
+            },
+            streamFactory: { _ in probe.session(key: "partial") }
+        )
+
+        model.reload()
+        let started = await eventually { await probe.hasStarted("partial") }
+        XCTAssertTrue(started)
+        XCTAssertEqual(model.discoveryIssues, [issue])
+        XCTAssertEqual(model.items.map(\.id), [app.id])
+
+        await probe.finish("partial")
+        _ = await eventually { !model.isLoading }
+
+        XCTAssertFalse(AppFootprintMetricProjection.isComplete(
+            items: model.items,
+            discoveryIssues: model.discoveryIssues
+        ), "未读取到的应用根必须让 footer 保持下界语义")
+    }
+
+    func test_metricProjection_只有根发现和每个App都完整才显示精确总量() {
+        let app = makeApp(bundleID: "complete", path: "/Applications/Complete.app")
+        let completeItem = item(for: app, bytes: 42)
+        XCTAssertTrue(AppFootprintMetricProjection.isComplete(
+            items: [completeItem],
+            discoveryIssues: []
+        ))
+
+        let issue = InstalledAppDiscoveryIssue(
+            rootPath: "/Users/me/Applications",
+            path: "/Users/me/Applications",
+            reason: .permissionDenied
+        )
+        XCTAssertFalse(AppFootprintMetricProjection.isComplete(
+            items: [completeItem],
+            discoveryIssues: [issue]
+        ))
     }
 
     func test_同BundleID的不同安装路径拥有独立identity() {
@@ -345,9 +394,14 @@ private actor AppFootprintIconLoaderProbe {
 }
 
 final class AppFootprintBundleSessionTests: XCTestCase {
-    func test_关联候选partial令聚合结果保持下界语义() async {
+    func test_关联候选partial令聚合结果保持下界语义() async throws {
         let home = "/H"
-        let app = makeApp(bundleID: "com.demo.partial", path: "/Demo.app")
+        let fixture = try makeRealAppFootprintTestApp(
+            bundleID: "com.demo.partial",
+            name: "Demo"
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let app = fixture.app
         let cacheRoot = "\(home)/Library/Caches"
         let relatedPath = "\(cacheRoot)/com.demo.partial"
         let issue = FSSnapshotIssue(
@@ -358,7 +412,11 @@ final class AppFootprintBundleSessionTests: XCTestCase {
         let snapshot = MappedAppFootprintSnapshot(
             entries: [cacheRoot: [.init(name: "com.demo.partial", path: relatedPath)]],
             values: [
-                app.appURL.path: .init(bytes: 100, fileCount: 1, exists: true, isDirectory: true),
+                app.appURL.path: appFootprintBundleSnapshot(
+                    bytes: 100,
+                    fileCount: 1,
+                    app: app
+                ),
                 relatedPath: .init(
                     bytes: 500,
                     fileCount: 5,
@@ -369,7 +427,12 @@ final class AppFootprintBundleSessionTests: XCTestCase {
                 )
             ]
         )
-        let uninstaller = AppUninstaller(homeDirectory: home, fileManager: snapshot, vendorRules: [])
+        let uninstaller = AppUninstaller(
+            homeDirectory: home,
+            fileManager: snapshot,
+            vendorRules: [],
+            appMetadataReader: { _ in app.metadata }
+        )
         let scanner = AppFootprintScanner(uninstaller: uninstaller, snapshot: snapshot)
 
         let item = await scanner.scanOne(app: app)
@@ -546,9 +609,11 @@ private struct FixedAppFootprintSnapshot: FileManagerSnapshotting {
     let value: FSSnapshot
 
     func firstLevelEntries(at path: String) -> [FSEntry]? { [] }
-    func snapshot(at path: String) -> FSSnapshot { value }
+    func snapshot(at path: String) -> FSSnapshot {
+        appFootprintIdentityBoundSnapshot(value, path: path)
+    }
     func snapshot(at path: String, cancellationToken: FSSnapshotCancellationToken) -> FSSnapshot {
-        value
+        appFootprintIdentityBoundSnapshot(value, path: path)
     }
 }
 
@@ -558,7 +623,10 @@ private struct MappedAppFootprintSnapshot: FileManagerSnapshotting {
 
     func firstLevelEntries(at path: String) -> [FSEntry]? { entries[path] }
     func snapshot(at path: String) -> FSSnapshot {
-        values[path] ?? FSSnapshot(bytes: 0, fileCount: 0, exists: false)
+        appFootprintIdentityBoundSnapshot(
+            values[path] ?? FSSnapshot(bytes: 0, fileCount: 0, exists: false),
+            path: path
+        )
     }
 }
 
@@ -587,18 +655,21 @@ private final class CancellableAppFootprintSnapshot: FileManagerSnapshotting, @u
 
         for _ in 0..<100 {
             if cancellationToken.isCancelled {
-                return FSSnapshot(
+                return appFootprintIdentityBoundSnapshot(FSSnapshot(
                     bytes: 0,
                     fileCount: 0,
                     exists: true,
                     isDirectory: true,
                     completion: .cancelled,
                     issues: [.init(path: path, reason: .cancelled, stage: .cancellation)]
-                )
+                ), path: path)
             }
             Thread.sleep(forTimeInterval: 0.002)
         }
-        return FSSnapshot(bytes: 1, fileCount: 1, exists: true, isDirectory: true)
+        return appFootprintIdentityBoundSnapshot(
+            FSSnapshot(bytes: 1, fileCount: 1, exists: true, isDirectory: true),
+            path: path
+        )
     }
 
     private func withLock<T>(_ body: () -> T) -> T {
@@ -616,7 +687,8 @@ private func makeApp(bundleID: String, path: String) -> InstalledApp {
             bundleVendor: AppMetadata.vendorPrefix(of: bundleID),
             appName: URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent,
             executableName: "fixture"
-        )
+        ),
+        fileIdentity: appFootprintTestIdentity(for: path)
     )
 }
 

@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import LogKit
 @testable import AppUI
 
 final class LiveLocalizationTests: XCTestCase {
@@ -199,6 +200,95 @@ final class LiveLocalizationTests: XCTestCase {
             notice.localized(locale: simplifiedChinese),
             "已导出到 /tmp/AmuxAIClean-Logs.txt"
         )
+    }
+
+    func test_settingsLogFailure_reprojectsClosedDiagnosticWithoutRawError() {
+        let failure = LogFileSinkFailure(
+            stage: .prepareAccess,
+            errorDomain: NSPOSIXErrorDomain,
+            errorCode: 13
+        )
+        let englishText = SettingsLogFailurePresentation.localized(failure, locale: english)
+        let chineseText = SettingsLogFailurePresentation.localized(
+            failure,
+            locale: simplifiedChinese
+        )
+
+        for text in [englishText, chineseText] {
+            XCTAssertTrue(text.contains(NSPOSIXErrorDomain))
+            XCTAssertTrue(text.contains("13"))
+        }
+        XCTAssertTrue(englishText.contains("Validate the main App log directory"))
+        XCTAssertTrue(chineseText.contains("验证主 App 日志目录"))
+        XCTAssertNotEqual(englishText, chineseText)
+    }
+
+    func test_settingsLogFailure_everyStageHasLocalizedOperationName() {
+        // v2026.07.18 regression: Settings/Help must never fall back to the raw enum value for a
+        // newly observed file-log failure. The stage list is closed and all cases are exercised.
+        for stage in LogFileSinkFailure.Stage.allCases {
+            let failure = LogFileSinkFailure(
+                stage: stage,
+                errorDomain: NSPOSIXErrorDomain,
+                errorCode: 5
+            )
+            let englishText = SettingsLogFailurePresentation.localized(failure, locale: english)
+            let chineseText = SettingsLogFailurePresentation.localized(
+                failure,
+                locale: simplifiedChinese
+            )
+
+            XCTAssertTrue(englishText.contains(NSPOSIXErrorDomain), "stage=\(stage)")
+            XCTAssertTrue(chineseText.contains(NSPOSIXErrorDomain), "stage=\(stage)")
+            XCTAssertTrue(englishText.contains("5"), "stage=\(stage)")
+            XCTAssertTrue(chineseText.contains("5"), "stage=\(stage)")
+            XCTAssertNotEqual(englishText, chineseText, "stage=\(stage)")
+        }
+    }
+
+    func test_settingsLogDirectory_distinguishesInitializingUnavailableAndDisabled() {
+        let initializing = SettingsLogDirectoryPresentation.localized(
+            health: .initializing,
+            directory: nil,
+            locale: english
+        )
+        let unavailable = SettingsLogDirectoryPresentation.localized(
+            health: .unavailable(LogFileSinkFailure(
+                stage: .initialization,
+                errorDomain: NSPOSIXErrorDomain,
+                errorCode: 5
+            )),
+            directory: nil,
+            locale: english
+        )
+        let disabled = SettingsLogDirectoryPresentation.localized(
+            health: .disabled,
+            directory: nil,
+            locale: english
+        )
+
+        XCTAssertEqual(initializing, "(initializing the main App file log…)")
+        XCTAssertEqual(unavailable, "(main App file log unavailable)")
+        XCTAssertEqual(disabled, "(main App file logging is explicitly disabled)")
+        XCTAssertNotEqual(initializing, disabled)
+    }
+
+    func test_settingsLogContract_namesClearScopeAndTargetRetention() {
+        let clearMessage = AppLocalization.string(
+            "settings.storage.log.clear.confirm.message",
+            locale: english
+        )
+        let footer = AppLocalization.string(
+            "settings.storage.section.log.footer",
+            locale: english
+        )
+
+        XCTAssertTrue(clearMessage.contains("Only the main App"))
+        XCTAssertTrue(clearMessage.contains("Sentinel"))
+        XCTAssertTrue(clearMessage.contains("Unified Logging"))
+        XCTAssertTrue(clearMessage.contains("previously exported"))
+        XCTAssertTrue(footer.contains("target retention of 7 days"))
+        XCTAssertTrue(footer.contains("absolute paths"))
     }
 
     func test_scanProgressTitle_reprojectsWithoutRescanning() {

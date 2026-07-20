@@ -12,7 +12,7 @@ English | [简体中文](README.md)
 <!-- v2026.07.16: the product deployment floor is the contracted Ventura 13.5 baseline. -->
 [![macOS 13.5+](https://img.shields.io/badge/macOS-13.5%2B-success)](docs/INSTALL.md)
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange)](https://swift.org)
-[![Tests 370+ Pass](https://img.shields.io/badge/tests-370%2B%20pass-brightgreen)](#quality--safety)
+[![Tests 9 Packages](https://img.shields.io/badge/tests-9%20packages-brightgreen)](#quality--safety)
 [![i18n zh-Hans EN](https://img.shields.io/badge/i18n-zh--Hans%20%7C%20EN-informational)](#languages)
 
 [Download Latest](https://github.com/CarGuo/GSYCleanMac/releases/latest) ·
@@ -30,8 +30,8 @@ English | [简体中文](README.md)
 - **Reclaim space stolen by code projects**: detect build / node_modules / target / .gradle / DerivedData across 12+ ecosystems including Android, Flutter, iOS, React Native, Electron, Rust, Go, Python.
 - **See big files at a glance**: top 200 files >= 100 MB on a single screen, sortable by size or modification date.
 - **Truly uninstall apps**: pick an installed app and see every leftover it dropped under config / cache / Preferences / Group Containers.
-- **Manage launch items**: list LaunchAgents / LaunchDaemons with one toggle each.
-- **Reversible deletes**: every delete goes through the system Trash, never `unlink(2)`. Undo any time.
+- **Inspect classic launch agents**: read-only coverage of the three launchd plist directories; modern Login & Background Items remain managed by System Settings.
+- **Keep a recovery window**: everything goes to Trash and `unlink(2)` is never called. Restoration can be attempted while the exact Trash item still exists.
 
 ---
 
@@ -69,7 +69,14 @@ English | [简体中文](README.md)
 **We do**
 
 - Local disk usage scanning, large-file finder, uninstall leftover sweep, launch-item inspector, duplicate detection, developer build-artifact scanning.
-- Every delete goes to Trash. Reversible.
+- Every delete goes to Trash; restoration can be attempted only while the matching Trash item still exists.
+- The optional Sentinel is off by default. When enabled, it runs as a non-privileged agent for the signed-in user and watches Trash and cleanup hotspots locally. The current build separately retires both historical root-domain registrations; see [PRIVACY.md](PRIVACY.md) for its records, migration, unregister flow, and removal boundary.
+- Local safety decisions do not depend on the network. The App itself creates HTTP requests only
+  for GitHub update checks (enabled at launch on first install and configurable in Settings) and
+  user-enabled, user-initiated AI requests. Scanning a network share or cloud placeholder, or
+  invoking Quick Look, may still cause macOS or the storage provider to read remotely. See
+  [PRIVACY.md](PRIVACY.md) for path and
+  metadata fields, default redaction, and provider boundaries.
 
 **We do not**
 
@@ -90,19 +97,19 @@ Both **Simplified Chinese** and **English** are supported. The app follows your 
 
 Fastest path:
 
-1. Grab the `.dmg` or `.app.zip` from [Releases](https://github.com/CarGuo/GSYCleanMac/releases/latest).
+1. Grab the published `.dmg` from [Releases](https://github.com/CarGuo/GSYCleanMac/releases/latest).
 2. Drag into Applications. On first launch click "Open Anyway" in System Settings if Gatekeeper blocks it.
-3. In System Settings -> Privacy & Security -> Full Disk Access, enable GSYCleanMac so it can read `~/Library`.
+3. For complete scans, allow AmuxAIClean in System Settings -> Privacy & Security -> Full Disk Access. If denied, the app remains usable and marks affected results as incomplete.
 
 Full install / TCC / signature verification flow is in [docs/INSTALL.md](docs/INSTALL.md).
 
-> Because this is an open-source project we ship with **ad-hoc code signing + SHA256 checksums**, no Apple Developer Program ($99/year) needed. Every release ships a `.sha256` file so you can verify the .app you downloaded is exactly the binary that came out of CI. See [docs/RELEASE.md](docs/RELEASE.md).
+> The current public release path is a maintainer-local **Developer ID Application signed and notarized final DMG**. The repository's GitHub Actions CI and release jobs are explicitly disabled and do not produce public artifacts. See [docs/RELEASE.md](docs/RELEASE.md).
 
 ---
 
 ## Quality & Safety
 
-- **370+ unit tests across 5 SPM packages**: [ScanKit](Packages/ScanKit) / [SafetyKit](Packages/SafetyKit) / [HeuristicKit](Packages/HeuristicKit) / [TestHarness](Packages/TestHarness) / [AppUI](Packages/AppUI).
+- **Tests across 9 first-party SPM packages**: [ScanKit](Packages/ScanKit) / [SafetyKit](Packages/SafetyKit) / [AppUI](Packages/AppUI) / [HeuristicKit](Packages/HeuristicKit) / [LogKit](Packages/LogKit) / [BrewKit](Packages/BrewKit) / [FileSearchKit](Packages/FileSearchKit) / [AIKit](Packages/AIKit) / [TestHarness](Packages/TestHarness). The exact test count is whatever the current run reports.
 - **Three-tier safety engine**: every delete candidate runs through a `safe / confirm / forbid` verdict. Rules are public YAML in [vendors.yaml](Resources/Rules/vendors.yaml).
 - **Hard skip on TCC-sensitive paths**: Mail / Messages / Calendars / Photos Library never enter the candidate set, so we cannot accidentally trash your mail.
 - **End-to-end integration tests pin the contract**: [V12SafetyIntegrationTests](Packages/AppUI/Tests/AppUITests/V12SafetyIntegrationTests.swift) asserts what must never be deletable.
@@ -120,7 +127,7 @@ cd GSYCleanMac
 ./Scripts/setup_dev.sh
 ```
 
-> **Forks must read this**: [GSYCleanMac.xcodeproj/project.pbxproj](GSYCleanMac.xcodeproj/project.pbxproj) is currently configured for enterprise signing with `DEVELOPMENT_TEAM = W6H34N9728`, `CODE_SIGN_STYLE = Manual`, and `CODE_SIGN_IDENTITY = Apple Distribution`. Before the first build, change it to your own Team/signing setup. See the "Signing Configuration" section in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+> **Forks must read this**: [GSYCleanMac.xcodeproj/project.pbxproj](GSYCleanMac.xcodeproj/project.pbxproj) currently uses `Automatic + Apple Development` for Debug and `Manual + Developer ID Application: SentenceEnd Inc (W6H34N9728)` for Release. Before the first build, change the Team/signing setup to your own. See the "Signing Configuration" section in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ```bash
 xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build
@@ -149,12 +156,13 @@ See [docs/ROADMAP_V1.md](docs/ROADMAP_V1.md).
 | Doc | Content |
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | Install, Gatekeeper, TCC Full Disk Access |
-| [docs/RELEASE.md](docs/RELEASE.md) | Release flow, ad-hoc signing, SHA256 verify, tag-triggered CI |
+| [docs/RELEASE.md](docs/RELEASE.md) | Local Developer ID / DMG-only notarization flow and SHA256 verification |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Dev environment, build scripts, local debugging |
 | [docs/DEV_ARTIFACTS_RULES.md](docs/DEV_ARTIFACTS_RULES.md) | Developer artifact scanner rules & extension |
 | [docs/FEATURE_GAP.md](docs/FEATURE_GAP.md) | 23-dim x 8-competitor feature matrix |
 | [docs/ROADMAP_V1.md](docs/ROADMAP_V1.md) | Version plan and per-milestone scope |
 | [SECURITY.md](SECURITY.md) | Threat model, hard rules, vulnerability report |
+| [PRIVACY.md](PRIVACY.md) | Network fields, local stores, permissions, Sentinel, and removal order |
 | [PITFALLS.md](PITFALLS.md) | Lessons learned from this whole product category |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | PR red lines, commit conventions |
 

@@ -1,5 +1,16 @@
 import SwiftUI
 import AppKit
+
+/// v2026.07.18：应用根发现缺口与单 App 容量缺口共同决定总量语义。
+/// 只检查已加载 rows 会把未枚举到的 `/Applications` 根错误显示成精确总计。
+enum AppFootprintMetricProjection {
+    static func isComplete(
+        items: [AppFootprintItem],
+        discoveryIssues: [InstalledAppDiscoveryIssue]
+    ) -> Bool {
+        discoveryIssues.isEmpty && items.allSatisfy(\.isComplete)
+    }
+}
 import SafetyKit
 
 /// v2026.07.17：App 图标读取的异步、严格有界 LRU。
@@ -152,10 +163,11 @@ final class AppFootprintIconCache: ObservableObject {
 /// 到一个状态机：旧 producer 排空之前不启动新 producer，所有发布都验证 owned revision。
 @MainActor
 final class AppFootprintReloadModel: ObservableObject {
-    typealias InstalledAppsLoader = @Sendable () async -> [InstalledApp]
+    typealias InstalledAppsLoader = @Sendable () async -> InstalledAppDiscoveryResult
     typealias StreamFactory = @Sendable ([InstalledApp]) -> AppFootprintStreamSession
 
     @Published private(set) var items: [AppFootprintItem] = []
+    @Published private(set) var discoveryIssues: [InstalledAppDiscoveryIssue] = []
     @Published var selected: AppFootprintItem?
     @Published private(set) var pendingIDs: Set<AppFootprintItem.ID> = []
     @Published private(set) var isLoading = false
@@ -206,6 +218,7 @@ final class AppFootprintReloadModel: ObservableObject {
         progressDone = 0
         progressTotal = 0
         items = []
+        discoveryIssues = []
         selected = nil
         pendingIDs = []
         displayCommitCount = 0
@@ -213,10 +226,13 @@ final class AppFootprintReloadModel: ObservableObject {
         let loader = self.loader
         let streamFactory = self.streamFactory
         loadTask = Task { [weak self] in
-            let installed = await loader()
+            let discovery = await loader()
             guard let self,
                   !Task.isCancelled,
                   self.revision == ownedRevision else { return }
+
+            let installed = discovery.apps
+            self.discoveryIssues = discovery.incompleteIssues
 
             self.progressTotal = installed.count
             let placeholders = installed.map(Self.placeholderItem(for:))
@@ -456,6 +472,25 @@ public struct AppFootprintScreen: View {
         VStack(spacing: 0) {
             header
             Divider()
+            if !reloadModel.discoveryIssues.isEmpty {
+                Label {
+                    Text(verbatim: AppLocalization.format(
+                        "appfootprint.discovery.partial",
+                        locale: locale,
+                        arguments: [Int64(reloadModel.discoveryIssues.count)]
+                    ))
+                        .font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.07))
+                Divider()
+            }
             if reloadModel.isLoading && reloadModel.items.isEmpty {
                 placeholder(AppLocalization.string("appfootprint.placeholder.loading", locale: locale), systemImage: "hourglass")
             } else if filtered.isEmpty {
@@ -725,13 +760,19 @@ public struct AppFootprintScreen: View {
         if !search.trimmingCharacters(in: .whitespaces).isEmpty {
             return AppLocalization.string("appfootprint.empty.no_match", locale: locale)
         }
+        if !reloadModel.discoveryIssues.isEmpty {
+            return AppLocalization.string("appfootprint.empty.partial", locale: locale)
+        }
         return AppLocalization.string("appfootprint.empty.no_apps", locale: locale)
     }
 
     private var displayedLoadedTotal: String {
         let total = loadedItems.map(\.totalBytes).reduce(0, +)
         let value = byteString(total)
-        guard loadedItems.allSatisfy(\.isComplete) else {
+        guard AppFootprintMetricProjection.isComplete(
+            items: loadedItems,
+            discoveryIssues: reloadModel.discoveryIssues
+        ) else {
             return AppLocalization.format(
                 "tree.metric.lower_bound",
                 locale: locale,

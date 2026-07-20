@@ -133,6 +133,19 @@ enum SimulatorLedgerProcessLiveness: Sendable, Equatable {
 /// NSLock 让同进程多个 Coordinator/ViewModel 的 read-modify-write 保持单一临界区。
 public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOperationLedger,
                                                               @unchecked Sendable {
+    /// v2026.07.18 P1: managed-resource authorization is intentionally tiny. Eight MiB and 4,096
+    /// records are both far above a real CoreSimulator inventory while bounding decode/encode work
+    /// before the pre-Process.run persistence barrier. Limits reject; they never truncate state.
+    struct StorageLimits: Sendable, Equatable {
+        let maximumBytes: Int
+        let maximumRecordCount: Int
+
+        static let production = StorageLimits(
+            maximumBytes: 8 * 1_024 * 1_024,
+            maximumRecordCount: 4_096
+        )
+    }
+
     private enum Phase: String, Codable, Sendable {
         case reserved
         case submitted
@@ -230,6 +243,7 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
     typealias ProcessLivenessProbe = @Sendable (
         SimulatorLedgerProcessIdentity
     ) -> SimulatorLedgerProcessLiveness
+    typealias BoundedReader = @Sendable (URL, Int) throws -> Data
 
     private let fileURL: URL
     private let lockFileURL: URL
@@ -238,6 +252,8 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
     private let decoder = JSONDecoder()
     private let processIdentityProvider: ProcessIdentityProvider
     private let processLivenessProbe: ProcessLivenessProbe
+    private let storageLimits: StorageLimits
+    private let boundedReader: BoundedReader
 
     public convenience init() {
         let base = FileManager.default.urls(
@@ -274,12 +290,20 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
     init(
         fileURL: URL,
         processIdentityProvider: @escaping ProcessIdentityProvider,
-        processLivenessProbe: @escaping ProcessLivenessProbe
+        processLivenessProbe: @escaping ProcessLivenessProbe,
+        storageLimits: StorageLimits = .production,
+        boundedReader: @escaping BoundedReader = { url, maximumBytes in
+            try BoundedLocalFileReader.read(at: url, maximumBytes: maximumBytes)
+        }
     ) {
+        precondition(storageLimits.maximumBytes >= 0)
+        precondition(storageLimits.maximumRecordCount >= 0)
         self.fileURL = fileURL
         self.lockFileURL = fileURL.appendingPathExtension("lock")
         self.processIdentityProvider = processIdentityProvider
         self.processLivenessProbe = processLivenessProbe
+        self.storageLimits = storageLimits
+        self.boundedReader = boundedReader
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -520,17 +544,41 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
     }
 
     private func loadEnvelope() -> Envelope? {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            return Envelope(schemaVersion: 4, records: [:])
-        }
+        let data: Data
         do {
-            let data = try Data(contentsOf: fileURL, options: [.mappedIfSafe])
+            data = try boundedReader(fileURL, storageLimits.maximumBytes)
+        } catch let error as BoundedLocalFileReadError {
+            if case .metadataUnavailable(stage: .initialPath, posixErrorCode: ENOENT) = error {
+                return Envelope(schemaVersion: 4, records: [:])
+            }
+            logBoundedReadFailure(error)
+            return nil
+        } catch {
+            let diagnostic = error as NSError
+            GSYLog.error(
+                .app,
+                "simulator.managed_ledger.read_failed stage=boundedRead reason=unexpected domain=\(diagnostic.domain) code=\(diagnostic.code) maxBytes=\(storageLimits.maximumBytes) path=\(fileURL.path)"
+            )
+            return nil
+        }
+
+        do {
             switch try decoder.decode(SchemaHeader.self, from: data).schemaVersion {
             case 4:
                 let envelope = try decoder.decode(Envelope.self, from: data)
-                return Self.isValidEnvelope(envelope) ? envelope : nil
+                guard validateRecordCount(envelope.records.count, schemaVersion: 4) else {
+                    return nil
+                }
+                guard Self.isValidEnvelope(envelope) else {
+                    logInvalidEnvelope(schemaVersion: 4, recordCount: envelope.records.count)
+                    return nil
+                }
+                return envelope
             case 3:
                 let legacy = try decoder.decode(Schema3Envelope.self, from: data)
+                guard validateRecordCount(legacy.records.count, schemaVersion: 3) else {
+                    return nil
+                }
                 let envelope = Envelope(
                     schemaVersion: 4,
                     records: legacy.records.mapValues { record in
@@ -548,9 +596,16 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
                         )
                     }
                 )
-                return Self.isValidEnvelope(envelope) ? envelope : nil
+                guard Self.isValidEnvelope(envelope) else {
+                    logInvalidEnvelope(schemaVersion: 3, recordCount: legacy.records.count)
+                    return nil
+                }
+                return envelope
             case 2:
                 let legacy = try decoder.decode(Schema2Envelope.self, from: data)
+                guard validateRecordCount(legacy.records.count, schemaVersion: 2) else {
+                    return nil
+                }
                 let envelope = Envelope(
                     schemaVersion: 4,
                     records: legacy.records.mapValues { record in
@@ -568,9 +623,16 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
                         )
                     }
                 )
-                return Self.isValidEnvelope(envelope) ? envelope : nil
+                guard Self.isValidEnvelope(envelope) else {
+                    logInvalidEnvelope(schemaVersion: 2, recordCount: legacy.records.count)
+                    return nil
+                }
+                return envelope
             case 1:
                 let legacy = try decoder.decode(LegacyEnvelope.self, from: data)
+                guard validateRecordCount(legacy.records.count, schemaVersion: 1) else {
+                    return nil
+                }
                 let envelope = Envelope(
                     schemaVersion: 4,
                     records: legacy.records.mapValues { record in
@@ -588,30 +650,148 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
                         )
                     }
                 )
-                return Self.isValidEnvelope(envelope) ? envelope : nil
+                guard Self.isValidEnvelope(envelope) else {
+                    logInvalidEnvelope(schemaVersion: 1, recordCount: legacy.records.count)
+                    return nil
+                }
+                return envelope
             case let unsupported:
-                GSYLog.warning(.app, "Simulator ledger schema unsupported: \(unsupported)")
+                GSYLog.error(
+                    .app,
+                    "simulator.managed_ledger.read_failed stage=validate reason=unsupportedSchema schema=\(unsupported) bytes=\(data.count) path=\(fileURL.path)"
+                )
                 return nil
             }
         } catch {
-            GSYLog.warning(.app, "Simulator ledger read failed path=\(fileURL.path) error=\(error)")
+            let diagnostic = error as NSError
+            GSYLog.error(
+                .app,
+                "simulator.managed_ledger.read_failed stage=decode reason=malformed domain=\(diagnostic.domain) code=\(diagnostic.code) bytes=\(data.count) path=\(fileURL.path)"
+            )
             return nil
         }
     }
 
     private func persist(_ envelope: Envelope) -> Bool {
+        guard envelope.schemaVersion == 4 else {
+            GSYLog.error(
+                .app,
+                "simulator.managed_ledger.write_rejected stage=validate reason=unsupportedSchema schema=\(envelope.schemaVersion) path=\(fileURL.path)"
+            )
+            return false
+        }
+        guard envelope.records.count <= storageLimits.maximumRecordCount else {
+            GSYLog.error(
+                .app,
+                "simulator.managed_ledger.write_rejected stage=validate reason=recordLimit recordCount=\(envelope.records.count) maxRecords=\(storageLimits.maximumRecordCount) path=\(fileURL.path)"
+            )
+            return false
+        }
+        guard Self.isValidEnvelope(envelope) else {
+            GSYLog.error(
+                .app,
+                "simulator.managed_ledger.write_rejected stage=validate reason=invalidEnvelope recordCount=\(envelope.records.count) path=\(fileURL.path)"
+            )
+            return false
+        }
+
+        let data: Data
+        do {
+            data = try encoder.encode(envelope)
+        } catch {
+            let diagnostic = error as NSError
+            GSYLog.error(
+                .app,
+                "simulator.managed_ledger.write_failed stage=encode reason=serialization domain=\(diagnostic.domain) code=\(diagnostic.code) recordCount=\(envelope.records.count) path=\(fileURL.path)"
+            )
+            return false
+        }
+        guard data.count <= storageLimits.maximumBytes else {
+            GSYLog.error(
+                .app,
+                "simulator.managed_ledger.write_rejected stage=encode reason=byteLimit bytes=\(data.count) maxBytes=\(storageLimits.maximumBytes) recordCount=\(envelope.records.count) path=\(fileURL.path)"
+            )
+            return false
+        }
+
         do {
             try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            let data = try encoder.encode(envelope)
             try data.write(to: fileURL, options: [.atomic])
             return true
         } catch {
-            GSYLog.warning(.app, "Simulator ledger atomic write failed path=\(fileURL.path) error=\(error)")
+            let diagnostic = error as NSError
+            GSYLog.error(
+                .app,
+                "simulator.managed_ledger.write_failed stage=atomicWrite reason=io domain=\(diagnostic.domain) code=\(diagnostic.code) path=\(fileURL.path)"
+            )
             return false
         }
+    }
+
+    private func validateRecordCount(_ count: Int, schemaVersion: Int) -> Bool {
+        guard count <= storageLimits.maximumRecordCount else {
+            GSYLog.error(
+                .app,
+                "simulator.managed_ledger.read_failed stage=validate reason=recordLimit schema=\(schemaVersion) recordCount=\(count) maxRecords=\(storageLimits.maximumRecordCount) path=\(fileURL.path)"
+            )
+            return false
+        }
+        return true
+    }
+
+    private func logInvalidEnvelope(schemaVersion: Int, recordCount: Int) {
+        GSYLog.error(
+            .app,
+            "simulator.managed_ledger.read_failed stage=validate reason=invalidEnvelope schema=\(schemaVersion) recordCount=\(recordCount) path=\(fileURL.path)"
+        )
+    }
+
+    private func logBoundedReadFailure(_ error: BoundedLocalFileReadError) {
+        let stage: String
+        let reason: String
+        let details: String
+        switch error {
+        case .invalidFileURL:
+            stage = "validateURL"
+            reason = "invalidFileURL"
+            details = ""
+        case .metadataUnavailable(let metadataStage, let code):
+            stage = metadataStage.rawValue
+            reason = code == ENOENT ? "changed" : "metadataUnavailable"
+            details = ""
+        case .openFailed(let code):
+            stage = "open"
+            reason = code == ENOENT ? "changed" : "openFailed"
+            details = ""
+        case .readFailed:
+            stage = "read"
+            reason = "readFailed"
+            details = ""
+        case .tooLarge(let limit, let observedSize):
+            stage = "initialOrStreamingSize"
+            reason = "tooLarge"
+            details = " limit=\(limit) observedBytes=\(observedSize)"
+        case .unsafeType(let kind):
+            stage = "fileType"
+            reason = "unsafeType"
+            details = " fileKind=\(kind.rawValue)"
+        case .changed:
+            stage = "identityVersion"
+            reason = "changed"
+            details = ""
+        case .cancelled:
+            stage = "read"
+            reason = "cancelled"
+            details = ""
+        }
+        let code = error.posixErrorCode.map(String.init) ?? "none"
+        GSYLog.error(
+            .app,
+            "simulator.managed_ledger.read_failed stage=\(stage) reason=\(reason) domain=\(error.posixErrorCode == nil ? "none" : NSPOSIXErrorDomain) code=\(code) maxBytes=\(storageLimits.maximumBytes)\(details) path=\(fileURL.path)"
+        )
     }
 
     private static func hasValidShape(_ record: Record) -> Bool {

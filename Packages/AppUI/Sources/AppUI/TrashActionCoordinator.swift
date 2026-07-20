@@ -196,8 +196,11 @@ struct TrashActionCoordinator {
     let pipeline: DeletionPipeline
     let undoHistoryStore: UndoHistoryStore
 
+    /// v2026.07.20: Undo persistence is an explicit dependency. A default `.shared` allowed
+    /// scripted package tests to write fake moved pairs into the user's production history.
+    /// Production call sites pass `.shared`; tests must pass a fixture store.
     init(pipeline: DeletionPipeline,
-         undoHistoryStore: UndoHistoryStore = .shared) {
+         undoHistoryStore: UndoHistoryStore) {
         self.pipeline = pipeline
         self.undoHistoryStore = undoHistoryStore
     }
@@ -244,7 +247,10 @@ struct TrashActionCoordinator {
         outcome: TrashOutcome?,
         attemptedPaths: [String],
         dryRun: Bool,
-        source: String
+        source: String,
+        undoCommit: TrashUndoCommitCapability? = nil,
+        undoJournalFailedPaths: [String] = [],
+        undoJournalBlockedAttempts: Set<TrashPendingAttemptIdentity> = []
     ) async -> Result {
         let (moved, skipped, err, pairs) = legacy
         let projection: MovedPairProjection
@@ -267,10 +273,32 @@ struct TrashActionCoordinator {
             }.value
         }
         if !dryRun, !pairs.isEmpty {
-            undoHistoryStore.addRecord(
-                source: source,
-                filePairs: projection.undoFilePairs
-            )
+            if let undoCommit {
+                let persisted = await undoHistoryStore.addJournalEntriesDurably(
+                    source: source,
+                    entries: undoCommit.entries
+                )
+                if persisted {
+                    if !(await undoCommit.finishDurablyAfterUndoPersisted(
+                        pruningReceiptsIn: undoHistoryStore
+                    )) {
+                        GSYLog.error(.trash, "Undo durable commit persisted but acknowledgement remains pending entries=\(undoCommit.entries.count)")
+                    }
+                }
+            } else if undoJournalFailedPaths.isEmpty {
+                // Compatibility-only pipelines do not own the production durable capability.
+                undoHistoryStore.addRecord(
+                    source: source,
+                    filePairs: projection.undoFilePairs
+                )
+            }
+            if !undoJournalFailedPaths.isEmpty {
+                undoHistoryStore.reportCompletionJournalFailure(
+                    blockedAttempts: undoJournalBlockedAttempts.isEmpty
+                        ? nil
+                        : undoJournalBlockedAttempts
+                )
+            }
             NotificationCenter.default.post(
                 name: .gsyTrashDidMove,
                 object: nil,
@@ -300,7 +328,10 @@ struct TrashActionCoordinator {
             outcome: completion.outcome,
             attemptedPaths: completion.attemptedPaths,
             dryRun: false,
-            source: source
+            source: source,
+            undoCommit: completion.undoCommit,
+            undoJournalFailedPaths: completion.undoJournalFailedPaths,
+            undoJournalBlockedAttempts: completion.undoJournalBlockedAttempts
         )
     }
 
@@ -388,7 +419,7 @@ struct ProfessionalTrashSubmissionExecutor {
 
     init(
         pipeline: DeletionPipeline,
-        undoHistoryStore: UndoHistoryStore = .shared
+        undoHistoryStore: UndoHistoryStore
     ) {
         self.pipeline = pipeline
         self.undoHistoryStore = undoHistoryStore

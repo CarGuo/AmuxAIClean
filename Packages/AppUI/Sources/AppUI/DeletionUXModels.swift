@@ -311,6 +311,9 @@ public struct DeletionIntentCandidate: Identifiable, Sendable, Equatable {
     public let rejection: SafetyRejection
     public let accessEvidence: DeletionAccessEvidence
     public let runningBundleIDPrefix: String?
+    /// Optional for non-Uninstall tools. Uninstall intents require this scan-time no-follow
+    /// object proof for every candidate and validate it against their typed verification request.
+    public let sourceObjectIdentity: TrashObjectIdentity?
 
     public init(
         id: UUID = UUID(),
@@ -323,6 +326,7 @@ public struct DeletionIntentCandidate: Identifiable, Sendable, Equatable {
         rejection: SafetyRejection,
         accessEvidence: DeletionAccessEvidence = .complete,
         runningBundleIDPrefix: String? = nil,
+        sourceObjectIdentity: TrashObjectIdentity? = nil,
         titlePresentation: LocalizedTextDescriptor? = nil
     ) {
         self.id = id
@@ -337,6 +341,7 @@ public struct DeletionIntentCandidate: Identifiable, Sendable, Equatable {
         self.rejection = rejection
         self.accessEvidence = accessEvidence
         self.runningBundleIDPrefix = runningBundleIDPrefix
+        self.sourceObjectIdentity = sourceObjectIdentity
     }
 
     public func displayTitle(locale: Locale) -> String {
@@ -397,6 +402,10 @@ public struct DeletionIntent: Identifiable, Sendable, Equatable {
             switch (origin, executionVerification) {
             case (.duplicate, .duplicate(let request)):
                 guard request.matchesExactTargets(candidates.map(\.standardizedPath)) else {
+                    throw DeletionIntentValidationError.invalidExecutionVerification
+                }
+            case (.uninstall, .uninstall(let request)):
+                guard request.matchesExactCandidates(candidates) else {
                     throw DeletionIntentValidationError.invalidExecutionVerification
                 }
             default:
@@ -766,11 +775,17 @@ struct DeleteSheetRequest: Identifiable, Sendable, Equatable {
     }
 }
 
-/// DeleteSheet 关闭与结果 sheet 呈现之间的确定性交接。
-/// 删除事务只能在前一张 sheet 的 onDismiss 之后取出，避免“全部跳过”等瞬时结果
-/// 与 macOS 的 dismiss 动画竞争而丢失结果页。
+/// v2026.07.19 删除提交与 sheet 退场的确定性交接。
+///
+/// Professional 确认后必须立即领取一次性 submission，不得等待 SwiftUI
+/// `onDismiss`；否则 Tree/layout 主线程负载会被错误地串到回收开始前。
+/// Smart Care 仍保留原有的 sheet 间交接，因为它的提交从自身 sheet 退场后启动。
+struct ProfessionalDeleteSubmission: Sendable, Equatable {
+    let request: DeleteSheetRequest
+    let executionPlan: ToolTrashExecutionPlan
+}
+
 enum DeleteSubmission: Sendable, Equatable {
-    case professional(request: DeleteSheetRequest, executionPlan: ToolTrashExecutionPlan)
     case smartCare(
         request: SmartCareCleanRequest,
         action: DeleteSheetAction,
@@ -780,12 +795,32 @@ enum DeleteSubmission: Sendable, Equatable {
 
 struct DeleteSubmissionHandoff: Sendable, Equatable {
     private(set) var pending: DeleteSubmission?
+    private(set) var professionalSubmissionIsActive = false
 
     var hasPending: Bool { pending != nil }
+    var blocksNewSubmission: Bool { pending != nil || professionalSubmissionIsActive }
+
+    /// Confirmation and one-shot admission are one synchronous transition. The returned value is
+    /// ready for immediate task submission; no presentation callback participates in this path.
+    mutating func beginProfessionalSubmission(
+        request: DeleteSheetRequest,
+        executionPlan: ToolTrashExecutionPlan
+    ) -> ProfessionalDeleteSubmission? {
+        guard !blocksNewSubmission else { return nil }
+        professionalSubmissionIsActive = true
+        return ProfessionalDeleteSubmission(request: request, executionPlan: executionPlan)
+    }
+
+    @discardableResult
+    mutating func finishProfessionalSubmission() -> Bool {
+        guard professionalSubmissionIsActive else { return false }
+        professionalSubmissionIsActive = false
+        return true
+    }
 
     @discardableResult
     mutating func schedule(_ submission: DeleteSubmission) -> Bool {
-        guard pending == nil else { return false }
+        guard !blocksNewSubmission else { return false }
         pending = submission
         return true
     }
@@ -793,6 +828,46 @@ struct DeleteSubmissionHandoff: Sendable, Equatable {
     mutating func takeAfterSheetDismissal() -> DeleteSubmission? {
         defer { pending = nil }
         return pending
+    }
+}
+
+enum ProfessionalDeletePresentationRoute: Sendable, Equatable {
+    case presentNow
+    case deferUntilSheetDismissal
+    case rejectDuplicate
+}
+
+/// v2026.07.19: execution starts at confirmation, while any follow-up presentation still waits
+/// for the confirmation sheet to finish dismissing. Payload and phase live in the same state
+/// machine so cancellation, fast completion and slow completion cannot produce split state.
+struct ProfessionalDeletePresentationHandoff<Value: Sendable>: Sendable {
+    private(set) var isAwaitingSheetDismissal = false
+    private(set) var deferredPresentation: Value?
+
+    var canBeginSheetDismissal: Bool {
+        !isAwaitingSheetDismissal && deferredPresentation == nil
+    }
+
+    @discardableResult
+    mutating func beginSheetDismissal() -> Bool {
+        guard canBeginSheetDismissal else { return false }
+        isAwaitingSheetDismissal = true
+        return true
+    }
+
+    mutating func routeNextPresentation(_ presentation: Value) -> ProfessionalDeletePresentationRoute {
+        guard isAwaitingSheetDismissal else { return .presentNow }
+        guard deferredPresentation == nil else { return .rejectDuplicate }
+        deferredPresentation = presentation
+        return .deferUntilSheetDismissal
+    }
+
+    /// Returns a deferred payload exactly once; nil is the normal cancellation/slow-completion path.
+    mutating func finishSheetDismissal() -> Value? {
+        guard isAwaitingSheetDismissal else { return nil }
+        isAwaitingSheetDismissal = false
+        defer { deferredPresentation = nil }
+        return deferredPresentation
     }
 }
 

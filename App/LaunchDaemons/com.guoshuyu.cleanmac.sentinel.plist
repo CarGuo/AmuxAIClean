@@ -2,8 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!--
+      v2026.07.18 P1: migration-only descriptor for the pre-brand root registration.
+      File name and Label intentionally preserve that authority identity. SentinelManager may
+      only query/unregister this service; it must never register it again.
+    -->
     <key>Label</key>
-    <string>com.amux.ai.Clean.sentinel</string>
+    <string>com.guoshuyu.cleanmac.sentinel</string>
     <key>BundleProgram</key>
     <string>Contents/MacOS/amuxaiclean-sentinel</string>
     <key>RunAtLoad</key>
@@ -17,8 +22,8 @@
     <key>Nice</key>
     <integer>10</integer>
     <key>StandardOutPath</key>
-    <string>/tmp/com.amux.ai.Clean.sentinel.out.log</string>
+    <string>/tmp/com.guoshuyu.cleanmac.sentinel.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/com.amux.ai.Clean.sentinel.err.log</string>
+    <string>/tmp/com.guoshuyu.cleanmac.sentinel.err.log</string>
 </dict>
 </plist>

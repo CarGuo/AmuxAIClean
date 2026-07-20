@@ -87,6 +87,25 @@ public actor BulkScanner {
         }
     }
 
+    /// Owns both the event stream and its detached filesystem producer. Consumers that can be
+    /// replaced by another heavy scan must cancel and await this handle before yielding ownership;
+    /// waiting only for the consumer Task is insufficient because `AsyncStream` does not join an
+    /// unstructured producer automatically.
+    public struct ScanSession: Sendable {
+        public let events: AsyncStream<ScanEvent>
+        private let producer: Task<Void, Never>
+
+        /// Module-internal initializer supports deterministic ownership tests without exposing
+        /// arbitrary producer construction to application clients.
+        init(events: AsyncStream<ScanEvent>, producer: Task<Void, Never>) {
+            self.events = events
+            self.producer = producer
+        }
+
+        public func cancel() { producer.cancel() }
+        public func waitForTermination() async { await producer.value }
+    }
+
     /// Maximum number of entries carried by one `.nodes` event.
     ///
     /// The consumer currently ingests each batch on MainActor. Keeping this
@@ -103,13 +122,27 @@ public actor BulkScanner {
     public nonisolated func scan(
         root: URL,
         delivery: EventDelivery = .complete,
-        topLevelPathMappings: [ScanPathPrefixMapping] = [],
+        pathNamespace: ScanPathNamespace? = nil,
         topLevelProjectionRootPath: String? = nil
     ) -> AsyncStream<ScanEvent> {
-        scan(
+        scanSession(
             root: root,
             delivery: delivery,
-            topLevelPathMappings: topLevelPathMappings,
+            pathNamespace: pathNamespace,
+            topLevelProjectionRootPath: topLevelProjectionRootPath
+        ).events
+    }
+
+    public nonisolated func scanSession(
+        root: URL,
+        delivery: EventDelivery = .complete,
+        pathNamespace: ScanPathNamespace? = nil,
+        topLevelProjectionRootPath: String? = nil
+    ) -> ScanSession {
+        scanSession(
+            root: root,
+            delivery: delivery,
+            pathNamespace: pathNamespace,
             topLevelProjectionRootPath: topLevelProjectionRootPath,
             allocationLedger: InodeSet()
         )
@@ -121,13 +154,13 @@ public actor BulkScanner {
     /// crossing otherwise independent roots contribute physical bytes exactly once globally.
     /// Directory traversal identities remain per-root; sharing them would incorrectly suppress a
     /// root's enumeration and its scoped completeness evidence.
-    nonisolated func scan(
+    nonisolated func scanSession(
         root: URL,
         delivery: EventDelivery,
-        topLevelPathMappings: [ScanPathPrefixMapping],
+        pathNamespace: ScanPathNamespace?,
         topLevelProjectionRootPath: String?,
         allocationLedger: InodeSet
-    ) -> AsyncStream<ScanEvent> {
+    ) -> ScanSession {
         // v1.3 P0 修复：原 `.bufferingNewest(8192)` 在 195k+ 文件场景会静默丢事件
         //（消费者主线程慢于 worker yield 速度时，最旧的 .node 事件被 AsyncStream 主动丢弃，
         // 直接导致 Finder 18.86 GB / 195,979 items → 应用 552.6 MB / 1,209 items 的灾难性少算）。
@@ -138,16 +171,12 @@ public actor BulkScanner {
         // 清空或吞掉 inode。每轮独立集合同时解决复用污染与并发数据竞争。
         let inodeSet = allocationLedger
         let dirInodeSet = DirInodeSet()
-        return AsyncStream(bufferingPolicy: .unbounded) { continuation in
-            let opts = options
-            let inodes = inodeSet
-            let dirInodes = dirInodeSet
-            // 最长前缀优先，避免 `/System/Volumes/Data` 抢先覆盖更具体的
-            // `/System/Volumes/Data/private/var`。排序只做一次，不进入 entry hot path。
-            let projectionMappings = topLevelPathMappings.sorted {
-                $0.sourcePrefix.count > $1.sourcePrefix.count
-            }
-            let task = Task.detached(priority: .userInitiated) {
+        let streamPair = AsyncStream<ScanEvent>.makeStream(bufferingPolicy: .unbounded)
+        let continuation = streamPair.continuation
+        let opts = options
+        let inodes = inodeSet
+        let dirInodes = dirInodeSet
+        let task = Task.detached(priority: .userInitiated) {
                 let start = Date()
                 // v2026.07.16：统计与投影共用一个 actor/一次目录 merge。独立 projection
                 // actor 会让 60 万目录额外产生 60 万次串行 hop，反过来拖慢 producer。
@@ -157,14 +186,19 @@ public actor BulkScanner {
                     continuation.finish()
                     return
                 }
-                // v1.1：根目录本身就是 TCC 雷区时直接退出（防御性，正常 UI 不会传入）
-                if opts.respectTCCSkipList && TCCSkipList.shouldSkip(root.path) {
-                    GSYLog.notice(.scan, "scan 根目录命中 TCC skip-list path=\(root.path)")
+                // v2026.07.18：TCC 规则属于用户公开命名空间。全盘扫描实际从 Data 卷
+                // 枚举时，必须先投影 `/System/Volumes/Data/Users/...`，否则 Mail/Messages
+                // 等规则永远不命中并会主动触碰受保护目录。
+                let publicRootPath = pathNamespace?.publicPath(
+                    forPhysicalPath: root.path
+                ) ?? root.path
+                if opts.respectTCCSkipList && TCCSkipList.shouldSkip(publicRootPath) {
+                    GSYLog.notice(.scan, "scan 根目录命中 TCC skip-list path=\(publicRootPath)")
                     let issue = ScanIncompleteIssue(
-                        path: root.path,
+                        path: publicRootPath,
                         reason: .tccProtectedSkipped
                     )
-                    continuation.yield(.tccProtectedSkipped(path: root.path))
+                    continuation.yield(.tccProtectedSkipped(path: publicRootPath))
                     continuation.yield(.incomplete(issue))
                     let summary = ScanSummary(
                         root: root,
@@ -204,7 +238,7 @@ public actor BulkScanner {
                     // Preserve the established public contract for a non-directory root:
                     // the descriptor can exist but cannot be enumerated as a directory.
                     let issue = ScanFailureClassifier.issue(
-                        path: root.path,
+                        path: publicRootPath,
                         stage: .enumerate,
                         posixErrorCode: ENOTDIR
                     )
@@ -214,7 +248,7 @@ public actor BulkScanner {
                         continuation: continuation
                     )
                     continuation.yield(.failed(.cannotEnumerate(
-                        path: root.path,
+                        path: publicRootPath,
                         stage: .enumerate,
                         posixErrorCode: ENOTDIR
                     )))
@@ -240,7 +274,7 @@ public actor BulkScanner {
                     // keep the historical `.open` stage consumed by permission and retry UI.
                     let stage: ScanIssueStage = errorCode == ELOOP ? .metadata : .open
                     let issue = ScanFailureClassifier.issue(
-                        path: root.path,
+                        path: publicRootPath,
                         stage: stage,
                         posixErrorCode: errorCode
                     )
@@ -251,7 +285,7 @@ public actor BulkScanner {
                     )
                     if issue.reason != .permissionDenied {
                         continuation.yield(.failed(.cannotEnumerate(
-                            path: root.path,
+                            path: publicRootPath,
                             stage: stage,
                             posixErrorCode: errorCode
                         )))
@@ -311,7 +345,7 @@ public actor BulkScanner {
                                 rootDev: rootDev,
                                 continuation: continuation,
                                 delivery: delivery,
-                                topLevelPathMappings: projectionMappings,
+                                pathNamespace: pathNamespace,
                                 topLevelProjectionRootPath: topLevelProjectionRootPath
                             )
                         }
@@ -347,10 +381,9 @@ public actor BulkScanner {
                     continuation: continuation
                 )
                 continuation.finish()
-            }
-
-            continuation.onTermination = { _ in task.cancel() }
         }
+        continuation.onTermination = { _ in task.cancel() }
+        return ScanSession(events: streamPair.stream, producer: task)
     }
 
     /// v2026.07.17 progress-terminal contract: throttled worker updates may omit the final
@@ -383,7 +416,7 @@ public actor BulkScanner {
         rootDev: UInt64,
         continuation: AsyncStream<ScanEvent>.Continuation,
         delivery: EventDelivery,
-        topLevelPathMappings: [ScanPathPrefixMapping],
+        pathNamespace: ScanPathNamespace?,
         topLevelProjectionRootPath: String?
     ) async {
         while !Task.isCancelled {
@@ -407,7 +440,7 @@ public actor BulkScanner {
                     rootDev: rootDev,
                     continuation: continuation,
                     delivery: delivery,
-                    topLevelPathMappings: topLevelPathMappings,
+                    pathNamespace: pathNamespace,
                     topLevelProjectionRootPath: topLevelProjectionRootPath
                 )
                 // 注意顺序：必须先把发现的子目录全部 push 完才 markCompleted，
@@ -430,7 +463,7 @@ public actor BulkScanner {
         rootDev: UInt64,
         continuation: AsyncStream<ScanEvent>.Continuation,
         delivery: EventDelivery,
-        topLevelPathMappings: [ScanPathPrefixMapping],
+        pathNamespace: ScanPathNamespace?,
         topLevelProjectionRootPath: String?
     ) async {
         guard !Task.isCancelled else { return }
@@ -456,15 +489,16 @@ public actor BulkScanner {
             // parent was enumerated. This is scoped metadata incompleteness and never a reason to
             // follow the replacement object. Root work emits a terminal failure unless the typed
             // classifier proves this is the existing permission-interaction contract.
-            let issue = ScanFailureClassifier.issue(
+            let physicalIssue = ScanFailureClassifier.issue(
                 path: dirPath,
                 stage: .metadata,
                 posixErrorCode: identityError
             )
+            let issue = pathNamespace?.publicIssue(physicalIssue) ?? physicalIssue
             await publishIncomplete(issue, stats: stats, continuation: continuation)
             if work.isRoot, issue.reason != .permissionDenied {
                 continuation.yield(.failed(.cannotEnumerate(
-                    path: rootPath,
+                    path: pathNamespace?.publicPath(forPhysicalPath: rootPath) ?? rootPath,
                     stage: .metadata,
                     posixErrorCode: identityError
                 )))
@@ -479,11 +513,12 @@ public actor BulkScanner {
             )
             return
         case .failed(let openError):
-            let issue = ScanFailureClassifier.issue(
+            let physicalIssue = ScanFailureClassifier.issue(
                 path: dirPath,
                 stage: .open,
                 posixErrorCode: openError
             )
+            let issue = pathNamespace?.publicIssue(physicalIssue) ?? physicalIssue
             await publishIncomplete(issue, stats: stats, continuation: continuation)
             let isRootFailure = work.isRoot && issue.reason != .permissionDenied
             GSYLog.warning(
@@ -492,7 +527,7 @@ public actor BulkScanner {
             )
             if isRootFailure {
                 continuation.yield(.failed(.cannotEnumerate(
-                    path: rootPath,
+                    path: pathNamespace?.publicPath(forPhysicalPath: rootPath) ?? rootPath,
                     stage: .open,
                     posixErrorCode: openError
                 )))
@@ -505,7 +540,9 @@ public actor BulkScanner {
         // 不是“清理工具可以不统计大小”的许可。备份工具可以据此跳过内容，但本应用必须继续
         // 下钻，才能给出真实的可释放字节数。事件仍保留给上层做 safe 分类提示。
         if delivery == .complete, CacheDirTag.isCacheDirectory(at: dirPath) {
-            continuation.yield(.cacheDirTagged(path: dirPath))
+            continuation.yield(.cacheDirTagged(
+                path: pathNamespace?.publicPath(forPhysicalPath: dirPath) ?? dirPath
+            ))
             GSYLog.info(.scan, "BulkScanner 命中 CACHEDIR.TAG，保留缓存分类并继续统计 dir=\(dirPath)")
         }
 
@@ -532,13 +569,12 @@ public actor BulkScanner {
         var localTopLevel: [String: LocalTopLevelEntry] = [:]
         // v2026.07.18：全盘扫描的物理根是 Data 卷，公开投影根是 `/`。两者不可
         // 再隐式假设相同，否则路径映射完成后会因不再位于物理根前缀下而整批丢弃。
-        let projectionRootPath = topLevelProjectionRootPath ?? rootPath
+        let projectionRootPath = topLevelProjectionRootPath
+            ?? pathNamespace?.publicPath(forPhysicalPath: rootPath)
+            ?? rootPath
         let fixedTopLevelBucketPath: String? = {
             guard delivery.collectsTopLevelProjection, dirPath != rootPath else { return nil }
-            let projectedPath = projectedTopLevelPath(
-                dirPath,
-                mappings: topLevelPathMappings
-            )
+            let projectedPath = pathNamespace?.publicPath(forPhysicalPath: dirPath) ?? dirPath
             return topLevelBucketPath(for: projectedPath, rootPath: projectionRootPath)
         }()
         var fixedTopLevelEntry = fixedTopLevelBucketPath.map {
@@ -611,14 +647,17 @@ public actor BulkScanner {
                 || (entry.isSymlink && options.followSymlinks)
             if mayRepresentDirectory {
                 // v1.1：TCC 雷区硬 skip，源头杜绝 Apple Music/Photos/Mail 弹窗。
-                if options.respectTCCSkipList && TCCSkipList.shouldSkip(absPath) {
+                let tccPath = options.respectTCCSkipList
+                    ? (pathNamespace?.publicPath(forPhysicalPath: absPath) ?? absPath)
+                    : absPath
+                if options.respectTCCSkipList && TCCSkipList.shouldSkip(tccPath) {
                     localTCCSkipped += 1
                     let issue = ScanIncompleteIssue(
-                        path: absPath,
+                        path: tccPath,
                         reason: .tccProtectedSkipped
                     )
                     localIncompleteIssues.append(issue)
-                    continuation.yield(.tccProtectedSkipped(path: absPath))
+                    continuation.yield(.tccProtectedSkipped(path: tccPath))
                     continuation.yield(.incomplete(issue))
                 } else {
                     let resolution = BulkDirectoryWorkResolver.resolveDescendant(
@@ -647,14 +686,15 @@ public actor BulkScanner {
                     case .cancelled:
                         return false
                     case .failed(let errorCode):
-                        let issue = ScanFailureClassifier.issue(
+                        let physicalIssue = ScanFailureClassifier.issue(
                             path: absPath,
                             stage: .metadata,
                             posixErrorCode: errorCode
                         )
+                        let issue = pathNamespace?.publicIssue(physicalIssue) ?? physicalIssue
                         if issue.reason == .permissionDenied {
                             localPermissionDenied += 1
-                            continuation.yield(.permissionDenied(path: absPath))
+                            continuation.yield(.permissionDenied(path: issue.path))
                         }
                         localIncompleteIssues.append(issue)
                         continuation.yield(.incomplete(issue))
@@ -677,10 +717,7 @@ public actor BulkScanner {
                 aggregate.hasChildren = true
                 fixedTopLevelEntry = aggregate
             } else if delivery.collectsTopLevelProjection {
-                let projectedPath = projectedTopLevelPath(
-                    absPath,
-                    mappings: topLevelPathMappings
-                )
+                let projectedPath = pathNamespace?.publicPath(forPhysicalPath: absPath) ?? absPath
                 guard let bucketPath = topLevelBucketPath(
                     for: projectedPath,
                     rootPath: projectionRootPath
@@ -714,7 +751,7 @@ public actor BulkScanner {
                isFirstFile,
                nodeAllocated >= policy.minimumBytes {
                 localLargeFiles.append(FSNode(
-                    path: absPath,
+                    path: pathNamespace?.publicPath(forPhysicalPath: absPath) ?? absPath,
                     isDirectory: false,
                     isSymlink: entry.isSymlink,
                     allocatedSize: nodeAllocated,
@@ -744,7 +781,7 @@ public actor BulkScanner {
                isFirstFile,
                nodeLogical >= minimumLogicalBytes {
                 localFileCandidates.append(FSNode(
-                    path: absPath,
+                    path: pathNamespace?.publicPath(forPhysicalPath: absPath) ?? absPath,
                     isDirectory: false,
                     isSymlink: entry.isSymlink,
                     allocatedSize: nodeAllocated,
@@ -766,7 +803,7 @@ public actor BulkScanner {
                 // 反向 bridge 回 String，纯白工。FSNode 已把 url 改成 computed，需要 URL
                 // 的 cold path 自己付钱即可。
                 let node = FSNode(
-                    path: absPath,
+                    path: pathNamespace?.publicPath(forPhysicalPath: absPath) ?? absPath,
                     isDirectory: entry.isDirectory,
                     isSymlink: entry.isSymlink,
                     allocatedSize: nodeAllocated,
@@ -789,7 +826,8 @@ public actor BulkScanner {
         case .complete:
             break
         case .completeWithIssues(let issues):
-            for issue in issues {
+            for physicalIssue in issues {
+                let issue = pathNamespace?.publicIssue(physicalIssue) ?? physicalIssue
                 await publishIncomplete(issue, stats: stats, continuation: continuation)
             }
         case .stoppedByConsumer:
@@ -797,18 +835,19 @@ public actor BulkScanner {
             // 文件系统不完整，不能污染下一轮删除证据或权限 banner。
             if !Task.isCancelled {
                 let issue = ScanIncompleteIssue(
-                    path: dirPath,
+                    path: pathNamespace?.publicPath(forPhysicalPath: dirPath) ?? dirPath,
                     reason: .enumerationFailed,
                     stage: .enumerate
                 )
                 await publishIncomplete(issue, stats: stats, continuation: continuation)
             }
-        case .failed(let issue):
+        case .failed(let physicalIssue):
+            let issue = pathNamespace?.publicIssue(physicalIssue) ?? physicalIssue
             await publishIncomplete(issue, stats: stats, continuation: continuation)
             let isRootFailure = shouldEmitTerminalFailure(
                 rootPath: rootPath,
                 directoryPath: dirPath,
-                issue: issue
+                issue: physicalIssue
             )
             GSYLog.warning(
                 .scan,
@@ -816,7 +855,7 @@ public actor BulkScanner {
             )
             if isRootFailure {
                 continuation.yield(.failed(.cannotEnumerate(
-                    path: rootPath,
+                    path: pathNamespace?.publicPath(forPhysicalPath: rootPath) ?? rootPath,
                     stage: issue.stage ?? .enumerate,
                     posixErrorCode: issue.posixErrorCode
                 )))
@@ -876,21 +915,6 @@ public actor BulkScanner {
         let first = tail.firstIndex(of: "/").map { tail[..<$0] } ?? tail[...]
         guard !first.isEmpty else { return nil }
         return rootPath == "/" ? "/" + first : rootPath + "/" + first
-    }
-
-    /// 路径规范化必须发生在一级 bucket 被折叠之前；折叠后原始后代路径已不可恢复。
-    /// 空规则走零分配 fast path，普通/推荐扫描不会为全盘 firmlink 合同付额外成本。
-    static func projectedTopLevelPath(
-        _ path: String,
-        mappings: [ScanPathPrefixMapping]
-    ) -> String {
-        guard !mappings.isEmpty else { return path }
-        for mapping in mappings {
-            if let projected = mapping.project(path) {
-                return projected
-            }
-        }
-        return path
     }
 
     fileprivate static func largeFilePrecedes(_ lhs: FSNode, _ rhs: FSNode) -> Bool {

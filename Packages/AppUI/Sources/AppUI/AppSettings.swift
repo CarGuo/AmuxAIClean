@@ -55,13 +55,23 @@ public final class AppSettings: ObservableObject {
         /// v1.4：开发者构建产物扫描的规则启用集合，存为 `[String]`（DevArtifactRule.id 数组）。
         /// 默认 = `DevArtifactRules.allIDs`（全开），用户可在设置面板逐项关。
         public static let enabledDevArtifactRuleIDs = "v1.4.enabled_dev_artifact_rules"
-        /// v1.6：Sentinel 后台守护开关（SMAppService.daemon）。默认 OFF —— 用户必须在
+        /// v2026.07.20：普通模式首次启用“开发缓存”时的耗时提示确认。
+        /// 该键只记录用户已理解扫描可能较慢，不改变专业模式的规则集合。
+        public static let smartCareDeveloperCacheWarningAcknowledged =
+            "v2026.07.smart_care_developer_cache_warning_acknowledged"
+        /// v1.6：Sentinel 后台守护开关（SMAppService.agent）。默认 OFF —— 用户必须在
         /// 「设置 → 高级 → 后台守护」显式打开才会注册 helper。详见 [docs/SENTINEL_DESIGN.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/SENTINEL_DESIGN.md) §4。
         public static let sentinelEnabled = "v1.6.sentinel_enabled"
         /// v1.6：Sentinel 最近一次成功 register 的时间戳（双向写入；register 时刷，
         /// unregister 时清）。给设置面板「最近被 Sentinel 发现的候选」面板做"自从启用以来"
         /// 的时间窗起点；同时用于诊断"用户开了但从来没成功过"的边界情况。
         public static let sentinelLastEnabled = "v1.6.sentinel_last_enabled"
+        /// v2026.07.19 P1：是否仍有可信证据表明某代 Sentinel authority 需要完成关闭核验。
+        /// 该证据与 Toggle、最近启用时间分离：Toggle 是用户期望，时间戳可在 current Agent
+        /// 关闭后清空；只有 current Agent 与两代 legacy Daemon 都明确 `.notRegistered` 才能
+        /// 清除此标记。默认不存在/false，避免从未启用的用户被状态查询错误打扰。
+        static let sentinelRequiresShutdownVerification =
+            "v1.6.sentinel_requires_shutdown_verification_v2"
         /// v1.7：用户在设置面板里手动指定的 UI 语言（覆盖系统跟随）。
         /// 持久化 raw string（`LanguageOverride.rawValue`）；`.system` 视为不覆盖。
         /// 改动后会同步写 `AppleLanguages`，并由 App 层把同一 locale 实时同步给
@@ -374,6 +384,17 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(Array(enabledDevArtifactRuleIDs), forKey: Keys.enabledDevArtifactRuleIDs) }
     }
 
+    /// 普通模式的开发缓存耗时提示只在首次显式开启时出现。确认状态持久化，
+    /// 避免用户每次取消再选择都被相同提示打断；它不授权删除，也不启用任何专业规则。
+    @Published public var smartCareDeveloperCacheWarningAcknowledged: Bool {
+        didSet {
+            defaults.set(
+                smartCareDeveloperCacheWarningAcknowledged,
+                forKey: Keys.smartCareDeveloperCacheWarningAcknowledged
+            )
+        }
+    }
+
     /// v1.6：Sentinel 后台守护开关。默认 `false` —— 用户必须显式在
     /// 「设置 → 高级 → 后台守护」勾选启用，避免存量用户升级后多了个守护进程。
     ///
@@ -393,8 +414,27 @@ public final class AppSettings: ObservableObject {
         didSet {
             if let date = sentinelLastEnabled {
                 defaults.set(date, forKey: Keys.sentinelLastEnabled)
+                // v2026.07.19 P1：成功 register 的时间戳是可信 authority 证据；后续即使
+                // current Agent 已停，也要等 legacy identities 一并权威收敛后才能清证据。
+                sentinelRequiresShutdownVerification = true
             } else {
                 defaults.removeObject(forKey: Keys.sentinelLastEnabled)
+            }
+        }
+    }
+
+    /// v2026.07.19 P1：跨启动保存的 Sentinel authority 证据。
+    ///
+    /// 这不是另一个用户开关。它只由 `SentinelManager` 在系统明确报告 active/register
+    /// 成功时置 true，并在 current Agent + 两代 legacy Daemon 全部明确 notRegistered 后
+    /// 清除。把它独立持久化可同时守住两条边界：fresh/default-OFF 不弹误报；曾启用但
+    /// 状态不可用时仍 fail-closed，不把查询失败冒充已关闭。
+    var sentinelRequiresShutdownVerification: Bool {
+        didSet {
+            if sentinelRequiresShutdownVerification {
+                defaults.set(true, forKey: Keys.sentinelRequiresShutdownVerification)
+            } else {
+                defaults.removeObject(forKey: Keys.sentinelRequiresShutdownVerification)
             }
         }
     }
@@ -541,13 +581,29 @@ public final class AppSettings: ObservableObject {
         } else {
             self.enabledDevArtifactRuleIDs = DevArtifactRules.allIDs
         }
+        self.smartCareDeveloperCacheWarningAcknowledged =
+            (defaults.object(forKey: Keys.smartCareDeveloperCacheWarningAcknowledged) as? Bool)
+            ?? false
         // v1.6：Sentinel 默认 OFF（用户必须显式启用，避免存量用户升级后多了个守护进程）。
-        if let raw = defaults.object(forKey: Keys.sentinelEnabled) as? Bool {
-            self.sentinelEnabled = raw
+        let loadedSentinelEnabled =
+            (defaults.object(forKey: Keys.sentinelEnabled) as? Bool) ?? false
+        self.sentinelEnabled = loadedSentinelEnabled
+        let loadedSentinelLastEnabled =
+            defaults.object(forKey: Keys.sentinelLastEnabled) as? Date
+        self.sentinelLastEnabled = loadedSentinelLastEnabled
+        if let raw = defaults.object(
+            forKey: Keys.sentinelRequiresShutdownVerification
+        ) as? Bool {
+            self.sentinelRequiresShutdownVerification = raw
         } else {
-            self.sentinelEnabled = false
+            // v2026.07.19 P1 migration：旧版本没有独立 authority 标记。保存的 ON 期望或
+            // 成功启用时间都是可信历史证据；fresh install 两者都没有，必须保持 false。
+            let derivedEvidence = loadedSentinelEnabled || loadedSentinelLastEnabled != nil
+            self.sentinelRequiresShutdownVerification = derivedEvidence
+            if derivedEvidence {
+                defaults.set(true, forKey: Keys.sentinelRequiresShutdownVerification)
+            }
         }
-        self.sentinelLastEnabled = defaults.object(forKey: Keys.sentinelLastEnabled) as? Date
         // v1.7：UI 语言覆盖。默认 .system（跟随系统）。
         // 不存在 / 解析失败 / 显式 "system" 都视为 .system，避免污染主域 AppleLanguages。
         if let raw = defaults.string(forKey: Keys.preferredLanguage),
@@ -579,8 +635,10 @@ public final class AppSettings: ObservableObject {
         defaults.removeObject(forKey: Keys.hudPlacementForcedIsland)
         defaults.removeObject(forKey: Keys.hideFromDockWhenClosed)
         defaults.removeObject(forKey: Keys.enabledDevArtifactRuleIDs)
+        defaults.removeObject(forKey: Keys.smartCareDeveloperCacheWarningAcknowledged)
         defaults.removeObject(forKey: Keys.sentinelEnabled)
         defaults.removeObject(forKey: Keys.sentinelLastEnabled)
+        defaults.removeObject(forKey: Keys.sentinelRequiresShutdownVerification)
         defaults.removeObject(forKey: Keys.preferredLanguage)
     }
 }

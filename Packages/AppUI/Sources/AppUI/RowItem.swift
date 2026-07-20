@@ -480,6 +480,27 @@ public enum LargeFileSortKey: String, CaseIterable, Sendable, Hashable {
     }
 }
 
+/// Width-dependent row aggregates prepared alongside a terminal presentation.
+///
+/// v2026.07.18: `ScanSnapshot` historically recomputed these four values in its initializer.
+/// That is correct for ordinary callers, but an unbounded terminal row projection would put an
+/// O(width) loop back on MainActor after merge/verdict/sort had already moved off-main.
+struct ScanSnapshotRowRollup: Sendable, Equatable {
+    private(set) var safeBytes: Int64 = 0
+    private(set) var confirmBytes: Int64 = 0
+    private(set) var forbidBytes: Int64 = 0
+    private(set) var maxRowBytes: Int64 = 0
+
+    mutating func record(verdict: SafetyVerdict, bytes: Int64) {
+        switch verdict {
+        case .safe: safeBytes &+= bytes
+        case .confirm: confirmBytes &+= bytes
+        case .forbid: forbidBytes &+= bytes
+        }
+        if bytes > maxRowBytes { maxRowBytes = bytes }
+    }
+}
+
 /// UI 节流后的扫描快照。
 public struct ScanSnapshot: Sendable, Equatable {
     public let categoryID: String
@@ -531,6 +552,31 @@ public struct ScanSnapshot: Sendable, Equatable {
                 scannedFileCount: Int, isFinished: Bool, elapsed: TimeInterval,
                 isComplete: Bool? = nil,
                 bytesPerSecond: Double = 0, estimatedRemaining: TimeInterval? = nil) {
+        var rowRollup = ScanSnapshotRowRollup()
+        for row in rows {
+            rowRollup.record(verdict: row.verdict, bytes: row.bytes)
+        }
+        self.init(
+            categoryID: categoryID,
+            rows: rows,
+            totalBytes: totalBytes,
+            scannedFileCount: scannedFileCount,
+            isFinished: isFinished,
+            elapsed: elapsed,
+            isComplete: isComplete,
+            bytesPerSecond: bytesPerSecond,
+            estimatedRemaining: estimatedRemaining,
+            rowRollup: rowRollup
+        )
+    }
+
+    /// Internal prepared boundary used by terminal ScanCoordinator publication. The rollup and
+    /// rows are produced in the same background pass, so MainActor only performs COW assignments.
+    init(categoryID: String, rows: [RowItem], totalBytes: Int64,
+         scannedFileCount: Int, isFinished: Bool, elapsed: TimeInterval,
+         isComplete: Bool? = nil,
+         bytesPerSecond: Double = 0, estimatedRemaining: TimeInterval? = nil,
+         rowRollup: ScanSnapshotRowRollup) {
         self.categoryID = categoryID
         self.rows = rows
         self.totalBytes = totalBytes
@@ -540,25 +586,10 @@ public struct ScanSnapshot: Sendable, Equatable {
         self.elapsed = elapsed
         self.bytesPerSecond = bytesPerSecond
         self.estimatedRemaining = estimatedRemaining
-        // 一次性扫 rows 算 verdict 三桶 + maxRowBytes，零额外内存分配。
-        // 对应原 [safeBytes/confirmBytes/forbidBytes 三个 computed reduce + listResults max].
-        // 即便 N=几百，单次 O(N) 比每帧多个消费者各跑一次 O(N) 便宜得多。
-        var s: Int64 = 0
-        var c: Int64 = 0
-        var f: Int64 = 0
-        var m: Int64 = 0
-        for r in rows {
-            switch r.verdict {
-            case .safe: s &+= r.bytes
-            case .confirm: c &+= r.bytes
-            case .forbid: f &+= r.bytes
-            }
-            if r.bytes > m { m = r.bytes }
-        }
-        self.safeBytes = s
-        self.confirmBytes = c
-        self.forbidBytes = f
-        self.maxRowBytes = m
+        self.safeBytes = rowRollup.safeBytes
+        self.confirmBytes = rowRollup.confirmBytes
+        self.forbidBytes = rowRollup.forbidBytes
+        self.maxRowBytes = rowRollup.maxRowBytes
     }
 
     /// v1.3：用户语义"还未扫描过"的判定。

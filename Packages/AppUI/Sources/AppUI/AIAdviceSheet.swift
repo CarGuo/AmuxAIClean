@@ -34,8 +34,8 @@ struct AIAdviceSheet: View {
 
     /// v2026.07.15：请求失败可能在 sheet 内停留很久；状态只保存错误种类与安全参数，
     /// 不保存启动语言下翻译出的 String。
-    /// v2026.07.16：服务 body、transport 文本与未知 Error 不再进入用户界面；它们只经
-    /// 去敏后写技术日志，避免服务器实现细节、路径或未本地化系统文本泄漏。
+    /// v2026.07.16：服务 body、transport 文本与未知 Error 不再进入用户界面。
+    /// v2026.07.18：它们也不得进入技术日志；日志只保留 status、字节数或 transport code。
     enum FailurePresentation: Equatable, Sendable {
         case notConfigured
         case invalidBaseURL
@@ -266,7 +266,7 @@ struct AIAdviceSheet: View {
         } catch {
             GSYLog.warning(
                 .operation,
-                "AI advice endpoint validation failed: \(PathRedactor().redact(String(describing: error)))"
+                "AI advice endpoint validation failed kind=unexpected"
             )
             state = .failure(.unexpected)
             return
@@ -315,16 +315,17 @@ struct AIAdviceSheet: View {
             let advice = try await client.ask(inquiry)
             state = .success(advice)
         } catch let OpenAIChatClient.Error.http(status, _) {
-            // **v2026.06.22 (P0-4)**：body 已在 [OpenAIChatClient](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift)
-            // 抛出前虽经 PathRedactor.redact 去敏，服务 body 仍可能包含实现细节，不能
-            // 直接展示。OpenAIChatClient 已记录 status + body length，足以定位请求类别。
+            // v2026.07.18：OpenAIChatClient.Error 不再携带 body；UI 只投影 status。
             state = .failure(.http(status: status))
-        } catch let OpenAIChatClient.Error.transport(msg) {
+        } catch let OpenAIChatClient.Error.transport(domain, code) {
             GSYLog.warning(
                 .operation,
-                "AI advice transport failed: \(PathRedactor().redact(msg))"
+                "AI advice transport failed domain=\(domain) code=\(code)"
             )
             state = .failure(.transport)
+        } catch OpenAIChatClient.Error.decoding {
+            GSYLog.warning(.operation, "AI advice request failed kind=decoding")
+            state = .failure(.unexpected)
         } catch OpenAIChatClient.Error.missingAPIKey {
             state = .failure(.missingAPIKey)
         } catch OpenAIChatClient.Error.invalidBaseURL {
@@ -334,7 +335,7 @@ struct AIAdviceSheet: View {
         } catch {
             GSYLog.warning(
                 .operation,
-                "AI advice request failed: \(PathRedactor().redact(String(describing: error)))"
+                "AI advice request failed kind=unexpected"
             )
             state = .failure(.unexpected)
         }

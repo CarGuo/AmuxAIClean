@@ -6,8 +6,9 @@ import XCTest
 ///
 /// 之前仅 SemVer 纯函数测过，HTTP 401 / 超时 / HTML 误返回 / URL 构造失败 全都没覆盖。
 ///
-/// 实现方式：用 URLProtocol mock 注入 [URLSession](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Updater/UpdateChecker.swift#L94-L101)，
-/// 配合 UpdateChecker 的 init 接受 `session:` 注入参数 → 整套不出网。
+/// 实现方式：用 URLProtocol mock 只替换 session 的 protocol class，
+/// UpdateChecker 仍由生产工厂统一创建 ephemeral/redirect-deny session，整套不出网。
+/// v2026.07.18：禁止恢复 public URLSession 注入，否则生产调用方可绕过来源策略。
 @MainActor
 final class UpdateCheckerNetworkTests: XCTestCase {
 
@@ -22,10 +23,37 @@ final class UpdateCheckerNetworkTests: XCTestCase {
             let mimeType: String
         }
         nonisolated(unsafe) static var stub: Stub?
+        nonisolated(unsafe) static var responseURLOverride: URL?
+        private static let requestCountLock = NSLock()
+        nonisolated(unsafe) private static var requestCountStorage = 0
+        nonisolated(unsafe) private static var lastRequestStorage: URLRequest?
+
+        static func resetRequestCount() {
+            requestCountLock.lock()
+            requestCountStorage = 0
+            lastRequestStorage = nil
+            requestCountLock.unlock()
+        }
+
+        static func requestCount() -> Int {
+            requestCountLock.lock()
+            defer { requestCountLock.unlock() }
+            return requestCountStorage
+        }
+
+        static func lastRequest() -> URLRequest? {
+            requestCountLock.lock()
+            defer { requestCountLock.unlock() }
+            return lastRequestStorage
+        }
 
         override class func canInit(with request: URLRequest) -> Bool { true }
         override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
         override func startLoading() {
+            Self.requestCountLock.lock()
+            Self.requestCountStorage += 1
+            Self.lastRequestStorage = request
+            Self.requestCountLock.unlock()
             guard let stub = Self.stub else {
                 client?.urlProtocol(self, didFailWithError:
                     NSError(domain: "MockURLProtocol", code: -1,
@@ -36,7 +64,7 @@ final class UpdateCheckerNetworkTests: XCTestCase {
                 client?.urlProtocol(self, didFailWithError: err)
                 return
             }
-            let url = request.url ?? URL(string: "https://x")!
+            let url = Self.responseURLOverride ?? request.url ?? URL(string: "https://x")!
             let resp = HTTPURLResponse(
                 url: url, statusCode: stub.statusCode,
                 httpVersion: "HTTP/1.1",
@@ -51,11 +79,17 @@ final class UpdateCheckerNetworkTests: XCTestCase {
         override func stopLoading() {}
     }
 
-    private func makeSession() -> URLSession {
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.protocolClasses = [MockURLProtocol.self]
-        cfg.timeoutIntervalForRequest = 2
-        return URLSession(configuration: cfg)
+    private func makeChecker(
+        owner: String = "CarGuo",
+        repo: String = "GSYCleanMac",
+        settings: AppSettings? = nil
+    ) -> UpdateChecker {
+        UpdateChecker(
+            owner: owner,
+            repo: repo,
+            protocolClasses: [MockURLProtocol.self],
+            settings: settings
+        )
     }
 
     /// 等到 runCheck 真正写出 lastResult 为止——既覆盖 isChecking==true 的中间态，
@@ -75,6 +109,8 @@ final class UpdateCheckerNetworkTests: XCTestCase {
 
     override func tearDown() {
         MockURLProtocol.stub = nil
+        MockURLProtocol.responseURLOverride = nil
+        MockURLProtocol.resetRequestCount()
         super.tearDown()
     }
 
@@ -85,7 +121,7 @@ final class UpdateCheckerNetworkTests: XCTestCase {
             data: Data("Unauthorized".utf8),
             statusCode: 401, error: nil, mimeType: "text/plain"
         )
-        let checker = UpdateChecker(session: makeSession())
+        let checker = makeChecker()
         checker.checkNow()
         await waitForResult(checker)
         guard case .failed(let failure) = checker.lastResult else {
@@ -107,7 +143,7 @@ final class UpdateCheckerNetworkTests: XCTestCase {
                            userInfo: [NSLocalizedDescriptionKey: "timed out"]),
             mimeType: "application/json"
         )
-        let checker = UpdateChecker(session: makeSession())
+        let checker = makeChecker()
         checker.checkNow()
         await waitForResult(checker)
         guard case .failed = checker.lastResult else {
@@ -125,7 +161,7 @@ final class UpdateCheckerNetworkTests: XCTestCase {
             data: Data(html.utf8), statusCode: 200,
             error: nil, mimeType: "text/html"
         )
-        let checker = UpdateChecker(session: makeSession())
+        let checker = makeChecker()
         checker.checkNow()
         await waitForResult(checker)
         guard case .failed = checker.lastResult else {
@@ -136,18 +172,9 @@ final class UpdateCheckerNetworkTests: XCTestCase {
             "HTML 误返回时不能误弹更新对话框")
     }
 
-    // MARK: - 用例 4: URL 构造失败分支说明
-    //
-    // [UpdateChecker.runCheck L134-L138](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Updater/UpdateChecker.swift#L134-L138)
-    // 的 `guard let url = URL(string: urlStr)` 失败分支理论上会落 .failed("URL 构造失败：...")。
-    // 实测 macOS 14+ 上 `URL(string:)` 解析放宽（自动 percent-encode 控制字符 / 空格），
-    // 即便注入含 `\n\t` / 空格 / 中文的 owner，URL 仍能构造成功，无法在不动产品代码的前提下
-    // 触发该 nil 分支。该分支仍由静态 [SemVer 字符串解析](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Updater/UpdateChecker.swift#L57-L70)
-    // 类的纯函数测试间接覆盖，且生产 owner/repo 是写死的 "CarGuo"/"GSYCleanMac"，运行时 nil
-    // 概率为零。Step 15 验收口径：覆盖网络层 4 个真实可发生的故障模式（401 / 超时 / HTML
-    // 误返回 / 解析失败），URL(string:) nil 分支留给 SemVerTests + manual review。
-
-
+    // v2026.07.18：不再依赖宽松的 `URL(string:)` 是否返回 nil。owner/repo
+    // 先按 ASCII GitHub path component 合同验证，非法路由必须在请求计数为 0 时
+    // 类型化失败，对应用例见本文件后半部。
 
     // MARK: - 用例 5: 200 + 合法 JSON 且远端版本更新 → .newer + availableUpdate 非 nil
 
@@ -156,7 +183,7 @@ final class UpdateCheckerNetworkTests: XCTestCase {
         {
             "tag_name": "v999.0.0",
             "name": "Big Release",
-            "html_url": "https://example.com/release/999",
+            "html_url": "https://github.com/CarGuo/GSYCleanMac/releases/tag/v999.0.0",
             "body": "release notes",
             "published_at": "2026-06-04T00:00:00Z"
         }
@@ -165,7 +192,7 @@ final class UpdateCheckerNetworkTests: XCTestCase {
             data: Data(json.utf8), statusCode: 200,
             error: nil, mimeType: "application/json"
         )
-        let checker = UpdateChecker(session: makeSession())
+        let checker = makeChecker()
         checker.checkNow()
         await waitForResult(checker)
         guard case .newer(let info) = checker.lastResult else {
@@ -184,7 +211,7 @@ final class UpdateCheckerNetworkTests: XCTestCase {
         {
             "tag_name": "v0.0.1",
             "name": "Ancient",
-            "html_url": "https://example.com/release/old",
+            "html_url": "https://github.com/CarGuo/GSYCleanMac/releases/tag/v0.0.1",
             "body": "",
             "published_at": null
         }
@@ -193,7 +220,7 @@ final class UpdateCheckerNetworkTests: XCTestCase {
             data: Data(json.utf8), statusCode: 200,
             error: nil, mimeType: "application/json"
         )
-        let checker = UpdateChecker(session: makeSession())
+        let checker = makeChecker()
         checker.checkNow()
         await waitForResult(checker)
         guard case .upToDate = checker.lastResult else {
@@ -202,5 +229,260 @@ final class UpdateCheckerNetworkTests: XCTestCase {
         }
         XCTAssertNil(checker.availableUpdate,
             "旧版本不能弹更新对话框")
+    }
+
+    /// v2026.07.18：WindowGroup 关闭后重建会重新执行 `.task`。同一
+    /// UpdateChecker 实例的自动检查必须保持每进程最多一次。
+    func test_checkOnLaunch_同一进程重建窗口不重复请求() async {
+        let suite = "UpdateCheckerNetworkTests.\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        let settings = AppSettings(testSuite: suite)
+        settings.updateCheckEnabled = true
+        MockURLProtocol.resetRequestCount()
+        MockURLProtocol.stub = MockURLProtocol.Stub(
+            data: Data("""
+                {
+                  "tag_name": "v0.0.1",
+                  "name": "Old",
+                  "html_url": "https://github.com/CarGuo/GSYCleanMac/releases/tag/v0.0.1",
+                  "body": "",
+                  "published_at": null
+                }
+                """.utf8),
+            statusCode: 200,
+            error: nil,
+            mimeType: "application/json"
+        )
+        let checker = makeChecker(settings: settings)
+
+        checker.checkOnLaunch()
+        checker.checkOnLaunch()
+        await waitForResult(checker)
+
+        XCTAssertEqual(MockURLProtocol.requestCount(), 1)
+    }
+
+    // MARK: - v2026.07.18 来源与重定向合同
+
+    func test_sessionConfiguration_禁CookieCacheCredential并复用生产策略() {
+        let configuration = UpdateSessionFactory.configuration(
+            protocolClasses: [MockURLProtocol.self]
+        )
+
+        XCTAssertEqual(configuration.httpCookieAcceptPolicy, .never)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertEqual(configuration.requestCachePolicy, .reloadIgnoringLocalCacheData)
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertNil(configuration.urlCredentialStorage)
+        XCTAssertEqual(
+            configuration.protocolClasses?.first.map(ObjectIdentifier.init),
+            ObjectIdentifier(MockURLProtocol.self)
+        )
+    }
+
+    func test_APIRequest_只向固定仓库GET且不携凭据Cookie或Body() async {
+        MockURLProtocol.stub = validOldReleaseStub()
+        let checker = makeChecker()
+
+        checker.checkNow()
+        await waitForResult(checker)
+
+        let request = MockURLProtocol.lastRequest()
+        XCTAssertEqual(
+            request?.url?.absoluteString,
+            "https://api.github.com/repos/CarGuo/GSYCleanMac/releases/latest"
+        )
+        XCTAssertEqual(request?.httpMethod, "GET")
+        XCTAssertNil(request?.httpBody)
+        XCTAssertNil(request?.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertNil(request?.value(forHTTPHeaderField: "Cookie"))
+        XCTAssertEqual(request?.value(forHTTPHeaderField: "Accept"), "application/vnd.github+json")
+    }
+
+    func test_redirectPolicy_同源与跨源都拒绝() {
+        let requests = [
+            URLRequest(url: URL(string: "https://api.github.com/repos/CarGuo/GSYCleanMac/releases/1")!),
+            URLRequest(url: URL(string: "https://github.com/CarGuo/GSYCleanMac/releases/tag/v1.0.0")!),
+            URLRequest(url: URL(string: "https://objects.example.invalid/asset")!),
+        ]
+
+        for request in requests {
+            XCTAssertNil(UpdateRedirectPolicy.requestAfterRedirect(request))
+        }
+    }
+
+    func test_repositoryBoundary_仅接受精确HTTPSReleasePage() {
+        let boundary = UpdateRepositoryNetworkBoundary(owner: "CarGuo", repo: "GSYCleanMac")!
+        XCTAssertTrue(boundary.ownsReleasePageURL(
+            URL(string: "https://github.com/carguo/gsycleanmac/releases/tag/v1.6.1")!,
+            tag: "v1.6.1"
+        ))
+
+        let rejected = [
+            "http://github.com/CarGuo/GSYCleanMac/releases/tag/v1.6.1",
+            "https://github.com.evil.invalid/CarGuo/GSYCleanMac/releases/tag/v1.6.1",
+            "https://github.com@evil.invalid/CarGuo/GSYCleanMac/releases/tag/v1.6.1",
+            "https://github.com:444/CarGuo/GSYCleanMac/releases/tag/v1.6.1",
+            "https://github.com/CarGuo2/GSYCleanMac/releases/tag/v1.6.1",
+            "https://github.com/CarGuo/GSYCleanMac2/releases/tag/v1.6.1",
+            "https://github.com/CarGuo/GSYCleanMac/releases/tag/v1.6.2",
+            "https://github.com/CarGuo/GSYCleanMac/releases/tag/v1.6.1/extra",
+            "https://github.com/CarGuo/GSYCleanMac/releases/tag/v1.6.1?next=evil",
+            "https://github.com/CarGuo/GSYCleanMac/releases/tag/v1.6.1#fragment",
+            "https://github.com/CarGuo/GSYCleanMac/releases/tag/v1.6.1%2Fevil",
+        ]
+        for raw in rejected {
+            XCTAssertFalse(
+                boundary.ownsReleasePageURL(URL(string: raw)!, tag: "v1.6.1"),
+                "应拒绝 \(raw)"
+            )
+        }
+    }
+
+    func test_repositoryBoundary_仅接受同仓库同Tag同文件名Asset() {
+        let boundary = UpdateRepositoryNetworkBoundary(owner: "CarGuo", repo: "GSYCleanMac")!
+        XCTAssertTrue(boundary.ownsReleaseAssetURL(
+            URL(string: "https://github.com/CarGuo/GSYCleanMac/releases/download/v1.6.1/AmuxAIClean.dmg.sha256")!,
+            tag: "v1.6.1",
+            assetName: "AmuxAIClean.dmg.sha256"
+        ))
+
+        let rejected = [
+            "http://github.com/CarGuo/GSYCleanMac/releases/download/v1.6.1/AmuxAIClean.dmg.sha256",
+            "https://objects.githubusercontent.com/CarGuo/GSYCleanMac/AmuxAIClean.dmg.sha256",
+            "https://github.com/Other/GSYCleanMac/releases/download/v1.6.1/AmuxAIClean.dmg.sha256",
+            "https://github.com/CarGuo/Other/releases/download/v1.6.1/AmuxAIClean.dmg.sha256",
+            "https://github.com/CarGuo/GSYCleanMac/releases/download/v1.6.2/AmuxAIClean.dmg.sha256",
+            "https://github.com/CarGuo/GSYCleanMac/releases/download/v1.6.1/other.sha256",
+            "https://github.com/CarGuo/GSYCleanMac/releases/download/v1.6.1/AmuxAIClean.dmg.sha256?token=x",
+            "https://github.com/CarGuo/GSYCleanMac/releases/download/v1.6.1/AmuxAIClean.dmg.sha256/extra",
+        ]
+        for raw in rejected {
+            XCTAssertFalse(
+                boundary.ownsReleaseAssetURL(
+                    URL(string: raw)!,
+                    tag: "v1.6.1",
+                    assetName: "AmuxAIClean.dmg.sha256"
+                ),
+                "应拒绝 \(raw)"
+            )
+        }
+    }
+
+    func test_runCheck_releasePage跨源应类型化拒绝() async {
+        MockURLProtocol.stub = releaseStub(
+            htmlURL: "https://example.com/CarGuo/GSYCleanMac/releases/tag/v999.0.0"
+        )
+        let checker = makeChecker()
+
+        checker.checkNow()
+        await waitForResult(checker)
+
+        guard case .failed(.untrustedResponseSource) = checker.lastResult else {
+            return XCTFail("跨源 Release page 应被类型化拒绝")
+        }
+        XCTAssertNil(checker.availableUpdate)
+    }
+
+    func test_runCheck_checksumAsset跨仓库应拒绝整个Release() async {
+        MockURLProtocol.stub = releaseStub(
+            assetsJSON: """
+            [{
+              "name": "AmuxAIClean.dmg.sha256",
+              "browser_download_url": "https://github.com/Other/Repo/releases/download/v999.0.0/AmuxAIClean.dmg.sha256",
+              "size": 128
+            }]
+            """
+        )
+        let checker = makeChecker()
+
+        checker.checkNow()
+        await waitForResult(checker)
+
+        guard case .failed(.untrustedResponseSource) = checker.lastResult else {
+            return XCTFail("跨仓库 checksum asset 应拒绝整个 Release")
+        }
+        XCTAssertNil(checker.availableUpdate)
+    }
+
+    func test_runCheck_最终响应URL偏离固定API应拒绝() async {
+        MockURLProtocol.stub = validOldReleaseStub()
+        MockURLProtocol.responseURLOverride = URL(string: "https://example.com/releases/latest")!
+        let checker = makeChecker()
+
+        checker.checkNow()
+        await waitForResult(checker)
+
+        guard case .failed(.untrustedResponseSource) = checker.lastResult else {
+            return XCTFail("最终响应 URL 偏离固定 API 应被拒绝")
+        }
+    }
+
+    func test_runCheck_非法仓库路由在发请求前拒绝() async {
+        MockURLProtocol.stub = validOldReleaseStub()
+        let checker = makeChecker(owner: "CarGuo/Other")
+
+        checker.checkNow()
+        await waitForResult(checker)
+
+        guard case .failed(.invalidRequestURL) = checker.lastResult else {
+            return XCTFail("非法 owner 应在 URL 构造边界被拒绝")
+        }
+        XCTAssertEqual(MockURLProtocol.requestCount(), 0)
+    }
+
+    func test_validReleaseAsset_仅解析元数据不发起第二请求() async {
+        MockURLProtocol.stub = releaseStub(
+            assetsJSON: """
+            [{
+              "name": "AmuxAIClean.dmg.sha256",
+              "browser_download_url": "https://github.com/CarGuo/GSYCleanMac/releases/download/v999.0.0/AmuxAIClean.dmg.sha256",
+              "size": 128
+            }]
+            """
+        )
+        let checker = makeChecker()
+
+        checker.checkNow()
+        await waitForResult(checker)
+
+        guard case .newer(let release) = checker.lastResult else {
+            return XCTFail("合法 Release 应解析成新版本")
+        }
+        XCTAssertEqual(release.assets.count, 1)
+        XCTAssertEqual(MockURLProtocol.requestCount(), 1)
+        XCTAssertEqual(
+            UpdateChecker.automaticChecksumFetchPolicy,
+            .disabledBecauseRedirectDestinationIsUnverifiable
+        )
+    }
+
+    private func validOldReleaseStub() -> MockURLProtocol.Stub {
+        releaseStub(tag: "v0.0.1")
+    }
+
+    private func releaseStub(
+        tag: String = "v999.0.0",
+        htmlURL: String? = nil,
+        assetsJSON: String = "[]"
+    ) -> MockURLProtocol.Stub {
+        let releaseURL = htmlURL
+            ?? "https://github.com/CarGuo/GSYCleanMac/releases/tag/\(tag)"
+        return MockURLProtocol.Stub(
+            data: Data("""
+                {
+                  "tag_name": "\(tag)",
+                  "name": "Release \(tag)",
+                  "html_url": "\(releaseURL)",
+                  "body": "",
+                  "published_at": null,
+                  "assets": \(assetsJSON)
+                }
+                """.utf8),
+            statusCode: 200,
+            error: nil,
+            mimeType: "application/json"
+        )
     }
 }

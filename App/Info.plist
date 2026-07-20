@@ -50,6 +50,29 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<false/>
 	</dict>
+	<!--
+	 v2026.07.18: macOS uses these localized purpose strings before allowing this
+	 disk-inspection utility to read other apps' bundles or sandbox containers.
+	-->
+	<key>NSAppBundlesUsageDescription</key>
+	<string>AmuxAIClean reads installed-app metadata such as Info.plist; duplicate scanning also reads candidate bytes to compute SHA-256. File contents are not uploaded.</string>
+	<key>NSAppDataUsageDescription</key>
+	<string>AmuxAIClean reads app-data metadata and supported local configuration records; duplicate scanning also reads candidate bytes to compute SHA-256. File contents are not uploaded.</string>
+	<!--
+	 v2026.07.18: full-disk and fixed-root scans can reach these Files & Folders
+	 categories without an NSOpenPanel gesture. Keep every prompt aligned with the
+	 local-analysis, user-reviewed candidate contract; TCCSkipList remains a hard skip.
+	-->
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>AmuxAIClean reads Desktop metadata and, for duplicate-file scans, candidate bytes locally to compute SHA-256. File contents are not uploaded.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>AmuxAIClean reads Documents metadata and, for duplicate-file scans, candidate bytes locally to compute SHA-256. File contents are not uploaded.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>AmuxAIClean reads Downloads metadata and, for duplicate-file scans, candidate bytes locally to compute SHA-256. File contents are not uploaded.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>AmuxAIClean reads removable-volume metadata and, for duplicate-file scans, candidate bytes locally to compute SHA-256. File contents are not uploaded.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>AmuxAIClean reads metadata and duplicate candidates from the selected network server to analyze them on this Mac. File contents are not uploaded elsewhere.</string>
 	<key>NSHumanReadableCopyright</key>
 		<string>Copyright © 2026 Amux AI. All rights reserved.</string>
 </dict>

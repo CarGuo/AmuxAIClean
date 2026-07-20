@@ -5,7 +5,47 @@ import ScanKit
 import SafetyKit
 @testable import AppUI
 
+private actor DeletionReconciliationGate {
+    private var entered = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func pause() async {
+        entered = true
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func waitUntilEntered() async {
+        while !entered {
+            await Task.yield()
+        }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 final class ProfessionalToolDeletionFlowTests: XCTestCase {
+    func testDeletionModelSynchronizationUsesOneExactSurfaceAndInvalidatesTheOther() {
+        XCTAssertEqual(
+            MainDeletionModelSynchronizationPolicy.plan(authoritativeSurface: .professional),
+            MainDeletionModelSynchronizationPlan(
+                exactSurface: .professional,
+                invalidatedSurface: .smartCare
+            )
+        )
+        XCTAssertEqual(
+            MainDeletionModelSynchronizationPolicy.plan(authoritativeSurface: .smartCare),
+            MainDeletionModelSynchronizationPlan(
+                exactSurface: .smartCare,
+                invalidatedSurface: .professional
+            )
+        )
+    }
+
     private actor PipelineState {
         struct Snapshot: Sendable, Equatable {
             let preflightPaths: [[String]]
@@ -126,7 +166,15 @@ final class ProfessionalToolDeletionFlowTests: XCTestCase {
         try Data([0x02]).write(to: sibling)
 
         let pipeline = TrashPipeline(home: home.path)
-        let coordinator = DeletionInteractionCoordinator(pipeline: pipeline)
+        // v2026.07.20: coordinator tests must own both pipeline recovery storage and the
+        // coordinator's Undo projection. The production shared store is not a test default.
+        let coordinator = DeletionInteractionCoordinator(
+            pipeline: pipeline,
+            undoHistoryStore: UndoHistoryStore(
+                storeURL: home.appendingPathComponent("UndoHistory.json"),
+                allowedRestoreRoots: [home.path]
+            )
+        )
         let identity = DeletionSnapshotIdentity(
             sessionID: UUID(),
             revision: 1,
@@ -563,29 +611,167 @@ final class ProfessionalToolDeletionFlowTests: XCTestCase {
     }
 
     @MainActor
-    func test_resultPresentationRunsAfterTerminalModelProjection() async {
+    func test_resultPresentationAndVisibleRemovalDoNotWaitForSlowTerminalModelProjection() async {
         var events: [String] = []
         var visiblePaths = ["/tmp/moved", "/tmp/failed"]
+        let gate = DeletionReconciliationGate()
 
-        await ToolDeletionResultOrdering.finish(
-            updateModelToTerminalState: {
-                XCTAssertTrue(events.isEmpty)
-                visiblePaths.removeAll { $0 == "/tmp/moved" }
-                events.append("model-terminal")
-            },
-            makePayload: {
-                XCTAssertEqual(visiblePaths, ["/tmp/failed"])
-                events.append("payload")
-                return 42
-            },
-            present: { payload in
-                XCTAssertEqual(payload, 42)
-                XCTAssertEqual(visiblePaths, ["/tmp/failed"])
-                events.append("result-presented")
-            }
+        let operation = Task { @MainActor in
+            await DeletionResultAcknowledgementOrdering.acknowledgeThenReconcile(
+                makePayload: {
+                    XCTAssertEqual(visiblePaths, ["/tmp/moved", "/tmp/failed"])
+                    events.append("payload")
+                    return 42
+                },
+                present: { payload in
+                    XCTAssertEqual(payload, 42)
+                    XCTAssertEqual(visiblePaths, ["/tmp/moved", "/tmp/failed"])
+                    events.append("result-presented")
+                },
+                reconcileModel: {
+                    XCTAssertEqual(events, ["payload", "result-presented"])
+                    visiblePaths.removeAll { $0 == "/tmp/moved" }
+                    events.append("presentation-pruned")
+                    // Deterministically hold the wide Tree/model worker. The result must already
+                    // be visible and the moved identity must already be gone while authoritative
+                    // reconciliation is blocked.
+                    await gate.pause()
+                    events.append("model-terminal")
+                }
+            )
+        }
+
+        await gate.waitUntilEntered()
+        XCTAssertEqual(events, ["payload", "result-presented", "presentation-pruned"])
+        XCTAssertEqual(visiblePaths, ["/tmp/failed"])
+
+        await gate.release()
+        await operation.value
+
+        XCTAssertEqual(
+            events,
+            ["payload", "result-presented", "presentation-pruned", "model-terminal"]
+        )
+        XCTAssertEqual(visiblePaths, ["/tmp/failed"])
+    }
+
+    func test_mainListDeletionPresentationRemovesOnlySucceededSubtree() async {
+        func row(_ path: String) -> RowItem {
+            RowItem(
+                id: path,
+                url: URL(fileURLWithPath: path),
+                title: URL(fileURLWithPath: path).lastPathComponent,
+                isDirectory: true,
+                bytes: 1,
+                logicalBytes: 1,
+                fileCount: 1,
+                verdict: .safe,
+                rejection: .ok
+            )
+        }
+        let snapshot = ScanSnapshot(
+            categoryID: "test",
+            rows: [row("/tmp/drop"), row("/tmp/drop/child"), row("/tmp/dropbox")],
+            totalBytes: 3,
+            scannedFileCount: 3,
+            isFinished: true,
+            elapsed: 1
         )
 
-        XCTAssertEqual(events, ["model-terminal", "payload", "result-presented"])
+        let projection = await MainDeletionPresentationExecutor.run(
+            snapshot: snapshot,
+            succeededPaths: ["/tmp/drop"],
+            selection: ["/tmp/drop", "/tmp/dropbox"],
+            listDetailPath: "/tmp/drop/child"
+        )
+
+        XCTAssertEqual(projection.snapshot.rows.map(\.id), ["/tmp/dropbox"])
+        XCTAssertEqual(projection.remainingSelection, ["/tmp/dropbox"])
+        XCTAssertTrue(projection.shouldCloseListDetail)
+        XCTAssertEqual(projection.snapshot.totalBytes, snapshot.totalBytes,
+                       "presentation projection must not pre-empt authoritative accounting")
+    }
+
+    func test_mainListDeletionPresentationRejectsStaleSessionOrRevision() {
+        let session = UUID()
+        let frozen = MainDeletionPresentationSourceIdentity(
+            scanSessionID: session,
+            sourceRevision: 11,
+            sourceCategoryID: "developer",
+            selectedCategoryID: "developer",
+            interfaceMode: "professional"
+        )
+        XCTAssertEqual(MainDeletionPresentationCommitPolicy.decision(
+            frozen: frozen,
+            current: frozen,
+            requestRevisionMatches: true
+        ), .commit)
+
+        let newerScan = MainDeletionPresentationSourceIdentity(
+            scanSessionID: UUID(),
+            sourceRevision: 12,
+            sourceCategoryID: "developer",
+            selectedCategoryID: "developer",
+            interfaceMode: "professional"
+        )
+        XCTAssertEqual(MainDeletionPresentationCommitPolicy.decision(
+            frozen: frozen,
+            current: newerScan,
+            requestRevisionMatches: true
+        ), .discard)
+        XCTAssertEqual(MainDeletionPresentationCommitPolicy.decision(
+            frozen: frozen,
+            current: frozen,
+            requestRevisionMatches: false
+        ), .discard)
+
+        let sameSessionNewRevision = MainDeletionPresentationSourceIdentity(
+            scanSessionID: session,
+            sourceRevision: 12,
+            sourceCategoryID: "developer",
+            selectedCategoryID: "developer",
+            interfaceMode: "professional"
+        )
+        XCTAssertEqual(MainDeletionPresentationCommitPolicy.decision(
+            frozen: frozen,
+            current: sameSessionNewRevision,
+            requestRevisionMatches: true
+        ), .retryLatestSource)
+    }
+
+    @MainActor
+    func test_deferredResultIsReleasedWhenSheetDismissesWhileReconciliationIsStillBlocked() async {
+        var handoff = ProfessionalDeletePresentationHandoff<Int>()
+        let gate = DeletionReconciliationGate()
+        var routeWasCalled = false
+        var visiblePayload: Int?
+        XCTAssertTrue(handoff.beginSheetDismissal())
+
+        let operation = Task { @MainActor in
+            await DeletionResultAcknowledgementOrdering.acknowledgeThenReconcile(
+                makePayload: { 42 },
+                present: { payload in
+                    routeWasCalled = true
+                    XCTAssertEqual(
+                        handoff.routeNextPresentation(payload),
+                        .deferUntilSheetDismissal
+                    )
+                },
+                reconcileModel: {
+                    await gate.pause()
+                }
+            )
+        }
+
+        await gate.waitUntilEntered()
+        XCTAssertTrue(routeWasCalled)
+        XCTAssertNil(visiblePayload)
+        visiblePayload = handoff.finishSheetDismissal()
+        XCTAssertEqual(visiblePayload, 42,
+                       "sheet dismissal must release the receipt result without waiting for prune")
+
+        await gate.release()
+        await operation.value
     }
 
     func test_brewTerminalProjectionRemovesOnlySubmittedSuccesses() {
@@ -771,6 +957,13 @@ final class ProfessionalToolDeletionFlowTests: XCTestCase {
             ),
             "已选择 %1$lld 项 · 共 %2$@。要移到废纸篓吗？"
         )
+        for key in [
+            "delete.vendor_override.action",
+            "delete.scan_incomplete_override.action"
+        ] {
+            XCTAssertEqual(try localizedValue(key, locale: "en"), "Force Move to Trash")
+            XCTAssertEqual(try localizedValue(key, locale: "zh-Hans"), "强制移到废纸篓")
+        }
     }
 
     func test_skippingAllVendorProtectedConflictsDowngradesRemainingSafeItemsToNormalMode() throws {
@@ -824,8 +1017,20 @@ final class ProfessionalToolDeletionFlowTests: XCTestCase {
         XCTAssertTrue(confirmation.contains(
             "ToolTrashConfirmationSubmissionContract.accepts("
         ))
+        // v2026.07.19 regression contract: Main Professional confirmation submits immediately;
+        // its active one-shot state, not an onDismiss pending value, guards both entry points.
+        XCTAssertGreaterThanOrEqual(
+            main.components(separatedBy: "!deleteSubmissionHandoff.blocksNewSubmission").count - 1,
+            2
+        )
+        XCTAssertTrue(main.contains("beginProfessionalSubmission("))
+        XCTAssertTrue(main.contains("startProfessionalDeleteSubmission(submission, timing: timing)"))
+        XCTAssertTrue(main.contains("onDismiss: finishProfessionalDeleteSheetDismissal"))
+        XCTAssertTrue(main.contains("routeProfessionalDeletePresentation"))
+        XCTAssertFalse(main.contains(".professional(request:"),
+                       "Main Professional submission must never return to onDismiss storage")
+
         for (source, handoffName) in [
-            (main, "deleteSubmissionHandoff"),
             (brew, "cleanupDeletionHandoff"),
             (uninstall, "uninstallDeletionHandoff")
         ] {
@@ -841,7 +1046,8 @@ final class ProfessionalToolDeletionFlowTests: XCTestCase {
         for source in [main, brew, duplicate, uninstall, workflow] {
             XCTAssertTrue(source.contains("DeletionInteractionCoordinator"))
             XCTAssertTrue(source.contains("ToolTrashConfirmationSheet"))
-            XCTAssertTrue(source.contains("DeletionPreflightNoticeSheet"))
+            XCTAssertTrue(source.contains(".deletionPreflightNoticeOverlay("))
+            XCTAssertFalse(source.contains("DeletionPreflightNoticeBanner"))
             XCTAssertFalse(source.contains("ProfessionalTrashSubmissionExecutor"),
                            "Professional tools must use the receipt-bearing shared coordinator")
             XCTAssertTrue(source.contains("OperationResultCompletion"),

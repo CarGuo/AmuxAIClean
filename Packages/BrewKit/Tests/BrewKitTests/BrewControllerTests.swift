@@ -34,6 +34,11 @@ final class BrewControllerTests: XCTestCase {
         XCTAssertTrue(c.listAll().isEmpty)
         XCTAssertTrue(c.listFormulae().isEmpty)
         XCTAssertTrue(c.listCasks().isEmpty)
+        // v2026.07.18 regression：两个可选安装根均不存在是可信 absence，不是读取失败。
+        let result = c.listAllWithDiagnostics()
+        XCTAssertEqual(result.status, .missing)
+        XCTAssertTrue(result.isAuthoritativeEmpty)
+        XCTAssertEqual(result.diagnostics, [])
     }
 
     // MARK: - 契约 3：单个 formula + 完整 INSTALL_RECEIPT 解析
@@ -74,7 +79,8 @@ final class BrewControllerTests: XCTestCase {
     func test_cask_无receipt_仍能列出_默认显式安装() throws {
         try makeCask(name: "copilot-cli", version: "0.0.408")
         let c = BrewController(prefix: prefix)
-        let pkgs = c.listCasks()
+        let result = c.listCasksWithDiagnostics()
+        let pkgs = result.packages
         XCTAssertEqual(pkgs.count, 1)
         let p = try XCTUnwrap(pkgs.first)
         XCTAssertEqual(p.name, "copilot-cli")
@@ -83,6 +89,8 @@ final class BrewControllerTests: XCTestCase {
         XCTAssertNil(p.installedAt, "cask 没 receipt，installedAt 应为 nil")
         XCTAssertTrue(p.installedOnRequest, "cask 默认视作用户显式安装的 GUI app")
         XCTAssertNil(p.tap)
+        XCTAssertEqual(result.diagnostics, [], "缺失 receipt 是预期状态，不应伪装成错误")
+        XCTAssertEqual(result.status, .complete)
     }
 
     // MARK: - 契约 6：同一 name 多 version 全部列出
@@ -103,11 +111,174 @@ final class BrewControllerTests: XCTestCase {
     func test_损坏receipt_不崩溃_其他字段降级为默认值() throws {
         try makeFormula(name: "broken", version: "1.0", receiptContents: "{ this is not json }")
         let c = BrewController(prefix: prefix)
-        let pkgs = c.listFormulae()
+        let result = c.listFormulaeWithDiagnostics()
+        let pkgs = result.packages
         XCTAssertEqual(pkgs.count, 1, "json 解析失败仍应返回 placeholder pkg")
         XCTAssertNil(pkgs[0].installedAt)
         XCTAssertFalse(pkgs[0].installedOnRequest, "失败默认 false（formula）")
         XCTAssertNil(pkgs[0].tap)
+        XCTAssertEqual(result.diagnostics.count, 1)
+        XCTAssertEqual(result.diagnostics.first?.source, .installReceipt)
+        XCTAssertEqual(result.diagnostics.first?.stage, .decodeDocument)
+        XCTAssertEqual(result.diagnostics.first?.reason, .malformed)
+        // v2026.07.18 regression：placeholder 仍可展示，但不能把损坏元数据标成完整。
+        XCTAssertEqual(result.status, .partial)
+    }
+
+    /// v2026.07.18 regression：读取被拒绝与文件缺失不能再落入同一个静默 nil。
+    func test_receipt权限拒绝_保留package并返回结构化诊断() throws {
+        try makeFormula(name: "denied", version: "1.0",
+                        installedAt: Date(), installedOnRequest: true, tap: nil)
+        let deniedPath = prefix
+            .appendingPathComponent("Cellar/denied/1.0/INSTALL_RECEIPT.json")
+            .path
+        let reader = BrewFileReader(read: { url in
+            if url.path == deniedPath {
+                throw NSError(
+                    domain: NSCocoaErrorDomain,
+                    code: CocoaError.fileReadNoPermission.rawValue
+                )
+            }
+            return try Data(contentsOf: url)
+        })
+        let result = BrewController(prefix: prefix, fileReader: reader)
+            .listFormulaeWithDiagnostics()
+
+        XCTAssertEqual(result.packages.map(\.name), ["denied"])
+        XCTAssertEqual(result.diagnostics.count, 1)
+        XCTAssertEqual(result.diagnostics.first?.source, .installReceipt)
+        XCTAssertEqual(result.diagnostics.first?.stage, .read)
+        XCTAssertEqual(result.diagnostics.first?.reason, .permissionDenied)
+        XCTAssertEqual(result.status, .partial)
+    }
+
+    func test_cellar枚举权限拒绝_区别于可选root缺失() {
+        let cellar = prefix.appendingPathComponent("Cellar", isDirectory: true)
+        let reader = BrewFileReader(
+            read: { url in try Data(contentsOf: url) },
+            contentsOfDirectory: { url in
+                if url.path == cellar.path {
+                    throw NSError(
+                        domain: NSPOSIXErrorDomain,
+                        code: Int(EACCES)
+                    )
+                }
+                throw NSError(
+                    domain: NSCocoaErrorDomain,
+                    code: CocoaError.fileNoSuchFile.rawValue
+                )
+            }
+        )
+
+        let result = BrewController(prefix: prefix, fileReader: reader)
+            .listAllWithDiagnostics()
+
+        XCTAssertEqual(result.packages, [])
+        XCTAssertEqual(result.diagnostics.count, 1, "缺失 Caskroom 不报错，Cellar 权限拒绝必须保留")
+        XCTAssertEqual(result.diagnostics.first?.source, .formulaInstallations)
+        XCTAssertEqual(result.diagnostics.first?.stage, .enumerateRoot)
+        XCTAssertEqual(result.diagnostics.first?.reason, .permissionDenied)
+        // v2026.07.18 regression：无可信 package 时权限失败必须是 unavailable。
+        XCTAssertEqual(result.status, .unavailable)
+        XCTAssertFalse(result.isAuthoritativeEmpty)
+    }
+
+    func test_formula版本目录枚举失败_保留其它package与局部诊断() throws {
+        try makeFormula(name: "denied", version: "1.0",
+                        installedAt: Date(), installedOnRequest: true, tap: nil)
+        try makeFormula(name: "healthy", version: "2.0",
+                        installedAt: Date(), installedOnRequest: true, tap: nil)
+        let deniedNameDirectory = prefix.appendingPathComponent("Cellar/denied", isDirectory: true)
+        let reader = BrewFileReader(
+            read: { url in try Data(contentsOf: url) },
+            contentsOfDirectory: { url in
+                if url.path == deniedNameDirectory.path {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))
+                }
+                return try FileManager.default.contentsOfDirectory(atPath: url.path)
+            }
+        )
+
+        let result = BrewController(prefix: prefix, fileReader: reader)
+            .listFormulaeWithDiagnostics()
+
+        XCTAssertEqual(result.packages.map(\.name), ["healthy"])
+        XCTAssertEqual(result.diagnostics.count, 1)
+        XCTAssertEqual(result.diagnostics.first?.source, .formulaInstallations)
+        XCTAssertEqual(result.diagnostics.first?.stage, .enumerateVersions)
+        XCTAssertEqual(result.diagnostics.first?.reason, .unreadable)
+        // v2026.07.18 regression：保留健康 package 的同时显式标记局部证据。
+        XCTAssertEqual(result.status, .partial)
+    }
+
+    func test_package容量子树枚举失败_保留package但证据必须partial() throws {
+        try makeFormula(name: "size-denied", version: "1.0",
+                        installedAt: Date(), installedOnRequest: true, tap: nil)
+        let versionDirectory = prefix.appendingPathComponent(
+            "Cellar/size-denied/1.0",
+            isDirectory: true
+        )
+        let sizeFileSystem = BrewPackageSizeFileSystem(
+            contentsOfDirectory: { url in
+                if url.path == versionDirectory.path {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))
+                }
+                return []
+            },
+            entryFacts: { _ in
+                return BrewPackageSizeEntryFacts(kind: .other, allocatedBytes: nil)
+            }
+        )
+
+        let result = BrewController(
+            prefix: prefix,
+            fileReader: .live,
+            packageSizeFileSystem: sizeFileSystem
+        ).listFormulaeWithDiagnostics()
+
+        XCTAssertEqual(result.packages.map(\.name), ["size-denied"])
+        XCTAssertEqual(result.packages.first?.sizeBytes, 0, "0B 只能是带 partial 的可信下界")
+        XCTAssertEqual(result.diagnostics.count, 1)
+        XCTAssertEqual(result.diagnostics.first?.stage, .enumeratePackageSize)
+        XCTAssertEqual(result.diagnostics.first?.reason, .permissionDenied)
+        XCTAssertEqual(result.status, .partial)
+    }
+
+    func test_package容量子项metadata失败_保留已量到bytes并降为partial() throws {
+        try makeFormula(name: "size-partial", version: "1.0",
+                        installedAt: Date(), installedOnRequest: true, tap: nil)
+        let versionDirectory = prefix.appendingPathComponent(
+            "Cellar/size-partial/1.0",
+            isDirectory: true
+        )
+        let good = versionDirectory.appendingPathComponent("good")
+        let bad = versionDirectory.appendingPathComponent("bad")
+        let sizeFileSystem = BrewPackageSizeFileSystem(
+            contentsOfDirectory: { url in
+                url.path == versionDirectory.path ? ["good", "bad"] : []
+            },
+            entryFacts: { url in
+                if url.path == bad.path {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))
+                }
+                if url.path == good.path {
+                    return BrewPackageSizeEntryFacts(kind: .regularFile, allocatedBytes: 4_096)
+                }
+                return BrewPackageSizeEntryFacts(kind: .other, allocatedBytes: nil)
+            }
+        )
+
+        let result = BrewController(
+            prefix: prefix,
+            fileReader: .live,
+            packageSizeFileSystem: sizeFileSystem
+        ).listFormulaeWithDiagnostics()
+
+        XCTAssertEqual(result.packages.first?.sizeBytes, 4_096)
+        XCTAssertEqual(result.diagnostics.count, 1)
+        XCTAssertEqual(result.diagnostics.first?.stage, .inspectPackageSize)
+        XCTAssertEqual(result.diagnostics.first?.reason, .unreadable)
+        XCTAssertEqual(result.status, .partial)
     }
 
     // MARK: - 契约 8：listAll = formulae + casks 全部排序

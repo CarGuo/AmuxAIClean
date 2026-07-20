@@ -48,6 +48,14 @@ final class TCCSkipListTests: XCTestCase {
         XCTAssertTrue(TCCSkipList.shouldSkip("\(home)/Library/Application Support/CallHistoryDB"))
     }
 
+    func testOtherUsersInPublicFullDiskNamespaceAreAlsoSkipped() {
+        XCTAssertTrue(TCCSkipList.shouldSkip("/Users/another-user/Library/Mail"))
+        XCTAssertTrue(TCCSkipList.shouldSkip("/Users/another-user/Library/Messages/chat.db"))
+        XCTAssertTrue(TCCSkipList.shouldSkip(
+            "/Users/another-user/Library/Containers/com.apple.Safari/Data"
+        ))
+    }
+
     // MARK: - 边界
 
     func testPrefixCollisionIsNotMistakenlySkipped() {
@@ -55,6 +63,14 @@ final class TCCSkipListTests: XCTestCase {
         let home = NSHomeDirectory()
         XCTAssertFalse(TCCSkipList.shouldSkip("\(home)/Library/MailStuff"))
         XCTAssertFalse(TCCSkipList.shouldSkip("\(home)/Library/SafariBackup"))
+        XCTAssertFalse(TCCSkipList.shouldSkip("/Users/another-user/Library/MailStuff"))
+    }
+
+    func testArbitraryCustomHomeSuffixDoesNotImpersonateTCCNamespace() {
+        XCTAssertFalse(TCCSkipList.shouldSkip("/tmp/custom-home/Library/Mail"))
+        XCTAssertFalse(TCCSkipList.shouldSkip(
+            "/Volumes/backup/Users/another-user/Library/Messages"
+        ))
     }
 
     func testSystemAbsolutePathIsSkipped() {

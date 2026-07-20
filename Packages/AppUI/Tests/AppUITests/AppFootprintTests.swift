@@ -1,6 +1,99 @@
 import XCTest
+import Darwin
 import SafetyKit
 @testable import AppUI
+
+/// Test-only no-follow capability model. In-memory snapshots must exercise the same identity
+/// contract as production instead of regaining path-only authority through fixture defaults.
+func appFootprintTestIdentity(for path: String) -> InstalledAppFileIdentity {
+    var inode: UInt64 = 1_469_598_103_934_665_603
+    for byte in path.utf8 {
+        inode = (inode ^ UInt64(byte)) &* 1_099_511_628_211
+    }
+    return InstalledAppFileIdentity(deviceID: 0xA11, inode: max(1, inode))
+}
+
+func appFootprintIdentityBoundSnapshot(_ snapshot: FSSnapshot, path: String) -> FSSnapshot {
+    if snapshot.objectIdentity != nil { return snapshot }
+    let identity = appFootprintTestIdentity(for: path)
+    let isDirectory = snapshot.isDirectory || path.lowercased().hasSuffix(".app")
+    return FSSnapshot(
+        bytes: snapshot.bytes,
+        logicalBytes: snapshot.logicalBytes,
+        fileCount: snapshot.fileCount,
+        exists: snapshot.exists,
+        isDirectory: isDirectory,
+        objectIdentity: TrashObjectIdentity(
+            device: identity.deviceID,
+            inode: identity.inode,
+            fileType: UInt16(isDirectory ? S_IFDIR : S_IFREG)
+        ),
+        completion: snapshot.completion,
+        issues: snapshot.issues
+    )
+}
+
+func makeRealAppFootprintTestApp(
+    bundleID: String,
+    name: String
+) throws -> (root: URL, app: InstalledApp) {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("app-footprint-identity-\(UUID().uuidString)", isDirectory: true)
+    let appURL = root.appendingPathComponent("\(name).app", isDirectory: true)
+    let contents = appURL.appendingPathComponent("Contents", isDirectory: true)
+    try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+    let metadata = AppMetadata(
+        bundleID: bundleID,
+        bundleVendor: AppMetadata.vendorPrefix(of: bundleID),
+        appName: name,
+        executableName: name
+    )
+    let plist = try PropertyListSerialization.data(
+        fromPropertyList: [
+            "CFBundleIdentifier": metadata.bundleID,
+            "CFBundleName": metadata.appName,
+            "CFBundleExecutable": metadata.executableName ?? metadata.appName,
+        ],
+        format: .xml,
+        options: 0
+    )
+    try plist.write(to: contents.appendingPathComponent("Info.plist"))
+    var diskMetadata = stat()
+    guard lstat(appURL.path, &diskMetadata) == 0 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+    return (
+        root,
+        InstalledApp(
+            appURL: appURL,
+            metadata: metadata,
+            fileIdentity: InstalledAppFileIdentity(metadata: diskMetadata)
+        )
+    )
+}
+
+func appFootprintBundleSnapshot(
+    bytes: Int64,
+    fileCount: Int,
+    app: InstalledApp,
+    completion: FSSnapshotCompletionStatus = .complete,
+    issues: [FSSnapshotIssue] = []
+) -> FSSnapshot {
+    let identity = app.fileIdentity!
+    return FSSnapshot(
+        bytes: bytes,
+        fileCount: fileCount,
+        exists: true,
+        isDirectory: true,
+        objectIdentity: TrashObjectIdentity(
+            device: identity.deviceID,
+            inode: identity.inode,
+            fileType: UInt16(S_IFDIR)
+        ),
+        completion: completion,
+        issues: issues
+    )
+}
 
 /// v1.2 P1-6 应用占用排行榜 —— 数据契约与扫描器单元测试。
 ///
@@ -23,7 +116,10 @@ final class AppFootprintTests: XCTestCase {
             entriesByRoot[path]
         }
         func snapshot(at path: String) -> FSSnapshot {
-            snapshots[path] ?? .init(bytes: 0, fileCount: 0)
+            appFootprintIdentityBoundSnapshot(
+                snapshots[path] ?? .init(bytes: 0, fileCount: 0),
+                path: path
+            )
         }
     }
 
@@ -39,8 +135,21 @@ final class AppFootprintTests: XCTestCase {
                 bundleVendor: AppMetadata.vendorPrefix(of: bundleID),
                 appName: name,
                 executableName: name
-            )
+            ),
+            fileIdentity: appFootprintTestIdentity(for: path)
         )
+    }
+
+    private func metadataReader(
+        for apps: [InstalledApp]
+    ) -> @Sendable (URL) throws -> AppMetadata {
+        let byPath = Dictionary(uniqueKeysWithValues: apps.map { ($0.appURL.path, $0.metadata) })
+        return { url in
+            guard let metadata = byPath[url.path] else {
+                throw AppMetadataReadError.missingBundleIdentifier
+            }
+            return metadata
+        }
     }
 
     // MARK: - 1. bucketKind 映射
@@ -87,10 +196,15 @@ final class AppFootprintTests: XCTestCase {
         let fm = FakeFM(entriesByRoot: [:], snapshots: [
             appPath: .init(bytes: 5_000_000, fileCount: 42)
         ])
-        let unins = AppUninstaller(homeDirectory: home, fileManager: fm, vendorRules: [])
+        let app = makeApp(bundleID: "com.foo.bar", name: "Foo", atPath: appPath)
+        let unins = AppUninstaller(
+            homeDirectory: home,
+            fileManager: fm,
+            vendorRules: [],
+            appMetadataReader: metadataReader(for: [app])
+        )
         let scanner = AppFootprintScanner(uninstaller: unins, snapshot: fm)
 
-        let app = makeApp(bundleID: "com.foo.bar", name: "Foo", atPath: appPath)
         let item = await scanner.scanOne(app: app)
 
         XCTAssertEqual(item.appBundleBytes, 5_000_000)
@@ -101,9 +215,12 @@ final class AppFootprintTests: XCTestCase {
         XCTAssertEqual(item.buckets.first?.kind, .bundle)
     }
 
-    func test_scanOne_有关联目录_关联bytes累加且按字节倒序() async {
+    func test_scanOne_有关联目录_关联bytes累加且按字节倒序() async throws {
         let home = "/H"
-        let appPath = "/Applications/Demo.app"
+        let fixture = try makeRealAppFootprintTestApp(bundleID: "com.acme.demo", name: "Demo")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let app = fixture.app
+        let appPath = app.appURL.path
         let cachesPath = "\(home)/Library/Caches"
 
         // 在 Caches 下挂 3 个 com.acme.demo.* 命中候选
@@ -111,16 +228,20 @@ final class AppFootprintTests: XCTestCase {
             FSEntry(name: "com.acme.demo.\(i)", path: "\(cachesPath)/com.acme.demo.\(i)")
         }
         let snaps: [String: FSSnapshot] = [
-            appPath: .init(bytes: 100, fileCount: 1),
+            appPath: appFootprintBundleSnapshot(bytes: 100, fileCount: 1, app: app),
             "\(cachesPath)/com.acme.demo.0": .init(bytes: 1000, fileCount: 5),
             "\(cachesPath)/com.acme.demo.1": .init(bytes: 50_000, fileCount: 8),
             "\(cachesPath)/com.acme.demo.2": .init(bytes: 200, fileCount: 2)
         ]
         let fm = FakeFM(entriesByRoot: [cachesPath: entries], snapshots: snaps)
-        let unins = AppUninstaller(homeDirectory: home, fileManager: fm, vendorRules: [])
+        let unins = AppUninstaller(
+            homeDirectory: home,
+            fileManager: fm,
+            vendorRules: [],
+            appMetadataReader: metadataReader(for: [app])
+        )
         let scanner = AppFootprintScanner(uninstaller: unins, snapshot: fm)
 
-        let app = makeApp(bundleID: "com.acme.demo", name: "Demo", atPath: appPath)
         let item = await scanner.scanOne(app: app)
 
         XCTAssertEqual(item.appBundleBytes, 100)
@@ -133,6 +254,80 @@ final class AppFootprintTests: XCTestCase {
         XCTAssertEqual(item.buckets[1].bytes, 50_000)
         XCTAssertEqual(item.buckets[2].bytes, 1000)
         XCTAssertEqual(item.buckets[3].bytes, 200)
+    }
+
+    func test_scanOne_磁盘App身份漂移时不聚合旧metadata关联目录() async {
+        let home = "/H"
+        let appPath = "/Applications/Claimed.app"
+        let caches = "\(home)/Library/Caches"
+        let claimedRelated = "\(caches)/com.claimed.app"
+        let app = makeApp(
+            bundleID: "com.claimed.app",
+            name: "Claimed",
+            atPath: appPath
+        )
+        let actual = AppMetadata(
+            bundleID: "com.actual.replaced",
+            bundleVendor: "com.actual",
+            appName: "Actual",
+            executableName: "Actual"
+        )
+        let fileManager = FakeFM(
+            entriesByRoot: [caches: [FSEntry(name: "com.claimed.app", path: claimedRelated)]],
+            snapshots: [
+                appPath: .init(bytes: 100, fileCount: 1, exists: true, isDirectory: true),
+                claimedRelated: .init(bytes: 900, fileCount: 9, exists: true, isDirectory: true),
+            ]
+        )
+        let uninstaller = AppUninstaller(
+            homeDirectory: home,
+            fileManager: fileManager,
+            vendorRules: [],
+            appMetadataReader: { _ in actual }
+        )
+        let scanner = AppFootprintScanner(uninstaller: uninstaller, snapshot: fileManager)
+
+        let item = await scanner.scanOne(app: app)
+
+        XCTAssertEqual(item.appBundleBytes, 100)
+        XCTAssertEqual(item.relatedBytes, 0)
+        XCTAssertEqual(item.totalBytes, 100)
+        XCTAssertFalse(item.isComplete, "identity issue 必须把聚合权威降为下界")
+    }
+
+    func test_scanOne_bundle测量身份不是已发现App时不把replacement字节标给旧App() async {
+        let appPath = "/Applications/Claimed.app"
+        let app = makeApp(bundleID: "com.claimed.app", name: "Claimed", atPath: appPath)
+        let expected = app.fileIdentity!
+        let replacementSnapshot = FSSnapshot(
+            bytes: 9_999,
+            fileCount: 9,
+            exists: true,
+            isDirectory: true,
+            objectIdentity: TrashObjectIdentity(
+                device: expected.deviceID,
+                inode: expected.inode &+ 1,
+                fileType: UInt16(S_IFDIR)
+            )
+        )
+        let fileManager = FakeFM(
+            entriesByRoot: [:],
+            snapshots: [appPath: replacementSnapshot]
+        )
+        let scanner = AppFootprintScanner(
+            uninstaller: AppUninstaller(
+                homeDirectory: "/H",
+                fileManager: fileManager,
+                vendorRules: []
+            ),
+            snapshot: fileManager
+        )
+
+        let item = await scanner.scanOne(app: app)
+
+        XCTAssertEqual(item.appBundleBytes, 0)
+        XCTAssertEqual(item.totalBytes, 0)
+        XCTAssertFalse(item.isComplete)
     }
 
     // MARK: - 4. 排行榜聚合
@@ -150,15 +345,19 @@ final class AppFootprintTests: XCTestCase {
             bPath: .init(bytes: 200_000_000, fileCount: 1),
             cPath: .init(bytes: 1_000_000, fileCount: 1)
         ]
-        let fm = FakeFM(entriesByRoot: [cachesPath: []], snapshots: snaps)
-        let unins = AppUninstaller(homeDirectory: home, fileManager: fm, vendorRules: [])
-        let scanner = AppFootprintScanner(uninstaller: unins, snapshot: fm)
-
         let apps = [
             makeApp(bundleID: "com.a", name: "A", atPath: aPath),
             makeApp(bundleID: "com.b", name: "B", atPath: bPath),
             makeApp(bundleID: "com.c", name: "C", atPath: cPath)
         ]
+        let fm = FakeFM(entriesByRoot: [cachesPath: []], snapshots: snaps)
+        let unins = AppUninstaller(
+            homeDirectory: home,
+            fileManager: fm,
+            vendorRules: [],
+            appMetadataReader: metadataReader(for: apps)
+        )
+        let scanner = AppFootprintScanner(uninstaller: unins, snapshot: fm)
         let items = await scanner.scanAll(apps: apps)
 
         XCTAssertEqual(items.count, 3)
@@ -183,14 +382,18 @@ final class AppFootprintTests: XCTestCase {
             "/A.app": .init(bytes: 1, fileCount: 1),
             "/B.app": .init(bytes: 2, fileCount: 1)
         ]
-        let fm = FakeFM(entriesByRoot: [cachesPath: []], snapshots: snaps)
-        let unins = AppUninstaller(homeDirectory: home, fileManager: fm, vendorRules: [])
-        let scanner = AppFootprintScanner(uninstaller: unins, snapshot: fm)
-
         let apps = [
             makeApp(bundleID: "com.a", name: "A", atPath: "/A.app"),
             makeApp(bundleID: "com.b", name: "B", atPath: "/B.app")
         ]
+        let fm = FakeFM(entriesByRoot: [cachesPath: []], snapshots: snaps)
+        let unins = AppUninstaller(
+            homeDirectory: home,
+            fileManager: fm,
+            vendorRules: [],
+            appMetadataReader: metadataReader(for: apps)
+        )
+        let scanner = AppFootprintScanner(uninstaller: unins, snapshot: fm)
 
         // 用 actor 收集回调
         actor Progress {

@@ -19,11 +19,134 @@ import Foundation
 ///    误带出 `com.foobar`）；appName 用 `==[c]`（case-insensitive 严格相等）
 ///    且要求长度 >= 4。
 /// 3. **路径去重**：与已有 `seenPaths` 合并；新路径若不存在 / 0B / 无 entries 跳过。
-/// 4. **Fail-soft**：Spotlight 不可用 / 超时 / 返空一律不报错，主路径结果原样返回。
+/// 4. **Typed terminal evidence**：空结果是一次成功查询；启动失败、超时与取消分别保留，
+///    调用方不能再把它们伪装成“完整且没有命中”。
 ///
 /// 决策来源：[docs/AUDIT_2026_06.md L416-L417](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/AUDIT_2026_06.md#L416-L417)。
 
 /// Spotlight 查询抽象层。生产实现走 NSMetadataQuery，测试实现走内存 fixture。
+public enum SpotlightProbeFailure: Hashable, Sendable {
+    case startFailed
+    case timedOut
+    case cancelled
+    case resultCountLimitExceeded(limit: Int)
+    case extractionTimeLimitExceeded(limitMilliseconds: Int64)
+}
+
+/// Pure budget/normalization pieces are separated from NSMetadataQuery so truncation semantics are
+/// deterministic in tests. The MainActor only freezes a bounded set of path strings; canonical
+/// validation and deduplication happen on a utility worker.
+struct SpotlightResultBudget: Sendable, Equatable {
+    let maximumResultCount: Int
+    let maximumMainActorExtractionNanoseconds: UInt64
+
+    static let production = SpotlightResultBudget(
+        maximumResultCount: 4_096,
+        maximumMainActorExtractionNanoseconds: 25_000_000
+    )
+
+    init(maximumResultCount: Int, maximumMainActorExtractionNanoseconds: UInt64) {
+        self.maximumResultCount = max(1, maximumResultCount)
+        self.maximumMainActorExtractionNanoseconds = maximumMainActorExtractionNanoseconds
+    }
+
+    func countFailure(totalResultCount: Int) -> SpotlightProbeFailure? {
+        totalResultCount > maximumResultCount
+            ? .resultCountLimitExceeded(limit: maximumResultCount)
+            : nil
+    }
+
+    func timeFailureIfExceeded(
+        startedAt: UInt64,
+        now: UInt64
+    ) -> SpotlightProbeFailure? {
+        guard now &- startedAt >= maximumMainActorExtractionNanoseconds else { return nil }
+        return .extractionTimeLimitExceeded(
+            limitMilliseconds: Int64(maximumMainActorExtractionNanoseconds / 1_000_000)
+        )
+    }
+}
+
+enum SpotlightPathNormalizer {
+    static func normalize(_ paths: [String]) -> [String] {
+        var seen = Set<String>()
+        return paths.compactMap { raw in
+            guard raw.hasPrefix("/"), !raw.contains("\0") else { return nil }
+            let normalized = URL(fileURLWithPath: raw).standardizedFileURL.path
+            guard normalized.hasPrefix("/"), seen.insert(normalized).inserted else { return nil }
+            return normalized
+        }.sorted()
+    }
+}
+
+struct SpotlightFrozenPathProjection: Sendable, Equatable {
+    let paths: [String]
+    let failure: SpotlightProbeFailure?
+}
+
+/// v2026.07.18: `NSMetadataQuery.result(at:)` is MainActor-only work. A numeric cap does not make
+/// 4,096 synchronous calls responsive, so extraction is split into tiny RunLoop-cooperative
+/// batches and checks cancellation/deadline before every item. Timeout/cancel can therefore run
+/// between batches instead of waiting behind one long main-thread loop.
+@MainActor
+enum SpotlightBatchedPathExtractor {
+    static func extract(
+        totalResultCount: Int,
+        budget: SpotlightResultBudget,
+        batchSize: Int = 8,
+        pathAtIndex: (Int) -> String?,
+        now: () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+        cancellationRequested: () -> Bool = { Task.isCancelled },
+        yieldBetweenBatches: () async -> Void = { await Task.yield() }
+    ) async -> SpotlightFrozenPathProjection {
+        let extractionLimit = min(totalResultCount, budget.maximumResultCount)
+        let startedAt = now()
+        var paths: [String] = []
+        paths.reserveCapacity(extractionLimit)
+        let failure = budget.countFailure(totalResultCount: totalResultCount)
+        let boundedBatchSize = max(1, batchSize)
+        var index = 0
+
+        while index < extractionLimit {
+            let end = min(index + boundedBatchSize, extractionLimit)
+            while index < end {
+                if cancellationRequested() {
+                    return SpotlightFrozenPathProjection(paths: paths, failure: .cancelled)
+                }
+                if let timeFailure = budget.timeFailureIfExceeded(
+                    startedAt: startedAt,
+                    now: now()
+                ) {
+                    return SpotlightFrozenPathProjection(paths: paths, failure: timeFailure)
+                }
+                if let path = pathAtIndex(index) { paths.append(path) }
+                index += 1
+            }
+            if index < extractionLimit {
+                await yieldBetweenBatches()
+            }
+        }
+        return SpotlightFrozenPathProjection(paths: paths, failure: failure)
+    }
+}
+
+/// 一条 Spotlight 谓词的终态。`paths=[]` 只有在 `failure == nil` 时才表示索引完整返回空。
+public struct SpotlightProbeResult: Hashable, Sendable {
+    public let paths: [String]
+    public let failure: SpotlightProbeFailure?
+
+    public var isComplete: Bool { failure == nil }
+
+    public init(paths: [String], failure: SpotlightProbeFailure? = nil) {
+        self.paths = paths
+        self.failure = failure
+    }
+
+    public static func failed(_ failure: SpotlightProbeFailure) -> SpotlightProbeResult {
+        SpotlightProbeResult(paths: [], failure: failure)
+    }
+}
+
 public protocol SpotlightProbing: Sendable {
     /// 按 bundleID 严格相等查路径。返回的路径**未必存在**或**未必属于该 app 残留**，
     /// 调用方负责后续过滤。
@@ -33,6 +156,33 @@ public protocol SpotlightProbing: Sendable {
 
     /// 按 appName 严格相等（忽略大小写）查路径。
     func probeByAppName(_ appName: String, timeout: TimeInterval) async -> [String]
+
+    /// Typed variants are the production completeness boundary. The defaults keep existing
+    /// in-memory probes source-compatible and interpret their returned array as a successful query.
+    func probeByBundleIDEvidence(
+        _ bundleID: String,
+        timeout: TimeInterval
+    ) async -> SpotlightProbeResult
+    func probeByAppNameEvidence(
+        _ appName: String,
+        timeout: TimeInterval
+    ) async -> SpotlightProbeResult
+}
+
+public extension SpotlightProbing {
+    func probeByBundleIDEvidence(
+        _ bundleID: String,
+        timeout: TimeInterval
+    ) async -> SpotlightProbeResult {
+        SpotlightProbeResult(paths: await probeByBundleID(bundleID, timeout: timeout))
+    }
+
+    func probeByAppNameEvidence(
+        _ appName: String,
+        timeout: TimeInterval
+    ) async -> SpotlightProbeResult {
+        SpotlightProbeResult(paths: await probeByAppName(appName, timeout: timeout))
+    }
 }
 
 /// 默认实现：NSMetadataQuery（全用户域 + 本地索引）。
@@ -42,7 +192,17 @@ public protocol SpotlightProbing: Sendable {
 public final class DefaultSpotlightProbe: SpotlightProbing, @unchecked Sendable {
     public init() {}
 
-    public func probeByBundleID(_ bundleID: String, timeout: TimeInterval) async -> [String] {
+    public func probeByBundleID(
+        _ bundleID: String,
+        timeout: TimeInterval
+    ) async -> [String] {
+        await probeByBundleIDEvidence(bundleID, timeout: timeout).paths
+    }
+
+    public func probeByBundleIDEvidence(
+        _ bundleID: String,
+        timeout: TimeInterval
+    ) async -> SpotlightProbeResult {
         // 谓词：kMDItemCFBundleIdentifier == "<bundleID>"
         await runQuery(
             predicateFormat: "kMDItemCFBundleIdentifier == %@",
@@ -51,7 +211,17 @@ public final class DefaultSpotlightProbe: SpotlightProbing, @unchecked Sendable 
         )
     }
 
-    public func probeByAppName(_ appName: String, timeout: TimeInterval) async -> [String] {
+    public func probeByAppName(
+        _ appName: String,
+        timeout: TimeInterval
+    ) async -> [String] {
+        await probeByAppNameEvidence(appName, timeout: timeout).paths
+    }
+
+    public func probeByAppNameEvidence(
+        _ appName: String,
+        timeout: TimeInterval
+    ) async -> SpotlightProbeResult {
         // 严格相等（忽略大小写）：kMDItemDisplayName ==[c] "<appName>"
         await runQuery(
             predicateFormat: "kMDItemDisplayName ==[c] %@",
@@ -60,43 +230,37 @@ public final class DefaultSpotlightProbe: SpotlightProbing, @unchecked Sendable 
         )
     }
 
-    private func runQuery(predicateFormat: String, argument: String, timeout: TimeInterval) async -> [String] {
-        // NSMetadataQuery 必须在主线程启动并由 RunLoop 驱动；这里包装成 continuation。
-        // 跨 actor 只传 String（Sendable），NSPredicate 在 main actor 内组装。
-        await withCheckedContinuation { (cont: CheckedContinuation<[String], Never>) in
-            Task { @MainActor in
-                let state = SpotlightQueryState()
-                state.query.predicate = NSPredicate(format: predicateFormat, argument)
-                state.query.searchScopes = [NSMetadataQueryUserHomeScope]
-
-                state.observer = NotificationCenter.default.addObserver(
-                    forName: .NSMetadataQueryDidFinishGathering,
-                    object: state.query, queue: .main
-                ) { [weak state] _ in
-                    MainActor.assumeIsolated {
-                        guard let state else { return }
-                        var paths: [String] = []
-                        for i in 0..<state.query.resultCount {
-                            if let item = state.query.result(at: i) as? NSMetadataItem,
-                               let p = item.value(forAttribute: NSMetadataItemPathKey) as? String {
-                                paths.append(p)
-                            }
-                        }
-                        state.finish(with: paths, cont: cont)
-                    }
-                }
-
-                let deadline = DispatchTime.now() + timeout
-                DispatchQueue.main.asyncAfter(deadline: deadline) { [weak state] in
-                    guard let state else { return }
-                    state.finish(with: [], cont: cont)
-                }
-
-                if !state.query.start() {
-                    state.finish(with: [], cont: cont)
+    private func runQuery(
+        predicateFormat: String,
+        argument: String,
+        timeout: TimeInterval
+    ) async -> SpotlightProbeResult {
+        // NSMetadataQuery 必须在主线程启动并由 RunLoop 驱动。State 在 continuation 安装前
+        // 也能记录取消终态，消除“Task 已取消但 query 仍等满 timeout”的竞态。
+        let state = await MainActor.run { SpotlightQueryState() }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                Task { @MainActor in
+                    state.begin(
+                        predicateFormat: predicateFormat,
+                        argument: argument,
+                        timeout: Self.normalizedTimeout(timeout),
+                        continuation: continuation
+                    )
                 }
             }
+        } onCancel: {
+            Task { @MainActor in
+                state.cancel()
+            }
         }
+    }
+
+    /// A caller-provided NaN/infinity must not turn a bounded metadata query into an immortal one.
+    /// Production uses 1.5 s; 30 s is only a defensive API ceiling.
+    private static func normalizedTimeout(_ timeout: TimeInterval) -> TimeInterval {
+        guard timeout.isFinite, timeout > 0 else { return 0 }
+        return min(timeout, 30)
     }
 }
 
@@ -106,23 +270,141 @@ public final class DefaultSpotlightProbe: SpotlightProbing, @unchecked Sendable 
 private final class SpotlightQueryState {
     let query = NSMetadataQuery()
     var observer: NSObjectProtocol?
-    var resumed = false
+    private var continuation: CheckedContinuation<SpotlightProbeResult, Never>?
+    private var terminalResult: SpotlightProbeResult?
+    private var timeoutWorkItem: DispatchWorkItem?
+    private var extractionTask: Task<Void, Never>?
+    private var normalizationTask: Task<Void, Never>?
 
-    func finish(with paths: [String], cont: CheckedContinuation<[String], Never>) {
-        guard !resumed else { return }
-        resumed = true
+    func begin(
+        predicateFormat: String,
+        argument: String,
+        timeout: TimeInterval,
+        continuation: CheckedContinuation<SpotlightProbeResult, Never>
+    ) {
+        precondition(self.continuation == nil)
+        self.continuation = continuation
+        if let terminalResult {
+            self.continuation = nil
+            continuation.resume(returning: terminalResult)
+            return
+        }
+
+        query.predicate = NSPredicate(format: predicateFormat, argument)
+        query.searchScopes = [NSMetadataQueryUserHomeScope]
+        observer = NotificationCenter.default.addObserver(
+            forName: .NSMetadataQueryDidFinishGathering,
+            object: query,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.freezeFinishedQueryResults()
+            }
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                self?.finish(with: .failed(.timedOut))
+            }
+        }
+        timeoutWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout, execute: workItem)
+
+        guard query.start() else {
+            finish(with: .failed(.startFailed))
+            return
+        }
+    }
+
+    func cancel() {
+        finish(with: .failed(.cancelled))
+    }
+
+    /// NSMetadataQuery is MainActor/RunLoop-bound, but result interpretation is not. Freeze only a
+    /// bounded path-string projection while updates are disabled, then normalize/deduplicate it on
+    /// a utility executor. Count/time truncation returns partial paths plus typed incomplete proof.
+    private func freezeFinishedQueryResults() {
+        guard terminalResult == nil,
+              extractionTask == nil,
+              normalizationTask == nil else { return }
+        query.disableUpdates()
+        let budget = SpotlightResultBudget.production
+        let totalResultCount = query.resultCount
+        extractionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let projection = await SpotlightBatchedPathExtractor.extract(
+                totalResultCount: totalResultCount,
+                budget: budget,
+                pathAtIndex: { [query] index in
+                    guard let item = query.result(at: index) as? NSMetadataItem else { return nil }
+                    return item.value(forAttribute: NSMetadataItemPathKey) as? String
+                }
+            )
+            guard !Task.isCancelled else { return }
+            self.completeExtraction(projection)
+        }
+    }
+
+    private func completeExtraction(_ projection: SpotlightFrozenPathProjection) {
+        guard terminalResult == nil else { return }
+        extractionTask = nil
         query.stop()
+        timeoutWorkItem?.cancel()
+        timeoutWorkItem = nil
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
+            self.observer = nil
+        }
+
+        let frozenPaths = projection.paths
+        let frozenFailure = projection.failure
+        let task = Task.detached(priority: .utility) { [weak self] in
+            guard !Task.isCancelled else { return }
+            let normalized = SpotlightPathNormalizer.normalize(frozenPaths)
+            guard !Task.isCancelled else { return }
+            await self?.completeNormalization(paths: normalized, failure: frozenFailure)
+        }
+        normalizationTask = task
+    }
+
+    private func completeNormalization(
+        paths: [String],
+        failure: SpotlightProbeFailure?
+    ) {
+        normalizationTask = nil
+        finish(with: SpotlightProbeResult(paths: paths, failure: failure))
+    }
+
+    private func finish(with result: SpotlightProbeResult) {
+        guard terminalResult == nil else { return }
+        terminalResult = result
+        query.stop()
+        extractionTask?.cancel()
+        extractionTask = nil
+        normalizationTask?.cancel()
+        normalizationTask = nil
+        timeoutWorkItem?.cancel()
+        timeoutWorkItem = nil
         if let o = observer {
             NotificationCenter.default.removeObserver(o)
             observer = nil
         }
-        cont.resume(returning: paths)
+        if let continuation {
+            self.continuation = nil
+            continuation.resume(returning: result)
+        }
     }
 }
 
 /// Noop 实现：所有查询返空。给单元测试当默认 stub，避免触发系统 mds。
 public struct NoopSpotlightProbe: SpotlightProbing {
     public init() {}
-    public func probeByBundleID(_ bundleID: String, timeout: TimeInterval) async -> [String] { [] }
-    public func probeByAppName(_ appName: String, timeout: TimeInterval) async -> [String] { [] }
+    public func probeByBundleID(
+        _ bundleID: String,
+        timeout: TimeInterval
+    ) async -> [String] { [] }
+    public func probeByAppName(
+        _ appName: String,
+        timeout: TimeInterval
+    ) async -> [String] { [] }
 }

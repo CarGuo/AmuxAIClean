@@ -1,5 +1,33 @@
 import SwiftUI
 import AppKit
+import ServiceManagement
+
+/// v2026.07.18：一次启动项 reload 的唯一发布身份。取消 Task 只是一条信号，
+/// 旧轮必须同时失去 revision ownership，才不能在同步 IO 返回后回写新页面。
+struct LaunchAgentReloadIdentity: Sendable, Equatable {
+    let operationID: UUID
+    let revision: UInt64
+}
+
+struct LaunchAgentReloadGate: Sendable, Equatable {
+    private(set) var current: LaunchAgentReloadIdentity?
+
+    mutating func begin(_ identity: LaunchAgentReloadIdentity) { current = identity }
+    mutating func invalidate() { current = nil }
+
+    mutating func finishIfCurrent(
+        _ identity: LaunchAgentReloadIdentity,
+        taskWasCancelled: Bool
+    ) -> Bool? {
+        guard current == identity else { return nil }
+        current = nil
+        return !taskWasCancelled
+    }
+}
+
+enum LaunchAgentMetricProjection {
+    static func isComplete(issues: [LaunchAgentScanIssue]) -> Bool { issues.isEmpty }
+}
 
 /// v1.2 P1-7 启动项查看屏。
 ///
@@ -11,9 +39,13 @@ public struct LaunchAgentScreen: View {
     private let scanner: LaunchAgentScanner
 
     @State private var items: [LaunchAgentItem] = []
+    @State private var issues: [LaunchAgentScanIssue] = []
     @State private var selected: LaunchAgentItem?
     @State private var isLoading: Bool = false
     @State private var search: String = ""
+    @State private var reloadTask: Task<Void, Never>?
+    @State private var reloadRevision: UInt64 = 0
+    @State private var reloadGate = LaunchAgentReloadGate()
     /// v2026.07.15：只保留扫描事实，所有占位、分组和容量在渲染时按当前 locale 投影。
     @Environment(\.locale) private var locale
 
@@ -25,6 +57,8 @@ public struct LaunchAgentScreen: View {
         VStack(spacing: 0) {
             header
             Divider()
+            scanContractNotices
+            Divider()
             if isLoading && items.isEmpty {
                 placeholder(AppLocalization.string("launchagent.placeholder.scanning", locale: locale), systemImage: "hourglass")
             } else if filtered.isEmpty {
@@ -35,7 +69,45 @@ public struct LaunchAgentScreen: View {
             Divider()
             footer
         }
-        .task { await reload() }
+        .onAppear { startReload() }
+        .onDisappear { cancelReloadForDeparture() }
+    }
+
+    /// v2026.07.18：覆盖范围与不完整证据属于结果合同，不能藏进日志或空状态。
+    private var scanContractNotices: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 7) {
+                Image(systemName: "info.circle")
+                    .foregroundStyle(.secondary)
+                Text(AppLocalization.string("launchagent.coverage.classic_only", locale: locale))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 10)
+                Button {
+                    SMAppService.openSystemSettingsLoginItems()
+                } label: {
+                    Text(AppLocalization.string("launchagent.coverage.open_settings", locale: locale))
+                }
+                .buttonStyle(.link)
+            }
+            if !issues.isEmpty {
+                HStack(alignment: .top, spacing: 7) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(AppLocalization.format(
+                        "launchagent.issue.partial %lld",
+                        locale: locale,
+                        arguments: [issues.count]
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(Color.secondary.opacity(0.045))
     }
 
     // MARK: - Header / Footer
@@ -56,7 +128,7 @@ public struct LaunchAgentScreen: View {
                 ProgressView().controlSize(.small)
             }
             Button {
-                Task { await reload() }
+                startReload()
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
@@ -72,7 +144,9 @@ public struct LaunchAgentScreen: View {
             if !items.isEmpty {
                 let total = items.map(\.fileSize).reduce(Int64(0), +)
                 Text(AppLocalization.format(
-                    "launchagent.footer.total",
+                    LaunchAgentMetricProjection.isComplete(issues: issues)
+                        ? "launchagent.footer.total"
+                        : "launchagent.footer.partial",
                     locale: locale,
                     arguments: [items.count, byteString(total)]
                 ))
@@ -189,14 +263,50 @@ public struct LaunchAgentScreen: View {
         if !search.trimmingCharacters(in: .whitespaces).isEmpty {
             return AppLocalization.string("launchagent.empty.no_match", locale: locale)
         }
+        if !issues.isEmpty {
+            return AppLocalization.format(
+                "launchagent.issue.empty %lld",
+                locale: locale,
+                arguments: [issues.count]
+            )
+        }
         return AppLocalization.string("launchagent.empty.no_items", locale: locale)
     }
 
-    private func reload() async {
+    private func startReload() {
+        reloadTask?.cancel()
+        reloadRevision &+= 1
+        let identity = LaunchAgentReloadIdentity(
+            operationID: UUID(),
+            revision: reloadRevision
+        )
+        reloadGate.begin(identity)
         isLoading = true
         selected = nil
-        let result = await scanner.scanAll()
-        items = result
+        let scanner = scanner
+        reloadTask = Task {
+            let result = await scanner.scanAll()
+            let taskWasCancelled = Task.isCancelled
+            await MainActor.run {
+                guard let shouldPublish = reloadGate.finishIfCurrent(
+                    identity,
+                    taskWasCancelled: taskWasCancelled
+                ) else { return }
+                reloadTask = nil
+                isLoading = false
+                guard shouldPublish else { return }
+                items = result.items
+                issues = result.issues
+            }
+        }
+    }
+
+    private func cancelReloadForDeparture() {
+        // Invalidate before signalling cancellation: synchronous plist/metadata IO may return
+        // before observing Task.isCancelled, but it still cannot claim the departed page.
+        reloadGate.invalidate()
+        reloadTask?.cancel()
+        reloadTask = nil
         isLoading = false
     }
 

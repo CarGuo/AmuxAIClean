@@ -212,6 +212,7 @@ public struct DuplicateDeletionVerificationRequest: Sendable, Equatable {
 /// Source-specific proof carried by the otherwise shared deletion state machine.
 public enum DeletionExecutionVerification: Sendable, Equatable {
     case duplicate(DuplicateDeletionVerificationRequest)
+    case uninstall(UninstallCandidateVerificationRequest)
 }
 
 /// Claim-adjacent, cheap fence retained after the initial complete hash pass. It is reused for

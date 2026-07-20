@@ -53,6 +53,19 @@ public struct MultiRootEvent: Sendable {
 }
 
 public actor MultiRootScanner {
+    public struct ScanSession: Sendable {
+        public let events: AsyncStream<MultiRootEvent>
+        private let producer: Task<Void, Never>
+
+        fileprivate init(events: AsyncStream<MultiRootEvent>, producer: Task<Void, Never>) {
+            self.events = events
+            self.producer = producer
+        }
+
+        public func cancel() { producer.cancel() }
+        public func waitForTermination() async { await producer.value }
+    }
+
     typealias RootScanOperation = @Sendable (
         _ root: URL,
         _ options: ScanOptions,
@@ -113,6 +126,24 @@ public actor MultiRootScanner {
         totalDeadline: TimeInterval = MultiRootScanner.defaultTotalDeadline,
         delivery: BulkScanner.EventDelivery = .complete
     ) -> AsyncStream<MultiRootEvent> {
+        scanSession(
+            roots: roots,
+            maxConcurrentRoots: maxConcurrentRoots,
+            perRootTimeout: perRootTimeout,
+            noProgressTimeout: noProgressTimeout,
+            totalDeadline: totalDeadline,
+            delivery: delivery
+        ).events
+    }
+
+    public func scanSession(
+        roots: [URL],
+        maxConcurrentRoots: Int = 4,
+        perRootTimeout: TimeInterval = MultiRootScanner.defaultPerRootTimeout,
+        noProgressTimeout: TimeInterval = MultiRootScanner.defaultNoProgressTimeout,
+        totalDeadline: TimeInterval = MultiRootScanner.defaultTotalDeadline,
+        delivery: BulkScanner.EventDelivery = .complete
+    ) -> ScanSession {
         let opts = self.options
         let rootScanOperation = self.rootScanOperation
         // v2026.07.17 public timeout hardening: TimeInterval accepts NaN, infinities and
@@ -129,8 +160,9 @@ public actor MultiRootScanner {
         // other's files.
         let allocationLedger = InodeSet()
         let cap = max(1, maxConcurrentRoots)
-        return AsyncStream(bufferingPolicy: .unbounded) { continuation in
-            let parent = Task.detached(priority: .userInitiated) {
+        let streamPair = AsyncStream<MultiRootEvent>.makeStream(bufferingPolicy: .unbounded)
+        let continuation = streamPair.continuation
+        let parent = Task.detached(priority: .userInitiated) {
                 await withTaskGroup(of: ParentRaceResult.self) { race in
                     // 结构化的扫描 child：deadline child 完成时 cancelAll 会真正向这里及
                     // 其内部 root task group 传播取消，不依赖读取另一个 Task 的状态。
@@ -199,9 +231,9 @@ public actor MultiRootScanner {
                     await race.waitForAll()
                 }
                 continuation.finish()
-            }
-            continuation.onTermination = { _ in parent.cancel() }
         }
+        continuation.onTermination = { _ in parent.cancel() }
+        return ScanSession(events: streamPair.stream, producer: parent)
     }
 
     private enum ParentRaceResult: Sendable, Equatable {
@@ -235,55 +267,61 @@ public actor MultiRootScanner {
         await withTaskGroup(of: Void.self) { group in
             // 子任务 1：真正消费 BulkScanner stream。
             group.addTask {
-                let stream = scanner.scan(
+                let session = scanner.scanSession(
                     root: root,
                     delivery: delivery,
-                    topLevelPathMappings: [],
+                    pathNamespace: nil,
                     topLevelProjectionRootPath: nil,
                     allocationLedger: allocationLedger
                 )
-                var iterator = stream.makeAsyncIterator()
-                while !Task.isCancelled, let ev = await iterator.next() {
-                    // 任何"实质事件"都刷新进度时钟。.tccProtectedSkipped/.cacheDirTagged 也算进展。
-                    switch ev {
-                    case .heartbeat:
-                        await progressClock.touch()
-                    case .node(let node):
-                        await progressClock.record(node: node)
-                    case .nodes(let nodes):
-                        await progressClock.record(nodes: nodes)
-                    case .progress(let scannedBytes, let fileCount):
-                        await progressClock.recordProgress(scannedBytes: scannedBytes, fileCount: fileCount)
-                    case .permissionDenied:
-                        await progressClock.recordPermissionDenied()
-                    case .tccProtectedSkipped:
-                        await progressClock.recordTCCProtectedSkipped()
-                    case .incomplete(let issue):
-                        await progressClock.recordIncomplete(issue)
-                    case .cacheDirTagged:
-                        await progressClock.touch()
-                    case .finished:
-                        // 上游已经产出真实 summary，标记一下，scanOne 末尾就不补合成 .finished。
-                        await progressClock.markFinished()
-                    case .failed:
-                        break
+                await withTaskCancellationHandler {
+                    var iterator = session.events.makeAsyncIterator()
+                    while !Task.isCancelled, let ev = await iterator.next() {
+                        // 任何"实质事件"都刷新进度时钟。.tccProtectedSkipped/.cacheDirTagged 也算进展。
+                        switch ev {
+                        case .heartbeat:
+                            await progressClock.touch()
+                        case .node(let node):
+                            await progressClock.record(node: node)
+                        case .nodes(let nodes):
+                            await progressClock.record(nodes: nodes)
+                        case .progress(let scannedBytes, let fileCount):
+                            await progressClock.recordProgress(scannedBytes: scannedBytes, fileCount: fileCount)
+                        case .permissionDenied:
+                            await progressClock.recordPermissionDenied()
+                        case .tccProtectedSkipped:
+                            await progressClock.recordTCCProtectedSkipped()
+                        case .incomplete(let issue):
+                            await progressClock.recordIncomplete(issue)
+                        case .cacheDirTagged:
+                            await progressClock.touch()
+                        case .finished:
+                            // 上游已经产出真实 summary，标记一下，scanOne 末尾就不补合成 .finished。
+                            await progressClock.markFinished()
+                        case .failed:
+                            break
+                        }
+                        // Only a root terminal contributes to the producer clock.
+                        // Reading Date for every node/batch would put telemetry back on the hot
+                        // path that this metric exists to diagnose.
+                        let producerCompletedAt: Date?
+                        if case .finished = ev {
+                            producerCompletedAt = Date()
+                        } else {
+                            producerCompletedAt = nil
+                        }
+                        continuation.yield(MultiRootEvent(
+                            rootPath: rootPath,
+                            event: ev,
+                            producerCompletedAt: producerCompletedAt
+                        ))
                     }
-                    // Only a root terminal contributes to the producer clock.
-                    // Reading Date for every node/batch would put telemetry back on the hot
-                    // path that this metric exists to diagnose.
-                    let producerCompletedAt: Date?
-                    if case .finished = ev {
-                        producerCompletedAt = Date()
-                    } else {
-                        producerCompletedAt = nil
-                    }
-                    continuation.yield(MultiRootEvent(
-                        rootPath: rootPath,
-                        event: ev,
-                        producerCompletedAt: producerCompletedAt
-                    ))
+                } onCancel: {
+                    session.cancel()
                 }
-                _ = iterator
+                // The root does not release its sliding-window permit until the detached
+                // filesystem producer has actually stopped.
+                await session.waitForTermination()
             }
             // 子任务 2：协作式 timeout 哨兵。到点 cancel 整组 → 子任务 1 在下一个可取消边界退出。
             group.addTask { [perRootTimeout] in

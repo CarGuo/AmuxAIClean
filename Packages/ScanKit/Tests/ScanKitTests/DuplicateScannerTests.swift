@@ -373,4 +373,77 @@ final class DuplicateScannerTests: XCTestCase {
         XCTAssertEqual(groups.first?.reclaimableBytes, allocatedB,
                        "默认保留第一份时，可释放应是第二份的 allocated bytes")
     }
+
+    /// v2026.07.18 producer-ownership regression: cancellation of the outer duplicate stream
+    /// must not report settled while an uncooperative child BulkScanner producer is still alive.
+    func testScanSessionCancellationTransitivelyJoinsChildProducer() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let probe = DuplicateChildSettlementProbe()
+        let scanner = DuplicateScanner(
+            roots: [root],
+            minBytes: 1,
+            bulkSessionFactory: { _, _, _ in
+                let pair = AsyncStream<ScanEvent>.makeStream(bufferingPolicy: .unbounded)
+                let continuation = pair.continuation
+                let producer = Task.detached {
+                    await probe.runIgnoringCancellation()
+                    continuation.finish()
+                }
+                return BulkScanner.ScanSession(events: pair.stream, producer: producer)
+            }
+        )
+        let session = scanner.scanSession()
+
+        var childStarted = false
+        for _ in 0..<200 {
+            if await probe.didStart() {
+                childStarted = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(childStarted)
+
+        session.cancel()
+        let waiter = Task {
+            await session.waitForTermination()
+            await probe.markOuterFinished()
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        let finishedBeforeChild = await probe.didFinishOuter()
+        XCTAssertFalse(finishedBeforeChild,
+                       "outer session must retain ownership until the child walker exits")
+
+        await probe.releaseChild()
+        await waiter.value
+        let finishedAfterChild = await probe.didFinishOuter()
+        XCTAssertTrue(finishedAfterChild)
+    }
+}
+
+private actor DuplicateChildSettlementProbe {
+    private var started = false
+    private var childReleased = false
+    private var outerFinished = false
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func runIgnoringCancellation() async {
+        started = true
+        guard !childReleased else { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func releaseChild() {
+        childReleased = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    func markOuterFinished() { outerFinished = true }
+    func didStart() -> Bool { started }
+    func didFinishOuter() -> Bool { outerFinished }
 }

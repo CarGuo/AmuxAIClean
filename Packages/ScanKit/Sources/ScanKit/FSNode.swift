@@ -238,7 +238,7 @@ public struct ScanTopLevelEntry: Sendable, Equatable {
     }
 }
 
-/// 一级投影前使用的路径前缀规范化规则。
+/// 扫描物理路径与用户公开路径之间的一条边界安全前缀规则。
 ///
 /// **v2026.07.16 全盘投影正确性修复：** macOS Data 卷上的真实路径（例如
 /// `/System/Volumes/Data/Users/...`）需要先映射回公开 firmlink 路径（`/Users/...`），
@@ -246,7 +246,9 @@ public struct ScanTopLevelEntry: Sendable, Equatable {
 /// 原始后代路径已经丢失，无法恢复 `/Users`、`/Library` 等真实顶层分布。
 ///
 /// 该类型只表达通用、边界安全的前缀替换；具体 firmlink 规则仍由 AppUI 从系统
-/// `/usr/share/firmlinks` 读取并传入，ScanKit 不硬编码 macOS 目录知识。
+/// `/usr/share/firmlinks` 读取并传入，ScanKit 不硬编码 macOS 目录知识。规则本身
+/// 支持双向投影，但调用方必须通过 ``ScanPathNamespace`` 使用，避免容量、TCC、Tree
+/// 和 incomplete evidence 各自维护一套字符串替换。
 public struct ScanPathPrefixMapping: Sendable, Equatable {
     public let sourcePrefix: String
     public let destinationPrefix: String
@@ -256,20 +258,170 @@ public struct ScanPathPrefixMapping: Sendable, Equatable {
         self.destinationPrefix = Self.normalizedPrefix(destinationPrefix)
     }
 
-    func project(_ path: String) -> String? {
-        if path == sourcePrefix {
-            return destinationPrefix
-        }
-        guard path.hasPrefix(sourcePrefix + "/") else { return nil }
-        return destinationPrefix + String(path.dropFirst(sourcePrefix.count))
+    fileprivate func projectForward(_ path: String) -> String? {
+        Self.replacingPrefix(
+            in: path,
+            sourcePrefix: sourcePrefix,
+            destinationPrefix: destinationPrefix
+        )
     }
 
-    private static func normalizedPrefix(_ path: String) -> String {
+    fileprivate func projectReverse(_ path: String) -> String? {
+        Self.replacingPrefix(
+            in: path,
+            sourcePrefix: destinationPrefix,
+            destinationPrefix: sourcePrefix
+        )
+    }
+
+    fileprivate static func normalizedPrefix(_ path: String) -> String {
         var value = path
+        while value.contains("//") {
+            value = value.replacingOccurrences(of: "//", with: "/")
+        }
         while value.count > 1, value.hasSuffix("/") {
             value.removeLast()
         }
         return value
+    }
+
+    /// v2026.07.18 root-cause fix: a replacement whose destination is `/` must not
+    /// concatenate another slash from the suffix. Keeping POSIX joining here prevents the
+    /// Data-volume fallback from producing `//System`, which top-level bucketing interprets as
+    /// an empty first component and silently drops.
+    private static func replacingPrefix(
+        in rawPath: String,
+        sourcePrefix: String,
+        destinationPrefix: String
+    ) -> String? {
+        let path = rawPath
+        if path == sourcePrefix { return destinationPrefix }
+        let sourceBoundary = sourcePrefix == "/" ? "/" : sourcePrefix + "/"
+        guard path.hasPrefix(sourceBoundary) else { return nil }
+        let suffix = String(path.dropFirst(sourcePrefix.count))
+        if destinationPrefix == "/" {
+            return "/" + suffix.drop(while: { $0 == "/" })
+        }
+        return destinationPrefix + "/" + suffix.drop(while: { $0 == "/" })
+    }
+}
+
+/// 一次扫描会话的物理/公开路径命名空间。
+///
+/// **v2026.07.18 全盘根因修复：** `/System/Volumes/Data` 是实际枚举根，`/` 是用户、
+/// Tree、安全证据和 TCC 规则使用的公开根。两者如果只在 UI 最后一步临时替换，会同时
+/// 造成一级容量漏桶、TCC skip 失效、Tree 展开重新扫错根以及 root failure 被误判为
+/// descendant。该值类型冻结一轮扫描的双向合同，ScanKit 与 AppUI 只允许通过这里跨命名空间。
+public struct ScanPathNamespace: Sendable, Equatable {
+    public let physicalRoot: String
+    public let publicRoot: String
+    public let mappings: [ScanPathPrefixMapping]
+    /// Rules rejected at the namespace boundary because accepting them would make
+    /// `publicPath` many-to-one and therefore make Tree reverse projection guess a physical path.
+    /// The effective namespace remains the root-relative, reversible mapping instead of applying
+    /// an ambiguous rule. This is a fail-closed compatibility surface for callers that cannot make
+    /// construction throwing.
+    public let rejectedMappings: [ScanPathPrefixMapping]
+    private let reverseMappings: [ScanPathPrefixMapping]
+
+    public init(
+        physicalRoot: String,
+        publicRoot: String,
+        mappings: [ScanPathPrefixMapping] = []
+    ) {
+        self.physicalRoot = ScanPathPrefixMapping.normalizedPrefix(physicalRoot)
+        self.publicRoot = ScanPathPrefixMapping.normalizedPrefix(publicRoot)
+
+        let rootMapping = ScanPathPrefixMapping(
+            sourcePrefix: self.physicalRoot,
+            destinationPrefix: self.publicRoot
+        )
+        var accepted: [ScanPathPrefixMapping] = [rootMapping]
+        var rejected: [ScanPathPrefixMapping] = []
+        accepted.reserveCapacity(mappings.count + 1)
+        rejected.reserveCapacity(mappings.count)
+        for mapping in mappings where !accepted.contains(mapping) {
+            // v2026.07.18 reversibility closure: the root fallback already maps every physical
+            // descendant to the corresponding public descendant. A rule that sends the same
+            // physical prefix elsewhere necessarily collides with the fallback physical prefix at
+            // that destination. Example: `/Data/A -> /X` collides with `/Data/X -> /X`; reverse
+            // projection can no longer know which tree to enumerate. Only root-relative aliases
+            // are therefore admissible without carrying a separate physical identity per row.
+            guard Self.isRootRelativeReversible(mapping, rootMapping: rootMapping) else {
+                rejected.append(mapping)
+                continue
+            }
+            accepted.append(mapping)
+        }
+        self.mappings = accepted.sorted(by: Self.forwardPrecedes)
+        self.rejectedMappings = rejected
+        self.reverseMappings = accepted.sorted(by: Self.reversePrecedes)
+    }
+
+    /// 把扫描器观察到的物理 pathname 投影到用户公开命名空间。最长物理前缀优先，
+    /// 让精确 firmlink 规则胜过 Data 根 fallback；命名空间外路径保持原样。
+    public func publicPath(forPhysicalPath path: String) -> String {
+        let normalized = path.count > 1 && path.hasSuffix("/")
+            ? ScanPathPrefixMapping.normalizedPrefix(path)
+            : path
+        for mapping in mappings {
+            if let projected = mapping.projectForward(normalized) { return projected }
+        }
+        return normalized
+    }
+
+    /// 把 Tree / 用户公开 pathname 逆投影为同一会话实际应枚举的物理路径。最长公开
+    /// 前缀优先，保证 `/usr/local` 等精确 firmlink 不被 `/` fallback 抢先。
+    public func physicalPath(forPublicPath path: String) -> String {
+        let normalized = path.count > 1 && path.hasSuffix("/")
+            ? ScanPathPrefixMapping.normalizedPrefix(path)
+            : path
+        for mapping in reverseMappings {
+            if let projected = mapping.projectReverse(normalized) { return projected }
+        }
+        return normalized
+    }
+
+    public func publicIssue(_ issue: ScanIncompleteIssue) -> ScanIncompleteIssue {
+        ScanIncompleteIssue(
+            path: publicPath(forPhysicalPath: issue.path),
+            reason: issue.reason,
+            stage: issue.stage,
+            posixErrorCode: issue.posixErrorCode
+        )
+    }
+
+    private static func isRootRelativeReversible(
+        _ mapping: ScanPathPrefixMapping,
+        rootMapping: ScanPathPrefixMapping
+    ) -> Bool {
+        guard mapping.sourcePrefix.hasPrefix("/"),
+              mapping.destinationPrefix.hasPrefix("/"),
+              let expectedPublic = rootMapping.projectForward(mapping.sourcePrefix),
+              expectedPublic == mapping.destinationPrefix,
+              rootMapping.projectReverse(mapping.destinationPrefix) == mapping.sourcePrefix
+        else { return false }
+        return true
+    }
+
+    private static func forwardPrecedes(
+        _ lhs: ScanPathPrefixMapping,
+        _ rhs: ScanPathPrefixMapping
+    ) -> Bool {
+        if lhs.sourcePrefix.count != rhs.sourcePrefix.count {
+            return lhs.sourcePrefix.count > rhs.sourcePrefix.count
+        }
+        return lhs.sourcePrefix < rhs.sourcePrefix
+    }
+
+    private static func reversePrecedes(
+        _ lhs: ScanPathPrefixMapping,
+        _ rhs: ScanPathPrefixMapping
+    ) -> Bool {
+        if lhs.destinationPrefix.count != rhs.destinationPrefix.count {
+            return lhs.destinationPrefix.count > rhs.destinationPrefix.count
+        }
+        return lhs.destinationPrefix < rhs.destinationPrefix
     }
 }
 
