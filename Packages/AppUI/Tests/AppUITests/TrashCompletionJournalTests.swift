@@ -1219,10 +1219,18 @@ final class TrashCompletionJournalTests: XCTestCase {
             recoveryDependencyDomain: domain
         )
 
+        // v2026.09.06 SR-01: satisfy the review-object gate so this test still reaches the
+        // corrupt journal. Its original ledgerUnavailable / no-outcome assertions stay intact.
+        guard case .ready(let objects) = await pipeline.prepareReviewedObjects(
+            paths: [fixture.target.path], expectedIdentities: [:]
+        ) else { return XCTFail("The owned fixture must be reviewable before testing recovery") }
         let disposition = await pipeline.submitToTrashReturningDisposition(
             paths: [fixture.target.path],
             accessDeniedPaths: [],
-            vendorOverrideRequest: nil
+            vendorOverrideRequest: nil,
+            scanIncompleteOverrideRequest: nil,
+            reviewIdentity: DeletionSnapshotIdentity(sessionID: UUID(), revision: 1),
+            executionVerification: .reviewedObjects(objects)
         )
 
         guard case .preSubmitRejected(.pendingOperation(let rejection)) = disposition else {

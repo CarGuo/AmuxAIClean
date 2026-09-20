@@ -5199,7 +5199,8 @@ public final class ScanCoordinator: ObservableObject {
                 whitelistStore: WhitelistStore = .shared,
                 commonAppCacheExecution: CommonAppCacheExecutionMode = .inProcess,
                 primaryScanAdmissionRegistry: PrimaryScanAdmissionRegistry = PrimaryScanAdmissionRegistry(),
-                primaryScanAdmissionClientID: PrimaryScanAdmissionRegistry.ClientID = .init()) {
+                primaryScanAdmissionClientID: PrimaryScanAdmissionRegistry.ClientID = .init(),
+                systemProbeStore: SystemProbeStore? = nil) {
         let initialScanGeneration = UUID()
         self.scanGeneration = initialScanGeneration
         self.publishedScanSessionID = initialScanGeneration
@@ -5217,7 +5218,9 @@ public final class ScanCoordinator: ObservableObject {
         self.liveProgress = ScanLiveProgressStore()
         // Step 10a / 2026-06：抽 SystemProbeStore 持有 fdaStatus/volumeSnapshot/swapSnapshot。
         // store 的 init 内部就会探一次三个值。
-        let probe = SystemProbeStore(home: home)
+        // v2026.09.06: additional workspace scan owners share the process probe. Creating
+        // a result session must not duplicate synchronous probes or mount/active timers.
+        let probe = systemProbeStore ?? SystemProbeStore(home: home)
         self.systemProbe = probe
         // Step 10b / 2026-06：抽 TreeBrowserStore 提供 cache / revision 的 SSOT 接口外壳。
         // ScanCoordinator 上同名字段保留作 @Published mirror（向后兼容）；

@@ -516,6 +516,9 @@ public struct MainView: View {
     @StateObject private var coordinator: ScanCoordinator
     @State private var interfaceMode: SmartCareInterfaceMode = MainView.defaultInterfaceMode
     @StateObject private var smartCareSession: SmartCareSession
+    @StateObject private var storageAnalysis: StorageAnalysisStore
+    @State private var normalSection: NormalWorkspaceSection = .analyze
+    @State private var normalToolIsBusy = false
     @State private var smartCareSheetRoute: SmartCareSheetRoute?
     /// v2026.07.20：仅普通模式首次启用开发缓存时占用。确认前不修改选择，
     /// 取消后仍保持未选中，避免提示状态与实际扫描计划分叉。
@@ -776,11 +779,12 @@ public struct MainView: View {
             ?? PrimaryScanAdmissionRegistry.ClientID()
         let smartCareAdmissionClientID = smartCareSession?.scanCoordinator.primaryScanAdmissionClientID
             ?? PrimaryScanAdmissionRegistry.ClientID()
-        _coordinator = StateObject(wrappedValue: coordinator ?? ScanCoordinator(
+        let professionalCoordinator = coordinator ?? ScanCoordinator(
             vendors: vendors,
             primaryScanAdmissionRegistry: sharedAdmissionRegistry,
             primaryScanAdmissionClientID: professionalAdmissionClientID
-        ))
+        )
+        _coordinator = StateObject(wrappedValue: professionalCoordinator)
         _smartCareSession = StateObject(wrappedValue: smartCareSession ?? SmartCareSession(
             scanCoordinator: ScanCoordinator(
                 vendors: vendors,
@@ -788,6 +792,13 @@ public struct MainView: View {
                 primaryScanAdmissionClientID: smartCareAdmissionClientID
             )
         ))
+        // v2026.09.06: the storage workspace has its own result identity but joins the
+        // same physical scan admission domain, so switching tools never overlaps walkers.
+        _storageAnalysis = StateObject(wrappedValue: StorageAnalysisStore(scanner: ScanCoordinator(
+            vendors: vendors,
+            primaryScanAdmissionRegistry: sharedAdmissionRegistry,
+            systemProbeStore: professionalCoordinator.systemProbe
+        )))
         _smartCareAIReviewSession = StateObject(
             wrappedValue: smartCareAIReviewSession ?? SmartCareAIReviewSession()
         )
@@ -833,7 +844,7 @@ public struct MainView: View {
         Group {
             switch interfaceMode {
             case .normal:
-                smartCareHome
+                normalWorkspace
             case .professional:
                 NavigationSplitView(columnVisibility: $professionalColumnVisibility) {
                     sidebar
@@ -1120,7 +1131,11 @@ public struct MainView: View {
             // 注意：window id 必须与 GSYCleanMacApp 中 WindowGroup(id:) 一致（"main"）。
             openWindow(id: "main")
         }
+        .onReceive(NotificationCenter.default.publisher(for: .gsyTrashPendingLedgerDidInvalidate)) { _ in
+            storageAnalysis.invalidateAfterExternalChange()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .gsyTrashDidMove)) { notification in
+            storageAnalysis.invalidateAfterExternalChange()
             guard let source = notification.userInfo?["source"] as? String,
                   !["smart-care", "clean", "tree", "large-file", "stash"].contains(source),
                   let paths = notification.userInfo?["paths"] as? [String],
@@ -1160,6 +1175,7 @@ public struct MainView: View {
         ) {
             Button(AppLocalization.string("sentinel.alert.scan_invitation.action_scan", locale: locale)) {
                 transitionInterfaceMode(to: .normal)
+                selectNormalSection(.clean)
                 startSmartCareScan()
             }
             Button(AppLocalization.string("sentinel.alert.scan_invitation.action_dismiss", locale: locale), role: .cancel) {}
@@ -1190,6 +1206,7 @@ public struct MainView: View {
     /// interrupted by this control (the picker is disabled during deletion).
     private func transitionInterfaceMode(to newMode: SmartCareInterfaceMode) {
         guard interfaceMode != newMode else { return }
+        storageAnalysis.deactivate()
         let smartCareIsScanning: Bool
         if case .scanning = smartCareSession.care.phase {
             smartCareIsScanning = true
@@ -1208,6 +1225,40 @@ public struct MainView: View {
             }
         )
         interfaceMode = newMode
+    }
+
+    private var normalWorkspace: some View {
+        NormalWorkspaceView(
+            section: Binding(get: { normalSection }, set: { selectNormalSection($0) }),
+            analysis: storageAnalysis,
+            probe: coordinator.systemProbe,
+            pipeline: uninstallPipeline,
+            undoHistoryStore: undoHistoryStore,
+            isBusy: hasConflictingMainModalPresentation,
+            onToolBusyChange: { normalToolIsBusy = $0 },
+            onClean: {
+                selectNormalSection(.clean)
+                if case .idle = smartCareSession.care.phase { startSmartCareScan() }
+            },
+            cleanContent: { smartCareHome }
+        )
+    }
+
+    private func selectNormalSection(_ section: NormalWorkspaceSection) {
+        guard section != normalSection else { return }
+        let departingSection = normalSection
+        // v2026.09.06: revoke visibility before cancellation can publish an AI terminal.
+        // Normal mode now has multiple pages; late Smart Care reports belong to Clean only.
+        normalSection = section
+        if departingSection == .analyze { storageAnalysis.deactivate() }
+        if departingSection == .clean {
+            if case .scanning = smartCareSession.care.phase { smartCareSession.cancelScan() }
+            cancelSmartCareAIReview()
+        }
+    }
+
+    private var isSmartCareVisible: Bool {
+        interfaceMode == .normal && normalSection == .clean
     }
 
     private var smartCareHome: some View {
@@ -1373,6 +1424,7 @@ public struct MainView: View {
             smartCareIsPresented = true
         }
         return smartCareIsPresented
+            || normalToolIsBusy
             || professionalDeletePresentationHandoff.isAwaitingSheetDismissal
             || aiAskingRow != nil
             || isStashScreenPresented
@@ -1427,7 +1479,7 @@ public struct MainView: View {
 
     private var canPresentPendingSmartCareAIReport: Bool {
         guard pendingSmartCareAIReport != nil,
-              interfaceMode == .normal,
+              isSmartCareVisible,
               !hasConflictingMainModalPresentation else {
             return false
         }
@@ -1451,7 +1503,7 @@ public struct MainView: View {
         }
         let action = SmartCareAIReviewAutoPresentationPolicy.action(
             reportStatus: report?.status,
-            isNormalInterface: interfaceMode == .normal,
+            isNormalInterface: isSmartCareVisible,
             isAIReportVisible: isAIReportVisible,
             isCleanupVisible: isCleanupVisible,
             hasOtherModalPresentation: hasConflictingMainModalPresentation
@@ -1689,7 +1741,7 @@ public struct MainView: View {
 
     @MainActor
     private func presentSmartCareDeleteRequest(expectedSummaryRevision: UInt64? = nil) async {
-        guard interfaceMode == .normal,
+        guard isSmartCareVisible,
               smartCareSession.scanCoordinator.canUseCurrentScanResultsForActions,
               !hasConflictingMainModalPresentation else { return }
 
@@ -1712,19 +1764,24 @@ public struct MainView: View {
 
         do {
             let projectedRequest = try await smartCareSession.care.makeCleanRequest()
-            let request = projectedRequest.bindingDeletionSnapshot(
+            let snapshotRequest = projectedRequest.bindingDeletionSnapshot(
                 DeletionSnapshotIdentity(
                     sessionID: frozenScanSessionID,
                     revision: frozenSummaryRevision,
                     categoryID: "smart-care"
                 )
             )
-            guard !request.items.isEmpty,
+            guard !snapshotRequest.items.isEmpty,
                   smartCareSession.scanCoordinator.canUseCurrentScanResultsForActions,
                   smartCareSession.scanCoordinator.currentScanSessionID == frozenScanSessionID else {
                 return
             }
-            let modalAvailable = interfaceMode == .normal
+            let objectPreparation = await pipeline.prepareReviewedObjects(
+                paths: snapshotRequest.paths, expectedIdentities: [:]
+            )
+            guard !Task.isCancelled,
+                  smartCareSession.scanCoordinator.currentScanSessionID == frozenScanSessionID else { return }
+            let modalAvailable = isSmartCareVisible
                 && !hasOtherMainModalPresentation
                 && deleteSheetRequest == nil
                 && !deleteSubmissionHandoff.blocksNewSubmission
@@ -1735,11 +1792,22 @@ public struct MainView: View {
                 token: token,
                 currentSummaryRevision: smartCareSession.care.summaryRevision,
                 currentSelectionRevision: smartCareSession.care.selectionRevision,
-                requestSummaryRevision: request.sourceSummaryRevision,
-                requestSelectionRevision: request.sourceSelectionRevision,
+                requestSummaryRevision: snapshotRequest.sourceSummaryRevision,
+                requestSelectionRevision: snapshotRequest.sourceSelectionRevision,
                 modalAvailable: modalAvailable
             ) else { return }
-            smartCareSheetRoute = .cleanup(request)
+            switch objectPreparation {
+            case .blocked(let rejections):
+                deletePreflightNotice = DeletionPreflightNotice(rejections: rejections)
+            case .ready(let objects):
+                guard let request = snapshotRequest.bindingReviewedObjects(objects) else {
+                    deletePreflightNotice = DeletionPreflightNotice(rejections: snapshotRequest.paths.map {
+                        .init(path: $0, reason: TrashPendingOperationRejection.Reason.freshReviewRequired.rawValue)
+                    })
+                    return
+                }
+                smartCareSheetRoute = .cleanup(request)
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -1839,6 +1907,14 @@ public struct MainView: View {
             return
         }
 
+        guard let reviewedObjects = request.reviewedObjects?.restricting(to: execution.paths) else {
+            smartCareSession.care.resumeReviewAfterUnsubmittedClean()
+            deletePreflightNotice = DeletionPreflightNotice(rejections: execution.paths.map {
+                .init(path: $0, reason: TrashPendingOperationRejection.Reason.freshReviewRequired.rawValue)
+            })
+            return
+        }
+
         let submission = await TrashActionCoordinator(
             pipeline: pipeline,
             undoHistoryStore: undoHistoryStore
@@ -1848,7 +1924,8 @@ public struct MainView: View {
             accessDeniedPaths: finalDeniedPaths,
             // v2026.07.16: this is the identity frozen before the preview sheet appeared, not a
             // new token minted by the confirmation click.
-            reviewIdentity: reviewIdentity
+            reviewIdentity: reviewIdentity,
+            executionVerification: .reviewedObjects(reviewedObjects)
         )
         let result: TrashRunResult
         let completedSubmission: TrashActionCoordinator.CompletedSubmission
@@ -3599,7 +3676,7 @@ public struct MainView: View {
         .pickerStyle(.segmented)
         .frame(width: 220)
         .help(Text("smart_care.mode.label", bundle: .module))
-        .disabled(isPreparingDeletion || isDeleting)
+        .disabled(isPreparingDeletion || isDeleting || normalToolIsBusy)
         // Stable semantic hook for accessibility and the single-session C4 matrix.
         .accessibilityIdentifier("main.interface-mode")
     }

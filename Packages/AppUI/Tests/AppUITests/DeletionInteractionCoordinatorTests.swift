@@ -61,7 +61,7 @@ final class DeletionInteractionCoordinatorTests: XCTestCase {
         }
     }
 
-    private struct SpyPipeline: DeletionPipeline {
+    private struct SpyPipeline: ScriptedDeletionObjectPipeline {
         let state: PipelineState
 
         func preflight(

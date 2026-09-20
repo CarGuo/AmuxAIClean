@@ -551,7 +551,7 @@ final class WorkflowDetailViewTests: XCTestCase {
     // MARK: - v2026.06.22 (P0-1) performDelete 4 步握手
 
     /// 测试用 stub DeletionPipeline，记录调用并按预设返回 outcome。
-    private final class StubDeletionPipeline: DeletionPipeline, @unchecked Sendable {
+    private final class StubDeletionPipeline: ScriptedDeletionObjectPipeline, @unchecked Sendable {
         var deniedReceived: Set<String> = []
         var movedPathsReceived: [String] = []
         var preflightPathsReceived: [String] = []

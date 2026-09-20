@@ -14,6 +14,13 @@ import SafetyKit
 /// - 默认 dryRun=true（PITFALLS §5.7：trash preview 模式）
 /// - 5s 超时（PITFALLS §1.7：禁止同步阻塞）
 public protocol DeletionPipeline: Sendable {
+    /// v2026.09.06: read-only object evidence frozen before user confirmation. The default
+    /// probes real filesystem objects off the UI executor; scripted pipelines must explicitly
+    /// supply their own object domain and cannot silently drop this proof during submission.
+    func prepareReviewedObjects(
+        paths: [String], expectedIdentities: [String: TrashObjectIdentity]
+    ) async -> ReviewedDeletionObjectPreparation
+
     /// 删除确认前的完整只读预检。生产实现必须与最终执行使用同一套
     /// SafetyEngine / vendor trie / whitelist / access-denied 合同；UI 不得再用
     /// 自己拼出的部分判定决定是否展示确认框。

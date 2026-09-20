@@ -31,6 +31,9 @@ public enum DeleteRequestOrigin: String, Sendable, Hashable {
     case duplicate
     case uninstall
     case workflowFilesystem
+    /// v2026.09.06: separate receipt source so every other workspace invalidates
+    /// its old scan after a map-driven cleanup, including cached Smart Care results.
+    case storageAnalysis
 
     var historySource: String {
         switch self {
@@ -43,6 +46,7 @@ public enum DeleteRequestOrigin: String, Sendable, Hashable {
         case .duplicate: return "duplicate"
         case .uninstall: return "uninstall"
         case .workflowFilesystem: return "workflow"
+        case .storageAnalysis: return "storage-analysis"
         }
     }
 }
@@ -408,6 +412,13 @@ public struct DeletionIntent: Identifiable, Sendable, Equatable {
                 guard request.matchesExactCandidates(candidates) else {
                     throw DeletionIntentValidationError.invalidExecutionVerification
                 }
+            case (.duplicate, .reviewedObjects), (.uninstall, .reviewedObjects):
+                // Generic object identity cannot replace full-content or app/residual proof.
+                throw DeletionIntentValidationError.invalidExecutionVerification
+            case (_, .reviewedObjects(let request)):
+                guard request.matchesExactTargets(candidates.map(\.standardizedPath)) else {
+                    throw DeletionIntentValidationError.invalidExecutionVerification
+                }
             default:
                 throw DeletionIntentValidationError.invalidExecutionVerification
             }
@@ -419,6 +430,13 @@ public struct DeletionIntent: Identifiable, Sendable, Equatable {
         self.candidates = candidates
         self.executionVerification = executionVerification
         self.createdAt = createdAt
+    }
+
+    func bindingReviewedObjects(_ objects: ReviewedDeletionObjects) throws -> Self {
+        try Self(
+            id: id, origin: origin, mode: mode, snapshotIdentity: snapshotIdentity,
+            candidates: candidates, executionVerification: .reviewedObjects(objects), createdAt: createdAt
+        )
     }
 }
 

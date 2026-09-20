@@ -97,7 +97,17 @@ final class TrashPipelineTests: XCTestCase {
         try "bye".write(toFile: f, atomically: true, encoding: .utf8)
 
         let pipe = TrashPipeline()
-        let (moved, skipped, err, _) = await pipe.moveToTrash(paths: [f], dryRun: false)
+        // v2026.09.06 SR-01: real recycle requires evidence frozen before confirmation;
+        // legacy dryRun=false without that proof must now fail closed.
+        guard case .ready(let objects) = await pipe.prepareReviewedObjects(
+            paths: [f], expectedIdentities: [:]
+        ), case .recycleCompleted(let completion) = await pipe.submitToTrashReturningDisposition(
+            paths: [f], accessDeniedPaths: [], vendorOverrideRequest: nil,
+            scanIncompleteOverrideRequest: nil,
+            reviewIdentity: DeletionSnapshotIdentity(sessionID: UUID(), revision: 1),
+            executionVerification: .reviewedObjects(objects)
+        ) else { return XCTFail("Reviewed temporary fixture must reach real recycle completion") }
+        let (moved, skipped, err, _) = completion.legacy
         XCTAssertNil(err)
         XCTAssertEqual(moved, 1)
         XCTAssertEqual(skipped, 0)

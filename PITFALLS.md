@@ -493,6 +493,16 @@
   - 不得用 `ProcessInfo`、环境变量或 XCTest 类名猜测运行环境；构造 API 本身必须表达 production /
     isolated 的选择。
 
+### 3.9.2 [P1] 审阅对象和保护目录必须贯穿最终提交
+
+**v2026.09.06 审查补充（SR-01/SR-02）**：扫描 revision 不能证明某个路径仍指向用户审阅的
+对象。修复必须在确认前冻结对象身份，在 durable reserve 后比较，并保留后续 claim fence；
+不能只在最后一刻读取当前 inode。普通分析、Tree 和一键清理使用同一份
+`ReviewedDeletionObjects`，无证据的 legacy 真删调用明确拒绝。固定凭据路径的保护还必须
+向祖先闭合，否则 `.config/gh` 拒绝而 `.config` 可删会把保护内容一起移走。回归见
+`SafetyReviewRegressionTests`、`CredentialAncestorProtectionTests`；真实测试始终使用隔离临时
+文件和完整的隔离恢复域，不能用测试替身的成功响应代替真实对象替换验证。
+
 ### 3.10 [阻塞] 扫描不完整被误当删除权限，污染整棵 HOME 子树
 - **现象**：一个 descendant 目录无法枚举，扫描器同时发 scoped incomplete 和全局 failed；上层再把整个 scan root 加入 incomplete。删除预检按祖先重叠后，所有 sibling 都变成 `accessDenied`，真实 vendor override 消失，UI 还错误提示 Full Disk Access。
 - **根因**：fatal/partial 事件没有 scope，且 `incomplete / TCC / POSIX / OS delete permission` 被压进同一个字符串或 Set。
@@ -1592,3 +1602,15 @@ deep 指标写回还会取消上一轮 worker。结果是“数据已经有了�
 
 参考：[Apple NSURL.standardizingPath](https://developer.apple.com/documentation/foundation/nsurl/standardizingpath)
 明确说明 `/private` 前缀的移除可能查询文件系统。
+
+## 17. v2026.09.20：干净 worktree 不能证明发布包含当前完整产品
+
+1.6.4 打包前只提交模拟器修复和版本号，原工作区已经完成的普通工作台、存储分析、
+系统状态及配套安全改动仍未提交。随后从该提交创建的干净 worktree 不含这些内容，
+即使构建、签名和测试通过，交付界面仍退回旧 Smart Care 单页。
+
+发布范围必须从用户当前完整产品状态出发，不能擅自把既有未提交改动排除。提交前记录
+tracked 与 untracked 源文件的内容基线，提交后逐项核对；固定版本 tag 后，以同一 tag
+指向的源码构建，并核对最终 provenance。普通模式生产入口、实现和本地化资源必须都
+包含在产物中。具体流程见 [RELEASE.md](docs/RELEASE.md)；源码、离屏渲染与真实运行
+交互的证据等级仍分别记录，不能把“clean”或“编译成功”当成用户已完成界面被保留的证明。

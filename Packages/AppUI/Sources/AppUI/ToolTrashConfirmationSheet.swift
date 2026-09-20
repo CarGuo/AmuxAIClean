@@ -23,6 +23,49 @@ struct ToolTrashConfirmationCopy: Sendable, Equatable {
     let message: String
 }
 
+/// v2026.09.06 SR-03: Normal review consumes the complete plan. Directory file counts and
+/// source are frozen review facts, not the number of selected top-level paths.
+struct NormalDeletionReviewCopy: Equatable {
+    let summary: String
+    let source: String
+
+    static func resolve(plan: DeletionConfirmationPlan, locale: Locale) -> Self {
+        let files = plan.intent.candidates.reduce(Int64(0)) { total, candidate in
+            let addition = total.addingReportingOverflow(Int64(max(0, candidate.fileCount)))
+            return addition.overflow ? Int64.max : addition.partialValue
+        }
+        let bytes = plan.intent.candidates.reduce(Int64(0)) { total, candidate in
+            let addition = total.addingReportingOverflow(max(0, candidate.bytes))
+            return addition.overflow ? Int64.max : addition.partialValue
+        }
+        return Self(
+            summary: AppLocalization.format(
+                "delete.review.summary %lld %lld %@", locale: locale,
+                arguments: [Int64(plan.intent.candidates.count), files, AppLocalization.byteCount(bytes, locale: locale)]
+            ),
+            source: AppLocalization.format(
+                "delete.review.source %@", locale: locale,
+                arguments: [AppLocalization.string(sourceKey(plan.intent.origin), locale: locale)]
+            )
+        )
+    }
+
+    private static func sourceKey(_ origin: DeleteRequestOrigin) -> String {
+        switch origin {
+        case .scanSelection: return "delete.review.origin.scan"
+        case .tree: return "delete.review.origin.tree"
+        case .largeFiles: return "delete.review.origin.large_files"
+        case .stash: return "delete.review.origin.stash"
+        case .smartCare: return "delete.review.origin.smart_care"
+        case .brew: return "delete.review.origin.brew"
+        case .duplicate: return "delete.review.origin.duplicate"
+        case .uninstall: return "delete.review.origin.uninstall"
+        case .workflowFilesystem: return "delete.review.origin.workflow"
+        case .storageAnalysis: return "delete.review.origin.storage_analysis"
+        }
+    }
+}
+
 enum ToolTrashConfirmationCopyResolver {
     static func resolve(
         profile: ToolTrashConfirmationProfile,
@@ -93,6 +136,9 @@ struct ToolTrashConfirmationSheet: View {
     let totalBytes: Int64
     let vendorOverrideRequest: VendorPathOverrideRequest?
     let scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest?
+    /// v2026.09.06: tools embedded in Normal mode present the frozen, typed review
+    /// items. The same coordinator still owns safety and final authorization.
+    let reviewPlan: DeletionConfirmationPlan?
     let onCancel: () -> Void
     /// Returns `true` only after the caller has synchronously frozen the plan in its
     /// dismissal handoff. A rejected handoff must leave this sheet interactive so the
@@ -114,12 +160,14 @@ struct ToolTrashConfirmationSheet: View {
          totalBytes: Int64,
          vendorOverrideRequest: VendorPathOverrideRequest? = nil,
          scanIncompleteOverrideRequest: ScanIncompleteOverrideRequest? = nil,
+         reviewPlan: DeletionConfirmationPlan? = nil,
          onCancel: @escaping () -> Void,
          onConfirm: @escaping (ToolTrashExecutionPlan) -> Bool) {
         self.items = items
         self.totalBytes = max(0, totalBytes)
         self.vendorOverrideRequest = vendorOverrideRequest
         self.scanIncompleteOverrideRequest = scanIncompleteOverrideRequest
+        self.reviewPlan = reviewPlan
         self.onCancel = onCancel
         self.onConfirm = onConfirm
     }
@@ -188,14 +236,50 @@ struct ToolTrashConfirmationSheet: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .font(.title2)
-                Text(verbatim: copy.title)
+                Text(verbatim: reviewPlan == nil ? copy.title : AppLocalization.string("delete.summary.title", locale: locale))
                     .font(.title3.bold())
             }
 
-            Text(verbatim: copy.message)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if let reviewPlan {
+                let reviewCopy = NormalDeletionReviewCopy.resolve(plan: reviewPlan, locale: locale)
+                Text(verbatim: reviewCopy.summary)
+                    .font(.callout).fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("delete.review.summary")
+                Text(verbatim: reviewCopy.source)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("delete.review.source")
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(reviewPlan.items, id: \.candidate.standardizedPath) { item in
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: item.candidate.isDirectory ? "folder" : "doc")
+                                    .foregroundStyle(Color.accentColor)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(verbatim: item.candidate.titlePresentation.localized(locale: locale))
+                                        .font(.callout.weight(.medium))
+                                    Text(verbatim: item.candidate.rawPath)
+                                        .font(.caption).foregroundStyle(.secondary)
+                                        .lineLimit(2).truncationMode(.middle)
+                                    Text(verbatim: AppLocalization.format(
+                                        "delete.review.files %lld", locale: locale,
+                                        arguments: [Int64(max(0, item.candidate.fileCount))]
+                                    ))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(verbatim: AppLocalization.byteCount(item.candidate.bytes, locale: locale))
+                                    .font(.caption.monospacedDigit())
+                            }
+                        }
+                    }
+                }.frame(minHeight: 160, maxHeight: 280)
+                Text("workspace.delete.review_note", bundle: .module)
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text(verbatim: copy.message)
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if requiresStrictConfirmation {
                 VStack(alignment: .leading, spacing: 8) {
@@ -296,7 +380,7 @@ struct ToolTrashConfirmationSheet: View {
             }
         }
         .padding(20)
-        .frame(width: requiresStrictConfirmation ? 520 : 440)
+        .frame(width: requiresStrictConfirmation || reviewPlan != nil ? 560 : 440)
         .confirmationDialog(
             AppLocalization.string("delete.running_app.choice.title", locale: locale),
             isPresented: $showRunningAppDecision,

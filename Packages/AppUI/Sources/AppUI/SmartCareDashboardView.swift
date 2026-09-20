@@ -158,7 +158,7 @@ struct SmartCareDashboardView: View {
                 mode: .scanning(bytes: progress.safeBytes),
                 reduceMotion: reduceMotion
             )
-            .frame(width: 270, height: 270)
+            .frame(width: 200, height: 200)
 
             SmartCareActivityBadge(
                 activity: progress.activity,
@@ -774,51 +774,58 @@ private struct SmartCareIdleVisual: View {
         VStack(spacing: 22) {
             Spacer(minLength: 8)
 
-            VStack(spacing: 6) {
-                Text("smart_care.visual.ready", bundle: .module)
-                    .font(.system(.title, design: .rounded).weight(.bold))
-                Text(verbatim: scopeSummary)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
+            // v2026.09.06: keep the established core animation, but arrange the idle
+            // hero horizontally so the workspace navigation and live cards fit at 760pt.
+            HStack(spacing: 42) {
+                ZStack {
+                    SmartCareCoreMotionView(mode: .idle, reduceMotion: reduceMotion)
+                        .frame(width: 270, height: 270)
 
-            ZStack {
-                SmartCareCoreMotionView(mode: .idle, reduceMotion: reduceMotion)
-                    .frame(width: 270, height: 270)
-
-                Button(action: onScan) {
-                    VStack(spacing: 8) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 30, weight: .semibold))
-                        Text("smart_care.action.start_scan", bundle: .module)
-                            .font(.headline)
+                    Button(action: onScan) {
+                        VStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 30, weight: .semibold))
+                            Text("smart_care.action.start_scan", bundle: .module)
+                                .font(.headline)
+                        }
+                        .foregroundStyle(.white)
+                        .frame(width: 144, height: 144)
+                        .background(
+                            canScan ? Color.accentColor : Color.secondary.opacity(0.48),
+                            in: Circle()
+                        )
+                        .overlay(Circle().strokeBorder(Color.white.opacity(0.4), lineWidth: 1))
+                        .shadow(
+                            color: canScan ? Color.accentColor.opacity(scanHovered ? 0.34 : 0.22) : .clear,
+                            radius: scanHovered ? 24 : 16,
+                            y: 8
+                        )
+                        .scaleEffect(scanHovered && canScan && !reduceMotion ? 1.035 : 1)
+                        .contentShape(Circle())
                     }
-                    .foregroundStyle(.white)
-                    .frame(width: 144, height: 144)
-                    .background(
-                        canScan ? Color.accentColor : Color.secondary.opacity(0.48),
-                        in: Circle()
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.defaultAction)
+                    .help(Text("smart_care.action.start_scan", bundle: .module))
+                    .disabled(!canScan)
+                    .onHover { scanHovered = $0 }
+                    .animation(
+                        PlatformAnimationCompatibility.smooth(duration: 0.18),
+                        value: scanHovered
                     )
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.4), lineWidth: 1))
-                    .shadow(
-                        color: canScan ? Color.accentColor.opacity(scanHovered ? 0.34 : 0.22) : .clear,
-                        radius: scanHovered ? 24 : 16,
-                        y: 8
-                    )
-                    .scaleEffect(scanHovered && canScan && !reduceMotion ? 1.035 : 1)
-                    .contentShape(Circle())
                 }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.defaultAction)
-                .help(Text("smart_care.action.start_scan", bundle: .module))
-                .disabled(!canScan)
-                .onHover { scanHovered = $0 }
-                .animation(
-                    PlatformAnimationCompatibility.smooth(duration: 0.18),
-                    value: scanHovered
-                )
-            }
-            .frame(width: 280, height: 280)
+                .frame(width: 280, height: 280)
+
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("smart_care.visual.ready", bundle: .module)
+                        .font(.system(.largeTitle, design: .rounded).weight(.bold))
+                    Text(verbatim: scopeSummary)
+                        .font(.callout).foregroundStyle(.secondary)
+                    Label {
+                        Text("smart_care.visual.safety_note", bundle: .module)
+                    } icon: { Image(systemName: "shield.checkered") }
+                    .font(.caption).foregroundStyle(.secondary)
+                }.frame(maxWidth: 430, alignment: .leading)
+            }.frame(maxWidth: 900)
 
             HStack(spacing: 12) {
                 ForEach(Array(SmartCareSession.stageOrder.enumerated()), id: \.element) { index, stage in
@@ -835,14 +842,6 @@ private struct SmartCareIdleVisual: View {
             .frame(maxWidth: 900)
             .onAppear { cardsRevealed = true }
             .onDisappear { cardsRevealed = false }
-
-            Label {
-                Text("smart_care.visual.safety_note", bundle: .module)
-            } icon: {
-                Image(systemName: "shield.checkered")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
 
             Spacer(minLength: 10)
         }
@@ -1220,7 +1219,8 @@ private struct SmartCareTechSurfaceModifier: ViewModifier {
     }
 }
 
-private extension View {
+// v2026.09.06: workspace cards reuse the same surface rather than duplicating the palette/material.
+extension View {
     func smartCareTechSurface(tint: Color,
                               cornerRadius: CGFloat,
                               elevated: Bool) -> some View {

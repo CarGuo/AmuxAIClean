@@ -142,6 +142,20 @@ pending 语义，最终通过重新扫描收敛真实状态。
 
 ### 3.5 v2026.07.16 持久化提交身份与重启恢复
 
+**v2026.09.06 审阅对象绑定（SR-01）**：普通路径删除在确认页出现前，经后台
+`prepareReviewedObjects` 冻结每个目标的 no-follow 对象身份；已有扫描身份必须与当前对象一致。
+`ReviewedDeletionObjects` 随 intent/plan/authorization 保留，运行中应用过滤或最终风险升级只能
+缩小路径集合，不能重采样身份。一键清理的 `SmartCareCleanRequest` 同样在显示详细审阅前绑定
+这份证据，并在 revision stamping 与确认交接中保留。TrashPipeline 先比对审阅身份与 durable
+reserve 身份，后续批次及诊断重试继续走 ledger 的紧邻 claim 身份检查。没有审阅对象证据、
+Duplicate 全量内容证据、Uninstall 对象证据或扫描缺口的目标身份请求时，所有真实回收入口
+（包括 legacy `dryRun=false`）都必须在提交前拒绝；不能用扫描 revision 或执行时的新 lstat
+为当前路径占用者补授权。
+
+**v2026.09.06 目录覆盖范围（SR-02）**：既有 HOME 相对敏感凭据规则同时保护自身、后代和
+会覆盖它的祖先目录，比较必须保持路径组件边界，并同时检查原始/解析后的路径。目录的
+普通确认不能覆盖敏感凭据保护；同级缓存目录继续按原有规则判定，无需增加目录黑名单特例。
+
 `NSWorkspace.recycle` 的同步返回、异步 callback 和 App 生命周期互不等价。为避免回调迟到、
 诊断重试、另一个窗口或重启后的请求对同一路径重复提交，真实 Trash 提交必须遵守以下合同：
 
@@ -308,10 +322,13 @@ Normal 不自动获得 Professional 严格覆盖能力。若用户需要覆盖�
 
 所有真实文件删除入口必须提交 `DeletionIntent` 给同一个 coordinator。下表中的 C2/C3/C4 需要分别留证，不能以共享底层调用替代入口验收。
 
+普通空间图的 C2/C3 证据见 [2026-09-06 工作台验证记录](NORMAL_WORKSPACE_2026-09-06.md)；未做 C4。
+
 | 入口 | 必须覆盖的触发方式 | Normal 期望 | Professional 期望 | 安全/强制期望 | C2 | C3 | C4 |
 |---|---|---|---|---|---|---|---|
 | Main List | 行图标、右键、Delete 键、底部批量 | 详细审阅 | 普通简洁确认；有 eligible 风险时严格确认 | hard-forbid 仅解释；肯定操作恰好一次真实提交 | ☐ | ☐ | ☐ |
 | Tree | 行图标、右键、Delete 键、批量 | 详细审阅 | 普通简洁确认；有 eligible 风险时严格确认 | 锁只属于真实受限节点；parent 不得继承伪锁 | ☐ | ☐ | ☐ |
+| 普通空间图（v2026.09.06） | 图块/目录列表右键 | 完整候选审阅 | 使用现有专业 Tree 入口 | pending/incomplete 不提交；共享预检、绑定扫描 revision、独立 receipt 来源 | ✓ | ✓ | ☐ |
 | Large Files | 单行、右键、批量 | 详细审阅 | 简洁/严格按 plan 路由 | 不得自建旧 confirmation sheet | ☐ | ☐ | ☐ |
 | Stash | 单行、右键、批量/全部 | 详细审阅 | 简洁/严格按 plan 路由 | 关闭 presentation 不得提交或伪报成功 | ☐ | ☐ | ☐ |
 | Smart Care | 清理选中项、全部清理 | 详细审阅 | 简洁/严格按 plan 路由 | 运行中 App 决策与其它入口一致 | ☐ | ☐ | ☐ |

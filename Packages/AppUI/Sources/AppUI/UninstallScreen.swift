@@ -1294,6 +1294,10 @@ public struct UninstallScreen: View {
     private let pipeline: any DeletionPipeline
     /// v2026.07.20 P0: pipeline and Undo owner are one explicit persistence domain.
     private let undoHistoryStore: UndoHistoryStore
+    // v2026.09.06: workspace embedding keeps normal review authority and reports
+    // transaction occupancy to the enclosing navigation until its terminal.
+    private let userMode: DeletionUserMode
+    private let onTransactionActiveChange: (Bool) -> Void
 
     @State private var apps: [InstalledApp] = []
     @State private var appListIncompleteIssues: [InstalledAppDiscoveryIssue] = []
@@ -1374,7 +1378,9 @@ public struct UninstallScreen: View {
         store: UninstallStore? = nil,
         pipeline: (any DeletionPipeline)? = nil,
         vendors: [VendorRule],
-        undoHistoryStore: UndoHistoryStore
+        undoHistoryStore: UndoHistoryStore,
+        userMode: DeletionUserMode = .professional,
+        onTransactionActiveChange: @escaping (Bool) -> Void = { _ in }
     ) {
         // 若没传 store，用注入的 vendors 现场装一个 AppUninstaller
         if let store {
@@ -1388,6 +1394,8 @@ public struct UninstallScreen: View {
             whitelistStore: .shared
         )
         self.undoHistoryStore = undoHistoryStore
+        self.userMode = userMode
+        self.onTransactionActiveChange = onTransactionActiveChange
     }
 
     public var body: some View {
@@ -1420,6 +1428,7 @@ public struct UninstallScreen: View {
                     totalBytes: request.totalBytes,
                     vendorOverrideRequest: request.prepared.vendorOverrideRequest,
                     scanIncompleteOverrideRequest: request.prepared.scanIncompleteOverrideRequest,
+                    reviewPlan: userMode == .normal ? request.prepared.plan : nil,
                     onCancel: { activeSheet = nil },
                     onConfirm: { executionPlan in
                         guard requireCurrentUninstallRequest(request) else { return false }
@@ -1444,7 +1453,11 @@ public struct UninstallScreen: View {
                 }
             }
         }
+        .onValueChange(of: isDeletionTransactionActive) { _, active in
+            onTransactionActiveChange(active)
+        }
         .onDisappear {
+            onTransactionActiveChange(false)
             cancelAppListReloadForDeparture()
             cancelCandidateLoadForDeparture()
             cancelUninstallPreflight()
@@ -1907,7 +1920,7 @@ public struct UninstallScreen: View {
                 do {
                     let intent = try coordinator.makeIntent(
                         origin: .uninstall,
-                        mode: .professional,
+                        mode: userMode,
                         snapshotIdentity: identity,
                         candidates: selectedCandidates.map { candidate in
                             UninstallDeletionSelectionPolicy.interactionSnapshot(

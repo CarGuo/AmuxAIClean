@@ -102,6 +102,18 @@ App 不读取系统剪贴板。用户点击页面中的“复制路径 / 复制�
 在被覆盖前可能被其它获准访问剪贴板的 App、通用剪贴板或系统历史能力读取；App 不跟踪、
 上传或自动清除该副本。
 
+### 2.7 普通模式的系统状态
+
+<!-- v2026.09.06：新增只读状态卡，明确本机计数与网络请求的区别。 -->
+普通模式在 App 活跃时读取本机 CPU 时间、虚拟内存统计、磁盘容量、内置电池状态、运行时间、
+系统热状态，以及活动 Wi-Fi/以太网接口的收发字节计数。采样和最近最多 60 秒的曲线仅保留在
+进程内存，不写历史文件，不读取网络数据包内容，不上传，也不为采样发送网络请求。
+
+Normal mode reads local CPU time, memory statistics, disk capacity, battery status, uptime, thermal
+state, and byte counters for active Wi-Fi/Ethernet interfaces while the app is active. Samples and
+up to 60 seconds of chart history remain in process memory. They are not persisted or uploaded;
+sampling neither reads packet contents nor sends network requests.
+
 ## 3. 本地数据存储
 
 以下列出 App 管理的本地状态与用户主动导出的副本。除表中明确写为“用户选择位置”的导出外，

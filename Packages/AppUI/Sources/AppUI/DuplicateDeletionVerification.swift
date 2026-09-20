@@ -213,6 +213,7 @@ public struct DuplicateDeletionVerificationRequest: Sendable, Equatable {
 public enum DeletionExecutionVerification: Sendable, Equatable {
     case duplicate(DuplicateDeletionVerificationRequest)
     case uninstall(UninstallCandidateVerificationRequest)
+    case reviewedObjects(ReviewedDeletionObjects)
 }
 
 /// Claim-adjacent, cheap fence retained after the initial complete hash pass. It is reused for

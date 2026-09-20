@@ -741,6 +741,9 @@ public struct SmartCareCleanRequest: Identifiable, Sendable, Hashable {
     /// owns the revisions while its ScanCoordinator owns the scan session, so the request binds
     /// both before the sheet is shown and carries them unchanged through dismissal.
     let sourceDeletionSnapshotIdentity: DeletionSnapshotIdentity?
+    /// v2026.09.06 SR-01: frozen before the detailed cleanup sheet; a matching summary revision
+    /// must never authorize a replacement object at one of these paths.
+    let reviewedObjects: ReviewedDeletionObjects?
 
     public init(items: [SmartCareItem]) {
         var selectedItems: [SmartCareItem] = []
@@ -797,7 +800,8 @@ public struct SmartCareCleanRequest: Identifiable, Sendable, Hashable {
             previewRows: previewRows,
             sourceSummaryRevision: summaryRevision,
             sourceSelectionRevision: selectionRevision,
-            sourceDeletionSnapshotIdentity: sourceDeletionSnapshotIdentity
+            sourceDeletionSnapshotIdentity: sourceDeletionSnapshotIdentity,
+            reviewedObjects: reviewedObjects
         )
     }
 
@@ -812,7 +816,20 @@ public struct SmartCareCleanRequest: Identifiable, Sendable, Hashable {
             previewRows: previewRows,
             sourceSummaryRevision: sourceSummaryRevision,
             sourceSelectionRevision: sourceSelectionRevision,
-            sourceDeletionSnapshotIdentity: identity
+            sourceDeletionSnapshotIdentity: identity,
+            reviewedObjects: reviewedObjects
+        )
+    }
+
+    func bindingReviewedObjects(_ objects: ReviewedDeletionObjects) -> Self? {
+        guard objects.matchesExactTargets(paths) else { return nil }
+        return Self(
+            id: id, items: items, requiresConfirmation: requiresConfirmation,
+            paths: paths, totalBytes: totalBytes, confirmCount: confirmCount,
+            previewRows: previewRows, sourceSummaryRevision: sourceSummaryRevision,
+            sourceSelectionRevision: sourceSelectionRevision,
+            sourceDeletionSnapshotIdentity: sourceDeletionSnapshotIdentity,
+            reviewedObjects: objects
         )
     }
 
@@ -825,7 +842,8 @@ public struct SmartCareCleanRequest: Identifiable, Sendable, Hashable {
                  previewRows: [RowItem],
                  sourceSummaryRevision: UInt64?,
                  sourceSelectionRevision: UInt64?,
-                 sourceDeletionSnapshotIdentity: DeletionSnapshotIdentity?) {
+                 sourceDeletionSnapshotIdentity: DeletionSnapshotIdentity?,
+                 reviewedObjects: ReviewedDeletionObjects? = nil) {
         self.id = id
         self.items = items
         self.requiresConfirmation = requiresConfirmation
@@ -836,6 +854,7 @@ public struct SmartCareCleanRequest: Identifiable, Sendable, Hashable {
         self.sourceSummaryRevision = sourceSummaryRevision
         self.sourceSelectionRevision = sourceSelectionRevision
         self.sourceDeletionSnapshotIdentity = sourceDeletionSnapshotIdentity
+        self.reviewedObjects = reviewedObjects
     }
 }
 

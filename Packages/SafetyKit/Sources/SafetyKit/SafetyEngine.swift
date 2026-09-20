@@ -317,9 +317,15 @@ public struct SafetyEngine: Sendable {
             } else {
                 bucket = []
             }
+            // v2026.09.06 SR-02: recycling an ancestor also removes the credential below it.
+            // Compare both directions with component boundaries. This closes every ancestor
+            // of the existing credential rules without adding ad-hoc protected directories or
+            // traversing children on the UI/scanning hot path.
+            let relative = String(standardized.dropFirst(home.count))
+            let descendantPrefix = relative + "/"
             for suffix in bucket {
-                let full = home + suffix
-                if standardized == full || standardized.hasPrefix(full + "/") {
+                if relative == suffix || relative.hasPrefix(suffix + "/")
+                    || suffix.hasPrefix(descendantPrefix) {
                     return (.forbid, .sensitiveCredential)
                 }
             }

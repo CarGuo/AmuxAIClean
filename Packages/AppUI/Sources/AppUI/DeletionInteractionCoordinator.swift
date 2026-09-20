@@ -184,12 +184,36 @@ struct DeletionInteractionCoordinator {
             paths: intent.candidates.map(\.rawPath),
             accessDeniedPaths: accessDeniedPaths
         )
-        return preparation(
+        let decision = preparation(
             intent: intent,
             preflight: preflight,
             currentSnapshotIdentity: currentSnapshotIdentity,
             carriedRunningAppSkipped: []
         )
+        guard case .confirmation = decision,
+              intent.origin != .duplicate, intent.origin != .uninstall,
+              intent.executionVerification == nil else { return decision }
+        // v2026.09.06 SR-01: freeze before the sheet appears, never at its confirmation click.
+        let expected = Dictionary(uniqueKeysWithValues: intent.candidates.compactMap { candidate in
+            candidate.sourceObjectIdentity.map { (candidate.standardizedPath, $0) }
+        })
+        let objects = await pipeline.prepareReviewedObjects(
+            paths: intent.candidates.map(\.rawPath), expectedIdentities: expected
+        )
+        guard !Task.isCancelled else { return .cancelled(intentID: intent.id) }
+        switch objects {
+        case .blocked(let rejections):
+            return .blocked(DeletionInteractionBlock(intentID: intent.id, rejections: rejections))
+        case .ready(let reviewed):
+            do {
+                return preparation(
+                    intent: try intent.bindingReviewedObjects(reviewed), preflight: preflight,
+                    currentSnapshotIdentity: currentSnapshotIdentity, carriedRunningAppSkipped: []
+                )
+            } catch {
+                return .blocked(invariantBlock(intent: intent))
+            }
+        }
     }
 
     /// Consumes the typed target-revalidation capability without downgrading it
@@ -428,9 +452,15 @@ struct DeletionInteractionCoordinator {
                 intent: intent,
                 paths: authorization.paths
             ))
-        case (_, nil):
+        case (_, .some(.reviewedObjects(let request))):
+            guard intent.origin != .duplicate, intent.origin != .uninstall,
+                  let restricted = request.restricting(to: authorization.paths) else {
+                return .blocked(invariantBlock(intent: intent))
+            }
+            executionVerification = .reviewedObjects(restricted)
+        case (_, nil) where confirmed.scanIncompleteOverrideRequest != nil:
             executionVerification = nil
-        case (_, .some(_)):
+        case (_, nil), (_, .some(_)):
             return .blocked(invariantBlock(intent: intent))
         }
 
@@ -633,6 +663,11 @@ struct DeletionInteractionCoordinator {
                 throw DeletionIntentValidationError.invalidExecutionVerification
             }
             restrictedVerification = .uninstall(restricted)
+        case .some(.reviewedObjects(let request)):
+            guard let restricted = request.restricting(to: paths) else {
+                throw DeletionIntentValidationError.invalidExecutionVerification
+            }
+            restrictedVerification = .reviewedObjects(restricted)
         case .none:
             restrictedVerification = nil
         }

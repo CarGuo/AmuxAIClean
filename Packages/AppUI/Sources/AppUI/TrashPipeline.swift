@@ -1440,6 +1440,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
         let duplicateVerificationRequest: DuplicateDeletionVerificationRequest?
         let uninstallVerificationRequest: UninstallCandidateVerificationRequest?
+        let reviewedObjects: ReviewedDeletionObjects?
         switch executionVerification {
         case .some(.duplicate(let request)):
             guard request.matchesExactTargets(allowed) else {
@@ -1456,6 +1457,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             }
             duplicateVerificationRequest = request
             uninstallVerificationRequest = nil
+            reviewedObjects = nil
         case .some(.uninstall(let request)):
             guard request.matchesExactTargets(allowed) else {
                 let rejection = TrashPendingOperationRejection(
@@ -1467,9 +1469,35 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             }
             duplicateVerificationRequest = nil
             uninstallVerificationRequest = request
+            reviewedObjects = nil
+        case .some(.reviewedObjects(let request)):
+            guard request.matchesExactTargets(allowed) else {
+                return pendingLedgerPreSubmitFailure(
+                    paths: allowed,
+                    rejection: TrashPendingOperationRejection(reasonsByPath: Dictionary(
+                        uniqueKeysWithValues: allowed.map { ($0, .freshReviewRequired) }
+                    ))
+                )
+            }
+            duplicateVerificationRequest = nil
+            uninstallVerificationRequest = nil
+            reviewedObjects = request
         case .none:
             duplicateVerificationRequest = nil
             uninstallVerificationRequest = nil
+            reviewedObjects = nil
+        }
+
+        // v2026.09.06 SR-01: every real entry, including legacy/debug overloads, must carry
+        // evidence frozen before confirmation. A scan revision or a fresh ledger reservation
+        // cannot authorize the current occupant of an unreviewed pathname.
+        if !dryRun, executionVerification == nil, scanIncompleteOverrideRequest == nil {
+            return pendingLedgerPreSubmitFailure(
+                paths: allowed,
+                rejection: TrashPendingOperationRejection(reasonsByPath: Dictionary(
+                    uniqueKeysWithValues: allowed.map { ($0, .freshReviewRequired) }
+                ))
+            )
         }
 
         if dryRun {
@@ -1559,10 +1587,17 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         // Compare those scan-time identities with the durable ledger reservation before any
         // AppKit claim. The ledger's existing claim fence repeats the comparison beside every
         // concrete recycle call, so later replacements remain blocked as well.
-        if let uninstallVerificationRequest {
-            let changedPaths = uninstallVerificationRequest.changedPaths(
-                comparedTo: frozenIdentities
-            )
+        // v2026.09.06: ordinary review objects use the same durable identity fence as
+        // Uninstall residuals. The ledger's later claim fences retain these exact identities.
+        let changedReviewedPaths: [String]?
+        if let reviewedObjects {
+            changedReviewedPaths = reviewedObjects.changedPaths(comparedTo: frozenIdentities)
+        } else if let uninstallVerificationRequest {
+            changedReviewedPaths = uninstallVerificationRequest.changedPaths(comparedTo: frozenIdentities)
+        } else {
+            changedReviewedPaths = nil
+        }
+        if let changedPaths = changedReviewedPaths {
             guard changedPaths.isEmpty else {
                 let changed = Set(changedPaths)
                 let rejection = TrashPendingOperationRejection(
