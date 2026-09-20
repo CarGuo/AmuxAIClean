@@ -112,6 +112,47 @@ final class SimulatorDeleteCoordinatorTests: XCTestCase {
         XCTAssertTrue(reason.contains(runtime.displayName))
     }
 
+    /// v2026.09.20：扫描、预检和冻结计划复核必须使用同一纯词法路径合同。
+    /// 只构造 dry-run plan，不执行 simctl，不修改这些系统路径。
+    func test_prepareAndRevalidate_preserveLibraryAndPrivateRuntimePaths() {
+        let coordinator = makeCoordinator()
+        for path in [
+            "/Library/Developer/CoreSimulator/Volumes/iOS_23C54/iOS 26.2.simruntime",
+            "/private/var/run",
+            "/private/var/run/com.apple.security.cryptexd/mnt/TestRuntime/iOS 27.0.simruntime",
+            "/var/run/com.apple.security.cryptexd/mnt/TestRuntime/iOS 27.0.simruntime",
+        ] {
+            let runtime = hit(name: "Runtime", path: path, identifier: runtimeUUID)
+            let plan = coordinator.prepare(
+                cards: [runtimeCard()],
+                cardHits: [runtimeCardID: [runtime]],
+                selected: [runtime.id]
+            )
+            guard case let .ready(items) = plan else {
+                XCTFail("Valid system-reported runtime path must be accepted: \(path)")
+                continue
+            }
+            XCTAssertEqual(items.count, 1)
+            XCTAssertEqual(items.first?.hitID, path)
+            XCTAssertEqual(items.first?.args, ["simctl", "runtime", "delete", runtimeUUID])
+            XCTAssertEqual(coordinator.revalidate(items: items), .ready(items: items))
+        }
+    }
+
+    func test_revalidate_rejectsAmbiguousResourcePaths() {
+        let coordinator = makeCoordinator()
+        for path in [
+            "", "/", "relative/runtime", "file:///private/var/run",
+            "/private/var/../run", "/private/var/./run", "/private//var/run",
+            "/private/var/run/", "/private/var/run\0other",
+        ] {
+            let item = makeItem(
+                hitID: path, name: "Invalid runtime", kind: .simulatorRuntime, identifier: runtimeUUID
+            )
+            XCTAssertEqual(coordinator.revalidate(items: [item]), .invalid(reason: item.displayName), path)
+        }
+    }
+
     func test_prepare_deviceRejectsMalformedUUID() {
         let coordinator = makeCoordinator()
         let device = hit(

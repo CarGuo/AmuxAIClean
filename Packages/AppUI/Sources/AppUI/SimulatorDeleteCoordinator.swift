@@ -991,12 +991,9 @@ public struct SimulatorDeleteCoordinator: Sendable {
     }
 
     private static func isUnambiguousAbsolutePath(_ path: String) -> Bool {
-        guard !path.isEmpty, path != "/", path.hasPrefix("/") else { return false }
-        let components = path.split(separator: "/", omittingEmptySubsequences: false)
-        guard !components.dropFirst().contains(where: { $0 == "." || $0 == ".." || $0.isEmpty }) else {
-            return false
-        }
-        return URL(fileURLWithPath: path).standardizedFileURL.path == path
+        // v2026.09.20：与 runtime 解码共用纯词法合同；复核不得因已挂载的
+        // /private 路径被 Foundation 规范化而误拒绝冻结计划。
+        SimctlResourcePath(rawValue: path) != nil
     }
 
     private static func isValidTailArg(_ tail: String, for kind: ManagedUninstallRecipe) -> Bool {

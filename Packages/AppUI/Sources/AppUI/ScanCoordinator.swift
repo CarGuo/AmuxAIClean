@@ -5998,7 +5998,9 @@ public final class ScanCoordinator: ObservableObject {
         GSYLog.notice(.flow,
                       "scan.common_app_cache.start rules=\(vendorsCopy.filter { $0.category == "common_app_cache" }.count) includeConfirm=\(includeConfirm)")
 
-        scanTask = Task { [weak self] in
+        // v2026.09.20：捕获配置值快照，避免外层 MainActor Task 与 detached producer
+        // 共享 options 的可变捕获盒；Swift 6 严格并发要求跨隔离传递不可变 Sendable 值。
+        scanTask = Task { [weak self, options] in
             let whitelist = await whitelistStore.snapshotPaths()
             guard !Task.isCancelled,
                   let self,

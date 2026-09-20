@@ -1566,3 +1566,29 @@ deep 指标写回还会取消上一轮 worker。结果是“数据已经有了�
 4. 日志必须分别记录 recycle completion、result eligibility 与 model-sync completion；性能测试
    同时锁定“结果不等待 reconciliation”的顺序，以及宽 Developer Tree prune 不恢复全局投影、
    不构建全缓存贡献索引。不能仅通过提前弹框掩盖后台 11 秒浪费。
+
+## 16. v2026.09.20：Simulator 路径校验不能要求 Foundation 规范化前后相等
+
+现场 `simctl runtime list -j` 成功返回同机的两类挂载：iOS 26.2 使用
+`/Library/Developer/CoreSimulator/Volumes/…`，iOS 27.0 使用
+`/private/var/run/com.apple.security.cryptexd/mnt/…`。旧扫描器把
+`standardizedFileURL.path == raw` 当成合法性条件；Foundation 会在对应目录存在时移除
+`/private`，导致正常 runtime 被误判为 invalid payload，进而拒绝整份清单。仅用不存在路径
+的 JSON fixture 不能复现这种依赖挂载状态的错误。托管卸载预检/冻结计划复核曾复制同一判据。
+
+长期合同：
+
+1. `SimctlResourcePath` 统一负责 simctl 资源路径的纯词法校验：拒绝空值、相对路径、根目录、
+   NUL、`.`/`..`、重复分隔符及尾分隔符；保留系统返回的合法原始路径，不读取文件系统，
+   不按 Xcode、iOS 或 macOS 版本硬编码前缀，不因挂载存在性改变解码或复核结果。
+2. managed 与 legacy 解码、卸载预检和冻结计划复核共用该合同。bundle 与 mount 同时存在时
+   仍须按完整路径组件证明包含关系；不能放过同前缀 sibling 或把两个不同路径猜成同一资源。
+3. 词法有效不代表删除授权或物理身份证明。托管卸载继续依赖 UUID、deletable、冻结复核、
+   执行前权威查询和原有 ledger；legacy 永不生成托管卸载 UUID，不能转为文件删除。
+4. 回归覆盖旧 `/Library` 挂载、新 Cryptex 路径、确实存在的 `/private/var/run`、legacy、
+   mount-only、路径穿越/NUL、mount sibling，以及 prepare/revalidate 的路径保真。
+   本次不引入新系统 API，产品部署下限仍为 macOS 13.5；当前系统上的测试和 Debug 构建不能
+   替代 macOS 13.5 真机/VM 与持续 UI 交互验收。
+
+参考：[Apple NSURL.standardizingPath](https://developer.apple.com/documentation/foundation/nsurl/standardizingpath)
+明确说明 `/private` 前缀的移除可能查询文件系统。

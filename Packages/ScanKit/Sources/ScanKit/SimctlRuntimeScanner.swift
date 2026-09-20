@@ -199,7 +199,7 @@ public actor SimctlRuntimeScanner {
             guard !dto.identifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   !dto.version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   seenIdentifiers.insert(dto.identifier.lowercased()).inserted,
-                  let runtimeRoot = validatedAbsolutePath(dto.runtimeRoot) else {
+                  let runtimeRoot = SimctlResourcePath(rawValue: dto.runtimeRoot) else {
                 return nil
             }
             runtimes.append(SimctlRuntime(
@@ -209,7 +209,7 @@ public actor SimctlRuntimeScanner {
                 kind: nil,
                 version: dto.version,
                 buildversion: dto.buildversion,
-                runtimeRoot: runtimeRoot,
+                runtimeRoot: runtimeRoot.rawValue,
                 isAvailable: dto.isAvailable,
                 deletable: nil,
                 sizeBytes: nil,
@@ -232,29 +232,18 @@ public actor SimctlRuntimeScanner {
         runtimeBundlePath: String?,
         mountPath: String?
     ) -> String? {
-        let bundle = runtimeBundlePath.flatMap(validatedAbsolutePath)
-        let mount = mountPath.flatMap(validatedAbsolutePath)
+        let bundle = runtimeBundlePath.flatMap { SimctlResourcePath(rawValue: $0) }
+        let mount = mountPath.flatMap { SimctlResourcePath(rawValue: $0) }
         if runtimeBundlePath != nil && bundle == nil { return nil }
         if mountPath != nil && mount == nil { return nil }
 
         if let bundle, let mount {
-            guard bundle == mount || bundle.hasPrefix(mount + "/") else { return nil }
-            return bundle
+            guard bundle.isWithin(mount) else { return nil }
+            return bundle.rawValue
         }
-        return bundle ?? mount
-    }
-
-    /// 空、相对、根目录、`.`/`..`、重复斜线和尾斜线都属于歧义路径。扫描结果只用于
-    /// 展示/关联，但路径身份不明确时仍必须整份拒绝，避免后续选择绑定到另一个资源。
-    private static func validatedAbsolutePath(_ raw: String) -> String? {
-        guard !raw.isEmpty, raw != "/", raw.hasPrefix("/") else { return nil }
-        let components = raw.split(separator: "/", omittingEmptySubsequences: false)
-        guard !components.dropFirst().contains(where: { $0 == "." || $0 == ".." || $0.isEmpty }) else {
-            return nil
-        }
-        let standardized = URL(fileURLWithPath: raw).standardizedFileURL.path
-        guard standardized == raw else { return nil }
-        return raw
+        // v2026.09.20：纯词法合同保留 CoreSimulator 返回的 /private 路径，
+        // 不因 Foundation 对已挂载目录的规范化而把合法清单误判为 schema failure。
+        return (bundle ?? mount)?.rawValue
     }
 
     private struct ManagedRuntimeDTO: Decodable {

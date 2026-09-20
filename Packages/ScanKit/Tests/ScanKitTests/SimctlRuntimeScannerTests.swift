@@ -11,6 +11,115 @@ final class SimctlRuntimeScannerTests: XCTestCase {
 
     // MARK: - detect 纯解析
 
+    /// v2026.09.20：同一份清单可能同时包含旧 /Library 挂载与新 Cryptex 挂载。
+    /// /private/var/run 是已有系统目录，稳定触发 Foundation 去掉 /private 的旧误判；
+    /// 其余路径不要求实际安装 runtime，解码结果不能依赖挂载目录是否存在。
+    func test_decode_managedMixedMountPaths_preservesCompleteListAndSourcePaths() throws {
+        let oldID = "11111111-2222-3333-4444-555555555555"
+        let newID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        let oldMount = "/Library/Developer/CoreSimulator/Volumes/iOS_23C54"
+        let oldBundle = oldMount + "/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 26.2.simruntime"
+        for (mount, bundle) in [
+            ("/private/var/run", "/private/var/run"),
+            ("/private/var/run/com.apple.security.cryptexd/mnt/TestRuntime",
+             "/private/var/run/com.apple.security.cryptexd/mnt/TestRuntime/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime"),
+            ("/var/run/com.apple.security.cryptexd/mnt/TestRuntime",
+             "/var/run/com.apple.security.cryptexd/mnt/TestRuntime/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime"),
+        ] {
+            let payload: [String: Any] = [
+                oldID: [
+                    "identifier": oldID, "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-26-2",
+                    "version": "26.2", "runtimeBundlePath": oldBundle, "mountPath": oldMount,
+                    "state": "Ready", "deletable": true, "sizeBytes": 8_381_044_573,
+                ],
+                newID: [
+                    "identifier": newID, "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                    "version": "27.0", "runtimeBundlePath": bundle, "mountPath": mount,
+                    "state": "Ready", "deletable": true, "sizeBytes": 8_067_000_161,
+                ],
+            ]
+            let runtimes = try SimctlRuntimeScanner.decode(from: jsonString(payload))
+            XCTAssertEqual(runtimes.map(\.runtimeRoot), [oldBundle, bundle])
+            XCTAssertEqual(runtimes.map(\.managedUninstallIdentifier), [oldID, newID])
+            XCTAssertEqual(runtimes.map(\.sizeBytes), [8_381_044_573, 8_067_000_161])
+            XCTAssertTrue(runtimes.allSatisfy { $0.isAvailable && $0.discoverySource == .managed })
+        }
+    }
+
+    func test_decode_legacyAndMountOnly_acceptValidPathsWithoutInventingUninstallAuthority() throws {
+        let identifier = "11111111-2222-3333-4444-555555555555"
+        for path in [
+            "/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 18.0.simruntime",
+            "/private/var/run",
+            "/private/var/run/com.apple.security.cryptexd/mnt/TestRuntime",
+        ] {
+            let legacy = try SimctlRuntimeScanner.decode(from: jsonString([
+                "runtimes": [[
+                    "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-0",
+                    "version": "18.0", "runtimeRoot": path, "isAvailable": false,
+                ]],
+            ]))
+            XCTAssertEqual(legacy.count, 1)
+            XCTAssertEqual(legacy.first?.runtimeRoot, path)
+            XCTAssertEqual(legacy.first?.discoverySource, .legacyReadOnly)
+            XCTAssertNil(legacy.first?.managedUninstallIdentifier)
+            XCTAssertNil(legacy.first?.sizeBytes)
+
+            let mountOnly = try SimctlRuntimeScanner.decode(from: jsonString([
+                identifier: [
+                    "identifier": identifier, "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-0",
+                    "version": "18.0", "mountPath": path, "state": "Staging", "deletable": false,
+                ],
+            ]))
+            XCTAssertEqual(mountOnly.count, 1)
+            XCTAssertEqual(mountOnly.first?.runtimeRoot, path)
+            XCTAssertEqual(mountOnly.first?.isAvailable, false)
+            XCTAssertNil(mountOnly.first?.managedUninstallIdentifier)
+        }
+    }
+
+    func test_decode_rejectsAmbiguousPathsInEveryRuntimePathField() throws {
+        let identifier = "11111111-2222-3333-4444-555555555555"
+        for path in [
+            "", "/", "relative/runtime", "file:///private/var/run",
+            "/private/var/../run", "/private/var/./run", "/private//var/run",
+            "/private/var/run/", "/private/var/run\0other",
+        ] {
+            for field in ["runtimeBundlePath", "mountPath"] {
+                let payload: [String: Any] = [identifier: [
+                    "identifier": identifier, "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-0",
+                    "version": "18.0", field: path,
+                ]]
+                XCTAssertThrowsError(try SimctlRuntimeScanner.decode(from: jsonString(payload)), "\(field): \(path)")
+            }
+            let legacy: [String: Any] = ["runtimes": [[
+                "identifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-0",
+                "version": "18.0", "runtimeRoot": path, "isAvailable": true,
+            ]]]
+            XCTAssertThrowsError(try SimctlRuntimeScanner.decode(from: jsonString(legacy)), path)
+        }
+    }
+
+    func test_decode_rejectsBundleOutsideMountIncludingSiblingPrefix() throws {
+        let identifier = "11111111-2222-3333-4444-555555555555"
+        for mount in [
+            "/Library/Developer/CoreSimulator/Volumes/TestRuntime",
+            "/private/var/run/com.apple.security.cryptexd/mnt/TestRuntime",
+        ] {
+            for bundle in [mount + "-other/iOS.simruntime", "/Library/Unrelated/iOS.simruntime"] {
+                let payload: [String: Any] = [identifier: [
+                    "identifier": identifier, "runtimeIdentifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-0",
+                    "version": "18.0", "runtimeBundlePath": bundle, "mountPath": mount,
+                ]]
+                XCTAssertThrowsError(try SimctlRuntimeScanner.decode(from: jsonString(payload)))
+            }
+        }
+    }
+
+    private func jsonString(_ object: [String: Any]) throws -> String {
+        String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+    }
+
     func test_detect_空字符串_返回空() {
         XCTAssertEqual(SimctlRuntimeScanner.detect(from: "").count, 0)
     }
