@@ -2276,6 +2276,8 @@ public struct MainView: View {
                     .tag(MainView.launchAgentSentinelID)
                 portCleanerSidebarRow
                     .tag(MainView.portCleanerSentinelID)
+                dartRadarSidebarRow
+                    .tag(MainView.dartRadarSentinelID)
                 uninstallSidebarRow
                     .tag(MainView.uninstallSentinelID)
                     .accessibilityIdentifier("sidebar.uninstaller")
@@ -2364,6 +2366,9 @@ public struct MainView: View {
     /// v1.8：「清理端口」侧边项。端口占用是运行时进程资源，和磁盘扫描模型不同，
     /// 使用独立屏幕 + 后台 lsof scanner，不进入 ScanCategory。
     static let portCleanerSentinelID: String = "port.cleaner"
+
+    /// Dart 雷达：运行时 Dart/Flutter 进程观测工具，与端口清理同属进程类旁路屏幕。
+    static let dartRadarSentinelID: String = "dart.radar"
 
     /// v1.2 P1-8：「卸载残留」侧边项。UninstallScreen 自带 SafetyEngine + dryRun
     /// + 二次确认 sheet，外层 MainView 不应再叠加扫描/删除 UI，故走 sentinel ID 旁路。
@@ -2463,6 +2468,16 @@ public struct MainView: View {
                 .foregroundStyle(.tint)
                 .frame(width: 16)
             localizedSidebarTitle("sidebar.row.port_cleaner")
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var dartRadarSidebarRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            localizedSidebarTitle("sidebar.row.dart_radar")
         }
         .padding(.vertical, 2)
     }
@@ -2655,6 +2670,11 @@ public struct MainView: View {
         selectedCategory == MainView.portCleanerSentinelID
     }
 
+    /// 当前是否在「Dart 雷达」模式。
+    private var isDartRadarMode: Bool {
+        selectedCategory == MainView.dartRadarSentinelID
+    }
+
     /// v1.2 P1-8：当前是否在卸载残留模式。
     private var isUninstallMode: Bool {
         selectedCategory == MainView.uninstallSentinelID
@@ -2711,6 +2731,9 @@ public struct MainView: View {
             } else if isPortCleanerMode {
                 // 「清理端口」是运行时进程工具：后台 lsof 扫描，kill 前二次确认，不复用磁盘扫描 UI。
                 PortCleanerScreen()
+            } else if isDartRadarMode {
+                // 「Dart 雷达」整段独立：后台 ps 扫描 Dart/Flutter 进程，冻结身份后二次确认结束。
+                DartRadarScreen()
             } else if isUninstallMode {
                 // 「卸载残留」整段独立：UninstallScreen 自带 SafetyEngine + dryRun + 二次确认，
                 // 外层不能再叠 statusBar / footerBar / 删除按钮，避免重复或绕过安全契约。

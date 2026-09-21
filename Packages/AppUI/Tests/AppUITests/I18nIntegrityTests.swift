@@ -393,6 +393,7 @@ final class I18nIntegrityTests: XCTestCase {
             "drop.error.",       // 拖拽错误
             "common.",           // 通用按钮（OK / Cancel）
             "toolbar.help.",     // 工具栏 tooltip
+            "dart_radar.role.",  // DartProcessRole.titleKey 用 enum rawValue 拼接
         ]
 
         var orphans: [String] = []
