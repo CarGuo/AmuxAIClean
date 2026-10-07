@@ -89,14 +89,18 @@ public enum TreeSizeEstimator {
     ///     轻微高估，对"估算分母"用途无感）
     /// 预期：单根 333ms → ~50ms（5-10x 提升）。
     private static func walkRoot(_ root: URL, deadline: Date) -> Int64? {
+        let rootPath = root.standardizedFileURL.path
+        if TCCSkipList.shouldSkip(rootPath) { return nil }
+
         // 拿根目录的 device id 作为跨卷判定基准（一次 stat 调用，省去 NSURL.volumeIdentifierKey）
         // 注意 BulkEntry.device 是 UInt64（来自 attrlist ATTR_CMN_DEVID），stat.st_dev 是 dev_t（Int32），
         // 这里统一转 UInt64 比较。
         var rootStat = stat()
-        guard stat(root.path, &rootStat) == 0 else { return nil }
+        guard stat(rootPath, &rootStat) == 0 else { return nil }
         let rootDevice = UInt64(bitPattern: Int64(rootStat.st_dev))
 
-        var stack: [String] = [root.path]
+        var stack: [String] = [rootPath]
+        let inodes = InodeSet()
         var total: Int64 = 0
         var iterations = 0
         // 软上限：估算不接受走太多目录（防御性，正常根 ~10k 目录以内）
@@ -105,6 +109,7 @@ public enum TreeSizeEstimator {
 
         while let dirPath = stack.popLast() {
             if Date() >= deadline { break }
+            if TCCSkipList.shouldSkip(dirPath) { continue }
             let fd = open(dirPath, O_RDONLY, 0)
             if fd < 0 { continue }
             openedAnyDirectory = true
@@ -120,10 +125,17 @@ public enum TreeSizeEstimator {
                 if entry.isSymlink { return true }
                 // 跨卷停止：device 来自 attrlist，无需 NSURL bridge
                 if entry.device != rootDevice { return true }
+                // 硬链接与目录环路去重：与正式 BulkScanner 的 (device, inode) 口径一致
+                guard inodes.insertIfFirstSeen(device: entry.device, inode: entry.inode) else {
+                    return true
+                }
+
+                let childPath = dirPath == "/" ? "/\(entry.name)" : "\(dirPath)/\(entry.name)"
+                if TCCSkipList.shouldSkip(childPath) { return true }
 
                 anyEntry = true
                 if entry.isDirectory {
-                    stack.append("\(dirPath)/\(entry.name)")
+                    stack.append(childPath)
                 } else {
                     // 与正式 BulkScanner、System Settings 储存空间使用同一 allocated 语义。
                     total += entry.allocatedSize

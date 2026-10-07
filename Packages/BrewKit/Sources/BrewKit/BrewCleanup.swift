@@ -262,16 +262,15 @@ public struct BrewCleanup: Sendable {
 
     // MARK: - 内部
 
-    /// 枚举 cacheRoot 顶层的 symlink，把 target 文件名（downloads/<name>）收集起来。
-    /// 这些文件不算 stale，因为仍有"活跃 bottle 别名"指向。
+    /// 枚举 cacheRoot 顶层以及 `Cask/` 子目录的 symlink，把 target 文件名（downloads/<name>）收集起来。
+    /// 这些文件不算 stale，因为仍有"活跃 bottle / cask 别名"指向。
     private func collectActiveDownloadFilenames(
         rootEntries: [String]
     ) -> (names: Set<String>, diagnostics: [BrewDiagnostic]) {
         var active = Set<String>()
         var diagnostics: [BrewDiagnostic] = []
-        for name in rootEntries where !name.hasPrefix(".") {
-            let entry = cacheRoot.appendingPathComponent(name)
-            // 仅看 symlink；普通文件 / 目录不算 alias
+
+        func inspectSymlinkEntry(_ entry: URL, checkCaskDirectory: Bool) {
             let attributes: BrewCleanupEntryAttributes
             do {
                 attributes = try fileSystem.attributes(entry)
@@ -284,7 +283,7 @@ public struct BrewCleanup: Sendable {
                 ) {
                     diagnostics.append(diagnostic)
                 }
-                continue
+                return
             }
             guard let isSymbolicLink = attributes.isSymbolicLink else {
                 diagnostics.append(BrewDiagnostic(
@@ -293,9 +292,21 @@ public struct BrewCleanup: Sendable {
                     reason: .missingMetadata,
                     path: entry.path
                 ))
-                continue
+                return
             }
-            guard isSymbolicLink else { continue }
+            if !isSymbolicLink {
+                if checkCaskDirectory,
+                   entry.lastPathComponent == "Cask",
+                   let caskEntries = try? fileSystem.contentsOfDirectory(entry) {
+                    for caskName in caskEntries where !caskName.hasPrefix(".") {
+                        inspectSymlinkEntry(
+                            entry.appendingPathComponent(caskName),
+                            checkCaskDirectory: false
+                        )
+                    }
+                }
+                return
+            }
 
             let dest: String
             do {
@@ -309,16 +320,21 @@ public struct BrewCleanup: Sendable {
                 ) {
                     diagnostics.append(diagnostic)
                 }
-                continue
+                return
             }
-            // dest 形如 "downloads/<hash>--xxx.tar.gz" 或相对裸文件名 "<hash>--xxx.tar.gz"
-            let comp = (dest as NSString).pathComponents.filter { $0 != "/" && $0 != "." }
+            // dest 形如 "downloads/<hash>--xxx.tar.gz"、"../downloads/<hash>--xxx.dmg" 或相对裸文件名 "<hash>--xxx.tar.gz"
+            let comp = (dest as NSString).pathComponents.filter { $0 != "/" && $0 != "." && $0 != ".." }
             if comp.count >= 2 && comp[comp.count - 2] == "downloads" {
                 active.insert(comp[comp.count - 1])
             } else if comp.count == 1 {
                 // 相对裸文件名 fallback
                 active.insert(comp[0])
             }
+        }
+
+        for name in rootEntries where !name.hasPrefix(".") {
+            let entry = cacheRoot.appendingPathComponent(name)
+            inspectSymlinkEntry(entry, checkCaskDirectory: true)
         }
         return (active, diagnostics)
     }

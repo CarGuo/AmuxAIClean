@@ -1312,12 +1312,17 @@ public final class LogFileSink: @unchecked Sendable {
         entries.reserveCapacity(names.count)
         for name in names where Self.isCanonicalLogFileName(name) {
             var information = stat()
-            guard fstatat(
+            if fstatat(
                 directoryDescriptor,
                 name,
                 &information,
                 AT_SYMLINK_NOFOLLOW
-            ) == 0 else { throw Self.posixError() }
+            ) != 0 {
+                if errno == ENOENT {
+                    continue
+                }
+                throw Self.posixError()
+            }
             // Matching-name directories, symlinks, devices and hard links are foreign entries.
             // They stay visible on disk but are never read, exported, purged or cleared.
             guard Self.isOwnedRegularFile(information) else { continue }

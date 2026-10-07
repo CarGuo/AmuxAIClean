@@ -187,40 +187,56 @@ public struct SafetyEngine: Sendable {
         "/dart-sdk/bin/"
     ]
 
+    /// Data 卷 firmlink 前缀。
+    static let dataVolumePrefix = "/System/Volumes/Data"
+
+    /// 将 `/System/Volumes/Data/<subpath>` 归一化为 `/<subpath>`，消除 APFS firmlink 镜像路径绕过。
+    static func stripDataVolumePrefix(_ standardized: String) -> String {
+        if standardized.hasPrefix(dataVolumePrefix + "/") {
+            return String(standardized.dropFirst(dataVolumePrefix.count))
+        }
+        return standardized
+    }
+
+    /// `userRootForbidden(home:)` 对应的家目录相对后缀常量表（热路径零分配）。
+    static let userRootForbiddenRelativeSuffixes: [String] = [
+        "/Documents",
+        "/Desktop",
+        "/Downloads",
+        "/Pictures",
+        "/Movies",
+        "/Music",
+        "/Library",
+        "/Library/Mobile Documents", // iCloud Drive 根
+        "/Library/Containers",       // 沙盒容器根
+        "/Library/Group Containers"
+    ]
+
+    /// `safeCachePrefixes(home:)` 对应的家目录相对前缀常量表（热路径零分配）。
+    static let safeCacheRelativePrefixes: [String] = [
+        "/Library/Caches/",
+        "/Library/Logs/",
+        "/Library/Developer/Xcode/DerivedData/",
+        "/Library/Developer/Xcode/Archives/",
+        "/Library/Developer/CoreSimulator/Caches/"
+    ]
+
+    /// 系统级共享 per-user 临时区前缀常量表（热路径零分配）。
+    static let systemSafeCachePrefixes: [String] = [
+        "/private/var/folders/",
+        "/var/folders/"
+    ]
+
     /// 用户家目录下"根级别"禁删（防止用户拖进整个文件夹被一键带走）。
     public static func userRootForbidden(home: String) -> [String] {
-        [
-            home,
-            "\(home)/Documents",
-            "\(home)/Desktop",
-            "\(home)/Downloads",
-            "\(home)/Pictures",
-            "\(home)/Movies",
-            "\(home)/Music",
-            "\(home)/Library",
-            "\(home)/Library/Mobile Documents", // iCloud Drive 根
-            "\(home)/Library/Containers",       // 沙盒容器根
-            "\(home)/Library/Group Containers"
-        ]
+        [home] + userRootForbiddenRelativeSuffixes.map { "\(home)\($0)" }
     }
 
     /// 已知"系统语义就是给清理工具刷的"路径前缀 —— 默认 `safe`，UI 可默认勾选。
     /// 见 PITFALLS §3 / §5.5：必须是**严格匹配的子节点**，不允许整删根本身。
     public static func safeCachePrefixes(home: String) -> [String] {
-        let dataPrefix = "/System/Volumes/Data" // firmlink 等价镜像
-        let primary = [
-            "\(home)/Library/Caches/",
-            "\(home)/Library/Logs/",
-            "\(home)/Library/Developer/Xcode/DerivedData/",
-            "\(home)/Library/Developer/Xcode/Archives/",
-            "\(home)/Library/Developer/CoreSimulator/Caches/"
-        ]
-        // 系统级（任何用户共享的 per-user 临时区）
-        let system = [
-            "/private/var/folders/",
-            "/var/folders/"
-        ]
-        return primary + primary.map { "\(dataPrefix)\($0)" } + system
+        let primary = safeCacheRelativePrefixes.map { "\(home)\($0)" }
+        return primary + primary.map { "\(dataVolumePrefix)\($0)" } + systemSafeCachePrefixes
     }
 
     /// 严格判定。返回 (verdict, rejection)。
@@ -262,32 +278,27 @@ public struct SafetyEngine: Sendable {
         if standardized == "/" || standardized.isEmpty {
             return (.forbid, .rootOrAboveHome)
         }
-        // 5. 硬编码黑名单
-        //    M4-P0 修复：旧实现对 `/System/Volumes/Data/` 整体放过 hardForbid，导致 firmlink
-        //    等价路径（`/System/Volumes/Data/etc`、`/usr`、`/Applications`、`/Library/Apple`、
-        //    `/private/var/db` 等）完全绕过硬禁区。
-        //
-        //    修复方案：当路径位于 `/System/Volumes/Data/` 下时，**只**用"剥掉数据卷前缀"的
-        //    等价路径 (`stripped`) 跑 hardForbid——这样 `/System/Volumes/Data/usr/bin` 会被
-        //    `/usr` 前缀命中 forbid，而 `/System/Volumes/Data/private/var/folders/...`（safeCache
-        //    镜像项）的 stripped `/private/var/folders/...` 不匹配任何 hardForbid 前缀，
-        //    可以继续走到第 8 步升级为 safe。
-        //
-        //    非 Data 卷路径（普通 standardized）按原逻辑跑 hardForbid。
-        let dataVolumePrefix = "/System/Volumes/Data"
-        let isDataVolumeChild = standardized.hasPrefix(dataVolumePrefix + "/")
-        let pathForHardForbid: String = isDataVolumeChild
-            ? String(standardized.dropFirst(dataVolumePrefix.count))
-            : standardized
+        // 5. 统一剥除 `/System/Volumes/Data/` firmlink 前缀，确保第 5~9 步全部使用一致的
+        //    canonical 路径，防止通过 `/System/Volumes/Data/Users/...` 绕过用户根、凭证或 bundle 保护。
+        let canonical = Self.stripDataVolumePrefix(standardized)
+        let canonicalHome = Self.stripDataVolumePrefix(home)
         for prefix in Self.hardForbidPrefixes {
-            if pathForHardForbid == prefix || pathForHardForbid.hasPrefix(prefix + "/") {
+            if canonical == prefix || canonical.hasPrefix(prefix + "/") {
                 return (.forbid, .hardForbidPrefix)
             }
         }
-        // 6. 用户根级目录不允许整删
-        for forbidden in Self.userRootForbidden(home: home) {
-            if standardized == forbidden {
-                return (.forbid, .userDocumentsRoot)
+        // 6. 用户根级目录不允许整删（零分配：直接基于 canonicalHome 与相对后缀比较）
+        if canonical == canonicalHome {
+            return (.forbid, .userDocumentsRoot)
+        }
+        let homeRelative: String? = canonical.hasPrefix(canonicalHome + "/")
+            ? String(canonical.dropFirst(canonicalHome.count))
+            : nil
+        if let relative = homeRelative {
+            for suffix in Self.userRootForbiddenRelativeSuffixes {
+                if relative == suffix {
+                    return (.forbid, .userDocumentsRoot)
+                }
             }
         }
         // 7. 不允许触碰其他卷的系统区
@@ -298,17 +309,9 @@ public struct SafetyEngine: Sendable {
         // 7.1 敏感凭证 / 配置（DEV_ARTIFACTS_RULES §2.7）。
         //     必须放在 safeCache 之前，否则 `~/Library/org.swift.swiftpm/security`
         //     这种"在 ~/Library 下但属于凭证"的路径会被错误升级为 safe。
-        //
-        //     性能优化：
-        //     1) home 前缀短路：非家目录路径直接跳过
-        //     2) 第二字符分桶：home 后的第一段要么是 `/.<dotfile>` 要么是 `/Library/...`，
-        //        用 standardized[homeLen+1] 单字节判断只跑对应桶（27 → 平均 13 项）
-        //     3) 用 hasPrefix(home + suffix) 直接走 String 内核 SIMD 比较，避免 UTF8 索引开销
-        if standardized.hasPrefix(home + "/") {
-            let homeEndIdx = standardized.index(standardized.startIndex,
-                                                offsetBy: home.count + 1)
-            // homeEndIdx 指向 home 后第一个字符（已知是 '/' 之后那位）
-            let firstChar = standardized[homeEndIdx]
+        if let relative = homeRelative, relative.count > 1 {
+            let firstCharIdx = relative.index(after: relative.startIndex)
+            let firstChar = relative[firstCharIdx]
             let bucket: [String]
             if firstChar == "." {
                 bucket = Self.dotfileCredentialSuffixes
@@ -321,7 +324,6 @@ public struct SafetyEngine: Sendable {
             // Compare both directions with component boundaries. This closes every ancestor
             // of the existing credential rules without adding ad-hoc protected directories or
             // traversing children on the UI/scanning hot path.
-            let relative = String(standardized.dropFirst(home.count))
             let descendantPrefix = relative + "/"
             for suffix in bucket {
                 if relative == suffix || relative.hasPrefix(suffix + "/")
@@ -332,7 +334,7 @@ public struct SafetyEngine: Sendable {
         }
         // 7.2 文件名后缀禁区（签名容器 / Provisioning）。
         for suffix in Self.hardForbidSuffixes {
-            if standardized.hasSuffix(suffix) {
+            if canonical.hasSuffix(suffix) {
                 return (.forbid, .sensitiveCredential)
             }
         }
@@ -340,53 +342,41 @@ public struct SafetyEngine: Sendable {
         for segment in Self.hardForbidPathSegments {
             let middle = "/\(segment)/"
             let tail = "/\(segment)"
-            if standardized.contains(middle) || standardized.hasSuffix(tail) {
+            if canonical.contains(middle) || canonical.hasSuffix(tail) {
                 return (.forbid, .sensitiveCredential)
             }
         }
         // 7.4 路径子串禁区（review 中危 #4 / #6）。
-        // 跨段命中：路径含 `/User/globalStorage/` 或全局工具二进制目录子串即 forbid。
-        // 覆盖：
-        // - VS Code / Cursor / Trae / Windsurf / Cody 等所有 Code-OSS 衍生编辑器
-        //   的 `~/Library/Application Support/<vendor>/User/globalStorage`，
-        //   不依赖 vendors.yaml 列举（每加一个新 vendor 都要改 yaml 不可持续）。
-        // - Flutter/Dart 全局工具二进制目录（`/.pub-cache/bin/`、`/dart-sdk/bin/`）。
-        //   作为 vendors.yaml forbid 规则的 runtime 兜底。
-        //
-        // 兼容"叶节点自身（无尾斜杠）"：fragment 末尾若为 `/`，同时也允许路径以 `<fragment 去掉尾斜杠>` 结尾命中
-        // （否则 `/Users/foo/.pub-cache/bin` 这种刚好是 vendor 根的路径会漏拦，要降级到 vendors.yaml 兜底）。
         for fragment in Self.hardForbidPathContains {
-            if standardized.contains(fragment) {
+            if canonical.contains(fragment) {
                 return (.forbid, .sensitiveCredential)
             }
             if fragment.hasSuffix("/") {
                 let trimmed = String(fragment.dropLast())
-                if standardized.hasSuffix(trimmed) {
+                if canonical.hasSuffix(trimmed) {
                     return (.forbid, .sensitiveCredential)
                 }
             }
         }
-        // 8. 已知缓存路径升级为 safe（UI 可默认勾选）
-        for safePrefix in Self.safeCachePrefixes(home: home) {
-            if standardized.hasPrefix(safePrefix) {
-                // 8.1 bundle 保护叠加：safe 路径若属于 data_protected app
-                //     （例：~/Library/Caches/com.1password.7/Logs），升级为 confirm。
-                if let bm = bundleMatch(standardized: standardized, home: home),
-                   bm.kind == .dataProtected {
-                    return (.confirm, .bundleDataProtected)
-                }
-                return (.safe, .ok)
+        // 8. 已知缓存路径升级为 safe（UI 可默认勾选；零分配前缀匹配）
+        let isSafeCachePath: Bool
+        if let relative = homeRelative {
+            isSafeCachePath = Self.safeCacheRelativePrefixes.contains { relative.hasPrefix($0) }
+        } else {
+            isSafeCachePath = Self.systemSafeCachePrefixes.contains { canonical.hasPrefix($0) }
+        }
+        if isSafeCachePath {
+            // 8.1 bundle 保护叠加：safe 路径若属于 data_protected app
+            //     （例：~/Library/Caches/com.1password.7/Logs），升级为 confirm。
+            if let bm = bundleMatch(standardized: canonical, home: canonicalHome),
+               bm.kind == .dataProtected {
+                return (.confirm, .bundleDataProtected)
             }
+            return (.safe, .ok)
         }
 
         // 9. bundle 保护兜底：confirm 默认出口前再扫一次。
-        //    设计取舍：两类命中都**只升级到 confirm**，不强 forbid。
-        //    原因：真正"绝对禁删"的系统区已由 hardForbidPrefixes（/System、/Library/Apple
-        //    等）完全拦截。用户家目录下的 `~/Library/Containers/com.apple.*` 是该 app 的
-        //    用户数据容器（如 Mail Downloads），强 forbid 会与 vendors.yaml 的 confirm 规则
-        //    冲突（RuleLoader 在 load-time 会把 vendor 整条丢弃）。
-        //    appleUninstallable 仅供 uninstall 流程使用，cleanup 评估忽略。
-        if let bm = bundleMatch(standardized: standardized, home: home) {
+        if let bm = bundleMatch(standardized: canonical, home: canonicalHome) {
             switch bm.kind {
             case .systemCritical:
                 return (.confirm, .bundleSystemCritical)
@@ -422,21 +412,23 @@ public struct SafetyEngine: Sendable {
     /// - 因此本函数零分配：用 Substring 切片 + Index 步进，不用 split / String(...) 构造
     /// - 非 `~/Library` 路径 1 步 hasPrefix 短路退出
     func bundleMatch(standardized: String, home: String) -> BundleProtection.Match? {
+        let canonical = Self.stripDataVolumePrefix(standardized)
+        let canonicalHome = Self.stripDataVolumePrefix(home)
         // 1. 必须是 home/Library/ 子路径 —— 一次 hasPrefix 短路
-        let libraryRoot = home + "/Library/"
-        guard standardized.hasPrefix(libraryRoot) else { return nil }
+        let libraryRoot = canonicalHome + "/Library/"
+        guard canonical.hasPrefix(libraryRoot) else { return nil }
 
         // 2. 找第一段（dir）：libraryRoot 后到下一个 '/'
-        let afterRoot = standardized.index(standardized.startIndex, offsetBy: libraryRoot.count)
-        guard let slashAfterDir = standardized[afterRoot...].firstIndex(of: "/") else {
+        let afterRoot = canonical.index(canonical.startIndex, offsetBy: libraryRoot.count)
+        guard let slashAfterDir = canonical[afterRoot...].firstIndex(of: "/") else {
             return nil
         }
-        let dir = standardized[afterRoot..<slashAfterDir]
+        let dir = canonical[afterRoot..<slashAfterDir]
 
         // 3. 找第二段（candidate）：slashAfterDir+1 到下一个 '/' 或字符串尾
-        let candidateStart = standardized.index(after: slashAfterDir)
-        let candidateEnd = standardized[candidateStart...].firstIndex(of: "/") ?? standardized.endIndex
-        var candidate = standardized[candidateStart..<candidateEnd]
+        let candidateStart = canonical.index(after: slashAfterDir)
+        let candidateEnd = canonical[candidateStart...].firstIndex(of: "/") ?? canonical.endIndex
+        var candidate = canonical[candidateStart..<candidateEnd]
         guard !candidate.isEmpty else { return nil }
 
         // 4. 按 dir 形状剥后缀（.plist / .savedState），无配对的 dir 早退
@@ -530,26 +522,37 @@ public struct SafetyEngine: Sendable {
         // 2. 只 standardize 一次，复用给 base 判定 + trie 匹配；若中间 symlink 指向更敏感位置，
         // 先采用更保守的真实路径判定，避免 vendor safe 或 cache safe 覆盖真实禁区。
         let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        let canonical = Self.stripDataVolumePrefix(standardized)
         let (baseVerdict, rejection) = evaluateStandardized(standardized: standardized, home: home)
         if baseVerdict == .forbid { return (baseVerdict, rejection, nil) }
         let resolved = Self.resolvedSymlinkPath(forStandardizedPath: standardized)
+        let resolvedCanonical = Self.stripDataVolumePrefix(resolved)
+        var effectiveBase = (baseVerdict, rejection)
         if resolved != standardized {
             let resolvedBase = evaluateStandardized(standardized: resolved, home: home)
-            let conservative = Self.moreRestrictive((baseVerdict, rejection), resolvedBase)
-            if conservative.0 != baseVerdict || conservative.1 != rejection {
-                return (conservative.0, conservative.1, nil)
+            effectiveBase = Self.moreRestrictive(effectiveBase, resolvedBase)
+            if effectiveBase.0 == .forbid {
+                return (effectiveBase.0, effectiveBase.1, nil)
+            }
+            if let resolvedHit = VendorTrie.match(standardizedPath: resolvedCanonical, in: trie),
+               resolvedHit.pathOverride?.verdict == .forbid {
+                return (.forbid, .vendorPathRule, resolvedHit.rule)
+            }
+            if effectiveBase.0 != baseVerdict || effectiveBase.1 != rejection {
+                return (effectiveBase.0, effectiveBase.1, nil)
             }
         }
 
-        guard let hit = VendorTrie.match(standardizedPath: standardized, in: trie) else {
-            return (baseVerdict, rejection, nil)
+        guard let hit = VendorTrie.match(standardizedPath: canonical, in: trie) else {
+            return (effectiveBase.0, effectiveBase.1, nil)
         }
         // path 级 verdict 覆盖（DEV_ARTIFACTS_RULES.md §2.x）：
         // 当 vendor 在 yaml 里显式声明了 `paths: [{path, verdict}]`，那条 path-rule 比
         // vendor 根的默认 `.confirm` 更"具体"，应优先生效。
         // - override.forbid：升级到 forbid（注意 base 的 forbid 已经在上面短路了，
         //   所以这里不会绕过硬安全网；override 仅能在 base==safe/confirm 时生效）
-        // - override.safe：即便 base 是 confirm，也按规则作者意图降级到 safe
+        // - override.safe：即便 base 是 confirm，也按规则作者意图降级到 safe（但若路径是
+        //   指向外部非 safe 目标的 symlink，则保留 effectiveBase，防止 symlink 降级绕过）
         // - override.confirm：与默认行为相同，仍走 confirm
         // path-override 沿子树继承，所以 `Pods/Release/**` 这类规则不需要列举每个子文件。
         if let ovr = hit.pathOverride {
@@ -557,6 +560,15 @@ public struct SafetyEngine: Sendable {
             case .forbid:
                 return (.forbid, .vendorPathRule, hit.rule)
             case .safe:
+                if resolved != standardized && effectiveBase.0 != .safe {
+                    let resolvedTrieSafe = VendorTrie.match(
+                        standardizedPath: resolvedCanonical,
+                        in: trie
+                    )?.pathOverride?.verdict == .safe
+                    if !resolvedTrieSafe {
+                        return (effectiveBase.0, effectiveBase.1, hit.rule)
+                    }
+                }
                 return (.safe, .ok, hit.rule)
             case .confirm:
                 return (.confirm, .ok, hit.rule)
@@ -566,8 +578,8 @@ public struct SafetyEngine: Sendable {
             // 命中 vendor 根 —— 强制 confirm
             return (.confirm, .ok, hit.rule)
         } else {
-            // 命中 vendor 子目录 —— 用 baseVerdict（safe / confirm）
-            return (baseVerdict, rejection, hit.rule)
+            // 命中 vendor 子目录 —— 用 effectiveBase（safe / confirm）
+            return (effectiveBase.0, effectiveBase.1, hit.rule)
         }
     }
 
@@ -579,7 +591,15 @@ public struct SafetyEngine: Sendable {
         _ lhs: (SafetyVerdict, SafetyRejection),
         _ rhs: (SafetyVerdict, SafetyRejection)
     ) -> (SafetyVerdict, SafetyRejection) {
-        severity(rhs.0) > severity(lhs.0) ? rhs : lhs
+        let lhsSeverity = severity(lhs.0)
+        let rhsSeverity = severity(rhs.0)
+        if rhsSeverity != lhsSeverity {
+            return rhsSeverity > lhsSeverity ? rhs : lhs
+        }
+        if lhs.1 == .ok && rhs.1 != .ok {
+            return rhs
+        }
+        return lhs
     }
 
     private static func severity(_ verdict: SafetyVerdict) -> Int {

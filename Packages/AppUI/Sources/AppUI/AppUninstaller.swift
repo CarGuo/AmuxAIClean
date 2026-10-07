@@ -4,6 +4,7 @@ import Foundation
 import LogKit
 import SafetyKit
 import ScanKit
+import Security
 
 /// 残留候选项 —— 是“可能”属于被卸载 App 的文件/目录。
 ///
@@ -453,12 +454,22 @@ public struct AppMetadata: Hashable, Sendable {
     public let bundleVendor: String?
     public let appName: String
     public let executableName: String?
+    /// 代码签名中的 Apple Developer Team ID（如 10 位大写字母数字），用于核验
+    /// `~/Library/Group Containers/<TeamID>.<bundleID>`。无签名或测试 fixture 时为 nil。
+    public let teamID: String?
 
-    public init(bundleID: String, bundleVendor: String?, appName: String, executableName: String?) {
+    public init(
+        bundleID: String,
+        bundleVendor: String?,
+        appName: String,
+        executableName: String?,
+        teamID: String? = nil
+    ) {
         self.bundleID = bundleID
         self.bundleVendor = bundleVendor
         self.appName = appName
         self.executableName = executableName
+        self.teamID = teamID
     }
 
     /// 从 `<App>.app/Contents/Info.plist` 解析。
@@ -477,13 +488,21 @@ public struct AppMetadata: Hashable, Sendable {
             at: plistURL,
             shouldCancel: shouldCancel
         )
-        return try read(plistData: data, appFileName: appURL.lastPathComponent)
+        return try read(
+            plistData: data,
+            appFileName: appURL.lastPathComponent,
+            teamID: readCodeSigningTeamID(at: appURL)
+        )
     }
 
     /// Shared parser for the pathname compatibility API and production bounded fd reader.
     /// Keeping plist interpretation in one place prevents identity hardening from changing product
     /// naming or localization behavior.
-    static func read(plistData data: Data, appFileName: String) throws -> AppMetadata {
+    static func read(
+        plistData data: Data,
+        appFileName: String,
+        teamID: String? = nil
+    ) throws -> AppMetadata {
         guard
             let any = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any]
         else {
@@ -501,8 +520,28 @@ public struct AppMetadata: Hashable, Sendable {
             bundleID: bundleID,
             bundleVendor: vendorPrefix(of: bundleID),
             appName: appName,
-            executableName: exe
+            executableName: exe,
+            teamID: teamID
         )
+    }
+
+    static func readCodeSigningTeamID(at appURL: URL) -> String? {
+        var staticCode: SecStaticCode?
+        let status = SecStaticCodeCreateWithPath(appURL as CFURL, [], &staticCode)
+        guard status == errSecSuccess, let staticCode else { return nil }
+        var signingInfo: CFDictionary?
+        let infoStatus = SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &signingInfo
+        )
+        guard infoStatus == errSecSuccess,
+              let dict = signingInfo as? [String: Any],
+              let teamID = dict[kSecCodeInfoTeamIdentifier as String] as? String,
+              !teamID.isEmpty else {
+            return nil
+        }
+        return teamID
     }
 
     /// `com.foo.bar.baz` -> `com.foo`；少于两段返回 nil。
@@ -743,6 +782,35 @@ public struct AppUninstaller: Sendable {
         switch validate(identity: identity) {
         case .success: return nil
         case .failure(let issue): return issue
+        }
+    }
+
+    public enum SelectedAppDeletionValidationDisposition: Sendable, Equatable {
+        case valid
+        case appAlreadyRemoved
+        case invalid(UninstallDiscoveryIssue)
+    }
+
+    /// Typed pre-deletion revalidator. When the `.app` itself was already trashed in an earlier
+    /// pass (and is not among `deletingPaths`), `lstat` returning `ENOENT` yields `.appAlreadyRemoved`
+    /// while any replacement file/directory/symlink at the bundle path still fails closed.
+    public func revalidateSelectedAppForDeletion(
+        identity: UninstallSelectedAppIdentity,
+        deletingPaths: Set<String>
+    ) -> SelectedAppDeletionValidationDisposition {
+        switch validate(identity: identity) {
+        case .success:
+            return .valid
+        case .failure(let issue):
+            guard let bundlePath = Self.canonicalSelectedBundlePath(identity.appURL),
+                  !deletingPaths.contains(bundlePath) else {
+                return .invalid(issue)
+            }
+            var linkStat = stat()
+            if lstat(bundlePath, &linkStat) != 0, errno == ENOENT {
+                return .appAlreadyRemoved
+            }
+            return .invalid(issue)
         }
     }
 
@@ -1065,12 +1133,12 @@ public struct AppUninstaller: Sendable {
             return .failure(Self.selectedAppIdentityIssue(path: bundlePath))
         }
 
-        let actual: AppMetadata
+        let parsedMetadata: AppMetadata
         do {
             if let injectedAppMetadataReader {
-                actual = try injectedAppMetadataReader(appURL)
+                parsedMetadata = try injectedAppMetadataReader(appURL)
             } else {
-                actual = try Self.readMetadata(
+                parsedMetadata = try Self.readMetadata(
                     fromOpenBundleDescriptor: descriptor,
                     appFileName: appURL.lastPathComponent
                 )
@@ -1078,6 +1146,22 @@ public struct AppUninstaller: Sendable {
         } catch {
             return .failure(Self.selectedAppIdentityIssue(path: bundlePath))
         }
+
+        let observedTeamID = injectedAppMetadataReader == nil
+            ? AppMetadata.readCodeSigningTeamID(at: appURL)
+            : parsedMetadata.teamID
+        if let claimedTeamID = identity.claimedMetadata.teamID,
+           let observedTeamID,
+           claimedTeamID != observedTeamID {
+            return .failure(Self.selectedAppIdentityIssue(path: bundlePath))
+        }
+        let actual = AppMetadata(
+            bundleID: parsedMetadata.bundleID,
+            bundleVendor: parsedMetadata.bundleVendor,
+            appName: parsedMetadata.appName,
+            executableName: parsedMetadata.executableName,
+            teamID: parsedMetadata.teamID ?? observedTeamID ?? identity.claimedMetadata.teamID
+        )
 
         // The fd above freezes the object used for default metadata parsing. Re-opening the path at
         // the terminal boundary proves the UI path still names that object; a persistent rename or
@@ -1446,8 +1530,13 @@ public struct AppUninstaller: Sendable {
 
     /// 把名字 → 命中原因的匹配纯函数。**测试主战场**。
     func matchReason(name: String, scope: SearchRoot.Scope, meta: AppMetadata) -> MatchReason? {
-        // 1) 严格 bundleID 前缀
-        if matchesStrictPrefix(name: name, prefix: meta.bundleID) {
+        // 1) 严格 bundleID 前缀（含 Group Containers 的 group.<bundleID> 与经签名验证的 <TeamID>.[group.]<bundleID>）
+        if matchesStrictPrefix(name: name, prefix: meta.bundleID)
+            || Self.matchesGroupContainerPrefix(
+                name: name,
+                bundleID: meta.bundleID,
+                teamID: meta.teamID
+            ) {
             return .bundleID(meta.bundleID)
         }
         // 2) LaunchAgents/Daemons：允许 vendor 级
@@ -1477,6 +1566,34 @@ public struct AppUninstaller: Sendable {
         return false
     }
 
+    static func matchesGroupContainerPrefix(
+        name: String,
+        bundleID: String,
+        teamID: String? = nil
+    ) -> Bool {
+        if name.hasPrefix("group.") {
+            let stripped = String(name.dropFirst("group.".count))
+            return matchesStrictPrefix(name: stripped, prefix: bundleID)
+        }
+        guard let expectedTeamID = teamID,
+              !expectedTeamID.isEmpty,
+              let dot = name.firstIndex(of: ".") else {
+            return false
+        }
+        let teamPrefix = String(name[..<dot])
+        guard teamPrefix == expectedTeamID else {
+            return false
+        }
+        var remainder = String(name[name.index(after: dot)...])
+        while remainder.hasPrefix(".") {
+            remainder.removeFirst()
+        }
+        if remainder.hasPrefix("group.") {
+            remainder = String(remainder.dropFirst("group.".count))
+        }
+        return matchesStrictPrefix(name: remainder, prefix: bundleID)
+    }
+
     func matchesStrictPrefix(name: String, prefix: String) -> Bool {
         Self.matchesStrictPrefix(name: name, prefix: prefix)
     }
@@ -1486,16 +1603,29 @@ public struct AppUninstaller: Sendable {
         s.count >= 4
     }
 
-    /// 比较 `name`（可能含扩展名，如 `Foo.savedState`）的 stem 是否等于 `stem`。
+    /// 比较 `name`（可能含已知扩展名，如 `Foo.savedState` / `Foo.plist`）是否等于 `stem`。
+    /// 不再在任意第一个 `.` 处截断，从而支持本身带 `.` 的应用名并避免 `Acme.OtherApp` 误匹配 `Acme`。
     private func nameEqualsIgnoringCase(_ name: String, stem: String) -> Bool {
-        // 取 name 的第一段（"."之前）作为可比较 stem
-        let head: String
-        if let dot = name.firstIndex(of: ".") {
-            head = String(name[..<dot])
-        } else {
-            head = name
+        if name.caseInsensitiveCompare(stem) == .orderedSame {
+            return true
         }
-        return head.caseInsensitiveCompare(stem) == .orderedSame
+        let knownSuffixes = [
+            ".savedState",
+            ".plist",
+            ".binarycookies",
+            ".cookies",
+            ".log",
+            ".cache",
+            ".db",
+            ".sqlite"
+        ]
+        for suffix in knownSuffixes where name.lowercased().hasSuffix(suffix.lowercased()) {
+            let candidate = String(name.dropLast(suffix.count))
+            if candidate.caseInsensitiveCompare(stem) == .orderedSame {
+                return true
+            }
+        }
+        return false
     }
 }
 

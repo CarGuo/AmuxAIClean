@@ -401,9 +401,12 @@ enum DartRadarParser {
         return result
     }
 
-    /// 把 `top` 的内存大小（123B/26K/791M/1.5G）解析成字节数。
+    /// 把 `top` 的内存大小（123B/26K/791M/1.5G，以及带 +/- 变动标记的值如 791M+）解析成字节数。
     static func parseByteCount(_ text: String) -> Int64? {
-        let value = text.trimmingCharacters(in: .whitespaces)
+        var value = text.trimmingCharacters(in: .whitespaces)
+        while let last = value.last, last == "+" || last == "-" {
+            value.removeLast()
+        }
         guard let suffix = value.last, let multiplier = byteUnitMultiplier(suffix) else {
             return nil
         }

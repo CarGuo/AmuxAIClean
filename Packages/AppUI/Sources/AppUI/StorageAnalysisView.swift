@@ -65,6 +65,11 @@ struct StorageAnalysisView: View {
         }
         .onValueChange(of: locale) { _, new in store.activate(locale: new) }
         .onValueChange(of: store.path) { _, _ in selectedFile = nil }
+        .onValueChange(of: store.projection?.rows.map(\.path) ?? []) { _, paths in
+            if let selectedPath = selectedFile?.path, !paths.contains(selectedPath) {
+                selectedFile = nil
+            }
+        }
         .onValueChange(of: store.phase) { _, phase in
             if phase == .idle || phase == .scanning || phase == .cancelled || phase == .failed {
                 selectedFile = nil

@@ -627,6 +627,8 @@ public struct MainView: View {
     /// 外层 detailPane 永远拿不到，详情面板因此长期空白。现在通过 onSelect 回调
     /// 同步到这里，detailPane 优先用 treeSelection 渲染（语义上"看哪个就显哪个"）。
     @State private var treeSelection: TreeRow?
+    @State private var canDeleteSelectedTreeRow: Bool = false
+    @State private var treeSelectionEligibilityTask: Task<Void, Never>?
     /// Parent-to-Tree selection reset channel. Tree owns its AppKit selection locally for
     /// performance, so clearing only `treeSelection` would hide detail while leaving the row
     /// highlighted and unable to reopen on the next identical click.
@@ -1138,7 +1140,7 @@ public struct MainView: View {
                 largeFilesBatch.remove(paths: paths)
             }
             if source != DeleteRequestOrigin.storageAnalysis.historySource {
-                storageAnalysis.invalidateAfterExternalChange()
+                storageAnalysis.applyExternalDeletedPaths(paths)
             }
             guard let source,
                   !["smart-care", "clean", "tree", "large-file", "stash"].contains(source),
@@ -1764,12 +1766,12 @@ public struct MainView: View {
     @MainActor
     private func presentSmartCareDeleteRequest(expectedSummaryRevision: UInt64? = nil) async {
         guard isSmartCareVisible,
-              smartCareSession.scanCoordinator.canUseCurrentScanResultsForActions,
+              smartCareSession.canUseCurrentScanResultsForActions,
               !hasConflictingMainModalPresentation else { return }
 
         let frozenSummaryRevision = smartCareSession.care.summaryRevision
         let frozenSelectionRevision = smartCareSession.care.selectionRevision
-        let frozenScanSessionID = smartCareSession.scanCoordinator.currentScanSessionID
+        let frozenScanSessionID = smartCareSession.currentScanSessionID
         if let expectedSummaryRevision,
            expectedSummaryRevision != frozenSummaryRevision {
             return
@@ -1794,15 +1796,15 @@ public struct MainView: View {
                 )
             )
             guard !snapshotRequest.items.isEmpty,
-                  smartCareSession.scanCoordinator.canUseCurrentScanResultsForActions,
-                  smartCareSession.scanCoordinator.currentScanSessionID == frozenScanSessionID else {
+                  smartCareSession.canUseCurrentScanResultsForActions,
+                  smartCareSession.currentScanSessionID == frozenScanSessionID else {
                 return
             }
             let objectPreparation = await pipeline.prepareReviewedObjects(
                 paths: snapshotRequest.paths, expectedIdentities: [:]
             )
             guard !Task.isCancelled,
-                  smartCareSession.scanCoordinator.currentScanSessionID == frozenScanSessionID else { return }
+                  smartCareSession.currentScanSessionID == frozenScanSessionID else { return }
             let modalAvailable = isSmartCareVisible
                 && !hasOtherMainModalPresentation
                 && deleteSheetRequest == nil
@@ -1858,7 +1860,7 @@ public struct MainView: View {
         // 从提交开始而不是从真正 recycle 才加锁：后台投影也是同一删除事务的一部分，
         // 快速重复确认不能让两份相同 frozen request 同时越过第一个 await。
         guard !isDeleting,
-              smartCareSession.scanCoordinator.canUseCurrentScanResultsForActions else { return }
+              smartCareSession.canUseCurrentScanResultsForActions else { return }
         isDeleting = true
         defer { isDeleting = false }
 
@@ -1874,7 +1876,7 @@ public struct MainView: View {
             assertionFailure("Unexpected Smart Care deletion projection error: \(error)")
             return
         }
-        guard smartCareSession.scanCoordinator.canUseCurrentScanResultsForActions else { return }
+        guard smartCareSession.canUseCurrentScanResultsForActions else { return }
         let execution = projection.execution
         let finalDeniedPaths = DeletionDeniedPathPolicy.final(
             frozen: accessDeniedPaths,
@@ -1901,8 +1903,8 @@ public struct MainView: View {
         }
 
         guard let reviewIdentity = request.sourceDeletionSnapshotIdentity,
-              smartCareSession.scanCoordinator.canUseCurrentScanResultsForActions,
-              reviewIdentity.sessionID == smartCareSession.scanCoordinator.currentScanSessionID,
+              smartCareSession.canUseCurrentScanResultsForActions,
+              reviewIdentity.sessionID == smartCareSession.currentScanSessionID,
               reviewIdentity.revision == request.sourceSummaryRevision,
               reviewIdentity.categoryID == "smart-care",
               smartCareSession.care.confirmClean(request) else {
@@ -2055,6 +2057,9 @@ public struct MainView: View {
         // synchronizeSuccessfulDeletion 已在 SmartCareSession 的后台事务中完成
         // summary 移除 + selection reconcile + metrics；这里只做 O(1) 相位提交，
         // 避免在 MainActor 对同一份 20k+ 结果再构建一遍。
+        let hasPostCleanIssues = result.skipped > 0
+            || runningAppSkippedCount > 0
+            || cleanFailureDetail != nil
         smartCareSession.care.completeCleaning(
             SmartCareResult(
                 movedCount: result.moved,
@@ -2062,10 +2067,6 @@ public struct MainView: View {
                 releasedBytes: releasedBytes
             )
         )
-        let hasPostCleanIssues = (result.outcome?.failedPaths.isEmpty == false)
-            || (result.outcome?.safetyRejected.isEmpty == false)
-            || runningAppSkippedCount > 0
-            || result.err != nil
         if hasPostCleanIssues {
             deleteResultCompletion = .trash(
                 completedSubmission,
@@ -2904,9 +2905,11 @@ public struct MainView: View {
                                             // 避免两条选中态打架（detailPane 先看 treeSelection）。
                                             treeSelection = row
                                             detail = nil
+                                            refreshSelectedTreeRowDeletionEligibility()
                                         },
                                         onSelectionCleared: {
                                             treeSelection = nil
+                                            refreshSelectedTreeRowDeletionEligibility()
                                         },
                                         onTrash: { treeRow in
                                             // Tree 直接冻结用户看到的那一行。不能退化成 URL 后再去
@@ -3215,9 +3218,7 @@ public struct MainView: View {
             if issuePresentation.kind == .fatal {
                 ScanFailureBanner(
                     onRetry: {
-                        guard let id = selectedCategory,
-                              let category = allCategories.first(where: { $0.id == id }) else { return }
-                        startScan(category: category)
+                        rescanCurrentCategory()
                     }
                 )
                 .padding(.horizontal, 16)
@@ -3249,10 +3250,7 @@ public struct MainView: View {
                         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
                             NSWorkspace.shared.open(url)
                         }
-                        if let id = selectedCategory,
-                           let cat = allCategories.first(where: { $0.id == id }) {
-                            startScan(category: cat)
-                        }
+                        rescanCurrentCategory()
                     }
                 )
                 .padding(.horizontal, 16)
@@ -3442,6 +3440,29 @@ public struct MainView: View {
         }
     }
 
+    private func rescanCurrentCategory() {
+        guard let id = selectedCategory else { return }
+        switch id {
+        case ScanCategory.batchRecommendedID:
+            triggerRecommendedScan()
+        case ScanCategory.batchDeveloperID:
+            triggerDeveloperScan()
+        case ScanCategory.batchFullDiskID:
+            triggerFullDiskScan()
+        case ScanCategory.batchCommonAppCacheID:
+            triggerCommonAppCacheScan()
+        case MainView.devVersionedSentinelID:
+            resetSelectionState()
+            coordinator.scanKnownVersionedRoots(
+                home: FileManager.default.homeDirectoryForCurrentUser
+            )
+        default:
+            guard let cat = allCategories.first(where: { $0.id == id }) else { return }
+            resetSelectionState()
+            startScan(category: cat)
+        }
+    }
+
     private var footerBar: some View {
         // v2026.06.21 perf：listResults 出现后两个列表同时卡的核心证据 ——
         // footerBar 一帧内 `selectedRows` 被读 3+ 次（selectionSummary、isEmpty
@@ -3452,20 +3473,34 @@ public struct MainView: View {
         // transaction 被一并拖卡（与 listResults / inlineDetailPane 串行 layout）。
         // 改为 body 顶端一次 let 计算 selectedRows + 预算 summary 文本，
         // 后续三处复用同一个 `selectedRowsEmpty` / `summaryText`。
-        let listSelectionRows = isLargeFilesMode ? [] : selectedRows
-        let treeFallbackRow: RowItem? = (!isLargeFilesMode && viewMode == .tree && listSelectionRows.isEmpty)
-            ? treeSelection.flatMap(makeDeletionRow)
-            : nil
-        let rows: [RowItem] = {
-            if !listSelectionRows.isEmpty { return listSelectionRows }
-            if let treeFallbackRow { return [treeFallbackRow] }
-            return []
+        let isTreeMode = !isLargeFilesMode && viewMode == .tree
+        let listSelectionRows = (isLargeFilesMode || isTreeMode) ? [] : selectedRows
+        let activeTreeRow: TreeRow? = isTreeMode ? treeSelection : nil
+        let canDeleteActiveTreeRow: Bool = {
+            guard let activeTreeRow,
+                  canDeleteSelectedTreeRow,
+                  coordinator.canUseCurrentScanResultsForActions,
+                  !coordinator.isFetchingChildren(
+                      of: activeTreeRow.path,
+                      sortedBy: .from(global: settings.mainListSortKey)
+                  ) else { return false }
+            return true
         }()
-        let selectedRowsEmpty = rows.isEmpty
+        let selectedRowsEmpty = isTreeMode ? !canDeleteActiveTreeRow : listSelectionRows.isEmpty
         let summaryText: String = {
+            if isTreeMode {
+                guard let activeTreeRow else {
+                    return AppLocalization.string("selection.empty", locale: locale)
+                }
+                return String(
+                    format: AppLocalization.string("selection.summary %lld %@", locale: locale),
+                    1,
+                    formattedBytes(activeTreeRow.bytes)
+                )
+            }
             if selectedRowsEmpty { return AppLocalization.string("selection.empty", locale: locale) }
-            let total = rows.reduce(Int64(0)) { $0 + $1.bytes }
-            return String(format: AppLocalization.string("selection.summary %lld %@", locale: locale), rows.count, formattedBytes(total))
+            let total = listSelectionRows.reduce(Int64(0)) { $0 + $1.bytes }
+            return String(format: AppLocalization.string("selection.summary %lld %@", locale: locale), listSelectionRows.count, formattedBytes(total))
         }()
         return HStack {
             if isLargeFilesMode {
@@ -3543,10 +3578,19 @@ public struct MainView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button {
-                    if !selectedRowsEmpty {
+                    if isTreeMode {
+                        if canDeleteActiveTreeRow,
+                           let activeTreeRow,
+                           let deletionRow = makeDeletionRow(activeTreeRow) {
+                            presentDeleteConfirmation(
+                                rows: [deletionRow],
+                                origin: .tree
+                            )
+                        }
+                    } else if !selectedRowsEmpty {
                         presentDeleteConfirmation(
-                            rows: rows,
-                            origin: treeFallbackRow != nil ? .tree : .scanSelection
+                            rows: listSelectionRows,
+                            origin: .scanSelection
                         )
                     }
                 } label: {
@@ -4156,7 +4200,41 @@ public struct MainView: View {
         largeFileSelection = nil
         detail = nil
         treeSelection = nil
+        refreshSelectedTreeRowDeletionEligibility()
         treeSelectionResetRevision &+= 1
+    }
+
+    /// 树选中行变化时更新可删状态：优先走进程内无 I/O 缓存字典命中（Tree 列表在后台构建
+    /// projection 时已预热 VerdictCache）；极少数未命中时派发到后台 utility/userInitiated
+    /// 计算，确保 footerBar 在 MainActor 渲染时零对象分配、零同步磁盘 I/O（PITFALLS §2.9）。
+    private func refreshSelectedTreeRowDeletionEligibility() {
+        treeSelectionEligibilityTask?.cancel()
+        treeSelectionEligibilityTask = nil
+        guard let row = treeSelection else {
+            canDeleteSelectedTreeRow = false
+            return
+        }
+        if let cached = TreeBrowserView.cachedCanInitiateDeletionIfPresent(
+            row,
+            cacheNamespace: coordinator.treeDeletionEvaluationCacheNamespace
+        ) {
+            canDeleteSelectedTreeRow = cached
+            return
+        }
+        canDeleteSelectedTreeRow = false
+        let expectedPath = row.path
+        let snapshot = coordinator.treeDeletionEvaluationSnapshot
+        treeSelectionEligibilityTask = Task.detached(priority: .userInitiated) {
+            let eligible = TreeBrowserView.cachedCanInitiateDeletion(
+                row,
+                snapshot: snapshot
+            )
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard self.treeSelection?.path == expectedPath else { return }
+                self.canDeleteSelectedTreeRow = eligible
+            }
+        }
     }
 
     /// v1.5 P2 / Q3：统一的"用户请求问 AI"入口。
@@ -4671,6 +4749,7 @@ public struct MainView: View {
                 let matcher = DeletionPresentationPathMatcher(paths: succeededPaths)
                 if let selected = treeSelection, matcher.contains(selected.path) {
                     treeSelection = nil
+                    refreshSelectedTreeRowDeletionEligibility()
                 }
                 if let selected = largeFileSelection, matcher.contains(selected.path) {
                     largeFileSelection = nil
@@ -4746,6 +4825,7 @@ public struct MainView: View {
             succeededPaths: succeededPaths,
             refreshedRow: { coordinator.refreshedTreeRow(for: $0) }
         )
+        refreshSelectedTreeRowDeletionEligibility()
     }
 
     /// 专业模式真实文件删除的统一入口。所有页面先冻结相同的 RowItem + Safety

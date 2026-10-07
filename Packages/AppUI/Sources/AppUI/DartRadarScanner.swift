@@ -129,6 +129,10 @@ public actor DartRadarScanner {
         var entries: [DartProcessEntry] = []
         for item in stable {
             let pid = item.raw.pid
+            guard case .found(let currentIdentity) = await processController.identity(for: pid),
+                  currentIdentity == item.identity else {
+                continue
+            }
             let (projectPath, projectName) = resolveProject(
                 raw: item.raw,
                 workingDirectory: workingDirectories[pid]
@@ -303,7 +307,7 @@ public actor DartRadarScanner {
     private func nearestProjectRoot(from path: String) -> String? {
         var url = URL(fileURLWithPath: path, isDirectory: true)
         let home = NSHomeDirectory()
-        while url.path.hasPrefix(home) {
+        while url.path == home || url.path.hasPrefix(home + "/") {
             if projectChecker.fileExists(at: url.appendingPathComponent("pubspec.yaml").path) {
                 return url.path
             }

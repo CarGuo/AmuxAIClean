@@ -289,6 +289,52 @@ final class AppFootprintReloadModel: ObservableObject {
         isLoading = false
     }
 
+    func pruneDeletedPaths(_ paths: [String]) {
+        guard !paths.isEmpty else { return }
+        let matcher = DeletionPresentationPathMatcher(paths: paths)
+        var didChange = false
+        let selectedID = selected?.id
+        var nextItems: [AppFootprintItem] = []
+        nextItems.reserveCapacity(items.count)
+        for item in items {
+            if matcher.contains(item.appURL.path) {
+                didChange = true
+                pendingIDs.remove(item.id)
+                terminalIDs.remove(item.id)
+                bufferedItems.removeValue(forKey: item.id)
+                continue
+            }
+            let remainingBuckets = item.buckets.filter { !matcher.contains($0.path) }
+            if remainingBuckets.count != item.buckets.count {
+                didChange = true
+                let bundleBytes = remainingBuckets
+                    .filter { $0.kind == .bundle }
+                    .reduce(Int64(0)) { $0 + $1.bytes }
+                let relatedBytes = remainingBuckets
+                    .filter { $0.kind != .bundle }
+                    .reduce(Int64(0)) { $0 + $1.bytes }
+                nextItems.append(AppFootprintItem(
+                    bundleID: item.bundleID,
+                    appName: item.appName,
+                    appURL: item.appURL,
+                    isComplete: item.isComplete,
+                    deliveryPhase: item.deliveryPhase,
+                    appBundleBytes: bundleBytes,
+                    relatedBytes: relatedBytes,
+                    buckets: remainingBuckets
+                ))
+            } else {
+                nextItems.append(item)
+            }
+        }
+        guard didChange else { return }
+        items = nextItems
+        sortItemsForDisplay()
+        if let selectedID {
+            selected = items.first(where: { $0.id == selectedID }) ?? items.first
+        }
+    }
+
     private func cancelActiveProducer() -> Task<Void, Never>? {
         guard let session = activeSession else { return producerDrainTask }
         activeSession = nil
@@ -470,6 +516,11 @@ public struct AppFootprintScreen: View {
                 .layoutPriority(1)
         }
         .task { reloadScreen() }
+        .onReceive(NotificationCenter.default.publisher(for: .gsyTrashDidMove)) { notification in
+            let paths = notification.userInfo?["paths"] as? [String] ?? []
+            guard !paths.isEmpty else { return }
+            reloadModel.pruneDeletedPaths(paths)
+        }
         .onDisappear {
             // v2026.07.17：页面生命周期同时拥有磁盘 producer 与图标 I/O。只取消扫描
             // 会让 SwiftUI 保留的隐藏页面继续读取 LaunchServices；两者必须一起失效。

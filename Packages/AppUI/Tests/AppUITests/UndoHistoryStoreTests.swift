@@ -3119,4 +3119,41 @@ final class UndoHistoryStoreTests: XCTestCase {
         XCTAssertEqual(reader.storageState, .ready)
         XCTAssertEqual(Set(reader.history.map(\.source)), Set(["current", "legacy"]))
     }
+
+    func testBackgroundPersistenceCompletionPreservesResolvedRecoveryStates() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let destinationURL = storeURL(in: dir)
+        let trashedA = dir.appendingPathComponent("trashed-a.log")
+        let trashedB = dir.appendingPathComponent("trashed-b.log")
+        try Data("a".utf8).write(to: trashedA)
+        try Data("b".utf8).write(to: trashedB)
+
+        let seedStore = UndoHistoryStore(storeURL: destinationURL)
+        seedStore.addRecord(source: "seed", filePairs: [
+            .init(original: dir.appendingPathComponent("orig-a.log").path, trashed: trashedA.path)
+        ])
+
+        let store = UndoHistoryStore(
+            storeURL: destinationURL,
+            maxHistoryCount: 10,
+            saveStrategy: .background
+        )
+        XCTAssertEqual(store.history.first?.recoveryStates.first?.status, .checking)
+        await store.refreshRecoveryStates()
+        XCTAssertEqual(store.history.first?.recoveryStates.first?.status, .available)
+
+        store.addRecord(source: "second", filePairs: [
+            .init(original: dir.appendingPathComponent("orig-b.log").path, trashed: trashedB.path)
+        ])
+        await store.flushPendingWrites()
+
+        let seedRecord = try XCTUnwrap(store.history.first { $0.source == "seed" })
+        XCTAssertEqual(
+            seedRecord.recoveryStates.first?.status,
+            .available,
+            "后台持久化完成回写 envelope 时不得把已探测完成的 .available 状态重置回 .checking"
+        )
+    }
 }
+

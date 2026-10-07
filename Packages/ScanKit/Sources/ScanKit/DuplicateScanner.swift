@@ -541,9 +541,14 @@ public actor DuplicateScanner {
                 )))
             }
             if hashed.wasCancelled { break }
-            // 按 prefixHex 分组
+            // 按 prefixHex 分组（同时按物理 (device, inode) 去重，确保硬链接绝不会被当成可释放空间的重复文件）
             var byHash: [String: [DuplicateCandidate]] = [:]
+            var seenInodesByHash: [String: Set<String>] = [:]
             for (candidate, hex, identity) in hashed.values {
+                let inodeKey = "\(identity.device):\(identity.inode)"
+                guard seenInodesByHash[hex, default: []].insert(inodeKey).inserted else {
+                    continue
+                }
                 byHash[hex, default: []].append(candidate.frozen(to: identity))
             }
             for (hex, files) in byHash where files.count >= 2 {
@@ -608,7 +613,12 @@ public actor DuplicateScanner {
             }
             if hashed.wasCancelled { break }
             var byHash: [String: [DuplicateCandidate]] = [:]
+            var seenInodesByHash: [String: Set<String>] = [:]
             for (candidate, hex, identity) in hashed.values {
+                let inodeKey = "\(identity.device):\(identity.inode)"
+                guard seenInodesByHash[hex, default: []].insert(inodeKey).inserted else {
+                    continue
+                }
                 byHash[hex, default: []].append(candidate.frozen(to: identity))
             }
             for (fullHex, files) in byHash where files.count >= 2 {

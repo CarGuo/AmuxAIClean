@@ -295,13 +295,33 @@ public actor VersionedRetainScanner {
             return DetectionResult(hits: [], incompleteIssues: incompleteIssues)
         }
 
-        // 版本数 ≤ keepLatest → 安全起见整个集合不识别
-        guard candidates.count > options.keepLatest else {
+        // 按逻辑基础版本归组，防止 JetBrains Toolbox ch-0 内的 `<version>.plugins` 伴随目录
+        // 被当成独立版本或因字典序比 `<version>` 大而反向把唯一/最新活跃 IDE 本体淘汰。
+        var groupsByBaseVersion: [String: [Candidate]] = [:]
+        for candidate in candidates {
+            let baseKey = Self.canonicalVersionGroupKey(for: candidate.name)
+            groupsByBaseVersion[baseKey, default: []].append(candidate)
+        }
+
+        // 独立基础版本数 ≤ keepLatest → 安全起见整个集合不识别
+        guard groupsByBaseVersion.count > options.keepLatest else {
             return DetectionResult(hits: [], incompleteIssues: [])
         }
 
+        let representatives: [Candidate] = groupsByBaseVersion.map { baseKey, members in
+            if let primary = members.first(where: { $0.name == baseKey }) {
+                return primary
+            }
+            let latestModDate = members.compactMap(\.modificationDate).max()
+            return Candidate(
+                name: baseKey,
+                url: members[0].url,
+                modificationDate: latestModDate
+            )
+        }
+
         // 排序：升序排列后，尾 N 个为保留版本，前面的都是旧版本
-        let sorted = sort(candidates: candidates, ordering: options.ordering)
+        let sorted = sort(candidates: representatives, ordering: options.ordering)
         if cancellationCheck() { return cancelledDetectionResult }
         let retainCount = options.keepLatest
         let oldCount = sorted.count - retainCount
@@ -311,13 +331,21 @@ public actor VersionedRetainScanner {
         hits.reserveCapacity(oldCount)
         for i in 0..<oldCount {
             if cancellationCheck() { return cancelledDetectionResult }
-            let entry = sorted[i]
-            hits.append(Hit(
-                url: entry.url,
-                collectionRoot: collectionRoot,
-                versionName: entry.name,
-                retainedLatest: retainedLatest
-            ))
+            let rep = sorted[i]
+            let members = (groupsByBaseVersion[rep.name] ?? [rep]).sorted { lhs, rhs in
+                if (lhs.name == rep.name) != (rhs.name == rep.name) {
+                    return lhs.name == rep.name
+                }
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+            for entry in members {
+                hits.append(Hit(
+                    url: entry.url,
+                    collectionRoot: collectionRoot,
+                    versionName: entry.name,
+                    retainedLatest: retainedLatest
+                ))
+            }
         }
         if cancellationCheck() { return cancelledDetectionResult }
 
@@ -332,6 +360,18 @@ public actor VersionedRetainScanner {
 
     nonisolated private static var cancelledDetectionResult: DetectionResult {
         DetectionResult(hits: [], incompleteIssues: [], wasCancelled: true)
+    }
+
+    /// 将 `<version>.plugins` 伴随目录归一到其宿主 `<version>`，避免伴随插件目录被当作独立新版本。
+    nonisolated static func canonicalVersionGroupKey(for name: String) -> String {
+        let lower = name.lowercased()
+        if lower.hasSuffix(".plugins") {
+            let stem = String(name.dropLast(".plugins".count))
+            if extractLeadingVersion(stem) != nil {
+                return stem
+            }
+        }
+        return name
     }
 
     struct Candidate: Sendable {
@@ -361,33 +401,44 @@ public actor VersionedRetainScanner {
         }
     }
 
-    /// 提取版本名首段连续的 `[0-9.]+` 做数值比较；解析失败 → 字典序兜底。
+    /// 提取版本名首段（或同产品前缀后的首段）连续 `[0-9.]+` 做数值比较；解析失败 → 字典序兜底。
     ///
     /// 用例：
     /// - `"17.5 (21F79)"` vs `"18.0 (22A3354)"` → 比较 `17.5` vs `18.0` → asc
     /// - `"242.20224.155"` vs `"241.18034.62"` → desc
     /// - `"0.7.2"` vs `"0.6.0"` → desc
+    /// - `"IntelliJIdea2024.1-beta"` vs `"IntelliJIdea2024.1"` → asc（预发布版早于正式版）
+    /// - `"242.20224.300.plugins"` vs `"242.20224.300"` → asc（伴随插件目录不压过主版本目录）
     nonisolated static func compareSemver(_ lhs: String, _ rhs: String) -> ComparisonResult {
-        let lhsVersion = extractLeadingVersion(lhs)
-        let rhsVersion = extractLeadingVersion(rhs)
-        if let l = lhsVersion, let r = rhsVersion {
-            let cmp = l.compare(r, options: .numeric)
+        if let l = extractPrefixedVersion(lhs),
+           let r = extractPrefixedVersion(rhs),
+           l.prefix.caseInsensitiveCompare(r.prefix) == .orderedSame {
+            let cmp = l.version.compare(r.version, options: .numeric)
             if cmp != .orderedSame { return cmp }
-            let lSuffix = String(lhs.dropFirst(l.count))
-            let rSuffix = String(rhs.dropFirst(r.count))
-            let lPre = isPrereleaseSuffix(lSuffix)
-            let rPre = isPrereleaseSuffix(rSuffix)
+            let lPre = isPrereleaseSuffix(l.suffix)
+            let rPre = isPrereleaseSuffix(r.suffix)
             if lPre != rPre {
                 // Pre-release (e.g. 1.0.0-alpha) is older than stable release (1.0.0)
                 return lPre ? .orderedAscending : .orderedDescending
+            }
+            let lCompanion = isCompanionSuffix(l.suffix)
+            let rCompanion = isCompanionSuffix(r.suffix)
+            if lCompanion != rCompanion {
+                // Companion directories (.plugins) sort before the primary IDE directory
+                return lCompanion ? .orderedAscending : .orderedDescending
             }
         }
         return lhs.localizedStandardCompare(rhs)
     }
 
     nonisolated private static func isPrereleaseSuffix(_ suffix: String) -> Bool {
-        guard suffix.hasPrefix("-") else { return false }
-        let lower = suffix.dropFirst().lowercased()
+        let trimmed: Substring
+        if suffix.hasPrefix("-") || suffix.hasPrefix(".") || suffix.hasPrefix("_") {
+            trimmed = suffix.dropFirst()
+        } else {
+            return false
+        }
+        let lower = trimmed.lowercased()
         return lower.hasPrefix("alpha")
             || lower.hasPrefix("beta")
             || lower.hasPrefix("rc")
@@ -395,6 +446,12 @@ public actor VersionedRetainScanner {
             || lower.hasPrefix("dev")
             || lower.hasPrefix("canary")
             || lower.hasPrefix("nightly")
+            || lower.hasPrefix("eap")
+    }
+
+    nonisolated private static func isCompanionSuffix(_ suffix: String) -> Bool {
+        let lower = suffix.lowercased()
+        return lower == ".plugins" || lower.hasPrefix(".plugins.")
     }
 
     nonisolated static func extractLeadingVersion(_ s: String) -> String? {
@@ -406,8 +463,44 @@ public actor VersionedRetainScanner {
                 break
             }
         }
+        while buf.hasSuffix(".") {
+            buf.removeLast()
+        }
         guard !buf.isEmpty, buf.contains(where: { $0.isNumber }) else { return nil }
         return buf
+    }
+
+    nonisolated private static func extractPrefixedVersion(
+        _ s: String
+    ) -> (prefix: String, version: String, suffix: String)? {
+        guard let firstDigitIdx = s.firstIndex(where: { $0.isNumber }) else {
+            return nil
+        }
+        let prefix = String(s[..<firstDigitIdx])
+        var versionEndIdx = firstDigitIdx
+        while versionEndIdx < s.endIndex {
+            let ch = s[versionEndIdx]
+            if ch.isNumber || ch == "." {
+                versionEndIdx = s.index(after: versionEndIdx)
+            } else {
+                break
+            }
+        }
+        var versionRangeEnd = versionEndIdx
+        while versionRangeEnd > firstDigitIdx {
+            let prevIdx = s.index(before: versionRangeEnd)
+            if s[prevIdx] == "." {
+                versionRangeEnd = prevIdx
+            } else {
+                break
+            }
+        }
+        let version = String(s[firstDigitIdx..<versionRangeEnd])
+        guard !version.isEmpty, version.contains(where: { $0.isNumber }) else {
+            return nil
+        }
+        let suffix = String(s[versionRangeEnd...])
+        return (prefix: prefix, version: version, suffix: suffix)
     }
 
     nonisolated private static func incompleteResult(

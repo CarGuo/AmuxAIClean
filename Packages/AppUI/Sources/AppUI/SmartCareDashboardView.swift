@@ -523,7 +523,9 @@ struct SmartCareDashboardView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
-            if isPartial {
+            let hasRemainingReviewableItems = !coordinator.summary.safeItems.isEmpty
+                || !coordinator.summary.confirmItems.isEmpty
+            if isPartial && hasRemainingReviewableItems {
                 HStack(spacing: 10) {
                     Button {
                         onPrimaryAction(.cleanSafeItems)
@@ -532,6 +534,35 @@ struct SmartCareDashboardView: View {
                             Text("smart_care.action.retry_remaining", bundle: .module)
                         } icon: {
                             Image(systemName: "arrow.counterclockwise")
+                        }
+                        .frame(minWidth: 142)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .tint(tint)
+
+                    Button {
+                        onPrimaryAction(.scanAgain)
+                    } label: {
+                        Label {
+                            Text("smart_care.action.scan_again", bundle: .module)
+                        } icon: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .frame(minWidth: 124)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                }
+            } else if hasRemainingReviewableItems {
+                HStack(spacing: 10) {
+                    Button {
+                        coordinator.resumeReviewAfterUnsubmittedClean()
+                    } label: {
+                        Label {
+                            Text("smart_care.action.review_cleanup", bundle: .module)
+                        } icon: {
+                            Image(systemName: "checklist")
                         }
                         .frame(minWidth: 142)
                     }

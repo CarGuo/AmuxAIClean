@@ -2645,7 +2645,7 @@ public final class ScanCoordinator: ObservableObject {
     private let engine = SafetyEngine()
     /// Stable namespace for the process-local Tree verdict cache. Different coordinator instances
     /// may freeze different HOME/vendor inputs, so path alone can never be the cache identity.
-    private let treeDeletionEvaluationCacheNamespace = UUID()
+    let treeDeletionEvaluationCacheNamespace = UUID()
     private let vendors: [VendorRule]
     private let home: String
     private let whitelistStore: WhitelistStore
@@ -8983,12 +8983,16 @@ public final class ScanCoordinator: ObservableObject {
             // those arrays here would put 1k-40k row work back on MainActor; the projection workers
             // own that work and the revision CAS rejects any older matcher/row combination.
             receiptTombstones: deletedPathTombstones.presentationMatcher,
-            deletionEvaluation: TreeDeletionEvaluationSnapshot(
-                cacheNamespace: treeDeletionEvaluationCacheNamespace,
-                engine: engine,
-                trie: trie,
-                home: home
-            )
+            deletionEvaluation: treeDeletionEvaluationSnapshot
+        )
+    }
+
+    var treeDeletionEvaluationSnapshot: TreeDeletionEvaluationSnapshot {
+        TreeDeletionEvaluationSnapshot(
+            cacheNamespace: treeDeletionEvaluationCacheNamespace,
+            engine: engine,
+            trie: trie,
+            home: home
         )
     }
 
@@ -10429,6 +10433,7 @@ public final class ScanCoordinator: ObservableObject {
         /// commit 会替换的其余 COW storage 也必须由 worker 跨过 MainActor swap 强持有。
         let perRootSorted: [PerRootProgress]
         let perRootTreeRows: [TreeSortKey: [TreeRow]]
+        let mainListSortKey: MainListSortKey
         let previousPrunedPaths: [String]?
     }
 
@@ -10495,10 +10500,15 @@ public final class ScanCoordinator: ObservableObject {
             mergedPaths.reserveCapacity(mergedPaths.count + requestedPaths.count)
             mergedPaths.append(contentsOf: requestedPaths)
             let matcher = PrunedPathMatcher(paths: mergedPaths)
+            let deltaMatcher = PrunedPathMatcher(paths: requestedPaths)
             let mergeRanOnMainThread = Thread.isMainThread
 
             let started = DispatchTime.now().uptimeNanoseconds
-            var plan = ScanCoordinator.makePrunePlan(from: state, matcher: matcher)
+            var plan = ScanCoordinator.makePrunePlan(
+                from: state,
+                matcher: matcher,
+                deltaMatcher: deltaMatcher
+            )
             plan.durationNanoseconds = DispatchTime.now().uptimeNanoseconds - started
             let output = PreparedPrune(
                 tombstones: DeletedPathIndex(matcher: matcher),
@@ -10813,13 +10823,15 @@ public final class ScanCoordinator: ObservableObject {
             perRootFinished: perRootFinishedSlim,
             perRootSorted: perRootProgressSorted,
             perRootTreeRows: perRootTreeRowsBySort,
+            mainListSortKey: mainListSortKey,
             previousPrunedPaths: lastPrunedPaths
         )
     }
 
     private nonisolated static func makePrunePlan(
         from state: PruneStateSnapshot,
-        matcher: PrunedPathMatcher
+        matcher: PrunedPathMatcher,
+        deltaMatcher: PrunedPathMatcher
     ) -> PrunePlan {
         var sourcePerRoot = state.perRootStaging
         if sourcePerRoot.isEmpty {
@@ -10889,11 +10901,13 @@ public final class ScanCoordinator: ObservableObject {
             return treeCacheContributions?.contribution(for: path)
         }
 
-        let indexedContributions = matcher.roots.compactMap(contribution(for:))
+        // 只对本次新请求的 deltaMatcher.roots 计算扣减贡献，避免第 2+ 次删除时对已在上一轮
+        // prune 掉的历史路径重复查询而误触发 TreeCacheContributionIndex 全量构建或二次扣减。
+        let indexedContributions = deltaMatcher.roots.compactMap(contribution(for:))
         let treeCacheContributionIndexBuilt = treeCacheContributions != nil
         let indexedMatcher = PrunedPathMatcher(paths: indexedContributions.map(\.path))
         let perRootContributions = sourcePerRoot.values.compactMap { progress -> PruneContribution? in
-            guard matcher.contains(progress.rootPath),
+            guard deltaMatcher.contains(progress.rootPath),
                   !indexedMatcher.contains(progress.rootPath) else { return nil }
             return PruneContribution(path: progress.rootPath, bytes: progress.bytes,
                                      logicalBytes: progress.logicalBytes, fileCount: progress.fileCount)
@@ -10952,6 +10966,7 @@ public final class ScanCoordinator: ObservableObject {
         var newRows: [RowItem] = []
         newRows.reserveCapacity(state.snapshot.rows.count)
         var removedRowBytes: Int64 = 0
+        var mutatedIndices: [Int] = []
         for row in state.snapshot.rows {
             if matcher.contains(row.id) {
                 removedRowBytes &+= row.bytes
@@ -10966,6 +10981,9 @@ public final class ScanCoordinator: ObservableObject {
             guard hasAggregateChange || updatedHasChildren != row.hasChildren else {
                 newRows.append(row)
                 continue
+            }
+            if hasAggregateChange {
+                mutatedIndices.append(newRows.count)
             }
             newRows.append(RowItem(
                 id: row.id,
@@ -10987,6 +11005,70 @@ public final class ScanCoordinator: ObservableObject {
                 vendorNamePresentation: row.vendorNamePresentation,
                 vendorNotePresentation: row.vendorNotePresentation
             ))
+        }
+        let sortKeyDependsOnAggregates: Bool = {
+            switch state.mainListSortKey {
+            case .sizeDesc, .sizeAsc, .fileCountDesc, .fileCountAsc:
+                return true
+            case .nameAsc, .nameDesc, .mtimeDesc, .mtimeAsc:
+                return false
+            }
+        }()
+        if !mutatedIndices.isEmpty && state.snapshot.isFinished && sortKeyDependsOnAggregates {
+            let sortKey = state.mainListSortKey
+            let locale = state.locale
+            let violatesNeighborOrder = mutatedIndices.contains { idx in
+                (idx > 0 && sortKey.lessThan(newRows[idx], newRows[idx - 1], locale: locale))
+                    || (idx + 1 < newRows.count && sortKey.lessThan(newRows[idx + 1], newRows[idx], locale: locale))
+            }
+            if violatesNeighborOrder {
+                if mutatedIndices.count * 16 < newRows.count {
+                    let mutatedSet = Set(mutatedIndices)
+                    var unchangedRows: [RowItem] = []
+                    unchangedRows.reserveCapacity(newRows.count - mutatedIndices.count)
+                    var mutatedRows: [RowItem] = []
+                    mutatedRows.reserveCapacity(mutatedIndices.count)
+                    var unchangedIsSorted = true
+                    for (idx, row) in newRows.enumerated() {
+                        if mutatedSet.contains(idx) {
+                            mutatedRows.append(row)
+                        } else {
+                            if let prev = unchangedRows.last,
+                               sortKey.lessThan(row, prev, locale: locale) {
+                                unchangedIsSorted = false
+                            }
+                            unchangedRows.append(row)
+                        }
+                    }
+                    if unchangedIsSorted {
+                        mutatedRows.sort { sortKey.lessThan($0, $1, locale: locale) }
+                        var merged: [RowItem] = []
+                        merged.reserveCapacity(newRows.count)
+                        var i = 0
+                        var j = 0
+                        while i < unchangedRows.count && j < mutatedRows.count {
+                            if sortKey.lessThan(mutatedRows[j], unchangedRows[i], locale: locale) {
+                                merged.append(mutatedRows[j])
+                                j &+= 1
+                            } else {
+                                merged.append(unchangedRows[i])
+                                i &+= 1
+                            }
+                        }
+                        if i < unchangedRows.count {
+                            merged.append(contentsOf: unchangedRows[i...])
+                        }
+                        if j < mutatedRows.count {
+                            merged.append(contentsOf: mutatedRows[j...])
+                        }
+                        newRows = merged
+                    } else {
+                        newRows.sort { sortKey.lessThan($0, $1, locale: locale) }
+                    }
+                } else {
+                    newRows.sort { sortKey.lessThan($0, $1, locale: locale) }
+                }
+            }
         }
         let snapshotBytesToSubtract = totalDeletedBytes > 0 ? totalDeletedBytes : removedRowBytes
         let nextSnapshot = ScanSnapshot(
@@ -12571,6 +12653,15 @@ public final class ScanCoordinator: ObservableObject {
             let cacheKey = "\(parentPath)|\(sortKey.rawValue)"
             if let cached = treeChildrenCache[cacheKey]?.first(where: { $0.path == path }) {
                 return cached
+            }
+        }
+
+        for sortKey in TreeSortKey.allCases {
+            if let perRoot = perRootTreeRowsBySort[sortKey]?.first(where: { $0.path == path }) {
+                return perRoot
+            }
+            if let topRow = snapshotTreeRowsBySort[sortKey]?.first(where: { $0.path == path }) {
+                return topRow
             }
         }
 

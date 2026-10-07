@@ -194,6 +194,29 @@ public final class SmartCareSession: ObservableObject {
         }
     }
 
+    /// 当前 Smart Care 扫描会话的唯一标识。
+    /// 注意：`applySuccessfulDeletion` 会通过 `scanCoordinator.cancel()` 释放底层 stage scanner 的大体积缓存，
+    /// 因此删除确认门禁必须绑定 `SmartCareSession` 自身的会话世代，而非底层 ingestion `scanCoordinator`。
+    public var currentScanSessionID: UUID {
+        scanGeneration
+    }
+
+    /// 当前 Smart Care 摘要是否可用于发起清理或复核操作。
+    public var canUseCurrentScanResultsForActions: Bool {
+        guard scanTask == nil,
+              scanCoordinator.scanPhase == .idle,
+              !scanCoordinator.isScanning,
+              !care.summary.items.isEmpty else {
+            return false
+        }
+        switch care.phase {
+        case .reviewing, .confirming, .completed, .failed(.cleanFailed):
+            return true
+        case .idle, .scanning, .cleaning, .cancelled, .failed(.scanFailed):
+            return false
+        }
+    }
+
     private var scanTask: Task<Void, Never>?
     private var scanGeneration = UUID()
     private var checkpoint: SmartCareScanCheckpoint?
@@ -290,6 +313,7 @@ public final class SmartCareSession: ObservableObject {
                 deletionDeniedPaths: deletionDeniedPaths,
                 phase: care.phase
             )
+        scanGeneration = UUID()
         startedAt = nil
         finishedAt = nil
         setCheckpoint(nil)

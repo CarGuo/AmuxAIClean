@@ -88,9 +88,9 @@ public enum TCCSkipList {
     /// - Parameter absPath: 绝对路径（不含 trailing slash）
     /// - Returns: true 表示该路径是 TCC 雷区，walker 不应进入
     public static func shouldSkip(_ absPath: String) -> Bool {
-        // 1. 后缀匹配（媒体库类）
+        // 1. 后缀匹配（媒体库类 bundle 根及其内部子路径）
         for suffix in dangerousSuffixes {
-            if absPath.hasSuffix(suffix) {
+            if absPath.hasSuffix(suffix) || absPath.contains(suffix + "/") {
                 return true
             }
         }

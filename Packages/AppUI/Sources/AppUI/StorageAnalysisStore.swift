@@ -164,6 +164,24 @@ final class StorageAnalysisStore: ObservableObject {
         refresh()
     }
 
+    func applyExternalDeletedPaths(_ paths: [String]) {
+        guard !paths.isEmpty else {
+            invalidateAfterExternalChange()
+            return
+        }
+        if scanner.snapshot.isFinished, !scanner.isScanning,
+            phase == .ready || phase == .loadingDirectory
+        {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.scanner.acknowledgeSuccessfulDeletionForPresentation(paths: paths)
+                await self.scanner.pruneDeleted(paths: paths)
+            }
+        } else if phase != .idle {
+            invalidateAfterExternalChange()
+        }
+    }
+
     func invalidateAfterExternalChange() {
         // A moved file invalidates allocation evidence, including hardlink attribution.
         // A new scan is explicit; do not silently rescan the user's disk after deletion.

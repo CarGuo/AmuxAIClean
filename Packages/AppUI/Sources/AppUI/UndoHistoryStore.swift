@@ -5015,7 +5015,51 @@ public final class UndoHistoryStore: ObservableObject {
         appliedPersistenceRevision = revision
         storageState = persisted.state
         guard persisted.succeeded else { return }
-        publishHistory(persisted.envelope.records)
+        publishHistory(Self.preservingResolvedRecoveryStates(
+            persisted.envelope.records,
+            current: history
+        ))
+    }
+
+    nonisolated private static func preservingResolvedRecoveryStates(
+        _ records: [Record],
+        current: [Record]
+    ) -> [Record] {
+        guard !current.isEmpty else { return records }
+        let currentByID = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
+        return records.map { record in
+            guard let existing = currentByID[record.id] else { return record }
+            var mergedStates = record.recoveryStates
+            var didChange = false
+            for index in record.filePairs.indices {
+                guard index < mergedStates.count,
+                      mergedStates[index].status == .checking,
+                      index < existing.filePairs.count,
+                      index < existing.recoveryStates.count else { continue }
+                let incomingPair = record.filePairs[index]
+                let existingPair = existing.filePairs[index]
+                let existingState = existing.recoveryStates[index]
+                guard existingState.status != .checking,
+                      TrashPipeline.normalizePath(incomingPair.original)
+                        == TrashPipeline.normalizePath(existingPair.original),
+                      TrashPipeline.normalizePath(incomingPair.trashed)
+                        == TrashPipeline.normalizePath(existingPair.trashed),
+                      incomingPair.trashedIdentity == existingPair.trashedIdentity else {
+                    continue
+                }
+                mergedStates[index] = existingState
+                didChange = true
+            }
+            guard didChange else { return record }
+            return Record(
+                id: record.id,
+                timestamp: record.timestamp,
+                source: record.source,
+                filePairs: record.filePairs,
+                recoveryStates: mergedStates,
+                journalOperationID: record.journalOperationID
+            )
+        }
     }
 
     nonisolated private static func bootstrapHistory(

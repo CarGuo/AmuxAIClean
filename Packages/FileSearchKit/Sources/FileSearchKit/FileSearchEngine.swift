@@ -162,13 +162,13 @@ public struct FileSearchEngine: Sendable {
     private static func match(url: URL,
                               filters: [FileSearchFilter],
                               options: FileSearchOptions) -> FileSearchResult? {
-        let isDir = url.hasDirectoryPath
         let name = url.lastPathComponent
         let resourceKeys: Set<URLResourceKey> = [
             .totalFileSizeKey, .contentModificationDateKey, .isDirectoryKey,
             .tagNamesKey,
         ]
         let values = try? url.resourceValues(forKeys: resourceKeys)
+        let isDir = values?.isDirectory ?? url.hasDirectoryPath
         let size: Int64 = isDir ? 0 : Int64(values?.totalFileSize ?? 0)
         let mtime = values?.contentModificationDate ?? Date(timeIntervalSince1970: 0)
         let tags = values?.tagNames ?? []
@@ -206,7 +206,9 @@ public struct FileSearchEngine: Sendable {
             return matchName(m, name: name, value: value, caseSensitive: caseSensitive)
         case .fileExtension(let m, let exts):
             let fileExt = url.pathExtension.lowercased()
-            let normalized = exts.map { $0.lowercased() }
+            let normalized = exts.map {
+                $0.trimmingCharacters(in: CharacterSet(charactersIn: ". ")).lowercased()
+            }
             switch m {
             case .includes: return normalized.contains(fileExt)
             case .excludes: return !normalized.contains(fileExt)

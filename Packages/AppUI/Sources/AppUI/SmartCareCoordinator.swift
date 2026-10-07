@@ -242,7 +242,11 @@ public final class SmartCareCoordinator: ObservableObject {
             phase = newSummary.items.isEmpty ? .idle : .reviewing(summary: newSummary)
         case .cancelled:
             phase = .cancelled(partial: newSummary.items.isEmpty ? nil : newSummary)
-        case .idle, .scanning, .cleaning, .completed, .failed:
+        case .failed(.cleanFailed):
+            if newSummary.items.isEmpty {
+                phase = .idle
+            }
+        case .idle, .scanning, .cleaning, .completed, .failed(.scanFailed):
             break
         }
     }

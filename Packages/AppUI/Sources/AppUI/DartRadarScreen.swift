@@ -139,24 +139,28 @@ public struct DartRadarScreen: View {
     }
 
     private var statsStrip: some View {
-        HStack(spacing: 10) {
+        let currentVisible = visibleEntries
+        let currentProjectCount = Set(currentVisible.compactMap(\.projectPath)).count
+        let currentCPU = currentVisible.reduce(0.0) { $0 + $1.cpuPercent }
+        let currentMemory = currentVisible.reduce(Int64(0)) { $0 + $1.memoryBytes }
+        return HStack(spacing: 10) {
             statChip(
-                value: String(visibleEntries.count),
+                value: String(currentVisible.count),
                 label: AppLocalization.string("dart_radar.stat.processes", locale: locale),
                 symbol: "waveform.path.ecg"
             )
             statChip(
-                value: String(projectCount),
+                value: String(currentProjectCount),
                 label: AppLocalization.string("dart_radar.stat.projects", locale: locale),
                 symbol: "folder.fill"
             )
             statChip(
-                value: String(format: "%.1f%%", totalCPU),
+                value: String(format: "%.1f%%", currentCPU),
                 label: AppLocalization.string("dart_radar.stat.cpu", locale: locale),
                 symbol: "cpu"
             )
             statChip(
-                value: AppLocalization.byteCount(totalMemory, locale: locale),
+                value: AppLocalization.byteCount(currentMemory, locale: locale),
                 label: AppLocalization.string("dart_radar.stat.memory", locale: locale),
                 symbol: "memorychip"
             )
@@ -198,14 +202,28 @@ public struct DartRadarScreen: View {
 
     @ViewBuilder
     private var contentSnapshot: some View {
+        let currentGroups = groups
         if isLoading && entries.isEmpty {
             placeholder("dart_radar.placeholder.scanning", icon: "radar")
-        } else if groups.isEmpty {
+        } else if entries.isEmpty {
             placeholder("dart_radar.placeholder.empty", icon: "checkmark.circle")
+        } else if currentGroups.isEmpty {
+            VStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 30))
+                    .foregroundStyle(.tertiary)
+                Text("dart_radar.placeholder.no_match", bundle: .module)
+                    .foregroundStyle(.secondary)
+                Button(AppLocalization.string("common.button.clear_filter", locale: locale)) {
+                    query = ""
+                }
+                .controlSize(.small)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
                 LazyVStack(spacing: 12) {
-                    ForEach(groups) { group in
+                    ForEach(currentGroups) { group in
                         projectSection(group)
                     }
                 }
@@ -276,16 +294,16 @@ public struct DartRadarScreen: View {
                 }
                 .buttonStyle(.borderless)
                 .help(Text("dart_radar.button.reveal_project", bundle: .module))
-
-                Button(role: .destructive) {
-                    requestKill(entries: group.entries)
-                } label: {
-                    Image(systemName: "xmark.octagon")
-                }
-                .buttonStyle(.borderless)
-                .help(Text("dart_radar.button.kill_project", bundle: .module))
-                .disabled(isKilling || !group.entries.contains(where: \.canTerminate))
             }
+
+            Button(role: .destructive) {
+                requestKill(entries: group.entries)
+            } label: {
+                Image(systemName: "xmark.octagon")
+            }
+            .buttonStyle(.borderless)
+            .help(Text("dart_radar.button.kill_project", bundle: .module))
+            .disabled(isKilling || !group.entries.contains(where: \.canTerminate))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)

@@ -151,5 +151,40 @@ final class VersionedRetainScannerTests: XCTestCase {
         // 预发布后缀（-alpha / -beta / -rc）必须排在同核心版本的正式版之前（保留正式版）
         XCTAssertEqual(VersionedRetainScanner.compareSemver("1.0.0-alpha", "1.0.0"), .orderedAscending)
         XCTAssertEqual(VersionedRetainScanner.compareSemver("1.0.0", "1.0.0-beta.1"), .orderedDescending)
+        // 带非数字产品前缀的预发布后缀同样排在正式版之前
+        XCTAssertEqual(VersionedRetainScanner.compareSemver("IntelliJIdea2024.1-beta", "IntelliJIdea2024.1"), .orderedAscending)
+        XCTAssertEqual(VersionedRetainScanner.compareSemver("v1.0.0-alpha", "v1.0.0"), .orderedAscending)
+        // 伴随 .plugins 目录不压过同名主版本目录
+        XCTAssertEqual(VersionedRetainScanner.extractLeadingVersion("242.20224.300.plugins"), "242.20224.300")
+        XCTAssertEqual(VersionedRetainScanner.compareSemver("242.20224.300.plugins", "242.20224.300"), .orderedAscending)
+    }
+
+    // 7) JetBrains Toolbox ch-0 `.plugins` 伴随目录保护：绝不把唯一活跃版本当旧版淘汰
+    func test_toolboxPluginsCompanion_不误删活跃版本本体() throws {
+        let singleVersionRoot = tempRoot.appendingPathComponent("ch-0-single", isDirectory: true)
+        try makeDirs(singleVersionRoot, names: [
+            "242.20224.300",
+            "242.20224.300.plugins"
+        ])
+        let singleHits = VersionedRetainScanner.detect(
+            collectionRoot: singleVersionRoot,
+            options: .init(keepLatest: 1, ordering: .semverPreferred)
+        )
+        XCTAssertTrue(singleHits.isEmpty, "单版本 + 伴随 .plugins 仅代表 1 个版本，不应淘汰活跃 IDE 本体")
+
+        let twoVersionsRoot = tempRoot.appendingPathComponent("ch-0-two", isDirectory: true)
+        try makeDirs(twoVersionsRoot, names: [
+            "241.18034.62",
+            "241.18034.62.plugins",
+            "242.20224.300",
+            "242.20224.300.plugins"
+        ])
+        let twoHits = VersionedRetainScanner.detect(
+            collectionRoot: twoVersionsRoot,
+            options: .init(keepLatest: 1, ordering: .semverPreferred)
+        )
+        XCTAssertEqual(Set(twoHits.map(\.versionName)), ["241.18034.62", "241.18034.62.plugins"])
+        XCTAssertTrue(twoHits.allSatisfy { $0.retainedLatest == "242.20224.300" })
     }
 }
+

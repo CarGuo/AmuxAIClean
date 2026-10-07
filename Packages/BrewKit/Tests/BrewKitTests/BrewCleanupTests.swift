@@ -79,6 +79,23 @@ final class BrewCleanupTests: XCTestCase {
                       "裸文件名相对 symlink 同样应排除活跃 bottle；实际 stale: \(plan.stalePaths)")
     }
 
+    func test_dryRun_Cask子目录symlink指向的活跃dmg被排除() throws {
+        try writeFile(into: downloads, name: "caskhash--my-app.dmg",
+                      bytes: 16_384,
+                      mtime: Date(timeIntervalSinceNow: -60 * 86400))
+        let caskDir = root.appendingPathComponent("Cask", isDirectory: true)
+        try FileManager.default.createDirectory(at: caskDir, withIntermediateDirectories: true)
+        let caskLink = caskDir.appendingPathComponent("my-app--1.0.dmg")
+        try FileManager.default.createSymbolicLink(
+            atPath: caskLink.path,
+            withDestinationPath: "../downloads/caskhash--my-app.dmg")
+
+        let cleanup = BrewCleanup(cacheRoot: root)
+        let plan = cleanup.dryRun()
+        XCTAssertTrue(plan.isEmpty,
+                      "Cask/ 子目录 symlink 指向的活跃安装包应被排除；实际 stale: \(plan.stalePaths)")
+    }
+
     // MARK: - 契约 4：downloads 缺失时返回空 plan
 
     func test_dryRun_缺downloads目录_空plan() throws {

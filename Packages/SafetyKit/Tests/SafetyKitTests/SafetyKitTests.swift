@@ -274,4 +274,62 @@ final class SafetyEngineTests: XCTestCase {
         let v2 = engine.evaluate(path: "\(home)/dev/dart-sdk/lib/core/core.dart", home: home)
         XCTAssertEqual(v2.0, .confirm, "(dart-sdk/lib 不应被 dart-sdk/bin 子串命中) got \(v2)")
     }
+
+    func testSymlinkInsideSafeVendorPathDoesNotDowngradeTargetToSafe() throws {
+        let fm = FileManager.default
+        let tempHome = fm.temporaryDirectory.appendingPathComponent("safety-symlink-\(UUID().uuidString)")
+        let vendorCacheDir = tempHome.appendingPathComponent("Library/Application Support/Acme/Cache")
+        let externalTarget = tempHome.appendingPathComponent("Documents/ImportantDoc.txt")
+        try fm.createDirectory(at: vendorCacheDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: externalTarget.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("important".utf8).write(to: externalTarget)
+        defer { try? fm.removeItem(at: tempHome) }
+
+        let normalFile = vendorCacheDir.appendingPathComponent("normal.tmp")
+        try Data("cache".utf8).write(to: normalFile)
+        let symlinkFile = vendorCacheDir.appendingPathComponent("linked-doc.txt")
+        try fm.createSymbolicLink(at: symlinkFile, withDestinationURL: externalTarget)
+
+        let rule = VendorRule(
+            name: "Acme",
+            appSupportSubdir: "Acme",
+            paths: [
+                PathRule(path: "~/Library/Application Support/Acme/Cache", verdict: .safe)
+            ]
+        )
+
+        let normalEval = engine.evaluate(path: normalFile.path, vendors: [rule], home: tempHome.path)
+        XCTAssertEqual(normalEval.0, .safe, "vendor safe 子目录下的普通文件应为 .safe")
+
+        let symlinkEval = engine.evaluate(path: symlinkFile.path, vendors: [rule], home: tempHome.path)
+        XCTAssertEqual(symlinkEval.0, .confirm, "指向外部 .confirm 目标的 symlink 不得被 vendor safe 规则降级为 .safe")
+    }
+
+    func testSubpathGlobForbidOverridesInheritedParentSafeVendorRule() {
+        let home = "/Users/foo"
+        let rule = VendorRule(
+            name: "Acme Glob",
+            appSupportSubdir: "Acme",
+            paths: [
+                PathRule(path: "~/Library/Application Support/Acme", verdict: .safe),
+                PathRule(path: "~/Library/Application Support/Acme/**/secrets/*", verdict: .forbid)
+            ]
+        )
+
+        let safeChild = engine.evaluate(
+            path: "\(home)/Library/Application Support/Acme/workspace/cache.db",
+            vendors: [rule],
+            home: home
+        )
+        XCTAssertEqual(safeChild.0, .safe)
+
+        let forbiddenChild = engine.evaluate(
+            path: "\(home)/Library/Application Support/Acme/workspace/secrets/token.json",
+            vendors: [rule],
+            home: home
+        )
+        XCTAssertEqual(forbiddenChild.0, .forbid, "更具体的子路径 glob forbid 必须优先于父目录继承的 .safe")
+        XCTAssertEqual(forbiddenChild.1, .vendorPathRule)
+    }
 }
+

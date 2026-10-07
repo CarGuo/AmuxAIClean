@@ -567,6 +567,15 @@ public struct DuplicateScreen: View {
             cancelDuplicatePreflight()
             handleDuplicateExecutionDeparture()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .gsyTrashDidMove)) { notification in
+            let source = notification.userInfo?["source"] as? String
+            guard source != DeleteRequestOrigin.duplicate.historySource else { return }
+            let paths = notification.userInfo?["paths"] as? [String] ?? []
+            guard !paths.isEmpty, !groups.isEmpty else { return }
+            Task { @MainActor in
+                await pruneMovedDuplicatePaths(Set(paths))
+            }
+        }
         .sheet(
             isPresented: Binding(
                 get: { activeSheet != nil },
@@ -1497,10 +1506,25 @@ public struct DuplicateScreen: View {
             }
             let result = completed.result
             let succeededPaths = result.succeededPaths
-            if !succeededPaths.isEmpty {
-                await pruneMovedDuplicatePaths(Set(succeededPaths))
+            let succeededSet = Set(succeededPaths.map(TrashPipeline.normalizePath))
+            let releasedBytes = authorization.prepared.plan.submittableItems.reduce(Int64(0)) { partial, item in
+                succeededSet.contains(TrashPipeline.normalizePath(item.candidate.rawPath))
+                    ? partial + max(0, item.candidate.bytes)
+                    : partial
             }
             activeSheet = .result(.deletion(completed))
+            if !succeededPaths.isEmpty {
+                await pruneMovedDuplicatePaths(Set(succeededPaths))
+                Task.detached(priority: .utility) { [releasedBytes, succeededPaths] in
+                    await HeuristicRecorder().recordTrashed(paths: succeededPaths)
+                    if releasedBytes > 0 {
+                        await CleanStatsStore.shared.record(
+                            bytesReclaimed: releasedBytes,
+                            category: "duplicate"
+                        )
+                    }
+                }
+            }
         }
     }
 

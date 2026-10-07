@@ -280,7 +280,7 @@ struct UndoHistoryScreen: View {
                             .foregroundStyle(.secondary)
                     }
                     HStack(spacing: 6) {
-                        Text(record.source.uppercased())
+                        Text(localizedSourceLabel(record.source))
                             .font(.caption2.weight(.semibold))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
@@ -301,6 +301,35 @@ struct UndoHistoryScreen: View {
         }
     }
 
+    private func localizedSourceLabel(_ source: String) -> String {
+        switch source.lowercased() {
+        case "clean":
+            return AppLocalization.string("undo_history.source.clean", locale: locale)
+        case "tree":
+            return AppLocalization.string("undo_history.source.tree", locale: locale)
+        case "large-file":
+            return AppLocalization.string("undo_history.source.large_file", locale: locale)
+        case "stash":
+            return AppLocalization.string("undo_history.source.stash", locale: locale)
+        case "smart-care":
+            return AppLocalization.string("undo_history.source.smart_care", locale: locale)
+        case "brew":
+            return AppLocalization.string("undo_history.source.brew", locale: locale)
+        case "duplicate":
+            return AppLocalization.string("undo_history.source.duplicate", locale: locale)
+        case "uninstall":
+            return AppLocalization.string("undo_history.source.uninstall", locale: locale)
+        case "workflow":
+            return AppLocalization.string("undo_history.source.workflow", locale: locale)
+        case "storage-analysis":
+            return AppLocalization.string("undo_history.source.storage_analysis", locale: locale)
+        case "nsworkspace":
+            return AppLocalization.string("undo_history.source.system_trash", locale: locale)
+        default:
+            return source
+        }
+    }
+
     @ViewBuilder
     private var detailView: some View {
         if let record = selectedRecord {
@@ -311,7 +340,7 @@ struct UndoHistoryScreen: View {
                         Text(AppLocalization.format(
                             "undo_history.detail.summary %@ %lld",
                             locale: locale,
-                            arguments: [record.source, Int64(record.fileCount)]
+                            arguments: [localizedSourceLabel(record.source), Int64(record.fileCount)]
                         ))
                             .font(.callout)
                             .foregroundStyle(.secondary)

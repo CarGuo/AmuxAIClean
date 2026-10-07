@@ -134,11 +134,18 @@ public enum AIAdviceClamp {
     ]
 
     public static func pathIsHardForbid(_ path: String) -> Bool {
+        let dataPrefix = "/System/Volumes/Data"
+        let canonical = path.hasPrefix(dataPrefix + "/")
+            ? String(path.dropFirst(dataPrefix.count))
+            : path
         for p in SafetyEngine.hardForbidPrefixes {
-            if path == p || path.hasPrefix(p + "/") { return true }
+            if canonical == p || canonical.hasPrefix(p + "/") { return true }
         }
         for p in extraHardForbidPrefixes {
-            if path == p || path.hasPrefix(p + "/") { return true }
+            if canonical == p || canonical.hasPrefix(p + "/") { return true }
+        }
+        if SafetyEngine().isForbidden(path: path) {
+            return true
         }
         return false
     }

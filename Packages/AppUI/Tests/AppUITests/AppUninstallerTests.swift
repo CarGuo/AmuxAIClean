@@ -1343,4 +1343,152 @@ final class AppUninstallerTests: XCTestCase {
         XCTAssertTrue(collector.snapshot.isEmpty,
             "ENOENT 必须静默，不调用 permissionDeniedHandler")
     }
+
+    func test_GroupContainers_匹配group前缀与签名TeamID前缀并拒绝伪造TeamID() throws {
+        let fixture = try makeTempDir("group-containers-teamid")
+        defer { try? FileManager.default.removeItem(at: fixture) }
+
+        let groupContainers = fixture.appendingPathComponent("Library/Group Containers", isDirectory: true)
+        try FileManager.default.createDirectory(at: groupContainers, withIntermediateDirectories: true)
+
+        let standardGroup = groupContainers.appendingPathComponent("group.com.acme.demo.shared", isDirectory: true)
+        let teamDirect = groupContainers.appendingPathComponent("ABCDE12345.com.acme.demo", isDirectory: true)
+        let teamGroup = groupContainers.appendingPathComponent("ABCDE12345.group.com.acme.demo.sync", isDirectory: true)
+        let wrongTeam = groupContainers.appendingPathComponent("ZZZZZ99999.com.acme.demo", isDirectory: true)
+        for dir in [standardGroup, teamDirect, teamGroup, wrongTeam] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+
+        let uninstaller = AppUninstaller(
+            homeDirectory: fixture.path,
+            systemLibrary: fixture.appendingPathComponent("SystemLibrary").path
+        )
+
+        let withTeamResult = uninstaller.candidates(for: AppMetadata(
+            bundleID: "com.acme.demo",
+            bundleVendor: "com.acme",
+            appName: "AcmeDemo",
+            executableName: "AcmeDemo",
+            teamID: "ABCDE12345"
+        ))
+        let matchedPaths = Set(withTeamResult.candidates.map(\.path))
+        XCTAssertTrue(matchedPaths.contains(standardGroup.path), "应命中 group.<bundleID> 子前缀")
+        XCTAssertTrue(matchedPaths.contains(teamDirect.path), "应命中签名匹配的 <TeamID>.<bundleID>")
+        XCTAssertTrue(matchedPaths.contains(teamGroup.path), "应命中签名匹配的 <TeamID>.group.<bundleID>")
+        XCTAssertFalse(matchedPaths.contains(wrongTeam.path), "不应命中其他 TeamID 的容器")
+
+        let withoutTeamResult = uninstaller.candidates(for: AppMetadata(
+            bundleID: "com.acme.demo",
+            bundleVendor: "com.acme",
+            appName: "AcmeDemo",
+            executableName: "AcmeDemo",
+            teamID: nil
+        ))
+        let withoutTeamPaths = Set(withoutTeamResult.candidates.map(\.path))
+        XCTAssertTrue(withoutTeamPaths.contains(standardGroup.path))
+        XCTAssertFalse(withoutTeamPaths.contains(teamDirect.path), "无签名 TeamID 时不得仅凭 10 位前缀形状盲目匹配")
+        XCTAssertFalse(withoutTeamPaths.contains(teamGroup.path))
+    }
+
+    func test_UninstallStore_默认将vendorRules传递给OrphanScanner() async throws {
+        let fixture = try makeTempDir("uninstall-store-orphan-vendors")
+        defer { try? FileManager.default.removeItem(at: fixture) }
+
+        let appsDir = fixture.appendingPathComponent("Applications", isDirectory: true)
+        let appSupport = fixture.appendingPathComponent("Library/Application Support", isDirectory: true)
+        let protectedOrphan = appSupport.appendingPathComponent("ProtectedVendorData", isDirectory: true)
+        let unprotectedOrphan = appSupport.appendingPathComponent("UnprotectedLegacyApp", isDirectory: true)
+        try FileManager.default.createDirectory(at: appsDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: protectedOrphan, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: unprotectedOrphan, withIntermediateDirectories: true)
+        try Data("secret".utf8).write(to: protectedOrphan.appendingPathComponent("token.db"))
+        try Data("cache".utf8).write(to: unprotectedOrphan.appendingPathComponent("old.db"))
+
+        let oldDate = Date(timeIntervalSinceNow: -60 * 86_400)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: protectedOrphan.path)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: unprotectedOrphan.path)
+
+        let vendorRule = VendorRule(
+            name: "Protected Vendor",
+            appSupportSubdir: "ProtectedVendorData",
+            paths: [
+                PathRule(path: "~/Library/Application Support/ProtectedVendorData", verdict: .forbid)
+            ]
+        )
+        let uninstaller = AppUninstaller(
+            homeDirectory: fixture.path,
+            systemLibrary: fixture.appendingPathComponent("SystemLibrary").path,
+            vendorRules: [vendorRule]
+        )
+        let store = UninstallStore(
+            applicationsPath: appsDir.path,
+            uninstaller: uninstaller
+        )
+        let orphans = await store.scanOrphans()
+        let orphanPaths = Set(orphans.map { URL(fileURLWithPath: $0.path).standardizedFileURL.path })
+        XCTAssertTrue(
+            orphanPaths.contains(unprotectedOrphan.standardizedFileURL.path),
+            "未受厂商规则保护的陈旧无主目录应被识别为孤儿"
+        )
+        XCTAssertFalse(
+            orphanPaths.contains(protectedOrphan.standardizedFileURL.path),
+            "UninstallStore 默认继承 vendorRules 后，命中 .forbid 的厂商目录不得作为孤儿返回"
+        )
+    }
+
+    func test_revalidateSelectedAppForDeletion_App已移除但不在待删列表时返回appAlreadyRemoved() throws {
+        let fixture = try makeTempDir("revalidate-app-removed")
+        defer { try? FileManager.default.removeItem(at: fixture) }
+
+        let appURL = fixture.appendingPathComponent("Demo.app", isDirectory: true)
+        let contentsURL = appURL.appendingPathComponent("Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: contentsURL, withIntermediateDirectories: true)
+        let plist: [String: Any] = [
+            "CFBundleIdentifier": "com.acme.demo",
+            "CFBundleName": "Demo",
+            "CFBundleExecutable": "Demo"
+        ]
+        let plistData = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        try plistData.write(to: contentsURL.appendingPathComponent("Info.plist"))
+
+        let metadata = try AppMetadata.read(appURL: appURL)
+        var appStat = stat()
+        XCTAssertEqual(lstat(appURL.path, &appStat), 0)
+        let fileIdentity = InstalledAppFileIdentity(metadata: appStat)
+        let identity = UninstallSelectedAppIdentity(
+            appURL: appURL,
+            metadata: metadata,
+            expectedFileIdentity: fileIdentity
+        )
+        let uninstaller = AppUninstaller(
+            homeDirectory: fixture.path,
+            systemLibrary: fixture.appendingPathComponent("SystemLibrary").path
+        )
+
+        let validDisposition = uninstaller.revalidateSelectedAppForDeletion(
+            identity: identity,
+            deletingPaths: [appURL.path]
+        )
+        XCTAssertEqual(validDisposition, .valid)
+
+        try FileManager.default.removeItem(at: appURL)
+        let leftoverPath = fixture.appendingPathComponent("Library/Caches/com.acme.demo").path
+        let removedDisposition = uninstaller.revalidateSelectedAppForDeletion(
+            identity: identity,
+            deletingPaths: [leftoverPath]
+        )
+        XCTAssertEqual(removedDisposition, .appAlreadyRemoved,
+                       "App 已被移除且本次仅清理剩余残留时应返回 .appAlreadyRemoved")
+
+        let stillSelectedAppDisposition = uninstaller.revalidateSelectedAppForDeletion(
+            identity: identity,
+            deletingPaths: [appURL.path, leftoverPath]
+        )
+        if case .invalid = stillSelectedAppDisposition {
+            // expected: .app仍在待删列表中但磁盘上已消失，必须报错拦截
+        } else {
+            XCTFail("待删列表仍包含 .app 但磁盘已不存在时应返回 .invalid，实际: \(stillSelectedAppDisposition)")
+        }
+    }
 }
+

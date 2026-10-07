@@ -238,4 +238,52 @@ final class BundleProtectionTests: XCTestCase {
         XCTAssertEqual(verdict, .confirm)
         XCTAssertEqual(rejection, .ok, "Desktop 子文件不应被 bundle 规则升级到其他 rejection")
     }
+
+    /// 大小写无关匹配：exact 与 prefix 桶对不同大小写的 bundleID 均能命中并返回原始 pattern。
+    func testCaseInsensitiveExactAndPrefixBundleMatching() {
+        let matcher = BundleProtection.shared
+        let finderMixed = matcher.match(bundleID: "com.apple.Finder")
+        XCTAssertEqual(finderMixed?.kind, .systemCritical)
+        XCTAssertEqual(finderMixed?.pattern, "com.apple.finder")
+
+        let jetbrainsMixed = matcher.match(bundleID: "com.JetBrains.IntelliJ")
+        XCTAssertEqual(jetbrainsMixed?.kind, .dataProtected)
+        XCTAssertEqual(jetbrainsMixed?.pattern, "com.jetbrains.*")
+    }
+
+    /// `/System/Volumes/Data` firmlink 镜像路径不得绕过用户根目录、凭证禁区或 bundle 保护。
+    func testDataVolumeFirmlinkDoesNotBypassUserRootCredentialOrBundleProtection() {
+        let dataHome = "/System/Volumes/Data\(fakeHome)"
+
+        let (docVerdict, docRejection) = engine.evaluate(
+            path: "\(dataHome)/Documents",
+            home: fakeHome
+        )
+        XCTAssertEqual(docVerdict, .forbid)
+        XCTAssertEqual(docRejection, .userDocumentsRoot)
+
+        let (sshVerdict, sshRejection) = engine.evaluate(
+            path: "\(dataHome)/.ssh/id_ed25519",
+            home: fakeHome
+        )
+        XCTAssertEqual(sshVerdict, .forbid)
+        XCTAssertEqual(sshRejection, .sensitiveCredential)
+
+        let (keychainVerdict, keychainRejection) = engine.evaluate(
+            path: "\(dataHome)/Library/Keychains/login.keychain-db",
+            home: fakeHome
+        )
+        XCTAssertEqual(keychainVerdict, .forbid)
+        XCTAssertEqual(keychainRejection, .sensitiveCredential)
+
+        let protectedCachePath = "\(dataHome)/Library/Caches/com.1password.7/Logs/foo.log"
+        let (cacheVerdict, cacheRejection) = engine.evaluate(
+            path: protectedCachePath,
+            home: fakeHome
+        )
+        XCTAssertEqual(cacheVerdict, .confirm)
+        XCTAssertEqual(cacheRejection, .bundleDataProtected)
+        XCTAssertTrue(engine.isPathBundleProtected(path: protectedCachePath, home: fakeHome))
+    }
 }
+

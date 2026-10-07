@@ -568,21 +568,47 @@ public enum KnownVersionedRoots {
         }
 
         var result: [Hit] = []
-        if !directVersionInvalid, directVersionCandidates.count > options.keepLatest {
-            let sorted = VersionedRetainScanner.sort(candidates: directVersionCandidates, ordering: options.ordering)
-            let oldCount = sorted.count - options.keepLatest
-            let retainedLatest = sorted.last?.name ?? ""
-            for i in 0..<oldCount {
-                if cancellationCheck() { return cancelledScanResult }
-                let old = sorted[i]
-                result.append(Hit(
-                    url: old.url,
-                    ruleID: entry.ruleID,
-                    displayName: entry.displayName,
-                    collectionRoot: collectionRoot,
-                    versionName: old.name,
-                    retainedLatest: retainedLatest
-                ))
+        if !directVersionInvalid {
+            var directGroups: [String: [VersionedRetainScanner.Candidate]] = [:]
+            for candidate in directVersionCandidates {
+                let baseKey = VersionedRetainScanner.canonicalVersionGroupKey(for: candidate.name)
+                directGroups[baseKey, default: []].append(candidate)
+            }
+            if directGroups.count > options.keepLatest {
+                let representatives: [VersionedRetainScanner.Candidate] = directGroups.map { baseKey, members in
+                    if let primary = members.first(where: { $0.name == baseKey }) {
+                        return primary
+                    }
+                    let latestModDate = members.compactMap(\.modificationDate).max()
+                    return VersionedRetainScanner.Candidate(
+                        name: baseKey,
+                        url: members[0].url,
+                        modificationDate: latestModDate
+                    )
+                }
+                let sorted = VersionedRetainScanner.sort(candidates: representatives, ordering: options.ordering)
+                let oldCount = sorted.count - options.keepLatest
+                let retainedLatest = sorted.last?.name ?? ""
+                for i in 0..<oldCount {
+                    if cancellationCheck() { return cancelledScanResult }
+                    let rep = sorted[i]
+                    let members = (directGroups[rep.name] ?? [rep]).sorted { lhs, rhs in
+                        if (lhs.name == rep.name) != (rhs.name == rep.name) {
+                            return lhs.name == rep.name
+                        }
+                        return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+                    }
+                    for old in members {
+                        result.append(Hit(
+                            url: old.url,
+                            ruleID: entry.ruleID,
+                            displayName: entry.displayName,
+                            collectionRoot: collectionRoot,
+                            versionName: old.name,
+                            retainedLatest: retainedLatest
+                        ))
+                    }
+                }
             }
         }
 

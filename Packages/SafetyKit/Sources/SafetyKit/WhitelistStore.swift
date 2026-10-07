@@ -172,6 +172,9 @@ public actor WhitelistStore {
     private static func normalize(_ path: String) -> String {
         var p = path
         while p.count > 1, p.hasSuffix("/") { p.removeLast() }
+        if p.hasPrefix("/") {
+            p = URL(fileURLWithPath: p).standardizedFileURL.path
+        }
         return p
     }
 

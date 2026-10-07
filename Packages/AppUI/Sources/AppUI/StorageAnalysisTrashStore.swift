@@ -45,18 +45,31 @@ final class StorageAnalysisTrashStore: ObservableObject {
             categoryID: scanner.snapshot.categoryID)
     }
 
-    static func candidate(_ row: TreeRow) -> DeletionInteractionCandidateSnapshot? {
-        guard !row.isSizePending, row.hasCompleteAccessEvidence else { return nil }
+    static func candidate(
+        _ row: TreeRow,
+        accessEvidence: DeletionAccessEvidence = .complete
+    ) -> DeletionInteractionCandidateSnapshot? {
+        guard !row.isSizePending,
+              row.hasCompleteAccessEvidence,
+              case .complete = accessEvidence else { return nil }
         return DeletionInteractionCandidateSnapshot(
             path: row.path, title: row.title,
             isDirectory: row.isDirectory, bytes: row.bytes, fileCount: row.fileCount,
+            accessEvidence: accessEvidence,
             titlePresentation: row.titlePresentation)
+    }
+
+    private func accessEvidence(for path: String) -> DeletionAccessEvidence {
+        guard let issue = scanner.incompleteIssues(overlappingAny: [path]).first else {
+            return .complete
+        }
+        return .incomplete(DeletionIncompleteReason(scanIncompleteReason: issue.reason))
     }
 
     func prepare(_ row: TreeRow, snapshotIdentity: DeletionSnapshotIdentity?) {
         guard !isBusy, scanner.canUseCurrentScanResultsForActions,
             snapshotIdentity == currentIdentity,
-            let candidate = Self.candidate(row)
+            let candidate = Self.candidate(row, accessEvidence: accessEvidence(for: row.path))
         else { return }
         let identity = currentIdentity
         let token = UUID()
@@ -72,12 +85,14 @@ final class StorageAnalysisTrashStore: ObservableObject {
                 let decision = await interaction.prepare(intent: intent, currentSnapshotIdentity: identity)
                 guard !Task.isCancelled, owner == token else { return }
                 preflightTask = nil
-                guard currentIdentity == identity else {
+                guard currentIdentity == identity,
+                      case .complete = accessEvidence(for: row.path) else {
                     rejectStale(path: row.path)
                     return
                 }
                 switch decision {
-                case .confirmation(let prepared): sheet = .review(Review(prepared: prepared))
+                case .confirmation(let prepared):
+                    sheet = .review(Review(prepared: prepared))
                 case .blocked(let block): show(block)
                 case .cancelled: isBusy = false
                 }
@@ -108,7 +123,8 @@ final class StorageAnalysisTrashStore: ObservableObject {
             return
         }
         pending = nil
-        guard review.prepared.plan.intent.snapshotIdentity == currentIdentity else {
+        guard review.prepared.plan.intent.snapshotIdentity == currentIdentity,
+              scanner.incompleteIssues(overlappingAny: review.prepared.paths).isEmpty else {
             rejectStale(path: review.prepared.paths.first ?? "")
             return
         }
@@ -118,17 +134,38 @@ final class StorageAnalysisTrashStore: ObservableObject {
         case .authorized(let authorization):
             sheet = .executing(review.id)
             Task {
-                let result = await interaction.submit(authorization, accessDeniedPaths: [])
+                let result = await interaction.submit(
+                    authorization,
+                    accessDeniedPaths: []
+                )
                 switch result {
                 case .completed(let completion):
                     let succeededPaths = completion.result.succeededPaths
+                    let succeededSet = Set(succeededPaths.map(TrashPipeline.normalizePath))
+                    let releasedBytes = authorization.prepared.plan.submittableItems.reduce(Int64(0)) { partial, item in
+                        succeededSet.contains(TrashPipeline.normalizePath(item.candidate.rawPath))
+                            ? partial + max(0, item.candidate.bytes)
+                            : partial
+                    }
                     if !succeededPaths.isEmpty {
                         await scanner.acknowledgeSuccessfulDeletionForPresentation(paths: succeededPaths)
-                        await scanner.pruneDeleted(paths: succeededPaths)
                     }
                     sheet = .result(.deletion(completion))
+                    if !succeededPaths.isEmpty {
+                        await scanner.pruneDeleted(paths: succeededPaths)
+                        Task.detached(priority: .utility) { [releasedBytes, succeededPaths] in
+                            await HeuristicRecorder().recordTrashed(paths: succeededPaths)
+                            if releasedBytes > 0 {
+                                await CleanStatsStore.shared.record(
+                                    bytesReclaimed: releasedBytes,
+                                    category: "storage-analysis"
+                                )
+                            }
+                        }
+                    }
                 case .blocked(let block): show(block)
-                case .requiresConfirmation(let prepared): sheet = .review(Review(prepared: prepared))
+                case .requiresConfirmation(let prepared):
+                    sheet = .review(Review(prepared: prepared))
                 }
             }
         }

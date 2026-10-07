@@ -85,10 +85,14 @@ public struct VendorTrie: @unchecked Sendable {
             // 2) path 级 override（paths: 列表项）
             for (raw, pathRule) in rule.absolutePathRules(home: home) {
                 if PathGlob.isGlob(raw) {
-                    // glob 规则单独走线性扫描，不进 trie
+                    // glob 规则单独走线性扫描，不进 trie；去除末尾多余的 '/' 以保证段数一致
+                    var normalizedPattern = raw
+                    while normalizedPattern.count > 1 && normalizedPattern.hasSuffix("/") {
+                        normalizedPattern.removeLast()
+                    }
                     root.globRules.append(GlobEntry(rule: rule,
                                                    pathRule: pathRule,
-                                                   absolutePattern: raw))
+                                                   absolutePattern: normalizedPattern))
                     continue
                 }
                 let std = URL(fileURLWithPath: raw).standardizedFileURL.path
@@ -150,6 +154,14 @@ public struct VendorTrie: @unchecked Sendable {
             }
         }
         if let overrideHit = inheritedOverride {
+            // 若仅继承了祖先节点的非 forbid override，仍需检查是否有更具体的子路径 glob 规则声明了 forbid
+            if overrideHit.depth < segments.count,
+               overrideHit.pathRule.verdict != .forbid,
+               !trie.globRules.isEmpty,
+               let globHit = matchGlob(standardizedPath: standardizedPath, in: trie),
+               globHit.pathOverride?.verdict == .forbid {
+                return (globHit.rule, globHit.isExactRoot, globHit.pathOverride)
+            }
             return (
                 overrideHit.rule,
                 overrideHit.depth == segments.count,

@@ -750,7 +750,7 @@ public struct TreeBrowserView: View {
     /// Tree deletion eligibility shared by keyboard, context menu, AppKit canvas and SwiftUI row.
     /// A lazy pending row is not a zero-byte row: its metrics are unknown until measurement ends,
     /// so no entry point may form a deletion intent from it.
-    static func canInitiateDeletion(
+    nonisolated static func canInitiateDeletion(
         _ row: TreeRow,
         verdict: SafetyVerdict,
         rejection: SafetyRejection,
@@ -771,7 +771,7 @@ public struct TreeBrowserView: View {
     /// Flat-row authority gate. v2026.07.20 contract: direct-child identities may be selected and
     /// revealed immediately, but `isLoadingChildren` remains true until exact subtree metrics and
     /// the requested ordering commit. Destructive actions must wait for that same terminal.
-    static func canInitiateDeletion(
+    nonisolated static func canInitiateDeletion(
         _ flat: FlatTreeRow,
         allowsVendorPathOverride: Bool
     ) -> Bool {
@@ -779,6 +779,39 @@ public struct TreeBrowserView: View {
             flat.row,
             verdict: flat.verdict,
             rejection: flat.rejection,
+            allowsVendorPathOverride: allowsVendorPathOverride
+        )
+    }
+
+    nonisolated static func cachedCanInitiateDeletion(
+        _ row: TreeRow,
+        snapshot: TreeDeletionEvaluationSnapshot,
+        allowsVendorPathOverride: Bool = true
+    ) -> Bool {
+        let eval = VerdictCache.evaluation(for: row.path, snapshot: snapshot)
+        return canInitiateDeletion(
+            row,
+            verdict: eval.verdict,
+            rejection: eval.rejection,
+            allowsVendorPathOverride: allowsVendorPathOverride
+        )
+    }
+
+    nonisolated static func cachedCanInitiateDeletionIfPresent(
+        _ row: TreeRow,
+        cacheNamespace: UUID,
+        allowsVendorPathOverride: Bool = true
+    ) -> Bool? {
+        guard let eval = VerdictCache.cachedEvaluationIfPresent(
+            for: row.path,
+            cacheNamespace: cacheNamespace
+        ) else {
+            return nil
+        }
+        return canInitiateDeletion(
+            row,
+            verdict: eval.verdict,
+            rejection: eval.rejection,
             allowsVendorPathOverride: allowsVendorPathOverride
         )
     }
@@ -822,6 +855,17 @@ public struct TreeBrowserView: View {
         nonisolated(unsafe) private static var cache: [Key: Value] = [:]
         private static let lock = NSLock()
         private static let maxEntries = 50_000
+
+        static func cachedEvaluationIfPresent(
+            for path: String,
+            cacheNamespace: UUID
+        ) -> (verdict: SafetyVerdict, rejection: SafetyRejection)? {
+            let key = Key(cacheNamespace: cacheNamespace, path: path)
+            lock.lock()
+            defer { lock.unlock() }
+            guard let hit = cache[key] else { return nil }
+            return (hit.verdict, hit.rejection)
+        }
 
         static func evaluation(
             for path: String,
@@ -2153,7 +2197,7 @@ private enum TreeTableMetrics {
     static let inlineProgressGap: CGFloat = 6
     static let horizontalGap: CGFloat = 8
     static let sizeWidth: CGFloat = 90
-    static let countWidth: CGFloat = 56
+    static let countWidth: CGFloat = 64
     static let mtimeWidth: CGFloat = 98
     static let actionGap: CGFloat = 12
     static let actionWidth: CGFloat = 28
@@ -2849,6 +2893,7 @@ struct TreeColumnHeader: View {
             Text("tree.column.actions", bundle: .module)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
                 .frame(width: TreeTableMetrics.actionAreaWidth, alignment: .center)
         }
         .padding(.leading, TreeTableMetrics.leftPadding)
@@ -2867,6 +2912,7 @@ struct TreeColumnHeader: View {
                 Text(label)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 if sortKey.column == column {
                     Image(systemName: sortKey.isDescending ? "arrowtriangle.down.fill" : "arrowtriangle.up.fill")
                         .font(.system(size: 8))

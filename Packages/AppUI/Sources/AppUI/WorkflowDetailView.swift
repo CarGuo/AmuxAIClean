@@ -135,6 +135,13 @@ public struct WorkflowDetailView: View {
         .onDisappear {
             viewModel.cancelVisibleScanWork()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .gsyTrashDidMove)) { notification in
+            let source = notification.userInfo?["source"] as? String
+            guard source != DeleteRequestOrigin.workflowFilesystem.historySource else { return }
+            let paths = notification.userInfo?["paths"] as? [String] ?? []
+            guard !paths.isEmpty else { return }
+            viewModel.applyExternalDeletedPaths(paths)
+        }
         .alert(viewModel.alertTitle ?? "",
                isPresented: Binding(get: { viewModel.alertMessage != nil },
                                     set: { if !$0 { viewModel.clearAlert() } })) {
@@ -2791,6 +2798,11 @@ public final class WorkflowDetailViewModel: ObservableObject {
             }
         }
         simulatorUninstallState = .executing(intent, progress)
+    }
+
+    public func applyExternalDeletedPaths(_ paths: [String]) {
+        guard !paths.isEmpty, !isDeletionTransactionActive else { return }
+        removeHitsFromVisibleState([], succeededFilesystemPaths: paths)
     }
 
     /// 从已发布卡片投影中只移除真实成功项，并同步重叠父子卡片（如 DerivedData 整根与分工程卡片）。

@@ -1148,11 +1148,16 @@ public actor UninstallStore {
     public init(
         applicationPaths: [String] = UninstallStore.standardApplicationPaths(),
         uninstaller: AppUninstaller = AppUninstaller(),
-        orphanScanner: OrphanScanner = OrphanScanner()
+        orphanScanner: OrphanScanner? = nil
     ) {
-        self.applicationRoots = Self.normalizedRoots(applicationPaths)
+        let roots = Self.normalizedRoots(applicationPaths)
+        self.applicationRoots = roots
         self.uninstaller = uninstaller
-        self.orphanScanner = orphanScanner
+        self.orphanScanner = orphanScanner ?? OrphanScanner(
+            homeDirectory: uninstaller.homeDirectory,
+            resolver: DefaultBundleResolver(applicationDirectories: roots),
+            vendorRules: uninstaller.vendorRules
+        )
         self.rootReader = DefaultInstalledApplicationRootReader()
         self.discoveryLimits = InstalledAppDiscoveryLimits()
     }
@@ -1161,11 +1166,16 @@ public actor UninstallStore {
     public init(
         applicationsPath: String,
         uninstaller: AppUninstaller = AppUninstaller(),
-        orphanScanner: OrphanScanner = OrphanScanner()
+        orphanScanner: OrphanScanner? = nil
     ) {
-        self.applicationRoots = Self.normalizedRoots([applicationsPath])
+        let roots = Self.normalizedRoots([applicationsPath])
+        self.applicationRoots = roots
         self.uninstaller = uninstaller
-        self.orphanScanner = orphanScanner
+        self.orphanScanner = orphanScanner ?? OrphanScanner(
+            homeDirectory: uninstaller.homeDirectory,
+            resolver: DefaultBundleResolver(applicationDirectories: roots),
+            vendorRules: uninstaller.vendorRules
+        )
         self.rootReader = DefaultInstalledApplicationRootReader()
         self.discoveryLimits = InstalledAppDiscoveryLimits()
     }
@@ -1173,13 +1183,18 @@ public actor UninstallStore {
     init(
         applicationPaths: [String],
         uninstaller: AppUninstaller = AppUninstaller(),
-        orphanScanner: OrphanScanner = OrphanScanner(),
+        orphanScanner: OrphanScanner? = nil,
         rootReader: any InstalledApplicationRootReading,
         discoveryLimits: InstalledAppDiscoveryLimits = InstalledAppDiscoveryLimits()
     ) {
-        self.applicationRoots = Self.normalizedRoots(applicationPaths)
+        let roots = Self.normalizedRoots(applicationPaths)
+        self.applicationRoots = roots
         self.uninstaller = uninstaller
-        self.orphanScanner = orphanScanner
+        self.orphanScanner = orphanScanner ?? OrphanScanner(
+            homeDirectory: uninstaller.homeDirectory,
+            resolver: DefaultBundleResolver(applicationDirectories: roots),
+            vendorRules: uninstaller.vendorRules
+        )
         self.rootReader = rootReader
         self.discoveryLimits = discoveryLimits
     }
@@ -1288,6 +1303,24 @@ public actor UninstallStore {
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
                 continuation.resume(returning: uninstaller.selectedAppValidationIssue(for: identity))
+            }
+        }
+    }
+
+    public func revalidateSelectedAppForDeletion(
+        identity: UninstallSelectedAppIdentity,
+        deletingPaths: [String]
+    ) async -> AppUninstaller.SelectedAppDeletionValidationDisposition {
+        let uninstaller = self.uninstaller
+        let deletingSet = Set(deletingPaths)
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(
+                    returning: uninstaller.revalidateSelectedAppForDeletion(
+                        identity: identity,
+                        deletingPaths: deletingSet
+                    )
+                )
             }
         }
     }
@@ -1424,12 +1457,13 @@ public struct UninstallScreen: View {
         userMode: DeletionUserMode = .professional,
         onTransactionActiveChange: @escaping (Bool) -> Void = { _ in }
     ) {
-        // 若没传 store，用注入的 vendors 现场装一个 AppUninstaller
+        // 若没传 store，用注入的 vendors 现场装一个 AppUninstaller 与 OrphanScanner
         if let store {
             self.store = store
         } else {
             let unins = AppUninstaller(vendorRules: vendors)
-            self.store = UninstallStore(uninstaller: unins)
+            let orphan = OrphanScanner(vendorRules: vendors)
+            self.store = UninstallStore(uninstaller: unins, orphanScanner: orphan)
         }
         self.pipeline = pipeline ?? TrashPipeline.production(
             vendors: vendors,
@@ -1460,6 +1494,28 @@ public struct UninstallScreen: View {
             preflightNotice = nil
         }
         .onAppear { startAppListReload() }
+        .onReceive(NotificationCenter.default.publisher(for: .gsyTrashDidMove)) { notification in
+            let source = notification.userInfo?["source"] as? String
+            guard source != DeleteRequestOrigin.uninstall.historySource,
+                  !isDeletionTransactionActive else { return }
+            let paths = notification.userInfo?["paths"] as? [String] ?? []
+            guard !paths.isEmpty else { return }
+            let terminal = UninstallCandidateTerminalProjection.applying(
+                succeededPaths: Set(paths),
+                to: UninstallCandidateTerminalState(
+                    candidates: candidates,
+                    checked: checked,
+                    apps: apps,
+                    selectedApp: selectedApp
+                )
+            )
+            candidates = terminal.candidates
+            checked = terminal.checked
+            apps = terminal.apps
+            if selectedApp != terminal.selectedApp {
+                selectedApp = terminal.selectedApp
+            }
+        }
         // 确认与结果共用一个 ActiveSheet。真删只在确认 sheet 的 onDismiss
         // 之后从 handoff 取出，避免两张 sibling sheet 争抢呈现。
         .sheet(item: $activeSheet, onDismiss: completeUninstallSheetDismissal) { sheet in
@@ -2003,7 +2059,17 @@ public struct UninstallScreen: View {
                 undoHistoryStore: undoHistoryStore
             )
             let decision: DeletionInteractionPreparation
-            let identityIssue = await store.validationIssue(for: selectedIdentity)
+            let identityDisposition = await store.revalidateSelectedAppForDeletion(
+                identity: selectedIdentity,
+                deletingPaths: selectedPaths
+            )
+            let identityIssue: UninstallDiscoveryIssue?
+            switch identityDisposition {
+            case .valid, .appAlreadyRemoved:
+                identityIssue = nil
+            case .invalid(let issue):
+                identityIssue = issue
+            }
             if identityIssue != nil {
                 decision = .blocked(DeletionInteractionBlock(
                     intentID: UUID(),
@@ -2220,9 +2286,11 @@ public struct UninstallScreen: View {
             request,
             boundSnapshotIdentity: authorization.authorization.snapshotIdentity
         ) else { return }
-        if let identityIssue = await store.validationIssue(
-            for: request.request.selectedAppIdentity
-        ) {
+        let executionIdentityDisposition = await store.revalidateSelectedAppForDeletion(
+            identity: request.request.selectedAppIdentity,
+            deletingPaths: authorization.authorization.paths
+        )
+        if case .invalid(let identityIssue) = executionIdentityDisposition {
             candidateDiscoveryIssues = Array(Set(candidateDiscoveryIssues + [identityIssue]))
             checked.removeAll()
             activeSheet = nil
@@ -2291,13 +2359,20 @@ public struct UninstallScreen: View {
             return
         }
         let result = completed.result
+        let succeededPaths = result.succeededPaths
+        let succeededSet = Set(succeededPaths.map(TrashPipeline.normalizePath))
+        let releasedBytes = authorization.prepared.plan.submittableItems.reduce(Int64(0)) { partial, item in
+            succeededSet.contains(TrashPipeline.normalizePath(item.candidate.rawPath))
+                ? partial + max(0, item.candidate.bytes)
+                : partial
+        }
         await ToolDeletionResultOrdering.finish(
             updateModelToTerminalState: {
                 // Submit succeeded for these exact paths. Project them out even if a future
                 // non-UI state change advanced the selection during the await; silently
                 // keeping a path that has actually moved would leave the visible model false.
                 let terminal = UninstallCandidateTerminalProjection.applying(
-                    succeededPaths: Set(result.succeededPaths),
+                    succeededPaths: Set(succeededPaths),
                     to: UninstallCandidateTerminalState(
                         candidates: self.candidates,
                         checked: self.checked,
@@ -2317,6 +2392,17 @@ public struct UninstallScreen: View {
                 self.activeSheet = .result(completion)
             }
         )
+        if !succeededPaths.isEmpty {
+            Task.detached(priority: .utility) { [releasedBytes, succeededPaths] in
+                await HeuristicRecorder().recordTrashed(paths: succeededPaths)
+                if releasedBytes > 0 {
+                    await CleanStatsStore.shared.record(
+                        bytesReclaimed: releasedBytes,
+                        category: "uninstall"
+                    )
+                }
+            }
+        }
     }
 
     private func formattedBytes(_ b: Int64) -> String {
@@ -2325,16 +2411,36 @@ public struct UninstallScreen: View {
 
     private func reasonLabel(_ r: MatchReason) -> String {
         switch r {
-        case .bundleID(let s): return "bundleID · \(s)"
-        case .bundleVendor(let s): return "vendor · \(s)"
-        case .appName(let s): return "appName · \(s)"
+        case .bundleID(let s):
+            return AppLocalization.format(
+                "uninstall.reason.bundle_id",
+                locale: locale,
+                arguments: [s]
+            )
+        case .bundleVendor(let s):
+            return AppLocalization.format(
+                "uninstall.reason.bundle_vendor",
+                locale: locale,
+                arguments: [s]
+            )
+        case .appName(let s):
+            return AppLocalization.format(
+                "uninstall.reason.app_name",
+                locale: locale,
+                arguments: [s]
+            )
         case .vendorRule(let s):
             return AppLocalization.format(
                 "uninstall.reason.vendor.rule",
                 locale: locale,
                 arguments: [s]
             )
-        case .spotlight(let kind): return "spotlight · \(kind)"
+        case .spotlight(let kind):
+            return AppLocalization.format(
+                "uninstall.reason.spotlight",
+                locale: locale,
+                arguments: [kind]
+            )
         case .pkgReceipt(let pkgID):
             return AppLocalization.format(
                 "uninstall.reason.pkg_receipt",

@@ -124,6 +124,8 @@ public struct PortCleanerEntry: Identifiable, Hashable, Sendable {
             || path.hasPrefix("/usr/libexec/")
             || path == "/System"
             || path.hasPrefix("/System/")
+            || path == "/Library/Apple"
+            || path.hasPrefix("/Library/Apple/")
     }
 }
 
@@ -512,7 +514,7 @@ public actor PortCleanerScanner {
     private func lsofEntries() async -> SnapshotResult<[PortCleanerEntry]> {
         let output = await commandRunner.run(
             "/usr/sbin/lsof",
-            arguments: ["-nP", "-iTCP", "-sTCP:LISTEN", "-iUDP", "-FpcLnPT"],
+            arguments: ["-nP", "+c", "0", "-iTCP", "-sTCP:LISTEN", "-iUDP", "-FpcLnPT"],
             timeout: 8
         )
         if Task.isCancelled { return .cancelled }

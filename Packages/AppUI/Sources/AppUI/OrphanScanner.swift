@@ -159,6 +159,7 @@ public struct OrphanScanner: Sendable {
     public let homeDirectory: String
     public let resolver: BundleResolving
     public let safetyEngine: SafetyEngine
+    public let vendorTrie: VendorTrieNode
     public let fileManager: FileManagerSnapshotting
     /// 默认 30 天。最近修改过的目录，宁可漏报也不当 orphan。
     public let minAgeDays: Int
@@ -169,6 +170,7 @@ public struct OrphanScanner: Sendable {
         homeDirectory: String = NSHomeDirectory(),
         resolver: BundleResolving = DefaultBundleResolver(),
         safetyEngine: SafetyEngine = SafetyEngine(),
+        vendorRules: [VendorRule] = [],
         fileManager: FileManagerSnapshotting = DefaultFileManagerSnapshot(),
         minAgeDays: Int = 30,
         systemDirectoryNames: Set<String> = OrphanScanner.defaultSystemDirectoryNames
@@ -176,6 +178,7 @@ public struct OrphanScanner: Sendable {
         self.homeDirectory = homeDirectory
         self.resolver = resolver
         self.safetyEngine = safetyEngine
+        self.vendorTrie = VendorTrie.build(vendors: vendorRules, home: homeDirectory)
         self.fileManager = fileManager
         self.minAgeDays = minAgeDays
         self.systemDirectoryNames = systemDirectoryNames
@@ -184,11 +187,16 @@ public struct OrphanScanner: Sendable {
     /// 默认系统目录名跳过列表（不是穷举，只挡最常见的 macOS 自身组件）。
     /// 这些目录就算"无主"也不应该被建议删除。
     public static let defaultSystemDirectoryNames: Set<String> = [
-        // Application Support 里 macOS 自带
+        // Application Support / Caches / Preferences 里 macOS 自带
         "App Store", "AddressBook", "Apple", "Mobile Documents",
         "iCloud", "FileProvider", "CloudDocs",
         "Knowledge", "CallHistoryDB", "CallHistoryTransactions",
         "MobileSync", "SyncServices", "CrashReporter",
+        "GeoServices", "CloudKit", "FamilyCircle", "PassKit",
+        "ByHost", "ContextStoreAgent", "Audio", "Ubiquity",
+        "Animoji", "ConfigurationProfiles", "DifferentialPrivacy",
+        "DiskImages", "Dock", "icdd", "videosubscriptionsd",
+        "pbs", "loginwindow"
         // Caches 里系统的（com.apple.* 走 hasPrefix 判定）
         // Preferences 里 com.apple.* 也走 hasPrefix
     ]
@@ -261,11 +269,12 @@ public struct OrphanScanner: Sendable {
 
         // 跳过隐藏（dotfile）和系统组件
         if name.hasPrefix(".") { return nil }
-        if name.hasPrefix("com.apple.") { return nil }
+        if name.hasPrefix("com.apple.") || name == "com.apple" { return nil }
         if systemDirectoryNames.contains(name) { return nil }
 
         // 取 stem（去 .plist / .savedState 等后缀）用于 bundleID 反查
         let stem = stemOf(name)
+        if systemDirectoryNames.contains(stem) { return nil }
 
         // 反查
         let reason: OrphanReason?
@@ -288,7 +297,11 @@ public struct OrphanScanner: Sendable {
         guard let resolvedReason = reason else { return nil }
 
         // 安全闸
-        let (verdict, _) = safetyEngine.evaluate(path: entry.path, home: homeDirectory)
+        let (verdict, _, _) = safetyEngine.evaluate(
+            path: entry.path,
+            trie: vendorTrie,
+            home: homeDirectory
+        )
         if verdict == .forbid { return nil }
 
         // mtime 阈值

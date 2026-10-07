@@ -142,16 +142,16 @@ public final class BundleProtectionMatcher: @unchecked Sendable {
     public let loadState: BundleProtectionLoadState
 
     // 三个 Kind 各自的三个桶（exact / prefix / contains）
-    private let systemExact: Set<String>
-    private let systemPrefix: [String]
+    private let systemExact: [String: String]
+    private let systemPrefix: [(lowercasedPrefix: String, pattern: String)]
     private let systemContains: [String]
 
-    private let appleUninstallableExact: Set<String>
-    private let appleUninstallablePrefix: [String]
+    private let appleUninstallableExact: [String: String]
+    private let appleUninstallablePrefix: [(lowercasedPrefix: String, pattern: String)]
     private let appleUninstallableContains: [String]
 
-    private let dataExact: Set<String>
-    private let dataPrefix: [String]
+    private let dataExact: [String: String]
+    private let dataPrefix: [(lowercasedPrefix: String, pattern: String)]
     private let dataContains: [String]
 
     private init(data: BundleProtectionData,
@@ -224,19 +224,23 @@ public final class BundleProtectionMatcher: @unchecked Sendable {
     /// 但**只在用户主动卸载时**才需要这层放行；用作 cleanup 评估时，systemCritical
     /// 命中就直接 forbid，apple_uninstallable 不参与降级。
     public func match(bundleID: String) -> BundleProtection.Match? {
+        let lowercasedID = bundleID.lowercased()
         if let p = matchOneKind(bundleID: bundleID,
+                                lowercasedID: lowercasedID,
                                 exact: systemExact,
                                 prefix: systemPrefix,
                                 contains: systemContains) {
             return .init(kind: .systemCritical, pattern: p)
         }
         if let p = matchOneKind(bundleID: bundleID,
+                                lowercasedID: lowercasedID,
                                 exact: dataExact,
                                 prefix: dataPrefix,
                                 contains: dataContains) {
             return .init(kind: .dataProtected, pattern: p)
         }
         if let p = matchOneKind(bundleID: bundleID,
+                                lowercasedID: lowercasedID,
                                 exact: appleUninstallableExact,
                                 prefix: appleUninstallablePrefix,
                                 contains: appleUninstallableContains) {
@@ -248,27 +252,31 @@ public final class BundleProtectionMatcher: @unchecked Sendable {
     // MARK: - Private
 
     private struct Buckets {
-        let exact: Set<String>
-        let prefix: [String]   // 不含 `*`，匹配规则：bundleID 以 prefix 开头
+        let exact: [String: String]
+        let prefix: [(lowercasedPrefix: String, pattern: String)] // 不含 `*`，匹配规则：bundleID 以 prefix 开头（忽略大小写）
         let contains: [String] // 含 `*` 中段，按 glob 语义匹配
     }
 
     /// 按 pattern 形状分桶：
-    /// - 无 `*`                              → exact（O(1) Set）
-    /// - 仅末尾 `*`（如 `com.1password.*`）  → prefix（保留去掉 `*` 后的串）
+    /// - 无 `*`                              → exact（O(1) Dictionary，key 为小写，value 为原始 pattern）
+    /// - 仅末尾 `*`（如 `com.1password.*`）  → prefix（保留小写前缀与原始去掉 `*` 的串）
     /// - 其他含 `*` 的（如 `*ShadowsocksX-NG*`） → contains（用 NSRegular 转 glob）
     private static func partition(_ patterns: [String]) -> Buckets {
-        var exact: Set<String> = []
-        var prefix: [String] = []
+        var exact: [String: String] = [:]
+        var prefix: [(lowercasedPrefix: String, pattern: String)] = []
         var contains: [String] = []
         for raw in patterns {
             if !raw.contains("*") {
-                exact.insert(raw)
+                let key = raw.lowercased()
+                if exact[key] == nil {
+                    exact[key] = raw
+                }
                 continue
             }
             // 末尾 `*` 且唯一一个 `*`
             if raw.hasSuffix("*"), raw.dropLast().firstIndex(of: "*") == nil {
-                prefix.append(String(raw.dropLast()))
+                let stem = String(raw.dropLast())
+                prefix.append((lowercasedPrefix: stem.lowercased(), pattern: stem))
                 continue
             }
             contains.append(raw)
@@ -277,11 +285,12 @@ public final class BundleProtectionMatcher: @unchecked Sendable {
     }
 
     private func matchOneKind(bundleID: String,
-                              exact: Set<String>,
-                              prefix: [String],
+                              lowercasedID: String,
+                              exact: [String: String],
+                              prefix: [(lowercasedPrefix: String, pattern: String)],
                               contains: [String]) -> String? {
-        if exact.contains(bundleID) { return bundleID }
-        for p in prefix where bundleID.hasPrefix(p) { return p + "*" }
+        if let canonical = exact[lowercasedID] { return canonical }
+        for p in prefix where lowercasedID.hasPrefix(p.lowercasedPrefix) { return p.pattern + "*" }
         for p in contains where Self.globMatch(pattern: p, candidate: bundleID) {
             return p
         }

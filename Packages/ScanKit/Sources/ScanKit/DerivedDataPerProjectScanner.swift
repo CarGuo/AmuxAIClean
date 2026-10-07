@@ -634,9 +634,11 @@ public actor DerivedDataPerProjectScanner {
             .fileAllocatedSizeKey,
             .isRegularFileKey,
         ]
+        let isTopLevelSymlink = ((try? FileManager.default.attributesOfItem(atPath: layout.root.path))?[.type] as? FileAttributeType) == .typeSymbolicLink
+        let enumerationRoot = isTopLevelSymlink ? layout.root.resolvingSymlinksInPath() : layout.root
         var issues: [ScanIncompleteIssue] = []
         guard let enumerator = FileManager.default.enumerator(
-            at: layout.root,
+            at: enumerationRoot,
             includingPropertiesForKeys: Array(keys),
             options: [],
             errorHandler: { failedURL, error in
@@ -662,7 +664,7 @@ public actor DerivedDataPerProjectScanner {
         }
 
         let projectNames = Set(layout.projects.map { $0.url.lastPathComponent })
-        let rootPrefix = layout.root.standardizedFileURL.path + "/"
+        let rootPrefix = enumerationRoot.standardizedFileURL.path + "/"
         var rootBytes: Int64 = 0
         var projectBytes: [String: Int64] = [:]
         var physicalFiles: [PhysicalFileIdentity: PhysicalFileAttribution] = [:]
