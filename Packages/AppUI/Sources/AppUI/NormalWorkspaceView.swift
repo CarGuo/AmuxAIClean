@@ -150,18 +150,22 @@ struct NormalWorkspaceView<CleanContent: View>: View {
             .background(Color.primary.opacity(0.035), in: Capsule())
             Spacer(minLength: 0)
 
-            Button {
-                showHistory = true
-            } label: {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 16))
-                    .frame(width: 36, height: 36)
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                Button {
+                    showHistory = true
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 16))
+                        .frame(width: 36, height: 36)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(Text("sidebar.section.undo_history", bundle: .module))
+                .accessibilityLabel(Text("sidebar.section.undo_history", bundle: .module))
+                .disabled(isBusy)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help(Text("sidebar.section.undo_history", bundle: .module))
-            .accessibilityLabel(Text("sidebar.section.undo_history", bundle: .module))
-            .disabled(isBusy)
+            .frame(width: 195, alignment: .trailing)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 12)

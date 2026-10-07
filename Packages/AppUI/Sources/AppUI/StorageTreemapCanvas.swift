@@ -50,10 +50,15 @@ struct StorageTreemapCanvas<Actions: View>: View {
                 RoundedRectangle(cornerRadius: 12)
                     .fill(
                         LinearGradient(
-                            colors: [color.opacity(0.80), color.opacity(0.53)],
+                            colors: [
+                                color.opacity(colorScheme == .dark ? 0.80 : 0.24),
+                                color.opacity(colorScheme == .dark ? 0.53 : 0.14)
+                            ],
                             startPoint: .topLeading, endPoint: .bottomTrailing))
                 RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(Color.white.opacity(0.23), lineWidth: 1)
+                    .strokeBorder(
+                        colorScheme == .dark ? Color.white.opacity(0.23) : color.opacity(0.42),
+                        lineWidth: 1)
                 if canLabel {
                     VStack(spacing: expanded ? 7 : 4) {
                         if expanded {

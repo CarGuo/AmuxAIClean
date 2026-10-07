@@ -191,9 +191,10 @@ public final class StashStore: ObservableObject {
     /// 批量移除。一键清理 / 单独清理走真删通道之前，先把对应路径从待处理里摘掉，
     /// 避免删完了图标还残留在购物车。
     public func remove(paths: [String]) {
-        let set = Set(paths)
-        entries.removeAll { set.contains($0.id) }
-        pathIndex.subtract(set)
+        guard !paths.isEmpty, !entries.isEmpty else { return }
+        let matcher = DeletionPresentationPathMatcher(paths: paths)
+        entries.removeAll { matcher.contains($0.id) }
+        pathIndex = Set(entries.map(\.id))
     }
 
     /// 清空待处理。用户主动点"清空"或一键清理全部成功后调用。

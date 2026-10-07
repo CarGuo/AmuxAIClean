@@ -355,6 +355,6 @@ private func extractInodeAndDevice(
     }
     guard result == 0 else { return result }
     inode = UInt64(st.st_ino)
-    device = UInt64(st.st_dev)
+    device = UInt64(bitPattern: Int64(st.st_dev))
     return nil
 }

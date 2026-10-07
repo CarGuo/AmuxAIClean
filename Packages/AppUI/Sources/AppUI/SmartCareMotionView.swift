@@ -376,7 +376,7 @@ final class SmartCareAnimatedActivityTextHostView: NSView {
         label.font = NSFont(descriptor: roundedDescriptor, size: 22)
         label.textColor = .labelColor
         label.alignment = .center
-        label.lineBreakMode = .byClipping
+        label.lineBreakMode = .byTruncatingTail
         label.maximumNumberOfLines = 1
         label.wantsLayer = true
         label.layer?.masksToBounds = false

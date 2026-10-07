@@ -10924,6 +10924,31 @@ public final class ScanCoordinator: ObservableObject {
             }
         }
 
+        var nextChildEdges: [String: Set<String>] = [:]
+        nextChildEdges.reserveCapacity(state.childEdges.count)
+        for (parent, children) in state.childEdges where !matcher.contains(parent) {
+            nextChildEdges[parent] = Set(children.lazy.filter { !matcher.contains($0) })
+        }
+
+        // A cached parent row owns its disclosure state, while the actual direct children live in
+        // a separate `parent|sort` entry. Resolve the post-delete child state once across all sort
+        // variants so deleting the last child removes the stale empty chevron immediately. When no
+        // cache exists for a path we preserve the row's prior value instead of guessing.
+        var cachedParentHasSurvivingChildren: [String: Bool] = [:]
+        cachedParentHasSurvivingChildren.reserveCapacity(state.treeChildrenCache.count)
+        for (cacheKey, rows) in state.treeChildrenCache {
+            let parentPath: String
+            if let pipe = cacheKey.lastIndex(of: "|") {
+                parentPath = String(cacheKey[..<pipe])
+            } else {
+                parentPath = cacheKey
+            }
+            guard !matcher.contains(parentPath) else { continue }
+            let hasSurvivingChild = rows.contains { !matcher.contains($0.path) }
+            cachedParentHasSurvivingChildren[parentPath] =
+                (cachedParentHasSurvivingChildren[parentPath] ?? false) || hasSurvivingChild
+        }
+
         var newRows: [RowItem] = []
         newRows.reserveCapacity(state.snapshot.rows.count)
         var removedRowBytes: Int64 = 0
@@ -10932,8 +10957,13 @@ public final class ScanCoordinator: ObservableObject {
                 removedRowBytes &+= row.bytes
                 continue
             }
-            guard let dec = ancestorDecrements[row.id],
-                  dec.bytes > 0 || dec.logicalBytes > 0 || dec.fileCount > 0 else {
+            let dec = ancestorDecrements[row.id]
+            let hasAggregateChange = dec.map {
+                $0.bytes > 0 || $0.logicalBytes > 0 || $0.fileCount > 0
+            } ?? false
+            let updatedHasChildren = cachedParentHasSurvivingChildren[row.id]
+                ?? (nextChildEdges[row.id].map { !$0.isEmpty } ?? row.hasChildren)
+            guard hasAggregateChange || updatedHasChildren != row.hasChildren else {
                 newRows.append(row)
                 continue
             }
@@ -10942,16 +10972,16 @@ public final class ScanCoordinator: ObservableObject {
                 url: row.url,
                 title: row.title,
                 isDirectory: row.isDirectory,
-                bytes: max(0, row.bytes - dec.bytes),
-                logicalBytes: max(0, row.logicalBytes - dec.logicalBytes),
-                fileCount: max(0, row.fileCount - dec.fileCount),
+                bytes: max(0, row.bytes - (dec?.bytes ?? 0)),
+                logicalBytes: max(0, row.logicalBytes - (dec?.logicalBytes ?? 0)),
+                fileCount: max(0, row.fileCount - (dec?.fileCount ?? 0)),
                 verdict: row.verdict,
                 rejection: row.rejection,
                 vendorName: row.vendorName,
                 vendorNote: row.vendorNote,
                 runningBundleIDPrefix: row.runningBundleIDPrefix,
                 isActive: row.isActive,
-                hasChildren: row.hasChildren,
+                hasChildren: updatedHasChildren,
                 modificationDate: row.modificationDate,
                 titlePresentation: row.titlePresentation,
                 vendorNamePresentation: row.vendorNamePresentation,
@@ -10983,6 +11013,27 @@ public final class ScanCoordinator: ObservableObject {
                 evidence: state.treeEvidenceProjection,
                 locale: state.locale
             ) ?? [:]
+        }
+
+        var nextBuckets: [String: Bucket] = [:]
+        nextBuckets.reserveCapacity(state.buckets.count)
+        for (bucketPath, bucket) in state.buckets where !matcher.contains(bucketPath) {
+            let dec = ancestorDecrements[bucketPath]
+            let hasAggregateChange = dec.map {
+                $0.bytes > 0 || $0.logicalBytes > 0 || $0.fileCount > 0
+            } ?? false
+            let updatedHasChildren = cachedParentHasSurvivingChildren[bucketPath]
+                ?? (nextChildEdges[bucketPath].map { !$0.isEmpty } ?? bucket.hasChildren)
+            if hasAggregateChange || updatedHasChildren != bucket.hasChildren {
+                var updated = bucket
+                updated.bytes = max(0, bucket.bytes - (dec?.bytes ?? 0))
+                updated.logicalBytes = max(0, bucket.logicalBytes - (dec?.logicalBytes ?? 0))
+                updated.fileCount = max(0, bucket.fileCount - (dec?.fileCount ?? 0))
+                updated.hasChildren = updatedHasChildren
+                nextBuckets[bucketPath] = updated
+            } else {
+                nextBuckets[bucketPath] = bucket
+            }
         }
 
         var nextDirIndex = state.dirIndex
@@ -11046,33 +11097,8 @@ public final class ScanCoordinator: ObservableObject {
             compactedLargeRemoved = 0
         }
 
-        var nextChildEdges: [String: Set<String>] = [:]
-        nextChildEdges.reserveCapacity(state.childEdges.count)
-        for (parent, children) in state.childEdges where !matcher.contains(parent) {
-            nextChildEdges[parent] = Set(children.lazy.filter { !matcher.contains($0) })
-        }
-
         var nextTreeCache: [String: [TreeRow]] = [:]
         nextTreeCache.reserveCapacity(state.treeChildrenCache.count)
-
-        // A cached parent row owns its disclosure state, while the actual direct children live in
-        // a separate `parent|sort` entry. Resolve the post-delete child state once across all sort
-        // variants so deleting the last child removes the stale empty chevron immediately. When no
-        // cache exists for a path we preserve the row's prior value instead of guessing.
-        var cachedParentHasSurvivingChildren: [String: Bool] = [:]
-        cachedParentHasSurvivingChildren.reserveCapacity(state.treeChildrenCache.count)
-        for (cacheKey, rows) in state.treeChildrenCache {
-            let parentPath: String
-            if let pipe = cacheKey.lastIndex(of: "|") {
-                parentPath = String(cacheKey[..<pipe])
-            } else {
-                parentPath = cacheKey
-            }
-            guard !matcher.contains(parentPath) else { continue }
-            let hasSurvivingChild = rows.contains { !matcher.contains($0.path) }
-            cachedParentHasSurvivingChildren[parentPath] =
-                (cachedParentHasSurvivingChildren[parentPath] ?? false) || hasSurvivingChild
-        }
 
         for (cacheKey, rows) in state.treeChildrenCache {
             let parentPath: String
@@ -11083,6 +11109,32 @@ public final class ScanCoordinator: ObservableObject {
             }
             if matcher.contains(parentPath) { continue }
 
+            var anyRemoved = false
+            var anyRowChanged = false
+            var anyAggregateChanged = false
+            for row in rows {
+                if matcher.contains(row.path) {
+                    anyRemoved = true
+                    continue
+                }
+                let decrement = ancestorDecrements[row.path]
+                let hasAggregateChange = decrement.map {
+                    $0.bytes > 0 || $0.logicalBytes > 0 || $0.fileCount > 0
+                } ?? false
+                let updatedHasChildren = cachedParentHasSurvivingChildren[row.path]
+                    ?? (nextChildEdges[row.path].map { !$0.isEmpty } ?? row.hasChildren)
+                if hasAggregateChange {
+                    anyAggregateChanged = true
+                    anyRowChanged = true
+                } else if updatedHasChildren != row.hasChildren {
+                    anyRowChanged = true
+                }
+            }
+            if !anyRemoved && !anyRowChanged {
+                nextTreeCache[cacheKey] = rows
+                continue
+            }
+
             var nextRows: [TreeRow] = []
             nextRows.reserveCapacity(rows.count)
             for row in rows where !matcher.contains(row.path) {
@@ -11091,7 +11143,7 @@ public final class ScanCoordinator: ObservableObject {
                     $0.bytes > 0 || $0.logicalBytes > 0 || $0.fileCount > 0
                 } ?? false
                 let updatedHasChildren = cachedParentHasSurvivingChildren[row.path]
-                    ?? row.hasChildren
+                    ?? (nextChildEdges[row.path].map { !$0.isEmpty } ?? row.hasChildren)
                 guard hasAggregateChange || updatedHasChildren != row.hasChildren else {
                     nextRows.append(row)
                     continue
@@ -11116,6 +11168,11 @@ public final class ScanCoordinator: ObservableObject {
                     titlePresentation: row.titlePresentation
                 ))
             }
+            if anyAggregateChanged,
+               let sortKey = sortKeyFromCacheKey(cacheKey),
+               sortKey == .sizeDesc || sortKey == .sizeAsc || sortKey == .countDesc || sortKey == .countAsc {
+                nextRows.sort { sortTreeRow($0, before: $1, by: sortKey, locale: state.locale) }
+            }
             nextTreeCache[cacheKey] = nextRows
         }
 
@@ -11128,7 +11185,7 @@ public final class ScanCoordinator: ObservableObject {
             scannedFiles: totalDeletedFiles > 0
                 ? max(0, state.scannedFiles - totalDeletedFiles)
                 : state.scannedFiles,
-            buckets: state.buckets.filter { !matcher.contains($0.key) },
+            buckets: nextBuckets,
             dirIndex: nextDirIndex,
             childEdges: nextChildEdges,
             fileLeaves: state.fileLeaves.filter { !matcher.contains($0.key) },
@@ -12573,7 +12630,9 @@ public final class ScanCoordinator: ObservableObject {
         } else {
             source = largeFileLeaves.snapshot()
         }
+        let tombstones = deletedPathTombstones.matcher
         let filtered = source
+            .filter { !tombstones.contains($0.path) }
             .filter { $0.bytes >= minBytes }
             .filter { mtimeFilter.passes($0.modificationDate, now: now) }
             .map {
@@ -12609,10 +12668,17 @@ public final class ScanCoordinator: ObservableObject {
     /// "还有 X 项被截断"或者"未达到任何阈值"时用。
     /// M3：compact 之后回退到二级缓存的 count，UI 拿到的"集合大小"语义不变。
     public var largeFileCollectedCount: Int {
-        if largeFileLeaves.isEmpty, let cache = compactedLargeFileTopN {
-            return cache.count
+        let tombstones = deletedPathTombstones.matcher
+        guard !tombstones.roots.isEmpty else {
+            if largeFileLeaves.isEmpty, let cache = compactedLargeFileTopN {
+                return cache.count
+            }
+            return largeFileLeaves.count
         }
-        return largeFileLeaves.count
+        if largeFileLeaves.isEmpty, let cache = compactedLargeFileTopN {
+            return cache.lazy.filter { !tombstones.contains($0.path) }.count
+        }
+        return largeFileLeaves.snapshot().lazy.filter { !tombstones.contains($0.path) }.count
     }
 
     /// v1.0 T4：当前会话扫描期阈值（bytes）。视图据此判断是否需要"调阈值后重扫"。
@@ -12989,6 +13055,18 @@ public final class ScanCoordinator: ObservableObject {
     }
 
     func _bucketsKeysForTesting() -> [String] { Array(buckets.keys) }
+    func _bucketsBytesForTesting(_ path: String) -> Int64? { buckets[path]?.bytes }
+    func _seedLargeFileLeavesForTesting(_ leaves: [(path: String, bytes: Int64)]) {
+        largeFileLeaves = LargeFileLeafTopNHeap(capacity: max(1, leaves.count))
+        for item in leaves {
+            largeFileLeaves.consider(LargeFileLeaf(
+                path: item.path,
+                bytes: item.bytes,
+                logicalBytes: item.bytes,
+                modificationDate: nil
+            ))
+        }
+    }
     func _dirIndexKeysForTesting() -> [String] { Array(dirIndex.keys) }
     /// v1.5.7：暴露 dirIndex 聚合值，让 pruneDeleted 祖先减法契约可验证。
     func _dirIndexAggForTesting(_ path: String) -> (bytes: Int64, fileCount: Int)? {

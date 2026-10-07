@@ -67,6 +67,13 @@ struct BrewPackageSizeEntryFacts: Sendable, Equatable {
 
     let kind: Kind
     let allocatedBytes: Int64?
+    let resourceIdentifier: Data?
+
+    init(kind: Kind, allocatedBytes: Int64?, resourceIdentifier: Data? = nil) {
+        self.kind = kind
+        self.allocatedBytes = allocatedBytes
+        self.resourceIdentifier = resourceIdentifier
+    }
 }
 
 struct BrewPackageSizeFileSystem: Sendable {
@@ -84,6 +91,7 @@ struct BrewPackageSizeFileSystem: Sendable {
                 .isSymbolicLinkKey,
                 .totalFileAllocatedSizeKey,
                 .fileAllocatedSizeKey,
+                .fileResourceIdentifierKey,
             ]
             let values = try url.resourceValues(forKeys: keys)
             let kind: BrewPackageSizeEntryFacts.Kind
@@ -100,7 +108,8 @@ struct BrewPackageSizeFileSystem: Sendable {
                 kind: kind,
                 allocatedBytes: values.totalFileAllocatedSize
                     .map(Int64.init)
-                    ?? values.fileAllocatedSize.map(Int64.init)
+                    ?? values.fileAllocatedSize.map(Int64.init),
+                resourceIdentifier: values.fileResourceIdentifier as? Data
             )
         }
     )
@@ -315,6 +324,7 @@ public struct BrewController: Sendable {
         var pending = [url]
         var total: Int64 = 0
         var diagnostics: [BrewDiagnostic] = []
+        var seenInodes: Set<Data> = []
         while let directory = pending.popLast() {
             if Task.isCancelled {
                 diagnostics.append(BrewDiagnostic(
@@ -338,7 +348,7 @@ public struct BrewController: Sendable {
                 continue
             }
 
-            for name in names where !name.hasPrefix(".") {
+            for name in names where name != ".DS_Store" {
                 if Task.isCancelled {
                     diagnostics.append(BrewDiagnostic(
                         source: source,
@@ -365,6 +375,11 @@ public struct BrewController: Sendable {
                 case .directory:
                     pending.append(child)
                 case .regularFile:
+                    if let resourceID = facts.resourceIdentifier {
+                        if !seenInodes.insert(resourceID).inserted {
+                            continue
+                        }
+                    }
                     guard let bytes = facts.allocatedBytes, bytes >= 0 else {
                         diagnostics.append(BrewDiagnostic(
                             source: source,

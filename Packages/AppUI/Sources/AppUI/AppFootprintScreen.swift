@@ -35,7 +35,7 @@ final class AppFootprintIconCache: ObservableObject {
     private var generation: UInt64 = 0
 
     init(
-        capacity: Int = 64,
+        capacity: Int = 256,
         maximumConcurrentLoads: Int = 4,
         loader: @escaping Loader = AppFootprintIconCache.loadIconData(for:)
     ) {
@@ -344,25 +344,37 @@ final class AppFootprintReloadModel: ObservableObject {
         bufferedItems.removeAll(keepingCapacity: true)
 
         if !batch.isEmpty {
-            var indexByID = Dictionary(uniqueKeysWithValues: items.indices.map { (items[$0].id, $0) })
+            var updatedItems = items
+            var updatedPendingIDs = pendingIDs
+            var updatedProgressDone = progressDone
+            var indexByID = Dictionary(uniqueKeysWithValues: updatedItems.indices.map { (updatedItems[$0].id, $0) })
             let selectedID = selected?.id
             for item in batch {
                 if let index = indexByID[item.id] {
-                    items[index] = item
+                    updatedItems[index] = item
                 } else {
-                    indexByID[item.id] = items.count
-                    items.append(item)
+                    indexByID[item.id] = updatedItems.count
+                    updatedItems.append(item)
                 }
                 // `isComplete` 只表示证据完整度；progress 必须由显式 terminal 交付收敛。
                 // partial terminal 也应完成进度，intermediate 则继续保留 pending。
                 if item.deliveryPhase == .terminal,
-                   pendingIDs.remove(item.id) != nil {
-                    progressDone += 1
+                   updatedPendingIDs.remove(item.id) != nil {
+                    updatedProgressDone += 1
                 }
             }
-            sortItemsForDisplay()
+            updatedItems.sort { lhs, rhs in
+                let lhsPending = updatedPendingIDs.contains(lhs.id)
+                let rhsPending = updatedPendingIDs.contains(rhs.id)
+                if lhsPending != rhsPending { return !lhsPending }
+                if lhs.totalBytes != rhs.totalBytes { return lhs.totalBytes > rhs.totalBytes }
+                return lhs.appName.localizedCaseInsensitiveCompare(rhs.appName) == .orderedAscending
+            }
+            items = updatedItems
+            pendingIDs = updatedPendingIDs
+            progressDone = updatedProgressDone
             if let selectedID {
-                selected = items.first(where: { $0.id == selectedID })
+                selected = updatedItems.first(where: { $0.id == selectedID })
             }
             displayCommitCount += 1
         } else if forceFinalSort {

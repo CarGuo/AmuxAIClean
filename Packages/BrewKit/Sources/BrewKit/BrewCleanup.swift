@@ -311,14 +311,13 @@ public struct BrewCleanup: Sendable {
                 }
                 continue
             }
-            // dest 形如 "downloads/<hash>--xxx.tar.gz"
-            let url = URL(fileURLWithPath: dest)
-            let comp = url.pathComponents
+            // dest 形如 "downloads/<hash>--xxx.tar.gz" 或相对裸文件名 "<hash>--xxx.tar.gz"
+            let comp = (dest as NSString).pathComponents.filter { $0 != "/" && $0 != "." }
             if comp.count >= 2 && comp[comp.count - 2] == "downloads" {
-                active.insert(url.lastPathComponent)
+                active.insert(comp[comp.count - 1])
             } else if comp.count == 1 {
                 // 相对裸文件名 fallback
-                active.insert(dest)
+                active.insert(comp[0])
             }
         }
         return (active, diagnostics)

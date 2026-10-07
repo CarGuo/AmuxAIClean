@@ -257,4 +257,27 @@ final class NodeModulesScannerTests: XCTestCase {
         XCTAssertEqual(hits.count, 1)
         XCTAssertEqual(hits.first?.projectName, "looped-app")
     }
+
+    func test_estimateSize_包含pnpm隐藏目录且对硬链接去重() throws {
+        let home = try makeTempHome()
+        let dev = home.appendingPathComponent("Developer", isDirectory: true)
+        let nm = dev.appendingPathComponent("pnpm-app/node_modules", isDirectory: true)
+        let pnpmDir = nm.appendingPathComponent(".pnpm/pkg@1.0.0/node_modules/pkg", isDirectory: true)
+        let visiblePkgDir = nm.appendingPathComponent("pkg", isDirectory: true)
+        try mkdir(pnpmDir)
+        try mkdir(visiblePkgDir)
+
+        let payload = Data(repeating: 0x5A, count: 65_536)
+        let storeFile = pnpmDir.appendingPathComponent("index.js")
+        try payload.write(to: storeFile)
+        // 模拟 pnpm 硬链接同一文件到可见包目录
+        try FileManager.default.linkItem(at: storeFile, to: visiblePkgDir.appendingPathComponent("index.js"))
+
+        let hits = NodeModulesScanner.detect(home: home)
+        let hit = try XCTUnwrap(hits.first)
+        let size = try XCTUnwrap(hit.sizeBytes)
+        XCTAssertGreaterThanOrEqual(size, 65_536, "node_modules/.pnpm 隐藏目录中的真实依赖体积必须计入")
+        let singleFileAllocated = (try? storeFile.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize) ?? 65_536
+        XCTAssertEqual(size, Int64(singleFileAllocated), "同一 node_modules 内的硬链接文件不应重复累加")
+    }
 }

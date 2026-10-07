@@ -121,4 +121,42 @@ final class DuplicateHandlingPlanTests: XCTestCase {
         XCTAssertEqual(result[0].reclaimableBytes, 20)
         XCTAssertEqual(result[1], unaffected)
     }
+
+    func test_keepNewestDeleteTargets_retainsLatestMtimeCopy() {
+        let fingerprint = DuplicateContentFingerprint(
+            sha256Hex: String(repeating: "c", count: 64),
+            logicalBytes: 100
+        )!
+        let oldIdentity = DuplicateFileIdentity(
+            device: 1, inode: 10, fileType: UInt16(S_IFREG), logicalBytes: 100,
+            modificationSeconds: 1_000, modificationNanoseconds: 0,
+            statusChangeSeconds: 1_000, statusChangeNanoseconds: 0
+        )
+        let newestIdentity = DuplicateFileIdentity(
+            device: 1, inode: 11, fileType: UInt16(S_IFREG), logicalBytes: 100,
+            modificationSeconds: 2_000, modificationNanoseconds: 500,
+            statusChangeSeconds: 2_000, statusChangeNanoseconds: 500
+        )
+        let midIdentity = DuplicateFileIdentity(
+            device: 1, inode: 12, fileType: UInt16(S_IFREG), logicalBytes: 100,
+            modificationSeconds: 2_000, modificationNanoseconds: 100,
+            statusChangeSeconds: 2_000, statusChangeNanoseconds: 100
+        )
+        let group = DuplicateGroup(
+            hashKey: "mtime-group",
+            logicalBytes: 100,
+            files: [
+                DuplicateFile(path: "/dir/old.bin", allocatedBytes: 100, snapshotIdentity: oldIdentity),
+                DuplicateFile(path: "/dir/newest.bin", allocatedBytes: 100, snapshotIdentity: newestIdentity),
+                DuplicateFile(path: "/dir/mid.bin", allocatedBytes: 100, snapshotIdentity: midIdentity)
+            ],
+            reliability: .full,
+            contentFingerprint: fingerprint
+        )
+
+        XCTAssertEqual(
+            DuplicateHandlingPlan.keepNewestDeleteTargets(for: group),
+            ["/dir/mid.bin", "/dir/old.bin"]
+        )
+    }
 }

@@ -148,5 +148,8 @@ final class VersionedRetainScannerTests: XCTestCase {
         XCTAssertEqual(VersionedRetainScanner.compareSemver("0.7.2", "0.6.0"), .orderedDescending)
         // 同首段 → fallback 字典序
         XCTAssertEqual(VersionedRetainScanner.compareSemver("17.5 (a)", "17.5 (b)"), .orderedAscending)
+        // 预发布后缀（-alpha / -beta / -rc）必须排在同核心版本的正式版之前（保留正式版）
+        XCTAssertEqual(VersionedRetainScanner.compareSemver("1.0.0-alpha", "1.0.0"), .orderedAscending)
+        XCTAssertEqual(VersionedRetainScanner.compareSemver("1.0.0", "1.0.0-beta.1"), .orderedDescending)
     }
 }

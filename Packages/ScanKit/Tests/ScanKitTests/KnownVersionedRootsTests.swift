@@ -142,6 +142,35 @@ final class KnownVersionedRootsTests: XCTestCase {
         XCTAssertEqual(hits.first?.ruleID, "jetbrains.toolbox-apps.versioned")
     }
 
+    func test_scanAll_Toolbox真实IDE布局_不误删产品目录_仅回收ch0内旧版本() throws {
+        let tmp = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let tb = tmp.appendingPathComponent("Library/Application Support/JetBrains/Toolbox/apps", isDirectory: true)
+        for (ide, versions) in [
+            ("IDEA-U", ["241.14494.240", "242.20224.300"]),
+            ("PyCharm-P", ["242.21829.153"]),
+            ("WebStorm", ["241.15989.105", "242.20224.342"])
+        ] {
+            let ch0 = tb.appendingPathComponent(ide, isDirectory: true)
+                .appendingPathComponent("ch-0", isDirectory: true)
+            try FileManager.default.createDirectory(at: ch0, withIntermediateDirectories: true)
+            for v in versions {
+                try FileManager.default.createDirectory(
+                    at: ch0.appendingPathComponent(v, isDirectory: true),
+                    withIntermediateDirectories: true
+                )
+            }
+        }
+
+        let hits = KnownVersionedRoots.scanAll(home: tmp)
+        let hitNames = Set(hits.map(\.versionName))
+        XCTAssertEqual(hitNames, ["241.14494.240", "241.15989.105"],
+                       "只应回收各 IDE ch-0 通道内的旧版本，绝不能把 IDEA-U / PyCharm-P 产品目录当作旧版本")
+        let groupKeys = Set(hits.compactMap(\.groupKey))
+        XCTAssertEqual(groupKeys, ["IDEA-U", "WebStorm"])
+    }
+
     func test_scanAll_构造_Android_SDK_build_tools_5_版本_keepLatest_2_产出_3_旧版本() throws {
         let tmp = try makeTempHome()
         defer { try? FileManager.default.removeItem(at: tmp) }

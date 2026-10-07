@@ -369,41 +369,34 @@ struct ToolTrashConfirmationSheet: View {
                 }
                 .keyboardShortcut(.cancelAction)
                 .disabled(hasSubmitted)
-                Button(
-                    destructiveActionTitle,
-                    role: .destructive
-                ) {
-                    resolveCurrentConflicts()
+                if !displayedConflictAppNames.isEmpty && decisionConflictCount > 0 {
+                    Button(skipActionTitle) {
+                        submitFinalResolution(.skipConflictingItems)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(hasSubmitted || isResolvingRunningApps || !typedConfirmationIsValid)
+
+                    Button(role: .destructive) {
+                        submitFinalResolution(.moveAllToTrash)
+                    } label: {
+                        Text("delete.running_app.choice.move_all", bundle: .module)
+                    }
+                    .disabled(hasSubmitted || isResolvingRunningApps || !typedConfirmationIsValid)
+                } else {
+                    Button(
+                        destructiveActionTitle,
+                        role: .destructive
+                    ) {
+                        resolveCurrentConflicts()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(hasSubmitted || isResolvingRunningApps || !typedConfirmationIsValid)
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(hasSubmitted || isResolvingRunningApps || !typedConfirmationIsValid)
             }
         }
         .padding(20)
-        .frame(width: requiresStrictConfirmation || reviewPlan != nil ? 560 : 440)
-        .confirmationDialog(
-            AppLocalization.string("delete.running_app.choice.title", locale: locale),
-            isPresented: $showRunningAppDecision,
-            titleVisibility: .visible
-        ) {
-            Button(skipActionTitle) {
-                submitFinalResolution(.skipConflictingItems)
-            }
-            Button(role: .destructive) {
-                submitFinalResolution(.moveAllToTrash)
-            } label: {
-                Text("delete.running_app.choice.move_all", bundle: .module)
-            }
-            Button(role: .cancel) {} label: {
-                Text("delete.action.cancel", bundle: .module)
-            }
-        } message: {
-            Text(RunningAppNoticeFormatter.text(
-                localizationKey: "delete.running_app.choice.message %@",
-                appNames: decisionAppNames,
-                locale: locale
-            ))
-        }
+        .frame(width: requiresStrictConfirmation || reviewPlan != nil || !displayedConflictAppNames.isEmpty ? 560 : 440)
         .task {
             await refreshDisplayedConflicts()
         }
@@ -439,10 +432,10 @@ struct ToolTrashConfirmationSheet: View {
                     ))
                     return
                 }
+                displayedConflictAppNames = projection.appNames
                 decisionConflicts = projection.conflicts
                 decisionAppNames = projection.appNames
                 decisionConflictCount = projection.uniquePathCount
-                showRunningAppDecision = true
             } catch is CancellationError {
                 isResolvingRunningApps = false
             } catch {
@@ -487,6 +480,9 @@ struct ToolTrashConfirmationSheet: View {
             )
             try Task.checkCancellation()
             displayedConflictAppNames = projection.appNames
+            decisionConflicts = projection.conflicts
+            decisionAppNames = projection.appNames
+            decisionConflictCount = projection.uniquePathCount
         } catch is CancellationError {
             return
         } catch {

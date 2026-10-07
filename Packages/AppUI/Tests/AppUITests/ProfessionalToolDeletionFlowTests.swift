@@ -818,6 +818,53 @@ final class ProfessionalToolDeletionFlowTests: XCTestCase {
         XCTAssertEqual(terminal.checked, [failed.path])
     }
 
+    func test_uninstallTerminalProjectionRemovesDeletedAppAndAdvancesSelection() {
+        let appA = InstalledApp(
+            appURL: URL(fileURLWithPath: "/Applications/Alpha.app"),
+            metadata: AppMetadata(
+                bundleID: "com.example.alpha",
+                bundleVendor: nil,
+                appName: "Alpha",
+                executableName: nil
+            )
+        )
+        let appB = InstalledApp(
+            appURL: URL(fileURLWithPath: "/Applications/Beta.app"),
+            metadata: AppMetadata(
+                bundleID: "com.example.beta",
+                bundleVendor: nil,
+                appName: "Beta",
+                executableName: nil
+            )
+        )
+        let bundleCand = UninstallCandidate(
+            path: "/Applications/Alpha.app",
+            bytes: 100,
+            fileCount: 10,
+            matchReason: .bundleID("com.example.alpha")
+        )
+        let cacheCand = UninstallCandidate(
+            path: "/Users/test/Library/Caches/com.example.alpha/inner",
+            bytes: 50,
+            fileCount: 2,
+            matchReason: .bundleID("com.example.alpha")
+        )
+        let terminal = UninstallCandidateTerminalProjection.applying(
+            succeededPaths: ["/Applications/Alpha.app", "/Users/test/Library/Caches/com.example.alpha"],
+            to: UninstallCandidateTerminalState(
+                candidates: [bundleCand, cacheCand],
+                checked: [bundleCand.path, cacheCand.path],
+                apps: [appA, appB],
+                selectedApp: appA
+            )
+        )
+
+        XCTAssertTrue(terminal.candidates.isEmpty)
+        XCTAssertTrue(terminal.checked.isEmpty)
+        XCTAssertEqual(terminal.apps, [appB], "已移入废纸篓的 .app 本体必须从左侧应用列表移除")
+        XCTAssertEqual(terminal.selectedApp, appB, "全部候选清空且 .app 本体被删后应自动前进到下一个 App")
+    }
+
     func test_preflightRequestGateRejectsCancelledAndSupersededResults() {
         var gate = ToolDeletionPreflightRequestGate<String>()
 

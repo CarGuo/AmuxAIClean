@@ -246,6 +246,17 @@ public enum KnownVersionedRoots {
                 if groupedResult.wasCancelled { return cancelledScanResult }
                 result.append(contentsOf: groupedResult.hits)
                 incompleteIssues.append(contentsOf: groupedResult.incompleteIssues)
+            } else if entry.ruleID == "jetbrains.toolbox-apps.versioned" {
+                let toolboxResult = scanToolboxAppsWithEvidence(
+                    entry: entry,
+                    collectionRoot: collectionRoot,
+                    options: options,
+                    fileSystem: fileSystem,
+                    cancellationCheck: cancellationCheck
+                )
+                if toolboxResult.wasCancelled { return cancelledScanResult }
+                result.append(contentsOf: toolboxResult.hits)
+                incompleteIssues.append(contentsOf: toolboxResult.incompleteIssues)
             } else {
                 // PR-3 之前的旧行为：整 root 一组，直接 detect。
                 let detection = VersionedRetainScanner.detectWithEvidence(
@@ -456,6 +467,164 @@ public enum KnownVersionedRoots {
                                   groupKey: groupKey))
             }
         }
+        if cancellationCheck() { return cancelledScanResult }
+        return ScanResult(hits: result, incompleteIssues: incompleteIssues)
+    }
+
+    /// JetBrains Toolbox `apps/` 专用扫描：
+    /// 1. 若 `apps/` 下存在以数字版本号开头的扁平版本子目录（兼容扁平测试 fixture），仅在这些版本目录间比较保留；
+    /// 2. 若 `apps/` 下为 IDE 产品目录（如 `IDEA-U`、`PyCharm-P`、`WebStorm`，不含首段版本号），绝不将不同 IDE 互相当作旧版本删除，
+    ///    而是下钻到 `<IDE>/ch-*` 通道目录内按每个 IDE 通道独立保留最新 `keepLatest` 版。
+    private static func scanToolboxAppsWithEvidence(
+        entry: Entry,
+        collectionRoot: URL,
+        options: VersionedRetainScanner.Options,
+        fileSystem: any VersionedRootFileSystem,
+        cancellationCheck: () -> Bool
+    ) -> ScanResult {
+        if cancellationCheck() { return cancelledScanResult }
+        let rootAttributes: [FileAttributeKey: Any]
+        do {
+            rootAttributes = try fileSystem.attributesOfItem(atPath: collectionRoot.path)
+        } catch {
+            if cancellationCheck() { return cancelledScanResult }
+            if isFileNotFound(error) {
+                return ScanResult(hits: [], incompleteIssues: [])
+            }
+            let reason: ScanIncompleteReason = VersionedRootErrorClassifier.isPermissionDenied(error)
+                ? .permissionDenied
+                : .metadataUnavailable
+            return ScanResult(
+                hits: [],
+                incompleteIssues: [ScanIncompleteIssue(path: collectionRoot.path, reason: reason)]
+            )
+        }
+        if cancellationCheck() { return cancelledScanResult }
+        guard let rootType = rootAttributes[.type] as? FileAttributeType else {
+            return ScanResult(
+                hits: [],
+                incompleteIssues: [ScanIncompleteIssue(path: collectionRoot.path, reason: .metadataUnavailable)]
+            )
+        }
+        guard rootType == .typeDirectory || rootType == .typeSymbolicLink else {
+            return ScanResult(hits: [], incompleteIssues: [])
+        }
+
+        let children: [String]
+        do {
+            children = try fileSystem.contentsOfDirectory(atPath: collectionRoot.path)
+        } catch {
+            if cancellationCheck() { return cancelledScanResult }
+            let reason: ScanIncompleteReason = VersionedRootErrorClassifier.isPermissionDenied(error)
+                ? .permissionDenied
+                : .enumerationFailed
+            return ScanResult(
+                hits: [],
+                incompleteIssues: [ScanIncompleteIssue(path: collectionRoot.path, reason: reason)]
+            )
+        }
+        if cancellationCheck() { return cancelledScanResult }
+
+        var directVersionCandidates: [VersionedRetainScanner.Candidate] = []
+        var directVersionInvalid = false
+        var productDirectories: [(name: String, url: URL)] = []
+        var incompleteIssues: [ScanIncompleteIssue] = []
+
+        for name in children {
+            if cancellationCheck() { return cancelledScanResult }
+            if name.hasPrefix(".") { continue }
+            let child = collectionRoot.appendingPathComponent(name)
+            let attributes: [FileAttributeKey: Any]
+            do {
+                attributes = try fileSystem.attributesOfItem(atPath: child.path)
+            } catch {
+                if cancellationCheck() { return cancelledScanResult }
+                directVersionInvalid = true
+                incompleteIssues.append(ScanIncompleteIssue(
+                    path: child.path,
+                    reason: VersionedRootErrorClassifier.isPermissionDenied(error)
+                        ? .permissionDenied
+                        : .metadataUnavailable
+                ))
+                continue
+            }
+            guard let type = attributes[.type] as? FileAttributeType else {
+                directVersionInvalid = true
+                incompleteIssues.append(ScanIncompleteIssue(path: child.path, reason: .metadataUnavailable))
+                continue
+            }
+            if type == .typeSymbolicLink, options.skipSymlinks { continue }
+            guard type == .typeDirectory else { continue }
+
+            if VersionedRetainScanner.extractLeadingVersion(name) != nil {
+                directVersionCandidates.append(VersionedRetainScanner.Candidate(
+                    name: name,
+                    url: child,
+                    modificationDate: attributes[.modificationDate] as? Date
+                ))
+            } else {
+                productDirectories.append((name: name, url: child))
+            }
+        }
+
+        var result: [Hit] = []
+        if !directVersionInvalid, directVersionCandidates.count > options.keepLatest {
+            let sorted = VersionedRetainScanner.sort(candidates: directVersionCandidates, ordering: options.ordering)
+            let oldCount = sorted.count - options.keepLatest
+            let retainedLatest = sorted.last?.name ?? ""
+            for i in 0..<oldCount {
+                if cancellationCheck() { return cancelledScanResult }
+                let old = sorted[i]
+                result.append(Hit(
+                    url: old.url,
+                    ruleID: entry.ruleID,
+                    displayName: entry.displayName,
+                    collectionRoot: collectionRoot,
+                    versionName: old.name,
+                    retainedLatest: retainedLatest
+                ))
+            }
+        }
+
+        for product in productDirectories {
+            if cancellationCheck() { return cancelledScanResult }
+            let subNames: [String]
+            do {
+                subNames = try fileSystem.contentsOfDirectory(atPath: product.url.path)
+            } catch {
+                if cancellationCheck() { return cancelledScanResult }
+                let reason: ScanIncompleteReason = VersionedRootErrorClassifier.isPermissionDenied(error)
+                    ? .permissionDenied
+                    : .enumerationFailed
+                incompleteIssues.append(ScanIncompleteIssue(path: product.url.path, reason: reason))
+                continue
+            }
+            for subName in subNames where subName.hasPrefix("ch-") {
+                if cancellationCheck() { return cancelledScanResult }
+                let channelURL = product.url.appendingPathComponent(subName)
+                let detection = VersionedRetainScanner.detectWithEvidence(
+                    collectionRoot: channelURL,
+                    options: options,
+                    fileSystem: fileSystem,
+                    cancellationCheck: cancellationCheck
+                )
+                if detection.wasCancelled { return cancelledScanResult }
+                incompleteIssues.append(contentsOf: detection.incompleteIssues)
+                for rh in detection.hits {
+                    if cancellationCheck() { return cancelledScanResult }
+                    result.append(Hit(
+                        url: rh.url,
+                        ruleID: entry.ruleID,
+                        displayName: entry.displayName,
+                        collectionRoot: rh.collectionRoot,
+                        versionName: rh.versionName,
+                        retainedLatest: rh.retainedLatest,
+                        groupKey: product.name
+                    ))
+                }
+            }
+        }
+
         if cancellationCheck() { return cancelledScanResult }
         return ScanResult(hits: result, incompleteIssues: incompleteIssues)
     }

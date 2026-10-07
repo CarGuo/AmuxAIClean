@@ -447,6 +447,7 @@ public struct DuplicateScreen: View {
     @State private var minStep: SizeStep = .mb10
     @State private var groups: [DuplicateGroup] = []
     @State private var selectedGroupID: String?
+    @State private var inlineSelectedPaths: Set<String> = []
     @State private var isScanning: Bool = false
     @State private var scanPhase: ScanPhase?
     @State private var bucketsDone: Int = 0
@@ -814,6 +815,13 @@ public struct DuplicateScreen: View {
                     }
                 }
                 .listStyle(.inset)
+                .onValueChange(of: selectedGroupID) { _, newID in
+                    if let g = groups.first(where: { $0.id == newID }) {
+                        inlineSelectedPaths = Set(DuplicateHandlingPlan.keepNewestDeleteTargets(for: g))
+                    } else {
+                        inlineSelectedPaths = []
+                    }
+                }
             }
         }
     }
@@ -869,8 +877,13 @@ public struct DuplicateScreen: View {
                 Divider()
                 List {
                     ForEach(g.files, id: \.path) { file in
-                        pathRow(file)
+                        pathRow(file, in: g)
                             .contextMenu {
+                                Button {
+                                    QuickLookController.shared.preview(urls: [URL(fileURLWithPath: file.path)])
+                                } label: {
+                                    Text("tree.menu.quick_look", bundle: .module)
+                                }
                                 Button {
                                     revealInFinder(path: file.path)
                                 } label: {
@@ -885,6 +898,8 @@ public struct DuplicateScreen: View {
                     }
                 }
                 .listStyle(.inset)
+                Divider()
+                detailActionBar(g)
             } else {
                 placeholder(
                     AppLocalization.string("duplicate.placeholder.select_group", locale: locale),
@@ -913,12 +928,22 @@ public struct DuplicateScreen: View {
                 ))
                     .font(.callout.monospacedDigit())
                 Button {
+                    inlineSelectedPaths = Set(DuplicateHandlingPlan.keepNewestDeleteTargets(for: g))
+                } label: {
+                    Label(AppLocalization.string("duplicate.handle.default.button", locale: locale),
+                          systemImage: "wand.and.stars")
+                }
+                .controlSize(.small)
+                .disabled(isDeletingDuplicates || !DuplicateHandlingPlan.isExecutableGroup(g))
+                Button {
                     activeSheet = .handle(g)
                 } label: {
                     Label(AppLocalization.string("duplicate.action.handle", locale: locale),
                           systemImage: "checklist")
+                        .labelStyle(.iconOnly)
                 }
                 .controlSize(.small)
+                .help(AppLocalization.string("duplicate.action.handle", locale: locale))
                 .disabled(isDeletingDuplicates)
             }
             Text(AppLocalization.format(
@@ -936,17 +961,83 @@ public struct DuplicateScreen: View {
         .padding(.vertical, 10)
     }
 
-    private func pathRow(_ file: DuplicateFile) -> some View {
-        HStack(spacing: 6) {
+    private func detailActionBar(_ g: DuplicateGroup) -> some View {
+        let validTargets = inlineSelectedPaths.intersection(Set(g.files.map(\.path)))
+        let selectedBytes = g.allocatedBytes(for: Array(validTargets))
+        return HStack {
+            Text(AppLocalization.format(
+                "duplicate.handle.selected %lld %@",
+                locale: locale,
+                arguments: [Int64(validTargets.count), byteString(selectedBytes)]
+            ))
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+            Spacer()
+            Button(AppLocalization.string("duplicate.handle.manual.button", locale: locale), role: .destructive) {
+                prepareDuplicateDeletion(group: g, paths: Array(validTargets))
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .controlSize(.small)
+            .disabled(
+                isDeletingDuplicates
+                    || !DuplicateHandlingPlan.isExecutableGroup(g)
+                    || validTargets.isEmpty
+                    || validTargets.count >= g.files.count
+            )
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
+    private func inlineBinding(for path: String, in group: DuplicateGroup) -> Binding<Bool> {
+        Binding(
+            get: { inlineSelectedPaths.contains(path) },
+            set: { newValue in
+                if newValue {
+                    inlineSelectedPaths.insert(path)
+                } else {
+                    inlineSelectedPaths.remove(path)
+                }
+            }
+        )
+    }
+
+    private func pathRow(_ file: DuplicateFile, in group: DuplicateGroup) -> some View {
+        HStack(spacing: 8) {
+            Toggle("", isOn: inlineBinding(for: file.path, in: group))
+                .labelsHidden()
+                .toggleStyle(.checkbox)
+                .disabled(isDeletingDuplicates || !DuplicateHandlingPlan.isExecutableGroup(group))
             Image(systemName: "doc")
                 .foregroundStyle(.tint)
                 .font(.caption)
-            Text(file.path)
-                .font(.system(.callout, design: .monospaced))
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(URL(fileURLWithPath: file.path).lastPathComponent)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(file.path)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
             Spacer()
+            if let mtime = DuplicateHandlingPlan.modificationDate(for: file) {
+                Text(mtime.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale)))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+            Button {
+                QuickLookController.shared.preview(urls: [URL(fileURLWithPath: file.path)])
+            } label: {
+                Image(systemName: "eye")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .help(AppLocalization.string("tree.menu.quick_look", locale: locale))
             Text(byteString(file.allocatedBytes))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
@@ -1537,6 +1628,12 @@ public struct DuplicateScreen: View {
         if let selectedGroupID, !prunedGroups.contains(where: { $0.id == selectedGroupID }) {
             self.selectedGroupID = prunedGroups.first?.id
         }
+        if let currentID = self.selectedGroupID,
+           let currentGroup = prunedGroups.first(where: { $0.id == currentID }) {
+            inlineSelectedPaths = Set(DuplicateHandlingPlan.keepNewestDeleteTargets(for: currentGroup))
+        } else {
+            inlineSelectedPaths = []
+        }
     }
 
     // MARK: - Scan driver
@@ -1547,6 +1644,7 @@ public struct DuplicateScreen: View {
               !isDeletionTransactionActive else { return }
         groups = []
         selectedGroupID = nil
+        inlineSelectedPaths = []
         tccSkippedRoots = []
         scanIncompleteIssues = []
         scanIncompleteIssueIndex = []
@@ -1593,6 +1691,10 @@ public struct DuplicateScreen: View {
                         bucketsTotal = total
                     case .finished(let g):
                         groups = g
+                        if selectedGroupID == nil, let first = g.first {
+                            selectedGroupID = first.id
+                            inlineSelectedPaths = Set(DuplicateHandlingPlan.keepNewestDeleteTargets(for: first))
+                        }
                     case .cancelled:
                         // 用户/上游 cancel：保留 groups 不动，仅退出 isScanning 状态。
                         // 与「停止仅终止扫描、保留已有结果」UX 一致。
@@ -1754,21 +1856,37 @@ private struct DuplicateHandleSheet: View {
                 .foregroundStyle(.secondary)
             List {
                 ForEach(group.files, id: \.path) { file in
-                    Toggle(isOn: binding(for: file.path)) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(URL(fileURLWithPath: file.path).lastPathComponent)
-                                .font(.callout)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Text(file.path)
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                    HStack(spacing: 8) {
+                        Toggle(isOn: binding(for: file.path)) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(URL(fileURLWithPath: file.path).lastPathComponent)
+                                    .font(.callout)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text(file.path)
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
                         }
+                        .toggleStyle(.checkbox)
+                        .disabled(isDeleting || !DuplicateHandlingPlan.isExecutableGroup(group))
+                        Spacer()
+                        if let mtime = DuplicateHandlingPlan.modificationDate(for: file) {
+                            Text(mtime.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale)))
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.tertiary)
+                        }
+                        Button {
+                            QuickLookController.shared.preview(urls: [URL(fileURLWithPath: file.path)])
+                        } label: {
+                            Image(systemName: "eye")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderless)
+                        .help(AppLocalization.string("tree.menu.quick_look", locale: locale))
                     }
-                    .toggleStyle(.checkbox)
-                    .disabled(isDeleting || !DuplicateHandlingPlan.isExecutableGroup(group))
                 }
             }
             .listStyle(.inset)
@@ -1826,12 +1944,36 @@ private struct DuplicateHandleSheet: View {
 }
 
 enum DuplicateHandlingPlan {
+    static func modificationDate(for file: DuplicateFile) -> Date? {
+        guard let identity = file.snapshotIdentity else { return nil }
+        return Date(
+            timeIntervalSince1970: TimeInterval(identity.modificationSeconds)
+                + TimeInterval(identity.modificationNanoseconds) / 1_000_000_000
+        )
+    }
+
     static func defaultDeleteTargets(for group: DuplicateGroup) -> [String] {
         // v2026.07.17 重复文件安全回归：prefixOnly 只证明 size + 前 64KB
         // 一致，绝不是可删除证明。警告文案不能代替执行闸门；在可取消的
         // full-hash + 最终身份重验链路完成前，计划层直接不铸造任何删除目标。
         guard isExecutableGroup(group) else { return [] }
         return group.files.dropFirst().map(\.path)
+    }
+
+    static func keepNewestDeleteTargets(for group: DuplicateGroup) -> [String] {
+        guard isExecutableGroup(group),
+              let newest = group.files.max(by: { lhs, rhs in
+                  let lSec = lhs.snapshotIdentity?.modificationSeconds ?? .min
+                  let rSec = rhs.snapshotIdentity?.modificationSeconds ?? .min
+                  if lSec != rSec { return lSec < rSec }
+                  let lNano = lhs.snapshotIdentity?.modificationNanoseconds ?? .min
+                  let rNano = rhs.snapshotIdentity?.modificationNanoseconds ?? .min
+                  if lNano != rNano { return lNano < rNano }
+                  return lhs.path > rhs.path
+              }) else {
+            return defaultDeleteTargets(for: group)
+        }
+        return group.files.filter { $0.path != newest.path }.map(\.path)
     }
 
     static func isValidDeleteTargets(_ paths: [String], for group: DuplicateGroup) -> Bool {
@@ -1860,6 +2002,10 @@ enum DuplicateHandlingPlan {
     /// 纯数据投影，调用方可安全放到 detached utility task，避免大重复集在主线程重聚合。
     static func pruning(_ groups: [DuplicateGroup], movedPaths: Set<String>) -> [DuplicateGroup] {
         guard !movedPaths.isEmpty else { return groups }
-        return groups.compactMap { $0.removing(paths: movedPaths) }
+        let matcher = DeletionPresentationPathMatcher(paths: Array(movedPaths))
+        return groups.compactMap { group in
+            let matchedPaths = Set(group.files.map(\.path).filter { matcher.contains($0) })
+            return matchedPaths.isEmpty ? group : group.removing(paths: matchedPaths)
+        }
     }
 }

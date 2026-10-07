@@ -64,6 +64,21 @@ final class BrewCleanupTests: XCTestCase {
                       "活跃 bottle 应被 symlink 别名挡住；实际 stale: \(plan.stalePaths)")
     }
 
+    func test_dryRun_裸文件名相对symlink指向的文件被排除() throws {
+        try writeFile(into: downloads, name: "bare--active.tar.gz",
+                      bytes: 8192,
+                      mtime: Date(timeIntervalSinceNow: -60 * 86400))
+        let link = root.appendingPathComponent("bare--1.0")
+        try FileManager.default.createSymbolicLink(
+            atPath: link.path,
+            withDestinationPath: "bare--active.tar.gz")
+
+        let cleanup = BrewCleanup(cacheRoot: root)
+        let plan = cleanup.dryRun()
+        XCTAssertTrue(plan.isEmpty,
+                      "裸文件名相对 symlink 同样应排除活跃 bottle；实际 stale: \(plan.stalePaths)")
+    }
+
     // MARK: - 契约 4：downloads 缺失时返回空 plan
 
     func test_dryRun_缺downloads目录_空plan() throws {

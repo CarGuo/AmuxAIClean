@@ -1125,20 +1125,23 @@ public struct MainView: View {
             smartCareSession.scanCoordinator.refreshFDAStatus()
         }
         .onReceive(NotificationCenter.default.publisher(for: .gsyOpenMainWindowRequested)) { _ in
-            // v1.3 review-fix B3：托盘 / HUD 触发"打开主窗口"，但主窗口已被 ⌘W 销毁。
-            // 走 SwiftUI 的 OpenWindow action 重建——这是 macOS 14+ 唯一可靠的方式，
-            // 比直接 NSApp.windows 遍历 makeKeyAndOrderFront 更稳。
-            // 注意：window id 必须与 GSYCleanMacApp 中 WindowGroup(id:) 一致（"main"）。
-            openWindow(id: "main")
+            ensureMainWindowFocused()
         }
         .onReceive(NotificationCenter.default.publisher(for: .gsyTrashPendingLedgerDidInvalidate)) { _ in
             storageAnalysis.invalidateAfterExternalChange()
         }
         .onReceive(NotificationCenter.default.publisher(for: .gsyTrashDidMove)) { notification in
-            storageAnalysis.invalidateAfterExternalChange()
-            guard let source = notification.userInfo?["source"] as? String,
+            let source = notification.userInfo?["source"] as? String
+            let paths = notification.userInfo?["paths"] as? [String] ?? []
+            if !paths.isEmpty {
+                stash.remove(paths: paths)
+                largeFilesBatch.remove(paths: paths)
+            }
+            if source != DeleteRequestOrigin.storageAnalysis.historySource {
+                storageAnalysis.invalidateAfterExternalChange()
+            }
+            guard let source,
                   !["smart-care", "clean", "tree", "large-file", "stash"].contains(source),
-                  let paths = notification.userInfo?["paths"] as? [String],
                   !paths.isEmpty else { return }
             Task { @MainActor in
                 await synchronizeSuccessfulDeletion(
@@ -1460,11 +1463,11 @@ public struct MainView: View {
 
             switch intent {
             case .inviteFullScan:
-                openWindow(id: "main")
+                ensureMainWindowFocused()
                 sentinelScanInvitationVisible = true
 
             case .openUninstall(let path):
-                openWindow(id: "main")
+                ensureMainWindowFocused()
                 transitionInterfaceMode(to: .professional)
                 requestCategorySwitch(to: MainView.uninstallSentinelID)
                 // 当前 UninstallScreen 还没有按路径高亮的输入口；路径仍被完整排队，
@@ -1474,6 +1477,25 @@ public struct MainView: View {
 
             // openUninstall 在无需切换确认时不占 modal；继续按一事件/一次调度排空。
             schedulePendingSentinelPresentationIfPossible()
+        }
+    }
+
+    private func ensureMainWindowFocused() {
+        let windows = NSApp.windows
+        let decision = MainWindowRoutingPolicy.decision(
+            windows: MainWindowRoutingPolicy.descriptors(for: windows),
+            canRequestMainScene: true
+        )
+        switch decision {
+        case .focusExisting(let index) where windows.indices.contains(index):
+            let window = windows[index]
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+        case .focusExisting, .requestMainScene, .reopenApplication:
+            openWindow(id: "main")
         }
     }
 
@@ -2040,10 +2062,16 @@ public struct MainView: View {
                 releasedBytes: releasedBytes
             )
         )
-        deleteResultCompletion = .trash(
-            completedSubmission,
-            runningAppSkipped: execution.runningAppSkippedResultItems
-        )
+        let hasPostCleanIssues = (result.outcome?.failedPaths.isEmpty == false)
+            || (result.outcome?.safetyRejected.isEmpty == false)
+            || runningAppSkippedCount > 0
+            || result.err != nil
+        if hasPostCleanIssues {
+            deleteResultCompletion = .trash(
+                completedSubmission,
+                runningAppSkipped: execution.runningAppSkippedResultItems
+            )
+        }
     }
 
     /// v2026.07.19: accept and enqueue Professional deletion before changing sheet state. The
@@ -2718,6 +2746,22 @@ public struct MainView: View {
     /// v1.9：当前是否在「Backend 工作流」模式。
     private var isWorkflowBackendMode: Bool {
         selectedCategory == MainView.workflowBackendSentinelID
+    }
+
+    private var isStandaloneProfessionalToolMode: Bool {
+        isAppFootprintMode
+            || isLaunchAgentMode
+            || isPortCleanerMode
+            || isDartRadarMode
+            || isUninstallMode
+            || isDuplicateMode
+            || isUndoHistoryMode
+            || isMaintenanceMode
+            || isBrewMode
+            || isWorkflowAppleMode
+            || isWorkflowAndroidMode
+            || isWorkflowWebNodeMode
+            || isWorkflowBackendMode
     }
 
     private var results: some View {
@@ -3408,7 +3452,15 @@ public struct MainView: View {
         // transaction 被一并拖卡（与 listResults / inlineDetailPane 串行 layout）。
         // 改为 body 顶端一次 let 计算 selectedRows + 预算 summary 文本，
         // 后续三处复用同一个 `selectedRowsEmpty` / `summaryText`。
-        let rows = isLargeFilesMode ? [] : selectedRows
+        let listSelectionRows = isLargeFilesMode ? [] : selectedRows
+        let treeFallbackRow: RowItem? = (!isLargeFilesMode && viewMode == .tree && listSelectionRows.isEmpty)
+            ? treeSelection.flatMap(makeDeletionRow)
+            : nil
+        let rows: [RowItem] = {
+            if !listSelectionRows.isEmpty { return listSelectionRows }
+            if let treeFallbackRow { return [treeFallbackRow] }
+            return []
+        }()
         let selectedRowsEmpty = rows.isEmpty
         let summaryText: String = {
             if selectedRowsEmpty { return AppLocalization.string("selection.empty", locale: locale) }
@@ -3492,7 +3544,10 @@ public struct MainView: View {
                 Spacer()
                 Button {
                     if !selectedRowsEmpty {
-                        presentDeleteConfirmation(rows: rows, origin: .scanSelection)
+                        presentDeleteConfirmation(
+                            rows: rows,
+                            origin: treeFallbackRow != nil ? .tree : .scanSelection
+                        )
                     }
                 } label: {
                     Label {
@@ -3523,85 +3578,92 @@ public struct MainView: View {
     private var inlineDetailPane: some View {
         if let id = detail,
            let item = coordinator.snapshot.rows.first(where: { $0.id == id }) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    VerdictBadge(verdict: item.verdict)
-                        .frame(width: 14, height: 14)
-                    Text(verbatim: item.displayTitle(locale: locale))
-                        .font(.title2.bold())
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 8)
-                    closeInlineDetailButton
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        VerdictBadge(verdict: item.verdict)
+                            .frame(width: 14, height: 14)
+                        Text(verbatim: item.displayTitle(locale: locale))
+                            .font(.title2.bold())
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 8)
+                        closeInlineDetailButton
+                    }
+                    Text(item.url.path)
+                        .font(.system(.callout, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .longPathStyle()
+                    Divider()
+                    LabeledContent(AppLocalization.string("detail.size.physical", locale: locale), value: formattedBytes(item.bytes))
+                    LabeledContent(AppLocalization.string("detail.size.logical", locale: locale), value: formattedBytes(item.logicalBytes))
+                    LabeledContent(AppLocalization.string("detail.file.count", locale: locale), value: "\(item.fileCount)")
+                    LabeledContent(AppLocalization.string("detail.is.directory", locale: locale), value: item.isDirectory ? AppLocalization.string("detail.bool.yes", locale: locale) : AppLocalization.string("detail.bool.no", locale: locale))
+                    LabeledContent(AppLocalization.string("detail.safety.level", locale: locale), value: verdictLabel(item.verdict))
+                    if item.verdict == .forbid {
+                        Text(String(
+                            format: AppLocalization.string("detail.rejection.reason", locale: locale),
+                            DeletionSafetyReasonPresentation.text(for: item.rejection.rawValue, locale: locale)
+                        ))
+                            .font(.callout)
+                            .foregroundStyle(.red)
+                    }
+                    Spacer()
                 }
-                Text(item.url.path)
-                    .font(.system(.callout, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .longPathStyle()
-                Divider()
-                LabeledContent(AppLocalization.string("detail.size.physical", locale: locale), value: formattedBytes(item.bytes))
-                LabeledContent(AppLocalization.string("detail.size.logical", locale: locale), value: formattedBytes(item.logicalBytes))
-                LabeledContent(AppLocalization.string("detail.file.count", locale: locale), value: "\(item.fileCount)")
-                LabeledContent(AppLocalization.string("detail.is.directory", locale: locale), value: item.isDirectory ? AppLocalization.string("detail.bool.yes", locale: locale) : AppLocalization.string("detail.bool.no", locale: locale))
-                LabeledContent(AppLocalization.string("detail.safety.level", locale: locale), value: verdictLabel(item.verdict))
-                if item.verdict == .forbid {
-                    Text(String(format: AppLocalization.string("detail.rejection.reason", locale: locale), item.rejection.rawValue))
-                        .font(.callout)
-                        .foregroundStyle(.red)
-                }
-                Spacer()
+                // v2：统一详情面板样式（padding + maxWidth.infinity + leading 对齐）。
+                .detailPaneStyle()
             }
-            // v2：统一详情面板样式（padding + maxWidth.infinity + leading 对齐）。
-            .detailPaneStyle()
         } else if let row = treeSelection {
             let metrics = TreeMetricPresentation(row: row, locale: locale)
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Image(systemName: row.isDirectory ? "folder.fill" : "doc")
-                        .foregroundStyle(.tint)
-                    Text(verbatim: row.displayTitle(locale: locale))
-                        .font(.title2.bold())
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 8)
-                    closeInlineDetailButton
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Image(systemName: row.isDirectory ? "folder.fill" : "doc")
+                            .foregroundStyle(.tint)
+                        Text(verbatim: row.displayTitle(locale: locale))
+                            .font(.title2.bold())
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 8)
+                        closeInlineDetailButton
+                    }
+                    Text(row.path)
+                        .font(.system(.callout, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .longPathStyle()
+                    Divider()
+                    if let partialStatus = metrics.partialStatusText {
+                        Label(partialStatus, systemImage: "exclamationmark.circle.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                            .help(metrics.helpText ?? partialStatus)
+                    }
+                    LabeledContent(
+                        AppLocalization.string("detail.size.physical", locale: locale),
+                        value: metrics.size.detailText
+                    )
+                    LabeledContent(
+                        AppLocalization.string("detail.size.logical", locale: locale),
+                        value: metrics.logicalSize.detailText
+                    )
+                    LabeledContent(
+                        AppLocalization.string("detail.file.count", locale: locale),
+                        value: metrics.count.detailText
+                    )
+                    LabeledContent(AppLocalization.string("detail.is.directory", locale: locale), value: row.isDirectory ? AppLocalization.string("detail.bool.yes", locale: locale) : AppLocalization.string("detail.bool.no", locale: locale))
+                    if row.isDirectory && row.hasChildren {
+                        LabeledContent(AppLocalization.string("detail.expandable", locale: locale), value: AppLocalization.string("detail.bool.yes", locale: locale))
+                    }
+                    Divider()
+                    Text("detail.tree.hint", bundle: .module)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
                 }
-                Text(row.path)
-                    .font(.system(.callout, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .longPathStyle()
-                Divider()
-                if let partialStatus = metrics.partialStatusText {
-                    Label(partialStatus, systemImage: "exclamationmark.circle.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.orange)
-                        .help(metrics.helpText ?? partialStatus)
-                }
-                LabeledContent(
-                    AppLocalization.string("detail.size.physical", locale: locale),
-                    value: metrics.size.detailText
-                )
-                LabeledContent(
-                    AppLocalization.string("detail.size.logical", locale: locale),
-                    value: metrics.logicalSize.detailText
-                )
-                LabeledContent(
-                    AppLocalization.string("detail.file.count", locale: locale),
-                    value: metrics.count.detailText
-                )
-                LabeledContent(AppLocalization.string("detail.is.directory", locale: locale), value: row.isDirectory ? AppLocalization.string("detail.bool.yes", locale: locale) : AppLocalization.string("detail.bool.no", locale: locale))
-                if row.isDirectory && row.hasChildren {
-                    LabeledContent(AppLocalization.string("detail.expandable", locale: locale), value: AppLocalization.string("detail.bool.yes", locale: locale))
-                }
-                Divider()
-                Text("detail.tree.hint", bundle: .module)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                Spacer()
+                .detailPaneStyle()
             }
-            .detailPaneStyle()
         }
     }
 
@@ -3650,8 +3712,10 @@ public struct MainView: View {
             ToolbarItem(placement: .principal) {
                 pathBar
             }
-            ToolbarItem(placement: .primaryAction) {
-                sortMenu
+            if !isStandaloneProfessionalToolMode && !isLargeFilesMode {
+                ToolbarItem(placement: .primaryAction) {
+                    sortMenu
+                }
             }
         }
         // v2026.06.21：原右上角「推荐 / 开发者 / 整盘」三个 logo 按钮直接移除——
@@ -4666,13 +4730,12 @@ public struct MainView: View {
         }
         selection = accounting.remainingSelection
         largeFilesBatch.remove(paths: succeededPaths)
+        let matcher = DeletionPresentationPathMatcher(paths: succeededPaths)
         if let selected = largeFileSelection,
-           succeededPaths.contains(selected.path) {
+           matcher.contains(selected.path) {
             largeFileSelection = nil
         }
-        if request.origin == .stash {
-            stash.remove(paths: succeededPaths)
-        }
+        stash.remove(paths: succeededPaths)
         await synchronizeSuccessfulDeletion(
             paths: succeededPaths,
             authoritativeSurface: .professional,

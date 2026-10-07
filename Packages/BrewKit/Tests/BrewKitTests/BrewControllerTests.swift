@@ -313,6 +313,32 @@ final class BrewControllerTests: XCTestCase {
         XCTAssertEqual(casks[0].name, "real-cask")
     }
 
+    func test_formula容量统计_同版本内硬链接去重且包含点brew目录() throws {
+        try makeFormula(name: "git-hardlink", version: "2.45.0",
+                        installedAt: Date(), installedOnRequest: true, tap: "homebrew/core")
+        let verDir = prefix.appendingPathComponent("Cellar/git-hardlink/2.45.0", isDirectory: true)
+        let binDir = verDir.appendingPathComponent("bin", isDirectory: true)
+        let brewHiddenDir = verDir.appendingPathComponent(".brew", isDirectory: true)
+        try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: brewHiddenDir, withIntermediateDirectories: true)
+
+        let binary = binDir.appendingPathComponent("git")
+        try Data(repeating: 0xAA, count: 65_536).write(to: binary)
+        try FileManager.default.linkItem(at: binary, to: binDir.appendingPathComponent("git-receive-pack"))
+        try FileManager.default.linkItem(at: binary, to: binDir.appendingPathComponent("git-upload-pack"))
+
+        let formulaRB = brewHiddenDir.appendingPathComponent("git-hardlink.rb")
+        try Data(repeating: 0xBB, count: 16_384).write(to: formulaRB)
+
+        let pkgs = BrewController(prefix: prefix).listFormulae()
+        let pkg = try XCTUnwrap(pkgs.first { $0.name == "git-hardlink" })
+        let binAlloc = (try? binary.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize) ?? 65_536
+        let rbAlloc = (try? formulaRB.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize) ?? 16_384
+        let receiptAlloc = (try? verDir.appendingPathComponent("INSTALL_RECEIPT.json").resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize) ?? 0
+        XCTAssertEqual(pkg.sizeBytes, Int64(binAlloc + rbAlloc + receiptAlloc),
+                       "同版本目录内的硬链接二进制只应统计一次，且 .brew 子目录应被计入")
+    }
+
     // MARK: - helpers
 
     private func makeFormula(name: String, version: String,

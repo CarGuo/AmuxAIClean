@@ -464,6 +464,8 @@ actor TreeIncrementalProjectionWorker {
             ancestorStack.append((item.depth, index))
         }
 
+        let sameRowIdentities = rows.count == previous.rows.count
+            && zip(rows, previous.rows).allSatisfy { $0.id == $1.id && $0.depth == $1.depth }
         let output = PreparedTreeFlatProjection(
             rows: rows,
             rowIndexByPath: rowIndexByPath,
@@ -473,7 +475,7 @@ actor TreeIncrementalProjectionWorker {
             changed: rows != previous.rows
                 || rowIndexByPath != previous.rowIndexByPath
                 || parentIndexByRow != previous.parentIndexByRow,
-            tableIdentityChanged: rows.count != previous.rows.count,
+            tableIdentityChanged: !sameRowIdentities,
             ranOnMainThread: ranOnMainThread,
             rowRemovalRanges: nil
         )
@@ -1710,6 +1712,15 @@ enum TreeBrowserLiveLocalization {
         return AppLocalization.format(key, locale: locale, arguments: [row.path])
     }
 
+    private static let currentYearFormatTemplate = Date.FormatStyle()
+        .month(.twoDigits)
+        .day(.twoDigits)
+    private static let crossYearFormatTemplate = Date.FormatStyle()
+        .year(.defaultDigits)
+        .month(.twoDigits)
+        .day(.twoDigits)
+    private static let fullHelpFormatTemplate = Date.FormatStyle(date: .abbreviated, time: .shortened)
+
     static func mtimeDisplay(
         _ date: Date?,
         denied: Bool,
@@ -1720,29 +1731,16 @@ enum TreeBrowserLiveLocalization {
         guard let date else { return "·" }
         let calendar = Calendar.current
         if calendar.isDate(date, equalTo: now, toGranularity: .year) {
-            return date.formatted(
-                Date.FormatStyle()
-                    .month(.twoDigits)
-                    .day(.twoDigits)
-                    .locale(locale)
-            )
+            return date.formatted(currentYearFormatTemplate.locale(locale))
         }
-        return date.formatted(
-            Date.FormatStyle()
-                .year(.defaultDigits)
-                .month(.twoDigits)
-                .day(.twoDigits)
-                .locale(locale)
-        )
+        return date.formatted(crossYearFormatTemplate.locale(locale))
     }
 
     static func mtimeFullHelp(_ date: Date?, locale: Locale) -> String {
         guard let date else {
             return AppLocalization.string("tree.column.mtime.aggregate_help", locale: locale)
         }
-        return date.formatted(
-            Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale)
-        )
+        return date.formatted(fullHelpFormatTemplate.locale(locale))
     }
 }
 
@@ -2223,6 +2221,16 @@ private final class TreeTableCellView: NSTableCellView {
 }
 
 private final class TreeTableRowCanvas: NSView {
+    private struct SymbolCacheKey: Hashable {
+        let name: String
+        let colorDescription: String
+        let pointSizeTenths: Int
+        let weightRawValue: CGFloat
+    }
+
+    @MainActor
+    private static var symbolCache: [SymbolCacheKey: NSImage] = [:]
+
     private let inlineProgress = NSProgressIndicator()
     private var flat: FlatTreeRow?
     private var maxBytes: Int64 = 0
@@ -2237,6 +2245,8 @@ private final class TreeTableRowCanvas: NSView {
     private var hasAI = false
     private var aiReady = false
     private var actions: TreeTableRowActions?
+    private var cachedMetrics: TreeMetricPresentation?
+    private var cachedMtimeText: String = "·"
 
     override var isFlipped: Bool { true }
 
@@ -2285,6 +2295,13 @@ private final class TreeTableRowCanvas: NSView {
         self.aiReady = aiReady
         self.actions = actions
         let metrics = TreeBrowserLiveLocalization.metricPresentation(row: flat.row, locale: locale)
+        self.cachedMetrics = metrics
+        let denied = flat.row.accessState != .normal
+        self.cachedMtimeText = TreeBrowserLiveLocalization.mtimeDisplay(
+            flat.row.modificationDate,
+            denied: denied,
+            locale: locale
+        )
         if let accessHelp = TreeBrowserLiveLocalization.accessHelp(for: flat.row, locale: locale) {
             toolTip = accessHelp
         } else if let helpText = metrics.helpText {
@@ -2354,7 +2371,7 @@ private final class TreeTableRowCanvas: NSView {
             }
             return
         }
-        if event.clickCount >= 2 || canExpand(flat) {
+        if event.clickCount >= 2, canExpand(flat) {
             GSYLog.notice(.operation, "tree.row.toggle path=\(flat.row.path) expanded=\(!isExpanded)")
             actions.toggle()
         }
@@ -2471,7 +2488,7 @@ private final class TreeTableRowCanvas: NSView {
 
     private func drawRow(_ flat: FlatTreeRow) {
         let row = flat.row
-        let metrics = TreeBrowserLiveLocalization.metricPresentation(row: row, locale: locale)
+        let metrics = cachedMetrics ?? TreeBrowserLiveLocalization.metricPresentation(row: row, locale: locale)
         let denied = row.accessState != .normal
         let chevronRect = disclosureRect(for: flat)
         if canExpand(flat) {
@@ -2530,11 +2547,7 @@ private final class TreeTableRowCanvas: NSView {
                  font: .monospacedSystemFont(ofSize: 13.5, weight: .regular),
                  color: .tertiaryLabelColor,
                  alignment: .right)
-        drawText(TreeBrowserLiveLocalization.mtimeDisplay(
-                    row.modificationDate,
-                    denied: denied,
-                    locale: locale
-                 ),
+        drawText(cachedMtimeText,
                  in: CGRect(x: mtimeX, y: 6, width: TreeTableMetrics.mtimeWidth - 8, height: 17),
                  font: .monospacedSystemFont(ofSize: 13.5, weight: .regular),
                  color: .tertiaryLabelColor,
@@ -2729,14 +2742,30 @@ private final class TreeTableRowCanvas: NSView {
                             color: NSColor,
                             pointSize: CGFloat? = nil,
                             weight: NSFont.Weight = .regular) {
-        guard var image = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return }
-        let colorConfig = NSImage.SymbolConfiguration(hierarchicalColor: color)
-        if let pointSize {
-            let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
-                .applying(colorConfig)
-            image = image.withSymbolConfiguration(config) ?? image
+        let cacheKey = SymbolCacheKey(
+            name: name,
+            colorDescription: color.description,
+            pointSizeTenths: Int(((pointSize ?? 0) * 10).rounded()),
+            weightRawValue: weight.rawValue
+        )
+        let image: NSImage
+        if let cached = Self.symbolCache[cacheKey] {
+            image = cached
         } else {
-            image = image.withSymbolConfiguration(colorConfig) ?? image
+            guard var loaded = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return }
+            let colorConfig = NSImage.SymbolConfiguration(hierarchicalColor: color)
+            if let pointSize {
+                let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
+                    .applying(colorConfig)
+                loaded = loaded.withSymbolConfiguration(config) ?? loaded
+            } else {
+                loaded = loaded.withSymbolConfiguration(colorConfig) ?? loaded
+            }
+            if Self.symbolCache.count >= 128 {
+                Self.symbolCache.removeAll(keepingCapacity: true)
+            }
+            Self.symbolCache[cacheKey] = loaded
+            image = loaded
         }
         image.draw(in: aspectFitRect(for: image, in: rect),
                    from: .zero,
@@ -2796,32 +2825,34 @@ struct TreeColumnHeader: View {
     @Environment(\.locale) private var locale
 
     var body: some View {
-        HStack(spacing: 10) {
-            // 与 TreeBrowserRow 的 icon + 三角占位对齐：22（三角 hit area）+ 6（间距）+ 16（icon）= 44
-            Spacer().frame(width: 44)
+        HStack(spacing: 0) {
+            // 与 TreeTableRowCanvas depth=0 的 chevron (24) + gap (8) + icon (24) + gap (8) = 64 对齐
+            Spacer().frame(
+                width: TreeTableMetrics.chevronWidth
+                    + TreeTableMetrics.horizontalGap
+                    + TreeTableMetrics.iconWidth
+                    + TreeTableMetrics.horizontalGap
+            )
             headerButton(key: "tree.column.name", column: .name)
                 .frame(maxWidth: .infinity, alignment: .leading)
             headerButton(key: "tree.column.size", column: .size)
-                .frame(width: 90, alignment: .trailing)
+                .frame(width: TreeTableMetrics.sizeWidth - 8, alignment: .trailing)
+                .padding(.trailing, 8)
             headerButton(key: "tree.column.count", column: .count)
-                .frame(width: 56, alignment: .trailing)
+                .frame(width: TreeTableMetrics.countWidth - 8, alignment: .trailing)
+                .padding(.trailing, 8)
             // v1.5.4：mtime 列。98pt 给"yyyy-MM-dd"或"3 天前"宽度足够。
             headerButton(key: "tree.column.mtime", column: .mtime)
-                .frame(width: 98, alignment: .trailing)
-            // v2026.06.21 反馈修复：之前 mtime 与按钮列贴边，视觉上像"挤在一起"。
-            // 加一个 12pt gap，让 mtime 文案与「操作」列有清晰的视觉分隔。
-            Spacer().frame(width: 12)
-            // **v2026.06.21 修复**：原来这里只是一个固定 Spacer 占位，没有标题，
-            // 用户原话「这个栏目也没有写『操作』这个栏目信息」。改成正式的「操作」
-            // 表头文案，居中显示在按钮列上方，
-            // 让用户一眼知道这一列点开会发生什么；不参与点击切排序，所以不复用
-            // headerButton 而是直接 Text。
+                .frame(width: TreeTableMetrics.mtimeWidth - 8, alignment: .trailing)
+                .padding(.trailing, 8)
+            Spacer().frame(width: TreeTableMetrics.actionGap)
             Text("tree.column.actions", bundle: .module)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: TreeTableMetrics.actionAreaWidth, alignment: .center)
         }
-        .padding(.horizontal, 16)
+        .padding(.leading, TreeTableMetrics.leftPadding)
+        .padding(.trailing, TreeTableMetrics.actionTrailingPadding)
         .padding(.vertical, 6)
         .background(.bar)
     }
@@ -2987,7 +3018,6 @@ struct TreeNodeRow: View {
                 }
                 .onTapGesture(count: 1) {
                     onSelect()
-                    if canExpand { onToggleExpand() }
                 }
             // v2026.06.21 反馈修复：在数据 Row 与「操作」按钮组之间也插入与表头
             // 一致的 12pt 间隙（表头 mtime 与 actions 同样间隔 12pt），避免行内

@@ -523,9 +523,14 @@ public struct LargeFilesView: View {
     // MARK: - Columns
 
     private var columnHeader: some View {
-        HStack(spacing: 10) {
-            // 图标占位（与行内对齐）
-            Spacer().frame(width: 20)
+        HStack(spacing: 0) {
+            // 与 LargeFilesRowCanvas 的 checkbox (22) + gap (10) + icon (20) + gap (10) = 62 对齐
+            Spacer().frame(
+                width: LargeFilesTableMetrics.checkboxWidth
+                    + LargeFilesTableMetrics.horizontalGap
+                    + LargeFilesTableMetrics.iconWidth
+                    + LargeFilesTableMetrics.horizontalGap
+            )
             Text("largefiles.column.name_path", bundle: .module)
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
@@ -534,14 +539,22 @@ public struct LargeFilesView: View {
                 title: AppLocalization.string("largefiles.column.size", locale: locale),
                 column: .size
             )
-                .frame(width: 110, alignment: .trailing)
+                .frame(width: LargeFilesTableMetrics.sizeWidth - 8, alignment: .trailing)
+                .padding(.trailing, 8)
             columnButton(
                 title: AppLocalization.string("largefiles.column.mtime", locale: locale),
                 column: .mtime
             )
-                .frame(width: 130, alignment: .trailing)
+                .frame(width: LargeFilesTableMetrics.mtimeWidth - 8, alignment: .trailing)
+                .padding(.trailing, 8)
+            Spacer().frame(width: LargeFilesTableMetrics.actionGap)
+            Text("tree.column.actions", bundle: .module)
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+                .frame(width: LargeFilesTableMetrics.actionAreaWidth, alignment: .center)
         }
-        .padding(.horizontal, 16)
+        .padding(.leading, LargeFilesTableMetrics.leftPadding)
+        .padding(.trailing, LargeFilesTableMetrics.actionTrailingPadding)
         .padding(.vertical, 6)
         // v2026.07.16：`.background.secondary` 是 macOS 14 ShapeStyle；AppKit 的
         // controlBackgroundColor 在 Ventura 上提供同一层级的原生表头底色。

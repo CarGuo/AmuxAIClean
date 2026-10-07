@@ -1286,4 +1286,48 @@ final class PruneDeletedTests: XCTestCase {
             XCTAssertEqual(mine, nsExpected, "path=\(p)")
         }
     }
+
+    func test_pruneDeleted_删除子项后buckets祖先聚合扣减且treeChildrenCache按size重排() async {
+        let coord = ScanCoordinator()
+        let parentA = makeTreeRow("/R/A", bytes: 1_000, fileCount: 3)
+        let parentB = makeTreeRow("/R/B", bytes: 600, fileCount: 2)
+        coord._seedForTesting(
+            buckets: ["/R/A": 1_000, "/R/B": 600],
+            dirIndexFull: [
+                "/R/A": (bytes: 1_000, fileCount: 3),
+                "/R/A/drop": (bytes: 800, fileCount: 2),
+                "/R/B": (bytes: 600, fileCount: 2)
+            ],
+            treeChildrenCache: [
+                "/R|sizeDesc": [parentA, parentB]
+            ],
+            totalBytes: 1_600,
+            scannedFiles: 5
+        )
+
+        await coord.pruneDeleted(paths: ["/R/A/drop"])
+
+        XCTAssertEqual(coord._bucketsBytesForTesting("/R/A"), 200,
+                       "删掉子目录后，顶层 bucket 的 bytes 也必须同步扣减")
+        let cachedOrder = coord._treeChildrenCacheForTesting()["/R|sizeDesc"]?.map(\.path)
+        XCTAssertEqual(cachedOrder, ["/R/B", "/R/A"],
+                       "祖先 /R/A 缩小到 200 bytes 后，sizeDesc 缓存必须重排使 /R/B (600) 在前")
+    }
+
+    func test_acknowledgeSuccessfulDeletionForPresentation_大文件列表立即过滤tombstone路径() async {
+        let coord = ScanCoordinator()
+        let mb100: Int64 = 100 * 1_024 * 1_024
+        coord._seedLargeFileLeavesForTesting([
+            (path: "/R/drop/movie.mov", bytes: mb100 * 3),
+            (path: "/R/keep/archive.zip", bytes: mb100 * 2)
+        ])
+
+        XCTAssertEqual(coord.largeFileCollectedCount, 2)
+        await coord.acknowledgeSuccessfulDeletionForPresentation(paths: ["/R/drop"])
+
+        XCTAssertEqual(coord.largeFileCollectedCount, 1,
+                       "确认删除后无需等待慢速后台 prune，largeFileCollectedCount 应立即剔除被删子树")
+        let remaining = coord.largeFiles(minSizeMB: 50, sortKey: .sizeDesc)
+        XCTAssertEqual(remaining.map(\.path), ["/R/keep/archive.zip"])
+    }
 }

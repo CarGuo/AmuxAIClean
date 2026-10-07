@@ -357,12 +357,17 @@ public actor NodeModulesScanner {
             return DirectorySizeResult(sizeBytes: nil, incompleteIssues: [])
         }
         let fm = FileManager.default
-        let keys: Set<URLResourceKey> = [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .isRegularFileKey]
+        let keys: Set<URLResourceKey> = [
+            .totalFileAllocatedSizeKey,
+            .fileAllocatedSizeKey,
+            .isRegularFileKey,
+            .fileResourceIdentifierKey
+        ]
         var incompleteIssues: [ScanIncompleteIssue] = []
         guard let enumerator = fm.enumerator(
             at: url,
             includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles],
+            options: [],
             errorHandler: { failedURL, error in
                 incompleteIssues.append(ScanIncompleteIssue(
                     path: failedURL.standardizedFileURL.path,
@@ -381,8 +386,10 @@ public actor NodeModulesScanner {
         }
         var total: Int64 = 0
         var visitedEntries = 0
+        var seenInodes: Set<Data> = []
         for case let fileURL as URL in enumerator {
             try cancellationCheck()
+            if fileURL.lastPathComponent == ".DS_Store" { continue }
             visitedEntries += 1
             remainingGlobalEntries -= 1
             if visitedEntries > maxEntries || remainingGlobalEntries < 0 {
@@ -402,6 +409,11 @@ public actor NodeModulesScanner {
                 continue
             }
             if values.isRegularFile == true {
+                if let resourceID = values.fileResourceIdentifier as? Data {
+                    if !seenInodes.insert(resourceID).inserted {
+                        continue
+                    }
+                }
                 let size = values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0
                 total += Int64(size)
             }

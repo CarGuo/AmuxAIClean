@@ -47,6 +47,9 @@ public actor HeuristicEngine {
         guard !standardized.isEmpty, standardized.hasPrefix("/") else { return }
 
         for prefix in Self.ancestorPrefixes(of: standardized) {
+            if prefix != standardized && isSharedContainerRoot(prefix) {
+                continue
+            }
             var entry = scores[prefix] ?? PathScore()
             switch action {
             case .trashedPath:
@@ -165,12 +168,48 @@ public actor HeuristicEngine {
         return s
     }
 
-    /// 检查该路径自身或任一祖先前缀是否曾经发生过 restore。
+    /// 检查该路径自身或任一应用级祖先前缀是否曾经发生过 restore。
+    /// 共享容器根（如 `/Users`、`$HOME`、`~/Library/Caches`）不跨应用传染 restore 惩罚。
     private func hasRestoreInLineage(of path: String) -> Bool {
         for prefix in Self.ancestorPrefixes(of: path) {
+            if prefix != path && isSharedContainerRoot(prefix) {
+                continue
+            }
             if let entry = scores[prefix], entry.restoredCount > 0 { return true }
         }
         return false
+    }
+
+    /// 判断路径是否为多应用共用的顶层容器目录（不应用于跨应用向上聚合或传染）。
+    private func isSharedContainerRoot(_ prefix: String) -> Bool {
+        let stdHome = Self.standardize(home)
+        if !stdHome.isEmpty {
+            if prefix == stdHome || stdHome.hasPrefix(prefix + "/") {
+                return true
+            }
+            let sharedHomeContainers: Set<String> = [
+                "\(stdHome)/Library",
+                "\(stdHome)/Library/Caches",
+                "\(stdHome)/Library/Logs",
+                "\(stdHome)/Library/Application Support",
+                "\(stdHome)/Library/Containers",
+                "\(stdHome)/Library/Group Containers",
+                "\(stdHome)/Library/Saved Application State",
+                "\(stdHome)/Library/Preferences",
+                "\(stdHome)/Library/Developer",
+                "\(stdHome)/Downloads",
+                "\(stdHome)/Documents",
+                "\(stdHome)/Desktop",
+            ]
+            if sharedHomeContainers.contains(prefix) {
+                return true
+            }
+        }
+        let systemContainers: Set<String> = [
+            "/Users", "/var", "/private", "/private/var", "/tmp", "/private/tmp",
+            "/System", "/Library", "/Applications"
+        ]
+        return systemContainers.contains(prefix)
     }
 
     // MARK: - 工具

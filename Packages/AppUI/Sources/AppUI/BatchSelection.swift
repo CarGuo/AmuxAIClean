@@ -44,7 +44,9 @@ public final class BatchSelection: ObservableObject {
     }
 
     public func remove(paths: [String]) {
-        selected.subtract(paths)
+        guard !paths.isEmpty, !selected.isEmpty else { return }
+        let matcher = DeletionPresentationPathMatcher(paths: paths)
+        selected = selected.filter { !matcher.contains($0) }
     }
 
     // MARK: - 与可见列表的交互

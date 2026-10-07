@@ -227,4 +227,26 @@ final class HeuristicEngineTests: XCTestCase {
         let none = HeuristicEngine.ancestorPrefixes(of: "relative/path")
         XCTAssertTrue(none.isEmpty)
     }
+
+    // MARK: - 11. 共享容器根不跨 vendor 传染 restore
+
+    func testRestoreDoesNotPoisonUnrelatedVendorViaSharedContainers() async {
+        let engine = makeEngine()
+        let restoredVendorFile = "\(home)/Library/Caches/com.vendorA/data.bin"
+        let unrelatedVendorFile = "\(home)/Library/Caches/com.vendorB/cache.bin"
+
+        await engine.record(action: .restoredPath(restoredVendorFile, timestamp: ts(1)))
+        for i in 0..<4 {
+            await engine.record(action: .trashedPath(unrelatedVendorFile, timestamp: ts(Double(10 + i))))
+        }
+
+        let scoreA = await engine.score(path: "\(home)/Library/Caches/com.vendorA/other.bin")
+        let scoreB = await engine.score(path: unrelatedVendorFile)
+        XCTAssertLessThan(scoreA, 0.0, "同一 vendor 下的兄弟文件仍应继承 restore 警惕负分")
+        XCTAssertGreaterThan(scoreB, 0.0, "不同 vendor 不得因共用 ~/Library/Caches 或 $HOME 而被污染为负分")
+        let cachesEntry = await engine.snapshotEntry(for: "\(home)/Library/Caches")
+        let homeEntry = await engine.snapshotEntry(for: home)
+        XCTAssertNil(cachesEntry, "共享容器 ~/Library/Caches 不应累积跨应用计数")
+        XCTAssertNil(homeEntry, "$HOME 根不应累积跨应用计数")
+    }
 }

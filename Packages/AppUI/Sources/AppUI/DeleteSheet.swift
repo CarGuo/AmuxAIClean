@@ -160,43 +160,45 @@ public struct DeleteSheet: View {
                     cancelAndClose()
                 }
                     .keyboardShortcut(.cancelAction)
-                Button(
-                    isPreviewAction
-                        ? AppLocalization.string("delete.action.preview", locale: locale)
-                        : AppLocalization.string("delete.action.confirm", locale: locale),
-                    role: isPreviewAction ? nil : .destructive
-                ) {
-                    confirmCurrentAction()
+                if !isPreviewAction && !displayedConflictAppNames.isEmpty && decisionConflictCount > 0 {
+                    let choiceHelp = AppLocalization.string("delete.running_app.choice.title", locale: locale)
+                        + "\n"
+                        + RunningAppNoticeFormatter.text(
+                            localizationKey: "delete.running_app.choice.message %@",
+                            appNames: decisionAppNames.isEmpty ? displayedConflictAppNames : decisionAppNames,
+                            locale: locale
+                        )
+                    Button(skipActionTitle) {
+                        submitFinalAction(.skipConflictingItems)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isResolvingRunningApps)
+                    .help(choiceHelp)
+
+                    Button(role: .destructive) {
+                        submitFinalAction(.moveAllToTrash)
+                    } label: {
+                        Text("delete.running_app.choice.move_all", bundle: .module)
+                    }
+                    .disabled(isResolvingRunningApps)
+                    .help(choiceHelp)
+                } else {
+                    Button(
+                        isPreviewAction
+                            ? AppLocalization.string("delete.action.preview", locale: locale)
+                            : AppLocalization.string("delete.action.confirm", locale: locale),
+                        role: isPreviewAction ? nil : .destructive
+                    ) {
+                        confirmCurrentAction()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isResolvingRunningApps)
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(isResolvingRunningApps)
             }
             .padding(20)
         }
         .frame(minWidth: 560, minHeight: 480)
-        .confirmationDialog(
-            AppLocalization.string("delete.running_app.choice.title", locale: locale),
-            isPresented: $showRunningAppDecision,
-            titleVisibility: .visible
-        ) {
-            Button(skipActionTitle) {
-                submitFinalAction(.skipConflictingItems)
-            }
-            Button(role: .destructive) {
-                submitFinalAction(.moveAllToTrash)
-            } label: {
-                Text("delete.running_app.choice.move_all", bundle: .module)
-            }
-            Button(role: .cancel) {} label: {
-                Text("delete.action.cancel", bundle: .module)
-            }
-        } message: {
-            Text(RunningAppNoticeFormatter.text(
-                localizationKey: "delete.running_app.choice.message %@",
-                appNames: decisionAppNames,
-                locale: locale
-            ))
-        }
         .task {
             await refreshDisplayedConflicts()
         }
@@ -235,10 +237,10 @@ public struct DeleteSheet: View {
                     ))
                     return
                 }
+                displayedConflictAppNames = projection.appNames
                 decisionConflicts = projection.conflicts
                 decisionAppNames = projection.appNames
                 decisionConflictCount = projection.uniquePathCount
-                showRunningAppDecision = true
             } catch is CancellationError {
                 isResolvingRunningApps = false
             } catch {
@@ -274,6 +276,9 @@ public struct DeleteSheet: View {
             )
             try Task.checkCancellation()
             displayedConflictAppNames = projection.appNames
+            decisionConflicts = projection.conflicts
+            decisionAppNames = projection.appNames
+            decisionConflictCount = projection.uniquePathCount
         } catch is CancellationError {
             return
         } catch {

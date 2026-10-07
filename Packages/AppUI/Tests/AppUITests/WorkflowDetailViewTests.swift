@@ -2608,6 +2608,80 @@ final class WorkflowDetailViewTests: XCTestCase {
         ])
         XCTAssertEqual(folded, ["\(home)/.npm", "\(home)/.npm-other"])
     }
+
+    func test_performDelete_父子重叠卡片同步扣减或移除() async throws {
+        let home = makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let (undoHistoryStore, undoHistoryURL) = try makeUndoStore()
+        defer { try? FileManager.default.removeItem(at: undoHistoryURL) }
+
+        let rootPath = "/Users/test/Library/Developer/Xcode/DerivedData"
+        let childAPath = rootPath + "/ProjectA-123"
+        let childBPath = rootPath + "/ProjectB-456"
+
+        let rootCard = makeFilesystemCard(id: "apple.derivedDataRoot")
+        let projectsCard = makeFilesystemCard(id: "apple.derivedDataProjects")
+        let rootHit = WorkflowScanHit(
+            url: URL(fileURLWithPath: rootPath),
+            sizeBytes: 1_000,
+            displayName: "DerivedData",
+            note: nil
+        )
+        let childAHit = WorkflowScanHit(
+            url: URL(fileURLWithPath: childAPath),
+            sizeBytes: 400,
+            displayName: "ProjectA",
+            note: nil
+        )
+        let childBHit = WorkflowScanHit(
+            url: URL(fileURLWithPath: childBPath),
+            sizeBytes: 600,
+            displayName: "ProjectB",
+            note: nil
+        )
+
+        let vm = WorkflowDetailViewModel(
+            testingWorkflow: AppleWorkflow(),
+            home: home,
+            undoHistoryStore: undoHistoryStore
+        )
+        vm.setTestCards([rootCard, projectsCard])
+        vm.setTestHits([
+            rootCard.id: [rootHit],
+            projectsCard.id: [childAHit, childBHit]
+        ])
+        vm.setTestSelection([childAHit.id])
+
+        let pipeline = StubDeletionPipeline()
+        pipeline.stubOutcome = TrashOutcome(
+            movedPairs: [(childAPath, "/Trash/ProjectA-123")],
+            failedPaths: [],
+            safetyRejected: [],
+            missingPaths: []
+        )
+        let childIntent = try await confirmedIntent(from: vm, pipeline: pipeline)
+        await vm.performDelete(pipeline: pipeline, intent: childIntent)
+
+        XCTAssertEqual(vm.cardHits[projectsCard.id]?.map(\.url.path), [childBPath])
+        XCTAssertEqual(vm.cardHits[rootCard.id]?.first?.sizeBytes, 600,
+                       "删除子项目后，父根 DerivedData 卡片容量必须同步扣减 400 bytes")
+
+        // 关闭上一次删除结果页，再删父根：子项目卡片中剩余的后代也必须一并移除
+        vm.activeSheet = nil
+        vm.setTestSelection([rootHit.id])
+        pipeline.stubOutcome = TrashOutcome(
+            movedPairs: [(rootPath, "/Trash/DerivedData")],
+            failedPaths: [],
+            safetyRejected: [],
+            missingPaths: []
+        )
+        let rootIntent = try await confirmedIntent(from: vm, pipeline: pipeline)
+        await vm.performDelete(pipeline: pipeline, intent: rootIntent)
+
+        XCTAssertEqual(vm.cardHits[rootCard.id]?.isEmpty, true)
+        XCTAssertEqual(vm.cardHits[projectsCard.id]?.isEmpty, true,
+                       "删除父根 DerivedData 后，子项目卡片中的后代路径必须同步清空")
+    }
 }
 
 /// v2026.07.20 regression boundary: Workflow compatibility stubs can report moved pairs without

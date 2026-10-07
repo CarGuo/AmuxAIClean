@@ -1776,24 +1776,21 @@ private struct SmartCareCategorySection: View {
                 Divider()
                     .padding(.leading, 58)
 
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(bucket.safeItems.enumerated()), id: \.element.id) { index, item in
-                            SmartCareSelectableItemRow(
-                                item: item,
-                                selected: selectedIDs.contains(item.id),
-                                aiState: aiItemStates[item.path],
-                                showsRisk: false,
-                                onToggle: { onToggleItem($0, item) }
-                            )
-                            if index < bucket.safeItems.count - 1 {
-                                Divider()
-                                    .padding(.leading, 34)
-                            }
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(bucket.safeItems.enumerated()), id: \.element.id) { index, item in
+                        SmartCareSelectableItemRow(
+                            item: item,
+                            selected: selectedIDs.contains(item.id),
+                            aiState: aiItemStates[item.path],
+                            showsRisk: false,
+                            onToggle: { onToggleItem($0, item) }
+                        )
+                        if index < bucket.safeItems.count - 1 {
+                            Divider()
+                                .padding(.leading, 34)
                         }
                     }
                 }
-                .frame(height: expandedHeight)
                 .background(tint.opacity(0.035))
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
@@ -1825,11 +1822,6 @@ private struct SmartCareCategorySection: View {
 
     private var tint: Color {
         SmartCarePresentation.tint(for: bucket.id)
-    }
-
-    private var expandedHeight: CGFloat {
-        let visibleRows = min(bucket.safeItems.count, 5)
-        return max(44, CGFloat(visibleRows * 44 + max(0, visibleRows - 1)))
     }
 }
 
@@ -1910,25 +1902,22 @@ private struct SmartCareRiskSection: View {
                 Divider()
                     .padding(.leading, 58)
 
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                            SmartCareSelectableItemRow(
-                                item: item,
-                                selected: selectedIDs.contains(item.id),
-                                aiState: aiItemStates[item.path],
-                                showsRisk: true,
-                                selectionEnabled: kind == .confirm,
-                                onToggle: { onToggleItem($0, item) }
-                            )
-                            if index < items.count - 1 {
-                                Divider()
-                                    .padding(.leading, 34)
-                            }
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                        SmartCareSelectableItemRow(
+                            item: item,
+                            selected: selectedIDs.contains(item.id),
+                            aiState: aiItemStates[item.path],
+                            showsRisk: true,
+                            selectionEnabled: kind == .confirm,
+                            onToggle: { onToggleItem($0, item) }
+                        )
+                        if index < items.count - 1 {
+                            Divider()
+                                .padding(.leading, 34)
                         }
                     }
                 }
-                .frame(height: riskExpandedHeight)
                 .background(tint.opacity(0.035))
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
@@ -1938,11 +1927,6 @@ private struct SmartCareRiskSection: View {
 
     private var tint: Color {
         SmartCarePresentation.tint(for: kind.verdict)
-    }
-
-    private var riskExpandedHeight: CGFloat {
-        let visibleRows = min(items.count, 4)
-        return max(56, CGFloat(visibleRows * 56 + max(0, visibleRows - 1)))
     }
 }
 
@@ -1984,6 +1968,12 @@ private struct SmartCareSelectableItemRow: View {
 
                 if showsRisk {
                     riskText
+                } else {
+                    Text(verbatim: (item.path as NSString).abbreviatingWithTildeInPath)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
             }
 
@@ -1994,7 +1984,31 @@ private struct SmartCareSelectableItemRow: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 14)
-        .frame(minHeight: showsRisk ? 56 : 44)
+        .frame(minHeight: showsRisk ? 56 : 48)
+        .contentShape(Rectangle())
+        .help(item.path)
+        .contextMenu {
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
+            } label: {
+                Label {
+                    Text("tree.menu.reveal_in_finder", bundle: .module)
+                } icon: {
+                    Image(systemName: "folder")
+                }
+            }
+            Button {
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(item.path, forType: .string)
+            } label: {
+                Label {
+                    Text("tree.menu.copy_path", bundle: .module)
+                } icon: {
+                    Image(systemName: "doc.on.doc")
+                }
+            }
+        }
     }
 
     @ViewBuilder

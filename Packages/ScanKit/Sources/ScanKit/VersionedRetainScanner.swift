@@ -373,8 +373,28 @@ public actor VersionedRetainScanner {
         if let l = lhsVersion, let r = rhsVersion {
             let cmp = l.compare(r, options: .numeric)
             if cmp != .orderedSame { return cmp }
+            let lSuffix = String(lhs.dropFirst(l.count))
+            let rSuffix = String(rhs.dropFirst(r.count))
+            let lPre = isPrereleaseSuffix(lSuffix)
+            let rPre = isPrereleaseSuffix(rSuffix)
+            if lPre != rPre {
+                // Pre-release (e.g. 1.0.0-alpha) is older than stable release (1.0.0)
+                return lPre ? .orderedAscending : .orderedDescending
+            }
         }
         return lhs.localizedStandardCompare(rhs)
+    }
+
+    nonisolated private static func isPrereleaseSuffix(_ suffix: String) -> Bool {
+        guard suffix.hasPrefix("-") else { return false }
+        let lower = suffix.dropFirst().lowercased()
+        return lower.hasPrefix("alpha")
+            || lower.hasPrefix("beta")
+            || lower.hasPrefix("rc")
+            || lower.hasPrefix("pre")
+            || lower.hasPrefix("dev")
+            || lower.hasPrefix("canary")
+            || lower.hasPrefix("nightly")
     }
 
     nonisolated static func extractLeadingVersion(_ s: String) -> String? {

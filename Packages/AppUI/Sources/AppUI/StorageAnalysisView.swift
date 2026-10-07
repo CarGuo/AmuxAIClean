@@ -311,41 +311,58 @@ struct StorageAnalysisView: View {
     }
 
     private func directoryRow(_ row: TreeRow) -> some View {
-        Button {
-            activate(row)
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: row.accessState == .normal ? (row.isDirectory ? "folder" : "doc") : "lock")
-                    .foregroundStyle(
-                        NormalWorkspacePalette.color(StorageDirectoryProjection.colorIndex(for: row.path)))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(verbatim: row.displayTitle(locale: locale)).font(.callout.weight(.medium)).lineLimit(
-                        1)
-                    Text(
-                        verbatim: row.isSizePending
-                            ? AppLocalization.string("workspace.storage.pending", locale: locale)
-                            : AppLocalization.byteCount(row.bytes, locale: locale)
-                    )
-                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    if !row.hasCompleteAccessEvidence {
-                        Text("workspace.storage.partial.short", bundle: .module)
-                            .font(.caption2).foregroundStyle(.secondary)
+        let canTrash = !(trash.isBusy || store.isProjecting || store.phase != .ready
+            || !row.hasCompleteAccessEvidence || row.isSizePending)
+        return HStack(spacing: 8) {
+            Button {
+                activate(row)
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: row.accessState == .normal ? (row.isDirectory ? "folder" : "doc") : "lock")
+                        .foregroundStyle(
+                            NormalWorkspacePalette.color(StorageDirectoryProjection.colorIndex(for: row.path)))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(verbatim: row.displayTitle(locale: locale)).font(.callout.weight(.medium)).lineLimit(
+                            1)
+                        Text(
+                            verbatim: row.isSizePending
+                                ? AppLocalization.string("workspace.storage.pending", locale: locale)
+                                : AppLocalization.byteCount(row.bytes, locale: locale)
+                        )
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        if !row.hasCompleteAccessEvidence {
+                            Text("workspace.storage.partial.short", bundle: .module)
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    if row.isDirectory, row.accessState == .normal {
+                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
                     }
                 }
-                Spacer(minLength: 0)
-                if row.isDirectory, row.accessState == .normal {
-                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
-                }
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 9).padding(.vertical, 10)
-            .background(
-                Color.primary.opacity(selectedFile?.path == row.path ? 0.08 : 0.025),
-                in: RoundedRectangle(cornerRadius: 10)
-            )
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .disabled(trash.isBusy)
+
+            Button {
+                trash.prepare(row, snapshotIdentity: store.projectionIdentity)
+            } label: {
+                Image(systemName: "trash")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(canTrash ? Color.red.opacity(0.85) : Color.secondary.opacity(0.35))
+                    .frame(width: 26, height: 26)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canTrash)
+            .help(Text("delete.action.confirm", bundle: .module))
         }
-        .buttonStyle(.plain)
-        .disabled(trash.isBusy)
+        .padding(.horizontal, 9).padding(.vertical, 10)
+        .background(
+            Color.primary.opacity(selectedFile?.path == row.path ? 0.08 : 0.025),
+            in: RoundedRectangle(cornerRadius: 10)
+        )
         .contextMenu { fileActions(row) }
     }
 

@@ -104,10 +104,10 @@ enum BrewCleanupTerminalProjection {
         succeededPaths: Set<String>,
         to state: BrewCleanupTerminalState
     ) -> BrewCleanupTerminalState {
-        let currentPaths = Set(state.plan.stalePaths.map(\.path))
-        let removedPaths = succeededPaths.intersection(currentPaths)
+        let matcher = DeletionPresentationPathMatcher(paths: Array(succeededPaths))
+        let removedPaths = Set(state.plan.stalePaths.map(\.path).filter { matcher.contains($0) })
         let remaining = state.plan.stalePaths.filter { !removedPaths.contains($0.path) }
-        let remainingBytes = state.bytesByPath.filter { !removedPaths.contains($0.key) }
+        let remainingBytes = state.bytesByPath.filter { !matcher.contains($0.key) }
 
         let totalBytes: Int64
         if remaining.isEmpty {

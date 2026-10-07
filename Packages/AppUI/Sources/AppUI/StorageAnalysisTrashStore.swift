@@ -121,6 +121,11 @@ final class StorageAnalysisTrashStore: ObservableObject {
                 let result = await interaction.submit(authorization, accessDeniedPaths: [])
                 switch result {
                 case .completed(let completion):
+                    let succeededPaths = completion.result.succeededPaths
+                    if !succeededPaths.isEmpty {
+                        await scanner.acknowledgeSuccessfulDeletionForPresentation(paths: succeededPaths)
+                        await scanner.pruneDeleted(paths: succeededPaths)
+                    }
                     sheet = .result(.deletion(completion))
                 case .blocked(let block): show(block)
                 case .requiresConfirmation(let prepared): sheet = .review(Review(prepared: prepared))

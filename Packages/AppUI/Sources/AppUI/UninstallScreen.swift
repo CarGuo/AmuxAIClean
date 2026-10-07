@@ -722,6 +722,20 @@ private struct InstalledApplicationDiscoveryWorker: Sendable {
 struct UninstallCandidateTerminalState: Equatable, Sendable {
     let candidates: [UninstallCandidate]
     let checked: Set<String>
+    let apps: [InstalledApp]
+    let selectedApp: InstalledApp?
+
+    init(
+        candidates: [UninstallCandidate],
+        checked: Set<String>,
+        apps: [InstalledApp] = [],
+        selectedApp: InstalledApp? = nil
+    ) {
+        self.candidates = candidates
+        self.checked = checked
+        self.apps = apps
+        self.selectedApp = selectedApp
+    }
 }
 
 enum UninstallCandidateTerminalProjection {
@@ -729,9 +743,25 @@ enum UninstallCandidateTerminalProjection {
         succeededPaths: Set<String>,
         to state: UninstallCandidateTerminalState
     ) -> UninstallCandidateTerminalState {
-        UninstallCandidateTerminalState(
-            candidates: state.candidates.filter { !succeededPaths.contains($0.path) },
-            checked: state.checked.subtracting(succeededPaths)
+        let matcher = DeletionPresentationPathMatcher(paths: Array(succeededPaths))
+        let remainingCandidates = state.candidates.filter { !matcher.contains($0.path) }
+        let remainingChecked = Set(state.checked.filter { !matcher.contains($0) })
+        let remainingApps = state.apps.filter { !matcher.contains($0.appURL.path) }
+        let nextSelectedApp: InstalledApp?
+        if let selected = state.selectedApp {
+            if matcher.contains(selected.appURL.path) {
+                nextSelectedApp = remainingCandidates.isEmpty ? remainingApps.first : selected
+            } else {
+                nextSelectedApp = selected
+            }
+        } else {
+            nextSelectedApp = nil
+        }
+        return UninstallCandidateTerminalState(
+            candidates: remainingCandidates,
+            checked: remainingChecked,
+            apps: remainingApps,
+            selectedApp: nextSelectedApp
         )
     }
 }
@@ -1322,9 +1352,21 @@ public struct UninstallScreen: View {
     @State private var uninstallExecutionOwner: UninstallExecutionOwner?
     @State private var uninstallExecutionStatus: UninstallExecutionStatus?
     @State private var selectedAppRevision: UInt64 = 0
+    @StateObject private var iconCache = AppFootprintIconCache()
+    @State private var searchQuery: String = ""
     /// v2026.07.16: identifies the candidate scan, not the confirmation click. This closes the
     /// path where a random UUID made every retry look like a fresh review after restart.
     @State private var selectedAppScanSessionID = UUID()
+
+    private var filteredApps: [InstalledApp] {
+        let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return apps }
+        return apps.filter { app in
+            app.metadata.appName.localizedCaseInsensitiveContains(q)
+                || app.metadata.bundleID.localizedCaseInsensitiveContains(q)
+                || app.appURL.path.localizedCaseInsensitiveContains(q)
+        }
+    }
 
     private var isDeletionTransactionActive: Bool {
         isDeleting
@@ -1458,6 +1500,7 @@ public struct UninstallScreen: View {
         }
         .onDisappear {
             onTransactionActiveChange(false)
+            iconCache.removeAll()
             cancelAppListReloadForDeparture()
             cancelCandidateLoadForDeparture()
             cancelUninstallPreflight()
@@ -1477,6 +1520,7 @@ public struct UninstallScreen: View {
                 Spacer()
                 if isLoadingApps { ProgressView().controlSize(.small) }
                 Button {
+                    iconCache.removeAll()
                     startAppListReload()
                 } label: {
                     Image(systemName: "arrow.clockwise")
@@ -1486,6 +1530,10 @@ public struct UninstallScreen: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
+            TextField(AppLocalization.string("appfootprint.header.search_placeholder", locale: locale), text: $searchQuery)
+                .textFieldStyle(.roundedBorder)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
             Divider()
             if !appListIncompleteIssues.isEmpty {
                 discoveryNotice(
@@ -1495,14 +1543,32 @@ public struct UninstallScreen: View {
                 Divider()
             }
             List(selection: $selectedApp) {
-                ForEach(apps) { app in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(app.metadata.appName)
-                            .font(.system(.body, design: .rounded))
-                        Text(app.metadata.bundleID)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                ForEach(filteredApps) { app in
+                    HStack(spacing: 10) {
+                        Group {
+                            if let icon = iconCache.image(for: app.appURL) {
+                                Image(nsImage: icon)
+                                    .resizable()
+                                    .interpolation(.high)
+                            } else {
+                                Image(systemName: "app.fill")
+                                    .resizable()
+                                    .scaledToFit()
+                                    .padding(4)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(width: 28, height: 28)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(app.metadata.appName)
+                                .font(.system(.body, design: .rounded))
+                                .lineLimit(1)
+                            Text(app.metadata.bundleID)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
                     .padding(.vertical, 2)
                     .tag(app)
@@ -1677,6 +1743,30 @@ public struct UninstallScreen: View {
             }
         }
         .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .help(cand.path)
+        .contextMenu {
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: cand.path)])
+            } label: {
+                Label {
+                    Text("tree.menu.reveal_in_finder", bundle: .module)
+                } icon: {
+                    Image(systemName: "folder")
+                }
+            }
+            Button {
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(cand.path, forType: .string)
+            } label: {
+                Label {
+                    Text("tree.menu.copy_path", bundle: .module)
+                } icon: {
+                    Image(systemName: "doc.on.doc")
+                }
+            }
+        }
     }
 
     private var footerBar: some View {
@@ -1784,6 +1874,11 @@ public struct UninstallScreen: View {
             guard shouldPublish else { return }
             self.apps = result.apps
             self.appListIncompleteIssues = result.incompleteIssues
+            if let current = self.selectedApp, !result.apps.contains(current) {
+                self.selectedApp = result.apps.first
+            } else if self.selectedApp == nil {
+                self.selectedApp = result.apps.first
+            }
         }
     }
 
@@ -2205,11 +2300,17 @@ public struct UninstallScreen: View {
                     succeededPaths: Set(result.succeededPaths),
                     to: UninstallCandidateTerminalState(
                         candidates: self.candidates,
-                        checked: self.checked
+                        checked: self.checked,
+                        apps: self.apps,
+                        selectedApp: self.selectedApp
                     )
                 )
                 self.candidates = terminal.candidates
                 self.checked = terminal.checked
+                self.apps = terminal.apps
+                if self.selectedApp != terminal.selectedApp {
+                    self.selectedApp = terminal.selectedApp
+                }
             },
             makePayload: { OperationResultCompletion.deletion(completed) },
             present: { completion in

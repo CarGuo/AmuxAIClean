@@ -477,6 +477,7 @@ public struct DartRadarScreen: View {
         guard !text.isEmpty else { return entries }
         return entries.filter { entry in
             entry.role.titleKey.localizedCaseInsensitiveContains(text)
+            || AppLocalization.string(entry.role.titleKey, locale: locale).localizedCaseInsensitiveContains(text)
             || (entry.projectName?.localizedCaseInsensitiveContains(text) ?? false)
             || (entry.projectPath?.localizedCaseInsensitiveContains(text) ?? false)
             || (entry.workingDirectory?.localizedCaseInsensitiveContains(text) ?? false)

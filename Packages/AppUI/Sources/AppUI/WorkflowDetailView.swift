@@ -2502,12 +2502,16 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 movedPairs = result.pairs
             }
 
-            // 只消费确认前冻结的 path → hit 映射；执行阶段不能回读新一轮 cardHits。
-            for path in movedPairs.map({ $0.0 }) {
+            // 只消费确认前冻结的 path → hit 映射；同时同步父子重叠卡片（如 DerivedData 根与单项目卡）。
+            let succeededPaths = movedPairs.map { $0.0 }
+            for path in succeededPaths {
                 succeededFilesystemHitIDs.formUnion(intent.filesystemHitIDsByPath[path] ?? [])
             }
             selected.subtract(succeededFilesystemHitIDs)
-            removeHitsFromVisibleState(succeededFilesystemHitIDs)
+            removeHitsFromVisibleState(
+                succeededFilesystemHitIDs,
+                succeededFilesystemPaths: succeededPaths
+            )
         }
 
         // v2026.07.15：Trash 完成后直接展示真实 receipt，并只从当前卡片投影中移除
@@ -2789,17 +2793,95 @@ public final class WorkflowDetailViewModel: ObservableObject {
         simulatorUninstallState = .executing(intent, progress)
     }
 
-    /// 从已发布卡片投影中只移除真实成功项，并重算受影响卡片容量。
+    /// 从已发布卡片投影中只移除真实成功项，并同步重叠父子卡片（如 DerivedData 整根与分工程卡片）。
     /// 不触发全页 runScan，所以无关 Card 不会一起进入 loading。
-    private func removeHitsFromVisibleState(_ hitIDs: Set<String>) {
-        guard !hitIDs.isEmpty else { return }
-        for hitID in hitIDs {
-            explicitFilesystemSelectionPaths.removeValue(forKey: hitID)
+    private func removeHitsFromVisibleState(
+        _ hitIDs: Set<String>,
+        succeededFilesystemPaths: [String] = []
+    ) {
+        guard !hitIDs.isEmpty || !succeededFilesystemPaths.isEmpty else { return }
+        let pathMatcher = DeletionPresentationPathMatcher(paths: succeededFilesystemPaths)
+        let foldedDeletedRoots = Self.foldNestedPaths(succeededFilesystemPaths)
+        let filesystemCardIDs = Set(cards.compactMap { card -> String? in
+            if case .filesystem = card.recipe { return card.id }
+            return nil
+        })
+
+        // Record the size of deleted roots before removing hits so ancestor cards can subtract them.
+        var deletedBytesByRoot: [String: Int64] = [:]
+        if !foldedDeletedRoots.isEmpty {
+            let deletedRootSet = Set(foldedDeletedRoots)
+            for cardID in cardHits.keys where filesystemCardIDs.isEmpty || filesystemCardIDs.contains(cardID) {
+                for hit in cardHits[cardID] ?? [] {
+                    let stdPath = hit.url.standardizedFileURL.path
+                    guard deletedRootSet.contains(stdPath),
+                          let bytes = hit.sizeBytes, bytes > 0 else { continue }
+                    deletedBytesByRoot[stdPath] = max(deletedBytesByRoot[stdPath] ?? 0, bytes)
+                }
+            }
         }
+
+        var allRemovedHitIDs = hitIDs
         for cardID in Array(cardHits.keys) {
-            let remaining = (cardHits[cardID] ?? []).filter { !hitIDs.contains($0.id) }
+            let isFilesystemCard = filesystemCardIDs.isEmpty || filesystemCardIDs.contains(cardID)
+            let currentHits = cardHits[cardID] ?? []
+            var remaining: [WorkflowScanHit] = []
+            remaining.reserveCapacity(currentHits.count)
+
+            for hit in currentHits {
+                let stdPath = hit.url.standardizedFileURL.path
+                if hitIDs.contains(hit.id) || (isFilesystemCard && pathMatcher.contains(stdPath)) {
+                    allRemovedHitIDs.insert(hit.id)
+                    continue
+                }
+                if isFilesystemCard, let oldBytes = hit.sizeBytes {
+                    var subtractedBytes: Int64 = 0
+                    for (deletedRoot, rootBytes) in deletedBytesByRoot
+                        where Self.isAncestor(stdPath, of: deletedRoot) && stdPath != deletedRoot {
+                        subtractedBytes = Self.saturatingAdd(subtractedBytes, rootBytes)
+                    }
+                    if subtractedBytes > 0 {
+                        let nextBytes = max(0, oldBytes - subtractedBytes)
+                        if nextBytes == 0 {
+                            let issues = cardIncompleteIssues[cardID] ?? []
+                            let hasIncompleteEvidence = !DeletionTargetRevalidator.relevantIssues(
+                                for: hit.url.path,
+                                from: issues
+                            ).isEmpty
+                            if !hasIncompleteEvidence {
+                                allRemovedHitIDs.insert(hit.id)
+                                continue
+                            }
+                            remaining.append(WorkflowScanHit(
+                                url: hit.url,
+                                sizeBytes: nil,
+                                displayName: hit.displayName,
+                                note: hit.note,
+                                semanticNote: hit.semanticNote,
+                                managedUninstallIdentifier: hit.managedUninstallIdentifier
+                            ))
+                            continue
+                        }
+                        remaining.append(WorkflowScanHit(
+                            url: hit.url,
+                            sizeBytes: nextBytes,
+                            displayName: hit.displayName,
+                            note: hit.note,
+                            semanticNote: hit.semanticNote,
+                            managedUninstallIdentifier: hit.managedUninstallIdentifier
+                        ))
+                        continue
+                    }
+                }
+                remaining.append(hit)
+            }
             cardHits[cardID] = remaining
             cardTotalBytes[cardID] = remaining.reduce(0) { $0 &+ max(0, $1.sizeBytes ?? 0) }
+        }
+
+        selected.subtract(allRemovedHitIDs)
+        for hitID in allRemovedHitIDs {
+            explicitFilesystemSelectionPaths.removeValue(forKey: hitID)
         }
     }
 
