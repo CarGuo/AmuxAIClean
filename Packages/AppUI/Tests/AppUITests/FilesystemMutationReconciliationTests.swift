@@ -232,6 +232,182 @@ final class FilesystemMutationReconciliationTests: XCTestCase {
         XCTFail("The authoritative primary scan did not settle")
     }
 
+    // v2026.10.09: use the production shallow primary scan, whose allocation catalog survives
+    // without a deep index. Partial absence must preserve published members and one baseline.
+    func testPartialShallowRefreshPreservesRowsAndAllocationThroughRecovery() async throws {
+        if geteuid() == 0 { throw XCTSkip("Root bypasses the fixture's POSIX permissions") }
+        let root = try fixture()
+        let blocked = root.appendingPathComponent("blocked", isDirectory: true)
+        defer {
+            chmod(root.path, 0o700)
+            chmod(blocked.path, 0o700)
+            try? FileManager.default.removeItem(at: root) // best-effort owned fixture cleanup
+        }
+        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
+        let visible = root.appendingPathComponent("visible.bin")
+        let kept = blocked.appendingPathComponent("kept.bin")
+        try Data(repeating: 0x51, count: 8192).write(to: visible)
+        try Data(repeating: 0x52, count: 16384).write(to: kept)
+        let coordinator = ScanCoordinator(home: root.path)
+        let session = coordinator.currentScanSessionID
+        coordinator.scan(category: .makeCustom(url: root))
+        try await waitForPrimaryScan(coordinator, replacing: session)
+        let originalBytes = coordinator.snapshot.totalBytes
+        let blockedBytes = try XCTUnwrap(coordinator.snapshot.rows.first { $0.id == blocked.path }).bytes
+        XCTAssertNil(coordinator._dirIndexAggForTesting(root.path))
+        // The async enumeration API returns values without publishing a cache. Exercise the
+        // actual View getter and wait for its owned producer/projection before denying access.
+        let expansionDeadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while ContinuousClock.now < expansionDeadline {
+            let rows = coordinator.directChildren(of: blocked.path, sortedBy: .sizeDesc)
+            if rows.map(\.path) == [kept.path],
+               !coordinator.isFetchingChildren(of: blocked.path, sortedBy: .sizeDesc) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(coordinator.directChildren(of: blocked.path).map(\.path), [kept.path])
+        XCTAssertFalse(coordinator.isFetchingChildren(of: blocked.path, sortedBy: .sizeDesc))
+
+        XCTAssertEqual(chmod(root.path, 0o000), 0)
+        await coordinator.rescanSubtree(at: root.path)
+        XCTAssertEqual(Set(coordinator.snapshot.rows.map(\.id)), [visible.path, blocked.path])
+        XCTAssertEqual(coordinator.snapshot.totalBytes, originalBytes)
+        XCTAssertEqual(coordinator.snapshot.scannedFileCount, 2)
+        XCTAssertTrue(coordinator.incompleteScanIssues.contains { $0.reason == .permissionDenied })
+        for sort in TreeSortKey.allCases {
+            XCTAssertEqual(Set(coordinator._snapshotTreeRowsForTesting(sort).map(\.path)), [visible.path, blocked.path])
+            XCTAssertEqual(Set(coordinator.directChildren(of: root.path, sortedBy: sort).map(\.path)), [visible.path, blocked.path])
+            XCTAssertEqual(coordinator.directChildren(of: blocked.path, sortedBy: sort).map(\.path), [kept.path])
+        }
+
+        XCTAssertEqual(chmod(root.path, 0o700), 0)
+        try Data(repeating: 0x53, count: 32768).write(to: visible)
+        var metadata = stat()
+        XCTAssertEqual(lstat(visible.path, &metadata), 0)
+        let visibleBytes = Int64(metadata.st_blocks) * 512
+        XCTAssertEqual(chmod(blocked.path, 0o000), 0)
+        // A readable sibling can grow while an old subtree remains unobservable. The merged
+        // directory ledger, not max(old root, incoming root), owns this positive delta.
+        for _ in 0..<2 {
+            await coordinator.rescanSubtree(at: root.path)
+            XCTAssertEqual(Set(coordinator.snapshot.rows.map(\.id)), [visible.path, blocked.path])
+            XCTAssertEqual(coordinator.snapshot.totalBytes, visibleBytes + blockedBytes)
+            XCTAssertEqual(coordinator.snapshot.scannedFileCount, 2)
+            XCTAssertEqual(coordinator.snapshot.rows.reduce(0) { $0 + $1.bytes }, coordinator.snapshot.totalBytes)
+            XCTAssertEqual(coordinator._dirIndexAggForTesting(root.path)?.bytes, coordinator.snapshot.totalBytes)
+        }
+        XCTAssertEqual(chmod(blocked.path, 0o700), 0)
+        await coordinator.rescanSubtree(at: root.path)
+        XCTAssertEqual(coordinator.snapshot.totalBytes, visibleBytes + blockedBytes)
+        XCTAssertEqual(coordinator.snapshot.scannedFileCount, 2)
+        XCTAssertTrue(coordinator.incompleteScanIssues.isEmpty)
+        try FileManager.default.removeItem(at: visible) // owned temporary fixture only
+        await coordinator.rescanSubtree(at: root.path)
+        XCTAssertEqual(coordinator.snapshot.rows.map(\.id), [blocked.path])
+        XCTAssertEqual(coordinator.snapshot.totalBytes, blockedBytes)
+        XCTAssertEqual(coordinator.snapshot.scannedFileCount, 1)
+    }
+
+    func testPartialRefreshChargesAnUnobservedHardlinkOwnerCorrectionOnce() async throws {
+        if geteuid() == 0 { throw XCTSkip("Root bypasses the fixture's POSIX permissions") }
+        let root = try fixture()
+        let a = root.appendingPathComponent("A", isDirectory: true)
+        let b = root.appendingPathComponent("B", isDirectory: true)
+        defer {
+            chmod(a.path, 0o700)
+            chmod(b.path, 0o700)
+            try? FileManager.default.removeItem(at: root) // best-effort owned fixture cleanup
+        }
+        try FileManager.default.createDirectory(at: a, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: b, withIntermediateDirectories: true)
+        let source = a.appendingPathComponent("linked.bin")
+        let alias = b.appendingPathComponent("linked.bin")
+        try Data(repeating: 0x54, count: 8192).write(to: source)
+        try FileManager.default.linkItem(at: source, to: alias)
+        let coordinator = ScanCoordinator(home: root.path)
+        let session = coordinator.currentScanSessionID
+        coordinator.scan(category: .makeCustom(url: root))
+        try await waitForPrimaryScan(coordinator, replacing: session)
+        let owner = try XCTUnwrap(coordinator.snapshot.rows.first { $0.bytes > 0 }).url
+        let readableAlias = owner.path == a.path ? alias : source
+        try Data(repeating: 0x55, count: 32768).write(to: readableAlias)
+        var metadata = stat()
+        XCTAssertEqual(lstat(readableAlias.path, &metadata), 0)
+        let expectedBytes = Int64(metadata.st_blocks) * 512
+        XCTAssertEqual(chmod(owner.path, 0o000), 0)
+        for _ in 0..<2 {
+            await coordinator.rescanSubtree(at: root.path)
+            XCTAssertEqual(coordinator.snapshot.totalBytes, expectedBytes)
+            XCTAssertEqual(coordinator.snapshot.rows.reduce(0) { $0 + $1.bytes }, expectedBytes)
+            XCTAssertEqual(coordinator.snapshot.scannedFileCount, 2)
+            XCTAssertEqual(coordinator._dirIndexAggForTesting(root.path)?.bytes, expectedBytes)
+        }
+        XCTAssertEqual(chmod(owner.path, 0o700), 0)
+        await coordinator.rescanSubtree(at: root.path)
+        XCTAssertEqual(coordinator.snapshot.totalBytes, expectedBytes)
+        XCTAssertEqual(coordinator.snapshot.scannedFileCount, 2)
+    }
+
+    // v2026.10.09: Undo and explicit refresh must replay the original enumeration options,
+    // including after a later primary scan installs a different configuration.
+    func testUndoAndRefreshRetainHiddenFileOptionsAcrossPrimarySessions() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) } // best-effort fixture cleanup
+        let visible = root.appendingPathComponent("visible.bin")
+        let hidden = root.appendingPathComponent(".excluded.bin")
+        let hiddenDirectory = root.appendingPathComponent(".excluded-directory", isDirectory: true)
+        try FileManager.default.createDirectory(at: hiddenDirectory, withIntermediateDirectories: true)
+        try Data(repeating: 0x61, count: 8192).write(to: visible)
+        try Data(repeating: 0x62, count: 16384).write(to: hidden)
+        try Data(repeating: 0x63, count: 32768).write(to: hiddenDirectory.appendingPathComponent("nested.bin"))
+        let coordinator = ScanCoordinator(home: root.path)
+        for includeHidden in [false, true, false] {
+            let session = coordinator.currentScanSessionID
+            coordinator.scan(category: .makeCustom(url: root), includeHidden: includeHidden)
+            try await waitForPrimaryScan(coordinator, replacing: session)
+            let expectedRows: Set<String> = includeHidden ? [visible.path, hidden.path, hiddenDirectory.path] : [visible.path]
+            let expectedBytes = coordinator.snapshot.totalBytes
+            let expectedFiles = coordinator.snapshot.scannedFileCount
+            XCTAssertEqual(Set(coordinator.snapshot.rows.map(\.id)), expectedRows)
+            await coordinator.acknowledgeSuccessfulDeletionForPresentation(paths: [visible.path])
+            await coordinator.pruneDeleted(paths: [visible.path])
+            await coordinator.reconcileRestoredPaths([visible.path])
+            XCTAssertEqual(Set(coordinator.snapshot.rows.map(\.id)), expectedRows)
+            XCTAssertEqual(coordinator.snapshot.totalBytes, expectedBytes)
+            XCTAssertEqual(coordinator.snapshot.scannedFileCount, expectedFiles)
+            XCTAssertFalse(coordinator._isDeletedTombstonedForTesting(visible.path))
+            await coordinator.rescanSubtree(at: root.path)
+            XCTAssertEqual(Set(coordinator.snapshot.rows.map(\.id)), expectedRows)
+            XCTAssertEqual(coordinator.snapshot.totalBytes, expectedBytes)
+            XCTAssertEqual(coordinator.snapshot.scannedFileCount, expectedFiles)
+        }
+    }
+
+    func testMultiRootUndoRetainsPrimaryHiddenFileOptions() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) } // best-effort fixture cleanup
+        let categories = ScanCategories.recommended(home: root.path)
+        for category in categories {
+            try FileManager.default.createDirectory(at: category.rootURL, withIntermediateDirectories: true)
+            try Data(repeating: 0x71, count: 8192).write(to: category.rootURL.appendingPathComponent("visible.bin"))
+            try Data(repeating: 0x72, count: 16384).write(to: category.rootURL.appendingPathComponent(".excluded.bin"))
+        }
+        let coordinator = ScanCoordinator(home: root.path)
+        let session = coordinator.currentScanSessionID
+        coordinator.scanRecommended(includeHidden: false)
+        try await waitForPrimaryScan(coordinator, replacing: session)
+        let expectedRows = Set(coordinator.snapshot.rows.map(\.id))
+        let expectedBytes = coordinator.snapshot.totalBytes
+        let expectedFiles = coordinator.snapshot.scannedFileCount
+        let restored = categories[0].rootURL.appendingPathComponent("visible.bin")
+        await coordinator.acknowledgeSuccessfulDeletionForPresentation(paths: [restored.path])
+        await coordinator.pruneDeleted(paths: [restored.path])
+        await coordinator.reconcileRestoredPaths([restored.path])
+        XCTAssertEqual(Set(coordinator.snapshot.rows.map(\.id)), expectedRows)
+        XCTAssertEqual(coordinator.snapshot.totalBytes, expectedBytes)
+        XCTAssertEqual(coordinator.snapshot.scannedFileCount, expectedFiles)
+        XCTAssertFalse(coordinator.snapshot.rows.contains { $0.url.lastPathComponent.hasPrefix(".") })
+    }
+
     func testUndoRestoresAnEntirePrunedMultiRootResult() async throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) } // best-effort fixture cleanup

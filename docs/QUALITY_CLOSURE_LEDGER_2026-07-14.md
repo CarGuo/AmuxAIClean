@@ -788,3 +788,32 @@ macOS 13.5 实机/VM 与最终 DMG C5 仍未验证。
   3. 复核 F07 候选补丁（`privacy-alias-proposed.patch`）：实测发现若直接将 `/private/var/folders` 折叠为 `/var/folders`，会导致 `FileManager.default.temporaryDirectory`（`/var/folders/.../T`）下的 `BulkScanner` / `TreeSizeEstimator` 测试 fixture 全部被误判为 `.tccProtectedSkipped`（触发 `ScanCoordinatorKnownVersionedRootsTests` 等 8 处断言失败），且与 `AGENTS.md` 的 `NSTemporaryDirectory()` fixture 合同冲突；因此驳回该候选补丁，保持 `TCCSkipList.swift` 原实现不变，留待后续区分系统目录与当前进程临时目录后再处理。
 - **剩余项**：本节改动完成九包全测与 Debug 构建（C3），未启动 App 做新的运行交互验收（C4）。
   F04 原生菜单混语与 F07 隐私路径匹配仍待后续处理；真实回收/Undo、macOS 13.5/Intel 与 Release/DMG C5 尚未完成。长期合同见 PITFALLS 第 22 节。
+
+### 9.20 v2026.10.09 最新提交审查后的刷新基线与扫描范围修复（C3；无新 C4）
+
+- **问题证据**：`7837094` 的默认浅层扫描保留 allocation catalog，但没有 deep index。
+  根不可读后的 partial refresh 将清单与总量清零，恢复权限后容量仍为零；Undo 对账重新
+  构造固定 `includeHidden=true`，把原扫描排除的隐藏文件重新加入清单和容量。使用真实
+  primary scan 的三项新增回归在修复前产生 47 处断言失败，原十项恢复测试仍通过；原审查
+  的独立生产 API 探针也复现两项问题，均只操作 `NSTemporaryDirectory()` 内人工 fixture。
+- **修复边界**：indexed transaction 的目录索引统一从合并后的稀疏账本取得容量基线，批量
+  聚合在后台进行；partial 保留未观测清单和已展开 Tree 成员，complete 才按缺席移除。
+  可读目录增长与旧不可读目录容量合并，硬链接保留 owner 的展示修正同步推进 delta 基线，
+  避免重复计费。单根、多根和开发者 producer 保存完整原始 `ScanOptions`，Undo 与显式
+  indexed refresh 使用该副本；新结果 owner 重设配置，发现型列表继续重放原类型化计划。
+- **聚焦验证**：新增四项 AppUI 行为回归及一项 ScanKit 聚合合同测试，覆盖浅层 scan 的
+  根/后代权限变化、重复 partial、权限恢复、完整删除观测、已展开 Tree、单根选项切换、
+  多根 Undo 以及不可读硬链接 owner 的容量修正。68 项相关 AppUI 行为与 4 项 allocation
+  测试通过；原独立探针复验显示权限失败/恢复均保留 `8192 / 1`，关闭隐藏文件的 Undo 后
+  仍只有原可见文件和 `8192 / 1`。没有真实回收，也没有启动 App。
+- **最终验证（C3）**：九包全测全部 exit 0，共调度 2,457 项 XCTest，11 项 Swift Testing
+  通过；AppUI 为 1,512 项 XCTest 加 11 项 Swift Testing。另开启原生视图 opt-in，7 项
+  发布边界测试全部通过，包含默认跳过的两项原生视图，不重复累加。目标 Debug 构建、
+  实际 `AmuxAIClean.app` 的 strict/deep 签名核验和 diff check 通过。全测使用既有 native
+  SwiftPM backend，AppUI 使用两个 test worker，未改测试预算或断言。440 个生产/工程资源
+  与测试文件在验证期间指纹一致；生产 Undo、pending ledger 与 completion journal 哈希
+  均未变。完整命令、红日志、聚焦/全量结果和探针见本地
+  `build/refresh-review-fix-20261009/verification-summary.json` 及关联日志。
+- **剩余项**：未做运行交互验收，真实回收/Undo 的 C4 仍待用户授权的持续 App 场景验证。
+  本轮只修复审查发现的两项问题；既有 F04/F07、macOS 13.5/Intel 与 Release/DMG C5
+  仍按前述台账待办，未扩大规则、安全边界、删除执行或发布范围。

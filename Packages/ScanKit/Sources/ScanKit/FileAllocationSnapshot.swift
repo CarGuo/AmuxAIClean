@@ -188,6 +188,33 @@ public struct FileAllocationSnapshot: Sendable {
         public let fileCount: Int
     }
 
+    /// v2026.10.09: indexed refreshes must derive every directory from the same merged ledger,
+    /// even when the original scan retained only shallow projections. Walk each direct total's
+    /// ancestors once instead of rescanning the whole catalog for every observed directory.
+    public func directoryAggregates(inDirectory root: String) -> [String: Aggregate] {
+        var totals: [String: DirectoryTotals] = [
+            root: DirectoryTotals(allocatedBytes: 0, logicalBytes: 0, fileCount: 0)
+        ]
+        let prefix = root == "/" ? "/" : root + "/"
+        for (path, direct) in directories where path == root || path.hasPrefix(prefix) {
+            var cursor = path
+            while true {
+                let old = totals[cursor] ?? DirectoryTotals(allocatedBytes: 0, logicalBytes: 0, fileCount: 0)
+                totals[cursor] = DirectoryTotals(
+                    allocatedBytes: old.allocatedBytes + direct.allocatedBytes,
+                    logicalBytes: old.logicalBytes + direct.logicalBytes,
+                    fileCount: old.fileCount + direct.fileCount)
+                if cursor == root { break }
+                let parent = (cursor as NSString).deletingLastPathComponent
+                guard parent != cursor else { break }
+                cursor = parent
+            }
+        }
+        return totals.mapValues {
+            Aggregate(allocatedBytes: $0.allocatedBytes, logicalBytes: $0.logicalBytes, fileCount: $0.fileCount)
+        }
+    }
+
     /// Ordinary files are retained as one direct sum per directory, not one path per file.
     /// First-observer accounting remains exact for the observed transaction, with the same
     /// live-namespace limitation as the sparse DerivedData ledger documented in PITFALLS.

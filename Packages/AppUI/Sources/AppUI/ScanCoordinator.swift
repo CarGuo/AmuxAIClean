@@ -4988,6 +4988,9 @@ public final class ScanCoordinator: ObservableObject {
     }
     private var allocationCatalog: AllocationCatalog?
     private var scanResultRoots: [String] = []
+    /// v2026.10.09: refresh/Undo belong to the original producer's enumeration scope. Keep
+    /// the complete value with its catalog; changing UI settings cannot widen an old result.
+    private var retainedScanOptions: ScanOptions = .default
     private var allocationRebaseline: (@MainActor () -> Void)?
 
     /// v2026.10.08 Undo review: discovery rows are semantic candidates, not a root's children.
@@ -5087,10 +5090,11 @@ public final class ScanCoordinator: ObservableObject {
         func retire() { value = nil }
     }
 
-    private func beginAllocationCatalog(roots: [String]) -> InodeSet {
+    private func beginAllocationCatalog(roots: [String], options: ScanOptions) -> InodeSet {
         let ledger = InodeSet(tracksPaths: true)
         allocationCatalog = .producer(ledger)
         scanResultRoots = roots
+        retainedScanOptions = options
         return ledger
     }
 
@@ -5108,6 +5112,7 @@ public final class ScanCoordinator: ObservableObject {
         let worker = AllocationCatalogRetirementWorker(allocationCatalog)
         allocationCatalog = nil
         scanResultRoots = []
+        retainedScanOptions = .default
         Task { @MainActor in
             await Task.yield()
             await worker.retire()
@@ -5581,6 +5586,7 @@ public final class ScanCoordinator: ObservableObject {
         // v2026.10.08: the replay strategy belongs to this visible result owner. Cancellation
         // and cross-mode invalidation must revoke it; an admitted replay reinstalls its capture.
         discoveryScanState = nil
+        retainedScanOptions = .default
         let retirementWorker = ScanSessionRetirementWorker(
             snapshotRows: snapshot.rows,
             buckets: buckets,
@@ -7378,7 +7384,7 @@ public final class ScanCoordinator: ObservableObject {
             delivery: delivery,
             pathNamespace: pathNamespace,
             topLevelProjectionRootPath: rootPath == "/" ? "/" : nil,
-            allocationLedger: beginAllocationCatalog(roots: [displayRootPath])
+            allocationLedger: beginAllocationCatalog(roots: [displayRootPath], options: options)
         )
         let producerTermination = Task.detached(priority: .userInitiated) {
             await scanSession.waitForTermination()
@@ -7677,7 +7683,7 @@ public final class ScanCoordinator: ObservableObject {
             roots: normalizedRoots,
             maxConcurrentRoots: maxConcurrentRoots,
             delivery: delivery,
-            allocationLedger: beginAllocationCatalog(roots: normalizedRoots.map(\.path))
+            allocationLedger: beginAllocationCatalog(roots: normalizedRoots.map(\.path), options: options)
         )
         let producerTermination = Task.detached(priority: .userInitiated) {
             await multiRootSession.waitForTermination()
@@ -10171,6 +10177,7 @@ public final class ScanCoordinator: ObservableObject {
 
         let pathNamespace = treeScanPathNamespace
         let knownAllocationCatalog = allocationCatalog
+        let options = retainedScanOptions
         let leaseDomain = treeFilesystemLeaseDomain
         let scanTask: Task<IndexedSubtreeMeasurement?, Never> = Task(priority: .userInitiated) {
             let lease = await leaseDomain.run(
@@ -10186,6 +10193,7 @@ public final class ScanCoordinator: ObservableObject {
                     measurement = await Self.scanIndexedSubtreeOnDemand(
                         rootPath: path,
                         pathNamespace: pathNamespace,
+                        options: options,
                         knownAllocationCatalog: knownAllocationCatalog
                     )
                 }
@@ -12199,6 +12207,59 @@ public final class ScanCoordinator: ObservableObject {
         state.perRootTreeRows = projection.treeRowsBySort
     }
 
+    /// v2026.10.09: an incomplete enumeration has no authority to remove published children.
+    /// Merge the indexed observations with retained projection members on the worker, including
+    /// shallow primary scans and expanded on-demand caches that have no deep-index identities.
+    nonisolated private static func buildIndexedTreeChildren(
+        parentPath: String,
+        retainedRows: [TreeRow],
+        dirIndex: [String: DirAgg],
+        fileLeaves: [String: IndexedFileLeaf],
+        childEdges: [String: Set<String>],
+        isComplete: Bool,
+        evidence: TreeScanEvidenceProjection,
+        tombstones: PrunedPathMatcher,
+        whitelist: Set<String>
+    ) -> [TreeRow]? {
+        var rowsByPath: [String: TreeRow] = [:]
+        if !isComplete {
+            for row in retainedRows { rowsByPath[row.path] = row }
+        }
+        let children = (childEdges[parentPath] ?? []).union(rowsByPath.keys)
+        for path in children {
+            guard !Task.isCancelled else { return nil }
+            guard !tombstones.contains(path), !isWhitelisted(path, in: whitelist) else {
+                rowsByPath.removeValue(forKey: path)
+                continue
+            }
+            let old = rowsByPath[path]
+            let directory = dirIndex[path]
+            let leaf = fileLeaves[path]
+            guard directory != nil || leaf != nil || old != nil else { continue }
+            let isDirectory = directory != nil || leaf?.isDir == true
+                || leaf == nil && old?.isDirectory == true
+            let state = evidence.projectedState(for: path)
+            let hasChildren = isDirectory && (
+                !(childEdges[path]?.isEmpty ?? true) || !isComplete && old?.hasChildren == true
+            )
+            rowsByPath[path] = TreeRow(
+                path: path,
+                title: old?.title ?? (path as NSString).lastPathComponent,
+                bytes: directory?.bytes ?? leaf?.bytes ?? old?.bytes ?? 0,
+                logicalBytes: directory?.logicalBytes ?? leaf?.logicalBytes ?? old?.logicalBytes ?? 0,
+                fileCount: directory?.fileCount ?? leaf?.fileCount ?? old?.fileCount ?? 0,
+                isDirectory: isDirectory,
+                hasChildren: hasChildren,
+                accessState: state.accessState,
+                subtreeCompleteness: state.subtreeCompleteness,
+                modificationDate: directory?.modificationDate ?? leaf?.modificationDate ?? old?.modificationDate,
+                isSizePending: directory != nil && !isComplete,
+                titlePresentation: old?.titlePresentation
+            )
+        }
+        return Array(rowsByPath.values)
+    }
+
     /// Builds the atomic replacement for an explicit indexed-subtree refresh. A complete
     /// measurement may shrink/remove old nodes; a partial measurement is only a lower bound and
     /// therefore unions observed identities while preserving unobserved old state fail-closed.
@@ -12219,6 +12280,8 @@ public final class ScanCoordinator: ObservableObject {
         var retainedState = retainedState
         var measurement = measurement
         let previousAllocations = retainedState.allocationCatalog?.snapshot()
+        var scopedExternalByteDelta: Int64 = 0
+        var scopedExternalLogicalDelta: Int64 = 0
         if let catalog = previousAllocations {
             let replacement = catalog.replacing(
                 with: measurement.allocations,
@@ -12231,6 +12294,12 @@ public final class ScanCoordinator: ObservableObject {
             )
             applyIncomingAllocationDeltas(replacement.incomingDeltas, to: &measurement)
             applyExternalAllocationDeltas(replacement.externalDeltas, to: &retainedState, locale: locale)
+            // A partial refresh can retain a hardlink owner inside this scope. Its correction
+            // already updated published totals above, so it also advances the delta baseline.
+            for delta in replacement.externalDeltas where pathBelongsToSubtree(delta.path, rootPath: rootPath) {
+                scopedExternalByteDelta += delta.allocatedBytes
+                scopedExternalLogicalDelta += delta.logicalBytes
+            }
             retainedState.allocationCatalog = .committed(replacement.snapshot)
         } else {
             retainedState.allocationCatalog = .committed(measurement.allocations)
@@ -12260,7 +12329,8 @@ public final class ScanCoordinator: ObservableObject {
         let oldRootAggregate: DirAgg = {
             if let previousAllocations, previousAllocations.covers(directory: rootPath) {
                 let aggregate = previousAllocations.aggregate(inDirectory: rootPath)
-                return DirAgg(bytes: aggregate.allocatedBytes, logicalBytes: aggregate.logicalBytes,
+                return DirAgg(bytes: aggregate.allocatedBytes + scopedExternalByteDelta,
+                              logicalBytes: aggregate.logicalBytes + scopedExternalLogicalDelta,
                               fileCount: aggregate.fileCount)
             }
             if let aggregate = retainedState.dirIndex[rootPath] { return aggregate }
@@ -12366,6 +12436,9 @@ public final class ScanCoordinator: ObservableObject {
             }
         } else {
             nextDirIndex = retainedState.dirIndex
+            // A production shallow scan has a catalog/projection baseline but no deep index.
+            // Missing indexed state is not evidence that the previously measured root was empty.
+            nextDirIndex[rootPath] = oldRootAggregate
             nextChildEdges = retainedState.childEdges
             nextFileLeaves = retainedState.fileLeaves
             for (path, incoming) in measurement.dirIndex
@@ -12392,6 +12465,21 @@ public final class ScanCoordinator: ObservableObject {
                 where !tombstones.contains(path) && !isWhitelisted(path, in: whitelist)
             {
                 nextFileLeaves[path] = leaf
+            }
+        }
+
+        // v2026.10.09: the merged sparse catalog is the shared allocation authority. A partial
+        // root's total is the sum of retained and observed directories, not max(old, incoming).
+        // Materialize its aggregates once on this worker to avoid one catalog walk per node.
+        if let catalog = retainedState.allocationCatalog?.snapshot(), catalog.covers(directory: rootPath) {
+            let aggregates = catalog.directoryAggregates(inDirectory: rootPath)
+            for path in Array(nextDirIndex.keys) where pathBelongsToSubtree(path, rootPath: rootPath) {
+                guard let value = aggregates[path] else { continue }
+                var directory = nextDirIndex[path] ?? DirAgg()
+                directory.bytes = value.allocatedBytes
+                directory.logicalBytes = value.logicalBytes
+                directory.fileCount = value.fileCount
+                nextDirIndex[path] = directory
             }
         }
 
@@ -12436,6 +12524,16 @@ public final class ScanCoordinator: ObservableObject {
             }
             let cachePath = String(cacheKey[..<separator])
             if pathBelongsToSubtree(cachePath, rootPath: rootPath) {
+                if !measurement.isComplete, let sortKey = sortKeyFromCacheKey(cacheKey) {
+                    guard let rows = buildIndexedTreeChildren(
+                        parentPath: cachePath, retainedRows: oldRows, dirIndex: nextDirIndex,
+                        fileLeaves: nextFileLeaves, childEdges: nextChildEdges, isComplete: false,
+                        evidence: evidenceProjection, tombstones: tombstones, whitelist: whitelist
+                    ) else { return nil }
+                    nextTreeCache[cacheKey] = rows.sorted {
+                        sortTreeRow($0, before: $1, by: sortKey, locale: locale)
+                    }
+                }
                 continue
             }
             var rows = oldRows
@@ -12491,47 +12589,29 @@ public final class ScanCoordinator: ObservableObject {
             nextTreeCache[cacheKey] = rows
         }
 
-        // Publish the refreshed root itself for every ordering in the same transaction. Deeper
-        // expanded projections are intentionally dropped: the rebuilt childEdges/dirIndex graph
-        // can rematerialize them from current identities, never from pre-refresh rows.
-        let directChildren = nextChildEdges[rootPath] ?? []
-        var semanticRows: [TreeRow] = []
-        semanticRows.reserveCapacity(directChildren.count)
-        for childPath in directChildren
-            where !tombstones.contains(childPath) && !isWhitelisted(childPath, in: whitelist)
-        {
-            guard !Task.isCancelled else { return nil }
-            let state = evidenceProjection.projectedState(for: childPath)
-            if let aggregate = nextDirIndex[childPath] {
-                semanticRows.append(TreeRow(
-                    path: childPath,
-                    title: (childPath as NSString).lastPathComponent,
-                    bytes: aggregate.bytes,
-                    logicalBytes: aggregate.logicalBytes,
-                    fileCount: aggregate.fileCount,
-                    isDirectory: true,
-                    hasChildren: !(nextChildEdges[childPath]?.isEmpty ?? true),
-                    accessState: state.accessState,
-                    subtreeCompleteness: state.subtreeCompleteness,
-                    modificationDate: aggregate.modificationDate,
-                    isSizePending: !measurement.isComplete
-                ))
-            } else if let leaf = nextFileLeaves[childPath] {
-                semanticRows.append(TreeRow(
-                    path: childPath,
-                    title: (childPath as NSString).lastPathComponent,
-                    bytes: leaf.bytes,
-                    logicalBytes: leaf.logicalBytes,
-                    fileCount: leaf.fileCount,
-                    isDirectory: leaf.isDir,
-                    hasChildren: false,
-                    accessState: state.accessState,
-                    subtreeCompleteness: state.subtreeCompleteness,
-                    modificationDate: leaf.modificationDate,
-                    isSizePending: false
-                ))
+        // Complete observations replace the graph. Partial observations merge every previously
+        // published source, including shallow List rows that never entered childEdges.
+        var retainedRootRows: [TreeRow] = []
+        for sortKey in TreeSortKey.allCases {
+            if let rows = retainedState.treeCache["\(rootPath)|\(sortKey.rawValue)"] {
+                retainedRootRows = rows
+                break
             }
         }
+        if !measurement.isComplete, !retainedState.usesLargeFileTopNOnly,
+           retainedState.scanResultRoots.contains(rootPath) {
+            guard let publishedRows = buildSemanticTreeRows(
+                rows: retainedState.snapshot.rows.filter { String._gsyParentPath(of: $0.id) == rootPath },
+                evidence: evidenceProjection,
+                forceLeafPresentation: retainedState.forceSnapshotTreeLeafPresentation
+            ) else { return nil }
+            retainedRootRows.append(contentsOf: publishedRows)
+        }
+        guard let semanticRows = buildIndexedTreeChildren(
+            parentPath: rootPath, retainedRows: retainedRootRows, dirIndex: nextDirIndex,
+            fileLeaves: nextFileLeaves, childEdges: nextChildEdges, isComplete: measurement.isComplete,
+            evidence: evidenceProjection, tombstones: tombstones, whitelist: whitelist
+        ) else { return nil }
         for sortKey in TreeSortKey.allCases {
             guard !Task.isCancelled else { return nil }
             nextTreeCache["\(rootPath)|\(sortKey.rawValue)"] = semanticRows.sorted {
@@ -12613,7 +12693,13 @@ public final class ScanCoordinator: ObservableObject {
            retainedState.scanResultRoots.contains(rootPath) {
             let children = nextChildEdges[rootPath] ?? []
             let oldRowsByPath = Dictionary(uniqueKeysWithValues: retainedState.snapshot.rows.map { ($0.id, $0) })
-            var rows: [RowItem] = []
+            var rowsByPath: [String: RowItem] = [:]
+            if !measurement.isComplete {
+                for row in nextRows where String._gsyParentPath(of: row.id) == rootPath
+                    && !tombstones.contains(row.id) && !isWhitelisted(row.id, in: whitelist) {
+                    rowsByPath[row.id] = row
+                }
+            }
             for path in children where !tombstones.contains(path) && !isWhitelisted(path, in: whitelist) {
                 let directory = nextDirIndex[path]
                 let leaf = nextFileLeaves[path]
@@ -12626,28 +12712,29 @@ public final class ScanCoordinator: ObservableObject {
                 let safety = retainedState.engine.evaluate(path: path, trie: retainedState.trie, home: retainedState.home)
                 var bucket = Bucket(url: url, bytes: bytes, logicalBytes: logical,
                     fileCount: count, isDirectory: isDirectory,
-                    hasChildren: !(nextChildEdges[path]?.isEmpty ?? true),
+                    hasChildren: !(nextChildEdges[path]?.isEmpty ?? true)
+                        || !measurement.isComplete && oldRowsByPath[path]?.hasChildren == true,
                     modificationDate: directory?.modificationDate ?? leaf?.modificationDate)
                 bucket.cachedVerdict = safety.0
                 bucket.cachedRejection = safety.1
                 bucket.cachedVendor = safety.2
                 nextBuckets[path] = bucket
                 let old = oldRowsByPath[path]
-                rows.append(RowItem(id: path, url: url, title: old?.title ?? url.lastPathComponent,
+                rowsByPath[path] = RowItem(id: path, url: url, title: old?.title ?? url.lastPathComponent,
                     isDirectory: isDirectory, bytes: bytes, logicalBytes: logical, fileCount: count,
                     verdict: safety.0, rejection: safety.1, vendorName: safety.2?.name,
                     vendorNote: safety.2?.note, runningBundleIDPrefix: old?.runningBundleIDPrefix,
                     hasChildren: bucket.hasChildren, modificationDate: bucket.modificationDate,
-                    titlePresentation: old?.titlePresentation))
+                    titlePresentation: old?.titlePresentation)
             }
             if measurement.isComplete {
                 nextBuckets = nextBuckets.filter { !pathBelongsToSubtree($0.key, rootPath: rootPath) || children.contains($0.key) }
             }
             if retainedState.usesPerRootPresentation {
                 nextRows.removeAll { pathBelongsToSubtree($0.id, rootPath: rootPath) }
-                nextRows.append(contentsOf: rows)
+                nextRows.append(contentsOf: rowsByPath.values)
             } else {
-                nextRows = rows
+                nextRows = Array(rowsByPath.values)
             }
             didMutateSnapshotRows = true
         }
@@ -13165,6 +13252,7 @@ public final class ScanCoordinator: ObservableObject {
     nonisolated private static func scanIndexedSubtreeOnDemand(
         rootPath: String,
         pathNamespace: ScanPathNamespace?,
+        options: ScanOptions,
         knownAllocationCatalog: AllocationCatalog? = nil
     ) async -> IndexedSubtreeMeasurement? {
         let ranOnMainThread = currentThreadIsMainForDiagnostics()
@@ -13217,15 +13305,7 @@ public final class ScanCoordinator: ObservableObject {
         var terminalStatus: ScanCompletionStatus?
         var sawRootFailure = false
 
-        let scanner = BulkScanner(options: ScanOptions(
-            includeHidden: true,
-            includePackageContents: true,
-            followSymlinks: false,
-            followFirmlinks: false,
-            dedupByInode: true,
-            staySingleVolume: true,
-            respectTCCSkipList: true
-        ))
+        let scanner = BulkScanner(options: options)
         let allocationLedger = InodeSet(tracksPaths: true, trackingPathsFor: knownAllocationCatalog?.snapshot() ?? .init())
         let scanSession = scanner.scanSession(
             root: rootURL,

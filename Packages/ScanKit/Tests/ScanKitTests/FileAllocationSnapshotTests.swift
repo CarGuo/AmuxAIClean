@@ -2,6 +2,26 @@ import XCTest
 @testable import ScanKit
 
 final class FileAllocationSnapshotTests: XCTestCase {
+    // v2026.10.09: the batch aggregate used by partial refresh must preserve directory
+    // boundaries, empty directories and separate allocated/logical totals without file paths.
+    func testDirectoryAggregatesShareOneScopedAllocationBaseline() {
+        let ledger = InodeSet(tracksPaths: true)
+        ledger.recordScanRoot(path: "/")
+        ledger.recordDirectory(path: "/A", allocatedBytes: 4096, logicalBytes: 1000, fileCount: 1)
+        ledger.recordDirectory(path: "/A/nested", allocatedBytes: 8192, logicalBytes: 6000, fileCount: 2)
+        ledger.recordDirectory(path: "/A/empty", allocatedBytes: 0, logicalBytes: 0, fileCount: 0)
+        ledger.recordDirectory(path: "/AB", allocatedBytes: 16384, logicalBytes: 12000, fileCount: 1)
+        let catalog = ledger.allocationSnapshot()
+        let values = catalog.directoryAggregates(inDirectory: "/A")
+        XCTAssertEqual(Set(values.keys), ["/A", "/A/nested", "/A/empty"])
+        XCTAssertEqual(values["/A"]?.allocatedBytes, catalog.aggregate(inDirectory: "/A").allocatedBytes)
+        XCTAssertEqual(values["/A"]?.logicalBytes, 7000)
+        XCTAssertEqual(values["/A"]?.fileCount, 3)
+        XCTAssertEqual(values["/A/nested"]?.allocatedBytes, 8192)
+        XCTAssertEqual(values["/A/empty"]?.fileCount, 0)
+        XCTAssertEqual(catalog.directoryAggregates(inDirectory: "/")["/"]?.allocatedBytes, 28672)
+    }
+
     private func catalog(_ observations: [(String, UInt64, Int64)]) -> FileAllocationSnapshot {
         let ledger = InodeSet(tracksPaths: true)
         for (path, inode, bytes) in observations {

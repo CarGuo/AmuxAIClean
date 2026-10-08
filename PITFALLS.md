@@ -1766,6 +1766,16 @@ Tree 投影时，增量刷新继续沿用空字典。完整空扫描通常已包
 4. Tree 投影依照结果模式决定：真正的 per-root 模式与大文件 Top-N 不构造全局排序；普通和
    discovery snapshot 按需构造。sentinel 集合还含版本/缓存，不能把所有 sentinel 都当 per-root。
    版本候选经过显式刷新仍保持语义叶子，不能因物理目录有内容就改变产品展示。
+5. v2026.10.09：默认浅层 primary scan 不保存 deep index，不能把缺少索引解释成旧容量为零。
+   partial indexed refresh 的目录容量统一来自合并后的稀疏 allocation catalog；可读目录新增
+   容量与不可读目录保留容量必须相加，不能只取旧根与本轮根的最大值。清单和已展开 Tree
+   缓存保留未被观测的已发布成员，仍发布类型化不完整证据；只有 complete 才有权按缺席移除。
+   硬链接保留 owner 的修正若已更新展示总量，必须同步推进子树 delta 基线，不能再次计入。
+6. v2026.10.09：单根、多根及开发者 primary producer 的完整 `ScanOptions` 与结果账本一起
+   保存，显式 indexed refresh 和 Undo 对账读取其不可变副本，不能重新构造固定选项或读取
+   后来改变的 UI 偏好。新扫描安装新配置，结果 owner 失效时撤销旧配置；发现型列表继续
+   按原类型化计划重放。必须用真实浅层 primary scan 覆盖 `includeHidden=false`，只注入
+   完整 deep index 的 fixture 无法发现生产数据源缺口。
 
 回归断言同时覆盖清单、bucket、八种 Tree 排序、其他根保留、真实 producer 的规则/选项重放、
 重名恢复、连续通知的结算、取消后通知和专用候选显式刷新。测试只使用系统临时 fixture，未
