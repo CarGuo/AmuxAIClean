@@ -73,20 +73,23 @@ public struct VendorTrie: @unchecked Sendable {
     /// 不污染 trie 字面量索引。
     public static func build(vendors: [VendorRule], home: String) -> VendorTrieNode {
         let root = VendorTrieNode()
+        let normalizedHome = SafetyEngine.normalizeHome(home)
         for rule in vendors {
             // 1) 默认 vendor 根（appSupportSubdir / cachesPath）
-            for raw in rule.absolutePathPrefixes(home: home) {
-                let std = URL(fileURLWithPath: raw).standardizedFileURL.path
+            for raw in rule.absolutePathPrefixes(home: normalizedHome) {
+                let std = SafetyEngine.stripDataVolumePrefix(
+                    URL(fileURLWithPath: raw).standardizedFileURL.path
+                )
                 let segments = Self.segments(of: std)
                 guard !segments.isEmpty else { continue }
                 let node = ensurePath(segments: segments, from: root)
                 if node.rule == nil { node.rule = rule }
             }
             // 2) path 级 override（paths: 列表项）
-            for (raw, pathRule) in rule.absolutePathRules(home: home) {
+            for (raw, pathRule) in rule.absolutePathRules(home: normalizedHome) {
                 if PathGlob.isGlob(raw) {
                     // glob 规则单独走线性扫描，不进 trie；去除末尾多余的 '/' 以保证段数一致
-                    var normalizedPattern = raw
+                    var normalizedPattern = SafetyEngine.stripDataVolumePrefix(raw)
                     while normalizedPattern.count > 1 && normalizedPattern.hasSuffix("/") {
                         normalizedPattern.removeLast()
                     }
@@ -95,7 +98,9 @@ public struct VendorTrie: @unchecked Sendable {
                                                    absolutePattern: normalizedPattern))
                     continue
                 }
-                let std = URL(fileURLWithPath: raw).standardizedFileURL.path
+                let std = SafetyEngine.stripDataVolumePrefix(
+                    URL(fileURLWithPath: raw).standardizedFileURL.path
+                )
                 let segments = Self.segments(of: std)
                 guard !segments.isEmpty else { continue }
                 let node = ensurePath(segments: segments, from: root)
@@ -134,7 +139,8 @@ public struct VendorTrie: @unchecked Sendable {
     public static func match(standardizedPath: String, in trie: VendorTrieNode)
     -> (rule: VendorRule, isExactRoot: Bool, pathOverride: PathRule?)?
     {
-        let segments = Self.segments(of: standardizedPath)
+        let canonicalPath = SafetyEngine.stripDataVolumePrefix(standardizedPath)
+        let segments = Self.segments(of: canonicalPath)
         var node = trie
         var depth = 0
         // 跟踪沿途遇到的最深 path-override（祖先 override 也对子节点生效）。
@@ -154,13 +160,18 @@ public struct VendorTrie: @unchecked Sendable {
             }
         }
         if let overrideHit = inheritedOverride {
-            // 若仅继承了祖先节点的非 forbid override，仍需检查是否有更具体的子路径 glob 规则声明了 forbid
-            if overrideHit.depth < segments.count,
-               overrideHit.pathRule.verdict != .forbid,
+            // 若命中或继承了非 forbid override，仍需检查是否有更具体的 glob 规则声明了更严格的 verdict
+            if overrideHit.pathRule.verdict != .forbid,
                !trie.globRules.isEmpty,
-               let globHit = matchGlob(standardizedPath: standardizedPath, in: trie),
-               globHit.pathOverride?.verdict == .forbid {
-                return (globHit.rule, globHit.isExactRoot, globHit.pathOverride)
+               let globHit = matchGlob(standardizedPath: canonicalPath, in: trie) {
+                if globHit.pathOverride?.verdict == .forbid {
+                    return (globHit.rule, globHit.isExactRoot, globHit.pathOverride)
+                }
+                if overrideHit.depth < segments.count,
+                   overrideHit.pathRule.verdict == .safe,
+                   globHit.pathOverride?.verdict == .confirm {
+                    return (globHit.rule, globHit.isExactRoot, globHit.pathOverride)
+                }
             }
             return (
                 overrideHit.rule,
@@ -181,36 +192,53 @@ public struct VendorTrie: @unchecked Sendable {
             // UI 显示的 vendorName 会是 A，但 verdict/reason/recipe 来自 B，造成误导。
             // 取 globHit.rule 与 isExactRoot=globHit.isExactRoot 让 (rule, override) 同源。
             if !trie.globRules.isEmpty,
-               let globHit = matchGlob(standardizedPath: standardizedPath, in: trie) {
+               let globHit = matchGlob(standardizedPath: canonicalPath, in: trie) {
                 return (globHit.rule, globHit.isExactRoot, globHit.pathOverride)
             }
             return (rule, isExactRoot, nil)
         }
         // trie miss：扫描 globRules
         guard !trie.globRules.isEmpty else { return nil }
-        return matchGlob(standardizedPath: standardizedPath, in: trie)
+        return matchGlob(standardizedPath: canonicalPath, in: trie)
     }
 
     /// 把 standardizedPath 喂给 root.globRules 做 fnmatch 前缀检查。
-    /// 多条命中时取**最先声明**的（与 trie 的"先到先得"语义一致）。
+    /// 多条命中时优先取更严格的 verdict（forbid > confirm > safe），同级保留最先声明的条目。
     static func matchGlob(standardizedPath: String, in root: VendorTrieNode)
     -> (rule: VendorRule, isExactRoot: Bool, pathOverride: PathRule?)?
     {
+        var best: (rule: VendorRule, isExactRoot: Bool, pathOverride: PathRule?, severity: Int)? = nil
         for entry in root.globRules {
+            let isExact: Bool
             if PathGlob.match(pattern: entry.absolutePattern, path: standardizedPath) {
-                return (entry.rule, true, entry.pathRule)
+                isExact = true
+            } else if PathGlob.matchPrefix(pattern: entry.absolutePattern, path: standardizedPath) {
+                isExact = false
+            } else {
+                continue
             }
-            if PathGlob.matchPrefix(pattern: entry.absolutePattern, path: standardizedPath) {
-                return (entry.rule, false, entry.pathRule)
+            let sev: Int
+            switch entry.pathRule.verdict {
+            case .safe: sev = 0
+            case .confirm: sev = 1
+            case .forbid: sev = 2
+            }
+            if let current = best {
+                if sev > current.severity {
+                    best = (entry.rule, isExact, entry.pathRule, sev)
+                }
+            } else {
+                best = (entry.rule, isExact, entry.pathRule, sev)
             }
         }
-        return nil
+        guard let hit = best else { return nil }
+        return (hit.rule, hit.isExactRoot, hit.pathOverride)
     }
 
-    /// 把绝对路径按 "/" 切成非空段序列。
-    /// 例：`/Users/foo/Library` → `["Users", "foo", "Library"]`
+    /// 把绝对路径按 "/" 切成非空小写段序列（APFS 默认大小写不敏感）。
+    /// 例：`/Users/foo/Library` → `["users", "foo", "library"]`
     @inline(__always)
     private static func segments(of absolutePath: String) -> [String] {
-        absolutePath.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        absolutePath.lowercased().split(separator: "/", omittingEmptySubsequences: true).map(String.init)
     }
 }

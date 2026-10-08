@@ -166,6 +166,36 @@ final class FileSearchEngineExtendedFiltersTests: XCTestCase {
         XCTAssertEqual(FileSearchEngine.readFinderComment(url: url), "hello world")
     }
 
+    func test_readFinderComment_doesNotFollowSymlinkTarget() throws {
+        let target = try makeFile(name: "target.txt", mtime: Date())
+        try setFinderComment("secret-target-comment", for: target)
+        let link = fixtureRoot.appendingPathComponent("link.txt")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+        XCTAssertEqual(
+            FileSearchEngine.readFinderComment(url: link),
+            "",
+            "readFinderComment must pass XATTR_NOFOLLOW and not read target xattr through a symlink"
+        )
+    }
+
+    func test_fileExtension_respectsCaseSensitiveOption() async throws {
+        try makeFile(name: "upper.SWIFT", mtime: Date())
+        try makeFile(name: "lower.swift", mtime: Date())
+
+        let engine = FileSearchEngine()
+        var caseSensitiveOpts = FileSearchOptions()
+        caseSensitiveOpts.caseSensitive = true
+        let sensitiveNames = try await collectNames(
+            engine.search(
+                rootPath: fixtureRoot.path,
+                filters: [.fileExtension(.includes, ["swift"])],
+                options: caseSensitiveOpts
+            )
+        )
+        XCTAssertEqual(Set(sensitiveNames), ["lower.swift"])
+    }
+
     // MARK: - 组合：date + tags + comment 三者 AND 全满足
 
     func test_组合date_tags_comment_AND全满足才命中() async throws {

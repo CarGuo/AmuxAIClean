@@ -33,7 +33,13 @@ public actor HeuristicEngine {
                 initialScores: [String: PathScore] = [:]) {
         self.safety = safety
         self.home = home
-        self.scores = initialScores
+        var normalizedScores: [String: PathScore] = [:]
+        for (k, v) in initialScores {
+            let key = Self.scoreKey(for: k)
+            guard !key.isEmpty else { continue }
+            normalizedScores[key] = v
+        }
+        self.scores = normalizedScores
     }
 
     // MARK: - 行为录入
@@ -47,10 +53,11 @@ public actor HeuristicEngine {
         guard !standardized.isEmpty, standardized.hasPrefix("/") else { return }
 
         for prefix in Self.ancestorPrefixes(of: standardized) {
-            if prefix != standardized && isSharedContainerRoot(prefix) {
+            if prefix.caseInsensitiveCompare(standardized) != .orderedSame && isSharedContainerRoot(prefix) {
                 continue
             }
-            var entry = scores[prefix] ?? PathScore()
+            let key = Self.scoreKey(for: prefix)
+            var entry = scores[key] ?? PathScore()
             switch action {
             case .trashedPath:
                 entry.deletedCount += 1
@@ -60,7 +67,7 @@ public actor HeuristicEngine {
                 entry.keptCount += 1
             }
             entry.lastUpdated = action.timestamp
-            scores[prefix] = entry
+            scores[key] = entry
         }
     }
 
@@ -88,7 +95,7 @@ public actor HeuristicEngine {
         guard !standardized.isEmpty else { return 0 }
 
         // 取该路径自身的累积值（不向下汇总——record 时已经向上累加过）
-        let entry = scores[standardized] ?? PathScore()
+        let entry = scores[Self.scoreKey(for: standardized)] ?? PathScore()
 
         let alpha = 3.0
         let beta  = 1.0
@@ -110,7 +117,7 @@ public actor HeuristicEngine {
 
     /// 取出某路径的原始计数（主要用于测试 / 诊断）。
     public func snapshotEntry(for path: String) -> PathScore? {
-        scores[Self.standardize(path)]
+        scores[Self.scoreKey(for: path)]
     }
 
     /// 取出整体快照。
@@ -136,7 +143,13 @@ public actor HeuristicEngine {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let snap = try decoder.decode(HeuristicSnapshot.self, from: data)
-        self.scores = snap.scores
+        var normalizedScores: [String: PathScore] = [:]
+        for (k, v) in snap.scores {
+            let key = Self.scoreKey(for: k)
+            guard !key.isEmpty else { continue }
+            normalizedScores[key] = v
+        }
+        self.scores = normalizedScores
     }
 
     // MARK: - 安全兜底
@@ -149,9 +162,9 @@ public actor HeuristicEngine {
     private func sanityCheck(rawScore: Double, path: String) -> Double {
         var s = rawScore
 
-        // 规则 1：forbid 永远不许输出正分
+        // 规则 1：forbid 或共享顶层容器根永远不许输出正分
         let verdict = safety.evaluate(path: path, home: home).0
-        if verdict == .forbid && s > 0 {
+        if (verdict == .forbid || isSharedContainerRoot(path)) && s > 0 {
             s = 0
         }
 
@@ -172,55 +185,82 @@ public actor HeuristicEngine {
     /// 共享容器根（如 `/Users`、`$HOME`、`~/Library/Caches`）不跨应用传染 restore 惩罚。
     private func hasRestoreInLineage(of path: String) -> Bool {
         for prefix in Self.ancestorPrefixes(of: path) {
-            if prefix != path && isSharedContainerRoot(prefix) {
+            if prefix.caseInsensitiveCompare(path) != .orderedSame && isSharedContainerRoot(prefix) {
                 continue
             }
-            if let entry = scores[prefix], entry.restoredCount > 0 { return true }
+            if let entry = scores[Self.scoreKey(for: prefix)], entry.restoredCount > 0 { return true }
         }
         return false
     }
 
     /// 判断路径是否为多应用共用的顶层容器目录（不应用于跨应用向上聚合或传染）。
     private func isSharedContainerRoot(_ prefix: String) -> Bool {
-        let stdHome = Self.standardize(home)
+        let lowerPrefix = Self.standardize(prefix).lowercased()
+        let stdHome = Self.standardize(home).lowercased()
         if !stdHome.isEmpty {
-            if prefix == stdHome || stdHome.hasPrefix(prefix + "/") {
+            if lowerPrefix == stdHome || stdHome.hasPrefix(lowerPrefix + "/") {
                 return true
             }
             let sharedHomeContainers: Set<String> = [
-                "\(stdHome)/Library",
-                "\(stdHome)/Library/Caches",
-                "\(stdHome)/Library/Logs",
-                "\(stdHome)/Library/Application Support",
-                "\(stdHome)/Library/Containers",
-                "\(stdHome)/Library/Group Containers",
-                "\(stdHome)/Library/Saved Application State",
-                "\(stdHome)/Library/Preferences",
-                "\(stdHome)/Library/Developer",
-                "\(stdHome)/Downloads",
-                "\(stdHome)/Documents",
-                "\(stdHome)/Desktop",
+                "\(stdHome)/library",
+                "\(stdHome)/library/caches",
+                "\(stdHome)/library/logs",
+                "\(stdHome)/library/application support",
+                "\(stdHome)/library/containers",
+                "\(stdHome)/library/group containers",
+                "\(stdHome)/library/saved application state",
+                "\(stdHome)/library/preferences",
+                "\(stdHome)/library/developer",
+                "\(stdHome)/library/httpstorages",
+                "\(stdHome)/library/webkit",
+                "\(stdHome)/library/cookies",
+                "\(stdHome)/downloads",
+                "\(stdHome)/documents",
+                "\(stdHome)/desktop",
+                "\(stdHome)/pictures",
+                "\(stdHome)/movies",
+                "\(stdHome)/music",
             ]
-            if sharedHomeContainers.contains(prefix) {
+            if sharedHomeContainers.contains(lowerPrefix) {
                 return true
             }
         }
         let systemContainers: Set<String> = [
-            "/Users", "/var", "/private", "/private/var", "/tmp", "/private/tmp",
-            "/System", "/Library", "/Applications"
+            "/users", "/var", "/var/folders", "/private", "/private/var", "/private/var/folders",
+            "/tmp", "/private/tmp", "/system", "/library", "/applications"
         ]
-        return systemContainers.contains(prefix)
+        return systemContainers.contains(lowerPrefix)
     }
 
     // MARK: - 工具
 
-    /// 标准化绝对路径（去 trailing slash，去 ..）。
+    private nonisolated static let dataVolumePrefix = "/System/Volumes/Data"
+    private nonisolated static let lowerDataVolumePrefix = "/system/volumes/data"
+
+    private nonisolated static func stripDataVolumePrefix(_ p: String) -> String {
+        let lower = p.lowercased()
+        if lower == lowerDataVolumePrefix {
+            return "/"
+        }
+        if lower.hasPrefix(lowerDataVolumePrefix + "/") {
+            return String(p.dropFirst(dataVolumePrefix.count))
+        }
+        return p
+    }
+
+    /// 标准化绝对路径（去 `/System/Volumes/Data`、去 trailing slash，去 ..）。
     nonisolated static func standardize(_ path: String) -> String {
         guard path.hasPrefix("/") else { return "" }
-        var p = URL(fileURLWithPath: path).standardizedFileURL.path
+        let strippedInput = stripDataVolumePrefix(path)
+        var p = URL(fileURLWithPath: strippedInput).standardizedFileURL.path
+        p = stripDataVolumePrefix(p)
         // URL.path 在根 "/" 也保留 "/"，其他末尾不带 "/"
         if p.count > 1 && p.hasSuffix("/") { p.removeLast() }
         return p
+    }
+
+    nonisolated static func scoreKey(for path: String) -> String {
+        standardize(path).lowercased()
     }
 
     /// 返回 path 自身 + 所有祖先目录前缀（不含 "/"）。

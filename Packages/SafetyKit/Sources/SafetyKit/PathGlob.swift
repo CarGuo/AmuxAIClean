@@ -26,10 +26,10 @@ public enum PathGlob {
         return false
     }
 
-    /// 严格 fnmatch：`pattern` 必须**完整**匹配 `path` 的全部字符。
+    /// 严格 fnmatch：`pattern` 必须**完整**匹配 `path` 的全部字符（APFS 默认大小写不敏感）。
     /// 用于"path 等同于 vendor 根的精确匹配"语义（VendorTrie isExactRoot 场景）。
     public static func match(pattern: String, path: String) -> Bool {
-        matchUTF8(Array(pattern.utf8), Array(path.utf8))
+        matchUTF8(Array(pattern.lowercased().utf8), Array(path.lowercased().utf8))
     }
 
     /// 前缀 fnmatch：`pattern` 是否匹配 `path` 的某个前缀，且分界点必须落在 `/` 上
@@ -40,6 +40,19 @@ public enum PathGlob {
     /// 截 path 的前 5 段（与 pattern 段数相同）= `~/Library/Caches/JetBrains/IntelliJIdea2024.3`，
     /// 完整 fnmatch 通过，返回 true。
     public static func matchPrefix(pattern: String, path: String) -> Bool {
+        if pattern.contains("**") {
+            let pBytes = Array(pattern.lowercased().utf8)
+            let tBytes = Array(path.lowercased().utf8)
+            if matchUTF8(pBytes, tBytes) {
+                return true
+            }
+            for i in 1..<tBytes.count where tBytes[i] == 0x2F /* / */ {
+                if matchUTF8(pBytes, Array(tBytes[..<i])) {
+                    return true
+                }
+            }
+            return false
+        }
         let segNeeded = countSegments(pattern)
         let prefix = takeSegments(path, count: segNeeded)
         return match(pattern: pattern, path: prefix)
@@ -85,50 +98,81 @@ public enum PathGlob {
         return path
     }
 
-    /// 经典 iterative fnmatch with backtracking，工作在 utf8 字节流。
-    /// `*` 贪婪匹配同段内非 `/` 字节，遇 `/` 强制停回溯。
+    /// 工作在 utf8 字节流的 glob 匹配：
+    /// - 单个 `*` 仅匹配同段内 0..N 个非 `/` 字节（遇 `/` 停止）
+    /// - 连续 `**` 支持跨 `/` 匹配 0..N 个路径段（含 `/**/` 匹配 0 个中间段）
     @usableFromInline
     static func matchUTF8(_ pattern: [UInt8], _ path: [UInt8]) -> Bool {
-        var pi = 0       // pattern 游标
-        var ti = 0       // path 游标
-        var starPi = -1  // 最近一个 `*` 在 pattern 中的位置
-        var starTi = -1  // 当时 path 的位置（回溯起点）
+        var memo: [Int: Bool] = [:]
+        let stride = path.count + 1
 
-        while ti < path.count {
-            let tc = path[ti]
-            if pi < pattern.count {
-                let pc = pattern[pi]
-                if pc == 0x2A /* * */ {
-                    starPi = pi
-                    starTi = ti
-                    pi += 1
-                    continue
+        func dfs(_ pi: Int, _ ti: Int) -> Bool {
+            let key = pi * stride + ti
+            if let cached = memo[key] { return cached }
+
+            let result: Bool
+            if pi == pattern.count {
+                result = (ti == path.count)
+            } else if pattern[pi] == 0x2A /* * */ {
+                var nextPi = pi + 1
+                while nextPi < pattern.count && pattern[nextPi] == 0x2A {
+                    nextPi += 1
                 }
-                if pc == 0x3F /* ? */ && tc != 0x2F /* / */ {
-                    pi += 1; ti += 1
-                    continue
+                let isGlobstar = (nextPi - pi) >= 2
+                if isGlobstar {
+                    // 若形如 `/**/`（或开头的 `**/`），允许匹配 0 个中间段
+                    if nextPi < pattern.count && pattern[nextPi] == 0x2F /* / */
+                        && (pi == 0 || pattern[pi - 1] == 0x2F) {
+                        if dfs(nextPi + 1, ti) {
+                            memo[key] = true
+                            return true
+                        }
+                    }
+                    // `**` 匹配 0..N 个任意字符（可跨 `/`）
+                    var matched = false
+                    var k = ti
+                    while k <= path.count {
+                        if dfs(nextPi, k) {
+                            matched = true
+                            break
+                        }
+                        k += 1
+                    }
+                    result = matched
+                } else {
+                    // 单个 `*`：匹配 0..N 个非 `/` 字符
+                    var matched = false
+                    var k = ti
+                    while true {
+                        if dfs(nextPi, k) {
+                            matched = true
+                            break
+                        }
+                        if k == path.count || path[k] == 0x2F /* / */ {
+                            break
+                        }
+                        k += 1
+                    }
+                    result = matched
                 }
-                if pc == tc {
-                    pi += 1; ti += 1
-                    continue
+            } else if pattern[pi] == 0x3F /* ? */ {
+                if ti < path.count && path[ti] != 0x2F /* / */ {
+                    result = dfs(pi + 1, ti + 1)
+                } else {
+                    result = false
+                }
+            } else {
+                if ti < path.count && pattern[pi] == path[ti] {
+                    result = dfs(pi + 1, ti + 1)
+                } else {
+                    result = false
                 }
             }
-            // 字面量不匹配 —— 尝试在最近的 `*` 上多吃一个字符
-            if starPi >= 0 {
-                // `*` 不能跨越 `/` —— 如果当前要吃掉的字符是 `/`，回溯失败
-                if path[starTi] == 0x2F { return false }
-                starTi += 1
-                pi = starPi + 1
-                ti = starTi
-                continue
-            }
-            return false
+
+            memo[key] = result
+            return result
         }
-        // path 已耗尽，pattern 剩余只能是 0..N 个 `*`
-        while pi < pattern.count {
-            if pattern[pi] != 0x2A { return false }
-            pi += 1
-        }
-        return true
+
+        return dfs(0, 0)
     }
 }

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// BrewKit MVP（Step 16-B）—— 不执行 brew 命令，直接读 Cellar / Caskroom 文件系统结构。
@@ -221,10 +222,15 @@ public struct BrewController: Sendable {
         at root: URL,
         kind: BrewPackageKind
     ) -> BrewPackageListResult {
-        let fm = FileManager.default
         let source: BrewDiagnostic.Source = kind == .formula
             ? .formulaInstallations
             : .caskInstallations
+        var rootStat = stat()
+        if lstat(root.path, &rootStat) == 0 {
+            guard (rootStat.st_mode & S_IFMT) == S_IFDIR else {
+                return BrewPackageListResult(packages: [], status: .missing)
+            }
+        }
         let names: [String]
         do {
             names = try fileReader.contentsOfDirectory(root)
@@ -249,9 +255,12 @@ public struct BrewController: Sendable {
         var diagnostics: [BrewDiagnostic] = []
         for name in names where !name.hasPrefix(".") {
             let nameDir = root.appendingPathComponent(name, isDirectory: true)
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: nameDir.path, isDirectory: &isDir),
-                  isDir.boolValue else { continue }
+            guard isRealDirectory(
+                at: nameDir,
+                source: source,
+                stage: .enumerateRoot,
+                diagnostics: &diagnostics
+            ) else { continue }
             // 每个 name 下可能有多个 version 目录，全列出（与 brew list --versions 一致）
             let versions: [String]
             do {
@@ -269,9 +278,12 @@ public struct BrewController: Sendable {
             }
             for version in versions where !version.hasPrefix(".") {
                 let verDir = nameDir.appendingPathComponent(version, isDirectory: true)
-                var verIsDir: ObjCBool = false
-                guard fm.fileExists(atPath: verDir.path, isDirectory: &verIsDir),
-                      verIsDir.boolValue else { continue }
+                guard isRealDirectory(
+                    at: verDir,
+                    source: source,
+                    stage: .enumerateVersions,
+                    diagnostics: &diagnostics
+                ) else { continue }
                 let built = build(
                     name: name,
                     version: version,
@@ -288,6 +300,32 @@ public struct BrewController: Sendable {
             diagnostics: diagnostics,
             status: diagnostics.isEmpty ? .complete : .partial
         )
+    }
+
+    private func isRealDirectory(
+        at url: URL,
+        source: BrewDiagnostic.Source,
+        stage: BrewDiagnostic.Stage,
+        diagnostics: inout [BrewDiagnostic]
+    ) -> Bool {
+        var st = stat()
+        if lstat(url.path, &st) == 0 {
+            return (st.st_mode & S_IFMT) == S_IFDIR
+        }
+        let err = errno
+        if err == ENOENT {
+            return false
+        }
+        let error = NSError(domain: NSPOSIXErrorDomain, code: Int(err))
+        if let diagnostic = brewLocalFileFailureDiagnostic(
+            error,
+            source: source,
+            stage: stage,
+            path: url.path
+        ) {
+            diagnostics.append(diagnostic)
+        }
+        return false
     }
 
     private func build(

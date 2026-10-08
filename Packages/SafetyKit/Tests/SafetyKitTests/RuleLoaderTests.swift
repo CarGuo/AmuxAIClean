@@ -1140,4 +1140,25 @@ final class RuleLoaderTests: XCTestCase {
     static func loadRealRules(home: String = "/Users/foo") throws -> [VendorRule] {
         try RuleLoader.loadVendors(from: vendorsYamlURL(), home: home)
     }
+
+    func testLoadVendorsRejectsWildcardOnlyAndForbiddenMatchingGlobs() throws {
+        let yaml = """
+        vendors:
+          - name: "StarOnly"
+            paths:
+              - path: "*"
+                verdict: "safe"
+          - name: "BroadLibraryGlob"
+            paths:
+              - path: "~/Library/*"
+                verdict: "safe"
+        """
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RuleLoaderGlobReject-\(UUID().uuidString).yaml")
+        try yaml.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let loaded = try RuleLoader.loadVendors(from: tmp, home: "/Users/foo")
+        XCTAssertTrue(loaded.isEmpty, "纯通配符或可匹配硬禁区的非 forbid glob 必须被 loadVendors 丢弃")
+    }
 }

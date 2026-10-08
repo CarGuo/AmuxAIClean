@@ -186,5 +186,21 @@ final class VersionedRetainScannerTests: XCTestCase {
         XCTAssertEqual(Set(twoHits.map(\.versionName)), ["241.18034.62", "241.18034.62.plugins"])
         XCTAssertTrue(twoHits.allSatisfy { $0.retainedLatest == "242.20224.300" })
     }
+
+    // 8) 孤立更高版本 `.plugins` 伴随目录（主 IDE 目录已删或回滚后残留）不能挤占 keepLatest 额度导致真实唯一 IDE 被淘汰
+    func test_orphanPluginsCompanionWithHigherVersionDoesNotEvictActiveIDE() throws {
+        let root = tempRoot.appendingPathComponent("ch-0-orphan-higher-plugins", isDirectory: true)
+        try makeDirs(root, names: [
+            "242.20224.300",
+            "243.99999.1.plugins"
+        ])
+        let hits = VersionedRetainScanner.detect(
+            collectionRoot: root,
+            options: .init(keepLatest: 1, ordering: .semverPreferred)
+        )
+        XCTAssertEqual(hits.map(\.versionName), ["243.99999.1.plugins"],
+                       "孤立 .plugins 伴随目录应被作为残留回收，而唯一真实主版本 242.20224.300 必须保留")
+        XCTAssertEqual(hits.first?.retainedLatest, "242.20224.300")
+    }
 }
 

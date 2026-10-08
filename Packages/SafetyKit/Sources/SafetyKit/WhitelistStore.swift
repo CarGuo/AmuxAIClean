@@ -69,7 +69,8 @@ public actor WhitelistStore {
     public func add(path: String, reason: String? = nil) async {
         await loadIfNeeded()
         let normalized = WhitelistStore.normalize(path)
-        inMemoryEntries[normalized] = Entry(path: normalized, reason: reason)
+        let key = normalized.lowercased()
+        inMemoryEntries[key] = Entry(path: normalized, reason: reason)
         await persist()
         GSYLog.info(.safety, "Whitelist + path=\(normalized) reason=\(reason ?? "<nil>")")
     }
@@ -79,7 +80,8 @@ public actor WhitelistStore {
     public func remove(path: String) async -> Bool {
         await loadIfNeeded()
         let normalized = WhitelistStore.normalize(path)
-        let removed = inMemoryEntries.removeValue(forKey: normalized) != nil
+        let key = normalized.lowercased()
+        let removed = inMemoryEntries.removeValue(forKey: key) != nil
         if removed {
             await persist()
             GSYLog.info(.safety, "Whitelist - path=\(normalized)")
@@ -97,7 +99,7 @@ public actor WhitelistStore {
     /// 用于 ScanCoordinator 这类不便在 hot path 反复 await actor 的同步调用方。
     public func snapshotPaths() async -> Set<String> {
         await loadIfNeeded()
-        return Set(inMemoryEntries.keys)
+        return Set(inMemoryEntries.values.map(\.path))
     }
 
     /// 判定某条扫描结果是否被加白。
@@ -109,10 +111,25 @@ public actor WhitelistStore {
     ///    扫描根 `~/X` 本身不会被加白，这是反向不命中（避免用户误以为加白子项就静默父级）。
     public func isWhitelisted(_ path: String) async -> Bool {
         await loadIfNeeded()
-        let normalized = WhitelistStore.normalize(path)
-        for entry in inMemoryEntries.keys {
-            if normalized == entry { return true }
-            if normalized.hasPrefix(entry + "/") { return true }
+        let normalized = WhitelistStore.normalize(path).lowercased()
+        let resolved = WhitelistStore.resolveSymlinks(path).lowercased()
+        for entry in inMemoryEntries.values {
+            let entryNorm = WhitelistStore.normalize(entry.path).lowercased()
+            if normalized == entryNorm || normalized.hasPrefix(entryNorm + "/") {
+                return true
+            }
+            if resolved != normalized && (resolved == entryNorm || resolved.hasPrefix(entryNorm + "/")) {
+                return true
+            }
+            let entryResolved = WhitelistStore.resolveSymlinks(entry.path).lowercased()
+            if entryResolved != entryNorm {
+                if normalized == entryResolved || normalized.hasPrefix(entryResolved + "/") {
+                    return true
+                }
+                if resolved == entryResolved || resolved.hasPrefix(entryResolved + "/") {
+                    return true
+                }
+            }
         }
         return false
     }
@@ -143,8 +160,16 @@ public actor WhitelistStore {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             let persisted = try decoder.decode(Persisted.self, from: data)
-            inMemoryEntries = Dictionary(uniqueKeysWithValues:
-                persisted.entries.map { ($0.path, $0) })
+            var loadedEntries: [String: Entry] = [:]
+            for item in persisted.entries {
+                let norm = WhitelistStore.normalize(item.path)
+                loadedEntries[norm.lowercased()] = Entry(
+                    path: norm,
+                    reason: item.reason,
+                    addedAt: item.addedAt
+                )
+            }
+            inMemoryEntries = loadedEntries
             GSYLog.info(.safety, "Whitelist loaded count=\(inMemoryEntries.count)")
         } catch {
             GSYLog.warning(.safety, "Whitelist 加载失败 path=\(url.path) err=\(error)")
@@ -170,12 +195,40 @@ public actor WhitelistStore {
     }
 
     private static func normalize(_ path: String) -> String {
-        var p = path
+        var p = SafetyEngine.stripDataVolumePrefix(path)
         while p.count > 1, p.hasSuffix("/") { p.removeLast() }
         if p.hasPrefix("/") {
             p = URL(fileURLWithPath: p).standardizedFileURL.path
+            p = SafetyEngine.stripDataVolumePrefix(p)
         }
+        while p.count > 1, p.hasSuffix("/") { p.removeLast() }
         return p
+    }
+
+    private static func resolveSymlinks(_ path: String) -> String {
+        let stripped = normalize(path)
+        guard stripped.hasPrefix("/") else { return stripped }
+        let fm = FileManager.default
+        var current = stripped
+        var trailingComponents: [String] = []
+        while current != "/" && !current.isEmpty && !fm.fileExists(atPath: current) {
+            let ns = current as NSString
+            let last = ns.lastPathComponent
+            if !last.isEmpty && last != "/" {
+                trailingComponents.append(last)
+            }
+            current = ns.deletingLastPathComponent
+        }
+        var resolvedBase = URL(fileURLWithPath: current).resolvingSymlinksInPath().standardizedFileURL.path
+        resolvedBase = SafetyEngine.stripDataVolumePrefix(resolvedBase)
+        for comp in trailingComponents.reversed() {
+            if resolvedBase == "/" {
+                resolvedBase = "/" + comp
+            } else {
+                resolvedBase += "/" + comp
+            }
+        }
+        return normalize(resolvedBase)
     }
 
     private static func defaultStorageURL() -> URL? {

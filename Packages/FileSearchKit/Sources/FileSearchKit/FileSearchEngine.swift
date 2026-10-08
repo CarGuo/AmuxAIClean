@@ -205,9 +205,10 @@ public struct FileSearchEngine: Sendable {
         case .name(let m, let value):
             return matchName(m, name: name, value: value, caseSensitive: caseSensitive)
         case .fileExtension(let m, let exts):
-            let fileExt = url.pathExtension.lowercased()
-            let normalized = exts.map {
-                $0.trimmingCharacters(in: CharacterSet(charactersIn: ". ")).lowercased()
+            let fileExt = caseSensitive ? url.pathExtension : url.pathExtension.lowercased()
+            let normalized = exts.map { ext -> String in
+                let trimmed = ext.trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+                return caseSensitive ? trimmed : trimmed.lowercased()
             }
             switch m {
             case .includes: return normalized.contains(fileExt)
@@ -302,13 +303,13 @@ public struct FileSearchEngine: Sendable {
         let attr = "com.apple.metadata:kMDItemFinderComment"
         let data: Data? = url.withUnsafeFileSystemRepresentation { cpath -> Data? in
             guard let cpath else { return nil }
-            let length = getxattr(cpath, attr, nil, 0, 0, 0)
+            let length = getxattr(cpath, attr, nil, 0, 0, XATTR_NOFOLLOW)
             guard length > 0 else { return nil }
             var buf = Data(count: length)
             let n = buf.withUnsafeMutableBytes { raw -> ssize_t in
-                getxattr(cpath, attr, raw.baseAddress, length, 0, 0)
+                getxattr(cpath, attr, raw.baseAddress, length, 0, XATTR_NOFOLLOW)
             }
-            return n > 0 ? buf : nil
+            return n > 0 ? Data(buf.prefix(n)) : nil
         }
         guard let data else { return "" }
         if let s = try? PropertyListSerialization.propertyList(from: data, format: nil) as? String {

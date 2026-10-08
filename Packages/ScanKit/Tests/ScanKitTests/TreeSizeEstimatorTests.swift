@@ -200,6 +200,27 @@ final class TreeSizeEstimatorTests: XCTestCase {
         XCTAssertLessThan(elapsed, 0.5, "短 timeout 下 5 根并发未能及时返回，疑似某根 walk 阻塞")
     }
 
+    func test_estimate_symlinkRootAndFIFOChildIgnored() async throws {
+        let tmp = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
+
+        let realDir = tmp.appendingPathComponent("real", isDirectory: true)
+        try FileManager.default.createDirectory(at: realDir, withIntermediateDirectories: true)
+        try writeFile(in: realDir, name: "payload.bin", bytes: 4_096)
+        let fifo = realDir.appendingPathComponent("pipe.fifo")
+        XCTAssertEqual(mkfifo(fifo.path, S_IRUSR | S_IWUSR), 0)
+
+        let symlinkRoot = tmp.appendingPathComponent("symlink-root")
+        try FileManager.default.createSymbolicLink(at: symlinkRoot, withDestinationURL: realDir)
+
+        let symlinkEstimate = await TreeSizeEstimator.estimate(roots: [symlinkRoot], timeout: 2.0)
+        XCTAssertNil(symlinkEstimate, "Symlink root must not be followed by TreeSizeEstimator")
+
+        let realEstimate = await TreeSizeEstimator.estimate(roots: [realDir], timeout: 2.0)
+        let expected = try allocatedSize(of: realDir.appendingPathComponent("payload.bin"))
+        XCTAssertEqual(realEstimate, expected, "FIFO inside directory must not block or add non-regular bytes")
+    }
+
     // MARK: - helpers
 
     private func makeTempDir() throws -> URL {

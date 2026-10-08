@@ -244,13 +244,21 @@ public actor DerivedDataPerProjectScanner {
 
         let allocation = try measureRootOnce(
             layout: layout,
+            fileSystem: fileSystem,
             cancellationCheck: cancellationCheck,
             progress: progress
         )
         let allIssues = layout.incompleteIssues + allocation.incompleteIssues
+        let resolvedRoot = layout.root.resolvingSymlinksInPath()
         let hits = layout.projects.map { project -> ProjectHit in
-            let relevantIssues = allIssues.filter {
-                isSameOrDescendant(path: $0.path, root: project.url.path)
+            let resolvedProjectPath = project.url.resolvingSymlinksInPath().path
+            let rebasedProjectPath = resolvedRoot
+                .appendingPathComponent(project.url.lastPathComponent, isDirectory: true)
+                .path
+            let relevantIssues = allIssues.filter { issue in
+                isSameOrDescendant(path: issue.path, root: project.url.path)
+                    || isSameOrDescendant(path: issue.path, root: resolvedProjectPath)
+                    || isSameOrDescendant(path: issue.path, root: rebasedProjectPath)
             }
             return ProjectHit(
                 url: project.url,
@@ -626,6 +634,7 @@ public actor DerivedDataPerProjectScanner {
     /// in a shared cache can still be attributed later to a project, but never to two projects.
     private nonisolated static func measureRootOnce(
         layout: DerivedDataLayout,
+        fileSystem: any DynamicDiscoveryFileSystem = FileManager.default,
         cancellationCheck: () throws -> Void,
         progress: (@Sendable (DerivedDataScanProgress) -> Void)?
     ) throws -> RootAllocation {
@@ -634,7 +643,7 @@ public actor DerivedDataPerProjectScanner {
             .fileAllocatedSizeKey,
             .isRegularFileKey,
         ]
-        let isTopLevelSymlink = ((try? FileManager.default.attributesOfItem(atPath: layout.root.path))?[.type] as? FileAttributeType) == .typeSymbolicLink
+        let isTopLevelSymlink = ((try? fileSystem.attributesOfItem(atPath: layout.root.path))?[.type] as? FileAttributeType) == .typeSymbolicLink
         let enumerationRoot = isTopLevelSymlink ? layout.root.resolvingSymlinksInPath() : layout.root
         var issues: [ScanIncompleteIssue] = []
         guard let enumerator = FileManager.default.enumerator(
@@ -818,9 +827,22 @@ public actor DerivedDataPerProjectScanner {
         )
     }
 
+    private nonisolated static func normalizeIssuePath(_ path: String) -> String {
+        let dataPrefix = Firmlinks.recommendedDataVolumeRoot.path
+        let stripped: String
+        if path == dataPrefix {
+            stripped = "/"
+        } else if path.hasPrefix(dataPrefix + "/") {
+            stripped = String(path.dropFirst(dataPrefix.count))
+        } else {
+            stripped = path
+        }
+        return URL(fileURLWithPath: stripped).standardizedFileURL.path
+    }
+
     private nonisolated static func isSameOrDescendant(path: String, root: String) -> Bool {
-        let normalizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
-        let normalizedRoot = URL(fileURLWithPath: root).standardizedFileURL.path
+        let normalizedPath = normalizeIssuePath(path)
+        let normalizedRoot = normalizeIssuePath(root)
         return normalizedPath == normalizedRoot || normalizedPath.hasPrefix(normalizedRoot + "/")
     }
 

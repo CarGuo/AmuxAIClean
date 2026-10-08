@@ -249,4 +249,22 @@ final class HeuristicEngineTests: XCTestCase {
         XCTAssertNil(cachesEntry, "共享容器 ~/Library/Caches 不应累积跨应用计数")
         XCTAssertNil(homeEntry, "$HOME 根不应累积跨应用计数")
     }
+
+    func testDataVolumeFirmlinkAndAdditionalSharedContainerRoots() async {
+        let engine = makeEngine()
+        let firmlinkRestored = "/System/Volumes/Data\(home)/Library/HTTPStorages/com.vendorA/http.db"
+        let siblingVendor = "\(home)/Library/HTTPStorages/com.vendorB/http.db"
+
+        await engine.record(action: .restoredPath(firmlinkRestored, timestamp: ts(1)))
+        for i in 0..<4 {
+            await engine.record(action: .trashedPath(siblingVendor, timestamp: ts(Double(10 + i))))
+        }
+
+        let scoreA = await engine.score(path: "\(home)/Library/HTTPStorages/com.vendorA/other.db")
+        let scoreB = await engine.score(path: siblingVendor)
+        XCTAssertLessThan(scoreA, 0.0, "/System/Volumes/Data 录入的 restore 应归一化并传染同 vendor 子项")
+        XCTAssertGreaterThan(scoreB, 0.0, "~/Library/HTTPStorages 作为共享容器根不得跨应用传染 restore")
+        let httpRootEntry = await engine.snapshotEntry(for: "\(home)/Library/HTTPStorages")
+        XCTAssertNil(httpRootEntry, "~/Library/HTTPStorages 根不应累积跨应用计数")
+    }
 }

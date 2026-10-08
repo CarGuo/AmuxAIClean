@@ -125,28 +125,62 @@ public actor VersionsScanner {
             return []
         }
 
-        // 4) readlink → 解析相对路径 → 必须落在 versions/ 内
-        guard let target = try? fm.destinationOfSymbolicLink(atPath: currentLink.path) else {
-            return []
-        }
-        let resolvedTarget: URL = {
-            if (target as NSString).isAbsolutePath {
-                return URL(fileURLWithPath: target).standardizedFileURL
-            }
-            // 相对路径基准是 currentLink 的父目录（toolchainRoot）
-            return URL(fileURLWithPath: target, relativeTo: toolchainRoot)
-                .standardizedFileURL
-        }()
-
+        // 4) readlink（支持多级软链）→ 解析相对路径 → 必须落在 versions/ 内且目标目录真实存在
         let versionsDirStandardized = versionsDir.standardizedFileURL
-        let activeVersionParent = resolvedTarget.deletingLastPathComponent().standardizedFileURL
-        guard activeVersionParent.path == versionsDirStandardized.path else {
-            // current 落点不在 versions/ 内（如 asdf 落到 plugin 内部）→ 保守不识别
-            GSYLog.notice(.scan, "VersionsScanner current 软链落点不在 versions/ 内 root=\(rootPath) target=\(target)")
+        let versionsDirResolved = versionsDir.resolvingSymlinksInPath().standardizedFileURL
+        var cursorURL = currentLink
+        var resolvedTarget: URL?
+        var protectedNames: Set<String> = []
+        for _ in 0..<16 {
+            guard let attrs = try? fm.attributesOfItem(atPath: cursorURL.path),
+                  let itemType = attrs[.type] as? FileAttributeType else {
+                return []
+            }
+            if itemType == .typeSymbolicLink {
+                let parentPath = cursorURL.deletingLastPathComponent().standardizedFileURL.path
+                if parentPath == versionsDirStandardized.path || parentPath == versionsDirResolved.path {
+                    protectedNames.insert(cursorURL.lastPathComponent)
+                }
+                guard let dest = try? fm.destinationOfSymbolicLink(atPath: cursorURL.path) else {
+                    return []
+                }
+                if (dest as NSString).isAbsolutePath {
+                    cursorURL = URL(fileURLWithPath: dest).standardizedFileURL
+                } else {
+                    // 相对路径基准是当前软链所在的父目录
+                    cursorURL = URL(
+                        fileURLWithPath: dest,
+                        relativeTo: cursorURL.deletingLastPathComponent()
+                    ).standardizedFileURL
+                }
+            } else {
+                resolvedTarget = cursorURL.standardizedFileURL
+                break
+            }
+        }
+        guard let activeTargetURL = resolvedTarget else {
             return []
         }
-        let activeVersion = resolvedTarget.lastPathComponent
+        var isActiveDir: ObjCBool = false
+        guard fm.fileExists(atPath: activeTargetURL.path, isDirectory: &isActiveDir),
+              isActiveDir.boolValue else {
+            return []
+        }
+
+        let activeVersionParent = activeTargetURL.deletingLastPathComponent().standardizedFileURL
+        let activeVersionParentResolved = activeTargetURL
+            .deletingLastPathComponent()
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        guard activeVersionParent.path == versionsDirStandardized.path
+            || activeVersionParentResolved.path == versionsDirResolved.path else {
+            // current 落点不在 versions/ 内（如 asdf 落到 plugin 内部）→ 保守不识别
+            GSYLog.notice(.scan, "VersionsScanner current 软链落点不在 versions/ 内 root=\(rootPath) target=\(activeTargetURL.path)")
+            return []
+        }
+        let activeVersion = activeTargetURL.lastPathComponent
         guard !activeVersion.isEmpty else { return [] }
+        protectedNames.insert(activeVersion)
 
         // 5) 枚举 versions/* 子目录，排除 active
         guard let versionEntries = try? fm.contentsOfDirectory(atPath: versionsDir.path) else {
@@ -154,7 +188,7 @@ public actor VersionsScanner {
         }
         var hits: [Hit] = []
         for name in versionEntries {
-            if name == activeVersion { continue }
+            if protectedNames.contains(name) { continue }
             if name.hasPrefix(".") { continue }
             let child = versionsDir.appendingPathComponent(name)
             var childIsDir: ObjCBool = false

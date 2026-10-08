@@ -112,4 +112,20 @@ final class PathGlobTests: XCTestCase {
         // VendorTrie 调用方走的硬安全网检查（B 阶段 sensitiveCredential 红线）。
         XCTAssertTrue(PathGlob.match(pattern: "~/*", path: "~/.ssh"))
     }
+
+    func test_match_globstar_and_caseInsensitive() {
+        let pattern = "~/Library/Application Support/Acme/**/secrets/*"
+        XCTAssertTrue(PathGlob.match(
+            pattern: pattern,
+            path: "~/Library/Application Support/Acme/secrets/key.pem"
+        ))
+        XCTAssertTrue(PathGlob.match(
+            pattern: pattern,
+            path: "~/library/application support/acme/a/b/SECRETS/key.pem"
+        ))
+        XCTAssertTrue(PathGlob.matchPrefix(
+            pattern: pattern,
+            path: "~/Library/Application Support/Acme/a/b/secrets/sub/key.pem"
+        ))
+    }
 }

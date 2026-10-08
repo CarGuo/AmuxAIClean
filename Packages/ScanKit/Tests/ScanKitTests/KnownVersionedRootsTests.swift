@@ -222,6 +222,27 @@ final class KnownVersionedRootsTests: XCTestCase {
         }
     }
 
+    func test_scanAll_ToolboxDirectAndCh0OrphanPluginsDoNotEvictActiveIDE() throws {
+        let tmp = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let tb = tmp.appendingPathComponent("Library/Application Support/JetBrains/Toolbox/apps", isDirectory: true)
+        // 1) Direct version layout directly under Toolbox/apps: 1 active version + 1 companion .plugins + 1 higher orphan .plugins
+        try FileManager.default.createDirectory(at: tb.appendingPathComponent("242.20224.300"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: tb.appendingPathComponent("242.20224.300.plugins"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: tb.appendingPathComponent("243.99999.1.plugins"), withIntermediateDirectories: true)
+
+        // 2) ch-0 layout under PyCharm-Ch0: 1 active version + 1 companion .plugins
+        let ch0 = tb.appendingPathComponent("PyCharm-Ch0/ch-0", isDirectory: true)
+        try FileManager.default.createDirectory(at: ch0.appendingPathComponent("242.21829.153"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: ch0.appendingPathComponent("242.21829.153.plugins"), withIntermediateDirectories: true)
+
+        let hits = KnownVersionedRoots.scanAll(home: tmp)
+        XCTAssertEqual(hits.map(\.versionName), ["243.99999.1.plugins"],
+                       "Direct 与 ch-0 布局下均不得将唯一活跃 IDE 本体或其同版本 .plugins 误判为旧版本")
+        XCTAssertEqual(hits.first?.retainedLatest, "242.20224.300")
+    }
+
     // MARK: - helper
 
     private func makeTempHome() throws -> URL {

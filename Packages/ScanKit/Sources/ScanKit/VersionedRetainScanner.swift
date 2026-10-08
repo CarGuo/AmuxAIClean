@@ -295,57 +295,26 @@ public actor VersionedRetainScanner {
             return DetectionResult(hits: [], incompleteIssues: incompleteIssues)
         }
 
-        // 按逻辑基础版本归组，防止 JetBrains Toolbox ch-0 内的 `<version>.plugins` 伴随目录
-        // 被当成独立版本或因字典序比 `<version>` 大而反向把唯一/最新活跃 IDE 本体淘汰。
-        var groupsByBaseVersion: [String: [Candidate]] = [:]
-        for candidate in candidates {
-            let baseKey = Self.canonicalVersionGroupKey(for: candidate.name)
-            groupsByBaseVersion[baseKey, default: []].append(candidate)
-        }
-
-        // 独立基础版本数 ≤ keepLatest → 安全起见整个集合不识别
-        guard groupsByBaseVersion.count > options.keepLatest else {
+        guard let selection = Self.selectEvictedVersionCandidates(
+            from: candidates,
+            options: options
+        ) else {
             return DetectionResult(hits: [], incompleteIssues: [])
         }
-
-        let representatives: [Candidate] = groupsByBaseVersion.map { baseKey, members in
-            if let primary = members.first(where: { $0.name == baseKey }) {
-                return primary
-            }
-            let latestModDate = members.compactMap(\.modificationDate).max()
-            return Candidate(
-                name: baseKey,
-                url: members[0].url,
-                modificationDate: latestModDate
-            )
-        }
-
-        // 排序：升序排列后，尾 N 个为保留版本，前面的都是旧版本
-        let sorted = sort(candidates: representatives, ordering: options.ordering)
         if cancellationCheck() { return cancelledDetectionResult }
-        let retainCount = options.keepLatest
-        let oldCount = sorted.count - retainCount
-        let retainedLatest = sorted.last?.name ?? ""
 
+        let retainCount = options.keepLatest
+        let retainedLatest = selection.retainedLatest
         var hits: [Hit] = []
-        hits.reserveCapacity(oldCount)
-        for i in 0..<oldCount {
+        hits.reserveCapacity(selection.evicted.count)
+        for entry in selection.evicted {
             if cancellationCheck() { return cancelledDetectionResult }
-            let rep = sorted[i]
-            let members = (groupsByBaseVersion[rep.name] ?? [rep]).sorted { lhs, rhs in
-                if (lhs.name == rep.name) != (rhs.name == rep.name) {
-                    return lhs.name == rep.name
-                }
-                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-            }
-            for entry in members {
-                hits.append(Hit(
-                    url: entry.url,
-                    collectionRoot: collectionRoot,
-                    versionName: entry.name,
-                    retainedLatest: retainedLatest
-                ))
-            }
+            hits.append(Hit(
+                url: entry.url,
+                collectionRoot: collectionRoot,
+                versionName: entry.name,
+                retainedLatest: retainedLatest
+            ))
         }
         if cancellationCheck() { return cancelledDetectionResult }
 
@@ -360,6 +329,59 @@ public actor VersionedRetainScanner {
 
     nonisolated private static var cancelledDetectionResult: DetectionResult {
         DetectionResult(hits: [], incompleteIssues: [], wasCancelled: true)
+    }
+
+    /// 按逻辑基础版本归组并筛选可淘汰候选：
+    /// - 只有包含真实主版本目录（`member.name == baseKey`）的组才计入 `keepLatest` 保留名额；
+    /// - 孤立伴随目录组（如仅有 `<version>.plugins` 而无 `<version>` 本体）绝不挤占主版本保留名额，
+    ///   并在存在有效主版本时作为陈旧残留一并淘汰。
+    nonisolated static func selectEvictedVersionCandidates(
+        from candidates: [Candidate],
+        options: Options
+    ) -> (evicted: [Candidate], retainedLatest: String)? {
+        var groupsByBaseVersion: [String: [Candidate]] = [:]
+        for candidate in candidates {
+            let baseKey = canonicalVersionGroupKey(for: candidate.name)
+            groupsByBaseVersion[baseKey, default: []].append(candidate)
+        }
+
+        var primaryRepresentatives: [Candidate] = []
+        var orphanRepresentatives: [Candidate] = []
+        for (baseKey, members) in groupsByBaseVersion {
+            if let primary = members.first(where: { $0.name == baseKey }) {
+                primaryRepresentatives.append(primary)
+            } else if let firstMember = members.first {
+                let latestModDate = members.compactMap(\.modificationDate).max()
+                orphanRepresentatives.append(Candidate(
+                    name: baseKey,
+                    url: firstMember.url,
+                    modificationDate: latestModDate
+                ))
+            }
+        }
+
+        guard !primaryRepresentatives.isEmpty,
+              (primaryRepresentatives.count > options.keepLatest || !orphanRepresentatives.isEmpty) else {
+            return nil
+        }
+
+        let sortedPrimary = sort(candidates: primaryRepresentatives, ordering: options.ordering)
+        let sortedOrphans = sort(candidates: orphanRepresentatives, ordering: options.ordering)
+        let oldPrimaryCount = max(0, sortedPrimary.count - options.keepLatest)
+        let retainedLatest = sortedPrimary.last?.name ?? ""
+
+        let evictedRepresentatives = Array(sortedPrimary.prefix(oldPrimaryCount)) + sortedOrphans
+        var evicted: [Candidate] = []
+        for rep in evictedRepresentatives {
+            let members = (groupsByBaseVersion[rep.name] ?? [rep]).sorted { lhs, rhs in
+                if (lhs.name == rep.name) != (rhs.name == rep.name) {
+                    return lhs.name == rep.name
+                }
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+            evicted.append(contentsOf: members)
+        }
+        return (evicted: evicted, retainedLatest: retainedLatest)
     }
 
     /// 将 `<version>.plugins` 伴随目录归一到其宿主 `<version>`，避免伴随插件目录被当作独立新版本。

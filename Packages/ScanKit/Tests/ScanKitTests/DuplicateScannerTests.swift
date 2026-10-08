@@ -420,6 +420,58 @@ final class DuplicateScannerTests: XCTestCase {
         let finishedAfterChild = await probe.didFinishOuter()
         XCTAssertTrue(finishedAfterChild)
     }
+
+    func testMixedHardlinkAndIndependentCopyKeepsSharedInodeFirst() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // Independent single-link copy has a lexicographically smaller name ("a_single.bin")
+        // and older mtime, while the hardlinked pair ("z_link1.bin", "z_link2.bin") has nlink == 2.
+        let single = try writeFile(root.appendingPathComponent("a_single.bin"), size: 64 * 1024, fillByte: 0x5C)
+        let hard1 = try writeFile(root.appendingPathComponent("z_link1.bin"), size: 64 * 1024, fillByte: 0x5C)
+        let hard2 = root.appendingPathComponent("z_link2.bin")
+        XCTAssertEqual(link(hard1.path, hard2.path), 0, "link(2) should succeed")
+
+        let now = Date()
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-3600)], ofItemAtPath: single.path)
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: hard1.path)
+
+        let groups = await DuplicateScanner(roots: [root], minBytes: 1024).scanToCompletion()
+        let group = try XCTUnwrap(groups.first)
+        XCTAssertEqual(group.files.count, 2)
+        XCTAssertGreaterThan(group.files[0].nlink, 1,
+                             "Keeper (files[0]) must prefer the hardlinked inode so deleting files.dropFirst() frees disk space")
+        XCTAssertEqual(group.files[1].path, single.path,
+                       "Single-link copy must be positioned in files.dropFirst() as the removable duplicate")
+        XCTAssertEqual(group.reclaimableBytes, try allocatedBytes(of: single))
+    }
+
+    func testVerifyFullContentReplacedByFIFODoesNotBlock() throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let target = try writeFile(root.appendingPathComponent("victim.bin"), size: 4096, fillByte: 0x33)
+        var targetStat = stat()
+        XCTAssertEqual(lstat(target.path, &targetStat), 0)
+        let identity = DuplicateFileIdentity(stat: targetStat)
+        let fingerprint = try XCTUnwrap(DuplicateContentFingerprint(
+            sha256Hex: String(repeating: "0", count: 64),
+            logicalBytes: 4096
+        ))
+
+        try FileManager.default.removeItem(at: target)
+        XCTAssertEqual(mkfifo(target.path, S_IRUSR | S_IWUSR), 0)
+
+        XCTAssertNil(DuplicateScanner.fullSHA256Hex(path: target.path),
+                     "Opening a FIFO during hashing must not block and must return nil")
+        let verification = DuplicateScanner.verifyFullContent(
+            path: target.path,
+            expectedIdentity: identity,
+            expectedFingerprint: fingerprint
+        )
+        XCTAssertEqual(verification, .identityChangedOrUnavailable,
+                       "Opening a FIFO during verification must not block and must report .identityChangedOrUnavailable")
+    }
 }
 
 private actor DuplicateChildSettlementProbe {

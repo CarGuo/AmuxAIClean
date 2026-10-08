@@ -149,4 +149,36 @@ final class VersionsScannerTests: XCTestCase {
         XCTAssertEqual(Set(actorHits.map(\.versionName)),
                        Set(syncHits.map(\.versionName)))
     }
+
+    /// 7) current 为悬空软链（指向不存在的版本）时，必须保守返回空，绝不能把所有真实版本都当旧版删光。
+    func testDanglingCurrentSymlinkReturnsEmpty() throws {
+        let root = tempRoot.appendingPathComponent("dangling", isDirectory: true)
+        try makeToolchain(
+            root: root,
+            versionsDirName: "versions",
+            currentName: "current",
+            versions: ["1.0.0", "2.0.0"],
+            active: "9.9.9-missing"
+        )
+
+        let hits = VersionsScanner.detect(toolchainRoot: root)
+        XCTAssertTrue(hits.isEmpty, "current 指向不存在的目标时必须返回空，防止全删真实版本")
+    }
+
+    /// 8) 多级软链（current -> versions/stable -> 2.0.0）应解析到最终真实版本目录并保护激活版本。
+    func testChainedCurrentSymlinkResolvesActiveVersionAndProtectsAllChainMembers() throws {
+        let root = tempRoot.appendingPathComponent("chained", isDirectory: true)
+        let fm = FileManager.default
+        let versionsDir = root.appendingPathComponent("versions", isDirectory: true)
+        try fm.createDirectory(at: versionsDir.appendingPathComponent("1.0.0"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: versionsDir.appendingPathComponent("2.0.0"), withIntermediateDirectories: true)
+        let stableAlias = versionsDir.appendingPathComponent("stable")
+        try fm.createSymbolicLink(atPath: stableAlias.path, withDestinationPath: "2.0.0")
+        let currentLink = root.appendingPathComponent("current")
+        try fm.createSymbolicLink(atPath: currentLink.path, withDestinationPath: "versions/stable")
+
+        let hits = VersionsScanner.detect(toolchainRoot: root)
+        XCTAssertEqual(hits.map(\.versionName), ["1.0.0"])
+        XCTAssertEqual(hits.first?.activeVersion, "2.0.0")
+    }
 }

@@ -339,6 +339,41 @@ final class BrewControllerTests: XCTestCase {
                        "同版本目录内的硬链接二进制只应统计一次，且 .brew 子目录应被计入")
     }
 
+    func test_symlinkedCellarOrFormulaOrVersionDirectory_isNotFollowed() throws {
+        let external = prefix.appendingPathComponent("external-target", isDirectory: true)
+        let externalVer = external.appendingPathComponent("evil/1.0", isDirectory: true)
+        try FileManager.default.createDirectory(at: externalVer, withIntermediateDirectories: true)
+        try Data(repeating: 0x33, count: 4096).write(to: externalVer.appendingPathComponent("payload"))
+
+        // 1) Formula name directory is a symlink -> ignored
+        try makeFormula(name: "real-pkg", version: "1.0",
+                        installedAt: Date(), installedOnRequest: true, tap: "homebrew/core")
+        try FileManager.default.createSymbolicLink(
+            at: prefix.appendingPathComponent("Cellar/evil-pkg"),
+            withDestinationURL: external.appendingPathComponent("evil")
+        )
+        // 2) Version directory is a symlink -> ignored
+        try FileManager.default.createSymbolicLink(
+            at: prefix.appendingPathComponent("Cellar/real-pkg/2.0-symlink"),
+            withDestinationURL: externalVer
+        )
+
+        let controller = BrewController(prefix: prefix)
+        let formulae = controller.listFormulae()
+        XCTAssertEqual(formulae.count, 1)
+        XCTAssertEqual(formulae.first?.name, "real-pkg")
+        XCTAssertEqual(formulae.first?.version, "1.0")
+
+        // 3) Entire Caskroom is a symlink -> treated as missing
+        try FileManager.default.createSymbolicLink(
+            at: prefix.appendingPathComponent("Caskroom"),
+            withDestinationURL: external
+        )
+        let caskResult = controller.listCasksWithDiagnostics()
+        XCTAssertTrue(caskResult.packages.isEmpty)
+        XCTAssertEqual(caskResult.status, .missing)
+    }
+
     // MARK: - helpers
 
     private func makeFormula(name: String, version: String,

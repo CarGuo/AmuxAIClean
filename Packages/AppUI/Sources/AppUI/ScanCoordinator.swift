@@ -1,3 +1,4 @@
+import Combine
 import Darwin
 import Foundation
 import LogKit
@@ -1695,13 +1696,21 @@ public final class ScanCoordinator: ObservableObject {
     /// 使用一次性快照同步判断，避免逐 node 跨 actor。
     private nonisolated static func isWhitelisted(_ path: String,
                                                    in snapshot: Set<String>) -> Bool {
-        var normalized = path
+        guard !snapshot.isEmpty else { return false }
+        var normalized = SafetyEngine.stripDataVolumePrefix(path)
         while normalized.count > 1, normalized.hasSuffix("/") {
             normalized.removeLast()
         }
         if snapshot.contains(normalized) { return true }
-        for entry in snapshot where normalized.hasPrefix(entry + "/") {
-            return true
+        let lowerNormalized = normalized.lowercased()
+        for entry in snapshot {
+            if normalized.hasPrefix(entry + "/") {
+                return true
+            }
+            let lowerEntry = entry.lowercased()
+            if lowerNormalized == lowerEntry || lowerNormalized.hasPrefix(lowerEntry + "/") {
+                return true
+            }
         }
         return false
     }
@@ -3278,6 +3287,7 @@ public final class ScanCoordinator: ObservableObject {
         private let measuredParentState: TreeScanEvidenceProjection.ProjectedState?
         private let incompleteIssues: [ScanIncompleteIssue]?
         private let tombstones: PrunedPathMatcher
+        private let whitelist: Set<String>
         private let locale: Locale
         private let reconcileParent: Bool
 
@@ -3289,6 +3299,7 @@ public final class ScanCoordinator: ObservableObject {
             measuredParentState: TreeScanEvidenceProjection.ProjectedState?,
             incompleteIssues: [ScanIncompleteIssue]?,
             tombstones: PrunedPathMatcher,
+            whitelist: Set<String> = [],
             locale: Locale,
             reconcileParent: Bool
         ) {
@@ -3299,6 +3310,7 @@ public final class ScanCoordinator: ObservableObject {
             self.measuredParentState = measuredParentState
             self.incompleteIssues = incompleteIssues
             self.tombstones = tombstones
+            self.whitelist = whitelist
             self.locale = locale
             self.reconcileParent = reconcileParent
         }
@@ -3313,6 +3325,7 @@ public final class ScanCoordinator: ObservableObject {
                 measuredParentState: measuredParentState,
                 incompleteIssues: incompleteIssues,
                 tombstones: tombstones,
+                whitelist: whitelist,
                 locale: locale,
                 reconcileParent: reconcileParent
             ) else { return nil }
@@ -3358,17 +3371,20 @@ public final class ScanCoordinator: ObservableObject {
         private var preparedOutput: PreparedMemoryTreeProjection?
         private let parentPath: String
         private let tombstones: PrunedPathMatcher
+        private let whitelist: Set<String>
         private let locale: Locale
 
         init(
             retainedState: MemoryTreeRetainedState,
             parentPath: String,
             tombstones: PrunedPathMatcher,
+            whitelist: Set<String> = [],
             locale: Locale
         ) {
             self.retainedState = retainedState
             self.parentPath = parentPath
             self.tombstones = tombstones
+            self.whitelist = whitelist
             self.locale = locale
         }
 
@@ -3378,6 +3394,7 @@ public final class ScanCoordinator: ObservableObject {
                 retainedState: retainedState,
                 parentPath: parentPath,
                 tombstones: tombstones,
+                whitelist: whitelist,
                 locale: locale
             ) else { return nil }
             preparedOutput = output
@@ -3929,6 +3946,17 @@ public final class ScanCoordinator: ObservableObject {
     }
 
     private struct IndexedSubtreeRetainedState: Sendable {
+        let snapshot: ScanSnapshot
+        let totalBytes: Int64
+        let scannedFiles: Int
+        let buckets: [String: Bucket]
+        let snapshotTreeRows: [TreeSortKey: [TreeRow]]
+        let perRootStaging: [String: PerRootProgress]
+        let perRootActive: [String: PerRootProgress]
+        let perRootFinished: [String: PerRootProgress]
+        let perRootSorted: [PerRootProgress]
+        let perRootTreeRows: [TreeSortKey: [TreeRow]]
+        let mainListSortKey: MainListSortKey
         let dirIndex: [String: DirAgg]
         let childEdges: [String: Set<String>]
         let fileLeaves: [String: (bytes: Int64, logicalBytes: Int64, isDir: Bool, modificationDate: Date?)]
@@ -3944,6 +3972,17 @@ public final class ScanCoordinator: ObservableObject {
     }
 
     private struct PreparedIndexedSubtreeTransaction: Sendable {
+        let snapshot: ScanSnapshot
+        let totalBytes: Int64
+        let scannedFiles: Int
+        let buckets: [String: Bucket]
+        let snapshotTreeRows: [TreeSortKey: [TreeRow]]
+        let perRootStaging: [String: PerRootProgress]
+        let perRootActive: [String: PerRootProgress]
+        let perRootFinished: [String: PerRootProgress]
+        let perRootFinishedCount: Int
+        let perRootSorted: [PerRootProgress]
+        let perRootTreeRows: [TreeSortKey: [TreeRow]]
         let dirIndex: [String: DirAgg]
         let childEdges: [String: Set<String>]
         let fileLeaves: [String: (bytes: Int64, logicalBytes: Int64, isDir: Bool, modificationDate: Date?)]
@@ -3962,17 +4001,20 @@ public final class ScanCoordinator: ObservableObject {
         private var preparedOutput: PreparedIndexedSubtreeTransaction?
         private let measurement: IndexedSubtreeMeasurement
         private let tombstones: PrunedPathMatcher
+        private let whitelist: Set<String>
         private let locale: Locale
 
         init(
             retainedState: IndexedSubtreeRetainedState,
             measurement: IndexedSubtreeMeasurement,
             tombstones: PrunedPathMatcher,
+            whitelist: Set<String> = [],
             locale: Locale
         ) {
             self.retainedState = retainedState
             self.measurement = measurement
             self.tombstones = tombstones
+            self.whitelist = whitelist
             self.locale = locale
         }
 
@@ -3982,6 +4024,7 @@ public final class ScanCoordinator: ObservableObject {
                 retainedState: retainedState,
                 measurement: measurement,
                 tombstones: tombstones,
+                whitelist: whitelist,
                 locale: locale
             ) else { return nil }
             preparedOutput = output
@@ -4814,7 +4857,10 @@ public final class ScanCoordinator: ObservableObject {
     /// 的位置（写新键 / 删旧键 / removeAll / patch-by-prune）必须串到这里。
     /// 用 `&+=` 让计数器溢出时回卷而非 trap；订阅者只关心"变没变"，绝对值无意义。
     @inline(__always)
-    private func bumpChildrenCacheVersion(changedPath: String? = nil) {
+    private func bumpChildrenCacheVersion(
+        changedPath: String? = nil,
+        advanceSourceRevision: Bool = true
+    ) {
         // v2026.07.19 Tree one-click regression closure: the cache mutation revision is part of
         // the state being published. `@Published` delivers synchronously, so advancing this after
         // `treeBrowser.bumpChildrenCacheVersion` let the subscriber freeze revision R and then
@@ -4822,7 +4868,9 @@ public final class ScanCoordinator: ObservableObject {
         // notification therefore failed its CAS, and the next click was required to reveal the
         // previous directory. Commit the complete source identity before emitting the version;
         // never weaken the stale-projection guard.
-        notePruneSourceMutation()
+        if advanceSourceRevision {
+            notePruneSourceMutation()
+        }
         childrenCacheVersion &+= 1
         treeBrowser.bumpChildrenCacheVersion(changedPath: changedPath)
     }
@@ -4991,11 +5039,16 @@ public final class ScanCoordinator: ObservableObject {
     /// 单点收敛：推进结构脏标。
     /// 同时推 `treeRevision`（兼容外部已订阅 treeRevision 的代码）和 `structuralRevision`。
     /// `tickRevision` 也顺带 +1 —— 任何 structural 都隐含一次 tick（一致性保证）。
-    private func bumpStructuralRevision() {
+    private func bumpStructuralRevision(advanceSourceRevision: Bool = true) {
         // v2026.10.08: all Tree signals must publish the committed source identity. Like the
         // children-cache boundary, synchronous @Published subscribers freeze their source here;
         // advancing it afterwards rejects the last refresh after a successful recycle forever.
-        notePruneSourceMutation()
+        // When paired immediately after `bumpChildrenCacheVersion()`, pass `advanceSourceRevision: false`
+        // so `pruneSourceRevision` is not advanced a second time after `childrenCacheVersion` has
+        // already notified synchronous subscribers.
+        if advanceSourceRevision {
+            notePruneSourceMutation()
+        }
         structuralRevision &+= 1
         tickRevision &+= 1
         treeRevision &+= 1
@@ -5204,6 +5257,7 @@ public final class ScanCoordinator: ObservableObject {
     public let liveProgress: ScanLiveProgressStore
     private static let fullDiskDataRootPath = Firmlinks.recommendedDataVolumeRoot.path
     private let fullDiskPathNamespace: ScanPathNamespace
+    private var undoRestoreCancellable: AnyCancellable?
 
     public init(vendors: [VendorRule] = [], home: String = NSHomeDirectory(),
                 enableTreeDeepIndex: Bool = false,
@@ -5242,6 +5296,68 @@ public final class ScanCoordinator: ObservableObject {
         self.fdaStatus = probe.fdaStatus
         self.volumeSnapshot = probe.volumeSnapshot
         self.swapSnapshot = probe.swapSnapshot
+        self.undoRestoreCancellable = NotificationCenter.default
+            .publisher(for: .gsyUndoDidRestore)
+            .sink { [weak self] notification in
+                guard let paths = notification.userInfo?["paths"] as? [String],
+                      !paths.isEmpty else { return }
+                if Thread.isMainThread {
+                    MainActor.assumeIsolated {
+                        self?.reconcileRestoredPaths(paths)
+                    }
+                } else {
+                    Task { @MainActor [weak self] in
+                        self?.reconcileRestoredPaths(paths)
+                    }
+                }
+            }
+    }
+
+    /// Reconciles paths restored from Trash by UndoHistoryStore in the current scan session.
+    /// Removes overlapping tombstones and invalidates parent Tree caches so restored items
+    /// are no longer suppressed by same-session deletion tombstones.
+    public func reconcileRestoredPaths(_ rawPaths: [String]) {
+        let normalizedRestored = rawPaths
+            .map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+            .filter { !$0.isEmpty }
+        guard !normalizedRestored.isEmpty else { return }
+
+        var didMutate = false
+        let existingRoots = deletedPathTombstones.matcher.roots
+        if !existingRoots.isEmpty {
+            let remainingRoots = existingRoots.filter { root in
+                !normalizedRestored.contains { Self.pathsOverlap(root, $0) }
+            }
+            if remainingRoots.count != existingRoots.count {
+                let nextIndex = remainingRoots.isEmpty
+                    ? DeletedPathIndex.empty
+                    : DeletedPathIndex(matcher: PrunedPathMatcher(paths: remainingRoots))
+                deletedPathTombstones = nextIndex
+                treeBrowser.publishDeletionPresentation(matcher: nextIndex.presentationMatcher)
+                didMutate = true
+            }
+        }
+
+        for restoredPath in normalizedRestored {
+            let parentPath = String._gsyParentPath(of: restoredPath)
+            guard !parentPath.isEmpty else { continue }
+            for sortKey in TreeSortKey.allCases {
+                let key = "\(parentPath)|\(sortKey.rawValue)"
+                if treeChildrenCache.removeValue(forKey: key) != nil {
+                    didMutate = true
+                }
+                if indexedTreePreviewCache.removeValue(forKey: key) != nil {
+                    didMutate = true
+                }
+            }
+        }
+
+        if didMutate {
+            bumpChildrenCacheVersion()
+            bumpStructuralRevision(advanceSourceRevision: false)
+            storeRevision &+= 1
+        }
+        refreshVolumeCapacity()
     }
 
     /// v1.3：用户从系统设置回到 App 后调用，重探 FDA 状态与卷容量。
@@ -5328,7 +5444,7 @@ public final class ScanCoordinator: ObservableObject {
         compactedLargeFileTopN = nil
         lastIndexSnapshot = (0, 0, 0)
         bumpChildrenCacheVersion()
-        bumpStructuralRevision()
+        bumpStructuralRevision(advanceSourceRevision: false)
 
         Task { @MainActor [weak self] in
             // Let synchronous @Published delivery finish before the actor drops its retained roots.
@@ -7987,7 +8103,7 @@ public final class ScanCoordinator: ObservableObject {
         if !node.isDirectory {
             // v1.0 T4：达到大文件阈值的叶子单独留底，供 LargeFilesView 用。
             // 注：与深索引开关解耦，largeFileLeaves 即便 deepIndex=off 也照常采集。
-            if largeFileMinBytes > 0 && bytes >= largeFileMinBytes {
+            if largeFileMinBytes > 0 && bytes >= largeFileMinBytes && !isWhitelisted(nodePath) {
                 largeFileLeaves.consider(LargeFileLeaf(
                     path: nodePath,
                     bytes: bytes,
@@ -8047,7 +8163,7 @@ public final class ScanCoordinator: ObservableObject {
     private func ingestLargeFileNode(_ node: FSNode, rootPath: String) {
         guard !node.isDirectory else { return }
         let nodePath = displayPathForScanNode(node.path, rootPath: rootPath)
-        guard !isDeletedTombstoned(nodePath) else { return }
+        guard !isDeletedTombstoned(nodePath), !isWhitelisted(nodePath) else { return }
         let bytes = displayBytes(of: node)
         scannedFiles += 1
         totalBytes += bytes
@@ -8094,7 +8210,7 @@ public final class ScanCoordinator: ObservableObject {
         case .largeFiles(let nodes):
             for node in nodes {
                 let path = displayPathForScanNode(node.path, rootPath: rootPath)
-                guard !isDeletedTombstoned(path) else { continue }
+                guard !isDeletedTombstoned(path), !isWhitelisted(path) else { continue }
                 largeFileLeaves.consider(LargeFileLeaf(
                     path: path,
                     bytes: node.allocatedSize,
@@ -8898,7 +9014,7 @@ public final class ScanCoordinator: ObservableObject {
                   rows.count < Self.indexedTreeFirstFramePreviewCapacity
             else { break }
             inspectedCount &+= 1
-            guard !tombstones.contains(childPath) else { continue }
+            guard !tombstones.contains(childPath), !isWhitelisted(childPath) else { continue }
             let projectedState = projectedTreeState(for: childPath)
             if let aggregate = dirIndex[childPath] {
                 rows.append(TreeRow(
@@ -9106,6 +9222,7 @@ public final class ScanCoordinator: ObservableObject {
                 ),
                 parentPath: path,
                 tombstones: deletedPathTombstones.matcher,
+                whitelist: whitelistSnapshot,
                 locale: locale
             )
             var prepared = await worker.prepare()
@@ -9283,7 +9400,7 @@ public final class ScanCoordinator: ObservableObject {
             }
             lastTreePreparationRanOnMainThread = prepared.ranOnMainThread
             bumpChildrenCacheVersion()
-            bumpStructuralRevision()
+            bumpStructuralRevision(advanceSourceRevision: false)
             treeLocaleProjectionTask = nil
             treeLocaleProjectionToken = nil
             Task { @MainActor [weak self] in
@@ -9637,6 +9754,7 @@ public final class ScanCoordinator: ObservableObject {
                 measuredParentState: parentState,
                 incompleteIssues: incompleteIssues,
                 tombstones: deletedPathTombstones.matcher,
+                whitelist: whitelistSnapshot,
                 locale: locale,
                 reconcileParent: reconcileParent
             )
@@ -9730,7 +9848,7 @@ public final class ScanCoordinator: ObservableObject {
         treeChildrenCache = [:]
         indexedTreePreviewCache = [:]
         bumpChildrenCacheVersion()
-        bumpStructuralRevision()
+        bumpStructuralRevision(advanceSourceRevision: false)
         Task { @MainActor [weak self] in
             await Task.yield()
             let diagnostics = await retirementWorker.retire()
@@ -10080,7 +10198,7 @@ public final class ScanCoordinator: ObservableObject {
             lastSubtreeRescanPreparationRanOnMainThread = transaction.ranOnMainThread
             lastSubtreeRescanAttemptCount = attemptCount
             bumpChildrenCacheVersion()
-            bumpStructuralRevision()
+            bumpStructuralRevision(advanceSourceRevision: false)
             scheduleSubtreeRescanRetirement(worker)
             return
         }
@@ -10110,8 +10228,20 @@ public final class ScanCoordinator: ObservableObject {
             let ownershipRevision = treeChildrenOwnershipRevision
             let evidenceRevision = incompleteEvidenceSourceRevision
             let locale = presentationLocale
+            let sortKey = mainListSortKey
             let worker = IndexedSubtreeTransactionWorker(
                 retainedState: IndexedSubtreeRetainedState(
+                    snapshot: snapshot,
+                    totalBytes: totalBytes,
+                    scannedFiles: scannedFiles,
+                    buckets: buckets,
+                    snapshotTreeRows: snapshotTreeRowsBySort,
+                    perRootStaging: perRootStaging,
+                    perRootActive: perRootProgressActive,
+                    perRootFinished: perRootFinishedSlim,
+                    perRootSorted: perRootProgressSorted,
+                    perRootTreeRows: perRootTreeRowsBySort,
+                    mainListSortKey: sortKey,
                     dirIndex: dirIndex,
                     childEdges: childEdges,
                     fileLeaves: fileLeaves,
@@ -10127,6 +10257,7 @@ public final class ScanCoordinator: ObservableObject {
                 ),
                 measurement: measurement,
                 tombstones: deletedPathTombstones.matcher,
+                whitelist: whitelistSnapshot,
                 locale: locale
             )
             var prepared = await worker.prepare()
@@ -10147,6 +10278,7 @@ public final class ScanCoordinator: ObservableObject {
                   cacheRevision == childrenCacheVersion,
                   ownershipRevision == treeChildrenOwnershipRevision,
                   evidenceRevision == incompleteEvidenceSourceRevision,
+                  sortKey == mainListSortKey,
                   locale.identifier == presentationLocale.identifier else {
                 prepared = nil
                 _ = await worker.retire()
@@ -10158,19 +10290,29 @@ public final class ScanCoordinator: ObservableObject {
                 return false
             }
 
+            snapshot = prepared.snapshot
+            totalBytes = prepared.totalBytes
+            scannedFiles = prepared.scannedFiles
+            buckets = prepared.buckets
             dirIndex = prepared.dirIndex
             childEdges = prepared.childEdges
             fileLeaves = prepared.fileLeaves
             treeChildrenCache = prepared.treeCache
+            snapshotTreeRowsBySort = prepared.snapshotTreeRows
+            perRootStaging = prepared.perRootStaging
+            perRootProgressActive = prepared.perRootActive
+            perRootFinishedSlim = prepared.perRootFinished
+            perRootFinishedCount = prepared.perRootFinishedCount
+            perRootProgressSorted = prepared.perRootSorted
+            perRootTreeRowsBySort = prepared.perRootTreeRows
             mtimeFallbackCache = prepared.mtimeCache
             treeIncompleteEvidenceByRoot = prepared.treeEvidenceByRoot
             incompleteEvidenceSourceRevision &+= 1
             applyPreparedIncompleteEvidenceProjection(prepared.evidence)
             lastSubtreeRescanPreparationRanOnMainThread = prepared.ranOnMainThread
             lastSubtreeRescanAttemptCount = attemptCount
-            notePruneSourceMutation()
             bumpChildrenCacheVersion()
-            bumpStructuralRevision()
+            bumpStructuralRevision(advanceSourceRevision: false)
             scheduleIndexedSubtreeRetirement(worker)
             return true
         }
@@ -11325,7 +11467,7 @@ public final class ScanCoordinator: ObservableObject {
         lastPrunePlanDurationNanoseconds = plan.durationNanoseconds
         lastPruneTreeCacheContributionIndexBuilt = plan.treeCacheContributionIndexBuilt
         bumpChildrenCacheVersion()
-        bumpStructuralRevision()
+        bumpStructuralRevision(advanceSourceRevision: false)
         storeRevision &+= 1
 
         if plan.largeRemoved > 0 {
@@ -11501,6 +11643,7 @@ public final class ScanCoordinator: ObservableObject {
         retainedState: MemoryTreeRetainedState,
         parentPath: String,
         tombstones: PrunedPathMatcher,
+        whitelist: Set<String> = [],
         locale: Locale
     ) -> PreparedMemoryTreeProjection? {
         guard !Task.isCancelled else { return nil }
@@ -11512,7 +11655,9 @@ public final class ScanCoordinator: ObservableObject {
         )
         var hasMoreMtimePaths = false
 
-        for childPath in retainedState.kids where !tombstones.contains(childPath) {
+        for childPath in retainedState.kids
+            where !tombstones.contains(childPath) && !isWhitelisted(childPath, in: whitelist)
+        {
             guard !Task.isCancelled else { return nil }
             let projectedState = retainedState.evidence.projectedState(for: childPath)
             if let aggregate = retainedState.dirIndex[childPath] {
@@ -11591,11 +11736,14 @@ public final class ScanCoordinator: ObservableObject {
         retainedState: IndexedSubtreeRetainedState,
         measurement: IndexedSubtreeMeasurement,
         tombstones: PrunedPathMatcher,
+        whitelist: Set<String> = [],
         locale: Locale
     ) -> PreparedIndexedSubtreeTransaction? {
         guard !Task.isCancelled else { return nil }
         let rootPath = measurement.rootPath
-        guard !tombstones.contains(rootPath) else { return nil }
+        guard !tombstones.contains(rootPath), !isWhitelisted(rootPath, in: whitelist) else {
+            return nil
+        }
 
         var nextTreeEvidence = retainedState.treeEvidenceByRoot
         let replacementIssues = measurement.incompleteIssues
@@ -11632,6 +11780,52 @@ public final class ScanCoordinator: ObservableObject {
                     )
                 }
             }
+            if let bucket = retainedState.buckets[rootPath] {
+                return DirAgg(
+                    bytes: bucket.bytes,
+                    logicalBytes: bucket.logicalBytes,
+                    fileCount: bucket.fileCount,
+                    modificationDate: bucket.modificationDate
+                )
+            }
+            if let row = retainedState.snapshot.rows.first(where: { $0.id == rootPath }) {
+                return DirAgg(
+                    bytes: row.bytes,
+                    logicalBytes: row.logicalBytes,
+                    fileCount: row.fileCount,
+                    modificationDate: row.modificationDate
+                )
+            }
+            if let progress = retainedState.perRootFinished[rootPath]
+                ?? retainedState.perRootStaging[rootPath]
+            {
+                return DirAgg(
+                    bytes: progress.bytes,
+                    logicalBytes: progress.logicalBytes,
+                    fileCount: progress.fileCount,
+                    modificationDate: nil
+                )
+            }
+            for rows in retainedState.snapshotTreeRows.values {
+                if let row = rows.first(where: { $0.path == rootPath }) {
+                    return DirAgg(
+                        bytes: row.bytes,
+                        logicalBytes: row.logicalBytes,
+                        fileCount: row.fileCount,
+                        modificationDate: row.modificationDate
+                    )
+                }
+            }
+            for rows in retainedState.perRootTreeRows.values {
+                if let row = rows.first(where: { $0.path == rootPath }) {
+                    return DirAgg(
+                        bytes: row.bytes,
+                        logicalBytes: row.logicalBytes,
+                        fileCount: row.fileCount,
+                        modificationDate: row.modificationDate
+                    )
+                }
+            }
             return DirAgg()
         }()
 
@@ -11650,20 +11844,32 @@ public final class ScanCoordinator: ObservableObject {
             nextFileLeaves = retainedState.fileLeaves.filter {
                 !pathBelongsToSubtree($0.key, rootPath: rootPath)
             }
-            for (path, aggregate) in measurement.dirIndex where !tombstones.contains(path) {
+            for (path, aggregate) in measurement.dirIndex
+                where !tombstones.contains(path) && !isWhitelisted(path, in: whitelist)
+            {
                 nextDirIndex[path] = aggregate
             }
-            for (parent, children) in measurement.childEdges where !tombstones.contains(parent) {
-                nextChildEdges[parent] = Set(children.lazy.filter { !tombstones.contains($0) })
+            for (parent, children) in measurement.childEdges
+                where !tombstones.contains(parent) && !isWhitelisted(parent, in: whitelist)
+            {
+                nextChildEdges[parent] = Set(
+                    children.lazy.filter {
+                        !tombstones.contains($0) && !isWhitelisted($0, in: whitelist)
+                    }
+                )
             }
-            for (path, leaf) in measurement.fileLeaves where !tombstones.contains(path) {
+            for (path, leaf) in measurement.fileLeaves
+                where !tombstones.contains(path) && !isWhitelisted(path, in: whitelist)
+            {
                 nextFileLeaves[path] = leaf
             }
         } else {
             nextDirIndex = retainedState.dirIndex
             nextChildEdges = retainedState.childEdges
             nextFileLeaves = retainedState.fileLeaves
-            for (path, incoming) in measurement.dirIndex where !tombstones.contains(path) {
+            for (path, incoming) in measurement.dirIndex
+                where !tombstones.contains(path) && !isWhitelisted(path, in: whitelist)
+            {
                 let old = nextDirIndex[path] ?? DirAgg()
                 nextDirIndex[path] = DirAgg(
                     bytes: max(old.bytes, incoming.bytes),
@@ -11672,12 +11878,18 @@ public final class ScanCoordinator: ObservableObject {
                     modificationDate: incoming.modificationDate ?? old.modificationDate
                 )
             }
-            for (parent, children) in measurement.childEdges where !tombstones.contains(parent) {
+            for (parent, children) in measurement.childEdges
+                where !tombstones.contains(parent) && !isWhitelisted(parent, in: whitelist)
+            {
                 nextChildEdges[parent, default: []].formUnion(
-                    children.lazy.filter { !tombstones.contains($0) }
+                    children.lazy.filter {
+                        !tombstones.contains($0) && !isWhitelisted($0, in: whitelist)
+                    }
                 )
             }
-            for (path, leaf) in measurement.fileLeaves where !tombstones.contains(path) {
+            for (path, leaf) in measurement.fileLeaves
+                where !tombstones.contains(path) && !isWhitelisted(path, in: whitelist)
+            {
                 nextFileLeaves[path] = leaf
             }
         }
@@ -11729,9 +11941,26 @@ public final class ScanCoordinator: ObservableObject {
             var changed = false
             for index in rows.indices {
                 let old = rows[index]
-                guard affectedAggregatePaths.contains(old.path),
-                      let aggregate = nextDirIndex[old.path]
-                else { continue }
+                guard affectedAggregatePaths.contains(old.path) else { continue }
+                let updatedBytes: Int64
+                let updatedLogicalBytes: Int64
+                let updatedFileCount: Int
+                let updatedHasChildren: Bool
+                let updatedMtime: Date?
+                if let aggregate = nextDirIndex[old.path] {
+                    updatedBytes = aggregate.bytes
+                    updatedLogicalBytes = aggregate.logicalBytes
+                    updatedFileCount = aggregate.fileCount
+                    updatedHasChildren = !(nextChildEdges[old.path]?.isEmpty ?? true)
+                    updatedMtime = aggregate.modificationDate ?? old.modificationDate
+                } else {
+                    updatedBytes = max(0, old.bytes &+ byteDelta)
+                    updatedLogicalBytes = max(0, old.logicalBytes &+ logicalDelta)
+                    updatedFileCount = max(0, old.fileCount &+ fileDelta)
+                    updatedHasChildren = nextChildEdges[old.path].map { !$0.isEmpty }
+                        ?? old.hasChildren
+                    updatedMtime = old.modificationDate
+                }
                 let projectedState = evidenceProjection.projectedState(
                     for: old.path,
                     fallbackAccessState: old.accessState,
@@ -11740,14 +11969,14 @@ public final class ScanCoordinator: ObservableObject {
                 rows[index] = TreeRow(
                     path: old.path,
                     title: old.title,
-                    bytes: aggregate.bytes,
-                    logicalBytes: aggregate.logicalBytes,
-                    fileCount: aggregate.fileCount,
+                    bytes: updatedBytes,
+                    logicalBytes: updatedLogicalBytes,
+                    fileCount: updatedFileCount,
                     isDirectory: old.isDirectory,
-                    hasChildren: !(nextChildEdges[old.path]?.isEmpty ?? true),
+                    hasChildren: updatedHasChildren,
                     accessState: projectedState.accessState,
                     subtreeCompleteness: projectedState.subtreeCompleteness,
-                    modificationDate: aggregate.modificationDate ?? old.modificationDate,
+                    modificationDate: updatedMtime,
                     isSizePending: old.path == rootPath && measurement.isComplete
                         ? false
                         : old.isSizePending,
@@ -11767,7 +11996,9 @@ public final class ScanCoordinator: ObservableObject {
         let directChildren = nextChildEdges[rootPath] ?? []
         var semanticRows: [TreeRow] = []
         semanticRows.reserveCapacity(directChildren.count)
-        for childPath in directChildren where !tombstones.contains(childPath) {
+        for childPath in directChildren
+            where !tombstones.contains(childPath) && !isWhitelisted(childPath, in: whitelist)
+        {
             guard !Task.isCancelled else { return nil }
             let state = evidenceProjection.projectedState(for: childPath)
             if let aggregate = nextDirIndex[childPath] {
@@ -11807,7 +12038,199 @@ public final class ScanCoordinator: ObservableObject {
             }
         }
 
+        // Reconcile top-level buckets, snapshot rows, snapshotTreeRows, and perRoot progress
+        // when the refreshed subtree is itself a top-level item or a descendant of one.
+        var nextBuckets = retainedState.buckets
+        for (bucketPath, bucket) in retainedState.buckets
+            where affectedAggregatePaths.contains(bucketPath)
+        {
+            var updated = bucket
+            if let agg = nextDirIndex[bucketPath] {
+                updated.bytes = agg.bytes
+                updated.logicalBytes = agg.logicalBytes
+                updated.fileCount = agg.fileCount
+                if let mtime = agg.modificationDate {
+                    updated.modificationDate = mtime
+                }
+            } else {
+                updated.bytes = max(0, bucket.bytes &+ byteDelta)
+                updated.logicalBytes = max(0, bucket.logicalBytes &+ logicalDelta)
+                updated.fileCount = max(0, bucket.fileCount &+ fileDelta)
+            }
+            if let kids = nextChildEdges[bucketPath] {
+                updated.hasChildren = !kids.isEmpty
+            }
+            nextBuckets[bucketPath] = updated
+        }
+
+        var nextRows = retainedState.snapshot.rows
+        var didMutateSnapshotRows = false
+        for idx in nextRows.indices {
+            let row = nextRows[idx]
+            guard affectedAggregatePaths.contains(row.id) else { continue }
+            let updatedBytes: Int64
+            let updatedLogicalBytes: Int64
+            let updatedFileCount: Int
+            if let agg = nextDirIndex[row.id] {
+                updatedBytes = agg.bytes
+                updatedLogicalBytes = agg.logicalBytes
+                updatedFileCount = agg.fileCount
+            } else {
+                updatedBytes = max(0, row.bytes &+ byteDelta)
+                updatedLogicalBytes = max(0, row.logicalBytes &+ logicalDelta)
+                updatedFileCount = max(0, row.fileCount &+ fileDelta)
+            }
+            let updatedHasChildren = nextChildEdges[row.id].map { !$0.isEmpty } ?? row.hasChildren
+            let updatedMtime = nextDirIndex[row.id]?.modificationDate ?? row.modificationDate
+            nextRows[idx] = RowItem(
+                id: row.id,
+                url: row.url,
+                title: row.title,
+                isDirectory: row.isDirectory,
+                bytes: updatedBytes,
+                logicalBytes: updatedLogicalBytes,
+                fileCount: updatedFileCount,
+                verdict: row.verdict,
+                rejection: row.rejection,
+                vendorName: row.vendorName,
+                vendorNote: row.vendorNote,
+                runningBundleIDPrefix: row.runningBundleIDPrefix,
+                isActive: row.isActive,
+                hasChildren: updatedHasChildren,
+                modificationDate: updatedMtime,
+                titlePresentation: row.titlePresentation,
+                vendorNamePresentation: row.vendorNamePresentation,
+                vendorNotePresentation: row.vendorNotePresentation
+            )
+            didMutateSnapshotRows = true
+        }
+        if didMutateSnapshotRows && retainedState.snapshot.isFinished {
+            let sortKey = retainedState.mainListSortKey
+            nextRows.sort { sortKey.lessThan($0, $1, locale: locale) }
+        }
+
+        var nextPerRootStaging = retainedState.perRootStaging
+        var didMutatePerRoot = false
+        for (perRootKey, progress) in retainedState.perRootStaging
+            where affectedAggregatePaths.contains(perRootKey)
+        {
+            var updated = progress
+            if let agg = nextDirIndex[perRootKey] {
+                updated.bytes = agg.bytes
+                updated.logicalBytes = agg.logicalBytes
+                updated.fileCount = agg.fileCount
+            } else {
+                updated.bytes = max(0, progress.bytes &+ byteDelta)
+                updated.logicalBytes = max(0, progress.logicalBytes &+ logicalDelta)
+                updated.fileCount = max(0, progress.fileCount &+ fileDelta)
+            }
+            nextPerRootStaging[perRootKey] = updated
+            didMutatePerRoot = true
+        }
+        for (perRootKey, progress) in retainedState.perRootFinished
+            where affectedAggregatePaths.contains(perRootKey) && nextPerRootStaging[perRootKey] == nil
+        {
+            var updated = progress
+            if let agg = nextDirIndex[perRootKey] {
+                updated.bytes = agg.bytes
+                updated.logicalBytes = agg.logicalBytes
+                updated.fileCount = agg.fileCount
+            } else {
+                updated.bytes = max(0, progress.bytes &+ byteDelta)
+                updated.logicalBytes = max(0, progress.logicalBytes &+ logicalDelta)
+                updated.fileCount = max(0, progress.fileCount &+ fileDelta)
+            }
+            nextPerRootStaging[perRootKey] = updated
+            didMutatePerRoot = true
+        }
+
+        let nextPerRootActive: [String: PerRootProgress]
+        let nextPerRootFinished: [String: PerRootProgress]
+        let nextPerRootSorted: [PerRootProgress]
+        let nextPerRootTreeRows: [TreeSortKey: [TreeRow]]
+        if didMutatePerRoot {
+            var active: [String: PerRootProgress] = [:]
+            var finished: [String: PerRootProgress] = [:]
+            for (path, progress) in nextPerRootStaging {
+                if progress.isFinished {
+                    finished[path] = progress
+                } else {
+                    active[path] = progress
+                }
+            }
+            nextPerRootActive = active
+            nextPerRootFinished = finished
+            nextPerRootSorted = nextPerRootStaging.values.sorted { $0.rootPath < $1.rootPath }
+            let perRootProjection = buildPerRootProjection(
+                staging: nextPerRootStaging,
+                tombstones: tombstones,
+                previousActive: retainedState.perRootActive,
+                previousFinished: retainedState.perRootFinished,
+                previousFinishedCount: retainedState.perRootFinished.count,
+                previousSorted: retainedState.perRootSorted,
+                evidence: evidenceProjection,
+                locale: locale,
+                sessionIsScanning: false
+            )
+            nextPerRootTreeRows = perRootProjection.treeRowsBySort
+        } else {
+            nextPerRootActive = retainedState.perRootActive
+            nextPerRootFinished = retainedState.perRootFinished
+            nextPerRootSorted = retainedState.perRootSorted
+            nextPerRootTreeRows = retainedState.perRootTreeRows
+        }
+
+        let didAffectTopLevelTotals = didMutateSnapshotRows
+            || didMutatePerRoot
+            || retainedState.buckets.keys.contains(where: { affectedAggregatePaths.contains($0) })
+        let nextTotalBytes = didAffectTopLevelTotals
+            ? max(0, retainedState.totalBytes &+ byteDelta)
+            : retainedState.totalBytes
+        let nextScannedFiles = didAffectTopLevelTotals
+            ? max(0, retainedState.scannedFiles &+ fileDelta)
+            : retainedState.scannedFiles
+        let nextSnapshot: ScanSnapshot
+        if didMutateSnapshotRows || didAffectTopLevelTotals {
+            nextSnapshot = ScanSnapshot(
+                categoryID: retainedState.snapshot.categoryID,
+                rows: nextRows,
+                totalBytes: max(0, retainedState.snapshot.totalBytes &+ byteDelta),
+                scannedFileCount: max(0, retainedState.snapshot.scannedFileCount &+ fileDelta),
+                isFinished: retainedState.snapshot.isFinished,
+                elapsed: retainedState.snapshot.elapsed,
+                isComplete: retainedState.snapshot.isComplete,
+                bytesPerSecond: retainedState.snapshot.bytesPerSecond,
+                estimatedRemaining: retainedState.snapshot.estimatedRemaining
+            )
+        } else {
+            nextSnapshot = retainedState.snapshot
+        }
+
+        let nextSnapshotTreeRows: [TreeSortKey: [TreeRow]]
+        if retainedState.snapshotTreeRows.isEmpty {
+            nextSnapshotTreeRows = [:]
+        } else if didMutateSnapshotRows {
+            nextSnapshotTreeRows = buildSnapshotTreeRows(
+                rows: nextRows,
+                evidence: evidenceProjection,
+                locale: locale
+            ) ?? retainedState.snapshotTreeRows
+        } else {
+            nextSnapshotTreeRows = retainedState.snapshotTreeRows
+        }
+
         return PreparedIndexedSubtreeTransaction(
+            snapshot: nextSnapshot,
+            totalBytes: nextTotalBytes,
+            scannedFiles: nextScannedFiles,
+            buckets: nextBuckets,
+            snapshotTreeRows: nextSnapshotTreeRows,
+            perRootStaging: nextPerRootStaging,
+            perRootActive: nextPerRootActive,
+            perRootFinished: nextPerRootFinished,
+            perRootFinishedCount: nextPerRootFinished.count,
+            perRootSorted: nextPerRootSorted,
+            perRootTreeRows: nextPerRootTreeRows,
             dirIndex: nextDirIndex,
             childEdges: nextChildEdges,
             fileLeaves: nextFileLeaves,
@@ -11830,6 +12253,7 @@ public final class ScanCoordinator: ObservableObject {
         measuredParentState: TreeScanEvidenceProjection.ProjectedState?,
         incompleteIssues: [ScanIncompleteIssue]?,
         tombstones: PrunedPathMatcher,
+        whitelist: Set<String> = [],
         locale: Locale,
         reconcileParent: Bool
     ) -> PreparedTreeCacheTransaction? {
@@ -11862,7 +12286,9 @@ public final class ScanCoordinator: ObservableObject {
             ?? retainedState.previousTreeProjection
 
         var nextCache = retainedState.cache
-        guard !tombstones.contains(normalizedPath) else {
+        guard !tombstones.contains(normalizedPath),
+              !isWhitelisted(normalizedPath, in: whitelist)
+        else {
             for sortKey in TreeSortKey.allCases {
                 nextCache.removeValue(forKey: "\(normalizedPath)|\(sortKey.rawValue)")
             }
@@ -11875,7 +12301,9 @@ public final class ScanCoordinator: ObservableObject {
         }
 
         let visibleRows = retainedState.inputRows
-            .filter { !tombstones.contains($0.path) }
+            .filter {
+                !tombstones.contains($0.path) && !isWhitelisted($0.path, in: whitelist)
+            }
             .sorted { sortTreeRow($0, before: $1, by: requestedSort, locale: locale) }
         nextCache[requestedKey] = visibleRows
 
@@ -12580,6 +13008,7 @@ public final class ScanCoordinator: ObservableObject {
               !Task.isCancelled,
               generation == treeFetchGeneration
         else { return [] }
+        let whitelist = whitelistSnapshot
         let projectionTask = Task.detached(priority: .userInitiated) {
             let projected = Self.projectDirectChildrenProducerOutput(
                 producerOutput,
@@ -12587,9 +13016,11 @@ public final class ScanCoordinator: ObservableObject {
                 accessProjection: accessProjection
             )
             return TreeChildrenMeasurement(
-                rows: projected.rows.sorted {
-                    Self.sortTreeRow($0, before: $1, by: key)
-                },
+                rows: projected.rows
+                    .filter { !Self.isWhitelisted($0.path, in: whitelist) }
+                    .sorted {
+                        Self.sortTreeRow($0, before: $1, by: key)
+                    },
                 authority: projected.authority,
                 parentState: projected.parentState,
                 incompleteIssues: projected.incompleteIssues
@@ -12733,8 +13164,9 @@ public final class ScanCoordinator: ObservableObject {
             source = largeFileLeaves.snapshot()
         }
         let tombstones = deletedPathTombstones.matcher
+        let whitelist = whitelistSnapshot
         let filtered = source
-            .filter { !tombstones.contains($0.path) }
+            .filter { !tombstones.contains($0.path) && !Self.isWhitelisted($0.path, in: whitelist) }
             .filter { $0.bytes >= minBytes }
             .filter { mtimeFilter.passes($0.modificationDate, now: now) }
             .map {
@@ -12771,16 +13203,21 @@ public final class ScanCoordinator: ObservableObject {
     /// M3：compact 之后回退到二级缓存的 count，UI 拿到的"集合大小"语义不变。
     public var largeFileCollectedCount: Int {
         let tombstones = deletedPathTombstones.matcher
-        guard !tombstones.roots.isEmpty else {
+        let whitelist = whitelistSnapshot
+        guard !tombstones.roots.isEmpty || !whitelist.isEmpty else {
             if largeFileLeaves.isEmpty, let cache = compactedLargeFileTopN {
                 return cache.count
             }
             return largeFileLeaves.count
         }
         if largeFileLeaves.isEmpty, let cache = compactedLargeFileTopN {
-            return cache.lazy.filter { !tombstones.contains($0.path) }.count
+            return cache.lazy.filter {
+                !tombstones.contains($0.path) && !Self.isWhitelisted($0.path, in: whitelist)
+            }.count
         }
-        return largeFileLeaves.snapshot().lazy.filter { !tombstones.contains($0.path) }.count
+        return largeFileLeaves.snapshot().lazy.filter {
+            !tombstones.contains($0.path) && !Self.isWhitelisted($0.path, in: whitelist)
+        }.count
     }
 
     /// v1.0 T4：当前会话扫描期阈值（bytes）。视图据此判断是否需要"调阈值后重扫"。

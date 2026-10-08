@@ -10,6 +10,8 @@ import HeuristicKit
 /// - 启动时若 JSON 已存在则尝试 load；失败不影响功能（HL 是辅助信号，不是关键路径）
 /// - 每次 record 后异步 persist —— 即使 App 异常退出也最多丢最近一次行为
 public actor HeuristicRecorder {
+    public static let shared = HeuristicRecorder()
+
     private let engine: HeuristicEngine
     private let storeURL: URL
     private var loaded: Bool = false

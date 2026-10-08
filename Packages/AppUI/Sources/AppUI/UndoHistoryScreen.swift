@@ -86,6 +86,7 @@ struct UndoHistoryRecoveryRefreshRevision: Equatable, Sendable {
 ///   —— 失败时弹 alert 不静默。
 struct UndoHistoryScreen: View {
     @ObservedObject private var store: UndoHistoryStore
+    private let onBusyChange: ((Bool) -> Void)?
     @State private var selectedRecordID: UUID?
     @State private var alertPresentation: UndoHistoryAlertPresentation?
     @State private var isRestoring = false
@@ -100,6 +101,12 @@ struct UndoHistoryScreen: View {
     // history impossible for MainView fixtures and scripted deletion surfaces.
     init(store: UndoHistoryStore) {
         _store = ObservedObject(wrappedValue: store)
+        self.onBusyChange = nil
+    }
+
+    init(store: UndoHistoryStore, onBusyChange: @escaping (Bool) -> Void) {
+        _store = ObservedObject(wrappedValue: store)
+        self.onBusyChange = onBusyChange
     }
 
     private var selectedRecord: UndoHistoryStore.Record? {
@@ -428,11 +435,16 @@ struct UndoHistoryScreen: View {
     private func requestRestore(_ record: UndoHistoryStore.Record) async {
         guard !isRestoring, !isPreparingRestore else { return }
         isPreparingRestore = true
+        onBusyChange?(true)
         let plan = await store.prepareRestore(record)
         isPreparingRestore = false
 
-        guard store.history.contains(where: { $0.id == record.id }) else { return }
+        guard store.history.contains(where: { $0.id == record.id }) else {
+            onBusyChange?(isRestoring)
+            return
+        }
         if plan.requiresConflictChoice {
+            onBusyChange?(isRestoring)
             pendingConflictRecord = record
             pendingConflictCount = plan.conflictPaths.count
             showConflictDecision = true
@@ -453,13 +465,42 @@ struct UndoHistoryScreen: View {
         _ record: UndoHistoryStore.Record,
         conflictPolicy: UndoHistoryStore.RestoreConflictPolicy
     ) async {
+        let previouslyRestoredIndices = Set(
+            record.recoveryStates.enumerated().compactMap { index, state in
+                state.status == .restored ? index : nil
+            }
+        )
         isRestoring = true
-        defer { isRestoring = false }
+        onBusyChange?(true)
+        defer {
+            isRestoring = false
+            onBusyChange?(isPreparingRestore)
+        }
         let result = await store.restoreRecord(
             record,
             conflictPolicy: conflictPolicy,
             locale: locale
         )
+        if result.restoredCount > 0 {
+            let updatedRecord = store.history.first(where: { $0.id == record.id })
+            let newlyRestoredPaths: [String]
+            if let updatedRecord {
+                newlyRestoredPaths = updatedRecord.filePairs.enumerated().compactMap { index, pair in
+                    guard !previouslyRestoredIndices.contains(index),
+                          updatedRecord.recoveryState(at: index).status == .restored else {
+                        return nil
+                    }
+                    return pair.original
+                }
+            } else {
+                newlyRestoredPaths = record.filePairs.enumerated().compactMap { index, pair in
+                    previouslyRestoredIndices.contains(index) ? nil : pair.original
+                }
+            }
+            if !newlyRestoredPaths.isEmpty {
+                await HeuristicRecorder.shared.recordRestored(paths: newlyRestoredPaths)
+            }
+        }
         if let failure = result.firstFailure {
             alertPresentation = .partial(
                 restored: result.restoredCount,

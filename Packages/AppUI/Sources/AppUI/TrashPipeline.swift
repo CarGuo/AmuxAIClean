@@ -1594,6 +1594,8 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             changedReviewedPaths = reviewedObjects.changedPaths(comparedTo: frozenIdentities)
         } else if let uninstallVerificationRequest {
             changedReviewedPaths = uninstallVerificationRequest.changedPaths(comparedTo: frozenIdentities)
+        } else if let scanIncompleteOverrideRequest {
+            changedReviewedPaths = scanIncompleteOverrideRequest.changedPaths(comparedTo: frozenIdentities)
         } else {
             changedReviewedPaths = nil
         }

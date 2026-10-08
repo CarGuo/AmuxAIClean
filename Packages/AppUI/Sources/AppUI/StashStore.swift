@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import SafetyKit
+import ScanKit
 
 /// v2026.06.18 **稍后处理（购物车）**：跨视图共享的"待处理路径集合"。
 ///
@@ -44,6 +45,8 @@ public final class StashStore: ObservableObject {
         /// 加入待处理时所属完整扫描会话的不可读路径快照。稍后清理不能借用另一个
         /// category 的 ScanCoordinator 状态，否则目录项会丢失“存在未扫描子树”的证据。
         public let accessDeniedPaths: Set<String>
+        /// 加入待处理时冻结的 typed incomplete 证据，确保跨类目/工具页清理时保留严格确认上下文。
+        public let incompleteIssues: [ScanIncompleteIssue]
         /// v2026.06.19 **一键 AI 队列**结果缓存。
         /// `.pending` 是初值；由 [StashAIQueue.start](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)
         /// 在每条询问完成后调 [setAIVerdict](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashStore.swift)
@@ -55,6 +58,7 @@ public final class StashStore: ObservableObject {
                     fileCount: Int = 1,
                     addedAt: Date = Date(),
                     accessDeniedPaths: Set<String> = [],
+                    incompleteIssues: [ScanIncompleteIssue] = [],
                     aiVerdict: AIVerdictCache = .pending,
                     titlePresentation: LocalizedTextDescriptor? = nil) {
             self.id = path
@@ -66,6 +70,7 @@ public final class StashStore: ObservableObject {
             self.fileCount = max(1, fileCount)
             self.addedAt = addedAt
             self.accessDeniedPaths = accessDeniedPaths
+            self.incompleteIssues = incompleteIssues
             self.aiVerdict = aiVerdict
         }
 
@@ -137,6 +142,7 @@ public final class StashStore: ObservableObject {
             // 新的安全证据丢掉；只保持原顺序/AI 状态，并让上下文单调变严格。
             if let index = entries.firstIndex(where: { $0.id == entry.id }) {
                 let existing = entries[index]
+                let mergedIssues = Array(Set(existing.incompleteIssues + entry.incompleteIssues))
                 entries[index] = StashEntry(
                     path: existing.path,
                     title: existing.title,
@@ -145,6 +151,7 @@ public final class StashStore: ObservableObject {
                     fileCount: max(existing.fileCount, entry.fileCount),
                     addedAt: existing.addedAt,
                     accessDeniedPaths: existing.accessDeniedPaths.union(entry.accessDeniedPaths),
+                    incompleteIssues: mergedIssues,
                     aiVerdict: existing.aiVerdict,
                     titlePresentation: existing.titlePresentation
                 )
@@ -164,6 +171,7 @@ public final class StashStore: ObservableObject {
                     isDirectory: Bool,
                     fileCount: Int = 1,
                     accessDeniedPaths: Set<String> = [],
+                    incompleteIssues: [ScanIncompleteIssue] = [],
                     titlePresentation: LocalizedTextDescriptor? = nil) -> Bool {
         add(StashEntry(
             path: path,
@@ -172,6 +180,7 @@ public final class StashStore: ObservableObject {
             isDirectory: isDirectory,
             fileCount: fileCount,
             accessDeniedPaths: accessDeniedPaths,
+            incompleteIssues: incompleteIssues,
             titlePresentation: titlePresentation
         ))
     }

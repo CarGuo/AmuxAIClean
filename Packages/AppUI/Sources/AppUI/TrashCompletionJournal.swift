@@ -307,6 +307,22 @@ public struct TrashObjectIdentity: Codable, Hashable, Sendable {
         return true
     }
 
+    /// Cross-reboot APFS mount instances may receive a new `st_dev` while the underlying volume
+    /// object (`inode`, `fileType`, `birthTimeSeconds`, `birthTimeNanoseconds`, `generation`) is
+    /// unchanged. Legacy three-field identities without birthtime/generation still require exact
+    /// `device` equality.
+    func matchesAllowingMountDeviceRebase(_ current: TrashObjectIdentity) -> Bool {
+        if matches(current) { return true }
+        guard let birthTimeSeconds,
+              let birthTimeNanoseconds,
+              let generation else { return false }
+        return inode == current.inode
+            && fileType == current.fileType
+            && birthTimeSeconds == current.birthTimeSeconds
+            && birthTimeNanoseconds == current.birthTimeNanoseconds
+            && generation == current.generation
+    }
+
     enum Probe: Sendable, Equatable {
         case present(TrashObjectIdentity)
         case missing

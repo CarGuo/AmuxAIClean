@@ -271,9 +271,15 @@ final class TrashListener: @unchecked Sendable {
     }
 
     fileprivate func handleEvents(paths: [String], flags: [FSEventStreamEventFlags]) {
+        let trashRoot = SentinelPaths.trashDirectory.path
         for (path, flag) in zip(paths, flags) {
-            guard TrashListener.isAppBundle(path: path) else { continue }
-            // 只关心新建事件（用户拖入）
+            guard TrashListener.isTopLevelTrashAppBundle(path: path, trashRoot: trashRoot) else { continue }
+            let isRemoved = (flag & UInt32(kFSEventStreamEventFlagItemRemoved)) != 0
+            if isRemoved && !FileManager.default.fileExists(atPath: path) {
+                pendingPaths.remove(path)
+                continue
+            }
+            // 只关心新建或移入事件（用户拖入废纸篓）
             let isCreated = (flag & UInt32(kFSEventStreamEventFlagItemCreated)) != 0
             let isRenamed = (flag & UInt32(kFSEventStreamEventFlagItemRenamed)) != 0
             guard isCreated || isRenamed else { continue }
@@ -290,6 +296,9 @@ final class TrashListener: @unchecked Sendable {
             let snapshot = self.pendingPaths
             self.pendingPaths.removeAll()
             for path in snapshot {
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir),
+                      isDir.boolValue else { continue }
                 self.dispatcher.openUninstall(path: path)
             }
         }
@@ -297,10 +306,19 @@ final class TrashListener: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + 30, execute: work)
     }
 
-    /// 判定路径是否是 .app / .bundle 形态。
+    /// 判定路径是否是直接位于 `~/.Trash` 顶层的 `.app` 包（排除 `.app` 内部嵌套 `.bundle` 及子目录事件）。
+    static func isTopLevelTrashAppBundle(path: String, trashRoot: String) -> Bool {
+        let normalized = (path as NSString).standardizingPath
+        let expectedParent = (trashRoot as NSString).standardizingPath
+        guard (normalized as NSString).deletingLastPathComponent == expectedParent else {
+            return false
+        }
+        return normalized.lowercased().hasSuffix(".app")
+    }
+
+    /// 判定路径是否是 .app 形态。
     static func isAppBundle(path: String) -> Bool {
-        let lower = path.lowercased()
-        return lower.hasSuffix(".app") || lower.hasSuffix(".bundle")
+        path.lowercased().hasSuffix(".app")
     }
 }
 
@@ -379,7 +397,9 @@ final class HotspotListener: @unchecked Sendable {
     private var pendingEvents: [HotspotEvent] = []
     /// 累计 5GB 后触发推荐扫描通知
     private static let openURLBytesThreshold: Int64 = 5 * 1024 * 1024 * 1024
+    private static let maxTrackedPaths = 10_000
     private var bytesSinceLastNotify: Int64 = 0
+    private var lastObservedSizeByPath: [String: Int64] = [:]
 
     init(ringBuffer: HotspotRingBuffer, dispatcher: URLSchemeDispatcher) {
         self.ringBuffer = ringBuffer
@@ -445,12 +465,27 @@ final class HotspotListener: @unchecked Sendable {
         for (path, flag) in zip(paths, flags) {
             // 黑名单：Spotlight / fseventsd 内部目录
             if HotspotListener.isBlacklisted(path: path) { continue }
+            let isRemoved = (flag & UInt32(kFSEventStreamEventFlagItemRemoved)) != 0
+            if isRemoved && HotspotListener.fileSize(path: path) == nil {
+                lastObservedSizeByPath.removeValue(forKey: path)
+                continue
+            }
             let isCreated = (flag & UInt32(kFSEventStreamEventFlagItemCreated)) != 0
             let isModified = (flag & UInt32(kFSEventStreamEventFlagItemModified)) != 0
             guard isCreated || isModified else { continue }
             let size = HotspotListener.fileSize(path: path)
             if let s = size {
-                bytesSinceLastNotify += s
+                let previous = lastObservedSizeByPath[path] ?? 0
+                if lastObservedSizeByPath[path] == nil,
+                   lastObservedSizeByPath.count >= HotspotListener.maxTrackedPaths,
+                   let evictedKey = lastObservedSizeByPath.keys.first {
+                    lastObservedSizeByPath.removeValue(forKey: evictedKey)
+                }
+                lastObservedSizeByPath[path] = s
+                let delta = max(0, s - previous)
+                bytesSinceLastNotify += delta
+            } else {
+                lastObservedSizeByPath.removeValue(forKey: path)
             }
             pendingEvents.append(HotspotEvent(path: path, detectedAt: now, sizeHint: size))
         }
@@ -487,7 +522,8 @@ final class HotspotListener: @unchecked Sendable {
 
     static func fileSize(path: String) -> Int64? {
         var st = stat()
-        guard stat(path, &st) == 0 else { return nil }
+        guard lstat(path, &st) == 0,
+              (st.st_mode & S_IFMT) == S_IFREG else { return nil }
         return Int64(st.st_size)
     }
 }

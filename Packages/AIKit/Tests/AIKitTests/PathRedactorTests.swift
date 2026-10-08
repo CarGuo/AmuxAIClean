@@ -85,4 +85,15 @@ final class PathRedactorTests: XCTestCase {
         let out = r.redact(["/Users/guoshuyu/a", "/Users/guoshuyu/b", "/tmp/x"])
         XCTAssertEqual(out, ["/Users/<USER>/a", "/Users/<USER>/b", "/tmp/x"])
     }
+
+    func test_data_volume_and_lowercase_users_redacted() {
+        XCTAssertEqual(
+            r.redact("/System/Volumes/Data/Users/guoshuyu/Library/Caches/foo"),
+            "/Users/<USER>/Library/Caches/foo"
+        )
+        XCTAssertEqual(
+            r.redact("/users/alice/Documents/secret.txt"),
+            "/Users/<USER>/Documents/secret.txt"
+        )
+    }
 }

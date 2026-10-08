@@ -109,4 +109,22 @@ final class WhitelistStoreTests: XCTestCase {
         XCTAssertGreaterThan(secondList.first!.addedAt, firstAt!,
                              "重复 add 应刷新 addedAt")
     }
+
+    func test_dataVolume_caseInsensitive_and_symlink_matching() async throws {
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory.appendingPathComponent("whitelist-\(UUID().uuidString)")
+        let realDir = tempDir.appendingPathComponent("RealWork")
+        let linkDir = tempDir.appendingPathComponent("LinkWork")
+        try fm.createDirectory(at: realDir, withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: linkDir, withDestinationURL: realDir)
+        defer { try? fm.removeItem(at: tempDir) }
+
+        let store = WhitelistStore(storageURL: nil)
+        await store.add(path: "/System/Volumes/Data" + realDir.path)
+
+        let firmlinkHit = await store.isWhitelisted(realDir.path.lowercased() + "/sub")
+        let symlinkHit = await store.isWhitelisted(linkDir.path + "/sub")
+        XCTAssertTrue(firmlinkHit, "剥除 /System/Volumes/Data 且忽略大小写后应命中白名单")
+        XCTAssertTrue(symlinkHit, "指向白名单目录的 symlink 子项也应命中白名单")
+    }
 }

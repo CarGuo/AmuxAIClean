@@ -284,6 +284,34 @@ final class MultiRootScannerTests: XCTestCase {
         XCTAssertEqual(counts.cancelled, counts.started, "total deadline 必须取消所有已启动 root")
         XCTAssertLessThan(Date().timeIntervalSince(startedAt), 1.0, "不能继续等待单根 5 秒任务")
     }
+
+    func test_progressClock_recordsSummaryOnlyProgressAndIgnoresSymlinkFileCount() async {
+        let root = URL(fileURLWithPath: "/tmp/summary-only-progress-root")
+        let clock = MultiRootProgressClock()
+
+        await clock.record(node: FSNode(
+            path: "/tmp/summary-only-progress-root/link",
+            isDirectory: false,
+            isSymlink: true,
+            allocatedSize: 0,
+            logicalSize: 0,
+            inode: 10,
+            device: 1,
+            modificationDate: nil
+        ))
+        await clock.recordProgress(
+            scannedBytes: 16_384,
+            fileCount: 4,
+            logicalBytes: 12_288,
+            directoryCount: 2
+        )
+
+        let summary = await clock.syntheticSummary(root: root, elapsed: 0.5)
+        XCTAssertEqual(summary.totalAllocatedBytes, 16_384)
+        XCTAssertEqual(summary.totalLogicalBytes, 12_288)
+        XCTAssertEqual(summary.fileCount, 4, "Symlink node must not inflate fileCount and progress logical/directory totals must be preserved")
+        XCTAssertEqual(summary.directoryCount, 2)
+    }
 }
 
 private actor MultiRootDeadlineProbe {

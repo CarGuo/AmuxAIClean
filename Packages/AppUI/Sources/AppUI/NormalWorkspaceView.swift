@@ -41,6 +41,7 @@ struct NormalWorkspaceView<CleanContent: View>: View {
     @ViewBuilder let cleanContent: () -> CleanContent
     @State private var status = SystemStatusStore()
     @State private var showHistory = false
+    @State private var isHistoryRestoreBusy = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.locale) private var locale
 
@@ -78,23 +79,35 @@ struct NormalWorkspaceView<CleanContent: View>: View {
             if scenePhase == .active { await status.run() }
         }
         .onValueChange(of: showHistory) { _, visible in
-            if visible { onToolBusyChange(true) }
+            if visible {
+                onToolBusyChange(true)
+            } else {
+                isHistoryRestoreBusy = false
+            }
         }
-        .localizedSheet(isPresented: $showHistory, onDismiss: { onToolBusyChange(false) }) {
+        .localizedSheet(isPresented: $showHistory, onDismiss: {
+            isHistoryRestoreBusy = false
+            onToolBusyChange(false)
+        }) {
             VStack(spacing: 0) {
                 HStack {
                     Text("sidebar.section.undo_history", bundle: .module).font(.headline)
                     Spacer()
                     Button {
+                        guard !isHistoryRestoreBusy else { return }
                         showHistory = false
                     } label: {
                         Image(systemName: "xmark")
                     }
+                    .disabled(isHistoryRestoreBusy)
                     .accessibilityLabel(Text("workspace.close", bundle: .module))
                 }.padding(16)
-                UndoHistoryScreen(store: undoHistoryStore)
+                UndoHistoryScreen(store: undoHistoryStore) { busy in
+                    isHistoryRestoreBusy = busy
+                }
             }
             .frame(width: 820, height: 540)
+            .interactiveDismissDisabled(isHistoryRestoreBusy)
         }
     }
 

@@ -249,7 +249,7 @@ public struct PortCleanerScreen: View {
                     Label(AppLocalization.string("port_cleaner.button.kill_selected", locale: locale),
                           systemImage: "xmark.octagon")
                 }
-                .disabled(selectedIDs.isEmpty || isKilling)
+                .disabled(selectedFilteredEntries.isEmpty || isKilling)
             }
         }
         .padding(.horizontal, 16)
@@ -512,12 +512,13 @@ public struct PortCleanerScreen: View {
     }
 
     private var footer: some View {
-        HStack {
-            if !selectedIDs.isEmpty {
+        let selectedVisible = selectedFilteredEntries
+        return HStack {
+            if !selectedVisible.isEmpty {
                 Text(AppLocalization.format(
                     "port_cleaner.footer.selected",
                     locale: locale,
-                    arguments: [Int64(selectedIDs.count)]
+                    arguments: [Int64(selectedVisible.count)]
                 ))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -557,6 +558,10 @@ public struct PortCleanerScreen: View {
         }
     }
 
+    private var selectedFilteredEntries: [PortCleanerEntry] {
+        filteredEntries.filter { selectedIDs.contains($0.id) && $0.canRequestTermination }
+    }
+
     private var groupedEntries: [PortCleanerGroup] {
         PortCleanerGroup.groups(from: filteredEntries)
     }
@@ -580,10 +585,9 @@ public struct PortCleanerScreen: View {
     }
 
     private func requestKillSelected() {
-        let selectedEntries = entries.filter { selectedIDs.contains($0.id) && $0.canRequestTermination }
         requestKill(
             title: .selected,
-            entries: selectedEntries
+            entries: selectedFilteredEntries
         )
     }
 

@@ -115,6 +115,16 @@ public enum AIAdviceClamp {
                     sideEffects: advice.sideEffects
                 )
             }
+            return advice
+        }
+        // 规则 3：本地 confirm 时，AI 不得把 verdict 升级放宽为 safe
+        if inquiry.verdict == .confirm && advice.canDelete == .safe {
+            return AIAdvice(
+                summary: advice.summary,
+                canDelete: .confirm,
+                reason: Self.localPolicyOverridePrefix + advice.reason,
+                sideEffects: advice.sideEffects
+            )
         }
         return advice
     }
@@ -133,19 +143,57 @@ public enum AIAdviceClamp {
         "/private/var", "/var"
     ]
 
-    public static func pathIsHardForbid(_ path: String) -> Bool {
+    private static let lowerHardForbidPrefixes: [String] =
+        SafetyEngine.hardForbidPrefixes.map { $0.lowercased() }
+    private static let lowerExtraHardForbidPrefixes: [String] =
+        extraHardForbidPrefixes.map { $0.lowercased() }
+
+    private static func stripDataVolume(_ p: String) -> String {
         let dataPrefix = "/System/Volumes/Data"
-        let canonical = path.hasPrefix(dataPrefix + "/")
-            ? String(path.dropFirst(dataPrefix.count))
-            : path
-        for p in SafetyEngine.hardForbidPrefixes {
-            if canonical == p || canonical.hasPrefix(p + "/") { return true }
+        let lower = p.lowercased()
+        if lower == "/system/volumes/data" {
+            return "/"
         }
-        for p in extraHardForbidPrefixes {
-            if canonical == p || canonical.hasPrefix(p + "/") { return true }
+        if lower.hasPrefix("/system/volumes/data/") {
+            return String(p.dropFirst(dataPrefix.count))
         }
-        if SafetyEngine().isForbidden(path: path) {
-            return true
+        return p
+    }
+
+    private static func inferHome(from canonicalPath: String) -> String? {
+        let lower = canonicalPath.lowercased()
+        guard lower.hasPrefix("/users/") else { return nil }
+        let afterUsers = canonicalPath.index(canonicalPath.startIndex, offsetBy: "/Users/".count)
+        let endIdx = canonicalPath[afterUsers...].firstIndex(of: "/") ?? canonicalPath.endIndex
+        let user = canonicalPath[afterUsers..<endIdx]
+        guard !user.isEmpty else { return nil }
+        return "/Users/\(user)"
+    }
+
+    public static func pathIsHardForbid(_ path: String) -> Bool {
+        guard path.hasPrefix("/") else { return true }
+        let stripped = stripDataVolume(path)
+        let standardized = stripDataVolume(URL(fileURLWithPath: stripped).standardizedFileURL.path)
+        let resolved = stripDataVolume(
+            URL(fileURLWithPath: standardized).resolvingSymlinksInPath().standardizedFileURL.path
+        )
+        let candidates = resolved == standardized ? [standardized] : [standardized, resolved]
+        let engine = SafetyEngine()
+        for candidate in candidates {
+            let lower = candidate.lowercased()
+            for p in lowerHardForbidPrefixes {
+                if lower == p || lower.hasPrefix(p + "/") { return true }
+            }
+            for p in lowerExtraHardForbidPrefixes {
+                if lower == p || lower.hasPrefix(p + "/") { return true }
+            }
+            if engine.isForbidden(path: candidate) {
+                return true
+            }
+            if let inferredHome = inferHome(from: candidate),
+               engine.isForbidden(path: candidate, home: inferredHome) {
+                return true
+            }
         }
         return false
     }

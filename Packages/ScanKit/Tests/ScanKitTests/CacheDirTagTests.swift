@@ -115,4 +115,25 @@ final class CacheDirTagTests: XCTestCase {
         XCTAssertTrue(CacheDirTag.isCacheDirectory(at: dir.path),
                       "签名正确时即便附带大量后续内容也必须命中")
     }
+
+    /// 5) 安全回归：CACHEDIR.TAG 若是命名管道（FIFO）或软链，必须立即返回 false 且绝不阻塞扫描线程。
+    func testFIFOAndSymlinkTagRejectedWithoutBlocking() throws {
+        let fifoDir = tempRoot.appendingPathComponent("fifo_cache_dir", isDirectory: true)
+        try FileManager.default.createDirectory(at: fifoDir, withIntermediateDirectories: true)
+        let fifoTag = fifoDir.appendingPathComponent(CacheDirTag.fileName)
+        XCTAssertEqual(mkfifo(fifoTag.path, S_IRUSR | S_IWUSR), 0)
+        XCTAssertFalse(CacheDirTag.isCacheDirectory(at: fifoDir.path),
+                       "FIFO 伪造的 CACHEDIR.TAG 必须立即返回 false 且不能阻塞")
+
+        let realDir = tempRoot.appendingPathComponent("real_tag_holder", isDirectory: true)
+        try writeTag(in: realDir, content: CacheDirTag.signature + "\n")
+        let symlinkDir = tempRoot.appendingPathComponent("symlink_cache_dir", isDirectory: true)
+        try FileManager.default.createDirectory(at: symlinkDir, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: symlinkDir.appendingPathComponent(CacheDirTag.fileName),
+            withDestinationURL: realDir.appendingPathComponent(CacheDirTag.fileName)
+        )
+        XCTAssertFalse(CacheDirTag.isCacheDirectory(at: symlinkDir.path),
+                       "软链 CACHEDIR.TAG 必须被 O_NOFOLLOW 拒绝")
+    }
 }

@@ -117,23 +117,49 @@ public enum RuleLoader {
             throw LoadError.fileNotFound(url.path)
         }
         let parsed = try parse(text)
+        let normalizedHome = SafetyEngine.normalizeHome(home)
+        let exactForbiddenRoots = SafetyEngine.userRootForbidden(home: normalizedHome)
+        let subtreeForbiddenPaths = SafetyEngine.hardForbidPrefixes
+            + SafetyEngine.sensitiveCredentialPrefixes(home: normalizedHome)
+            + ["\(normalizedHome)/Library/Application Support/MobileSync/Backup"]
         return parsed.filter { rule in
-            for prefix in rule.absolutePathPrefixes(home: home) {
-                let v = engine.evaluate(path: prefix, home: home).0
+            for prefix in rule.absolutePathPrefixes(home: normalizedHome) {
+                let v = engine.evaluate(path: prefix, home: normalizedHome).0
                 if v == .forbid { return false }
             }
-            for (abs, pathRule) in rule.absolutePathRules(home: home) {
+            for (abs, pathRule) in rule.absolutePathRules(home: normalizedHome) {
                 // glob 规则：取 `*`/`?` 之前的字面量前缀做硬安全网探测。
                 // 例如 `~/Library/Keychains/*` 字面量前缀 `~/Library/Keychains/` —— 命中硬禁区。
                 // 防御目标：作者意图绕过黄金禁区（声明 safe/confirm 试图删凭证目录下匹配项）。
                 // 注意：运行时 evaluateStandardized 已先于 trie/glob 跑硬安全网，
                 // 这里的 load-time 过滤是"早失败 + 启动期可见"的补充防御。
-                let probe = PathGlob.isGlob(abs) ? Self.literalPrefix(of: abs) : abs
-                if probe.isEmpty { continue }
-                let v = engine.evaluate(path: probe, home: home).0
+                let isGlobRule = PathGlob.isGlob(abs)
+                let probe = isGlobRule ? Self.literalPrefix(of: abs) : abs
+                if probe.isEmpty {
+                    if pathRule.verdict != .forbid { return false }
+                    continue
+                }
+                let v = engine.evaluate(path: probe, home: normalizedHome).0
                 if v == .forbid && pathRule.verdict != .forbid {
                     // 恶意尝试：硬禁区路径但作者宣称 safe/confirm —— 整条丢弃
                     return false
+                }
+                if isGlobRule && pathRule.verdict != .forbid {
+                    var pattern = SafetyEngine.stripDataVolumePrefix(abs)
+                    while pattern.count > 1 && pattern.hasSuffix("/") {
+                        pattern.removeLast()
+                    }
+                    for root in exactForbiddenRoots {
+                        if PathGlob.match(pattern: pattern, path: root) {
+                            return false
+                        }
+                    }
+                    for forbidden in subtreeForbiddenPaths {
+                        if PathGlob.match(pattern: pattern, path: forbidden)
+                            || PathGlob.matchPrefix(pattern: pattern, path: forbidden) {
+                            return false
+                        }
+                    }
                 }
             }
             return true

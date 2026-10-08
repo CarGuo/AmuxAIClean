@@ -13,7 +13,39 @@ public struct ScanIncompleteOverrideRequest: Sendable, Hashable {
         let device: UInt64
         let inode: UInt64
         let fileType: UInt16
+        let birthTimeSeconds: Int64
+        let birthTimeNanoseconds: Int64
+        let generation: UInt32
         let resolvedPath: String
+
+        init(
+            device: UInt64,
+            inode: UInt64,
+            fileType: UInt16,
+            birthTimeSeconds: Int64 = 0,
+            birthTimeNanoseconds: Int64 = 0,
+            generation: UInt32 = 0,
+            resolvedPath: String
+        ) {
+            self.device = device
+            self.inode = inode
+            self.fileType = fileType
+            self.birthTimeSeconds = birthTimeSeconds
+            self.birthTimeNanoseconds = birthTimeNanoseconds
+            self.generation = generation
+            self.resolvedPath = resolvedPath
+        }
+
+        var trashObjectIdentity: TrashObjectIdentity {
+            TrashObjectIdentity(
+                device: device,
+                inode: inode,
+                fileType: fileType,
+                birthTimeSeconds: birthTimeSeconds,
+                birthTimeNanoseconds: birthTimeNanoseconds,
+                generation: generation
+            )
+        }
     }
 
     struct Entry: Sendable, Hashable {
@@ -60,6 +92,17 @@ public struct ScanIncompleteOverrideRequest: Sendable, Hashable {
             scanSessionID: scanSessionID,
             entries: remaining
         )
+    }
+
+    func changedPaths(comparedTo current: [String: TrashObjectIdentity]) -> [String] {
+        entries.compactMap { entry in
+            let normalized = TrashPipeline.normalizePath(entry.path)
+            guard let observed = current[normalized] ?? current[entry.path],
+                  entry.identity.trashObjectIdentity.matches(observed) else {
+                return normalized
+            }
+            return nil
+        }.sorted()
     }
 }
 
@@ -567,9 +610,12 @@ enum DeletionTargetRevalidator {
 
         let resolvedPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
         return .eligible(.init(
-            device: UInt64(target.st_dev),
+            device: UInt64(bitPattern: Int64(target.st_dev)),
             inode: UInt64(target.st_ino),
             fileType: UInt16(fileType),
+            birthTimeSeconds: Int64(target.st_birthtimespec.tv_sec),
+            birthTimeNanoseconds: Int64(target.st_birthtimespec.tv_nsec),
+            generation: UInt32(target.st_gen),
             resolvedPath: resolvedPath
         ))
     }

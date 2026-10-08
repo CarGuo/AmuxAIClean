@@ -27,6 +27,7 @@ public struct DuplicateFileIdentity: Sendable, Hashable {
     public let modificationNanoseconds: Int64
     public let statusChangeSeconds: Int64
     public let statusChangeNanoseconds: Int64
+    public let nlink: UInt64
 
     /// v2026.07.17 Duplicate deletion evidence: keep the POSIX file-kind decision in ScanKit
     /// so every UI/execution consumer applies the same regular-file contract without copying
@@ -41,7 +42,8 @@ public struct DuplicateFileIdentity: Sendable, Hashable {
         modificationSeconds: Int64,
         modificationNanoseconds: Int64,
         statusChangeSeconds: Int64,
-        statusChangeNanoseconds: Int64
+        statusChangeNanoseconds: Int64,
+        nlink: UInt64 = 1
     ) {
         self.device = device
         self.inode = inode
@@ -51,6 +53,7 @@ public struct DuplicateFileIdentity: Sendable, Hashable {
         self.modificationNanoseconds = modificationNanoseconds
         self.statusChangeSeconds = statusChangeSeconds
         self.statusChangeNanoseconds = statusChangeNanoseconds
+        self.nlink = max(1, nlink)
     }
 
     init(stat value: stat) {
@@ -62,7 +65,8 @@ public struct DuplicateFileIdentity: Sendable, Hashable {
             modificationSeconds: Int64(value.st_mtimespec.tv_sec),
             modificationNanoseconds: Int64(value.st_mtimespec.tv_nsec),
             statusChangeSeconds: Int64(value.st_ctimespec.tv_sec),
-            statusChangeNanoseconds: Int64(value.st_ctimespec.tv_nsec)
+            statusChangeNanoseconds: Int64(value.st_ctimespec.tv_nsec),
+            nlink: UInt64(max(1, Int(value.st_nlink)))
         )
     }
 }
@@ -94,15 +98,19 @@ public struct DuplicateFile: Sendable, Hashable {
     /// Captured before and after hashing from the same descriptor, then matched against the
     /// pathname with `lstat`. Nil means this row has no executable deletion evidence.
     public let snapshotIdentity: DuplicateFileIdentity?
+    /// Link count observed when the file identity was frozen (`> 1` indicates hardlinks).
+    public let nlink: UInt64
 
     public init(
         path: String,
         allocatedBytes: Int64,
-        snapshotIdentity: DuplicateFileIdentity? = nil
+        snapshotIdentity: DuplicateFileIdentity? = nil,
+        nlink: UInt64? = nil
     ) {
         self.path = path
         self.allocatedBytes = max(0, allocatedBytes)
         self.snapshotIdentity = snapshotIdentity
+        self.nlink = max(1, nlink ?? snapshotIdentity?.nlink ?? 1)
     }
 }
 
@@ -113,7 +121,7 @@ public struct DuplicateGroup: Sendable, Hashable, Identifiable {
     public let hashKey: String
     /// 单份内容的逻辑大小。只用于 size 分桶、hash 边界和详情说明，不能当作磁盘占用。
     public let logicalBytes: Int64
-    /// 重复文件列表，至少 2 个。按路径字典序稳定排序，并保留每条路径各自的物理占用。
+    /// 重复文件列表，至少 2 个。优先保留 `nlink > 1` 的硬链接代表，再按路径字典序稳定排序，并保留每条路径各自的物理占用。
     public let files: [DuplicateFile]
     /// 该组当前磁盘占用：逐路径 allocated bytes 求和。
     public let totalBytes: Int64
@@ -142,7 +150,16 @@ public struct DuplicateGroup: Sendable, Hashable, Identifiable {
         }
     }
 
-    /// 删除成功后生成剩余重复组。`files` 在构造时已经按路径排序，过滤会保持相对顺序，
+    private static func keeperPrecedes(_ lhs: DuplicateFile, _ rhs: DuplicateFile) -> Bool {
+        let lhsHasExternalHardlinks = lhs.nlink > 1
+        let rhsHasExternalHardlinks = rhs.nlink > 1
+        if lhsHasExternalHardlinks != rhsHasExternalHardlinks {
+            return lhsHasExternalHardlinks
+        }
+        return lhs.path < rhs.path
+    }
+
+    /// 删除成功后生成剩余重复组。`files` 在构造时已经按既定顺序排序，过滤会保持相对顺序，
     /// 因此这里不能再调用公开 initializer 重排整个数组。未命中的组直接复用原值。
     public func removing(paths: Set<String>) -> DuplicateGroup? {
         guard !paths.isEmpty else { return self }
@@ -177,7 +194,7 @@ public struct DuplicateGroup: Sendable, Hashable, Identifiable {
         self.init(
             hashKey: hashKey,
             logicalBytes: logicalBytes,
-            sortedFiles: files.sorted { $0.path < $1.path },
+            sortedFiles: files.sorted(by: DuplicateGroup.keeperPrecedes),
             reliability: reliability,
             contentFingerprint: contentFingerprint
         )
@@ -205,12 +222,28 @@ private struct DuplicateCandidate: Sendable {
     let logicalBytes: Int64
     let allocatedBytes: Int64
     let snapshotIdentity: DuplicateFileIdentity?
+    let nlink: UInt64
+
+    init(
+        path: String,
+        logicalBytes: Int64,
+        allocatedBytes: Int64,
+        snapshotIdentity: DuplicateFileIdentity? = nil,
+        nlink: UInt64? = nil
+    ) {
+        self.path = path
+        self.logicalBytes = logicalBytes
+        self.allocatedBytes = allocatedBytes
+        self.snapshotIdentity = snapshotIdentity
+        self.nlink = max(1, nlink ?? snapshotIdentity?.nlink ?? 1)
+    }
 
     var publicValue: DuplicateFile {
         DuplicateFile(
             path: path,
             allocatedBytes: allocatedBytes,
-            snapshotIdentity: snapshotIdentity
+            snapshotIdentity: snapshotIdentity,
+            nlink: nlink
         )
     }
 
@@ -219,7 +252,8 @@ private struct DuplicateCandidate: Sendable {
             path: path,
             logicalBytes: logicalBytes,
             allocatedBytes: allocatedBytes,
-            snapshotIdentity: identity
+            snapshotIdentity: identity,
+            nlink: identity.nlink
         )
     }
 }
@@ -818,7 +852,7 @@ public actor DuplicateScanner {
         // inspect the opened descriptor with fstat, then prove the pathname still identifies
         // that descriptor after the read. This closes scan-time path replacement rather than
         // trusting metadata collected by the earlier directory enumeration.
-        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { return isCancelled() ? .cancelled : .readFailed }
         defer { close(fd) }
         guard !isCancelled() else { return .cancelled }
@@ -827,6 +861,10 @@ public actor DuplicateScanner {
         guard fstat(fd, &before) == 0,
               (before.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
               before.st_size >= 0 else { return .readFailed }
+        let flags = fcntl(fd, F_GETFL)
+        if flags >= 0 {
+            _ = fcntl(fd, F_SETFL, flags & ~O_NONBLOCK)
+        }
         let identity = DuplicateFileIdentity(stat: before)
 
         var hasher = SHA256()

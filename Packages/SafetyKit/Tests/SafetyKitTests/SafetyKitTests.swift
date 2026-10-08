@@ -330,6 +330,88 @@ final class SafetyEngineTests: XCTestCase {
         )
         XCTAssertEqual(forbiddenChild.0, .forbid, "更具体的子路径 glob forbid 必须优先于父目录继承的 .safe")
         XCTAssertEqual(forbiddenChild.1, .vendorPathRule)
+
+        let zeroDepthForbidden = engine.evaluate(
+            path: "\(home)/Library/Application Support/Acme/secrets/token.json",
+            vendors: [rule],
+            home: home
+        )
+        XCTAssertEqual(zeroDepthForbidden.0, .forbid, "** 匹配 0 个中间段时也必须命中 forbid")
+
+        let multiDepthForbidden = engine.evaluate(
+            path: "\(home)/Library/Application Support/Acme/a/b/c/secrets/token.json",
+            vendors: [rule],
+            home: home
+        )
+        XCTAssertEqual(multiDepthForbidden.0, .forbid, "** 匹配多层中间段时也必须命中 forbid")
+    }
+
+    func testCaseInsensitiveHardForbidAndCredentialsAndNormalizedHome() {
+        let home = "/System/Volumes/Data/Users/foo/"
+        XCTAssertEqual(engine.evaluate(path: "/system/Library/Frameworks", home: home).0, .forbid)
+        XCTAssertEqual(engine.evaluate(path: "/APPLICATIONS/Safari.app", home: home).0, .forbid)
+        XCTAssertEqual(engine.evaluate(path: "/Users/foo/documents", home: home).1, .userDocumentsRoot)
+        XCTAssertEqual(engine.evaluate(path: "/Users/foo/.SSH/id_rsa", home: home).1, .sensitiveCredential)
+        XCTAssertEqual(engine.evaluate(path: "/Users/foo/library/keychains/login.keychain-db", home: home).1, .sensitiveCredential)
+        XCTAssertEqual(engine.evaluate(path: "/Users/foo/repo/.GIT/config", home: home).1, .sensitiveCredential)
+        XCTAssertEqual(engine.evaluate(path: "/Users/foo/Downloads/cert.P12", home: home).1, .sensitiveCredential)
+        XCTAssertEqual(engine.evaluate(path: "/system/volumes/data/Users/foo/.ssh/id_ed25519", home: home).1, .sensitiveCredential)
+        let bundleRes = engine.evaluate(path: "/Users/foo/library/caches/COM.1PASSWORD.7/log.txt", home: home)
+        XCTAssertEqual(bundleRes.0, .confirm)
+        XCTAssertEqual(bundleRes.1, .bundleDataProtected)
+    }
+
+    func testSymlinkCanonicalVendorForbidAndResolvedVendorRootConfirmAndBundleRejectionPreserved() throws {
+        let fm = FileManager.default
+        let tempHome = fm.temporaryDirectory.appendingPathComponent("safety-trie-\(UUID().uuidString)")
+        let cachesAcme = tempHome.appendingPathComponent("Library/Caches/Acme")
+        let docsDir = tempHome.appendingPathComponent("Documents")
+        let vendorRootInCaches = tempHome.appendingPathComponent("Library/Caches/ProtectedVendorRoot")
+        try fm.createDirectory(at: cachesAcme, withIntermediateDirectories: true)
+        try fm.createDirectory(at: docsDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: vendorRootInCaches, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempHome) }
+
+        let docTarget = docsDir.appendingPathComponent("note.txt")
+        try Data("doc".utf8).write(to: docTarget)
+        let forbidSymlink = cachesAcme.appendingPathComponent("forbidden-link")
+        try fm.createSymbolicLink(at: forbidSymlink, withDestinationURL: docTarget)
+
+        let rootSymlink = cachesAcme.appendingPathComponent("vendor-root-link")
+        try fm.createSymbolicLink(at: rootSymlink, withDestinationURL: vendorRootInCaches)
+
+        let rules = [
+            VendorRule(
+                name: "Acme",
+                cachesPath: "~/Library/Caches/ProtectedVendorRoot",
+                paths: [
+                    PathRule(path: "~/Library/Caches/Acme/forbidden-link", verdict: .forbid)
+                ]
+            ),
+            VendorRule(
+                name: "OnePasswordVendor",
+                cachesPath: "~/Library/Caches/com.1password.7"
+            )
+        ]
+
+        // 2A: canonical 路径命中 vendor forbid 时，即便 symlink 目标是 .confirm，也必须返回 .forbid
+        let forbidEval = engine.evaluate(path: forbidSymlink.path, vendors: rules, home: tempHome.path)
+        XCTAssertEqual(forbidEval.0, .forbid)
+        XCTAssertEqual(forbidEval.1, .vendorPathRule)
+
+        // 2B: symlink 指向 vendor 根时，必须保留 .confirm 而不能当成普通 Caches 子项放行 .safe
+        let rootLinkEval = engine.evaluate(path: rootSymlink.path, vendors: rules, home: tempHome.path)
+        XCTAssertEqual(rootLinkEval.0, .confirm)
+        XCTAssertEqual(rootLinkEval.2?.name, "Acme")
+
+        // 2C: 命中受保护 bundle 的路径叠加 vendor 根 confirm 时，不得丢失 .bundleDataProtected
+        let bundleVendorEval = engine.evaluate(
+            path: "\(tempHome.path)/Library/Caches/com.1password.7",
+            vendors: rules,
+            home: tempHome.path
+        )
+        XCTAssertEqual(bundleVendorEval.0, .confirm)
+        XCTAssertEqual(bundleVendorEval.1, .bundleDataProtected)
     }
 }
 

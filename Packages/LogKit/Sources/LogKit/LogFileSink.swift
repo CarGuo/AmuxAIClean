@@ -305,6 +305,7 @@ public final class LogFileSink: @unchecked Sendable {
     /// Deterministic package-test seam for otherwise platform-dependent retention failures.
     /// Production construction always supplies nil.
     private let retentionPreflight: (@Sendable () throws -> Void)?
+    private let nowProvider: @Sendable () -> Date
     /// v2026.07.19 log-append hot-path regression fix: visibility checks are bounded independently
     /// by throughput and elapsed time. A stable descriptor never follows a replacement pathname,
     /// so per-line path traversal added no write-safety and instead multiplied metadata I/O.
@@ -347,7 +348,8 @@ public final class LogFileSink: @unchecked Sendable {
         retentionPreflight: (@Sendable () throws -> Void)?,
         appendValidationLineInterval: Int = LogFileSink.defaultAppendValidationLineInterval,
         appendValidationTimeIntervalNanoseconds: UInt64 = LogFileSink.defaultAppendValidationTimeIntervalNanoseconds,
-        visibilityReplayByteCapacity: Int = LogFileSink.defaultVisibilityReplayByteCapacity
+        visibilityReplayByteCapacity: Int = LogFileSink.defaultVisibilityReplayByteCapacity,
+        nowProvider: @escaping @Sendable () -> Date = { Date() }
     ) throws {
         // v2026.07.18 P1 root-boundary fix: classify the requested path and traverse/create it
         // component-by-component with openat(O_NOFOLLOW) before any write. FileManager.createDirectory
@@ -359,6 +361,7 @@ public final class LogFileSink: @unchecked Sendable {
         self.canonicalDirectoryPath = boundary.requestedPath
         self.directoryBoundary = boundary
         self.retentionPreflight = retentionPreflight
+        self.nowProvider = nowProvider
         self.appendValidationLineInterval = max(1, appendValidationLineInterval)
         self.appendValidationTimeIntervalNanoseconds = max(
             1,
@@ -377,7 +380,7 @@ public final class LogFileSink: @unchecked Sendable {
             // v2026.07.18: rotate already performs the startup retention transaction after a
             // successful open. Running purge again here duplicated directory enumeration and,
             // worse, could immediately erase the diagnostic from a failed first pass.
-            self.rotateIfNeededLocked(now: Date())
+            self.rotateIfNeededLocked(now: nowProvider())
             if case .unavailable(let failure) = self.health {
                 startupFailure = failure
             }
@@ -497,7 +500,7 @@ public final class LogFileSink: @unchecked Sendable {
 
     private func prepareDirectoryForAccessLocked() -> Result<URL, LogFileSinkFailure> {
         do {
-            let now = Date()
+            let now = nowProvider()
             try ensureCurrentFileVisibleLocked(now: now)
             // Preparing the user-visible directory is also the explicit same-stage retry point
             // for an outstanding retention issue. Retention failure remains a maintenance issue
@@ -521,7 +524,7 @@ public final class LogFileSink: @unchecked Sendable {
         await withCheckedContinuation { continuation in
             queue.async { [self] in
                 do {
-                    try ensureCurrentFileVisibleLocked(now: Date())
+                    try ensureCurrentFileVisibleLocked(now: nowProvider())
                 } catch {
                     invalidateActiveHandleLocked()
                     let writerFailure = markFailure(error, stage: .write)
@@ -551,7 +554,7 @@ public final class LogFileSink: @unchecked Sendable {
         await withCheckedContinuation { continuation in
             queue.async { [self] in
                 do {
-                    try ensureCurrentFileVisibleLocked(now: Date())
+                    try ensureCurrentFileVisibleLocked(now: nowProvider())
                 } catch {
                     invalidateActiveHandleLocked()
                     let writerFailure = markFailure(error, stage: .write)
@@ -607,7 +610,7 @@ public final class LogFileSink: @unchecked Sendable {
                 LogFileSinkPublicDiagnostics.record(.disabled)
                 return
             }
-            let now = Date()
+            let now = nowProvider()
             let nowUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
             rotateIfNeededLocked(now: now)
             // rotate already emitted the typed open failure and invalidated state. Do not retry
@@ -753,8 +756,9 @@ public final class LogFileSink: @unchecked Sendable {
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("Logs", isDirectory: true)
             .standardizedFileURL.path
-        let temporary = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            .standardizedFileURL.path
+        let temporaryURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        let temporary = temporaryURL.standardizedFileURL.path
+        let resolvedTemporary = temporaryURL.resolvingSymlinksInPath().standardizedFileURL.path
 
         let basePath: String
         if isStrictDescendant(requested, of: userLogs) {
@@ -764,6 +768,8 @@ public final class LogFileSink: @unchecked Sendable {
             // $TMPDIR is an OS-provided trusted base; all caller-controlled descendants still use
             // O_NOFOLLOW. Requiring a child also prevents a sink from clearing the temp root.
             basePath = temporary
+        } else if isStrictDescendant(requested, of: resolvedTemporary) {
+            basePath = resolvedTemporary
         } else {
             throw posixError(EACCES)
         }
@@ -1023,22 +1029,33 @@ public final class LogFileSink: @unchecked Sendable {
             throw Self.posixError(EAGAIN)
         }
 
+        let expectedURL = directory.appendingPathComponent(fileName, isDirectory: false)
         handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         descriptorOwnedLocally = false
         activeDirectoryDescriptor = directoryDescriptor
         directoryDescriptorOwnedLocally = false
         currentDayKey = today
-        _currentFileURL = directory.appendingPathComponent(fileName, isDirectory: false)
+        _currentFileURL = expectedURL
+        let nowUptime = DispatchTime.now().uptimeNanoseconds
         resetAppendValidationBoundaryLocked(
-            nowUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
+            nowUptimeNanoseconds: nowUptime
         )
+        let hadPendingWindow = !pendingVisibilityLines.isEmpty || pendingVisibilityDroppedLineCount > 0
         try replayPendingVisibilityWindowLocked()
+        if hadPendingWindow {
+            guard activeFileMatchesVisiblePathLocked(expectedURL: expectedURL) else {
+                throw Self.posixError(EAGAIN)
+            }
+            commitPendingVisibilityWindowLocked(
+                nowUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
+            )
+        }
     }
 
     private func closePreservingVisibleLogsLocked() {
         do {
             if !pendingVisibilityLines.isEmpty || pendingVisibilityDroppedLineCount > 0 {
-                try ensureCurrentFileVisibleLocked(now: Date())
+                try ensureCurrentFileVisibleLocked(now: nowProvider())
             } else {
                 try handle?.synchronize()
             }
@@ -1060,6 +1077,14 @@ public final class LogFileSink: @unchecked Sendable {
             Self.logFileName(dayKey: Self.dayKeyFormatter.string(from: now)),
             isDirectory: false
         )
+        if let previousURL = _currentFileURL,
+           previousURL != expectedURL,
+           activeFileMatchesVisiblePathLocked(expectedURL: previousURL) {
+            try? handle?.synchronize()
+            commitPendingVisibilityWindowLocked(
+                nowUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
+            )
+        }
         let wasAlreadyVisible = activeFileMatchesVisiblePathLocked(expectedURL: expectedURL)
         if !wasAlreadyVisible {
             invalidateActiveHandleLocked()
@@ -1103,6 +1128,15 @@ public final class LogFileSink: @unchecked Sendable {
     private func rotateIfNeededLocked(now: Date) {
         let today = Self.dayKeyFormatter.string(from: now)
         if today == currentDayKey, handle != nil { return }
+        if !currentDayKey.isEmpty,
+           today != currentDayKey,
+           let previousURL = _currentFileURL,
+           activeFileMatchesVisiblePathLocked(expectedURL: previousURL) {
+            try? handle?.synchronize()
+            commitPendingVisibilityWindowLocked(
+                nowUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
+            )
+        }
         do {
             try openActiveFileLocked(now: now)
             markReady()
@@ -1219,12 +1253,38 @@ public final class LogFileSink: @unchecked Sendable {
             throw Self.posixError(EINVAL)
         }
         let destinationParent = destination.deletingLastPathComponent()
+        let destinationStandardized = destination.standardizedFileURL.path.lowercased()
+        let destinationResolved = destinationParent
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .appendingPathComponent(destinationName, isDirectory: false)
+            .path
+            .lowercased()
+        let sinkDirectories = [
+            canonicalDirectoryPath.lowercased(),
+            directory.resolvingSymlinksInPath().standardizedFileURL.path.lowercased(),
+        ]
+        for sinkDir in sinkDirectories {
+            for candidate in [destinationStandardized, destinationResolved] {
+                if candidate == sinkDir || Self.isStrictDescendant(candidate, of: sinkDir) {
+                    throw Self.posixError(EINVAL)
+                }
+            }
+        }
         let destinationDirectoryDescriptor = Darwin.open(
             destinationParent.path,
             O_RDONLY | O_DIRECTORY | O_CLOEXEC
         )
         guard destinationDirectoryDescriptor >= 0 else { throw Self.posixError() }
         defer { Darwin.close(destinationDirectoryDescriptor) }
+
+        var sinkDirStat = stat()
+        var destDirStat = stat()
+        if fstat(directoryDescriptor, &sinkDirStat) == 0,
+           fstat(destinationDirectoryDescriptor, &destDirStat) == 0,
+           EntryIdentity(sinkDirStat) == EntryIdentity(destDirStat) {
+            throw Self.posixError(EINVAL)
+        }
 
         let temporaryName = ".AmuxAIClean-Logs.\(UUID().uuidString).tmp"
         let outputDescriptor = openat(

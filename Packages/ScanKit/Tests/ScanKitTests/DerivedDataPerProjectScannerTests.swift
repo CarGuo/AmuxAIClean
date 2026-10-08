@@ -273,4 +273,46 @@ final class DerivedDataPerProjectScannerTests: XCTestCase {
         XCTAssertEqual(hits.map(\.url), [project])
         XCTAssertEqual(hits.map(\.projectName), ["CustomLocation"])
     }
+
+    func test_snapshot_symlinkedDerivedDataRootPropagatesProjectSubtreeIncompleteToProjectHit() throws {
+        let (home, derivedLink) = try makeTempHome()
+        let externalDerived = home.appendingPathComponent("ExternalDerivedDataTarget", isDirectory: true)
+        try FileManager.default.createDirectory(at: externalDerived, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: derivedLink.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(at: derivedLink, withDestinationURL: externalDerived)
+
+        _ = try makeProject(
+            named: "Healthy-aaa111",
+            in: externalDerived,
+            fileSize: 4_096,
+            mtime: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let broken = try makeProject(
+            named: "Broken-bbb222",
+            in: externalDerived,
+            fileSize: 4_096,
+            mtime: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+        let lockedSubdir = broken.appendingPathComponent("LockedSubdir", isDirectory: true)
+        try FileManager.default.createDirectory(at: lockedSubdir, withIntermediateDirectories: true)
+        try Data(repeating: 0xEE, count: 4_096).write(to: lockedSubdir.appendingPathComponent("secret.bin"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: lockedSubdir.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: lockedSubdir.path)
+        }
+
+        // Skip permission assertion if running as root (uid 0 bypasses 0o000).
+        guard geteuid() != 0 else { return }
+
+        let snapshot = DerivedDataPerProjectScanner.detectSnapshot(home: home)
+        let healthyHit = try XCTUnwrap(snapshot.projects.hits.first { $0.projectName == "Healthy" })
+        let brokenHit = try XCTUnwrap(snapshot.projects.hits.first { $0.projectName == "Broken" })
+
+        XCTAssertNotNil(healthyHit.sizeBytes, "Healthy project under symlinked DerivedData root should retain its measured size")
+        XCTAssertNil(brokenHit.sizeBytes, "Project with an incomplete descendant under symlinked DerivedData root must have nil sizeBytes rather than a truncated byte count")
+        XCTAssertFalse(snapshot.projects.isComplete)
+    }
 }

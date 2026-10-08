@@ -6,7 +6,16 @@ typealias DartRadarReloadModel = SnapshotRefreshModel<DartProcessEntry, ProcessS
 public struct DartRadarScreen: View {
     private struct PendingKill: Equatable {
         let identities: [ProcessIdentity]
-        let summary: String
+        let count: Int64
+        let projectHint: String
+
+        func summary(locale: Locale) -> String {
+            AppLocalization.format(
+                "dart_radar.confirm.message",
+                locale: locale,
+                arguments: [count, projectHint]
+            )
+        }
     }
 
     private enum Metrics {
@@ -49,10 +58,11 @@ public struct DartRadarScreen: View {
         .task { startReload() }
         .task(id: autoRefresh) {
             // 自动刷新只在开关开启时循环；离开页面或关闭开关后任务取消，旧结果由
-            // revision 版本号拦截，不会覆盖新一轮界面。
+            // revision 版本号拦截，不会覆盖新一轮界面。当前扫描未完成时不重复抢占，
+            // 避免 ps+lsof 耗时超过刷新间隔时自我取消活锁。
             while autoRefresh, !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: Metrics.autoRefreshInterval * 1_000_000_000)
-                if !isKilling { startReload() }
+                if !Task.isCancelled, !isKilling, !isLoading { startReload() }
             }
         }
         .onValueChange(of: reloadModel.entries) { _, latest in
@@ -74,7 +84,7 @@ public struct DartRadarScreen: View {
                 pendingKill = nil
             }
         } message: {
-            Text(pendingKill?.summary ?? "")
+            Text(pendingKill?.summary(locale: locale) ?? "")
         }
         .alert(AppLocalization.string("dart_radar.result.title", locale: locale),
                isPresented: Binding(
@@ -130,7 +140,7 @@ public struct DartRadarScreen: View {
                     Label(AppLocalization.string("dart_radar.button.kill_selected", locale: locale),
                           systemImage: "xmark.octagon")
                 }
-                .disabled(selectedIDs.isEmpty || isKilling)
+                .disabled(selectedVisibleEntries.isEmpty || isKilling)
                 Spacer()
             }
         }
@@ -379,12 +389,13 @@ public struct DartRadarScreen: View {
     }
 
     private var footer: some View {
-        HStack {
-            if !selectedIDs.isEmpty {
+        let selectedVisible = selectedVisibleEntries
+        return HStack {
+            if !selectedVisible.isEmpty {
                 Text(AppLocalization.format(
                     "dart_radar.footer.selected",
                     locale: locale,
-                    arguments: [Int64(selectedIDs.count)]
+                    arguments: [Int64(selectedVisible.count)]
                 ))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -486,6 +497,10 @@ public struct DartRadarScreen: View {
         Array(groups.flatMap(\.entries))
     }
 
+    private var selectedVisibleEntries: [DartProcessEntry] {
+        visibleEntries.filter { selectedIDs.contains($0.id) && $0.canTerminate }
+    }
+
     private var groups: [DartProjectGroup] {
         DartProjectGrouper.groups(from: filteredEntries)
     }
@@ -525,8 +540,7 @@ public struct DartRadarScreen: View {
     }
 
     private func requestKillSelected() {
-        let selectedEntries = entries.filter { selectedIDs.contains($0.id) && $0.canTerminate }
-        requestKill(entries: selectedEntries)
+        requestKill(entries: selectedVisibleEntries)
     }
 
     private func requestKill(entries targetEntries: [DartProcessEntry]) {
@@ -535,12 +549,11 @@ public struct DartRadarScreen: View {
         guard !unique.isEmpty else { return }
         let projectHint = killable.compactMap(\.projectName).first
             ?? unique.first!.executablePath
-        let summary = AppLocalization.format(
-            "dart_radar.confirm.message",
-            locale: locale,
-            arguments: [Int64(unique.count), projectHint]
+        pendingKill = PendingKill(
+            identities: unique,
+            count: Int64(unique.count),
+            projectHint: projectHint
         )
-        pendingKill = PendingKill(identities: unique, summary: summary)
         showKillConfirm = true
     }
 

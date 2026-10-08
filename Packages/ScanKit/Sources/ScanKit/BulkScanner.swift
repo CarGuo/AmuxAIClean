@@ -622,14 +622,14 @@ public actor BulkScanner {
                 return true
             }
 
-            // inode 去重只属于文件字节语义；目录回环由独立的 DirInodeSet 处理。
-            let isFirstFile = entry.isDirectory
+            // inode 去重只属于常规文件字节语义；目录回环由独立的 DirInodeSet 处理。
+            let isFirstFile = !entry.isRegularFile
                 || !options.dedupByInode
                 || inodes.insertIfFirstSeen(device: entry.device, inode: entry.inode)
 
             if entry.isDirectory {
                 localDirCount += 1
-            } else {
+            } else if entry.isRegularFile {
                 localFileCount += 1
                 if isFirstFile {
                     localAllocated += entry.allocatedSize
@@ -643,6 +643,7 @@ public actor BulkScanner {
             // enqueue. The normal path uses getattrlistbulk's dev/inode without another syscall;
             // the explicit `followSymlinks=true` path resolves only symlink entries, freezes the
             // final target identity, and remains bounded by the same volume/cycle gates.
+            var resolvedSymlinkDirectory = false
             let mayRepresentDirectory = entry.isDirectory
                 || (entry.isSymlink && options.followSymlinks)
             if mayRepresentDirectory {
@@ -668,6 +669,9 @@ public actor BulkScanner {
                     )
                     switch resolution {
                     case .resolved(let childWork):
+                        if entry.isSymlink {
+                            resolvedSymlinkDirectory = true
+                        }
                         if options.staySingleVolume,
                            !options.followFirmlinks,
                            rootDev != 0,
@@ -702,14 +706,14 @@ public actor BulkScanner {
                 }
             }
 
-            let contributesBytes = !entry.isDirectory && isFirstFile
+            let contributesBytes = entry.isRegularFile && isFirstFile
             let nodeAllocated = contributesBytes ? entry.allocatedSize : 0
             let nodeLogical = contributesBytes ? entry.logicalSize : 0
 
             if var aggregate = fixedTopLevelEntry {
                 // 非根目录内的所有 entry 必然归属同一个一级 bucket；直接累计单值，
                 // 避免为数百万后代重复做路径切片和 Dictionary 哈希。
-                if !entry.isDirectory {
+                if entry.isRegularFile {
                     aggregate.allocatedBytes += nodeAllocated
                     aggregate.logicalBytes += nodeLogical
                     aggregate.fileCount += 1
@@ -726,7 +730,7 @@ public actor BulkScanner {
                     path: bucketPath,
                     isDirectory: true
                 )
-                if !entry.isDirectory {
+                if entry.isRegularFile {
                     aggregate.allocatedBytes += nodeAllocated
                     aggregate.logicalBytes += nodeLogical
                     aggregate.fileCount += 1
@@ -736,7 +740,7 @@ public actor BulkScanner {
                 }
                 if projectedPath == bucketPath {
                     aggregate.sawTopLevelNode = true
-                    aggregate.isDirectory = entry.isDirectory
+                    aggregate.isDirectory = entry.isDirectory || resolvedSymlinkDirectory
                     if let modificationDate = entry.modificationDate {
                         aggregate.modificationDate = modificationDate
                     }
@@ -747,7 +751,7 @@ public actor BulkScanner {
             if let policy = largeFilePolicy,
                policy.minimumBytes > 0,
                policy.maximumResults > 0,
-               !entry.isDirectory,
+               entry.isRegularFile,
                isFirstFile,
                nodeAllocated >= policy.minimumBytes {
                 localLargeFiles.append(FSNode(
@@ -777,7 +781,7 @@ public actor BulkScanner {
             }
 
             if let minimumLogicalBytes = fileCandidateMinimumLogicalBytes,
-               !entry.isDirectory,
+               entry.isRegularFile,
                isFirstFile,
                nodeLogical >= minimumLogicalBytes {
                 localFileCandidates.append(FSNode(
@@ -1522,11 +1526,34 @@ struct BulkEntry {
     let name: String
     let isDirectory: Bool
     let isSymlink: Bool
+    let isRegularFile: Bool
     let allocatedSize: Int64
     let logicalSize: Int64
     let inode: UInt64
     let device: UInt64
     let modificationDate: Date?
+
+    init(
+        name: String,
+        isDirectory: Bool,
+        isSymlink: Bool,
+        isRegularFile: Bool? = nil,
+        allocatedSize: Int64,
+        logicalSize: Int64,
+        inode: UInt64,
+        device: UInt64,
+        modificationDate: Date?
+    ) {
+        self.name = name
+        self.isDirectory = isDirectory
+        self.isSymlink = isSymlink
+        self.isRegularFile = isRegularFile ?? (!isDirectory && !isSymlink)
+        self.allocatedSize = allocatedSize
+        self.logicalSize = logicalSize
+        self.inode = inode
+        self.device = device
+        self.modificationDate = modificationDate
+    }
 }
 
 /// 调用 `getattrlistbulk` 并按偏移解析返回缓冲区。
@@ -1675,13 +1702,15 @@ enum BulkEnumerate {
                     cursor = cursor.advanced(by: MemoryLayout<dev_t>.size)
                 }
 
-                // ATTR_CMN_OBJTYPE：fsobj_type_t (UInt32)；VDIR/VLNK 是 vtype enum
+                // ATTR_CMN_OBJTYPE：fsobj_type_t (UInt32)；VDIR/VLNK/VREG 是 vtype enum
                 var isDir = false
                 var isSymlink = false
+                var isRegularFile = false
                 if returned.commonattr & attrgroup_t(UInt32(ATTR_CMN_OBJTYPE)) != 0 {
                     let objType = cursor.loadUnaligned(as: fsobj_type_t.self)
                     isDir = (objType == fsobj_type_t(VDIR.rawValue))
                     isSymlink = (objType == fsobj_type_t(VLNK.rawValue))
+                    isRegularFile = (objType == fsobj_type_t(VREG.rawValue))
                     cursor = cursor.advanced(by: MemoryLayout<fsobj_type_t>.size)
                 }
 
@@ -1729,7 +1758,7 @@ enum BulkEnumerate {
                 let needsDescriptorMetadata = !returnedDevice
                     || !returnedObjectType
                     || !returnedFileID
-                    || (!isDir && !isSymlink
+                    || (isRegularFile
                         && (!returnedLogicalSize || !returnedAllocatedSize))
                 if needsDescriptorMetadata {
                     var descriptorMetadata = stat()
@@ -1755,16 +1784,18 @@ enum BulkEnumerate {
                     let descriptorType = descriptorMetadata.st_mode & mode_t(S_IFMT)
                     isDir = descriptorType == mode_t(S_IFDIR)
                     isSymlink = descriptorType == mode_t(S_IFLNK)
+                    isRegularFile = descriptorType == mode_t(S_IFREG)
                     device = UInt64(bitPattern: Int64(descriptorMetadata.st_dev))
                     inode = UInt64(descriptorMetadata.st_ino)
-                    logical = Int64(descriptorMetadata.st_size)
-                    allocated = Int64(descriptorMetadata.st_blocks) * 512
+                    logical = isRegularFile ? Int64(descriptorMetadata.st_size) : 0
+                    allocated = isRegularFile ? Int64(descriptorMetadata.st_blocks) * 512 : 0
                 }
 
                 let entry = BulkEntry(
                     name: name,
                     isDirectory: isDir,
                     isSymlink: isSymlink,
+                    isRegularFile: isRegularFile,
                     allocatedSize: allocated,
                     logicalSize: logical,
                     inode: inode,
@@ -1935,12 +1966,14 @@ enum BulkEnumerate {
                 continue
             }
             let mode = sb.st_mode & S_IFMT
+            let isRegularFile = mode == S_IFREG
             let entry = BulkEntry(
                 name: name,
                 isDirectory: mode == S_IFDIR,
                 isSymlink: mode == S_IFLNK,
-                allocatedSize: Int64(sb.st_blocks) * 512,
-                logicalSize: Int64(sb.st_size),
+                isRegularFile: isRegularFile,
+                allocatedSize: isRegularFile ? Int64(sb.st_blocks) * 512 : 0,
+                logicalSize: isRegularFile ? Int64(sb.st_size) : 0,
                 inode: UInt64(sb.st_ino),
                 device: UInt64(bitPattern: Int64(sb.st_dev)),
                 modificationDate: Date(timeIntervalSince1970: TimeInterval(sb.st_mtimespec.tv_sec) + TimeInterval(sb.st_mtimespec.tv_nsec) / 1e9)

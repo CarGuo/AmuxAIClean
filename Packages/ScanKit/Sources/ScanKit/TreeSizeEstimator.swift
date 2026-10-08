@@ -96,7 +96,10 @@ public enum TreeSizeEstimator {
         // 注意 BulkEntry.device 是 UInt64（来自 attrlist ATTR_CMN_DEVID），stat.st_dev 是 dev_t（Int32），
         // 这里统一转 UInt64 比较。
         var rootStat = stat()
-        guard stat(rootPath, &rootStat) == 0 else { return nil }
+        guard lstat(rootPath, &rootStat) == 0,
+              (rootStat.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else {
+            return nil
+        }
         let rootDevice = UInt64(bitPattern: Int64(rootStat.st_dev))
 
         var stack: [String] = [rootPath]
@@ -108,41 +111,47 @@ public enum TreeSizeEstimator {
         var openedAnyDirectory = false
 
         while let dirPath = stack.popLast() {
-            if Date() >= deadline { break }
+            if Task.isCancelled || Date() >= deadline { break }
             if TCCSkipList.shouldSkip(dirPath) { continue }
-            let fd = open(dirPath, O_RDONLY, 0)
+            let fd = Darwin.open(dirPath, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0)
             if fd < 0 { continue }
+            defer { Darwin.close(fd) }
             openedAnyDirectory = true
 
-            BulkEnumerate.enumerate(fd: fd, dirPath: dirPath) { entry in
-                iterations += 1
-                // 每 256 个条目检查一次超时（getattrlistbulk 本身已批量，避免每次回调 Date()）
-                if iterations & 0xFF == 0, Date() >= deadline { return false }
+            BulkEnumerate.enumerate(
+                fd: fd,
+                dirPath: dirPath,
+                shouldCancel: { Task.isCancelled },
+                { entry in
+                    iterations += 1
+                    // 每 256 个条目检查一次超时（getattrlistbulk 本身已批量，避免每次回调 Date()）
+                    if Task.isCancelled { return false }
+                    if iterations & 0xFF == 0, Date() >= deadline { return false }
 
-                // 对齐原 .skipsHiddenFiles：名字前缀 . 跳过
-                if entry.name.hasPrefix(".") { return true }
-                // 符号链接不递归、也不计大小（避免 iCloud / Application Support 里 symlink 爆炸）
-                if entry.isSymlink { return true }
-                // 跨卷停止：device 来自 attrlist，无需 NSURL bridge
-                if entry.device != rootDevice { return true }
-                // 硬链接与目录环路去重：与正式 BulkScanner 的 (device, inode) 口径一致
-                guard inodes.insertIfFirstSeen(device: entry.device, inode: entry.inode) else {
+                    // 对齐原 .skipsHiddenFiles：名字前缀 . 跳过
+                    if entry.name.hasPrefix(".") { return true }
+                    // 符号链接不递归、也不计大小（避免 iCloud / Application Support 里 symlink 爆炸）
+                    if entry.isSymlink { return true }
+                    // 跨卷停止：device 来自 attrlist，无需 NSURL bridge
+                    if entry.device != rootDevice { return true }
+                    // 硬链接与目录环路去重：与正式 BulkScanner 的 (device, inode) 口径一致
+                    guard inodes.insertIfFirstSeen(device: entry.device, inode: entry.inode) else {
+                        return true
+                    }
+
+                    let childPath = dirPath == "/" ? "/\(entry.name)" : "\(dirPath)/\(entry.name)"
+                    if TCCSkipList.shouldSkip(childPath) { return true }
+
+                    anyEntry = true
+                    if entry.isDirectory {
+                        stack.append(childPath)
+                    } else if entry.isRegularFile {
+                        // 与正式 BulkScanner、System Settings 储存空间使用同一 allocated 语义。
+                        total += entry.allocatedSize
+                    }
                     return true
                 }
-
-                let childPath = dirPath == "/" ? "/\(entry.name)" : "\(dirPath)/\(entry.name)"
-                if TCCSkipList.shouldSkip(childPath) { return true }
-
-                anyEntry = true
-                if entry.isDirectory {
-                    stack.append(childPath)
-                } else {
-                    // 与正式 BulkScanner、System Settings 储存空间使用同一 allocated 语义。
-                    total += entry.allocatedSize
-                }
-                return true
-            }
-            close(fd)
+            )
         }
 
         // 空目录是合法估算结果：stat/open 都成功但没有任何 entry，应返回 0。

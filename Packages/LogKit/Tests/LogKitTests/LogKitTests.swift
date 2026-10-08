@@ -787,6 +787,111 @@ final class LogFileSinkTests: XCTestCase {
         XCTAssertEqual(first, .ready)
         XCTAssertEqual(second, .unavailable(failure))
     }
+
+    func test_rotate_跨天轮转不把昨天已可见窗口重复回放到今天文件() throws {
+        let dir = try makeTempDir("rotate-no-duplicate-replay")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let clockBox = LockedTestBox<Date>()
+        let day1 = Date(timeIntervalSince1970: 1_760_000_000)
+        let day2 = day1.addingTimeInterval(86_400)
+        clockBox.set(day1)
+
+        let sink = try LogFileSink(
+            directory: dir,
+            retentionDays: 7,
+            retentionPreflight: nil,
+            appendValidationLineInterval: 256,
+            appendValidationTimeIntervalNanoseconds: .max,
+            nowProvider: { clockBox.get() ?? day1 }
+        )
+        let day1URL = try XCTUnwrap(sink.currentFileURL)
+        sink.append("day1-visible-line\n")
+        _ = sink.appendValidationDiagnosticsForTesting()
+
+        clockBox.set(day2)
+        sink.append("day2-fresh-line\n")
+        let day2URL = try XCTUnwrap(sink.currentFileURL)
+        sink.close()
+
+        XCTAssertNotEqual(day1URL, day2URL)
+        let day1Content = try String(contentsOf: day1URL, encoding: .utf8)
+        let day2Content = try String(contentsOf: day2URL, encoding: .utf8)
+        XCTAssertTrue(day1Content.contains("day1-visible-line"))
+        XCTAssertFalse(day1Content.contains("day2-fresh-line"))
+        XCTAssertTrue(day2Content.contains("day2-fresh-line"))
+        XCTAssertFalse(
+            day2Content.contains("day1-visible-line"),
+            "Yesterday's already-visible pending window must be committed before opening today's file"
+        )
+    }
+
+    func test_append_连续两次替换不会把第一次已回放窗口二次重放() throws {
+        let dir = try makeTempDir("consecutive-replacement-replay")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let sink = try LogFileSink(
+            directory: dir,
+            retentionPreflight: nil,
+            appendValidationLineInterval: 1,
+            appendValidationTimeIntervalNanoseconds: .max
+        )
+        let expected = try XCTUnwrap(sink.currentFileURL)
+        let displaced1 = dir.appendingPathComponent("displaced-1.log")
+        let displaced2 = dir.appendingPathComponent("displaced-2.log")
+
+        sink.append("window-1-line\n")
+        _ = sink.appendValidationDiagnosticsForTesting()
+        try FileManager.default.moveItem(at: expected, to: displaced1)
+        try Data("replacement-1\n".utf8).write(to: expected)
+
+        // Boundary 1: rebinds to replacement-1, replays window-1-line, then appends window-2-line
+        sink.append("window-2-line\n")
+        _ = sink.appendValidationDiagnosticsForTesting()
+
+        try FileManager.default.moveItem(at: expected, to: displaced2)
+        try Data("replacement-2\n".utf8).write(to: expected)
+
+        // Boundary 2: rebinds to replacement-2, should replay ONLY window-2-line, NOT window-1-line
+        sink.append("window-3-line\n")
+        sink.close()
+
+        let finalContent = try String(contentsOf: expected, encoding: .utf8)
+        XCTAssertTrue(finalContent.contains("window-2-line"))
+        XCTAssertTrue(finalContent.contains("window-3-line"))
+        XCTAssertFalse(
+            finalContent.contains("window-1-line"),
+            "window-1-line was already replayed and committed in replacement-1"
+        )
+    }
+
+    func test_init_支持resolvingSymlinksInPath后的临时目录() throws {
+        let rawDir = try makeTempDir("resolved-tmp")
+        defer { try? FileManager.default.removeItem(at: rawDir) }
+        let resolvedDir = rawDir.resolvingSymlinksInPath()
+        let sink = try LogFileSink(directory: resolvedDir)
+        let logURL = try XCTUnwrap(sink.currentFileURL)
+        sink.append("resolved-tmp-line\n")
+        sink.close()
+        XCTAssertTrue(try String(contentsOf: logURL, encoding: .utf8).contains("resolved-tmp-line"))
+    }
+
+    func test_exportCombined_拒绝导出到当前活跃日志目录内() async throws {
+        let dir = try makeTempDir("export-into-self")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let sink = try LogFileSink(directory: dir)
+        sink.append("keep-safe\n")
+        let activeURL = try XCTUnwrap(sink.currentFileURL)
+
+        let result = await sink.exportCombined(to: activeURL)
+        sink.close()
+
+        guard case .failure(let failure) = result else {
+            return XCTFail("exportCombined must reject destination inside active log directory")
+        }
+        XCTAssertEqual(failure.stage, .export)
+        XCTAssertEqual(failure.errorCode, Int(EINVAL))
+        let content = try String(contentsOf: activeURL, encoding: .utf8)
+        XCTAssertEqual(content, "keep-safe\n")
+    }
 }
 
 final class GSYLogTests: XCTestCase {

@@ -33,6 +33,7 @@ final class StorageAnalysisTrashStore: ObservableObject {
     private var preflightTask: Task<Void, Never>?
     private var owner = UUID()
     private var pending: (Review, ToolTrashExecutionPlan)?
+    private var isCompletingExecution = false
 
     init(scanner: ScanCoordinator, pipeline: any DeletionPipeline, undoHistoryStore: UndoHistoryStore) {
         self.scanner = scanner
@@ -120,7 +121,7 @@ final class StorageAnalysisTrashStore: ObservableObject {
 
     func dismiss() {
         guard let (review, plan) = pending else {
-            if sheet == nil { isBusy = false }
+            if sheet == nil, !isCompletingExecution { isBusy = false }
             return
         }
         pending = nil
@@ -129,12 +130,20 @@ final class StorageAnalysisTrashStore: ObservableObject {
             rejectStale(path: review.prepared.paths.first ?? "")
             return
         }
+        let expectedSessionID = review.prepared.plan.intent.snapshotIdentity.sessionID
         switch interaction.authorize(prepared: review.prepared, executionPlan: plan) {
         case .blocked(let block): show(block)
         case .cancelled: isBusy = false
         case .authorized(let authorization):
             sheet = .executing(review.id)
+            isCompletingExecution = true
             Task {
+                defer {
+                    isCompletingExecution = false
+                    if sheet == nil, pending == nil {
+                        isBusy = false
+                    }
+                }
                 let result = await interaction.submit(
                     authorization,
                     accessDeniedPaths: []
@@ -148,16 +157,18 @@ final class StorageAnalysisTrashStore: ObservableObject {
                             ? partial + max(0, item.candidate.bytes)
                             : partial
                     }
-                    if !succeededPaths.isEmpty {
+                    if !succeededPaths.isEmpty, scanner.currentScanSessionID == expectedSessionID {
                         await scanner.acknowledgeSuccessfulDeletionForPresentation(paths: succeededPaths)
                     }
                     let presentation = OperationCompletionPresentation(.deletion(completion))
                     successFeedback = presentation.successFeedback
                     sheet = presentation.details.map(Sheet.result)
                     if !succeededPaths.isEmpty {
-                        await scanner.pruneDeleted(paths: succeededPaths)
+                        if scanner.currentScanSessionID == expectedSessionID {
+                            await scanner.pruneDeleted(paths: succeededPaths)
+                        }
                         Task.detached(priority: .utility) { [releasedBytes, succeededPaths] in
-                            await HeuristicRecorder().recordTrashed(paths: succeededPaths)
+                            await HeuristicRecorder.shared.recordTrashed(paths: succeededPaths)
                             if releasedBytes > 0 {
                                 await CleanStatsStore.shared.record(
                                     bytesReclaimed: releasedBytes,
@@ -186,6 +197,7 @@ final class StorageAnalysisTrashStore: ObservableObject {
         // Submitted operations remain owned until their typed terminal. Normal
         // navigation is disabled during that interval by the workspace busy state.
         if case .executing = sheet { return }
+        if isCompletingExecution { return }
         pending = nil
         sheet = nil
         isBusy = false

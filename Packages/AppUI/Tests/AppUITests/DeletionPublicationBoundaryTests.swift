@@ -165,4 +165,68 @@ final class DeletionPublicationBoundaryTests: XCTestCase {
         XCTAssertTrue(coordinator.treeFlatProjectionSourceIsCurrent(source.revision),
                       "all Tree notification channels must commit their identity before notifying")
     }
+
+    func test_childrenCacheVersionNotificationIsNotInvalidatedBySubsequentStructuralBumpInPrune() async throws {
+        let coordinator = ScanCoordinator()
+        let rows = ["/A/drop", "/A/keep"].map { path in
+            RowItem(
+                id: path, url: URL(fileURLWithPath: path), title: path,
+                isDirectory: true, bytes: 100, logicalBytes: 100, fileCount: 1,
+                verdict: .safe, rejection: .ok
+            )
+        }
+        coordinator._seedForTesting(
+            snapshot: ScanSnapshot(
+                categoryID: "test", rows: rows, totalBytes: 200,
+                scannedFileCount: 2, isFinished: true, elapsed: 1
+            ),
+            currentRootPath: "/A", isScanning: false
+        )
+
+        var cacheNotifiedSource: TreeFlatProjectionSource?
+        let subscription = coordinator.treeBrowser.$childrenCacheVersion.dropFirst()
+            .sink { @MainActor _ in
+                cacheNotifiedSource = coordinator.makeTreeFlatProjectionSource(
+                    rootPath: "/A", sortedBy: .sizeDesc, expandedPaths: []
+                )
+            }
+        await coordinator.pruneDeleted(paths: ["/A/drop"])
+        withExtendedLifetime(subscription) {}
+
+        let source = try XCTUnwrap(cacheNotifiedSource)
+        XCTAssertTrue(
+            coordinator.treeFlatProjectionSourceIsCurrent(source.revision),
+            "bumpStructuralRevision after bumpChildrenCacheVersion must not advance pruneSourceRevision a second time"
+        )
+    }
+
+    func test_undoDidRestoreNotificationClearsSameSessionDeletionTombstones() async throws {
+        let coordinator = ScanCoordinator()
+        coordinator._seedForTesting(
+            snapshot: .init(categoryID: "test", rows: [], totalBytes: 400 * 1_048_576,
+                            scannedFileCount: 2, isFinished: true, elapsed: 1),
+            currentRootPath: "/A", isScanning: false
+        )
+        coordinator._seedLargeFileLeavesForTesting([
+            (path: "/A/restored.bin", bytes: 200 * 1_048_576),
+            (path: "/A/keep.bin", bytes: 200 * 1_048_576)
+        ])
+
+        await coordinator.acknowledgeSuccessfulDeletionForPresentation(paths: ["/A/restored.bin"])
+        XCTAssertEqual(
+            coordinator.largeFiles(minSizeMB: 1, sortKey: .sizeDesc).map(\.path),
+            ["/A/keep.bin"]
+        )
+
+        NotificationCenter.default.post(
+            name: .gsyUndoDidRestore,
+            object: nil,
+            userInfo: ["paths": ["/A/restored.bin"]]
+        )
+        XCTAssertEqual(
+            Set(coordinator.largeFiles(minSizeMB: 1, sortKey: .sizeDesc).map(\.path)),
+            Set(["/A/restored.bin", "/A/keep.bin"]),
+            "restoring a file from Undo History must remove its same-session tombstone"
+        )
+    }
 }

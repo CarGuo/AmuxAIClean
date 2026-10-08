@@ -42,9 +42,15 @@ public enum CacheDirTag {
     /// - 仅做精确字节比对（不做 UTF-8 normalize）—— 标准要求 byte-exact。
     public static func isCacheDirectory(at directoryPath: String) -> Bool {
         let tagPath = directoryPath + "/" + fileName
-        let fd = open(tagPath, O_RDONLY)
+        let fd = Darwin.open(tagPath, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { return false }
-        defer { close(fd) }
+        defer { Darwin.close(fd) }
+
+        var st = stat()
+        guard fstat(fd, &st) == 0,
+              (st.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
+            return false
+        }
 
         let expected = Array(signature.utf8)
         let need = expected.count
@@ -53,8 +59,9 @@ public enum CacheDirTag {
         while totalRead < need {
             let n = buf.withUnsafeMutableBufferPointer { ptr -> Int in
                 guard let base = ptr.baseAddress else { return -1 }
-                return read(fd, base.advanced(by: totalRead), need - totalRead)
+                return Darwin.read(fd, base.advanced(by: totalRead), need - totalRead)
             }
+            if n < 0 && errno == EINTR { continue }
             if n <= 0 { return false }   // EOF 不足 43 字节 / 读错
             totalRead += n
         }

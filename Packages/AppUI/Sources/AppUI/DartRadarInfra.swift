@@ -51,18 +51,28 @@ public enum ProcessTerminationPolicy {
     }
 
     static func isProtectedSystemPath(_ path: String) -> Bool {
-        path == "/bin"
-            || path.hasPrefix("/bin/")
-            || path == "/sbin"
-            || path.hasPrefix("/sbin/")
-            || path == "/usr/bin"
-            || path.hasPrefix("/usr/bin/")
-            || path == "/usr/sbin"
-            || path.hasPrefix("/usr/sbin/")
-            || path == "/usr/libexec"
-            || path.hasPrefix("/usr/libexec/")
-            || path == "/System"
-            || path.hasPrefix("/System/")
+        let normalized: String
+        if path == "/System/Volumes/Data" {
+            normalized = "/"
+        } else if path.hasPrefix("/System/Volumes/Data/") {
+            normalized = String(path.dropFirst("/System/Volumes/Data".count))
+        } else {
+            normalized = path
+        }
+        return normalized == "/bin"
+            || normalized.hasPrefix("/bin/")
+            || normalized == "/sbin"
+            || normalized.hasPrefix("/sbin/")
+            || normalized == "/usr/bin"
+            || normalized.hasPrefix("/usr/bin/")
+            || normalized == "/usr/sbin"
+            || normalized.hasPrefix("/usr/sbin/")
+            || normalized == "/usr/libexec"
+            || normalized.hasPrefix("/usr/libexec/")
+            || normalized == "/System"
+            || normalized.hasPrefix("/System/")
+            || normalized == "/Library/Apple"
+            || normalized.hasPrefix("/Library/Apple/")
     }
 }
 
@@ -525,7 +535,43 @@ public struct ProcessProductionCommandRunner: ProcessCommandRunning {
         arguments: [String],
         timeout: TimeInterval
     ) async -> ProcessSubprocessOutput {
-        ProcessBoundedProcessExecutor.run(path, arguments: arguments, timeout: timeout)
+        let cancellationFlag = ProcessCancellationFlag()
+        if Task.isCancelled {
+            cancellationFlag.cancel()
+        }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let output = ProcessBoundedProcessExecutor.run(
+                        path,
+                        arguments: arguments,
+                        timeout: timeout,
+                        shouldCancel: { cancellationFlag.isCancelled }
+                    )
+                    continuation.resume(returning: output)
+                }
+            }
+        } onCancel: {
+            cancellationFlag.cancel()
+        }
+    }
+}
+
+/// 跨异步取消回调与 GCD 执行线程的最小布尔盒；内部状态由 NSLock 保护，Sendable 承诺可验证。
+private final class ProcessCancellationFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
     }
 }
 
@@ -539,8 +585,17 @@ enum ProcessBoundedProcessExecutor {
         timeout: TimeInterval,
         terminationGrace: TimeInterval = 0.4,
         killGrace: TimeInterval = 1.0,
-        maximumOutputBytes: Int = 16 * 1_024 * 1_024
+        maximumOutputBytes: Int = 16 * 1_024 * 1_024,
+        shouldCancel: () -> Bool = { Task.isCancelled }
     ) -> ProcessSubprocessOutput {
+        guard !shouldCancel() else {
+            return ProcessSubprocessOutput(
+                stdout: "",
+                stderr: "cancelled",
+                status: -2,
+                timedOut: true
+            )
+        }
         guard let child = spawn(path: path, arguments: arguments) else {
             return ProcessSubprocessOutput(
                 stdout: "",
@@ -562,7 +617,8 @@ enum ProcessBoundedProcessExecutor {
 
         let initialWait = waitForOwnedChild(
             child.pid,
-            timeout: max(0.01, timeout)
+            timeout: max(0.01, timeout),
+            shouldCancel: shouldCancel
         )
         let timedOut: Bool
         let normalStatus: Int32?
@@ -652,7 +708,16 @@ enum ProcessBoundedProcessExecutor {
         }
         defer { posix_spawn_file_actions_destroy(&actions) }
 
-        guard posix_spawn_file_actions_adddup2(&actions, stdoutFDs[1], STDOUT_FILENO) == 0,
+        var attributes: posix_spawnattr_t?
+        guard posix_spawnattr_init(&attributes) == 0 else {
+            stdoutFDs.forEach { close($0) }
+            stderrFDs.forEach { close($0) }
+            return nil
+        }
+        defer { posix_spawnattr_destroy(&attributes) }
+
+        guard posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0,
+              posix_spawn_file_actions_adddup2(&actions, stdoutFDs[1], STDOUT_FILENO) == 0,
               posix_spawn_file_actions_adddup2(&actions, stderrFDs[1], STDERR_FILENO) == 0,
               posix_spawn_file_actions_addclose(&actions, stdoutFDs[0]) == 0,
               posix_spawn_file_actions_addclose(&actions, stderrFDs[0]) == 0,
@@ -679,7 +744,7 @@ enum ProcessBoundedProcessExecutor {
                 &pid,
                 path,
                 &actions,
-                nil,
+                &attributes,
                 argvBuffer.baseAddress,
                 environ
             )
@@ -700,7 +765,8 @@ enum ProcessBoundedProcessExecutor {
 
     private static func waitForOwnedChild(
         _ pid: pid_t,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        shouldCancel: () -> Bool = { false }
     ) -> OwnedChildWait {
         let timeoutNanos = normalizedTimeoutNanoseconds(timeout)
         let start = DispatchTime.now().uptimeNanoseconds
@@ -714,6 +780,7 @@ enum ProcessBoundedProcessExecutor {
                 if errno == EINTR { continue }
                 return .notOwned
             }
+            if shouldCancel() { return .running }
             if DispatchTime.now().uptimeNanoseconds >= maximum { return .running }
             usleep(2_000)
         }

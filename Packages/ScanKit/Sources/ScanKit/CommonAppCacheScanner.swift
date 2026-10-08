@@ -1071,10 +1071,20 @@ public actor CommonAppCacheScanner {
                         IncompletePath(path: candidates[$0].path, reason: .deadlineExceeded)
                     })
                 }
+                checkpoint = makeCheckpoint(
+                    candidates: candidates,
+                    accumulators: accumulators,
+                    completedCandidateIndices: completedCandidateIndices,
+                    incompletePaths: initialIncompletePaths + incompletePaths,
+                    union: union,
+                    coverageHierarchy: coverageHierarchy,
+                    completedGroupCount: completedGroupCount
+                )
                 break
             }
 
             var started = Set<Int>()
+            var completedPathsInCurrentGroup = Set<String>()
             let groupSet = Set(group.indices)
             let traversalOrder = [group.ownerIndex] + group.indices
                 .filter { $0 != group.ownerIndex }
@@ -1086,6 +1096,7 @@ public actor CommonAppCacheScanner {
                 }
 
             for candidateIndex in traversalOrder where !started.contains(candidateIndex) {
+                let startedBefore = started
                 let outcome = traverseCandidateRoot(
                     candidateIndex,
                     candidates: candidates,
@@ -1111,11 +1122,32 @@ public actor CommonAppCacheScanner {
                     )
                 }
                 if outcome.timedOut {
-                    for remainingGroup in groups[groupPosition...] {
-                        incompletePaths.append(contentsOf: remainingGroup.indices.map {
-                            IncompletePath(path: candidates[$0].path, reason: .deadlineExceeded)
-                        })
+                    incompletePaths.append(contentsOf: group.indices.compactMap { index in
+                        let path = candidates[index].path
+                        return completedPathsInCurrentGroup.contains(path)
+                            ? nil
+                            : IncompletePath(path: path, reason: .deadlineExceeded)
+                    })
+                    if groupPosition + 1 < groups.count {
+                        for remainingGroup in groups[(groupPosition + 1)...] {
+                            incompletePaths.append(contentsOf: remainingGroup.indices.map {
+                                IncompletePath(path: candidates[$0].path, reason: .deadlineExceeded)
+                            })
+                        }
                     }
+                    checkpoint = makeCheckpoint(
+                        candidates: candidates,
+                        accumulators: accumulators,
+                        completedCandidateIndices: completedCandidateIndices,
+                        incompletePaths: initialIncompletePaths + incompletePaths,
+                        union: union,
+                        coverageHierarchy: coverageHierarchy,
+                        completedGroupCount: completedGroupCount
+                    )
+                    pendingPaths = candidatePaths(
+                        in: groups[groupPosition...],
+                        candidates: candidates
+                    ).filter { !completedPathsInCurrentGroup.contains($0) }
                     let stats = makeCandidateStats(accumulators)
                     return CandidateForestMeasurement(
                         candidateStats: stats,
@@ -1133,6 +1165,11 @@ public actor CommonAppCacheScanner {
                         checkpoint: checkpoint,
                         pendingPaths: pendingPaths
                     )
+                }
+                let newlyCompletedIndices = started.subtracting(startedBefore)
+                completedCandidateIndices.formUnion(newlyCompletedIndices)
+                for completedIndex in newlyCompletedIndices {
+                    completedPathsInCurrentGroup.insert(candidates[completedIndex].path)
                 }
             }
             completedGroupCount &+= 1

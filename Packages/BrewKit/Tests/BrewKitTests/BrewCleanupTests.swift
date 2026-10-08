@@ -145,6 +145,24 @@ final class BrewCleanupTests: XCTestCase {
         XCTAssertEqual(result.diagnostics, [])
     }
 
+    func test_dryRun_symlinkedDownloadsDirectory_returnsMissing() throws {
+        try FileManager.default.removeItem(at: downloads)
+        let external = root.appendingPathComponent("external-downloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+        try writeFile(
+            into: external,
+            name: "hash--old.tar.gz",
+            bytes: 1024,
+            mtime: Date(timeIntervalSinceNow: -60 * 86400)
+        )
+        try FileManager.default.createSymbolicLink(at: downloads, withDestinationURL: external)
+
+        let result = BrewCleanup(cacheRoot: root).dryRunWithEvidence()
+        XCTAssertTrue(result.plan.isEmpty, "Symlinked downloads directory must not be traversed")
+        XCTAssertEqual(result.status, .missing)
+        XCTAssertEqual(result.diagnostics, [])
+    }
+
     // MARK: - v2026.07.18 regression: absence and incomplete evidence are distinct
 
     func test_dryRun_cacheRoot权限拒绝_返回unavailable而不是权威空plan() {

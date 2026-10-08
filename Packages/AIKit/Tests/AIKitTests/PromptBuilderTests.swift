@@ -90,7 +90,19 @@ final class PromptBuilderTests: XCTestCase {
         // /private/var/folders 等 SafetyEngine 不锁的系统私有路径。
         XCTAssertTrue(AIAdviceClamp.pathIsHardForbid("/private/var/folders/abc/T"),
                       "/private/var/* 在 AI clamp 中被宽前缀覆盖（system prompt 承诺）")
+        XCTAssertTrue(AIAdviceClamp.pathIsHardForbid("/System/Volumes/Data"))
+        XCTAssertTrue(AIAdviceClamp.pathIsHardForbid("/system/volumes/data/private/var/folders/abc/T"))
+        XCTAssertTrue(AIAdviceClamp.pathIsHardForbid("/PRIVATE/VAR/db/foo"))
+        XCTAssertTrue(AIAdviceClamp.pathIsHardForbid("/Users/otheruser/.ssh/id_rsa"))
         XCTAssertFalse(AIAdviceClamp.pathIsHardForbid("/Users/guoshuyu/Library/Caches/foo"))
         XCTAssertFalse(AIAdviceClamp.pathIsHardForbid("/Systemic"), "前缀必须严格匹配，不允许误吃")
+    }
+
+    func test_clamp_local_confirm_clamps_ai_safe_to_confirm() {
+        let inquiry = makeInquiry(path: "/Users/guoshuyu/Documents/report.pdf", verdict: .confirm)
+        let aiSays = AIAdvice(summary: "文档", canDelete: .safe, reason: "AI 误判为 safe", sideEffects: [])
+        let clamped = AIAdviceClamp.clamp(aiSays, against: inquiry)
+        XCTAssertEqual(clamped.canDelete, .confirm, "本地 confirm 时 AI 返回 safe 必须被钳制回 confirm")
+        XCTAssertTrue(clamped.reason.hasPrefix(AIAdviceClamp.localPolicyOverridePrefix))
     }
 }

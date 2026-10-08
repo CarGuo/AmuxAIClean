@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// BrewKit Step 16-B3 —— `brew cleanup` 的 dryRun 等价物（纯文件枚举，不执行 brew）。
@@ -167,6 +168,16 @@ public struct BrewCleanup: Sendable {
             // A root entry whose type/target cannot be inspected may alias any download. No
             // candidate is trustworthy until the active-reference set is complete.
             return emptyResult(status: .unavailable, diagnostics: aliases.diagnostics)
+        }
+
+        var downloadsStat = stat()
+        if lstat(downloads.path, &downloadsStat) == 0 {
+            guard (downloadsStat.st_mode & S_IFMT) == S_IFDIR else {
+                return emptyResult(status: .missing)
+            }
+        }
+        if (try? fileSystem.attributes(downloads).isSymbolicLink) == true {
+            return emptyResult(status: .missing)
         }
 
         let entries: [String]

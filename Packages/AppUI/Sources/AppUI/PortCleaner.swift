@@ -112,20 +112,28 @@ public struct PortCleanerEntry: Identifiable, Hashable, Sendable {
     /// v2026.07.16：扫描期和执行期共用同一份路径保护规则，防止 UI 允许、执行层却按
     /// 不同口径发送信号。执行层仍会独立重验，View 的 disabled 不是安全边界。
     static func isProtectedSystemPath(_ path: String) -> Bool {
-        path == "/bin"
-            || path.hasPrefix("/bin/")
-            || path == "/sbin"
-            || path.hasPrefix("/sbin/")
-            || path == "/usr/bin"
-            || path.hasPrefix("/usr/bin/")
-            || path == "/usr/sbin"
-            || path.hasPrefix("/usr/sbin/")
-            || path == "/usr/libexec"
-            || path.hasPrefix("/usr/libexec/")
-            || path == "/System"
-            || path.hasPrefix("/System/")
-            || path == "/Library/Apple"
-            || path.hasPrefix("/Library/Apple/")
+        let normalized: String
+        if path == "/System/Volumes/Data" {
+            normalized = "/"
+        } else if path.hasPrefix("/System/Volumes/Data/") {
+            normalized = String(path.dropFirst("/System/Volumes/Data".count))
+        } else {
+            normalized = path
+        }
+        return normalized == "/bin"
+            || normalized.hasPrefix("/bin/")
+            || normalized == "/sbin"
+            || normalized.hasPrefix("/sbin/")
+            || normalized == "/usr/bin"
+            || normalized.hasPrefix("/usr/bin/")
+            || normalized == "/usr/sbin"
+            || normalized.hasPrefix("/usr/sbin/")
+            || normalized == "/usr/libexec"
+            || normalized.hasPrefix("/usr/libexec/")
+            || normalized == "/System"
+            || normalized.hasPrefix("/System/")
+            || normalized == "/Library/Apple"
+            || normalized.hasPrefix("/Library/Apple/")
     }
 }
 
@@ -384,7 +392,42 @@ struct PortCleanerProductionCommandRunner: PortCleanerCommandRunning {
         arguments: [String],
         timeout: TimeInterval
     ) async -> PortCleanerSubprocessOutput {
-        PortCleanerBoundedProcessExecutor.run(path, arguments: arguments, timeout: timeout)
+        let cancellationFlag = PortCleanerCancellationFlag()
+        if Task.isCancelled {
+            cancellationFlag.cancel()
+        }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let output = PortCleanerBoundedProcessExecutor.run(
+                        path,
+                        arguments: arguments,
+                        timeout: timeout,
+                        shouldCancel: { cancellationFlag.isCancelled }
+                    )
+                    continuation.resume(returning: output)
+                }
+            }
+        } onCancel: {
+            cancellationFlag.cancel()
+        }
+    }
+}
+
+private final class PortCleanerCancellationFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
     }
 }
 
@@ -740,8 +783,17 @@ enum PortCleanerBoundedProcessExecutor {
         timeout: TimeInterval,
         terminationGrace: TimeInterval = 0.4,
         killGrace: TimeInterval = 1.0,
-        maximumOutputBytes: Int = 16 * 1_024 * 1_024
+        maximumOutputBytes: Int = 16 * 1_024 * 1_024,
+        shouldCancel: () -> Bool = { Task.isCancelled }
     ) -> PortCleanerSubprocessOutput {
+        guard !shouldCancel() else {
+            return PortCleanerSubprocessOutput(
+                stdout: "",
+                stderr: "cancelled",
+                status: -2,
+                timedOut: true
+            )
+        }
         guard let child = spawn(path: path, arguments: arguments) else {
             return PortCleanerSubprocessOutput(
                 stdout: "",
@@ -763,7 +815,8 @@ enum PortCleanerBoundedProcessExecutor {
 
         let initialWait = waitForOwnedChild(
             child.pid,
-            timeout: max(0.01, timeout)
+            timeout: max(0.01, timeout),
+            shouldCancel: shouldCancel
         )
         let timedOut: Bool
         let normalStatus: Int32?
@@ -862,7 +915,16 @@ enum PortCleanerBoundedProcessExecutor {
         }
         defer { posix_spawn_file_actions_destroy(&actions) }
 
-        guard posix_spawn_file_actions_adddup2(&actions, stdoutFDs[1], STDOUT_FILENO) == 0,
+        var attributes: posix_spawnattr_t?
+        guard posix_spawnattr_init(&attributes) == 0 else {
+            stdoutFDs.forEach { close($0) }
+            stderrFDs.forEach { close($0) }
+            return nil
+        }
+        defer { posix_spawnattr_destroy(&attributes) }
+
+        guard posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0,
+              posix_spawn_file_actions_adddup2(&actions, stdoutFDs[1], STDOUT_FILENO) == 0,
               posix_spawn_file_actions_adddup2(&actions, stderrFDs[1], STDERR_FILENO) == 0,
               posix_spawn_file_actions_addclose(&actions, stdoutFDs[0]) == 0,
               posix_spawn_file_actions_addclose(&actions, stderrFDs[0]) == 0,
@@ -889,7 +951,7 @@ enum PortCleanerBoundedProcessExecutor {
                 &pid,
                 path,
                 &actions,
-                nil,
+                &attributes,
                 argvBuffer.baseAddress,
                 environ
             )
@@ -912,7 +974,8 @@ enum PortCleanerBoundedProcessExecutor {
     /// still reserved by this child (live or zombie) and cannot have been reused.
     private static func waitForOwnedChild(
         _ pid: pid_t,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        shouldCancel: () -> Bool = { false }
     ) -> OwnedChildWait {
         let timeoutNanos = normalizedTimeoutNanoseconds(timeout)
         let start = DispatchTime.now().uptimeNanoseconds
@@ -926,6 +989,7 @@ enum PortCleanerBoundedProcessExecutor {
                 if errno == EINTR { continue }
                 return .notOwned
             }
+            if shouldCancel() { return .running }
             if DispatchTime.now().uptimeNanoseconds >= maximum { return .running }
             usleep(2_000)
         }

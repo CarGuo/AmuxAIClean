@@ -61,9 +61,14 @@ public struct PathRedactor: Sendable {
     // MARK: - 内部
 
     /// `/Users/foo/...` → `/Users/<USER>/...`
-    /// 也兼容 `/Users/foo` 结尾无斜杠的情况。
+    /// 也兼容 `/System/Volumes/Data/Users/foo`、`/users/foo` 及结尾无斜杠的情况。
     private func redactUsersPrefix(in s: String) -> String {
-        replacePathSegments(prefix: "/Users/", in: s, with: Self.userPlaceholder)
+        let stripped = replaceAll(
+            in: s,
+            pattern: #"(?i)/System/Volumes/Data(?=/Users(?:/|$))"#,
+            with: ""
+        )
+        return replacePathSegments(prefix: "/Users/", in: stripped, with: Self.userPlaceholder)
     }
 
     /// Linux/Docker 残留路径偶尔出现 `/home/<user>/...`
@@ -77,7 +82,7 @@ public struct PathRedactor: Sendable {
         let token = "/Volumes/"
         var out = s
         var searchStart = out.startIndex
-        while let range = out.range(of: token, range: searchStart..<out.endIndex) {
+        while let range = out.range(of: token, options: [.caseInsensitive], range: searchStart..<out.endIndex) {
             let tail = out[range.upperBound...]
             let endIdx = tail.firstIndex(of: "/") ?? tail.endIndex
             let volume = String(tail[..<endIdx])
@@ -85,7 +90,7 @@ public struct PathRedactor: Sendable {
                 searchStart = range.upperBound
                 continue
             }
-            if Self.systemVolumes.contains(volume) {
+            if Self.systemVolumes.contains(where: { $0.caseInsensitiveCompare(volume) == .orderedSame }) {
                 searchStart = endIdx
                 continue
             }
@@ -95,19 +100,20 @@ public struct PathRedactor: Sendable {
         return out
     }
 
-    /// 通用：把每个 `<prefix><segment>(/<rest>)?` 里的 `<segment>` 替换为占位符。
+    /// 通用：把每个 `<prefix><segment>(/<rest>)?` 里的 `<segment>` 替换为占位符（大小写不敏感匹配 prefix，输出规范化 prefix）。
     private func replacePathSegments(prefix: String, in s: String, with placeholder: String) -> String {
         var out = s
         var searchStart = out.startIndex
-        while let range = out.range(of: prefix, range: searchStart..<out.endIndex) {
+        let replacement = prefix + placeholder
+        while let range = out.range(of: prefix, options: [.caseInsensitive], range: searchStart..<out.endIndex) {
             let tail = out[range.upperBound...]
             let endIdx = tail.firstIndex(of: "/") ?? tail.endIndex
             if tail[..<endIdx].isEmpty {
                 searchStart = range.upperBound
                 continue
             }
-            out.replaceSubrange(range.upperBound..<endIdx, with: placeholder)
-            searchStart = out.index(range.upperBound, offsetBy: placeholder.count, limitedBy: out.endIndex) ?? out.endIndex
+            out.replaceSubrange(range.lowerBound..<endIdx, with: replacement)
+            searchStart = out.index(range.lowerBound, offsetBy: replacement.count, limitedBy: out.endIndex) ?? out.endIndex
         }
         return out
     }

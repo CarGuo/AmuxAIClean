@@ -1046,6 +1046,63 @@ final class CommonAppCacheScannerTests: XCTestCase {
         XCTAssertTrue(result.incompletePaths.isEmpty)
     }
 
+    func testDetect_deadlineExceededMidGroupOnlyMarksUnmeasuredCandidatesAndRefreshesCheckpoint() throws {
+        let home = try makeTempDir()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let safeA = home.appendingPathComponent("Library/Caches/SafeA", isDirectory: true)
+        let safeB = home.appendingPathComponent("Library/Caches/SafeB", isDirectory: true)
+        try FileManager.default.createDirectory(at: safeA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: safeB, withIntermediateDirectories: true)
+        try writeFile(in: safeA, name: "a.bin", bytes: 4_096)
+        try writeFile(in: safeB, name: "b.bin", bytes: 4_096)
+
+        let recorder = CommonAppCacheProgressRecorder()
+        let result = CommonAppCacheScanner.detect(
+            vendors: [
+                VendorRule(
+                    name: "SafeA",
+                    category: "common_app_cache",
+                    paths: [PathRule(path: "~/Library/Caches/SafeA", verdict: .safe)]
+                ),
+                VendorRule(
+                    name: "SafeB",
+                    category: "common_app_cache",
+                    paths: [PathRule(path: "~/Library/Caches/SafeB", verdict: .safe)]
+                ),
+            ],
+            home: home,
+            options: CommonAppCacheScanner.Options(timeoutSeconds: 0.05),
+            shouldCancel: { false },
+            openDirectory: { path in
+                let fd = Darwin.open(path, O_RDONLY)
+                if path == safeA.path {
+                    // Expire the soft deadline right as SafeA finishes opening/enumerating
+                    // so SafeA completes and SafeB hits the deadline before its forest starts.
+                    Thread.sleep(forTimeInterval: 0.08)
+                }
+                return fd
+            },
+            onProgress: { recorder.append($0) }
+        )
+
+        XCTAssertFalse(result.isComplete)
+        XCTAssertEqual(result.hits.map(\.ruleName), ["SafeA"],
+                       "Completed forest before deadline must remain in hits")
+        XCTAssertEqual(result.incompletePaths, [
+            .init(path: safeB.path, reason: .deadlineExceeded)
+        ], "Already-measured SafeA must not be marked .deadlineExceeded when SafeB times out")
+
+        let terminalProgress = try XCTUnwrap(recorder.snapshot().last)
+        XCTAssertEqual(terminalProgress.phase, .terminal)
+        XCTAssertEqual(terminalProgress.terminalOutcome, .partial)
+        XCTAssertEqual(terminalProgress.checkpoint?.hits.map(\.ruleName), ["SafeA"],
+                       "Terminal checkpoint on timeout must include completed hits from the interrupted group")
+        XCTAssertEqual(terminalProgress.checkpoint?.incompletePaths, [
+            .init(path: safeB.path, reason: .deadlineExceeded)
+        ])
+        XCTAssertEqual(terminalProgress.pendingPaths, [safeB.path])
+    }
+
     private func makeTempDir() throws -> URL {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("CommonAppCacheScannerTests-\(UUID().uuidString)", isDirectory: true)

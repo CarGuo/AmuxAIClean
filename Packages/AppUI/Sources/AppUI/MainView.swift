@@ -727,7 +727,7 @@ public struct MainView: View {
     public init(pipeline: (any DeletionPipeline)? = nil,
                 vendors: [VendorRule],
                 undoHistoryStore: UndoHistoryStore,
-                recorder: HeuristicRecorder = HeuristicRecorder(),
+                recorder: HeuristicRecorder = .shared,
                 settings: AppSettings? = nil,
                 pathStore: UserPathStore? = nil,
                 coordinator: ScanCoordinator? = nil,
@@ -1043,7 +1043,13 @@ public struct MainView: View {
             )
         }
         // 删除结果提示：真删完成后按 movedPairs 更新列表；失败 / 拦截项留在原处并通过结果弹窗说明。
-        .alert(AppLocalization.string("main.delete.result.title", locale: locale), isPresented: .constant(deleteResult != nil)) {
+        .alert(
+            AppLocalization.string("main.delete.result.title", locale: locale),
+            isPresented: Binding(
+                get: { deleteResult != nil },
+                set: { if !$0 { deleteResult = nil } }
+            )
+        ) {
             Button(AppLocalization.string("main.delete.result.ok", locale: locale)) { deleteResult = nil }
         } message: {
             Text(deleteResult ?? "")
@@ -3026,6 +3032,10 @@ public struct MainView: View {
         .layoutSandbox()
         .navigationSplitViewColumnWidth(min: 560, ideal: 760)
         .onValueChange(of: coordinator.snapshot.rows.count) { _, newCount in
+            if newCount == 0 {
+                lastDefaultSelectedSeenCount = 0
+                return
+            }
             // v2026.07.19 regression fix: the predecessor frame remains visible while a producer
             // settles, but it is disclosure-only. Never bind its rows to the incoming selection
             // session merely because the legacy Boolean is already false.
@@ -3043,10 +3053,6 @@ public struct MainView: View {
             let seen = lastDefaultSelectedSeenCount
             let startIdx = (newCount >= seen && rows.count == newCount) ? seen : 0
             if startIdx == 0 { lastDefaultSelectedSeenCount = 0 }
-            if newCount == 0 {
-                lastDefaultSelectedSeenCount = 0
-                return
-            }
             // 仅遍历末尾差量（含 startIdx == 0 时的全量回退）
             var idx = startIdx
             let end = rows.count
@@ -4200,6 +4206,8 @@ public struct MainView: View {
     /// 防止旧详情面板残留显示到新扫描结果上。
     private func resetSelectionState() {
         selection.removeAll()
+        lastDefaultSelectedSeenCount = 0
+        largeFilesBatch.clear()
         largeFileSelection = nil
         detail = nil
         treeSelection = nil
@@ -4546,6 +4554,18 @@ public struct MainView: View {
         }
     }
 
+    private func canExecuteProfessionalDelete(origin: DeleteRequestOrigin) -> Bool {
+        if origin == .stash {
+            switch coordinator.scanPhase {
+            case .idle:
+                return !coordinator.isScanning
+            case .scanning, .settling:
+                return false
+            }
+        }
+        return coordinator.canUseCurrentScanResultsForActions
+    }
+
     private func performProfessionalDelete(
         request: DeleteSheetRequest,
         executionPlan: ToolTrashExecutionPlan,
@@ -4558,7 +4578,8 @@ public struct MainView: View {
             )
             return
         }
-        guard coordinator.canUseCurrentScanResultsForActions,
+        let origin = request.preparedInteraction.plan.intent.origin
+        guard canExecuteProfessionalDelete(origin: origin),
               coordinator.snapshot.categoryID == request.sourceCategoryID,
               coordinator.currentScanSessionID == request.scanSessionID,
               coordinator.storeRevision == request.preparedInteraction.plan.intent.snapshotIdentity.revision else {
@@ -4837,9 +4858,10 @@ public struct MainView: View {
     private func presentDeleteConfirmation(
         rows: [RowItem],
         origin: DeleteRequestOrigin,
-        accessDeniedPaths suppliedDeniedPaths: Set<String>? = nil
+        accessDeniedPaths suppliedDeniedPaths: Set<String>? = nil,
+        incompleteIssues suppliedIncompleteIssues: [ScanIncompleteIssue]? = nil
     ) {
-        guard coordinator.canUseCurrentScanResultsForActions else {
+        guard canExecuteProfessionalDelete(origin: origin) else {
             // v2026.07.20: this is a zero-submission state, not an operation result. Keep the
             // page interactive while the current scan becomes action-authoritative.
             deletePreflightNotice = DeletionPreflightNotice(
@@ -4862,7 +4884,10 @@ public struct MainView: View {
         let categoryID = coordinator.snapshot.categoryID
         let scanSessionID = coordinator.currentScanSessionID
         let targetPaths = rows.map(\.url.path)
-        let typedIncompleteIssues = coordinator.incompleteIssues(overlappingAny: targetPaths)
+        let currentIssues = coordinator.incompleteIssues(overlappingAny: targetPaths)
+        let typedIncompleteIssues = suppliedIncompleteIssues.map {
+            Array(Set($0 + currentIssues))
+        } ?? currentIssues
         let snapshotIdentity = DeletionSnapshotIdentity(
             sessionID: scanSessionID,
             revision: coordinator.storeRevision,
@@ -4925,7 +4950,7 @@ public struct MainView: View {
                     preparation: targetPreparation
                 )
             }
-            guard coordinator.canUseCurrentScanResultsForActions,
+            guard canExecuteProfessionalDelete(origin: origin),
                   coordinator.snapshot.categoryID == categoryID,
                   coordinator.currentScanSessionID == scanSessionID,
                   coordinator.storeRevision == snapshotIdentity.revision else {
@@ -5062,10 +5087,12 @@ public struct MainView: View {
         let deniedSnapshot = entries.reduce(into: Set<String>()) { partial, entry in
             partial.formUnion(entry.accessDeniedPaths)
         }
+        let incompleteSnapshot = Array(Set(entries.flatMap(\.incompleteIssues)))
         presentDeleteConfirmation(
             rows: entries.map(makeDeletionRow),
             origin: .stash,
-            accessDeniedPaths: deniedSnapshot
+            accessDeniedPaths: deniedSnapshot,
+            incompleteIssues: incompleteSnapshot
         )
     }
 
@@ -5093,6 +5120,7 @@ public struct MainView: View {
             isDirectory: isDirectory,
             fileCount: fileCount,
             accessDeniedPaths: accessDeniedPathsSnapshot(),
+            incompleteIssues: coordinator.incompleteIssues(overlappingAny: [path]),
             titlePresentation: titlePresentation
         )
     }

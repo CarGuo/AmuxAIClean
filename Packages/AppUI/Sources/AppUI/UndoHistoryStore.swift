@@ -25,6 +25,10 @@ import LogKit
 ///
 /// **并发**：`@MainActor`，与 [HeuristicRecorder](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HeuristicRecorder.swift)
 /// 不同——本 store 是 UI 直接消费的（侧栏列表渲染），跑在主 Actor 反而省一层桥接。
+public extension Notification.Name {
+    static let gsyUndoDidRestore = Notification.Name("GSYCleanMac.UndoDidRestore")
+}
+
 @MainActor
 public final class UndoHistoryStore: ObservableObject {
 
@@ -124,6 +128,7 @@ public final class UndoHistoryStore: ObservableObject {
     private struct RestoreExecution: Sendable {
         let result: RestoreResult
         let recoveryStates: [Record.RecoveryState]
+        let restoredPaths: [String]
     }
 
     private struct RestorePreparation: Sendable {
@@ -4056,6 +4061,14 @@ public final class UndoHistoryStore: ObservableObject {
             saveHistory()
         }
 
+        if !execution.restoredPaths.isEmpty {
+            NotificationCenter.default.post(
+                name: .gsyUndoDidRestore,
+                object: self,
+                userInfo: ["paths": execution.restoredPaths]
+            )
+        }
+
         let result = execution.result
         GSYLog.info(
             .trash,
@@ -4149,6 +4162,7 @@ public final class UndoHistoryStore: ObservableObject {
         var renamed = 0
         var firstFailure: RestoreFailure?
         var states = normalizedRecoveryStates(for: record)
+        var restoredPaths: [String] = []
         var reservedDestinations = Set(record.filePairs.map { pair in
             URL(fileURLWithPath: pair.original).standardizedFileURL.path
         })
@@ -4246,6 +4260,10 @@ public final class UndoHistoryStore: ObservableObject {
                     status: .restored,
                     restoredDestination: destinationURL.path
                 )
+                restoredPaths.append(pair.original)
+                if destinationURL.path != pair.original {
+                    restoredPaths.append(destinationURL.path)
+                }
             case .sourceMissing:
                 skipped += 1
                 states[index] = Record.RecoveryState(status: .missing)
@@ -4291,7 +4309,8 @@ public final class UndoHistoryStore: ObservableObject {
                 renamedCount: renamed,
                 firstFailure: firstFailure
             ),
-            recoveryStates: states
+            recoveryStates: states,
+            restoredPaths: restoredPaths
         )
     }
 
@@ -4353,7 +4372,8 @@ public final class UndoHistoryStore: ObservableObject {
             // Migrated three-field identities intentionally match a stronger current probe by
             // the discriminators that were actually persisted. Full Equatable would reject every
             // legacy restorable item merely because optional birthtime/generation are now known.
-            return expected.matches(current) ? .available : .identityChanged
+            // Cross-reboot mount renumbering is accepted when full kernel discriminators match.
+            return expected.matchesAllowingMountDeviceRebase(current) ? .available : .identityChanged
         case .missing:
             return .missing
         case .unavailable:
@@ -4459,10 +4479,26 @@ public final class UndoHistoryStore: ObservableObject {
             return .moveFailed("invalid leaf name")
         }
 
+        // Probe the authorized scope root's current mount device first so destination parent
+        // validation remains anchored even if the source in .Trash is missing. When the volume
+        // was remounted across a reboot, scopeRoot and source share the current mount device.
+        var rootStat = stat()
+        let currentScopeDevice: UInt64
+        if lstat(TrashPipeline.normalizePath(restoreScopeRoot), &rootStat) == 0 {
+            currentScopeDevice = UInt64(bitPattern: Int64(rootStat.st_dev))
+        } else {
+            currentScopeDevice = expected.device
+        }
+        let targetMountDevice = expected.birthTimeSeconds != nil
+            && expected.birthTimeNanoseconds != nil
+            && expected.generation != nil
+            ? currentScopeDevice
+            : expected.device
+
         guard let destinationParentFD = openDestinationParent(
             scopeRoot: restoreScopeRoot,
             destinationParent: destinationURL.deletingLastPathComponent().path,
-            expectedDevice: expected.device
+            expectedDevice: targetMountDevice
         ) else {
             return .destinationParentUnavailable("destination parent validation failed")
         }
@@ -4484,7 +4520,9 @@ public final class UndoHistoryStore: ObservableObject {
         guard sourceProbe == 0 else {
             return errno == ENOENT || errno == ENOTDIR ? .sourceMissing : .sourceUnavailable
         }
-        guard expected.matches(TrashObjectIdentity(metadata: sourceMetadata)) else {
+        let observedSource = TrashObjectIdentity(metadata: sourceMetadata)
+        guard expected.matchesAllowingMountDeviceRebase(observedSource),
+              observedSource.device == targetMountDevice else {
             return .sourceIdentityChanged
         }
 
@@ -4514,8 +4552,10 @@ public final class UndoHistoryStore: ObservableObject {
         let destinationProbe = destinationName.withCString {
             fstatat(destinationParentFD, $0, &destinationMetadata, AT_SYMLINK_NOFOLLOW)
         }
+        let observedDestination = TrashObjectIdentity(metadata: destinationMetadata)
         guard destinationProbe == 0,
-              expected.matches(TrashObjectIdentity(metadata: destinationMetadata)) else {
+              expected.matchesAllowingMountDeviceRebase(observedDestination),
+              observedDestination.device == targetMountDevice else {
             let rollback = destinationName.withCString { destinationLeaf in
                 sourceName.withCString { sourceLeaf in
                     renameatx_np(

@@ -295,8 +295,14 @@ public actor MultiRootScanner {
                             await progressClock.recordIncomplete(issue)
                         case .cacheDirTagged:
                             await progressClock.touch()
-                        case .finished:
+                        case .finished(let summary):
                             // 上游已经产出真实 summary，标记一下，scanOne 末尾就不补合成 .finished。
+                            await progressClock.recordProgress(
+                                scannedBytes: summary.totalAllocatedBytes,
+                                fileCount: summary.fileCount,
+                                logicalBytes: summary.totalLogicalBytes,
+                                directoryCount: summary.directoryCount
+                            )
                             await progressClock.markFinished()
                         case .failed:
                             break
@@ -425,7 +431,9 @@ actor MultiRootProgressClock {
     private var lastTouch: Date = Date()
     var didReceiveFinished: Bool = false
     private var latestProgressBytes: Int64 = 0
+    private var latestProgressLogicalBytes: Int64 = 0
     private var latestProgressFileCount: Int = 0
+    private var latestProgressDirectoryCount: Int = 0
     private var observedAllocatedBytes: Int64 = 0
     private var observedLogicalBytes: Int64 = 0
     private var observedFileCount: Int = 0
@@ -447,7 +455,7 @@ actor MultiRootProgressClock {
         for node in nodes {
             if node.isDirectory {
                 observedDirectoryCount += 1
-            } else {
+            } else if !node.isSymlink {
                 observedFileCount += 1
                 observedAllocatedBytes += node.allocatedSize
                 observedLogicalBytes += node.logicalSize
@@ -455,10 +463,17 @@ actor MultiRootProgressClock {
         }
     }
 
-    func recordProgress(scannedBytes: Int64, fileCount: Int) {
+    func recordProgress(
+        scannedBytes: Int64,
+        fileCount: Int,
+        logicalBytes: Int64 = 0,
+        directoryCount: Int = 0
+    ) {
         touch()
         latestProgressBytes = max(latestProgressBytes, scannedBytes)
+        latestProgressLogicalBytes = max(latestProgressLogicalBytes, logicalBytes)
         latestProgressFileCount = max(latestProgressFileCount, fileCount)
+        latestProgressDirectoryCount = max(latestProgressDirectoryCount, directoryCount)
     }
 
     func recordPermissionDenied() {
@@ -492,9 +507,9 @@ actor MultiRootProgressClock {
         return ScanSummary(
             root: root,
             totalAllocatedBytes: max(latestProgressBytes, observedAllocatedBytes),
-            totalLogicalBytes: observedLogicalBytes,
+            totalLogicalBytes: max(latestProgressLogicalBytes, observedLogicalBytes),
             fileCount: max(latestProgressFileCount, observedFileCount),
-            directoryCount: observedDirectoryCount,
+            directoryCount: max(latestProgressDirectoryCount, observedDirectoryCount),
             dedupedHardlinkBytes: 0,
             elapsed: elapsed,
             permissionDeniedCount: permissionDeniedCount,

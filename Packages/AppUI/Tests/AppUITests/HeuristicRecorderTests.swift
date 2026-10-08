@@ -45,4 +45,15 @@ final class HeuristicRecorderTests: XCTestCase {
         let s = await r2.score(of: "/Persist/P/a.log")
         XCTAssertGreaterThan(s, 0.0)
     }
+
+    func testDataVolumePrefixAndCaseInsensitiveNormalizationMatchSameRecord() async throws {
+        let url = tempStoreURL()
+        let recorder = HeuristicRecorder(engine: HeuristicEngine(), storeURL: url)
+        await recorder.recordTrashed(paths: ["/System/Volumes/Data/Users/demo/Library/Caches/FooBar/a.log"])
+        await recorder.recordTrashed(paths: ["/Users/demo/library/caches/foobar/b.log"])
+        await recorder.recordRestored(paths: ["/USERS/DEMO/LIBRARY/CACHES/FOOBAR/a.log"])
+
+        let score = await recorder.score(of: "/Users/demo/Library/Caches/FooBar")
+        XCTAssertLessThan(score, 0.0)
+    }
 }

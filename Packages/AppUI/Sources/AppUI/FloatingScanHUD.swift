@@ -358,7 +358,7 @@ public final class FloatingScanHUDController {
             dynamicIslandEnvelopeSize = envelope
             return envelope
         default:
-            return NSSize(width: 320, height: 112)
+            return NSSize(width: 368, height: 180)
         }
     }
 
@@ -1949,7 +1949,7 @@ struct FloatingScanHUDView: View {
     }
 
     private func bytesString(_ b: Int64) -> String {
-        AppLocalization.byteCount(b, locale: locale)
+        AppLocalization.byteCount(b, locale: liveLocale)
     }
 
     private func percentString(_ r: Double) -> String {
