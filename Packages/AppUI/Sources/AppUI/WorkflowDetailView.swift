@@ -152,7 +152,7 @@ public struct WorkflowDetailView: View {
         // **v2026.07.15**：统一使用单一 ActiveSheet 路由。Trash 结果与 Simulator
         // managed uninstall 虽然共享 SwiftUI presentation slot，但状态与 receipt 完全分离；
         // managed 流程始终留在自己的 sheet 内，不会再先关闭后等待整页重扫。
-        .sheet(
+        .localizedSheet(
             item: $viewModel.activeSheet,
             onDismiss: runPendingDeleteAfterSheetDismissal
         ) { sheet in

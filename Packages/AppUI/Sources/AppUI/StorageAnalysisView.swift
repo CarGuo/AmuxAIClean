@@ -47,7 +47,7 @@ struct StorageAnalysisView: View {
         }
         .onReceive(trash.$isBusy) { onBusyChange($0) }
         .deletionPreflightNoticeOverlay(trash.notice) { trash.notice = nil }
-        .sheet(item: $trash.sheet, onDismiss: trash.dismiss) { sheet in
+        .localizedSheet(item: $trash.sheet, onDismiss: trash.dismiss) { sheet in
             switch sheet {
             case .review(let review):
                 ToolTrashConfirmationSheet(
@@ -104,7 +104,7 @@ struct StorageAnalysisView: View {
                 Text("workspace.storage.search", bundle: .module)
             }
             .textFieldStyle(.roundedBorder)
-            .disabled(store.projection == nil || trash.isBusy)
+            .disabled(store.projection == nil || store.directoryAccessState != .normal || trash.isBusy)
             .accessibilityIdentifier("normal.analysis.search")
 
             ScrollViewReader { reader in
@@ -248,7 +248,7 @@ struct StorageAnalysisView: View {
                     }
                 }.font(.caption)
             }
-            if let projection = store.projection {
+            if let projection = store.projection, store.directoryAccessState == .normal {
                 Text(verbatim: AppLocalization.byteCount(projection.measuredBytes, locale: locale))
                     .font(.callout.monospacedDigit().weight(.semibold))
             }
@@ -281,7 +281,11 @@ struct StorageAnalysisView: View {
                 icon: "exclamationmark.triangle", title: "workspace.storage.failed.title",
                 detail: "workspace.storage.failed.detail", action: true)
         case .ready, .loadingDirectory:
-            if let projection = store.projection, !projection.mapItems.isEmpty {
+            // v2026.10.07 C4: an unread root has no child rows, just like an empty root. Show
+            // its typed access evidence before choosing any empty/zero-allocation presentation.
+            if let access = StorageDirectoryAccessPresentation(state: store.directoryAccessState) {
+                emptyState(icon: "lock", title: access.titleKey, detail: access.detailKey, action: false)
+            } else if let projection = store.projection, !projection.mapItems.isEmpty {
                 VStack(spacing: 8) {
                     if projection.incompleteCount > 0 || projection.pendingCount > 0
                         || store.phase == .loadingDirectory

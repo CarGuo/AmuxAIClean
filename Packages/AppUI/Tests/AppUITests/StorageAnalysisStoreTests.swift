@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import ScanKit
 import XCTest
@@ -82,6 +83,74 @@ final class StorageAnalysisStoreTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(store.phase, .idle)
         XCTAssertNil(store.projection)
+        store.deactivate()
+    }
+
+    func testQueuedDeletionReceiptCannotMutateOrCancelReplacementScan() async throws {
+        let root = try fixture()
+        let scanner = ScanCoordinator(home: root.path)
+        let store = StorageAnalysisStore(scanner: scanner)
+        store.activate(locale: Locale(identifier: "en"))
+        store.scan(.makeCustom(url: root))
+        try await waitUntil { store.phase == .ready && store.projection != nil && !store.isProjecting }
+
+        let reconciliation = try XCTUnwrap(store.applyExternalDeletedPaths([
+            root.appendingPathComponent("Folder/payload.bin").path
+        ]))
+        // Same MainActor turn: the receipt is queued but has not entered its async body.
+        scanner.cancel()
+        let replacementSession = scanner.currentScanSessionID
+        scanner._seedForTesting(isScanning: true)
+        await reconciliation.value
+
+        XCTAssertTrue(scanner.isScanning, "An old receipt must not cancel the replacement producer")
+        XCTAssertEqual(scanner.currentScanSessionID, replacementSession)
+        scanner.cancel()
+        store.deactivate()
+    }
+
+    func testConcurrentDeletionReceiptsMergeWithinTheSameCompletedScan() async throws {
+        let root = try fixture()
+        let second = root.appendingPathComponent("second.bin")
+        try Data(repeating: 2, count: 8_192).write(to: second)
+        let scanner = ScanCoordinator(home: root.path)
+        let store = StorageAnalysisStore(scanner: scanner)
+        store.activate(locale: Locale(identifier: "en"))
+        store.scan(.makeCustom(url: root))
+        try await waitUntil { store.phase == .ready && store.projection != nil && !store.isProjecting }
+        let session = scanner.currentScanSessionID
+        let first = try XCTUnwrap(store.applyExternalDeletedPaths([root.appendingPathComponent("Folder").path]))
+        let next = try XCTUnwrap(store.applyExternalDeletedPaths([second.path]))
+
+        await first.value
+        await next.value
+        try await waitUntil { store.projection?.rows.isEmpty == true && !store.isProjecting }
+
+        XCTAssertEqual(scanner.currentScanSessionID, session)
+        XCTAssertEqual(store.phase, .ready)
+        store.deactivate()
+    }
+
+    func testCanonicalTemporaryRootRetainsPrivacySkipEvidenceInsteadOfClaimingEmpty() async throws {
+        let fixtureRoot = try fixture()
+        // NSOpenPanel returns the physical /private namespace. Foundation's URL resolver folds
+        // /private/var back to /var, so use realpath to reproduce the observed picker boundary.
+        let physicalPath = try XCTUnwrap(realpath(fixtureRoot.path, nil))
+        defer { free(physicalPath) }
+        let root = URL(fileURLWithPath: String(cString: physicalPath))
+        XCTAssertTrue(TCCSkipList.shouldSkip(root.path), "Use the actual system-picker namespace")
+        let scanner = ScanCoordinator()
+        let store = StorageAnalysisStore(scanner: scanner)
+        store.activate(locale: Locale(identifier: "zh-Hans"))
+        store.scan(.makeCustom(url: root))
+        try await waitUntil { store.phase == .ready && store.projection != nil && !store.isProjecting }
+
+        XCTAssertEqual(store.directoryAccessState, .tccProtected)
+        XCTAssertTrue(store.projection?.rows.isEmpty == true)
+        let message = try XCTUnwrap(StorageDirectoryAccessPresentation(state: store.directoryAccessState))
+        XCTAssertTrue(AppLocalization.string(message.detailKey, locale: Locale(identifier: "zh-Hans")).contains("隐私"))
+        XCTAssertTrue(AppLocalization.string(message.detailKey, locale: Locale(identifier: "en")).contains("privacy"))
+        XCTAssertFalse(scanner.incompleteScanIssues.isEmpty)
         store.deactivate()
     }
 

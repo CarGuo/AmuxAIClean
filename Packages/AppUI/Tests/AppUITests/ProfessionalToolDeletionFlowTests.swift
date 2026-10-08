@@ -1137,7 +1137,12 @@ final class ProfessionalToolDeletionFlowTests: XCTestCase {
         XCTAssertTrue(uninstall.contains("selectedAppRevision"))
         XCTAssertTrue(uninstall.contains("runningBundleIDPrefix: selectedApp.metadata.bundleID"))
         XCTAssertFalse(brew.contains(".confirmationDialog("))
-        XCTAssertEqual(uninstall.components(separatedBy: ".sheet(").count - 1, 1,
+        // v2026.10.07: localizedSheet delegates to the same SwiftUI presentation slot. Count
+        // both entry points so the single-owner contract cannot pass with two competing sheets.
+        let uninstallPresenterCount = [".sheet(", ".localizedSheet("].reduce(0) {
+            $0 + uninstall.components(separatedBy: $1).count - 1
+        }
+        XCTAssertEqual(uninstallPresenterCount, 1,
                        "卸载确认与结果必须共用一个 sheet presenter")
         XCTAssertTrue(uninstall.contains("onDismiss: completeUninstallSheetDismissal"))
         XCTAssertFalse(uninstall.contains("showRealDeleteConfirm"))

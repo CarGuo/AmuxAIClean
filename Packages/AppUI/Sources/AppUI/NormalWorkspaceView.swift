@@ -80,7 +80,7 @@ struct NormalWorkspaceView<CleanContent: View>: View {
         .onValueChange(of: showHistory) { _, visible in
             if visible { onToolBusyChange(true) }
         }
-        .sheet(isPresented: $showHistory, onDismiss: { onToolBusyChange(false) }) {
+        .localizedSheet(isPresented: $showHistory, onDismiss: { onToolBusyChange(false) }) {
             VStack(spacing: 0) {
                 HStack {
                     Text("sidebar.section.undo_history", bundle: .module).font(.headline)

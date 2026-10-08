@@ -445,7 +445,8 @@ public struct DuplicateScreen: View {
 
     @State private var roots: [URL] = DuplicateScreen.defaultRoots()
     @State private var minStep: SizeStep = .mb10
-    @State private var groups: [DuplicateGroup] = []
+    @StateObject private var results = DuplicateResultsStore()
+    private var groups: [DuplicateGroup] { results.groups }
     @State private var selectedGroupID: String?
     @State private var inlineSelectedPaths: Set<String> = []
     @State private var isScanning: Bool = false
@@ -572,11 +573,12 @@ public struct DuplicateScreen: View {
             guard source != DeleteRequestOrigin.duplicate.historySource else { return }
             let paths = notification.userInfo?["paths"] as? [String] ?? []
             guard !paths.isEmpty, !groups.isEmpty else { return }
+            let expectedSessionID = scanSessionID
             Task { @MainActor in
-                await pruneMovedDuplicatePaths(Set(paths))
+                await pruneMovedDuplicatePaths(Set(paths), expectedSessionID: expectedSessionID)
             }
         }
-        .sheet(
+        .localizedSheet(
             isPresented: Binding(
                 get: { activeSheet != nil },
                 set: {
@@ -1514,7 +1516,9 @@ public struct DuplicateScreen: View {
             }
             activeSheet = .result(.deletion(completed))
             if !succeededPaths.isEmpty {
-                await pruneMovedDuplicatePaths(Set(succeededPaths))
+                await pruneMovedDuplicatePaths(
+                    Set(succeededPaths), expectedSessionID: submission.request.scanSessionID
+                )
                 Task.detached(priority: .utility) { [releasedBytes, succeededPaths] in
                     await HeuristicRecorder().recordTrashed(paths: succeededPaths)
                     if releasedBytes > 0 {
@@ -1641,20 +1645,21 @@ public struct DuplicateScreen: View {
     }
 
     @MainActor
-    private func pruneMovedDuplicatePaths(_ moved: Set<String>) async {
-        guard !moved.isEmpty else { return }
-        let sourceGroups = groups
-        let prunedGroups = await Task.detached(priority: .utility) {
-            DuplicateHandlingPlan.pruning(sourceGroups, movedPaths: moved)
-        }.value
-        guard !Task.isCancelled else { return }
-        groups = prunedGroups
-        if let selectedGroupID, !prunedGroups.contains(where: { $0.id == selectedGroupID }) {
-            self.selectedGroupID = prunedGroups.first?.id
-        }
+    private func pruneMovedDuplicatePaths(_ moved: Set<String>, expectedSessionID: UUID) async {
+        guard await results.pruneMovedPaths(moved, expectedSessionID: expectedSessionID),
+            scanSessionID == expectedSessionID, !Task.isCancelled else { return }
+        let prunedGroups = groups
+        let selectionSurvives = selectedGroupID.map { id in
+            prunedGroups.contains(where: { $0.id == id })
+        } ?? false
+        if !selectionSurvives { selectedGroupID = prunedGroups.first?.id }
         if let currentID = self.selectedGroupID,
            let currentGroup = prunedGroups.first(where: { $0.id == currentID }) {
-            inlineSelectedPaths = Set(DuplicateHandlingPlan.keepNewestDeleteTargets(for: currentGroup))
+            // Preserve manual choices in a surviving group; an unrelated receipt must not
+            // silently select extra deletion targets. A new group uses its usual default.
+            inlineSelectedPaths = selectionSurvives
+                ? inlineSelectedPaths.intersection(Set(currentGroup.files.map(\.path)))
+                : Set(DuplicateHandlingPlan.keepNewestDeleteTargets(for: currentGroup))
         } else {
             inlineSelectedPaths = []
         }
@@ -1666,7 +1671,6 @@ public struct DuplicateScreen: View {
         guard !isScanning,
               !roots.isEmpty,
               !isDeletionTransactionActive else { return }
-        groups = []
         selectedGroupID = nil
         inlineSelectedPaths = []
         tccSkippedRoots = []
@@ -1676,6 +1680,7 @@ public struct DuplicateScreen: View {
         let revision = scanRevision
         let sessionID = UUID()
         scanSessionID = sessionID
+        results.beginScan(sessionID: sessionID)
         bucketsDone = 0
         bucketsTotal = 0
         sizingFiles = 0
@@ -1714,7 +1719,7 @@ public struct DuplicateScreen: View {
                         bucketsDone = done
                         bucketsTotal = total
                     case .finished(let g):
-                        groups = g
+                        results.replaceGroups(g, sessionID: sessionID)
                         if selectedGroupID == nil, let first = g.first {
                             selectedGroupID = first.id
                             inlineSelectedPaths = Set(DuplicateHandlingPlan.keepNewestDeleteTargets(for: first))
@@ -2027,9 +2032,20 @@ enum DuplicateHandlingPlan {
     static func pruning(_ groups: [DuplicateGroup], movedPaths: Set<String>) -> [DuplicateGroup] {
         guard !movedPaths.isEmpty else { return groups }
         let matcher = DeletionPresentationPathMatcher(paths: Array(movedPaths))
-        return groups.compactMap { group in
-            let matchedPaths = Set(group.files.map(\.path).filter { matcher.contains($0) })
-            return matchedPaths.isEmpty ? group : group.removing(paths: matchedPaths)
+        var pruned: [DuplicateGroup] = []
+        pruned.reserveCapacity(groups.count)
+        for group in groups {
+            // A retired projection has no publishable output; stop traversing wide groups.
+            guard !Task.isCancelled else { return [] }
+            var matchedPaths: Set<String> = []
+            for file in group.files {
+                guard !Task.isCancelled else { return [] }
+                if matcher.contains(file.path) { matchedPaths.insert(file.path) }
+            }
+            if let remaining = matchedPaths.isEmpty ? group : group.removing(paths: matchedPaths) {
+                pruned.append(remaining)
+            }
         }
+        return pruned
     }
 }

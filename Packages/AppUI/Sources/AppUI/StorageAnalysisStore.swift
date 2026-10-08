@@ -6,6 +6,26 @@ enum StorageAnalysisPhase: Equatable {
     case idle, scanning, loadingDirectory, ready, cancelled, failed
 }
 
+struct StorageDirectoryAccessPresentation: Equatable {
+    let titleKey: String
+    let detailKey: String
+
+    init?(state: TreeRow.AccessState) {
+        switch state {
+        case .normal: return nil
+        case .tccProtected:
+            titleKey = "workspace.storage.access.privacy.title"
+            detailKey = "workspace.storage.access.privacy.detail"
+        case .permissionDenied:
+            titleKey = "workspace.storage.access.permission.title"
+            detailKey = "workspace.storage.access.permission.detail"
+        case .incomplete:
+            titleKey = "workspace.storage.access.incomplete.title"
+            detailKey = "workspace.storage.access.incomplete.detail"
+        }
+    }
+}
+
 /// v2026.09.06: Normal analysis is a separate presentation owner, sharing the
 /// primary producer admission registry with Professional and Smart Care. Leaving a
 /// page cancels its producers; completed scans survive navigation. No partial tree
@@ -16,6 +36,7 @@ final class StorageAnalysisStore: ObservableObject {
     @Published private(set) var phase: StorageAnalysisPhase = .idle
     @Published private(set) var projection: StorageDirectoryProjection?
     @Published private(set) var projectionIdentity: DeletionSnapshotIdentity?
+    @Published private(set) var directoryAccessState: TreeRow.AccessState = .normal
     @Published private(set) var breadcrumbs: [String] = []
     @Published private(set) var category: ScanCategory = .fullDisk
     @Published private(set) var isProjecting = false
@@ -44,6 +65,7 @@ final class StorageAnalysisStore: ObservableObject {
         let treeRevision: UInt64
         let childrenRevision: UInt64
         let sourceRevision: UInt64
+        let directoryAccess: TreeRow.AccessState
         let path: String
         let query: String
         let limit: Int
@@ -62,6 +84,9 @@ final class StorageAnalysisStore: ObservableObject {
             Task { @MainActor [weak self] in self?.refresh() }
         }.store(in: &subscriptions)
         scanner.$snapshot.map(\.isFinished).removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refresh() }
+        }.store(in: &subscriptions)
+        scanner.$incompleteScanIssues.sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.refresh() }
         }.store(in: &subscriptions)
         scanner.treeBrowser.$treeRevision.sink { [weak self] _ in
@@ -103,6 +128,7 @@ final class StorageAnalysisStore: ObservableObject {
         breadcrumbs = [self.category.rootPath]
         projection = nil
         projectionIdentity = nil
+        directoryAccessState = .normal
         query = ""
         limit = 100
         listScope = .all
@@ -132,6 +158,7 @@ final class StorageAnalysisStore: ObservableObject {
         }
         projection = nil
         projectionIdentity = nil
+        directoryAccessState = .normal
         limit = 100
         listScope = .all
         query = ""
@@ -164,22 +191,33 @@ final class StorageAnalysisStore: ObservableObject {
         refresh()
     }
 
-    func applyExternalDeletedPaths(_ paths: [String]) {
+    @discardableResult
+    func applyExternalDeletedPaths(_ paths: [String]) -> Task<Void, Never>? {
         guard !paths.isEmpty else {
             invalidateAfterExternalChange()
-            return
+            return nil
         }
         if scanner.snapshot.isFinished, !scanner.isScanning,
             phase == .ready || phase == .loadingDirectory
         {
-            Task { @MainActor [weak self] in
-                guard let self else { return }
+            // v2026.10.07: freeze ownership before enqueueing, and recheck after each await.
+            // Presentation acknowledgement and authoritative pruning are separate transactions;
+            // a replacement scan must never inherit an old receipt or be cancelled by its prune.
+            // Do not bind to projection revision: navigation and concurrent same-session receipts
+            // legitimately change it, and ScanCoordinator merges those with its source CAS.
+            let sessionID = scanner.currentScanSessionID
+            return Task { @MainActor [weak self] in
+                guard let self, !Task.isCancelled,
+                    self.scanner.currentScanSessionID == sessionID else { return }
                 await self.scanner.acknowledgeSuccessfulDeletionForPresentation(paths: paths)
+                guard !Task.isCancelled,
+                    self.scanner.currentScanSessionID == sessionID else { return }
                 await self.scanner.pruneDeleted(paths: paths)
             }
         } else if phase != .idle {
             invalidateAfterExternalChange()
         }
+        return nil
     }
 
     func invalidateAfterExternalChange() {
@@ -188,6 +226,7 @@ final class StorageAnalysisStore: ObservableObject {
         cancel()
         projection = nil
         projectionIdentity = nil
+        directoryAccessState = .normal
         hasRequestedScan = false
         listScope = .all
         phase = .idle
@@ -226,7 +265,8 @@ final class StorageAnalysisStore: ObservableObject {
             session: scanner.currentScanSessionID,
             treeRevision: scanner.treeBrowser.treeRevision,
             childrenRevision: scanner.treeBrowser.childrenCacheVersion,
-            sourceRevision: scanner.deletionPresentationSourceRevision, path: path,
+            sourceRevision: scanner.deletionPresentationSourceRevision,
+            directoryAccess: scanner.directoryAccessState(for: path), path: path,
             query: query, limit: limit, locale: locale.identifier, fetching: fetching,
             viewportSize: viewportSize, listScope: listScope)
         guard key != lastKey else { return }
@@ -255,12 +295,14 @@ final class StorageAnalysisStore: ObservableObject {
                 self.revision == expectedRevision, self.lastKey == key
             else { return }
             guard self.scanner.currentScanSessionID == key.session,
-                self.scanner.deletionPresentationSourceRevision == key.sourceRevision
+                self.scanner.deletionPresentationSourceRevision == key.sourceRevision,
+                self.scanner.directoryAccessState(for: key.path) == key.directoryAccess
             else {
                 self.lastKey = nil
                 self.refresh()
                 return
             }
+            self.directoryAccessState = key.directoryAccess
             self.projection = prepared
             self.listScope = prepared.listScope
             var committedKey = key

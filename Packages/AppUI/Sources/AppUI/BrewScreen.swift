@@ -286,7 +286,7 @@ public struct BrewScreen: View {
             preflightNotice = nil
         }
         .task { reloadInstalled() }
-        .sheet(item: $activeSheet, onDismiss: completeCleanupSheetDismissal) { sheet in
+        .localizedSheet(item: $activeSheet, onDismiss: completeCleanupSheetDismissal) { sheet in
             switch sheet {
             case .confirm(let request):
                 ToolTrashConfirmationSheet(

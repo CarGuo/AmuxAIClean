@@ -96,6 +96,43 @@ final class BrewCleanupTests: XCTestCase {
                       "Cask/ 子目录 symlink 指向的活跃安装包应被排除；实际 stale: \(plan.stalePaths)")
     }
 
+    func test_dryRun_unreadableCaskAliasesInvalidateActiveDownloadEvidence() throws {
+        let cask = root.appendingPathComponent("Cask", isDirectory: true)
+        try FileManager.default.createDirectory(at: cask, withIntermediateDirectories: true)
+        try writeFile(into: downloads, name: "still-active.dmg", bytes: 8192,
+                      mtime: Date(timeIntervalSinceNow: -60 * 86400))
+        try FileManager.default.createSymbolicLink(
+            at: cask.appendingPathComponent("active.dmg"),
+            withDestinationURL: downloads.appendingPathComponent("still-active.dmg")
+        )
+        let caskPath = cask.path
+        let live = BrewCleanupFileSystem.live
+        for code in [EACCES, EIO] {
+            let fileSystem = BrewCleanupFileSystem(
+                contentsOfDirectory: { url in
+                    if url.path == caskPath {
+                        throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+                    }
+                    return try live.contentsOfDirectory(url)
+                },
+                attributes: live.attributes,
+                symlinkDestination: live.symlinkDestination
+            )
+
+            let result = BrewCleanup(cacheRoot: root, fileSystem: fileSystem).dryRunWithEvidence()
+
+            XCTAssertEqual(result.status, .unavailable)
+            XCTAssertTrue(result.plan.isEmpty, "Unknown active references cannot authorize stale downloads")
+            XCTAssertEqual(result.bytesByPath, [:])
+            XCTAssertEqual(result.diagnostics.count, 1)
+            XCTAssertEqual(result.diagnostics.first?.source, .cleanup)
+            XCTAssertEqual(result.diagnostics.first?.stage, .inspectEntry)
+            XCTAssertEqual(result.diagnostics.first?.path, caskPath)
+            XCTAssertEqual(result.diagnostics.first?.reason, code == EACCES ? .permissionDenied : .unreadable)
+            XCTAssertEqual(result.diagnostics.first?.errorCode, Int(code))
+        }
+    }
+
     // MARK: - 契约 4：downloads 缺失时返回空 plan
 
     func test_dryRun_缺downloads目录_空plan() throws {

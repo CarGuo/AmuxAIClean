@@ -557,7 +557,7 @@ struct SmartCareDashboardView: View {
             } else if hasRemainingReviewableItems {
                 HStack(spacing: 10) {
                     Button {
-                        coordinator.resumeReviewAfterUnsubmittedClean()
+                        coordinator.reviewRemainingItemsAfterCleaning()
                     } label: {
                         Label {
                             Text("smart_care.action.review_cleanup", bundle: .module)

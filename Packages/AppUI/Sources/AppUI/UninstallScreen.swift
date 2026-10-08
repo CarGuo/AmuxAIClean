@@ -1518,7 +1518,7 @@ public struct UninstallScreen: View {
         }
         // 确认与结果共用一个 ActiveSheet。真删只在确认 sheet 的 onDismiss
         // 之后从 handoff 取出，避免两张 sibling sheet 争抢呈现。
-        .sheet(item: $activeSheet, onDismiss: completeUninstallSheetDismissal) { sheet in
+        .localizedSheet(item: $activeSheet, onDismiss: completeUninstallSheetDismissal) { sheet in
             switch sheet {
             case .confirm(let request):
                 ToolTrashConfirmationSheet(

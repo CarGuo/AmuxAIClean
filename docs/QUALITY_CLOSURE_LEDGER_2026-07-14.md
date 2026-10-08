@@ -637,3 +637,38 @@ macOS 13.5 实机/VM 与最终 DMG C5 仍未验证。
   未结算测试事务与 UndoHistory 中 4 组旧测试记录尚未修改；现有 schema 没有可信 test provenance，
   禁止按路径名自动猜删。必须在用户明确确认 exact IDs 后，以 durable quarantine + 锁内 CAS 执行一次
   性隔离，且不移动或删除废纸篓文件。完成前不得启动 production recovery 做 C4，因此当前证据止于 C3。
+
+### 9.15 v2026.10.07 两个当日提交复审、修复与部分真实运行验收（C3，C4 未全闭合）
+
+- 审阅 `e27bf74`、`4760396` 后修复四项 P2：Smart Care 完成后继续审阅的错误状态转换；
+  普通分析延迟删除回执跨扫描会话；重复文件旧投影覆盖新扫描/并发回执互相恢复旧路径；
+  Brew Cask 别名读取失败被静默当成没有活跃引用。新状态 owner 保持会话/revision 校验，
+  过滤与证据计算留在后台，回归覆盖真实失效条件。
+- 用户授权持续真实 App 测试后，又复现普通分析把隐私跳过根呈现为空目录，以及中文页面
+  的确认 sheet 使用英文。前者复用 Tree 的 typed access projection；后者由公共
+  `localizedSheet` 显式传递页面 locale，全部 presenter 使用同一入口。隐私规则未改，
+  不因临时 fixture 受阻放开 `/private/var/folders`，也不改用别名绕过。
+- 最终九包全测全部通过：AppUI 1,476 XCTest + 11 Swift Testing，ScanKit 532、SafetyKit 174、
+  HeuristicKit 12、LogKit 46、BrewKit 58、FileSearchKit 21、AIKit 55、TestHarness 8；合计
+  2,393。最终原生 Debug build、catalog 校验与 `git diff --check` 通过。ScanKit 使用 native
+  backend；默认 swiftbuild 的重复链接故障在未修改基线上同样复现，未改项目/依赖。
+- 真实操作已覆盖 Smart Care 扫描/停止/继续/预览取消，项目目录的普通分析下钻/返回/搜索，
+  专业 Tree/清单切换，卸载/Brew/Apple workflow 的发现，以及最终构建的工作流中文/英文
+  确认取消与语言还原。隐私跳过根已观察到修复后的明确终态。上述为对应只读交互证据，
+  **不代表删除合同的 C4 已完成**。
+- 当前启动前后的 pending ledger、completion journal 均为空，字节哈希相同；没有真删、
+  新 receipt 或 Undo 操作。10 月 7 日 23:59 九个临时 fixture 的哈希/大小/mtime/inode 不变；
+  10 月 8 日补验后核对发现 `Duplicates/old.bin` 缺失，其余八个未变，目录修改时间为补验前
+  03:35，删除来源未证实；该 fixture 后续须重建，不能再作为完整的原始验收输入。Undo 保留十条
+  既有记录；正常退出会重写 JSON，字节哈希并非未变。7 月第 9.14 节的队列状态是当时
+  证据，不能替代本轮实际读取，也不能据此猜测或清除旧记录。
+- 首轮后续原生 UI 工具返回 `cgWindowNotFound`，库存仍报 App 运行，未把它解释成 App
+  崩溃。10 月 8 日窗口恢复后，最终产物 Smart Care 的中英文确认/取消已复验通过，原选择
+  保留，语言恢复简体中文。真实 fixture 回收、receipt/结果、Undo、Smart Care 真清理后的
+  完成页、深色/尺寸矩阵、macOS 13.5 与 Release DMG C5 仍未完成。
+- 10 月 8 日用户授权最终 review 通过后提交、推送。六类修复的最终审查无未处理阻塞项；
+  源码及运行二进制哈希匹配上述九包测试/Debug 构建，不重复运行未发生源码变化的测试。
+  提交不改变 C3 与部分 C4 的证据边界，也不构成全平台/全入口无缺陷保证。
+
+完整范围、根因、操作步骤与原始证据索引见
+[2026-10-07 commit 修复与真实 App 验收](regression/COMMIT_REVIEW_C4_2026-10-07.md)。

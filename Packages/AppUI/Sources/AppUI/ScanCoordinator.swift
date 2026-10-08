@@ -1937,6 +1937,13 @@ public final class ScanCoordinator: ObservableObject {
         )
     }
 
+    /// v2026.10.07 C4: a directory can have no child rows because it was deliberately skipped
+    /// or could not be read. Normal analysis consumes the same typed node-access projection as
+    /// Tree; child-row emptiness is never evidence that the directory itself was measured empty.
+    func directoryAccessState(for path: String) -> TreeRow.AccessState {
+        projectedTreeState(for: path).accessState
+    }
+
     private nonisolated static func normalizedIncompleteIssue(
         _ issue: ScanIncompleteIssue
     ) -> ScanIncompleteIssue {

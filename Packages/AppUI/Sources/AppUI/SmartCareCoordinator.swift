@@ -419,6 +419,13 @@ public final class SmartCareCoordinator: ObservableObject {
         phase = .completed(result: result)
     }
 
+    /// v2026.10.07: reviewing the remaining items is a completed-clean transition, distinct
+    /// from a rejected, unsubmitted request. Keep the reconciled summary and user selection.
+    public func reviewRemainingItemsAfterCleaning() {
+        guard case .completed = phase, !summary.items.isEmpty else { return }
+        phase = .reviewing(summary: summary)
+    }
+
     /// 仍需在完成时替换 summary 的调用方必须走 async 路径：
     /// reconcile/metrics 在 detached worker 完成，MainActor 只提交 projection 和 phase。
     public func completeCleaning(_ result: SmartCareResult,

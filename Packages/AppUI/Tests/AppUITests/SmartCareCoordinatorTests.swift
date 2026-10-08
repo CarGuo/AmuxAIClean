@@ -320,6 +320,33 @@ final class SmartCareCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.phase.primaryAction, .scanAgain)
     }
 
+    func test_completedCleanupCanReviewRemainingItemsWithoutResettingSelection() async {
+        let moved = item("moved", verdict: .safe)
+        let remaining = item("remaining", verdict: .safe)
+        let confirm = item("confirm", verdict: .confirm)
+        let coordinator = SmartCareCoordinator(summary: summary([moved, remaining, confirm]))
+        XCTAssertTrue(coordinator.setSelected(false, itemID: remaining.id))
+        XCTAssertTrue(coordinator.setSelected(true, itemID: confirm.id))
+        await coordinator.completeCleaning(
+            SmartCareResult(movedCount: 1, skippedCount: 0, releasedBytes: 100),
+            remainingSummary: summary([remaining, confirm])
+        )
+
+        coordinator.reviewRemainingItemsAfterCleaning()
+
+        guard case .reviewing(let remainingSummary) = coordinator.phase else {
+            return XCTFail("The completed-page review action must leave the completion page")
+        }
+        XCTAssertEqual(remainingSummary.items, [remaining, confirm])
+        XCTAssertEqual(coordinator.selectedItems, [confirm])
+        XCTAssertEqual(coordinator.phase.primaryAction, .cleanSafeItems)
+
+        coordinator.beginScan()
+        coordinator.reviewRemainingItemsAfterCleaning()
+        XCTAssertEqual(coordinator.phase.primaryAction, .stopScan,
+                       "A completed-page action cannot interrupt a later scan")
+    }
+
     func test_cancel_有summary时保留partial_空summary时partial为nil() {
         let coordinator = SmartCareCoordinator(summary: summary([item("safe", verdict: .safe)]))
         coordinator.cancel()

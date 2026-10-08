@@ -248,7 +248,6 @@ struct GSYCleanMacApp: App {
                      settingsNavigation: settingsNavigation)
             .frame(minWidth: MainWindowMetrics.minWidth,
                    minHeight: MainWindowMetrics.minHeight)
-            .environment(\.locale, settings.effectiveLocale)
             .background {
                 MainWindowIdentityMarker {
                     reconcileActivationPolicy()
@@ -384,7 +383,7 @@ struct GSYCleanMacApp: App {
                 // 主窗口被打开 / 拉回前台 → 立刻同步策略（accessory→regular）。
                 reconcileActivationPolicy()
             }
-            .sheet(isPresented: $showTCCGuide) {
+            .localizedSheet(isPresented: $showTCCGuide) {
                 TCCGuideView { openedSettings in
                     if openedSettings {
                         UserDefaults.standard.set(true, forKey: tccDismissedKey)
@@ -392,12 +391,14 @@ struct GSYCleanMacApp: App {
                     showTCCGuide = false
                 }
             }
-            .sheet(item: Binding(
+            .localizedSheet(item: Binding(
                 get: { updateChecker.availableUpdate.map { IdentifiedRelease(release: $0) } },
                 set: { _ in updateChecker.dismissUntilNextLaunch() }
             )) { wrapped in
                 UpdatePromptView(checker: updateChecker, release: wrapped.release)
             }
+            // Keep the scene-owned presenters inside the same live locale hierarchy as MainView.
+            .environment(\.locale, settings.effectiveLocale)
         }
         .defaultSize(width: MainWindowMetrics.defaultWidth,
                      height: MainWindowMetrics.defaultHeight)

@@ -62,8 +62,11 @@ final class DeletionPreflightPresentationTests: XCTestCase {
             XCTAssertTrue(source.contains("OperationResultSheet"),
                           "真实提交结果仍必须保留共享 result sheet：\(name)")
         }
-        XCTAssertFalse(try XCTUnwrap(sources["MainView.swift"])
-            .contains(".sheet(item: $deletePreflightNotice)"))
+        // The localized presentation entry must enforce the same non-modal preflight contract.
+        for presenter in [".sheet(", ".localizedSheet("] {
+            XCTAssertFalse(try XCTUnwrap(sources["MainView.swift"])
+                .contains(presenter + "item: $deletePreflightNotice)"))
+        }
         XCTAssertFalse(try XCTUnwrap(sources["MainView.swift"])
             .contains(".message(AppLocalization.string(\"delete.preflight."),
             "Main 的预提交状态变化也不得回退到 modal message")

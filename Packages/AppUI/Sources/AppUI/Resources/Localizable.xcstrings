@@ -21568,6 +21568,108 @@
         }
       }
     },
+    "workspace.storage.access.incomplete.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This directory could not be fully measured. Its contents cannot be treated as empty. Return to the parent folder to browse other items, or analyze again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此目录未能完整测量，不能将其中内容视为空。可以返回上级查看其他项目，或重新分析。"
+          }
+        }
+      }
+    },
+    "workspace.storage.access.incomplete.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Directory analysis is incomplete"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目录分析不完整"
+          }
+        }
+      }
+    },
+    "workspace.storage.access.permission.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The scanner could not read this directory. Check its file access permissions, then analyze again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描器无法读取此目录。请检查文件访问权限后重新分析。"
+          }
+        }
+      }
+    },
+    "workspace.storage.access.permission.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Directory is not readable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取目录"
+          }
+        }
+      }
+    },
+    "workspace.storage.access.privacy.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This directory is within the app's privacy protection scope and was deliberately skipped. Its contents will not be scanned or cleaned."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此目录属于应用隐私保护范围，已主动跳过。不会扫描或清理其中内容。"
+          }
+        }
+      }
+    },
+    "workspace.storage.access.privacy.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Directory skipped for privacy"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已按隐私策略跳过目录"
+          }
+        }
+      }
+    },
     "workspace.storage.back": {
       "extractionState": "manual",
       "localizations": {

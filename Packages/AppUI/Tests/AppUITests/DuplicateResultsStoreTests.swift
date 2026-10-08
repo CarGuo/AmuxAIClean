@@ -1,0 +1,87 @@
+import Foundation
+import ScanKit
+import XCTest
+@testable import AppUI
+
+@MainActor
+final class DuplicateResultsStoreTests: XCTestCase {
+    /// Pause each receipt's first projection after it has frozen its source. Retries run freely.
+    private actor PruneGate {
+        private var started = 0
+        private var seen: Set<Set<String>> = []
+        private var pending: [Set<String>: CheckedContinuation<Void, Never>] = [:]
+        private var waiter: (Int, CheckedContinuation<Void, Never>)?
+
+        func prune(_ groups: [DuplicateGroup], paths: Set<String>) async -> [DuplicateGroup] {
+            if seen.insert(paths).inserted {
+                await withCheckedContinuation { continuation in
+                    pending[paths] = continuation
+                    started += 1
+                    if let (count, continuation) = waiter, started >= count {
+                        waiter = nil
+                        continuation.resume()
+                    }
+                }
+            }
+            return DuplicateHandlingPlan.pruning(groups, movedPaths: paths)
+        }
+
+        func waitForStarted(_ count: Int) async {
+            guard started < count else { return }
+            await withCheckedContinuation { waiter = (count, $0) }
+        }
+
+        func release(_ paths: Set<String>) {
+            pending.removeValue(forKey: paths)?.resume()
+        }
+    }
+
+    private func group(_ key: String, paths: [String]) -> DuplicateGroup {
+        DuplicateGroup(
+            hashKey: key, logicalBytes: 100,
+            files: paths.map { DuplicateFile(path: $0, allocatedBytes: 100) },
+            reliability: .full
+        )
+    }
+
+    func testOldDeletionProjectionCannotOverwriteReplacementScanResults() async {
+        let gate = PruneGate()
+        let store = DuplicateResultsStore { await gate.prune($0, paths: $1) }
+        let oldSession = UUID()
+        store.beginScan(sessionID: oldSession)
+        store.replaceGroups([group("old", paths: ["/old/a", "/old/b", "/old/c"])], sessionID: oldSession)
+        let pruning = Task { await store.pruneMovedPaths(["/old/b"], expectedSessionID: oldSession) }
+        await gate.waitForStarted(1)
+
+        let newSession = UUID()
+        let replacement = group("new", paths: ["/new/a", "/new/b"])
+        store.beginScan(sessionID: newSession)
+        store.replaceGroups([replacement], sessionID: newSession)
+        await gate.release(["/old/b"])
+
+        let committed = await pruning.value
+        XCTAssertFalse(committed)
+        XCTAssertEqual(store.groups, [replacement])
+    }
+
+    func testConcurrentDeletionReceiptsCannotResurrectEachOthersPaths() async {
+        let gate = PruneGate()
+        let store = DuplicateResultsStore { await gate.prune($0, paths: $1) }
+        let session = UUID()
+        store.beginScan(sessionID: session)
+        store.replaceGroups([group("same", paths: ["/a", "/b", "/c", "/d"])], sessionID: session)
+        let first = Task { await store.pruneMovedPaths(["/b"], expectedSessionID: session) }
+        let second = Task { await store.pruneMovedPaths(["/c"], expectedSessionID: session) }
+        await gate.waitForStarted(2)
+
+        await gate.release(["/b"])
+        let firstCommitted = await first.value
+        XCTAssertTrue(firstCommitted)
+        await gate.release(["/c"])
+        let secondCommitted = await second.value
+        XCTAssertTrue(secondCommitted)
+
+        XCTAssertEqual(store.groups.first?.paths, ["/a", "/d"])
+        XCTAssertEqual(store.groups.first?.totalBytes, 200)
+    }
+}

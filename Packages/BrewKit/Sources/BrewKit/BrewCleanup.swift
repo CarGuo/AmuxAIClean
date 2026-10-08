@@ -296,13 +296,24 @@ public struct BrewCleanup: Sendable {
             }
             if !isSymbolicLink {
                 if checkCaskDirectory,
-                   entry.lastPathComponent == "Cask",
-                   let caskEntries = try? fileSystem.contentsOfDirectory(entry) {
-                    for caskName in caskEntries where !caskName.hasPrefix(".") {
-                        inspectSymlinkEntry(
-                            entry.appendingPathComponent(caskName),
-                            checkCaskDirectory: false
-                        )
+                   entry.lastPathComponent == "Cask" {
+                    // v2026.10.07: aliases under Cask are part of the active-reference proof.
+                    // An unreadable directory invalidates that proof just like a root alias;
+                    // silently treating it as empty could admit a still-active download.
+                    do {
+                        let caskEntries = try fileSystem.contentsOfDirectory(entry)
+                        for caskName in caskEntries where !caskName.hasPrefix(".") {
+                            inspectSymlinkEntry(
+                                entry.appendingPathComponent(caskName),
+                                checkCaskDirectory: false
+                            )
+                        }
+                    } catch {
+                        if let diagnostic = brewLocalFileFailureDiagnostic(
+                            error, source: .cleanup, stage: .inspectEntry, path: entry.path
+                        ) {
+                            diagnostics.append(diagnostic)
+                        }
                     }
                 }
                 return

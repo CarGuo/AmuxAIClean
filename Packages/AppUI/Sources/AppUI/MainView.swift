@@ -914,7 +914,7 @@ public struct MainView: View {
                 )
             )
         }
-        .sheet(
+        .localizedSheet(
             item: $deleteSheetRequest,
             onDismiss: finishProfessionalDeleteSheetDismissal
         ) { request in
@@ -948,7 +948,7 @@ public struct MainView: View {
                 }
             )
         }
-        .sheet(
+        .localizedSheet(
             item: $smartCareSheetRoute,
             onDismiss: runPendingDeleteSubmissionAfterSheetDismissal
         ) { route in
@@ -983,7 +983,7 @@ public struct MainView: View {
             }
         }
         // M5 / 2026-06：AI 询问 sheet —— item-based 触发，aiAskingRow 非 nil 即弹。
-        .sheet(item: $aiAskingRow) { row in
+        .localizedSheet(item: $aiAskingRow) { row in
             AIAdviceSheet(row: row,
                           aiSettings: aiSettings,
                           onClose: { aiAskingRow = nil })
@@ -1005,7 +1005,7 @@ public struct MainView: View {
         // v2026.06.18 **稍后处理 sheet**。点 toolbar 的 `tray.full.fill` 按钮触发；
         // 在 sheet 内做"一键清理 / 一键 AI / 单独清理 / 单独 AI / 剔除"集中操作。
         // 复用现有 trigger / aiAskingRow 通道，不引入第二条删除/AI 链路。
-        .sheet(
+        .localizedSheet(
             isPresented: $isStashScreenPresented,
             onDismiss: presentPendingStashDeletionAfterDismissal
         ) {
@@ -1062,7 +1062,7 @@ public struct MainView: View {
         }
         // 删除结果只展示已经跨过 NSWorkspace.recycle 提交边界的真实尝试。
         // 最终重验发现的新风险会回到严格确认或 typed explanation，不会先进结果页。
-        .sheet(item: $deleteResultCompletion) { completion in
+        .localizedSheet(item: $deleteResultCompletion) { completion in
             OperationResultSheet(
                 completion: completion,
                 onDismiss: { deleteResultCompletion = nil }
