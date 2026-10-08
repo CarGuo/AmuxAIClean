@@ -406,6 +406,40 @@
 
 ## 3. 删除 / 安全判定 —— 用户数据丢一次就完蛋
 
+### v2026.10.08 `7b96b02` 复审：路径、恢复和容量必须保留原始证据
+
+- **正向安全规则不能无条件转小写**。大小写敏感卷上，`Library/Caches` 和
+  `library/caches` 可以是两个目录。缓存前缀和 vendor literal/glob 的 `.safe` 匹配先做
+  精确匹配，只有目标路径所在文件系统明确返回大小写不敏感时才接受折叠匹配；查询失败
+  不得升级 `.safe`。保护性 forbid 维持保守匹配，不能借本次修复放宽安全列表。
+- **Undo 不是清缓存**。完整 prune 已移除行、索引、聚合与 Top-N；解除 tombstone 不会把
+  数据变回来。恢复通知只发布实际 destination，重名恢复不能复活被占用的 original。
+  在后台重测受影响父目录，按发起 scan session/revision 原子提交全部来源和 tombstone；
+  保留原始扫描根，才能恢复已经整根 prune 的多根结果。断开的软链要用 `lstat` 验证目录项，
+  不能用跟随 target 的 `fileExists` 判断恢复是否发生。通知路径的父级别名须通过同一
+  `ScanPathNamespace` 映射回扫描命名空间，不能跟随最后一级软链或写死临时目录别名。
+- **子树 refresh 不是新的容量域**。独立 inode 去重只能保证局部正确，不能直接把局部值
+  加回原始全局统计。原始扫描保留目录直系合计及多链接 `(device,inode)` 的计费路径；
+  refresh/prune 共用归属对账，原计费路径消失时把 allocated/logical 贡献转移到存活别名，
+  文件数仍按普通文件目录项计数。普通单链接文件名不常驻账本。若两轮扫描之间新增硬链接，
+  稀疏账本无法知道旧单链接路径的归属，必须使该容量基线失效并重放原始扫描计划，不能猜局部差值。
+  多链接别名集合必须原位更新，不能每次追加都复制整个集合导致二次方增长。
+  这不提供文件系统快照语义；扫描中持续变化的目录仍按 §2 的 live namespace 限制验收。
+- **非目录不等于普通文件**。`FSNode.isRegularFile` 必须从 bulk/descriptor metadata 透传至
+  coordinator、Tree、prune 和刷新；FIFO、socket、symlink 可显示，但不能凭“非目录”变成
+  一个普通文件或进入大文件候选。
+- **历史别名不是相互覆盖的记录**。初始化与 JSON 迁移统一合并 canonical alias 的删除、
+  恢复、保留计数及最新时间；计数溢出饱和而不崩溃，不能因字典迭代顺序丢失恢复负反馈。
+- **active version 用目录身份排除**。current 的 readlink 拼写可能不同于目录枚举名称，
+  多跳软链也不能按名字保护。比较目录 `(device,inode)`、父目录身份，并在返回候选前重验
+  current；symlink 子项和跨卷子项不作为旧版本候选。
+
+回归入口：`FilesystemMutationReconciliationTests`、`FileAllocationSnapshotTests`、
+`PermissivePathSemanticsTests`、`HistoryAliasMigrationTests`、`VersionsScannerTests` 与
+`DeletionPublicationBoundaryTests`。测试必须先完整 prune 再恢复，覆盖所有 Tree 排序、
+Top-N、多根结果、重名恢复、硬链接刷新顺序和计费路径消失；仅解除 tombstone 的测试不能证明 Undo 正确。
+自动化与离屏原生表格仍只属于 C2/C3，真实回收/Undo 要另外完成持续 C4。
+
 ### v2026.10.08 删除成功后 Tree 仍显示旧行：发布边界事故
 
 - 现场 `dryRun=false` 且 `moved=1`，权威 prune 已提交；最后一次 Tree projection 却因
@@ -1630,3 +1664,109 @@ tracked 与 untracked 源文件的内容基线，提交后逐项核对；固定�
 指向的源码构建，并核对最终 provenance。普通模式生产入口、实现和本地化资源必须都
 包含在产物中。具体流程见 [RELEASE.md](docs/RELEASE.md)；源码、离屏渲染与真实运行
 交互的证据等级仍分别记录，不能把“clean”或“编译成功”当成用户已完成界面被保留的证明。
+
+## 18. v2026.10.08：搜索、成功反馈与原生语言必须跟随各自状态边界
+
+真实 App 回归中，应用占用/卸载只筛选左侧列表，右侧仍保留被隐藏应用；卸载的候选与
+预检也仍属于旧应用。搜索不是纯视觉过滤：可见 identity 集合必须约束详情和操作 owner。
+`AppListSearchProjection` 统一这个合同，卸载的点击、搜索、刷新和删除终态共用同步选择
+切换，立即清候选、取消任务并旋转 revision。迟到结果继续通过原有 gate 拒绝，不能只在
+详情 View 上遮住旧数据。应用占用 progressive commit 和删除后的 fallback 同样遵守当前搜索。
+候选头部的总量必须与候选数量同源，不能拿勾选量显示“共 N 项”的容量。
+
+端口与 Dart 的人工进程真实结束后仍有纯成功模态。两者现在共用确认全部退出的非模态
+反馈；SIGTERM 已提交但未退出、未提交和失败继续显示明细。反馈计时器绑定新的 receipt ID，
+文本保存 Catalog 语义，在显示时本地化，不以发送信号成功冒充进程退出。
+
+切语言后延迟一个 runloop 刷新菜单无法覆盖后续 SwiftUI scene 重建。当前保留 AppKit
+`applicationDidUpdate` 的幂等标题协调、声明式新建窗口命令和 Settings 标题 attachment，
+但真实展开原生菜单仍观察到子项回到启动语言，**此问题尚未关闭**，不能靠菜单图单测宣布通过。
+本轮诊断还证实：在菜单变更通知里同步读取 accessibility 属性会触发 AppKit 菜单重新
+populate，重入其 key-equivalent 内部锁并挂起主线程。已撤销整组通知/target 接管/AX 实验，
+相关人工 validator 模型不代表实际 sideband 更新；不把这些实验或其测试作为交付修复。
+原有标题 attachment 与标准 action/快捷键不变的测试保留。后续修复必须通过同进程切页、
+展开、键盘操作的真实 C4，不能在更新中递归请求菜单构建。
+
+SwiftPM 原样复制 xcstrings，不支持把 DEBUG 的原始字符串读取当成复数格式运行验证。
+本轮复数集成测试使用 Apple `xcstringstool` 编译真实 Catalog，再经同一格式化边界断言中英
+文；不为包测试写一套产品复数解析器，也不删减精确文案断言。完整测试还暴露旧 Undo 用例
+把 append 发布 `.ready` 误当第二次 bootstrap 完成；改为等待第二次 bootstrap hook，仍严格
+断言重读次数、两个 journal identity 与最终 history，不改变存储需求。
+
+## 19. v2026.10.08：目录刷新终态必须在通知前结束请求 owner
+
+真实 App 在 Assets 的“刷新此目录”后一直转圈，但 worker 与 indexed transaction 已在约
+0.1 秒内完成。`commitIndexedSubtreeMeasurement` 发布最终 children/structural 通知时，
+`indexedSubtreeRequests` 仍持有刷新 token；同步订阅的 Tree source 因此冻结 `fetching=true`。
+调用者随后移除 token，却没有新的最终通知。只检查 `await rescanSubtree` 后的模型会通过，
+实际画面仍保留忙碌状态，不能用超时隐藏 spinner 或额外点击重绘掩盖。
+
+请求 owner、行、容量、完整性证据与 source identity 必须在同一个无挂起提交内结束，再发布
+最终 Tree 通知。成功调用者只记录已提交结果；拒绝/取消仍按 token 结束自身，不能清除新的
+重叠请求。测量、准备与退休继续在后台，不为 UI 增加遍历或等待。
+
+防回归测试同步订阅生产 children-cache 通知，冻结真实 Tree source，再运行生产投影 worker，
+同时断言新文件可见、终态 owner 已结束、source 仍有效且目录没有 loading 状态。原代码两项
+断言失败；现有重叠请求 CAS 与 incomplete 证据测试保持严格。参考 Apple
+[`Published`](https://developer.apple.com/documentation/combine/published)：通知发生在属性更新
+边界，订阅者读取的关联状态必须已经一致；不能依赖下一个 runloop 恰好修正。
+
+## 20. v2026.10.08：空结果不是扫描终态
+
+真实重复扫描已枚举完 16 文件、没有达到最小尺寸的候选，UI 却仍显示“还没有结果，点开始
+扫描”。`isScanning=false && groups.isEmpty` 同时可能表示尚未开始、完整空结果、停止、异常
+结束或读取不完整；不能根据集合是否为空猜测业务终态。
+
+`DuplicateResultsStore` 与 groups 共用 session owner，保存类型化终态。驱动只在实际 producer
+结算后提交完成/停止/未取得完整结果；旧 session 和重复终态不能覆盖新状态。完整空结果与
+typed incomplete 分开呈现，文案进入中英 Catalog。修改扫描根或最小尺寸必须旋转同一个
+owner、取消旧任务、清选择/结果/证据并回到待扫描，避免用新输入解释旧结果。原有生产者
+settlement barrier、最终内容/身份复验与删除授权不变。
+
+测试验证空完成不是初始态、incomplete 不声称完整空、取消/异常明确、改输入后旧结果与终态
+均被拒绝；真实 App 再验证扫描、连续重扫、输入变更与只读跳过根。不能为凑正向重复组降低
+产品最小尺寸或修改判定；正向 full hash、部分失败和真实回收仍须人工 fixture 独立验收。
+
+## 21. v2026.10.08：隐私规则必须匹配扫描器实际采用的路径表示（未关闭）
+
+真实重复扫描通过系统选取器选中 `/private/var/folders/...` 内人工测试目录；页面和扫描根规划
+调用 Foundation `standardizedFileURL` 后变为 `/var/folders/...`。`TCCSkipList` 仍只按原始
+`/private/var/folders` 字面前缀比较，结果实际枚举了两个人工文件。独立调用当前实现也证实
+`/var/db/locationd` 未命中相应规则；未实际扫描该敏感目录。
+
+这是共同匹配边界的问题，不能通过增加某个用户的随机临时路径、放宽 HOME 删除边界、改名
+fixture 或使用路径别名来通过验收。保持当前规则范围的候选方案是：在共同 TCC 边界保留原始
+系统前缀并一次计算其 Foundation 表示，输入无论来自选择器还是 scanner 都命中同一条规则；
+不能对每个目录项反复查询文件系统，也不能因此推断任意软链均已安全。
+
+候选补丁尚未应用：规则库修改按 AGENTS.md 等待明确授权。当前实现红探针与候选绿探针仅是
+独立原型证据，不是包测试或真实 App 修复通过；后续必须在原场景复验“跳过且不枚举”。
+参考 Apple [`NSURL.standardizingPath`](https://developer.apple.com/documentation/foundation/nsurl/standardizingpath)
+对移除 `/private` 的说明；该 Foundation 行为也曾影响本仓库的 simctl 路径校验，见第 16 节。
+
+## 22. v2026.10.08：Undo 必须重建当前模式的数据源，不能按缓存是否为空猜模式
+
+外部复审指出 Undo 的三处遗漏，新增断言均已在修复前失败：多根恢复只修复 Tree/总量，未恢复
+清单与 bucket；版本/常用缓存使用 sentinel 且没有可对账根，恢复直接返回；普通结果尚未生成
+Tree 投影时，增量刷新继续沿用空字典。完整空扫描通常已包含八个排序键的空数组，第三项并非
+“所有完整空结果都失败”，实际合同是投影尚未生成时仍应按当前模式建立它。
+
+长期合同：
+
+1. 普通及多根扫描的清单是枚举根的一级子项。恢复整个根时，同一后台 indexed transaction
+   必须重建其 rows/buckets，并保留其他根；Tree、容量、数量和 tombstone 仍在同一 revision
+   提交，不能只检查 Tree 已出现就认为清单正确。
+2. 版本/缓存列表保存的是规则候选本身，不是候选内部文件。使用类型化 discovery state 保存
+   原计划与候选历史，不能把候选路径混入通用枚举根，否则显式刷新会把候选替换成内部文件。
+   恢复命中候选的父目录域后，通过原 primary admission 重放生产者，重新判定版本保留策略、
+   缓存选项、安全证据和白名单；重名恢复只负责使发现结果失效，不能为新名字授予规则资格。
+3. 候选历史在 prune 和连续恢复重扫间保留，用来识别后续恢复；结果 owner 取消或跨模式失效
+   时必须撤销重放计划。旧生产者须真实退出才可启动下一轮，迟到通知不能重启已退出的页面。
+   新扫描在 admission 时一起清理旧投影与 tombstone，不能先清标记而把未重测的旧行暴露出来。
+4. Tree 投影依照结果模式决定：真正的 per-root 模式与大文件 Top-N 不构造全局排序；普通和
+   discovery snapshot 按需构造。sentinel 集合还含版本/缓存，不能把所有 sentinel 都当 per-root。
+   版本候选经过显式刷新仍保持语义叶子，不能因物理目录有内容就改变产品展示。
+
+回归断言同时覆盖清单、bucket、八种 Tree 排序、其他根保留、真实 producer 的规则/选项重放、
+重名恢复、连续通知的结算、取消后通知和专用候选显式刷新。测试只使用系统临时 fixture，未
+调用真实回收；包测试及挂载 NSHostingView 仍不能代替真实 App 的回收/Undo C4。

@@ -285,6 +285,65 @@ final class ScanCoordinatorKnownVersionedRootsTests: XCTestCase {
 
     // MARK: - helpers
 
+    func testUndoRediscoveryRestoresVersionCandidatesAndRechecksRetention() async throws {
+        let tmp = try makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: tmp)) }
+        let support = tmp.appendingPathComponent("Library/Developer/Xcode/iOS DeviceSupport")
+        for version in ["15.0", "16.0", "17.0", "18.0"] {
+            let directory = support.appendingPathComponent(version)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data(repeating: 0x61, count: 8192).write(to: directory.appendingPathComponent("payload.bin"))
+        }
+        let coordinator = ScanCoordinator(home: tmp.path)
+        coordinator.scanKnownVersionedRoots(home: tmp)
+        try await waitScanFinished(coordinator)
+        let candidates = coordinator.snapshot.rows.map(\.id)
+        XCTAssertEqual(candidates.count, 2)
+        XCTAssertTrue(coordinator.snapshot.rows.allSatisfy { !$0.hasChildren })
+        let session = coordinator.currentScanSessionID
+        let firstCandidate = try XCTUnwrap(candidates.first)
+        let remainingCandidates = Array(candidates.dropFirst())
+        await coordinator.acknowledgeSuccessfulDeletionForPresentation(paths: [firstCandidate])
+        await coordinator.pruneDeleted(paths: [firstCandidate])
+        XCTAssertEqual(coordinator.snapshot.rows.map(\.id), remainingCandidates)
+        XCTAssertTrue(coordinator.snapshot.rows.allSatisfy { !$0.hasChildren })
+        let partialTree = coordinator.directChildren(of: ScanCoordinator.versionedRootSentinelPath, sortedBy: .sizeDesc)
+        XCTAssertEqual(partialTree.map(\.path), remainingCandidates)
+        XCTAssertTrue(partialTree.allSatisfy { !$0.hasChildren }, "Partial pruneDeleted must retain version-candidate leaf presentation")
+
+        await coordinator.acknowledgeSuccessfulDeletionForPresentation(paths: remainingCandidates)
+        await coordinator.pruneDeleted(paths: remainingCandidates)
+        XCTAssertTrue(coordinator.snapshot.rows.isEmpty)
+
+        // The files occupy their restored destinations. A newly installed version means Undo
+        // must re-run retention discovery, not turn the restored directory's files into rows.
+        let newest = support.appendingPathComponent("19.0")
+        try FileManager.default.createDirectory(at: newest, withIntermediateDirectories: true)
+        try Data([0x62]).write(to: newest.appendingPathComponent("payload.bin"))
+        await coordinator.reconcileRestoredPaths(candidates)
+        try await waitScanFinished(coordinator)
+        XCTAssertNotEqual(coordinator.currentScanSessionID, session)
+        XCTAssertEqual(Set(coordinator.snapshot.rows.map { $0.url.lastPathComponent }), ["15.0", "16.0", "17.0"])
+        XCTAssertEqual(coordinator.snapshot.scannedFileCount, 3)
+        XCTAssertEqual(coordinator.snapshot.totalBytes, coordinator.snapshot.rows.reduce(0) { $0 + $1.bytes })
+        for row in coordinator.snapshot.rows {
+            XCTAssertFalse(row.hasChildren)
+            XCTAssertFalse(coordinator._isDeletedTombstonedForTesting(row.id))
+            XCTAssertTrue(row.displayTitle(locale: Locale(identifier: "en")).hasPrefix("iOS Device Support"))
+            XCTAssertTrue(row.displayVendorNote(locale: Locale(identifier: "en"))?.contains("19.0") == true)
+        }
+        let tree = coordinator.directChildren(of: ScanCoordinator.versionedRootSentinelPath, sortedBy: .sizeDesc)
+        XCTAssertEqual(Set(tree.map(\.path)), Set(coordinator.snapshot.rows.map(\.id)))
+        XCTAssertTrue(tree.allSatisfy { !$0.hasChildren }, "version candidates retain their semantic leaf presentation")
+        let candidateIDs = Set(coordinator.snapshot.rows.map(\.id))
+        await coordinator.rescanSubtree(at: try XCTUnwrap(candidates.first))
+        XCTAssertEqual(Set(coordinator.snapshot.rows.map(\.id)), candidateIDs)
+        XCTAssertTrue(coordinator.snapshot.rows.allSatisfy { !$0.hasChildren })
+        let refreshedTree = coordinator.directChildren(of: ScanCoordinator.versionedRootSentinelPath, sortedBy: .sizeDesc)
+        XCTAssertEqual(Set(refreshedTree.map(\.path)), candidateIDs)
+        XCTAssertTrue(refreshedTree.allSatisfy { !$0.hasChildren }, "Explicit refresh must retain version-candidate semantics")
+    }
+
     private func makeTempHome() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("ScanCoordinatorKnownVersioned-\(UUID().uuidString)",
@@ -293,15 +352,16 @@ final class ScanCoordinatorKnownVersionedRootsTests: XCTestCase {
         return url
     }
 
-    /// 轮询等扫描事件循环结束（isScanning false 且 snapshot.isFinished）。
+    /// 轮询等扫描事件循环结束，包含旧生产者结算与新扫描发布 finished snapshot。
     /// 复用 [ScanCoordinatorStoreTests.waitScanFinished] 的 30ms 间隔 + 6s 超时策略。
     private func waitScanFinished(_ coord: ScanCoordinator,
                                   timeout: TimeInterval = 6) async throws {
         let deadline = Date().addingTimeInterval(timeout)
-        while (coord.isScanning || !coord.snapshot.isFinished) && Date() < deadline {
+        while (coord.scanPhase != .idle || !coord.snapshot.isFinished) && Date() < deadline {
             try await Task.sleep(for: .milliseconds(30))
         }
         XCTAssertFalse(coord.isScanning, "扫描应在测试超时前结束")
+        XCTAssertEqual(coord.scanPhase, .idle, "扫描应在测试超时前结算")
         XCTAssertTrue(coord.snapshot.isFinished, "扫描应发布 finished snapshot")
     }
 }

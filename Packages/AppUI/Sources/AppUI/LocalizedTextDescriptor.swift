@@ -58,6 +58,11 @@ public struct LocalizedTextDescriptor: Sendable, Hashable {
     }
 
     public func localized(locale: Locale) -> String {
+        localized(locale: locale, bundle: .module)
+    }
+
+    /// v2026.10.08: compiled-catalog integration tests use the same projection as the App.
+    func localized(locale: Locale, bundle: Bundle) -> String {
         var result = ""
         result.reserveCapacity(segments.reduce(0) { partial, segment in
             switch segment {
@@ -71,12 +76,13 @@ public struct LocalizedTextDescriptor: Sendable, Hashable {
                 result += value
             case .catalog(let key, let arguments):
                 if arguments.isEmpty {
-                    result += AppLocalization.string(key, locale: locale)
+                    result += AppLocalization.string(key, locale: locale, bundle: bundle)
                 } else {
                     result += AppLocalization.format(
                         key,
                         locale: locale,
-                        arguments: arguments.map(\.cVarArg)
+                        arguments: arguments.map(\.cVarArg),
+                        bundle: bundle
                     )
                 }
             }

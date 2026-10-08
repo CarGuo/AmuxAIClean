@@ -33,13 +33,7 @@ public actor HeuristicEngine {
                 initialScores: [String: PathScore] = [:]) {
         self.safety = safety
         self.home = home
-        var normalizedScores: [String: PathScore] = [:]
-        for (k, v) in initialScores {
-            let key = Self.scoreKey(for: k)
-            guard !key.isEmpty else { continue }
-            normalizedScores[key] = v
-        }
-        self.scores = normalizedScores
+        self.scores = Self.normalizedScores(initialScores)
     }
 
     // MARK: - 行为录入
@@ -60,13 +54,13 @@ public actor HeuristicEngine {
             var entry = scores[key] ?? PathScore()
             switch action {
             case .trashedPath:
-                entry.deletedCount += 1
+                entry.deletedCount = Self.addCounts(entry.deletedCount, 1)
             case .restoredPath:
-                entry.restoredCount += 1
+                entry.restoredCount = Self.addCounts(entry.restoredCount, 1)
             case .keptPath:
-                entry.keptCount += 1
+                entry.keptCount = Self.addCounts(entry.keptCount, 1)
             }
-            entry.lastUpdated = action.timestamp
+            entry.lastUpdated = max(entry.lastUpdated, action.timestamp)
             scores[key] = entry
         }
     }
@@ -143,13 +137,33 @@ public actor HeuristicEngine {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let snap = try decoder.decode(HeuristicSnapshot.self, from: data)
-        var normalizedScores: [String: PathScore] = [:]
-        for (k, v) in snap.scores {
-            let key = Self.scoreKey(for: k)
+        self.scores = Self.normalizedScores(snap.scores)
+    }
+
+    /// v2026.10.08: canonical aliases represent accumulated observations, not competing
+    /// records. Merge all counters and the latest timestamp so dictionary iteration order
+    /// cannot erase a restore signal during initialization or persisted-history migration.
+    private static func normalizedScores(_ source: [String: PathScore]) -> [String: PathScore] {
+        var result: [String: PathScore] = [:]
+        for (path, value) in source {
+            let key = scoreKey(for: path)
             guard !key.isEmpty else { continue }
-            normalizedScores[key] = v
+            let previous = result[key] ?? PathScore()
+            result[key] = PathScore(
+                deletedCount: addCounts(previous.deletedCount, value.deletedCount),
+                restoredCount: addCounts(previous.restoredCount, value.restoredCount),
+                keptCount: addCounts(previous.keptCount, value.keptCount),
+                lastUpdated: max(previous.lastUpdated, value.lastUpdated)
+            )
         }
-        self.scores = normalizedScores
+        return result
+    }
+
+    /// Frequencies are nonnegative and saturate at the representable limit, including
+    /// subsequent record() calls. Overflow must never crash migration or lose restore history.
+    private static func addCounts(_ lhs: Int, _ rhs: Int) -> Int {
+        let sum = max(0, lhs).addingReportingOverflow(max(0, rhs))
+        return sum.overflow ? Int.max : sum.partialValue
     }
 
     // MARK: - 安全兜底

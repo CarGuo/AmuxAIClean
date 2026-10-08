@@ -38,6 +38,7 @@ public struct DartRadarScreen: View {
     @State private var pendingKill: PendingKill?
     @State private var showKillConfirm = false
     @State private var resultPresentation: ProcessKillResultSummary?
+    @State private var successFeedback: ProcessTerminationSuccessFeedback?
     @Environment(\.locale) private var locale
 
     public init(scanner: DartRadarScanner = DartRadarScanner()) {
@@ -55,6 +56,7 @@ public struct DartRadarScreen: View {
             Divider()
             footer
         }
+        .operationSuccessFeedbackOverlay($successFeedback)
         .task { startReload() }
         .task(id: autoRefresh) {
             // 自动刷新只在开关开启时循环；离开页面或关闭开关后任务取消，旧结果由
@@ -562,7 +564,10 @@ public struct DartRadarScreen: View {
         guard let request else { return }
         isKilling = true
         let results = await scanner.kill(identities: request.identities)
-        resultPresentation = ProcessKillResultSummary.summarize(results)
+        let summary = ProcessKillResultSummary.summarize(results)
+        // v2026.10.08: share the confirmed-only success policy with the port tool.
+        successFeedback = ProcessTerminationSuccessFeedback(summary: summary)
+        resultPresentation = successFeedback == nil ? summary : nil
         selectedIDs.removeAll()
         isKilling = false
         startReload()

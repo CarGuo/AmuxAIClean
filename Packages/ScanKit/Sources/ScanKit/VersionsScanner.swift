@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import LogKit
 
 /// `versions/*` 旧版本识别器。
@@ -126,21 +127,15 @@ public actor VersionsScanner {
         }
 
         // 4) readlink（支持多级软链）→ 解析相对路径 → 必须落在 versions/ 内且目标目录真实存在
-        let versionsDirStandardized = versionsDir.standardizedFileURL
         let versionsDirResolved = versionsDir.resolvingSymlinksInPath().standardizedFileURL
         var cursorURL = currentLink
         var resolvedTarget: URL?
-        var protectedNames: Set<String> = []
         for _ in 0..<16 {
             guard let attrs = try? fm.attributesOfItem(atPath: cursorURL.path),
                   let itemType = attrs[.type] as? FileAttributeType else {
                 return []
             }
             if itemType == .typeSymbolicLink {
-                let parentPath = cursorURL.deletingLastPathComponent().standardizedFileURL.path
-                if parentPath == versionsDirStandardized.path || parentPath == versionsDirResolved.path {
-                    protectedNames.insert(cursorURL.lastPathComponent)
-                }
                 guard let dest = try? fm.destinationOfSymbolicLink(atPath: cursorURL.path) else {
                     return []
                 }
@@ -161,57 +156,71 @@ public actor VersionsScanner {
         guard let activeTargetURL = resolvedTarget else {
             return []
         }
-        var isActiveDir: ObjCBool = false
-        guard fm.fileExists(atPath: activeTargetURL.path, isDirectory: &isActiveDir),
-              isActiveDir.boolValue else {
+        guard let activeIdentity = directoryIdentity(activeTargetURL),
+              let versionsIdentity = directoryIdentity(versionsDirResolved) else {
             return []
         }
 
-        let activeVersionParent = activeTargetURL.deletingLastPathComponent().standardizedFileURL
         let activeVersionParentResolved = activeTargetURL
             .deletingLastPathComponent()
             .resolvingSymlinksInPath()
             .standardizedFileURL
-        guard activeVersionParent.path == versionsDirStandardized.path
-            || activeVersionParentResolved.path == versionsDirResolved.path else {
+        guard directoryIdentity(activeVersionParentResolved) == versionsIdentity else {
             // current 落点不在 versions/ 内（如 asdf 落到 plugin 内部）→ 保守不识别
             GSYLog.notice(.scan, "VersionsScanner current 软链落点不在 versions/ 内 root=\(rootPath) target=\(activeTargetURL.path)")
             return []
         }
-        let activeVersion = activeTargetURL.lastPathComponent
-        guard !activeVersion.isEmpty else { return [] }
-        protectedNames.insert(activeVersion)
+        var activeVersion: String?
 
         // 5) 枚举 versions/* 子目录，排除 active
         guard let versionEntries = try? fm.contentsOfDirectory(atPath: versionsDir.path) else {
             return []
         }
-        var hits: [Hit] = []
+        var oldVersions: [(name: String, url: URL)] = []
         for name in versionEntries {
-            if protectedNames.contains(name) { continue }
             if name.hasPrefix(".") { continue }
             let child = versionsDir.appendingPathComponent(name)
-            var childIsDir: ObjCBool = false
-            guard fm.fileExists(atPath: child.path, isDirectory: &childIsDir),
-                  childIsDir.boolValue
-            else { continue }
-            // 也要确认 child 本身不是软链（防 versions/ 下又埋一个软链指回 current）
-            if let attrs = try? fm.attributesOfItem(atPath: child.path),
-               let t = attrs[.type] as? FileAttributeType,
-               t == .typeSymbolicLink {
+            guard let identity = directoryIdentity(child),
+                  identity.device == versionsIdentity.device else { continue }
+            // v2026.10.08: readlink spelling is not filesystem identity. On insensitive
+            // APFS `VACTIVE` may be the enumerated `vActive` directory; Unicode aliases
+            // have the same issue. Only device/inode proves which directory is active.
+            if identity == activeIdentity {
+                activeVersion = name
                 continue
             }
-            hits.append(Hit(
-                url: child,
+            oldVersions.append((name, child))
+        }
+        guard let activeVersion,
+              directoryIdentity(currentLink.resolvingSymlinksInPath()) == activeIdentity,
+              directoryIdentity(activeTargetURL) == activeIdentity else { return [] }
+        let hits = oldVersions.map { version in
+            Hit(
+                url: version.url,
                 toolchainRoot: toolchainRoot,
                 activeVersion: activeVersion,
-                versionName: name
-            ))
+                versionName: version.name
+            )
         }
 
         if !hits.isEmpty {
             GSYLog.info(.scan, "VersionsScanner 识别到旧版本 root=\(rootPath) active=\(activeVersion) old=\(hits.count)")
         }
         return hits
+    }
+
+    private struct DirectoryIdentity: Equatable {
+        let device: dev_t
+        let inode: ino_t
+    }
+
+    /// lstat deliberately excludes a symbolic-link child even if its target is a directory.
+    private nonisolated static func directoryIdentity(_ url: URL) -> DirectoryIdentity? {
+        var metadata = stat()
+        guard url.withUnsafeFileSystemRepresentation({ path in
+            guard let path else { return false }
+            return lstat(path, &metadata) == 0
+        }), metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else { return nil }
+        return DirectoryIdentity(device: metadata.st_dev, inode: metadata.st_ino)
     }
 }

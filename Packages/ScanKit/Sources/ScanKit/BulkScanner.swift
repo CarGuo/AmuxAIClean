@@ -149,12 +149,12 @@ public actor BulkScanner {
     }
 
     /// v2026.07.17 multi-root allocation contract: the public single-root entry always owns a
-    /// fresh inode ledger, preserving concurrent/reused `BulkScanner` isolation. MultiRootScanner
-    /// alone calls this module-internal overload with one transaction-scoped ledger so hardlinks
+    /// fresh inode ledger, preserving concurrent/reused `BulkScanner` isolation. This explicit
+    /// overload lets a producer owner retain one transaction-scoped ledger so hardlinks
     /// crossing otherwise independent roots contribute physical bytes exactly once globally.
     /// Directory traversal identities remain per-root; sharing them would incorrectly suppress a
     /// root's enumeration and its scoped completeness evidence.
-    nonisolated func scanSession(
+    public nonisolated func scanSession(
         root: URL,
         delivery: EventDelivery,
         pathNamespace: ScanPathNamespace?,
@@ -176,6 +176,7 @@ public actor BulkScanner {
         let opts = options
         let inodes = inodeSet
         let dirInodes = dirInodeSet
+        inodes.recordScanRoot(path: pathNamespace?.publicPath(forPhysicalPath: root.path) ?? root.path)
         let task = Task.detached(priority: .userInitiated) {
                 let start = Date()
                 // v2026.07.16：统计与投影共用一个 actor/一次目录 merge。独立 projection
@@ -625,7 +626,12 @@ public actor BulkScanner {
             // inode 去重只属于常规文件字节语义；目录回环由独立的 DirInodeSet 处理。
             let isFirstFile = !entry.isRegularFile
                 || !options.dedupByInode
-                || inodes.insertIfFirstSeen(device: entry.device, inode: entry.inode)
+                || inodes.insertIfFirstSeen(
+                    device: entry.device, inode: entry.inode,
+                    path: pathNamespace?.publicPath(forPhysicalPath: absPath) ?? absPath,
+                    allocatedBytes: entry.allocatedSize, logicalBytes: entry.logicalSize,
+                    linkCount: entry.linkCount
+                )
 
             if entry.isDirectory {
                 localDirCount += 1
@@ -814,7 +820,8 @@ public actor BulkScanner {
                     logicalSize: nodeLogical,
                     inode: entry.inode,
                     device: entry.device,
-                    modificationDate: entry.modificationDate
+                    modificationDate: entry.modificationDate,
+                    isRegularFile: entry.isRegularFile
                 )
                 // 同一父目录内保持原枚举顺序；达到固定上限立即 flush，避免宽目录无界 batch。
                 localNodes.append(node)
@@ -882,6 +889,10 @@ public actor BulkScanner {
         if !wasCancelled {
             await queue.pushMany(newDirs)
         }
+        inodes.recordDirectory(
+            path: pathNamespace?.publicPath(forPhysicalPath: dirPath) ?? dirPath,
+            allocatedBytes: localAllocated, logicalBytes: localLogical, fileCount: localFileCount
+        )
         await stats.merge(
             files: localFileCount,
             dirs: localDirCount,
@@ -1532,6 +1543,7 @@ struct BulkEntry {
     let inode: UInt64
     let device: UInt64
     let modificationDate: Date?
+    let linkCount: UInt32
 
     init(
         name: String,
@@ -1542,7 +1554,8 @@ struct BulkEntry {
         logicalSize: Int64,
         inode: UInt64,
         device: UInt64,
-        modificationDate: Date?
+        modificationDate: Date?,
+        linkCount: UInt32 = 1
     ) {
         self.name = name
         self.isDirectory = isDirectory
@@ -1553,6 +1566,7 @@ struct BulkEntry {
         self.inode = inode
         self.device = device
         self.modificationDate = modificationDate
+        self.linkCount = linkCount
     }
 }
 
@@ -1607,7 +1621,8 @@ enum BulkEnumerate {
             | UInt32(ATTR_CMN_DEVID)
         )
         attrList.fileattr = attrgroup_t(
-            UInt32(ATTR_FILE_TOTALSIZE)
+            UInt32(ATTR_FILE_LINKCOUNT)
+            | UInt32(ATTR_FILE_TOTALSIZE)
             | UInt32(ATTR_FILE_ALLOCSIZE)
         )
 
@@ -1683,7 +1698,7 @@ enum BulkEnumerate {
 
                 // —— 关键：之后的字段严格按 attrgroup_t 的 **bit 升序** 排列 ——
                 // commonattr：NAME(bit0) → DEVID(bit1) → OBJTYPE(bit3) → MODTIME(bit10) → FILEID(bit25)
-                // fileattr  ：TOTALSIZE(bit1) → ALLOCSIZE(bit2)
+                // fileattr  ：LINKCOUNT(bit0) → TOTALSIZE(bit1) → ALLOCSIZE(bit2)
 
                 // ATTR_CMN_NAME：attrreference_t（offset + length），name 字符串放在 buffer 末尾
                 var name = ""
@@ -1729,6 +1744,13 @@ enum BulkEnumerate {
                     cursor = cursor.advanced(by: MemoryLayout<UInt64>.size)
                 }
 
+                var linkCount: UInt32 = 1
+                let returnedLinkCount = returned.fileattr & attrgroup_t(UInt32(ATTR_FILE_LINKCOUNT)) != 0
+                if returnedLinkCount {
+                    linkCount = cursor.loadUnaligned(as: UInt32.self)
+                    cursor = cursor.advanced(by: MemoryLayout<UInt32>.size)
+                }
+
                 // ATTR_FILE_TOTALSIZE：off_t (Int64)
                 var logical: Int64 = 0
                 if returned.fileattr & attrgroup_t(UInt32(ATTR_FILE_TOTALSIZE)) != 0 {
@@ -1759,7 +1781,7 @@ enum BulkEnumerate {
                     || !returnedObjectType
                     || !returnedFileID
                     || (isRegularFile
-                        && (!returnedLogicalSize || !returnedAllocatedSize))
+                        && (!returnedLogicalSize || !returnedAllocatedSize || !returnedLinkCount))
                 if needsDescriptorMetadata {
                     var descriptorMetadata = stat()
                     guard fstatat(
@@ -1789,6 +1811,7 @@ enum BulkEnumerate {
                     inode = UInt64(descriptorMetadata.st_ino)
                     logical = isRegularFile ? Int64(descriptorMetadata.st_size) : 0
                     allocated = isRegularFile ? Int64(descriptorMetadata.st_blocks) * 512 : 0
+                    linkCount = UInt32(descriptorMetadata.st_nlink)
                 }
 
                 let entry = BulkEntry(
@@ -1800,7 +1823,8 @@ enum BulkEnumerate {
                     logicalSize: logical,
                     inode: inode,
                     device: device,
-                    modificationDate: modDate
+                    modificationDate: modDate,
+                    linkCount: linkCount
                 )
                 if fallbackPolicy == .exactDeduplication {
                     emittedNames.insert(name)
@@ -1976,7 +2000,8 @@ enum BulkEnumerate {
                 logicalSize: isRegularFile ? Int64(sb.st_size) : 0,
                 inode: UInt64(sb.st_ino),
                 device: UInt64(bitPattern: Int64(sb.st_dev)),
-                modificationDate: Date(timeIntervalSince1970: TimeInterval(sb.st_mtimespec.tv_sec) + TimeInterval(sb.st_mtimespec.tv_nsec) / 1e9)
+                modificationDate: Date(timeIntervalSince1970: TimeInterval(sb.st_mtimespec.tv_sec) + TimeInterval(sb.st_mtimespec.tv_nsec) / 1e9),
+                linkCount: UInt32(sb.st_nlink)
             )
             emitted += 1
             if !body(entry) {

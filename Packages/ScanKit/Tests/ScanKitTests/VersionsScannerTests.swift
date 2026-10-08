@@ -11,6 +11,21 @@ import XCTest
 /// 4. current 软链所指版本 **永远不**出现在 hits（防误删激活版本）。
 final class VersionsScannerTests: XCTestCase {
 
+    func testMixedCaseMultihopTargetProtectsActiveFilesystemObject() throws {
+        let root = tempRoot.appendingPathComponent("case-chain")
+        let versions = root.appendingPathComponent("versions")
+        try FileManager.default.createDirectory(at: versions.appendingPathComponent("vActive"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: versions.appendingPathComponent("vOld"), withIntermediateDirectories: true)
+        guard FileManager.default.fileExists(atPath: versions.appendingPathComponent("VACTIVE").path) else {
+            throw XCTSkip("Mixed spelling denotes another object on this case-sensitive volume")
+        }
+        try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("current").path, withDestinationPath: "selector")
+        try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("selector").path, withDestinationPath: "versions/VACTIVE")
+        let hits = VersionsScanner.detect(toolchainRoot: root)
+        XCTAssertEqual(hits.map(\.versionName), ["vOld"])
+        XCTAssertEqual(hits.first?.activeVersion, "vActive")
+    }
+
     private var tempRoot: URL!
 
     override func setUpWithError() throws {

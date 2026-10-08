@@ -569,6 +569,8 @@ public struct DuplicateScreen: View {
             cancelDuplicatePreflight()
             handleDuplicateExecutionDeparture()
         }
+        .onValueChange(of: roots) { _, _ in invalidateResultsForConfigurationChange() }
+        .onValueChange(of: minStep) { _, _ in invalidateResultsForConfigurationChange() }
         .onReceive(NotificationCenter.default.publisher(for: .gsyTrashDidMove)) { notification in
             let source = notification.userInfo?["source"] as? String
             guard source != DeleteRequestOrigin.duplicate.historySource else { return }
@@ -818,7 +820,8 @@ public struct DuplicateScreen: View {
                 )
             } else if groups.isEmpty {
                 placeholder(
-                    AppLocalization.string("duplicate.placeholder.no_results", locale: locale),
+                    results.emptyMessage(hasIncompleteEvidence: !scanIncompleteIssues.isEmpty)
+                        .localized(locale: locale),
                     systemImage: "doc.on.doc"
                 )
             } else {
@@ -1671,6 +1674,28 @@ public struct DuplicateScreen: View {
 
     // MARK: - Scan driver
 
+    /// v2026.10.08: results and their terminal describe the frozen scan inputs. Editing a root
+    /// or threshold rotates that owner instead of presenting the previous scan as current.
+    private func invalidateResultsForConfigurationChange() {
+        cancelActiveScan()
+        cancelDuplicatePreflight()
+        scanRevision &+= 1
+        let sessionID = UUID()
+        scanSessionID = sessionID
+        results.resetForConfiguration(sessionID: sessionID)
+        selectedGroupID = nil
+        inlineSelectedPaths = []
+        tccSkippedRoots = []
+        scanIncompleteIssues = []
+        scanIncompleteIssueIndex = []
+        isScanning = false
+        scanPhase = nil
+        bucketsDone = 0
+        bucketsTotal = 0
+        sizingFiles = 0
+        scanTask = nil
+    }
+
     private func startScan() {
         guard !isScanning,
               !roots.isEmpty,
@@ -1697,6 +1722,7 @@ public struct DuplicateScreen: View {
         scanTask = Task { @MainActor in
             guard await ScanProducerSettlementChain.waitForSettlement(predecessor) else {
                 if scanSessionID == sessionID, scanRevision == revision {
+                    results.finishScan(.cancelled, sessionID: sessionID)
                     isScanning = false
                     scanPhase = nil
                     scanTask = nil
@@ -1706,6 +1732,7 @@ public struct DuplicateScreen: View {
 
             let scanner = DuplicateScanner(roots: rootsSnapshot, minBytes: minimumBytes)
             let session = scanner.scanSession()
+            var completion = DuplicateResultsStore.Completion.interrupted
             await withTaskCancellationHandler {
                 for await event in session.events {
                     if Task.isCancelled { break }
@@ -1723,12 +1750,14 @@ public struct DuplicateScreen: View {
                         bucketsDone = done
                         bucketsTotal = total
                     case .finished(let g):
+                        completion = .completed
                         results.replaceGroups(g, sessionID: sessionID)
                         if selectedGroupID == nil, let first = g.first {
                             selectedGroupID = first.id
                             inlineSelectedPaths = Set(DuplicateHandlingPlan.keepNewestDeleteTargets(for: first))
                         }
                     case .cancelled:
+                        completion = .cancelled
                         // 用户/上游 cancel：保留 groups 不动，仅退出 isScanning 状态。
                         // 与「停止仅终止扫描、保留已有结果」UX 一致。
                         break
@@ -1752,6 +1781,9 @@ public struct DuplicateScreen: View {
             // 无论正常 finished 还是 cancel，退出循环时一并复位进度计数与标签，
             // 避免下次启动前 footer 闪显旧进度数字。
             if scanSessionID == sessionID, scanRevision == revision {
+                // Publish a typed terminal only after the actual producer has settled. Incomplete
+                // evidence remains separate; an unreadable root cannot claim a complete empty scan.
+                results.finishScan(Task.isCancelled ? .cancelled : completion, sessionID: sessionID)
                 isScanning = false
                 scanPhase = nil
                 bucketsDone = 0

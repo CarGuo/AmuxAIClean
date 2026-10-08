@@ -16,8 +16,19 @@ public enum AppLocalization {
         locale: Locale,
         arguments: [any CVarArg]
     ) -> String {
+        format(key, locale: locale, arguments: arguments, bundle: .module)
+    }
+
+    // v2026.10.08: plural verification must use compiled .stringsdict, just like the App.
+    // The injectable bundle shares the production formatting path without a test-only parser.
+    static func format(
+        _ key: String,
+        locale: Locale,
+        arguments: [any CVarArg],
+        bundle: Bundle
+    ) -> String {
         String(
-            format: string(key, locale: locale),
+            format: string(key, locale: locale, bundle: bundle),
             locale: locale,
             arguments: arguments
         )

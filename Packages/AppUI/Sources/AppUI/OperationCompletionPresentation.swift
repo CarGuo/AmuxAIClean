@@ -42,13 +42,44 @@ struct OperationCompletionPresentation {
     }
 }
 
-struct OperationSuccessFeedback: Identifiable, Equatable, Sendable {
-    let id: UUID
-    let movedCount: Int
+/// v2026.10.08: confirmed success uses one nonmodal, revision-bound presentation across
+/// file operations and process tools. Partial and uncertain outcomes keep their details.
+protocol ContextualSuccessFeedback: Identifiable, Sendable where ID == UUID {
+    var message: LocalizedTextDescriptor { get }
+    var accessibilityIdentifier: String { get }
 }
 
-private struct OperationSuccessFeedbackModifier: ViewModifier {
-    @Binding var feedback: OperationSuccessFeedback?
+struct OperationSuccessFeedback: ContextualSuccessFeedback, Equatable {
+    let id: UUID
+    let movedCount: Int
+
+    var message: LocalizedTextDescriptor {
+        .catalog("op.feedback.trashed %lld", arguments: [.signed(Int64(movedCount))])
+    }
+
+    var accessibilityIdentifier: String { "delete.success.feedback" }
+}
+
+struct ProcessTerminationSuccessFeedback: ContextualSuccessFeedback, Equatable {
+    let id: UUID
+    let stoppedCount: Int
+
+    init?(summary: ProcessKillResultSummary) {
+        guard summary.confirmedStopped > 0, summary.requestPending == 0,
+              summary.notSubmitted == 0, summary.failed == 0 else { return nil }
+        id = UUID()
+        stoppedCount = summary.confirmedStopped
+    }
+
+    var message: LocalizedTextDescriptor {
+        .catalog("op.feedback.processes_stopped %lld", arguments: [.signed(Int64(stoppedCount))])
+    }
+
+    var accessibilityIdentifier: String { "process.success.feedback" }
+}
+
+private struct OperationSuccessFeedbackModifier<Feedback: ContextualSuccessFeedback>: ViewModifier {
+    @Binding var feedback: Feedback?
     @Environment(\.locale) private var locale
 
     func body(content: Content) -> some View {
@@ -58,10 +89,7 @@ private struct OperationSuccessFeedbackModifier: ViewModifier {
                     HStack(spacing: 10) {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.green)
-                        Text(verbatim: AppLocalization.format(
-                            "op.feedback.trashed %lld", locale: locale,
-                            arguments: [Int64(feedback.movedCount)]
-                        ))
+                        Text(verbatim: feedback.message.localized(locale: locale))
                         .font(.callout)
                         Button { self.feedback = nil } label: {
                             Image(systemName: "xmark").font(.caption)
@@ -81,7 +109,7 @@ private struct OperationSuccessFeedbackModifier: ViewModifier {
                     .padding(.trailing, 18)
                     .padding(.bottom, 64)
                     .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("delete.success.feedback")
+                    .accessibilityIdentifier(feedback.accessibilityIdentifier)
                 }
             }
             .task(id: feedback?.id) {
@@ -99,8 +127,8 @@ private struct OperationSuccessFeedbackModifier: ViewModifier {
 }
 
 extension View {
-    func operationSuccessFeedbackOverlay(
-        _ feedback: Binding<OperationSuccessFeedback?>
+    func operationSuccessFeedbackOverlay<Feedback: ContextualSuccessFeedback>(
+        _ feedback: Binding<Feedback?>
     ) -> some View {
         modifier(OperationSuccessFeedbackModifier(feedback: feedback))
     }

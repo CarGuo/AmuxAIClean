@@ -41,8 +41,8 @@ public enum ApplicationMenuLocalizer {
             switch role {
             case .application:
                 // 顶层 application menu 使用产品名；只刷新其标准子项。
-                rootItem.title = appName
-                submenu.title = appName
+                setTitle(appName, for: rootItem)
+                setTitle(appName, for: submenu)
                 localizeApplicationMenu(
                     submenu,
                     locale: locale,
@@ -52,14 +52,26 @@ public enum ApplicationMenuLocalizer {
             case .file, .edit, .view, .window, .help:
                 let key = role.titleKey
                 let title = AppLocalization.string(key, locale: locale)
-                rootItem.title = title
-                submenu.title = title
+                setTitle(title, for: rootItem)
+                setTitle(title, for: submenu)
                 localizeStandardActions(in: submenu, locale: locale)
             case .unknown:
                 break
             }
         }
-        mainMenu.update()
+        // v2026.10.08: this also runs after AppKit updates. Titles already invalidate their
+        // display; recursively asking the SwiftUI-owned graph to validate/rebuild here can
+        // overwrite the locale again. Targets, actions and validation remain system-owned.
+    }
+
+    private static func setTitle(_ title: String, for item: NSMenuItem) {
+        guard item.title != title else { return }
+        item.title = title
+    }
+
+    private static func setTitle(_ title: String, for menu: NSMenu) {
+        guard menu.title != title else { return }
+        menu.title = title
     }
 
     private enum MenuRole {
@@ -102,7 +114,7 @@ public enum ApplicationMenuLocalizer {
     ) {
         for item in menu.items where !item.isSeparatorItem {
             if item.submenu === servicesMenu {
-                item.title = AppLocalization.string("menu.native.services", locale: locale)
+                setTitle(AppLocalization.string("menu.native.services", locale: locale), for: item)
                 continue
             }
             let action = actionName(of: item)
@@ -112,33 +124,33 @@ public enum ApplicationMenuLocalizer {
                 "showPreferencesWindow:",
                 "orderFrontPreferencesPanel:",
             ].contains(action) || item.keyEquivalent == "," {
-                item.title = AppLocalization.string("menu.native.settings", locale: locale)
+                setTitle(AppLocalization.string("menu.native.settings", locale: locale), for: item)
                 continue
             }
 
             switch action {
             case "orderFrontStandardAboutPanel:":
-                item.title = AppLocalization.format(
+                setTitle(AppLocalization.format(
                     "menu.native.about %@",
                     locale: locale,
                     arguments: [appName]
-                )
+                ), for: item)
             case "hide:":
-                item.title = AppLocalization.format(
+                setTitle(AppLocalization.format(
                     "menu.native.hide %@",
                     locale: locale,
                     arguments: [appName]
-                )
+                ), for: item)
             case "hideOtherApplications:":
-                item.title = AppLocalization.string("menu.native.hide_others", locale: locale)
+                setTitle(AppLocalization.string("menu.native.hide_others", locale: locale), for: item)
             case "unhideAllApplications:":
-                item.title = AppLocalization.string("menu.native.show_all", locale: locale)
+                setTitle(AppLocalization.string("menu.native.show_all", locale: locale), for: item)
             case "terminate:":
-                item.title = AppLocalization.format(
+                setTitle(AppLocalization.format(
                     "menu.native.quit %@",
                     locale: locale,
                     arguments: [appName]
-                )
+                ), for: item)
             default:
                 // 未知系统/第三方命令保持原题；不按标题或位置猜测语义。
                 break
@@ -146,9 +158,9 @@ public enum ApplicationMenuLocalizer {
         }
     }
 
-    private static func localizeStandardActions(in menu: NSMenu, locale: Locale) {
-        let actionKeys: [String: String] = [
+    private static let standardActionKeys: [String: String] = [
             "performClose:": "menu.native.close",
+            "closeAll:": "menu.native.close_all",
             "undo:": "menu.native.undo",
             "redo:": "menu.native.redo",
             "cut:": "menu.native.cut",
@@ -165,11 +177,12 @@ public enum ApplicationMenuLocalizer {
             "toggleFullScreen:": "menu.native.toggle_full_screen",
             "toggleSidebar:": "menu.native.toggle_sidebar",
             "toggleToolbarShown:": "menu.native.toggle_toolbar",
-        ]
+    ]
 
+    private static func localizeStandardActions(in menu: NSMenu, locale: Locale) {
         for item in menu.items {
-            if let action = actionName(of: item), let key = actionKeys[action] {
-                item.title = AppLocalization.string(key, locale: locale)
+            if let action = actionName(of: item), let key = standardActionKeys[action] {
+                setTitle(AppLocalization.string(key, locale: locale), for: item)
             }
             if let submenu = item.submenu {
                 localizeStandardActions(in: submenu, locale: locale)

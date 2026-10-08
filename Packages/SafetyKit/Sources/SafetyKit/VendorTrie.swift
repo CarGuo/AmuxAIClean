@@ -34,6 +34,11 @@ public final class VendorTrieNode: @unchecked Sendable {
     /// **build-only mutable**；path 级 verdict 覆盖（DEV_ARTIFACTS_RULES §2.x 的 path 字段直接对应）。
     /// 命中此节点或其子节点时，verdict 由此覆盖决定，而非走默认 confirm。
     public var pathOverride: PathRule? = nil
+    /// Expanded, canonical spelling of a literal override, frozen with the trie.
+    public var absoluteOverridePath: String? = nil
+    /// **build-only mutable**；同一下写化节点上的全部字面量 path-rule 列表（保持声明顺序）。
+    /// 在维持既有"先到先得"合同的同时，支持区分大小写卷上同一归一化节点的多种大小写拼写。
+    public var literalOverrides: [LiteralOverrideEntry] = []
 
     /// **build-only mutable**；仅在**根节点**有效：含 glob 元字符（`*` / `?`）的 path 规则副本。
     /// 这些规则不能插入 trie（trie 节点路径段是字面量），评估时退化为线性扫描。
@@ -41,6 +46,19 @@ public final class VendorTrieNode: @unchecked Sendable {
     public var globRules: [GlobEntry] = []
 
     public init() {}
+}
+
+/// 同一下写化 Trie 节点上的一条字面量 path-rule 记录。
+public struct LiteralOverrideEntry: Sendable {
+    public let rule: VendorRule
+    public let pathRule: PathRule
+    public let absolutePath: String
+
+    public init(rule: VendorRule, pathRule: PathRule, absolutePath: String) {
+        self.rule = rule
+        self.pathRule = pathRule
+        self.absolutePath = absolutePath
+    }
 }
 
 /// 一条 glob path-rule 的展开形态：保留原始 rule + pathRule，
@@ -67,7 +85,8 @@ public struct VendorTrie: @unchecked Sendable {
 
     /// 把每条 vendor 的 `absolutePathPrefixes` + `absolutePathRules` 拆段插入 trie。
     /// 同一节点已有 rule 时不覆盖（保留**最先插入**的，等价于朴素遍历的"先命中即返回"语义）。
-    /// path 级 override 也遵循相同的"先到先得"规则。
+    /// path 级 override 也遵循相同的"先到先得"规则，同时在 `literalOverrides` 中保留同节点
+    /// 后续大小写拼写变体以供区分大小写卷匹配。
     ///
     /// glob path-rule（含 `*`/`?`）单独走 `root.globRules` 线性扫描分支，
     /// 不污染 trie 字面量索引。
@@ -105,7 +124,13 @@ public struct VendorTrie: @unchecked Sendable {
                 guard !segments.isEmpty else { continue }
                 let node = ensurePath(segments: segments, from: root)
                 if node.rule == nil { node.rule = rule }
-                if node.pathOverride == nil { node.pathOverride = pathRule }
+                node.literalOverrides.append(
+                    LiteralOverrideEntry(rule: rule, pathRule: pathRule, absolutePath: std)
+                )
+                if node.pathOverride == nil {
+                    node.pathOverride = pathRule
+                    node.absoluteOverridePath = std
+                }
             }
         }
         return root
@@ -136,7 +161,8 @@ public struct VendorTrie: @unchecked Sendable {
     /// trie miss 时回退到 [globRules](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/VendorTrie.swift#L30-L30) 线性扫描，
     /// 用 [PathGlob.matchPrefix](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/PathGlob.swift#L42-L48)
     /// 判断 path 是否落在某条 glob pattern 的前缀（含完整匹配）。
-    public static func match(standardizedPath: String, in trie: VendorTrieNode)
+    public static func match(standardizedPath: String, in trie: VendorTrieNode,
+                             acceptSafeRule: ((String) -> Bool)? = nil)
     -> (rule: VendorRule, isExactRoot: Bool, pathOverride: PathRule?)?
     {
         let canonicalPath = SafetyEngine.stripDataVolumePrefix(standardizedPath)
@@ -150,10 +176,8 @@ public struct VendorTrie: @unchecked Sendable {
             guard let next = node.children[seg] else { break }
             node = next
             depth += 1
-            if let ovr = node.pathOverride {
-                if let owner = node.rule {
-                    inheritedOverride = (owner, depth, ovr)
-                }
+            if let resolved = resolveNodeOverride(node, acceptSafeRule: acceptSafeRule) {
+                inheritedOverride = (resolved.rule, depth, resolved.pathRule)
             }
             if firstRuleHit == nil, let rule = node.rule {
                 firstRuleHit = (rule, depth)
@@ -163,7 +187,7 @@ public struct VendorTrie: @unchecked Sendable {
             // 若命中或继承了非 forbid override，仍需检查是否有更具体的 glob 规则声明了更严格的 verdict
             if overrideHit.pathRule.verdict != .forbid,
                !trie.globRules.isEmpty,
-               let globHit = matchGlob(standardizedPath: canonicalPath, in: trie) {
+               let globHit = matchGlob(standardizedPath: canonicalPath, in: trie, acceptSafeRule: acceptSafeRule) {
                 if globHit.pathOverride?.verdict == .forbid {
                     return (globHit.rule, globHit.isExactRoot, globHit.pathOverride)
                 }
@@ -192,23 +216,50 @@ public struct VendorTrie: @unchecked Sendable {
             // UI 显示的 vendorName 会是 A，但 verdict/reason/recipe 来自 B，造成误导。
             // 取 globHit.rule 与 isExactRoot=globHit.isExactRoot 让 (rule, override) 同源。
             if !trie.globRules.isEmpty,
-               let globHit = matchGlob(standardizedPath: canonicalPath, in: trie) {
+               let globHit = matchGlob(standardizedPath: canonicalPath, in: trie, acceptSafeRule: acceptSafeRule) {
                 return (globHit.rule, globHit.isExactRoot, globHit.pathOverride)
             }
             return (rule, isExactRoot, nil)
         }
         // trie miss：扫描 globRules
         guard !trie.globRules.isEmpty else { return nil }
-        return matchGlob(standardizedPath: canonicalPath, in: trie)
+        return matchGlob(standardizedPath: canonicalPath, in: trie, acceptSafeRule: acceptSafeRule)
+    }
+
+    private static func resolveNodeOverride(
+        _ node: VendorTrieNode,
+        acceptSafeRule: ((String) -> Bool)?
+    ) -> (rule: VendorRule, pathRule: PathRule)? {
+        if !node.literalOverrides.isEmpty {
+            for entry in node.literalOverrides {
+                if entry.pathRule.verdict == .safe,
+                   let acceptSafeRule,
+                   !acceptSafeRule(entry.absolutePath) {
+                    continue
+                }
+                return (entry.rule, entry.pathRule)
+            }
+            return nil
+        }
+        guard let ovr = node.pathOverride, let owner = node.rule else { return nil }
+        if ovr.verdict == .safe,
+           let acceptSafeRule,
+           node.absoluteOverridePath.map({ acceptSafeRule($0) }) != true {
+            return nil
+        }
+        return (owner, ovr)
     }
 
     /// 把 standardizedPath 喂给 root.globRules 做 fnmatch 前缀检查。
     /// 多条命中时优先取更严格的 verdict（forbid > confirm > safe），同级保留最先声明的条目。
-    static func matchGlob(standardizedPath: String, in root: VendorTrieNode)
+    static func matchGlob(standardizedPath: String, in root: VendorTrieNode,
+                          acceptSafeRule: ((String) -> Bool)? = nil)
     -> (rule: VendorRule, isExactRoot: Bool, pathOverride: PathRule?)?
     {
         var best: (rule: VendorRule, isExactRoot: Bool, pathOverride: PathRule?, severity: Int)? = nil
         for entry in root.globRules {
+            if entry.pathRule.verdict == .safe, let acceptSafeRule,
+               !acceptSafeRule(entry.absolutePattern) { continue }
             let isExact: Bool
             if PathGlob.match(pattern: entry.absolutePattern, path: standardizedPath) {
                 isExact = true

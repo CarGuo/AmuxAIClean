@@ -136,6 +136,7 @@ public struct PortCleanerScreen: View {
     @State private var pendingKill: PendingKill?
     @State private var showKillConfirm = false
     @State private var resultPresentation: PortCleanerKillResultPresentation?
+    @State private var successFeedback: ProcessTerminationSuccessFeedback?
     @Environment(\.locale) private var locale
 
     public init(scanner: PortCleanerScanner = PortCleanerScanner()) {
@@ -153,6 +154,7 @@ public struct PortCleanerScreen: View {
             Divider()
             footer
         }
+        .operationSuccessFeedbackOverlay($successFeedback)
         .task { startReload() }
         .onValueChange(of: reloadModel.entries) { _, latest in
             selectedIDs.formIntersection(Set(latest.filter(\.canRequestTermination).map(\.id)))
@@ -599,15 +601,23 @@ public struct PortCleanerScreen: View {
         let confirmedStopped = results.filter(\.success).count
         let requestPending = results.filter(\.requestPending).count
         let notSubmitted = results.filter(\.notSubmitted).count
-        let failed = results.count - confirmedStopped - requestPending - notSubmitted
-        // v2026.07.16：结果必须区分“已确认退出”和“SIGTERM 已提交但仍在运行”，避免
-        // kill(2) 返回 0 后把尚未退出的进程误报为成功结束。
-        resultPresentation = PortCleanerKillResultPresentation(
+        let summary = ProcessKillResultSummary(
             confirmedStopped: confirmedStopped,
             requestPending: requestPending,
             notSubmitted: notSubmitted,
-            failed: failed
+            failed: results.count - confirmedStopped - requestPending - notSubmitted
         )
+        // v2026.07.16：结果必须区分“已确认退出”和“SIGTERM 已提交但仍在运行”，避免
+        // kill(2) 返回 0 后把尚未退出的进程误报为成功结束。
+        // v2026.10.08: a confirmed full success must not require another acknowledgement.
+        // SIGTERM pending, batch limits and failures retain the existing detailed result.
+        successFeedback = ProcessTerminationSuccessFeedback(summary: summary)
+        resultPresentation = successFeedback == nil ? PortCleanerKillResultPresentation(
+            confirmedStopped: summary.confirmedStopped,
+            requestPending: summary.requestPending,
+            notSubmitted: summary.notSubmitted,
+            failed: summary.failed
+        ) : nil
         selectedIDs.removeAll()
         isKilling = false
         startReload()

@@ -8,6 +8,77 @@ import SafetyKit
 /// 不读取真实 /Applications，也不启动 App。
 @MainActor
 final class AppFootprintReloadModelTests: XCTestCase {
+    /// v2026.10.08: reproduces real App search leaving an unrelated App in the detail pane.
+    /// Exercise both intermediate and terminal arrivals after search-driven deselection.
+    func test_searchDeselectsHiddenAppAndLateStreamCannotRestoreItsDetails() async {
+        let alpha = makeApp(bundleID: "com.example.alpha", path: "/Alpha.app")
+        let beta = makeApp(bundleID: "com.example.beta", path: "/Beta.app")
+        let probe = ControlledAppFootprintSessionProbe()
+        let model = AppFootprintReloadModel(
+            loader: { InstalledAppDiscoveryResult(apps: [alpha, beta]) },
+            streamFactory: { _ in probe.session(key: "search") },
+            batchLimit: 1
+        )
+        model.reload()
+        let started = await eventually { await probe.hasStarted("search") }
+        XCTAssertTrue(started)
+        XCTAssertEqual(model.selected?.id, alpha.id)
+
+        model.updateSearchQuery("  BETA  ")
+        XCTAssertEqual(model.searchProjection.items.map(\.id), [beta.id])
+        XCTAssertNil(model.selected, "a hidden App cannot remain the detail/action owner")
+        await probe.yield(item(for: alpha, bytes: 100, deliveryPhase: .intermediate), to: "search")
+        let intermediateArrived = await eventually { model.items.first(where: { $0.id == alpha.id })?.totalBytes == 100 }
+        XCTAssertTrue(intermediateArrived)
+        XCTAssertNil(model.selected)
+        await probe.yield(item(for: alpha, bytes: 200), to: "search")
+        await probe.yield(item(for: beta, bytes: 50), to: "search")
+        await probe.finish("search")
+        let finished = await eventually { !model.isLoading }
+        XCTAssertTrue(finished)
+        XCTAssertNil(model.selected)
+
+        model.selected = model.searchProjection.items.first
+        XCTAssertEqual(model.selected?.id, beta.id)
+        model.updateSearchQuery("no such App")
+        XCTAssertTrue(model.searchProjection.items.isEmpty)
+        XCTAssertNil(model.selected)
+        model.updateSearchQuery("")
+        XCTAssertEqual(model.items.count, 2)
+        XCTAssertNil(model.selected, "clearing search must not revive the previous hidden owner")
+    }
+
+    func test_reloadAndDeletionFallbackKeepSelectionWithinCurrentSearch() async {
+        let alpha = makeApp(bundleID: "com.example.alpha", path: "/Alpha.app")
+        let beta = makeApp(bundleID: "com.example.beta", path: "/Beta.app")
+        let gamma = makeApp(bundleID: "com.example.beta.extra", path: "/Gamma.app")
+        let probe = ControlledAppFootprintSessionProbe()
+        let model = AppFootprintReloadModel(
+            loader: { InstalledAppDiscoveryResult(apps: [alpha, beta, gamma]) },
+            streamFactory: { _ in probe.session(key: "filtered-reload") },
+            batchLimit: 1
+        )
+        model.updateSearchQuery("com.example.beta")
+        model.reload()
+        let started = await eventually { await probe.hasStarted("filtered-reload") }
+        XCTAssertTrue(started)
+        XCTAssertEqual(model.selected?.id, beta.id, "reload must choose from the visible list")
+        await probe.yield(item(for: alpha, bytes: 1_000), to: "filtered-reload")
+        await probe.yield(item(for: beta, bytes: 200), to: "filtered-reload")
+        await probe.yield(item(for: gamma, bytes: 100), to: "filtered-reload")
+        await probe.finish("filtered-reload")
+        let finished = await eventually { !model.isLoading }
+        XCTAssertTrue(finished)
+
+        model.pruneDeletedPaths([beta.appURL.path])
+        XCTAssertEqual(model.selected?.id, gamma.id,
+                       "the largest hidden App must not become the post-deletion detail")
+        model.pruneDeletedPaths([gamma.appURL.path])
+        XCTAssertNil(model.selected)
+        XCTAssertEqual(model.items.map(\.id), [alpha.id])
+        XCTAssertTrue(model.searchProjection.items.isEmpty)
+    }
+
     func test_cancel离页终止producer且后续item不能再写状态() async {
         let app = makeApp(bundleID: "old", path: "/Old.app")
         let probe = ControlledAppFootprintSessionProbe()

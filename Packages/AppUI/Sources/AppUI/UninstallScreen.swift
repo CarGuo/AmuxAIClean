@@ -1392,14 +1392,30 @@ public struct UninstallScreen: View {
     /// path where a random UUID made every retry look like a fresh review after restart.
     @State private var selectedAppScanSessionID = UUID()
 
-    private var filteredApps: [InstalledApp] {
-        let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return apps }
-        return apps.filter { app in
-            app.metadata.appName.localizedCaseInsensitiveContains(q)
-                || app.metadata.bundleID.localizedCaseInsensitiveContains(q)
-                || app.appURL.path.localizedCaseInsensitiveContains(q)
+    private func appSearchProjection(
+        selection: InstalledApp?, query: String
+    ) -> AppListSearchProjection<InstalledApp> {
+        AppListSearchProjection(items: apps, selection: selection, query: query) { app, term in
+            app.metadata.appName.localizedCaseInsensitiveContains(term)
+                || app.metadata.bundleID.localizedCaseInsensitiveContains(term)
+                || app.appURL.path.localizedCaseInsensitiveContains(term)
         }
+    }
+
+    private var appSearchProjection: AppListSearchProjection<InstalledApp> {
+        appSearchProjection(selection: selectedApp, query: searchQuery)
+    }
+
+    private var filteredApps: [InstalledApp] { appSearchProjection.items }
+
+    private var appSearchBinding: Binding<String> {
+        Binding(get: { searchQuery }, set: { query in
+            // v2026.10.08: search, list clicks and reloads share the same synchronous
+            // selection transition. Hidden candidates must lose their owner and actions
+            // before another UI event or asynchronous completion can use them.
+            updateSelectedApp(appSearchProjection(selection: selectedApp, query: query).selection)
+            searchQuery = query
+        })
     }
 
     private var isDeletionTransactionActive: Bool {
@@ -1515,7 +1531,7 @@ public struct UninstallScreen: View {
             checked = terminal.checked
             apps = terminal.apps
             if selectedApp != terminal.selectedApp {
-                selectedApp = terminal.selectedApp
+                updateSelectedApp(appSearchProjection(selection: terminal.selectedApp, query: searchQuery).selection)
             }
         }
         // 确认与结果共用一个 ActiveSheet。真删只在确认 sheet 的 onDismiss
@@ -1588,10 +1604,11 @@ public struct UninstallScreen: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            TextField(AppLocalization.string("appfootprint.header.search_placeholder", locale: locale), text: $searchQuery)
+            TextField(AppLocalization.string("appfootprint.header.search_placeholder", locale: locale), text: appSearchBinding)
                 .textFieldStyle(.roundedBorder)
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
+                .disabled(isDeletionTransactionActive)
             Divider()
             if !appListIncompleteIssues.isEmpty {
                 discoveryNotice(
@@ -1600,7 +1617,10 @@ public struct UninstallScreen: View {
                 )
                 Divider()
             }
-            List(selection: $selectedApp) {
+            List(selection: Binding(
+                get: { appSearchProjection.selection },
+                set: { updateSelectedApp($0) }
+            )) {
                 ForEach(filteredApps) { app in
                     HStack(spacing: 10) {
                         Group {
@@ -1634,37 +1654,6 @@ public struct UninstallScreen: View {
             }
             .listStyle(.inset)
             .disabled(isDeletionTransactionActive)
-            .onValueChange(of: selectedApp) { _, new in
-                selectedAppRevision &+= 1
-                selectedAppScanSessionID = UUID()
-                let scanSessionID = selectedAppScanSessionID
-                cancelUninstallPreflight()
-                candidateTask?.cancel()
-                candidateTask = nil
-                candidateLoadGate.invalidate()
-                guard let app = new else {
-                    candidates = []
-                    candidateDiscoveryIssues = []
-                    checked = []
-                    isLoadingCandidates = false
-                    return
-                }
-                let identity = UninstallCandidateLoadIdentity(
-                    appID: app.id,
-                    scanSessionID: scanSessionID,
-                    selectionRevision: selectedAppRevision
-                )
-                // Start-state publication is synchronous with the selection revision. The
-                // asynchronous body below is never allowed to clear a newer result on startup.
-                candidateLoadGate.begin(identity)
-                isLoadingCandidates = true
-                candidates = []
-                candidateDiscoveryIssues = []
-                checked = []
-                candidateTask = Task {
-                    await reloadCandidates(for: app, identity: identity)
-                }
-            }
         }
     }
 
@@ -1681,7 +1670,7 @@ public struct UninstallScreen: View {
                 )
                 Divider()
             }
-            if selectedApp == nil {
+            if appSearchProjection.selection == nil {
                 placeholder(
                     AppLocalization.string("uninstall.placeholder.select.app", locale: locale),
                     icon: "app.dashed"
@@ -1715,7 +1704,7 @@ public struct UninstallScreen: View {
 
     private var candidatesHeader: some View {
         HStack {
-            if let app = selectedApp {
+            if let app = appSearchProjection.selection {
                 Text(app.metadata.appName).font(.headline)
                 Text(app.metadata.bundleID)
                     .font(.caption)
@@ -1727,7 +1716,9 @@ public struct UninstallScreen: View {
             Text(AppLocalization.format(
                 "uninstall.candidates.summary",
                 locale: locale,
-                arguments: [Int64(candidates.count), formattedBytes(totalCheckedBytes)]
+                // v2026.10.08: the header describes all discovered candidates. Selection
+                // bytes belong to the footer; mixing them showed six files with “0 kB”.
+                arguments: [Int64(candidates.count), formattedBytes(candidates.reduce(Int64(0)) { $0 + $1.bytes })]
             ))
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -1870,6 +1861,35 @@ public struct UninstallScreen: View {
 
     // MARK: - Helpers
 
+    /// v2026.10.08: selection is the ownership boundary of discovery and deletion preview.
+    /// Clear candidates and invalidate their revision immediately, including search-driven
+    /// deselection; an onChange callback is too late to guard intervening UI actions.
+    private func updateSelectedApp(_ selection: InstalledApp?) {
+        guard selectedApp != selection else { return }
+        selectedAppRevision &+= 1
+        selectedAppScanSessionID = UUID()
+        cancelUninstallPreflight()
+        candidateTask?.cancel()
+        candidateTask = nil
+        candidateLoadGate.invalidate()
+        selectedApp = selection
+        candidates = []
+        candidateDiscoveryIssues = []
+        checked = []
+        isLoadingCandidates = false
+        guard let app = selection else { return }
+        let identity = UninstallCandidateLoadIdentity(
+            appID: app.id,
+            scanSessionID: selectedAppScanSessionID,
+            selectionRevision: selectedAppRevision
+        )
+        candidateLoadGate.begin(identity)
+        isLoadingCandidates = true
+        candidateTask = Task {
+            await reloadCandidates(for: app, identity: identity)
+        }
+    }
+
     private var allChecked: Bool {
         let selectable = UninstallDeletionSelectionPolicy.selectablePaths(in: candidates)
         return !selectable.isEmpty && checked.intersection(selectable) == selectable
@@ -1932,11 +1952,11 @@ public struct UninstallScreen: View {
             guard shouldPublish else { return }
             self.apps = result.apps
             self.appListIncompleteIssues = result.incompleteIssues
-            if let current = self.selectedApp, !result.apps.contains(current) {
-                self.selectedApp = result.apps.first
-            } else if self.selectedApp == nil {
-                self.selectedApp = result.apps.first
-            }
+            // v2026.10.08: retain the selected path using its newly discovered value. A
+            // replacement bundle can have the same list ID but a different inode/metadata;
+            // retaining the old value would leave candidates owned by an obsolete object.
+            let projection = self.appSearchProjection
+            self.updateSelectedApp(projection.selection ?? projection.items.first)
         }
     }
 
@@ -2386,7 +2406,7 @@ public struct UninstallScreen: View {
                 self.checked = terminal.checked
                 self.apps = terminal.apps
                 if self.selectedApp != terminal.selectedApp {
-                    self.selectedApp = terminal.selectedApp
+                    self.updateSelectedApp(self.appSearchProjection(selection: terminal.selectedApp, query: self.searchQuery).selection)
                 }
             },
             makePayload: { OperationResultCompletion.deletion(completed) },

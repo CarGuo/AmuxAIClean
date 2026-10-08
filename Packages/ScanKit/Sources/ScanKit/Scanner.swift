@@ -190,6 +190,7 @@ public actor Scanner {
 
                     let isDir = values.isDirectory ?? false
                     let isSymlink = values.isSymbolicLink ?? false
+                    let isRegularFile = values.isRegularFile == true && !isSymlink
                     let allocated = Int64(values.totalFileAllocatedSize ?? 0)
                     let logical = Int64(values.fileSize ?? 0)
                     let modDate = values.contentModificationDate
@@ -216,13 +217,13 @@ public actor Scanner {
 
                     // hardlink 去重——只计第一次出现的字节。APFS clone 是不同 inode，
                     // ATTR_FILE_ALLOCSIZE 也不是 exclusive/reclaimable extent 统计，不能在这里伪装成可去重。
-                    let isFirstFile = isDir
+                    let isFirstFile = !isRegularFile
                         || !options.dedupByInode
                         || inodeSet.insertIfFirstSeen(device: device, inode: inode)
 
                     if isDir {
                         dirCount += 1
-                    } else {
+                    } else if isRegularFile {
                         fileCount += 1
                         if isFirstFile {
                             totalAllocated += allocated
@@ -236,11 +237,12 @@ public actor Scanner {
                         url: url,
                         isDirectory: isDir,
                         isSymlink: isSymlink,
-                        allocatedSize: !isDir && isFirstFile ? allocated : 0,
-                        logicalSize: !isDir && isFirstFile ? logical : 0,
+                        allocatedSize: isRegularFile && isFirstFile ? allocated : 0,
+                        logicalSize: isRegularFile && isFirstFile ? logical : 0,
                         inode: inode,
                         device: device,
-                        modificationDate: modDate
+                        modificationDate: modDate,
+                        isRegularFile: isRegularFile
                     )
                     continuation.yield(.node(node))
 

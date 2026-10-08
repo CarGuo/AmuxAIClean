@@ -124,7 +124,8 @@ public actor MultiRootScanner {
         perRootTimeout: TimeInterval = MultiRootScanner.defaultPerRootTimeout,
         noProgressTimeout: TimeInterval = MultiRootScanner.defaultNoProgressTimeout,
         totalDeadline: TimeInterval = MultiRootScanner.defaultTotalDeadline,
-        delivery: BulkScanner.EventDelivery = .complete
+        delivery: BulkScanner.EventDelivery = .complete,
+        allocationLedger suppliedAllocationLedger: InodeSet? = nil
     ) -> AsyncStream<MultiRootEvent> {
         scanSession(
             roots: roots,
@@ -132,7 +133,8 @@ public actor MultiRootScanner {
             perRootTimeout: perRootTimeout,
             noProgressTimeout: noProgressTimeout,
             totalDeadline: totalDeadline,
-            delivery: delivery
+            delivery: delivery,
+            allocationLedger: suppliedAllocationLedger
         ).events
     }
 
@@ -142,7 +144,8 @@ public actor MultiRootScanner {
         perRootTimeout: TimeInterval = MultiRootScanner.defaultPerRootTimeout,
         noProgressTimeout: TimeInterval = MultiRootScanner.defaultNoProgressTimeout,
         totalDeadline: TimeInterval = MultiRootScanner.defaultTotalDeadline,
-        delivery: BulkScanner.EventDelivery = .complete
+        delivery: BulkScanner.EventDelivery = .complete,
+        allocationLedger suppliedAllocationLedger: InodeSet? = nil
     ) -> ScanSession {
         let opts = self.options
         let rootScanOperation = self.rootScanOperation
@@ -158,7 +161,7 @@ public actor MultiRootScanner {
         // actor instance: callers may start a later scan using the same MultiRootScanner while an
         // earlier stream is still draining, and those transactions must never deduplicate each
         // other's files.
-        let allocationLedger = InodeSet()
+        let allocationLedger = suppliedAllocationLedger ?? InodeSet()
         let cap = max(1, maxConcurrentRoots)
         let streamPair = AsyncStream<MultiRootEvent>.makeStream(bufferingPolicy: .unbounded)
         let continuation = streamPair.continuation
@@ -455,7 +458,7 @@ actor MultiRootProgressClock {
         for node in nodes {
             if node.isDirectory {
                 observedDirectoryCount += 1
-            } else if !node.isSymlink {
+            } else if node.isRegularFile {
                 observedFileCount += 1
                 observedAllocatedBytes += node.allocatedSize
                 observedLogicalBytes += node.logicalSize

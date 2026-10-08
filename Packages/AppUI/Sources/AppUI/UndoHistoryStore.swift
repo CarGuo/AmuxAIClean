@@ -4260,10 +4260,10 @@ public final class UndoHistoryStore: ObservableObject {
                     status: .restored,
                     restoredDestination: destinationURL.path
                 )
-                restoredPaths.append(pair.original)
-                if destinationURL.path != pair.original {
-                    restoredPaths.append(destinationURL.path)
-                }
+                // v2026.10.08: a conflict rename restores only the actual destination.
+                // Publishing the original path would revive a different occupied object and
+                // incorrectly clear that path's deletion tombstone in scan consumers.
+                restoredPaths.append(destinationURL.path)
             case .sourceMissing:
                 skipped += 1
                 states[index] = Record.RecoveryState(status: .missing)

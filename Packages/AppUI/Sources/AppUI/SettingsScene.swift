@@ -230,6 +230,15 @@ public struct SettingsScene: View {
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 620, idealWidth: 720, minHeight: 460, idealHeight: 520)
+        .background {
+            LocalizedWindowTitle(title: AppLocalization.format(
+                "settings.window.title %@",
+                locale: currentEnvironmentLocale,
+                arguments: [AppLocalization.string("app.name", locale: currentEnvironmentLocale)]
+            ))
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+        }
         .fileImporter(
             isPresented: $isPathImporterPresented,
             allowedContentTypes: [.folder],

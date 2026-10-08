@@ -44,6 +44,42 @@ final class DuplicateResultsStoreTests: XCTestCase {
         )
     }
 
+    func testEmptyScanHasATypedTerminalWithoutLettingOldSessionsReplaceIt() {
+        let store = DuplicateResultsStore()
+        XCTAssertEqual(store.emptyMessage(hasIncompleteEvidence: false),
+                       .catalog("duplicate.placeholder.no_results"))
+        let oldSession = UUID()
+        store.beginScan(sessionID: oldSession)
+        let currentSession = UUID()
+        store.beginScan(sessionID: currentSession)
+        store.finishScan(.cancelled, sessionID: oldSession)
+        XCTAssertEqual(store.scanState, .scanning)
+        store.replaceGroups([], sessionID: currentSession)
+        store.finishScan(.completed, sessionID: currentSession)
+        XCTAssertEqual(store.emptyMessage(hasIncompleteEvidence: false),
+                       .catalog("duplicate.placeholder.completed_empty"))
+        XCTAssertEqual(store.emptyMessage(hasIncompleteEvidence: true),
+                       .catalog("duplicate.placeholder.incomplete_empty"))
+        store.finishScan(.cancelled, sessionID: currentSession)
+        XCTAssertEqual(store.scanState, .finished(.completed), "a terminal cannot be overwritten")
+
+        store.resetForConfiguration(sessionID: UUID())
+        store.replaceGroups([group("late", paths: ["/old/a", "/old/b"])], sessionID: currentSession)
+        store.finishScan(.completed, sessionID: currentSession)
+        XCTAssertTrue(store.groups.isEmpty, "old inputs must not repopulate the edited scan")
+        XCTAssertEqual(store.scanState, .idle)
+
+        for (completion, message) in [
+            (DuplicateResultsStore.Completion.cancelled, "duplicate.placeholder.cancelled_empty"),
+            (.interrupted, "duplicate.placeholder.interrupted_empty")
+        ] {
+            let nextSession = UUID()
+            store.beginScan(sessionID: nextSession)
+            store.finishScan(completion, sessionID: nextSession)
+            XCTAssertEqual(store.emptyMessage(hasIncompleteEvidence: false), .catalog(message))
+        }
+    }
+
     func testOldDeletionProjectionCannotOverwriteReplacementScanResults() async {
         let gate = PruneGate()
         let store = DuplicateResultsStore { await gate.prune($0, paths: $1) }

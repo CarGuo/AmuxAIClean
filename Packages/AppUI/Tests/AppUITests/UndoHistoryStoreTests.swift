@@ -633,6 +633,17 @@ final class UndoHistoryStoreTests: XCTestCase {
         ])
         let record = try XCTUnwrap(store.history.first)
 
+        let notifiedPaths = LockedEventSet()
+        let observer = NotificationCenter.default.addObserver(forName: .gsyUndoDidRestore, object: store, queue: nil) { notification in
+            // v2026.10.08: directory enumeration resolves /var to /private/var on macOS.
+            // Compare destination identities in one namespace, while still rejecting the
+            // occupied original path; spelling aliases are not different restored files.
+            for path in notification.userInfo?["paths"] as? [String] ?? [] {
+                notifiedPaths.insert(URL(fileURLWithPath: path).resolvingSymlinksInPath().path)
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
         let result = await store.restoreRecord(
             record,
             conflictPolicy: .restoreWithUniqueName,
@@ -653,6 +664,9 @@ final class UndoHistoryStoreTests: XCTestCase {
         ).filter { $0.standardizedFileURL.path != original.standardizedFileURL.path }
         XCTAssertEqual(restoredCopies.count, 1)
         XCTAssertEqual(try String(contentsOf: restoredCopies[0], encoding: .utf8), "older")
+        XCTAssertTrue(notifiedPaths.contains(restoredCopies[0].resolvingSymlinksInPath().path))
+        XCTAssertFalse(notifiedPaths.contains(original.resolvingSymlinksInPath().path),
+                       "Only the actual restored destination may revive scan state")
         XCTAssertEqual(store.history.count, 1)
         XCTAssertEqual(store.history[0].filePairs, record.filePairs)
         XCTAssertEqual(store.history[0].recoveryStates[0].status, .restored)
@@ -1765,6 +1779,12 @@ final class UndoHistoryStoreTests: XCTestCase {
         gate.release()
         let appended = await append.value
         XCTAssertTrue(appended)
+        // v2026.10.08: the journal append can itself publish `.ready` before the stale
+        // bootstrap's MainActor continuation gets scheduled. Readiness is not evidence of
+        // the required second read; wait for that hook without weakening the retry assertion.
+        for _ in 0..<400 where gate.invocationCount < 2 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         for _ in 0..<400 where loading.storageState == .loading {
             try await Task.sleep(for: .milliseconds(5))
         }
@@ -3156,4 +3176,3 @@ final class UndoHistoryStoreTests: XCTestCase {
         )
     }
 }
-

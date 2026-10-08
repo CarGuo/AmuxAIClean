@@ -166,6 +166,58 @@ final class DeletionPublicationBoundaryTests: XCTestCase {
                       "all Tree notification channels must commit their identity before notifying")
     }
 
+    /// v2026.10.08: the real App kept a directory spinner after its indexed refresh finished.
+    /// Observing only isFetchingChildren after await missed the busy bit frozen by Tree's sink.
+    func test_subtreeRefreshPublishesSettledOwnershipWithItsFinalTreeRows() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("refresh-publication-\(UUID())", isDirectory: true)
+        let target = root.appendingPathComponent("Cache", isDirectory: true)
+        let leaf = target.appendingPathComponent("fresh.bin")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try Data(repeating: 0x42, count: 4_096).write(to: leaf)
+        defer { try? FileManager.default.removeItem(at: root) } // best-effort test fixture cleanup
+
+        let coordinator = ScanCoordinator(home: root.path, enableTreeDeepIndex: true)
+        let targetRow = TreeRow(path: target.path, title: "Cache", bytes: 1,
+                                fileCount: 1, isDirectory: true, hasChildren: true)
+        coordinator._seedForTesting(
+            currentRootPath: root.path, isScanning: false,
+            dirIndexFull: [root.path: (1, 1), target.path: (1, 1)],
+            childEdges: [root.path: [target.path], target.path: []],
+            treeChildrenCache: ["\(root.path)|\(TreeSortKey.sizeDesc.rawValue)": [targetRow]]
+        )
+        var notifiedSource: TreeFlatProjectionSource?
+        let subscription = coordinator.treeBrowser.$childrenCacheVersion.dropFirst()
+            .sink { @MainActor _ in
+                notifiedSource = coordinator.makeTreeFlatProjectionSource(
+                    rootPath: root.path, sortedBy: .sizeDesc, expandedPaths: [target.path]
+                )
+            }
+
+        await coordinator.rescanSubtree(at: target.path)
+        withExtendedLifetime(subscription) {}
+
+        let source = try XCTUnwrap(notifiedSource)
+        XCTAssertFalse(coordinator.isFetchingChildren(of: target.path, sortedBy: .sizeDesc))
+        XCTAssertFalse(source.fetchingPaths.contains(target.path),
+                       "the terminal notification must freeze settled ownership, not a permanent spinner")
+        XCTAssertTrue(coordinator.treeFlatProjectionSourceIsCurrent(source.revision))
+        let worker = TreeFlatProjectionWorker(
+            input: .init(rootRows: source.rootRows, childrenByParent: source.childrenByParent,
+                         expandedPaths: [target.path], fetchingPaths: source.fetchingPaths,
+                         isFetchingRoot: source.isFetchingRoot,
+                         evaluator: .init { _ in (.safe, .ok) }),
+            previous: .init(rows: [], rowIndexByPath: [:], parentIndexByRow: [],
+                            maxBytes: 0, isFetchingRoot: false)
+        )
+        let result = await worker.prepare()
+        let prepared = try XCTUnwrap(result)
+        XCTAssertEqual(Set(prepared.rows.map(\.row.path)), [target.path, leaf.path])
+        XCTAssertFalse(try XCTUnwrap(prepared.rows.first { $0.row.path == target.path })
+            .isLoadingChildren)
+        _ = await worker.retire()
+    }
+
     func test_childrenCacheVersionNotificationIsNotInvalidatedBySubsequentStructuralBumpInPrune() async throws {
         let coordinator = ScanCoordinator()
         let rows = ["/A/drop", "/A/keep"].map { path in
@@ -201,32 +253,34 @@ final class DeletionPublicationBoundaryTests: XCTestCase {
     }
 
     func test_undoDidRestoreNotificationClearsSameSessionDeletionTombstones() async throws {
-        let coordinator = ScanCoordinator()
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("undo-notification-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) } // best-effort fixture cleanup
+        let restored = root.appendingPathComponent("restored.bin")
+        let kept = root.appendingPathComponent("keep.bin")
+        try Data(repeating: 0x31, count: 2 * 1_048_576).write(to: restored)
+        try Data(repeating: 0x32, count: 2 * 1_048_576).write(to: kept)
+        let coordinator = ScanCoordinator(home: root.path)
         coordinator._seedForTesting(
-            snapshot: .init(categoryID: "test", rows: [], totalBytes: 400 * 1_048_576,
+            snapshot: .init(categoryID: "test", rows: [], totalBytes: 4 * 1_048_576,
                             scannedFileCount: 2, isFinished: true, elapsed: 1),
-            currentRootPath: "/A", isScanning: false
+            currentRootPath: root.path, isScanning: false, largeFileMinBytes: 1_048_576
         )
         coordinator._seedLargeFileLeavesForTesting([
-            (path: "/A/restored.bin", bytes: 200 * 1_048_576),
-            (path: "/A/keep.bin", bytes: 200 * 1_048_576)
+            (path: restored.path, bytes: 2 * 1_048_576),
+            (path: kept.path, bytes: 2 * 1_048_576)
         ])
-
-        await coordinator.acknowledgeSuccessfulDeletionForPresentation(paths: ["/A/restored.bin"])
-        XCTAssertEqual(
-            coordinator.largeFiles(minSizeMB: 1, sortKey: .sizeDesc).map(\.path),
-            ["/A/keep.bin"]
-        )
-
-        NotificationCenter.default.post(
-            name: .gsyUndoDidRestore,
-            object: nil,
-            userInfo: ["paths": ["/A/restored.bin"]]
-        )
-        XCTAssertEqual(
-            Set(coordinator.largeFiles(minSizeMB: 1, sortKey: .sizeDesc).map(\.path)),
-            Set(["/A/restored.bin", "/A/keep.bin"]),
-            "restoring a file from Undo History must remove its same-session tombstone"
-        )
+        await coordinator.acknowledgeSuccessfulDeletionForPresentation(paths: [restored.path])
+        // v2026.10.08: the actual UI awaits full prune before Undo is available. Testing
+        // acknowledgement alone left the old heap intact and concealed lost source models.
+        await coordinator.pruneDeleted(paths: [restored.path])
+        XCTAssertEqual(coordinator.largeFiles(minSizeMB: 1, sortKey: .sizeDesc).map(\.path), [kept.path])
+        NotificationCenter.default.post(name: .gsyUndoDidRestore, object: nil,
+                                        userInfo: ["paths": [restored.path]])
+        await coordinator._waitForUndoReconciliationForTesting()
+        XCTAssertEqual(Set(coordinator.largeFiles(minSizeMB: 1, sortKey: .sizeDesc).map(\.path)),
+                       [restored.path, kept.path])
+        XCTAssertEqual(coordinator.snapshot.scannedFileCount, 2)
+        XCTAssertFalse(coordinator._isDeletedTombstonedForTesting(restored.path))
     }
 }

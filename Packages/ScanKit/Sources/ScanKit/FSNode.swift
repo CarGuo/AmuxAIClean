@@ -22,6 +22,9 @@ public struct FSNode: Sendable, Hashable {
     public let path: String
     public let isDirectory: Bool
     public let isSymlink: Bool
+    /// v2026.10.08: non-directory is not synonymous with regular file (FIFO, socket,
+    /// device and symbolic link entries must not contribute to regular-file counts).
+    public let isRegularFile: Bool
     /// 本次扫描中应累计的物理占用（字节）。目录及重复 hardlink 为 0。
     /// 对普通文件来自 `ATTR_FILE_ALLOCSIZE`；它不是 APFS clone 的 exclusive extent 大小。
     public let allocatedSize: Int64
@@ -48,11 +51,13 @@ public struct FSNode: Sendable, Hashable {
         logicalSize: Int64,
         inode: UInt64,
         device: UInt64,
-        modificationDate: Date?
+        modificationDate: Date?,
+        isRegularFile: Bool? = nil
     ) {
         self.path = path
         self.isDirectory = isDirectory
         self.isSymlink = isSymlink
+        self.isRegularFile = !isDirectory && !isSymlink && (isRegularFile ?? true)
         self.allocatedSize = allocatedSize
         self.logicalSize = logicalSize
         self.inode = inode
@@ -71,7 +76,8 @@ public struct FSNode: Sendable, Hashable {
         logicalSize: Int64,
         inode: UInt64,
         device: UInt64,
-        modificationDate: Date?
+        modificationDate: Date?,
+        isRegularFile: Bool? = nil
     ) {
         self.init(
             path: url.path,
@@ -81,7 +87,8 @@ public struct FSNode: Sendable, Hashable {
             logicalSize: logicalSize,
             inode: inode,
             device: device,
-            modificationDate: modificationDate
+            modificationDate: modificationDate,
+            isRegularFile: isRegularFile
         )
     }
 }

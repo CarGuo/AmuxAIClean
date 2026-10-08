@@ -699,3 +699,92 @@ macOS 13.5 实机/VM 与最终 DMG C5 仍未验证。
 
 逐入口审计、竞品参考、验证命令与证据索引见
 [2026-10-08 删除呈现复盘](regression/DELETION_PRESENTATION_2026-10-08.md)。
+
+### 9.17 v2026.10.08 `7b96b02` 六项复审修复（`CODED_UNVERIFIED`，待作者 review 与 C4）
+
+- **范围**：仅处理本次复审的六个根因：大小写敏感卷被错误升级 `.safe`；完整 prune 后 Undo
+  未重建结果；独立子树刷新重复计算跨目录硬链接；普通文件类型在流转中丢失；历史路径别名
+  覆盖恢复信号；active version 按 readlink 拼写而非目录身份排除。
+- **共同边界**：正向规则由目标文件系统能力决定；Undo 通过后台 indexed transaction 重测并
+  提交行、图索引、总量、Tree 排序、Top-N 与 tombstone。原始扫描目录合计与多链接身份归属
+  贯穿 refresh/prune；两轮间出现未知硬链接身份时使稀疏容量基线失效并重放原始扫描计划。
+  普通单链接文件名不进入持久内存账本，多链接别名集合原位更新以避免二次方复制。
+  恢复通知按当前扫描命名空间投影父级别名，保留最后一级软链目录项。
+  文件类型、历史计数和版本身份均保留生产者证据。
+- **防回归**：新增实际临时文件/硬链接/FIFO/断链 fixture，覆盖完整 prune、重名恢复、整根
+  多根恢复、连续刷新、计费路径消失、直接 prune 计费项、路径别名与两轮之间新建硬链接；另验证正向 literal/glob 规则、
+  历史 JSON 别名合并和 mixed-case 多跳 current。重名通知测试统一 `/var` 与 `/private/var`
+  的同一位置比较，仍断言占用的 original 不得出现在恢复通知。未改需求或削弱安全断言。
+- **最终验证（C3）**：九包全测、Debug 构建、六项 opt-in 原生订阅集成全部通过，
+  String Catalog 与 diff check 通过，21 个修改的 Swift 文件在最终验证期间指纹一致。
+  最终日志在本地 `build/fix-7b96b02/final/`。ScanKit 使用此前已验证的 native build-system
+  scratch 方式避开本地默认构建器重复 object 问题，未改 manifest、工具链或断言。
+  并发编译时 SafetyKit 和前一轮 AppUI 的既有性能项曾超预算，失败日志保留；最终 AppUI
+  全测通过，构建结束后 SafetyKit 独立全测 181/181 通过，性能项五次平均 0.691 秒，
+  原本的 1 秒 budget 未改。Undo、pending ledger、completion journal 的生产文件哈希与复审前相同。
+- **扫描基准**：受控临时数据共 60,100 个普通文件目录项、50,001 个唯一 inode，单个文件
+  有 10,100 个硬链接；独立 metadata 合计 allocated/logical 均为 204,804,096 bytes。
+  PerfBench 57ms、默认 CoordinatorBench 108ms、大文件模式 54ms，容量与数量全部一致；
+  深索引诊断模式 615ms、drain 528ms，不能把诊断模式耗时写成默认投影开销。
+  该基准没有渲染 UI，也不证明高频文件变化、真实界面响应性或 APFS exclusive reclaimable size。
+- **剩余边界**：未启动 App，未做运行交互验收；作者 review 与持续 C4 尚未完成。
+  C4 须在同一次 App 运行内核验回收后 Tree/清单/大文件的行、选择、详情和统计，随后 Undo
+  与重名恢复无需再次点击就重现一致结果；并检查取消/换扫描后的旧恢复不能覆盖新页面、
+  大目录 UI 响应性与内存。真实回收仍只能使用允许的临时 fixture，现有安全/隐私规则没有
+  为测试调整。macOS 13.5、Release/DMG C5 未做。本轮不提交、不推送，交由作者复审。
+
+
+### 9.18 v2026.10.08 全功能真实 App 首轮回归（`PARTIAL_C4`，未完成全功能验收）
+
+- **计划**：[75 项矩阵](regression/FULL_APP_C4_2026-10-08.md) 覆盖回收/Undo、普通与专业扫描、
+  工具、四工作流、设置及生命周期。每项 [执行状态](regression/FULL_APP_C4_RESULTS_2026-10-08.md)
+  区分通过、部分完成、失败、受阻与待测；页面进入、取消分支和 C3 不能算正向操作通过。
+- **实际修复并复测的范围**：人工端口/Dart 真实退出后的纯成功非模态；应用占用/卸载的可见
+  选择与异步 owner 同步；卸载候选数量/容量同源；Tree 父目录连续与嵌套刷新结束 owner 后
+  再发布最终投影；重复扫描完整空/不完整空/输入变更与语言切换。后两项均由本轮真实交互
+  发现，保留失败现场、共享边界修复、版本注释和聚焦防回归，未加 spinner 超时或 UI 兜底。
+- **C3**：九包 2,457 个测试项通过，原生视图 opt-in 另在 7 项集成集合中实际执行并通过；目标
+  Debug 构建与签名严格验证通过。最终源码/测试/整个 bundle 指纹核对一致。日志和 manifest
+  位于本地 `build/full-app-c4-20261008/`，当前结论对应 `delivery-build-preflight.json`，不是
+  中间构建的 loader 哈希。SwiftPM native scratch 方式未改变工程/manifest。
+- **未关闭**：F04 原生菜单展开后混语；F07 `/private/var` 与 `/var` 的规则匹配缺口真实枚举
+  人工临时文件。F07 保持规则不变的候选补丁与红/绿独立探针已准备，规则实现修改等待明确
+  授权，尚未应用，不计为修复通过。英文既有单数计数和更新请求 HTTP 404 也已如实记录。
+- **核心缺口**：没有真实回收或 Undo；TMP fixture 与现有 HOME 删除边界/隐私策略冲突，
+  HOME 人工 cache fixture 的一次测试位置例外尚未获答复。未用 `/var` 漏洞、改规则或既有
+  用户数据制造通过证据。系统维护、真实卸载、模拟器/后台服务、权限/提交故障需要隔离 E；
+  AI 请求、macOS 13.5、Intel、Release/DMG C5 未覆盖。作者 review 仍待，本轮未提交/推送。
+- **清理**：最后持续会话 PID 7041 正常退出；偏好与两条原自定义路径还原，人工五进程已结束，
+  参考文件哈希一致；pending/journal 仍为空、历史仍十条。人工 TMP 文本与空后缀目录保留，
+  没有绕过回收合同删除。正常退出重写 Undo JSON，不能声称其字节哈希不变。
+
+### 9.19 v2026.10.08 外部复审发现的 Undo 模式同步遗漏（C3；无新 C4）
+
+- **复核结论**：三项核心指摘成立。原有多根 Undo 用例只断言总量和 Tree，遗漏实际清单与
+  bucket；特殊版本/缓存扫描缺少恢复对账范围；普通结果尚未生成 Tree 投影时刷新沿用空字典。
+  第三项应收窄到未投影状态，完整空扫描通常已有八个排序键的空数组。新增/强化的聚焦集合
+  在原实现产生 22 处断言失败，见 `build/undo-review-20261008/red.log`。
+- **修复边界**：普通多根在同一后台 indexed transaction 合并当前根的一级 rows/buckets，
+  保留其他根。专用发现使用类型化计划和独立候选历史，经 primary admission 重放原生产者，
+  重新执行版本保留、缓存选项和白名单；不先清 tombstone 暴露旧行。Tree 按真实模式构造，
+  版本候选显式刷新仍保持语义叶子，不把所有 sentinel 都当 per-root。
+- **修复自查**：在实现过程中进一步用红断言拦住取消后通知重启扫描、重名恢复失效、候选
+  路径混入枚举根而使显式刷新替换候选等问题；最终候选历史跨恢复重扫保留，结果 owner
+  失效时撤销计划，重名仅使候选父域失效并重新判定规则，不能给新名字授信。红日志分别为
+  `cancelled-owner-red.log`、`renamed-discovery-red.log`、`discovery-root-domain-red.log`。
+- **最终验证（C3）**：九包全测全部 exit 0，共调度 2,451 项 XCTest，11 项 Swift Testing
+  通过；AppUI 为 1,508 项 XCTest 加 11 项 Swift Testing。默认跳过的两项原生视图已在开启
+  opt-in 的 45 项聚焦集合中实际执行，全部通过，不重复累加。目标 Debug 构建、签名
+  strict/deep 与 diff check 通过。214 个生产/工程资源、211 个测试文件验证期间指纹一致，
+  完整 bundle 未再变化；生产 Undo、pending ledger、completion journal 哈希均未变。
+  新增五个有行为意义的用例，另强化已有多根恢复断言；仅用系统临时 fixture，没有真实回收。
+  默认高并发全测出现既有 2 万候选性能项超出原 1 秒预算（1.407 秒），失败日志保留；原
+  断言独立复测通过（整个用例 0.530 秒），两个测试 worker 的完整 AppUI 重跑也通过，未改
+  预算、环境判据或需求。原始失败、最终全测、源码/产物身份见本地
+  `build/undo-review-20261008/verification-summary.json` 与关联日志，不能隐去首次失败。
+- **作者复审追加闭环（C2/C3）**：
+  1. `KnownVersionedRoots` 语义叶子合同统一：`prepareVersionedRootsPresentation` 生成的 `RowItem`、部分删除（`PruneStateWorker.prepare` / `makePrunePlan`）、外部硬链接容量更新（`applyExternalAllocationDeltas`）以及显式刷新（`buildIndexedSubtreeTransaction`）均保持 `hasChildren == false`，避免部分删除后剩余版本候选退化为可展开目录；在 `ScanCoordinatorKnownVersionedRootsTests` 中增加先删 1 个候选再删剩余候选及 Undo 的断言。
+  2. `VendorTrie` 同一下写化节点多字面量 `pathOverride` 合同：`VendorTrieNode` 保存保持声明顺序的 `literalOverrides`，在不破坏既有“先到先得”合同的前提下，支持区分大小写卷上同一归一化节点的多种大小写拼写（后续大小写变体不会在建树时被首条规则吞没）；新增 `PermissivePathSemanticsTests.testSameNormalizedTrieNodeSupportsCaseVariantsAndFirstMatchFallback`。
+  3. 复核 F07 候选补丁（`privacy-alias-proposed.patch`）：实测发现若直接将 `/private/var/folders` 折叠为 `/var/folders`，会导致 `FileManager.default.temporaryDirectory`（`/var/folders/.../T`）下的 `BulkScanner` / `TreeSizeEstimator` 测试 fixture 全部被误判为 `.tccProtectedSkipped`（触发 `ScanCoordinatorKnownVersionedRootsTests` 等 8 处断言失败），且与 `AGENTS.md` 的 `NSTemporaryDirectory()` fixture 合同冲突；因此驳回该候选补丁，保持 `TCCSkipList.swift` 原实现不变，留待后续区分系统目录与当前进程临时目录后再处理。
+- **剩余项**：本节改动完成九包全测与 Debug 构建（C3），未启动 App 做新的运行交互验收（C4）。
+  F04 原生菜单混语与 F07 隐私路径匹配仍待后续处理；真实回收/Undo、macOS 13.5/Intel 与 Release/DMG C5 尚未完成。长期合同见 PITFALLS 第 22 节。

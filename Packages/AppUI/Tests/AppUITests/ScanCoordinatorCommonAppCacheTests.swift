@@ -858,6 +858,150 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
         return url
     }
 
+    func testUndoRediscoveryRestoresCacheCandidatesWithOriginalScanOptions() async throws {
+        let home = try makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let cache = home.appendingPathComponent("Library/Caches/com.example.Cache")
+        let added = home.appendingPathComponent("Library/Caches/com.example.Added")
+        let excluded = home.appendingPathComponent("Library/Caches/com.example.Excluded")
+        let confirm = home.appendingPathComponent("Library/Application Support/Example/Backgrounds")
+        for url in [cache, excluded, confirm] {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            try Data(repeating: 0x61, count: 8192).write(to: url.appendingPathComponent("payload.bin"))
+        }
+        let vendors = [
+            VendorRule(name: "Cache", bundleIDPrefix: "com.example.Cache", category: "common_app_cache",
+                paths: [PathRule(path: "~/Library/Caches/com.example.Cache", verdict: .safe)]),
+            VendorRule(name: "Added", category: "common_app_cache",
+                paths: [PathRule(path: "~/Library/Caches/com.example.Added", verdict: .safe)]),
+            VendorRule(name: "Excluded", category: "common_app_cache",
+                paths: [PathRule(path: "~/Library/Caches/com.example.Excluded", verdict: .safe)]),
+            VendorRule(name: "Confirm", category: "common_app_cache",
+                paths: [PathRule(path: "~/Library/Application Support/Example/Backgrounds", verdict: .confirm)])
+        ]
+        let coordinator = ScanCoordinator(vendors: vendors, home: home.path)
+        isolateLiveStandardAppDiscovery(coordinator)
+        coordinator.scanCommonAppCaches(includeConfirm: false, scannerOptions: .init(
+            excludedCandidatePathPrefixes: [excluded.path]))
+        await waitScanFinished(coordinator)
+        XCTAssertEqual(coordinator.snapshot.rows.map(\.id), [cache.path])
+        let session = coordinator.currentScanSessionID
+        await coordinator.acknowledgeSuccessfulDeletionForPresentation(paths: [cache.path])
+        await coordinator.pruneDeleted(paths: [cache.path])
+        XCTAssertTrue(coordinator.snapshot.rows.isEmpty)
+
+        try FileManager.default.createDirectory(at: added, withIntermediateDirectories: true)
+        try Data(repeating: 0x62, count: 16384).write(to: added.appendingPathComponent("payload.bin"))
+        await coordinator.reconcileRestoredPaths([cache.path])
+        await waitScanFinished(coordinator)
+        XCTAssertNotEqual(coordinator.currentScanSessionID, session)
+        XCTAssertEqual(Set(coordinator.snapshot.rows.map(\.id)), [cache.path, added.path])
+        XCTAssertFalse(coordinator.snapshot.rows.contains { $0.id == confirm.path }, "Undo must keep includeConfirm=false")
+        XCTAssertFalse(coordinator.snapshot.rows.contains { $0.id == excluded.path }, "Undo must preserve scanner exclusions")
+        XCTAssertFalse(coordinator._isDeletedTombstonedForTesting(cache.path))
+        XCTAssertFalse(coordinator.treeBrowser.deletionPresentation.matcher.contains(cache.path))
+        let restored = try XCTUnwrap(coordinator.snapshot.rows.first { $0.id == cache.path })
+        XCTAssertEqual(restored.title, "Cache")
+        XCTAssertEqual(restored.runningBundleIDPrefix, "com.example.Cache")
+        XCTAssertEqual(coordinator.snapshot.totalBytes, coordinator.snapshot.rows.reduce(0) { $0 + $1.bytes })
+        XCTAssertEqual(coordinator.snapshot.scannedFileCount, 2)
+        XCTAssertEqual(Set(coordinator.directChildren(of: ScanCoordinator.commonAppCacheSentinelPath, sortedBy: .sizeDesc).map(\.path)), [cache.path, added.path])
+
+        await coordinator.rescanSubtree(at: cache.path)
+        XCTAssertEqual(Set(coordinator.snapshot.rows.map(\.id)), [cache.path, added.path],
+                       "An explicit candidate refresh must keep semantic roots, not replace them with child files")
+        XCTAssertEqual(Set(coordinator.directChildren(of: ScanCoordinator.commonAppCacheSentinelPath, sortedBy: .sizeDesc).map(\.path)),
+                       [cache.path, added.path], "Candidate refresh must retain the snapshot Tree projection")
+
+        // Undo reports only the actual destination when the old name is occupied. The sibling
+        // must invalidate discovery, but may not bypass the exact cache rule into a new row.
+        let renamed = cache.deletingLastPathComponent().appendingPathComponent("com.example.Cache (restored)")
+        try FileManager.default.moveItem(at: cache, to: renamed)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try Data(repeating: 0x64, count: 32768).write(to: cache.appendingPathComponent("new-occupant.bin"))
+        await coordinator.acknowledgeSuccessfulDeletionForPresentation(paths: [cache.path])
+        await coordinator.pruneDeleted(paths: [cache.path])
+        let previousSession = coordinator.currentScanSessionID
+        await coordinator.reconcileRestoredPaths([renamed.path])
+        await waitScanFinished(coordinator)
+        XCTAssertNotEqual(coordinator.currentScanSessionID, previousSession)
+        let occupied = try XCTUnwrap(coordinator.snapshot.rows.first { $0.id == cache.path })
+        XCTAssertEqual(occupied.bytes, try allocatedBytes(of: cache.appendingPathComponent("new-occupant.bin")))
+        XCTAssertFalse(coordinator.snapshot.rows.contains { $0.id == renamed.path }, "Restore is not a cache-rule grant")
+    }
+
+    /// v2026.10.08: a second restore must survive a still-running recovery producer; after
+    /// cancellation the same notification must not resurrect the discarded scan owner.
+    func testConsecutiveUndoRediscoveryWaitsForProducerAndDoesNotRestartACancelledScan() async throws {
+        let home = try makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let caches = ["First", "Second"].map { home.appendingPathComponent("Library/Caches/com.example.\($0)") }
+        for cache in caches {
+            try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+            try Data(repeating: 0x63, count: 8192).write(to: cache.appendingPathComponent("payload.bin"))
+        }
+        let vendors = [VendorRule(name: "Recovery", category: "common_app_cache", paths: [
+            PathRule(path: "~/Library/Caches/com.example.First", verdict: .safe),
+            PathRule(path: "~/Library/Caches/com.example.Second", verdict: .safe)
+        ])]
+        let coordinator = ScanCoordinator(vendors: vendors, home: home.path)
+        isolateLiveStandardAppDiscovery(coordinator)
+        coordinator.scanCommonAppCaches(includeConfirm: false, scannerOptions: .init(timeoutSeconds: 19))
+        await waitScanFinished(coordinator)
+        XCTAssertEqual(Set(coordinator.snapshot.rows.map(\.id)), Set(caches.map(\.path)))
+        await coordinator.acknowledgeSuccessfulDeletionForPresentation(paths: caches.map(\.path))
+        await coordinator.pruneDeleted(paths: caches.map(\.path))
+
+        let firstStarted = DispatchSemaphore(value: 0)
+        let releaseFirst = DispatchSemaphore(value: 0)
+        let latestStarted = DispatchSemaphore(value: 0)
+        defer { releaseFirst.signal() }
+        coordinator.commonAppCacheDetector = { _, _, options in
+            XCTAssertEqual(options.timeoutSeconds, 19)
+            XCTAssertEqual(options.includedVerdicts, [.safe])
+            firstStarted.signal()
+            releaseFirst.wait() // Deliberately non-cooperative filesystem producer.
+            return .init(hits: [], incompletePaths: [])
+        }
+        await coordinator.reconcileRestoredPaths([caches[0].path])
+        let didStartFirst = await waitForSignal(firstStarted, timeout: 2)
+        XCTAssertTrue(didStartFirst)
+        let firstSession = coordinator.currentScanSessionID
+
+        coordinator.commonAppCacheDetector = { rules, home, options in
+            XCTAssertEqual(options.timeoutSeconds, 19)
+            XCTAssertEqual(options.includedVerdicts, [.safe])
+            latestStarted.signal()
+            return CommonAppCacheScanner.detect(vendors: rules, home: home, options: options)
+        }
+        NotificationCenter.default.post(name: .gsyUndoDidRestore, object: nil,
+                                        userInfo: ["paths": [caches[1].path]])
+        await coordinator._waitForUndoReconciliationForTesting()
+        guard case .settling = coordinator.scanPhase else {
+            return XCTFail("The second restore must retain its scope and wait for true producer termination")
+        }
+        let didOverlap = await waitForSignal(latestStarted, timeout: 0.05)
+        XCTAssertFalse(didOverlap)
+        releaseFirst.signal()
+        await waitScanFinished(coordinator)
+        let didStartLatest = await waitForSignal(latestStarted, timeout: 1)
+        XCTAssertTrue(didStartLatest)
+        XCTAssertNotEqual(coordinator.currentScanSessionID, firstSession)
+        XCTAssertEqual(Set(coordinator.snapshot.rows.map(\.id)), Set(caches.map(\.path)))
+        XCTAssertEqual(coordinator.snapshot.scannedFileCount, 2)
+        XCTAssertEqual(coordinator.snapshot.totalBytes, coordinator.snapshot.rows.reduce(0) { $0 + $1.bytes })
+
+        coordinator.cancel()
+        let cancelledSession = coordinator.currentScanSessionID
+        NotificationCenter.default.post(name: .gsyUndoDidRestore, object: nil,
+                                        userInfo: ["paths": [caches[0].path]])
+        await coordinator._waitForUndoReconciliationForTesting()
+        XCTAssertEqual(coordinator.currentScanSessionID, cancelledSession)
+        XCTAssertEqual(coordinator.scanPhase, .idle)
+        XCTAssertTrue(coordinator.snapshot.rows.isEmpty)
+        coordinator.cancel()
+    }
+
     private func allocatedBytes(of url: URL) throws -> Int64 {
         let values = try url.resourceValues(forKeys: [
             .fileAllocatedSizeKey,
@@ -869,13 +1013,19 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
     private func waitScanFinished(_ coord: ScanCoordinator,
                                   timeout: TimeInterval = 6) async {
         let deadline = Date().addingTimeInterval(timeout)
-        while coord.isScanning && Date() < deadline {
+        // A queued replacement exposes isScanning=false while its old producer settles.
+        // Wait for the typed phase as well, never accept the predecessor's finished frame.
+        while (coord.scanPhase != .idle || !coord.snapshot.isFinished) && Date() < deadline {
             do {
                 try await Task.sleep(nanoseconds: 30_000_000)
             } catch {
+                XCTFail("Scan wait was cancelled: \(error)")
                 return
             }
         }
+        XCTAssertEqual(coord.scanPhase, .idle, "扫描应在测试超时前结算")
+        XCTAssertFalse(coord.isScanning)
+        XCTAssertTrue(coord.snapshot.isFinished, "扫描应发布 finished snapshot")
     }
 
     /// 让出 MainActor 等待后台 producer 信号，避免测试自己的 semaphore wait

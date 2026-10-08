@@ -20,6 +20,19 @@ private enum MainWindowMetrics {
 private final class ApplicationLifecycleDelegate: NSObject, NSApplicationDelegate {
     private typealias MainWindowSceneOpener = @MainActor () -> Void
     private var mainWindowSceneOpeners: [UUID: MainWindowSceneOpener] = [:]
+    private var menuLocale: Locale?
+
+    /// v2026.10.08: SwiftUI rebuilds native menus on later scene/navigation updates too.
+    /// Reconcile at AppKit's update boundary instead of guessing a number of runloop delays.
+    func updateMenuLocale(_ locale: Locale) {
+        menuLocale = locale
+        ApplicationMenuLocalizer.apply(locale: locale)
+    }
+
+    func applicationDidUpdate(_ notification: Notification) {
+        guard let menuLocale else { return }
+        ApplicationMenuLocalizer.apply(locale: menuLocale)
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         UndoHistoryStore.shared.saveHistorySync()
@@ -470,8 +483,7 @@ struct GSYCleanMacApp: App {
     /// v2026.07.16：两个扫描协调器属于 App 生命周期，必须在这里一起同步；
     /// 这样主窗口销毁、只剩 Settings scene 时切语言，托盘/HUD 后续发起的扫描也不会
     /// 继续生成旧语言文案。fanout 只写展示 locale，不重扫、不替换或重建 snapshot。
-    /// 延后一轮再刷新 main menu，是为了让本次 SwiftUI Commands diff 先完成，
-    /// 避免刚改好的原生标题被随后发生的 command rebuild 覆盖回启动语言。
+    /// The lifecycle delegate also reconciles subsequent AppKit/SwiftUI menu updates.
     private func applyLiveLocale() {
         let locale = settings.effectiveLocale
         ScanPresentationLocaleFanout.apply(
@@ -480,10 +492,7 @@ struct GSYCleanMacApp: App {
             smartCareCoordinator: smartCareSession.scanCoordinator
         )
         statusItem.updateLocale(locale)
-        ApplicationMenuLocalizer.apply(locale: locale)
-        DispatchQueue.main.async {
-            ApplicationMenuLocalizer.apply(locale: locale)
-        }
+        lifecycleDelegate.updateMenuLocale(locale)
     }
 
     /// v1.3.x：根据当前主窗口可见性 + settings.hideFromDockWhenClosed 决定 NSApp 激活策略。
@@ -744,8 +753,21 @@ private struct GSYCleanCommands: Commands {
     let updateChecker: UpdateChecker
     @Binding var hudShown: Bool
     let locale: Locale
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        // v2026.10.08: SwiftUI's generated New Window title uses the launch language and
+        // exposes an opaque action. Own that command semantically instead of guessing its
+        // title/position; keep the same public WindowGroup opening action and shortcut.
+        CommandGroup(replacing: .newItem) {
+            Button(AppLocalization.format(
+                "menu.native.new_window %@", locale: locale,
+                arguments: [AppLocalization.string("app.name", locale: locale)]
+            )) {
+                openWindow(id: GSYCleanMacApp.mainWindowID)
+            }
+            .keyboardShortcut("n", modifiers: [.command])
+        }
         // v1.1：Help 菜单加"检查更新"入口（实际落在 appInfo 后面，约定俗成）
         CommandGroup(after: .appInfo) {
             Button(AppLocalization.string("menu.app.checkUpdates", locale: locale)) {

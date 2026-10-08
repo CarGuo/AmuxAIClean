@@ -169,6 +169,7 @@ final class AppFootprintReloadModel: ObservableObject {
     @Published private(set) var items: [AppFootprintItem] = []
     @Published private(set) var discoveryIssues: [InstalledAppDiscoveryIssue] = []
     @Published var selected: AppFootprintItem?
+    @Published private(set) var searchQuery = ""
     @Published private(set) var pendingIDs: Set<AppFootprintItem.ID> = []
     @Published private(set) var isLoading = false
     @Published private(set) var progressDone = 0
@@ -191,6 +192,24 @@ final class AppFootprintReloadModel: ObservableObject {
     /// 已完成/partial 终态倒退成“仍在扫描”。revision 旋转时整体清空。
     private var terminalIDs: Set<AppFootprintItem.ID> = []
     private var hasPublishedFirstResult = false
+
+    var searchProjection: AppListSearchProjection<AppFootprintItem> {
+        AppListSearchProjection(items: items, selection: selected, query: searchQuery) {
+            $0.appName.localizedCaseInsensitiveContains($1)
+                || $0.bundleID.localizedCaseInsensitiveContains($1)
+        }
+    }
+
+    func updateSearchQuery(_ query: String) {
+        let next = AppListSearchProjection(items: items, selection: selected, query: query) {
+            $0.appName.localizedCaseInsensitiveContains($1)
+                || $0.bundleID.localizedCaseInsensitiveContains($1)
+        }
+        // Clear the old owner before publishing a query that hides it. A later progressive
+        // item cannot resurrect this selection, because commits retain only the current ID.
+        selected = next.selection
+        searchQuery = query
+    }
 
     init(
         loader: @escaping InstalledAppsLoader,
@@ -238,7 +257,7 @@ final class AppFootprintReloadModel: ObservableObject {
             let placeholders = installed.map(Self.placeholderItem(for:))
             self.pendingIDs = Set(placeholders.map(\.id))
             self.items = placeholders
-            self.selected = placeholders.first
+            self.selected = self.searchProjection.items.first
 
             // 新列表元数据可以先展示；重型 bundle snapshot 必须等待上一轮 producer
             // 确认退出，避免快速刷新时把两组目录遍历压到同一块磁盘上。
@@ -331,7 +350,8 @@ final class AppFootprintReloadModel: ObservableObject {
         items = nextItems
         sortItemsForDisplay()
         if let selectedID {
-            selected = items.first(where: { $0.id == selectedID }) ?? items.first
+            selected = searchProjection.items.first(where: { $0.id == selectedID })
+                ?? searchProjection.items.first
         }
     }
 
@@ -420,7 +440,8 @@ final class AppFootprintReloadModel: ObservableObject {
             pendingIDs = updatedPendingIDs
             progressDone = updatedProgressDone
             if let selectedID {
-                selected = updatedItems.first(where: { $0.id == selectedID })
+                // v2026.10.08: progressive metadata may change the search match too.
+                selected = searchProjection.items.first(where: { $0.id == selectedID })
             }
             displayCommitCount += 1
         } else if forceFinalSort {
@@ -482,7 +503,6 @@ final class AppFootprintReloadModel: ObservableObject {
 public struct AppFootprintScreen: View {
     @StateObject private var reloadModel: AppFootprintReloadModel
     @StateObject private var iconCache = AppFootprintIconCache()
-    @State private var search: String = ""
     /// v2026.07.15：String 型 placeholder、格式串与容量必须按当前界面语言即时投影。
     @Environment(\.locale) private var locale
 
@@ -575,7 +595,10 @@ public struct AppFootprintScreen: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            TextField(AppLocalization.string("appfootprint.header.search_placeholder", locale: locale), text: $search)
+            TextField(AppLocalization.string("appfootprint.header.search_placeholder", locale: locale), text: Binding(
+                get: { reloadModel.searchQuery },
+                set: { reloadModel.updateSearchQuery($0) }
+            ))
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 220)
             if reloadModel.isLoading {
@@ -596,7 +619,10 @@ public struct AppFootprintScreen: View {
 
     private var table: some View {
         let maxBytes = max(1, reloadModel.items.map(\.totalBytes).max() ?? 1)
-        return List(selection: $reloadModel.selected) {
+        return List(selection: Binding(
+            get: { reloadModel.searchProjection.selection },
+            set: { reloadModel.selected = $0 }
+        )) {
             ForEach(filtered) { item in
                 row(item, maxBytes: maxBytes)
                     .tag(item)
@@ -707,7 +733,7 @@ public struct AppFootprintScreen: View {
 
     private var rightPane: some View {
         VStack(spacing: 0) {
-            if let item = reloadModel.selected {
+            if let item = reloadModel.searchProjection.selection {
                 if reloadModel.pendingIDs.contains(item.id) {
                     pendingDetail(item)
                 } else {
@@ -808,11 +834,7 @@ public struct AppFootprintScreen: View {
     // MARK: - Helpers
 
     private var filtered: [AppFootprintItem] {
-        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return reloadModel.items }
-        return reloadModel.items.filter {
-            $0.appName.lowercased().contains(q) || $0.bundleID.lowercased().contains(q)
-        }
+        reloadModel.searchProjection.items
     }
 
     private var loadedItems: [AppFootprintItem] {
@@ -820,7 +842,7 @@ public struct AppFootprintScreen: View {
     }
 
     private var emptyText: String {
-        if !search.trimmingCharacters(in: .whitespaces).isEmpty {
+        if !reloadModel.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return AppLocalization.string("appfootprint.empty.no_match", locale: locale)
         }
         if !reloadModel.discoveryIssues.isEmpty {

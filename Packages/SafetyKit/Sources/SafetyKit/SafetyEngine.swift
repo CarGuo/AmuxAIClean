@@ -42,9 +42,17 @@ public struct SafetyEngine: Sendable {
     /// 使用 Bundle.module 的共享加载结果。普通 evaluate 仍沿用历史降级语义，只有需要
     /// 铸造 destructive override 的能力层查询 `hasCompleteBundleProtectionEvidence`。
     private let bundleProtectionMatcher: BundleProtectionMatcher
+    private let pathSemantics: FileSystemPathSemantics
 
     public init(bundleProtectionMatcher: BundleProtectionMatcher = BundleProtection.shared) {
         self.bundleProtectionMatcher = bundleProtectionMatcher
+        self.pathSemantics = FileSystemPathSemantics()
+    }
+
+    init(bundleProtectionMatcher: BundleProtectionMatcher = BundleProtection.shared,
+         pathCaseSensitivity: @escaping @Sendable (String) -> Bool?) {
+        self.bundleProtectionMatcher = bundleProtectionMatcher
+        self.pathSemantics = FileSystemPathSemantics(isCaseSensitive: pathCaseSensitivity)
     }
 
     public var bundleProtectionLoadState: BundleProtectionLoadState {
@@ -266,10 +274,6 @@ public struct SafetyEngine: Sendable {
         hardForbidPathContains.map { $0.lowercased() }
     private static let lowerUserRootForbiddenRelativeSuffixes: [String] =
         userRootForbiddenRelativeSuffixes.map { $0.lowercased() }
-    private static let lowerSafeCacheRelativePrefixes: [String] =
-        safeCacheRelativePrefixes.map { $0.lowercased() }
-    private static let lowerSystemSafeCachePrefixes: [String] =
-        systemSafeCachePrefixes.map { $0.lowercased() }
 
     /// 用户家目录下"根级别"禁删（防止用户拖进整个文件夹被一键带走）。
     public static func userRootForbidden(home: String) -> [String] {
@@ -407,12 +411,16 @@ public struct SafetyEngine: Sendable {
                 }
             }
         }
-        // 8. 已知缓存路径升级为 safe（UI 可默认勾选；零分配前缀匹配）
+        // 8. Positive cache matches honor filesystem case semantics before default selection.
         let isSafeCachePath: Bool
-        if let relative = lowerHomeRelative {
-            isSafeCachePath = Self.lowerSafeCacheRelativePrefixes.contains { relative.hasPrefix($0) }
+        if lowerHomeRelative != nil {
+            isSafeCachePath = Self.safeCacheRelativePrefixes.contains {
+                pathSemantics.matchesSafeRule(pattern: canonicalHome + $0, path: canonical)
+            }
         } else {
-            isSafeCachePath = Self.lowerSystemSafeCachePrefixes.contains { lowerCanonical.hasPrefix($0) }
+            isSafeCachePath = Self.systemSafeCachePrefixes.contains {
+                pathSemantics.matchesSafeRule(pattern: $0, path: canonical)
+            }
         }
         if isSafeCachePath {
             // 8.1 bundle 保护叠加：safe 路径若属于 data_protected app
@@ -588,7 +596,9 @@ public struct SafetyEngine: Sendable {
             if effectiveBase.0 == .forbid {
                 return (effectiveBase.0, effectiveBase.1, nil)
             }
-            resolvedHit = VendorTrie.match(standardizedPath: resolvedCanonical, in: trie)
+            resolvedHit = VendorTrie.match(standardizedPath: resolvedCanonical, in: trie) {
+                pathSemantics.matchesSafeRule(pattern: $0, path: resolvedCanonical)
+            }
             if let rHit = resolvedHit {
                 if rHit.pathOverride?.verdict == .forbid {
                     return (.forbid, .vendorPathRule, rHit.rule)
@@ -605,7 +615,9 @@ public struct SafetyEngine: Sendable {
             )
         ) ? effectiveBase.1 : .ok
 
-        guard let hit = VendorTrie.match(standardizedPath: canonical, in: trie) else {
+        guard let hit = VendorTrie.match(standardizedPath: canonical, in: trie, acceptSafeRule: {
+            pathSemantics.matchesSafeRule(pattern: $0, path: canonical)
+        }) else {
             if let rHit = resolvedHit,
                rHit.pathOverride?.verdict == .confirm || (rHit.pathOverride == nil && rHit.isExactRoot) {
                 return (.confirm, confirmRejection, rHit.rule)

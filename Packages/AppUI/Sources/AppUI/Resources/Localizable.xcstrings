@@ -4766,6 +4766,74 @@
         }
       }
     },
+    "duplicate.placeholder.cancelled_empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan stopped. No duplicate groups to display. Scan again to complete the check."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描已停止，暂无可显示的重复组。重新扫描可完成检查。"
+          }
+        }
+      }
+    },
+    "duplicate.placeholder.completed_empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan complete. No duplicate files found for the selected folders and minimum size."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描完成，未发现符合所选目录和最小尺寸的重复文件。"
+          }
+        }
+      }
+    },
+    "duplicate.placeholder.incomplete_empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan finished with unreadable locations. No duplicates were found in the scanned files."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描结束，但部分位置未读取。已读取的文件中未发现重复项。"
+          }
+        }
+      }
+    },
+    "duplicate.placeholder.interrupted_empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The scan ended without a complete result. Please scan again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描未取得完整结果，请重新扫描。"
+          }
+        }
+      }
+    },
     "duplicate.placeholder.no_results": {
       "extractionState": "manual",
       "localizations": {
@@ -7809,6 +7877,27 @@
         }
       }
     },
+    "settings.window.title %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "%@ Settings" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%@ 设置" } }
+      }
+    },
+    "menu.native.new_window %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "New %@ Window" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "新建 %@ 窗口" } }
+      }
+    },
+    "menu.native.close_all": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Close All" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "全部关闭" } }
+      }
+    },
     "menu.native.settings": {
       "extractionState": "manual",
       "localizations": {
@@ -8913,6 +9002,41 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Dismiss" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "关闭提示" } }
+      }
+    },
+    "op.feedback.processes_stopped %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": { "state": "translated", "value": "%#@count@" },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": { "stringUnit": { "state": "translated", "value": "%lld process stopped" } },
+                  "other": { "stringUnit": { "state": "translated", "value": "%lld processes stopped" } }
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": { "state": "translated", "value": "%#@count@" },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": { "stringUnit": { "state": "translated", "value": "已结束 %lld 个进程" } },
+                  "other": { "stringUnit": { "state": "translated", "value": "已结束 %lld 个进程" } }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "op.feedback.trashed %lld": {

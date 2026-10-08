@@ -28,8 +28,9 @@ public enum PathGlob {
 
     /// 严格 fnmatch：`pattern` 必须**完整**匹配 `path` 的全部字符（APFS 默认大小写不敏感）。
     /// 用于"path 等同于 vendor 根的精确匹配"语义（VendorTrie isExactRoot 场景）。
-    public static func match(pattern: String, path: String) -> Bool {
-        matchUTF8(Array(pattern.lowercased().utf8), Array(path.lowercased().utf8))
+    public static func match(pattern: String, path: String, caseSensitive: Bool = false) -> Bool {
+        matchUTF8(Array((caseSensitive ? pattern : pattern.lowercased()).utf8),
+                  Array((caseSensitive ? path : path.lowercased()).utf8))
     }
 
     /// 前缀 fnmatch：`pattern` 是否匹配 `path` 的某个前缀，且分界点必须落在 `/` 上
@@ -39,10 +40,10 @@ public enum PathGlob {
     /// `path="~/Library/Caches/JetBrains/IntelliJIdea2024.3/log.txt"`，
     /// 截 path 的前 5 段（与 pattern 段数相同）= `~/Library/Caches/JetBrains/IntelliJIdea2024.3`，
     /// 完整 fnmatch 通过，返回 true。
-    public static func matchPrefix(pattern: String, path: String) -> Bool {
+    public static func matchPrefix(pattern: String, path: String, caseSensitive: Bool = false) -> Bool {
         if pattern.contains("**") {
-            let pBytes = Array(pattern.lowercased().utf8)
-            let tBytes = Array(path.lowercased().utf8)
+            let pBytes = Array((caseSensitive ? pattern : pattern.lowercased()).utf8)
+            let tBytes = Array((caseSensitive ? path : path.lowercased()).utf8)
             if matchUTF8(pBytes, tBytes) {
                 return true
             }
@@ -55,7 +56,7 @@ public enum PathGlob {
         }
         let segNeeded = countSegments(pattern)
         let prefix = takeSegments(path, count: segNeeded)
-        return match(pattern: pattern, path: prefix)
+        return match(pattern: pattern, path: prefix, caseSensitive: caseSensitive)
     }
 
     /// 数路径里的非空段个数。
