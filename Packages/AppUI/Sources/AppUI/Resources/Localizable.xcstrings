@@ -8908,6 +8908,48 @@
         }
       }
     },
+    "op.feedback.dismiss": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Dismiss" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "关闭提示" } }
+      }
+    },
+    "op.feedback.trashed %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": { "state": "translated", "value": "%#@count@" },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": { "stringUnit": { "state": "translated", "value": "%lld item moved to Trash" } },
+                  "other": { "stringUnit": { "state": "translated", "value": "%lld items moved to Trash" } }
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": { "state": "translated", "value": "%#@count@" },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": { "stringUnit": { "state": "translated", "value": "已将 %lld 项移到废纸篓" } },
+                  "other": { "stringUnit": { "state": "translated", "value": "已将 %lld 项移到废纸篓" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "op.result.summary.success %lld": {
       "extractionState": "manual",
       "localizations": {

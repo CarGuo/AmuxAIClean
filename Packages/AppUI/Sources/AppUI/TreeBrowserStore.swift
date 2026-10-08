@@ -59,6 +59,13 @@ struct DeletionPresentationPathMatcher: Sendable, Equatable {
     }
 }
 
+/// v2026.10.08: carry the receipt matcher and its revision in one immutable event. @Published
+/// emits from willSet, so a subscriber must consume this value instead of re-reading old state.
+struct TreeDeletionPresentation: Sendable, Equatable {
+    let revision: UInt64
+    let matcher: DeletionPresentationPathMatcher
+}
+
 /// Step 10b / 2026-06：树形浏览状态 SSOT 接口外壳。
 ///
 /// 把 [ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
@@ -108,11 +115,12 @@ public final class TreeBrowserStore: ObservableObject {
 
     /// v2026.07.20：successful recycle receipt 的窄展示信号。完整 roots 留在 store，
     /// revision 仅负责唤醒 Tree；每个订阅者都可读取，不能用单消费者 consume 语义。
-    @Published public private(set) var deletionPresentationRevision: UInt64 = 0
-    public private(set) var deletionPresentationPaths: [String] = []
-    private(set) var deletionPresentationMatcher = DeletionPresentationPathMatcher(
-        paths: EmptyCollection<String>()
+    @Published private(set) var deletionPresentation = TreeDeletionPresentation(
+        revision: 0,
+        matcher: DeletionPresentationPathMatcher(paths: EmptyCollection<String>())
     )
+    public var deletionPresentationRevision: UInt64 { deletionPresentation.revision }
+    public var deletionPresentationPaths: [String] { deletionPresentation.matcher.roots }
 
     public init() {}
 
@@ -144,17 +152,15 @@ public final class TreeBrowserStore: ObservableObject {
     /// v2026.07.20: the coordinator's background tombstone worker owns normalization. Publishing
     /// the frozen matcher keeps sheet remounts and receipt patches O(1) on MainActor.
     func publishDeletionPresentation(matcher: DeletionPresentationPathMatcher) {
-        deletionPresentationMatcher = matcher
-        deletionPresentationPaths = matcher.roots
-        deletionPresentationRevision &+= 1
+        deletionPresentation = TreeDeletionPresentation(
+            revision: deletionPresentation.revision &+ 1, matcher: matcher
+        )
     }
 
     public func resetDeletionPresentation() {
         guard !deletionPresentationPaths.isEmpty else { return }
-        deletionPresentationPaths = []
-        deletionPresentationMatcher = DeletionPresentationPathMatcher(
-            paths: EmptyCollection<String>()
+        publishDeletionPresentation(
+            matcher: DeletionPresentationPathMatcher(paths: EmptyCollection<String>())
         )
-        deletionPresentationRevision &+= 1
     }
 }

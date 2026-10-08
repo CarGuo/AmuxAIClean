@@ -593,6 +593,7 @@ public struct MainView: View {
     /// 取代旧 alert 拼接 `delete.result.success/failure %@ %lld %lld` 的纯文字弹窗。
     /// `deleteResult` 仍保留——`delete.result.path_invalid` 等纯路径校验提示仍走旧 alert。
     @State private var deleteResultCompletion: OperationResultCompletion?
+    @State private var deleteSuccessFeedback: OperationSuccessFeedback?
     @State private var deletePreflightNotice: DeletionPreflightNotice?
     @State private var isDropTargeted: Bool = false
     /// v1.0 T3：结果区视图模式（清单 vs 多层树）。
@@ -1068,6 +1069,7 @@ public struct MainView: View {
                 onDismiss: { deleteResultCompletion = nil }
             )
         }
+        .operationSuccessFeedbackOverlay($deleteSuccessFeedback)
         // v2026.07.20 P0: pre-submit feedback floats above results instead of becoming a second
         // top banner beside the independent scan-permission banner. It does not change split-view
         // geometry or modal occupancy, so selection and a corrected retry remain available.
@@ -2036,10 +2038,10 @@ public struct MainView: View {
             // 已确认 moved 的项目已在上方同步，其余选择保持不变并回到 review，等待用户
             // 查看结果页后重新扫描对账；禁止用失败按钮诱导立即重复提交。
             smartCareSession.care.resumeReviewAfterUnsubmittedClean()
-            deleteResultCompletion = .trash(
+            presentDeletionCompletion(.trash(
                 completedSubmission,
                 runningAppSkipped: execution.runningAppSkippedResultItems
-            )
+            ))
             return
         }
 
@@ -2047,19 +2049,16 @@ public struct MainView: View {
             ?? result.err.map { _ in SmartCareFailureDetail.unexpectedFailure }
         if succeededPaths.isEmpty, let cleanFailureDetail {
             smartCareSession.care.fail(.cleanFailed(cleanFailureDetail))
-            deleteResultCompletion = .trash(
+            presentDeletionCompletion(.trash(
                 completedSubmission,
                 runningAppSkipped: execution.runningAppSkippedResultItems
-            )
+            ))
             return
         }
 
         // synchronizeSuccessfulDeletion 已在 SmartCareSession 的后台事务中完成
         // summary 移除 + selection reconcile + metrics；这里只做 O(1) 相位提交，
         // 避免在 MainActor 对同一份 20k+ 结果再构建一遍。
-        let hasPostCleanIssues = result.skipped > 0
-            || runningAppSkippedCount > 0
-            || cleanFailureDetail != nil
         smartCareSession.care.completeCleaning(
             SmartCareResult(
                 movedCount: result.moved,
@@ -2067,12 +2066,10 @@ public struct MainView: View {
                 releasedBytes: releasedBytes
             )
         )
-        if hasPostCleanIssues {
-            deleteResultCompletion = .trash(
-                completedSubmission,
-                runningAppSkipped: execution.runningAppSkippedResultItems
-            )
-        }
+        presentDeletionCompletion(.trash(
+            completedSubmission,
+            runningAppSkipped: execution.runningAppSkippedResultItems
+        ))
     }
 
     /// v2026.07.19: accept and enqueue Professional deletion before changing sheet state. The
@@ -2138,8 +2135,14 @@ public struct MainView: View {
         case .preflightNotice(let notice):
             deletePreflightNotice = notice
         case .result(let completion):
-            deleteResultCompletion = completion
+            presentDeletionCompletion(completion)
         }
+    }
+
+    private func presentDeletionCompletion(_ completion: OperationResultCompletion) {
+        let presentation = OperationCompletionPresentation(completion)
+        deleteSuccessFeedback = presentation.successFeedback
+        deleteResultCompletion = presentation.details
     }
 
     /// Smart Care keeps its existing sheet-to-execution handoff. Professional submissions are

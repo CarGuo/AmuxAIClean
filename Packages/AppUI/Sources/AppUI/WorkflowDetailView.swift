@@ -123,6 +123,7 @@ public struct WorkflowDetailView: View {
         }
         // v2026.07.20 P0: workflow cards and footer retain their layout and selection while the
         // shared non-modal callout explains why no Trash submission was created.
+        .operationSuccessFeedbackOverlay($viewModel.successFeedback)
         .deletionPreflightNoticeOverlay(viewModel.preflightNotice) {
             viewModel.preflightNotice = nil
         }
@@ -1312,6 +1313,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
     /// v2026.07.20: rejected pre-submit evidence is non-modal page state and never
     /// participates in the active transaction/sheet route.
     @Published var preflightNotice: DeletionPreflightNotice?
+    @Published var successFeedback: OperationSuccessFeedback?
 
     /// 当前正在显示的 sheet 类型。
     /// - `.simulatorUninstall`：Simulator 系统管理卸载的完整状态 sheet
@@ -2525,7 +2527,9 @@ public final class WorkflowDetailViewModel: ObservableObject {
         // 确认成功的 rows。旧实现为了接续 simctl 而 await 全页 runScan，导致结果与
         // managed 确认都被慢 Runtime 扫描阻塞数分钟。
         if let filesystemCompletion {
-            activeSheet = .result(.deletion(filesystemCompletion))
+            let presentation = OperationCompletionPresentation(.deletion(filesystemCompletion))
+            successFeedback = presentation.successFeedback
+            activeSheet = presentation.details.map(ActiveSheet.result)
         } else {
             GSYLog.notice(.trash, "Workflow Trash 未产生提交终态")
         }

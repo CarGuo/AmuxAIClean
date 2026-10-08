@@ -559,6 +559,90 @@ final class DeletionInteractionCoordinatorTests: XCTestCase {
         XCTAssertEqual(completed.receipt.submittedPaths, [path])
     }
 
+    /// v2026.10.08: only complete success may release the modal slot. Exercise real opaque
+    /// completions from the coordinator so failures/unknown states cannot disappear in routing.
+    @MainActor
+    func test_receiptPresentationIsQuietOnlyWhenEveryItemSucceeded() async throws {
+        let a = "/Users/test/Library/Caches/one"
+        let b = "/Users/test/Library/Caches/two"
+        let pair = (a, "/Users/test/.Trash/one")
+        // nil means the accounting gate must reject an impossible post-submit safety outcome;
+        // safety rejection belongs before submission and cannot mint a result receipt at all.
+        let cases: [(String, TrashOutcome, Bool?)] = [
+            ("success", .init(movedPairs: [pair, (b, "/Users/test/.Trash/two")],
+                              failedPaths: [], safetyRejected: [], missingPaths: []), true),
+            ("partial", .init(movedPairs: [pair], failedPaths: [b],
+                              safetyRejected: [], missingPaths: []), false),
+            ("failed", .init(movedPairs: [], failedPaths: [a, b],
+                             safetyRejected: [], missingPaths: []), false),
+            ("pending", .init(movedPairs: [pair], failedPaths: [], pendingPaths: [b],
+                              safetyRejected: [], missingPaths: []), false),
+            ("submission unknown", .init(movedPairs: [pair], failedPaths: [],
+                                         submissionUnknownPaths: [b],
+                                         safetyRejected: [], missingPaths: []), false),
+            ("not submitted", .init(movedPairs: [pair], failedPaths: [], notSubmittedPaths: [b],
+                                    safetyRejected: [], missingPaths: []), false),
+            ("safety rejected", .init(movedPairs: [pair], failedPaths: [],
+                                     safetyRejected: [(b, SafetyRejection.accessDenied.rawValue)],
+                                     missingPaths: []), nil)
+        ]
+        for (name, outcome, quiet) in cases {
+            let pairs = outcome.movedPairs.map { ($0.originalPath, $0.trashedPath) }
+            let attempted = outcome.movedPairs.map(\.originalPath) + outcome.failedPaths
+                + outcome.pendingPaths + outcome.submissionUnknownPaths
+            let state = PipelineState(
+                preflights: [.init(allowedPaths: [a, b], rejections: [])],
+                submissions: [.recycleCompleted(.init(
+                    attemptedPaths: attempted,
+                    legacy: (pairs.count, 2 - pairs.count, nil, pairs), outcome: outcome
+                ))]
+            )
+            let coordinator = makeCoordinator(state: state)
+            let identity = DeletionSnapshotIdentity(sessionID: UUID(), revision: 1)
+            let intent = try coordinator.makeIntent(
+                origin: .workflowFilesystem, mode: .professional, snapshotIdentity: identity,
+                candidates: [candidate(a), candidate(b)]
+            )
+            guard case .confirmation(let prepared) = await coordinator.prepare(
+                intent: intent, currentSnapshotIdentity: identity
+            ), case .authorized(let authorization) = coordinator.authorize(
+                prepared: prepared,
+                executionPlan: .init(paths: [a, b], runningAppSkipped: [])
+            ) else { return XCTFail("Expected authorization for \(name)") }
+            let disposition = await coordinator.submit(authorization, accessDeniedPaths: [])
+            guard let quiet else {
+                guard case .blocked = disposition else {
+                    return XCTFail("Safety rejection cannot be manufactured into a receipt")
+                }
+                continue
+            }
+            guard case .completed(let completed) = disposition else {
+                return XCTFail("Expected a typed completion for \(name)")
+            }
+
+            for completion in [OperationResultCompletion.deletion(completed),
+                               .trash(completed.trashSubmission, runningAppSkipped: [])] {
+                let presentation = OperationCompletionPresentation(completion)
+                XCTAssertEqual(presentation.successFeedback != nil, quiet, name)
+                XCTAssertEqual(presentation.details != nil, !quiet, name)
+                if quiet {
+                    XCTAssertEqual(presentation.successFeedback?.movedCount, 2)
+                    XCTAssertEqual(presentation.successFeedback?.id, completion.id)
+                    let skipped = OperationResultPayload.RunningAppSkippedItem(
+                        path: "/Users/test/Library/Caches/running", itemTitle: "Running", appName: "IDE"
+                    )
+                    let skippedPresentation = OperationCompletionPresentation(.trash(
+                        completed.trashSubmission, runningAppSkipped: [skipped]
+                    ))
+                    XCTAssertNil(skippedPresentation.successFeedback)
+                    XCTAssertEqual(skippedPresentation.details?.id, completion.id)
+                } else {
+                    XCTAssertEqual(presentation.details?.id, completion.id)
+                }
+            }
+        }
+    }
+
     @MainActor
     private func makeCoordinator(state: PipelineState) -> DeletionInteractionCoordinator {
         let storeURL = FileManager.default.temporaryDirectory

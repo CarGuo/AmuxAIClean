@@ -4992,11 +4992,14 @@ public final class ScanCoordinator: ObservableObject {
     /// 同时推 `treeRevision`（兼容外部已订阅 treeRevision 的代码）和 `structuralRevision`。
     /// `tickRevision` 也顺带 +1 —— 任何 structural 都隐含一次 tick（一致性保证）。
     private func bumpStructuralRevision() {
+        // v2026.10.08: all Tree signals must publish the committed source identity. Like the
+        // children-cache boundary, synchronous @Published subscribers freeze their source here;
+        // advancing it afterwards rejects the last refresh after a successful recycle forever.
+        notePruneSourceMutation()
         structuralRevision &+= 1
         tickRevision &+= 1
         treeRevision &+= 1
         treeBrowser.bumpStructuralRevision()
-        notePruneSourceMutation()
     }
 
     /// 单点收敛：推进数值脏标。
@@ -5009,6 +5012,8 @@ public final class ScanCoordinator: ObservableObject {
     /// 现在只 tick 数值通道（`tickRevision` + `treeBrowser.bumpTickRevision()`），
     /// 树形视图按"显式 structural"通道感知拓扑变化，纯 bytes 累加不再打扰它。
     private func bumpTickRevision() {
+        // Same publication contract as structural/cache changes; never invalidate our own signal.
+        notePruneSourceMutation()
         tickRevision &+= 1
         // v2026.06.21 perf：保持与 [TreeBrowserStore.bumpTickRevision](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift#L67-L70)
         // 完全对齐（store 端 tick 也会推 treeRevision 作老订阅者兼容），
@@ -5016,7 +5021,6 @@ public final class ScanCoordinator: ObservableObject {
         // 会判 coord.treeRevision 落后 store.treeRevision 一个 tick。
         treeRevision &+= 1
         treeBrowser.bumpTickRevision()
-        notePruneSourceMutation()
     }
 
     /// Step 3 P0-3 / 2026-06：bucket cachedVerdict 命中率计数器。

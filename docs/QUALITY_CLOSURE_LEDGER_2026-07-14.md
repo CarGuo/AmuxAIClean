@@ -672,3 +672,30 @@ macOS 13.5 实机/VM 与最终 DMG C5 仍未验证。
 
 完整范围、根因、操作步骤与原始证据索引见
 [2026-10-07 commit 修复与真实 App 验收](regression/COMMIT_REVIEW_C4_2026-10-07.md)。
+
+### 9.16 v2026.10.08 回收成功但行残留、多个页面回执漏订阅与成功弹框（C3，回收 C4 待验）
+
+- **真实事故重开**：用户截图对应的系统回收已返回 moved=1、failed=0，权威 prune 已提交，
+  最后 Tree 投影却被 `source_current=false` 丢弃。structural/tick 两个入口在通知后推进
+  source revision，自行使订阅者冻结的 source 过期；receipt 订阅又在 `@Published` 的 willSet
+  回调读取旧 revision。此前只修过 children-cache 的同类顺序，没有覆盖这些入口。
+  本轮统一提交 identity 后发布，并用不可变 matcher/revision 事件保留全部 stale CAS。
+- **跨页面与反馈**：普通空间图补回执订阅，后台使用共享 tombstone 过滤图块、列表与展示
+  统计；大文件补冻结表格和独立类型统计源的后台 receipt 投影。所有 Trash owner 共用纯成功
+  页面内短提示，失败、部分成功与不确定终态保留明细；定时关闭绑定 receipt ID。
+  未改安全/隐私规则、删除授权、最终重验、Trash、Undo、工程或依赖。
+- **最终自动化**：九包 swift test 均 exit 0，共 2,399 个条目；两项 opt-in 原生视图另在非并行
+  集合中执行，Tree/大文件/普通分析集成 14/14 通过。四个根因均保留原代码失败日志。
+  最终原生 Debug build、String Catalog 完整性与 diff check 通过。SafetyKit 性能首轮受并发负载
+  影响失败，独立全包重跑通过，阈值未改。20 个 Swift/catalog 文件在最终验证后指纹一致。
+- **真实运行与边界**：最终二进制的一次持续只读验收覆盖 Resources 的 Tree 展开/详情、清单
+  切换、普通空间图下钻/搜索/返回、两种确认取消。测试添加的快捷项已移除，用户原有路径保留。
+  这不证明真实回收后行/选择/详情消失、无成功模态或 Undo 正确；NSTemporaryDirectory 被现有
+  规则跳过，人工 HOME 缓存 fixture 的一次位置例外尚未获答复。没有为测试改规则或绕路径。
+  用户获知边界后明确要求提交和推送，按该授权交付，证据等级保持不变；
+  macOS 13.5 和 Release/DMG C5 未做。
+- **漏检原因**：上轮只读 C4、模型终态和独立 worker 测试没有观察同步发布边界，也没有挂载
+  production 表格验证 receipt-only 删除。后续不能再以这类 C2/C3 结果宣称真实删除交互已通过。
+
+逐入口审计、竞品参考、验证命令与证据索引见
+[2026-10-08 删除呈现复盘](regression/DELETION_PRESENTATION_2026-10-08.md)。

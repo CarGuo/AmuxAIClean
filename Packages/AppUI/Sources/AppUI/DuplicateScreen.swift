@@ -467,6 +467,7 @@ public struct DuplicateScreen: View {
     @State private var scanRevision: UInt64 = 0
     @State private var activeSheet: ActiveSheet?
     @State private var preflightNotice: DeletionPreflightNotice?
+    @State private var successFeedback: OperationSuccessFeedback?
     @State private var isDeletingDuplicates: Bool = false
     @State private var isRootImporterPresented = false
     @State private var duplicateDeletionHandoff = ToolDeletionHandoff<DuplicateConfirmedDeletion>()
@@ -642,6 +643,7 @@ public struct DuplicateScreen: View {
                 }
             }
         }
+        .operationSuccessFeedbackOverlay($successFeedback)
         .fileImporter(
             isPresented: $isRootImporterPresented,
             allowedContentTypes: [.folder],
@@ -1514,7 +1516,9 @@ public struct DuplicateScreen: View {
                     ? partial + max(0, item.candidate.bytes)
                     : partial
             }
-            activeSheet = .result(.deletion(completed))
+            let presentation = OperationCompletionPresentation(.deletion(completed))
+            successFeedback = presentation.successFeedback
+            activeSheet = presentation.details.map(ActiveSheet.result)
             if !succeededPaths.isEmpty {
                 await pruneMovedDuplicatePaths(
                     Set(succeededPaths), expectedSessionID: submission.request.scanSessionID

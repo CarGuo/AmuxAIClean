@@ -406,6 +406,22 @@
 
 ## 3. 删除 / 安全判定 —— 用户数据丢一次就完蛋
 
+### v2026.10.08 删除成功后 Tree 仍显示旧行：发布边界事故
+
+- 现场 `dryRun=false` 且 `moved=1`，权威 prune 已提交；最后一次 Tree projection 却因
+  `source_current=false` 被拒绝。根因是 structural/tick 通知先发布，source revision 后递增，
+  同步订阅冻结的 source 因此必定过期。children-cache 入口曾修正同类问题，但未覆盖另外
+  两条共享通知入口。
+- 另一条 receipt 快速删除链路在 `@Published` 的 willSet 回调中重读 revision，取得旧值，
+  导致 worker 完成后也被 CAS 丢弃。回执发布必须携带同一不可变 matcher/revision；订阅方
+  消费 emitted value，不能忽略参数再读属性。保留会话/revision 校验，禁止放宽 CAS 或增加重试点击。
+- 验证不能只在 `await pruneDeleted` 后检查数组。必须在真实 publisher 回调内冻结 source，
+  验证后台投影仍可提交，并把 production Tree 挂到 NSHostingView/NSTableView，验证回执到达后
+  无额外交互即移除行。离屏原生集成属于 C2，真实 App 回收/Undo 仍单列 C4。
+- 完整成功使用上下文内提示，异常终态保留详情 sheet。成功弹窗的 remount 曾偶然触发重建，
+  不能把它当成同步机制。详细原因、入口审计和运行证据见
+  [删除回执与呈现回归记录](docs/regression/DELETION_PRESENTATION_2026-10-08.md)。
+
 ### 3.1 [阻塞] 共享厂商目录被整删（Adobe / Microsoft / JetBrains 经典事故）
 - **现象**：用户卸载 Photoshop，工具把 `~/Library/Application Support/Adobe/` 整个删掉，Illustrator、Premiere 全废。
 - **避坑**（Nektony L1 红线）：

@@ -47,6 +47,7 @@ struct StorageAnalysisView: View {
         }
         .onReceive(trash.$isBusy) { onBusyChange($0) }
         .deletionPreflightNoticeOverlay(trash.notice) { trash.notice = nil }
+        .operationSuccessFeedbackOverlay($trash.successFeedback)
         .localizedSheet(item: $trash.sheet, onDismiss: trash.dismiss) { sheet in
             switch sheet {
             case .review(let review):

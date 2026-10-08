@@ -97,6 +97,11 @@ final class StorageAnalysisStore: ObservableObject {
         scanner.treeBrowser.$childrenCacheVersion.sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.refresh() }
         }.store(in: &subscriptions)
+        // v2026.10.08: receipt visibility precedes slow accounting. Observe the same event as
+        // Tree; otherwise a successful recycle leaves both the map and list actionable until prune.
+        scanner.treeBrowser.$deletionPresentation.sink { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refresh() }
+        }.store(in: &subscriptions)
     }
 
     var path: String { breadcrumbs.last ?? category.rootPath }
@@ -259,8 +264,10 @@ final class StorageAnalysisStore: ObservableObject {
             return
         }
         guard scanner.snapshot.isFinished else { return }
-        let rows = scanner.directChildren(of: path, sortedBy: .sizeDesc)
-        let fetching = scanner.isFetchingChildren(of: path, sortedBy: .sizeDesc)
+        let source = scanner.makeTreeFlatProjectionSource(
+            rootPath: path, sortedBy: .sizeDesc, expandedPaths: []
+        )
+        let fetching = source.isFetchingRoot
         let key = ProjectionKey(
             session: scanner.currentScanSessionID,
             treeRevision: scanner.treeBrowser.treeRevision,
@@ -278,9 +285,10 @@ final class StorageAnalysisStore: ObservableObject {
         let currentLocale = locale
         let worker = Task.detached(priority: .userInitiated) {
             try StorageDirectoryProjection.make(
-                rows: rows, query: key.query,
+                rows: source.rootRows, query: key.query,
                 limit: key.limit, locale: currentLocale,
-                viewportSize: key.viewportSize, listScope: key.listScope)
+                viewportSize: key.viewportSize, listScope: key.listScope,
+                receiptTombstones: source.receiptTombstones)
         }
         projectionTask = Task { [weak self] in
             let prepared: StorageDirectoryProjection

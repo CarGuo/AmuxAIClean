@@ -295,6 +295,18 @@ Normal 不自动获得 Professional 严格覆盖能力。若用户需要覆盖�
 
 ## 6. 结果页
 
+**v2026.10.08：按真实终态选择反馈形式。** 所有文件回收入口共用
+`OperationCompletionPresentation`：有成功 moved pair 且整批没有失败、跳过、pending、
+submission-unknown 或 not-submitted 时，只在当前页面显示本地化的短暂成功提示，释放 modal
+slot，不抢焦点，不要求再点 Done。失败、部分成功和未知状态仍进入 `OperationResultSheet`
+查看明细；取消或预检拒绝仍不得构造 completion。Undo 继续使用已有历史记录入口。
+
+成功提示也只由不透明 receipt completion 生成，不能由关闭确认页或 optimistic UI 伪造。
+提示到期绑定 receipt ID，新回执替换后旧 timer 不得关闭新提示。显示提示不等待全量统计重算；
+receipt-backed tombstone 先移除已回收行，再由后台 prune 对账容量/数量。Tree 的 source identity
+必须在通知前提交；订阅者消费同一不可变回执事件的 matcher/revision，不能在 `@Published`
+的同步 willSet 回调中重新读取旧属性。不得靠关闭/重开 sheet、再点一下或重扫来刷新删除结果。
+
 结果页只显示已经取得 `DeletionSubmissionReceipt` 后的：
 
 - `trashed`；

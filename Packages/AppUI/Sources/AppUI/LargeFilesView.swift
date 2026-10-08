@@ -4,6 +4,57 @@ import Combine
 import AIKit
 import LogKit
 
+private struct LargeFilesReceiptProjection: Sendable {
+    let items: [LargeFileItem]
+    let kindSource: [LargeFileItem]
+    let kindCounts: [(FileKind, Int)]
+}
+
+private enum LargeFilesKindCounts {
+    static func make(_ items: [LargeFileItem]) -> [(FileKind, Int)] {
+        var counts: [FileKind: Int] = [:]
+        for item in items { counts[item.kind, default: 0] += 1 }
+        return FileKind.allCases.compactMap { kind in
+            guard let count = counts[kind], count > 0 else { return nil }
+            return (kind, count)
+        }
+    }
+}
+
+/// v2026.10.08: receipt-only visibility updates must not wait for authoritative prune or sort
+/// the coordinator's index on MainActor. Patch the frozen table and its independent chip source
+/// together, retaining old COW roots until AppKit consumes the replacement.
+private actor LargeFilesReceiptProjectionWorker {
+    private var items: [LargeFileItem]?
+    private var kindSource: [LargeFileItem]?
+    private var preparedProjection: LargeFilesReceiptProjection?
+    private let matcher: DeletionPresentationPathMatcher
+
+    init(items: [LargeFileItem], kindSource: [LargeFileItem], matcher: DeletionPresentationPathMatcher) {
+        self.items = items
+        self.kindSource = kindSource
+        self.matcher = matcher
+    }
+
+    func prepare() -> LargeFilesReceiptProjection? {
+        guard !Task.isCancelled, let items, let kindSource else { return nil }
+        let remainingItems = items.filter { !matcher.contains($0.path) }
+        let remainingKindSource = kindSource.filter { !matcher.contains($0.path) }
+        let prepared = LargeFilesReceiptProjection(
+            items: remainingItems, kindSource: remainingKindSource,
+            kindCounts: LargeFilesKindCounts.make(remainingKindSource)
+        )
+        preparedProjection = prepared
+        return prepared
+    }
+
+    func retire() {
+        items = nil
+        kindSource = nil
+        preparedProjection = nil
+    }
+}
+
 /// v1.0 T4：大文件视图。
 ///
 /// 设计要点（参考 CleanMyMac / Sensei / Pearcleaner 大文件扫描器）：
@@ -79,6 +130,9 @@ public struct LargeFilesView: View {
 
     @State private var displayedItems: [LargeFileItem] = []
     @State private var displayedKindCounts: [(FileKind, Int)] = []
+    @State private var displayedKindSource: [LargeFileItem] = []
+    @State private var displayedRevision: UInt64 = 0
+    @State private var receiptProjectionTask: Task<Void, Never>?
 
     public init(coordinator: ScanCoordinator,
                 settings: AppSettings,
@@ -122,20 +176,13 @@ public struct LargeFilesView: View {
     /// 类型 chip 行需要展示的桶 + 该桶在"类型未筛选时"的命中数。
     /// 数量取自 mtime 已过滤的全集而不是 kind 筛选后的子集，
     /// 否则点了某个 kind 后其他 chip 数字会变成 0，体验差。
-    private var currentKindCounts: [(FileKind, Int)] {
-        let base = coordinator.largeFiles(
+    private var currentKindSource: [LargeFileItem] {
+        coordinator.largeFiles(
             minSizeMB: settings.minFileSizeMB,
             sortKey: .sizeDesc,
             limit: limit,
             mtimeFilter: settings.mtimeFilter
         )
-        var counts: [FileKind: Int] = [:]
-        for item in base { counts[item.kind, default: 0] += 1 }
-        // 只展示**有命中**的桶，避免一排空 chip。
-        return FileKind.allCases.compactMap { k in
-            guard let n = counts[k], n > 0 else { return nil }
-            return (k, n)
-        }
     }
 
     /// 视图阈值（B）—— 与扫描期阈值对比，判断是否需要提示重扫。
@@ -156,24 +203,54 @@ public struct LargeFilesView: View {
         // isScanning=false, so the old boolean gate caused a terminal-width rebuild on handoff.
         if case .settling = coordinator.scanPhase { return }
         let latest = currentItems
-        let latestCounts = currentKindCounts
+        let latestKindSource = currentKindSource
+        let latestCounts = LargeFilesKindCounts.make(latestKindSource)
         if force || !coordinator.isScanning || latest.isEmpty {
-            publishDisplayedLargeFiles(items: latest, kindCounts: latestCounts)
+            publishDisplayedLargeFiles(items: latest, kindSource: latestKindSource, kindCounts: latestCounts)
             return
         }
         if displayedItems.isEmpty, !latest.isEmpty {
-            publishDisplayedLargeFiles(items: latest, kindCounts: latestCounts)
+            publishDisplayedLargeFiles(items: latest, kindSource: latestKindSource, kindCounts: latestCounts)
         }
     }
 
     private func publishDisplayedLargeFiles(items: [LargeFileItem],
+                                            kindSource: [LargeFileItem],
                                             kindCounts: [(FileKind, Int)]) {
+        displayedRevision &+= 1
+        displayedKindSource = kindSource
         if displayedItems != items {
             displayedItems = items
         }
         onVisibleItemsChange(items)
         if !Self.kindCountsEqual(displayedKindCounts, kindCounts) {
             displayedKindCounts = kindCounts
+        }
+    }
+
+    private func applyDeletionPresentation(_ presentation: TreeDeletionPresentation) {
+        guard !presentation.matcher.roots.isEmpty else { return }
+        receiptProjectionTask?.cancel()
+        let revision = displayedRevision
+        let worker = LargeFilesReceiptProjectionWorker(
+            items: displayedItems, kindSource: displayedKindSource, matcher: presentation.matcher
+        )
+        receiptProjectionTask = Task { @MainActor in
+            var prepared = await worker.prepare()
+            guard !Task.isCancelled, revision == displayedRevision,
+                  presentation.revision == coordinator.treeBrowser.deletionPresentationRevision,
+                  let projection = prepared else {
+                prepared = nil
+                await worker.retire()
+                return
+            }
+            publishDisplayedLargeFiles(items: projection.items, kindSource: projection.kindSource,
+                                       kindCounts: projection.kindCounts)
+            receiptProjectionTask = nil
+            Task { @MainActor in
+                await Task.yield()
+                await worker.retire()
+            }
         }
     }
 
@@ -212,6 +289,10 @@ public struct LargeFilesView: View {
         .onReceive(coordinator.$storeRevision) { _ in
             syncDisplayedLargeFiles(force: true)
         }
+        .onReceive(coordinator.treeBrowser.$deletionPresentation.removeDuplicates()) { presentation in
+            applyDeletionPresentation(presentation)
+        }
+        .onDisappear { receiptProjectionTask?.cancel() }
         .onValueChange(of: settings.minFileSizeMB) { _, _ in syncDisplayedLargeFiles(force: true) }
         .onValueChange(of: settings.mtimeFilter) { _, _ in syncDisplayedLargeFiles(force: true) }
         .onValueChange(of: settings.mainListSortKey) { _, _ in syncDisplayedLargeFiles(force: true) }

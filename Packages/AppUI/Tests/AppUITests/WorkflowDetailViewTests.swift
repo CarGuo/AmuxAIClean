@@ -2665,9 +2665,11 @@ final class WorkflowDetailViewTests: XCTestCase {
         XCTAssertEqual(vm.cardHits[projectsCard.id]?.map(\.url.path), [childBPath])
         XCTAssertEqual(vm.cardHits[rootCard.id]?.first?.sizeBytes, 600,
                        "删除子项目后，父根 DerivedData 卡片容量必须同步扣减 400 bytes")
+        XCTAssertNil(vm.activeSheet, "v2026.10.08: complete success must release the modal slot")
+        XCTAssertEqual(vm.successFeedback?.movedCount, 1)
+        let firstFeedbackID = vm.successFeedback?.id
 
-        // 关闭上一次删除结果页，再删父根：子项目卡片中剩余的后代也必须一并移除
-        vm.activeSheet = nil
+        // Success needs no Done click. Delete the parent next; its remaining descendants must go.
         vm.setTestSelection([rootHit.id])
         pipeline.stubOutcome = TrashOutcome(
             movedPairs: [(rootPath, "/Trash/DerivedData")],
@@ -2681,6 +2683,10 @@ final class WorkflowDetailViewTests: XCTestCase {
         XCTAssertEqual(vm.cardHits[rootCard.id]?.isEmpty, true)
         XCTAssertEqual(vm.cardHits[projectsCard.id]?.isEmpty, true,
                        "删除父根 DerivedData 后，子项目卡片中的后代路径必须同步清空")
+        XCTAssertNil(vm.activeSheet)
+        XCTAssertEqual(vm.successFeedback?.movedCount, 1)
+        XCTAssertNotEqual(vm.successFeedback?.id, firstFeedbackID,
+                          "a later receipt owns a fresh feedback lifetime")
     }
 }
 

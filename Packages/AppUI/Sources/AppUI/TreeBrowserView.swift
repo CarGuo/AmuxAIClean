@@ -1106,8 +1106,8 @@ public struct TreeBrowserView: View {
         .onReceive(treeBrowser.$structuralRevision.removeDuplicates()) { _ in
             handleStructuralBump()
         }
-        .onReceive(treeBrowser.$deletionPresentationRevision.removeDuplicates()) { _ in
-            applyDeletionPresentation()
+        .onReceive(treeBrowser.$deletionPresentation.removeDuplicates()) { presentation in
+            applyDeletionPresentation(presentation)
         }
         .onReceive(treeBrowser.$childrenCacheVersion.removeDuplicates()) { _ in
             handleChildrenCacheBump()
@@ -1602,10 +1602,10 @@ public struct TreeBrowserView: View {
     /// v2026.07.20：receipt 到达后先对当前 frozen rows 做窄删除 patch，
     /// 不等待全量 prune，也不重新读取 Tree/Safety。新 revision 会拒绝旧 patch，
     /// 新扫描清空 paths 后旧 worker 无权发布到新会话。
-    private func applyDeletionPresentation() {
-        let presentationRevision = treeBrowser.deletionPresentationRevision
-        let paths = treeBrowser.deletionPresentationPaths
-        guard !paths.isEmpty else { return }
+    private func applyDeletionPresentation(_ presentation: TreeDeletionPresentation) {
+        // v2026.10.08: consume the emitted revision/matcher together. Reading the store in this
+        // willSet callback captured R instead of R+1 and silently discarded every receipt patch.
+        guard !presentation.matcher.roots.isEmpty else { return }
 
         flatProjectionRequestRevision &+= 1
         let requestRevision = flatProjectionRequestRevision
@@ -1618,14 +1618,14 @@ public struct TreeBrowserView: View {
             isFetchingRoot: isFetchingRoot
         )
         let worker = TreeDeletionPresentationWorker(
-            matcher: treeBrowser.deletionPresentationMatcher,
+            matcher: presentation.matcher,
             rootPath: rootPath,
             previous: previous
         )
         let task = Task { @MainActor in
             var prepared = await worker.prepare()
             guard requestRevision == flatProjectionRequestRevision,
-                  presentationRevision == treeBrowser.deletionPresentationRevision,
+                  presentation.revision == treeBrowser.deletionPresentationRevision,
                   !Task.isCancelled else {
                 prepared = nil
                 await worker.retire()

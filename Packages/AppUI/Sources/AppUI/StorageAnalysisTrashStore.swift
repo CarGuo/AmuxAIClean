@@ -26,6 +26,7 @@ final class StorageAnalysisTrashStore: ObservableObject {
     }
     @Published var sheet: Sheet?
     @Published var notice: DeletionPreflightNotice?
+    @Published var successFeedback: OperationSuccessFeedback?
     @Published private(set) var isBusy = false
     private let scanner: ScanCoordinator
     private let interaction: DeletionInteractionCoordinator
@@ -150,7 +151,9 @@ final class StorageAnalysisTrashStore: ObservableObject {
                     if !succeededPaths.isEmpty {
                         await scanner.acknowledgeSuccessfulDeletionForPresentation(paths: succeededPaths)
                     }
-                    sheet = .result(.deletion(completion))
+                    let presentation = OperationCompletionPresentation(.deletion(completion))
+                    successFeedback = presentation.successFeedback
+                    sheet = presentation.details.map(Sheet.result)
                     if !succeededPaths.isEmpty {
                         await scanner.pruneDeleted(paths: succeededPaths)
                         Task.detached(priority: .utility) { [releasedBytes, succeededPaths] in

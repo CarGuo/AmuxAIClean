@@ -109,6 +109,25 @@ final class StorageAnalysisStoreTests: XCTestCase {
         store.deactivate()
     }
 
+    func testReceiptUpdatesMapAndListBeforeAuthoritativePrune() async throws {
+        let root = try fixture()
+        let scanner = ScanCoordinator(home: root.path)
+        let store = StorageAnalysisStore(scanner: scanner)
+        store.activate(locale: Locale(identifier: "en"))
+        store.scan(.makeCustom(url: root))
+        try await waitUntil { store.phase == .ready && store.projection?.totalCount == 1 && !store.isProjecting }
+        let originalSnapshot = scanner.snapshot
+        await scanner.acknowledgeSuccessfulDeletionForPresentation(
+            paths: [root.appendingPathComponent("Folder").path]
+        )
+        try await waitUntil { store.projection?.totalCount == 0 && !store.isProjecting }
+        XCTAssertTrue(store.projection?.rows.isEmpty == true)
+        XCTAssertTrue(store.projection?.mapItems.isEmpty == true)
+        XCTAssertEqual(scanner.snapshot, originalSnapshot,
+                       "receipt visibility must not wait for or forge authoritative accounting")
+        store.deactivate()
+    }
+
     func testConcurrentDeletionReceiptsMergeWithinTheSameCompletedScan() async throws {
         let root = try fixture()
         let second = root.appendingPathComponent("second.bin")

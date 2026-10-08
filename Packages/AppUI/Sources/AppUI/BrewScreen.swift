@@ -201,6 +201,7 @@ public struct BrewScreen: View {
     @State private var isCleaning: Bool = false
     @State private var activeSheet: ActiveSheet?
     @State private var preflightNotice: DeletionPreflightNotice?
+    @State private var successFeedback: OperationSuccessFeedback?
     @State private var cleanupDeletionHandoff = ToolDeletionHandoff<CleanupConfirmedDeletion>()
     @State private var cleanupPreflightTask: Task<Void, Never>?
     @State private var cleanupPreflightGate = ToolDeletionPreflightRequestGate<[String]>()
@@ -286,6 +287,7 @@ public struct BrewScreen: View {
             preflightNotice = nil
         }
         .task { reloadInstalled() }
+        .operationSuccessFeedbackOverlay($successFeedback)
         .localizedSheet(item: $activeSheet, onDismiss: completeCleanupSheetDismissal) { sheet in
             switch sheet {
             case .confirm(let request):
@@ -929,7 +931,9 @@ public struct BrewScreen: View {
                 },
                 makePayload: { OperationResultCompletion.deletion(completed) },
                 present: { completion in
-                    activeSheet = .result(completion)
+                    let presentation = OperationCompletionPresentation(completion)
+                    successFeedback = presentation.successFeedback
+                    activeSheet = presentation.details.map(ActiveSheet.result)
                 }
             )
         }

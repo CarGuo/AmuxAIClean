@@ -29,12 +29,16 @@ struct StorageDirectoryProjection: Sendable, Equatable {
 
     static func make(
         rows: [TreeRow], query: String, limit: Int, locale: Locale,
-        viewportSize: CGSize = .zero, listScope: StorageDirectoryListScope = .all
+        viewportSize: CGSize = .zero, listScope: StorageDirectoryListScope = .all,
+        receiptTombstones: DeletionPresentationPathMatcher = .init(paths: EmptyCollection<String>())
     ) throws -> Self {
         var inspected = 0
         let filtered = try rows.filter {
             inspected += 1
             if inspected.isMultiple(of: 256) { try Task.checkCancellation() }
+            // v2026.10.08: use the same frozen receipt index as Tree, on this background worker.
+            // Filtering before search/grouping keeps tiles, rows and totals on one visible set.
+            guard !receiptTombstones.contains($0.path) else { return false }
             return query.isEmpty
                 || $0.displayTitle(locale: locale).range(
                     of: query, options: [.caseInsensitive, .diacriticInsensitive], locale: locale

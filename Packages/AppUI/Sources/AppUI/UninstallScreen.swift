@@ -1378,6 +1378,7 @@ public struct UninstallScreen: View {
     @State private var candidateLoadGate = UninstallCandidateLoadGate()
     @State private var activeSheet: ActiveSheet?
     @State private var preflightNotice: DeletionPreflightNotice?
+    @State private var successFeedback: OperationSuccessFeedback?
     @State private var uninstallDeletionHandoff = ToolDeletionHandoff<UninstallExecutionRequest>()
     @State private var uninstallPreflightTask: Task<Void, Never>?
     @State private var uninstallPreflightGate = ToolDeletionPreflightRequestGate<UninstallPreflightContext>()
@@ -1490,6 +1491,7 @@ public struct UninstallScreen: View {
         }
         // v2026.07.20 P0: keep app/candidate selection stable; the rejection is a floating,
         // dismissible explanation and never a new split-view row or blocking presentation.
+        .operationSuccessFeedbackOverlay($successFeedback)
         .deletionPreflightNoticeOverlay(preflightNotice) {
             preflightNotice = nil
         }
@@ -2389,7 +2391,9 @@ public struct UninstallScreen: View {
             },
             makePayload: { OperationResultCompletion.deletion(completed) },
             present: { completion in
-                self.activeSheet = .result(completion)
+                let presentation = OperationCompletionPresentation(completion)
+                self.successFeedback = presentation.successFeedback
+                self.activeSheet = presentation.details.map(ActiveSheet.result)
             }
         )
         if !succeededPaths.isEmpty {

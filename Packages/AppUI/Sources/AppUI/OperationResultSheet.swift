@@ -186,7 +186,8 @@ enum OperationResultStatusPolicy {
     }
 }
 
-/// 删除操作结果 sheet。**所有 alert("删除结果")样式都应该换到这个 sheet。**
+/// Receipt details for partial, failed or uncertain outcomes. Full success uses the shared
+/// non-modal OperationCompletionPresentation route (v2026.10.08).
 public struct OperationResultSheet: View {
     @Environment(\.locale) private var locale
     public let payload: OperationResultPayload
