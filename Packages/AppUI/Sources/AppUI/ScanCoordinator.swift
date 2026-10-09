@@ -5524,14 +5524,17 @@ public final class ScanCoordinator: ObservableObject {
             restartDiscoveryScan(discoveryPlan, reconciliationRoots: knownRoots)
             return
         }
-        if isScanning {
+        if isScanning || isPrimaryScanSettling {
             GSYLog.notice(.operation, "scan.cancel reason=filesystem_mutated_during_restore")
             cancel()
             refreshVolumeCapacity()
             return
         }
         for scope in request.scopes {
-            guard publishedScanSessionID == session, !Task.isCancelled else { return }
+            guard publishedScanSessionID == session,
+                  !isScanning,
+                  !isPrimaryScanSettling,
+                  !Task.isCancelled else { return }
             await rescanSubtreeTransaction(at: scope, beforeCommitForTesting: nil,
                                           restoredPaths: request.restored)
         }
@@ -9078,7 +9081,7 @@ public final class ScanCoordinator: ObservableObject {
         return fullDiskPathNamespace
     }
 
-    static func bucketProjection(nodePath: String, rootPath: String) -> (tail: String, bucketPath: String)? {
+    nonisolated static func bucketProjection(nodePath: String, rootPath: String) -> (tail: String, bucketPath: String)? {
         if rootPath == "/" {
             guard nodePath.hasPrefix("/"), nodePath != "/" else { return nil }
             let tail = String(nodePath.dropFirst())
@@ -9660,6 +9663,8 @@ public final class ScanCoordinator: ObservableObject {
         let taskToken = UUID()
         let accessProjection = treeScanEvidenceProjection
         let pathNamespace = treeScanPathNamespace
+        let scanOptions = retainedScanOptions
+        let knownAllocationCatalog = allocationCatalog
         let physicalPath = pathNamespace?.physicalPath(forPublicPath: path) ?? path
         let measurementIdentity = TreeFilesystemMeasurementIdentity(
             publicPath: path,
@@ -9694,7 +9699,9 @@ public final class ScanCoordinator: ObservableObject {
                 Self.scanDirectChildrenShallow(
                     rootPath: path,
                     accessProjection: accessProjection,
-                    pathNamespace: pathNamespace
+                    pathNamespace: pathNamespace,
+                    options: scanOptions,
+                    knownAllocationCatalog: knownAllocationCatalog
                 )
             }
             guard case .produced(let shallowMeasurement) = shallowLease else {
@@ -9811,6 +9818,7 @@ public final class ScanCoordinator: ObservableObject {
                 cacheKey: cacheKey,
                 token: taskToken
             )
+            let currentAllocationCatalog = self.allocationCatalog ?? knownAllocationCatalog
             let deepLease = await leaseDomain.run(
                 identity: measurementIdentity,
                 stage: .deep,
@@ -9828,7 +9836,9 @@ public final class ScanCoordinator: ObservableObject {
                 } else {
                     producerOutput = await Self.scanDirectChildrenProducer(
                         rootPath: path,
-                        pathNamespace: pathNamespace
+                        pathNamespace: pathNamespace,
+                        options: scanOptions,
+                        knownAllocationCatalog: currentAllocationCatalog
                     )
                 }
                 // acquire success has one linear release path, including cancellation.
@@ -11371,7 +11381,18 @@ public final class ScanCoordinator: ObservableObject {
                     cache: state.treeChildrenCache
                 )
             }
-            return treeCacheContributions?.contribution(for: path)
+            if let cached = treeCacheContributions?.contribution(for: path) {
+                return cached
+            }
+            if let catalogContribution = state.allocationCatalog?.snapshot().contribution(forPath: path) {
+                return PruneContribution(
+                    path: path,
+                    bytes: catalogContribution.allocatedBytes,
+                    logicalBytes: catalogContribution.logicalBytes,
+                    fileCount: catalogContribution.fileCount
+                )
+            }
+            return nil
         }
 
         // 只对本次新请求的 deltaMatcher.roots 计算扣减贡献，避免第 2+ 次删除时对已在上一轮
@@ -12217,13 +12238,22 @@ public final class ScanCoordinator: ObservableObject {
         fileLeaves: [String: IndexedFileLeaf],
         childEdges: [String: Set<String>],
         isComplete: Bool,
+        isAuthoritativelyEnumeratedPath: ((String) -> Bool)? = nil,
         evidence: TreeScanEvidenceProjection,
         tombstones: PrunedPathMatcher,
         whitelist: Set<String>
     ) -> [TreeRow]? {
         var rowsByPath: [String: TreeRow] = [:]
         if !isComplete {
-            for row in retainedRows { rowsByPath[row.path] = row }
+            let observedChildren = childEdges[parentPath] ?? []
+            for row in retainedRows {
+                if let isAuthoritativelyEnumeratedPath,
+                   isAuthoritativelyEnumeratedPath(row.path),
+                   !observedChildren.contains(row.path) {
+                    continue
+                }
+                rowsByPath[row.path] = row
+            }
         }
         let children = (childEdges[parentPath] ?? []).union(rowsByPath.keys)
         for path in children {
@@ -12279,17 +12309,33 @@ public final class ScanCoordinator: ObservableObject {
 
         var retainedState = retainedState
         var measurement = measurement
+        let rootEnumerated = measurement.allocations.hasObservedDirectory(rootPath)
+        let incompleteSubtreeRoots = Set(measurement.incompleteIssues.map(\.path))
+        let incompleteDirectDirectories = Set(
+            measurement.incompleteIssues.compactMap { issue -> String? in
+                guard issue.stage == .metadata else { return nil }
+                return String._gsyParentPath(of: issue.path)
+            }
+        )
+        let isAuthoritativelyEnumeratedPath: (String) -> Bool = { path in
+            guard pathBelongsToSubtree(path, rootPath: rootPath) else { return false }
+            if measurement.isComplete { return true }
+            if measurement.fileLeaves[path] != nil { return true }
+            guard rootEnumerated else { return false }
+            if incompleteDirectDirectories.contains(where: { pathBelongsToSubtree(path, rootPath: $0) }) {
+                return false
+            }
+            return !incompleteSubtreeRoots.contains { issuePath in
+                pathBelongsToSubtree(path, rootPath: issuePath)
+            }
+        }
         let previousAllocations = retainedState.allocationCatalog?.snapshot()
         var scopedExternalByteDelta: Int64 = 0
         var scopedExternalLogicalDelta: Int64 = 0
         if let catalog = previousAllocations {
             let replacement = catalog.replacing(
                 with: measurement.allocations,
-                replacesPath: { path in
-                    measurement.isComplete
-                        ? pathBelongsToSubtree(path, rootPath: rootPath)
-                        : measurement.fileLeaves[path] != nil
-                },
+                replacesPath: isAuthoritativelyEnumeratedPath,
                 excludesPath: { tombstones.contains($0) }
             )
             applyIncomingAllocationDeltas(replacement.incomingDeltas, to: &measurement)
@@ -12435,31 +12481,56 @@ public final class ScanCoordinator: ObservableObject {
                 nextFileLeaves[path] = leaf
             }
         } else {
-            nextDirIndex = retainedState.dirIndex
+            nextDirIndex = retainedState.dirIndex.filter {
+                !isAuthoritativelyEnumeratedPath($0.key) || measurement.dirIndex[$0.key] != nil
+            }
             // A production shallow scan has a catalog/projection baseline but no deep index.
             // Missing indexed state is not evidence that the previously measured root was empty.
             nextDirIndex[rootPath] = oldRootAggregate
-            nextChildEdges = retainedState.childEdges
-            nextFileLeaves = retainedState.fileLeaves
+            nextChildEdges = retainedState.childEdges.filter {
+                !isAuthoritativelyEnumeratedPath($0.key)
+            }
+            nextFileLeaves = retainedState.fileLeaves.filter {
+                !isAuthoritativelyEnumeratedPath($0.key)
+            }
             for (path, incoming) in measurement.dirIndex
                 where !tombstones.contains(path) && !isWhitelisted(path, in: whitelist)
             {
                 let old = nextDirIndex[path] ?? DirAgg()
-                nextDirIndex[path] = DirAgg(
-                    bytes: max(old.bytes, incoming.bytes),
-                    logicalBytes: max(old.logicalBytes, incoming.logicalBytes),
-                    fileCount: max(old.fileCount, incoming.fileCount),
-                    modificationDate: incoming.modificationDate ?? old.modificationDate
-                )
+                if isAuthoritativelyEnumeratedPath(path) {
+                    nextDirIndex[path] = DirAgg(
+                        bytes: incoming.bytes,
+                        logicalBytes: incoming.logicalBytes,
+                        fileCount: incoming.fileCount,
+                        modificationDate: incoming.modificationDate ?? old.modificationDate
+                    )
+                } else {
+                    nextDirIndex[path] = DirAgg(
+                        bytes: max(old.bytes, incoming.bytes),
+                        logicalBytes: max(old.logicalBytes, incoming.logicalBytes),
+                        fileCount: max(old.fileCount, incoming.fileCount),
+                        modificationDate: incoming.modificationDate ?? old.modificationDate
+                    )
+                }
             }
             for (parent, children) in measurement.childEdges
                 where !tombstones.contains(parent) && !isWhitelisted(parent, in: whitelist)
             {
-                nextChildEdges[parent, default: []].formUnion(
+                let filteredChildren = Set(
                     children.lazy.filter {
                         !tombstones.contains($0) && !isWhitelisted($0, in: whitelist)
                     }
                 )
+                if isAuthoritativelyEnumeratedPath(parent) {
+                    let preservedUnenumerated = (retainedState.childEdges[parent] ?? []).filter {
+                        !isAuthoritativelyEnumeratedPath($0)
+                            && !tombstones.contains($0)
+                            && !isWhitelisted($0, in: whitelist)
+                    }
+                    nextChildEdges[parent] = filteredChildren.union(preservedUnenumerated)
+                } else {
+                    nextChildEdges[parent, default: []].formUnion(filteredChildren)
+                }
             }
             for (path, leaf) in measurement.fileLeaves
                 where !tombstones.contains(path) && !isWhitelisted(path, in: whitelist)
@@ -12474,12 +12545,19 @@ public final class ScanCoordinator: ObservableObject {
         if let catalog = retainedState.allocationCatalog?.snapshot(), catalog.covers(directory: rootPath) {
             let aggregates = catalog.directoryAggregates(inDirectory: rootPath)
             for path in Array(nextDirIndex.keys) where pathBelongsToSubtree(path, rootPath: rootPath) {
-                guard let value = aggregates[path] else { continue }
-                var directory = nextDirIndex[path] ?? DirAgg()
-                directory.bytes = value.allocatedBytes
-                directory.logicalBytes = value.logicalBytes
-                directory.fileCount = value.fileCount
-                nextDirIndex[path] = directory
+                if let value = aggregates[path] {
+                    var directory = nextDirIndex[path] ?? DirAgg()
+                    directory.bytes = value.allocatedBytes
+                    directory.logicalBytes = value.logicalBytes
+                    directory.fileCount = value.fileCount
+                    nextDirIndex[path] = directory
+                } else if isAuthoritativelyEnumeratedPath(path) {
+                    var directory = nextDirIndex[path] ?? DirAgg()
+                    directory.bytes = 0
+                    directory.logicalBytes = 0
+                    directory.fileCount = 0
+                    nextDirIndex[path] = directory
+                }
             }
         }
 
@@ -12528,6 +12606,7 @@ public final class ScanCoordinator: ObservableObject {
                     guard let rows = buildIndexedTreeChildren(
                         parentPath: cachePath, retainedRows: oldRows, dirIndex: nextDirIndex,
                         fileLeaves: nextFileLeaves, childEdges: nextChildEdges, isComplete: false,
+                        isAuthoritativelyEnumeratedPath: isAuthoritativelyEnumeratedPath,
                         evidence: evidenceProjection, tombstones: tombstones, whitelist: whitelist
                     ) else { return nil }
                     nextTreeCache[cacheKey] = rows.sorted {
@@ -12610,6 +12689,7 @@ public final class ScanCoordinator: ObservableObject {
         guard let semanticRows = buildIndexedTreeChildren(
             parentPath: rootPath, retainedRows: retainedRootRows, dirIndex: nextDirIndex,
             fileLeaves: nextFileLeaves, childEdges: nextChildEdges, isComplete: measurement.isComplete,
+            isAuthoritativelyEnumeratedPath: isAuthoritativelyEnumeratedPath,
             evidence: evidenceProjection, tombstones: tombstones, whitelist: whitelist
         ) else { return nil }
         for sortKey in TreeSortKey.allCases {
@@ -12696,7 +12776,8 @@ public final class ScanCoordinator: ObservableObject {
             var rowsByPath: [String: RowItem] = [:]
             if !measurement.isComplete {
                 for row in nextRows where String._gsyParentPath(of: row.id) == rootPath
-                    && !tombstones.contains(row.id) && !isWhitelisted(row.id, in: whitelist) {
+                    && !tombstones.contains(row.id) && !isWhitelisted(row.id, in: whitelist)
+                    && (!isAuthoritativelyEnumeratedPath(row.id) || children.contains(row.id)) {
                     rowsByPath[row.id] = row
                 }
             }
@@ -12729,6 +12810,12 @@ public final class ScanCoordinator: ObservableObject {
             }
             if measurement.isComplete {
                 nextBuckets = nextBuckets.filter { !pathBelongsToSubtree($0.key, rootPath: rootPath) || children.contains($0.key) }
+            } else {
+                nextBuckets = nextBuckets.filter {
+                    !pathBelongsToSubtree($0.key, rootPath: rootPath)
+                        || !isAuthoritativelyEnumeratedPath($0.key)
+                        || children.contains($0.key)
+                }
             }
             if retainedState.usesPerRootPresentation {
                 nextRows.removeAll { pathBelongsToSubtree($0.id, rootPath: rootPath) }
@@ -13142,7 +13229,9 @@ public final class ScanCoordinator: ObservableObject {
     nonisolated private static func scanDirectChildrenShallow(
         rootPath: String,
         accessProjection: TreeScanEvidenceProjection,
-        pathNamespace: ScanPathNamespace? = nil
+        pathNamespace: ScanPathNamespace? = nil,
+        options: ScanOptions = .default,
+        knownAllocationCatalog: AllocationCatalog? = nil
     ) -> TreeChildrenMeasurement {
         if let protected = tccProtectedTreeMeasurement(
             publicRootPath: rootPath
@@ -13190,9 +13279,13 @@ public final class ScanCoordinator: ObservableObject {
             )
         }
 
+        let nonOwnerAliases = knownAllocationCatalog?.snapshot().nonOwnerAliasPaths(inDirectory: rootPath) ?? []
         var rows: [TreeRow] = []
         while let url = enumerator.nextObject() as? URL {
             guard !Task.isCancelled else { return .cancelled }
+            if !options.includeHidden && url.lastPathComponent.hasPrefix(".") {
+                continue
+            }
             let path = pathNamespace?.publicPath(forPhysicalPath: url.path) ?? url.path
             let values = try? url.resourceValues(forKeys: keys)
             let isSymlink = values?.isSymbolicLink ?? false
@@ -13208,13 +13301,18 @@ public final class ScanCoordinator: ObservableObject {
                 logicalBytes = 0
                 fileCount = 0
             } else if values?.isRegularFile == true && !isSymlink {
-                let allocated = values?.totalFileAllocatedSize ?? values?.fileAllocatedSize
-                let logical = values?.totalFileSize ?? values?.fileSize
-                // 不得回退到 logical size：那会把 sparse 虚拟容量混入磁盘占用主值。
-                // 本地文件系统未提供 allocated 值时先展示 0；完整后台阶段仍由
-                // BulkScanner 的 `st_blocks` 结果覆盖，而不是用另一种语义伪造一个数。
-                bytes = Int64(max(0, allocated ?? 0))
-                logicalBytes = Int64(max(0, logical ?? 0))
+                if nonOwnerAliases.contains(path) {
+                    bytes = 0
+                    logicalBytes = 0
+                } else {
+                    let allocated = values?.totalFileAllocatedSize ?? values?.fileAllocatedSize
+                    let logical = values?.totalFileSize ?? values?.fileSize
+                    // 不得回退到 logical size：那会把 sparse 虚拟容量混入磁盘占用主值。
+                    // 本地文件系统未提供 allocated 值时先展示 0；完整后台阶段仍由
+                    // BulkScanner 的 `st_blocks` 结果覆盖，而不是用另一种语义伪造一个数。
+                    bytes = Int64(max(0, allocated ?? 0))
+                    logicalBytes = Int64(max(0, logical ?? 0))
+                }
                 fileCount = 1
             } else {
                 bytes = 0
@@ -13438,7 +13536,9 @@ public final class ScanCoordinator: ObservableObject {
 
     nonisolated private static func scanDirectChildrenProducer(
         rootPath: String,
-        pathNamespace: ScanPathNamespace? = nil
+        pathNamespace: ScanPathNamespace? = nil,
+        options: ScanOptions = .default,
+        knownAllocationCatalog: AllocationCatalog? = nil
     ) async -> TreeChildrenProducerOutput {
         if let protected = tccProtectedTreeMeasurement(
             publicRootPath: rootPath
@@ -13464,15 +13564,12 @@ public final class ScanCoordinator: ObservableObject {
         }
 
         let root = URL(fileURLWithPath: physicalRootPath, isDirectory: true)
-        let scanner = BulkScanner(options: ScanOptions(
-            includeHidden: true,
-            includePackageContents: true,
-            followSymlinks: false,
-            followFirmlinks: false,
-            dedupByInode: true,
-            staySingleVolume: true,
-            respectTCCSkipList: true
-        ))
+        let scanner = BulkScanner(options: options)
+        let knownSnapshot = knownAllocationCatalog?.snapshot()
+        let allocationLedger = InodeSet(
+            tracksPaths: knownSnapshot != nil,
+            trackingPathsFor: knownSnapshot ?? .init()
+        )
 
         var entries: [ScanTopLevelEntry] = []
         var localIssues = Set<ScanIncompleteIssue>()
@@ -13482,7 +13579,8 @@ public final class ScanCoordinator: ObservableObject {
             root: root,
             delivery: .topLevel,
             pathNamespace: pathNamespace,
-            topLevelProjectionRootPath: rootPath
+            topLevelProjectionRootPath: rootPath,
+            allocationLedger: allocationLedger
         )
         await withTaskCancellationHandler {
             for await event in scanSession.events {
@@ -13521,6 +13619,41 @@ public final class ScanCoordinator: ObservableObject {
         }
         await scanSession.waitForTermination()
         guard !Task.isCancelled else { return .terminal(.cancelled) }
+        if let knownSnapshot, !entries.isEmpty {
+            let replacement = knownSnapshot.replacing(
+                with: allocationLedger.allocationSnapshot(),
+                replacesPath: { _ in false }
+            )
+            if !replacement.incomingDeltas.isEmpty {
+                var deltasByBucket: [String: (allocated: Int64, logical: Int64)] = [:]
+                for delta in replacement.incomingDeltas {
+                    let bucketPath = bucketProjection(
+                        nodePath: delta.path,
+                        rootPath: rootPath
+                    )?.bucketPath ?? (String._gsyParentPath(of: delta.path) == rootPath ? delta.path : nil)
+                    guard let bucketPath else { continue }
+                    let old = deltasByBucket[bucketPath] ?? (0, 0)
+                    deltasByBucket[bucketPath] = (
+                        old.allocated + delta.allocatedBytes,
+                        old.logical + delta.logicalBytes
+                    )
+                }
+                if !deltasByBucket.isEmpty {
+                    entries = entries.map { entry in
+                        guard let delta = deltasByBucket[entry.path] else { return entry }
+                        return ScanTopLevelEntry(
+                            path: entry.path,
+                            allocatedBytes: max(0, entry.allocatedBytes + delta.allocated),
+                            logicalBytes: max(0, entry.logicalBytes + delta.logical),
+                            fileCount: entry.fileCount,
+                            isDirectory: entry.isDirectory,
+                            hasChildren: entry.hasChildren,
+                            modificationDate: entry.modificationDate
+                        )
+                    }
+                }
+            }
+        }
         return .topLevel(
             entries: entries,
             issues: Array(localIssues),
@@ -13600,11 +13733,15 @@ public final class ScanCoordinator: ObservableObject {
         rootPath: String,
         sortedBy key: TreeSortKey,
         accessProjection: TreeScanEvidenceProjection,
-        pathNamespace: ScanPathNamespace? = nil
+        pathNamespace: ScanPathNamespace? = nil,
+        options: ScanOptions = .default,
+        knownAllocationCatalog: AllocationCatalog? = nil
     ) async -> TreeChildrenMeasurement {
         let output = await scanDirectChildrenProducer(
             rootPath: rootPath,
-            pathNamespace: pathNamespace
+            pathNamespace: pathNamespace,
+            options: options,
+            knownAllocationCatalog: knownAllocationCatalog
         )
         let projected = projectDirectChildrenProducerOutput(
             output,
@@ -13640,6 +13777,8 @@ public final class ScanCoordinator: ObservableObject {
         }
         let accessProjection = treeScanEvidenceProjection
         let pathNamespace = treeScanPathNamespace
+        let scanOptions = retainedScanOptions
+        let knownAllocationCatalog = allocationCatalog
         let physicalPath = pathNamespace?.physicalPath(forPublicPath: path) ?? path
         let identity = TreeFilesystemMeasurementIdentity(
             publicPath: path,
@@ -13665,7 +13804,9 @@ public final class ScanCoordinator: ObservableObject {
             } else {
                 producerOutput = await Self.scanDirectChildrenProducer(
                     rootPath: path,
-                    pathNamespace: pathNamespace
+                    pathNamespace: pathNamespace,
+                    options: scanOptions,
+                    knownAllocationCatalog: knownAllocationCatalog
                 )
             }
             await Self.treeChildrenFetchGate.release()
@@ -13679,6 +13820,7 @@ public final class ScanCoordinator: ObservableObject {
               generation == treeFetchGeneration
         else { return [] }
         let whitelist = whitelistSnapshot
+        let tombstones = deletedPathTombstones.matcher
         let projectionTask = Task.detached(priority: .userInitiated) {
             let projected = Self.projectDirectChildrenProducerOutput(
                 producerOutput,
@@ -13687,7 +13829,7 @@ public final class ScanCoordinator: ObservableObject {
             )
             return TreeChildrenMeasurement(
                 rows: projected.rows
-                    .filter { !Self.isWhitelisted($0.path, in: whitelist) }
+                    .filter { !tombstones.contains($0.path) && !Self.isWhitelisted($0.path, in: whitelist) }
                     .sorted {
                         Self.sortTreeRow($0, before: $1, by: key)
                     },

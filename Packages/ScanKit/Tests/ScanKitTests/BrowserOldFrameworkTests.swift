@@ -279,4 +279,40 @@ final class BrowserOldFrameworkTests: XCTestCase {
         XCTAssertEqual(Set(asyncHits.map(\.versionName)),
                        Set(syncHits.map(\.versionName)))
     }
+
+    // MARK: - 10. 多跳 Current 符号链接与悬空 Current 符号链接安全边界
+
+    func test_chained_current_symlink_excludes_active_version() throws {
+        let fw = try makeFramework(
+            in: try chromeFrameworksDir(),
+            name: "Google Chrome Framework.framework",
+            versions: ["1.0", "2.0"],
+            active: "Latest"
+        )
+        let versionsDir = fw.appendingPathComponent("Versions", isDirectory: true)
+        let latestLink = versionsDir.appendingPathComponent("Latest")
+        try FileManager.default.createSymbolicLink(
+            atPath: latestLink.path,
+            withDestinationPath: "2.0"
+        )
+        let hits = BrowserOldFrameworkScanner.detect(
+            options: BrowserOldFrameworkScanner.Options(frameworkRoots: [fw])
+        )
+        XCTAssertEqual(hits.map(\.versionName), ["1.0"],
+                       "Current -> Latest -> 2.0 多跳符号链接指向的活跃版本 2.0 必须被排除")
+    }
+
+    func test_dangling_current_symlink_fails_closed() throws {
+        let fw = try makeFramework(
+            in: try chromeFrameworksDir(),
+            name: "Google Chrome Framework.framework",
+            versions: ["1.0", "2.0"],
+            active: "9.9-missing"
+        )
+        let hits = BrowserOldFrameworkScanner.detect(
+            options: BrowserOldFrameworkScanner.Options(frameworkRoots: [fw])
+        )
+        XCTAssertTrue(hits.isEmpty,
+                      "Current 悬空指向不存在目录时必须 fail-closed 跳过整个 framework")
+    }
 }

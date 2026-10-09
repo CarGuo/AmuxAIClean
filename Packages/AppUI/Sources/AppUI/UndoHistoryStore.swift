@@ -123,6 +123,24 @@ public final class UndoHistoryStore: ObservableObject {
         public let skippedCount: Int
         public let renamedCount: Int
         public let firstFailure: RestoreFailure?
+        public let restoredPaths: [String]
+        public let restoredOriginalPaths: [String]
+
+        public init(
+            restoredCount: Int,
+            skippedCount: Int,
+            renamedCount: Int,
+            firstFailure: RestoreFailure?,
+            restoredPaths: [String] = [],
+            restoredOriginalPaths: [String] = []
+        ) {
+            self.restoredCount = restoredCount
+            self.skippedCount = skippedCount
+            self.renamedCount = renamedCount
+            self.firstFailure = firstFailure
+            self.restoredPaths = restoredPaths
+            self.restoredOriginalPaths = restoredOriginalPaths
+        }
     }
 
     private struct RestoreExecution: Sendable {
@@ -4163,6 +4181,7 @@ public final class UndoHistoryStore: ObservableObject {
         var firstFailure: RestoreFailure?
         var states = normalizedRecoveryStates(for: record)
         var restoredPaths: [String] = []
+        var restoredOriginalPaths: [String] = []
         var reservedDestinations = Set(record.filePairs.map { pair in
             URL(fileURLWithPath: pair.original).standardizedFileURL.path
         })
@@ -4264,6 +4283,7 @@ public final class UndoHistoryStore: ObservableObject {
                 // Publishing the original path would revive a different occupied object and
                 // incorrectly clear that path's deletion tombstone in scan consumers.
                 restoredPaths.append(destinationURL.path)
+                restoredOriginalPaths.append(pair.original)
             case .sourceMissing:
                 skipped += 1
                 states[index] = Record.RecoveryState(status: .missing)
@@ -4307,7 +4327,9 @@ public final class UndoHistoryStore: ObservableObject {
                 restoredCount: restored,
                 skippedCount: skipped,
                 renamedCount: renamed,
-                firstFailure: firstFailure
+                firstFailure: firstFailure,
+                restoredPaths: restoredPaths,
+                restoredOriginalPaths: restoredOriginalPaths
             ),
             recoveryStates: states,
             restoredPaths: restoredPaths

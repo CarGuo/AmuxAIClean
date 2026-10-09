@@ -413,5 +413,54 @@ final class SafetyEngineTests: XCTestCase {
         XCTAssertEqual(bundleVendorEval.0, .confirm)
         XCTAssertEqual(bundleVendorEval.1, .bundleDataProtected)
     }
+
+    func testAIAgentCredentialDotfilesAndAncestorProtection() {
+        let home = "/Users/foo"
+        let credentialFiles = [
+            "\(home)/.claude/credentials.json",
+            "\(home)/.claude/config.json",
+            "\(home)/.cursor/agent/credentials.json",
+            "\(home)/.copilot/hosts.yml",
+            "\(home)/.copilot/apps.yml",
+            "\(home)/.codex/auth.json",
+            "\(home)/.codex/config.toml"
+        ]
+        for path in credentialFiles {
+            let res = engine.evaluate(path: path, home: home)
+            XCTAssertEqual(res.0, .forbid, "AI CLI 凭据文件必须命中 .forbid: \(path)")
+            XCTAssertEqual(res.1, .sensitiveCredential)
+        }
+
+        let protectedAncestors = [
+            "\(home)/.claude",
+            "\(home)/.cursor",
+            "\(home)/.cursor/agent",
+            "\(home)/.copilot",
+            "\(home)/.codex"
+        ]
+        for ancestor in protectedAncestors {
+            let res = engine.evaluate(path: ancestor, home: home)
+            XCTAssertEqual(res.0, .forbid, "包含 AI CLI 凭据的父目录必须受 SR-02 祖先保护: \(ancestor)")
+        }
+    }
+
+    func testVendorTrieAncestorForbidOverrideCannotBeDowngradedByDescendantOverride() {
+        let home = "/Users/foo"
+        let rule = VendorRule(
+            name: "Acme",
+            appSupportSubdir: "Acme",
+            paths: [
+                PathRule(path: "~/Library/Application Support/Acme/Protected", verdict: .forbid),
+                PathRule(path: "~/Library/Application Support/Acme/Protected/SubCache", verdict: .safe)
+            ]
+        )
+        let eval = engine.evaluate(
+            path: "\(home)/Library/Application Support/Acme/Protected/SubCache/blob.bin",
+            vendors: [rule],
+            home: home
+        )
+        XCTAssertEqual(eval.0, .forbid, "祖先 pathOverride 的 .forbid 不得被后代非 forbid pathOverride 降级")
+        XCTAssertEqual(eval.1, .vendorPathRule)
+    }
 }
 

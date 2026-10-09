@@ -177,7 +177,9 @@ public struct VendorTrie: @unchecked Sendable {
             node = next
             depth += 1
             if let resolved = resolveNodeOverride(node, acceptSafeRule: acceptSafeRule) {
-                inheritedOverride = (resolved.rule, depth, resolved.pathRule)
+                if inheritedOverride?.pathRule.verdict != .forbid || resolved.pathRule.verdict == .forbid {
+                    inheritedOverride = (resolved.rule, depth, resolved.pathRule)
+                }
             }
             if firstRuleHit == nil, let rule = node.rule {
                 firstRuleHit = (rule, depth)

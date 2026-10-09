@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import LogKit
 
 /// 浏览器旧版 Framework 扫描器（Step 12C / AUDIT §4.2 P1 / line 117 + 435）。
@@ -123,52 +124,77 @@ public actor BrowserOldFrameworkScanner {
               type == .typeSymbolicLink
         else { return [] }
 
-        // 5) readlink → 解析相对路径 → 必须落在 Versions/ 内
-        guard let target = try? fm.destinationOfSymbolicLink(atPath: currentLink.path) else {
-            return []
-        }
-        let resolvedTarget: URL = {
-            if (target as NSString).isAbsolutePath {
-                return URL(fileURLWithPath: target).standardizedFileURL
+        // 5) readlink（支持多级软链）→ 解析相对路径 → 必须落在 Versions/ 内且目标目录真实存在
+        let versionsDirResolved = versionsDir.resolvingSymlinksInPath().standardizedFileURL
+        var cursorURL = currentLink
+        var resolvedTarget: URL?
+        for _ in 0..<16 {
+            guard let itemAttrs = try? fm.attributesOfItem(atPath: cursorURL.path),
+                  let itemType = itemAttrs[.type] as? FileAttributeType else {
+                return []
             }
-            // 相对路径基准是 currentLink 的父目录（Versions/）
-            return URL(fileURLWithPath: target, relativeTo: versionsDir)
-                .standardizedFileURL
-        }()
-        let versionsDirStandardized = versionsDir.standardizedFileURL
-        let activeVersionParent = resolvedTarget
-            .deletingLastPathComponent()
-            .standardizedFileURL
-        guard activeVersionParent.path == versionsDirStandardized.path else {
-            GSYLog.notice(.scan,
-                          "BrowserOldFramework Current 落点不在 Versions/ 内 fw=\(frameworkRoot.path) target=\(target)")
+            if itemType == .typeSymbolicLink {
+                guard let dest = try? fm.destinationOfSymbolicLink(atPath: cursorURL.path) else {
+                    return []
+                }
+                if (dest as NSString).isAbsolutePath {
+                    cursorURL = URL(fileURLWithPath: dest).standardizedFileURL
+                } else {
+                    cursorURL = URL(
+                        fileURLWithPath: dest,
+                        relativeTo: cursorURL.deletingLastPathComponent()
+                    ).standardizedFileURL
+                }
+            } else {
+                resolvedTarget = cursorURL.standardizedFileURL
+                break
+            }
+        }
+        guard let activeTargetURL = resolvedTarget else {
             return []
         }
-        let activeVersion = resolvedTarget.lastPathComponent
-        guard !activeVersion.isEmpty else { return [] }
+        guard let activeIdentity = directoryIdentity(activeTargetURL),
+              let versionsIdentity = directoryIdentity(versionsDirResolved) else {
+            return []
+        }
 
-        // 6) 列举 Versions/* 子目录，排除 active / Current / 隐藏项 / 软链本身
-        var hits: [Hit] = []
+        let activeVersionParentResolved = activeTargetURL
+            .deletingLastPathComponent()
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        guard directoryIdentity(activeVersionParentResolved) == versionsIdentity else {
+            GSYLog.notice(.scan,
+                          "BrowserOldFramework Current 落点不在 Versions/ 内 fw=\(frameworkRoot.path) target=\(activeTargetURL.path)")
+            return []
+        }
+
+        // 6) 列举 Versions/* 子目录，按 (st_dev, st_ino) 识别 active，排除 Current / 隐藏项 / 软链 / 跨卷
+        var activeVersion: String?
+        var oldVersions: [(name: String, url: URL)] = []
         for name in versionsEntries {
-            if name == activeVersion { continue }
             if options.currentSymlinkNames.contains(name) { continue }
             if name.hasPrefix(".") { continue }
             let child = versionsDir.appendingPathComponent(name)
-            var childIsDir: ObjCBool = false
-            guard fm.fileExists(atPath: child.path, isDirectory: &childIsDir),
-                  childIsDir.boolValue else { continue }
-            // 防 Versions/ 下又埋一个软链
-            if let cAttrs = try? fm.attributesOfItem(atPath: child.path),
-               let t = cAttrs[.type] as? FileAttributeType,
-               t == .typeSymbolicLink {
+            guard let identity = directoryIdentity(child),
+                  identity.device == versionsIdentity.device else { continue }
+            if identity == activeIdentity {
+                activeVersion = name
                 continue
             }
-            hits.append(Hit(
-                url: child,
+            oldVersions.append((name, child))
+        }
+        guard let activeVersion,
+              directoryIdentity(currentLink.resolvingSymlinksInPath()) == activeIdentity,
+              directoryIdentity(activeTargetURL) == activeIdentity else {
+            return []
+        }
+        let hits = oldVersions.map { version in
+            Hit(
+                url: version.url,
                 frameworkRoot: frameworkRoot,
                 activeVersion: activeVersion,
-                versionName: name
-            ))
+                versionName: version.name
+            )
         }
 
         if !hits.isEmpty {
@@ -176,5 +202,20 @@ public actor BrowserOldFrameworkScanner {
                         "BrowserOldFramework 识别到旧版本 fw=\(frameworkRoot.path) active=\(activeVersion) old=\(hits.count)")
         }
         return hits
+    }
+
+    private struct DirectoryIdentity: Equatable {
+        let device: dev_t
+        let inode: ino_t
+    }
+
+    /// lstat deliberately excludes a symbolic-link child even if its target is a directory.
+    private nonisolated static func directoryIdentity(_ url: URL) -> DirectoryIdentity? {
+        var metadata = stat()
+        guard url.withUnsafeFileSystemRepresentation({ path in
+            guard let path else { return false }
+            return lstat(path, &metadata) == 0
+        }), metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else { return nil }
+        return DirectoryIdentity(device: metadata.st_dev, inode: metadata.st_ino)
     }
 }

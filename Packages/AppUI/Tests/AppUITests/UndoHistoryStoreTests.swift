@@ -664,6 +664,11 @@ final class UndoHistoryStoreTests: XCTestCase {
         ).filter { $0.standardizedFileURL.path != original.standardizedFileURL.path }
         XCTAssertEqual(restoredCopies.count, 1)
         XCTAssertEqual(try String(contentsOf: restoredCopies[0], encoding: .utf8), "older")
+        XCTAssertEqual(result.restoredOriginalPaths, [original.path])
+        XCTAssertEqual(
+            result.restoredPaths.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+            [restoredCopies[0].resolvingSymlinksInPath().path]
+        )
         XCTAssertTrue(notifiedPaths.contains(restoredCopies[0].resolvingSymlinksInPath().path))
         XCTAssertFalse(notifiedPaths.contains(original.resolvingSymlinksInPath().path),
                        "Only the actual restored destination may revive scan state")

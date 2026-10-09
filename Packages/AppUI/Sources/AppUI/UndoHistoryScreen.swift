@@ -465,11 +465,6 @@ struct UndoHistoryScreen: View {
         _ record: UndoHistoryStore.Record,
         conflictPolicy: UndoHistoryStore.RestoreConflictPolicy
     ) async {
-        let previouslyRestoredIndices = Set(
-            record.recoveryStates.enumerated().compactMap { index, state in
-                state.status == .restored ? index : nil
-            }
-        )
         isRestoring = true
         onBusyChange?(true)
         defer {
@@ -481,25 +476,8 @@ struct UndoHistoryScreen: View {
             conflictPolicy: conflictPolicy,
             locale: locale
         )
-        if result.restoredCount > 0 {
-            let updatedRecord = store.history.first(where: { $0.id == record.id })
-            let newlyRestoredPaths: [String]
-            if let updatedRecord {
-                newlyRestoredPaths = updatedRecord.filePairs.enumerated().compactMap { index, pair in
-                    guard !previouslyRestoredIndices.contains(index),
-                          updatedRecord.recoveryState(at: index).status == .restored else {
-                        return nil
-                    }
-                    return pair.original
-                }
-            } else {
-                newlyRestoredPaths = record.filePairs.enumerated().compactMap { index, pair in
-                    previouslyRestoredIndices.contains(index) ? nil : pair.original
-                }
-            }
-            if !newlyRestoredPaths.isEmpty {
-                await HeuristicRecorder.shared.recordRestored(paths: newlyRestoredPaths)
-            }
+        if !result.restoredOriginalPaths.isEmpty {
+            await HeuristicRecorder.shared.recordRestored(paths: result.restoredOriginalPaths)
         }
         if let failure = result.firstFailure {
             alertPresentation = .partial(

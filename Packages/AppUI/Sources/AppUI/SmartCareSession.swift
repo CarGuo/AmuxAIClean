@@ -224,6 +224,7 @@ public final class SmartCareSession: ObservableObject {
     private var limitationProjectionGeneration = UUID()
     private let deletionAggregator: SmartCareCandidateDeletionAggregator
     private var careObservation: AnyCancellable?
+    private var undoRestoreCancellable: AnyCancellable?
 
     public convenience init(care: SmartCareCoordinator = SmartCareCoordinator(),
                             scanCoordinator: ScanCoordinator = ScanCoordinator()) {
@@ -253,6 +254,24 @@ public final class SmartCareSession: ObservableObject {
         self.careObservation = care.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
+        self.undoRestoreCancellable = NotificationCenter.default
+            .publisher(for: .gsyUndoDidRestore)
+            .sink { [weak self] notification in
+                guard let paths = notification.userInfo?["paths"] as? [String],
+                      !paths.isEmpty else { return }
+                if Thread.isMainThread {
+                    MainActor.assumeIsolated { self?.handleUndoRestore() }
+                } else {
+                    Task { @MainActor [weak self] in self?.handleUndoRestore() }
+                }
+            }
+    }
+
+    private func handleUndoRestore() {
+        if care.phase != .idle || checkpoint != nil || !care.summary.items.isEmpty {
+            invalidateAfterExternalDeletion()
+        }
+        scanCoordinator.refreshVolumeCapacity()
     }
 
     public var orderedSelectedStages: [SmartCareScanStage] {

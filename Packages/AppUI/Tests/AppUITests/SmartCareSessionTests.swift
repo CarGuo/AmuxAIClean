@@ -654,6 +654,36 @@ final class SmartCareSessionTests: XCTestCase {
         }
     }
 
+    func testUndoRestoreNotificationInvalidatesSmartCareSession() {
+        let path = "/Users/test/Library/Caches/Restored"
+        let summary = SmartCareSummaryBuilder.build(candidates: [
+            SmartCareCandidate(
+                source: .commonAppCache,
+                bucketID: .appCache,
+                path: path,
+                title: "Restored",
+                bytes: 42,
+                verdict: .safe
+            )
+        ])
+        let care = SmartCareCoordinator(summary: summary)
+        let scanner = ScanCoordinator(vendors: [])
+        let session = SmartCareSession(care: care, scanCoordinator: scanner)
+        let originalSessionID = session.currentScanSessionID
+
+        NotificationCenter.default.post(
+            name: .gsyUndoDidRestore,
+            object: nil,
+            userInfo: ["paths": [path]]
+        )
+
+        XCTAssertNotEqual(session.currentScanSessionID, originalSessionID)
+        XCTAssertTrue(care.summary.items.isEmpty)
+        guard case .idle = care.phase else {
+            return XCTFail("Smart Care must invalidate stale results when Undo restores disk state")
+        }
+    }
+
     func testConcurrentExternalDeletionsCommitLinearlyWithoutResurrectingCheckpointItems() async {
         let paths = [
             "/Users/test/Library/Caches/AppA",

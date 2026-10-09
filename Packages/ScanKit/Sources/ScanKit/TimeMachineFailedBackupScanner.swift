@@ -66,14 +66,14 @@ public actor TimeMachineFailedBackupScanner {
         let fm = FileManager.default
         let dbRoot = volumeRoot.appendingPathComponent("Backups.backupdb", isDirectory: true)
 
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: dbRoot.path, isDirectory: &isDir), isDir.boolValue else {
+        guard let dbAttrs = try? fm.attributesOfItem(atPath: dbRoot.path),
+              dbAttrs[.type] as? FileAttributeType == .typeDirectory else {
             return []
         }
 
         guard let hosts = try? fm.contentsOfDirectory(
             at: dbRoot,
-            includingPropertiesForKeys: [.isDirectoryKey],
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
             options: [.skipsHiddenFiles]
         ) else {
             return []
@@ -83,24 +83,20 @@ public actor TimeMachineFailedBackupScanner {
         let cutoff = options.now.addingTimeInterval(-options.safetyWindowHours * 3600)
 
         for hostDir in hosts {
-            var hostIsDir: ObjCBool = false
-            guard fm.fileExists(atPath: hostDir.path, isDirectory: &hostIsDir),
-                  hostIsDir.boolValue else { continue }
+            guard let hostAttrs = try? fm.attributesOfItem(atPath: hostDir.path),
+                  hostAttrs[.type] as? FileAttributeType == .typeDirectory else { continue }
 
             guard let entries = try? fm.contentsOfDirectory(
                 at: hostDir,
-                includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey],
                 options: [.skipsHiddenFiles]
             ) else { continue }
 
             for entry in entries {
                 guard entry.lastPathComponent.hasSuffix(".inProgress") else { continue }
-                var entryIsDir: ObjCBool = false
-                guard fm.fileExists(atPath: entry.path, isDirectory: &entryIsDir),
-                      entryIsDir.boolValue else { continue }
-
-                let attrs = try? fm.attributesOfItem(atPath: entry.path)
-                guard let mtime = attrs?[.modificationDate] as? Date else { continue }
+                guard let attrs = try? fm.attributesOfItem(atPath: entry.path),
+                      attrs[.type] as? FileAttributeType == .typeDirectory,
+                      let mtime = attrs[.modificationDate] as? Date else { continue }
                 guard mtime <= cutoff else { continue } // 安全窗内 → 跳过
 
                 let ageHours = options.now.timeIntervalSince(mtime) / 3600

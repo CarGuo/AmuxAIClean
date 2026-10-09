@@ -129,7 +129,15 @@ public struct SafetyEngine: Sendable {
         "/.cargo/credentials.toml",
         "/.m2/settings.xml",
         "/.m2/settings-security.xml",
-        "/.kube/config"
+        "/.kube/config",
+        // AI Agent CLI 凭证（DEV_ARTIFACTS_RULES.md §2.7 多重防御）
+        "/.claude/credentials.json",
+        "/.claude/config.json",
+        "/.cursor/agent/credentials.json",
+        "/.copilot/hosts.yml",
+        "/.copilot/apps.yml",
+        "/.codex/auth.json",
+        "/.codex/config.toml"
     ]
 
     /// `~/Library/...` 类凭证桶。
@@ -274,6 +282,10 @@ public struct SafetyEngine: Sendable {
         hardForbidPathContains.map { $0.lowercased() }
     private static let lowerUserRootForbiddenRelativeSuffixes: [String] =
         userRootForbiddenRelativeSuffixes.map { $0.lowercased() }
+    private static let lowerSafeCacheRelativePrefixes: [String] =
+        safeCacheRelativePrefixes.map { $0.lowercased() }
+    private static let lowerSystemSafeCachePrefixes: [String] =
+        systemSafeCachePrefixes.map { $0.lowercased() }
 
     /// 用户家目录下"根级别"禁删（防止用户拖进整个文件夹被一键带走）。
     public static func userRootForbidden(home: String) -> [String] {
@@ -413,14 +425,20 @@ public struct SafetyEngine: Sendable {
         }
         // 8. Positive cache matches honor filesystem case semantics before default selection.
         let isSafeCachePath: Bool
-        if lowerHomeRelative != nil {
-            isSafeCachePath = Self.safeCacheRelativePrefixes.contains {
-                pathSemantics.matchesSafeRule(pattern: canonicalHome + $0, path: canonical)
+        if let relative = lowerHomeRelative {
+            if let index = Self.lowerSafeCacheRelativePrefixes.firstIndex(where: { relative.hasPrefix($0) }) {
+                let pattern = canonicalHome + Self.safeCacheRelativePrefixes[index]
+                isSafeCachePath = pathSemantics.matchesSafeRule(pattern: pattern, path: canonical)
+            } else {
+                isSafeCachePath = false
             }
+        } else if let index = Self.lowerSystemSafeCachePrefixes.firstIndex(where: { lowerCanonical.hasPrefix($0) }) {
+            isSafeCachePath = pathSemantics.matchesSafeRule(
+                pattern: Self.systemSafeCachePrefixes[index],
+                path: canonical
+            )
         } else {
-            isSafeCachePath = Self.systemSafeCachePrefixes.contains {
-                pathSemantics.matchesSafeRule(pattern: $0, path: canonical)
-            }
+            isSafeCachePath = false
         }
         if isSafeCachePath {
             // 8.1 bundle 保护叠加：safe 路径若属于 data_protected app

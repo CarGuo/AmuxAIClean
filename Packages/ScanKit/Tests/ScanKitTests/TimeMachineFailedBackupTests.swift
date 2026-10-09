@@ -221,4 +221,27 @@ final class TimeMachineFailedBackupTests: XCTestCase {
         XCTAssertEqual(h.ageHours, 100, accuracy: 0.5,
                        "ageHours 应以注入的 now 为基准计算")
     }
+
+    func test_symlink_with_inProgress_suffix_is_skipped() throws {
+        let hostDir = tempRoot
+            .appendingPathComponent("Backups.backupdb", isDirectory: true)
+            .appendingPathComponent("MacSymlink", isDirectory: true)
+        let externalTarget = tempRoot.appendingPathComponent("ExternalTargetDir", isDirectory: true)
+        try FileManager.default.createDirectory(at: hostDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: externalTarget, withIntermediateDirectories: true)
+        let oldDate = Date().addingTimeInterval(-72 * 3600)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: externalTarget.path)
+
+        let symlinkEntry = hostDir.appendingPathComponent("2025-12-01-101234.inProgress")
+        try FileManager.default.createSymbolicLink(at: symlinkEntry, withDestinationURL: externalTarget)
+
+        let hits = TimeMachineFailedBackupScanner.detect(
+            volumeRoot: tempRoot,
+            options: TimeMachineFailedBackupScanner.Options(
+                safetyWindowHours: 24, now: Date()
+            )
+        )
+        XCTAssertTrue(hits.isEmpty,
+                      "指向目录的 .inProgress 符号链接不得被当作失败备份目录命中")
+    }
 }

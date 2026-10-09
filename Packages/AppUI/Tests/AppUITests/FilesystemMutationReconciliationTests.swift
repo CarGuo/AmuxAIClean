@@ -520,4 +520,128 @@ final class FilesystemMutationReconciliationTests: XCTestCase {
         XCTAssertEqual(Set(coordinator.directChildren(of: root.path, sortedBy: .sizeDesc).map(\.path)),
                        [file.path, fifo.path, symlink.path])
     }
+
+    func testPrunedHardlinkRestoreReconcilesWithoutFullRebaseline() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) } // best-effort fixture cleanup
+        let a = root.appendingPathComponent("A", isDirectory: true)
+        let b = root.appendingPathComponent("B", isDirectory: true)
+        try FileManager.default.createDirectory(at: a, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: b, withIntermediateDirectories: true)
+        let linkA = a.appendingPathComponent("shared.bin")
+        let linkB = b.appendingPathComponent("shared.bin")
+        let unrelatedDeleted = root.appendingPathComponent("deleted.bin")
+        try Data(repeating: 0x41, count: 16384).write(to: linkA)
+        try FileManager.default.linkItem(at: linkA, to: linkB)
+        try Data(repeating: 0x42, count: 8192).write(to: unrelatedDeleted)
+
+        let coordinator = ScanCoordinator(home: root.path)
+        let initialSession = coordinator.currentScanSessionID
+        coordinator.scan(category: .makeCustom(url: root))
+        try await waitForPrimaryScan(coordinator, replacing: initialSession)
+        let activeSession = coordinator.currentScanSessionID
+
+        var st = stat()
+        XCTAssertEqual(lstat(linkA.path, &st), 0)
+        let sharedBytes = Int64(st.st_blocks) * 512
+
+        // Prune both hardlinks and an unrelated file; remove linkB and unrelatedDeleted from disk,
+        // leaving linkA in place to simulate Undo restoring linkA while linkB remains in Trash.
+        try FileManager.default.removeItem(at: unrelatedDeleted) // owned temporary fixture only
+        await coordinator.acknowledgeSuccessfulDeletionForPresentation(
+            paths: [linkA.path, linkB.path, unrelatedDeleted.path]
+        )
+        await coordinator.pruneDeleted(
+            paths: [linkA.path, linkB.path, unrelatedDeleted.path]
+        )
+        XCTAssertEqual(coordinator.snapshot.totalBytes, 0)
+        XCTAssertTrue(coordinator._isDeletedTombstonedForTesting(unrelatedDeleted.path))
+
+        await coordinator.reconcileRestoredPaths([linkA.path])
+        XCTAssertEqual(
+            coordinator.currentScanSessionID,
+            activeSession,
+            "Restoring a previously scanned hardlink must not trigger a full rebaseline scan"
+        )
+        XCTAssertEqual(coordinator.snapshot.totalBytes, sharedBytes)
+        XCTAssertTrue(
+            coordinator._isDeletedTombstonedForTesting(unrelatedDeleted.path),
+            "Incremental restore reconciliation must preserve unrelated deletion tombstones"
+        )
+    }
+
+    func testPartialShallowRefreshReflectsDeletedAndShrunkReadableSiblingsWhilePreservingBlockedSubtree() async throws {
+        if geteuid() == 0 { throw XCTSkip("Root bypasses the fixture's POSIX permissions") }
+        let root = try fixture()
+        let blocked = root.appendingPathComponent("blocked", isDirectory: true)
+        defer {
+            chmod(blocked.path, 0o700)
+            try? FileManager.default.removeItem(at: root) // best-effort owned fixture cleanup
+        }
+        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
+        let shrinkable = root.appendingPathComponent("shrink.bin")
+        let removable = root.appendingPathComponent("remove.bin")
+        let keptInBlocked = blocked.appendingPathComponent("kept.bin")
+        try Data(repeating: 0x61, count: 65536).write(to: shrinkable)
+        try Data(repeating: 0x62, count: 32768).write(to: removable)
+        try Data(repeating: 0x63, count: 16384).write(to: keptInBlocked)
+
+        let coordinator = ScanCoordinator(home: root.path)
+        let session = coordinator.currentScanSessionID
+        coordinator.scan(category: .makeCustom(url: root))
+        try await waitForPrimaryScan(coordinator, replacing: session)
+        let blockedBytes = try XCTUnwrap(coordinator.snapshot.rows.first { $0.id == blocked.path }).bytes
+
+        // Shrink one readable root child and delete the other while `blocked` is unreadable.
+        try Data(repeating: 0x61, count: 4096).write(to: shrinkable)
+        try FileManager.default.removeItem(at: removable) // owned temporary fixture only
+        var shrunkStat = stat()
+        XCTAssertEqual(lstat(shrinkable.path, &shrunkStat), 0)
+        let shrunkBytes = Int64(shrunkStat.st_blocks) * 512
+
+        XCTAssertEqual(chmod(blocked.path, 0o000), 0)
+        await coordinator.rescanSubtree(at: root.path)
+
+        XCTAssertEqual(Set(coordinator.snapshot.rows.map(\.id)), [shrinkable.path, blocked.path])
+        XCTAssertEqual(coordinator.snapshot.totalBytes, shrunkBytes + blockedBytes)
+        XCTAssertEqual(coordinator.snapshot.scannedFileCount, 2)
+        for sort in TreeSortKey.allCases {
+            XCTAssertEqual(
+                Set(coordinator.directChildren(of: root.path, sortedBy: sort).map(\.path)),
+                [shrinkable.path, blocked.path]
+            )
+        }
+    }
+
+    func testOnDemandTreeDisclosureRespectsRetainedHiddenFilePolicyAndHardlinkAllocation() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) } // best-effort fixture cleanup
+        let a = root.appendingPathComponent("A", isDirectory: true)
+        let b = root.appendingPathComponent("B", isDirectory: true)
+        try FileManager.default.createDirectory(at: a, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: b, withIntermediateDirectories: true)
+        let linkA = a.appendingPathComponent("shared.bin")
+        let linkB = b.appendingPathComponent("shared.bin")
+        let hiddenInA = a.appendingPathComponent(".hidden.bin")
+        try Data(repeating: 0x71, count: 16384).write(to: linkA)
+        try FileManager.default.linkItem(at: linkA, to: linkB)
+        try Data(repeating: 0x72, count: 32768).write(to: hiddenInA)
+
+        let coordinator = ScanCoordinator(home: root.path)
+        let session = coordinator.currentScanSessionID
+        coordinator.scan(category: .makeCustom(url: root), includeHidden: false)
+        try await waitForPrimaryScan(coordinator, replacing: session)
+
+        let childrenA = await coordinator.directChildrenAsync(of: a.path, sortedBy: .sizeDesc)
+        let childrenB = await coordinator.directChildrenAsync(of: b.path, sortedBy: .sizeDesc)
+        XCTAssertEqual(childrenA.map(\.path), [linkA.path], "On-demand Tree expansion must honor includeHidden: false")
+        XCTAssertEqual(childrenB.map(\.path), [linkB.path])
+
+        let totalChildBytes = childrenA.reduce(0) { $0 + $1.bytes } + childrenB.reduce(0) { $0 + $1.bytes }
+        XCTAssertEqual(
+            totalChildBytes,
+            coordinator.snapshot.totalBytes,
+            "On-demand Tree expansion must deduplicate non-owner hardlinks against the primary allocation catalog"
+        )
+    }
 }

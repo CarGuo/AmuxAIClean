@@ -15,10 +15,12 @@ public struct FileAllocationSnapshot: Sendable {
         var aliases: Set<String> = []
         var allocatedBytes: Int64
         var logicalBytes: Int64
+        var linkCount: UInt32 = 1
         var paths: [String] { [owner] + aliases.sorted() }
     }
 
     var entries: [Identity: Entry] = [:]
+    var knownLinkedIdentities: Set<Identity> = []
     var directories: [String: DirectoryTotals] = [:]
     var coveredRoots: Set<String> = []
     public init() {}
@@ -50,11 +52,33 @@ public struct FileAllocationSnapshot: Sendable {
         coveredRoots.contains { path == $0 || path.hasPrefix($0 == "/" ? "/" : $0 + "/") }
     }
 
+    public func hasObservedDirectory(_ path: String) -> Bool {
+        directories[path] != nil
+    }
+
+    /// Returns non-owner hardlink alias paths under `directoryPath` so shallow directory
+    /// listings can zero out duplicate physical allocations without a full subtree scan.
+    public func nonOwnerAliasPaths(inDirectory directoryPath: String) -> Set<String> {
+        let prefix = directoryPath == "/" ? "/" : directoryPath + "/"
+        var result = Set<String>()
+        for entry in entries.values {
+            for alias in entry.aliases where alias.hasPrefix(prefix) {
+                result.insert(alias)
+            }
+        }
+        return result
+    }
+
     /// A sparse catalog cannot infer where an allocation that was previously single-link
-    /// was charged. Discovering a new linked identity invalidates that allocation baseline;
-    /// the owner must obtain a new authoritative scan instead of guessing a local delta.
+    /// was charged. Discovering a new linked identity with unobserved links outside the
+    /// refreshed scope invalidates that baseline; the owner must obtain a new authoritative
+    /// scan instead of guessing a local delta.
     public func introducesLinkedIdentity(comparedTo previous: FileAllocationSnapshot) -> Bool {
-        entries.keys.contains { previous.entries[$0] == nil }
+        entries.contains { identity, entry in
+            previous.entries[identity] == nil
+                && !previous.knownLinkedIdentities.contains(identity)
+                && entry.paths.count < max(2, Int(entry.linkCount))
+        }
     }
 
     public struct Delta: Sendable {
@@ -83,6 +107,9 @@ public struct FileAllocationSnapshot: Sendable {
     ) -> Replacement {
         var result = self
         result.coveredRoots.formUnion(incoming.coveredRoots)
+        result.knownLinkedIdentities.formUnion(entries.keys)
+        result.knownLinkedIdentities.formUnion(incoming.knownLinkedIdentities)
+        result.knownLinkedIdentities.formUnion(incoming.entries.keys)
         result.directories = directories.filter { !replacesPath($0.key) && !excludesPath($0.key) }
         for contribution in removedContributions {
             // A directory's files live in its own direct totals, removed above. Only a
@@ -102,7 +129,8 @@ public struct FileAllocationSnapshot: Sendable {
             affected.insert(identity)
             if let owner = remaining.first {
                 result.entries[identity] = Entry(owner: owner, aliases: Set(remaining.dropFirst()),
-                                                allocatedBytes: entry.allocatedBytes, logicalBytes: entry.logicalBytes)
+                                                allocatedBytes: entry.allocatedBytes, logicalBytes: entry.logicalBytes,
+                                                linkCount: entry.linkCount)
             } else {
                 result.entries.removeValue(forKey: identity)
             }
@@ -116,8 +144,10 @@ public struct FileAllocationSnapshot: Sendable {
             let preferredOwner = entries[identity]?.owner
             let owner = preferredOwner.flatMap { paths.contains($0) ? $0 : nil }
                 ?? result.entries[identity]?.owner ?? observed[0]
+            let mergedLinkCount = max(entry.linkCount, entries[identity]?.linkCount ?? 1)
             result.entries[identity] = Entry(owner: owner, aliases: Set(paths.filter { $0 != owner }),
-                                            allocatedBytes: entry.allocatedBytes, logicalBytes: entry.logicalBytes)
+                                            allocatedBytes: entry.allocatedBytes, logicalBytes: entry.logicalBytes,
+                                            linkCount: mergedLinkCount)
         }
 
         var incomingChanges: [String: (allocated: Int64, logical: Int64)] = [:]
@@ -228,6 +258,38 @@ public struct FileAllocationSnapshot: Sendable {
             allocated += totals.allocatedBytes
             logical += totals.logicalBytes
         }
+        return Aggregate(allocatedBytes: allocated, logicalBytes: logical, fileCount: files)
+    }
+
+    public func contribution(forPath path: String) -> Aggregate? {
+        for entry in entries.values {
+            if entry.owner == path {
+                return Aggregate(
+                    allocatedBytes: entry.allocatedBytes,
+                    logicalBytes: entry.logicalBytes,
+                    fileCount: 1
+                )
+            }
+            if entry.aliases.contains(path) {
+                return Aggregate(
+                    allocatedBytes: 0,
+                    logicalBytes: entry.logicalBytes,
+                    fileCount: 1
+                )
+            }
+        }
+        let prefix = path == "/" ? "/" : path + "/"
+        var matchedDirectory = false
+        var allocated: Int64 = 0
+        var logical: Int64 = 0
+        var files = 0
+        for (dirPath, totals) in directories where dirPath == path || dirPath.hasPrefix(prefix) {
+            matchedDirectory = true
+            allocated += totals.allocatedBytes
+            logical += totals.logicalBytes
+            files += totals.fileCount
+        }
+        guard matchedDirectory else { return nil }
         return Aggregate(allocatedBytes: allocated, logicalBytes: logical, fileCount: files)
     }
 }

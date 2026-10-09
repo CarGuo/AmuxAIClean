@@ -29,7 +29,7 @@ public final class InodeSet: @unchecked Sendable {
 
     public init(tracksPaths: Bool = false, trackingPathsFor knownAllocations: FileAllocationSnapshot = .init()) {
         self.tracksPaths = tracksPaths
-        self.trackedIdentities = Set(knownAllocations.entries.keys)
+        self.trackedIdentities = Set(knownAllocations.entries.keys).union(knownAllocations.knownLinkedIdentities)
         shards = (0..<Self.shardCount).map { _ in Shard() }
     }
 
@@ -52,13 +52,18 @@ public final class InodeSet: @unchecked Sendable {
                     // v2026.10.08: mutate the alias set in place. Copying an Entry's array
                     // on every observation makes a high-link-count inode quadratic.
                     shard.observations[key, default: FileAllocationSnapshot.Entry(
-                        owner: owner, allocatedBytes: allocatedBytes, logicalBytes: logicalBytes
+                        owner: owner, allocatedBytes: allocatedBytes, logicalBytes: logicalBytes,
+                        linkCount: linkCount
                     )].aliases.insert(path)
+                }
+                if let current = shard.observations[key]?.linkCount, linkCount > current {
+                    shard.observations[key]?.linkCount = linkCount
                 }
                 return isFirst
             }
             shard.observations[key] = FileAllocationSnapshot.Entry(
-                owner: path, allocatedBytes: allocatedBytes, logicalBytes: logicalBytes
+                owner: path, allocatedBytes: allocatedBytes, logicalBytes: logicalBytes,
+                linkCount: linkCount
             )
         }
         return isFirst
@@ -97,6 +102,7 @@ public final class InodeSet: @unchecked Sendable {
             snapshot.coveredRoots.formUnion(shard.coveredRoots)
             shard.lock.unlock()
         }
+        snapshot.knownLinkedIdentities = Set(snapshot.entries.keys)
         return snapshot
     }
 
