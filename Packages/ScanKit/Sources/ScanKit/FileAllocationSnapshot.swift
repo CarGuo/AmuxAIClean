@@ -15,7 +15,6 @@ public struct FileAllocationSnapshot: Sendable {
         var aliases: Set<String> = []
         var allocatedBytes: Int64
         var logicalBytes: Int64
-        var linkCount: UInt32 = 1
         var paths: [String] { [owner] + aliases.sorted() }
     }
 
@@ -70,14 +69,13 @@ public struct FileAllocationSnapshot: Sendable {
     }
 
     /// A sparse catalog cannot infer where an allocation that was previously single-link
-    /// was charged. Discovering a new linked identity with unobserved links outside the
-    /// refreshed scope invalidates that baseline; the owner must obtain a new authoritative
-    /// scan instead of guessing a local delta.
+    /// was charged. Discovering any linked identity that was not previously tracked as a
+    /// linked identity invalidates that baseline; even if all current links are inside the
+    /// refreshed scope, an unrefreshed directory may still retain the old single-link charge.
     public func introducesLinkedIdentity(comparedTo previous: FileAllocationSnapshot) -> Bool {
-        entries.contains { identity, entry in
+        entries.contains { identity, _ in
             previous.entries[identity] == nil
                 && !previous.knownLinkedIdentities.contains(identity)
-                && entry.paths.count < max(2, Int(entry.linkCount))
         }
     }
 
@@ -114,7 +112,9 @@ public struct FileAllocationSnapshot: Sendable {
         for contribution in removedContributions {
             // A directory's files live in its own direct totals, removed above. Only a
             // leaf contribution must also be removed from the surviving parent's direct sum.
-            guard directories[contribution.path] == nil else { continue }
+            let prefix = contribution.path == "/" ? "/" : contribution.path + "/"
+            guard directories[contribution.path] == nil,
+                  !directories.keys.contains(where: { $0.hasPrefix(prefix) }) else { continue }
             let parent = (contribution.path as NSString).deletingLastPathComponent
             guard var totals = result.directories[parent] else { continue }
             totals.allocatedBytes = max(0, totals.allocatedBytes - contribution.allocatedBytes)
@@ -129,8 +129,7 @@ public struct FileAllocationSnapshot: Sendable {
             affected.insert(identity)
             if let owner = remaining.first {
                 result.entries[identity] = Entry(owner: owner, aliases: Set(remaining.dropFirst()),
-                                                allocatedBytes: entry.allocatedBytes, logicalBytes: entry.logicalBytes,
-                                                linkCount: entry.linkCount)
+                                                allocatedBytes: entry.allocatedBytes, logicalBytes: entry.logicalBytes)
             } else {
                 result.entries.removeValue(forKey: identity)
             }
@@ -144,10 +143,8 @@ public struct FileAllocationSnapshot: Sendable {
             let preferredOwner = entries[identity]?.owner
             let owner = preferredOwner.flatMap { paths.contains($0) ? $0 : nil }
                 ?? result.entries[identity]?.owner ?? observed[0]
-            let mergedLinkCount = max(entry.linkCount, entries[identity]?.linkCount ?? 1)
             result.entries[identity] = Entry(owner: owner, aliases: Set(paths.filter { $0 != owner }),
-                                            allocatedBytes: entry.allocatedBytes, logicalBytes: entry.logicalBytes,
-                                            linkCount: mergedLinkCount)
+                                            allocatedBytes: entry.allocatedBytes, logicalBytes: entry.logicalBytes)
         }
 
         var incomingChanges: [String: (allocated: Int64, logical: Int64)] = [:]
@@ -273,7 +270,7 @@ public struct FileAllocationSnapshot: Sendable {
             if entry.aliases.contains(path) {
                 return Aggregate(
                     allocatedBytes: 0,
-                    logicalBytes: entry.logicalBytes,
+                    logicalBytes: 0,
                     fileCount: 1
                 )
             }

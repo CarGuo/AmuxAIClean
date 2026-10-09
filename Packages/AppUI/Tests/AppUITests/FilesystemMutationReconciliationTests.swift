@@ -644,4 +644,84 @@ final class FilesystemMutationReconciliationTests: XCTestCase {
             "On-demand Tree expansion must deduplicate non-owner hardlinks against the primary allocation catalog"
         )
     }
+
+    func testRescanSubtreeRebaselinesWhenMovedSingleLinkBecomesMultiLinkInsideRefreshedDirectory() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) } // best-effort fixture cleanup
+        let a = root.appendingPathComponent("A", isDirectory: true)
+        let b = root.appendingPathComponent("B", isDirectory: true)
+        try FileManager.default.createDirectory(at: a, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: b, withIntermediateDirectories: true)
+        let soloInA = a.appendingPathComponent("solo.bin")
+        try Data(repeating: 0x51, count: 16384).write(to: soloInA)
+
+        let coordinator = ScanCoordinator(home: root.path)
+        let session = coordinator.currentScanSessionID
+        coordinator.scan(category: .makeCustom(url: root))
+        try await waitForPrimaryScan(coordinator, replacing: session)
+        let initialBytes = coordinator.snapshot.totalBytes
+        XCTAssertGreaterThan(initialBytes, 0)
+
+        let movedInB = b.appendingPathComponent("moved.bin")
+        let secondLinkInB = b.appendingPathComponent("second.bin")
+        try FileManager.default.moveItem(at: soloInA, to: movedInB)
+        try FileManager.default.linkItem(at: movedInB, to: secondLinkInB)
+
+        let completedSession = coordinator.currentScanSessionID
+        await coordinator.rescanSubtree(at: b.path)
+        try await waitForPrimaryScan(coordinator, replacing: completedSession)
+
+        let rowsByPath = Dictionary(uniqueKeysWithValues: coordinator.snapshot.rows.map { ($0.id, $0) })
+        XCTAssertEqual(rowsByPath[a.path]?.bytes, 0)
+        XCTAssertEqual(rowsByPath[b.path]?.bytes, initialBytes)
+        XCTAssertEqual(
+            coordinator.snapshot.totalBytes,
+            initialBytes,
+            "Moving a single-link file from A to B and linking it inside B must not double-count A's stale allocation"
+        )
+        XCTAssertEqual(coordinator.snapshot.scannedFileCount, 2)
+    }
+
+    func testPruneDeletedNonOwnerHardlinkAliasInsideUnexpandedDirectoryPreservesSiblingLogicalSize() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) } // best-effort fixture cleanup
+        let a = root.appendingPathComponent("A", isDirectory: true)
+        let b = root.appendingPathComponent("B", isDirectory: true)
+        try FileManager.default.createDirectory(at: a, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: b, withIntermediateDirectories: true)
+        let linkA = a.appendingPathComponent("shared.bin")
+        let linkB = b.appendingPathComponent("shared.bin")
+        try Data(repeating: 0x61, count: 4096).write(to: linkA)
+        try FileManager.default.linkItem(at: linkA, to: linkB)
+        try Data(repeating: 0x62, count: 8192).write(to: a.appendingPathComponent("other.bin"))
+        try Data(repeating: 0x63, count: 8192).write(to: b.appendingPathComponent("other.bin"))
+
+        let coordinator = ScanCoordinator(home: root.path)
+        let session = coordinator.currentScanSessionID
+        coordinator.scan(category: .makeCustom(url: root))
+        try await waitForPrimaryScan(coordinator, replacing: session)
+
+        // Whichever directory was visited second holds the non-owner alias (0 logical bytes for shared.bin + 8192 for other.bin).
+        let aliasDirectoryRow = try XCTUnwrap(
+            coordinator.snapshot.rows.first { ($0.id == a.path || $0.id == b.path) && $0.logicalBytes == 8192 }
+        )
+        XCTAssertEqual(aliasDirectoryRow.fileCount, 2)
+        let aliasFile = URL(fileURLWithPath: aliasDirectoryRow.id).appendingPathComponent("shared.bin")
+
+        try FileManager.default.removeItem(at: aliasFile) // owned temporary fixture only
+        await coordinator.acknowledgeSuccessfulDeletionForPresentation(paths: [aliasFile.path])
+        await coordinator.pruneDeleted(paths: [aliasFile.path])
+
+        let afterAliasDirectoryRow = try XCTUnwrap(
+            coordinator.snapshot.rows.first { $0.id == aliasDirectoryRow.id }
+        )
+        XCTAssertEqual(
+            afterAliasDirectoryRow.logicalBytes,
+            8192,
+            "Pruning a non-owner hardlink alias inside an unexpanded directory must not subtract logical bytes from sibling files"
+        )
+        XCTAssertEqual(afterAliasDirectoryRow.bytes, aliasDirectoryRow.bytes)
+        XCTAssertEqual(afterAliasDirectoryRow.fileCount, 1)
+    }
 }
+

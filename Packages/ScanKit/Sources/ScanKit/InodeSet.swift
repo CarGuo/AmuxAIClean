@@ -52,18 +52,13 @@ public final class InodeSet: @unchecked Sendable {
                     // v2026.10.08: mutate the alias set in place. Copying an Entry's array
                     // on every observation makes a high-link-count inode quadratic.
                     shard.observations[key, default: FileAllocationSnapshot.Entry(
-                        owner: owner, allocatedBytes: allocatedBytes, logicalBytes: logicalBytes,
-                        linkCount: linkCount
+                        owner: owner, allocatedBytes: allocatedBytes, logicalBytes: logicalBytes
                     )].aliases.insert(path)
-                }
-                if let current = shard.observations[key]?.linkCount, linkCount > current {
-                    shard.observations[key]?.linkCount = linkCount
                 }
                 return isFirst
             }
             shard.observations[key] = FileAllocationSnapshot.Entry(
-                owner: path, allocatedBytes: allocatedBytes, logicalBytes: logicalBytes,
-                linkCount: linkCount
+                owner: path, allocatedBytes: allocatedBytes, logicalBytes: logicalBytes
             )
         }
         return isFirst
