@@ -111,22 +111,22 @@ public actor WhitelistStore {
     ///    扫描根 `~/X` 本身不会被加白，这是反向不命中（避免用户误以为加白子项就静默父级）。
     public func isWhitelisted(_ path: String) async -> Bool {
         await loadIfNeeded()
+        guard !inMemoryEntries.isEmpty else { return false }
         let normalized = WhitelistStore.normalize(path).lowercased()
-        let resolved = WhitelistStore.resolveSymlinks(path).lowercased()
+        let resolved = WhitelistStore.resolvedPath(path)?.lowercased()
         for entry in inMemoryEntries.values {
             let entryNorm = WhitelistStore.normalize(entry.path).lowercased()
             if normalized == entryNorm || normalized.hasPrefix(entryNorm + "/") {
                 return true
             }
-            if resolved != normalized && (resolved == entryNorm || resolved.hasPrefix(entryNorm + "/")) {
+            if let resolved, resolved != normalized && (resolved == entryNorm || resolved.hasPrefix(entryNorm + "/")) {
                 return true
             }
-            let entryResolved = WhitelistStore.resolveSymlinks(entry.path).lowercased()
-            if entryResolved != entryNorm {
+            if let entryResolved = WhitelistStore.resolvedPath(entry.path)?.lowercased(), entryResolved != entryNorm {
                 if normalized == entryResolved || normalized.hasPrefix(entryResolved + "/") {
                     return true
                 }
-                if resolved == entryResolved || resolved.hasPrefix(entryResolved + "/") {
+                if let resolved, resolved == entryResolved || resolved.hasPrefix(entryResolved + "/") {
                     return true
                 }
             }
@@ -205,40 +205,15 @@ public actor WhitelistStore {
         return p
     }
 
-    private static func resolveSymlinks(_ path: String) -> String {
-        let stripped = normalize(path)
-        guard stripped.hasPrefix("/") else { return stripped }
-        let fm = FileManager.default
-        var current = stripped
-        var trailingComponents: [String] = []
-        while current != "/" && !current.isEmpty && !fm.fileExists(atPath: current) {
-            var st = stat()
-            if Darwin.lstat(current, &st) == 0, (st.st_mode & S_IFMT) == S_IFLNK,
-               let destination = try? fm.destinationOfSymbolicLink(atPath: current) {
-                let parent = (current as NSString).deletingLastPathComponent
-                let resolvedTarget = destination.hasPrefix("/")
-                    ? destination
-                    : (parent as NSString).appendingPathComponent(destination)
-                current = normalize(resolvedTarget)
-                continue
-            }
-            let ns = current as NSString
-            let last = ns.lastPathComponent
-            if !last.isEmpty && last != "/" {
-                trailingComponents.append(last)
-            }
-            current = ns.deletingLastPathComponent
+    /// v2026.10.09: alias matching shares the bounded resolver with safety evaluation.
+    /// Unresolvable aliases cannot prove whitelist membership; lexical entries still match.
+    private static func resolvedPath(_ path: String) -> String? {
+        switch SymbolicLinkResolver.resolve(SafetyEngine.stripDataVolumePrefix(path)) {
+        case .success(let resolved): return normalize(resolved)
+        case .failure(let failure):
+            GSYLog.debug(.safety, "whitelist resolution failed path=\(path) failure=\(failure)")
+            return nil
         }
-        var resolvedBase = URL(fileURLWithPath: current).resolvingSymlinksInPath().standardizedFileURL.path
-        resolvedBase = SafetyEngine.stripDataVolumePrefix(resolvedBase)
-        for comp in trailingComponents.reversed() {
-            if resolvedBase == "/" {
-                resolvedBase = "/" + comp
-            } else {
-                resolvedBase += "/" + comp
-            }
-        }
-        return normalize(resolvedBase)
     }
 
     private static func defaultStorageURL() -> URL? {

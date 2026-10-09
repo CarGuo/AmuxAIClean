@@ -726,7 +726,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             guard baseVerdict != .forbid,
                   baseReason != .bundleSystemCritical,
                   baseReason != .bundleDataProtected,
-                  !safety.isPathBundleProtected(path: path, home: home),
+                  safety.bundleProtectionEvidence(path: path, home: home) == .unprotected,
                   deletionScope.contains(rawPath: path) else {
                 return []
             }

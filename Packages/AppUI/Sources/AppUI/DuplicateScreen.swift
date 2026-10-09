@@ -1201,20 +1201,11 @@ public struct DuplicateScreen: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private static func normalizeRootURL(_ raw: URL) -> URL {
-        let rawPath = raw.path
-        let standardized = raw.standardizedFileURL.path
-        if rawPath.hasPrefix("/private/"), !standardized.hasPrefix("/private/") {
-            return URL(fileURLWithPath: "/private" + standardized, isDirectory: raw.hasDirectoryPath)
-        }
-        return raw.standardizedFileURL
-    }
-
     private func handleRootImport(_ result: Result<[URL], any Error>) {
         switch result {
         case .success(let urls):
             for raw in urls {
-                let url = Self.normalizeRootURL(raw)
+                let url = ScanPathIdentity.lexicallyNormalizedURL(raw)
                 if !roots.contains(url) {
                     roots.append(url)
                 }
@@ -1651,7 +1642,7 @@ public struct DuplicateScreen: View {
 
     private func recordIncompleteIssue(_ issue: ScanIncompleteIssue) {
         let normalized = ScanIncompleteIssue(
-            path: Self.normalizeRootURL(URL(fileURLWithPath: issue.path)).path,
+            path: ScanPathIdentity.lexicallyNormalizedPath(issue.path),
             reason: issue.reason,
             stage: issue.stage,
             posixErrorCode: issue.posixErrorCode

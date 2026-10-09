@@ -8758,6 +8758,23 @@
         }
       }
     },
+    "op.result.reason.symbolic_link_resolution_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The symbolic link target could not be reliably resolved. Check the link and scan again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法可靠解析符号链接的目标，请检查链接后重新扫描。"
+          }
+        }
+      }
+    },
     "op.result.reason.sensitive_credential": {
       "extractionState": "manual",
       "localizations": {
@@ -13814,6 +13831,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "批次包含受保护项目，因此整批请求被拒绝。"
+          }
+        }
+      }
+    },
+    "delete.preflight.reason.symbolic_link_resolution_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The symbolic link target could not be reliably resolved. Check the link and scan again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法可靠解析符号链接的目标，请检查链接后重新扫描。"
           }
         }
       }

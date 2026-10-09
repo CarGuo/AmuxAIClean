@@ -7,6 +7,25 @@ import XCTest
 /// 满足 Swift 6 严格并发对非 Sendable 类型的要求。
 final class UserPathStoreTests: XCTestCase {
 
+    func testSelectedNamespaceSurvivesPersistenceAndSymlinksAreNotSilentlyFollowed() async throws {
+        let suite = freshSuite()
+        let store = UserPathStore(testSuite: suite)
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("UserPathIdentity-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try FileManager.default.removeItem(at: root) }
+        let alias = root.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: root)
+        let physical = URL(fileURLWithPath: "/private/var/folders/bucket/process/T/fixture")
+        _ = await store.add(URL(fileURLWithPath: physical.path + "/./child/.."))
+        _ = await store.add(alias)
+        let restored = UserPathStore(testSuite: suite)
+        let paths = await restored.list().map(\.path)
+        XCTAssertEqual(paths, [physical.path, alias.path])
+        let removed = await restored.remove(physical)
+        XCTAssertTrue(removed)
+    }
+
     private func freshSuite(_ name: String = #function) -> String {
         let s = "GSYCleanMac.tests.UserPathStore.\(name).\(UUID().uuidString)"
         UserDefaults().removePersistentDomain(forName: s)

@@ -12,7 +12,7 @@ final class DeletionPreflightPresentationTests: XCTestCase {
         XCTAssertTrue(DeletionPreflightNotice.Message.scanInProgress.rawValue
             .hasPrefix("delete.preflight."))
         let rejections: [SafetyRejection] = [
-            .relativePath, .dotDotInPath, .rootOrAboveHome, .outsideUserDeletionScope,
+            .relativePath, .dotDotInPath, .symbolicLinkResolutionFailed, .rootOrAboveHome, .outsideUserDeletionScope,
             .preflightCancelled, .hardForbidPrefix, .userDocumentsRoot, .systemVolume,
             .insideAppBundle, .sensitiveCredential, .vendorPathRule, .accessDenied,
             .userWhitelisted, .batchContainsForbidden, .bundleSystemCritical,
@@ -103,6 +103,7 @@ final class DeletionPreflightPresentationTests: XCTestCase {
         let expected: [(SafetyRejection, String)] = [
             (.relativePath, "op.result.reason.outside_user_scope"),
             (.dotDotInPath, "op.result.reason.outside_user_scope"),
+            (.symbolicLinkResolutionFailed, "op.result.reason.symbolic_link_resolution_failed"),
             (.rootOrAboveHome, "op.result.reason.user_root"),
             (.outsideUserDeletionScope, "op.result.reason.outside_user_scope"),
             (.preflightCancelled, "op.result.reason.preflight_cancelled"),

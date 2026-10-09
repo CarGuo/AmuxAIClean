@@ -817,3 +817,39 @@ macOS 13.5 实机/VM 与最终 DMG C5 仍未验证。
 - **剩余项**：未做运行交互验收，真实回收/Undo 的 C4 仍待用户授权的持续 App 场景验证。
   本轮只修复审查发现的两项问题；既有 F04/F07、macOS 13.5/Intel 与 Release/DMG C5
   仍按前述台账待办，未扩大规则、安全边界、删除执行或发布范围。
+
+### 9.21 v2026.10.09–10 `1f48352` 复审后的路径共同边界修复（C3；无新 C4）
+
+- **原始问题**：生产 API 探针确认多跳悬空链接指向 `/System` 时被缓存路径判为 safe；
+  白名单互指 symlink 查询不终止；Duplicate 根规划再次 standardize，丢失
+  `/private/var/folders` 政策身份，绕过与 BulkScanner 相同的 TCC skip。复现仅创建系统
+  临时 fixture，没有用真实 HOME 制造证据，也没有实际回收系统路径。
+- **共同修复**：SafetyEngine 三个解析入口与 WhitelistStore 共用有系统 link budget 的
+  SymbolicLinkResolver。存在目标走 libc；缺失目标仍逐组件解析整条链与相对目标，循环、
+  权限或 I/O 错误保留 typed failure。bundle override 使用三态证据，只有 unprotected
+  才满足资格。ScanPathIdentity 统一用户根存储、根规划、估算、终态证据、Tree 状态和
+  preflight overlap 的词法身份；物理所有权仍合并 filesystem alias，公开政策身份保留
+  所选命名空间。移除 DuplicateScreen 拼接 `/private` 的局部补丁，未更改 TCC 或安全
+  规则资产。BundleProtectionMatcher 一次编译 wildcard，保持原规则与优先级，并由
+  编译器验证 Sendable，移除原 unchecked 声明。
+- **聚焦证据（C2）**：多跳 dangling 与后代、libc/custom missing-component 两条循环路径、
+  actor 后续可用、相对 `..` 与非 ASCII 目标、权限来源、shipped wildcard 原语义 oracle
+  均通过。临时目录中的真实 producer 验证物理根从扫描终态到 Tree/预检查询保留 TCC
+  证据；随后显式逻辑根扫描保留当前进程临时目录豁免，并清除旧 revision 的证据。
+  独立生产 API 复验得到 dangling forbid、cycle false 终态、Duplicate 0 groups / 1 TCC issue。
+- **性能证据**：相同 seeds、159 vendors、5,000 paths；每 revision 三个交错进程、一次
+  warmup 后五次测量，15 样本中位数为 `519.550 ms → 210.951 ms`（2.463×），safe checksum
+  全部为 9,942。只说明安全评估热点改善，不宣称真实 UI 或整轮扫描同比加速。最终全测
+  曾发现新增 URL 身份适配使两万行 prune plan 在并行负载下超过原 2 秒预算；保留红日志，
+  把字符串消费点改成纯字符串处理，并在空的不可变证据索引上省去无用查询。71 项相关
+  聚焦测试与最终全测的原性能断言均通过，没有放宽预算或更改断言。
+- **最终验证（C3）**：九包 full native SwiftPM tests 均 exit 0，AppUI 另有 11 项 Swift
+  Testing 通过；目标 Debug 构建、actual App strict/deep codesign 与 diff check 通过。
+  491 个源码、资源和测试文件在最终验证期间指纹一致。Release 静态合同检查通过。
+  验证命令、红日志、清单、性能原样本与探针见本地
+  `build/root-fix-20261009/verification-summary.json` 及关联文件。
+- **剩余边界**：未做运行交互验收，macOS 13.5/Intel 运行验证仍缺。Apple 公证凭据预检
+  返回 HTTP 403，服务报告团队必要协议缺失或过期；账号持有人处理后才可完成公证。
+  本地签名不能代替 Apple Accepted，正式发布状态以最终 DMG provenance、公证结果和
+  GitHub Release 为准。版本按现有脚本以提交计数生成递增 build，不修改工程版本配置。
+  长期合同见 PITFALLS 第 23 节。

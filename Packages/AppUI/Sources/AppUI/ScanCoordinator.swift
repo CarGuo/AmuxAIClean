@@ -887,6 +887,16 @@ private struct TreeScanEvidenceProjection: Sendable {
         fallbackAccessState: TreeRow.AccessState = .normal,
         fallbackSubtreeCompleteness: TreeRow.SubtreeCompleteness = .complete
     ) -> ProjectedState {
+        // v2026.10.09: an empty immutable evidence index cannot alter either fallback.
+        // Prune/terminal transactions project tens of thousands of rows; avoid doing
+        // any path work when there is no evidence to query.
+        if permissionDeniedPaths.isEmpty, tccProtectedPaths.isEmpty,
+           incompletePaths.isEmpty, incompleteDescendantAncestors.isEmpty {
+            return ProjectedState(
+                accessState: fallbackAccessState,
+                subtreeCompleteness: fallbackSubtreeCompleteness
+            )
+        }
         let normalized = Self.normalize(path)
         let accessState: TreeRow.AccessState
         if Self.containsSameOrAncestor(in: tccProtectedPaths, of: normalized) {
@@ -911,11 +921,7 @@ private struct TreeScanEvidenceProjection: Sendable {
 
     private static func normalize(_ path: String) -> String {
         guard !path.isEmpty else { return "" }
-        var normalized = URL(fileURLWithPath: path).standardizedFileURL.path
-        while normalized.count > 1, normalized.hasSuffix("/") {
-            normalized.removeLast()
-        }
-        return normalized
+        return ScanPathIdentity.lexicallyNormalizedPath(path)
     }
 
     private static func containsSameOrAncestor(
@@ -1230,7 +1236,9 @@ public final class ScanCoordinator: ObservableObject {
         let physicalPath: String
 
         init(publicPath: String, physicalPath: String) {
-            self.publicPath = Self.standardize(publicPath)
+            // Public policy identity is lexical; physical ownership still coalesces aliases
+            // so two intents for the same filesystem location cannot overlap their I/O.
+            self.publicPath = ScanPathIdentity.lexicallyNormalizedPath(publicPath)
             self.physicalPath = Self.standardize(physicalPath)
         }
 
@@ -1744,7 +1752,7 @@ public final class ScanCoordinator: ObservableObject {
         // 这里也必须先提交 buffered typed evidence 再计算 overlap。
         commitIncompleteEvidenceProjectionsIfNeeded()
         let normalizedTargets = paths.map {
-            URL(fileURLWithPath: $0).standardizedFileURL.path
+            ScanPathIdentity.lexicallyNormalizedPath($0)
         }
         guard !normalizedTargets.isEmpty else { return [] }
         return incompleteScanIssues.filter { issue in
@@ -1846,7 +1854,7 @@ public final class ScanCoordinator: ObservableObject {
         var seen = Set<String>()
         var result: [String] = []
         for path in paths {
-            let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+            let normalized = ScanPathIdentity.lexicallyNormalizedPath(path)
             guard seen.insert(normalized).inserted else { continue }
             result.append(normalized)
         }
@@ -1884,7 +1892,7 @@ public final class ScanCoordinator: ObservableObject {
         rootPath: String,
         with issues: [ScanIncompleteIssue]
     ) {
-        let root = URL(fileURLWithPath: rootPath).standardizedFileURL.path
+        let root = ScanPathIdentity.lexicallyNormalizedPath(rootPath)
         let normalizedCandidates = issues
             .map(Self.normalizedIncompleteIssue)
             .sorted(by: Self.incompleteIssueComesBefore)
@@ -1918,7 +1926,7 @@ public final class ScanCoordinator: ObservableObject {
         let displayPath = displayRootPath.map {
             displayPathForScanNode(issue.path, rootPath: $0)
         } ?? issue.path
-        let normalized = URL(fileURLWithPath: displayPath).standardizedFileURL.path
+        let normalized = ScanPathIdentity.lexicallyNormalizedPath(displayPath)
         let normalizedIssue = ScanIncompleteIssue(
             path: normalized,
             reason: issue.reason,
@@ -1958,7 +1966,7 @@ public final class ScanCoordinator: ObservableObject {
     ) -> ScanIncompleteIssue {
         let path = issue.path.isEmpty
             ? ""
-            : URL(fileURLWithPath: issue.path).standardizedFileURL.path
+            : ScanPathIdentity.lexicallyNormalizedPath(issue.path)
         return ScanIncompleteIssue(
             path: path,
             reason: issue.reason,
@@ -1991,7 +1999,7 @@ public final class ScanCoordinator: ObservableObject {
         _ error: any Error,
         rootPath: String
     ) -> ScanFailureScope {
-        let standardizedRoot = URL(fileURLWithPath: rootPath).standardizedFileURL.path
+        let standardizedRoot = ScanPathIdentity.lexicallyNormalizedPath(rootPath)
         guard let scanError = error as? ScanError else {
             return .root(ScanIncompleteIssue(
                 path: standardizedRoot,
@@ -2005,7 +2013,7 @@ public final class ScanCoordinator: ObservableObject {
         let posixErrorCode: Int32?
         switch scanError {
         case .cannotEnumerate(let path, let errorStage, let errorCode):
-            failedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+            failedPath = ScanPathIdentity.lexicallyNormalizedPath(path)
             stage = errorStage
             posixErrorCode = errorCode
         }
@@ -8058,7 +8066,7 @@ public final class ScanCoordinator: ObservableObject {
         var unique: [(index: Int, url: URL, path: String)] = []
         var seen = Set<String>()
         for (index, root) in roots.enumerated() {
-            let path = root.standardizedFileURL.path
+            let path = ScanPathIdentity.lexicallyNormalizedPath(root.path)
             guard seen.insert(path).inserted else { continue }
             unique.append((index, URL(fileURLWithPath: path, isDirectory: true), path))
         }
@@ -10149,7 +10157,7 @@ public final class ScanCoordinator: ObservableObject {
             cancel()
             return
         }
-        let path = URL(fileURLWithPath: rawPath).standardizedFileURL.path
+        let path = ScanPathIdentity.lexicallyNormalizedPath(rawPath)
         let generation = treeFetchGeneration
         let token = UUID()
         let identity = treeFilesystemMeasurementIdentity(publicPath: path)
@@ -10281,7 +10289,7 @@ public final class ScanCoordinator: ObservableObject {
     private func treeFilesystemMeasurementIdentity(
         publicPath rawPath: String
     ) -> TreeFilesystemMeasurementIdentity {
-        let publicPath = URL(fileURLWithPath: rawPath).standardizedFileURL.path
+        let publicPath = ScanPathIdentity.lexicallyNormalizedPath(rawPath)
         let physicalPath = treeScanPathNamespace?.physicalPath(forPublicPath: publicPath)
             ?? publicPath
         return TreeFilesystemMeasurementIdentity(
@@ -13037,7 +13045,7 @@ public final class ScanCoordinator: ObservableObject {
         reconcileParent: Bool
     ) -> PreparedTreeCacheTransaction? {
         guard !Task.isCancelled else { return nil }
-        let normalizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        let normalizedPath = ScanPathIdentity.lexicallyNormalizedPath(path)
         let requestedKey = "\(normalizedPath)|\(requestedSort.rawValue)"
 
         var nextTreeEvidence = retainedState.treeEvidenceByRoot
@@ -13108,9 +13116,9 @@ public final class ScanCoordinator: ObservableObject {
         let childBytes = visibleRows.reduce(Int64(0)) { $0 &+ $1.bytes }
         let childLogicalBytes = visibleRows.reduce(Int64(0)) { $0 &+ $1.logicalBytes }
         let childFileCount = visibleRows.reduce(0) { $0 &+ $1.fileCount }
-        let parentCachePath = URL(fileURLWithPath: normalizedPath)
-            .deletingLastPathComponent()
-            .standardizedFileURL.path
+        let parentCachePath = ScanPathIdentity.lexicallyNormalizedURL(
+            URL(fileURLWithPath: normalizedPath).deletingLastPathComponent()
+        ).path
 
         guard parentCachePath != normalizedPath else {
             return PreparedTreeCacheTransaction(
@@ -15006,7 +15014,7 @@ public final class ScanCoordinator: ObservableObject {
         publicPath: String,
         owner: Task<Void, Never>
     ) -> (replacedRequests: Int, cancelledProducers: Int) {
-        let path = URL(fileURLWithPath: publicPath).standardizedFileURL.path
+        let path = ScanPathIdentity.lexicallyNormalizedPath(publicPath)
         let identity = treeFilesystemMeasurementIdentity(publicPath: path)
         let token = UUID()
         let replacements = beginIndexedSubtreeRequest(
@@ -15052,7 +15060,7 @@ public final class ScanCoordinator: ObservableObject {
         at path: String,
         beforeCommit: (@MainActor () async -> Void)? = nil
     ) async {
-        let normalizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        let normalizedPath = ScanPathIdentity.lexicallyNormalizedPath(path)
         let identity = treeFilesystemMeasurementIdentity(publicPath: normalizedPath)
         let token = UUID()
         _ = beginIndexedSubtreeRequest(

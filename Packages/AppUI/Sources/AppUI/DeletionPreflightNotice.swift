@@ -188,6 +188,8 @@ enum DeletionPreflightReasonPresentation {
         switch rejection {
         case .preflightCancelled:
             return "delete.preflight.reason.cancelled"
+        case .symbolicLinkResolutionFailed:
+            return "delete.preflight.reason.symbolic_link_resolution_failed"
         case .accessDenied:
             return "delete.preflight.reason.access_denied"
         case .batchContainsForbidden:
@@ -279,6 +281,8 @@ enum DeletionSafetyReasonPresentation {
             return "op.result.reason.hard_forbid"
         case .preflightCancelled:
             return "op.result.reason.preflight_cancelled"
+        case .symbolicLinkResolutionFailed:
+            return "op.result.reason.symbolic_link_resolution_failed"
         case .systemVolume:
             return "op.result.reason.system_volume"
         case .sensitiveCredential:

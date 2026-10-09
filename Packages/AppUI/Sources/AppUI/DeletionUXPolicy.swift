@@ -76,6 +76,7 @@ public enum ProfessionalOverridePolicy {
                 : .requiresProfessionalMode(overrideReason)
         case .relativePath,
              .dotDotInPath,
+             .symbolicLinkResolutionFailed,
              .rootOrAboveHome,
              .outsideUserDeletionScope,
              .preflightCancelled,

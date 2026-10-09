@@ -145,6 +145,43 @@ final class DuplicateProjectionRegressionTests: XCTestCase {
 
     // MARK: - Cancellation
 
+    /// v2026.10.09: root planning must not turn a protected physical namespace into
+    /// the logical temporary alias deliberately exempted for test/workspace scans.
+    func testPhysicalTemporaryRootKeepsTCCIdentityThroughDuplicatePipeline() async throws {
+        let root = try makeRoot(prefix: "DuplicateProjection-PhysicalTCC")
+        addTeardownBlock { try FileManager.default.removeItem(at: root) }
+        try writeFile(root.appendingPathComponent("a.bin"), size: 128 * 1_024, byte: 0x33)
+        try writeFile(root.appendingPathComponent("b.bin"), size: 128 * 1_024, byte: 0x33)
+        let canonical = try XCTUnwrap(root.path.withCString { realpath($0, nil) })
+        defer { free(canonical) }
+        let physical = URL(fileURLWithPath: String(cString: canonical), isDirectory: true)
+        guard physical.path.hasPrefix("/private/var/folders/") else {
+            throw XCTSkip("当前 runner 临时目录不在 macOS physical TCC namespace")
+        }
+        XCTAssertTrue(TCCSkipList.shouldSkip(physical.path))
+        let estimate = await TreeSizeEstimator.estimate(roots: [physical])
+        XCTAssertNil(estimate, "pre-scan estimation must honor the same selected namespace")
+        let planned = DuplicateScanner.minimalNonOverlappingRoots([
+            URL(fileURLWithPath: physical.path + "/./nested/.."), physical
+        ])
+        XCTAssertEqual(planned.map(\.path), [physical.path])
+
+        let scanner = DuplicateScanner(roots: [physical], minBytes: 1)
+        let session = scanner.scanSession()
+        var issues: [ScanIncompleteIssue] = []
+        var finished: [DuplicateGroup]?
+        for await event in session.events {
+            switch event {
+            case .incomplete(let issue): issues.append(issue)
+            case .finished(let groups): finished = groups
+            default: break
+            }
+        }
+        await session.waitForTermination()
+        XCTAssertEqual(issues, [.init(path: physical.path, reason: .tccProtectedSkipped)])
+        XCTAssertEqual(finished?.count, 0, "protected roots must not be enumerated or hashed")
+    }
+
     func test_duplicate枚举阶段取消一秒内收敛且不发布finished() async throws {
         let root = try makeRoot(prefix: "DuplicateProjection-ScanCancellation")
         for directoryIndex in 0..<384 {

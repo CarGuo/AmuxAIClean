@@ -1,4 +1,5 @@
 import Foundation
+import ScanKit
 
 /// v1.0 用户自定义扫描路径仓库。
 ///
@@ -120,13 +121,10 @@ public actor UserPathStore {
         snapshotContinuations[id] = nil
     }
 
-    /// 把 URL 标准化为绝对路径字符串：展开 `~`，resolveSymlinks，去掉尾随 `/`。
+    /// v2026.10.09: persist the selected scan namespace, not a filesystem alias.
+    /// Root symlink traversal remains governed by ScanOptions; storing a canonical target
+    /// here would silently bypass both that policy and the selected root's TCC identity.
     private static func normalize(_ url: URL) -> String {
-        let resolved = url.resolvingSymlinksInPath().standardizedFileURL
-        var p = resolved.path
-        while p.count > 1 && p.hasSuffix("/") {
-            p.removeLast()
-        }
-        return p
+        ScanPathIdentity.lexicallyNormalizedPath(url.path)
     }
 }

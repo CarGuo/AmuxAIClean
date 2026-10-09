@@ -123,6 +123,7 @@ final class DeletionUXPolicyTests: XCTestCase {
             .bundleSystemCritical,
             .bundleDataProtected,
             .dotDotInPath,
+            .symbolicLinkResolutionFailed,
             .relativePath,
         ]
         for rejection in hardBoundaries {

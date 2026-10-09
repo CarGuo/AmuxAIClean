@@ -89,7 +89,7 @@ public enum TreeSizeEstimator {
     ///     轻微高估，对"估算分母"用途无感）
     /// 预期：单根 333ms → ~50ms（5-10x 提升）。
     private static func walkRoot(_ root: URL, deadline: Date) -> Int64? {
-        let rootPath = root.standardizedFileURL.path
+        let rootPath = ScanPathIdentity.lexicallyNormalizedPath(root.path)
         if TCCSkipList.shouldSkip(rootPath) { return nil }
 
         // 拿根目录的 device id 作为跨卷判定基准（一次 stat 调用，省去 NSURL.volumeIdentifierKey）

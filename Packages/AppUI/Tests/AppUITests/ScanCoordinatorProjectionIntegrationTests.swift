@@ -468,6 +468,48 @@ final class ScanCoordinatorProjectionIntegrationTests: XCTestCase {
 
     // MARK: - Root normalization
 
+    /// v2026.10.09: exercise the production producer and all evidence consumers, not
+    /// just the root planner. The two aliases intentionally have different TCC policy.
+    func testPhysicalRootSkipIdentitySurvivesTerminalTreeAndPreflightEvidence() async throws {
+        let root = try makeTemporaryRoot(prefix: "PhysicalTCC")
+        addTeardownBlock { try FileManager.default.removeItem(at: root) }
+        try Data(repeating: 0x33, count: 8_192).write(to: root.appendingPathComponent("file.bin"))
+        let canonical = try XCTUnwrap(root.path.withCString { realpath($0, nil) })
+        defer { free(canonical) }
+        let physical = URL(fileURLWithPath: String(cString: canonical), isDirectory: true)
+        guard physical.path.hasPrefix("/private/var/folders/") else {
+            throw XCTSkip("runner temp path has no macOS physical TCC namespace")
+        }
+        let coordinator = ScanCoordinator(home: root.path)
+        coordinator.scan(category: .makeCustom(url: physical), includeHidden: true)
+        try await waitForTerminal(coordinator)
+        XCTAssertEqual(coordinator.snapshot.totalBytes, 0)
+        XCTAssertEqual(coordinator.tccProtectedSkippedPaths, [physical.path])
+        let expected = ScanIncompleteIssue(path: physical.path, reason: .tccProtectedSkipped)
+        XCTAssertEqual(coordinator.incompleteIssues(overlappingAny: [physical.path]), [expected])
+        XCTAssertEqual(coordinator._testAccessState(for: physical.path), .tccProtected)
+        XCTAssertEqual(coordinator._testAccessState(for: root.path), .normal)
+        XCTAssertTrue(coordinator.incompleteIssues(overlappingAny: [root.path]).isEmpty)
+
+        // A new explicit logical scan keeps the current-process temporary-root exemption,
+        // clears the previous revision's evidence, and publishes the actual fixture data.
+        coordinator.scan(category: .makeCustom(url: root), includeHidden: true)
+        try await waitForTerminal(coordinator)
+        XCTAssertGreaterThan(coordinator.snapshot.totalBytes, 0)
+        XCTAssertEqual(coordinator.snapshot.scannedFileCount, 1)
+        XCTAssertTrue(coordinator.tccProtectedSkippedPaths.isEmpty)
+    }
+
+    func testRootPlanningPreservesSelectedPhysicalNamespace() {
+        let physical = URL(fileURLWithPath: "/private/var/folders/bucket/process/T/fixture", isDirectory: true)
+        let logical = URL(fileURLWithPath: "/var/folders/bucket/process/T/fixture", isDirectory: true)
+        let result = ScanCoordinator.minimalNonOverlappingRoots([
+            URL(fileURLWithPath: physical.path + "/./child/.."), physical, logical
+        ])
+        XCTAssertEqual(result.map(\.path), [physical.path, logical.path],
+                       "namespace aliases carry different policy identities until explicit projection")
+    }
+
     func test_minimalNonOverlappingRoots去重标准化并折叠祖先覆盖() {
         let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("ProjectionRoots-\(UUID().uuidString)", isDirectory: true)

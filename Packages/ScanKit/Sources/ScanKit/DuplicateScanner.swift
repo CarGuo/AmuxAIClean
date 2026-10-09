@@ -466,7 +466,7 @@ public actor DuplicateScanner {
     /// 已经发生的重复 I/O。只折叠标准化后的字符串祖先，不解析 symlink，避免 root
     /// 规划本身引入慢 I/O/TCC 副作用。
     nonisolated static func minimalNonOverlappingRoots(_ roots: [URL]) -> [URL] {
-        let normalized = roots.map { $0.standardizedFileURL }
+        let normalized = roots.map(ScanPathIdentity.lexicallyNormalizedURL)
         let sorted = normalized.sorted {
             if $0.path.count != $1.path.count { return $0.path.count < $1.path.count }
             return $0.path < $1.path

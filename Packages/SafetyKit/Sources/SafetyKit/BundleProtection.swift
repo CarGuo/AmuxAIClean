@@ -136,7 +136,7 @@ public struct BundleProtectionData: Sendable, Decodable, Equatable {
 }
 
 /// 匹配器：把 JSON 三个 list 按模式形状分桶预编译，提供 O(1) ~ O(prefixes) 查询。
-public final class BundleProtectionMatcher: @unchecked Sendable {
+public final class BundleProtectionMatcher: Sendable {
     public let data: BundleProtectionData
     public let loadError: Error?
     public let loadState: BundleProtectionLoadState
@@ -144,34 +144,42 @@ public final class BundleProtectionMatcher: @unchecked Sendable {
     // 三个 Kind 各自的三个桶（exact / prefix / contains）
     private let systemExact: [String: String]
     private let systemPrefix: [(lowercasedPrefix: String, pattern: String)]
-    private let systemContains: [String]
+    private let systemContains: [CompiledGlob]
 
     private let appleUninstallableExact: [String: String]
     private let appleUninstallablePrefix: [(lowercasedPrefix: String, pattern: String)]
-    private let appleUninstallableContains: [String]
+    private let appleUninstallableContains: [CompiledGlob]
 
     private let dataExact: [String: String]
     private let dataPrefix: [(lowercasedPrefix: String, pattern: String)]
-    private let dataContains: [String]
+    private let dataContains: [CompiledGlob]
 
     private init(data: BundleProtectionData,
                  loadError: Error?,
                  loadState: BundleProtectionLoadState) {
         self.data = data
-        self.loadError = loadError
-        self.loadState = loadState
-
-        let s = Self.partition(data.systemCritical)
+        let buckets: (Buckets, Buckets, Buckets)
+        do {
+            buckets = (
+                try Self.partition(data.systemCritical),
+                try Self.partition(data.appleUninstallable),
+                try Self.partition(data.dataProtected)
+            )
+            self.loadError = loadError
+            self.loadState = loadState
+        } catch {
+            // A partial compiled ruleset cannot be presented as complete protection evidence.
+            buckets = (.empty, .empty, .empty)
+            self.loadError = error
+            self.loadState = .unavailable(.invalidResource)
+        }
+        let (s, a, d) = buckets
         self.systemExact = s.exact
         self.systemPrefix = s.prefix
         self.systemContains = s.contains
-
-        let a = Self.partition(data.appleUninstallable)
         self.appleUninstallableExact = a.exact
         self.appleUninstallablePrefix = a.prefix
         self.appleUninstallableContains = a.contains
-
-        let d = Self.partition(data.dataProtected)
         self.dataExact = d.exact
         self.dataPrefix = d.prefix
         self.dataContains = d.contains
@@ -254,17 +262,18 @@ public final class BundleProtectionMatcher: @unchecked Sendable {
     private struct Buckets {
         let exact: [String: String]
         let prefix: [(lowercasedPrefix: String, pattern: String)] // 不含 `*`，匹配规则：bundleID 以 prefix 开头（忽略大小写）
-        let contains: [String] // 含 `*` 中段，按 glob 语义匹配
+        let contains: [CompiledGlob] // 含 `*` 中段，按 glob 语义匹配
+        static let empty = Buckets(exact: [:], prefix: [], contains: [])
     }
 
     /// 按 pattern 形状分桶：
     /// - 无 `*`                              → exact（O(1) Dictionary，key 为小写，value 为原始 pattern）
     /// - 仅末尾 `*`（如 `com.1password.*`）  → prefix（保留小写前缀与原始去掉 `*` 的串）
     /// - 其他含 `*` 的（如 `*ShadowsocksX-NG*`） → contains（用 NSRegular 转 glob）
-    private static func partition(_ patterns: [String]) -> Buckets {
+    private static func partition(_ patterns: [String]) throws -> Buckets {
         var exact: [String: String] = [:]
         var prefix: [(lowercasedPrefix: String, pattern: String)] = []
-        var contains: [String] = []
+        var contains: [CompiledGlob] = []
         for raw in patterns {
             if !raw.contains("*") {
                 let key = raw.lowercased()
@@ -279,7 +288,7 @@ public final class BundleProtectionMatcher: @unchecked Sendable {
                 prefix.append((lowercasedPrefix: stem.lowercased(), pattern: stem))
                 continue
             }
-            contains.append(raw)
+            contains.append(try CompiledGlob(pattern: raw))
         }
         return Buckets(exact: exact, prefix: prefix, contains: contains)
     }
@@ -288,32 +297,49 @@ public final class BundleProtectionMatcher: @unchecked Sendable {
                               lowercasedID: String,
                               exact: [String: String],
                               prefix: [(lowercasedPrefix: String, pattern: String)],
-                              contains: [String]) -> String? {
+                              contains: [CompiledGlob]) -> String? {
         if let canonical = exact[lowercasedID] { return canonical }
         for p in prefix where lowercasedID.hasPrefix(p.lowercasedPrefix) { return p.pattern + "*" }
-        for p in contains where Self.globMatch(pattern: p, candidate: bundleID) {
-            return p
+        for p in contains where p.matches(bundleID) {
+            return p.pattern
         }
         return nil
     }
 
-    /// 最简 glob：把 pattern 中的 `*` 转成 `.*`，其他字符 regex-escape，全串匹配。
-    /// 仅供 contains 桶使用，数量受控（< 100 条），冷启动一次性编译可选。
-    static func globMatch(pattern: String, candidate: String) -> Bool {
-        var regex = "^"
-        for ch in pattern {
-            switch ch {
-            case "*":
-                regex.append(".*")
-            case ".", "+", "?", "^", "$", "(", ")", "[", "]", "{", "}", "|", "\\":
-                regex.append("\\")
-                regex.append(ch)
-            default:
-                regex.append(ch)
-            }
+    /// v2026.10.09: compile wildcard rules once, rather than rebuilding a regex for
+    /// every path. Foundation's immutable regex preserves ICU case folding and literal
+    /// escaping; no rules, priorities or match evidence change. No mutable result cache.
+    private struct CompiledGlob: Sendable {
+        let pattern: String
+        let regex: NSRegularExpression
+
+        init(pattern: String) throws {
+            self.pattern = pattern
+            let body = pattern.components(separatedBy: "*")
+                .map(NSRegularExpression.escapedPattern(for:))
+                .joined(separator: ".*")
+            // String.range(.regularExpression) used a strict end-of-input match. ICU's
+            // `$` also accepts a position before a final newline; `\z` preserves the
+            // previous String search semantics when reusing NSRegularExpression directly.
+            regex = try NSRegularExpression(pattern: "^" + body + "\\z", options: .caseInsensitive)
         }
-        regex.append("$")
-        return candidate.range(of: regex, options: [.regularExpression, .caseInsensitive]) != nil
+
+        func matches(_ candidate: String) -> Bool {
+            regex.firstMatch(
+                in: candidate,
+                range: NSRange(candidate.startIndex..<candidate.endIndex, in: candidate)
+            ) != nil
+        }
+    }
+
+    /// Test convenience; production uses the immutable precompiled buckets above.
+    static func globMatch(pattern: String, candidate: String) -> Bool {
+        do {
+            return try CompiledGlob(pattern: pattern).matches(candidate)
+        } catch {
+            // No match can be established if the escaped expression cannot be compiled.
+            return false
+        }
     }
 }
 

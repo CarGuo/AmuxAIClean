@@ -1780,3 +1780,34 @@ Tree 投影时，增量刷新继续沿用空字典。完整空扫描通常已包
 回归断言同时覆盖清单、bucket、八种 Tree 排序、其他根保留、真实 producer 的规则/选项重放、
 重名恢复、连续通知的结算、取消后通知和专用候选显式刷新。测试只使用系统临时 fixture，未
 调用真实回收；包测试及挂载 NSHostingView 仍不能代替真实 App 的回收/Undo C4。
+
+## 23. v2026.10.09：路径解析、扫描身份与不可变规则编译
+
+`1f48352` 复审通过生产 API 复现三项问题：多跳悬空链接留在缓存路径而被判为 safe；
+白名单解析互指链接不终止；Duplicate 根规划把 `/private/var/folders` 转成获当前进程
+临时目录豁免的 `/var/folders`，使相同根在 Bulk 与 Duplicate 中获得不同 TCC 结果。
+
+1. **安全解析只有一个实现**：SafetyEngine 的基础、vendor 与 bundle 能力查询，以及
+   WhitelistStore 共用 `SymbolicLinkResolver`。存在的目标先走 libc `realpath`；缺失目标
+   按组件解析全部链接，先展开中间链接再处理目标中的 `..`，保留缺失后缀。用系统
+   `_SC_SYMLOOP_MAX` 限制遍历；循环、权限和 I/O 错误返回 typed failure，不能留在原路径
+   假装成功。`realpath` 要求组件存在，见 [Apple 手册](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/realpath.3.html)，不能单独用于悬空链接证明。
+2. **缺失不等于无法解析**：已解析的存在祖先先转换为政策命名空间，再附加不存在的
+   后缀，不能让叶子是否存在决定 `/private` alias 的匹配结果。白名单只对成功解析的
+   alias 做成员证明；安全评估把解析失败保留为 `symbolicLinkResolutionFailed`。
+   专业覆盖消费 `.protected / .unprotected / .unresolved` 证据，只有明确 unprotected
+   才满足 bundle 条件，禁止通过否定 Bool 把未知变成授权。
+3. **扫描身份只做词法规范化**：用户根持久化、Duplicate/UI 根规划、扫描前估算和
+   incomplete evidence 共用 ScanKit `ScanPathIdentity`，不读取文件系统、不解析 alias。
+   root symlink 是否跟随由 ScanOptions 决定；跨 Data/public 命名空间继续由显式
+   `ScanPathNamespace` 管理。不能在某个 View 里拼回 `/private`，也不能在下游再次调用
+   `standardizedFileURL` 抹去已经保存的政策身份。
+4. **规则在构造时编译**：BundleProtectionMatcher 保存不可变 NSRegularExpression，
+   不在逐路径查询中拼接或编译正则，不做可能陈旧的路径 verdict 缓存。保持原规则优先级、
+   exact/prefix/contains 顺序、ICU 大小写行为与原 matched pattern；直接 NSRegularExpression
+   的 `$` 接受末尾换行之前的位置，用 `\z` 保持原 String 正则搜索的严格尾边界。
+
+回归只创建临时 HOME/文件：完整 dangling chain 与后代、循环终止和 actor 后续可用、
+中间 symlink/相对 `..`/非 ASCII 目标、权限来源、物理 TCC 根在估算和 Duplicate 中一致跳过，
+以及逐条 shipped wildcard 的原语义对照。基准必须对相同输入核对结果 checksum；局部
+评估变快不能写成整个 App 或真实扫描同比加速。

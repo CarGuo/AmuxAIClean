@@ -12,6 +12,7 @@ public enum SafetyVerdict: String, Sendable, Codable, Hashable {
 public enum SafetyRejection: String, Sendable, Equatable {
     case relativePath           // 不是绝对路径
     case dotDotInPath           // 含 .. 段（路径穿越）
+    case symbolicLinkResolutionFailed // v2026.10.09: cannot establish the link target; never override
     case rootOrAboveHome        // / 或用户家目录本身
     case outsideUserDeletionScope // 不在当前用户 HOME / 系统返回的当前用户临时目录内
     case preflightCancelled      // 删除预检任务被取消；整批不得继续
@@ -325,7 +326,15 @@ public struct SafetyEngine: Sendable {
         // 3. 标准化后再比较；若路径中间包含 symlink，再用真实路径做一次更保守判定。
         let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
         let base = evaluateStandardized(standardized: standardized, home: home)
-        let resolved = Self.resolvedSymlinkPath(forStandardizedPath: standardized)
+        if base.0 == .forbid { return base }
+        let resolved: String
+        switch SymbolicLinkResolver.resolve(path) {
+        case .success(let target):
+            resolved = target
+        case .failure(let failure):
+            GSYLog.debug(.safety, "symlink resolution failed path=\(path) failure=\(failure)")
+            return (.forbid, .symbolicLinkResolutionFailed)
+        }
         guard resolved != standardized else { return base }
         let resolvedResult = evaluateStandardized(standardized: resolved, home: home)
         return Self.moreRestrictive(base, resolvedResult)
@@ -552,17 +561,38 @@ public struct SafetyEngine: Sendable {
         SafetyEngine().isPathBundleProtected(path: path, home: home)
     }
 
-    /// 与静态兼容入口语义相同，但使用本 SafetyEngine 注入的 matcher/load state。
-    /// 删除能力层必须走这个入口，避免测试或启动失败时查询了另一个全局 matcher。
+    /// 与静态兼容入口语义相同，仅返回是否有正向 protected 证据。
+    /// 删除能力层必须消费 bundleProtectionEvidence，避免把未知结果解释为未受保护。
     public func isPathBundleProtected(path: String,
                                       home: String = NSHomeDirectory()) -> Bool {
+        bundleProtectionEvidence(path: path, home: home) == .protected
+    }
+
+    /// v2026.10.09: a failed link resolution cannot prove an unprotected target.
+    /// Destructive override consumes this typed evidence instead of negating a Bool.
+    public enum BundleProtectionEvidence: Sendable, Equatable {
+        case protected
+        case unprotected
+        case unresolved
+    }
+
+    public func bundleProtectionEvidence(path: String,
+                                         home: String = NSHomeDirectory()) -> BundleProtectionEvidence {
+        guard hasCompleteBundleProtectionEvidence else { return .unresolved }
         let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
         if bundleMatch(standardized: standardized, home: home) != nil {
-            return true
+            return .protected
         }
-        let resolved = Self.resolvedSymlinkPath(forStandardizedPath: standardized)
-        return resolved != standardized
-            && bundleMatch(standardized: resolved, home: home) != nil
+        let resolved: String
+        switch SymbolicLinkResolver.resolve(path) {
+        case .success(let target):
+            resolved = target
+        case .failure(let failure):
+            GSYLog.debug(.safety, "symlink resolution failed path=\(path) failure=\(failure)")
+            return .unresolved
+        }
+        return resolved != standardized && bundleMatch(standardized: resolved, home: home) != nil
+            ? .protected : .unprotected
     }
 
     /// 简单语义包装：是否被禁。
@@ -610,7 +640,14 @@ public struct SafetyEngine: Sendable {
         let canonical = Self.stripDataVolumePrefix(standardized)
         let (baseVerdict, rejection) = evaluateStandardized(standardized: standardized, home: home)
         if baseVerdict == .forbid { return (baseVerdict, rejection, nil) }
-        let resolved = Self.resolvedSymlinkPath(forStandardizedPath: standardized)
+        let resolved: String
+        switch SymbolicLinkResolver.resolve(path) {
+        case .success(let target):
+            resolved = target
+        case .failure(let failure):
+            GSYLog.debug(.safety, "symlink resolution failed path=\(path) failure=\(failure)")
+            return (.forbid, .symbolicLinkResolutionFailed, nil)
+        }
         let resolvedCanonical = Self.stripDataVolumePrefix(resolved)
         var effectiveBase = (baseVerdict, rejection)
         var resolvedHit: (rule: VendorRule, isExactRoot: Bool, pathOverride: PathRule?)? = nil
@@ -781,26 +818,6 @@ public struct SafetyEngine: Sendable {
         let beforeParentDir = withoutTrailingSlash[..<dirSlash]
         guard beforeParentDir.hasSuffix("/library") else { return false }
         return libraryBundleIDContainerDirs.contains(parentDir)
-    }
-
-    private static func resolvedSymlinkPath(forStandardizedPath path: String) -> String {
-        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
-        if resolved != path {
-            return resolved
-        }
-        var st = stat()
-        if Darwin.lstat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFLNK,
-           let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: path) {
-            let targetPath: String
-            if destination.hasPrefix("/") {
-                targetPath = destination
-            } else {
-                let parent = (path as NSString).deletingLastPathComponent
-                targetPath = (parent as NSString).appendingPathComponent(destination)
-            }
-            return URL(fileURLWithPath: targetPath).resolvingSymlinksInPath().standardizedFileURL.path
-        }
-        return resolved
     }
 
     private static func moreRestrictive(

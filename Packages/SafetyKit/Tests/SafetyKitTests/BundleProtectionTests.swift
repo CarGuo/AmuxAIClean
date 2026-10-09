@@ -26,6 +26,9 @@ final class BundleProtectionTests: XCTestCase {
         XCTAssertFalse(matcher.loadState.hasCompleteEvidence)
         XCTAssertFalse(engine.hasCompleteBundleProtectionEvidence)
         XCTAssertEqual(engine.bundleProtectionLoadState, .unavailable(.resourceMissing))
+        XCTAssertEqual(engine.bundleProtectionEvidence(
+            path: "/Users/testuser/Library/Caches/com.example.fixture", home: "/Users/testuser"
+        ), .unresolved)
 
         let result = engine.evaluate(
             path: "/Users/testuser/Library/Caches/com.1password.7/rebuildable.tmp",
@@ -163,6 +166,45 @@ final class BundleProtectionTests: XCTestCase {
     func testGlobMatch_caseInsensitive() {
         XCTAssertTrue(BundleProtectionMatcher.globMatch(pattern: "*ClashX*",
                                                        candidate: "com.acme.clashx.helper"))
+    }
+
+    /// v2026.10.09: independent legacy bucket/regex oracle checks the optimized production
+    /// matcher against every shipped glob, Unicode folding, escaping and anchoring.
+    func testPrecompiledRulesPreserveLegacyGlobSemantics() throws {
+        let shipped = try BundleProtectionMatcher.loadFromBundle().data
+        let patterns = Set(shipped.systemCritical + shipped.dataProtected + shipped.appleUninstallable)
+            .filter { $0.contains("*") }
+            + ["*a.+?^$()[]{}|\\b*", "*Kelvin*", "*.終端*", "*a*b*", "*🙂*", "*x*\ny*"]
+        for pattern in patterns {
+            let data = BundleProtectionData(
+                version: 1, source: "test", updatedAt: "", systemCritical: [],
+                appleUninstallable: [], dataProtected: [pattern], officialUninstallerRequired: []
+            )
+            let matcher = BundleProtectionMatcher(data: data)
+            XCTAssertEqual(matcher.loadState, .loaded)
+            var legacy = "^"
+            for character in pattern {
+                if character == "*" { legacy += ".*" }
+                else {
+                    if ".+?^$()[]{}|\\".contains(character) { legacy += "\\" }
+                    legacy.append(character)
+                }
+            }
+            legacy += "$"
+            let stem = pattern.replacingOccurrences(of: "*", with: "")
+            for candidate in [stem, stem.uppercased(), stem.lowercased(), "prefix" + stem,
+                              stem + "suffix", stem + "\n", "com.example.unknown", ""] {
+                // Existing single trailing-star rules use prefix matching, including
+                // newline input. Only middle/leading wildcard rules used String regex search.
+                let isPrefix = pattern.hasSuffix("*") && !pattern.dropLast().contains("*")
+                let expected = isPrefix
+                    ? candidate.lowercased().hasPrefix(stem.lowercased())
+                    : candidate.range(of: legacy, options: [.regularExpression, .caseInsensitive]) != nil
+                XCTAssertEqual(matcher.match(bundleID: candidate) != nil, expected,
+                               "pattern=\(pattern), candidate=\(candidate)")
+                if expected { XCTAssertEqual(matcher.match(bundleID: candidate)?.pattern, pattern) }
+            }
+        }
     }
 
     // MARK: - SafetyEngine 集成（M1-T4）
