@@ -22,14 +22,29 @@ public actor CleanStatsStore {
         public let id: UUID
         public let timestamp: Date
         public let bytesReclaimed: Int64
+        public let bytesTrashed: Int64
         public let category: String
 
         public init(id: UUID = UUID(), timestamp: Date = Date(),
-                    bytesReclaimed: Int64, category: String) {
+                    bytesReclaimed: Int64, bytesTrashed: Int64 = 0, category: String) {
             self.id = id
             self.timestamp = timestamp
             self.bytesReclaimed = bytesReclaimed
+            self.bytesTrashed = bytesTrashed
             self.category = category
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, timestamp, bytesReclaimed, bytesTrashed, category
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.id = try container.decode(UUID.self, forKey: .id)
+            self.timestamp = try container.decode(Date.self, forKey: .timestamp)
+            self.bytesReclaimed = try container.decode(Int64.self, forKey: .bytesReclaimed)
+            self.bytesTrashed = try container.decodeIfPresent(Int64.self, forKey: .bytesTrashed) ?? 0
+            self.category = try container.decode(String.self, forKey: .category)
         }
     }
 
@@ -48,6 +63,7 @@ public actor CleanStatsStore {
     private struct Persisted: Codable {
         let version: Int
         let lifetimeTotalBytes: Int64
+        let lifetimeTrashedBytes: Int64?
         let events: [Event]
     }
 
@@ -70,6 +86,7 @@ public actor CleanStatsStore {
     private let calendar: Calendar
     private var inMemoryEvents: [Event] = []
     private var lifetimeBytes: Int64 = 0
+    private var lifetimeTrashedBytes: Int64 = 0
     private var loaded = false
 
     public init(storageURL: URL?, retentionDays: Int = 365,
@@ -92,9 +109,34 @@ public actor CleanStatsStore {
         }
         let event = Event(timestamp: timestamp,
                           bytesReclaimed: bytesReclaimed,
+                          bytesTrashed: 0,
                           category: category)
         inMemoryEvents.append(event)
         lifetimeBytes &+= bytesReclaimed
+        pruneIfNeeded()
+        await persist()
+    }
+
+    /// 记录移入废纸篓的事件：同卷移入废纸篓尚未释放物理磁盘空间，因此单独统计 `bytesTrashed`，
+    /// 不直接虚增 `totalBytesReclaimed()`（除非显式传入已确认实际释放的 `bytesReclaimed`）。
+    public func recordTrashed(bytesTrashed: Int64,
+                              bytesReclaimed: Int64 = 0,
+                              category: String,
+                              timestamp: Date = Date()) async {
+        loadIfNeeded()
+        guard bytesTrashed > 0 || bytesReclaimed > 0 else {
+            GSYLog.debug(.app, "CleanStatsStore 忽略 0 字节移入废纸篓事件 category=\(category)")
+            return
+        }
+        let clampedReclaimed = max(0, bytesReclaimed)
+        let clampedTrashed = max(0, bytesTrashed)
+        let event = Event(timestamp: timestamp,
+                          bytesReclaimed: clampedReclaimed,
+                          bytesTrashed: clampedTrashed,
+                          category: category)
+        inMemoryEvents.append(event)
+        lifetimeBytes &+= clampedReclaimed
+        lifetimeTrashedBytes &+= clampedTrashed
         pruneIfNeeded()
         await persist()
     }
@@ -103,7 +145,10 @@ public actor CleanStatsStore {
     public func reset(alsoResetLifetime: Bool = false) async {
         loadIfNeeded()
         inMemoryEvents.removeAll()
-        if alsoResetLifetime { lifetimeBytes = 0 }
+        if alsoResetLifetime {
+            lifetimeBytes = 0
+            lifetimeTrashedBytes = 0
+        }
         await persist()
     }
 
@@ -112,6 +157,11 @@ public actor CleanStatsStore {
     public func totalBytesReclaimed() -> Int64 {
         loadIfNeeded()
         return lifetimeBytes
+    }
+
+    public func totalBytesTrashed() -> Int64 {
+        loadIfNeeded()
+        return lifetimeTrashedBytes
     }
 
     public func events() -> [Event] {
@@ -184,8 +234,10 @@ public actor CleanStatsStore {
             let persisted = try decoder.decode(Persisted.self, from: data)
             inMemoryEvents = persisted.events
             lifetimeBytes = persisted.lifetimeTotalBytes
+            lifetimeTrashedBytes = persisted.lifetimeTrashedBytes
+                ?? persisted.events.reduce(0) { $0 &+ $1.bytesTrashed }
             GSYLog.info(.app,
-                        "CleanStats loaded events=\(inMemoryEvents.count) lifetime=\(lifetimeBytes)")
+                        "CleanStats loaded events=\(inMemoryEvents.count) lifetime=\(lifetimeBytes) trashed=\(lifetimeTrashedBytes)")
         } catch {
             GSYLog.warning(.app, "CleanStats 加载失败 err=\(error)")
         }
@@ -206,6 +258,7 @@ public actor CleanStatsStore {
                 withIntermediateDirectories: true)
             let persisted = Persisted(version: 1,
                                       lifetimeTotalBytes: lifetimeBytes,
+                                      lifetimeTrashedBytes: lifetimeTrashedBytes,
                                       events: inMemoryEvents)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

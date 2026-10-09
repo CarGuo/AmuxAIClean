@@ -605,6 +605,7 @@ struct SmartCareDashboardView: View {
     }
 
     private func completionDetail(for result: SmartCareResult) -> String {
+        let displayBytes = result.movedBytes > 0 ? result.movedBytes : result.releasedBytes
         if result.completion == .partial {
             return AppLocalization.format(
                 "smart_care.detail.partial %lld %lld %@",
@@ -612,7 +613,7 @@ struct SmartCareDashboardView: View {
                 arguments: [
                     Int64(result.movedCount),
                     Int64(result.skippedCount),
-                    formattedSmartCareBytes(result.releasedBytes, locale: locale)
+                    formattedSmartCareBytes(displayBytes, locale: locale)
                 ]
             )
         }
@@ -621,7 +622,7 @@ struct SmartCareDashboardView: View {
             locale: locale,
             arguments: [
                 Int64(result.movedCount),
-                formattedSmartCareBytes(result.releasedBytes, locale: locale)
+                formattedSmartCareBytes(displayBytes, locale: locale)
             ]
         )
     }

@@ -20684,15 +20684,15 @@
     "smart_care.detail.completed %lld %@": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Moved to Trash: %1$lld · Reclaimed %2$@" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已移到废纸篓 %1$lld 项 · 释放 %2$@" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Moved to Trash: %1$lld (%2$@) · Empty Trash to reclaim space" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已移到废纸篓 %1$lld 项（%2$@）· 清空废纸篓后释放空间" } }
       }
     },
     "smart_care.detail.partial %lld %lld %@": {
       "extractionState": "manual",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Moved to Trash: %1$lld · Skipped: %2$lld · Reclaimed %3$@" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已移到废纸篓 %1$lld 项 · 跳过 %2$lld 项 · 释放 %3$@" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Moved to Trash: %1$lld · Skipped: %2$lld · In Trash: %3$@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已移到废纸篓 %1$lld 项 · 跳过 %2$lld 项 · 移入废纸篓 %3$@" } }
       }
     },
     "smart_care.detail.failed": {

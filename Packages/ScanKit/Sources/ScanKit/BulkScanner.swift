@@ -790,16 +790,26 @@ public actor BulkScanner {
                entry.isRegularFile,
                isFirstFile,
                nodeLogical >= minimumLogicalBytes {
-                localFileCandidates.append(FSNode(
-                    path: pathNamespace?.publicPath(forPhysicalPath: absPath) ?? absPath,
-                    isDirectory: false,
-                    isSymlink: entry.isSymlink,
-                    allocatedSize: nodeAllocated,
-                    logicalSize: nodeLogical,
-                    inode: entry.inode,
-                    device: entry.device,
-                    modificationDate: entry.modificationDate
-                ))
+                var isDatalessPlaceholder = false
+                if nodeAllocated == 0 && nodeLogical > 0 {
+                    var sb = stat()
+                    if fstatat(fd, entry.name, &sb, AT_SYMLINK_NOFOLLOW) == 0,
+                       (sb.st_flags & UInt32(SF_DATALESS)) != 0 {
+                        isDatalessPlaceholder = true
+                    }
+                }
+                if !isDatalessPlaceholder {
+                    localFileCandidates.append(FSNode(
+                        path: pathNamespace?.publicPath(forPhysicalPath: absPath) ?? absPath,
+                        isDirectory: false,
+                        isSymlink: entry.isSymlink,
+                        allocatedSize: nodeAllocated,
+                        logicalSize: nodeLogical,
+                        inode: entry.inode,
+                        device: entry.device,
+                        modificationDate: entry.modificationDate
+                    ))
+                }
             }
 
             // FSNode 是给增量消费者的“可累计”事件，而不是原始 stat dump：

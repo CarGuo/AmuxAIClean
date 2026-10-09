@@ -285,5 +285,52 @@ final class BundleProtectionTests: XCTestCase {
         XCTAssertEqual(cacheRejection, .bundleDataProtected)
         XCTAssertTrue(engine.isPathBundleProtected(path: protectedCachePath, home: fakeHome))
     }
-}
 
+    /// `.app` 应用包内部成员必须返回 `.forbid` + `.insideAppBundle`，而整包卸载路径保持 `.confirm` + `.ok`。
+    func testAppBundleInteriorForbiddenWhileWholeBundleRemainsConfirm() {
+        let wholeApp = "\(fakeHome)/Applications/Alpha.app"
+        let (wholeVerdict, wholeRejection) = engine.evaluate(path: wholeApp, home: fakeHome)
+        XCTAssertEqual(wholeVerdict, .confirm)
+        XCTAssertEqual(wholeRejection, .ok)
+
+        let resourcePath = "\(fakeHome)/Applications/Alpha.app/Contents/Resources/shared.bin"
+        let (resVerdict, resRejection) = engine.evaluate(path: resourcePath, home: fakeHome)
+        XCTAssertEqual(resVerdict, .forbid)
+        XCTAssertEqual(resRejection, .insideAppBundle)
+
+        let nestedHelper = "\(fakeHome)/Downloads/Beta.app/Contents/Library/LoginItems/Helper.app"
+        let (nestedVerdict, nestedRejection) = engine.evaluate(path: nestedHelper, home: fakeHome)
+        XCTAssertEqual(nestedVerdict, .forbid)
+        XCTAssertEqual(nestedRejection, .insideAppBundle)
+
+        // Reverse-DNS bundle ID ending with `.app` under ~/Library/Caches must remain `.safe`
+        let cacheContainer = "\(fakeHome)/Library/Caches/com.example.unknown.app/temp.db"
+        let (cacheVerdict, cacheRejection) = engine.evaluate(path: cacheContainer, home: fakeHome)
+        XCTAssertEqual(cacheVerdict, .safe)
+        XCTAssertEqual(cacheRejection, .ok)
+
+        // An actual `.app` bundle inside ~/Library/Caches must forbid interior files
+        let cacheEmbeddedApp = "\(fakeHome)/Library/Caches/com.example.updater/Update.app/Contents/MacOS/Update"
+        let (embVerdict, embRejection) = engine.evaluate(path: cacheEmbeddedApp, home: fakeHome)
+        XCTAssertEqual(embVerdict, .forbid)
+        XCTAssertEqual(embRejection, .insideAppBundle)
+    }
+
+    /// 指向受禁路径的悬空（dangling）符号链接也必须解析其目标并拦截。
+    func testDanglingSymlinkToForbiddenTargetIsForbidden() throws {
+        let tmpRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SafetyDangling-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpRoot) }
+
+        let linkURL = tmpRoot.appendingPathComponent("dangling-system-link")
+        try FileManager.default.createSymbolicLink(
+            atPath: linkURL.path,
+            withDestinationPath: "/System/Library/NonExistentTarget-\(UUID().uuidString)"
+        )
+
+        let (verdict, rejection) = engine.evaluate(path: linkURL.path, home: tmpRoot.path)
+        XCTAssertEqual(verdict, .forbid)
+        XCTAssertEqual(rejection, .hardForbidPrefix)
+    }
+}

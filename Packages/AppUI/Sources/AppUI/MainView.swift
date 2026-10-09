@@ -2026,10 +2026,12 @@ public struct MainView: View {
             )
         }
 
+        let movedBytes = accounting.movedBytes
         let releasedBytes = accounting.releasedBytes
-        if releasedBytes > 0 {
-            Task.detached { [releasedBytes] in
-                await CleanStatsStore.shared.record(
+        if movedBytes > 0 || releasedBytes > 0 {
+            Task.detached { [movedBytes, releasedBytes] in
+                await CleanStatsStore.shared.recordTrashed(
+                    bytesTrashed: movedBytes,
                     bytesReclaimed: releasedBytes,
                     category: "smart-care"
                 )
@@ -2069,6 +2071,7 @@ public struct MainView: View {
             SmartCareResult(
                 movedCount: result.moved,
                 skippedCount: result.skipped + runningAppSkippedCount,
+                movedBytes: movedBytes,
                 releasedBytes: releasedBytes
             )
         )
@@ -4825,8 +4828,8 @@ public struct MainView: View {
         if movedBytes > 0 {
             let categoryID = request.sourceCategoryID
             Task.detached { [movedBytes, categoryID] in
-                await CleanStatsStore.shared.record(
-                    bytesReclaimed: movedBytes,
+                await CleanStatsStore.shared.recordTrashed(
+                    bytesTrashed: movedBytes,
                     category: categoryID.isEmpty ? "unknown" : categoryID
                 )
             }

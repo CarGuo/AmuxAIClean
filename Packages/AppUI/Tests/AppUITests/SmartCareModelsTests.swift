@@ -330,7 +330,8 @@ final class SmartCareModelsTests: XCTestCase {
         XCTAssertTrue(accountingFinished)
         XCTAssertEqual(result.succeededPaths, [removed.path])
         XCTAssertEqual(result.remainingProfessionalSelection, [retained.path])
-        XCTAssertEqual(result.releasedBytes, 120)
+        XCTAssertEqual(result.movedBytes, 120)
+        XCTAssertEqual(result.releasedBytes, 0)
     }
 }
 

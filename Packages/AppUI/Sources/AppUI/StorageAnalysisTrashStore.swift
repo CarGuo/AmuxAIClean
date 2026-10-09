@@ -170,8 +170,8 @@ final class StorageAnalysisTrashStore: ObservableObject {
                         Task.detached(priority: .utility) { [releasedBytes, succeededPaths] in
                             await HeuristicRecorder.shared.recordTrashed(paths: succeededPaths)
                             if releasedBytes > 0 {
-                                await CleanStatsStore.shared.record(
-                                    bytesReclaimed: releasedBytes,
+                                await CleanStatsStore.shared.recordTrashed(
+                                    bytesTrashed: releasedBytes,
                                     category: "storage-analysis"
                                 )
                             }

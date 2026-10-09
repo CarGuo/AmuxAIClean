@@ -2418,10 +2418,10 @@ public struct UninstallScreen: View {
         )
         if !succeededPaths.isEmpty {
             Task.detached(priority: .utility) { [releasedBytes, succeededPaths] in
-                await HeuristicRecorder().recordTrashed(paths: succeededPaths)
+                await HeuristicRecorder.shared.recordTrashed(paths: succeededPaths)
                 if releasedBytes > 0 {
-                    await CleanStatsStore.shared.record(
-                        bytesReclaimed: releasedBytes,
+                    await CleanStatsStore.shared.recordTrashed(
+                        bytesTrashed: releasedBytes,
                         category: "uninstall"
                     )
                 }

@@ -552,11 +552,18 @@ public enum SmartCareResultCompletion: Sendable, Hashable {
 public struct SmartCareResult: Sendable, Hashable {
     public let movedCount: Int
     public let skippedCount: Int
+    public let movedBytes: Int64
     public let releasedBytes: Int64
 
-    public init(movedCount: Int, skippedCount: Int, releasedBytes: Int64) {
+    public init(
+        movedCount: Int,
+        skippedCount: Int,
+        movedBytes: Int64? = nil,
+        releasedBytes: Int64 = 0
+    ) {
         self.movedCount = movedCount
         self.skippedCount = skippedCount
+        self.movedBytes = movedBytes ?? releasedBytes
         self.releasedBytes = releasedBytes
     }
 
@@ -569,7 +576,20 @@ public struct SmartCareResult: Sendable, Hashable {
 struct SmartCareDeletionAccounting: Sendable, Hashable {
     let succeededPaths: Set<String>
     let remainingProfessionalSelection: Set<String>
+    let movedBytes: Int64
     let releasedBytes: Int64
+
+    init(
+        succeededPaths: Set<String>,
+        remainingProfessionalSelection: Set<String>,
+        movedBytes: Int64 = 0,
+        releasedBytes: Int64 = 0
+    ) {
+        self.succeededPaths = succeededPaths
+        self.remainingProfessionalSelection = remainingProfessionalSelection
+        self.movedBytes = movedBytes
+        self.releasedBytes = releasedBytes
+    }
 }
 
 typealias SmartCareDeletionAccountingOperation = @Sendable (
@@ -579,7 +599,7 @@ typealias SmartCareDeletionAccountingOperation = @Sendable (
 ) -> SmartCareDeletionAccounting
 
 /// 真删完成后的纯 CPU 统计 worker。成功路径建 Set、从 20k+ items
-/// 累加已释放容量、专业模式 selection subtract 都不在 MainActor 执行。
+/// 累加已移入废纸篓容量、专业模式 selection subtract 都不在 MainActor 执行。
 enum SmartCareDeletionAccountingExecutor {
     static func run(items: [SmartCareItem],
                     succeededPaths: [String],
@@ -607,14 +627,15 @@ enum SmartCareDeletionAccountingExecutor {
                                     professionalSelection: Set<String>)
         -> SmartCareDeletionAccounting {
         let succeeded = Set(succeededPaths)
-        var releasedBytes: Int64 = 0
+        var movedBytes: Int64 = 0
         for item in items where succeeded.contains(item.path) {
-            releasedBytes &+= item.bytes
+            movedBytes &+= item.bytes
         }
         return SmartCareDeletionAccounting(
             succeededPaths: succeeded,
             remainingProfessionalSelection: professionalSelection.subtracting(succeeded),
-            releasedBytes: releasedBytes
+            movedBytes: movedBytes,
+            releasedBytes: 0
         )
     }
 }

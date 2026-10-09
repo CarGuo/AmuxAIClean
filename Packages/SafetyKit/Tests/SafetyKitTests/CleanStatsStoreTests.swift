@@ -165,4 +165,27 @@ final class CleanStatsStoreTests: XCTestCase {
         XCTAssertEqual(events.count, 2)
         XCTAssertEqual(Set(events.map(\.category)), ["cache", "log"])
     }
+
+    func test_recordTrashed_单独累计_trashedBytes_不虚增_reclaimedBytes() async throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CleanStatsStoreTrashed-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let store = CleanStatsStore(storageURL: tmp)
+        await store.recordTrashed(bytesTrashed: 4_096, category: "smartCare")
+
+        let reclaimed = await store.totalBytesReclaimed()
+        let trashed = await store.totalBytesTrashed()
+        let events = await store.events()
+        XCTAssertEqual(reclaimed, 0, "同卷移入废纸篓不应直接计入已释放物理空间")
+        XCTAssertEqual(trashed, 4_096)
+        XCTAssertEqual(events.first?.bytesTrashed, 4_096)
+        XCTAssertEqual(events.first?.bytesReclaimed, 0)
+
+        let reloaded = CleanStatsStore(storageURL: tmp)
+        let reloadedReclaimed = await reloaded.totalBytesReclaimed()
+        let reloadedTrashed = await reloaded.totalBytesTrashed()
+        XCTAssertEqual(reloadedReclaimed, 0)
+        XCTAssertEqual(reloadedTrashed, 4_096)
+    }
 }

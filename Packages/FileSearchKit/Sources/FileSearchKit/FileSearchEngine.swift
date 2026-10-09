@@ -163,15 +163,21 @@ public struct FileSearchEngine: Sendable {
                               filters: [FileSearchFilter],
                               options: FileSearchOptions) -> FileSearchResult? {
         let name = url.lastPathComponent
-        let resourceKeys: Set<URLResourceKey> = [
+        let needsTags = filters.contains {
+            if case .tags = $0 { return true }
+            return false
+        }
+        var resourceKeys: Set<URLResourceKey> = [
             .totalFileSizeKey, .contentModificationDateKey, .isDirectoryKey,
-            .tagNamesKey,
         ]
+        if needsTags {
+            resourceKeys.insert(.tagNamesKey)
+        }
         let values = try? url.resourceValues(forKeys: resourceKeys)
         let isDir = values?.isDirectory ?? url.hasDirectoryPath
         let size: Int64 = isDir ? 0 : Int64(values?.totalFileSize ?? 0)
         let mtime = values?.contentModificationDate ?? Date(timeIntervalSince1970: 0)
-        let tags = values?.tagNames ?? []
+        let tags = needsTags ? (values?.tagNames ?? []) : []
 
         // tags + comment 读取代价更高，仅在 filters 实际用到时才取 comment（懒加载）
         var commentCache: String? = nil

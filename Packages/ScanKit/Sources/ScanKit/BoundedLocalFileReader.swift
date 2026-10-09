@@ -82,7 +82,7 @@ public enum BoundedLocalFileReader {
             at: url,
             stage: .initialPath
         )
-        guard initial.fileType == UInt16(S_IFREG) else {
+        guard initial.fileType == UInt16(S_IFREG), !initial.isDataless else {
             throw BoundedLocalFileReadError.unsafeType(fileKind(initial.fileType))
         }
         try validateSize(initial.size, maximumBytes: maximumBytes)
@@ -107,7 +107,7 @@ public enum BoundedLocalFileReader {
             descriptor,
             stage: .openedFile
         )
-        guard opened.fileType == UInt16(S_IFREG) else {
+        guard opened.fileType == UInt16(S_IFREG), !opened.isDataless else {
             throw BoundedLocalFileReadError.unsafeType(fileKind(opened.fileType))
         }
         guard opened.sameIdentity(as: initial), opened.sameVersion(as: initial) else {
@@ -174,6 +174,7 @@ public enum BoundedLocalFileReader {
         let device: UInt64
         let inode: UInt64
         let fileType: UInt16
+        let isDataless: Bool
         let size: Int64
         let modificationSeconds: Int64
         let modificationNanoseconds: Int64
@@ -184,6 +185,7 @@ public enum BoundedLocalFileReader {
             device = UInt64(bitPattern: Int64(metadata.st_dev))
             inode = UInt64(metadata.st_ino)
             fileType = UInt16(metadata.st_mode & S_IFMT)
+            isDataless = (metadata.st_flags & UInt32(SF_DATALESS)) != 0
             size = Int64(metadata.st_size)
             modificationSeconds = Int64(metadata.st_mtimespec.tv_sec)
             modificationNanoseconds = Int64(metadata.st_mtimespec.tv_nsec)

@@ -318,8 +318,21 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
     /// 如果压成 `missingAPIKey`，UI 会给出错误恢复建议并掩盖真实故障。
     private let apiKeyProvider: @Sendable () async throws -> String
     private let session: URLSession
+    private let sessionLifetime: SessionLifetime?
     private let redactor: PathRedactor
     private let prompts: PromptBuilder
+
+    private final class SessionLifetime: Sendable {
+        private let session: URLSession
+
+        init(session: URLSession) {
+            self.session = session
+        }
+
+        deinit {
+            session.finishTasksAndInvalidate()
+        }
+    }
 
     /// v2026.07.18 P2 availability boundary: the requested schema contains at most an 80-character
     /// summary, a 200-character reason and short side-effect phrases. A normal compatible
@@ -372,6 +385,7 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
             settings: settings,
             resolvedAPIKeyProvider: { try apiKeyProvider() },
             session: Self.makeIsolatedSession(),
+            ownsSession: true,
             redactor: redactor,
             prompts: prompts
         )
@@ -387,6 +401,7 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
             settings: settings,
             resolvedAPIKeyProvider: asyncAPIKeyProvider,
             session: Self.makeIsolatedSession(),
+            ownsSession: true,
             redactor: redactor,
             prompts: prompts
         )
@@ -415,6 +430,7 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
             settings: settings,
             resolvedAPIKeyProvider: { try apiKeyProvider() },
             session: testingSession,
+            ownsSession: false,
             redactor: redactor,
             prompts: prompts
         )
@@ -430,6 +446,7 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
             settings: settings,
             resolvedAPIKeyProvider: asyncAPIKeyProvider,
             session: testingSession,
+            ownsSession: false,
             redactor: redactor,
             prompts: prompts
         )
@@ -454,12 +471,14 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
         settings: SettingsSnapshot,
         resolvedAPIKeyProvider: @escaping @Sendable () async throws -> String,
         session: URLSession,
+        ownsSession: Bool,
         redactor: PathRedactor,
         prompts: PromptBuilder
     ) {
         self.settings = settings
         self.apiKeyProvider = resolvedAPIKeyProvider
         self.session = session
+        self.sessionLifetime = ownsSession ? SessionLifetime(session: session) : nil
         self.redactor = redactor
         self.prompts = prompts
     }

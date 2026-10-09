@@ -144,7 +144,8 @@ public struct BrewRegistry: Sendable {
                 rejectedEntryCount += 1
                 continue
             }
-            out[name] = stable
+            let revision = (item["revision"] as? Int) ?? 0
+            out[name] = revision > 0 ? "\(stable)_\(revision)" : stable
         }
         return RegistryParseResult(
             values: out,

@@ -35,12 +35,20 @@ public struct FileAllocationSnapshot: Sendable {
         public let allocatedBytes: Int64
         public let logicalBytes: Int64
         public let fileCount: Int
+        public let isDirectory: Bool?
 
-        public init(path: String, allocatedBytes: Int64, logicalBytes: Int64, fileCount: Int) {
+        public init(
+            path: String,
+            allocatedBytes: Int64,
+            logicalBytes: Int64,
+            fileCount: Int,
+            isDirectory: Bool? = nil
+        ) {
             self.path = path
             self.allocatedBytes = allocatedBytes
             self.logicalBytes = logicalBytes
             self.fileCount = fileCount
+            self.isDirectory = isDirectory
         }
     }
 
@@ -95,6 +103,12 @@ public struct FileAllocationSnapshot: Sendable {
         public let externalDeltas: [Delta]
     }
 
+    @inline(__always)
+    private static func parentDirectoryPath(of path: String) -> String {
+        guard path != "/", let slash = path.lastIndex(of: "/") else { return "/" }
+        return slash == path.startIndex ? "/" : String(path[..<slash])
+    }
+
     /// The caller serializes this value through its source-revision CAS. Partial scans replace
     /// only observed paths; absence is authoritative only for a complete measurement.
     public func replacing(
@@ -108,14 +122,39 @@ public struct FileAllocationSnapshot: Sendable {
         result.knownLinkedIdentities.formUnion(entries.keys)
         result.knownLinkedIdentities.formUnion(incoming.knownLinkedIdentities)
         result.knownLinkedIdentities.formUnion(incoming.entries.keys)
-        result.directories = directories.filter { !replacesPath($0.key) && !excludesPath($0.key) }
+
+        let needsUnrecordedAncestorIndex = removedContributions.contains {
+            $0.isDirectory == nil && directories[$0.path] == nil
+        }
+        var unrecordedDirectoryAncestors = Set<String>()
+        var keysToRemove: [String] = []
+        for key in directories.keys {
+            if replacesPath(key) || excludesPath(key) {
+                keysToRemove.append(key)
+            }
+            guard needsUnrecordedAncestorIndex else { continue }
+            var cursor = Self.parentDirectoryPath(of: key)
+            while cursor != key,
+                  directories[cursor] == nil,
+                  unrecordedDirectoryAncestors.insert(cursor).inserted {
+                let next = Self.parentDirectoryPath(of: cursor)
+                if next == cursor { break }
+                cursor = next
+            }
+        }
+        for key in keysToRemove {
+            result.directories.removeValue(forKey: key)
+        }
+
         for contribution in removedContributions {
             // A directory's files live in its own direct totals, removed above. Only a
             // leaf contribution must also be removed from the surviving parent's direct sum.
-            let prefix = contribution.path == "/" ? "/" : contribution.path + "/"
-            guard directories[contribution.path] == nil,
-                  !directories.keys.contains(where: { $0.hasPrefix(prefix) }) else { continue }
-            let parent = (contribution.path as NSString).deletingLastPathComponent
+            if contribution.isDirectory == true { continue }
+            if contribution.isDirectory == nil {
+                guard directories[contribution.path] == nil,
+                      !unrecordedDirectoryAncestors.contains(contribution.path) else { continue }
+            }
+            let parent = Self.parentDirectoryPath(of: contribution.path)
             guard var totals = result.directories[parent] else { continue }
             totals.allocatedBytes = max(0, totals.allocatedBytes - contribution.allocatedBytes)
             totals.logicalBytes = max(0, totals.logicalBytes - contribution.logicalBytes)

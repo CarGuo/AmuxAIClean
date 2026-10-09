@@ -423,6 +423,12 @@ public struct SafetyEngine: Sendable {
                 }
             }
         }
+        // 7.5 应用包（.app）内部成员保护：允许整包卸载（确认后回收整个 .app），
+        //     但禁止把 .app 包内的二进制、资源或签名文件当作普通重复文件/散落文件单独清理，
+        //     以免破坏应用资源完整性与 CodeSignature。
+        if Self.isInsideAppBundle(lowerCanonical: lowerCanonical, lowerHomeRelative: lowerHomeRelative) {
+            return (.forbid, .insideAppBundle)
+        }
         // 8. Positive cache matches honor filesystem case semantics before default selection.
         let isSafeCachePath: Bool
         if let relative = lowerHomeRelative {
@@ -676,8 +682,125 @@ public struct SafetyEngine: Sendable {
         }
     }
 
+    private static let appBundleInteriorMarkers: Set<Substring> = [
+        "contents", "wrapper", "wrappedbundle", "_codesignature",
+        "macos", "resources", "frameworks", "plugins", "plug-ins",
+        "xpcservices", "helpers", "sharedsupport", "info.plist",
+        "pkginfo", "coderesources",
+    ]
+
+    private static let libraryBundleIDContainerDirs: Set<Substring> = [
+        "caches", "logs", "application support", "containers",
+        "group containers", "httpstorages", "webkit",
+        "saved application state", "preferences", "cookies", "launchagents",
+    ]
+
+    /// 判断路径是否位于某个 `.app` 应用包内部（不含 `.app` 根目录本身）。
+    ///
+    /// - 整包路径（如 `/Users/alice/Applications/Foo.app`）返回 `false`，允许应用卸载入口处理；
+    /// - 包内成员（如 `.../Foo.app/Contents/Resources/a.png` 或嵌套 `.../Foo.app/Contents/.../Helper.app`）返回 `true`；
+    /// - `~/Library/{Caches,Containers,...}/com.example.unknown.app/...` 这类以 `.app` 结尾的反向域名
+    ///   Bundle ID 容器目录（至少含两个 `.` 且下一级不是 `.app` 包结构目录）不视为 `.app` 应用包。
+    public static func isInsideAppBundlePath(_ path: String, home: String = NSHomeDirectory()) -> Bool {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        let canonical = stripDataVolumePrefix(standardized)
+        let lowerCanonical = canonical.lowercased()
+        guard lowerCanonical.contains(".app/") else { return false }
+        let lowerHome = normalizeHome(home).lowercased()
+        let lowerHomeRelative: String?
+        if lowerCanonical.hasPrefix(lowerHome + "/") {
+            lowerHomeRelative = String(lowerCanonical.dropFirst(lowerHome.count))
+        } else {
+            lowerHomeRelative = nil
+        }
+        return isInsideAppBundle(lowerCanonical: lowerCanonical, lowerHomeRelative: lowerHomeRelative)
+    }
+
+    static func isInsideAppBundle(lowerCanonical: String, lowerHomeRelative: String?) -> Bool {
+        guard lowerCanonical.contains(".app/") else { return false }
+
+        var searchStart = lowerCanonical.startIndex
+        while let range = lowerCanonical.range(of: ".app/", range: searchStart..<lowerCanonical.endIndex) {
+            let segmentEnd = range.upperBound // points right after '/'
+            let appNameEnd = lowerCanonical.index(before: segmentEnd) // points at '/'
+            let segmentStart: String.Index
+            if let prevSlash = lowerCanonical[..<appNameEnd].lastIndex(of: "/") {
+                segmentStart = lowerCanonical.index(after: prevSlash)
+            } else {
+                segmentStart = lowerCanonical.startIndex
+            }
+            let appSegment = lowerCanonical[segmentStart..<appNameEnd]
+
+            // Remainder after "<segment>.app/"
+            let remainder = lowerCanonical[segmentEnd...]
+            if !remainder.isEmpty {
+                let nextSlash = remainder.firstIndex(of: "/") ?? remainder.endIndex
+                let nextComponent = remainder[..<nextSlash]
+                if !isLibraryBundleIDContainer(
+                    lowerCanonical: lowerCanonical,
+                    lowerHomeRelative: lowerHomeRelative,
+                    appSegmentStart: segmentStart,
+                    appSegment: appSegment,
+                    nextComponent: nextComponent
+                ) {
+                    return true
+                }
+            }
+            searchStart = segmentEnd
+        }
+        return false
+    }
+
+    private static func isLibraryBundleIDContainer(
+        lowerCanonical: String,
+        lowerHomeRelative: String?,
+        appSegmentStart: String.Index,
+        appSegment: Substring,
+        nextComponent: Substring
+    ) -> Bool {
+        if appBundleInteriorMarkers.contains(nextComponent) {
+            return false
+        }
+        // Reverse-DNS bundle ID ending with `.app` must have at least 2 dots (e.g. `com.example.app`)
+        var dotCount = 0
+        for ch in appSegment where ch == "." {
+            dotCount += 1
+            if dotCount >= 2 { break }
+        }
+        guard dotCount >= 2 else { return false }
+
+        // Check if parent is `<home>/Library/<containerDir>/<bundleID.app>`
+        guard let relative = lowerHomeRelative, relative.hasPrefix("/library/") else {
+            return false
+        }
+        let prefixBeforeSegment = lowerCanonical[..<appSegmentStart]
+        guard prefixBeforeSegment.hasSuffix("/") else { return false }
+        let withoutTrailingSlash = prefixBeforeSegment.dropLast()
+        guard let dirSlash = withoutTrailingSlash.lastIndex(of: "/") else { return false }
+        let parentDir = withoutTrailingSlash[withoutTrailingSlash.index(after: dirSlash)...]
+        let beforeParentDir = withoutTrailingSlash[..<dirSlash]
+        guard beforeParentDir.hasSuffix("/library") else { return false }
+        return libraryBundleIDContainerDirs.contains(parentDir)
+    }
+
     private static func resolvedSymlinkPath(forStandardizedPath path: String) -> String {
-        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+        if resolved != path {
+            return resolved
+        }
+        var st = stat()
+        if Darwin.lstat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFLNK,
+           let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: path) {
+            let targetPath: String
+            if destination.hasPrefix("/") {
+                targetPath = destination
+            } else {
+                let parent = (path as NSString).deletingLastPathComponent
+                targetPath = (parent as NSString).appendingPathComponent(destination)
+            }
+            return URL(fileURLWithPath: targetPath).resolvingSymlinksInPath().standardizedFileURL.path
+        }
+        return resolved
     }
 
     private static func moreRestrictive(

@@ -74,4 +74,49 @@ final class FileAllocationSnapshotTests: XCTestCase {
         XCTAssertEqual(frozen.aggregate(inDirectory: "/A").fileCount, 10_000)
         XCTAssertEqual(frozen.aggregate(inDirectory: "/A").allocatedBytes, 40_960_000)
     }
+
+    func testRemovingManyLeavesFromLargeDirectoryCatalogScalesWithoutFullDirectoryScanPerLeaf() {
+        let ledger = InodeSet(tracksPaths: true)
+        ledger.recordScanRoot(path: "/root")
+        ledger.recordDirectory(path: "/root", allocatedBytes: 0, logicalBytes: 0, fileCount: 0)
+        let dirCount = 50_000
+        let removedCount = 1_000
+        for index in 0..<dirCount {
+            let bucket = "/root/b\(index / 100)"
+            if index % 100 == 0 {
+                ledger.recordDirectory(path: bucket, allocatedBytes: 0, logicalBytes: 0, fileCount: 0)
+            }
+            ledger.recordDirectory(
+                path: "\(bucket)/d\(index)",
+                allocatedBytes: 8_192,
+                logicalBytes: 8_192,
+                fileCount: 2
+            )
+        }
+        let snapshot = ledger.allocationSnapshot()
+        let removed = (0..<removedCount).map { index in
+            FileAllocationSnapshot.RemovedContribution(
+                path: "/root/b\(index / 100)/d\(index)/leaf.bin",
+                allocatedBytes: 4_096,
+                logicalBytes: 4_096,
+                fileCount: 1
+            )
+        }
+        let start = CFAbsoluteTimeGetCurrent()
+        let updated = snapshot.replacing(
+            with: .init(),
+            replacesPath: { _ in false },
+            removedContributions: removed
+        )
+        let elapsed = CFAbsoluteTimeGetCurrent() - start
+        XCTAssertLessThan(elapsed, 1.0, "移除 1,000 个叶子文件不应逐次全量遍历全部目录")
+        XCTAssertEqual(
+            updated.snapshot.aggregate(inDirectory: "/root/b0/d0").allocatedBytes,
+            4_096
+        )
+        XCTAssertEqual(
+            updated.snapshot.aggregate(inDirectory: "/root/b0/d0").fileCount,
+            1
+        )
+    }
 }

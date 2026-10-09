@@ -80,24 +80,61 @@ public enum TCCSkipList {
     public static let dangerousAbsolute: [String] = [
         "/Library/Application Support/com.apple.TCC",  // TCC.db 本身
         "/private/var/db/locationd",
-        "/private/var/folders"  // 临时文件，FDA 也未必读得动
+        "/var/db/locationd",
+        "/private/var/folders",  // 临时文件，FDA 也未必读得动
+        "/var/folders"
     ]
+
+    private static let lowerDangerousSuffixes: [String] = dangerousSuffixes.map { $0.lowercased() }
+    private static let lowerDangerousHomeRelative: [String] = dangerousHomeRelative.map { $0.lowercased() }
+    private static let lowerDangerousAbsolute: [String] = dangerousAbsolute.map { $0.lowercased() }
+
+    /// 当前进程自身的逻辑临时目录根（如 `/var/folders/<b1>/<b2>/T`）。
+    ///
+    /// 系统级 `/var/folders` / `/private/var/folders` 整体、物理选择器命名空间 `/private/var/folders/...`
+    /// 以及他人的桶仍保持 TCC/权限硬跳过；唯独当前进程自己的逻辑 `/var/folders/<b1>/<b2>/T`
+    /// 临时目录属于 `FileManager.default.temporaryDirectory` / `NSTemporaryDirectory()` 测试与进程内
+    /// 合法工作区。若其内部包含 `.photoslibrary` 等敏感后缀（步骤 1），依然会被拦截。
+    private static let currentProcessTemporaryRoots: [String] = {
+        let rawCandidates = [
+            FileManager.default.temporaryDirectory.path,
+            NSTemporaryDirectory()
+        ]
+        var roots = Set<String>()
+        for raw in rawCandidates {
+            let normalized = normalizePath(raw).lowercased()
+            let logical = normalized.hasPrefix("/private/var/folders/")
+                ? String(normalized.dropFirst("/private".count))
+                : normalized
+            if isSpecificLogicalProcessTempDirectory(logical) {
+                roots.insert(logical)
+            }
+        }
+        return Array(roots)
+    }()
 
     /// 综合判断：传入一个绝对路径，是否应该 skip（不下钻）。
     ///
     /// - Parameter absPath: 绝对路径（不含 trailing slash）
     /// - Returns: true 表示该路径是 TCC 雷区，walker 不应进入
     public static func shouldSkip(_ absPath: String) -> Bool {
-        // 1. 后缀匹配（媒体库类 bundle 根及其内部子路径）
-        for suffix in dangerousSuffixes {
-            if absPath.hasSuffix(suffix) || absPath.contains(suffix + "/") {
+        let normalized = normalizePath(absPath)
+        let lowerPath = normalized.lowercased()
+
+        // 1. 后缀匹配（媒体库类 bundle 根及其内部子路径，忽略大小写以匹配 APFS 默认语义）
+        for suffix in lowerDangerousSuffixes {
+            if lowerPath.hasSuffix(suffix) || lowerPath.contains(suffix + "/") {
                 return true
             }
         }
 
-        // 2. 系统绝对路径
-        for prefix in dangerousAbsolute {
-            if absPath == prefix || absPath.hasPrefix(prefix + "/") {
+        // 2. 系统绝对路径（同时覆盖 /var 与 /private/var 别名，豁免当前进程逻辑临时目录）
+        for prefix in lowerDangerousAbsolute {
+            if lowerPath == prefix || lowerPath.hasPrefix(prefix + "/") {
+                if prefix == "/var/folders",
+                   isCurrentProcessTemporaryPath(lowerPath) {
+                    continue
+                }
                 return true
             }
         }
@@ -107,11 +144,12 @@ public enum TCCSkipList {
         // 从 `/` 扫描时还会看到 `/Users/<other-user>`，其 Mail/Messages 必须在
         // 触碰物理文件系统前使用同一 hard-skip 合同。但不能只按后缀匹配，
         // 否则 `/tmp/custom-home/Library/Mail` 这类 fixture/备份目录会被误当成 TCC home。
-        if let relative = relativePath(absPath, underHome: NSHomeDirectory()),
+        let lowerHome = normalizePath(NSHomeDirectory()).lowercased()
+        if let relative = relativePath(lowerPath, underHome: lowerHome),
            isDangerousHomeRelative(relative) {
             return true
         }
-        if let relative = relativePathInPublicUsersNamespace(absPath),
+        if let relative = relativePathInPublicUsersNamespace(lowerPath),
            isDangerousHomeRelative(relative) {
             return true
         }
@@ -119,10 +157,37 @@ public enum TCCSkipList {
         return false
     }
 
-    private static func isDangerousHomeRelative(_ relativePath: String) -> Bool {
-        dangerousHomeRelative.contains { rule in
-            relativePath == rule || relativePath.hasPrefix(rule + "/")
+    private static func isDangerousHomeRelative(_ lowerRelativePath: String) -> Bool {
+        lowerDangerousHomeRelative.contains { rule in
+            lowerRelativePath == rule || lowerRelativePath.hasPrefix(rule + "/")
         }
+    }
+
+    private static func isCurrentProcessTemporaryPath(_ lowerPath: String) -> Bool {
+        currentProcessTemporaryRoots.contains { root in
+            lowerPath == root || lowerPath.hasPrefix(root + "/")
+        }
+    }
+
+    private static func normalizePath(_ rawPath: String) -> String {
+        var path = rawPath
+        while path.count > 1, path.hasSuffix("/") {
+            path.removeLast()
+        }
+        let dataVolumePrefix = "/System/Volumes/Data"
+        if path.lowercased().hasPrefix(dataVolumePrefix.lowercased() + "/") {
+            path = String(path.dropFirst(dataVolumePrefix.count))
+        }
+        return path
+    }
+
+    private static func isSpecificLogicalProcessTempDirectory(_ lowerPath: String) -> Bool {
+        let prefix = "/var/folders/"
+        guard lowerPath.hasPrefix(prefix) else { return false }
+        let remainder = lowerPath.dropFirst(prefix.count)
+        let parts = remainder.split(separator: "/", omittingEmptySubsequences: true)
+        // Must be at least `<bucket1>/<bucket2>/t` (3 components under /var/folders/)
+        return parts.count >= 3
     }
 
     private static func relativePath(_ path: String, underHome rawHome: String) -> String? {
@@ -135,10 +200,10 @@ public enum TCCSkipList {
     /// Returns the path below `/Users/<one-user-segment>` in the public namespace.
     /// Nested backup paths such as `/tmp/custom-home` and `/Volumes/backup/Users/...` do not
     /// qualify, which keeps namespace identity explicit instead of inferring a home from a suffix.
-    private static func relativePathInPublicUsersNamespace(_ path: String) -> String? {
-        let prefix = "/Users/"
-        guard path.hasPrefix(prefix) else { return nil }
-        let afterUsers = path.dropFirst(prefix.count)
+    private static func relativePathInPublicUsersNamespace(_ lowerPath: String) -> String? {
+        let prefix = "/users/"
+        guard lowerPath.hasPrefix(prefix) else { return nil }
+        let afterUsers = lowerPath.dropFirst(prefix.count)
         guard let separator = afterUsers.firstIndex(of: "/") else { return nil }
         let user = afterUsers[..<separator]
         guard !user.isEmpty, user != ".", user != ".." else { return nil }

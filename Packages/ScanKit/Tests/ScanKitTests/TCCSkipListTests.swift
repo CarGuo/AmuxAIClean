@@ -77,4 +77,34 @@ final class TCCSkipListTests: XCTestCase {
         XCTAssertTrue(TCCSkipList.shouldSkip("/Library/Application Support/com.apple.TCC"))
         XCTAssertTrue(TCCSkipList.shouldSkip("/Library/Application Support/com.apple.TCC/TCC.db"))
     }
+
+    func testCaseInsensitiveSuffixAndVarAliasesAreSkippedWhileProcessTempFixtureIsAllowed() {
+        let home = NSHomeDirectory()
+        XCTAssertTrue(TCCSkipList.shouldSkip("/anywhere/Photos.PHOTOSLIBRARY"))
+        XCTAssertTrue(TCCSkipList.shouldSkip("/anywhere/Photos.PHOTOSLIBRARY/item.dat"))
+        XCTAssertTrue(TCCSkipList.shouldSkip("\(home)/library/MAIL"))
+        XCTAssertTrue(TCCSkipList.shouldSkip("/Users/another-user/LIBRARY/messages"))
+
+        XCTAssertTrue(TCCSkipList.shouldSkip("/private/var/db/locationd"))
+        XCTAssertTrue(TCCSkipList.shouldSkip("/var/db/locationd"))
+        XCTAssertTrue(TCCSkipList.shouldSkip("/private/var/folders"))
+        XCTAssertTrue(TCCSkipList.shouldSkip("/var/folders"))
+        XCTAssertTrue(TCCSkipList.shouldSkip("/var/folders/policy-probe"))
+        XCTAssertTrue(TCCSkipList.shouldSkip("/private/var/folders/policy-probe"))
+        XCTAssertTrue(TCCSkipList.shouldSkip("/var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/T/secret"))
+
+        let tempFixture = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scan-fixture-\(UUID().uuidString)")
+        XCTAssertFalse(TCCSkipList.shouldSkip(tempFixture.path),
+                       "当前进程临时目录下的测试/工作区普通路径不应被 /var/folders 伞规则误伤")
+        if tempFixture.path.hasPrefix("/var/folders/") {
+            XCTAssertTrue(TCCSkipList.shouldSkip("/private" + tempFixture.path),
+                          "系统选择器物理 /private/var/folders 命名空间仍保持 TCC 隐私跳过")
+        }
+
+        let tempPhotos = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Photos.PHOTOSLIBRARY")
+        XCTAssertTrue(TCCSkipList.shouldSkip(tempPhotos.path),
+                      "即便位于当前进程临时目录，命中媒体库后缀的目录仍必须按 TCC 规则跳过")
+    }
 }

@@ -472,7 +472,49 @@ final class DuplicateScannerTests: XCTestCase {
         XCTAssertEqual(verification, .identityChangedOrUnavailable,
                        "Opening a FIFO during verification must not block and must report .identityChangedOrUnavailable")
     }
+
+    func testAppBundleInteriorResourcesAreNotGroupedAsDuplicates() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let appA = root.appendingPathComponent("Applications/Alpha.app/Contents/Resources", isDirectory: true)
+        let appB = root.appendingPathComponent("Applications/Beta.app/Contents/Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: appA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: appB, withIntermediateDirectories: true)
+        try writeFile(appA.appendingPathComponent("shared.bin"), size: 128 * 1024, fillByte: 0x42)
+        try writeFile(appB.appendingPathComponent("shared.bin"), size: 128 * 1024, fillByte: 0x42)
+
+        let groups = await DuplicateScanner(
+            roots: [root.appendingPathComponent("Applications")],
+            minBytes: 1
+        ).scanToCompletion()
+        XCTAssertTrue(groups.isEmpty, ".app 包内资源不得被扫描为可清理重复文件组")
+    }
+
+    func testSurvivingExternalHardlinksDoNotInflateReclaimableBytes() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let scanRoot = root.appendingPathComponent("ScanScope", isDirectory: true)
+        let externalLinks = root.appendingPathComponent("ExternalLinks", isDirectory: true)
+        try FileManager.default.createDirectory(at: scanRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: externalLinks, withIntermediateDirectories: true)
+
+        let fileA = try writeFile(scanRoot.appendingPathComponent("a.bin"), size: 256 * 1024, fillByte: 0x7A)
+        let fileB = try writeFile(scanRoot.appendingPathComponent("b.bin"), size: 256 * 1024, fillByte: 0x7A)
+        XCTAssertEqual(link(fileA.path, externalLinks.appendingPathComponent("a-keep.bin").path), 0)
+        XCTAssertEqual(link(fileB.path, externalLinks.appendingPathComponent("b-keep.bin").path), 0)
+
+        let groups = await DuplicateScanner(roots: [scanRoot], minBytes: 1).scanToCompletion()
+        let group = try XCTUnwrap(groups.first)
+        XCTAssertEqual(group.files.count, 2)
+        XCTAssertTrue(group.files.allSatisfy { $0.nlink == 2 })
+        XCTAssertEqual(group.reclaimableBytes, 0,
+                       "两份重复文件均存在扫描范围外的存活硬链接（nlink=2），移走其中一份不会释放物理空间")
+        XCTAssertEqual(group.allocatedBytes(for: [fileB.path]), 0)
+    }
 }
+
 
 private actor DuplicateChildSettlementProbe {
     private var started = false

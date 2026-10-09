@@ -296,13 +296,24 @@ public struct OrphanScanner: Sendable {
         }
         guard let resolvedReason = reason else { return nil }
 
-        // 安全闸
-        let (verdict, _, _) = safetyEngine.evaluate(
+        // 安全闸与 vendor 反查：例如 ~/Library/Application Support/zoom.us 或 Code 命中 vendor 规则时，
+        // 若其关联的 bundleID 或 vendor 名称仍处于已安装状态，则绝不应判为孤儿残留。
+        let (verdict, _, vendor) = safetyEngine.evaluate(
             path: entry.path,
             trie: vendorTrie,
             home: homeDirectory
         )
         if verdict == .forbid { return nil }
+        if let vendorBundleID = vendor?.bundleIDPrefix,
+           !vendorBundleID.isEmpty,
+           resolver.isBundleIDRegistered(vendorBundleID) {
+            return nil
+        }
+        if case .appNameNotInstalled = resolvedReason,
+           let vendorName = vendor?.name.lowercased(),
+           installedAppNames().contains(vendorName) {
+            return nil
+        }
 
         // mtime 阈值
         let mtime = mtimeOf(path: entry.path) ?? now
@@ -335,12 +346,12 @@ public struct OrphanScanner: Sendable {
         Self.isBundleIDLike(stem)
     }
 
-    /// 去掉 `.plist` / `.savedState` 等后缀（取最后一个 dot 之前的部分）但保留中间 dot。
+    /// 去掉 `.plist` / `.savedState` / `.ShipIt` 等后缀（取最后一个 dot 之前的部分）但保留中间 dot。
     /// `com.foo.bar.plist` → `com.foo.bar`
     /// `com.foo.bar` → `com.foo.bar`（无尾后缀）
     /// `Spotify` → `Spotify`
     static func stemOf(_ name: String) -> String {
-        let knownSuffixes = [".plist", ".savedState", ".lock"]
+        let knownSuffixes = [".plist", ".savedState", ".lock", ".ShipIt"]
         for s in knownSuffixes {
             if name.hasSuffix(s) {
                 return String(name.dropLast(s.count))

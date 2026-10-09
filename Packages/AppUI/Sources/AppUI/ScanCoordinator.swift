@@ -3013,6 +3013,7 @@ public final class ScanCoordinator: ObservableObject {
                 rejection: scanWasIncomplete && verdict != .forbid ? .accessDenied : rejection,
                 vendorName: vendor?.name,
                 vendorNote: "retain: \(hit.retainedLatest)",
+                runningBundleIDPrefix: vendor?.bundleIDPrefix,
                 isActive: false,
                 hasChildren: false,
                 modificationDate: nil,
@@ -8680,6 +8681,7 @@ public final class ScanCoordinator: ObservableObject {
                 rejection: safety.rejection,
                 vendorName: safety.vendor?.name,
                 vendorNote: safety.vendor?.note,
+                runningBundleIDPrefix: safety.vendor?.bundleIDPrefix,
                 isActive: false,
                 hasChildren: bucket.hasChildren,
                 modificationDate: bucket.modificationDate
@@ -10643,6 +10645,7 @@ public final class ScanCoordinator: ObservableObject {
         var bytes: Int64
         var logicalBytes: Int64
         var fileCount: Int
+        var isDirectory: Bool? = nil
 
         mutating func add(_ other: PruneContribution) {
             bytes &+= other.bytes
@@ -10818,7 +10821,8 @@ public final class ScanCoordinator: ObservableObject {
                         path: row.path,
                         bytes: row.bytes,
                         logicalBytes: row.logicalBytes,
-                        fileCount: row.fileCount
+                        fileCount: row.fileCount,
+                        isDirectory: row.isDirectory
                     )
                     exact[row.path] = Self.preferred(exact[row.path], item)
                     if isCompleteEntry {
@@ -10831,7 +10835,13 @@ public final class ScanCoordinator: ObservableObject {
             var aggregate: [String: PruneContribution] = [:]
             aggregate.reserveCapacity(completeChildrenByParent.count)
             for (parent, children) in completeChildrenByParent {
-                var value = PruneContribution(path: parent, bytes: 0, logicalBytes: 0, fileCount: 0)
+                var value = PruneContribution(
+                    path: parent,
+                    bytes: 0,
+                    logicalBytes: 0,
+                    fileCount: 0,
+                    isDirectory: true
+                )
                 for child in children.values {
                     value.add(child)
                 }
@@ -10852,7 +10862,8 @@ public final class ScanCoordinator: ObservableObject {
                 path: candidate.path,
                 bytes: max(current.bytes, candidate.bytes),
                 logicalBytes: max(current.logicalBytes, candidate.logicalBytes),
-                fileCount: max(current.fileCount, candidate.fileCount)
+                fileCount: max(current.fileCount, candidate.fileCount),
+                isDirectory: candidate.isDirectory ?? current.isDirectory
             )
         }
     }
@@ -11343,7 +11354,8 @@ public final class ScanCoordinator: ObservableObject {
                 path: leaf.path,
                 bytes: leaf.bytes,
                 logicalBytes: leaf.logicalBytes,
-                fileCount: 1
+                fileCount: 1,
+                isDirectory: false
             )
             if let current = largeFileContributions[leaf.path], current.bytes >= candidate.bytes {
                 continue
@@ -11353,23 +11365,28 @@ public final class ScanCoordinator: ObservableObject {
         func contribution(for path: String) -> PruneContribution? {
             if let leaf = state.fileLeaves[path] {
                 return PruneContribution(path: path, bytes: leaf.bytes,
-                                         logicalBytes: leaf.logicalBytes, fileCount: leaf.fileCount)
+                                         logicalBytes: leaf.logicalBytes, fileCount: leaf.fileCount,
+                                         isDirectory: false)
             }
             if let agg = state.dirIndex[path] {
                 return PruneContribution(path: path, bytes: agg.bytes,
-                                         logicalBytes: agg.logicalBytes, fileCount: agg.fileCount)
+                                         logicalBytes: agg.logicalBytes, fileCount: agg.fileCount,
+                                         isDirectory: true)
             }
             if let bucket = state.buckets[path] {
                 return PruneContribution(path: path, bytes: bucket.bytes,
-                                         logicalBytes: bucket.logicalBytes, fileCount: bucket.fileCount)
+                                         logicalBytes: bucket.logicalBytes, fileCount: bucket.fileCount,
+                                         isDirectory: bucket.isDirectory)
             }
             if let row = rowsByID[path] {
                 return PruneContribution(path: path, bytes: row.bytes,
-                                         logicalBytes: row.logicalBytes, fileCount: row.fileCount)
+                                         logicalBytes: row.logicalBytes, fileCount: row.fileCount,
+                                         isDirectory: row.isDirectory)
             }
             if let progress = sourcePerRoot[path] {
                 return PruneContribution(path: path, bytes: progress.bytes,
-                                         logicalBytes: progress.logicalBytes, fileCount: progress.fileCount)
+                                         logicalBytes: progress.logicalBytes, fileCount: progress.fileCount,
+                                         isDirectory: true)
             }
             if let largeFile = largeFileContributions[path] {
                 return largeFile
@@ -11404,7 +11421,8 @@ public final class ScanCoordinator: ObservableObject {
             guard deltaMatcher.contains(progress.rootPath),
                   !indexedMatcher.contains(progress.rootPath) else { return nil }
             return PruneContribution(path: progress.rootPath, bytes: progress.bytes,
-                                     logicalBytes: progress.logicalBytes, fileCount: progress.fileCount)
+                                     logicalBytes: progress.logicalBytes, fileCount: progress.fileCount,
+                                     isDirectory: true)
         }
         let deletedContributions = indexedContributions + perRootContributions
         let totalDeletedBytes = deletedContributions.reduce(Int64(0)) { $0 &+ $1.bytes }
@@ -11419,7 +11437,8 @@ public final class ScanCoordinator: ObservableObject {
                 if matcher.contains(cursor) { break }
                 let delta = PruneContribution(path: cursor, bytes: item.bytes,
                                               logicalBytes: item.logicalBytes,
-                                              fileCount: item.fileCount)
+                                              fileCount: item.fileCount,
+                                              isDirectory: true)
                 if var current = ancestorDecrements[cursor] {
                     current.add(delta)
                     ancestorDecrements[cursor] = current
@@ -11782,7 +11801,13 @@ public final class ScanCoordinator: ObservableObject {
             ranOnMainThread: Thread.isMainThread,
             allocationCatalog: state.allocationCatalog,
             allocationRemovals: deletedContributions.map {
-                .init(path: $0.path, allocatedBytes: $0.bytes, logicalBytes: $0.logicalBytes, fileCount: $0.fileCount)
+                .init(
+                    path: $0.path,
+                    allocatedBytes: $0.bytes,
+                    logicalBytes: $0.logicalBytes,
+                    fileCount: $0.fileCount,
+                    isDirectory: $0.isDirectory
+                )
             }
         )
     }
@@ -12804,7 +12829,8 @@ public final class ScanCoordinator: ObservableObject {
                 rowsByPath[path] = RowItem(id: path, url: url, title: old?.title ?? url.lastPathComponent,
                     isDirectory: isDirectory, bytes: bytes, logicalBytes: logical, fileCount: count,
                     verdict: safety.0, rejection: safety.1, vendorName: safety.2?.name,
-                    vendorNote: safety.2?.note, runningBundleIDPrefix: old?.runningBundleIDPrefix,
+                    vendorNote: safety.2?.note,
+                    runningBundleIDPrefix: safety.2?.bundleIDPrefix ?? old?.runningBundleIDPrefix,
                     hasChildren: bucket.hasChildren, modificationDate: bucket.modificationDate,
                     titlePresentation: old?.titlePresentation)
             }
@@ -14180,6 +14206,7 @@ public final class ScanCoordinator: ObservableObject {
                 rejection: rejection,
                 vendorName: vendor?.name,
                 vendorNote: vendor?.note,
+                runningBundleIDPrefix: vendor?.bundleIDPrefix,
                 isActive: active,
                 hasChildren: bucket.hasChildren,
                 modificationDate: bucket.modificationDate

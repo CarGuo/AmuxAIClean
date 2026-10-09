@@ -135,12 +135,43 @@ public struct DuplicateGroup: Sendable, Hashable, Identifiable {
     public var id: String { hashKey }
     public var paths: [String] { files.map(\.path) }
 
-    /// 手动选择路径对应的预计可释放空间。未知路径不计入。
+    /// 手动选择路径对应的预计可释放空间。未知路径或仍有外部硬链接持有的 inode 不计入。
     public func allocatedBytes(for paths: [String]) -> Int64 {
         let selected = Set(paths)
-        return DuplicateGroup.saturatingSum(
-            files.lazy.filter { selected.contains($0.path) }.map(\.allocatedBytes)
+        return DuplicateGroup.reclaimableBytes(
+            for: files.lazy.filter { selected.contains($0.path) }
         )
+    }
+
+    private struct InodeKey: Hashable {
+        let device: UInt64
+        let inode: UInt64
+    }
+
+    /// 计算给定候选目标集合在全部移走后真正可释放的物理空间：
+    /// - `nlink <= 1` 的独立文件计入 `allocatedBytes`；
+    /// - `nlink > 1` 的硬链接文件，只有当同一 `(device, inode)` 的全部 `nlink` 个链接都在本次目标集合内时，
+    ///   才计一次 `allocatedBytes`；若仍有外部硬链接存活，则物理块不会释放，计 `0`。
+    public static func reclaimableBytes<S: Sequence>(for targets: S) -> Int64 where S.Element == DuplicateFile {
+        var singleLinkBytes: [Int64] = []
+        var linkedGroups: [InodeKey: (count: UInt64, requiredLinks: UInt64, allocatedBytes: Int64)] = [:]
+        for file in targets {
+            if file.nlink <= 1 {
+                singleLinkBytes.append(file.allocatedBytes)
+            } else if let identity = file.snapshotIdentity {
+                let key = InodeKey(device: identity.device, inode: identity.inode)
+                let previous = linkedGroups[key] ?? (0, file.nlink, file.allocatedBytes)
+                linkedGroups[key] = (
+                    count: previous.count + 1,
+                    requiredLinks: max(previous.requiredLinks, file.nlink),
+                    allocatedBytes: max(previous.allocatedBytes, file.allocatedBytes)
+                )
+            }
+        }
+        for group in linkedGroups.values where group.count >= group.requiredLinks {
+            singleLinkBytes.append(group.allocatedBytes)
+        }
+        return saturatingSum(singleLinkBytes)
     }
 
     private static func saturatingSum<S: Sequence>(_ values: S) -> Int64 where S.Element == Int64 {
@@ -211,7 +242,7 @@ public struct DuplicateGroup: Sendable, Hashable, Identifiable {
         self.logicalBytes = max(0, logicalBytes)
         self.files = sortedFiles
         self.totalBytes = DuplicateGroup.saturatingSum(sortedFiles.lazy.map(\.allocatedBytes))
-        self.reclaimableBytes = DuplicateGroup.saturatingSum(sortedFiles.dropFirst().lazy.map(\.allocatedBytes))
+        self.reclaimableBytes = DuplicateGroup.reclaimableBytes(for: sortedFiles.dropFirst())
         self.reliability = reliability
         self.contentFingerprint = contentFingerprint
     }
@@ -524,6 +555,9 @@ public actor DuplicateScanner {
                 continue
             }
             for node in candidates where !node.isSymlink {
+                guard !isInsideAppBundlePath(node.path) else {
+                    continue
+                }
                 // 每个 BulkScanner 根有自己的 inode 表；这层共享集合继续防止多根
                 // hardlink 重复进入 hash 桶。APFS clone 为不同 inode，不会被误去重。
                 guard inodes.insertIfFirstSeen(device: node.device, inode: node.inode) else {
@@ -860,6 +894,7 @@ public actor DuplicateScanner {
         var before = stat()
         guard fstat(fd, &before) == 0,
               (before.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              (before.st_flags & UInt32(SF_DATALESS)) == 0,
               before.st_size >= 0 else { return .readFailed }
         let flags = fcntl(fd, F_GETFL)
         if flags >= 0 {
@@ -904,5 +939,79 @@ public actor DuplicateScanner {
             digest.map { String(format: "%02x", $0) }.joined(),
             identity
         )
+    }
+
+    private nonisolated static let appBundleInteriorMarkers: Set<Substring> = [
+        "contents", "wrapper", "wrappedbundle", "_codesignature",
+        "macos", "resources", "frameworks", "plugins", "plug-ins",
+        "xpcservices", "helpers", "sharedsupport", "info.plist",
+        "pkginfo", "coderesources",
+    ]
+
+    private nonisolated static let libraryBundleIDContainerDirs: Set<Substring> = [
+        "caches", "logs", "application support", "containers",
+        "group containers", "httpstorages", "webkit",
+        "saved application state", "preferences", "cookies", "launchagents",
+    ]
+
+    /// 识别 `.app` 应用包内部成员路径，避免重复文件扫描把 `.app/Contents/Resources/...`
+    /// 等包内资源生成重复组并引导用户误移走签名保护内容。
+    nonisolated static func isInsideAppBundlePath(_ path: String) -> Bool {
+        let lowerPath = path.lowercased()
+        guard lowerPath.contains(".app/") else { return false }
+
+        var searchStart = lowerPath.startIndex
+        while let range = lowerPath.range(of: ".app/", range: searchStart..<lowerPath.endIndex) {
+            let segmentEnd = range.upperBound
+            let appNameEnd = lowerPath.index(before: segmentEnd)
+            let segmentStart: String.Index
+            if let prevSlash = lowerPath[..<appNameEnd].lastIndex(of: "/") {
+                segmentStart = lowerPath.index(after: prevSlash)
+            } else {
+                segmentStart = lowerPath.startIndex
+            }
+            let appSegment = lowerPath[segmentStart..<appNameEnd]
+            let remainder = lowerPath[segmentEnd...]
+            if !remainder.isEmpty {
+                let nextSlash = remainder.firstIndex(of: "/") ?? remainder.endIndex
+                let nextComponent = remainder[..<nextSlash]
+                if !isLibraryBundleIDContainer(
+                    lowerPath: lowerPath,
+                    appSegmentStart: segmentStart,
+                    appSegment: appSegment,
+                    nextComponent: nextComponent
+                ) {
+                    return true
+                }
+            }
+            searchStart = segmentEnd
+        }
+        return false
+    }
+
+    private nonisolated static func isLibraryBundleIDContainer(
+        lowerPath: String,
+        appSegmentStart: String.Index,
+        appSegment: Substring,
+        nextComponent: Substring
+    ) -> Bool {
+        if appBundleInteriorMarkers.contains(nextComponent) {
+            return false
+        }
+        var dotCount = 0
+        for ch in appSegment where ch == "." {
+            dotCount += 1
+            if dotCount >= 2 { break }
+        }
+        guard dotCount >= 2 else { return false }
+
+        let prefixBeforeSegment = lowerPath[..<appSegmentStart]
+        guard prefixBeforeSegment.hasSuffix("/") else { return false }
+        let withoutTrailingSlash = prefixBeforeSegment.dropLast()
+        guard let dirSlash = withoutTrailingSlash.lastIndex(of: "/") else { return false }
+        let parentDir = withoutTrailingSlash[withoutTrailingSlash.index(after: dirSlash)...]
+        let beforeParentDir = withoutTrailingSlash[..<dirSlash]
+        guard beforeParentDir.hasSuffix("/library") else { return false }
+        return libraryBundleIDContainerDirs.contains(parentDir)
     }
 }

@@ -606,14 +606,20 @@ public enum SmartCareSummaryBuilder {
         of path: String,
         retainedByPath: [String: SmartCareCandidate]
     ) -> String? {
-        var parent = (path as NSString).deletingLastPathComponent
+        var parent = parentPath(of: path)
         while !parent.isEmpty && parent != "/" {
             if retainedByPath[parent] != nil { return parent }
-            let next = (parent as NSString).deletingLastPathComponent
+            let next = parentPath(of: parent)
             if next == parent { break }
             parent = next
         }
         return retainedByPath["/"] == nil ? nil : "/"
+    }
+
+    private static func parentPath(of path: String) -> String {
+        guard let slash = path.lastIndex(of: "/") else { return "" }
+        if slash == path.startIndex { return "/" }
+        return String(path[..<slash])
     }
 
     private static func mergeContained(ancestor: SmartCareCandidate,
@@ -651,8 +657,9 @@ public enum SmartCareSummaryBuilder {
 
     private static func normalizedCandidate(_ candidate: SmartCareCandidate) -> SmartCareCandidate {
         let path = normalizePath(candidate.path)
-        let title = firstNonEmpty(candidate.title) ?? (path as NSString).lastPathComponent
-        let titlePresentation = firstNonEmpty(candidate.title) == nil
+        let explicitTitle = firstNonEmpty(candidate.title)
+        let title = explicitTitle ?? lastPathComponent(of: path)
+        let titlePresentation = explicitTitle == nil
             ? LocalizedTextDescriptor.verbatim(title)
             : candidate.titlePresentation
         return SmartCareCandidate(
@@ -672,9 +679,39 @@ public enum SmartCareSummaryBuilder {
         )
     }
 
+    private static func lastPathComponent(of path: String) -> String {
+        guard !path.isEmpty else { return "" }
+        if path == "/" { return "/" }
+        guard let slash = path.lastIndex(of: "/") else { return path }
+        return String(path[path.index(after: slash)...])
+    }
+
     private static func normalizePath(_ path: String) -> String {
         guard !path.isEmpty else { return "" }
+        if isAlreadyCanonicalPath(path) {
+            return path
+        }
         return URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+
+    private static func isAlreadyCanonicalPath(_ path: String) -> Bool {
+        let utf8 = path.utf8
+        guard let first = utf8.first, first == 47 else { return false } // '/'
+        if utf8.count > 1, utf8.last == 47 { return false }
+        if path.hasPrefix("/private/") || path.hasPrefix("/var/") || path.hasPrefix("/tmp/") || path.hasPrefix("/etc/") {
+            return false
+        }
+        var prevByte: UInt8 = 0
+        var prevPrevByte: UInt8 = 0
+        for byte in utf8 {
+            if byte == 47 && prevByte == 47 { return false } // "//"
+            if byte == 47 && prevByte == 46 && prevPrevByte == 47 { return false } // "/./"
+            if byte == 46 && prevByte == 46 && prevPrevByte == 47 { return false } // "/.."
+            prevPrevByte = prevByte
+            prevByte = byte
+        }
+        if prevByte == 46 && prevPrevByte == 47 { return false } // trailing "/."
+        return true
     }
 
     /// 对称的组件边界 overlap 索引：

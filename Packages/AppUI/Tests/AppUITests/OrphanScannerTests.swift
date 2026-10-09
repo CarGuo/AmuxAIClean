@@ -93,6 +93,7 @@ final class OrphanScannerTests: XCTestCase {
         XCTAssertEqual(OrphanScanner.stemOf("com.foo.bar"), "com.foo.bar")
         XCTAssertEqual(OrphanScanner.stemOf("Spotify.savedState"), "Spotify")
         XCTAssertEqual(OrphanScanner.stemOf("foo.lock"), "foo")
+        XCTAssertEqual(OrphanScanner.stemOf("com.spotify.client.ShipIt"), "com.spotify.client")
     }
 
     // MARK: - 3. 注册过的 bundleID 不当 orphan

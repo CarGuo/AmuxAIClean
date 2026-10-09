@@ -1201,11 +1201,20 @@ public struct DuplicateScreen: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private static func normalizeRootURL(_ raw: URL) -> URL {
+        let rawPath = raw.path
+        let standardized = raw.standardizedFileURL.path
+        if rawPath.hasPrefix("/private/"), !standardized.hasPrefix("/private/") {
+            return URL(fileURLWithPath: "/private" + standardized, isDirectory: raw.hasDirectoryPath)
+        }
+        return raw.standardizedFileURL
+    }
+
     private func handleRootImport(_ result: Result<[URL], any Error>) {
         switch result {
         case .success(let urls):
             for raw in urls {
-                let url = raw.standardizedFileURL
+                let url = Self.normalizeRootURL(raw)
                 if !roots.contains(url) {
                     roots.append(url)
                 }
@@ -1527,10 +1536,10 @@ public struct DuplicateScreen: View {
                     Set(succeededPaths), expectedSessionID: submission.request.scanSessionID
                 )
                 Task.detached(priority: .utility) { [releasedBytes, succeededPaths] in
-                    await HeuristicRecorder().recordTrashed(paths: succeededPaths)
+                    await HeuristicRecorder.shared.recordTrashed(paths: succeededPaths)
                     if releasedBytes > 0 {
-                        await CleanStatsStore.shared.record(
-                            bytesReclaimed: releasedBytes,
+                        await CleanStatsStore.shared.recordTrashed(
+                            bytesTrashed: releasedBytes,
                             category: "duplicate"
                         )
                     }
@@ -1642,7 +1651,7 @@ public struct DuplicateScreen: View {
 
     private func recordIncompleteIssue(_ issue: ScanIncompleteIssue) {
         let normalized = ScanIncompleteIssue(
-            path: URL(fileURLWithPath: issue.path).standardizedFileURL.path,
+            path: Self.normalizeRootURL(URL(fileURLWithPath: issue.path)).path,
             reason: issue.reason,
             stage: issue.stage,
             posixErrorCode: issue.posixErrorCode
@@ -2028,6 +2037,9 @@ enum DuplicateHandlingPlan {
     static func keepNewestDeleteTargets(for group: DuplicateGroup) -> [String] {
         guard isExecutableGroup(group),
               let newest = group.files.max(by: { lhs, rhs in
+                  let lHardlink = lhs.nlink > 1
+                  let rHardlink = rhs.nlink > 1
+                  if lHardlink != rHardlink { return !lHardlink && rHardlink }
                   let lSec = lhs.snapshotIdentity?.modificationSeconds ?? .min
                   let rSec = rhs.snapshotIdentity?.modificationSeconds ?? .min
                   if lSec != rSec { return lSec < rSec }

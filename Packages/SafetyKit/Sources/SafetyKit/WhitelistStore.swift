@@ -212,6 +212,16 @@ public actor WhitelistStore {
         var current = stripped
         var trailingComponents: [String] = []
         while current != "/" && !current.isEmpty && !fm.fileExists(atPath: current) {
+            var st = stat()
+            if Darwin.lstat(current, &st) == 0, (st.st_mode & S_IFMT) == S_IFLNK,
+               let destination = try? fm.destinationOfSymbolicLink(atPath: current) {
+                let parent = (current as NSString).deletingLastPathComponent
+                let resolvedTarget = destination.hasPrefix("/")
+                    ? destination
+                    : (parent as NSString).appendingPathComponent(destination)
+                current = normalize(resolvedTarget)
+                continue
+            }
             let ns = current as NSString
             let last = ns.lastPathComponent
             if !last.isEmpty && last != "/" {
