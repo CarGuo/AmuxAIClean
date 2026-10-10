@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import SafetyKit
 import XCTest
@@ -7,6 +8,72 @@ import XCTest
 // safety audit without weakening its assertions. All files and recovery stores are
 // UUID-owned temporary fixtures; real recycle fixtures are identity-checked and restored.
 final class SafetyReviewRegressionTests: XCTestCase {
+    // v2026.10.10: real ledger reservations use execution aliases; all review proofs must
+    // compare object identity across that boundary without rewriting the policy namespace.
+    func test_physicalReviewProofsJoinRealLedgerAndStillRejectReplacement() async throws {
+        let root = try fixture()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: root)) }
+        let target = root.appendingPathComponent("reviewed")
+        try Data([1]).write(to: target)
+        let pointer = try XCTUnwrap(target.path.withCString { realpath($0, nil) })
+        let physical = String(cString: pointer)
+        free(pointer)
+        let execution = TrashPipeline.normalizePath(physical)
+        XCTAssertNotEqual(physical, execution)
+        let original = try identity(target)
+        let birthSeconds = try XCTUnwrap(original.birthTimeSeconds)
+        let birthNanoseconds = try XCTUnwrap(original.birthTimeNanoseconds)
+        let generation = try XCTUnwrap(original.generation)
+        guard case .ready(let reviewed) = await ReviewedDeletionObjects.capture(
+            paths: [physical], expectedIdentities: [:]
+        ) else { return XCTFail("Physical fixture must be reviewable") }
+        let uninstall = try XCTUnwrap(UninstallCandidateVerificationRequest(candidates: [
+            .init(path: physical, bytes: 1, fileCount: 1, objectIdentity: original,
+                  matchReason: .bundleID("com.example.review"))
+        ]))
+        let incomplete = ScanIncompleteOverrideRequest(scanSessionID: UUID(), entries: [
+            .init(candidateID: UUID(), path: physical, title: "reviewed", isDirectory: false,
+                  bytes: 1, fileCount: 1, snapshotVerdict: .safe, snapshotRejectionRawValue: "ok",
+                  identity: .init(device: original.device, inode: original.inode,
+                                  fileType: original.fileType,
+                                  birthTimeSeconds: birthSeconds,
+                                  birthTimeNanoseconds: birthNanoseconds,
+                                  generation: generation, resolvedPath: execution),
+                  incompleteIssues: [])
+        ])
+        let ledger = PersistentTrashPendingOperationLedger(
+            fileURL: root.appendingPathComponent("ledger.json"),
+            activeOperationRegistry: TrashActiveOperationRegistry()
+        )
+        let operation = UUID()
+        defer { XCTAssertTrue(ledger.finish(operationID: operation, retainingPendingPaths: [])) }
+        guard case .reserved(let paths, _) = ledger.reserve(paths: [physical], operationID: operation)
+        else { return XCTFail("Real ledger reservation must succeed") }
+        XCTAssertEqual(paths, [execution])
+        let frozen = try XCTUnwrap(ledger.frozenIdentities(paths: paths, operationID: operation))
+        XCTAssertEqual(reviewed.changedPaths(comparedTo: frozen), [])
+        XCTAssertEqual(uninstall.changedPaths(comparedTo: frozen), [])
+        XCTAssertEqual(incomplete.changedPaths(comparedTo: frozen), [])
+        XCTAssertTrue(reviewed.matchesExactTargets([physical]))
+        XCTAssertFalse(reviewed.matchesExactTargets([execution]))
+        guard case .ready(let duplicateAliases) = await ReviewedDeletionObjects.capture(
+            paths: [physical, execution], expectedIdentities: [:]
+        ) else { return XCTFail("Both spellings must name the owned fixture") }
+        XCTAssertEqual(duplicateAliases.changedPaths(comparedTo: frozen), [execution])
+
+        try FileManager.default.moveItem(at: target, to: root.appendingPathComponent("original"))
+        try Data([2]).write(to: target)
+        let replacement = [execution: try identity(target)]
+        XCTAssertEqual(reviewed.changedPaths(comparedTo: replacement), [execution])
+        XCTAssertEqual(uninstall.changedPaths(comparedTo: replacement), [execution])
+        XCTAssertEqual(incomplete.changedPaths(comparedTo: replacement), [execution])
+        guard case .rejected(let rejection, _) = ledger.claim(
+            paths: paths, operationID: operation, attemptID: UUID()
+        ) else { return XCTFail("Ledger claim must still reject the replacement") }
+        XCTAssertEqual(rejection.reasonsByPath[execution], .freshReviewRequired)
+        XCTAssertEqual(try Data(contentsOf: target), Data([2]))
+    }
+
     private func fixture() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("GSYSafetyReview-\(UUID().uuidString)", isDirectory: true)

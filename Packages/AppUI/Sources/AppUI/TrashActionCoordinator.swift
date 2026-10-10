@@ -367,21 +367,30 @@ struct TrashActionCoordinator {
         case .preSubmitRejected(let rejection):
             return .preSubmitRejected(rejection)
         case .recycleCompleted(let completion):
-            guard TrashCompletionAccountingValidator.isValid(
-                completion,
-                requestedPaths: paths
-            ) else {
+            // v2026.10.10: validate execution identities once, then project every result back
+            // into the authorized namespace before receipts, Undo projection and notifications.
+            let selectedCompletion = await Task.detached(priority: .userInitiated) {
+                guard TrashCompletionAccountingValidator.isValid(completion, requestedPaths: paths),
+                      let identity = DeletionExecutionIdentity(selectedPaths: paths) else { return nil as TrashRecycleCompletion? }
+                do {
+                    return try identity.project(completion)
+                } catch {
+                    GSYLog.error(.trash, "recycle completion namespace projection failed: \(error)")
+                    return nil
+                }
+            }.value
+            guard let selectedCompletion else {
                 GSYLog.error(.trash, "拒绝不一致的 recycle completion requested=\(paths.count) attempted=\(completion.attemptedPaths.count)")
                 return .preSubmitRejected(.unsupportedPipeline)
             }
             let result = await finalizeRecycleCompletion(
-                completion,
+                selectedCompletion,
                 source: source
             )
             return .recycleCompleted(CompletedSubmission(
                 receipt: SubmissionReceipt(
                     id: submissionID,
-                    submittedPaths: completion.attemptedPaths,
+                    submittedPaths: selectedCompletion.attemptedPaths,
                     submittedAt: submittedAt
                 ),
                 result: result

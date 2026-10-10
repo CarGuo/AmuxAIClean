@@ -95,14 +95,10 @@ public struct ScanIncompleteOverrideRequest: Sendable, Hashable {
     }
 
     func changedPaths(comparedTo current: [String: TrashObjectIdentity]) -> [String] {
-        entries.compactMap { entry in
-            let normalized = TrashPipeline.normalizePath(entry.path)
-            guard let observed = current[normalized] ?? current[entry.path],
-                  entry.identity.trashObjectIdentity.matches(observed) else {
-                return normalized
-            }
-            return nil
-        }.sorted()
+        DeletionExecutionIdentity.changedPaths(
+            expected: entries.map { (path: $0.path, identity: $0.identity.trashObjectIdentity) },
+            reserved: current
+        )
     }
 }
 

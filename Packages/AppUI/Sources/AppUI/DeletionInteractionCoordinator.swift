@@ -483,15 +483,10 @@ struct DeletionInteractionCoordinator {
 
         switch submission {
         case .recycleCompleted(let submission):
-            // v2026.07.16：系统回收回调超时后，执行层会停止后续批次。此时真正提交的
-            // 路径可以是授权集合的严格子集，但 outcome 必须精确证明 pending 与未提交
-            // 的边界；缺失、重叠或越权都 fail closed，不能伪造成完成结果。
-            guard submissionAccountsForAuthorization(
-                submission,
-                authorizedPaths: authorization.paths
-            ) else {
-                return .blocked(invariantBlock(intent: intent))
-            }
+            // v2026.10.10: the opaque CompletedSubmission is minted only after the action
+            // coordinator validates the exact authorization partition before side effects.
+            // Revalidating it here in a different namespace used to block an already moved
+            // object. Receipts/outcomes now carry the authorized namespace from that boundary.
             let receipt = DeletionSubmissionReceipt(
                 id: submission.receipt.id,
                 authorizationID: authorization.id,
@@ -563,44 +558,6 @@ struct DeletionInteractionCoordinator {
              .preSubmitRejected(.unsupportedPipeline):
             return .blocked(invariantBlock(intent: intent))
         }
-    }
-
-    private func submissionAccountsForAuthorization(
-        _ submission: TrashActionCoordinator.CompletedSubmission,
-        authorizedPaths: [String]
-    ) -> Bool {
-        let authorized = normalizedPaths(authorizedPaths)
-        let attempted = normalizedPaths(submission.attemptedPaths)
-        let authorizedSet = Set(authorized)
-        let attemptedSet = Set(attempted)
-
-        guard authorizedSet.count == authorized.count,
-              attemptedSet.count == attempted.count,
-              !attempted.isEmpty,
-              attemptedSet.isSubset(of: authorizedSet) else { return false }
-
-        let hasUnknownBoundary = !(submission.outcome?.pendingPaths.isEmpty ?? true)
-            || !(submission.outcome?.submissionUnknownPaths.isEmpty ?? true)
-            || !(submission.outcome?.notSubmittedPaths.isEmpty ?? true)
-        if attemptedSet == authorizedSet, !hasUnknownBoundary {
-            return true
-        }
-
-        guard let outcome = submission.outcome else { return false }
-        let moved = Set(normalizedPaths(outcome.movedPairs.map(\.originalPath)))
-        let failed = Set(normalizedPaths(outcome.failedPaths))
-        let pending = Set(normalizedPaths(outcome.pendingPaths))
-        let submissionUnknown = Set(normalizedPaths(outcome.submissionUnknownPaths))
-        let notSubmitted = Set(normalizedPaths(outcome.notSubmittedPaths))
-        guard moved.isDisjoint(with: failed),
-              moved.isDisjoint(with: pending),
-              moved.isDisjoint(with: submissionUnknown),
-              failed.isDisjoint(with: pending),
-              failed.isDisjoint(with: submissionUnknown),
-              pending.isDisjoint(with: submissionUnknown),
-              moved.union(failed).union(pending).union(submissionUnknown) == attemptedSet,
-              notSubmitted == authorizedSet.subtracting(attemptedSet) else { return false }
-        return true
     }
 
     private func preparation(

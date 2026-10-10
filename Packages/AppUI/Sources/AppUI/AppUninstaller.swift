@@ -262,12 +262,9 @@ public struct UninstallCandidateVerificationRequest: Sendable, Equatable {
     /// The ledger rechecks this same identity beside every concrete AppKit claim, closing later
     /// replacement windows without duplicating filesystem policy here.
     func changedPaths(comparedTo current: [String: TrashObjectIdentity]) -> [String] {
-        entries.compactMap { entry in
-            guard let observed = current[entry.path], entry.identity.matches(observed) else {
-                return entry.path
-            }
-            return nil
-        }
+        DeletionExecutionIdentity.changedPaths(
+            expected: entries.map { (path: $0.path, identity: $0.identity) }, reserved: current
+        )
     }
 }
 

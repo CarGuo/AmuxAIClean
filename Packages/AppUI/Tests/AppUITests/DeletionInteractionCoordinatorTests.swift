@@ -5,6 +5,78 @@ import XCTest
 @testable import AppUI
 
 final class DeletionInteractionCoordinatorTests: XCTestCase {
+    // v2026.10.10: a canonical ledger completion must return to the exact selected
+    // namespace, including pending/not-submitted partitions and their typed reasons.
+    @MainActor
+    func test_physicalIntentConsumesCanonicalCompletionInSelectedNamespace() async throws {
+        let a = "/private/tmp/review-\(UUID().uuidString)/one"
+        let b = "/private/tmp/review-\(UUID().uuidString)/two"
+        let executionA = TrashPipeline.normalizePath(a)
+        let executionB = TrashPipeline.normalizePath(b)
+        let outcomes = [
+            TrashOutcome(movedPairs: [], failedPaths: [executionA, executionB],
+                         safetyRejected: [], missingPaths: [],
+                         failureReasons: [executionA: "fixture error"]),
+            TrashOutcome(movedPairs: [], failedPaths: [], pendingPaths: [executionA],
+                         notSubmittedPaths: [executionB],
+                         notSubmittedReasons: [executionB: .priorOperationPending],
+                         safetyRejected: [], missingPaths: []),
+            TrashOutcome(movedPairs: [(executionA, "/tmp/fixture-trash/one")],
+                         failedPaths: [executionB], safetyRejected: [], missingPaths: [],
+                         failureReasons: [executionB: "fixture error"],
+                         failureSummary: .recycleFailed(failedCount: 1, movedCount: 1,
+                                                        firstPath: executionB))
+        ]
+        for outcome in outcomes {
+            let attempted = outcome.movedPairs.map(\.originalPath) + outcome.failedPaths + outcome.pendingPaths
+            let state = PipelineState(
+                preflights: [.init(allowedPaths: [a, b], rejections: [])],
+                submissions: [.recycleCompleted(.init(
+                    attemptedPaths: attempted,
+                    legacy: (outcome.movedPairs.count, 2 - outcome.movedPairs.count, "fixture",
+                             outcome.movedPairs.map { ($0.originalPath, $0.trashedPath) }),
+                    outcome: outcome
+                ))]
+            )
+            let coordinator = makeCoordinator(state: state)
+            let revision = DeletionSnapshotIdentity(sessionID: UUID(), revision: 1)
+            let intent = try coordinator.makeIntent(
+                origin: .tree, mode: .professional, snapshotIdentity: revision,
+                candidates: [candidate(a), candidate(b)]
+            )
+            guard case .confirmation(let prepared) = await coordinator.prepare(
+                intent: intent, currentSnapshotIdentity: revision
+            ), case .authorized(let authorized) = coordinator.authorize(
+                prepared: prepared, executionPlan: .init(paths: [a, b], runningAppSkipped: [])
+            ) else { return XCTFail("Physical request must retain its authorization") }
+            guard case .completed(let completed) = await coordinator.submit(
+                authorized, accessDeniedPaths: []
+            ) else { return XCTFail("Canonical completion is the same authorized operation") }
+            if !outcome.pendingPaths.isEmpty {
+                XCTAssertEqual(completed.receipt.submittedPaths, [a])
+                XCTAssertEqual(completed.trashSubmission.outcome?.pendingPaths, [a])
+                XCTAssertEqual(completed.trashSubmission.outcome?.notSubmittedPaths, [b])
+                XCTAssertEqual(completed.trashSubmission.outcome?.notSubmittedReasons,
+                               [b: .priorOperationPending])
+            } else if outcome.movedPairs.isEmpty {
+                XCTAssertEqual(completed.receipt.submittedPaths, [a, b])
+                XCTAssertEqual(completed.trashSubmission.outcome?.failedPaths, [a, b])
+                XCTAssertEqual(completed.trashSubmission.outcome?.failureReasons, [a: "fixture error"])
+            } else {
+                XCTAssertEqual(completed.receipt.submittedPaths, [a, b])
+                XCTAssertEqual(completed.trashSubmission.result.succeededPaths, [a])
+                XCTAssertEqual(completed.trashSubmission.pairs.first?.0, a)
+                XCTAssertEqual(completed.trashSubmission.pairs.first?.1, "/tmp/fixture-trash/one")
+                XCTAssertEqual(completed.trashSubmission.outcome?.failedPaths, [b])
+                XCTAssertEqual(completed.trashSubmission.outcome?.failureReasons, [b: "fixture error"])
+                XCTAssertEqual(completed.trashSubmission.outcome?.failureSummary,
+                               .recycleFailed(failedCount: 1, movedCount: 1, firstPath: b))
+            }
+            let calls = await state.snapshot()
+            XCTAssertEqual(calls.submission, 1)
+        }
+    }
+
     private actor PipelineState {
         private var preflights: [DeletionPreflight]
         private var submissions: [TrashSubmissionDisposition]

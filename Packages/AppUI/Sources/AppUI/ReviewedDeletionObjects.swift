@@ -27,10 +27,9 @@ public struct ReviewedDeletionObjects: Sendable, Equatable, Hashable {
     }
 
     func changedPaths(comparedTo current: [String: TrashObjectIdentity]) -> [String] {
-        identitiesByPath.compactMap { path, expected in
-            guard let observed = current[path], expected.matches(observed) else { return path }
-            return nil
-        }.sorted()
+        DeletionExecutionIdentity.changedPaths(
+            expected: identitiesByPath.map { (path: $0.key, identity: $0.value) }, reserved: current
+        )
     }
 
     static func capture(

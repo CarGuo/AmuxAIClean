@@ -68,7 +68,7 @@ xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Deb
 
 - Swift 6 并发问题必须通过 actor/隔离修正；禁止用无说明的 `@unchecked Sendable`。业务错误不得用 `try?` 静默吞掉；明确的 best-effort cleanup 必须写明原因。
 - UI 和必须主线程的 API 之外，扫描、排序、规则计算和文件遍历必须后台执行。扫描期禁止在主线程重建大列表、重算 verdict 或 materialize partial tree。
-- 禁止用局部硬编码或兜底掩盖共享根因；修复应落在共同数据边界/状态合同，并有防回归测试。
+- 修复前必须追溯问题的历史产生原因、原始需求与相关入口；在共同数据边界或状态合同上全局根治，验证覆盖受同一机制影响的入口。禁止局部缝补、硬编码或兜底掩盖根因。
 - 所有用户可见文案先进入 String Catalog，并同时提供 `zh-Hans`、`en`；禁止局部硬编码。
 - 用户可见错误必须经过类型化 presentation 和本地化；raw Error、Swift enum、`file:///`、percent encoding、errno 只能进入结构化日志或技术详情。
 - 用户可见异步流程必须收敛到明确终态并绑定发起 revision，旧任务不得覆盖新页面。
