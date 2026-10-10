@@ -519,6 +519,10 @@ public struct MainView: View {
     @StateObject private var storageAnalysis: StorageAnalysisStore
     @State private var normalSection: NormalWorkspaceSection = .analyze
     @State private var normalToolIsBusy = false
+    @State private var isUserGuidePresented = false
+    @State private var userGuideInitialPage: UserGuidePage = .normalMode
+    @State private var hasEvaluatedInitialUserGuide = false
+    @State private var pendingUserGuideTargetMode: SmartCareInterfaceMode? = nil
     @State private var smartCareSheetRoute: SmartCareSheetRoute?
     /// v2026.07.20：仅普通模式首次启用开发缓存时占用。确认前不修改选择，
     /// 取消后仍保持未选中，避免提示状态与实际扫描计划分叉。
@@ -1075,6 +1079,19 @@ public struct MainView: View {
                 onDismiss: { deleteResultCompletion = nil }
             )
         }
+        .localizedSheet(
+            isPresented: $isUserGuidePresented,
+            onDismiss: finishUserGuideDismissal
+        ) {
+            UserGuideView(
+                initialPage: userGuideInitialPage,
+                currentInterfaceMode: interfaceMode,
+                onDismiss: { targetMode in
+                    pendingUserGuideTargetMode = targetMode
+                    isUserGuidePresented = false
+                }
+            )
+        }
         .operationSuccessFeedbackOverlay($deleteSuccessFeedback)
         // v2026.07.20 P0: pre-submit feedback floats above results instead of becoming a second
         // top banner beside the independent scan-permission banner. It does not change split-view
@@ -1137,6 +1154,10 @@ public struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: .gsyOpenMainWindowRequested)) { _ in
             ensureMainWindowFocused()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .gsyOpenUserGuideRequested)) { _ in
+            ensureMainWindowFocused()
+            presentUserGuide(trigger: .manual)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .gsyTrashPendingLedgerDidInvalidate)) { _ in
             storageAnalysis.invalidateAfterExternalChange()
         }
@@ -1179,6 +1200,7 @@ public struct MainView: View {
             // 所有 modal 共用 occupancy 边沿；当前 presentation 真正消失后再继续消费
             // Sentinel FIFO。调度器内部还会 yield 一轮，避免和 AppKit dismiss 动画竞争。
             if !isBusy {
+                evaluateInitialUserGuideIfNeeded()
                 schedulePendingSentinelPresentationIfPossible()
             }
         }
@@ -1203,6 +1225,7 @@ public struct MainView: View {
         .task {
             // v1.3：主列表排序键同样在启动时同步，避免持久化值与 coordinator 默认值不一致。
             coordinator.mainListSortKey = settings.mainListSortKey
+            evaluateInitialUserGuideIfNeeded()
             let snapshots = await pathStore.snapshots()
             for await urls in snapshots {
                 guard !Task.isCancelled else { return }
@@ -1437,6 +1460,7 @@ public struct MainView: View {
             smartCareIsPresented = true
         }
         return smartCareIsPresented
+            || isUserGuidePresented
             || normalToolIsBusy
             || professionalDeletePresentationHandoff.isAwaitingSheetDismissal
             || aiAskingRow != nil
@@ -1449,6 +1473,46 @@ public struct MainView: View {
             || sentinelScanInvitationVisible
             || showSwitchCategoryConfirm
             || showSmartCareDeveloperCacheWarning
+    }
+
+    private static var isRunningUnderTests: Bool {
+        NSClassFromString("XCTestCase") != nil
+            || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+
+    private func evaluateInitialUserGuideIfNeeded() {
+        guard !hasEvaluatedInitialUserGuide,
+              !hasConflictingMainModalPresentation else { return }
+        let shouldPresent = UserGuidePresentationPolicy.shouldAutoPresentOnLaunch(
+            userGuideCompleted: settings.userGuideCompleted,
+            hasEvaluatedInitialUserGuide: hasEvaluatedInitialUserGuide,
+            hasConflictingModal: hasConflictingMainModalPresentation,
+            isRunningTests: Self.isRunningUnderTests
+        )
+        hasEvaluatedInitialUserGuide = true
+        guard shouldPresent else { return }
+        presentUserGuide(trigger: .automaticFirstLaunch)
+    }
+
+    private func presentUserGuide(trigger: UserGuidePresentationTrigger) {
+        guard !hasConflictingMainModalPresentation else { return }
+        userGuideInitialPage = UserGuidePresentationPolicy.initialPage(
+            for: interfaceMode,
+            trigger: trigger
+        )
+        isUserGuidePresented = true
+    }
+
+    private func finishUserGuideDismissal() {
+        if !settings.userGuideCompleted {
+            settings.userGuideCompleted = true
+        }
+        if let targetMode = pendingUserGuideTargetMode {
+            pendingUserGuideTargetMode = nil
+            if !isPreparingDeletion, !isDeleting, !normalToolIsBusy {
+                transitionInterfaceMode(to: targetMode)
+            }
+        }
     }
 
     /// Sentinel 事件只入队，并在窗口真正空闲后的下一次 MainActor 调度机会消费。这样既不会在
@@ -3792,6 +3856,24 @@ public struct MainView: View {
                     .accessibilityIdentifier("main.scan-control")
             }
         }
+        ToolbarItem(placement: .primaryAction) {
+            userGuideToolbarButton
+        }
+    }
+
+    private var userGuideToolbarButton: some View {
+        Button {
+            presentUserGuide(trigger: .manual)
+        } label: {
+            Label {
+                Text("toolbar.user_guide.title", bundle: .module)
+            } icon: {
+                Image(systemName: "questionmark.circle")
+            }
+        }
+        .help(AppLocalization.string("toolbar.user_guide.help", locale: locale))
+        .disabled(hasConflictingMainModalPresentation)
+        .accessibilityIdentifier("main.user-guide")
     }
 
     private var mainToolbarBrand: some View {

@@ -276,7 +276,9 @@ struct GSYCleanMacApp: App {
                 // tooltip、托盘与主菜单分别由 environment + applyLiveLocale 即时刷新。
                 settings.applyToAppleLanguagesIfNeeded()
                 applyLiveLocale()
-                await evaluateTCCOnboarding()
+                if settings.userGuideCompleted {
+                    await evaluateTCCOnboarding()
+                }
                 // v1.1：尊重 settings.updateCheckEnabled 决定是否联网；用户可在设置里关
                 updateChecker.checkOnLaunch()
                 // v1.3：把 coordinator + settings 注入 HUD，订阅 isScanning 自动开关 panel
@@ -380,6 +382,13 @@ struct GSYCleanMacApp: App {
                 // v2026.07.15：String 型 tooltip / tray NSMenu / application main menu
                 // 不读取 SwiftUI environment；统一刷新其显式 locale 边界。
                 applyLiveLocale()
+            }
+            .onValueChange(of: settings.userGuideCompleted) { _, completed in
+                guard completed else { return }
+                Task {
+                    await Task.yield()
+                    await evaluateTCCOnboarding()
+                }
             }
             .onOpenURL { url in
                 // v1.6：用户态 Agent 通过 `amuxaiclean://` 把候选传回主 App。
@@ -668,6 +677,12 @@ struct GSYCleanMacApp: App {
         }
     }
 
+    @MainActor
+    fileprivate static func openUserGuide() {
+        bringMainWindowToFront()
+        NotificationCenter.default.post(name: .gsyOpenUserGuideRequested, object: nil)
+    }
+
     /// v1.5.7：Help 菜单统一的外链跳转入口。
     /// 只允许 https，避免后续被改成 file:// / shell: 等危险 scheme。
     ///
@@ -783,6 +798,9 @@ private struct GSYCleanCommands: Commands {
         }
         // v1.5.7：替换 SwiftUI 默认的占位 Help 菜单，提供生产级帮助入口。
         CommandGroup(replacing: .help) {
+            Button(AppLocalization.string("menu.help.userGuide", locale: locale)) {
+                GSYCleanMacApp.openUserGuide()
+            }
             Button(AppLocalization.string("menu.help.help", locale: locale)) {
                 GSYCleanMacApp.openExternal("https://github.com/CarGuo/GSYCleanMac#readme")
             }

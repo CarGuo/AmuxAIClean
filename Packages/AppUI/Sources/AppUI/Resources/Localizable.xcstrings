@@ -22858,6 +22858,1417 @@
           }
         }
       }
+    },
+    "menu.help.userGuide": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "User Guide…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新用户指引…"
+          }
+        }
+      }
+    },
+    "toolbar.user_guide.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "User Guide"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新用户指引"
+          }
+        }
+      }
+    },
+    "toolbar.user_guide.help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open the feature walkthrough for Normal Mode and Professional Mode"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看普通模式与专业模式的功能与操作指引"
+          }
+        }
+      }
+    },
+    "user_guide.header.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Welcome to GSYCleanMac"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "欢迎使用 GSYCleanMac — 新用户指引"
+          }
+        }
+      }
+    },
+    "user_guide.header.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start with guided Normal Mode or switch to Professional Mode for fine-grained control and batch cleanup"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "普通模式提供省心的一站式体检与清理；专业模式支持多层目录钻取、直接移入废纸篓、批量勾选与跨目录待处理"
+          }
+        }
+      }
+    },
+    "user_guide.action.close": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close user guide"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭新用户指引"
+          }
+        }
+      }
+    },
+    "user_guide.action.skip": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skip Guide"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "跳过指引"
+          }
+        }
+      }
+    },
+    "user_guide.action.previous": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Previous"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一步"
+          }
+        }
+      }
+    },
+    "user_guide.action.next": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下一步"
+          }
+        }
+      }
+    },
+    "user_guide.action.finish": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成指引"
+          }
+        }
+      }
+    },
+    "user_guide.action.try_professional": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switch to Professional Mode"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "立即进入专业模式"
+          }
+        }
+      }
+    },
+    "user_guide.action.try_normal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switch to Normal Mode"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "切换到普通模式"
+          }
+        }
+      }
+    },
+    "user_guide.step.counter %lld %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Step %1$lld of %2$lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "第 %1$lld / %2$lld 步"
+          }
+        }
+      }
+    },
+    "user_guide.page.normal.tab": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Normal Mode"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "普通模式速览"
+          }
+        }
+      }
+    },
+    "user_guide.page.normal.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Four Daily Workspaces in Normal Mode"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "普通模式：四大日常清理与诊断入口"
+          }
+        }
+      }
+    },
+    "user_guide.page.normal.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Designed for everyday maintenance with safe defaults, guided cleanup previews, and full Trash recovery."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认启用普通模式，聚焦日常空间分析、智能一键清理、应用与系统优化，以及本机状态与撤销记录。"
+          }
+        }
+      }
+    },
+    "user_guide.page.normal.tip": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tip: Use the mode switch at the top-left of the window anytime to toggle between Normal Mode and Professional Mode."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "提示：随时可通过窗口左上角的「普通 / 专业」切换器在两种模式之间自由切换。"
+          }
+        }
+      }
+    },
+    "user_guide.page.pro_nav.tab": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pro Navigation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "专业模式 · 导航与视图"
+          }
+        }
+      }
+    },
+    "user_guide.page.pro_nav.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Multi-Root Scanning, Tree Drill-Down & Safety Tiers"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "专业模式（一）：全量分类扫描、树形下钻与三档安全徽标"
+          }
+        }
+      }
+    },
+    "user_guide.page.pro_nav.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inspect every cache root, ~/Library subfolder, or custom directory with Tree and List views backed by SafetyEngine."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "面向开发者与进阶用户，提供完整侧边栏分类、树形/清单双视图切换、顶部路径直达及三档安全评估。"
+          }
+        }
+      }
+    },
+    "user_guide.page.pro_nav.tip": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tip: Press Return in the top path bar with / for a full-disk scan, or drag any folder into the window to add a custom scan root."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "提示：在顶部路径栏输入 / 回车可发起整盘扫描；也可直接把 Finder 文件夹拖入主窗口添加自定义扫描目录。"
+          }
+        }
+      }
+    },
+    "user_guide.page.pro_delete.tab": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pro Cleanup"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "专业模式 · 清理方式"
+          }
+        }
+      }
+    },
+    "user_guide.page.pro_delete.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Three Ways to Clean in Professional Mode"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "专业模式（二）：单条直删、勾选一批清理与跨目录「待处理」"
+          }
+        }
+      }
+    },
+    "user_guide.page.pro_delete.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Whether you want to trash a single folder immediately, select a batch of items, or collect folders across directories, every action goes safely to the macOS Trash."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "支持在树形视图直接删除单条目录、在清单或大文件视图勾选一批后集中清理，或跨目录加入「待处理」统一清理。"
+          }
+        }
+      }
+    },
+    "user_guide.page.pro_delete.tip": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tip: Every cleanup action uses NSWorkspace.recycle to move items to the system Trash—never permanent unlink—and records an undo receipt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "提示：所有清理均通过 NSWorkspace.recycle 移入系统废纸篓，绝不直接永久抹除，并自动写入撤销历史。"
+          }
+        }
+      }
+    },
+    "user_guide.page.pro_tools.tab": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pro Toolbox"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "专业模式 · 进阶工具"
+          }
+        }
+      }
+    },
+    "user_guide.page.pro_tools.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Developer Workflows, Deep Uninstaller & Runtime Tools"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "专业模式（三）：开发者工作流、深度卸载与运行态工具箱"
+          }
+        }
+      }
+    },
+    "user_guide.page.pro_tools.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dedicated cleanup workflows for Apple, Android, Web, and Backend toolchains, plus app residue removal, duplicate scanning, port inspection, and AI advice."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内置四大技术栈清理流、应用完整卸载、重复文件去重、端口与孤儿进程清理，以及可选 AI 顾问与常驻灵动岛。"
+          }
+        }
+      }
+    },
+    "user_guide.page.pro_tools.tip": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tip: You can reopen this guide anytime from the ? button in the toolbar or from Help → User Guide in the menu bar."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "提示：后续随时可点击窗口右上角工具栏的「?」按钮，或通过顶部菜单「帮助 → 新用户指引」再次打开本向导。"
+          }
+        }
+      }
+    },
+    "user_guide.badge.scan_entry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan Roots"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描入口"
+          }
+        }
+      }
+    },
+    "user_guide.badge.safety": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "3-Tier Gate"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "三档安全闸"
+          }
+        }
+      }
+    },
+    "user_guide.badge.direct_trash": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Direct Trash"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "单条直删"
+          }
+        }
+      }
+    },
+    "user_guide.badge.batch_clean": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Batch Select"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "批量勾选"
+          }
+        }
+      }
+    },
+    "user_guide.badge.stash_clean": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cross-Folder Cart"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "跨目录待处理"
+          }
+        }
+      }
+    },
+    "user_guide.badge.safe_recycle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "System Trash"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "废纸篓保障"
+          }
+        }
+      }
+    },
+    "user_guide.normal.card.analyze.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Storage Map & Visual Drill-Down"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "空间地图：可视化容量下钻"
+          }
+        }
+      }
+    },
+    "user_guide.normal.card.analyze.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Visualize home directory usage with an interactive proportional map. Click folders to drill down, inspect details on the right, or stage items for cleanup."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "以可视化色块地图展示个人目录空间分布，点击色块逐级下钻定位占用大户，右侧直接查看属性或加入清理列表。"
+          }
+        }
+      }
+    },
+    "user_guide.normal.card.analyze.flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Normal Mode → Space Map → Scan → Click blocks to drill down"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "普通模式 → 空间地图 → 扫描 → 点击色块逐级下钻"
+          }
+        }
+      }
+    },
+    "user_guide.normal.card.clean.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Smart Care One-Click Scan & Clean"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "智能扫描：安全项默认勾选、一键清理"
+          }
+        }
+      }
+    },
+    "user_guide.normal.card.clean.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scans system caches, app caches, logs, and optional developer artifacts. Safe items are preselected automatically; review and move them to Trash in one click."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "聚合扫描系统缓存、应用日志与可选开发构建产物。绿牌安全项自动预勾选，支持 AI 二次复核与一键移入废纸篓。"
+          }
+        }
+      }
+    },
+    "user_guide.normal.card.clean.flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Normal Mode → Smart Scan → Start Scan → Review & Clean"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "普通模式 → 智能扫描 → 开始扫描 → 确认并清理"
+          }
+        }
+      }
+    },
+    "user_guide.normal.card.optimize.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App Uninstaller, Duplicates & Launch Items"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "优化工具：卸载、去重与启动项治理"
+          }
+        }
+      }
+    },
+    "user_guide.normal.card.optimize.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clean up app leftovers, find duplicate files by SHA-256 hash, inspect LaunchAgents, or terminate stuck ports and processes from one hub."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "集中提供应用连根卸载、应用瘦身、重复文件比对、开机启动项检查与开发端口清理，日常维护无需翻找多层目录。"
+          }
+        }
+      }
+    },
+    "user_guide.normal.card.optimize.flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Normal Mode → Optimize → Choose tool in left rail"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "普通模式 → 优化工具 → 在左侧切换卸载 / 重复文件 / 启动项"
+          }
+        }
+      }
+    },
+    "user_guide.normal.card.status.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "System Status & One-Click Undo History"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "状态与撤销历史：误删随时一键放回"
+          }
+        }
+      }
+    },
+    "user_guide.normal.card.status.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Monitor disk space, memory pressure, and CPU load in real time, or open Undo History to restore any trashed batch back to its original path."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实时查看磁盘余量、内存压力与系统负载；所有清理批次均记录在「撤销历史」中，支持一键将文件从废纸篓还原回原路径。"
+          }
+        }
+      }
+    },
+    "user_guide.normal.card.status.flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Normal Mode → Status → Undo History → Restore"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "普通模式 → 本机状态 → 撤销历史 → 一键放回原位"
+          }
+        }
+      }
+    },
+    "user_guide.pro_nav.card.sidebar.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Batch Scans, Presets & Custom Paths"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "侧边栏分类、批量扫描与自定义路径"
+          }
+        }
+      }
+    },
+    "user_guide.pro_nav.card.sidebar.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Launch Recommended, Common App Cache, Developer, or Full-Disk scans from the sidebar, browse ~/Library roots, or add any custom folder."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "左侧提供推荐扫描、常见应用缓存、开发者构建产物、整盘扫描及 ~/Library 专项入口，也可通过「添加目录」或拖拽文件夹自定义扫描。"
+          }
+        }
+      }
+    },
+    "user_guide.pro_nav.card.sidebar.flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sidebar → Pick category or enter path in top bar"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "左侧栏选择分类 / 顶部路径栏输入路径回车 / 拖拽文件夹"
+          }
+        }
+      }
+    },
+    "user_guide.pro_nav.card.tree.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tree View (Default): Multi-Level Drill-Down"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "树形视图（默认）：按目录层级展开排查"
+          }
+        }
+      }
+    },
+    "user_guide.pro_nav.card.tree.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Displays folders sorted by size with proportional bars. Expand disclosure triangles to inspect child directories on demand and view full metadata on the right."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按字节占比展示目录层级，点击展开箭头按需下钻子目录；单击任意行即可在右侧详情区查看完整路径、修改时间与安全判定。"
+          }
+        }
+      }
+    },
+    "user_guide.pro_nav.card.tree.flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Click ▶ to expand subfolder → Select row to inspect details"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点击行首 ▶ 展开子目录 → 单击行查看右侧详情面板"
+          }
+        }
+      }
+    },
+    "user_guide.pro_nav.card.list.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "List View: Flat Filtering & Multi-Select"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清单视图：扁平筛选、排序与多选勾选"
+          }
+        }
+      }
+    },
+    "user_guide.pro_nav.card.list.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switch from Tree to List in the top bar to filter by modification time (7d / 30d / 90d), search keywords, sort by size, and select multiple rows with checkboxes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在结果区顶部切到「清单」，可按未修改时间（7天/30天/90天）过滤、按关键词搜索排序，并用复选框一次勾选多条候选。"
+          }
+        }
+      }
+    },
+    "user_guide.pro_nav.card.list.flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Results header → Switch to List → Filter by age or keyword"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结果区顶部切至「清单」→ 按时间/搜索过滤 → 批量勾选"
+          }
+        }
+      }
+    },
+    "user_guide.pro_nav.card.safety.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Three-Tier SafetyEngine Badges"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SafetyEngine 三档安全徽标保护"
+          }
+        }
+      }
+    },
+    "user_guide.pro_nav.card.safety.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Green (Safe) items can be cleaned with confidence; Amber (Review) items require explicit confirmation; Red (Protected) system, credential, and key paths are strictly blocked."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "绿标「安全可删」可放心清理；黄标「需确认」在删除前展示风险提示与覆盖确认；红标「严禁删除」硬件级拦截系统与凭据路径。"
+          }
+        }
+      }
+    },
+    "user_guide.pro_nav.card.safety.flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Green: Safe · Amber: Confirm · Red: Hard-Forbid"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "绿标：安全可删 · 黄标：需确认复核 · 红标：严禁删除"
+          }
+        }
+      }
+    },
+    "user_guide.pro_delete.card.direct.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Method 1: Direct Move to Trash (Single Item)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "方式一：直接删除到废纸篓（单条快速清理）"
+          }
+        }
+      }
+    },
+    "user_guide.pro_delete.card.direct.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In Tree View or Large Files, click the inline Trash icon on any deletable row, right-click and choose Move to Trash, or select a row and press ⌘Delete."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在「树形视图」或「大文件」列表中，直接点击行尾的废纸篓图标、右键菜单选择「移到废纸篓」，或选中行后按快捷键 ⌘Delete 即可触发确认并移入废纸篓。"
+          }
+        }
+      }
+    },
+    "user_guide.pro_delete.card.direct.flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Row Trash icon / Right-click Move to Trash / ⌘Delete → Confirm"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点击行尾废纸篓图标 / 右键「移到废纸篓」/ ⌘Delete → 确认清理"
+          }
+        }
+      }
+    },
+    "user_guide.pro_delete.card.batch.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Method 2: Select a Batch & Clean Together"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "方式二：选中一批，然后集中清理（批量勾选）"
+          }
+        }
+      }
+    },
+    "user_guide.pro_delete.card.batch.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switch to List View or open Large Files, check multiple items (or click Select All Safe / header tri-state checkbox), then click Move to Trash in the bottom bar."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "切到「清单视图」或「大文件」页面，勾选多条左侧复选框（或点底部「全选安全项」/ 表头全选框），再点击底部栏「移到废纸篓」一次清理整批项目。"
+          }
+        }
+      }
+    },
+    "user_guide.pro_delete.card.batch.flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "List or Large Files → Check batch of items → Bottom Move to Trash"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清单视图 / 大文件 → 勾选多条或全选安全项 → 底部「移到废纸篓」"
+          }
+        }
+      }
+    },
+    "user_guide.pro_delete.card.stash.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Method 3: Stage Across Folders into Stash"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "方式三：跨目录加入「待处理」统一清理"
+          }
+        }
+      }
+    },
+    "user_guide.pro_delete.card.stash.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Browsing different folders in Tree View? Right-click any item and choose Add to Stash. Open the top-right Stash tray (N) anytime to batch-ask AI or clean all staged items at once."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在不同目录或子树下排查时，右键条目选择「加入待处理」暂存到右上角托盘；汇总后点击工具栏「待处理(N)」，即可一键 AI 评估或一键全部移入废纸篓。"
+          }
+        }
+      }
+    },
+    "user_guide.pro_delete.card.stash.flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Right-click Add to Stash → Toolbar Stash (N) → Clean All"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "右键「加入待处理」→ 右上角「待处理(N)」→ 一键移到废纸篓"
+          }
+        }
+      }
+    },
+    "user_guide.pro_delete.card.recovery.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unified Confirmation & Undo Restoration"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "二次安全重验与「撤销历史」一键还原"
+          }
+        }
+      }
+    },
+    "user_guide.pro_delete.card.recovery.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Before moving items to Trash, GSYCleanMac re-verifies path identities and vendor rules. After cleanup, open Undo History in the sidebar to restore files to their original location."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "真正执行前系统会二次重验路径身份与安全规则；清理完成后可在侧边栏「撤销历史」查看明细，随时一键把文件从废纸篓放回原路径。"
+          }
+        }
+      }
+    },
+    "user_guide.pro_delete.card.recovery.flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pre-execution check → System Trash → Sidebar Undo History"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "执行前安全重验 → 移入系统废纸篓 → 侧边栏「撤销历史」还原"
+          }
+        }
+      }
+    },
+    "user_guide.pro_tools.card.workflows.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "4 Stack-Specific Developer Workflows"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "四大技术栈「开发者清理流」"
+          }
+        }
+      }
+    },
+    "user_guide.pro_tools.card.workflows.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tailored workspaces for Apple (Xcode DerivedData/Simulators), Android (Gradle/AVD), Web & Node (node_modules/pnpm), and Backend/Containers with rebuild-cost hints."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "针对 Apple/Xcode、Android/Gradle、Web/Node 与后端容器提供专属清理页，清晰标注缓存重建代价与最后活跃时间，避免误删正在编译的工程缓存。"
+          }
+        }
+      }
+    },
+    "user_guide.pro_tools.card.workflows.flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sidebar Developer Workflows → Pick stack → Clean selected"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "侧边栏「开发者清理流」→ 选择技术栈 → 按分组勾选清理"
+          }
+        }
+      }
+    },
+    "user_guide.pro_tools.card.cleanup_tools.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deep Uninstaller, App Thinning & Duplicates"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完整卸载、应用瘦身与重复文件去重"
+          }
+        }
+      }
+    },
+    "user_guide.pro_tools.card.cleanup_tools.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Match app bundles with their Preferences, Containers, and Caches by strict Bundle ID boundaries; strip unused architectures or clean SHA-256 duplicate files."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "基于严格 Bundle ID 边界关联应用本体与偏好/容器残留，一屏勾选连根移入废纸篓；支持剥离冗余架构瘦身与 SHA-256 重复文件智能保留。"
+          }
+        }
+      }
+    },
+    "user_guide.pro_tools.card.cleanup_tools.flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sidebar Apps & Tools → Uninstaller / App Thinning / Duplicates"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "侧边栏「应用与清理工具」→ 应用卸载 / 应用瘦身 / 重复文件"
+          }
+        }
+      }
+    },
+    "user_guide.pro_tools.card.runtime.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Port Cleaner, Dart Radar & Homebrew"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开发端口清理、Dart 孤儿进程与 Homebrew"
+          }
+        }
+      }
+    },
+    "user_guide.pro_tools.card.runtime.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inspect listening TCP ports (3000/8080 etc.), detect orphaned Dart/Flutter processes, review LaunchAgents, and clean outdated Homebrew downloads."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一键排查 3000/8080 等占用端口的进程、清理后台残留的 Dart/Flutter 孤儿进程、治理开机自启服务，并支持清理 Homebrew 旧版本包缓存。"
+          }
+        }
+      }
+    },
+    "user_guide.pro_tools.card.runtime.flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sidebar Dev Runtime → Port Cleaner / Dart Radar / Homebrew"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "侧边栏「开发运行态工具」→ 端口清理 / 孤儿进程 / Homebrew"
+          }
+        }
+      }
+    },
+    "user_guide.pro_tools.card.ai_hud.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI Safety Advisor, Dynamic Island HUD & Sentinel"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI 安全顾问、灵动岛悬浮窗与卸载守护"
+          }
+        }
+      }
+    },
+    "user_guide.pro_tools.card.ai_hud.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Right-click unfamiliar folders to Ask AI (heuristics + LLM never override Red forbid rules). Enable the Menu Bar tray, Dynamic Island HUD, or Sentinel watcher in Settings."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对陌生目录可右键「问 AI」获取重建代价分析（AI 绝不凌驾红牌禁删规则）；配合顶部菜单栏托盘、灵动岛 HUD 与卸载残留守护随时掌控空间。"
+          }
+        }
+      }
+    },
+    "user_guide.pro_tools.card.ai_hud.flow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Right-click Ask AI · ⌘⇧H Toggle HUD · ⌘, Settings"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "右键「问 AI」· ⌘⇧H 切换悬浮窗 · ⌘, 打开设置"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

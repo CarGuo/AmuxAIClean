@@ -269,4 +269,21 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(beforeStandard, afterStandard,
                        "单测 backend 是 isolated suite 时，AppleLanguages 不得被改写")
     }
+
+    @MainActor
+    func test_userGuideCompleted_首次未完成且完成后跨启动持久化_testReset可重置() throws {
+        let suite = freshSuite()
+        let first = AppSettings(testSuite: suite)
+        XCTAssertFalse(first.userGuideCompleted, "首次启动默认应未完成新用户指引")
+
+        first.userGuideCompleted = true
+        let restored = AppSettings(testSuite: suite)
+        XCTAssertTrue(restored.userGuideCompleted, "完成新用户指引后应跨启动持久化")
+
+        restored._testReset()
+        XCTAssertFalse(
+            AppSettings(testSuite: suite).userGuideCompleted,
+            "_testReset 后应重置回未完成状态"
+        )
+    }
 }
