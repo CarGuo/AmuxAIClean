@@ -23268,18 +23268,19 @@
       }
     },
     "user_guide.page.pro_delete.tip": {
+      "comment": "v2026.10.10: explain receipt-based feedback and recovery in user-facing terms.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tip: Every cleanup action uses NSWorkspace.recycle to move items to the system Trash—never permanent unlink—and records an undo receipt."
+            "value": "Tip: Cleanup moves files to the system Trash. Confirmed success shows a brief hint and adds an undo record; failures, partial results, or uncertain outcomes show details."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "提示：所有清理均通过 NSWorkspace.recycle 移入系统废纸篓，绝不直接永久抹除，并自动写入撤销历史。"
+            "value": "提示：清理将文件移入系统废纸篓。确认成功后显示简短提示并记录撤销历史；失败、部分成功或结果未确定时显示明细。"
           }
         }
       }
@@ -23557,52 +23558,55 @@
       }
     },
     "user_guide.normal.card.optimize.title": {
+      "comment": "v2026.10.10: describe the shipped Normal Optimize tabs, not Professional-only tools.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "App Uninstaller, Duplicates & Launch Items"
+            "value": "Maintenance Tasks & Launch Items"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "优化工具：卸载、去重与启动项治理"
+            "value": "优化工具：缓存维护与启动项检查"
           }
         }
       }
     },
     "user_guide.normal.card.optimize.body": {
+      "comment": "v2026.10.10: NormalMaintenanceView exposes maintenance and LaunchAgents; other tools require Professional Mode.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Clean up app leftovers, find duplicate files by SHA-256 hash, inspect LaunchAgents, or terminate stuck ports and processes from one hub."
+            "value": "Reset the Quick Look cache, flush the DNS cache, and inspect user or system LaunchAgents. Switch to Professional Mode for app uninstalling, duplicate files, and port tools."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "集中提供应用连根卸载、应用瘦身、重复文件比对、开机启动项检查与开发端口清理，日常维护无需翻找多层目录。"
+            "value": "重建 Quick Look 缓存、刷新 DNS 缓存，并检查用户或系统 LaunchAgents 启动项。应用卸载、重复文件和端口工具请切换到专业模式使用。"
           }
         }
       }
     },
     "user_guide.normal.card.optimize.flow": {
+      "comment": "v2026.10.10: use the actual segmented navigation in Normal Optimize.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Normal Mode → Optimize → Choose tool in left rail"
+            "value": "Normal → Optimize → Maintenance / Launch Items"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "普通模式 → 优化工具 → 在左侧切换卸载 / 重复文件 / 启动项"
+            "value": "普通模式 → 优化工具 → 维护 / 启动项"
           }
         }
       }
@@ -23829,35 +23833,37 @@
       }
     },
     "user_guide.pro_nav.card.safety.body": {
+      "comment": "v2026.10.10: red verdicts include vendor restrictions that may receive strict review; immutable safety boundaries remain blocked.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Green (Safe) items can be cleaned with confidence; Amber (Review) items require explicit confirmation; Red (Protected) system, credential, and key paths are strictly blocked."
+            "value": "Green: preflight and confirm. Amber: review risks. Red: blocked; eligible vendor rules allow strict review in Pro. System, credential, whole HOME/Library, and out-of-scope paths are never overridable."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "绿标「安全可删」可放心清理；黄标「需确认」在删除前展示风险提示与覆盖确认；红标「严禁删除」硬件级拦截系统与凭据路径。"
+            "value": "绿标仍需预检并确认，黄标需审阅风险。红标默认阻止删除，符合条件的厂商限制可在专业模式进入严格确认；系统、凭据、HOME/Library 整根与越界路径始终禁止删除。"
           }
         }
       }
     },
     "user_guide.pro_nav.card.safety.flow": {
+      "comment": "v2026.10.10: distinguish red protection from immutable hard-forbid rather than equating them.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Green: Safe · Amber: Confirm · Red: Hard-Forbid"
+            "value": "Green: Safe · Amber: Review · Red: Protected"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "绿标：安全可删 · 黄标：需确认复核 · 红标：严禁删除"
+            "value": "绿标：安全 · 黄标：复核 · 红标：保护"
           }
         }
       }
@@ -24118,35 +24124,37 @@
       }
     },
     "user_guide.pro_tools.card.cleanup_tools.title": {
+      "comment": "v2026.10.10: the app footprint tool analyzes size; it does not strip binary architectures.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Deep Uninstaller, App Thinning & Duplicates"
+            "value": "Uninstall, App Size & Duplicates"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "完整卸载、应用瘦身与重复文件去重"
+            "value": "应用卸载、占用分析与重复文件去重"
           }
         }
       }
     },
     "user_guide.pro_tools.card.cleanup_tools.body": {
+      "comment": "v2026.10.10: align claims with AppFootprintScreen's read-only size analysis and existing cleanup tools.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Match app bundles with their Preferences, Containers, and Caches by strict Bundle ID boundaries; strip unused architectures or clean SHA-256 duplicate files."
+            "value": "Review apps and leftovers matched by strict Bundle ID boundaries, inspect app size and components without modifying binaries, or compare SHA-256 duplicate files."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "基于严格 Bundle ID 边界关联应用本体与偏好/容器残留，一屏勾选连根移入废纸篓；支持剥离冗余架构瘦身与 SHA-256 重复文件智能保留。"
+            "value": "按严格 Bundle ID 边界审阅应用本体及关联残留，分析应用各组成部分的空间占用，或用 SHA-256 比对重复文件。占用分析不会修改应用二进制。"
           }
         }
       }

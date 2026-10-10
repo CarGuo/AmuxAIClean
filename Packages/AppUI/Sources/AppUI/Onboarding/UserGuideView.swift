@@ -1,10 +1,6 @@
 import AppKit
 import SwiftUI
 
-public extension Notification.Name {
-    static let gsyOpenUserGuideRequested = Notification.Name("AmuxAIClean.openUserGuideRequested")
-}
-
 public enum UserGuidePresentationTrigger: Sendable, Equatable {
     case automaticFirstLaunch
     case manual

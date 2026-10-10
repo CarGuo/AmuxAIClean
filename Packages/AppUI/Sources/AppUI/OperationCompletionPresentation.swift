@@ -60,6 +60,36 @@ struct OperationSuccessFeedback: ContextualSuccessFeedback, Equatable {
     var accessibilityIdentifier: String { "delete.success.feedback" }
 }
 
+/// v2026.10.10: diagnostic previews acknowledge success without a modal too, but
+/// must never claim a recycle receipt or reuse the real-deletion success message.
+enum MainDeletionSuccessFeedback: ContextualSuccessFeedback, Equatable {
+    case deletion(OperationSuccessFeedback)
+    case preview(id: UUID, processedCount: Int, skippedCount: Int)
+
+    var id: UUID {
+        switch self {
+        case .deletion(let feedback): return feedback.id
+        case .preview(let id, _, _): return id
+        }
+    }
+
+    var message: LocalizedTextDescriptor {
+        switch self {
+        case .deletion(let feedback): return feedback.message
+        case .preview(_, let processed, let skipped):
+            return .catalog("delete.result.success.dryrun %lld %lld",
+                            arguments: [.signed(Int64(processed)), .signed(Int64(skipped))])
+        }
+    }
+
+    var accessibilityIdentifier: String {
+        switch self {
+        case .deletion(let feedback): return feedback.accessibilityIdentifier
+        case .preview: return "delete.preview.feedback"
+        }
+    }
+}
+
 struct ProcessTerminationSuccessFeedback: ContextualSuccessFeedback, Equatable {
     let id: UUID
     let stoppedCount: Int

@@ -519,10 +519,11 @@ public struct MainView: View {
     @StateObject private var storageAnalysis: StorageAnalysisStore
     @State private var normalSection: NormalWorkspaceSection = .analyze
     @State private var normalToolIsBusy = false
-    @State private var isUserGuidePresented = false
-    @State private var userGuideInitialPage: UserGuidePage = .normalMode
-    @State private var hasEvaluatedInitialUserGuide = false
-    @State private var pendingUserGuideTargetMode: SmartCareInterfaceMode? = nil
+    @StateObject private var applicationPresentation: MainWindowPresentationCoordinator
+    @State private var presentationHostID = UUID()
+    @State private var isPresentationHostMounted = false
+    @State private var applicationSheetID: UUID?
+    private let onTCCGuideDismiss: (Bool) -> Void
     @State private var smartCareSheetRoute: SmartCareSheetRoute?
     /// v2026.07.20：仅普通模式首次启用开发缓存时占用。确认前不修改选择，
     /// 取消后仍保持未选中，避免提示状态与实际扫描计划分叉。
@@ -597,7 +598,7 @@ public struct MainView: View {
     /// 取代旧 alert 拼接 `delete.result.success/failure %@ %lld %lld` 的纯文字弹窗。
     /// `deleteResult` 仍保留——`delete.result.path_invalid` 等纯路径校验提示仍走旧 alert。
     @State private var deleteResultCompletion: OperationResultCompletion?
-    @State private var deleteSuccessFeedback: OperationSuccessFeedback?
+    @State private var deleteSuccessFeedback: MainDeletionSuccessFeedback?
     @State private var deletePreflightNotice: DeletionPreflightNotice?
     @State private var isDropTargeted: Bool = false
     /// v1.0 T3：结果区视图模式（清单 vs 多层树）。
@@ -738,7 +739,9 @@ public struct MainView: View {
                 smartCareSession: SmartCareSession? = nil,
                 smartCareAIReviewSession: SmartCareAIReviewSession? = nil,
                 aiSettings: AISettings? = nil,
-                settingsNavigation: SettingsNavigation? = nil) {
+                settingsNavigation: SettingsNavigation? = nil,
+                applicationPresentation: MainWindowPresentationCoordinator? = nil,
+                onTCCGuideDismiss: @escaping (Bool) -> Void = { _ in }) {
         // v0 默认走 NSWorkspace.recycle（PITFALLS §5.9）：不需要 root，不需要 99 美元 Apple Developer Program
         // 用户撤销可以走 Finder → 显示废纸篓 → 放回原位
         // M4-P0 修复：把 vendors 透传到 TrashPipeline，让最后闸门启用 vendor 路径树判定
@@ -769,7 +772,11 @@ public struct MainView: View {
         )
         self.undoHistoryStore = undoHistoryStore
         self.recorder = recorder
-        _settings = ObservedObject(wrappedValue: settings ?? AppSettings())
+        let resolvedSettings = settings ?? AppSettings()
+        _settings = ObservedObject(wrappedValue: resolvedSettings)
+        _applicationPresentation = StateObject(wrappedValue: applicationPresentation
+            ?? MainWindowPresentationCoordinator(updateChecker: UpdateChecker(settings: resolvedSettings)))
+        self.onTCCGuideDismiss = onTCCGuideDismiss
         self.pathStore = pathStore ?? UserPathStore()
         _settingsNavigation = ObservedObject(
             wrappedValue: settingsNavigation ?? SettingsNavigation()
@@ -843,6 +850,14 @@ public struct MainView: View {
     @Environment(\.openWindow) private var openWindow
 
     public var body: some View {
+        applicationSceneContent
+            .environment(\.mainWindowPresentationCoordinator, applicationPresentation)
+            .environment(\.mainWindowPresentationHostID, presentationHostID)
+    }
+
+    // v2026.10.10: keep sheet composition and scene observers in distinct expressions;
+    // the shared presentation lifecycle otherwise exceeds Swift's type-checking budget.
+    private var mainBusinessPresentation: some View {
         // v1.3.aa：三列 → 两列。原本 NavigationSplitView { sidebar / content / detail }
         // 在嵌套子屏（AppFootprintScreen / UninstallScreen / DuplicateScreen / LaunchAgentScreen）
         // 的内部分栏里出现「外层 detail 列被挤剩极窄一条 + 旋转 90° 占位文字」的视觉灾难
@@ -1079,18 +1094,17 @@ public struct MainView: View {
                 onDismiss: { deleteResultCompletion = nil }
             )
         }
-        .localizedSheet(
-            isPresented: $isUserGuidePresented,
-            onDismiss: finishUserGuideDismissal
-        ) {
-            UserGuideView(
-                initialPage: userGuideInitialPage,
-                currentInterfaceMode: interfaceMode,
-                onDismiss: { targetMode in
-                    pendingUserGuideTargetMode = targetMode
-                    isUserGuidePresented = false
-                }
-            )
+    }
+
+    private var applicationSceneContent: some View {
+        mainBusinessPresentation
+        // v2026.10.10: User Guide, TCC and updates share one item-based presentation slot.
+        // The App owns queued intents; this host owns admission and native dismissal.
+        .localizedSheet(item: Binding<MainWindowPresentationCoordinator.Presentation?>(
+            get: { applicationPresentation.visiblePresentation(for: presentationHostID) },
+            set: { if $0 == nil { applicationPresentation.dismiss(hostID: presentationHostID) } }
+        ), onDismiss: finishApplicationSheetDismissal, tracksMainWindowOccupancy: false) { presentation in
+            applicationSheetContent(presentation)
         }
         .operationSuccessFeedbackOverlay($deleteSuccessFeedback)
         // v2026.07.20 P0: pre-submit feedback floats above results instead of becoming a second
@@ -1154,10 +1168,6 @@ public struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: .gsyOpenMainWindowRequested)) { _ in
             ensureMainWindowFocused()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .gsyOpenUserGuideRequested)) { _ in
-            ensureMainWindowFocused()
-            presentUserGuide(trigger: .manual)
-        }
         .onReceive(NotificationCenter.default.publisher(for: .gsyTrashPendingLedgerDidInvalidate)) { _ in
             storageAnalysis.invalidateAfterExternalChange()
         }
@@ -1200,7 +1210,16 @@ public struct MainView: View {
             // 所有 modal 共用 occupancy 边沿；当前 presentation 真正消失后再继续消费
             // Sentinel FIFO。调度器内部还会 yield 一轮，避免和 AppKit dismiss 动画竞争。
             if !isBusy {
-                evaluateInitialUserGuideIfNeeded()
+                schedulePendingApplicationPresentationIfPossible()
+                schedulePendingSentinelPresentationIfPossible()
+            }
+        }
+        .onValueChange(of: applicationPresentation.requestRevision) { _, _ in
+            schedulePendingApplicationPresentationIfPossible()
+        }
+        .onValueChange(of: applicationPresentation.businessModalCount(for: presentationHostID)) { _, count in
+            if count == 0 {
+                schedulePendingApplicationPresentationIfPossible()
                 schedulePendingSentinelPresentationIfPossible()
             }
         }
@@ -1225,12 +1244,22 @@ public struct MainView: View {
         .task {
             // v1.3：主列表排序键同样在启动时同步，避免持久化值与 coordinator 默认值不一致。
             coordinator.mainListSortKey = settings.mainListSortKey
-            evaluateInitialUserGuideIfNeeded()
+            isPresentationHostMounted = true
+            applicationPresentation.attachHost(presentationHostID)
+            applicationPresentation.requestInitialUserGuideIfNeeded(
+                userGuideCompleted: settings.userGuideCompleted,
+                isRunningTests: Self.isRunningUnderTests
+            )
+            schedulePendingApplicationPresentationIfPossible()
             let snapshots = await pathStore.snapshots()
             for await urls in snapshots {
                 guard !Task.isCancelled else { return }
                 customCategories = urls.map { ScanCategory.makeCustom(url: $0) }
             }
+        }
+        .onDisappear {
+            isPresentationHostMounted = false
+            applicationPresentation.detachHost(presentationHostID)
         }
     }
 
@@ -1440,7 +1469,12 @@ public struct MainView: View {
     }
 
     private var hasConflictingMainModalPresentation: Bool {
-        hasOtherMainModalPresentation
+        hasBusinessMainModalPresentation || applicationPresentation.isOccupied(for: presentationHostID)
+            || applicationPresentation.businessModalCount(for: presentationHostID) > 0
+    }
+
+    private var hasBusinessMainModalPresentation: Bool {
+        hasOtherBusinessMainModalPresentation
             || deleteSheetRequest != nil
             || deleteSubmissionHandoff.blocksNewSubmission
             || smartCareDeletePreviewGate.isInFlight
@@ -1453,6 +1487,11 @@ public struct MainView: View {
     /// 返回时如果 fileImporter / AI / Stash / Smart Care 已占用窗口，就不能再竞争
     /// 同一个 presentation slot。
     private var hasOtherMainModalPresentation: Bool {
+        hasOtherBusinessMainModalPresentation || applicationPresentation.isOccupied(for: presentationHostID)
+            || applicationPresentation.businessModalCount(for: presentationHostID) > 0
+    }
+
+    private var hasOtherBusinessMainModalPresentation: Bool {
         let smartCareIsPresented: Bool
         if case nil = smartCareSheetRoute {
             smartCareIsPresented = false
@@ -1460,7 +1499,6 @@ public struct MainView: View {
             smartCareIsPresented = true
         }
         return smartCareIsPresented
-            || isUserGuidePresented
             || normalToolIsBusy
             || professionalDeletePresentationHandoff.isAwaitingSheetDismissal
             || aiAskingRow != nil
@@ -1480,38 +1518,61 @@ public struct MainView: View {
             || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }
 
-    private func evaluateInitialUserGuideIfNeeded() {
-        guard !hasEvaluatedInitialUserGuide,
-              !hasConflictingMainModalPresentation else { return }
-        let shouldPresent = UserGuidePresentationPolicy.shouldAutoPresentOnLaunch(
-            userGuideCompleted: settings.userGuideCompleted,
-            hasEvaluatedInitialUserGuide: hasEvaluatedInitialUserGuide,
-            hasConflictingModal: hasConflictingMainModalPresentation,
-            isRunningTests: Self.isRunningUnderTests
-        )
-        hasEvaluatedInitialUserGuide = true
-        guard shouldPresent else { return }
-        presentUserGuide(trigger: .automaticFirstLaunch)
-    }
-
-    private func presentUserGuide(trigger: UserGuidePresentationTrigger) {
-        guard !hasConflictingMainModalPresentation else { return }
-        userGuideInitialPage = UserGuidePresentationPolicy.initialPage(
-            for: interfaceMode,
-            trigger: trigger
-        )
-        isUserGuidePresented = true
-    }
-
-    private func finishUserGuideDismissal() {
-        if !settings.userGuideCompleted {
-            settings.userGuideCompleted = true
-        }
-        if let targetMode = pendingUserGuideTargetMode {
-            pendingUserGuideTargetMode = nil
-            if !isPreparingDeletion, !isDeleting, !normalToolIsBusy {
-                transitionInterfaceMode(to: targetMode)
+    @ViewBuilder
+    private func applicationSheetContent(
+        _ presentation: MainWindowPresentationCoordinator.Presentation
+    ) -> some View {
+        switch presentation.content {
+        case .userGuide(let initialPage, let mode):
+            UserGuideView(initialPage: initialPage, currentInterfaceMode: mode) { targetMode in
+                applicationPresentation.dismiss(hostID: presentationHostID, targetMode: targetMode)
             }
+        case .fullDiskAccess:
+            TCCGuideView { openedSettings in
+                onTCCGuideDismiss(openedSettings)
+                applicationPresentation.dismiss(hostID: presentationHostID)
+            }
+        case .update(let release):
+            UpdatePromptView(checker: applicationPresentation.updateChecker, release: release)
+        }
+    }
+
+    private func finishApplicationSheetDismissal() {
+        guard let id = applicationSheetID,
+              let dismissal = applicationPresentation.finishDismissal(
+                hostID: presentationHostID, presentationID: id
+              ) else { return }
+        applicationSheetID = nil
+        switch dismissal.presentation.content {
+        case .userGuide:
+            if let targetMode = dismissal.targetMode { transitionInterfaceMode(to: targetMode) }
+            settings.userGuideCompleted = true
+        case .fullDiskAccess:
+            break
+        case .update(let release):
+            // Only acknowledge the revision that actually closed. A newer release may
+            // have replaced the visible prompt while its native dismissal was in flight.
+            if applicationPresentation.updateChecker.availableUpdate?.tagName == release.tagName {
+                applicationPresentation.updateChecker.dismissUntilNextLaunch()
+            }
+        }
+        schedulePendingApplicationPresentationIfPossible()
+        schedulePendingSentinelPresentationIfPossible()
+    }
+
+    private func schedulePendingApplicationPresentationIfPossible() {
+        guard isPresentationHostMounted, applicationPresentation.attachHost(presentationHostID),
+              applicationPresentation.requestDrainIfPossible(
+                hostID: presentationHostID, isBusinessModalBusy: hasBusinessMainModalPresentation
+              ) else { return }
+        Task { @MainActor in
+            await Task.yield()
+            guard let presentation = applicationPresentation.takeScheduledIfPossible(
+                hostID: presentationHostID,
+                isBusinessModalBusy: hasBusinessMainModalPresentation,
+                interfaceMode: interfaceMode
+            ) else { return }
+            applicationSheetID = presentation.id
         }
     }
 
@@ -2214,7 +2275,7 @@ public struct MainView: View {
 
     private func presentDeletionCompletion(_ completion: OperationResultCompletion) {
         let presentation = OperationCompletionPresentation(completion)
-        deleteSuccessFeedback = presentation.successFeedback
+        deleteSuccessFeedback = presentation.successFeedback.map(MainDeletionSuccessFeedback.deletion)
         deleteResultCompletion = presentation.details
     }
 
@@ -3863,7 +3924,7 @@ public struct MainView: View {
 
     private var userGuideToolbarButton: some View {
         Button {
-            presentUserGuide(trigger: .manual)
+            applicationPresentation.requestUserGuide()
         } label: {
             Label {
                 Text("toolbar.user_guide.title", bundle: .module)
@@ -4623,9 +4684,8 @@ public struct MainView: View {
         coordinator.refreshVolumeCapacity()
     }
 
-    /// Debug preview never crosses the recycle boundary and therefore remains a
-    /// lightweight diagnostic alert. Real cleanup results are assigned from an
-    /// opaque `CompletedSubmission` at their call sites.
+    /// v2026.10.10: preview success uses the same nonmodal acknowledgement as real
+    /// cleanup, with an explicit preview descriptor; only errors open a diagnostic alert.
     @MainActor
     private func presentTrashPreviewOutcome(moved: Int,
                                             skipped: Int,
@@ -4633,9 +4693,11 @@ public struct MainView: View {
                                             legacyError: String?) {
         let error = failureSummary?.message(locale: locale) ?? legacyError
         if let error {
+            deleteSuccessFeedback = nil
             deleteResult = String(format: AppLocalization.string("delete.result.failure.dryrun %@ %lld %lld", locale: locale), error, moved, skipped)
         } else {
-            deleteResult = String(format: AppLocalization.string("delete.result.success.dryrun %lld %lld", locale: locale), moved, skipped)
+            deleteResult = nil
+            deleteSuccessFeedback = .preview(id: UUID(), processedCount: moved, skippedCount: skipped)
         }
     }
 

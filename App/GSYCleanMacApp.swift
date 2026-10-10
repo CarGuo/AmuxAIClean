@@ -127,7 +127,7 @@ struct GSYCleanMacApp: App {
     @StateObject private var aiSettings: AISettings
     @StateObject private var settingsNavigation: SettingsNavigation
 
-    @State private var showTCCGuide: Bool = false
+    @StateObject private var applicationPresentation: MainWindowPresentationCoordinator
 
     /// v1.1 更新检查器，启动时静默 GET 一次 GitHub Releases。
     @StateObject private var updateChecker: UpdateChecker
@@ -202,7 +202,11 @@ struct GSYCleanMacApp: App {
         self._settings = StateObject(wrappedValue: s)
         self._aiSettings = StateObject(wrappedValue: AISettings())
         self._settingsNavigation = StateObject(wrappedValue: SettingsNavigation())
-        self._updateChecker = StateObject(wrappedValue: UpdateChecker(settings: s))
+        let updateChecker = UpdateChecker(settings: s)
+        self._updateChecker = StateObject(wrappedValue: updateChecker)
+        self._applicationPresentation = StateObject(
+            wrappedValue: MainWindowPresentationCoordinator(updateChecker: updateChecker)
+        )
         // v1.6：Sentinel 管理器与 AppSettings 同生命周期；register / unregister
         // 由启动钩子 + onChange 驱动，AppSettings 里 didSet 不直接调 SMAppService。
         self._sentinelManager = StateObject(wrappedValue: SentinelManager(settings: s))
@@ -258,7 +262,13 @@ struct GSYCleanMacApp: App {
                      smartCareSession: smartCareSession,
                      smartCareAIReviewSession: smartCareAIReviewSession,
                      aiSettings: aiSettings,
-                     settingsNavigation: settingsNavigation)
+                     settingsNavigation: settingsNavigation,
+                     applicationPresentation: applicationPresentation,
+                     onTCCGuideDismiss: { openedSettings in
+                         if openedSettings {
+                             UserDefaults.standard.set(true, forKey: tccDismissedKey)
+                         }
+                     })
             .frame(minWidth: MainWindowMetrics.minWidth,
                    minHeight: MainWindowMetrics.minHeight)
             .background {
@@ -386,7 +396,6 @@ struct GSYCleanMacApp: App {
             .onValueChange(of: settings.userGuideCompleted) { _, completed in
                 guard completed else { return }
                 Task {
-                    await Task.yield()
                     await evaluateTCCOnboarding()
                 }
             }
@@ -405,21 +414,8 @@ struct GSYCleanMacApp: App {
                 // 主窗口被打开 / 拉回前台 → 立刻同步策略（accessory→regular）。
                 reconcileActivationPolicy()
             }
-            .localizedSheet(isPresented: $showTCCGuide) {
-                TCCGuideView { openedSettings in
-                    if openedSettings {
-                        UserDefaults.standard.set(true, forKey: tccDismissedKey)
-                    }
-                    showTCCGuide = false
-                }
-            }
-            .localizedSheet(item: Binding(
-                get: { updateChecker.availableUpdate.map { IdentifiedRelease(release: $0) } },
-                set: { _ in updateChecker.dismissUntilNextLaunch() }
-            )) { wrapped in
-                UpdatePromptView(checker: updateChecker, release: wrapped.release)
-            }
-            // Keep the scene-owned presenters inside the same live locale hierarchy as MainView.
+            // v2026.10.10: MainView is the sole presenter for guide/TCC/update sheets;
+            // App retains their requests across window recreation and supplies the live locale.
             .environment(\.locale, settings.effectiveLocale)
         }
         .defaultSize(width: MainWindowMetrics.defaultWidth,
@@ -443,6 +439,7 @@ struct GSYCleanMacApp: App {
             //     扫描 snapshot publish 不会触发本地化查表。
             GSYCleanCommands(
                 updateChecker: updateChecker,
+                applicationPresentation: applicationPresentation,
                 hudShown: hudBinding,
                 locale: settings.effectiveLocale
             )
@@ -647,10 +644,9 @@ struct GSYCleanMacApp: App {
         }
         let probe = TCCProbe()
         let status = await probe.probe()
+        guard !Task.isCancelled else { return }
         if case .deniedReadable = status {
-            await MainActor.run {
-                showTCCGuide = true
-            }
+            applicationPresentation.requestFullDiskAccessGuide()
         }
     }
 
@@ -678,9 +674,11 @@ struct GSYCleanMacApp: App {
     }
 
     @MainActor
-    fileprivate static func openUserGuide() {
+    fileprivate static func openUserGuide(using presentation: MainWindowPresentationCoordinator) {
+        // v2026.10.10: enqueue before opening the scene. A notification sent during
+        // asynchronous window recreation had no MainView subscriber and lost the Help intent.
+        presentation.requestUserGuide()
         bringMainWindowToFront()
-        NotificationCenter.default.post(name: .gsyOpenUserGuideRequested, object: nil)
     }
 
     /// v1.5.7：Help 菜单统一的外链跳转入口。
@@ -766,6 +764,7 @@ struct GSYCleanMacApp: App {
 ///   会变化的依赖；改成只传 `Binding<Bool>` 后依赖面收紧到 hudEnabled 一项。
 private struct GSYCleanCommands: Commands {
     let updateChecker: UpdateChecker
+    let applicationPresentation: MainWindowPresentationCoordinator
     @Binding var hudShown: Bool
     let locale: Locale
     @Environment(\.openWindow) private var openWindow
@@ -799,7 +798,7 @@ private struct GSYCleanCommands: Commands {
         // v1.5.7：替换 SwiftUI 默认的占位 Help 菜单，提供生产级帮助入口。
         CommandGroup(replacing: .help) {
             Button(AppLocalization.string("menu.help.userGuide", locale: locale)) {
-                GSYCleanMacApp.openUserGuide()
+                GSYCleanMacApp.openUserGuide(using: applicationPresentation)
             }
             Button(AppLocalization.string("menu.help.help", locale: locale)) {
                 GSYCleanMacApp.openExternal("https://github.com/CarGuo/GSYCleanMac#readme")
