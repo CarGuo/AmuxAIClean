@@ -1,4 +1,5 @@
 import Foundation
+import ScanKit
 
 /// 主扫描界面唯一的“扫描问题”投影。
 ///
@@ -44,6 +45,6 @@ struct ScanIssuePresentation: Sendable, Equatable {
     }
 
     private static func normalized(_ paths: [String]) -> [String] {
-        Array(Set(paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path })).sorted()
+        Array(Set(paths.map(ScanPathIdentity.lexicallyNormalizedPath))).sorted()
     }
 }

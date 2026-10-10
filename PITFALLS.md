@@ -1811,3 +1811,17 @@ Tree 投影时，增量刷新继续沿用空字典。完整空扫描通常已包
 中间 symlink/相对 `..`/非 ASCII 目标、权限来源、物理 TCC 根在估算和 Duplicate 中一致跳过，
 以及逐条 shipped wildcard 的原语义对照。基准必须对相同输入核对结果 checksum；局部
 评估变快不能写成整个 App 或真实扫描同比加速。
+
+## 24. v2026.10.10：SwiftPM 测试链接与 ScanKit 构建系统选择
+
+`Packages/ScanKit` 的测试目标 `ScanKitTests` 同时直接依赖 `ScanKit`，并通过测试辅助包 `TestHarness`
+间接依赖 `ScanKit`。在 Xcode 16+ 默认的 SwiftPM 构建系统（xcbuild/PIF）下，生成的 LinkFileList 会将
+`ScanKit.o` 重复引入两次，触发 `ld: 2900 duplicate symbols`。
+
+1. **禁止随意破坏包依赖结构**：不应为规避构建器 bug 而移除 `TestHarness` 对 `ScanKit` 的必要引用，
+   也不应将测试脚手架拆散或降低测试完整性。
+2. **使用原生构建驱动**：`Packages/ScanKit` 运行测试时使用 `swift test --build-system native`。
+   原生 llbuild 后端能正确去重目标对象文件并顺利链接全部测试。
+3. **多包测试脚本统一注入**：在全包测试循环中针对 `ScanKit` 单独传递 `--build-system native`，
+   其余 8 个包保持默认构建系统。
+

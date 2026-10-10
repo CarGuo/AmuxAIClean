@@ -69,9 +69,10 @@ enum DeletionRowSnapshotFactory {
         // an unknown directory into a misleading zero-byte deletion request. Every Tree entry
         // point also disables the action, while this guard protects future/non-UI callers.
         guard !row.isSizePending else { return nil }
+        let normalizedPath = ScanPathIdentity.lexicallyNormalizedPath(row.path)
         return RowItem(
-            id: row.path,
-            url: URL(fileURLWithPath: row.path).standardizedFileURL,
+            id: normalizedPath,
+            url: URL(fileURLWithPath: normalizedPath, isDirectory: row.isDirectory),
             title: row.title,
             isDirectory: row.isDirectory,
             bytes: row.bytes,
@@ -354,7 +355,7 @@ public struct DeletionIntentCandidate: Identifiable, Sendable, Equatable {
 
     static func pathIdentity(_ path: String) -> String {
         guard path.hasPrefix("/") else { return path }
-        return URL(fileURLWithPath: path).standardizedFileURL.path
+        return ScanPathIdentity.lexicallyNormalizedPath(path)
     }
 }
 

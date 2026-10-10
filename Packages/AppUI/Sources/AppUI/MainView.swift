@@ -4993,8 +4993,8 @@ public struct MainView: View {
     }
 
     private func deletionPathsOverlap(_ lhs: String, _ rhs: String) -> Bool {
-        let left = URL(fileURLWithPath: lhs).standardizedFileURL.path
-        let right = URL(fileURLWithPath: rhs).standardizedFileURL.path
+        let left = TrashPipeline.normalizePath(lhs)
+        let right = TrashPipeline.normalizePath(rhs)
         if left == right { return true }
         if left == "/" || right == "/" { return true }
         return left.hasPrefix(right + "/") || right.hasPrefix(left + "/")
@@ -5139,7 +5139,7 @@ public struct MainView: View {
             Task { @MainActor in
                 var duplicateCount = 0
                 for url in urls {
-                    if !(await pathStore.add(url.standardizedFileURL)) {
+                    if !(await pathStore.add(url)) {
                         duplicateCount &+= 1
                     }
                 }

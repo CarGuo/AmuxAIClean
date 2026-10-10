@@ -627,7 +627,7 @@ public struct SettingsScene: View {
             Task { @MainActor in
                 var duplicateCount = 0
                 for url in urls {
-                    if !(await pathStore.add(url.standardizedFileURL)) {
+                    if !(await pathStore.add(url)) {
                         duplicateCount &+= 1
                     }
                 }

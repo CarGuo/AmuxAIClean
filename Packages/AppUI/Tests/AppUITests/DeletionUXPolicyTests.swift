@@ -1,5 +1,6 @@
 import Foundation
 import SafetyKit
+import ScanKit
 import XCTest
 @testable import AppUI
 
@@ -1038,5 +1039,120 @@ final class DeletionUXPolicyTests: XCTestCase {
             scanIncompleteOverrideRequest: nil,
             carriedRunningAppSkipped: []
         )
+    }
+
+    // MARK: - Path Identity Preservation (Gap G1)
+
+    func test_deletionCandidatePathIdentityPreservesPhysicalNamespaces() {
+        let physical = "/private/var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/T/cache"
+        let logical = "/var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/T/cache"
+
+        let physicalStandardized = DeletionIntentCandidate.pathIdentity(physical)
+        let logicalStandardized = DeletionIntentCandidate.pathIdentity(logical)
+
+        XCTAssertEqual(physicalStandardized, physical,
+                       "Physical /private/var/folders must not collapse to /var/folders")
+        XCTAssertEqual(logicalStandardized, logical,
+                       "Logical /var/folders must retain its logical namespace identity")
+        XCTAssertNotEqual(physicalStandardized, logicalStandardized,
+                          "Distinct namespaces must produce distinct candidate identities")
+    }
+
+    func test_deletionCandidatePathIdentityPreservesPrivateTmpAndEtc() {
+        let privateTmp = "/private/tmp/scratch/item"
+        let publicTmp = "/tmp/scratch/item"
+        let privateEtc = "/private/etc/hosts.bak"
+        let publicEtc = "/etc/hosts.bak"
+
+        XCTAssertEqual(DeletionIntentCandidate.pathIdentity(privateTmp), privateTmp)
+        XCTAssertEqual(DeletionIntentCandidate.pathIdentity(publicTmp), publicTmp)
+        XCTAssertEqual(DeletionIntentCandidate.pathIdentity(privateEtc), privateEtc)
+        XCTAssertEqual(DeletionIntentCandidate.pathIdentity(publicEtc), publicEtc)
+    }
+
+    func test_deletionCandidatePathIdentityPerformsLexicalNormalizationWithoutAliasing() {
+        let dirtyPhysical = "/private/var/folders/zz/./zyx/../zyx/T//cache/"
+        let expected = "/private/var/folders/zz/zyx/T/cache"
+
+        XCTAssertEqual(DeletionIntentCandidate.pathIdentity(dirtyPhysical), expected)
+        XCTAssertEqual(
+            DeletionIntentCandidate.pathIdentity(dirtyPhysical),
+            ScanPathIdentity.lexicallyNormalizedPath(dirtyPhysical)
+        )
+    }
+
+    func test_deletionIntentCandidateStandardizedPathMatchesScanPathIdentity() {
+        let path = "/private/var/folders/xx/12345/T/temp_target"
+        let candidate = makeIntentCandidate(path: path, verdict: .safe, rejection: .ok)
+
+        XCTAssertEqual(candidate.rawPath, path)
+        XCTAssertEqual(candidate.standardizedPath, path)
+        XCTAssertEqual(candidate.standardizedPath, ScanPathIdentity.lexicallyNormalizedPath(path))
+    }
+
+    func test_deletionIntentAllowsDistinctCandidatesInPhysicalAndLogicalNamespaces() throws {
+        let physical = "/private/var/folders/bucket/T/sample"
+        let logical = "/var/folders/bucket/T/sample"
+
+        let candidatePhysical = makeIntentCandidate(path: physical, verdict: .safe, rejection: .ok)
+        let candidateLogical = makeIntentCandidate(path: logical, verdict: .safe, rejection: .ok)
+
+        let intent = try DeletionIntent(
+            origin: .scanSelection,
+            mode: .professional,
+            snapshotIdentity: DeletionSnapshotIdentity(sessionID: UUID(), revision: 1, categoryID: "custom"),
+            candidates: [candidatePhysical, candidateLogical]
+        )
+        XCTAssertEqual(intent.candidates.count, 2)
+        XCTAssertEqual(Set(intent.candidates.map(\.standardizedPath)).count, 2)
+    }
+
+    @MainActor
+    func test_treeDeletionRowSnapshotAndSelectionReconcilerPreservePhysicalNamespace() throws {
+        let physicalPath = "/private/var/folders/bucket/T/tree_target"
+        let treeRow = TreeRow(
+            path: physicalPath + "/./child/..",
+            title: "tree_target",
+            bytes: 4096,
+            fileCount: 2,
+            isDirectory: true,
+            hasChildren: true
+        )
+        let rowItem = try XCTUnwrap(
+            DeletionRowSnapshotFactory.tree(treeRow, verdict: .safe, rejection: .ok)
+        )
+        XCTAssertEqual(rowItem.id, physicalPath)
+        XCTAssertEqual(rowItem.url.path, physicalPath)
+
+        let normalizedTreeRow = TreeRow(
+            path: physicalPath,
+            title: "tree_target",
+            bytes: 4096,
+            fileCount: 2,
+            isDirectory: true,
+            hasChildren: true
+        )
+        let reconciled = TreeSelectionReconciler.afterSuccessfulDeletion(
+            selected: normalizedTreeRow,
+            succeededPaths: [rowItem.url.path],
+            refreshedRow: { _ in normalizedTreeRow }
+        )
+        XCTAssertNil(reconciled, "Deleted physical TreeRow selection must clear without /private collapse")
+    }
+
+    func test_scanIssuePresentationPreservesPhysicalNamespace() {
+        let presentation = ScanIssuePresentation.make(
+            hasTerminalFailure: false,
+            permissionDeniedPaths: ["/private/var/folders/bucket/T/denied/./sub/.."],
+            tccSkippedPaths: ["/private/var/folders/bucket/T/tcc"],
+            incompletePaths: [
+                "/private/var/folders/bucket/T/denied",
+                "/private/var/folders/bucket/T/tcc",
+                "/private/var/folders/bucket/T/other"
+            ]
+        )
+        XCTAssertEqual(presentation.permissionDeniedPaths, ["/private/var/folders/bucket/T/denied"])
+        XCTAssertEqual(presentation.tccSkippedPaths, ["/private/var/folders/bucket/T/tcc"])
+        XCTAssertEqual(presentation.otherIncompletePaths, ["/private/var/folders/bucket/T/other"])
     }
 }

@@ -36,10 +36,15 @@
 ```bash
 # 单包测试示例
 (cd Packages/AppUI && swift test)
+(cd Packages/ScanKit && swift test --build-system native)
 
-# 提交前的全包测试
+# 提交前的全包测试（ScanKit 在 Xcode 16+ 下需 --build-system native）
 for pkg in ScanKit SafetyKit AppUI HeuristicKit LogKit BrewKit FileSearchKit AIKit TestHarness; do
-  (cd "Packages/$pkg" && swift test --parallel) || exit 1
+  if [ "$pkg" = "ScanKit" ]; then
+    (cd "Packages/$pkg" && swift test --parallel --build-system native) || exit 1
+  else
+    (cd "Packages/$pkg" && swift test --parallel) || exit 1
+  fi
 done
 
 # 只构建，不启动 App

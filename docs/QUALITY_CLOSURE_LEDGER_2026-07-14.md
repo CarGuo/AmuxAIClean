@@ -853,3 +853,29 @@ macOS 13.5 实机/VM 与最终 DMG C5 仍未验证。
   本地签名不能代替 Apple Accepted，正式发布状态以最终 DMG provenance、公证结果和
   GitHub Release 为准。版本按现有脚本以提交计数生成递增 build，不修改工程版本配置。
   长期合同见 PITFALLS 第 23 节。
+
+### 9.22 v2026.10.10 M3 审查闭环与构建合同对齐（C3；无新 C4）
+
+- **原始问题**：复审 `92838ff` 与全仓删除/扫描投影发现，`DeletionIntentCandidate.pathIdentity`、
+  `DeletionRowSnapshotFactory.tree`、`ScanIssuePresentation.normalized`、
+  `DuplicateDeletionVerificationRequest.normalize` 以及 `SettingsScene`/`MainView` 自定义路径导入入口
+  仍调用 `standardizedFileURL`，会将 `/private/var/folders` 等物理命名空间提前折叠为 `/var/folders`，
+  与 `ScanPathIdentity` 及 `UserPathStore` 保持的词法命名空间发生漂移（Gap G1）；
+  `DEVELOPMENT.md` 与 `AGENTS.md` 记载的全包测试脚本未包含 `ScanKit` 在 Xcode 16+ 下必需的
+  `--build-system native` 标志（Gap G2）；多跳纯相对悬空链、非 UTF-8 符号链接目标与尾随斜杠规范化
+  缺乏显式回归用例（Gap G3/G4/G5）。
+- **共同修复**：
+  1. `DeletionIntentCandidate.pathIdentity`、`DeletionRowSnapshotFactory.tree`、
+     `ScanIssuePresentation.normalized`、`DuplicateDeletionVerificationRequest.normalize` 统一采用
+     `ScanPathIdentity.lexicallyNormalizedPath`；`SettingsScene`/`MainView` 文件导入器直接将 `url`
+     交由 `UserPathStore.add` 走词法归一化；`MainView.deletionPathsOverlap` 对齐
+     `TrashPipeline.normalizePath`。
+  2. `docs/DEVELOPMENT.md`、`AGENTS.md` 与 `PITFALLS.md` 明确规范 `ScanKit` 测试附加
+     `--build-system native`，并在全包回归循环中对齐。
+  3. `SymbolicLinkPolicyTests` 与对抗测试集补充多跳纯相对悬空链接解析、非法编码目标安全防御（`EILSEQ`）、
+     尾随斜杠目录边界（`ENOTDIR`）及并发/环形软链回归测试。
+- **最终验证（C3）**：九包测试全绿，累计 2,519 项测试通过（SafetyKit 203、ScanKit 558、AppUI 1,545、
+  TestHarness 8、BrewKit 60、FileSearchKit 23、AIKit 57、LogKit 50、HeuristicKit 15）；Debug 目标构建
+  exit 0；`./Scripts/test_release_contract.sh` 验证通过。
+- **剩余项**：未做运行交互验收，持续运行的 C4 验收仍待执行。
+

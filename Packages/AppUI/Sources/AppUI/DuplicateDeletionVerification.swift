@@ -205,7 +205,7 @@ public struct DuplicateDeletionVerificationRequest: Sendable, Equatable {
     }
 
     private static func normalize(_ path: String) -> String {
-        URL(fileURLWithPath: path).standardizedFileURL.path
+        ScanPathIdentity.lexicallyNormalizedPath(path)
     }
 }
 

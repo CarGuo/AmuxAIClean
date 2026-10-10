@@ -95,9 +95,24 @@ AMUX_CLEAN_NOTARY_KEYCHAIN_PROFILE=amux-notary ./Scripts/build_release.sh --nota
 ### 全部 9 个包
 
 ```bash
+# ScanKit 在 Xcode 16+ 下因 TestHarness 菱形依赖需指定 --build-system native 避免链接器符号重复
 for pkg in ScanKit SafetyKit AppUI HeuristicKit LogKit BrewKit FileSearchKit AIKit TestHarness; do
-  (cd "Packages/$pkg" && swift test) || exit 1
+  if [ "$pkg" = "ScanKit" ]; then
+    (cd "Packages/$pkg" && swift test --build-system native) || exit 1
+  else
+    (cd "Packages/$pkg" && swift test) || exit 1
+  fi
 done
+```
+
+### 单包测试示例
+
+```bash
+# 普通包直接运行
+(cd Packages/AppUI && swift test)
+
+# ScanKit 需附加 --build-system native
+(cd Packages/ScanKit && swift test --build-system native)
 ```
 
 ### 当前测试矩阵
