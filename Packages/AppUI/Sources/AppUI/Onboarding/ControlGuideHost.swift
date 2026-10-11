@@ -75,7 +75,9 @@ final class ControlGuideAnchors: ObservableObject {
         changes.send()
     }
 
-    func canReveal(_ target: ControlGuideTarget) -> Bool { reveals[target] != nil }
+    func canReveal(_ target: ControlGuideTarget, in window: NSWindow) -> Bool {
+        reveals[target] != nil && frame(for: .sidebarOperations, in: window) != nil
+    }
     func reveal(_ target: ControlGuideTarget) {
         reveals[target]?.action()
     }
@@ -192,6 +194,7 @@ struct ControlGuideHost: NSViewRepresentable {
     let anchors: ControlGuideAnchors
     let presentationID: UUID?
     let mode: SmartCareInterfaceMode
+    let requiredTargets: Set<ControlGuideTarget>
     let locale: Locale
     let isFocusedHost: Bool
     let onFocus: () -> Void
@@ -200,6 +203,7 @@ struct ControlGuideHost: NSViewRepresentable {
     func makeNSView(context: Context) -> HostView { HostView(anchors: anchors) }
     func updateNSView(_ view: HostView, context: Context) {
         view.controller.configure(presentationID: presentationID, mode: mode, locale: locale,
+                                  requiredTargets: requiredTargets,
                                   isFocusedHost: isFocusedHost, onFocus: onFocus, onEnd: onEnd)
         view.attach()
     }
@@ -235,6 +239,8 @@ final class ControlGuideController: NSObject {
     private var revealedTarget: ControlGuideTarget?
     private var isFocusedHost = false
     private var needsKeyboardFocus = false
+    private var requiredTargets: Set<ControlGuideTarget> = []
+    private var isStepReady = false
 
     init(anchors: ControlGuideAnchors) {
         self.anchors = anchors
@@ -243,6 +249,7 @@ final class ControlGuideController: NSObject {
     }
 
     func configure(presentationID: UUID?, mode: SmartCareInterfaceMode, locale: Locale,
+                   requiredTargets: Set<ControlGuideTarget> = [],
                    isFocusedHost: Bool = true,
                    onFocus: @escaping () -> Void = {}, onEnd: @escaping (UUID, ControlGuideEnd) -> Void) {
         // v2026.10.11 C4: native key/main flags disappear while App activation is pending.
@@ -256,6 +263,7 @@ final class ControlGuideController: NSObject {
         self.presentationID = presentationID
         self.mode = mode
         self.locale = locale
+        self.requiredTargets = requiredTargets
         self.onEnd = onEnd
         self.onFocus = onFocus
         scheduleRefresh()
@@ -269,7 +277,7 @@ final class ControlGuideController: NSObject {
         needsKeyboardFocus = presentationID != nil && isFocusedHost
         let center = NotificationCenter.default
         for name in [NSWindow.didResizeNotification, NSWindow.didMoveNotification,
-                     NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
+                     NSWindow.willMiniaturizeNotification, NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
                      NSWindow.didBecomeKeyNotification, NSWindow.didBecomeMainNotification,
                      NSWindow.didChangeOcclusionStateNotification] {
             center.addObserver(self, selector: #selector(windowChanged), name: name, object: window)
@@ -304,33 +312,46 @@ final class ControlGuideController: NSObject {
         guard let presentationID, let window else { hide(); return }
         // v2026.10.10: WindowGroup attaches views before showing its native window. A child
         // panel must never appear or take key focus ahead of that owner; resume on visibility.
-        guard window.isVisible, !window.isMiniaturized else { panel?.orderOut(nil); return }
-        if session == nil {
-            session = ControlGuideSession(presentationID: presentationID, mode: mode, available: anchors.available(in: window))
+        guard window.isVisible, !window.isMiniaturized else {
+            needsKeyboardFocus = needsKeyboardFocus || panel?.isKeyWindow == true
+            panel?.orderOut(nil)
+            return
         }
-        guard let session else { return } // Start only after the real toolbar anchor mounts.
-        if anchors.canReveal(session.target), revealedTarget != session.target {
+        isStepReady = false
+        let mounted = anchors.available(in: window)
+        let available = requiredTargets.isEmpty ? mounted
+            : mounted.intersection(requiredTargets.union([.resultsMode, .deleteSelection]))
+        if session == nil {
+            session = ControlGuideSession(presentationID: presentationID, mode: mode,
+                                          available: available, required: requiredTargets)
+        } else if available.contains(.interfaceMode), requiredTargets.isSubset(of: available) {
+            session?.updateInitialAvailability(available)
+        }
+        guard let session else {
+            show(AnyView(ControlGuidePreparingOverlay(onSkip: { [weak self] in self?.end(.skipped) })), in: window)
+            return
+        }
+        if anchors.canReveal(session.target, in: window), revealedTarget != session.target {
             revealedTarget = session.target
             anchors.reveal(session.target)
             scheduleRefresh()
-            return
         }
-        guard let frame = anchors.frame(for: session.target, in: window) else {
-            if anchors.canReveal(session.target) {
-                // ScrollViewReader mounts/moves native List rows asynchronously. Their
-                // anchor changes resume this step; never highlight off-screen coordinates.
-                needsKeyboardFocus = needsKeyboardFocus || panel?.isKeyWindow == true
-                panel?.orderOut(nil)
-                return
-            }
-            // An unmounted/hidden target changes the context of this tour. Release occupancy,
-            // without acknowledging onboarding or inventing an approximate highlight.
+        let frame = anchors.frame(for: session.target, in: window)
+        if frame == nil, !anchors.canReveal(session.target, in: window) {
             end(.contextChanged)
             return
         }
+        // v2026.10.11 review: native scrolling is asynchronous. Keep a visible, cancelable
+        // key panel throughout it; Return must never fall through to the owner's path field.
+        // A folded sidebar invalidates reveal eligibility, rather than retaining a hidden lease.
+        isStepReady = frame != nil
         let overlay = ControlGuideOverlay(session: session, focus: frame,
             onNext: { [weak self] in self?.next() }, onSkip: { [weak self] in self?.end(.skipped) })
-            .environment(\.locale, locale)
+        show(AnyView(overlay), in: window)
+    }
+
+    private func show(_ content: AnyView, in window: NSWindow) {
+        let overlay = content.environment(\.locale, locale)
         if panel == nil {
             // This is an interactive modal tour, not a nonactivating HUD/tool palette.
             let panel = GuidePanel(contentRect: window.frame, styleMask: [.borderless],
@@ -352,8 +373,7 @@ final class ControlGuideController: NSObject {
         } else {
             hostingView?.rootView = AnyView(overlay)
         }
-        // AppKit removes the parent relationship when a child is ordered out while
-        // waiting for a scrolled row. Restore that same ownership before showing it again.
+        // Miniaturization can remove the native child relationship; restore the same owner.
         if let panel, panel.parent !== window { window.addChildWindow(panel, ordered: .above) }
         panel?.setFrame(window.frame, display: true)
         if needsKeyboardFocus || window.isKeyWindow {
@@ -364,7 +384,7 @@ final class ControlGuideController: NSObject {
     }
 
     func next() {
-        guard var session else { return }
+        guard isStepReady, var session else { return }
         if session.advance() { self.session = session; refresh() }
         else { end(.completed) }
     }
@@ -394,6 +414,9 @@ final class ControlGuideController: NSObject {
     }
 
     @objc private func windowChanged(_ notification: Notification) {
+        if notification.name == NSWindow.willMiniaturizeNotification {
+            needsKeyboardFocus = needsKeyboardFocus || panel?.isKeyWindow == true
+        }
         if presentationID != nil, notification.name == NSWindow.didBecomeKeyNotification {
             needsKeyboardFocus = true
         }

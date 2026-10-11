@@ -98,6 +98,15 @@ enum ControlGuideTarget: String, CaseIterable, Sendable {
         // reveal action; the controller scrolls them into view before measuring a spotlight.
         return candidates.filter { available.contains($0) }
     }
+
+    static func requiredTargets(mode: SmartCareInterfaceMode, showsAnalysisControls: Bool = true) -> Set<Self> {
+        // v2026.10.11 review: permanent controls are an interface contract, not whatever
+        // happens to have mounted in the first frame. Only result-dependent controls vary.
+        let contextOnly: Set<Self> = mode == .normal && !showsAnalysisControls
+            ? [.analysisScope, .analysisScan] : []
+        return Set(sequence(mode: mode, available: Set(allCases)))
+            .subtracting([.resultsMode, .deleteSelection]).subtracting(contextOnly)
+    }
 }
 
 enum ControlGuideEnd: Sendable, Equatable {
@@ -108,17 +117,23 @@ enum ControlGuideEnd: Sendable, Equatable {
 struct ControlGuideSession {
     let presentationID: UUID
     let mode: SmartCareInterfaceMode
-    let steps: [ControlGuideTarget]
+    private(set) var steps: [ControlGuideTarget]
     private(set) var index = 0
     var target: ControlGuideTarget { steps[index] }
     var isLastStep: Bool { index == steps.count - 1 }
 
-    init?(presentationID: UUID, mode: SmartCareInterfaceMode, available: Set<ControlGuideTarget>) {
+    init?(presentationID: UUID, mode: SmartCareInterfaceMode, available: Set<ControlGuideTarget>,
+          required: Set<ControlGuideTarget> = []) {
         let steps = ControlGuideTarget.sequence(mode: mode, available: available)
-        guard available.contains(.interfaceMode), !steps.isEmpty else { return nil }
+        guard required.isSubset(of: available), available.contains(.interfaceMode), !steps.isEmpty else { return nil }
         self.presentationID = presentationID
         self.mode = mode
         self.steps = steps
+    }
+
+    mutating func updateInitialAvailability(_ available: Set<ControlGuideTarget>) {
+        guard index == 0 else { return }
+        steps = ControlGuideTarget.sequence(mode: mode, available: available)
     }
 
     mutating func advance() -> Bool {
@@ -134,8 +149,13 @@ enum ControlGuideLayout {
     static func bubbleFrame(target: CGRect, size: CGSize, bounds: CGRect) -> CGRect {
         let margin: CGFloat = 16
         let gap: CGFloat = 18
-        let area = bounds.insetBy(dx: margin, dy: margin)
-        let size = CGSize(width: min(size.width, area.width), height: min(size.height, area.height))
+        // A zero/small initial layout proposal is valid. Construct a finite viewport rather
+        // than insetting past its center, which produces CGRect.null / infinite coordinates.
+        let insetX = min(margin, max(0, bounds.width / 2))
+        let insetY = min(margin, max(0, bounds.height / 2))
+        let area = CGRect(x: bounds.minX + insetX, y: bounds.minY + insetY,
+                          width: max(0, bounds.width - 2 * insetX), height: max(0, bounds.height - 2 * insetY))
+        let size = CGSize(width: max(0, min(size.width, area.width)), height: max(0, min(size.height, area.height)))
         let centeredX = min(max(target.midX - size.width / 2, area.minX), area.maxX - size.width)
         let centeredY = min(max(target.midY - size.height / 2, area.minY), area.maxY - size.height)
         let below = CGRect(origin: CGPoint(x: centeredX, y: target.maxY + gap), size: size)
@@ -182,13 +202,42 @@ private struct ControlGuideBubblePlacement: Layout {
 
 struct ControlGuideOverlay: View {
     let session: ControlGuideSession
-    let focus: CGRect
+    let focus: CGRect?
     let onNext: () -> Void
     let onSkip: () -> Void
 
     var body: some View {
-        ControlGuideSpotlight(focus: focus) {
-            ControlGuideBubble(session: session, onNext: onNext, onSkip: onSkip)
+        if let focus {
+            ControlGuideSpotlight(focus: focus) {
+                ControlGuideBubble(session: session, onNext: onNext, onSkip: onSkip)
+            }
+        } else {
+            ControlGuideWaitingOverlay {
+                ControlGuideBubble(session: session, isReady: false, onNext: onNext, onSkip: onSkip)
+            }
+        }
+    }
+}
+
+struct ControlGuideWaitingOverlay<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.48).contentShape(Rectangle()).onTapGesture {}
+            content().frame(maxWidth: 320)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct ControlGuidePreparingOverlay: View {
+    let onSkip: () -> Void
+    var body: some View {
+        ControlGuideWaitingOverlay {
+            VStack(spacing: 16) {
+                ProgressView { Text("user_guide.control.preparing", bundle: .module) }
+                Button(action: onSkip) { Text("user_guide.action.skip", bundle: .module) }
+                    .keyboardShortcut(.cancelAction).accessibilityIdentifier("user_guide.skip")
+            }.padding(18).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         }
     }
 }
@@ -254,6 +303,7 @@ struct ControlGuideSpotlight<Content: View>: View {
 
 struct ControlGuideBubble: View {
     let session: ControlGuideSession
+    var isReady = true
     let onNext: () -> Void
     let onSkip: () -> Void
     @Environment(\.locale) private var locale
@@ -265,6 +315,7 @@ struct ControlGuideBubble: View {
                 .accessibilityIdentifier("user_guide.step.\(session.target.rawValue)")
             Text(LocalizedStringKey(session.target.bodyKey), bundle: .module)
                 .font(.callout).foregroundStyle(.secondary)
+            if !isReady { ProgressView { Text("user_guide.control.preparing", bundle: .module) }.controlSize(.small) }
             HStack(spacing: 10) {
                 Text(verbatim: AppLocalization.format("user_guide.step.counter %lld %lld", locale: locale,
                      arguments: [Int64(session.index + 1), Int64(session.steps.count)]))
@@ -278,6 +329,7 @@ struct ControlGuideBubble: View {
                     else { Text("user_guide.action.next", bundle: .module) }
                 }
                 .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                .disabled(!isReady)
                 .accessibilityIdentifier("user_guide.next")
             }
         }

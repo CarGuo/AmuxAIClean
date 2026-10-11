@@ -5,6 +5,32 @@ import XCTest
 // elapsed sleeps or notification timing. No app, permission probe, or network is started.
 final class MainWindowPresentationCoordinatorTests: XCTestCase {
     @MainActor
+    private final class TransactionPhase { var executing = false }
+
+    @MainActor
+    func test_scanAdmissionRechecksLiveTransactionNativeClosingAndHostWithoutPublication() async throws {
+        let model = MainWindowPresentationCoordinator(updateChecker: UpdateChecker())
+        let first = UUID(), second = UUID(), transaction = UUID()
+        model.attachHost(first); model.attachHost(second)
+        let phase = TransactionPhase()
+        model.registerBusinessTransaction(transaction, hostID: first, isActive: { phase.executing })
+        XCTAssertTrue(model.canReplaceScanContext(for: first, hasLocalTransaction: false))
+        // No publication or Task yield between changing the real owner and invoking admission.
+        phase.executing = true
+        XCTAssertFalse(model.canReplaceScanContext(for: first, hasLocalTransaction: false))
+        XCTAssertTrue(model.canReplaceScanContext(for: second, hasLocalTransaction: false))
+        phase.executing = false
+        XCTAssertFalse(model.canReplaceScanContext(for: first, hasLocalTransaction: true))
+        model.nativeSheetChanged(isPresented: true, hostID: first)
+        XCTAssertFalse(model.canReplaceScanContext(for: first, hasLocalTransaction: false))
+        model.nativeSheetChanged(isPresented: false, hostID: first)
+        XCTAssertTrue(model.canReplaceScanContext(for: first, hasLocalTransaction: false))
+        model.requestUserGuide(hostID: first)
+        XCTAssertTrue(model.requestDrainIfPossible(hostID: first, isBusinessModalBusy: false))
+        XCTAssertFalse(model.canReplaceScanContext(for: first, hasLocalTransaction: false), "Reserved application presentation is already occupied")
+    }
+
+    @MainActor
     func test_secondMainWindowCanOwnItsGuideWithoutClosingFirstWindow() async throws {
         let model = MainWindowPresentationCoordinator(updateChecker: UpdateChecker())
         let first = UUID()

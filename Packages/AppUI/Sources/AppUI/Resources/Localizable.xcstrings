@@ -23318,6 +23318,23 @@
         }
       }
     },
+    "user_guide.control.preparing": {
+      "comment": "Guide remains cancelable while native controls mount or scroll into view.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Locating the control…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在定位控件…"
+          }
+        }
+      }
+    },
     "user_guide.control.rescan.body": {
       "extractionState": "manual",
       "localizations": {

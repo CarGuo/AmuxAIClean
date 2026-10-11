@@ -1900,6 +1900,22 @@ Tree 投影时，增量刷新继续沿用空字典。完整空扫描通常已包
   [AppKit 的 key/main 合同](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/WinPanel/Concepts/ChangingMainKeyWindow.html)
   要求输入落在当前交互窗口，不能让回车落到遮罩后的路径输入框。键盘行为须另做生产 App C4，
   命令行 native fixture 的非前台 NSApplication 不能冒充这项证据。
+- **v2026.10.11 第二次外部复审纠正**：上述临时 `orderOut` 虽能恢复 parent，却仍有
+  键盘穿透及不可取消的等待期。滚动等待现在保留可见交互 panel、遮罩与 Skip/Escape；
+  Next 只接受当前步骤已有真实几何的动作。reveal 必须同时验证侧栏当前可见，折叠后
+  的残留闭包不构成可执行能力。首次会话须等当前页面的常驻控件齐备；结果控件允许在
+  第一步补入，首次推进后才冻结，不能让首帧挂载顺序决定导览是否漏步。最小化前保留
+  panel 的键盘归属，恢复时重新完成同一 owner 的交接。
+- **扫描准入也属于窗口合同**：重扫、路径 `/`、普通路径、批量与设置触发的扫描，必须
+  在清空选择/替换 revision 之前读取共同准入；控件 disabled 不是执行边界。异步路径
+  校验不在主线程，返回后重验输入、页面与占用，不能用旧校验结果覆盖新页面。标题栏
+  hosting 的动作闭包保持更新，只有内容布局 identity 改变才同步测量，不能把每次 body
+  刷新都叫“内容尺寸变化”。
+- **按用户要求退役临时门禁**：原生窗口 fixture 是特定 review 的复现实验，证据取得后
+  移出默认 package tests，不靠隐藏窗口或 opt-in/XCTSkip 保留在常规测试里。当前默认测试
+  保留无展示窗口的状态、布局、语言与测量合同；原生系统回调的实验日志和源码留在本地
+  `build/presentation-review-20261011/`，不作为后续每次工作的永久检查。C4 仍须按实际风险
+  选择持续业务场景，不能反复启动夹具代替运行验收。
 - 真实删除纯成功继续由 opaque receipt 生成短暂提示；部分失败与未知结果仍显示明细。
   Debug 预览成功同样不弹 modal，但保留明确的“预览”语义，不生成真实回收凭据。
 

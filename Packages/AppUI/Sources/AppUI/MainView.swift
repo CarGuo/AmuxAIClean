@@ -859,13 +859,19 @@ public struct MainView: View {
     public var body: some View {
         applicationSceneContent
             .background {
-                MainWindowActionsAccessory(content: AnyView(permanentWindowActions))
+                MainWindowActionsAccessory(content: permanentWindowActions,
+                    layoutIdentity: MainWindowActionsLayoutIdentity(mode: interfaceMode,
+                        isScanning: coordinator.hasActivePrimaryScanOwnership,
+                        stashCount: min(stash.count, 100), localeIdentifier: locale.identifier))
                     .frame(width: 0, height: 0)
                 MainWindowPresentationHost(coordinator: applicationPresentation, hostID: presentationHostID)
                     .frame(width: 0, height: 0)
                 ControlGuideHost(
                     anchors: guideAnchors, presentationID: activeControlGuideID,
-                    mode: interfaceMode, locale: locale,
+                    mode: interfaceMode,
+                    requiredTargets: ControlGuideTarget.requiredTargets(mode: interfaceMode,
+                        showsAnalysisControls: normalSection == .analyze),
+                    locale: locale,
                     isFocusedHost: applicationPresentation.isFocusedHost(presentationHostID),
                     onFocus: { applicationPresentation.focusHost(presentationHostID) },
                     onEnd: finishControlGuide
@@ -874,6 +880,10 @@ public struct MainView: View {
             .environment(\.controlGuideAnchors, guideAnchors)
             .environment(\.mainWindowPresentationCoordinator, applicationPresentation)
             .environment(\.mainWindowPresentationHostID, presentationHostID)
+            .onValueChange(of: activeControlGuideID) { _, id in
+                // A full Professional tour teaches the sidebar even if the user had collapsed it.
+                if id != nil, interfaceMode == .professional { professionalColumnVisibility = .all }
+            }
     }
 
     // v2026.10.10: keep sheet composition and scene observers in distinct expressions;
@@ -1509,6 +1519,14 @@ public struct MainView: View {
             || applicationPresentation.businessTransactionCount(for: presentationHostID) > 0
     }
 
+    // v2026.10.11 review: every scan producer must check the live transaction at the
+    // mutation boundary, including delayed settings/category actions and batch sentinels.
+    // Disabled controls alone cannot protect asynchronous or programmatic entry points.
+    private var canReplaceScanContext: Bool {
+        applicationPresentation.canReplaceScanContext(for: presentationHostID,
+                                                      hasLocalTransaction: hasActiveBusinessTransaction)
+    }
+
     /// Main 的所有系统 presentation 共享这一道互斥判定。异步 Safety preflight
     /// 返回时如果 fileImporter / AI / Stash / Smart Care 已占用窗口，就不能再竞争
     /// 同一个 presentation slot。
@@ -2026,6 +2044,7 @@ public struct MainView: View {
     }
 
     private func startSmartCareScan() {
+        guard canReplaceScanContext else { return }
         smartCareAIReviewSession.reset()
         pendingSmartCareAIReport = nil
         smartCareSheetRoute = nil
@@ -3696,6 +3715,7 @@ public struct MainView: View {
     }
 
     private func rescanCurrentCategory() {
+        guard canReplaceScanContext else { return }
         guard let id = selectedCategory else { return }
         switch id {
         case ScanCategory.batchRecommendedID:
@@ -3707,13 +3727,9 @@ public struct MainView: View {
         case ScanCategory.batchCommonAppCacheID:
             triggerCommonAppCacheScan()
         case MainView.devVersionedSentinelID:
-            resetSelectionState()
-            coordinator.scanKnownVersionedRoots(
-                home: FileManager.default.homeDirectoryForCurrentUser
-            )
+            triggerKnownVersionedScan()
         default:
             guard let cat = allCategories.first(where: { $0.id == id }) else { return }
-            resetSelectionState()
             startScan(category: cat)
         }
     }
@@ -4028,6 +4044,7 @@ public struct MainView: View {
             if interfaceMode == .professional {
                 stashToolbarButton
                 scanControlButton
+                    .disabled(!canReplaceScanContext || hasConflictingMainModalPresentation)
                     .accessibilityIdentifier("main.scan-control")
                     .controlGuideTarget(.rescan)
             }
@@ -4155,7 +4172,7 @@ public struct MainView: View {
     }
 
     private func requestCategorySwitch(to new: String?, fallbackCategory: ScanCategory? = nil) {
-        guard !hasActiveBusinessTransaction else { return }
+        guard canReplaceScanContext else { return }
         let old = selectedCategory
         guard old != new else {
             // 重复添加当前正在查看的路径仍然是一个明确的“扫描这里”意图。
@@ -4182,6 +4199,7 @@ public struct MainView: View {
         to new: String?,
         fallbackCategory: ScanCategory? = nil
     ) {
+        guard canReplaceScanContext else { return }
         guard old != new else { return }
         // v2026.07.16 scan-performance regression fix: specialized destinations
         // do not call ScanCoordinator.scan(...), so relying on the next scan to
@@ -4215,8 +4233,7 @@ public struct MainView: View {
         // 必须在 allCategories.first 之前拦截，否则会走 startScan(category:) 找不到 cat 直接 return。
         if let id = new, id == MainView.devVersionedSentinelID {
             runHeavyAfterCommit {
-                coordinator.scanKnownVersionedRoots(
-                    home: FileManager.default.homeDirectoryForCurrentUser)
+                triggerKnownVersionedScan()
             }
             return
         }
@@ -4241,6 +4258,7 @@ public struct MainView: View {
     /// 这是因为 toolbar 重复点同一按钮时 selection 没变 onChange 不触发，必须 helper 兜底。
     /// review-fix #12：可见性收紧到 private，与 triggerFullDiskScan 一致。
     private func triggerRecommendedScan() {
+        guard canReplaceScanContext else { return }
         resetSelectionState()
         selectedCategory = ScanCategory.batchRecommendedID
         coordinator.scanRecommended(includeHidden: settings.showHidden)
@@ -4248,6 +4266,7 @@ public struct MainView: View {
 
     /// v1.5：开发者扫描的统一入口，理由同上。
     private func triggerDeveloperScan() {
+        guard canReplaceScanContext else { return }
         resetSelectionState()
         selectedCategory = ScanCategory.batchDeveloperID
         coordinator.scanDeveloper(includeHidden: settings.showHidden,
@@ -4256,9 +4275,16 @@ public struct MainView: View {
 
     /// 常见应用缓存扫描入口：规则命中列表，不做大根递归。
     private func triggerCommonAppCacheScan() {
+        guard canReplaceScanContext else { return }
         resetSelectionState()
         selectedCategory = ScanCategory.batchCommonAppCacheID
         coordinator.scanCommonAppCaches()
+    }
+
+    private func triggerKnownVersionedScan() {
+        guard canReplaceScanContext else { return }
+        resetSelectionState()
+        coordinator.scanKnownVersionedRoots(home: FileManager.default.homeDirectoryForCurrentUser)
     }
 
     /// v1.0 T5：路径栏 —— 输 `/` 回车扫整盘；输任意已存在目录回车直接扫。
@@ -4296,6 +4322,7 @@ public struct MainView: View {
         )
         .contentShape(Capsule(style: .continuous))
         .animation(.easeInOut(duration: 0.12), value: pathBarFocused)
+        .disabled(!canReplaceScanContext || hasConflictingMainModalPresentation)
     }
 
     /// v2026.10.11: keep the Stash entrance even when empty; count changes only update
@@ -4363,8 +4390,6 @@ public struct MainView: View {
                 .help(AppLocalization.string("toolbar.help.stop", locale: locale))
         } else if let id = selectedCategory, let cat = allCategories.first(where: { $0.id == id }) {
             Button {
-                // v1.3：统一走 resetSelectionState()，避免重新扫描后 detail/treeSelection 残留
-                resetSelectionState()
                 startScan(category: cat)
             } label: {
                 Label {
@@ -4379,9 +4404,7 @@ public struct MainView: View {
             // 上面 `allCategories.first` 永远拿不到 cat，重新扫描按钮就没了
             // （用户截图反馈"那个常驻重新扫描按键哪里去了"）。这里专门走一支。
             Button {
-                resetSelectionState()
-                coordinator.scanKnownVersionedRoots(
-                    home: FileManager.default.homeDirectoryForCurrentUser)
+                triggerKnownVersionedScan()
             } label: {
                 Label {
                     Text("toolbar.scan.rescan", bundle: .module)
@@ -4433,7 +4456,10 @@ public struct MainView: View {
     /// 1. 输入 `/`（裸斜杠）→ 整盘扫描
     /// 2. 输入任意"已存在目录"绝对路径 → 加到 customCategories 并选中扫描
     private func submitPathBar() {
+        guard canReplaceScanContext, !hasConflictingMainModalPresentation else { return }
         let raw = pathBarInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let submittedCategory = selectedCategory
+        let submittedMode = interfaceMode
         guard !raw.isEmpty else { return }
         // 整盘
         if raw == "/" {
@@ -4442,16 +4468,28 @@ public struct MainView: View {
             return
         }
         // 普通目录
-        let url = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
-            // 简单提示：路径不存在/不是目录
-            deleteResult = String(format: AppLocalization.string("delete.result.path_invalid %@", locale: locale), url.path)
-            return
-        }
         Task {
+            // Path validation performs filesystem I/O. Keep it off the UI executor, and
+            // recheck both the input and live occupancy after returning across this await.
+            let validation = await Task.detached(priority: .userInitiated) {
+                let url = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
+                var isDir: ObjCBool = false
+                let isDirectory = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+                return (url, isDirectory)
+            }.value
+            guard pathBarInput.trimmingCharacters(in: .whitespacesAndNewlines) == raw,
+                  selectedCategory == submittedCategory, interfaceMode == submittedMode,
+                  canReplaceScanContext, !hasConflictingMainModalPresentation else { return }
+            let (url, isDirectory) = validation
+            guard isDirectory else {
+                deleteResult = String(format: AppLocalization.string("delete.result.path_invalid %@", locale: locale), url.path)
+                return
+            }
             _ = await pathStore.add(url)
             await MainActor.run {
+                guard pathBarInput.trimmingCharacters(in: .whitespacesAndNewlines) == raw,
+                      selectedCategory == submittedCategory, interfaceMode == submittedMode,
+                      canReplaceScanContext, !hasConflictingMainModalPresentation else { return }
                 let cat = ScanCategory.makeCustom(url: url)
                 requestCategorySwitch(to: cat.id, fallbackCategory: cat)
                 pathBarInput = ""
@@ -4466,6 +4504,7 @@ public struct MainView: View {
     /// onChange → startScan(category:) 的旧链路（避免高亮被绕回 fullDisk.id）。
     /// v1.5 review-fix #2：reset 由 helper 唯一负责（onChange 在 batch.* 分支不再 reset）。
     private func triggerFullDiskScan() {
+        guard canReplaceScanContext else { return }
         resetSelectionState()
         selectedCategory = ScanCategory.batchFullDiskID
         coordinator.scanFullDisk(includeHidden: settings.showHidden)
@@ -5330,6 +5369,8 @@ public struct MainView: View {
     /// 统一扫描入口：根据类目 kind 决定是否传 largeFileMinBytes。
     /// 这一层抽象避免在 onChange / toolbar / settings.onChange 三处重复"判 kind 决定参数"。
     private func startScan(category: ScanCategory) {
+        guard canReplaceScanContext else { return }
+        resetSelectionState()
         // v1.3.zzzz Phase 2-F-B：开新一轮扫描前先清掉 pipeline 上的 accessDenied 旧快照。
         // ScanCoordinator 在 scan(...) 入口会重置 permissionDeniedPaths / tccProtectedSkippedPaths
         // （见 [ScanCoordinator.swift L356-L361 / L410-L412 / L509-L511]

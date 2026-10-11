@@ -67,6 +67,13 @@ public final class MainWindowPresentationCoordinator: ObservableObject {
         return presentations[hostID] != nil || scheduledHosts.contains(hostID)
     }
 
+    // v2026.10.11 review: a scan replaces selection/revision as well as disk work. All
+    // producers must use live host admission, including the native closing barrier and
+    // nested tools whose transaction has changed before SwiftUI published another frame.
+    func canReplaceScanContext(for hostID: UUID, hasLocalTransaction: Bool) -> Bool {
+        !hasLocalTransaction && !isOccupied(for: hostID) && businessModalCount(for: hostID) == 0
+    }
+
     public init(updateChecker: UpdateChecker) {
         self.updateChecker = updateChecker
         updateSubscription = updateChecker.$availableUpdate.sink { [weak self] release in

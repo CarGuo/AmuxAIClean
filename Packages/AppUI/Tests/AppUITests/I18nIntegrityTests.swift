@@ -253,8 +253,8 @@ final class I18nIntegrityTests: XCTestCase {
             let dir = root.appendingPathComponent(relDir)
             let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: nil)
             while let url = enumerator?.nextObject() as? URL {
+                if Self.shouldSkipSwiftSource(url: url) { enumerator?.skipDescendants(); continue }
                 guard url.pathExtension == "swift" else { continue }
-                if Self.shouldSkipSwiftSource(url: url) { continue }
                 if let s = try? String(contentsOf: url, encoding: .utf8) {
                     combined += s
                     combined += "\n"
@@ -265,8 +265,8 @@ final class I18nIntegrityTests: XCTestCase {
         let pkgRoot = root.appendingPathComponent(Self.siblingPackagesRoot)
         if let enumerator = fm.enumerator(at: pkgRoot, includingPropertiesForKeys: nil) {
             while let url = enumerator.nextObject() as? URL {
+                if Self.shouldSkipSwiftSource(url: url) { enumerator.skipDescendants(); continue }
                 guard url.pathExtension == "swift" else { continue }
-                if Self.shouldSkipSwiftSource(url: url) { continue }
                 if let s = try? String(contentsOf: url, encoding: .utf8) {
                     combined += s
                     combined += "\n"
@@ -366,11 +366,15 @@ final class I18nIntegrityTests: XCTestCase {
     ///   - **运行期由 enum.rawValue / ID 拼接出完整 key**（编译期 grep 看不见完整字面量）；
     ///   - 已在其它专项契约中单独覆盖的家族（如 trash.err.* 已被契约 1 双向校验）。
     ///
-    /// **函数名保留 `_warn_only` 后缀**：CI 脚本 / 文档 / git blame 历史可能引用，
-    /// 重命名会断裂；语义已在文档与断言上明确升级，名称仅作历史标记。
-    func test_xcstrings_所有key都被Swift源引用_warn_only() throws {
+    /// v2026.10.11 门禁审计：这是仍有效的双语引用契约，不是临时 review 实验。
+    /// 仓库没有旧函数名的调用者，移除误导的 warn_only 标记；断言和白名单不变。
+    func test_xcstrings_所有key都被Swift源引用() throws {
         let keys = try loadXcstringsKeys()
         let sources = try loadAllSwiftSources()
+        // Repeated Swift String.contains on the large mixed-language source repeatedly
+        // performs Unicode search work. NSString preserves canonical string search while
+        // using the native search implementation; source coverage and assertion are unchanged.
+        let searchableSources = sources as NSString
 
         // 白名单：动态拼接的 key 前缀（运行期由 enum / id 拼出完整 key）。
         // 命中即跳过 —— 编译期 grep 看不见完整字面量是合理的。
@@ -399,7 +403,7 @@ final class I18nIntegrityTests: XCTestCase {
         var orphans: [String] = []
         for key in keys {
             if dynamicPrefixes.contains(where: { key.hasPrefix($0) }) { continue }
-            if !sources.contains(key) {
+            if searchableSources.range(of: key).location == NSNotFound {
                 orphans.append(key)
             }
         }
@@ -632,7 +636,7 @@ final class I18nIntegrityTests: XCTestCase {
     ///   - **同时**扫 substitution 内 plural 子条目：若 `Apple translated %lld file(s)`
     ///     这种"迁移半途"再次出现也会被抓到（substitution 内允许 plural form，但 form
     ///     内不应该再用 `(s)` 兜底——既然走 substitution 就应该 form 写完整）。
-    func test_xcstrings_plural_shape_backlog_warn_only() throws {
+    func test_xcstrings_英文复数不再使用括号s() throws {
         let units = try loadAllStringUnits()
         let regex = try NSRegularExpression(pattern: #"\b\w+\(s\)"#, options: [])
         let offenders = units.filter { unit in
@@ -657,7 +661,7 @@ final class I18nIntegrityTests: XCTestCase {
         )
     }
 
-    /// 契约 5：number-format hygiene —— 持续 warn-only，阈值收紧
+    /// 契约 5：number-format hygiene —— 保留现有 backlog 硬上限
     ///
     /// 凡是 value 同时包含 `%lld` / `%d` 与英文复数名词（files / items / sessions / rows /
     /// directories / apps）的 key，都是潜在的 plural variations 候选。
@@ -668,9 +672,9 @@ final class I18nIntegrityTests: XCTestCase {
     ///   - 2026-06-23（P1 收尾）：substitution-aware 化（已迁移条目自动从候选中剔除），
     ///     重新校准；当前 backlog 评估为 32 条（detail-only，无 UX 紧迫），保持 warn-only。
     ///
-    /// 本契约仍只**计数 + 列出 backlog**，不强制 fail。32 条多为 "scanning %lld files"
+    /// 本契约计数并限制新增 backlog。32 条多为 "scanning %lld files"
     /// 这种纯进度条文案，单 vs 复数差异极小，逐条迁移成本不匹配收益；保持 backlog 跟踪即可。
-    func test_xcstrings_number_plural_backlog_warn_only() throws {
+    func test_xcstrings_number_plural_backlog_不允许增加() throws {
         let units = try loadAllStringUnits()
         // %lld 后跟单个英文名词 + 单复数歧义：files / items / sessions / rows / directories / apps / bytes / leaves / paths / swapfiles
         let englishPluralNouns = #"(files|items|sessions|rows|directories|apps|bytes|leaves|paths|swapfiles)"#
