@@ -286,7 +286,7 @@ struct GSYCleanMacApp: App {
                 // tooltip、托盘与主菜单分别由 environment + applyLiveLocale 即时刷新。
                 settings.applyToAppleLanguagesIfNeeded()
                 applyLiveLocale()
-                if settings.userGuideCompleted {
+                if settings.hasAcknowledgedAnyUserGuide {
                     await evaluateTCCOnboarding()
                 }
                 // v1.1：尊重 settings.updateCheckEnabled 决定是否联网；用户可在设置里关
@@ -393,8 +393,10 @@ struct GSYCleanMacApp: App {
                 // 不读取 SwiftUI environment；统一刷新其显式 locale 边界。
                 applyLiveLocale()
             }
-            .onValueChange(of: settings.userGuideCompleted) { _, completed in
-                guard completed else { return }
+            .onValueChange(of: settings.hasAcknowledgedAnyUserGuide) { _, acknowledged in
+                // v1.6.9: FDA is app-wide and follows the first acknowledged tour; it does not
+                // require users to visit and finish both independent interface modes.
+                guard acknowledged else { return }
                 Task {
                     await evaluateTCCOnboarding()
                 }

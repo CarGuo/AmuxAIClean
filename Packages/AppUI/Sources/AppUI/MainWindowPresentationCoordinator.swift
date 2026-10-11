@@ -48,7 +48,6 @@ public final class MainWindowPresentationCoordinator: ObservableObject {
     private var presentations: [UUID: Presentation] = [:]
     private var dismissingHosts: Set<UUID> = []
     private var scheduledHosts: Set<UUID> = []
-    private var hasEvaluatedInitialGuide = false
     private var hasEvaluatedFullDiskAccess = false
     private(set) var fullDiskAccessEvaluationTask: Task<Void, Never>?
     private var businessLeases: [UUID: BusinessLease] = [:]
@@ -89,16 +88,30 @@ public final class MainWindowPresentationCoordinator: ObservableObject {
         if hostID == nil, let preferredHostID { focusActions[preferredHostID]?() }
     }
 
-    func requestInitialUserGuideIfNeeded(userGuideCompleted: Bool, isRunningTests: Bool) {
-        guard !hasEvaluatedInitialGuide else { return }
-        hasEvaluatedInitialGuide = true
-        guard UserGuidePresentationPolicy.shouldAutoPresentOnLaunch(
-            userGuideCompleted: userGuideCompleted,
-            hasEvaluatedInitialUserGuide: false,
-            hasConflictingModal: false,
+    func requestFirstVisitUserGuideIfNeeded(
+        hostID: UUID, mode: SmartCareInterfaceMode,
+        completedModes: Set<SmartCareInterfaceMode>, isRunningTests: Bool
+    ) {
+        // v1.6.9 (2026.10.12): startup and mode transitions share this reconciliation.
+        // Automatic requests are tied to a visible mode; Help retains its explicit window intent.
+        let previousCount = requests.count
+        requests.removeAll {
+            guard case .userGuide(.firstVisit(let requestedMode)) = $0.request else { return false }
+            return completedModes.contains(requestedMode)
+                || (($0.hostID == hostID || $0.hostID == nil) && requestedMode != mode)
+        }
+        if requests.count != previousCount { changed() }
+        guard hosts.contains(hostID), UserGuidePresentationPolicy.shouldAutoPresentOnVisit(
+            mode: mode, completedModes: completedModes,
             isRunningTests: isRunningTests
         ) else { return }
-        enqueueUserGuide(trigger: .automaticFirstLaunch, hostID: nil)
+        // First-visit tours are app-wide per mode; two hosts do not both auto-teach one mode.
+        guard !requests.contains(where: {
+            if case .userGuide(.firstVisit(let requestedMode)) = $0.request { return requestedMode == mode }; return false
+        }), !presentations.values.contains(where: {
+            if case .userGuide(let presentedMode) = $0.content { return presentedMode == mode }; return false
+        }) else { return }
+        enqueueUserGuide(trigger: .firstVisit(mode), hostID: hostID)
     }
 
     private func enqueueUserGuide(trigger: UserGuidePresentationTrigger, hostID: UUID?) {
@@ -186,6 +199,9 @@ public final class MainWindowPresentationCoordinator: ObservableObject {
                     requests.insert(PendingRequest(request: presentation.request, hostID: nil), at: 0)
                 }
             case .userGuide, .fullDiskAccess:
+                // v1.6.9 C4: changing the split view can temporarily detach its native host.
+                // Preserve the intent, including its first-visit mode, until admission rechecks
+                // the live window. A mismatched automatic mode is never displayed/acknowledged.
                 requests.insert(PendingRequest(request: presentation.request, hostID: nil), at: 0)
             }
         }
@@ -220,7 +236,8 @@ public final class MainWindowPresentationCoordinator: ObservableObject {
         let request = requests.remove(at: index).request
         let content: Presentation.Content
         switch request {
-        case .userGuide:
+        case .userGuide(let trigger):
+            if case .firstVisit(let requestedMode) = trigger, requestedMode != interfaceMode { return nil }
             content = .userGuide(interfaceMode: interfaceMode)
         case .fullDiskAccess: content = .fullDiskAccess
         case .update(let release): content = .update(release)

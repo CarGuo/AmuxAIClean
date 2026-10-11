@@ -7,12 +7,12 @@ final class ControlGuideTests: XCTestCase {
     func test_sequenceUsesOnlyRealControlsInTheCurrentMode() throws {
         let available: Set<ControlGuideTarget> = [.interfaceMode, .analyze, .clean, .optimize, .status,
                                                 .sidebarOperations, .diskCapacity, .scanCategory, .pathInput,
-                                                .rescan, .stash, .fullDisk, .deleteSelection, .reopenGuide]
+                                                .rescan, .rowActions, .stash, .deleteSelection, .reopenGuide]
         let normal = ControlGuideTarget.sequence(mode: .normal, available: available)
         XCTAssertEqual(normal, [.interfaceMode, .analyze, .clean, .optimize, .status, .reopenGuide])
         let pro = ControlGuideTarget.sequence(mode: .professional, available: available)
-        XCTAssertEqual(pro, [.interfaceMode, .sidebarOperations, .scanCategory, .fullDisk, .diskCapacity, .pathInput,
-                             .rescan, .deleteSelection, .stash, .reopenGuide])
+        XCTAssertEqual(pro, [.interfaceMode, .scanCategory, .diskCapacity, .pathInput,
+                             .rescan, .rowActions, .deleteSelection, .stash, .reopenGuide])
         XCTAssertFalse(pro.contains(.resultsMode), "No invented result control before a scan")
         XCTAssertTrue(pro.contains(.stash), "The permanent empty Stash entrance must also be taught")
         XCTAssertNil(ControlGuideSession(presentationID: UUID(), mode: .normal, available: []))
@@ -54,23 +54,23 @@ final class ControlGuideTests: XCTestCase {
         }
     }
 
-    func test_firstLaunchPolicyRetainsCompletionSessionAndBusinessGuards() {
-        XCTAssertTrue(UserGuidePresentationPolicy.shouldAutoPresentOnLaunch(userGuideCompleted: false,
-            hasEvaluatedInitialUserGuide: false, hasConflictingModal: false))
-        XCTAssertFalse(UserGuidePresentationPolicy.shouldAutoPresentOnLaunch(userGuideCompleted: true,
-            hasEvaluatedInitialUserGuide: false, hasConflictingModal: false))
-        XCTAssertFalse(UserGuidePresentationPolicy.shouldAutoPresentOnLaunch(userGuideCompleted: false,
-            hasEvaluatedInitialUserGuide: true, hasConflictingModal: false))
-        XCTAssertFalse(UserGuidePresentationPolicy.shouldAutoPresentOnLaunch(userGuideCompleted: false,
-            hasEvaluatedInitialUserGuide: false, hasConflictingModal: true))
-        XCTAssertFalse(UserGuidePresentationPolicy.shouldAutoPresentOnLaunch(userGuideCompleted: false,
-            hasEvaluatedInitialUserGuide: false, hasConflictingModal: false, isRunningTests: true))
+    func test_firstVisitPolicyUsesOnlyThatModesAcknowledgementAndSuppressesTestLaunches() {
+        // Business/native presentation admission is tested in the production coordinator;
+        // a busy window must retain this eligible request rather than consume a launch flag.
+        for mode in SmartCareInterfaceMode.allCases {
+            XCTAssertTrue(UserGuidePresentationPolicy.shouldAutoPresentOnVisit(mode: mode, completedModes: []))
+            XCTAssertFalse(UserGuidePresentationPolicy.shouldAutoPresentOnVisit(mode: mode, completedModes: [mode]))
+            let other = mode == .normal ? SmartCareInterfaceMode.professional : .normal
+            XCTAssertTrue(UserGuidePresentationPolicy.shouldAutoPresentOnVisit(mode: mode, completedModes: [other]))
+            XCTAssertFalse(UserGuidePresentationPolicy.shouldAutoPresentOnVisit(mode: mode,
+                completedModes: [], isRunningTests: true))
+        }
     }
 
     func test_realControlTextIsLocalizedInBothLanguages() {
         let keys = ControlGuideTarget.allCases.flatMap { [$0.titleKey, $0.bodyKey] }
             + ["user_guide.window.title", "user_guide.action.skip", "user_guide.action.next", "user_guide.action.finish",
-               "user_guide.control.preparing"]
+               "user_guide.control.preparing", "user_guide.control.row_actions.example"]
         for locale in [Locale(identifier: "zh-Hans"), Locale(identifier: "en")] {
             for key in keys {
                 let text = AppLocalization.string(key, locale: locale)
@@ -91,13 +91,19 @@ final class ControlGuideTests: XCTestCase {
         let navigationOnly = ControlGuideTarget.requiredTargets(mode: .normal, showsAnalysisControls: false)
         XCTAssertEqual(navigationOnly.count, 7, "Clean/Optimize/Status must not wait for unmounted Analyze controls")
         let proRequired = ControlGuideTarget.requiredTargets(mode: .professional)
+        XCTAssertTrue(proRequired.contains(.rowActions), "AI / Stash / Trash must be taught before users have scanned anything")
+        XCTAssertNil(ControlGuideSession(presentationID: id, mode: .professional,
+                                        available: proRequired.subtracting([.rowActions]), required: proRequired))
         session = try XCTUnwrap(ControlGuideSession(presentationID: id, mode: .professional,
                                                    available: proRequired, required: proRequired))
+        XCTAssertEqual(session.steps.filter { [.scanCategory, .customPaths, .professionalTools, .workflows].contains($0) }.count, 4,
+                       "Adjacent sidebar sections are introduced together, not one tiny step per entry")
+        XCTAssertEqual(session.steps.count, 11, "Empty-result guide still includes the item action example")
         session.updateInitialAvailability(proRequired.union([.resultsMode, .deleteSelection]))
-        XCTAssertEqual(session.steps.count, 21)
+        XCTAssertEqual(session.steps.count, 13)
         XCTAssertTrue(session.advance())
         session.updateInitialAvailability(proRequired)
-        XCTAssertEqual(session.steps.count, 21, "The running tour is frozen after the first user advance")
+        XCTAssertEqual(session.steps.count, 13, "The running tour is frozen after the first user advance")
     }
 
     func test_productionProgressIgnoresNextUntilReadyAndRejectsFoldedSidebarReveal() throws {
@@ -107,12 +113,10 @@ final class ControlGuideTests: XCTestCase {
         XCTAssertNil(state.session)
         XCTAssertEqual(state.advance(), .ignored)
         state.prepare(presentationID: id, mode: .professional,
-                      available: [.interfaceMode, .sidebarOperations, .scanCategory], required: [.interfaceMode])
+                      available: [.interfaceMode, .scanCategory, .customPaths], required: [.interfaceMode])
         XCTAssertEqual(state.locate(isVisible: true, canReveal: false), .ready)
         XCTAssertEqual(state.advance(), .advanced)
         XCTAssertEqual(state.advance(), .ignored, "A second Return cannot skip an unlocated next target")
-        XCTAssertEqual(state.locate(isVisible: true, canReveal: false), .ready)
-        XCTAssertEqual(state.advance(), .advanced)
         XCTAssertEqual(try XCTUnwrap(state.session).target, .scanCategory)
         let registered: Set<ControlGuideTarget> = [.scanCategory]
         XCTAssertTrue(ControlGuideAnchorPolicy.canReveal(.scanCategory, registered: registered, sidebarIsVisible: true))

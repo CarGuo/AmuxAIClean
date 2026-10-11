@@ -271,19 +271,40 @@ final class AppSettingsTests: XCTestCase {
     }
 
     @MainActor
-    func test_userGuideCompleted_首次未完成且完成后跨启动持久化_testReset可重置() throws {
+    func test_userGuideAcknowledgementIsIndependentForEachModeAndSurvivesRestart() throws {
         let suite = freshSuite()
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
         let first = AppSettings(testSuite: suite)
-        XCTAssertFalse(first.userGuideCompleted, "首次启动默认应未完成新用户指引")
+        XCTAssertTrue(first.completedUserGuideModes.isEmpty, "首次启动两种模式均未完成指引")
+        XCTAssertFalse(first.hasAcknowledgedAnyUserGuide)
 
-        first.userGuideCompleted = true
+        first.acknowledgeUserGuide(in: .normal)
         let restored = AppSettings(testSuite: suite)
-        XCTAssertTrue(restored.userGuideCompleted, "完成新用户指引后应跨启动持久化")
+        XCTAssertEqual(restored.completedUserGuideModes, [.normal], "完成普通指引不得消耗首次专业指引")
+        XCTAssertTrue(restored.hasAcknowledgedAnyUserGuide, "权限引导无需等待用户访问两种模式")
+        restored.acknowledgeUserGuide(in: .professional)
+        XCTAssertEqual(AppSettings(testSuite: suite).completedUserGuideModes, [.normal, .professional])
 
         restored._testReset()
-        XCTAssertFalse(
-            AppSettings(testSuite: suite).userGuideCompleted,
+        XCTAssertTrue(
+            AppSettings(testSuite: suite).completedUserGuideModes.isEmpty,
             "_testReset 后应重置回未完成状态"
         )
+    }
+
+    @MainActor
+    func test_legacyGlobalCompletionCannotSuppressEitherModeAfterUpgrade() throws {
+        let suite = freshSuite()
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.set(true, forKey: AppSettings.Keys.legacyUserGuideCompleted)
+        let upgraded = AppSettings(testSuite: suite)
+        XCTAssertTrue(upgraded.completedUserGuideModes.isEmpty,
+                      "旧 Boolean 没有模式来源，不能臆测两种都完成，也不能臆测普通已完成")
+        upgraded.acknowledgeUserGuide(in: .professional)
+        let restored = AppSettings(testSuite: suite)
+        XCTAssertEqual(restored.completedUserGuideModes, [.professional], "已有新格式记录优先，普通仍未完成")
+        XCTAssertTrue(UserGuidePresentationPolicy.shouldAutoPresentOnVisit(mode: .normal,
+            completedModes: restored.completedUserGuideModes))
     }
 }

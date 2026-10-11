@@ -902,7 +902,12 @@ public struct MainView: View {
                 NavigationSplitView(columnVisibility: $professionalColumnVisibility) {
                     sidebar
                 } detail: {
-                    results
+                    // The example is a sibling of results, like the sidebar's fixed capacity
+                    // area. It participates in normal column layout without a top safe-area owner.
+                    VStack(spacing: 0) {
+                        if activeControlGuideID != nil { professionalRowActionsGuide }
+                        results
+                    }
                 }
             }
         }
@@ -1273,11 +1278,7 @@ public struct MainView: View {
             coordinator.mainListSortKey = settings.mainListSortKey
             isPresentationHostMounted = true
             applicationPresentation.attachHost(presentationHostID)
-            applicationPresentation.requestInitialUserGuideIfNeeded(
-                userGuideCompleted: settings.userGuideCompleted,
-                isRunningTests: Self.isRunningUnderTests
-            )
-            schedulePendingApplicationPresentationIfPossible()
+            requestFirstVisitUserGuideIfNeeded()
             let snapshots = await pathStore.snapshots()
             for await urls in snapshots {
                 guard !Task.isCancelled else { return }
@@ -1295,6 +1296,17 @@ public struct MainView: View {
             consumeConfirmedCategorySwitchIfPossible()
         }
         .onValueChange(of: pathBarInput) { _, _ in invalidateStaleScanInputRequest() }
+        .onValueChange(of: interfaceMode) { _, _ in requestFirstVisitUserGuideIfNeeded() }
+        .onValueChange(of: settings.completedUserGuideModes) { _, _ in requestFirstVisitUserGuideIfNeeded() }
+    }
+
+    private func requestFirstVisitUserGuideIfNeeded() {
+        guard isPresentationHostMounted else { return }
+        applicationPresentation.requestFirstVisitUserGuideIfNeeded(
+            hostID: presentationHostID, mode: interfaceMode,
+            completedModes: settings.completedUserGuideModes, isRunningTests: Self.isRunningUnderTests
+        )
+        schedulePendingApplicationPresentationIfPossible()
     }
 
     // MARK: - Smart Care
@@ -1633,9 +1645,12 @@ public struct MainView: View {
         // another window's tour, acknowledge onboarding, or change its mode.
         guard activeControlGuideID == id else { return }
         applicationPresentation.dismiss(hostID: presentationHostID)
-        guard applicationPresentation.finishDismissal(hostID: presentationHostID, presentationID: id) != nil else { return }
+        guard let dismissal = applicationPresentation.finishDismissal(hostID: presentationHostID, presentationID: id),
+              case .userGuide(let presentedMode) = dismissal.presentation.content else { return }
         applicationSheetID = nil
-        if reason.acknowledgesOnboarding { settings.userGuideCompleted = true }
+        // v1.6.9: acknowledge the immutable presented mode, even if the window's mode changed.
+        if reason.acknowledgesOnboarding { settings.acknowledgeUserGuide(in: presentedMode) }
+        if presentedMode != interfaceMode { requestFirstVisitUserGuideIfNeeded() }
         schedulePendingApplicationPresentationIfPossible()
         schedulePendingSentinelPresentationIfPossible()
     }
@@ -2385,6 +2400,23 @@ public struct MainView: View {
         }
     }
 
+    /// v1.6.9: first-visit teaching cannot depend on a scan producing a row. This labelled
+    /// example uses the actual native row action renderer, without a file identity or callbacks.
+    private var professionalRowActionsGuide: some View {
+        HStack(spacing: 12) {
+            Text("user_guide.control.row_actions.example", bundle: .module)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 12)
+            TreeRowActionsGuideExample(locale: locale)
+                .controlGuideTarget(.rowActions)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.bar)
+        .accessibilityIdentifier("user_guide.row_actions.example")
+    }
+
     // MARK: - Sidebar
 
     /// v1.3.zz UI 修复：原本结构是 `List { ... }.safeAreaInset(.bottom) { VolumeCapacityCard }`，
@@ -2462,25 +2494,23 @@ public struct MainView: View {
                 Section {
                     sidebarRow(largeFilesCategory)
                         .tag(largeFilesCategory.id)
-                        .controlGuideGroupPart(.largeFiles)
+                        .controlGuideGroupPart(.scanCategory)
                         .accessibilityIdentifier("sidebar.large_files")
                 } header: {
                     Text("sidebar.section.large_files", bundle: .module)
-                        .controlGuideGroupPart(.largeFiles)
+                        .controlGuideGroupPart(.scanCategory)
                 }
-                .id(ControlGuideTarget.largeFiles)
 
                 Section {
                     ForEach(presetCategories) { cat in
                         sidebarRow(cat)
                             .tag(cat.id)
-                            .controlGuideGroupPart(.recommendedCleanup)
+                            .controlGuideGroupPart(.scanCategory)
                     }
                 } header: {
                     Text("sidebar.section.recommended", bundle: .module)
-                    .controlGuideGroupPart(.recommendedCleanup)
+                    .controlGuideGroupPart(.scanCategory)
                 }
-                .id(ControlGuideTarget.recommendedCleanup)
 
                 Section {
                     ForEach(customCategories) { cat in
@@ -2530,23 +2560,21 @@ public struct MainView: View {
                     ForEach(libraryBrowseCategories) { cat in
                         sidebarRow(cat, iconOverride: "folder.badge.gearshape")
                             .tag(cat.id)
-                            .controlGuideGroupPart(.libraryBrowsing)
+                            .controlGuideGroupPart(.customPaths)
                     }
                 } header: {
                     Text("sidebar.section.library", bundle: .module)
-                    .controlGuideGroupPart(.libraryBrowsing)
+                    .controlGuideGroupPart(.customPaths)
                 }
-                .id(ControlGuideTarget.libraryBrowsing)
 
                 Section {
                     sidebarRow(ScanCategory.fullDisk)
                         .tag(ScanCategory.fullDisk.id)
-                        .controlGuideGroupPart(.fullDisk)
+                        .controlGuideGroupPart(.customPaths)
                 } header: {
                     Text("sidebar.section.full_disk", bundle: .module)
-                        .controlGuideGroupPart(.fullDisk)
+                        .controlGuideGroupPart(.customPaths)
                 }
-                .id(ControlGuideTarget.fullDisk)
 
                 Section {
                     appFootprintSidebarRow
@@ -2578,25 +2606,25 @@ public struct MainView: View {
                 Section {
                     duplicateSidebarRow
                         .tag(MainView.duplicateSentinelID)
-                        .controlGuideGroupPart(.duplicates)
+                        .controlGuideGroupPart(.professionalTools)
                         .accessibilityIdentifier("sidebar.duplicates")
                 } header: {
                     Text("sidebar.section.duplicates", bundle: .module)
-                        .controlGuideGroupPart(.duplicates)
+                        .controlGuideGroupPart(.professionalTools)
                 }
-                .id(ControlGuideTarget.duplicates)
 
                 // Step 7：UndoHistory section —— 给"最近清理 / 恢复"一个独立入口。
                 // 单 row 设计避免污染 ScanCategory 体系（与 uninstall / duplicate 同款 sentinel ID 模式）。
                 Section {
                     undoHistorySidebarRow
                         .tag(MainView.undoHistorySentinelID)
-                        .controlGuideGroupPart(.history)
+                        .controlGuideGroupPart(.workflows)
                 } header: {
                     Text("sidebar.section.undo_history", bundle: .module)
-                        .controlGuideGroupPart(.history)
+                        .controlGuideGroupPart(.workflows)
                 }
-                .id(ControlGuideTarget.history)
+
+                .id(ControlGuideTarget.workflows)
 
                 // M4-T4 / 2026-06：系统维护 section —— flushQuickLookCache /
                 // flushDNSCache 两个 user-space 任务，
@@ -2605,12 +2633,11 @@ public struct MainView: View {
                 Section {
                     maintenanceSidebarRow
                         .tag(MainView.maintenanceSentinelID)
-                        .controlGuideGroupPart(.maintenance)
+                        .controlGuideGroupPart(.workflows)
                 } header: {
                     Text("sidebar.section.maintenance", bundle: .module)
-                        .controlGuideGroupPart(.maintenance)
+                        .controlGuideGroupPart(.workflows)
                 }
-                .id(ControlGuideTarget.maintenance)
 
                 // F-2-4 / 2026-06：dev 工具集 section —— Homebrew 包管理。
                 // 走 sentinel 旁路 + 独立 Screen，与 maintenance 同款不复用扫描状态栏。
@@ -2618,12 +2645,11 @@ public struct MainView: View {
                 Section {
                     brewSidebarRow
                         .tag(MainView.brewSentinelID)
-                        .controlGuideGroupPart(.brew)
+                        .controlGuideGroupPart(.workflows)
                 } header: {
                     Text("main.section.dev_tools", bundle: .module)
-                        .controlGuideGroupPart(.brew)
+                        .controlGuideGroupPart(.workflows)
                 }
-                .id(ControlGuideTarget.brew)
 
                 // v1.7 M1 PR-5 / 2026-06：Developer Workflows section ——
                 // Apple / Android / Web-Node 三大生态按"工作流"分组的一键清理入口。
@@ -2649,7 +2675,6 @@ public struct MainView: View {
                     Text("workflow.sidebar.section", bundle: .module)
                     .controlGuideGroupPart(.workflows)
                 }
-                .id(ControlGuideTarget.workflows)
             }
             // bug1：sidebar List 默认会在获得 keyboard focus 时画一圈蓝色焦点环
             // （包住整个 list 容器，看起来像"鼠标进入 sidebar 才出现的蓝框"）。
@@ -2661,10 +2686,9 @@ public struct MainView: View {
             .accessibilityIdentifier("main.sidebar")
             .controlGuideTarget(.sidebarOperations)
             .onAppear {
-                // v2026.10.11: every sidebar section is taught as its real block, including
-                // the standalone full-disk entry and the history header, rather than one row.
-                guideAnchors.registerReveals([.scanCategory, .largeFiles, .recommendedCleanup, .customPaths, .libraryBrowsing, .fullDisk,
-                                             .professionalTools, .duplicates, .history, .maintenance, .brew, .workflows], owner: presentationHostID) { target in
+                // v1.6.9: aggregate adjacent sections into four useful blocks. Geometry still
+                // comes from the real headings/rows, and scrolling never selects or scans.
+                guideAnchors.registerReveals([.scanCategory, .customPaths, .professionalTools, .workflows], owner: presentationHostID) { target in
                     proxy.scrollTo(target, anchor: .top)
                 }
             }

@@ -1,18 +1,17 @@
 import SwiftUI
 
 public enum UserGuidePresentationTrigger: Sendable, Equatable {
-    case automaticFirstLaunch
+    case firstVisit(SmartCareInterfaceMode)
     case manual
 }
 
 public enum UserGuidePresentationPolicy {
-    public static func shouldAutoPresentOnLaunch(
-        userGuideCompleted: Bool,
-        hasEvaluatedInitialUserGuide: Bool,
-        hasConflictingModal: Bool,
+    public static func shouldAutoPresentOnVisit(
+        mode: SmartCareInterfaceMode,
+        completedModes: Set<SmartCareInterfaceMode>,
         isRunningTests: Bool = false
     ) -> Bool {
-        !userGuideCompleted && !hasEvaluatedInitialUserGuide && !hasConflictingModal && !isRunningTests
+        !completedModes.contains(mode) && !isRunningTests
     }
 }
 
@@ -20,9 +19,8 @@ public enum UserGuidePresentationPolicy {
 // Feature cards/pages are removed. Targets are semantic view registrations, never screen coordinates.
 enum ControlGuideTarget: String, CaseIterable, Sendable {
     case interfaceMode, analyze, analysisScope, analysisScan, clean, optimize, status
-    case sidebarOperations, diskCapacity, scanCategory, largeFiles, recommendedCleanup, customPaths, libraryBrowsing, fullDisk
-    case professionalTools, duplicates, maintenance, brew, workflows
-    case pathInput, rescan, resultsMode, deleteSelection, stash, history, reopenGuide
+    case sidebarOperations, diskCapacity, scanCategory, customPaths, professionalTools, workflows
+    case pathInput, rescan, rowActions, resultsMode, deleteSelection, stash, history, reopenGuide
 
     var titleKey: String {
         switch self {
@@ -36,18 +34,12 @@ enum ControlGuideTarget: String, CaseIterable, Sendable {
         case .sidebarOperations: "user_guide.control.sidebar.title"
         case .diskCapacity: "user_guide.control.capacity.title"
         case .scanCategory: "user_guide.control.category.title"
-        case .largeFiles: "user_guide.control.large_files.title"
-        case .recommendedCleanup: "user_guide.control.recommended.title"
         case .customPaths: "user_guide.control.custom.title"
-        case .libraryBrowsing: "user_guide.control.library.title"
-        case .fullDisk: "user_guide.control.full_disk.title"
         case .professionalTools: "user_guide.control.tools.title"
-        case .duplicates: "user_guide.control.duplicates.title"
-        case .maintenance: "user_guide.control.maintenance.title"
-        case .brew: "user_guide.control.brew.title"
         case .workflows: "user_guide.control.workflows.title"
         case .pathInput: "user_guide.control.path.title"
         case .rescan: "user_guide.control.rescan.title"
+        case .rowActions: "user_guide.control.row_actions.title"
         case .resultsMode: "user_guide.control.results.title"
         case .deleteSelection: "user_guide.control.delete.title"
         case .stash: "user_guide.control.stash.title"
@@ -68,18 +60,12 @@ enum ControlGuideTarget: String, CaseIterable, Sendable {
         case .sidebarOperations: "user_guide.control.sidebar.body"
         case .diskCapacity: "user_guide.control.capacity.body"
         case .scanCategory: "user_guide.control.category.body"
-        case .largeFiles: "user_guide.control.large_files.body"
-        case .recommendedCleanup: "user_guide.control.recommended.body"
         case .customPaths: "user_guide.control.custom.body"
-        case .libraryBrowsing: "user_guide.control.library.body"
-        case .fullDisk: "user_guide.control.full_disk.body"
         case .professionalTools: "user_guide.control.tools.body"
-        case .duplicates: "user_guide.control.duplicates.body"
-        case .maintenance: "user_guide.control.maintenance.body"
-        case .brew: "user_guide.control.brew.body"
         case .workflows: "user_guide.control.workflows.body"
         case .pathInput: "user_guide.control.path.body"
         case .rescan: "user_guide.control.rescan.body"
+        case .rowActions: "user_guide.control.row_actions.body"
         case .resultsMode: "user_guide.control.results.body"
         case .deleteSelection: "user_guide.control.delete.body"
         case .stash: "user_guide.control.stash.body"
@@ -91,9 +77,10 @@ enum ControlGuideTarget: String, CaseIterable, Sendable {
     static func sequence(mode: SmartCareInterfaceMode, available: Set<Self>) -> [Self] {
         let candidates: [Self] = mode == .normal
             ? [.interfaceMode, .analyze, .analysisScope, .analysisScan, .clean, .optimize, .status, .history, .reopenGuide]
-            : [.interfaceMode, .sidebarOperations, .scanCategory, .largeFiles, .recommendedCleanup, .customPaths,
-               .libraryBrowsing, .fullDisk, .professionalTools, .duplicates, .history, .maintenance, .brew, .workflows, .diskCapacity, .pathInput,
-               .rescan, .resultsMode, .deleteSelection, .stash, .reopenGuide]
+            // v1.6.9 (2026.10.12): teach adjacent sidebar sections together. Row actions are
+            // mandatory: the production renderer supplies a demonstration before any scan.
+            : [.interfaceMode, .scanCategory, .customPaths, .professionalTools, .workflows,
+               .diskCapacity, .pathInput, .rescan, .rowActions, .resultsMode, .deleteSelection, .stash, .reopenGuide]
         // Contextual controls require real views. Scrollable groups register a semantic
         // reveal action; the controller scrolls them into view before measuring a spotlight.
         return candidates.filter { available.contains($0) }

@@ -8,6 +8,100 @@ final class MainWindowPresentationCoordinatorTests: XCTestCase {
     private final class TransactionPhase { var executing = false }
 
     @MainActor
+    func test_firstVisitToProfessionalIsNotConsumedByNormalGuide() async throws {
+        let model = MainWindowPresentationCoordinator(updateChecker: UpdateChecker())
+        let host = UUID()
+        let suite = "GSYCleanMac.tests.ModeGuide.\(UUID().uuidString)"
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let settings = AppSettings(testSuite: suite)
+        model.attachHost(host)
+        model.requestFirstVisitUserGuideIfNeeded(hostID: host, mode: .normal,
+            completedModes: settings.completedUserGuideModes, isRunningTests: false)
+        let normalGuide = try take(model, host: host, mode: .normal)
+        model.dismiss(hostID: host)
+        let dismissal = try XCTUnwrap(model.finishDismissal(hostID: host, presentationID: normalGuide.id))
+        guard case .userGuide(let acknowledgedMode) = dismissal.presentation.content else { return XCTFail("Expected Normal tour") }
+        settings.acknowledgeUserGuide(in: acknowledgedMode)
+
+        // The Professional tour is still unseen even after acknowledging the Normal tour.
+        model.requestFirstVisitUserGuideIfNeeded(hostID: host, mode: .professional,
+            completedModes: settings.completedUserGuideModes, isRunningTests: false)
+        XCTAssertEqual(model.pendingCount, 1, "First Professional entry must have its own automatic tour")
+        let professionalGuide = try take(model, host: host, mode: .professional)
+        guard case .userGuide(let mode) = professionalGuide.content else { return XCTFail("Expected Professional tour") }
+        XCTAssertEqual(mode, .professional)
+        model.dismiss(hostID: host)
+        _ = model.finishDismissal(hostID: host, presentationID: professionalGuide.id)
+        settings.acknowledgeUserGuide(in: mode)
+        for mode in SmartCareInterfaceMode.allCases {
+            model.requestFirstVisitUserGuideIfNeeded(hostID: host, mode: mode,
+                completedModes: settings.completedUserGuideModes, isRunningTests: false)
+        }
+        XCTAssertEqual(model.pendingCount, 0, "Acknowledged tours must not auto-repeat on later mode switches")
+        model.requestUserGuide(hostID: host)
+        XCTAssertNotNil(try take(model, host: host, mode: .professional), "Help always replays the actual current mode")
+    }
+
+    @MainActor
+    func test_firstVisitQueueTracksModeWhileBusinessOwnsWindowAndRejectsStaleDrain() async throws {
+        let model = MainWindowPresentationCoordinator(updateChecker: UpdateChecker())
+        let host = UUID(), business = UUID()
+        model.attachHost(host)
+        model.beginBusinessModal(business, hostID: host)
+        model.requestFirstVisitUserGuideIfNeeded(hostID: host, mode: .normal,
+            completedModes: [], isRunningTests: false)
+        model.requestFirstVisitUserGuideIfNeeded(hostID: host, mode: .professional,
+            completedModes: [], isRunningTests: false)
+        XCTAssertEqual(model.pendingCount, 1, "Departed mode's automatic tour must not remain queued")
+        XCTAssertFalse(model.requestDrainIfPossible(hostID: host, isBusinessModalBusy: false))
+        model.endBusinessModal(business)
+        XCTAssertTrue(model.requestDrainIfPossible(hostID: host, isBusinessModalBusy: false))
+        XCTAssertNil(model.takeScheduledIfPossible(hostID: host, isBusinessModalBusy: false, interfaceMode: .normal),
+                     "Mode can change after reserving a drain; do not present or acknowledge the wrong tour")
+        model.requestFirstVisitUserGuideIfNeeded(hostID: host, mode: .professional,
+            completedModes: [], isRunningTests: false)
+        let guide = try take(model, host: host, mode: .professional)
+        model.dismiss(hostID: host)
+        _ = model.finishDismissal(hostID: host, presentationID: guide.id)
+        // A context interruption has no acknowledgement. A later visit must still offer the tour.
+        model.requestFirstVisitUserGuideIfNeeded(hostID: host, mode: .professional,
+            completedModes: [], isRunningTests: false)
+        XCTAssertEqual(model.pendingCount, 1)
+    }
+
+    @MainActor
+    func test_automaticTourIsUniquePerModeAndClosedHostDoesNotRetargetIt() async throws {
+        let model = MainWindowPresentationCoordinator(updateChecker: UpdateChecker())
+        let first = UUID(), second = UUID()
+        model.attachHost(first); model.attachHost(second)
+        model.requestFirstVisitUserGuideIfNeeded(hostID: first, mode: .professional,
+            completedModes: [], isRunningTests: false)
+        model.requestFirstVisitUserGuideIfNeeded(hostID: second, mode: .professional,
+            completedModes: [], isRunningTests: false)
+        XCTAssertEqual(model.pendingCount, 1)
+        // A real Normal -> Professional transition reattaches the native hosting view after
+        // onChange enqueued/reserved the first-visit request. It is not a cancelled user intent.
+        XCTAssertTrue(model.requestDrainIfPossible(hostID: first, isBusinessModalBusy: false))
+        model.detachHost(first)
+        XCTAssertEqual(model.pendingCount, 1, "View reattachment must retain the mode-specific automatic request")
+        model.attachHost(first)
+        model.focusHost(first)
+        let guide = try take(model, host: first, mode: .professional)
+        model.detachHost(first)
+        XCTAssertEqual(model.pendingCount, 1, "Detached host cannot acknowledge an unfinished tour")
+        XCTAssertNil(model.finishDismissal(hostID: first, presentationID: guide.id))
+        model.requestFirstVisitUserGuideIfNeeded(hostID: second, mode: .normal,
+            completedModes: [.normal], isRunningTests: false)
+        XCTAssertEqual(model.pendingCount, 0)
+        model.requestFirstVisitUserGuideIfNeeded(hostID: second, mode: .professional,
+            completedModes: [.normal], isRunningTests: false)
+        XCTAssertEqual(model.pendingCount, 1, "Closing a guide is not completion of that mode")
+        model.requestFirstVisitUserGuideIfNeeded(hostID: second, mode: .professional,
+            completedModes: [.normal, .professional], isRunningTests: false)
+        XCTAssertEqual(model.pendingCount, 0, "Acknowledgement in another host removes a redundant queued automatic tour")
+    }
+
+    @MainActor
     func test_scanAdmissionRechecksLiveTransactionNativeClosingAndHostWithoutPublication() async throws {
         let model = MainWindowPresentationCoordinator(updateChecker: UpdateChecker())
         let first = UUID(), second = UUID(), transaction = UUID()
@@ -108,7 +202,8 @@ final class MainWindowPresentationCoordinatorTests: XCTestCase {
 
         let newHost = UUID()
         XCTAssertTrue(model.attachHost(newHost))
-        model.requestInitialUserGuideIfNeeded(userGuideCompleted: true, isRunningTests: false)
+        model.requestFirstVisitUserGuideIfNeeded(hostID: newHost, mode: .professional,
+            completedModes: [.normal, .professional], isRunningTests: false)
         let reopened = try take(model, host: newHost, mode: .professional)
         XCTAssertNotEqual(original.id, reopened.id)
         XCTAssertNil(model.finishDismissal(hostID: oldHost, presentationID: original.id))
@@ -123,8 +218,8 @@ final class MainWindowPresentationCoordinatorTests: XCTestCase {
         let model = MainWindowPresentationCoordinator(updateChecker: UpdateChecker())
         let host = UUID()
         model.attachHost(host)
-        model.requestInitialUserGuideIfNeeded(userGuideCompleted: false, isRunningTests: false)
-        model.requestInitialUserGuideIfNeeded(userGuideCompleted: false, isRunningTests: false)
+        model.requestFirstVisitUserGuideIfNeeded(hostID: host, mode: .professional, completedModes: [], isRunningTests: false)
+        model.requestFirstVisitUserGuideIfNeeded(hostID: host, mode: .professional, completedModes: [], isRunningTests: false)
         let outerTool = UUID()
         let confirmation = UUID()
         model.beginBusinessModal(outerTool)

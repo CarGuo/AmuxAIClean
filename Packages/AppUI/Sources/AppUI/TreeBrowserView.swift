@@ -2264,7 +2264,21 @@ private final class TreeTableCellView: NSTableCellView {
     }
 }
 
-private final class TreeTableRowCanvas: NSView {
+// v1.6.9: onboarding reuses the production action renderer without a synthetic file row.
+// This example has no file identity, selection or business callbacks.
+struct TreeRowActionsGuideExample: NSViewRepresentable {
+    let locale: Locale
+
+    func makeNSView(context: Context) -> TreeTableRowCanvas { TreeTableRowCanvas(frame: .zero) }
+    func updateNSView(_ view: TreeTableRowCanvas, context: Context) { view.configureGuideExample(locale: locale) }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: TreeTableRowCanvas, context: Context) -> CGSize? {
+        CGSize(width: TreeTableMetrics.actionAreaWidth + TreeTableMetrics.actionTrailingPadding,
+               height: TreeTableMetrics.rowHeight)
+    }
+}
+
+final class TreeTableRowCanvas: NSView {
     private struct SymbolCacheKey: Hashable {
         let name: String
         let colorDescription: String
@@ -2289,6 +2303,7 @@ private final class TreeTableRowCanvas: NSView {
     private var hasAI = false
     private var aiReady = false
     private var actions: TreeTableRowActions?
+    private var isGuideExample = false
     private var cachedMetrics: TreeMetricPresentation?
     private var cachedMtimeText: String = "·"
 
@@ -2314,7 +2329,7 @@ private final class TreeTableRowCanvas: NSView {
         updateInlineProgress()
     }
 
-    func configure(flat: FlatTreeRow,
+    fileprivate func configure(flat: FlatTreeRow,
                    maxBytes: Int64,
                    locale: Locale,
                    isExpanded: Bool,
@@ -2326,6 +2341,7 @@ private final class TreeTableRowCanvas: NSView {
                    hasAI: Bool,
                    aiReady: Bool,
                    actions: TreeTableRowActions) {
+        isGuideExample = false
         self.flat = flat
         self.maxBytes = maxBytes
         self.locale = locale
@@ -2357,8 +2373,30 @@ private final class TreeTableRowCanvas: NSView {
         needsDisplay = true
     }
 
+    func configureGuideExample(locale: Locale) {
+        isGuideExample = true
+        flat = nil
+        actions = nil
+        self.locale = locale
+        hasAI = true
+        hasStash = true
+        hasTrash = true
+        aiReady = true
+        isStashed = false
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel(AppLocalization.string("user_guide.control.row_actions.example", locale: locale))
+        setAccessibilityHelp(AppLocalization.string("user_guide.control.row_actions.body", locale: locale))
+        updateInlineProgress()
+        needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        if isGuideExample {
+            drawActions(isTrashable: true)
+            return
+        }
         guard let flat else { return }
         if isSelected {
             NSColor.controlAccentColor.withAlphaComponent(0.22).setFill()
@@ -2596,7 +2634,7 @@ private final class TreeTableRowCanvas: NSView {
                  font: .monospacedSystemFont(ofSize: 13.5, weight: .regular),
                  color: .tertiaryLabelColor,
                  alignment: .right)
-        drawActions(flat)
+        drawActions(isTrashable: isTrashable(flat))
     }
 
     private func drawBar(row: TreeRow, denied: Bool, rect: CGRect) {
@@ -2609,7 +2647,7 @@ private final class TreeTableRowCanvas: NSView {
         NSBezierPath(roundedRect: fill, xRadius: 1.5, yRadius: 1.5).fill()
     }
 
-    private func drawActions(_ flat: FlatTreeRow) {
+    private func drawActions(isTrashable: Bool) {
         if hasAI {
             drawSymbol("sparkles",
                        in: symbolRect(in: actionRect(.ai), side: 16),
@@ -2627,7 +2665,7 @@ private final class TreeTableRowCanvas: NSView {
         if hasTrash {
             drawSymbol("trash",
                        in: symbolRect(in: actionRect(.trash), side: 16),
-                       color: isTrashable(flat) ? .systemRed : .secondaryLabelColor.withAlphaComponent(0.35),
+                       color: isTrashable ? .systemRed : .secondaryLabelColor.withAlphaComponent(0.35),
                        pointSize: 14,
                        weight: .regular)
         }

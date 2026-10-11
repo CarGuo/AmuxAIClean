@@ -77,9 +77,10 @@ public final class AppSettings: ObservableObject {
         /// 改动后会同步写 `AppleLanguages`，并由 App 层把同一 locale 实时同步给
         /// SwiftUI、tooltip、托盘和原生主菜单；系统拥有的面板仍按系统自身策略取语言。
         public static let preferredLanguage = "v1.7.preferred_language"
-        /// v2026.10.10: completion means the real control tour was finished/skipped. Completing
-        /// the removed feature brochure does not acknowledge this different onboarding contract.
-        public static let userGuideCompleted = "v2026.10.control_guide_completed"
+        /// v1.6.9 (2026.10.12): the old Boolean did not identify a mode. It cannot prove that
+        /// either specific tour was acknowledged, and must never suppress both tours on upgrade.
+        static let legacyUserGuideCompleted = "v2026.10.control_guide_completed"
+        public static let completedUserGuideModes = "v2026.10.control_guide_completed_modes"
     }
 
     private static func isValidMinFileSizeMB(_ value: Int) -> Bool {
@@ -398,12 +399,19 @@ public final class AppSettings: ObservableObject {
         }
     }
 
-    /// v2026.10：新用户指引是否已完成首次展示（或被用户跳过）。
-    /// 默认 `false`；首次启动自动展示，完成后置 `true`；用户随时可从工具栏/菜单栏再次打开。
-    @Published public var userGuideCompleted: Bool {
+    /// v1.6.9: first-visit acknowledgement belongs to the tour's mode, not the whole App.
+    /// Finishing/skipping Normal must leave Professional eligible on its first entry.
+    @Published public private(set) var completedUserGuideModes: Set<SmartCareInterfaceMode> {
         didSet {
-            defaults.set(userGuideCompleted, forKey: Keys.userGuideCompleted)
+            defaults.set(completedUserGuideModes.map(\.rawValue).sorted(), forKey: Keys.completedUserGuideModes)
         }
+    }
+
+    public var hasAcknowledgedAnyUserGuide: Bool { !completedUserGuideModes.isEmpty }
+
+    func acknowledgeUserGuide(in mode: SmartCareInterfaceMode) {
+        guard !completedUserGuideModes.contains(mode) else { return }
+        completedUserGuideModes.insert(mode)
     }
 
     /// v1.6：Sentinel 后台守护开关。默认 `false` —— 用户必须显式在
@@ -595,8 +603,12 @@ public final class AppSettings: ObservableObject {
         self.smartCareDeveloperCacheWarningAcknowledged =
             (defaults.object(forKey: Keys.smartCareDeveloperCacheWarningAcknowledged) as? Bool)
             ?? false
-        self.userGuideCompleted =
-            (defaults.object(forKey: Keys.userGuideCompleted) as? Bool) ?? false
+        // The legacy flag has no mode provenance. Start mode-specific acknowledgement from
+        // known records only; each tour will be offered once on its own first visit after upgrade.
+        self.completedUserGuideModes = Set(
+            (defaults.stringArray(forKey: Keys.completedUserGuideModes) ?? [])
+                .compactMap(SmartCareInterfaceMode.init(rawValue:))
+        )
         // v1.6：Sentinel 默认 OFF（用户必须显式启用，避免存量用户升级后多了个守护进程）。
         let loadedSentinelEnabled =
             (defaults.object(forKey: Keys.sentinelEnabled) as? Bool) ?? false
@@ -649,7 +661,8 @@ public final class AppSettings: ObservableObject {
         defaults.removeObject(forKey: Keys.hideFromDockWhenClosed)
         defaults.removeObject(forKey: Keys.enabledDevArtifactRuleIDs)
         defaults.removeObject(forKey: Keys.smartCareDeveloperCacheWarningAcknowledged)
-        defaults.removeObject(forKey: Keys.userGuideCompleted)
+        defaults.removeObject(forKey: Keys.legacyUserGuideCompleted)
+        defaults.removeObject(forKey: Keys.completedUserGuideModes)
         defaults.removeObject(forKey: Keys.sentinelEnabled)
         defaults.removeObject(forKey: Keys.sentinelLastEnabled)
         defaults.removeObject(forKey: Keys.sentinelRequiresShutdownVerification)
