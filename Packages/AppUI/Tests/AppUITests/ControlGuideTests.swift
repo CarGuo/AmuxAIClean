@@ -69,7 +69,8 @@ final class ControlGuideTests: XCTestCase {
 
     func test_realControlTextIsLocalizedInBothLanguages() {
         let keys = ControlGuideTarget.allCases.flatMap { [$0.titleKey, $0.bodyKey] }
-            + ["user_guide.window.title", "user_guide.action.skip", "user_guide.action.next", "user_guide.action.finish"]
+            + ["user_guide.window.title", "user_guide.action.skip", "user_guide.action.next", "user_guide.action.finish",
+               "user_guide.control.preparing"]
         for locale in [Locale(identifier: "zh-Hans"), Locale(identifier: "en")] {
             for key in keys {
                 let text = AppLocalization.string(key, locale: locale)
@@ -99,4 +100,45 @@ final class ControlGuideTests: XCTestCase {
         XCTAssertEqual(session.steps.count, 21, "The running tour is frozen after the first user advance")
     }
 
+    func test_productionProgressIgnoresNextUntilReadyAndRejectsFoldedSidebarReveal() throws {
+        var state = ControlGuideProgressState()
+        let id = UUID()
+        state.prepare(presentationID: id, mode: .professional, available: [], required: [.interfaceMode])
+        XCTAssertNil(state.session)
+        XCTAssertEqual(state.advance(), .ignored)
+        state.prepare(presentationID: id, mode: .professional,
+                      available: [.interfaceMode, .sidebarOperations, .scanCategory], required: [.interfaceMode])
+        XCTAssertEqual(state.locate(isVisible: true, canReveal: false), .ready)
+        XCTAssertEqual(state.advance(), .advanced)
+        XCTAssertEqual(state.advance(), .ignored, "A second Return cannot skip an unlocated next target")
+        XCTAssertEqual(state.locate(isVisible: true, canReveal: false), .ready)
+        XCTAssertEqual(state.advance(), .advanced)
+        XCTAssertEqual(try XCTUnwrap(state.session).target, .scanCategory)
+        let registered: Set<ControlGuideTarget> = [.scanCategory]
+        XCTAssertTrue(ControlGuideAnchorPolicy.canReveal(.scanCategory, registered: registered, sidebarIsVisible: true))
+        let canReveal = ControlGuideAnchorPolicy.canReveal(.scanCategory, registered: registered, sidebarIsVisible: false)
+        XCTAssertFalse(canReveal)
+        XCTAssertFalse(ControlGuideAnchorPolicy.available(visible: [.interfaceMode], registered: registered).contains(.scanCategory))
+        XCTAssertEqual(state.locate(isVisible: false, canReveal: canReveal), .contextChanged)
+        XCTAssertEqual(state.advance(), .ignored)
+    }
+
+    func test_productionRevealRetriesOnlyAfterActualLayoutChangesIncludingResize() throws {
+        var state = ControlGuideProgressState()
+        state.prepare(presentationID: UUID(), mode: .professional,
+                      available: [.interfaceMode, .scanCategory], required: [])
+        _ = state.locate(isVisible: true, canReveal: false)
+        XCTAssertEqual(state.advance(), .advanced)
+        XCTAssertTrue(state.shouldReveal(isVisible: false, canReveal: true, layoutRevision: 1))
+        XCTAssertEqual(state.locate(isVisible: false, canReveal: true), .waiting)
+        XCTAssertEqual(state.advance(), .ignored)
+        XCTAssertFalse(state.shouldReveal(isVisible: false, canReveal: true, layoutRevision: 1), "No polling of an unchanged no-op scroll")
+        XCTAssertTrue(state.shouldReveal(isVisible: false, canReveal: true, layoutRevision: 2), "Mounted/expanded layout revokes the old attempt")
+        XCTAssertEqual(state.locate(isVisible: true, canReveal: true), .ready)
+        XCTAssertFalse(state.shouldReveal(isVisible: true, canReveal: true, layoutRevision: 3), "Visible controls must not be scrolled on unrelated changes")
+        XCTAssertTrue(state.shouldReveal(isVisible: false, canReveal: true, layoutRevision: 4), "Resize can clip the same target again")
+        XCTAssertEqual(state.locate(isVisible: false, canReveal: true), .waiting)
+        _ = state.locate(isVisible: true, canReveal: true)
+        XCTAssertEqual(state.advance(), .completed)
+    }
 }

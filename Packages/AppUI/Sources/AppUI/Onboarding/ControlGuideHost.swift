@@ -17,11 +17,17 @@ final class ControlGuideAnchors: ObservableObject {
     private var anchors: [ControlGuideTarget: [UUID: Anchor]] = [:]
     private var reveals: [ControlGuideTarget: Reveal] = [:]
     let changes = PassthroughSubject<Void, Never>()
+    private(set) var layoutRevision: UInt64 = 0
+
+    func layoutChanged() {
+        layoutRevision &+= 1
+        changes.send()
+    }
 
     func register(_ target: ControlGuideTarget, token: UUID, view: NSView) {
         guard anchors[target]?.count != 1 || anchors[target]?[token] == nil else { return }
         anchors[target] = [token: Anchor(view: view)]
-        changes.send()
+        layoutChanged()
     }
 
     /// v2026.10.11: a sidebar group spans several native List rows. Union real visible
@@ -29,13 +35,13 @@ final class ControlGuideAnchors: ObservableObject {
     func registerPart(_ target: ControlGuideTarget, token: UUID, view: NSView) {
         guard anchors[target]?[token] == nil else { return }
         anchors[target, default: [:]][token] = Anchor(view: view)
-        changes.send()
+        layoutChanged()
     }
 
     func unregister(_ target: ControlGuideTarget, token: UUID) {
         guard anchors[target]?.removeValue(forKey: token) != nil else { return }
         if anchors[target]?.isEmpty == true { anchors.removeValue(forKey: target) }
-        changes.send()
+        layoutChanged()
     }
 
     func frame(for target: ControlGuideTarget, in window: NSWindow) -> CGRect? {
@@ -60,23 +66,24 @@ final class ControlGuideAnchors: ObservableObject {
     }
 
     func available(in window: NSWindow) -> Set<ControlGuideTarget> {
-        var result = Set(anchors.keys.filter { frame(for: $0, in: window) != nil })
-        if result.contains(.sidebarOperations) { result.formUnion(reveals.keys) }
-        return result
+        ControlGuideAnchorPolicy.available(
+            visible: Set(anchors.keys.filter { frame(for: $0, in: window) != nil }),
+            registered: Set(reveals.keys))
     }
 
     func registerReveals(_ targets: [ControlGuideTarget], owner: UUID, action: @escaping (ControlGuideTarget) -> Void) {
         for target in targets { reveals[target] = Reveal(owner: owner, action: { action(target) }) }
-        changes.send()
+        layoutChanged()
     }
 
     func unregisterReveals(owner: UUID) {
         reveals = reveals.filter { $0.value.owner != owner }
-        changes.send()
+        layoutChanged()
     }
 
     func canReveal(_ target: ControlGuideTarget, in window: NSWindow) -> Bool {
-        reveals[target] != nil && frame(for: .sidebarOperations, in: window) != nil
+        ControlGuideAnchorPolicy.canReveal(target, registered: Set(reveals.keys),
+            sidebarIsVisible: frame(for: .sidebarOperations, in: window) != nil)
     }
     func reveal(_ target: ControlGuideTarget) {
         reveals[target]?.action()
@@ -147,12 +154,12 @@ private struct ControlGuideAnchor: NSViewRepresentable {
         override func setFrameSize(_ newSize: NSSize) {
             let changed = newSize != frame.size
             super.setFrameSize(newSize)
-            if changed { anchors.changes.send() }
+            if changed { anchors.layoutChanged() }
         }
         override func setFrameOrigin(_ newOrigin: NSPoint) {
             let changed = newOrigin != frame.origin
             super.setFrameOrigin(newOrigin)
-            if changed { anchors.changes.send() }
+            if changed { anchors.layoutChanged() }
         }
         func register() {
             guard window != nil else { return }
@@ -184,7 +191,7 @@ private struct ControlGuideAnchor: NSViewRepresentable {
                                                        name: NSView.boundsDidChangeNotification, object: clip)
             }
         }
-        @objc private func scrolled(_ notification: Notification) { anchors.changes.send() }
+        @objc private func scrolled(_ notification: Notification) { anchors.layoutChanged() }
     }
 }
 
@@ -228,7 +235,8 @@ final class ControlGuideController: NSObject {
     private weak var window: NSWindow?
     private var panel: NSPanel?
     private var hostingView: NSHostingView<AnyView>?
-    private(set) var session: ControlGuideSession?
+    private var progress = ControlGuideProgressState()
+    var session: ControlGuideSession? { progress.session }
     private var presentationID: UUID?
     private var mode: SmartCareInterfaceMode = .normal
     private var locale = Locale(identifier: "en")
@@ -236,11 +244,9 @@ final class ControlGuideController: NSObject {
     private var onFocus: (() -> Void)?
     private var anchorSubscription: AnyCancellable?
     private var refreshTask: Task<Void, Never>?
-    private var revealedTarget: ControlGuideTarget?
     private var isFocusedHost = false
     private var needsKeyboardFocus = false
     private var requiredTargets: Set<ControlGuideTarget> = []
-    private var isStepReady = false
 
     init(anchors: ControlGuideAnchors) {
         self.anchors = anchors
@@ -259,7 +265,7 @@ final class ControlGuideController: NSObject {
             needsKeyboardFocus = presentationID != nil
         }
         self.isFocusedHost = isFocusedHost
-        if self.presentationID != presentationID || self.mode != mode { session = nil; revealedTarget = nil }
+        if self.presentationID != presentationID || self.mode != mode { progress = ControlGuideProgressState() }
         self.presentationID = presentationID
         self.mode = mode
         self.locale = locale
@@ -292,8 +298,7 @@ final class ControlGuideController: NSObject {
         refreshTask?.cancel()
         refreshTask = nil
         hide()
-        session = nil
-        revealedTarget = nil
+        progress = ControlGuideProgressState()
         window = nil
     }
 
@@ -313,38 +318,34 @@ final class ControlGuideController: NSObject {
         // v2026.10.10: WindowGroup attaches views before showing its native window. A child
         // panel must never appear or take key focus ahead of that owner; resume on visibility.
         guard window.isVisible, !window.isMiniaturized else {
+            progress.suspend()
             needsKeyboardFocus = needsKeyboardFocus || panel?.isKeyWindow == true
             panel?.orderOut(nil)
             return
         }
-        isStepReady = false
         let mounted = anchors.available(in: window)
         let available = requiredTargets.isEmpty ? mounted
             : mounted.intersection(requiredTargets.union([.resultsMode, .deleteSelection]))
-        if session == nil {
-            session = ControlGuideSession(presentationID: presentationID, mode: mode,
-                                          available: available, required: requiredTargets)
-        } else if available.contains(.interfaceMode), requiredTargets.isSubset(of: available) {
-            session?.updateInitialAvailability(available)
-        }
+        progress.prepare(presentationID: presentationID, mode: mode,
+                         available: available, required: requiredTargets)
         guard let session else {
             show(AnyView(ControlGuidePreparingOverlay(onSkip: { [weak self] in self?.end(.skipped) })), in: window)
             return
         }
-        if anchors.canReveal(session.target, in: window), revealedTarget != session.target {
-            revealedTarget = session.target
+        let canReveal = anchors.canReveal(session.target, in: window)
+        if progress.shouldReveal(isVisible: anchors.frame(for: session.target, in: window) != nil,
+                                 canReveal: canReveal, layoutRevision: anchors.layoutRevision) {
             anchors.reveal(session.target)
             scheduleRefresh()
         }
         let frame = anchors.frame(for: session.target, in: window)
-        if frame == nil, !anchors.canReveal(session.target, in: window) {
+        if progress.locate(isVisible: frame != nil, canReveal: canReveal) == .contextChanged {
             end(.contextChanged)
             return
         }
         // v2026.10.11 review: native scrolling is asynchronous. Keep a visible, cancelable
         // key panel throughout it; Return must never fall through to the owner's path field.
         // A folded sidebar invalidates reveal eligibility, rather than retaining a hidden lease.
-        isStepReady = frame != nil
         let overlay = ControlGuideOverlay(session: session, focus: frame,
             onNext: { [weak self] in self?.next() }, onSkip: { [weak self] in self?.end(.skipped) })
         show(AnyView(overlay), in: window)
@@ -384,15 +385,17 @@ final class ControlGuideController: NSObject {
     }
 
     func next() {
-        guard isStepReady, var session else { return }
-        if session.advance() { self.session = session; refresh() }
-        else { end(.completed) }
+        switch progress.advance() {
+        case .ignored: break
+        case .advanced: refresh()
+        case .completed: end(.completed)
+        }
     }
 
     func end(_ reason: ControlGuideEnd) {
         guard let id = presentationID else { return }
         presentationID = nil
-        session = nil
+        progress = ControlGuideProgressState()
         hide()
         onEnd?(id, reason)
     }
@@ -414,6 +417,12 @@ final class ControlGuideController: NSObject {
     }
 
     @objc private func windowChanged(_ notification: Notification) {
+        // Real viewport changes invalidate a previous scroll attempt, including a target
+        // that became clipped after resize. An ordinary activation/refresh does not.
+        if notification.name == NSWindow.didResizeNotification
+            || notification.name == NSWindow.didDeminiaturizeNotification {
+            anchors.layoutChanged()
+        }
         if notification.name == NSWindow.willMiniaturizeNotification {
             needsKeyboardFocus = needsKeyboardFocus || panel?.isKeyWindow == true
         }

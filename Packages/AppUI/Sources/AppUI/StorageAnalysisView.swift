@@ -188,33 +188,37 @@ struct StorageAnalysisView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .controlGuideTarget(.analysisScope)
-            if store.phase == .scanning || store.phase == .loadingDirectory {
-                Button {
-                    store.cancel()
-                } label: {
-                    Label {
-                        Text("smart_care.action.stop_scan", bundle: .module)
-                    } icon: {
-                        Image(systemName: "stop.fill")
+            // v2026.10.11 review: this is one scan control across idle/loading/scanning.
+            // Its real anchor must survive the Scan ↔ Stop content transition.
+            HStack(spacing: 0) {
+                if store.phase == .scanning || store.phase == .loadingDirectory {
+                    Button {
+                        store.cancel()
+                    } label: {
+                        Label {
+                            Text("smart_care.action.stop_scan", bundle: .module)
+                        } icon: {
+                            Image(systemName: "stop.fill")
+                        }
                     }
-                }
-                .buttonStyle(.bordered)
-            } else {
-                Button {
-                    store.scan()
-                } label: {
-                    Label {
-                        Text(
-                            store.phase == .idle ? "workspace.storage.scan" : "workspace.storage.rescan",
-                            bundle: .module)
-                    } icon: {
-                        Image(systemName: "arrow.clockwise")
+                    .buttonStyle(.bordered)
+                } else {
+                    Button {
+                        store.scan()
+                    } label: {
+                        Label {
+                            Text(
+                                store.phase == .idle ? "workspace.storage.scan" : "workspace.storage.rescan",
+                                bundle: .module)
+                        } icon: {
+                            Image(systemName: "arrow.clockwise")
+                        }
                     }
+                    .buttonStyle(.borderedProminent)
                 }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("normal.analysis.scan")
-                .controlGuideTarget(.analysisScan)
             }
+            .accessibilityIdentifier("normal.analysis.scan")
+            .controlGuideTarget(.analysisScan)
         }
     }
 

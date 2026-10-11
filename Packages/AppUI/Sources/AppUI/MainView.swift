@@ -587,10 +587,8 @@ public struct MainView: View {
     /// SwiftUI `List(selection:)` 的默认 binding 会先切屏、后触发 `.onChange`，用户看到的就是
     /// "已经切到大文件了才问是否切换"。现在 sidebar 走自定义 binding setter，
     /// `pendingCategorySwitch` 只保存用户意图；确认通过后才真正写入 selectedCategory。
-    @State private var pendingCategorySwitch: (old: String?, new: String?)?
-    /// Add Path 后 AsyncStream 会异步把新类目投递到 `customCategories`。用户如果要求
-    /// 立即扫描，确认切换期间需要冻结这份类目本身，不能依赖稍后才更新的列表。
-    @State private var pendingCategoryFallback: ScanCategory?
+    @State private var pendingCategorySwitch: MainCategorySwitchIntent?
+    @State private var confirmedCategorySwitch: MainCategorySwitchIntent?
     @State private var showSwitchCategoryConfirm: Bool = false
     /// 删除中的 UI guard。删除完成后仅按 TrashPipeline 返回的 movedPairs 更新 UI，
     /// 防止部分失败时把未移动的项误移除。
@@ -651,6 +649,8 @@ public struct MainView: View {
     private let largeFilesCategory: ScanCategory = .largeFiles()
     /// v1.0 T5：路径栏临时输入（"/" + Enter 扫整盘；任意已存在目录路径也可直扫）。
     @State private var pathBarInput: String = ""
+    @State private var scanInputRequest = MainScanInputRequestState()
+    @State private var scanInputTask: Task<Void, Never>?
     /// v1.3：toolbar 路径输入框聚焦态。
     /// 目的：在 `ToolbarItem(.principal)` 里 SwiftUI/AppKit 默认 focus ring 会被 toolbar 容器
     /// 上下裁掉一截（截图反复出现的灰边）；改为 `.textFieldStyle(.plain)` + 自绘 Capsule 背景，
@@ -918,16 +918,15 @@ public struct MainView: View {
         ) {
             Button(role: .destructive) {
                 guard let pending = pendingCategorySwitch else { return }
-                let fallback = pendingCategoryFallback
                 pendingCategorySwitch = nil
-                pendingCategoryFallback = nil
-                applyCategorySwitch(from: pending.old, to: pending.new, fallbackCategory: fallback)
+                confirmedCategorySwitch = pending
+                showSwitchCategoryConfirm = false
+                consumeConfirmedCategorySwitchIfPossible()
             } label: {
                 Text("mainview.switch_category.confirm.proceed", bundle: .module)
             }
             Button(role: .cancel) {
                 pendingCategorySwitch = nil
-                pendingCategoryFallback = nil
             } label: {
                 Text("mainview.switch_category.confirm.cancel", bundle: .module)
             }
@@ -1241,10 +1240,12 @@ public struct MainView: View {
             }
         }
         .onValueChange(of: applicationPresentation.requestRevision) { _, _ in
+            consumeConfirmedCategorySwitchIfPossible()
             schedulePendingApplicationPresentationIfPossible()
         }
         .onValueChange(of: applicationPresentation.businessModalCount(for: presentationHostID)) { _, count in
             if count == 0 {
+                consumeConfirmedCategorySwitchIfPossible()
                 schedulePendingApplicationPresentationIfPossible()
                 schedulePendingSentinelPresentationIfPossible()
             }
@@ -1284,9 +1285,16 @@ public struct MainView: View {
             }
         }
         .onDisappear {
+            invalidateScanInputRequest()
+            confirmedCategorySwitch = nil
             isPresentationHostMounted = false
             applicationPresentation.detachHost(presentationHostID)
         }
+        .onValueChange(of: scanContextIdentity) { _, _ in
+            invalidateStaleScanInputRequest()
+            consumeConfirmedCategorySwitchIfPossible()
+        }
+        .onValueChange(of: pathBarInput) { _, _ in invalidateStaleScanInputRequest() }
     }
 
     // MARK: - Smart Care
@@ -1501,7 +1509,7 @@ public struct MainView: View {
     }
 
     private var hasBusinessMainModalPresentation: Bool {
-        hasOtherBusinessMainModalPresentation
+        confirmedCategorySwitch != nil || hasOtherBusinessMainModalPresentation
             || deleteSheetRequest != nil
             || deleteSubmissionHandoff.blocksNewSubmission
             || smartCareDeletePreviewGate.isInFlight
@@ -1523,15 +1531,22 @@ public struct MainView: View {
     // mutation boundary, including delayed settings/category actions and batch sentinels.
     // Disabled controls alone cannot protect asynchronous or programmatic entry points.
     private var canReplaceScanContext: Bool {
-        applicationPresentation.canReplaceScanContext(for: presentationHostID,
+        confirmedCategorySwitch == nil
+            && applicationPresentation.canReplaceScanContext(for: presentationHostID,
                                                       hasLocalTransaction: hasActiveBusinessTransaction)
+    }
+
+    private var scanContextIdentity: MainScanContextIdentity {
+        MainScanContextIdentity(interfaceMode: interfaceMode, categoryID: selectedCategory,
+                                scanSessionID: coordinator.currentScanSessionID)
     }
 
     /// Main 的所有系统 presentation 共享这一道互斥判定。异步 Safety preflight
     /// 返回时如果 fileImporter / AI / Stash / Smart Care 已占用窗口，就不能再竞争
     /// 同一个 presentation slot。
     private var hasOtherMainModalPresentation: Bool {
-        hasOtherBusinessMainModalPresentation || applicationPresentation.isOccupied(for: presentationHostID)
+        confirmedCategorySwitch != nil || hasOtherBusinessMainModalPresentation
+            || applicationPresentation.isOccupied(for: presentationHostID)
             || applicationPresentation.businessModalCount(for: presentationHostID) > 0
     }
 
@@ -3202,7 +3217,13 @@ public struct MainView: View {
                                             // v2026.07.18 Tree P2：右键刷新拥有独立的后台子树
                                             // BulkScanner，会原子替换索引/证据；View 不自行清 cache，
                                             // 也不在 MainActor 枚举目录。
+                                            guard interfaceMode == .professional, canReplaceScanContext,
+                                                  !hasConflictingMainModalPresentation else { return }
+                                            let source = scanContextIdentity
                                             Task { @MainActor in
+                                                guard source == scanContextIdentity,
+                                                      interfaceMode == .professional, canReplaceScanContext,
+                                                      !hasConflictingMainModalPresentation else { return }
                                                 await coordinator.rescanSubtree(at: path)
                                             }
                                         },
@@ -4171,82 +4192,116 @@ public struct MainView: View {
         )
     }
 
-    private func requestCategorySwitch(to new: String?, fallbackCategory: ScanCategory? = nil) {
-        guard canReplaceScanContext else { return }
+    @discardableResult
+    private func requestCategorySwitch(to new: String?, fallbackCategory: ScanCategory? = nil,
+                                       customPaths: [URL] = []) -> Bool {
+        guard interfaceMode == .professional, canReplaceScanContext,
+              !hasConflictingMainModalPresentation else { return false }
         let old = selectedCategory
+        let intent = MainCategorySwitchIntent(source: scanContextIdentity, destinationID: new,
+                                             fallbackCategory: fallbackCategory, customPaths: customPaths)
         guard old != new else {
             // 重复添加当前正在查看的路径仍然是一个明确的“扫描这里”意图。
             // 直接使用冻结类目，不等待跨 Scene 的 AsyncStream 镜像刷新。
             if let fallbackCategory, fallbackCategory.id == new {
                 startScan(category: fallbackCategory)
+                persistCommittedCustomPaths(customPaths)
+                return true
             }
-            return
+            return false
         }
         if shouldConfirmCategorySwitch {
-            pendingCategorySwitch = (old, new)
-            pendingCategoryFallback = fallbackCategory
+            pendingCategorySwitch = intent
             showSwitchCategoryConfirm = true
-            return
+            return true
         }
-        applyCategorySwitch(from: old, to: new, fallbackCategory: fallbackCategory)
+        return applyCategorySwitch(intent)
     }
 
-    /// v2026.06.21：原 onChange(selectedCategory) 的 body 抽出来，供"无须确认"与
-    /// "已确认" 两条路径共用，避免把"分发到 trigger* / runHeavyAfterCommit"逻辑
-    /// 复制到 confirmationDialog 的回调里去（一旦后续加 sentinel 又得改两处）。
-    private func applyCategorySwitch(
-        from old: String?,
-        to new: String?,
-        fallbackCategory: ScanCategory? = nil
-    ) {
-        guard canReplaceScanContext else { return }
-        guard old != new else { return }
-        // v2026.07.16 scan-performance regression fix: specialized destinations
-        // do not call ScanCoordinator.scan(...), so relying on the next scan to
-        // cancel the old producer left a full-disk/recommended scan running behind
-        // the newly selected screen. The confirmed category transition itself is
-        // the ownership boundary; cancel before dispatching any destination.
-        MainScanOwnershipPolicy.relinquishProfessionalCategory(from: old, to: new) {
-            coordinator.cancel()
+    private func consumeConfirmedCategorySwitchIfPossible() {
+        guard let intent = confirmedCategorySwitch else { return }
+        guard isPresentationHostMounted, intent.isCurrent(in: scanContextIdentity) else {
+            confirmedCategorySwitch = nil
+            return
         }
+        // The accepted intent retains priority until the native confirmation really closes.
+        // App hints cannot occupy the gap, and a stale callback cannot switch a newer context.
+        guard !hasOtherBusinessMainModalPresentation,
+              applicationPresentation.canReplaceScanContext(for: presentationHostID,
+                  hasLocalTransaction: hasActiveBusinessTransaction) else { return }
+        confirmedCategorySwitch = nil
+        _ = applyCategorySwitch(intent)
+    }
+
+    /// v2026.10.11 review: category, selection and scan admission are one synchronous commit.
+    /// ScanCoordinator already owns async producer settlement and background preparation;
+    /// delaying only the start by 16ms left a half-switched page and revived stale requests.
+    @discardableResult
+    private func applyCategorySwitch(_ intent: MainCategorySwitchIntent) -> Bool {
+        guard intent.isCurrent(in: scanContextIdentity), canReplaceScanContext,
+              !hasConflictingMainModalPresentation else { return false }
+        let old = intent.source.categoryID
+        let new = intent.destinationID
+        guard old != new else { return false }
+        let category = new.flatMap { id in
+            allCategories.first(where: { $0.id == id })
+                ?? intent.fallbackCategory.flatMap { $0.id == id ? $0 : nil }
+        }
+        let batchAction: (() -> Void)?
         if let id = new, ScanCategory.batchScanIDs.contains(id) {
             switch id {
             case ScanCategory.batchRecommendedID:
-                triggerRecommendedScan()
+                batchAction = triggerRecommendedScan
             case ScanCategory.batchDeveloperID:
-                triggerDeveloperScan()
+                batchAction = triggerDeveloperScan
             case ScanCategory.batchFullDiskID:
-                triggerFullDiskScan()
+                batchAction = triggerFullDiskScan
             case ScanCategory.batchCommonAppCacheID:
-                triggerCommonAppCacheScan()
+                batchAction = triggerCommonAppCacheScan
             default:
                 // v1.5 review-fix #1：batchScanIDs 已穷尽当前 case；future 加 sentinel
                 // 必须同步加 case，否则 selection 切到新 sentinel 会被静默吞掉。
                 assertionFailure("Unhandled batch scan sentinel id: \(id) — add case to MainView.applyCategorySwitch switch.")
+                return false
             }
-            return
+        } else {
+            batchAction = nil
+        }
+        // v2026.07.16 scan-performance regression fix: specialized destinations
+        // do not call ScanCoordinator.scan(...), so relying on the next scan to
+        // cancel the old producer left a full-disk/recommended scan running behind
+        // the newly selected screen. Resolve the destination before relinquishing
+        // ownership; then commit selection and dispatch without an intervening await.
+        MainScanOwnershipPolicy.relinquishProfessionalCategory(from: old, to: new) {
+            coordinator.cancel()
+        }
+        if let batchAction {
+            batchAction()
+            persistCommittedCustomPaths(intent.customPaths)
+            return true
         }
         selectedCategory = new
-        resetSelectionState()
         // M4-T2 / 2026-06：开发者版本化收集根扫描 sentinel —— 不在 allCategories 里，
         // 由 ScanCoordinator.scanKnownVersionedRoots(home:) 同步派发命中。
         // 必须在 allCategories.first 之前拦截，否则会走 startScan(category:) 找不到 cat 直接 return。
         if let id = new, id == MainView.devVersionedSentinelID {
-            runHeavyAfterCommit {
-                triggerKnownVersionedScan()
-            }
-            return
-        }
-        guard let id = new else { return }
-        let category = allCategories.first(where: { $0.id == id })
-            ?? fallbackCategory.flatMap { $0.id == id ? $0 : nil }
-        guard let cat = category else { return }
-        // v2：统一走 [runHeavyAfterCommit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HeavyTask.swift)
-        // 模板（detached + sleep 16ms + MainActor.run），让 SwiftUI 先把
-        // 「sidebar 高亮 / 旧 detail 清空 / loading 状态」这一帧 commit 出去再开始扫。
-        // 这样 Preferences 这种条目巨多的目录入扫时不再卡彩虹球。
-        runHeavyAfterCommit {
+            triggerKnownVersionedScan()
+        } else if let cat = category {
             startScan(category: cat)
+        } else {
+            resetSelectionState()
+        }
+        persistCommittedCustomPaths(intent.customPaths)
+        return true
+    }
+
+    private func persistCommittedCustomPaths(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        // Persistence records an already accepted UI commit. No awaited write can precede
+        // the admission decision or resurrect a rejected/abandoned path submission.
+        let store = pathStore
+        Task {
+            for url in urls { _ = await store.add(url) }
         }
     }
 
@@ -4456,10 +4511,9 @@ public struct MainView: View {
     /// 1. 输入 `/`（裸斜杠）→ 整盘扫描
     /// 2. 输入任意"已存在目录"绝对路径 → 加到 customCategories 并选中扫描
     private func submitPathBar() {
-        guard canReplaceScanContext, !hasConflictingMainModalPresentation else { return }
+        guard interfaceMode == .professional, canReplaceScanContext,
+              !hasConflictingMainModalPresentation else { return }
         let raw = pathBarInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let submittedCategory = selectedCategory
-        let submittedMode = interfaceMode
         guard !raw.isEmpty else { return }
         // 整盘
         if raw == "/" {
@@ -4467,34 +4521,72 @@ public struct MainView: View {
             pathBarInput = ""
             return
         }
-        // 普通目录
-        Task {
-            // Path validation performs filesystem I/O. Keep it off the UI executor, and
-            // recheck both the input and live occupancy after returning across this await.
-            let validation = await Task.detached(priority: .userInitiated) {
-                let url = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
-                var isDir: ObjCBool = false
-                let isDirectory = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
-                return (url, isDirectory)
-            }.value
-            guard pathBarInput.trimmingCharacters(in: .whitespacesAndNewlines) == raw,
-                  selectedCategory == submittedCategory, interfaceMode == submittedMode,
-                  canReplaceScanContext, !hasConflictingMainModalPresentation else { return }
-            let (url, isDirectory) = validation
-            guard isDirectory else {
-                deleteResult = String(format: AppLocalization.string("delete.result.path_invalid %@", locale: locale), url.path)
+        _ = submitDirectoryInput(.path(raw))
+    }
+
+    /// Path and drop share one request identity, off-main validation and atomic admission.
+    /// A request cannot persist anything until its category transition actually commits.
+    @discardableResult
+    private func submitDirectoryInput(_ source: MainDirectoryInputSource) -> Bool {
+        guard interfaceMode == .professional, canReplaceScanContext,
+              !hasConflictingMainModalPresentation else { return false }
+        let pathInput: String?
+        if case .path(let raw) = source { pathInput = raw } else { pathInput = nil }
+        guard let id = scanInputRequest.begin(in: scanContextIdentity, input: pathInput) else { return false }
+        scanInputTask = Task { @MainActor in
+            let validation: MainDirectoryInput.Validation
+            var hadLoadFailure = false
+            switch source {
+            case .path(let raw):
+                validation = await MainDirectoryInput.validate(.path(raw))
+            case .drop(let providers):
+                var urls: [URL] = []
+                // Keep provider order: only the first valid folder starts a scan. The rest
+                // are recorded by the same accepted commit, never by independent callbacks.
+                for provider in providers {
+                    guard !Task.isCancelled else { return }
+                    do {
+                        if let url = try await MainDirectoryInput.loadURL(from: provider) { urls.append(url) }
+                    } catch {
+                        hadLoadFailure = true
+                        GSYLog.error(.settings, "dropped directory URL loading failed: \(error.localizedDescription)")
+                    }
+                }
+                validation = await MainDirectoryInput.validate(.urls(urls))
+            }
+            guard scanInputRequest.requestID == id else { return }
+            scanInputTask = nil
+            guard scanInputRequest.take(id, in: scanContextIdentity,
+                input: pathBarInput.trimmingCharacters(in: .whitespacesAndNewlines),
+                isAdmitted: !Task.isCancelled && isPresentationHostMounted
+                    && interfaceMode == .professional && canReplaceScanContext
+                    && !hasConflictingMainModalPresentation) else { return }
+            guard let first = validation.directories.first else {
+                if pathInput != nil, let url = validation.candidates.first {
+                    deleteResult = String(format: AppLocalization.string("delete.result.path_invalid %@", locale: locale), url.path)
+                } else if hadLoadFailure { customPathImportNotice = .failed }
                 return
             }
-            _ = await pathStore.add(url)
-            await MainActor.run {
-                guard pathBarInput.trimmingCharacters(in: .whitespacesAndNewlines) == raw,
-                      selectedCategory == submittedCategory, interfaceMode == submittedMode,
-                      canReplaceScanContext, !hasConflictingMainModalPresentation else { return }
-                let cat = ScanCategory.makeCustom(url: url)
-                requestCategorySwitch(to: cat.id, fallbackCategory: cat)
+            let category = ScanCategory.makeCustom(url: first)
+            if requestCategorySwitch(to: category.id, fallbackCategory: category,
+                                     customPaths: validation.directories), pathInput != nil {
                 pathBarInput = ""
             }
         }
+        return true
+    }
+
+    private func invalidateStaleScanInputRequest() {
+        guard scanInputRequest.requestID != nil,
+              !scanInputRequest.matches(scanContextIdentity,
+                  input: pathBarInput.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+        invalidateScanInputRequest()
+    }
+
+    private func invalidateScanInputRequest() {
+        scanInputTask?.cancel()
+        scanInputTask = nil
+        scanInputRequest.invalidate()
     }
 
     /// 整盘扫描入口：统一从这里发起，方便后续接 TCC 引导。
@@ -5485,42 +5577,11 @@ public struct MainView: View {
     ///   ScanCoordinator 同时只支持单个 active scan，多根并发会互相打架；
     ///   其余目录已写入 customCategories，用户可在侧栏自行点击逐个扫。
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
-        var accepted = false
-        for provider in providers {
-            guard provider.canLoadObject(ofClass: URL.self) else { continue }
-            accepted = true
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url else { return }
-                var isDir: ObjCBool = false
-                let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
-                guard exists, isDir.boolValue else { return }
-                Task { @MainActor in
-                    _ = await pathStore.add(url)
-                    // 自动选中该自定义类目并触发扫描；
-                    // 已存在的路径 cat.id 相同，requestCategorySwitch 内部
-                    // 会因 "old==new" 直接 return —— 此时主动再起一次扫描。
-                    let cat = ScanCategory.makeCustom(url: url)
-                    requestCategorySwitch(to: cat.id, fallbackCategory: cat)
-                }
-            }
-            // 多文件夹拖入：仅对第一个 provider 触发扫描，其余只入库，
-            // 防止 ScanCoordinator 多扫并发互相覆盖。
-            break
-        }
-        // 剩余的 provider 仍走"只入库不扫描"路径，把整批文件夹都加到 customCategories
-        for provider in providers.dropFirst() {
-            guard provider.canLoadObject(ofClass: URL.self) else { continue }
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url else { return }
-                var isDir: ObjCBool = false
-                let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
-                guard exists, isDir.boolValue else { return }
-                Task { @MainActor in
-                    _ = await pathStore.add(url)
-                }
-            }
-        }
-        return accepted
+        guard interfaceMode == .professional, canReplaceScanContext,
+              !hasConflictingMainModalPresentation else { return false }
+        let loadable = providers.filter { $0.canLoadObject(ofClass: URL.self) }
+        guard !loadable.isEmpty else { return false }
+        return submitDirectoryInput(.drop(loadable))
     }
 }
 

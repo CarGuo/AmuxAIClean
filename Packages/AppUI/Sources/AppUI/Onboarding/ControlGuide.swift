@@ -143,6 +143,63 @@ struct ControlGuideSession {
     }
 }
 
+/// v2026.10.11 review: the native controller uses this state directly. Readiness and reveal
+/// admission are testable without presenting an NSWindow or manufacturing native focus.
+struct ControlGuideProgressState {
+    enum Advance: Equatable { case ignored, advanced, completed }
+    enum Location: Equatable { case ready, waiting, contextChanged }
+    private(set) var session: ControlGuideSession?
+    private(set) var isStepReady = false
+    private var lastReveal: (target: ControlGuideTarget, layoutRevision: UInt64)?
+
+    mutating func prepare(presentationID: UUID, mode: SmartCareInterfaceMode,
+                          available: Set<ControlGuideTarget>, required: Set<ControlGuideTarget>) {
+        isStepReady = false
+        if session == nil {
+            session = ControlGuideSession(presentationID: presentationID, mode: mode,
+                                          available: available, required: required)
+        } else if available.contains(.interfaceMode), required.isSubset(of: available) {
+            session?.updateInitialAvailability(available)
+        }
+    }
+
+    mutating func shouldReveal(isVisible: Bool, canReveal: Bool, layoutRevision: UInt64) -> Bool {
+        guard let target = session?.target, canReveal else { return false }
+        // Retry a missing target after actual layout/viewport changes. Repeating an unchanged
+        // refresh never retries a no-op scroll; there is no timer or self-sustaining poll loop.
+        guard lastReveal?.target != target
+                || (!isVisible && lastReveal?.layoutRevision != layoutRevision) else { return false }
+        lastReveal = (target, layoutRevision)
+        return true
+    }
+
+    mutating func locate(isVisible: Bool, canReveal: Bool) -> Location {
+        isStepReady = isVisible
+        return isVisible ? .ready : (canReveal ? .waiting : .contextChanged)
+    }
+
+    mutating func advance() -> Advance {
+        guard isStepReady, var session else { return .ignored }
+        isStepReady = false
+        guard session.advance() else { return .completed }
+        self.session = session
+        return .advanced
+    }
+
+    mutating func suspend() { isStepReady = false }
+}
+
+enum ControlGuideAnchorPolicy {
+    static func canReveal(_ target: ControlGuideTarget, registered: Set<ControlGuideTarget>,
+                          sidebarIsVisible: Bool) -> Bool {
+        sidebarIsVisible && registered.contains(target)
+    }
+
+    static func available(visible: Set<ControlGuideTarget>, registered: Set<ControlGuideTarget>) -> Set<ControlGuideTarget> {
+        visible.contains(.sidebarOperations) ? visible.union(registered) : visible
+    }
+}
+
 /// Layout is computed from a real anchor and measured text, including translated wrapping.
 /// There is no per-control position table or fixed-height instruction panel.
 enum ControlGuideLayout {
