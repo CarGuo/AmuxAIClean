@@ -1379,7 +1379,7 @@ public struct UninstallScreen: View {
     @State private var activeSheet: ActiveSheet?
     @State private var preflightNotice: DeletionPreflightNotice?
     @State private var successFeedback: OperationSuccessFeedback?
-    @State private var uninstallDeletionHandoff = ToolDeletionHandoff<UninstallExecutionRequest>()
+    @State private var uninstallDeletionHandoff = SheetDismissalHandoff<UninstallExecutionRequest>()
     @State private var uninstallPreflightTask: Task<Void, Never>?
     @State private var uninstallPreflightGate = ToolDeletionPreflightRequestGate<UninstallPreflightContext>()
     @State private var uninstallExecutionTask: Task<Void, Never>?
@@ -1569,6 +1569,8 @@ public struct UninstallScreen: View {
                 }
             }
         }
+        // v2026.10.10: window occupancy applies in every embedding, including Professional mode.
+        .mainWindowBusinessTransaction(isActive: isDeletionTransactionActive)
         .onValueChange(of: isDeletionTransactionActive) { _, active in
             onTransactionActiveChange(active)
         }

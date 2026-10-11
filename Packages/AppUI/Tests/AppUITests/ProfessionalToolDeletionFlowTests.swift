@@ -556,7 +556,7 @@ final class ProfessionalToolDeletionFlowTests: XCTestCase {
     }
 
     func test_toolDeletionHandoffRunsOnlyOnceAfterSheetDismissal() {
-        var handoff = ToolDeletionHandoff<String>()
+        var handoff = SheetDismissalHandoff<String>()
 
         XCTAssertTrue(handoff.schedule("first"))
         XCTAssertFalse(handoff.schedule("second"), "已排队的确认请求不能被后一次点击覆盖")
@@ -567,7 +567,7 @@ final class ProfessionalToolDeletionFlowTests: XCTestCase {
     }
 
     func test_confirmationRejectKeepsInteractionOpenThenAcceptedPlanLatchesExactlyOnce() {
-        var handoff = ToolDeletionHandoff<String>()
+        var handoff = SheetDismissalHandoff<String>()
         var hasSubmitted = false
         var freezeAttempts = 0
 

@@ -124,6 +124,7 @@ public struct WorkflowDetailView: View {
         // v2026.07.20 P0: workflow cards and footer retain their layout and selection while the
         // shared non-modal callout explains why no Trash submission was created.
         .operationSuccessFeedbackOverlay($viewModel.successFeedback)
+        .mainWindowBusinessTransaction(isActive: viewModel.isDeletionTransactionActive || viewModel.activeSheet != nil)
         .deletionPreflightNoticeOverlay(viewModel.preflightNotice) {
             viewModel.preflightNotice = nil
         }
@@ -518,8 +519,7 @@ public struct WorkflowDetailView: View {
     }
 
     private func runPendingDeleteAfterSheetDismissal() {
-        guard let intent = viewModel.takePendingConfirmedDeleteIntent() else { return }
-        Task { await viewModel.performDelete(pipeline: pipeline, intent: intent) }
+        viewModel.submitPendingConfirmedDeleteAfterSheetDismissal(pipeline: pipeline)
     }
 
     private func iconName(for risk: DeveloperCard.Risk) -> String {
@@ -2425,6 +2425,17 @@ public final class WorkflowDetailViewModel: ObservableObject {
     public func takePendingConfirmedDeleteIntent() -> WorkflowDeletionIntent? {
         defer { pendingConfirmedDeleteIntent = nil }
         return pendingConfirmedDeleteIntent
+    }
+
+    /// v2026.10.10: native dismissal hands ownership to the Task without an idle phase.
+    /// Pending remains set until the Task can synchronously enter performDelete before its first await.
+    @discardableResult
+    func submitPendingConfirmedDeleteAfterSheetDismissal(pipeline: any DeletionPipeline) -> Task<Void, Never>? {
+        guard pendingConfirmedDeleteIntent != nil else { return nil }
+        return Task { @MainActor in
+            guard let intent = takePendingConfirmedDeleteIntent() else { return }
+            await performDelete(pipeline: pipeline, intent: intent)
+        }
     }
 
     public func performDelete(pipeline: any DeletionPipeline,

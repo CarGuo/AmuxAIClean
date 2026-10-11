@@ -414,7 +414,7 @@ struct GSYCleanMacApp: App {
                 // 主窗口被打开 / 拉回前台 → 立刻同步策略（accessory→regular）。
                 reconcileActivationPolicy()
             }
-            // v2026.10.10: MainView is the sole presenter for guide/TCC/update sheets;
+            // v2026.10.10: MainView owns the control tour and TCC/update sheets;
             // App retains their requests across window recreation and supplies the live locale.
             .environment(\.locale, settings.effectiveLocale)
         }
@@ -639,14 +639,13 @@ struct GSYCleanMacApp: App {
     }
 
     private func evaluateTCCOnboarding() async {
-        if UserDefaults.standard.bool(forKey: tccDismissedKey) {
-            return
-        }
-        let probe = TCCProbe()
-        let status = await probe.probe()
-        guard !Task.isCancelled else { return }
-        if case .deniedReadable = status {
-            applicationPresentation.requestFullDiskAccessGuide()
+        // v2026.10.10: WindowGroup tasks can repeat or be cancelled by closing a window.
+        // The App-owned session, rather than a persistent "Later" preference, owns this probe.
+        applicationPresentation.evaluateFullDiskAccessOnboardingIfNeeded(
+            isPermanentlyDismissed: UserDefaults.standard.bool(forKey: tccDismissedKey)
+        ) {
+            if case .deniedReadable = await TCCProbe().probe() { return true }
+            return false
         }
     }
 
@@ -678,7 +677,9 @@ struct GSYCleanMacApp: App {
         // v2026.10.10: enqueue before opening the scene. A notification sent during
         // asynchronous window recreation had no MainView subscriber and lost the Help intent.
         presentation.requestUserGuide()
-        bringMainWindowToFront()
+        // Registered hosts focus their own native window. With no host, preserve the intent
+        // while the normal scene opener recreates it asynchronously.
+        if !presentation.hasAttachedHost { bringMainWindowToFront() }
     }
 
     /// v1.5.7：Help 菜单统一的外链跳转入口。

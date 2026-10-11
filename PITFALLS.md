@@ -1841,21 +1841,70 @@ Tree 投影时，增量刷新继续沿用空字典。完整空扫描通常已包
 指引门只知道自己的业务状态；检查返回与关闭动画之间没有共同的呈现合同。
 
 - `MainWindowPresentationCoordinator` 由 App 持有，Help 先入队再打开窗口。首启指引、
-  手动指引、TCC 与更新使用 MainView 的同一个 sheet owner；忙时保留请求，空闲时按
-  当前模式定位。主窗口消失会保留未完成请求，不能冒充用户完成指引。
-- 呈现绑定变成 nil 只代表开始关闭。直到原生 `onDismiss` 才释放 slot、确认模式切换与
-  完成状态；host ID 与 presentation ID 拒绝旧窗口的迟到回调。预留下一轮调度期间也算
+  手动指引、TCC 与更新使用各 MainView 的单一准入 owner；工具栏绑定发起窗口，Help
+  跟随原生主窗口焦点，不得永久固定第一个 WindowGroup。忙时保留请求，空闲时按当前
+  模式定位。主窗口消失会保留未完成请求，不能冒充用户完成指引。
+- 原生 sheet 的呈现绑定变成 nil 只代表开始关闭。直到 SwiftUI `onDismiss` 和宿主窗口
+  sheet 结束均已到达，才释放 slot。控件引导则在所属窗口的 overlay 实际移除后结束；
+  两种呈现均用 host ID 与 presentation ID 拒绝旧窗口的迟到回调。预留下一轮调度期间也算
   occupied，Sentinel 不能越过已预留的应用提示。
-- 所有主窗口业务 sheet 在 `localizedSheet` 的共同边界登记生命周期，包括嵌套工具。
-  待呈现源绑定在应用提示期间保留；已显示 sheet 的占用不能因 false 绑定或 presenter
-  离页提前释放。租约归属窗口，关闭一个窗口不能清掉另一个窗口的 sheet。
-- 指引必须对应已交付功能。普通优化只有维护/启动项分段入口；应用占用分析没有剥离
-  二进制架构。红色 verdict 不等于全部 hard-forbid：符合条件的 vendor reason 可严格
-  确认，系统、凭据、整根与越界等结构性禁止边界仍不可覆盖。文案在中英 Catalog 同步维护。
+- **v2026.10.10 `4ccd712` 外部复审修正**：不能把“sheet 可见”当成“事务仍活动”。
+  Brew、Workflow、Duplicate、Uninstall 从预检、确认交接、执行到结果收敛都在共同边界
+  登记真实 owner 的 phase；准入直接重读该 phase，View 的变更观察只负责唤醒队列，不能
+  以“已经重绘/已发回调”作为前置条件。异步执行必须在 Task 开始时才消费 pending，不能
+  在创建 Task 前暴露空闲阶段。Main 的模式/分类变更同样遵守事务边界。
+- 所有业务 sheet 在 `localizedSheet` 登记待呈现生命周期；报告→清理、暂存→AI 与暂存→
+  删除共享一次性交接，不能以 `Task.yield` 或主队列下一帧代替关闭。原生 SwiftUI 回归证实
+  `onDismiss` 可能早于窗口的 sheet 结束通知；共同边界必须等待两个信号，应用提示也遵守
+  此合同。原生通知可能发生于 SwiftUI 更新栈中，因此权威状态同步更新、观察发布合并到
+  栈外；不能在 View 更新中发布，也不能让准入依赖发布调度的一帧。
+  presenter 移除必须无条件、幂等地释放自身登记；实际关闭屏障由宿主窗口的
+  [NSWindow.didEndSheetNotification](https://developer.apple.com/documentation/appkit/nswindow/didendsheetnotification)
+  独立持有，不能依赖被卸载 View 的回调。租约归属窗口，关闭一个窗口不能清掉另一窗口。
+- TCC 自动评估由 App 会话持有，不能由每个 WindowGroup 重跑。“稍后”仅本次启动生效；
+  不写成永久偏好，也不因为关闭发起窗口而丢掉评估结果。
+- **本轮产品纠正**：说明页/功能卡片不是逐控件引导，旧页面与文案全部删除。参考
+  [Enlighten 的原生控件 spotlight 方式](https://github.com/chriszielinski/Enlighten)，直接注册
+  当前窗口真实控件，逐步高亮，提供下一步/完成/跳过；不运行扫描、删除或切换模式来制造
+  指引目标。结果/暂存等控件仅在实际显示时加入；窗口大小、控件布局与语言变化使用实际
+  几何重算。工具栏与正文的 SwiftUI hosting 树不同，不能假设 Preference 跨树传递；
+  `NSView.visibleRect` 在不裁剪的视图上也可能大于自身 bounds，必须先取交集再转换坐标。
+  新完成标记不能沿用旧说明页的已读状态，中英文本仍统一进入 Catalog。
+- **v2026.10.11 持续运行发现**：用 Preference 回传气泡高度会在原生 hosting 中拿到初始
+  零高度，底部控件的气泡虽然按零高度定位成功，真实文字和按钮却伸出窗口。不得加延时
+  或为删除按钮写位置特例；使用 [SwiftUI Layout](https://developer.apple.com/documentation/swiftui/layout)
+  在同一次布局中测量实际子视图并放置。回归必须测量生产气泡（含中英文与操作按钮行）在
+  原生窗口中的真实 bounds，不能只向坐标函数传入假定高度后宣称没有裁切。
+- **v2026.10.11 常驻操作合同**：`NSToolbar` 的分组、placement 和 SwiftUI
+  `layoutPriority` 都不承诺项目永不溢出；
+  [visibilityPriority](https://developer.apple.com/documentation/appkit/nstoolbaritem/visibilitypriority-swift.property)
+  也只决定折叠顺序，扫描引起的 SwiftUI 重建还会重新配置原生条目。不能靠不断改分组、
+  监听布局回写优先级或强制展开菜单保证常驻。暂存、重扫、指南使用
+  [右侧原生标题栏 accessory](https://developer.apple.com/documentation/appkit/nstitlebaraccessoryviewcontroller)，
+  从布局合同上退出 `NSToolbar` 的溢出集合；AppKit 按实测内容宽度预留位置，并处理窗口
+  缩放和全屏。暂存为空、没有扫描目标时入口也保留，仅数量/可用状态变化。
+  这些控件继续保留独立动作、可访问标识和指引锚点。原生回归必须断言三控件的真实
+  frame 在支持的窗口宽度和内容重建后都可见，C4 另验证真实扫描和暂存更新。
+- **侧栏按块教学**：只给推荐扫描一行加指引会漏掉整个左侧操作区。每个语义分组登记
+  标题和行的真实弱引用锚点，聚合当前可见 bounds；`ScrollViewReader` 使用稳定分组 ID
+  展示视口外的工具，再测量高亮。滚动只改变视口，不选中栏目、不启动业务；不得用写死
+  坐标框住一片区域或把屏幕外栏目默默过滤。左下角容量与虚拟内存另有独立步骤。
+  实际滚动只改变 `NSClipView.bounds`，不必改变行的 frame；锚点必须观察原生
+  [boundsDidChangeNotification](https://developer.apple.com/documentation/appkit/nsview/boundsdidchangenotification)，
+  否则从列表中部重放指引会在回到顶部时停住。等待可见锚点期间 `orderOut` 会解除子窗口
+  的 parent，重新显示前必须恢复同一 owner。Help 的激活请求返回时，App 可能尚未成为
+  active，owner 的 main/key 均为 false；扩大到 main 判断仍不能完成键盘交接。工具栏的
+  明确请求先选择对应 host，指引保留该 owner 的键盘意图，观察实际应用激活事件；交互
+  指引使用可激活的 panel，不能沿用非激活 HUD 的窗口样式。滚动临时隐藏时保留键盘
+  意图，结束时只在自己持有 key 的情况下归还原窗口，不能抢走另一窗口的焦点。
+  [AppKit 的 key/main 合同](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/WinPanel/Concepts/ChangingMainKeyWindow.html)
+  要求输入落在当前交互窗口，不能让回车落到遮罩后的路径输入框。键盘行为须另做生产 App C4，
+  命令行 native fixture 的非前台 NSApplication 不能冒充这项证据。
 - 真实删除纯成功继续由 opaque receipt 生成短暂提示；部分失败与未知结果仍显示明细。
   Debug 预览成功同样不弹 modal，但保留明确的“预览”语义，不生成真实回收凭据。
 
-聚焦回归覆盖无窗口 Help、重建后旧回调、关闭动画占用、嵌套确认、两窗口租约、更新替换
-与撤回，以及真实成功/预览的本地化区别。模型测试和目标构建不能证明 macOS 运行交互，
-交付必须继续单独说明 C4 是否执行。
+复审后的回归同时覆盖真实 Workflow owner 的跨 await phase、原生窗口通知、SwiftUI
+`localizedSheet` 的原生交接，以及无窗口 Help、旧回调、双窗口路由、更新和 TCC 会话。
+原生 fixture 的自动化仍是 C2；模型测试和目标构建不能证明生产 App 运行交互，交付必须
+继续单独说明 C4 是否执行。
 

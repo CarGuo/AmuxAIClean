@@ -159,6 +159,11 @@ private enum SmartCareSheetRoute: Identifiable {
     }
 }
 
+private enum StashDismissalAction: Sendable {
+    case delete([StashStore.StashEntry])
+    case askAI(RowItem)
+}
+
 /// AI Review 终态报告的自动呈现策略。
 ///
 /// 新鲜报告可以自动打开；summary 变化产生的过期报告只允许更新一个已经可见的
@@ -523,8 +528,10 @@ public struct MainView: View {
     @State private var presentationHostID = UUID()
     @State private var isPresentationHostMounted = false
     @State private var applicationSheetID: UUID?
+    @StateObject private var guideAnchors = ControlGuideAnchors()
     private let onTCCGuideDismiss: (Bool) -> Void
     @State private var smartCareSheetRoute: SmartCareSheetRoute?
+    @State private var smartCareCleanupHandoff = SheetDismissalHandoff<UInt64>()
     /// v2026.07.20：仅普通模式首次启用开发缓存时占用。确认前不修改选择，
     /// 取消后仍保持未选中，避免提示状态与实际扫描计划分叉。
     @State private var showSmartCareDeveloperCacheWarning = false
@@ -591,7 +598,7 @@ public struct MainView: View {
     @State private var isPreparingDeletion: Bool = false
     /// Stash 本身是 sheet；删除意图先冻结，待 Stash 真正 dismiss 后再呈现统一
     /// DeleteSheet，避免 sibling sheet 竞争导致失败结果不可见。
-    @State private var pendingStashDeletion: [StashStore.StashEntry]?
+    @State private var stashSheetHandoff = SheetDismissalHandoff<StashDismissalAction>()
     @State private var deleteResult: String?
 
     /// **v2026.06.16 修复 #4**：删除主路径 + 大文件 trash 的结构化结果 sheet。
@@ -851,6 +858,20 @@ public struct MainView: View {
 
     public var body: some View {
         applicationSceneContent
+            .background {
+                MainWindowActionsAccessory(content: AnyView(permanentWindowActions))
+                    .frame(width: 0, height: 0)
+                MainWindowPresentationHost(coordinator: applicationPresentation, hostID: presentationHostID)
+                    .frame(width: 0, height: 0)
+                ControlGuideHost(
+                    anchors: guideAnchors, presentationID: activeControlGuideID,
+                    mode: interfaceMode, locale: locale,
+                    isFocusedHost: applicationPresentation.isFocusedHost(presentationHostID),
+                    onFocus: { applicationPresentation.focusHost(presentationHostID) },
+                    onEnd: finishControlGuide
+                ).frame(width: 0, height: 0)
+            }
+            .environment(\.controlGuideAnchors, guideAnchors)
             .environment(\.mainWindowPresentationCoordinator, applicationPresentation)
             .environment(\.mainWindowPresentationHostID, presentationHostID)
     }
@@ -970,7 +991,7 @@ public struct MainView: View {
         }
         .localizedSheet(
             item: $smartCareSheetRoute,
-            onDismiss: runPendingDeleteSubmissionAfterSheetDismissal
+            onDismiss: finishSmartCareSheetDismissal
         ) { route in
             switch route {
             case .aiReview(let report):
@@ -1027,7 +1048,7 @@ public struct MainView: View {
         // 复用现有 trigger / aiAskingRow 通道，不引入第二条删除/AI 链路。
         .localizedSheet(
             isPresented: $isStashScreenPresented,
-            onDismiss: presentPendingStashDeletionAfterDismissal
+            onDismiss: finishStashSheetDismissal
         ) {
             StashScreen(
                 stash: stash,
@@ -1041,14 +1062,9 @@ public struct MainView: View {
                     scheduleStashDeletion(entries)
                 },
                 onAskAIOne: { entry in
-                    // 单独 AI：复用 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
-                    // 通道（item-based sheet），不在 StashScreen 内再造一份 AI 渲染。
-                    // 先把 stash sheet 收掉再弹 AI，避免 macOS sheet 叠层 (不支持 sheet 之上 sheet)。
-                    //
-                    // v1.5 P2 / Q3：走 requestAI 收敛 —— 未配置弹"前往设置"alert。
-                    let row = makeAIQueryRow(from: entry)
+                    // v2026.10.10: keep this intent until native dismissal, just like Stash deletion.
+                    guard stashSheetHandoff.schedule(.askAI(makeAIQueryRow(from: entry))) else { return }
                     isStashScreenPresented = false
-                    DispatchQueue.main.async { requestAI(row: row) }
                 },
                 onRunAIBatch: {
                     // v2026.06.19 一键 AI 队列入口：
@@ -1098,10 +1114,10 @@ public struct MainView: View {
 
     private var applicationSceneContent: some View {
         mainBusinessPresentation
-        // v2026.10.10: User Guide, TCC and updates share one item-based presentation slot.
-        // The App owns queued intents; this host owns admission and native dismissal.
+        // v2026.10.10: the control tour is an in-window overlay. TCC/update keep their native
+        // sheets; all three retain the same per-window request/admission owner.
         .localizedSheet(item: Binding<MainWindowPresentationCoordinator.Presentation?>(
-            get: { applicationPresentation.visiblePresentation(for: presentationHostID) },
+            get: { activeApplicationSheet },
             set: { if $0 == nil { applicationPresentation.dismiss(hostID: presentationHostID) } }
         ), onDismiss: finishApplicationSheetDismissal, tracksMainWindowOccupancy: false) { presentation in
             applicationSheetContent(presentation)
@@ -1270,7 +1286,8 @@ public struct MainView: View {
     /// remain available when the user switches back; deletion work is never
     /// interrupted by this control (the picker is disabled during deletion).
     private func transitionInterfaceMode(to newMode: SmartCareInterfaceMode) {
-        guard interfaceMode != newMode else { return }
+        // v2026.10.10: every route, including walkthrough completion, obeys the same transaction gate.
+        guard interfaceMode != newMode, !hasActiveBusinessTransaction else { return }
         storageAnalysis.deactivate()
         let smartCareIsScanning: Bool
         if case .scanning = smartCareSession.care.phase {
@@ -1480,7 +1497,16 @@ public struct MainView: View {
             || smartCareDeletePreviewGate.isInFlight
             || isPreparingDeletion
             || isDeleting
-            || pendingStashDeletion != nil
+            || stashSheetHandoff.hasPending
+            || smartCareCleanupHandoff.hasPending
+    }
+
+    private var hasActiveBusinessTransaction: Bool {
+        isPreparingDeletion || isDeleting || normalToolIsBusy
+            || deleteSubmissionHandoff.blocksNewSubmission
+            || smartCareDeletePreviewGate.isInFlight
+            || stashSheetHandoff.hasPending || smartCareCleanupHandoff.hasPending
+            || applicationPresentation.businessTransactionCount(for: presentationHostID) > 0
     }
 
     /// Main 的所有系统 presentation 共享这一道互斥判定。异步 Safety preflight
@@ -1523,10 +1549,8 @@ public struct MainView: View {
         _ presentation: MainWindowPresentationCoordinator.Presentation
     ) -> some View {
         switch presentation.content {
-        case .userGuide(let initialPage, let mode):
-            UserGuideView(initialPage: initialPage, currentInterfaceMode: mode) { targetMode in
-                applicationPresentation.dismiss(hostID: presentationHostID, targetMode: targetMode)
-            }
+        case .userGuide:
+            EmptyView() // ControlGuideHost owns the overlay; this route never enters a native sheet.
         case .fullDiskAccess:
             TCCGuideView { openedSettings in
                 onTCCGuideDismiss(openedSettings)
@@ -1545,8 +1569,7 @@ public struct MainView: View {
         applicationSheetID = nil
         switch dismissal.presentation.content {
         case .userGuide:
-            if let targetMode = dismissal.targetMode { transitionInterfaceMode(to: targetMode) }
-            settings.userGuideCompleted = true
+            break
         case .fullDiskAccess:
             break
         case .update(let release):
@@ -1556,6 +1579,30 @@ public struct MainView: View {
                 applicationPresentation.updateChecker.dismissUntilNextLaunch()
             }
         }
+        schedulePendingApplicationPresentationIfPossible()
+        schedulePendingSentinelPresentationIfPossible()
+    }
+
+    private var activeControlGuideID: UUID? {
+        guard let presentation = applicationPresentation.visiblePresentation(for: presentationHostID),
+              case .userGuide = presentation.content else { return nil }
+        return presentation.id
+    }
+
+    private var activeApplicationSheet: MainWindowPresentationCoordinator.Presentation? {
+        guard let presentation = applicationPresentation.visiblePresentation(for: presentationHostID) else { return nil }
+        if case .userGuide = presentation.content { return nil }
+        return presentation
+    }
+
+    private func finishControlGuide(_ id: UUID, _ reason: ControlGuideEnd) {
+        // The child overlay is already removed. A stale/window-detached callback cannot finish
+        // another window's tour, acknowledge onboarding, or change its mode.
+        guard activeControlGuideID == id else { return }
+        applicationPresentation.dismiss(hostID: presentationHostID)
+        guard applicationPresentation.finishDismissal(hostID: presentationHostID, presentationID: id) != nil else { return }
+        applicationSheetID = nil
+        if reason.acknowledgesOnboarding { settings.userGuideCompleted = true }
         schedulePendingApplicationPresentationIfPossible()
         schedulePendingSentinelPresentationIfPossible()
     }
@@ -1808,14 +1855,20 @@ public struct MainView: View {
               report.sourceSummaryRevision == smartCareSession.care.summaryRevision else {
             return
         }
-        let expectedSummaryRevision = report.sourceSummaryRevision
+        guard smartCareCleanupHandoff.schedule(report.sourceSummaryRevision) else { return }
         smartCareSheetRoute = nil
-        Task { @MainActor in
-            await Task.yield()
-            await presentSmartCareDeleteRequest(
-                expectedSummaryRevision: expectedSummaryRevision
-            )
+    }
+
+    private func finishSmartCareSheetDismissal() {
+        // Keep the handoff pending until its task starts, so queued application sheets cannot
+        // reserve the window between native dismissal and Smart Care's preflight gate acquisition.
+        if smartCareCleanupHandoff.hasPending {
+            Task { @MainActor in
+                guard let revision = smartCareCleanupHandoff.takeAfterSheetDismissal() else { return }
+                await presentSmartCareDeleteRequest(expectedSummaryRevision: revision)
+            }
         }
+        runPendingDeleteSubmissionAfterSheetDismissal()
     }
 
     private func openSmartCareAISettings() {
@@ -1944,7 +1997,7 @@ public struct MainView: View {
                 && !deleteSubmissionHandoff.blocksNewSubmission
                 && !isPreparingDeletion
                 && !isDeleting
-                && pendingStashDeletion == nil
+                && !stashSheetHandoff.hasPending
             guard smartCareDeletePreviewGate.allowsCompletion(
                 token: token,
                 currentSummaryRevision: smartCareSession.care.summaryRevision,
@@ -2282,10 +2335,13 @@ public struct MainView: View {
     /// Smart Care keeps its existing sheet-to-execution handoff. Professional submissions are
     /// intentionally absent from `DeleteSubmission`, so they cannot regress back to this callback.
     private func runPendingDeleteSubmissionAfterSheetDismissal() {
-        guard let submission = deleteSubmissionHandoff.takeAfterSheetDismissal() else { return }
-        switch submission {
-        case .smartCare(let request, let action, let accessDeniedPaths):
-            Task { [request, action, accessDeniedPaths] in
+        guard deleteSubmissionHandoff.hasPending else { return }
+        // v2026.10.10: just like Workflow, retain pending ownership until the Task enters
+        // execution. The native callback must never expose an idle window before isDeleting.
+        Task { @MainActor in
+            guard let submission = deleteSubmissionHandoff.takeAfterSheetDismissal() else { return }
+            switch submission {
+            case .smartCare(let request, let action, let accessDeniedPaths):
                 await performSmartCareDelete(
                     request: request,
                     action: action,
@@ -2320,6 +2376,7 @@ public struct MainView: View {
                 // v1.3 review-fix Must1：snapshot 探测失败时让卡片提供"重试"按钮，回调到 coordinator.refreshVolumeCapacity()。
                 onRetry: { coordinator.refreshVolumeCapacity() }
             )
+            .controlGuideTarget(.diskCapacity)
         }
         .navigationSplitViewColumnWidth(
             min: SidebarMetrics.minWidth,
@@ -2332,193 +2389,253 @@ public struct MainView: View {
     }
 
     private var sidebarList: some View {
-        List(selection: sidebarSelectionBinding) {
-            // v1.5: Batch Scans —— sidebar 与 toolbar 三大扫描入口的镜像。
-            // 解决用户截图反馈：点 toolbar 锤子 / 推荐 / 全盘后，左侧 sidebar
-            // 没有任何选中态，感知不到"我现在在跑哪条"。
-            // 这里的 .tag 用 ScanCategory.batchXxxID sentinel；
-            // onChange(selectedCategory) 看见这三 id 时不走 startScan(category:)
-            // 而是分发到对应 trigger* helper（toolbar 同款）。
-            Section {
-                batchScanRow(icon: "rectangle.3.group",
-                             titleKey: "batch.recommended.title")
-                    .tag(ScanCategory.batchRecommendedID)
-                    .accessibilityIdentifier("sidebar.batch.recommended")
+        ScrollViewReader { proxy in
+            List(selection: sidebarSelectionBinding) {
+                // v1.5: Batch Scans —— sidebar 与 toolbar 三大扫描入口的镜像。
+                // 解决用户截图反馈：点 toolbar 锤子 / 推荐 / 全盘后，左侧 sidebar
+                // 没有任何选中态，感知不到"我现在在跑哪条"。
+                // 这里的 .tag 用 ScanCategory.batchXxxID sentinel；
+                // onChange(selectedCategory) 看见这三 id 时不走 startScan(category:)
+                // 而是分发到对应 trigger* helper（toolbar 同款）。
+                Section {
+                    batchScanRow(icon: "rectangle.3.group",
+                                 titleKey: "batch.recommended.title")
+                        .tag(ScanCategory.batchRecommendedID)
+                        .controlGuideGroupPart(.scanCategory)
+                        .accessibilityIdentifier("sidebar.batch.recommended")
 
-                batchScanRow(icon: "hammer",
-                             titleKey: "batch.developer.title",
-                             helpKey: "batch.developer.help")
-                    .tag(ScanCategory.batchDeveloperID)
+                    batchScanRow(icon: "hammer",
+                                 titleKey: "batch.developer.title",
+                                 helpKey: "batch.developer.help")
+                        .tag(ScanCategory.batchDeveloperID)
+                        .controlGuideGroupPart(.scanCategory)
 
-                batchScanRow(icon: "internaldrive",
-                             titleKey: "batch.fulldisk.title")
-                    .tag(ScanCategory.batchFullDiskID)
+                    batchScanRow(icon: "internaldrive",
+                                 titleKey: "batch.fulldisk.title")
+                        .tag(ScanCategory.batchFullDiskID)
+                        .controlGuideGroupPart(.scanCategory)
 
-                batchScanRow(icon: "sparkles",
-                             titleKey: "batch.common_app_cache.title")
-                    .tag(ScanCategory.batchCommonAppCacheID)
-            } header: {
-                Text("sidebar.section.batch", bundle: .module)
-            }
-
-            Section {
-                sidebarRow(largeFilesCategory)
-                    .tag(largeFilesCategory.id)
-                    .accessibilityIdentifier("sidebar.large_files")
-            } header: {
-                Text("sidebar.section.large_files", bundle: .module)
-            }
-
-            Section {
-                ForEach(presetCategories) { cat in
-                    sidebarRow(cat)
-                        .tag(cat.id)
+                    batchScanRow(icon: "sparkles",
+                                 titleKey: "batch.common_app_cache.title")
+                        .tag(ScanCategory.batchCommonAppCacheID)
+                        .controlGuideGroupPart(.scanCategory)
+                } header: {
+                    Text("sidebar.section.batch", bundle: .module)
+                    .controlGuideGroupPart(.scanCategory)
                 }
-            } header: {
-                Text("sidebar.section.recommended", bundle: .module)
-            }
+                .id(ControlGuideTarget.scanCategory)
 
-            Section {
-                ForEach(customCategories) { cat in
-                    sidebarRow(cat)
-                        .tag(cat.id)
-                        .contextMenu {
-                            Button {
-                                Task { await removeCustomPath(cat) }
-                            } label: {
-                                Label {
-                                    Text("menu.path.remove", bundle: .module)
-                                } icon: {
-                                    Image(systemName: "minus.circle")
+                Section {
+                    sidebarRow(largeFilesCategory)
+                        .tag(largeFilesCategory.id)
+                        .controlGuideGroupPart(.largeFiles)
+                        .accessibilityIdentifier("sidebar.large_files")
+                } header: {
+                    Text("sidebar.section.large_files", bundle: .module)
+                        .controlGuideGroupPart(.largeFiles)
+                }
+                .id(ControlGuideTarget.largeFiles)
+
+                Section {
+                    ForEach(presetCategories) { cat in
+                        sidebarRow(cat)
+                            .tag(cat.id)
+                            .controlGuideGroupPart(.recommendedCleanup)
+                    }
+                } header: {
+                    Text("sidebar.section.recommended", bundle: .module)
+                    .controlGuideGroupPart(.recommendedCleanup)
+                }
+                .id(ControlGuideTarget.recommendedCleanup)
+
+                Section {
+                    ForEach(customCategories) { cat in
+                        sidebarRow(cat)
+                            .tag(cat.id)
+                            .controlGuideGroupPart(.customPaths)
+                            .contextMenu {
+                                Button {
+                                    Task { await removeCustomPath(cat) }
+                                } label: {
+                                    Label {
+                                        Text("menu.path.remove", bundle: .module)
+                                    } icon: {
+                                        Image(systemName: "minus.circle")
+                                    }
                                 }
                             }
+                    }
+                    Button {
+                        guard !hasConflictingMainModalPresentation else { return }
+                        isCustomPathImporterPresented = true
+                    } label: {
+                        Label {
+                            localizedSidebarTitle("menu.path.add")
+                        } icon: {
+                            Image(systemName: "plus")
                         }
-                }
-                Button {
-                    guard !hasConflictingMainModalPresentation else { return }
-                    isCustomPathImporterPresented = true
-                } label: {
-                    Label {
-                        localizedSidebarTitle("menu.path.add")
-                    } icon: {
-                        Image(systemName: "plus")
+                            .foregroundStyle(.tint)
                     }
-                        .foregroundStyle(.tint)
-                }
-                .buttonStyle(.plain)
-                .padding(.vertical, 2)
-                .disabled(hasConflictingMainModalPresentation)
-            } header: {
-                HStack {
-                    Text("sidebar.section.custom", bundle: .module)
-                    if !customCategories.isEmpty {
-                        Text("· \(customCategories.count)")
-                            .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
+                    .padding(.vertical, 2)
+                    .disabled(hasConflictingMainModalPresentation)
+                    .controlGuideGroupPart(.customPaths)
+                } header: {
+                    HStack {
+                        Text("sidebar.section.custom", bundle: .module)
+                        if !customCategories.isEmpty {
+                            Text("· \(customCategories.count)")
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .controlGuideGroupPart(.customPaths)
+                }
+                .id(ControlGuideTarget.customPaths)
+
+                Section {
+                    ForEach(libraryBrowseCategories) { cat in
+                        sidebarRow(cat, iconOverride: "folder.badge.gearshape")
+                            .tag(cat.id)
+                            .controlGuideGroupPart(.libraryBrowsing)
+                    }
+                } header: {
+                    Text("sidebar.section.library", bundle: .module)
+                    .controlGuideGroupPart(.libraryBrowsing)
+                }
+                .id(ControlGuideTarget.libraryBrowsing)
+
+                Section {
+                    sidebarRow(ScanCategory.fullDisk)
+                        .tag(ScanCategory.fullDisk.id)
+                        .controlGuideGroupPart(.fullDisk)
+                } header: {
+                    Text("sidebar.section.full_disk", bundle: .module)
+                        .controlGuideGroupPart(.fullDisk)
+                }
+                .id(ControlGuideTarget.fullDisk)
+
+                Section {
+                    appFootprintSidebarRow
+                        .tag(MainView.appFootprintSentinelID)
+                        .controlGuideGroupPart(.professionalTools)
+                        .accessibilityIdentifier("sidebar.app_footprint")
+                    launchAgentSidebarRow
+                        .tag(MainView.launchAgentSentinelID)
+                        .controlGuideGroupPart(.professionalTools)
+                    portCleanerSidebarRow
+                        .tag(MainView.portCleanerSentinelID)
+                        .controlGuideGroupPart(.professionalTools)
+                    dartRadarSidebarRow
+                        .tag(MainView.dartRadarSentinelID)
+                        .controlGuideGroupPart(.professionalTools)
+                    uninstallSidebarRow
+                        .tag(MainView.uninstallSentinelID)
+                        .controlGuideGroupPart(.professionalTools)
+                        .accessibilityIdentifier("sidebar.uninstaller")
+                    devVersionedSidebarRow
+                        .tag(MainView.devVersionedSentinelID)
+                        .controlGuideGroupPart(.professionalTools)
+                } header: {
+                    Text("sidebar.section.apps", bundle: .module)
+                    .controlGuideGroupPart(.professionalTools)
+                }
+                .id(ControlGuideTarget.professionalTools)
+
+                Section {
+                    duplicateSidebarRow
+                        .tag(MainView.duplicateSentinelID)
+                        .controlGuideGroupPart(.duplicates)
+                        .accessibilityIdentifier("sidebar.duplicates")
+                } header: {
+                    Text("sidebar.section.duplicates", bundle: .module)
+                        .controlGuideGroupPart(.duplicates)
+                }
+                .id(ControlGuideTarget.duplicates)
+
+                // Step 7：UndoHistory section —— 给"最近清理 / 恢复"一个独立入口。
+                // 单 row 设计避免污染 ScanCategory 体系（与 uninstall / duplicate 同款 sentinel ID 模式）。
+                Section {
+                    undoHistorySidebarRow
+                        .tag(MainView.undoHistorySentinelID)
+                        .controlGuideGroupPart(.history)
+                } header: {
+                    Text("sidebar.section.undo_history", bundle: .module)
+                        .controlGuideGroupPart(.history)
+                }
+                .id(ControlGuideTarget.history)
+
+                // M4-T4 / 2026-06：系统维护 section —— flushQuickLookCache /
+                // flushDNSCache 两个 user-space 任务，
+                // 走 [MaintenanceScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MaintenanceScreen.swift)
+                // 自包含 UI，不复用扫描状态栏。
+                Section {
+                    maintenanceSidebarRow
+                        .tag(MainView.maintenanceSentinelID)
+                        .controlGuideGroupPart(.maintenance)
+                } header: {
+                    Text("sidebar.section.maintenance", bundle: .module)
+                        .controlGuideGroupPart(.maintenance)
+                }
+                .id(ControlGuideTarget.maintenance)
+
+                // F-2-4 / 2026-06：dev 工具集 section —— Homebrew 包管理。
+                // 走 sentinel 旁路 + 独立 Screen，与 maintenance 同款不复用扫描状态栏。
+                // 字面量直接英文不进 xcstrings（dev 工具，不强求 i18n）。
+                Section {
+                    brewSidebarRow
+                        .tag(MainView.brewSentinelID)
+                        .controlGuideGroupPart(.brew)
+                } header: {
+                    Text("main.section.dev_tools", bundle: .module)
+                        .controlGuideGroupPart(.brew)
+                }
+                .id(ControlGuideTarget.brew)
+
+                // v1.7 M1 PR-5 / 2026-06：Developer Workflows section ——
+                // Apple / Android / Web-Node 三大生态按"工作流"分组的一键清理入口。
+                // 与 `batch.developer` sentinel（DevArtifactScanner 散点）共存，但
+                // 这三行走 [WorkflowDetailView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)
+                // 渲染卡片化 + 可勾选 + 动态扫描 + 回收站删除 全链路。
+                // 字面量改走 xcstrings（workflow.sidebar.* 前缀），中英双语。
+                Section {
+                    workflowAppleSidebarRow
+                        .tag(MainView.workflowAppleSentinelID)
+                        .controlGuideGroupPart(.workflows)
+                        .accessibilityIdentifier("sidebar.workflow.apple")
+                    workflowAndroidSidebarRow
+                        .tag(MainView.workflowAndroidSentinelID)
+                        .controlGuideGroupPart(.workflows)
+                    workflowWebNodeSidebarRow
+                        .tag(MainView.workflowWebNodeSentinelID)
+                        .controlGuideGroupPart(.workflows)
+                    workflowBackendSidebarRow
+                        .tag(MainView.workflowBackendSentinelID)
+                        .controlGuideGroupPart(.workflows)
+                } header: {
+                    Text("workflow.sidebar.section", bundle: .module)
+                    .controlGuideGroupPart(.workflows)
+                }
+                .id(ControlGuideTarget.workflows)
+            }
+            // bug1：sidebar List 默认会在获得 keyboard focus 时画一圈蓝色焦点环
+            // （包住整个 list 容器，看起来像"鼠标进入 sidebar 才出现的蓝框"）。
+            // 我们已经有 row selection 的蓝色背景做选中反馈，再叠焦点环纯属冗余且割裂。
+            // 关掉容器级焦点环，单行 selection 不受影响。
+            .suppressesFocusEffectWhenSupported()
+            // v2026.07.17 C4 contract: stable AX identifiers let a single long-running
+            // accessibility session select semantic destinations without hard-coded row indexes.
+            .accessibilityIdentifier("main.sidebar")
+            .controlGuideTarget(.sidebarOperations)
+            .onAppear {
+                // v2026.10.11: every sidebar section is taught as its real block, including
+                // the standalone full-disk entry and the history header, rather than one row.
+                guideAnchors.registerReveals([.scanCategory, .largeFiles, .recommendedCleanup, .customPaths, .libraryBrowsing, .fullDisk,
+                                             .professionalTools, .duplicates, .history, .maintenance, .brew, .workflows], owner: presentationHostID) { target in
+                    proxy.scrollTo(target, anchor: .top)
                 }
             }
-
-            Section {
-                ForEach(libraryBrowseCategories) { cat in
-                    sidebarRow(cat, iconOverride: "folder.badge.gearshape")
-                        .tag(cat.id)
-                }
-            } header: {
-                Text("sidebar.section.library", bundle: .module)
-            }
-
-            Section {
-                sidebarRow(ScanCategory.fullDisk)
-                    .tag(ScanCategory.fullDisk.id)
-            } header: {
-                Text("sidebar.section.full_disk", bundle: .module)
-            }
-
-            Section {
-                appFootprintSidebarRow
-                    .tag(MainView.appFootprintSentinelID)
-                    .accessibilityIdentifier("sidebar.app_footprint")
-                launchAgentSidebarRow
-                    .tag(MainView.launchAgentSentinelID)
-                portCleanerSidebarRow
-                    .tag(MainView.portCleanerSentinelID)
-                dartRadarSidebarRow
-                    .tag(MainView.dartRadarSentinelID)
-                uninstallSidebarRow
-                    .tag(MainView.uninstallSentinelID)
-                    .accessibilityIdentifier("sidebar.uninstaller")
-                devVersionedSidebarRow
-                    .tag(MainView.devVersionedSentinelID)
-            } header: {
-                Text("sidebar.section.apps", bundle: .module)
-            }
-
-            Section {
-                duplicateSidebarRow
-                    .tag(MainView.duplicateSentinelID)
-                    .accessibilityIdentifier("sidebar.duplicates")
-            } header: {
-                Text("sidebar.section.duplicates", bundle: .module)
-            }
-
-            // Step 7：UndoHistory section —— 给"最近清理 / 恢复"一个独立入口。
-            // 单 row 设计避免污染 ScanCategory 体系（与 uninstall / duplicate 同款 sentinel ID 模式）。
-            Section {
-                undoHistorySidebarRow
-                    .tag(MainView.undoHistorySentinelID)
-            } header: {
-                Text("sidebar.section.undo_history", bundle: .module)
-            }
-
-            // M4-T4 / 2026-06：系统维护 section —— flushQuickLookCache /
-            // flushDNSCache 两个 user-space 任务，
-            // 走 [MaintenanceScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MaintenanceScreen.swift)
-            // 自包含 UI，不复用扫描状态栏。
-            Section {
-                maintenanceSidebarRow
-                    .tag(MainView.maintenanceSentinelID)
-            } header: {
-                Text("sidebar.section.maintenance", bundle: .module)
-            }
-
-            // F-2-4 / 2026-06：dev 工具集 section —— Homebrew 包管理。
-            // 走 sentinel 旁路 + 独立 Screen，与 maintenance 同款不复用扫描状态栏。
-            // 字面量直接英文不进 xcstrings（dev 工具，不强求 i18n）。
-            Section {
-                brewSidebarRow
-                    .tag(MainView.brewSentinelID)
-            } header: {
-                Text("main.section.dev_tools", bundle: .module)
-            }
-
-            // v1.7 M1 PR-5 / 2026-06：Developer Workflows section ——
-            // Apple / Android / Web-Node 三大生态按"工作流"分组的一键清理入口。
-            // 与 `batch.developer` sentinel（DevArtifactScanner 散点）共存，但
-            // 这三行走 [WorkflowDetailView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)
-            // 渲染卡片化 + 可勾选 + 动态扫描 + 回收站删除 全链路。
-            // 字面量改走 xcstrings（workflow.sidebar.* 前缀），中英双语。
-            Section {
-                workflowAppleSidebarRow
-                    .tag(MainView.workflowAppleSentinelID)
-                    .accessibilityIdentifier("sidebar.workflow.apple")
-                workflowAndroidSidebarRow
-                    .tag(MainView.workflowAndroidSentinelID)
-                workflowWebNodeSidebarRow
-                    .tag(MainView.workflowWebNodeSentinelID)
-                workflowBackendSidebarRow
-                    .tag(MainView.workflowBackendSentinelID)
-            } header: {
-                Text("workflow.sidebar.section", bundle: .module)
-            }
+            .onDisappear { guideAnchors.unregisterReveals(owner: presentationHostID) }
         }
-        // bug1：sidebar List 默认会在获得 keyboard focus 时画一圈蓝色焦点环
-        // （包住整个 list 容器，看起来像"鼠标进入 sidebar 才出现的蓝框"）。
-        // 我们已经有 row selection 的蓝色背景做选中反馈，再叠焦点环纯属冗余且割裂。
-        // 关掉容器级焦点环，单行 selection 不受影响。
-        .suppressesFocusEffectWhenSupported()
-        // v2026.07.17 C4 contract: stable AX identifiers let a single long-running
-        // accessibility session select semantic destinations without hard-coded row indexes.
-        .accessibilityIdentifier("main.sidebar")
     }
 
     /// v1.2 P1-6：「应用占用排行榜」侧边项。用 sentinel ID 走旁路，避免污染
@@ -3236,6 +3353,7 @@ public struct MainView: View {
             .labelsHidden()
             .frame(maxWidth: 180)
             .accessibilityIdentifier("main.results-view-mode")
+            .controlGuideTarget(.resultsMode)
 
             // 当前视图角标——告诉用户"你在看树形（主视图）"或"清单是二级 fallback"
             switch viewMode {
@@ -3709,6 +3827,7 @@ public struct MainView: View {
                         || !coordinator.canUseCurrentScanResultsForActions
                 )
                 .keyboardShortcut(.delete, modifiers: .command)
+                .controlGuideTarget(.deleteSelection)
             } else {
                 Text(summaryText)
                     .font(.callout)
@@ -3744,6 +3863,7 @@ public struct MainView: View {
                         || !coordinator.canUseCurrentScanResultsForActions
                 )
                 .keyboardShortcut(.delete, modifiers: .command)
+                .controlGuideTarget(.deleteSelection)
             }
         }
         .padding(16)
@@ -3890,41 +4010,44 @@ public struct MainView: View {
             interfaceModePicker
         }
         if interfaceMode == .professional {
-            ToolbarItem(placement: .principal) {
+            ToolbarItem(placement: .navigation) {
                 pathBar
             }
             if !isStandaloneProfessionalToolMode && !isLargeFilesMode {
                 ToolbarItem(placement: .primaryAction) {
-                    sortMenu
+                    sortMenu.labelStyle(.iconOnly)
                 }
             }
         }
-        // v2026.06.21：原右上角「推荐 / 开发者 / 整盘」三个 logo 按钮直接移除——
-        // 用户反馈这三个入口长期占位制造视觉噪音；功能可达性由 sidebar 的
-        // 「批量扫描」分组完整承担，toolbar 右侧只保留：全局排序 + 购物车 + 单一
-        // [scanControlButton](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1762)
-        // （重新扫描 / 扫描中）。helpers triggerRecommendedScan / triggerDeveloperScan /
-        // triggerFullDiskScan 保留，sidebar onChange 仍在用。
-        // v2026.06.18 购物车入口。count==0 时整项隐藏（避免 toolbar 永远多出
-        // 一个"空购物车"按钮造成视觉噪音）。SwiftUI ToolbarItem 内 if 分支会让
-        // 该 item 在 layout 阶段被剔除，无需特殊处理。
-        if interfaceMode == .professional {
-            ToolbarItem(placement: .primaryAction) {
+    }
+
+    /// v2026.10.11: these buttons belong to the window's permanent right accessory,
+    /// outside NSToolbar's overflow contract. Counts and scan phases update existing controls.
+    private var permanentWindowActions: some View {
+        HStack(spacing: 12) {
+            if interfaceMode == .professional {
                 stashToolbarButton
-            }
-            ToolbarItem(placement: .primaryAction) {
                 scanControlButton
                     .accessibilityIdentifier("main.scan-control")
+                    .controlGuideTarget(.rescan)
             }
-        }
-        ToolbarItem(placement: .primaryAction) {
             userGuideToolbarButton
         }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.borderless)
+        .font(.system(size: 17))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: Capsule())
+        .padding(.trailing, 8)
+        .fixedSize()
+        .environment(\.locale, locale)
+        .environment(\.controlGuideAnchors, guideAnchors)
     }
 
     private var userGuideToolbarButton: some View {
         Button {
-            applicationPresentation.requestUserGuide()
+            applicationPresentation.requestUserGuide(hostID: presentationHostID)
         } label: {
             Label {
                 Text("toolbar.user_guide.title", bundle: .module)
@@ -3935,6 +4058,7 @@ public struct MainView: View {
         .help(AppLocalization.string("toolbar.user_guide.help", locale: locale))
         .disabled(hasConflictingMainModalPresentation)
         .accessibilityIdentifier("main.user-guide")
+        .controlGuideTarget(.reopenGuide)
     }
 
     private var mainToolbarBrand: some View {
@@ -3962,9 +4086,10 @@ public struct MainView: View {
         .pickerStyle(.segmented)
         .frame(width: 220)
         .help(Text("smart_care.mode.label", bundle: .module))
-        .disabled(isPreparingDeletion || isDeleting || normalToolIsBusy)
+        .disabled(hasActiveBusinessTransaction)
         // Stable semantic hook for accessibility and the single-session C4 matrix.
         .accessibilityIdentifier("main.interface-mode")
+        .controlGuideTarget(.interfaceMode)
     }
 
     /// 主窗口始终展示最终 App Bundle 的真实营销版本，便于截图、反馈和发版验收时
@@ -4030,7 +4155,7 @@ public struct MainView: View {
     }
 
     private func requestCategorySwitch(to new: String?, fallbackCategory: ScanCategory? = nil) {
-        guard !isPreparingDeletion, !isDeleting else { return }
+        guard !hasActiveBusinessTransaction else { return }
         let old = selectedCategory
         guard old != new else {
             // 重复添加当前正在查看的路径仍然是一个明确的“扫描这里”意图。
@@ -4151,12 +4276,13 @@ public struct MainView: View {
             TextField(AppLocalization.string("pathbar.placeholder", locale: locale), text: $pathBarInput)
                 .textFieldStyle(.plain)
                 .focused($pathBarFocused)
-                .frame(minWidth: 220, idealWidth: 320)
                 .onSubmit { submitPathBar() }
                 .help(AppLocalization.string("pathbar.help", locale: locale))
+                .controlGuideTarget(.pathInput)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
+        .frame(minWidth: 220, idealWidth: 320, maxWidth: 320)
         .background(
             Capsule(style: .continuous)
                 .fill(Color.secondary.opacity(0.10))
@@ -4172,41 +4298,31 @@ public struct MainView: View {
         .animation(.easeInOut(duration: 0.12), value: pathBarFocused)
     }
 
-    /// v2026.06.18 **稍后处理（待处理）**入口。
-    ///
-    /// 行为：
-    /// - `stash.count == 0` → 整按钮 `.hidden`（toolbar 视觉收敛，没东西不暴露入口）
-    /// - `stash.count > 0`  → 显示 `tray.full.fill` 工作托盘图标 + 右上角红色数字徽标
-    /// - 点击：把 [isStashScreenPresented](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) 翻 true，
-    ///   主体的 `.sheet` 监听该 flag 弹 [StashScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashScreen.swift)
-    ///
-    /// v2026.06.20 用户反馈：之前用 `cart.fill` 图标 + Label 文本里夹一个 `(N)`，
-    /// 既看着像电商购物车（语义不对——这是"工作待处理"，不是"购物清单"），数字也
-    /// 被混在 toolbar Label 文本里，远不如直接把数量做成"角标"那样一眼可见。
-    /// 改成：自定义 label = Image(`tray.full.fill`) + `.overlay` 一个胶囊红角标显示
-    /// 实时 `stash.count`；超过 99 显示 `99+` 避免角标过宽撑爆 toolbar 槽位。
-    @ViewBuilder
+    /// v2026.10.11: keep the Stash entrance even when empty; count changes only update
+    /// its badge. Removing the item hid a required action and destabilized native layout.
     private var stashToolbarButton: some View {
-        if stash.count > 0 {
-            Button {
-                guard !hasConflictingMainModalPresentation else { return }
-                isStashScreenPresented = true
-            } label: {
-                Label {
-                    Text("toolbar.stash.title", bundle: .module)
-                } icon: {
-                    ZStack(alignment: .topTrailing) {
-                        Image(systemName: "tray.full.fill")
+        Button {
+            guard !hasConflictingMainModalPresentation else { return }
+            isStashScreenPresented = true
+        } label: {
+            Label {
+                Text("toolbar.stash.title", bundle: .module)
+            } icon: {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "tray.full.fill")
+                    if stash.count > 0 {
                         stashCountBadge
                             .alignmentGuide(.top) { d in d[.top] + 2 }
                             .alignmentGuide(.trailing) { d in d[.trailing] - 2 }
                     }
                 }
             }
-            .help(String(format: AppLocalization.string("toolbar.stash.help_with_count", locale: locale),
-                         stash.count))
-            .disabled(hasConflictingMainModalPresentation)
         }
+        .help(String(format: AppLocalization.string("toolbar.stash.help_with_count", locale: locale),
+                     stash.count))
+        .disabled(hasConflictingMainModalPresentation)
+        .accessibilityIdentifier("main.stash")
+        .controlGuideTarget(.stash)
     }
 
     /// 待处理数量徽标（红底白字胶囊），独立成 ViewBuilder 便于阅读 + 复用样式。
@@ -4300,6 +4416,16 @@ public struct MainView: View {
                 }
             }
                 .help(AppLocalization.string("toolbar.help.rescan", locale: locale))
+        } else {
+            Button {} label: {
+                Label {
+                    Text("toolbar.scan.rescan", bundle: .module)
+                } icon: {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+            .disabled(true)
+            .help(AppLocalization.string("toolbar.help.rescan", locale: locale))
         }
     }
 
@@ -5223,14 +5349,19 @@ public struct MainView: View {
     }
 
     private func scheduleStashDeletion(_ entries: [StashStore.StashEntry]) {
-        guard !entries.isEmpty, pendingStashDeletion == nil, !isDeleting else { return }
-        pendingStashDeletion = entries
+        guard !entries.isEmpty, !isDeleting, stashSheetHandoff.schedule(.delete(entries)) else { return }
         isStashScreenPresented = false
     }
 
-    private func presentPendingStashDeletionAfterDismissal() {
-        guard let entries = pendingStashDeletion else { return }
-        pendingStashDeletion = nil
+    private func finishStashSheetDismissal() {
+        guard let action = stashSheetHandoff.takeAfterSheetDismissal() else { return }
+        switch action {
+        case .askAI(let row): requestAI(row: row)
+        case .delete(let entries): presentStashDeletion(entries)
+        }
+    }
+
+    private func presentStashDeletion(_ entries: [StashStore.StashEntry]) {
         let deniedSnapshot = entries.reduce(into: Set<String>()) { partial, entry in
             partial.formUnion(entry.accessDeniedPaths)
         }

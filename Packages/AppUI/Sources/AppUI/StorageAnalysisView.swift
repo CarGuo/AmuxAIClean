@@ -187,6 +187,7 @@ struct StorageAnalysisView: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
+            .controlGuideTarget(.analysisScope)
             if store.phase == .scanning || store.phase == .loadingDirectory {
                 Button {
                     store.cancel()
@@ -212,6 +213,7 @@ struct StorageAnalysisView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("normal.analysis.scan")
+                .controlGuideTarget(.analysisScan)
             }
         }
     }

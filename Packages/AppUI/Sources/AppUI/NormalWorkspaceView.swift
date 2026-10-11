@@ -24,6 +24,14 @@ enum NormalWorkspaceSection: String, CaseIterable, Identifiable, Sendable {
         case .status: return "waveform.path.ecg"
         }
     }
+    var controlGuideTarget: ControlGuideTarget {
+        switch self {
+        case .analyze: .analyze
+        case .clean: .clean
+        case .optimize: .optimize
+        case .status: .status
+        }
+    }
 }
 
 /// v2026.09.06: Normal mode is a task-oriented workspace. Shared visual tokens and
@@ -157,6 +165,7 @@ struct NormalWorkspaceView<CleanContent: View>: View {
                     .disabled(isBusy)
                     .accessibilityAddTraits(section == item ? .isSelected : [])
                     .accessibilityIdentifier("normal.tab.\(item.rawValue)")
+                    .controlGuideTarget(item.controlGuideTarget)
                 }
             }
             .padding(5)
@@ -177,6 +186,7 @@ struct NormalWorkspaceView<CleanContent: View>: View {
                 .help(Text("sidebar.section.undo_history", bundle: .module))
                 .accessibilityLabel(Text("sidebar.section.undo_history", bundle: .module))
                 .disabled(isBusy)
+                .controlGuideTarget(.history)
             }
             .frame(width: 195, alignment: .trailing)
         }

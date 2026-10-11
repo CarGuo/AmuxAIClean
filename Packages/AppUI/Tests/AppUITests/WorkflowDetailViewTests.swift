@@ -562,8 +562,11 @@ final class WorkflowDetailViewTests: XCTestCase {
         var stubOutcome: TrashOutcome = TrashOutcome(movedPairs: [], failedPaths: [],
                                                      safetyRejected: [], missingPaths: [])
         var stubLegacyErr: String?
+        var preflightSuspension: PresentationSuspension?
+        var submissionSuspension: PresentationSuspension?
 
         func preflight(paths: [String], accessDeniedPaths: Set<String>) async -> DeletionPreflight {
+            await preflightSuspension?.wait()
             preflightPathsReceived = paths
             preflightDeniedReceived = accessDeniedPaths
             return stubPreflight ?? DeletionPreflight(allowedPaths: paths, rejections: [])
@@ -610,6 +613,7 @@ final class WorkflowDetailViewTests: XCTestCase {
             accessDeniedPaths: Set<String>,
             vendorOverrideRequest: VendorPathOverrideRequest?
         ) async -> TrashSubmissionDisposition {
+            await submissionSuspension?.wait()
             movedPathsReceived = paths
             deniedReceived = accessDeniedPaths
             vendorOverrideReceived = vendorOverrideRequest
@@ -628,6 +632,81 @@ final class WorkflowDetailViewTests: XCTestCase {
                 outcome: stubOutcome
             ))
         }
+    }
+
+    private actor PresentationSuspension {
+        private(set) var started = false
+        private var released = false
+        private var waiter: CheckedContinuation<Void, Never>?
+        func wait() async {
+            started = true
+            guard !released else { return }
+            await withCheckedContinuation { waiter = $0 }
+        }
+        func release() {
+            released = true
+            waiter?.resume()
+            waiter = nil
+        }
+    }
+
+    // v2026.10.10: drive the real Workflow owner and native-dismissal entry point. Window
+    // admission reads its live phase even if SwiftUI has not observed/published an edge yet.
+    func test_windowPromptWaitsAcrossWorkflowPreflightHandoffExecutionAndFailureResult() async throws {
+        let home = makeTempHome()
+        defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: home)) }
+        let hit = WorkflowScanHit(url: home.appendingPathComponent("cache"), sizeBytes: 123,
+                                  displayName: "cache", note: nil)
+        let card = makeFilesystemCard(id: "card.cache")
+        let vm = WorkflowDetailViewModel(testingWorkflow: AppleWorkflow(), home: home)
+        vm.setTestCards([card])
+        vm.setTestHits([card.id: [hit]])
+        vm.setTestSelection([hit.id])
+        let pipe = StubDeletionPipeline()
+        let preflight = PresentationSuspension()
+        let submission = PresentationSuspension()
+        pipe.preflightSuspension = preflight
+        pipe.submissionSuspension = submission
+        pipe.stubOutcome = TrashOutcome(movedPairs: [], failedPaths: [hit.url.path],
+                                        safetyRejected: [], missingPaths: [])
+        let window = MainWindowPresentationCoordinator(updateChecker: UpdateChecker())
+        let host = UUID()
+        let owner = UUID()
+        window.attachHost(host)
+        window.registerBusinessTransaction(owner, hostID: host) {
+            vm.isDeletionTransactionActive || vm.activeSheet != nil
+        }
+        let preparing = Task { await vm.requestDeleteConfirmation(pipeline: pipe) }
+        for _ in 0..<100 {
+            if await preflight.started { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(vm.isPreparingDeletion)
+        window.requestUserGuide(hostID: host)
+        XCTAssertFalse(window.requestDrainIfPossible(hostID: host, isBusinessModalBusy: false))
+        await preflight.release()
+        await preparing.value
+        guard case .deleteConfirm(let confirmation) = vm.activeSheet else { return XCTFail("Expected confirmation") }
+        XCTAssertEqual(window.businessTransactionCount(for: host), 1)
+        XCTAssertTrue(vm.confirmDelete(confirmation, executionPlan: executionPlan(for: confirmation)))
+        XCTAssertNil(vm.activeSheet, "Confirmation is closing; transaction must still be active")
+        let executing = try XCTUnwrap(vm.submitPendingConfirmedDeleteAfterSheetDismissal(pipeline: pipe))
+        XCTAssertFalse(window.requestDrainIfPossible(hostID: host, isBusinessModalBusy: false),
+                       "Task creation cannot clear the pending transaction before it starts")
+        for _ in 0..<100 {
+            if await submission.started { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(vm.isDeleting)
+        XCTAssertFalse(window.requestDrainIfPossible(hostID: host, isBusinessModalBusy: false))
+        await submission.release()
+        await executing.value
+        XCTAssertFalse(vm.isDeleting)
+        guard case .result = vm.activeSheet else { return XCTFail("Real failed receipt needs details") }
+        XCTAssertFalse(window.requestDrainIfPossible(hostID: host, isBusinessModalBusy: false))
+        vm.activeSheet = nil
+        XCTAssertTrue(window.requestDrainIfPossible(hostID: host, isBusinessModalBusy: false))
+        window.endBusinessModal(owner)
     }
 
     private func makeFilesystemCard(

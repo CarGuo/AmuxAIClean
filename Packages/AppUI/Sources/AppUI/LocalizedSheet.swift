@@ -36,9 +36,10 @@ private struct LocalizedItemSheet<Item: Identifiable, SheetContent: View>: ViewM
     let sheet: (Item) -> SheetContent
 
     @ViewBuilder func body(content: Content) -> some View {
-        if tracksMainWindowOccupancy, let coordinator {
+        if let coordinator {
             content.modifier(CoordinatedItemSheet(
                 coordinator: coordinator, item: $item, onDismiss: onDismiss,
+                tracksMainWindowOccupancy: tracksMainWindowOccupancy,
                 sheet: { sheet($0).environment(\.locale, locale) }
             ))
         } else {
@@ -58,9 +59,10 @@ private struct LocalizedBooleanSheet<SheetContent: View>: ViewModifier {
     let sheet: () -> SheetContent
 
     @ViewBuilder func body(content: Content) -> some View {
-        if tracksMainWindowOccupancy, let coordinator {
+        if let coordinator {
             content.modifier(CoordinatedBooleanSheet(
                 coordinator: coordinator, isPresented: $isPresented, onDismiss: onDismiss,
+                tracksMainWindowOccupancy: tracksMainWindowOccupancy,
                 sheet: { sheet().environment(\.locale, locale) }
             ))
         } else {
@@ -78,26 +80,37 @@ private struct LocalizedBooleanSheet<SheetContent: View>: ViewModifier {
 struct BusinessSheetPresentationLifecycle {
     private let occupancyID = UUID()
     private(set) var hasPresentedSheet = false
+    private(set) var isAwaitingNativeEnd = false
 
-    func requestChanged(_ requested: Bool, coordinator: MainWindowPresentationCoordinator, hostID: UUID? = nil) {
+    func requestChanged(_ requested: Bool, coordinator: MainWindowPresentationCoordinator,
+                        hostID: UUID? = nil, tracksOccupancy: Bool = true) {
+        guard tracksOccupancy else { return }
         if requested { coordinator.beginBusinessModal(occupancyID, hostID: hostID) }
         else if !hasPresentedSheet { coordinator.endBusinessModal(occupancyID) }
     }
 
-    mutating func appeared(coordinator: MainWindowPresentationCoordinator, hostID: UUID? = nil) {
+    mutating func appeared(coordinator: MainWindowPresentationCoordinator,
+                          hostID: UUID? = nil, tracksOccupancy: Bool = true) {
         hasPresentedSheet = true
-        coordinator.beginBusinessModal(occupancyID, hostID: hostID)
+        if tracksOccupancy { coordinator.beginBusinessModal(occupancyID, hostID: hostID) }
+    }
+
+    mutating func dismissalCallbackReceived() {
+        isAwaitingNativeEnd = true
     }
 
     mutating func dismissed(coordinator: MainWindowPresentationCoordinator) {
         hasPresentedSheet = false
+        isAwaitingNativeEnd = false
         coordinator.endBusinessModal(occupancyID)
     }
 
-    func presenterDisappeared(coordinator: MainWindowPresentationCoordinator) {
-        // A shown sheet still owns its native dismissal. Full window teardown is
-        // released by detachHost; removing a presenter must not release it early.
-        if !hasPresentedSheet { coordinator.endBusinessModal(occupancyID) }
+    mutating func presenterDisappeared(coordinator: MainWindowPresentationCoordinator) {
+        // v2026.10.10 review correction: removed presenters may never receive onDismiss.
+        // Native window observation keeps the closing barrier without leaking this reservation.
+        hasPresentedSheet = false
+        isAwaitingNativeEnd = false
+        coordinator.endBusinessModal(occupancyID)
     }
 }
 
@@ -106,29 +119,42 @@ private struct CoordinatedItemSheet<Item: Identifiable, SheetContent: View>: Vie
     @Environment(\.mainWindowPresentationHostID) private var hostID
     @Binding var item: Item?
     let onDismiss: (() -> Void)?
+    let tracksMainWindowOccupancy: Bool
     let sheet: (Item) -> SheetContent
     @State private var lifecycle = BusinessSheetPresentationLifecycle()
 
     func body(content: Content) -> some View {
         content.sheet(item: Binding(
-            get: { coordinator.isOccupied(for: hostID) ? nil : item },
-            set: { if !coordinator.isOccupied(for: hostID) { item = $0 } }
+            get: { tracksMainWindowOccupancy && coordinator.isOccupied(for: hostID) ? nil : item },
+            set: { if !tracksMainWindowOccupancy || !coordinator.isOccupied(for: hostID) { item = $0 } }
         ), onDismiss: {
-            lifecycle.dismissed(coordinator: coordinator)
-            onDismiss?()
-            lifecycle.requestChanged(item != nil, coordinator: coordinator, hostID: hostID)
+            lifecycle.dismissalCallbackReceived()
+            finishNativeDismissalIfPossible()
         }) { item in
             sheet(item)
                 .environment(\.mainWindowPresentationCoordinator, coordinator)
                 .environment(\.mainWindowPresentationHostID, hostID)
                 .onAppear {
-                    lifecycle.appeared(coordinator: coordinator, hostID: hostID)
+                    lifecycle.appeared(coordinator: coordinator, hostID: hostID,
+                                       tracksOccupancy: tracksMainWindowOccupancy)
                 }
         }
         .onValueChange(of: item != nil, initial: true) { _, requested in
-            lifecycle.requestChanged(requested, coordinator: coordinator, hostID: hostID)
+            lifecycle.requestChanged(requested, coordinator: coordinator, hostID: hostID,
+                                     tracksOccupancy: tracksMainWindowOccupancy)
         }
+        .onValueChange(of: coordinator.requestRevision) { _, _ in finishNativeDismissalIfPossible() }
         .onDisappear { lifecycle.presenterDisappeared(coordinator: coordinator) }
+    }
+
+    private func finishNativeDismissalIfPossible() {
+        // v2026.10.10: actual SwiftUI onDismiss precedes NSWindow.didEndSheet in native tests.
+        // All business and application handoffs wait for both signals at this common boundary.
+        guard lifecycle.isAwaitingNativeEnd, !coordinator.hasNativeSheet(for: hostID) else { return }
+        lifecycle.dismissed(coordinator: coordinator)
+        onDismiss?()
+        lifecycle.requestChanged(item != nil, coordinator: coordinator, hostID: hostID,
+                                 tracksOccupancy: tracksMainWindowOccupancy)
     }
 }
 
@@ -137,28 +163,39 @@ private struct CoordinatedBooleanSheet<SheetContent: View>: ViewModifier {
     @Environment(\.mainWindowPresentationHostID) private var hostID
     @Binding var isPresented: Bool
     let onDismiss: (() -> Void)?
+    let tracksMainWindowOccupancy: Bool
     let sheet: () -> SheetContent
     @State private var lifecycle = BusinessSheetPresentationLifecycle()
 
     func body(content: Content) -> some View {
         content.sheet(isPresented: Binding(
-            get: { !coordinator.isOccupied(for: hostID) && isPresented },
-            set: { if !coordinator.isOccupied(for: hostID) { isPresented = $0 } }
+            get: { (!tracksMainWindowOccupancy || !coordinator.isOccupied(for: hostID)) && isPresented },
+            set: { if !tracksMainWindowOccupancy || !coordinator.isOccupied(for: hostID) { isPresented = $0 } }
         ), onDismiss: {
-            lifecycle.dismissed(coordinator: coordinator)
-            onDismiss?()
-            lifecycle.requestChanged(isPresented, coordinator: coordinator, hostID: hostID)
+            lifecycle.dismissalCallbackReceived()
+            finishNativeDismissalIfPossible()
         }) {
             sheet()
                 .environment(\.mainWindowPresentationCoordinator, coordinator)
                 .environment(\.mainWindowPresentationHostID, hostID)
                 .onAppear {
-                    lifecycle.appeared(coordinator: coordinator, hostID: hostID)
+                    lifecycle.appeared(coordinator: coordinator, hostID: hostID,
+                                       tracksOccupancy: tracksMainWindowOccupancy)
                 }
         }
         .onValueChange(of: isPresented, initial: true) { _, requested in
-            lifecycle.requestChanged(requested, coordinator: coordinator, hostID: hostID)
+            lifecycle.requestChanged(requested, coordinator: coordinator, hostID: hostID,
+                                     tracksOccupancy: tracksMainWindowOccupancy)
         }
+        .onValueChange(of: coordinator.requestRevision) { _, _ in finishNativeDismissalIfPossible() }
         .onDisappear { lifecycle.presenterDisappeared(coordinator: coordinator) }
+    }
+
+    private func finishNativeDismissalIfPossible() {
+        guard lifecycle.isAwaitingNativeEnd, !coordinator.hasNativeSheet(for: hostID) else { return }
+        lifecycle.dismissed(coordinator: coordinator)
+        onDismiss?()
+        lifecycle.requestChanged(isPresented, coordinator: coordinator, hostID: hostID,
+                                 tracksOccupancy: tracksMainWindowOccupancy)
     }
 }

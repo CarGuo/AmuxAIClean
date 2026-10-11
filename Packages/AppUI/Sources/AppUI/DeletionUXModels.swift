@@ -945,11 +945,9 @@ enum ToolDeletionPreflightGate {
     }
 }
 
-/// 工具确认 sheet 与真正执行之间的一次性交接。
-/// 删除只能在 sheet 的 `onDismiss` 中取出，避免确认页的 dismiss 动画与极快的
-/// 删除结果页竞争。泛型让三个工具共享同一条生命周期合同，而不把工具语义塞进
-/// MainView / Smart Care 使用的 `DeleteSubmission`。
-struct ToolDeletionHandoff<Value: Sendable>: Sendable {
+/// v2026.10.10: all sheet-to-action transitions use the same one-shot native dismissal
+/// handoff, including AI report → cleanup and Stash → AI. A scheduling tick is not dismissal.
+struct SheetDismissalHandoff<Value: Sendable>: Sendable {
     private(set) var pending: Value?
 
     var hasPending: Bool { pending != nil }

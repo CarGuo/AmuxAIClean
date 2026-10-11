@@ -470,7 +470,7 @@ public struct DuplicateScreen: View {
     @State private var successFeedback: OperationSuccessFeedback?
     @State private var isDeletingDuplicates: Bool = false
     @State private var isRootImporterPresented = false
-    @State private var duplicateDeletionHandoff = ToolDeletionHandoff<DuplicateConfirmedDeletion>()
+    @State private var duplicateDeletionHandoff = SheetDismissalHandoff<DuplicateConfirmedDeletion>()
     @State private var duplicatePreflightTask: Task<Void, Never>?
     @State private var duplicatePreflightGate = ToolDeletionPreflightRequestGate<DuplicatePreflightContext>()
     @State private var duplicateExecutionTask: Task<Void, Never>?
@@ -560,6 +560,8 @@ public struct DuplicateScreen: View {
         // v1.3.ab：整个 VStack 也强制 maxWidth: .infinity，
         // 让 banner / topBar 内的 chip / 滑杆 即使 ideal width 较大也不会反推外层。
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // v2026.10.10: include hashing/preflight as well as the visible execution sheet.
+        .mainWindowBusinessTransaction(isActive: isDeletionTransactionActive || activeSheet != nil)
         // v2026.07.20 P0: preserve duplicate selection while the non-modal explanation floats.
         .deletionPreflightNoticeOverlay(preflightNotice) {
             preflightNotice = nil

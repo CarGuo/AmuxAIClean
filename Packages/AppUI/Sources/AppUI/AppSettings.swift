@@ -77,8 +77,9 @@ public final class AppSettings: ObservableObject {
         /// 改动后会同步写 `AppleLanguages`，并由 App 层把同一 locale 实时同步给
         /// SwiftUI、tooltip、托盘和原生主菜单；系统拥有的面板仍按系统自身策略取语言。
         public static let preferredLanguage = "v1.7.preferred_language"
-        /// v2026.10：新用户首次启动指引是否已完成/跳过。默认 false，完成后不再自动弹出。
-        public static let userGuideCompleted = "v2026.10.user_guide_completed"
+        /// v2026.10.10: completion means the real control tour was finished/skipped. Completing
+        /// the removed feature brochure does not acknowledge this different onboarding contract.
+        public static let userGuideCompleted = "v2026.10.control_guide_completed"
     }
 
     private static func isValidMinFileSizeMB(_ value: Int) -> Bool {

@@ -202,7 +202,7 @@ public struct BrewScreen: View {
     @State private var activeSheet: ActiveSheet?
     @State private var preflightNotice: DeletionPreflightNotice?
     @State private var successFeedback: OperationSuccessFeedback?
-    @State private var cleanupDeletionHandoff = ToolDeletionHandoff<CleanupConfirmedDeletion>()
+    @State private var cleanupDeletionHandoff = SheetDismissalHandoff<CleanupConfirmedDeletion>()
     @State private var cleanupPreflightTask: Task<Void, Never>?
     @State private var cleanupPreflightGate = ToolDeletionPreflightRequestGate<[String]>()
     /// v2026.07.16: one stable capability lineage per cleanup result set. The session changes
@@ -237,6 +237,12 @@ public struct BrewScreen: View {
             case .result(let payload): return "result-\(payload.id)"
             }
         }
+    }
+
+    // v2026.10.10: modal visibility is not the lifetime of a cleanup transaction.
+    private var isDeletionTransactionActive: Bool {
+        isCleaning || cleanupPreflightGate.hasCurrentRequest
+            || cleanupDeletionHandoff.hasPending || activeSheet != nil
     }
 
     enum Tab: String, CaseIterable, Identifiable {
@@ -288,6 +294,7 @@ public struct BrewScreen: View {
         }
         .task { reloadInstalled() }
         .operationSuccessFeedbackOverlay($successFeedback)
+        .mainWindowBusinessTransaction(isActive: isDeletionTransactionActive)
         .localizedSheet(item: $activeSheet, onDismiss: completeCleanupSheetDismissal) { sheet in
             switch sheet {
             case .confirm(let request):
