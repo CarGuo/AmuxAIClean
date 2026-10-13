@@ -18,6 +18,7 @@ CONTRIBUTING_DOCUMENT="${ROOT}/CONTRIBUTING.md"
 LOG_SOURCE="${ROOT}/Packages/LogKit/Sources/LogKit/AmuxLog.swift"
 LOG_FILE_SINK_SOURCE="${ROOT}/Packages/LogKit/Sources/LogKit/LogFileSink.swift"
 SENTINEL_AGENT_PLIST="${ROOT}/App/LaunchAgents/com.amux.ai.Clean.sentinel.agent.plist"
+SENTINEL_ORIGINAL_BRAND_DAEMON_PLIST="${ROOT}/App/LaunchDaemons/com.guoshuyu.cleanmac.sentinel.plist"
 SENTINEL_LEGACY_DAEMON_PLIST="${ROOT}/App/LaunchDaemons/com.amux.ai.Clean.sentinel.plist"
 SENTINEL_MANAGER="${ROOT}/Packages/AppUI/Sources/AppUI/SentinelManager.swift"
 SENTINEL_MAIN="${ROOT}/Tools/Sentinel/Sources/Sentinel/main.swift"
@@ -199,9 +200,10 @@ if grep -Fq '本项目零网络是 hard rule' "$CONTRIBUTING_DOCUMENT"; then
 fi
 
 # v2026.07.18: Sentinel observes the signed-in user's Home/Trash and must therefore be a
-# non-privileged login agent. Older builds registered a root LaunchDaemon Label, so the
+# non-privileged login agent. Older builds registered two root LaunchDaemon Labels, so each
 # historical authority keeps a stable migration-only descriptor whose file name matches its Label.
-# Both identities are distinct and the root descriptor is never registered again.
+# v2026.10.14: branding cannot retire either installed authority; validate both real identities,
+# their bundle embedding and never-register contract until their upgrade windows are retired.
 # v2026.07.18 P1 executable-entry regression: a stale root LaunchDaemon must fail closed before
 # the current user-Agent implementation initializes paths, logs, persistence, or listeners.
 grep -Fq 'if geteuid() == 0 {' "$SENTINEL_MAIN" \
@@ -245,6 +247,7 @@ if /usr/libexec/PlistBuddy -c 'Print :UserName' "$SENTINEL_AGENT_PLIST" >/dev/nu
   fail "Sentinel LaunchAgent must not hard-code UserName or root semantics"
 fi
 for daemon_contract in \
+  "$SENTINEL_ORIGINAL_BRAND_DAEMON_PLIST|com.guoshuyu.cleanmac.sentinel" \
   "$SENTINEL_LEGACY_DAEMON_PLIST|com.amux.ai.Clean.sentinel"; do
   daemon_plist="${daemon_contract%%|*}"
   expected_label="${daemon_contract#*|}"
@@ -270,6 +273,7 @@ grep -Fq 'Contents/Library/LaunchDaemons' "${PROJECT}/project.pbxproj" \
 grep -Fq 'Embed Legacy LaunchDaemon Migration Descriptor' "${PROJECT}/project.pbxproj" \
   || fail "legacy Sentinel migration copy phase is missing"
 for daemon_plist_name in \
+  com.guoshuyu.cleanmac.sentinel.plist \
   com.amux.ai.Clean.sentinel.plist; do
   [ "$(grep -Fc "${daemon_plist_name} in Embed Legacy LaunchDaemon Migration Descriptor" "${PROJECT}/project.pbxproj")" -ge 2 ] \
     || fail "legacy Sentinel migration descriptor is not referenced by the copy phase: ${daemon_plist_name}"
@@ -278,6 +282,10 @@ grep -Fq 'public nonisolated static let agentPlistName = "com.amux.ai.Clean.sent
   || fail "SentinelManager current-agent plist identity drifted"
 grep -Fq '"com.amux.ai.Clean.sentinel.plist"' "$SENTINEL_MANAGER" \
   || fail "SentinelManager legacy daemon plist identity drifted"
+grep -Fq '"com.guoshuyu.cleanmac.sentinel.plist"' "$SENTINEL_MANAGER" \
+  || fail "SentinelManager original-brand daemon plist identity drifted"
+grep -Fq 'label: "com.guoshuyu.cleanmac.sentinel"' "$SENTINEL_MANAGER" \
+  || fail "SentinelManager original-brand daemon Label drifted"
 grep -Fq 'label: "com.amux.ai.Clean.sentinel"' "$SENTINEL_MANAGER" \
   || fail "SentinelManager legacy daemon Label drifted"
 grep -Fq 'service = SMAppService.agent(plistName: SentinelManager.agentPlistName)' "$SENTINEL_MANAGER" \

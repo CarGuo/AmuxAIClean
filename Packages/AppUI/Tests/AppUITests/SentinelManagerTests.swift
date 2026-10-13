@@ -19,15 +19,16 @@ final class SentinelManagerTests: XCTestCase {
 
     private enum StubError: Error { case operationFailed }
 
-    private static let legacyDescriptorA = SentinelManager.LegacyDaemonDescriptor(
-        plistName: "com.amux.ai.Clean.sentinel.v1.plist",
-        label: "com.amux.ai.Clean.sentinel.v1"
+    // v2026.10.14：固定真实历史身份作为系统状态输入，但 manager 使用生产默认描述符。
+    // 注入虚构身份会绕过生产配置，导致删掉真实旧 Label 后升级迁移测试仍然通过。
+    private static let originalBrandDescriptor = SentinelManager.LegacyDaemonDescriptor(
+        plistName: "com.guoshuyu.cleanmac.sentinel.plist",
+        label: "com.guoshuyu.cleanmac.sentinel"
     )
-    private static let legacyDescriptorB = SentinelManager.legacyDaemonDescriptors[0]
-    private static let twoLegacyDescriptors: [SentinelManager.LegacyDaemonDescriptor] = [
-        legacyDescriptorA,
-        legacyDescriptorB,
-    ]
+    private static let renamedBrandDescriptor = SentinelManager.LegacyDaemonDescriptor(
+        plistName: "com.amux.ai.Clean.sentinel.plist",
+        label: "com.amux.ai.Clean.sentinel"
+    )
 
     @MainActor
     private final class StubService: SentinelManager.ServiceControlling {
@@ -46,14 +47,10 @@ final class SentinelManagerTests: XCTestCase {
         private(set) var registerCalls = 0
         private(set) var unregisterCalls = 0
 
-        init(
-            status: SentinelManager.Status,
-            legacyDescriptors: [SentinelManager.LegacyDaemonDescriptor] =
-                SentinelManager.legacyDaemonDescriptors
-        ) {
+        init(status: SentinelManager.Status) {
             self.status = status
             self.legacyStatuses = Dictionary(
-                uniqueKeysWithValues: legacyDescriptors.map {
+                uniqueKeysWithValues: SentinelManager.legacyDaemonDescriptors.map {
                     ($0, .notRegistered)
                 }
             )
@@ -148,19 +145,15 @@ final class SentinelManagerTests: XCTestCase {
     func test_任一历史RootDaemon未收敛时不会再注册UserAgent_且仍检查另一身份() {
         let settings = makeSettings("legacy-daemon-cleanup")
         settings.sentinelEnabled = true
-        let service = StubService(
-            status: .notRegistered,
-            legacyDescriptors: Self.twoLegacyDescriptors
-        )
-        let original = Self.legacyDescriptorA
-        let renamed = Self.legacyDescriptorB
+        let service = StubService(status: .notRegistered)
+        let original = Self.originalBrandDescriptor
+        let renamed = Self.renamedBrandDescriptor
         service.legacyStatuses[original] = .enabled
         service.legacyUnregisterErrors[original] = StubError.operationFailed
         var presented: [SentinelManager.OperationFailure] = []
         let manager = SentinelManager(
             settings: settings,
             service: service,
-            legacyDaemonDescriptors: Self.twoLegacyDescriptors,
             failurePresenter: { failure, _, _ in presented.append(failure) }
         )
 
@@ -188,17 +181,13 @@ final class SentinelManagerTests: XCTestCase {
         let settings = makeSettings("legacy-daemon-refresh")
         settings.sentinelEnabled = false
         settings.sentinelLastEnabled = Date(timeIntervalSince1970: 1_780_000_000)
-        let service = StubService(
-            status: .notRegistered,
-            legacyDescriptors: Self.twoLegacyDescriptors
-        )
-        let renamed = Self.legacyDescriptorB
+        let service = StubService(status: .notRegistered)
+        let renamed = Self.renamedBrandDescriptor
         service.legacyStatuses[renamed] = .unknown(91)
         var presented: [SentinelManager.OperationFailure] = []
         let manager = SentinelManager(
             settings: settings,
             service: service,
-            legacyDaemonDescriptors: Self.twoLegacyDescriptors,
             failurePresenter: { failure, _, _ in presented.append(failure) }
         )
 
@@ -226,13 +215,10 @@ final class SentinelManagerTests: XCTestCase {
         let settings = makeSettings("user-off-agent-first")
         settings.sentinelEnabled = true
         settings.sentinelLastEnabled = Date(timeIntervalSince1970: 1_780_000_000)
-        let service = StubService(
-            status: .enabled,
-            legacyDescriptors: Self.twoLegacyDescriptors
-        )
+        let service = StubService(status: .enabled)
         service.statusAfterUnregister = .notRegistered
-        let original = Self.legacyDescriptorA
-        let renamed = Self.legacyDescriptorB
+        let original = Self.originalBrandDescriptor
+        let renamed = Self.renamedBrandDescriptor
         service.legacyStatuses[original] = .notFound
         service.legacyStatuses[renamed] = .enabled
         service.legacyStatusesAfterUnregister[renamed] = .notRegistered
@@ -240,7 +226,6 @@ final class SentinelManagerTests: XCTestCase {
         let manager = SentinelManager(
             settings: settings,
             service: service,
-            legacyDaemonDescriptors: Self.twoLegacyDescriptors,
             failurePresenter: { failure, _, _ in presented.append(failure) }
         )
 
@@ -323,12 +308,9 @@ final class SentinelManagerTests: XCTestCase {
     func test_两代RootDaemon逐项权威收敛后才允许注册UserAgent() {
         let settings = makeSettings("both-legacy-daemons")
         settings.sentinelEnabled = true
-        let service = StubService(
-            status: .notRegistered,
-            legacyDescriptors: Self.twoLegacyDescriptors
-        )
-        let original = Self.legacyDescriptorA
-        let renamed = Self.legacyDescriptorB
+        let service = StubService(status: .notRegistered)
+        let original = Self.originalBrandDescriptor
+        let renamed = Self.renamedBrandDescriptor
         for descriptor in [original, renamed] {
             service.legacyStatuses[descriptor] = .enabled
             service.legacyStatusesAfterUnregister[descriptor] = .notRegistered
@@ -337,7 +319,6 @@ final class SentinelManagerTests: XCTestCase {
         let manager = SentinelManager(
             settings: settings,
             service: service,
-            legacyDaemonDescriptors: Self.twoLegacyDescriptors,
             failurePresenter: { _, _, _ in XCTFail("success must not present failure") }
         )
 
@@ -365,19 +346,15 @@ final class SentinelManagerTests: XCTestCase {
     func test_一代notFound仍清理另一代但整体失败关闭() {
         let settings = makeSettings("legacy-not-found")
         settings.sentinelEnabled = true
-        let service = StubService(
-            status: .notRegistered,
-            legacyDescriptors: Self.twoLegacyDescriptors
-        )
-        let original = Self.legacyDescriptorA
-        let renamed = Self.legacyDescriptorB
+        let service = StubService(status: .notRegistered)
+        let original = Self.originalBrandDescriptor
+        let renamed = Self.renamedBrandDescriptor
         service.legacyStatuses[original] = .notFound
         service.legacyStatuses[renamed] = .requiresApproval
         service.legacyStatusesAfterUnregister[renamed] = .notRegistered
         let manager = SentinelManager(
             settings: settings,
             service: service,
-            legacyDaemonDescriptors: Self.twoLegacyDescriptors,
             failurePresenter: { _, _, _ in }
         )
 
@@ -397,19 +374,15 @@ final class SentinelManagerTests: XCTestCase {
     @MainActor
     func test_userON_legacy失败且CurrentAgent已enabled_安全注销后回滚OFF() {
         let settings = makeSettings("user-on-safety-shutdown-success")
-        let service = StubService(
-            status: .enabled,
-            legacyDescriptors: Self.twoLegacyDescriptors
-        )
+        let service = StubService(status: .enabled)
         service.statusAfterUnregister = .notRegistered
-        let original = Self.legacyDescriptorA
-        let renamed = Self.legacyDescriptorB
+        let original = Self.originalBrandDescriptor
+        let renamed = Self.renamedBrandDescriptor
         service.legacyStatuses[original] = .notFound
         var presented: [SentinelManager.OperationFailure] = []
         let manager = SentinelManager(
             settings: settings,
             service: service,
-            legacyDaemonDescriptors: Self.twoLegacyDescriptors,
             failurePresenter: { failure, _, _ in presented.append(failure) }
         )
 
@@ -643,6 +616,45 @@ final class SentinelManagerTests: XCTestCase {
         XCTAssertTrue(presented.isEmpty)
     }
 
+    @MainActor
+    func test_startupDefaultOFF原品牌Root仍注册_必须注销并按真实终态保留关闭证据() {
+        // v2026.10.14：模拟跳过中间迁移版本的升级；本地默认 OFF 不能掩盖系统旧注册。
+        // 成功和失败都必须经过生产描述符，不能只验证可注入列表的通用循环。
+        for didConverge in [true, false] {
+            let settings = makeSettings("original-brand-off-\(didConverge)")
+            let service = StubService(status: .notRegistered)
+            let original = Self.originalBrandDescriptor
+            service.legacyStatuses[original] = .enabled
+            service.legacyStatusesAfterUnregister[original] = didConverge ? .notRegistered : .enabled
+            var presented: [SentinelManager.OperationFailure] = []
+            let manager = SentinelManager(
+                settings: settings,
+                service: service,
+                failurePresenter: { failure, _, _ in presented.append(failure) }
+            )
+
+            let result = manager.reconcile(trigger: .startup)
+
+            XCTAssertEqual(service.legacyUnregisterCalls, [original])
+            XCTAssertEqual(
+                service.legacyStatusReads,
+                [original, original, Self.renamedBrandDescriptor],
+                "关闭旧身份后必须复读，并继续核验另一代真实身份"
+            )
+            XCTAssertEqual(service.registerCalls, 0)
+            XCTAssertFalse(settings.sentinelEnabled)
+            XCTAssertEqual(settings.sentinelRequiresShutdownVerification, !didConverge)
+            XCTAssertEqual(result.presentation, didConverge ? .disabledVerified : .desiredOffUnverified)
+            if didConverge {
+                XCTAssertNil(result.failure)
+                XCTAssertTrue(presented.isEmpty)
+            } else {
+                XCTAssertEqual(result.failure, .legacyMigrationFailed(requestedEnabled: false))
+                XCTAssertEqual(presented, [.legacyMigrationFailed(requestedEnabled: false)])
+            }
+        }
+    }
+
     func test_legacyMigrationPolicy_onlyExplicitNotRegisteredIsCleared() {
         XCTAssertEqual(
             SentinelManager.legacyMigrationAction(for: .notRegistered),
@@ -720,19 +732,15 @@ final class SentinelManagerTests: XCTestCase {
         settings.sentinelEnabled = true
         let enabledAt = Date(timeIntervalSince1970: 1_780_000_000)
         settings.sentinelLastEnabled = enabledAt
-        let service = StubService(
-            status: .enabled,
-            legacyDescriptors: Self.twoLegacyDescriptors
-        )
+        let service = StubService(status: .enabled)
         service.unregisterError = StubError.operationFailed
-        let renamed = Self.legacyDescriptorB
+        let renamed = Self.renamedBrandDescriptor
         service.legacyStatuses[renamed] = .enabled
         service.legacyStatusesAfterUnregister[renamed] = .notRegistered
         var presented: [SentinelManager.OperationFailure] = []
         let manager = SentinelManager(
             settings: settings,
             service: service,
-            legacyDaemonDescriptors: Self.twoLegacyDescriptors,
             failurePresenter: { failure, _, _ in presented.append(failure) }
         )
 
@@ -742,7 +750,7 @@ final class SentinelManagerTests: XCTestCase {
         XCTAssertEqual(service.unregisterCalls, 1)
         XCTAssertEqual(
             service.operationOrder,
-            ["agent-unregister"] + Self.twoLegacyDescriptors.flatMap {
+            ["agent-unregister"] + SentinelManager.legacyDaemonDescriptors.flatMap {
                 $0 == renamed
                     ? [
                         "legacy-status:\($0.label)",
@@ -1159,10 +1167,14 @@ final class SentinelManagerTests: XCTestCase {
 
     // MARK: - 常量契约
 
-    func test_当前Agent与旧Daemon迁移描述符必须使用独立身份() {
+    func test_当前Agent与两代旧Daemon迁移描述符必须使用三个独立身份() {
         XCTAssertEqual(
             SentinelManager.agentPlistName,
             "com.amux.ai.Clean.sentinel.agent.plist"
+        )
+        XCTAssertEqual(
+            SentinelManager.originalBrandLegacyDaemonPlistName,
+            "com.guoshuyu.cleanmac.sentinel.plist"
         )
         XCTAssertEqual(
             SentinelManager.legacyDaemonPlistName,
@@ -1171,6 +1183,10 @@ final class SentinelManagerTests: XCTestCase {
         XCTAssertEqual(
             SentinelManager.legacyDaemonDescriptors,
             [
+                .init(
+                    plistName: "com.guoshuyu.cleanmac.sentinel.plist",
+                    label: "com.guoshuyu.cleanmac.sentinel"
+                ),
                 .init(
                     plistName: "com.amux.ai.Clean.sentinel.plist",
                     label: "com.amux.ai.Clean.sentinel"
@@ -1182,7 +1198,7 @@ final class SentinelManagerTests: XCTestCase {
                 [SentinelManager.agentPlistName]
                     + SentinelManager.legacyDaemonDescriptors.map(\.plistName)
             ).count,
-            2
+            3
         )
     }
 

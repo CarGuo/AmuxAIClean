@@ -782,6 +782,85 @@ final class UndoHistoryStoreTests: XCTestCase {
         XCTAssertEqual(store.history.count, 1)
     }
 
+    // v2026.10.14: static migration tests missed the production initializer dropping its
+    // legacy URL. Exercise the same background configuration as shared, rooted only in temp.
+    func testProductionBootstrapReconcilesHistoricalBrandDirectoryAcrossLaunches() async throws {
+        let supportRoot = tempDir()
+        let legacyURL = supportRoot.appendingPathComponent("GSYCleanMac/UndoHistory.json")
+        let currentURL = supportRoot.appendingPathComponent("AmuxAIClean/UndoHistory.json")
+        let legacy = UndoHistoryStore(storeURL: legacyURL)
+        legacy.addRecord(source: "before-upgrade", filePairs: [
+            .init(
+                original: supportRoot.appendingPathComponent("original/first").path,
+                trashed: supportRoot.appendingPathComponent("trash/first").path
+            )
+        ])
+
+        let firstLaunch = UndoHistoryStore(applicationSupportRoot: supportRoot)
+        XCTAssertEqual(firstLaunch.storageState, .loading)
+        for _ in 0..<1_000 where firstLaunch.storageState == .loading {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(firstLaunch.storageState, .ready)
+        XCTAssertEqual(firstLaunch.history.map(\.source), ["before-upgrade"])
+        XCTAssertEqual(try directHistorySources(at: currentURL), ["before-upgrade"])
+        XCTAssertEqual(try directHistorySources(at: legacyURL), ["before-upgrade"])
+
+        // An existing current store cannot suppress records appended by a still-running old
+        // version. Reopening through the production configuration must merge both histories.
+        let current = UndoHistoryStore(storeURL: currentURL)
+        current.addRecord(source: "current-version", filePairs: [
+            .init(
+                original: supportRoot.appendingPathComponent("original/current").path,
+                trashed: supportRoot.appendingPathComponent("trash/current").path
+            )
+        ])
+        legacy.addRecord(source: "late-legacy", filePairs: [
+            .init(
+                original: supportRoot.appendingPathComponent("original/late").path,
+                trashed: supportRoot.appendingPathComponent("trash/late").path
+            )
+        ])
+
+        let nextLaunch = UndoHistoryStore(applicationSupportRoot: supportRoot)
+        for _ in 0..<1_000 where nextLaunch.storageState == .loading {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(nextLaunch.storageState, .ready)
+        XCTAssertEqual(nextLaunch.history.count, 3)
+        XCTAssertEqual(
+            Set(nextLaunch.history.map(\.source)),
+            ["before-upgrade", "current-version", "late-legacy"]
+        )
+        XCTAssertEqual(
+            try directHistorySources(at: currentURL),
+            ["before-upgrade", "current-version", "late-legacy"]
+        )
+        XCTAssertEqual(try directHistorySources(at: legacyURL), ["before-upgrade", "late-legacy"])
+    }
+
+    func testProductionBootstrapRejectsCorruptHistoricalBrandStore() async throws {
+        let supportRoot = tempDir()
+        let legacyURL = supportRoot.appendingPathComponent("GSYCleanMac/UndoHistory.json")
+        let currentURL = supportRoot.appendingPathComponent("AmuxAIClean/UndoHistory.json")
+        try FileManager.default.createDirectory(
+            at: legacyURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let corruptHistory = Data("not valid undo history".utf8)
+        try corruptHistory.write(to: legacyURL)
+
+        let loading = UndoHistoryStore(applicationSupportRoot: supportRoot)
+        for _ in 0..<1_000 where loading.storageState == .loading {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        XCTAssertEqual(loading.storageState, .corrupt)
+        XCTAssertTrue(loading.history.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: legacyURL), corruptHistory)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: currentURL.path))
+    }
+
     func testLegacyStoreReconcilesWithoutOverwritingCurrentHistoryAndRetainsSource() throws {
         let dir = tempDir()
         let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")

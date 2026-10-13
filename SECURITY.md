@@ -128,10 +128,15 @@ HTTP 请求只有：
   `UndoHistory.json` 还会短期保存不含路径的 SHA-256 幂等 receipt；确认流程先在 journal
   耐久标记 `receiptPrunePending`，再清 receipt，最后才移除 journal 项。任一阶段崩溃都由
   启动恢复继续，不能在失去最后恢复证据后永久遗留 receipt；
-- 用户主动开启 Sentinel 后，同目录的 `sentinel-pending.json` 最多保存 100 条热点变化的
+- 旧 `~/Library/Application Support/GSYCleanMac/UndoHistory.json` 在每次生产 bootstrap 中
+  通过 no-follow、fd-bound 有界读取，与当前历史在跨进程锁内单调合并；成功后仍保留旧源，
+  已观察 UUID 水位阻止已清除记录复活。不能因品牌重命名取消读取，完整清除需同时删除两份历史；
+- 用户主动开启 Sentinel 后，当前品牌目录的 `sentinel-pending.json` 最多保存 100 条热点变化的
   绝对路径、时间和可选大小；当前服务是用户域 `com.amux.ai.Clean.sentinel.agent`。
-  历史 root 服务 `com.amux.ai.Clean.sentinel` 使用文件名/Label 对应的 migration-only
-  描述符并验证 `notRegistered`；升级机器上的 ServiceManagement 状态才是权威；关闭
+  两代旧 root 服务 `com.guoshuyu.cleanmac.sentinel` 与 `com.amux.ai.Clean.sentinel` 各自使用
+  文件名/Label 对应的 migration-only 描述符并逐项验证 `notRegistered`；历史 helper 名、
+  Bundle ID 与签名 Team ID 曾变化，自动化不能保证真实旧注册必然可注销，升级机器上的
+  ServiceManagement 状态才是权威；关闭
   当前 Agent 是降权动作，不得因旧描述符查询失败而被阻断，但
   旧状态未验证时也不得显示“全部已停止”。ServiceManagement 另持有后台项目注册状态，
   删除 defaults 不能代替 `SMAppService.unregister()`；

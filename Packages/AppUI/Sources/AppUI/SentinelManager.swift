@@ -105,17 +105,23 @@ public final class SentinelManager: ObservableObject {
     /// `SentinelManager` 的 MainActor 隔离，也不需要用 unchecked 绕过并发检查。
     public nonisolated static let agentPlistName = "com.amux.ai.Clean.sentinel.agent.plist"
 
-    /// v2026.07.18 P1：历史版本曾使用 root LaunchDaemon。
-    /// 保留文件名与 Label 对应的独立迁移描述符，代码只能查询/注销，永不重新注册。
+    /// v2026.10.14：品牌更名不会移除已注册的 launchd authority。两代 root Label 都必须
+    /// 保留文件名对应的独立迁移描述符，直到有升级窗口结束证据；只能查询/注销，永不重新注册。
     struct LegacyDaemonDescriptor: Equatable, Hashable, Sendable {
         let plistName: String
         let label: String
     }
 
+    public nonisolated static let originalBrandLegacyDaemonPlistName =
+        "com.guoshuyu.cleanmac.sentinel.plist"
     public nonisolated static let legacyDaemonPlistName =
         "com.amux.ai.Clean.sentinel.plist"
 
     nonisolated static let legacyDaemonDescriptors: [LegacyDaemonDescriptor] = [
+        LegacyDaemonDescriptor(
+            plistName: originalBrandLegacyDaemonPlistName,
+            label: "com.guoshuyu.cleanmac.sentinel"
+        ),
         LegacyDaemonDescriptor(
             plistName: legacyDaemonPlistName,
             label: "com.amux.ai.Clean.sentinel"

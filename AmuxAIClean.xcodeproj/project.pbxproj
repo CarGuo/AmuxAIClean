@@ -23,6 +23,7 @@
 		AA01E001000000000000S001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA01F001000000000000S001 /* main.swift */; };
 		AA01E002000000000000S002 /* amuxaiclean-sentinel in Embed Helper Tools */ = {isa = PBXBuildFile; fileRef = AA01F002000000000000S002 /* amuxaiclean-sentinel */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		AA01J001000000000000S001 /* com.amux.ai.Clean.sentinel.agent.plist in Embed LaunchAgents */ = {isa = PBXBuildFile; fileRef = AA01J002000000000000S001 /* com.amux.ai.Clean.sentinel.agent.plist */; };
+		AA01K001000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist in Embed Legacy LaunchDaemon Migration Descriptor */ = {isa = PBXBuildFile; fileRef = AA01K002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */; };
 		AA01K005000000000000S001 /* com.amux.ai.Clean.sentinel.plist in Embed Legacy LaunchDaemon Migration Descriptor */ = {isa = PBXBuildFile; fileRef = AA01K006000000000000S001 /* com.amux.ai.Clean.sentinel.plist */; };
 		E0963A3E20D365A7E7DA8DE5 /* LogKit in Frameworks */ = {isa = PBXBuildFile; productRef = 869DB7788784E9203F564909 /* LogKit */; };
 /* End PBXBuildFile section */
@@ -66,6 +67,7 @@
 			dstPath = Contents/Library/LaunchDaemons;
 			dstSubfolderSpec = 1;
 			files = (
+				AA01K001000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist in Embed Legacy LaunchDaemon Migration Descriptor */,
 				AA01K005000000000000S001 /* com.amux.ai.Clean.sentinel.plist in Embed Legacy LaunchDaemon Migration Descriptor */,
 			);
 			name = "Embed Legacy LaunchDaemon Migration Descriptor";
@@ -94,6 +96,7 @@
 		AA01F002000000000000S002 /* amuxaiclean-sentinel */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "amuxaiclean-sentinel"; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA01F003000000000000S003 /* Sentinel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Sentinel.entitlements; sourceTree = "<group>"; };
 		AA01J002000000000000S001 /* com.amux.ai.Clean.sentinel.agent.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.amux.ai.Clean.sentinel.agent.plist; sourceTree = "<group>"; };
+		AA01K002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.guoshuyu.cleanmac.sentinel.plist; sourceTree = "<group>"; };
 		AA01K006000000000000S001 /* com.amux.ai.Clean.sentinel.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.amux.ai.Clean.sentinel.plist; sourceTree = "<group>"; };
 		DF808A7550415E3DB686B545 /* HeuristicKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = HeuristicKit; path = Packages/HeuristicKit; sourceTree = SOURCE_ROOT; };
 		F4112C6CEEEE50474D0CB590 /* AmuxAIClean.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AmuxAIClean.entitlements; sourceTree = "<group>"; };
@@ -194,6 +197,7 @@
 		AA01K003000000000000S001 /* LaunchDaemons */ = {
 			isa = PBXGroup;
 			children = (
+				AA01K002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */,
 				AA01K006000000000000S001 /* com.amux.ai.Clean.sentinel.plist */,
 			);
 			path = LaunchDaemons;
