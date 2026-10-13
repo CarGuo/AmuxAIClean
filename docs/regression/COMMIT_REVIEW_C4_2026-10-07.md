@@ -70,7 +70,7 @@
 最终 Debug 目标构建通过：
 
 ```bash
-xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug \
+xcodebuild -project AmuxAIClean.xcodeproj -scheme AmuxAIClean -configuration Debug \
   -derivedDataPath build/review-dd -jobs 2 build
 ```
 

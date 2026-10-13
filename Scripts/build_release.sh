@@ -24,9 +24,9 @@ absolute_path_from_root() {
   esac
 }
 
-PROJECT_NAME="GSYCleanMac"
+PROJECT_NAME="AmuxAIClean"
 APP_NAME="AmuxAIClean"
-SCHEME="GSYCleanMac"
+SCHEME="AmuxAIClean"
 PROJECT="${ROOT}/${PROJECT_NAME}.xcodeproj"
 CONFIG="${CONFIG:-Release}"
 VERSION="${VERSION:-}"

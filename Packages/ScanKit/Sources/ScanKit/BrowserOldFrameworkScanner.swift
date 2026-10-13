@@ -163,7 +163,7 @@ public actor BrowserOldFrameworkScanner {
             .resolvingSymlinksInPath()
             .standardizedFileURL
         guard directoryIdentity(activeVersionParentResolved) == versionsIdentity else {
-            GSYLog.notice(.scan,
+            AmuxLog.notice(.scan,
                           "BrowserOldFramework Current 落点不在 Versions/ 内 fw=\(frameworkRoot.path) target=\(activeTargetURL.path)")
             return []
         }
@@ -198,7 +198,7 @@ public actor BrowserOldFrameworkScanner {
         }
 
         if !hits.isEmpty {
-            GSYLog.info(.scan,
+            AmuxLog.info(.scan,
                         "BrowserOldFramework 识别到旧版本 fw=\(frameworkRoot.path) active=\(activeVersion) old=\(hits.count)")
         }
         return hits

@@ -4,14 +4,14 @@ Building for debugging...
 Build complete! (0.16s)
 Test Suite 'All tests' started at 2026-06-11 14:26:02.748.
 Test Suite 'LogKitPackageTests.xctest' started at 2026-06-11 14:26:02.749.
-Test Suite 'GSYLogTests' started at 2026-06-11 14:26:02.749.
-Test Case '-[LogKitTests.GSYLogTests test_GSYLog_configure_文件sink可写]' started.
-Test Case '-[LogKitTests.GSYLogTests test_GSYLog_configure_文件sink可写]' passed (0.005 seconds).
-Test Case '-[LogKitTests.GSYLogTests test_GSYLog_levelOrdering]' started.
-Test Case '-[LogKitTests.GSYLogTests test_GSYLog_levelOrdering]' passed (0.000 seconds).
-Test Case '-[LogKitTests.GSYLogTests test_GSYLog_minimumLevel_拦截低于阈值的日志]' started.
-Test Case '-[LogKitTests.GSYLogTests test_GSYLog_minimumLevel_拦截低于阈值的日志]' passed (0.001 seconds).
-Test Suite 'GSYLogTests' passed at 2026-06-11 14:26:02.755.
+Test Suite 'AmuxLogTests' started at 2026-06-11 14:26:02.749.
+Test Case '-[LogKitTests.AmuxLogTests test_AmuxLog_configure_文件sink可写]' started.
+Test Case '-[LogKitTests.AmuxLogTests test_AmuxLog_configure_文件sink可写]' passed (0.005 seconds).
+Test Case '-[LogKitTests.AmuxLogTests test_AmuxLog_levelOrdering]' started.
+Test Case '-[LogKitTests.AmuxLogTests test_AmuxLog_levelOrdering]' passed (0.000 seconds).
+Test Case '-[LogKitTests.AmuxLogTests test_AmuxLog_minimumLevel_拦截低于阈值的日志]' started.
+Test Case '-[LogKitTests.AmuxLogTests test_AmuxLog_minimumLevel_拦截低于阈值的日志]' passed (0.001 seconds).
+Test Suite 'AmuxLogTests' passed at 2026-06-11 14:26:02.755.
 	 Executed 3 tests, with 0 failures (0 unexpected) in 0.006 (0.007) seconds
 Test Suite 'IOErrorClassifierTests' started at 2026-06-11 14:26:02.756.
 Test Case '-[LogKitTests.IOErrorClassifierTests test_classify_CocoaFileNoSuchFile归类为notFound]' started.

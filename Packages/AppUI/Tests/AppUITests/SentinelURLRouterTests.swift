@@ -1,13 +1,13 @@
 import XCTest
 @testable import AppUI
 
-/// Step 6.5：[SentinelURLRouter](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SentinelURLRouter.swift)
+/// Step 6.5：[SentinelURLRouter](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/SentinelURLRouter.swift)
 /// 路由解析 + 路径防注入 单测。
 ///
 /// 设计要点：
 /// - `handle(_:)` 是 `@discardableResult` 同步方法，直接断言 `Outcome`；
 ///   附带的 NotificationCenter 副作用用 `expectation(forNotification:)` 验证。
-/// - `validateAbsolutePath(_:)` 直接走真实 [FileManager](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SentinelURLRouter.swift#L74-L83)
+/// - `validateAbsolutePath(_:)` 直接走真实 [FileManager](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/SentinelURLRouter.swift#L74-L83)
 ///   ——用 `/tmp` 下的临时文件覆盖真实存在分支。
 final class SentinelURLRouterTests: XCTestCase {
 
@@ -45,7 +45,7 @@ final class SentinelURLRouterTests: XCTestCase {
     }
 
     func test_handle_actionScanFull_应广播通知_并返回startFullScan() {
-        let exp = expectation(forNotification: .gsySentinelStartFullScan, object: nil)
+        let exp = expectation(forNotification: .amuxSentinelStartFullScan, object: nil)
         let outcome = SentinelURLRouter.handle(URL(string: "amuxaiclean://action/scan/full")!)
         XCTAssertEqual(outcome, .startFullScan)
         wait(for: [exp], timeout: 1.0)
@@ -55,7 +55,7 @@ final class SentinelURLRouterTests: XCTestCase {
 
     func test_handle_uninstall无path_应广播空userInfo() {
         let captured = CapturedInfo()
-        let exp = expectation(forNotification: .gsySentinelOpenUninstall, object: nil) { note in
+        let exp = expectation(forNotification: .amuxSentinelOpenUninstall, object: nil) { note in
             captured.set(note.userInfo)
             return true
         }
@@ -69,7 +69,7 @@ final class SentinelURLRouterTests: XCTestCase {
         let tmp = try makeTempFile()
         defer { try? FileManager.default.removeItem(at: tmp) }
         let captured = CapturedInfo()
-        let exp = expectation(forNotification: .gsySentinelOpenUninstall, object: nil) { note in
+        let exp = expectation(forNotification: .amuxSentinelOpenUninstall, object: nil) { note in
             captured.set(note.userInfo)
             return true
         }
@@ -102,7 +102,7 @@ final class SentinelURLRouterTests: XCTestCase {
 
     func test_handle_uninstall相对path_应被拒_广播nil() {
         let captured = CapturedInfo()
-        let exp = expectation(forNotification: .gsySentinelOpenUninstall, object: nil) { note in
+        let exp = expectation(forNotification: .amuxSentinelOpenUninstall, object: nil) { note in
             captured.set(note.userInfo)
             return true
         }
@@ -118,7 +118,7 @@ final class SentinelURLRouterTests: XCTestCase {
     }
 
     func test_handle_uninstall不存在路径_应被拒() {
-        let bogus = "/tmp/__gsy_sentinel_router_should_not_exist_\(UUID().uuidString)"
+        let bogus = "/tmp/__amux_sentinel_router_should_not_exist_\(UUID().uuidString)"
         let encoded = bogus.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? bogus
         let outcome = SentinelURLRouter.handle(URL(string: "amuxaiclean://uninstall?path=\(encoded)")!)
         XCTAssertEqual(outcome, .openUninstall(path: nil), "不存在的路径必须被拒")
@@ -161,7 +161,7 @@ final class SentinelURLRouterTests: XCTestCase {
 
     private func makeTempFile() throws -> URL {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("gsy-sentinel-router-test-\(UUID().uuidString).bin")
+            .appendingPathComponent("amux-sentinel-router-test-\(UUID().uuidString).bin")
         try Data("ok".utf8).write(to: url)
         return url
     }

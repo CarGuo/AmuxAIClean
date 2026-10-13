@@ -1,14 +1,14 @@
-# GSYCleanMac - 竞品深评报告
+# AmuxAIClean - 竞品深评报告
 
 > 编写日期：2026-05-21
-> 对照版本：GSYCleanMac v1.1.0（370+ 测试 + xcodebuild 绿）
+> 对照版本：AmuxAIClean v1.1.0（370+ 测试 + xcodebuild 绿）
 > 范围：CleanMyMac X、Pearcleaner、AppCleaner、OnyX、DaisyDisk、Sensei、MacFly Pro
 
 ---
 
 ## 0. 一览表
 
-| 产品 | 价格 | 开源 | 渠道 | 核心定位 | 与 GSYCleanMac 最显著差异 |
+| 产品 | 价格 | 开源 | 渠道 | 核心定位 | 与 AmuxAIClean 最显著差异 |
 |---|---|---|---|---|---|
 | CleanMyMac X | 订阅制 / 买断（具体档位以官网为准，约 $40–$90/年量级） | 否 | DMG（Notarized）+ Setapp；MAS 上有功能阉割版 | 一站式清理 / 优化 / 安全 / 卸载 | 我们不做"加速 / Malware"等扩展功能，只盯扫描 + 卸载 + 删除安全 |
 | Pearcleaner | 免费 | 是（GPL-3.0，GitHub: alienator88/Pearcleaner） | DMG（Notarized）+ Homebrew Cask | 开源 AppCleaner 替代品，主打卸载残留 | 我们抄方法论不抄代码（PITFALLS §5.9），并加 firmlink/inode 双重去重 |
@@ -44,7 +44,7 @@
 - **2015 年 MacKeeper 13M 用户数据泄露**事件常被搬来"连坐" CleanMyMac，但**该事件主体是 MacKeeper 而非 CleanMyMac**，不应混淆。
 - **CleanMyMac 自身的具体 CVE 编号**：在 NVD 公开库中**未检索到**与 "CleanMyMac" 直接对应的 CVE 条目（2026-05 时点）。
 
-### 1.5 与 GSYCleanMac v0.7 的差异化定位
+### 1.5 与 AmuxAIClean v0.7 的差异化定位
 - **范围克制**：CleanMyMac 是"一站式"，覆盖清理 / 加速 / Malware / 隐私 / 维护，我们只做扫描（ScanKit）+ 安全判定（SafetyKit）+ 卸载（AppUninstaller）+ 启发式（HeuristicKit）四层，PITFALLS §5.6 明确点了"OnyX 复选项过多吓退用户"的反面教训。
 - **算法透明**：我们 ScanKit 走 `getattrlistbulk` + firmlink 数据卷根 + (dev,ino) 去重，PITFALLS §2 全程公开数据（48k 文件 0.54s，~/Library/Caches 32.8 万文件 9.5s / 18.1 GB / 137 MB hardlink 去重）；CleanMyMac 不公开算法。
 - **删除安全**：我们 v0 直接走 `NSWorkspace.recycle`（PITFALLS §5.9），永不 unlink；CleanMyMac 提供"Secure Erase"等不可逆选项，历史上是用户事故源。
@@ -73,7 +73,7 @@
 - 截至 2026-05，未在 NVD 检索到 Pearcleaner 直接对应的 CVE 条目。
 - GitHub Issues 中**高赞的安全相关 issue**集中在"误删 / 共享目录 / 权限引导"主题（具体高赞条目以仓库当前 reactions 数为准）。
 
-### 2.5 与 GSYCleanMac v0.7 的差异化定位
+### 2.5 与 AmuxAIClean v0.7 的差异化定位
 - **方法论而非代码复用**：PITFALLS §5.9 明确写 **"拒绝抄 Pearcleaner Conditions.swift（学结构不抄代码，避免 license 纠纷）"**，我们走 SeedingTool 自动生成 + 手工 30 条主流 vendor 兜底，落到 [vendors.yaml](../Resources/Rules/vendors.yaml) 共 159 条。
 - **反向 hardForbid 校验**：所有规则进 SafetyEngine 前会被自检（[RuleLoader.loadVendors](../Packages/SafetyKit/Sources/SafetyKit/RuleLoader.swift)），社区规则即使写错路径也无法击穿 `/System` 等硬黑名单——这是 Pearcleaner 没有的"反向兜底"。
 - **strict prefix 边界**：F 路 [matchesStrictPrefix](../Packages/AppUI/Sources/AppUI/AppUninstaller.swift) 只接受 `name == prefix` 或 `name.hasPrefix(prefix + ".")`，避免 `com.foo.bar` 误吃 `com.foo.barbarian`，针对的就是 Pearcleaner 用户反馈的"误识别"场景。
@@ -102,7 +102,7 @@
 - 截至 2026-05，未在 NVD 检索到 FreeMacSoft AppCleaner 直接对应的 CVE 条目。
 - 历史上没有公开的"漏洞披露"事件，但"误删共享目录"的用户事故是社区共识级风险。
 
-### 3.5 与 GSYCleanMac v0.7 的差异化定位
+### 3.5 与 AmuxAIClean v0.7 的差异化定位
 - **默认勾选策略**：我们默认**只勾 SafetyKit 判定为 `.safe` 的项**，`.confirm` 项不勾、`.forbid` 项渲染锁图标不可勾（PITFALLS §5.5、v0.3 D 路落地）。
 - **共享目录保护**：[vendor_shared.yaml](../Resources/Rules/vendor_shared.yaml) 维护"共享厂商目录"白名单，命中时强制降级 `.confirm` 并加"我知道这是共享的"复选框（v0.4 E 路 [SafetyEngine.evaluate(path:vendors:)](../Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift)）。
 - **Containers 覆盖**：F 路 AppUninstaller 显式扫 11 个用户残留 scope + LaunchAgents/LaunchDaemons，PITFALLS §3.7 点名 AppCleaner 盲区做反面对照。
@@ -131,7 +131,7 @@
 - 截至 2026-05，未在 NVD 检索到 OnyX 直接对应的 CVE 条目。
 - Titanium Software 维护历史悠久（10+ 年），公开安全事件未见。
 
-### 4.5 与 GSYCleanMac v0.7 的差异化定位
+### 4.5 与 AmuxAIClean v0.7 的差异化定位
 - **目标用户**：OnyX 面向"懂 macOS 子系统的进阶用户"，我们面向"普通 Mac 用户的 100 GB 焦虑"——PITFALLS 起点诉求即"为什么 100 GB 找不到 80 GB"。
 - **UI 哲学**：PITFALLS §5.6 写明"默认两栏 UI：推荐清理 + 进阶；forbid 项默认隐藏"，对位 OnyX 的反面教材。
 - **不调系统命令**：我们不通过 shell out 调 `periodic`/`mdutil`，所有清理都在用户域 + recycle，避免"清完要重建几小时"的副作用。
@@ -160,7 +160,7 @@
 - 截至 2026-05，未在 NVD 检索到 DaisyDisk 直接对应的 CVE 条目。
 - 公开安全事件未见。
 
-### 5.5 与 GSYCleanMac v0.7 的差异化定位
+### 5.5 与 AmuxAIClean v0.7 的差异化定位
 - **判定 vs 可视化**：PITFALLS §5.8 明确写 **"DaisyDisk 教训：彩色 sunburst 图很酷但非必需。先做扁平 list + 体积条，环形图作为 v1 plus"**——我们把 SafetyKit 三色徽章（[优化] OK / [体验] confirm / [阻塞] forbid）放在第一位，先告诉用户"这能不能删"再谈"它有多大"。
 - **firmlink 双卷处理**：我们默认从 `/System/Volumes/Data` 数据卷根开始遍历（PITFALLS §2.1），用户传 `/private/var/db` 与 `/var/db` 都被认作同一硬黑名单——firmlink 处理是 DaisyDisk 没有强调的隐性需求。
 - **iCloud 占位文件**：PITFALLS §2.4 双取 `fileSize` + `totalFileAllocatedSize`，避免"幽灵 GB"——DaisyDisk 在 sunburst 上是否区分本地占用与云端逻辑大小，**未在公开材料中明确**。
@@ -188,7 +188,7 @@
 - 截至 2026-05，未在 NVD 检索到 Sensei 直接对应的 CVE 条目。
 - 公开安全事件未见。
 
-### 6.5 与 GSYCleanMac v0.7 的差异化定位
+### 6.5 与 AmuxAIClean v0.7 的差异化定位
 - **不做硬件监控**：我们专注"存储 + 卸载"主线，不读 SMC / SMART / 电池，避免被 Apple Silicon 硬件读数兼容性问题拖累。
 - **不做"打包销售"**：Sensei 把硬件 + 清理捆绑收订阅费，我们目标是 Free（v0 用 Personal Team 跑 Local Run，**v0 上架前都不必买 Apple Developer Program**，PITFALLS §5.9）。
 - **更深的删除安全栈**：SafetyKit 三色判定 + HMAC-XPC 三道闸门 + dryRun 默认 + recycle 移废纸篓——这些"商业级稳健"层面的工程量在 Sensei 里被简化成"清单 + 删除"。
@@ -216,7 +216,7 @@
 - 截至 2026-05，未在 NVD 检索到 MacFly Pro 直接对应的 CVE 条目。
 - 在 macOS 反恶意软件圈内偶有"被误归类为 PUA（Potentially Unwanted Application）"的讨论，**具体厂商判定以各 AV 引擎当前规则库为准**。
 
-### 7.5 与 GSYCleanMac v0.7 的差异化定位
+### 7.5 与 AmuxAIClean v0.7 的差异化定位
 - **拒绝伪功能**：我们不做"加速 / 内存释放 / RAM Booster"，PITFALLS 通篇围绕"扫描准 + 删除安全"两件事，完全不碰营销驱动的功能膨胀。
 - **拒绝弹窗推送**：v0 的产品形态是"打开扫一次，结束"，没有常驻 menu bar agent（与 Pearcleaner Sentinel Monitor 的可选项不同，我们 v0 直接不做）。
 - **自卸载干净**：菜单栏"Uninstall Helper"明确写在 PITFALLS §1.6 红线里，调用 `SMAppService.unregister()` + 删 `/Library/PrivilegedHelperTools/<id>` + 删 LaunchDaemon plist + 写 audit log——对位 MacFly Pro 用户最痛的"卸不干净"。
@@ -225,7 +225,7 @@
 
 ## 8. 横向能力对比矩阵
 
-| 能力维度 | CleanMyMac X | Pearcleaner | AppCleaner | OnyX | DaisyDisk | Sensei | MacFly Pro | **GSYCleanMac v0.7** |
+| 能力维度 | CleanMyMac X | Pearcleaner | AppCleaner | OnyX | DaisyDisk | Sensei | MacFly Pro | **AmuxAIClean v0.7** |
 |---|---|---|---|---|---|---|---|---|
 | 开源 | [N] | [Y] GPL-3.0 | [N] | [N] | [N] | [N] | [N] | 私有仓库（v0 阶段） |
 | 源码可审计 | [N] | [Y] | [N] | [N] | [N] | [N] | [N] | 内部可审 |
@@ -261,7 +261,7 @@
 | v0.3 | D | 三栏 UI + 颜色徽章 + DeleteSheet trash-preview |
 | v0.4 | E | NSWorkspace.recycle + SeedingTool 自生成 159 条 vendor + 反向 hardForbid |
 | v0.5 | F/G/I/J | AppUninstaller strict prefix + vendor 真注入 + TestHarness + HeuristicKit |
-| v0.5.1 | K | vendor 真生效（[GSYCleanMacApp.swift](../App/GSYCleanMacApp.swift)） + HeuristicRecorder 接 UI |
+| v0.5.1 | K | vendor 真生效（[AmuxAICleanApp.swift](../App/AmuxAICleanApp.swift)） + HeuristicRecorder 接 UI |
 | v0.6 | L | ScanKit 测试补到 14 条（hidden / inode / 引擎一致性 / golden） |
 | v0.7 | M | Xcode 真首跑通过 + TCC 引导 + 空状态 + PerfBench（~/Library/Caches 32.8w 文件 9.5s / 18.1 GB） + 应用卸载侧边栏 |
 
@@ -275,7 +275,7 @@
 - 用户吐槽：综合 Reddit（r/mac, r/macapps, r/MacOS）、HackerNews 评论区、MacRumors Forums、Apple Discussions 在 2024–2026 年的高频共识表述，**未引用具体帖子链接**——因为单一帖子链接会随用户删除 / 版主清理失效，本报告只总结"长期共识"，不做"具体一帖一证"。
 - CVE：以 NIST NVD 在 2026-05 时点的检索结果为准。**未检索到对应条目即标"未在 NVD 检索到"**，不假设其存在或不存在。
 - 算法细节：所有竞品**未公开的算法**统一以"未公开"标注，本文严格不做反向工程式猜测。
-- 与 GSYCleanMac 的差异化叙述：**全部基于本工程内 [PITFALLS.md](../PITFALLS.md) 与 [Resources/Rules/vendors.yaml](../Resources/Rules/vendors.yaml) 已落地的工程事实**，路径与行号均可在仓库中直接核对。
+- 与 AmuxAIClean 的差异化叙述：**全部基于本工程内 [PITFALLS.md](../PITFALLS.md) 与 [Resources/Rules/vendors.yaml](../Resources/Rules/vendors.yaml) 已落地的工程事实**，路径与行号均可在仓库中直接核对。
 
 ---
 

@@ -27,7 +27,7 @@ public struct RowItem: Identifiable, Hashable, Sendable {
     public let runningBundleIDPrefix: String?
     /// v1.3：该聚合行是否"正在被扫描"。
     ///
-    /// 判定来自 [ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 判定来自 [ScanCoordinator](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
     /// 维护的 `lastIngestAt[bucketPath]`：该 bucket 最近一次 ingest 距 publishSnapshot 时间 < 800ms 即视为 active。
     /// UI 给 active 行的 bytes 数字上色 + 轻微脉动，让用户一眼看出多 worker 同时在扫不同子树。
     /// 扫描结束后所有行的 isActive 一律 false。
@@ -35,9 +35,9 @@ public struct RowItem: Identifiable, Hashable, Sendable {
     /// v1.5.4：该行（聚合后第一级子目录或单个文件）对应 inode 的最近修改时间。
     ///
     /// 设计选择（A 方案，与 Finder 一致）：聚合行采用**目录自身 inode** 的 mtime，
-    /// 即 ScanCoordinator 在 ingest 阶段从 [FSNode.modificationDate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/FSNode.swift#L14)
+    /// 即 ScanCoordinator 在 ingest 阶段从 [FSNode.modificationDate](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/FSNode.swift#L14)
     /// 取来直接挂上；不走"max(子孙 mtime)"聚合，避免 dirIndex 多维护一字段以及 publish 抖动。
-    /// 数据来源已经在扫描层免费——[BulkScanner.enumerate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L390-L412)
+    /// 数据来源已经在扫描层免费——[BulkScanner.enumerate](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L390-L412)
     /// 的 attrlist 位图已请求 ATTR_CMN_MODTIME，本字段从源头透传过来不增加 syscall。
     /// 可选是因为：极早期 publish 帧 / 按需子树扫描结果可能缺失。
     public let modificationDate: Date?
@@ -99,7 +99,7 @@ public struct RowItem: Identifiable, Hashable, Sendable {
 ///
 /// 设计要点：
 /// - 默认值 `.sizeDesc`（按字节大小降序）—— 大的清理项先出现，符合"挑大的删"的直觉
-/// - 与 [TreeSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L72)
+/// - 与 [TreeSortKey](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L72)
 ///   不复用：树视图含 count 列；主列表行的 fileCount 也展示，但维度更少（无独立列头）
 /// - **扫描进行中不参与排序选择**——publishSnapshot 在 finished=false 阶段强制按 path 字典序，
 ///   保证多 worker 同时刷新时行位置稳定，避免"只一行在动"错觉（v1.3 修订背景见 ScanCoordinator）；
@@ -216,7 +216,7 @@ public struct TreeRow: Identifiable, Hashable, Sendable {
     public let subtreeCompleteness: SubtreeCompleteness
     /// v1.5.4：节点 inode 自身的最近修改时间。
     ///
-    /// 与 [RowItem.modificationDate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L33)
+    /// 与 [RowItem.modificationDate](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L33)
     /// 一致采用 Finder 风格——目录就是它自己 inode 的 mtime（修改子项时由内核自动更新），
     /// 不再额外聚合 max(子孙)。按需子树扫描路径会从文件系统元数据补齐。
     public let modificationDate: Date?
@@ -229,10 +229,10 @@ public struct TreeRow: Identifiable, Hashable, Sendable {
     public enum AccessState: String, Sendable, Hashable, Codable {
         /// 正常扫描得到的数据
         case normal
-        /// 被 BulkScanner 的 [permissionDenied](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L175) 拦掉
+        /// 被 BulkScanner 的 [permissionDenied](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L175) 拦掉
         /// （open(O_RDONLY) 失败，子目录里所有文件都没 emit）
         case permissionDenied
-        /// 被 TCC 雷区硬 skip（[respectTCCSkipList](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L210)），
+        /// 被 TCC 雷区硬 skip（[respectTCCSkipList](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L210)），
         /// 通常是用户没给 Full Disk Access
         case tccProtected
         /// 目录可打开，但枚举或节点 metadata 没有完整读完。它不是 FDA/TCC 问题，
@@ -337,7 +337,7 @@ public enum TreeSortKey: String, CaseIterable, Sendable, Hashable {
         }
     }
 
-    /// v1.5 P2 / Q1：把全局 [MainListSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L71)
+    /// v1.5 P2 / Q1：把全局 [MainListSortKey](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L71)
     /// 映射到树视图排序键。
     ///
     /// 树视图 4 列（size/name/count/mtime）几乎与主列表一一对应；fileCount 映到 count。
@@ -446,7 +446,7 @@ public enum LargeFileSortKey: String, CaseIterable, Sendable, Hashable {
         }
     }
 
-    /// v1.5 P2 / Q1：把全局 [MainListSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L71)
+    /// v1.5 P2 / Q1：把全局 [MainListSortKey](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L71)
     /// 映射到大文件列表自己支持的子集。
     ///
     /// 大文件列表只展示 size + mtime 两列：
@@ -519,7 +519,7 @@ public struct ScanSnapshot: Sendable, Equatable {
     /// 用法：HUD 显示 "MB/s"；估算 ETA 时 / bytesPerSecond。
     public let bytesPerSecond: Double
     /// v1.3：预计剩余耗时（秒）。仅在以下条件全部成立时给出：
-    ///   1) 当前在扫整盘且 [VolumeCapacity.Snapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/VolumeCapacity.swift) 已知（有"已用容量"作上限）；
+    ///   1) 当前在扫整盘且 [VolumeCapacity.Snapshot](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/VolumeCapacity.swift) 已知（有"已用容量"作上限）；
     ///   2) bytesPerSecond > 0 且 elapsed > 0.5s（采样不足时不报，避免开始 100ms 就显示"还需 6 小时"）；
     /// 否则为 nil —— UI 显示"估算中…"。
     public let estimatedRemaining: TimeInterval?
@@ -528,7 +528,7 @@ public struct ScanSnapshot: Sendable, Equatable {
     //
     // 旧实现把 safeBytes/confirmBytes/forbidBytes 实现为 `computed property`，每帧
     // 每次 sidebar / footer 访问都跑一次 O(N) reduce —— sidebar 在 dev 扫几百行
-    // 时被反复打。改为 stored let，由 [publishSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 在生成 snapshot 时一次性算完。
+    // 时被反复打。改为 stored let，由 [publishSnapshot](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 在生成 snapshot 时一次性算完。
     //
     // 同时本结构加上 `Equatable`，让 `@Published var snapshot = ...`（流式帧每 0.4s 推）
     // 在内容真没变（rows / totalBytes / scannedFileCount / bytesPerSecond / eta / safe/...）
@@ -540,8 +540,8 @@ public struct ScanSnapshot: Sendable, Equatable {
     public let confirmBytes: Int64
     /// `.forbid` 行字节合计 —— 仅供审计 / 调试，UI 一般不展示。
     public let forbidBytes: Int64
-    /// rows 的最大 bytes，用于 [RowContentView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowView.swift) 体积条归一化。
-    /// 由 publishSnapshot 同步算好（与 [MainView.listResults](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) 旧 lazy map.max 等价）。
+    /// rows 的最大 bytes，用于 [RowContentView](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowView.swift) 体积条归一化。
+    /// 由 publishSnapshot 同步算好（与 [MainView.listResults](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift) 旧 lazy map.max 等价）。
     public let maxRowBytes: Int64
 
     public static let empty = ScanSnapshot(categoryID: "", rows: [], totalBytes: 0,
@@ -619,8 +619,8 @@ public struct ScanSnapshot: Sendable, Equatable {
 
     /// 业界口径的"可清理字节数"——**仅** `.safe` 行求和。
     ///
-    /// **必须**用作 [VolumeCapacityCard.cleanableBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/VolumeCapacityCard.swift#L26) /
-    /// [FloatingScanHUD.cleanableBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift) 的唯一来源。
+    /// **必须**用作 [VolumeCapacityCard.cleanableBytes](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/VolumeCapacityCard.swift#L26) /
+    /// [FloatingScanHUD.cleanableBytes](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift) 的唯一来源。
     /// **禁止**再回退到 `totalBytes`——那是已扫总量，跟"能不能删"无关。
     public var cleanableBytes: Int64 { safeBytes }
 }

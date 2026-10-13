@@ -13,7 +13,7 @@ import Foundation
 /// 上 glob 也是为了避免引入复杂度（恶意作者可能用 `**` 吞掉整个 home）。
 ///
 /// 安全约束：本类型**只回答 yes/no 是否匹配**，不做文件系统枚举。
-/// VendorTrie 接入时，匹配通过后仍走 [SafetyEngine.evaluate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift)
+/// VendorTrie 接入时，匹配通过后仍走 [SafetyEngine.evaluate](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift)
 /// 的 hardForbid 红线检查，glob 永远无法绕过 §2.7 黄金禁区。
 public enum PathGlob {
 

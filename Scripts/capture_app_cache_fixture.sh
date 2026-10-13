@@ -44,7 +44,7 @@ Usage:
 
 Examples:
   Scripts/capture_app_cache_fixture.sh
-  Scripts/capture_app_cache_fixture.sh --out /tmp/gsy-fixtures Feishu DingTalk WPS
+  Scripts/capture_app_cache_fixture.sh --out /tmp/amux-fixtures Feishu DingTalk WPS
   Scripts/capture_app_cache_fixture.sh --with-size Lark QQ WeCom
 
 Notes:
@@ -127,8 +127,8 @@ mkdir -p "$OUT_DIR"
 STAMP="$(date '+%Y%m%d-%H%M%S')"
 JSON_OUT="${OUT_DIR}/common-app-cache-fixture-${STAMP}.jsonl"
 MD_OUT="${OUT_DIR}/common-app-cache-fixture-${STAMP}.md"
-CANDIDATE_TMP="$(mktemp -t gsy-candidates.XXXXXX)"
-MATCHED_APP_TMP="$(mktemp -t gsy-matched-apps.XXXXXX)"
+CANDIDATE_TMP="$(mktemp -t amux-candidates.XXXXXX)"
+MATCHED_APP_TMP="$(mktemp -t amux-matched-apps.XXXXXX)"
 trap 'rm -f "$CANDIDATE_TMP" "$MATCHED_APP_TMP"' EXIT
 
 append_app_glob_matches() {

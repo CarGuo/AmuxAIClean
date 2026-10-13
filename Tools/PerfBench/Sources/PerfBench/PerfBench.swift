@@ -243,7 +243,7 @@ struct PerfBench {
     /// 在 release 机器上一跑就是 5 秒，新人极易误以为程序卡死。
     private static func printUsage() {
         print("""
-        PerfBench — GSYCleanMac 扫描性能基线工具
+        PerfBench — AmuxAIClean 扫描性能基线工具
 
         用法：
           PerfBench [flags]

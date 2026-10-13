@@ -233,7 +233,7 @@ actor SystemStatusSampler {
             return true
         }
         if failedProbes.insert(probe).inserted {
-            GSYLog.error(.scan, "system_status probe=\(probe) code=\(code)")
+            AmuxLog.error(.scan, "system_status probe=\(probe) code=\(code)")
         }
         return false
     }

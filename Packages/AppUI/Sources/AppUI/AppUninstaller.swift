@@ -414,11 +414,11 @@ public enum MatchReason: Hashable, Sendable {
     case vendorRule(String)
     /// Step 11A / 2026-06：Spotlight 兜底命中。
     /// 主 12 root 路径覆盖不了的非典型残留位置（用户文档下、iCloud 同步目录等），
-    /// 通过 [SpotlightProbing](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SpotlightFallback.swift)
+    /// 通过 [SpotlightProbing](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/SpotlightFallback.swift)
     /// 严格谓词查到。关联值是命中谓词类别（`"bundleID"` / `"appName"`），方便 UI 提示证据链。
     case spotlight(String)
     /// M4-T3 / 2026-06：pkgutil receipts 命中。
-    /// 通过 [PkgutilReceiptsScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/PkgutilReceiptsScanner.swift)
+    /// 通过 [PkgutilReceiptsScanner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/PkgutilReceiptsScanner.swift)
     /// 只查询选中 App 的 exact bundleID namespace，并要求同一 receipt 实际列出
     /// 该 `.app` 或其内部路径作为产品锚点。候选只能是 receipt 内含 bundleID / 产品名
     /// 组件的最小产品专属根；共享祖先、其他 `.app`、选中 bundle 内部逐文件都不进入
@@ -568,13 +568,13 @@ public struct AppUninstaller: Sendable {
     /// **不会**让所有 vendor 路径裸奔参与匹配 —— 仅在 bundleID 命中后才放出该 vendor 的路径。
     public let vendorRules: [VendorRule]
     /// Step 11A / 2026-06：Spotlight 兜底查询器。
-    /// 主路径扫完后调用，补主 12 root 之外的残留位置。生产用 [DefaultSpotlightProbe](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SpotlightFallback.swift)，
+    /// 主路径扫完后调用，补主 12 root 之外的残留位置。生产用 [DefaultSpotlightProbe](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/SpotlightFallback.swift)，
     /// 测试可注入 fake 返回固定路径。
     public let spotlight: SpotlightProbing
     /// Spotlight 单次查询超时（秒）。NSMetadataQuery 偶尔会卡数十秒，必须有上限。
     public let spotlightTimeout: TimeInterval
     /// M4-T3 / 2026-06：pkgutil receipts 兜底扫描器。
-    /// 默认走 [DefaultPkgutilRunner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/PkgutilReceiptsScanner.swift)，
+    /// 默认走 [DefaultPkgutilRunner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/PkgutilReceiptsScanner.swift)，
     /// 测试可注入 fake runner 喂死数据。`nil` 表示完全关闭 pkgReceipt 候选发现
     /// （单测里 in-memory home / 不真实 / 想 isolate 主路径时使用）。
     public let pkgutilScanner: PkgutilReceiptsScanner?
@@ -2241,10 +2241,10 @@ struct FSSnapshotHardlinkLedger {
 /// 真实磁盘实现。第一层用 `contentsOfDirectory`，size 递归到子树，但受文件数/时长预算、
 /// cooperative cancellation 与 typed completeness 约束。
 ///
-/// **Step 14**：原 `try?` 全部改 do/catch + [IOErrorClassifier](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LogKit/Sources/LogKit/IOErrorClassifier.swift) 分类：
-/// - `.permissionDenied` → 调用 `permissionDeniedHandler`（默认 nil）+ GSYLog.debug
-/// - `.notFound` → GSYLog.debug 静默
-/// - `.other` → GSYLog.warning 落盘
+/// **Step 14**：原 `try?` 全部改 do/catch + [IOErrorClassifier](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/LogKit/Sources/LogKit/IOErrorClassifier.swift) 分类：
+/// - `.permissionDenied` → 调用 `permissionDeniedHandler`（默认 nil）+ AmuxLog.debug
+/// - `.notFound` → AmuxLog.debug 静默
+/// - `.other` → AmuxLog.warning 落盘
 public struct DefaultFileManagerSnapshot: FileManagerSnapshotting {
     /// EACCES 时被调用一次的 handler（默认 nil = 不上报，保留旧静默语义）。
     public let permissionDeniedHandler: (@Sendable (String) -> Void)?
@@ -2977,11 +2977,11 @@ public struct DefaultFileManagerSnapshot: FileManagerSnapshotting {
         switch IOErrorClassifier.classify(error) {
         case .permissionDenied:
             permissionDeniedHandler?(path)
-            GSYLog.debug(.scan, "FileManagerSnapshot \(op) permission denied: \(path)")
+            AmuxLog.debug(.scan, "FileManagerSnapshot \(op) permission denied: \(path)")
         case .notFound:
-            GSYLog.debug(.scan, "FileManagerSnapshot \(op) not found: \(path)")
+            AmuxLog.debug(.scan, "FileManagerSnapshot \(op) not found: \(path)")
         case .other:
-            GSYLog.warning(.scan, "FileManagerSnapshot \(op) failed at \(path): \(error.localizedDescription)")
+            AmuxLog.warning(.scan, "FileManagerSnapshot \(op) failed at \(path): \(error.localizedDescription)")
         }
     }
 }

@@ -35,7 +35,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SCHEME="GSYCleanMac"
+SCHEME="AmuxAIClean"
 APP_NAME="AmuxAIClean"
 OUT_DIR="${ROOT}/docs/screenshots"
 

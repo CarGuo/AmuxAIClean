@@ -1,23 +1,23 @@
-> **历史快照（GSYCleanMac v1.0）**：本文保留早期产品与发布背景，不是当前合同。
+> **历史快照（AmuxAIClean v1.0）**：本文保留早期产品与发布背景，不是当前合同。
 > 当前产品名、系统下限、Developer ID/Notary 发行、Sentinel、AI、联网与本地数据事实以
 > [README.md](README.md)、[PRIVACY.md](PRIVACY.md)、[SECURITY.md](SECURITY.md) 和
 > [docs/RELEASE.md](docs/RELEASE.md) 为准。
 
 <div align="center">
 
-<img src="docs/assets/logo.png" width="128" alt="GSYCleanMac" />
+<img src="docs/assets/logo.png" width="128" alt="AmuxAIClean" />
 
-# GSYCleanMac
+# AmuxAIClean
 
 **给 Mac 用一年就胀的硬盘减负 —— 开源、零遥测、零订阅。**
 
-[![CI](https://github.com/CarGuo/GSYCleanMac/actions/workflows/ci.yml/badge.svg)](https://github.com/CarGuo/GSYCleanMac/actions/workflows/ci.yml)
-[![Release](https://github.com/CarGuo/GSYCleanMac/actions/workflows/release.yml/badge.svg)](https://github.com/CarGuo/GSYCleanMac/actions/workflows/release.yml)
-[![Latest](https://img.shields.io/github/v/release/CarGuo/GSYCleanMac?display_name=tag)](https://github.com/CarGuo/GSYCleanMac/releases/latest)
-[![License](https://img.shields.io/github/license/CarGuo/GSYCleanMac)](LICENSE)
+[![CI](https://github.com/CarGuo/AmuxAIClean/actions/workflows/ci.yml/badge.svg)](https://github.com/CarGuo/AmuxAIClean/actions/workflows/ci.yml)
+[![Release](https://github.com/CarGuo/AmuxAIClean/actions/workflows/release.yml/badge.svg)](https://github.com/CarGuo/AmuxAIClean/actions/workflows/release.yml)
+[![Latest](https://img.shields.io/github/v/release/CarGuo/AmuxAIClean?display_name=tag)](https://github.com/CarGuo/AmuxAIClean/releases/latest)
+[![License](https://img.shields.io/github/license/CarGuo/AmuxAIClean)](LICENSE)
 [![Platform](https://img.shields.io/badge/macOS-15%2B-blue)](#系统要求)
 
-[下载最新版](https://github.com/CarGuo/GSYCleanMac/releases/latest) -
+[下载最新版](https://github.com/CarGuo/AmuxAIClean/releases/latest) -
 [安装指南](docs/INSTALL.md) -
 [功能一览](#你能用它干什么) -
 [安全模型](SECURITY.md) -
@@ -29,7 +29,7 @@
 
 ## 这是什么
 
-GSYCleanMac 是一款 **macOS 本地清理与卸载残留管家**：扫一次就知道硬盘里到底是什么在占空间、哪些 App 卸了之后还有几百兆配置赖在 `~/Library` 里没走。**所有删除都走废纸篓**，给反悔留窗口。代码完全开源，扫描结果不出本机、零遥测，**也不会让你掏 99 美元/年**。仅启动时会向 GitHub Releases 发一次约 2 KB 的 GET 请求检查新版（可在设置里关闭）。
+AmuxAIClean 是一款 **macOS 本地清理与卸载残留管家**：扫一次就知道硬盘里到底是什么在占空间、哪些 App 卸了之后还有几百兆配置赖在 `~/Library` 里没走。**所有删除都走废纸篓**，给反悔留窗口。代码完全开源，扫描结果不出本机、零遥测，**也不会让你掏 99 美元/年**。仅启动时会向 GitHub Releases 发一次约 2 KB 的 GET 请求检查新版（可在设置里关闭）。
 
 不是为了取代 CleanMyMac，是给那种"不想交订阅、不想被国外 App 把日志和遥测往云端怼一份"的人一个本地、可审计、敢上的备选。
 
@@ -77,21 +77,21 @@ GSYCleanMac 是一款 **macOS 本地清理与卸载残留管家**：扫一次就
 
 ### 方法 A：下载 DMG（推荐）
 
-1. 到 [Releases 页](https://github.com/CarGuo/GSYCleanMac/releases/latest) 下载 `GSYCleanMac-x.y.z.dmg`
-2. 双击挂载，把 `GSYCleanMac.app` 拖进 `/Applications`
+1. 到 [Releases 页](https://github.com/CarGuo/AmuxAIClean/releases/latest) 下载 `AmuxAIClean-x.y.z.dmg`
+2. 双击挂载，把 `AmuxAIClean.app` 拖进 `/Applications`
 3. **首次双击会被 Gatekeeper 拦下**（这是 ad-hoc 签名的预期）：
    - macOS 15+：系统设置 → 隐私与安全 → 滚到底点"仍要打开"
-   - macOS 13–14：Finder 里右键 `GSYCleanMac.app` → "打开" → 弹窗再点 "打开"
+   - macOS 13–14：Finder 里右键 `AmuxAIClean.app` → "打开" → 弹窗再点 "打开"
 4. 信任一次后双击直接开。完整截图步骤见 [docs/INSTALL.md](docs/INSTALL.md)
-5. 想扫到完整结果，需要在 系统设置 → 隐私与安全 → 完全磁盘访问 中勾上 GSYCleanMac
+5. 想扫到完整结果，需要在 系统设置 → 隐私与安全 → 完全磁盘访问 中勾上 AmuxAIClean
 
 ### 方法 B：自己编译
 
 ```bash
-git clone git@github.com:CarGuo/GSYCleanMac.git
-cd GSYCleanMac
+git clone git@github.com:CarGuo/AmuxAIClean.git
+cd AmuxAIClean
 ./Scripts/setup_dev.sh        # 装 xcodegen + 生成 .xcodeproj
-open GSYCleanMac.xcodeproj    # Xcode 里 Free Apple ID 直接 Run
+open AmuxAIClean.xcodeproj    # Xcode 里 Free Apple ID 直接 Run
 ```
 
 详细命令行/CI 构建步骤见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
@@ -101,8 +101,8 @@ open GSYCleanMac.xcodeproj    # Xcode 里 Free Apple ID 直接 Run
 ## 校验下载
 
 ```bash
-shasum -a 256 GSYCleanMac-1.0.0.dmg
-# 应与同 release 里附带的 GSYCleanMac-1.0.0.dmg.sha256 内容一致
+shasum -a 256 AmuxAIClean-1.0.0.dmg
+# 应与同 release 里附带的 AmuxAIClean-1.0.0.dmg.sha256 内容一致
 ```
 
 ---

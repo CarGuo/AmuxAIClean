@@ -11,7 +11,7 @@ import LogKit
 ///   - `pkgutil --pkg-info <pkgid>` 拿到 install-location（`volume` + `location`）
 ///
 /// 本扫描器是**纯只读探测器**：列举可疑 pkg、解出绝对路径候选，
-/// 真正删除依然走 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit) +
+/// 真正删除依然走 [TrashPipeline](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit) +
 /// 用户勾选 + SafetyEngine 守门。它**不**调 `pkgutil --forget`（那是 root 权限动作）。
 ///
 /// 注入策略：`runner` 默认是 `DefaultPkgutilRunner()` 走硬编码 `/usr/sbin/pkgutil`。
@@ -130,7 +130,7 @@ public struct PkgutilReceiptsScanner: Sendable {
             pkgList = try runner.listPackages(matchingRegex: regex)
         } catch {
             let failure = Self.commandFailure(from: error)
-            GSYLog.warning(.app, "pkgutil --pkgs 调用失败 prefix=\(prefix) reason=\(failure.sortKey)")
+            AmuxLog.warning(.app, "pkgutil --pkgs 调用失败 prefix=\(prefix) reason=\(failure.sortKey)")
             return ScanResult(
                 receipts: [],
                 incompleteIssues: [IncompleteIssue(
@@ -145,7 +145,7 @@ public struct PkgutilReceiptsScanner: Sendable {
         out.reserveCapacity(pkgList.count)
         for pkgID in pkgList {
             guard prefix.isEmpty || Self.isStrictReverseDNSMatch(pkgID, prefix: prefix) else {
-                GSYLog.warning(
+                AmuxLog.warning(
                     .app,
                     "pkgutil returned out-of-namespace package ID prefix=\(prefix) pkgID=\(pkgID)"
                 )
@@ -161,7 +161,7 @@ public struct PkgutilReceiptsScanner: Sendable {
                     pkgID: pkgID,
                     reason: failure
                 ))
-                GSYLog.warning(.app, "pkgutil --pkg-info 调用失败 pkgID=\(pkgID) reason=\(failure.sortKey)")
+                AmuxLog.warning(.app, "pkgutil --pkg-info 调用失败 pkgID=\(pkgID) reason=\(failure.sortKey)")
                 continue
             }
             let files: [String]
@@ -174,7 +174,7 @@ public struct PkgutilReceiptsScanner: Sendable {
                     pkgID: pkgID,
                     reason: failure
                 ))
-                GSYLog.warning(.app, "pkgutil --files 调用失败 pkgID=\(pkgID) reason=\(failure.sortKey)")
+                AmuxLog.warning(.app, "pkgutil --files 调用失败 pkgID=\(pkgID) reason=\(failure.sortKey)")
                 continue
             }
             guard let root = Self.joinVolumeLocation(
@@ -186,7 +186,7 @@ public struct PkgutilReceiptsScanner: Sendable {
                     pkgID: pkgID,
                     reason: .invalidInstallRoot
                 ))
-                GSYLog.warning(.app, "pkgutil receipt install root rejected pkgID=\(pkgID)")
+                AmuxLog.warning(.app, "pkgutil receipt install root rejected pkgID=\(pkgID)")
                 continue
             }
             guard let receipt = Receipt(
@@ -199,7 +199,7 @@ public struct PkgutilReceiptsScanner: Sendable {
                     pkgID: pkgID,
                     reason: .invalidRelativePath
                 ))
-                GSYLog.warning(.app, "pkgutil receipt payload path rejected pkgID=\(pkgID)")
+                AmuxLog.warning(.app, "pkgutil receipt payload path rejected pkgID=\(pkgID)")
                 continue
             }
             out.append(receipt)

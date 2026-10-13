@@ -127,7 +127,7 @@ public enum WorkflowRegistry {
         } catch is CancellationError {
             return []
         } catch {
-            GSYLog.error(.scan, "WorkflowRegistry unexpected discovery error scannerID=\(scannerID): \(error)")
+            AmuxLog.error(.scan, "WorkflowRegistry unexpected discovery error scannerID=\(scannerID): \(error)")
             return []
         }
     }
@@ -189,7 +189,7 @@ public enum WorkflowRegistry {
                 throw CancellationError()
             } catch {
                 // 完整成功空清单与失败严格分离；typed failure 变成 card-scoped evidence。
-                GSYLog.warning(.app, "WorkflowRegistry simctl-devices discovery incomplete: \(error)")
+                AmuxLog.warning(.app, "WorkflowRegistry simctl-devices discovery incomplete: \(error)")
                 return DiscoveryEvidence(hits: [], incompleteIssues: [
                     ScanIncompleteIssue(path: "/usr/bin/xcrun", reason: .enumerationFailed)
                 ])
@@ -217,7 +217,7 @@ public enum WorkflowRegistry {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                GSYLog.warning(.app, "WorkflowRegistry simctl-runtimes discover 抛错: \(error)")
+                AmuxLog.warning(.app, "WorkflowRegistry simctl-runtimes discover 抛错: \(error)")
                 return DiscoveryEvidence(hits: [], incompleteIssues: [
                     ScanIncompleteIssue(path: "/usr/bin/xcrun", reason: .enumerationFailed)
                 ])
@@ -249,7 +249,7 @@ public enum WorkflowRegistry {
             }
 
         default:
-            GSYLog.warning(.app, "WorkflowRegistry 收到未知 scannerID=\(scannerID)，返回空列表")
+            AmuxLog.warning(.app, "WorkflowRegistry 收到未知 scannerID=\(scannerID)，返回空列表")
             return DiscoveryEvidence(hits: [])
         }
     }

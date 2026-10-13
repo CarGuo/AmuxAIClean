@@ -3,7 +3,7 @@ import Foundation
 /// **Step 9c / 2026-06**：大文件叶子 Top-N 维护器（min-heap 实现）。
 ///
 /// 历史问题：
-///   早期 [largeFileLeaves](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+///   早期 [largeFileLeaves](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
 ///   是个普通 `[LargeFileLeaf]`，每个 ≥ `largeFileMinBytes` 的叶子都 `append` 进来。
 ///   极端情况（用户把阈值调到 1MB 扫整盘）下数百万条命中 → 内存翻车，
 ///   且 `largeFiles(...)` 调用时还要做 O(N log N) 排序整套，UI 第一帧卡顿。
@@ -71,7 +71,7 @@ struct LargeFileLeafTopNHeap: Sendable {
     /// **v2026.06.22**：按路径前缀剔除已删叶子，并重建 min-heap 不变量。
     ///
     /// 背景：用户反馈 "大文件列表，删除后没列表没更新，内容还在"。
-    /// 根因：[ScanCoordinator.pruneDeleted](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1621)
+    /// 根因：[ScanCoordinator.pruneDeleted](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1621)
     /// 历史上只剔除 `buckets / dirIndex / childEdges / fileLeaves / snapshot.rows /
     /// treeChildrenCache`；而 LargeFilesView 直接 `coordinator.largeFiles(...)` →
     /// 走 `largeFileLeaves.snapshot()`，**完全没经过 pruneDeleted 的洗手段**，

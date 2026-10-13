@@ -1221,7 +1221,7 @@ public actor UninstallStore {
         }
 
         if let firstIssue = result.incompleteIssues.first {
-            GSYLog.warning(
+            AmuxLog.warning(
                 .app,
                 "installed app discovery incomplete count=\(result.incompleteIssues.count) firstRoot=\(firstIssue.rootPath) firstPath=\(firstIssue.path) firstReason=\(firstIssue.reason.rawValue)"
             )
@@ -1512,7 +1512,7 @@ public struct UninstallScreen: View {
             preflightNotice = nil
         }
         .onAppear { startAppListReload() }
-        .onReceive(NotificationCenter.default.publisher(for: .gsyTrashDidMove)) { notification in
+        .onReceive(NotificationCenter.default.publisher(for: .amuxTrashDidMove)) { notification in
             let source = notification.userInfo?["source"] as? String
             guard source != DeleteRequestOrigin.uninstall.historySource,
                   !isDeletionTransactionActive else { return }
@@ -2201,7 +2201,7 @@ public struct UninstallScreen: View {
         case .current:
             return true
         case .cancelled(let rejections):
-            GSYLog.notice(
+            AmuxLog.notice(
                 .trash,
                 "Uninstall rejected stale deletion intent app=\(request.appID) revision=\(request.selectionRevision) currentApp=\(selectedApp?.id ?? "nil") currentRevision=\(selectedAppRevision)"
             )
@@ -2279,9 +2279,9 @@ public struct UninstallScreen: View {
               requireCurrentUninstallExecutionRequest(request) else { return }
         let executionPlan = request.plan
         // v1.3.zzzz Phase 3-A 对称防御：UninstallScreen 没接 BulkScanner 的
-        // permissionDenied 数据源（候选来自 [UninstallStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UninstallStore.swift)
+        // permissionDenied 数据源（候选来自 [UninstallStore](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/UninstallStore.swift)
         // 的 NSMetadataQuery + AppCandidate），但 pipeline 是注入进来的、
-        // 可能跨视图复用 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)
+        // 可能跨视图复用 [TrashPipeline](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)
         // 实例。若 MainView 上一轮扫描遗留了 accessDeniedPaths 没清，
         // 切到 UninstallScreen 走 trash 时就会"莫名 accessDenied 拒了某个 ~/Library/.. 路径"。
         // 主动清空一次是 O(1) 锁开销，零误伤；实际执行与 UndoHistory 写入走统一删除入口。

@@ -407,7 +407,7 @@ final class SimulatorDeleteCoordinatorTests: XCTestCase {
     }
 
     func test_executeManaged_processLaunchFailure_hasNoSubmissionReceipt() async {
-        let missingExecutable = "/usr/bin/definitely-not-present-gsycleanmac"
+        let missingExecutable = "/usr/bin/definitely-not-present-amuxaiclean"
         let allowEntry = SubprocessExecutor.AllowEntry(
             executable: missingExecutable,
             argsPrefix: ManagedUninstallRecipe.simulatorRuntime.argsPrefix

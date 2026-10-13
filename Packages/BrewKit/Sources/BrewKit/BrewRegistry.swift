@@ -3,7 +3,7 @@ import Foundation
 /// BrewKit Step 16-B2 —— 解析 `~/Library/Caches/Homebrew/api/{formula,cask}.jws.json`
 /// 的轻量 registry，做"已安装版本 vs 最新版本"的可升级标记。
 ///
-/// 设计来源（[docs/AUDIT_2026_06.md L102](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/AUDIT_2026_06.md#L102)）：
+/// 设计来源（[docs/AUDIT_2026_06.md L102](file:///Users/amuxuser/workspace/AmuxAIClean/docs/AUDIT_2026_06.md#L102)）：
 /// > 直接读 `~/Library/Caches/Homebrew/api/{cask,formula}.jws.json`，不需要执行 brew 命令。
 ///
 /// **JWS 信封格式**（真机抽样确认）：

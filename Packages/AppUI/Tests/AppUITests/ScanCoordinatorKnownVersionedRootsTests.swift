@@ -4,7 +4,7 @@ import SafetyKit
 @testable import AppUI
 @testable import ScanKit
 
-/// M4-T2 集成测试：[ScanCoordinator.scanKnownVersionedRoots](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L710)
+/// M4-T2 集成测试：[ScanCoordinator.scanKnownVersionedRoots](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L710)
 ///
 /// 覆盖：
 /// 1. 注入临时 home + 构造 Xcode iOS DeviceSupport 4 个版本子目录

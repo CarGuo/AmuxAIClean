@@ -50,7 +50,7 @@ struct WidthSandbox<Content: View>: View {
 }
 
 extension View {
-    /// 把当前视图包进 [WidthSandbox](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/LayoutSandbox.swift)，
+    /// 把当前视图包进 [WidthSandbox](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/LayoutSandbox.swift)，
     /// 切断子的 ideal size 对外层的反推。
     ///
     /// 用法：detail 入口或 split detail panel 的最外层调用一次。

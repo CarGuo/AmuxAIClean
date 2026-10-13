@@ -6,7 +6,7 @@ import Darwin
 /// 设计目标：**几百毫秒级**走完一个或多个根目录，只统计 on-disk allocated bytes，不分类、不
 /// 去重 hardlink、不发 progress。失败/超时直接吞掉，调用方拿到 nil 即可。
 ///
-/// 与 [BulkScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift) 的差异：
+/// 与 [BulkScanner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift) 的差异：
 /// - 不并发：单 worker 串行 walk，避免与正式扫描抢 IO
 /// - 不发事件：纯同步返回 Int64，方便 await 一次拿到结果
 /// - 不读 hardlink dedup（接受**轻微高估**）：估总量分母用，3-5% 误差可接受
@@ -77,7 +77,7 @@ public enum TreeSizeEstimator {
     /// 仍会强制触发 LaunchServices Database 查询判定 isPackage，无法绕过。
     ///
     /// 优化策略：彻底放弃 `FileManager.enumerator`，改用项目里已封装好的
-    /// [BulkEnumerate.enumerate(fd:dirPath:_:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L443-L573)
+    /// [BulkEnumerate.enumerate(fd:dirPath:_:)](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L443-L573)
     /// （getattrlistbulk + attrlist 直读 dirent + inode metadata，64KB 缓冲）+ 手动 DFS：
     ///   - 跳过 NSURL bridge / FileCache / LaunchServices isPackage 全部开销
     ///   - 直接从 attrlist 拿 `allocatedSize`，免去 per-entry resourceValues 调用

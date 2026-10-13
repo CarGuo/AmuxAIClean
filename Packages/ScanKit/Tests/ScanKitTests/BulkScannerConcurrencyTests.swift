@@ -17,7 +17,7 @@ final class BulkScannerConcurrencyTests: XCTestCase {
     private func makeFixture(fileCount: Int = 100, depthChain: Int = 6) throws -> URL {
         let fm = FileManager.default
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("GSYCleanScanConc-\(UUID().uuidString)")
+            .appendingPathComponent("AmuxAICleanScanConc-\(UUID().uuidString)")
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
 
         // 宽 50 子目录 × 每个 2 文件

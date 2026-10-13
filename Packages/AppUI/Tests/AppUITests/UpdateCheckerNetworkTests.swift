@@ -1,8 +1,7 @@
 import XCTest
 @testable import AppUI
 
-/// Step 15：补 [UpdateChecker.runCheck L127-L172](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Updater/UpdateChecker.swift#L127-L172)
-/// 网络层死角。
+/// Step 15：补 `UpdateChecker.runCheck` 网络层死角。
 ///
 /// 之前仅 SemVer 纯函数测过，HTTP 401 / 超时 / HTML 误返回 / URL 构造失败 全都没覆盖。
 ///
@@ -25,8 +24,8 @@ final class UpdateCheckerNetworkTests: XCTestCase {
         nonisolated(unsafe) static var stub: Stub?
         nonisolated(unsafe) static var responseURLOverride: URL?
         private static let requestCountLock = NSLock()
-        nonisolated(unsafe) private static var requestCountStorage = 0
-        nonisolated(unsafe) private static var lastRequestStorage: URLRequest?
+        nonisolated(unsafe) static var requestCountStorage = 0
+        nonisolated(unsafe) static var lastRequestStorage: URLRequest?
 
         static func resetRequestCount() {
             requestCountLock.lock()
@@ -81,7 +80,7 @@ final class UpdateCheckerNetworkTests: XCTestCase {
 
     private func makeChecker(
         owner: String = "CarGuo",
-        repo: String = "GSYCleanMac",
+        repo: String = "AmuxAIClean",
         settings: AppSettings? = nil
     ) -> UpdateChecker {
         UpdateChecker(
@@ -183,7 +182,7 @@ final class UpdateCheckerNetworkTests: XCTestCase {
         {
             "tag_name": "v999.0.0",
             "name": "Big Release",
-            "html_url": "https://github.com/CarGuo/GSYCleanMac/releases/tag/v999.0.0",
+            "html_url": "https://github.com/CarGuo/AmuxAIClean/releases/tag/v999.0.0",
             "body": "release notes",
             "published_at": "2026-06-04T00:00:00Z"
         }
@@ -211,7 +210,7 @@ final class UpdateCheckerNetworkTests: XCTestCase {
         {
             "tag_name": "v0.0.1",
             "name": "Ancient",
-            "html_url": "https://github.com/CarGuo/GSYCleanMac/releases/tag/v0.0.1",
+            "html_url": "https://github.com/CarGuo/AmuxAIClean/releases/tag/v0.0.1",
             "body": "",
             "published_at": null
         }
@@ -244,7 +243,7 @@ final class UpdateCheckerNetworkTests: XCTestCase {
                 {
                   "tag_name": "v0.0.1",
                   "name": "Old",
-                  "html_url": "https://github.com/CarGuo/GSYCleanMac/releases/tag/v0.0.1",
+                  "html_url": "https://github.com/CarGuo/AmuxAIClean/releases/tag/v0.0.1",
                   "body": "",
                   "published_at": null
                 }
@@ -291,7 +290,7 @@ final class UpdateCheckerNetworkTests: XCTestCase {
         let request = MockURLProtocol.lastRequest()
         XCTAssertEqual(
             request?.url?.absoluteString,
-            "https://api.github.com/repos/CarGuo/GSYCleanMac/releases/latest"
+            "https://api.github.com/repos/CarGuo/AmuxAIClean/releases/latest"
         )
         XCTAssertEqual(request?.httpMethod, "GET")
         XCTAssertNil(request?.httpBody)
@@ -302,8 +301,8 @@ final class UpdateCheckerNetworkTests: XCTestCase {
 
     func test_redirectPolicy_同源与跨源都拒绝() {
         let requests = [
-            URLRequest(url: URL(string: "https://api.github.com/repos/CarGuo/GSYCleanMac/releases/1")!),
-            URLRequest(url: URL(string: "https://github.com/CarGuo/GSYCleanMac/releases/tag/v1.0.0")!),
+            URLRequest(url: URL(string: "https://api.github.com/repos/CarGuo/AmuxAIClean/releases/1")!),
+            URLRequest(url: URL(string: "https://github.com/CarGuo/AmuxAIClean/releases/tag/v1.0.0")!),
             URLRequest(url: URL(string: "https://objects.example.invalid/asset")!),
         ]
 
@@ -313,24 +312,24 @@ final class UpdateCheckerNetworkTests: XCTestCase {
     }
 
     func test_repositoryBoundary_仅接受精确HTTPSReleasePage() {
-        let boundary = UpdateRepositoryNetworkBoundary(owner: "CarGuo", repo: "GSYCleanMac")!
+        let boundary = UpdateRepositoryNetworkBoundary(owner: "CarGuo", repo: "AmuxAIClean")!
         XCTAssertTrue(boundary.ownsReleasePageURL(
-            URL(string: "https://github.com/carguo/gsycleanmac/releases/tag/v1.6.1")!,
+            URL(string: "https://github.com/carguo/amuxaiclean/releases/tag/v1.6.1")!,
             tag: "v1.6.1"
         ))
 
         let rejected = [
-            "http://github.com/CarGuo/GSYCleanMac/releases/tag/v1.6.1",
-            "https://github.com.evil.invalid/CarGuo/GSYCleanMac/releases/tag/v1.6.1",
-            "https://github.com@evil.invalid/CarGuo/GSYCleanMac/releases/tag/v1.6.1",
-            "https://github.com:444/CarGuo/GSYCleanMac/releases/tag/v1.6.1",
-            "https://github.com/CarGuo2/GSYCleanMac/releases/tag/v1.6.1",
-            "https://github.com/CarGuo/GSYCleanMac2/releases/tag/v1.6.1",
-            "https://github.com/CarGuo/GSYCleanMac/releases/tag/v1.6.2",
-            "https://github.com/CarGuo/GSYCleanMac/releases/tag/v1.6.1/extra",
-            "https://github.com/CarGuo/GSYCleanMac/releases/tag/v1.6.1?next=evil",
-            "https://github.com/CarGuo/GSYCleanMac/releases/tag/v1.6.1#fragment",
-            "https://github.com/CarGuo/GSYCleanMac/releases/tag/v1.6.1%2Fevil",
+            "http://github.com/CarGuo/AmuxAIClean/releases/tag/v1.6.1",
+            "https://github.com.evil.invalid/CarGuo/AmuxAIClean/releases/tag/v1.6.1",
+            "https://github.com@evil.invalid/CarGuo/AmuxAIClean/releases/tag/v1.6.1",
+            "https://github.com:444/CarGuo/AmuxAIClean/releases/tag/v1.6.1",
+            "https://github.com/CarGuo2/AmuxAIClean/releases/tag/v1.6.1",
+            "https://github.com/CarGuo/AmuxAIClean2/releases/tag/v1.6.1",
+            "https://github.com/CarGuo/AmuxAIClean/releases/tag/v1.6.2",
+            "https://github.com/CarGuo/AmuxAIClean/releases/tag/v1.6.1/extra",
+            "https://github.com/CarGuo/AmuxAIClean/releases/tag/v1.6.1?next=evil",
+            "https://github.com/CarGuo/AmuxAIClean/releases/tag/v1.6.1#fragment",
+            "https://github.com/CarGuo/AmuxAIClean/releases/tag/v1.6.1%2Fevil",
         ]
         for raw in rejected {
             XCTAssertFalse(
@@ -341,22 +340,22 @@ final class UpdateCheckerNetworkTests: XCTestCase {
     }
 
     func test_repositoryBoundary_仅接受同仓库同Tag同文件名Asset() {
-        let boundary = UpdateRepositoryNetworkBoundary(owner: "CarGuo", repo: "GSYCleanMac")!
+        let boundary = UpdateRepositoryNetworkBoundary(owner: "CarGuo", repo: "AmuxAIClean")!
         XCTAssertTrue(boundary.ownsReleaseAssetURL(
-            URL(string: "https://github.com/CarGuo/GSYCleanMac/releases/download/v1.6.1/AmuxAIClean.dmg.sha256")!,
+            URL(string: "https://github.com/CarGuo/AmuxAIClean/releases/download/v1.6.1/AmuxAIClean.dmg.sha256")!,
             tag: "v1.6.1",
             assetName: "AmuxAIClean.dmg.sha256"
         ))
 
         let rejected = [
-            "http://github.com/CarGuo/GSYCleanMac/releases/download/v1.6.1/AmuxAIClean.dmg.sha256",
-            "https://objects.githubusercontent.com/CarGuo/GSYCleanMac/AmuxAIClean.dmg.sha256",
-            "https://github.com/Other/GSYCleanMac/releases/download/v1.6.1/AmuxAIClean.dmg.sha256",
+            "http://github.com/CarGuo/AmuxAIClean/releases/download/v1.6.1/AmuxAIClean.dmg.sha256",
+            "https://objects.githubusercontent.com/CarGuo/AmuxAIClean/AmuxAIClean.dmg.sha256",
+            "https://github.com/Other/AmuxAIClean/releases/download/v1.6.1/AmuxAIClean.dmg.sha256",
             "https://github.com/CarGuo/Other/releases/download/v1.6.1/AmuxAIClean.dmg.sha256",
-            "https://github.com/CarGuo/GSYCleanMac/releases/download/v1.6.2/AmuxAIClean.dmg.sha256",
-            "https://github.com/CarGuo/GSYCleanMac/releases/download/v1.6.1/other.sha256",
-            "https://github.com/CarGuo/GSYCleanMac/releases/download/v1.6.1/AmuxAIClean.dmg.sha256?token=x",
-            "https://github.com/CarGuo/GSYCleanMac/releases/download/v1.6.1/AmuxAIClean.dmg.sha256/extra",
+            "https://github.com/CarGuo/AmuxAIClean/releases/download/v1.6.2/AmuxAIClean.dmg.sha256",
+            "https://github.com/CarGuo/AmuxAIClean/releases/download/v1.6.1/other.sha256",
+            "https://github.com/CarGuo/AmuxAIClean/releases/download/v1.6.1/AmuxAIClean.dmg.sha256?token=x",
+            "https://github.com/CarGuo/AmuxAIClean/releases/download/v1.6.1/AmuxAIClean.dmg.sha256/extra",
         ]
         for raw in rejected {
             XCTAssertFalse(
@@ -372,7 +371,7 @@ final class UpdateCheckerNetworkTests: XCTestCase {
 
     func test_runCheck_releasePage跨源应类型化拒绝() async {
         MockURLProtocol.stub = releaseStub(
-            htmlURL: "https://example.com/CarGuo/GSYCleanMac/releases/tag/v999.0.0"
+            htmlURL: "https://example.com/CarGuo/AmuxAIClean/releases/tag/v999.0.0"
         )
         let checker = makeChecker()
 
@@ -437,7 +436,7 @@ final class UpdateCheckerNetworkTests: XCTestCase {
             assetsJSON: """
             [{
               "name": "AmuxAIClean.dmg.sha256",
-              "browser_download_url": "https://github.com/CarGuo/GSYCleanMac/releases/download/v999.0.0/AmuxAIClean.dmg.sha256",
+              "browser_download_url": "https://github.com/CarGuo/AmuxAIClean/releases/download/v999.0.0/AmuxAIClean.dmg.sha256",
               "size": 128
             }]
             """
@@ -468,7 +467,7 @@ final class UpdateCheckerNetworkTests: XCTestCase {
         assetsJSON: String = "[]"
     ) -> MockURLProtocol.Stub {
         let releaseURL = htmlURL
-            ?? "https://github.com/CarGuo/GSYCleanMac/releases/tag/\(tag)"
+            ?? "https://github.com/CarGuo/AmuxAIClean/releases/tag/\(tag)"
         return MockURLProtocol.Stub(
             data: Data("""
                 {

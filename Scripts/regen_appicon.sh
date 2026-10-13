@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# 一次性脚本：用 /Users/guoshuyu/Desktop/logo.png 重新生成 AppIcon 全套尺寸 + docs/assets/logo.png
+# 一次性脚本：用 /Users/amuxuser/Desktop/logo.png 重新生成 AppIcon 全套尺寸 + docs/assets/logo.png
 set -euo pipefail
 
-SRC=/Users/guoshuyu/Desktop/logo.png
-DST_DIR=/Users/guoshuyu/workspace/GSYCleanMac/Resources/Assets.xcassets/AppIcon.appiconset
-DOCS_LOGO=/Users/guoshuyu/workspace/GSYCleanMac/docs/assets/logo.png
+SRC=/Users/amuxuser/Desktop/logo.png
+DST_DIR=/Users/amuxuser/workspace/AmuxAIClean/Resources/Assets.xcassets/AppIcon.appiconset
+DOCS_LOGO=/Users/amuxuser/workspace/AmuxAIClean/docs/assets/logo.png
 
 [ -f "$SRC" ] || { echo "缺失源图 $SRC" >&2; exit 1; }
 [ -d "$DST_DIR" ] || { echo "缺失 $DST_DIR" >&2; exit 1; }

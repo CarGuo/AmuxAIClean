@@ -8,14 +8,14 @@ import XCTest
 ///   `treeChildrenCache: [String: [TreeRow]]` 早期标了 `@Published` —— 任何字典写入都会
 ///   触发 ScanCoordinator.objectWillChange，无差别让所有订阅 view（MainView 主列表、
 ///   SystemProbe banner、UndoHistory toolbar 等）跟着重算一帧。但实际只有 TreeBrowserView
-///   关心 cache 是否更新，并且 TreeBrowserView 已经通过 [structuralRevision](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+///   关心 cache 是否更新，并且 TreeBrowserView 已经通过 [structuralRevision](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
 ///   订阅"节点拓扑变化"信号。
 ///
 /// 解决：
 ///   1) `treeChildrenCache` 改普通字典（去掉 @Published）。
 ///   2) 新增 `childrenCacheVersion: UInt64` 计数器（保持 @Published 给单元测试 / 未来细粒度刷新留 hook）。
 ///   3) 所有原本写 cache 的位置（写新键 / removeAll / patch-by-prune）必须串到
-///      [bumpChildrenCacheVersion()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 单点收敛。
+///      [bumpChildrenCacheVersion()](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 单点收敛。
 ///
 /// 本套测试只覆盖"version 自增是否符合契约"——TreeBrowserView 订阅切换不在本范围。
 @MainActor
@@ -70,7 +70,7 @@ final class ScanCoordinatorCacheVersionTests: XCTestCase {
 
     private func makeFakeHome(leafCount: Int) throws -> String {
         let fm = FileManager.default
-        let raw = NSTemporaryDirectory() + "GSYCleanCacheVer-\(UUID().uuidString)"
+        let raw = NSTemporaryDirectory() + "AmuxAICleanCacheVer-\(UUID().uuidString)"
         let home = URL(fileURLWithPath: raw).standardizedFileURL.path
         let cache = home + "/Library/Caches/com.example.cachever"
         try fm.createDirectory(atPath: cache, withIntermediateDirectories: true)

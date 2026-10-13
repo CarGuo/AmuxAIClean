@@ -23,13 +23,13 @@ enum TrashDurableFileWriter {
     ) {
         let enumerationDescriptor = Darwin.dup(parentDescriptor)
         guard enumerationDescriptor >= 0 else {
-            GSYLog.warning(.trash, "\(logContext) temp sweep dup failed errno=\(errno)")
+            AmuxLog.warning(.trash, "\(logContext) temp sweep dup failed errno=\(errno)")
             return
         }
         guard let directory = fdopendir(enumerationDescriptor) else {
             let code = errno
             Darwin.close(enumerationDescriptor)
-            GSYLog.warning(.trash, "\(logContext) temp sweep fdopendir failed errno=\(code)")
+            AmuxLog.warning(.trash, "\(logContext) temp sweep fdopendir failed errno=\(code)")
             return
         }
         defer { closedir(directory) }
@@ -39,7 +39,7 @@ enum TrashDurableFileWriter {
             errno = 0
             guard let rawEntry = readdir(directory) else {
                 if errno != 0 {
-                    GSYLog.warning(.trash, "\(logContext) temp sweep readdir failed errno=\(errno)")
+                    AmuxLog.warning(.trash, "\(logContext) temp sweep readdir failed errno=\(errno)")
                 }
                 break
             }
@@ -60,7 +60,7 @@ enum TrashDurableFileWriter {
             guard status == 0 else {
                 let code = errno
                 if code != ENOENT {
-                    GSYLog.warning(
+                    AmuxLog.warning(
                         .trash,
                         "\(logContext) temp sweep metadata failed name=\(name) errno=\(code)"
                     )
@@ -74,7 +74,7 @@ enum TrashDurableFileWriter {
             guard removed == 0 else {
                 let code = errno
                 if code != ENOENT {
-                    GSYLog.warning(
+                    AmuxLog.warning(
                         .trash,
                         "\(logContext) temp sweep unlink failed name=\(name) errno=\(code)"
                     )
@@ -88,7 +88,7 @@ enum TrashDurableFileWriter {
         // after a crash. Sweep only while holding the store flock, then durably persist removal
         // through the already anchored parent descriptor before any recovery/read proceeds.
         if removedAny, Darwin.fsync(parentDescriptor) != 0 {
-            GSYLog.warning(.trash, "\(logContext) temp sweep parent fsync failed errno=\(errno)")
+            AmuxLog.warning(.trash, "\(logContext) temp sweep parent fsync failed errno=\(errno)")
         }
     }
 
@@ -110,7 +110,7 @@ enum TrashDurableFileWriter {
         do {
             names = try FileManager.default.contentsOfDirectory(atPath: parent.path)
         } catch {
-            GSYLog.warning(.trash, "\(logContext) temp sweep enumerate failed error=\(error)")
+            AmuxLog.warning(.trash, "\(logContext) temp sweep enumerate failed error=\(error)")
             return
         }
 
@@ -124,7 +124,7 @@ enum TrashDurableFileWriter {
             guard candidate.path.withCString({ Darwin.lstat($0, &metadata) }) == 0 else {
                 let code = errno
                 if code != ENOENT {
-                    GSYLog.warning(
+                    AmuxLog.warning(
                         .trash,
                         "\(logContext) temp sweep metadata failed name=\(name) errno=\(code)"
                     )
@@ -135,7 +135,7 @@ enum TrashDurableFileWriter {
             guard candidate.path.withCString({ Darwin.unlink($0) }) == 0 else {
                 let code = errno
                 if code != ENOENT {
-                    GSYLog.warning(
+                    AmuxLog.warning(
                         .trash,
                         "\(logContext) temp sweep unlink failed name=\(name) errno=\(code)"
                     )
@@ -153,12 +153,12 @@ enum TrashDurableFileWriter {
             Darwin.open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         }
         guard parentDescriptor >= 0 else {
-            GSYLog.warning(.trash, "\(logContext) temp sweep parent open failed errno=\(errno)")
+            AmuxLog.warning(.trash, "\(logContext) temp sweep parent open failed errno=\(errno)")
             return
         }
         defer { Darwin.close(parentDescriptor) }
         if Darwin.fsync(parentDescriptor) != 0 {
-            GSYLog.warning(.trash, "\(logContext) temp sweep parent fsync failed errno=\(errno)")
+            AmuxLog.warning(.trash, "\(logContext) temp sweep parent fsync failed errno=\(errno)")
         }
     }
 
@@ -188,7 +188,7 @@ enum TrashDurableFileWriter {
         do {
             try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         } catch {
-            GSYLog.error(.trash, "\(logContext) parent create failed error=\(error)")
+            AmuxLog.error(.trash, "\(logContext) parent create failed error=\(error)")
             return false
         }
         let temporary = parent.appendingPathComponent(
@@ -198,7 +198,7 @@ enum TrashDurableFileWriter {
             Darwin.open($0, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, S_IRUSR | S_IWUSR)
         }
         guard descriptor >= 0 else {
-            GSYLog.error(.trash, "\(logContext) temp open failed errno=\(errno)")
+            AmuxLog.error(.trash, "\(logContext) temp open failed errno=\(errno)")
             return false
         }
         var renamed = false
@@ -226,14 +226,14 @@ enum TrashDurableFileWriter {
             return true
         }
         guard wroteAll, fsync(descriptor) == 0 else {
-            GSYLog.error(.trash, "\(logContext) write/fsync failed errno=\(errno)")
+            AmuxLog.error(.trash, "\(logContext) write/fsync failed errno=\(errno)")
             return false
         }
         let renameResult = temporary.path.withCString { source in
             url.path.withCString { destination in Darwin.rename(source, destination) }
         }
         guard renameResult == 0 else {
-            GSYLog.error(.trash, "\(logContext) atomic rename failed errno=\(errno)")
+            AmuxLog.error(.trash, "\(logContext) atomic rename failed errno=\(errno)")
             return false
         }
         renamed = true
@@ -242,12 +242,12 @@ enum TrashDurableFileWriter {
             Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         }
         guard parentFD >= 0 else {
-            GSYLog.error(.trash, "\(logContext) parent open failed errno=\(errno)")
+            AmuxLog.error(.trash, "\(logContext) parent open failed errno=\(errno)")
             return false
         }
         defer { Darwin.close(parentFD) }
         guard fsync(parentFD) == 0 else {
-            GSYLog.error(.trash, "\(logContext) parent fsync failed errno=\(errno)")
+            AmuxLog.error(.trash, "\(logContext) parent fsync failed errno=\(errno)")
             return false
         }
         return true
@@ -727,14 +727,14 @@ final class PersistentTrashCompletionJournal: TrashCompletionJournaling, @unchec
     func append(_ entries: [TrashUndoJournalEntry]) -> Bool {
         guard !entries.isEmpty else { return true }
         guard entries.count == Set(entries.map(\.id)).count else {
-            GSYLog.error(.trash, "Trash completion journal duplicate IDs in one append")
+            AmuxLog.error(.trash, "Trash completion journal duplicate IDs in one append")
             return false
         }
         return transaction { envelope in
             var changed = false
             for entry in entries {
                 if let existing = envelope.entries[entry.id], existing != entry {
-                    GSYLog.error(.trash, "Trash completion journal ID collision id=\(entry.id)")
+                    AmuxLog.error(.trash, "Trash completion journal ID collision id=\(entry.id)")
                     return false
                 }
                 if envelope.entries[entry.id] == nil {
@@ -763,7 +763,7 @@ final class PersistentTrashCompletionJournal: TrashCompletionJournaling, @unchec
         guard !ids.isEmpty else { return true }
         return transaction { envelope in
             guard ids.isSubset(of: Set(envelope.entries.keys)) else {
-                GSYLog.error(.trash, "Trash completion journal prune phase lost callback rows")
+                AmuxLog.error(.trash, "Trash completion journal prune phase lost callback rows")
                 return false
             }
             let priorCount = envelope.receiptPrunePendingIDs.count
@@ -805,38 +805,38 @@ final class PersistentTrashCompletionJournal: TrashCompletionJournaling, @unchec
             let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
             let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
             guard size <= 32 * 1_024 * 1_024 else {
-                GSYLog.error(.trash, "Trash completion journal exceeds 32 MiB path=\(fileURL.path)")
+                AmuxLog.error(.trash, "Trash completion journal exceeds 32 MiB path=\(fileURL.path)")
                 return nil
             }
             let data = try Data(contentsOf: fileURL, options: .mappedIfSafe)
             let decoded = try decoder.decode(Envelope.self, from: data)
             guard decoded.schemaVersion == 1 || decoded.schemaVersion == 2 else {
-                GSYLog.error(.trash, "Trash completion journal schema is invalid")
+                AmuxLog.error(.trash, "Trash completion journal schema is invalid")
                 return nil
             }
             var migratedEntries: [String: TrashUndoJournalEntry] = [:]
             var needsOpaqueIDMigration = false
             for (persistedKey, entry) in decoded.entries {
                 guard persistedKey == entry.id || persistedKey == entry.legacyPlaintextID else {
-                    GSYLog.error(.trash, "Trash completion journal key does not match entry")
+                    AmuxLog.error(.trash, "Trash completion journal key does not match entry")
                     return nil
                 }
                 if migratedEntries[entry.id] != nil {
-                    GSYLog.error(.trash, "Trash completion journal migrated ID collision")
+                    AmuxLog.error(.trash, "Trash completion journal migrated ID collision")
                     return nil
                 }
                 migratedEntries[entry.id] = entry
                 needsOpaqueIDMigration = needsOpaqueIDMigration || persistedKey != entry.id
             }
             guard decoded.receiptPrunePendingIDs.isSubset(of: Set(decoded.entries.keys)) else {
-                GSYLog.error(.trash, "Trash completion journal prune phase references missing rows")
+                AmuxLog.error(.trash, "Trash completion journal prune phase references missing rows")
                 return nil
             }
             let migratedPruneIDs = Set(decoded.receiptPrunePendingIDs.compactMap { persistedID in
                 decoded.entries[persistedID]?.id
             })
             guard migratedPruneIDs.count == decoded.receiptPrunePendingIDs.count else {
-                GSYLog.error(.trash, "Trash completion journal prune phase migration failed")
+                AmuxLog.error(.trash, "Trash completion journal prune phase migration failed")
                 return nil
             }
             let envelope = Envelope(
@@ -845,12 +845,12 @@ final class PersistentTrashCompletionJournal: TrashCompletionJournaling, @unchec
                 receiptPrunePendingIDs: migratedPruneIDs
             )
             if (decoded.schemaVersion != 2 || needsOpaqueIDMigration), !persist(envelope) {
-                GSYLog.error(.trash, "Trash completion journal schema migration failed")
+                AmuxLog.error(.trash, "Trash completion journal schema migration failed")
                 return nil
             }
             return envelope
         } catch {
-            GSYLog.error(.trash, "Trash completion journal read failed path=\(fileURL.path) error=\(error)")
+            AmuxLog.error(.trash, "Trash completion journal read failed path=\(fileURL.path) error=\(error)")
             return nil
         }
     }
@@ -863,16 +863,16 @@ final class PersistentTrashCompletionJournal: TrashCompletionJournaling, @unchec
             )
             let data = try encoder.encode(envelope)
             guard data.count <= 32 * 1_024 * 1_024 else {
-                GSYLog.error(.trash, "Trash completion journal encode exceeds 32 MiB")
+                AmuxLog.error(.trash, "Trash completion journal encode exceeds 32 MiB")
                 return false
             }
             guard durableWriter(data, fileURL) else {
-                GSYLog.error(.trash, "Trash completion journal durable write failed path=\(fileURL.path)")
+                AmuxLog.error(.trash, "Trash completion journal durable write failed path=\(fileURL.path)")
                 return false
             }
             return true
         } catch {
-            GSYLog.error(.trash, "Trash completion journal write failed path=\(fileURL.path) error=\(error)")
+            AmuxLog.error(.trash, "Trash completion journal write failed path=\(fileURL.path) error=\(error)")
             return false
         }
     }
@@ -884,19 +884,19 @@ final class PersistentTrashCompletionJournal: TrashCompletionJournaling, @unchec
                 withIntermediateDirectories: true
             )
         } catch {
-            GSYLog.error(.trash, "Trash completion journal lock directory failed error=\(error)")
+            AmuxLog.error(.trash, "Trash completion journal lock directory failed error=\(error)")
             return nil
         }
         let descriptor = lockURL.path.withCString {
             Darwin.open($0, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
         }
         guard descriptor >= 0 else {
-            GSYLog.error(.trash, "Trash completion journal lock open failed errno=\(errno)")
+            AmuxLog.error(.trash, "Trash completion journal lock open failed errno=\(errno)")
             return nil
         }
         defer { Darwin.close(descriptor) }
         guard flock(descriptor, LOCK_EX) == 0 else {
-            GSYLog.error(.trash, "Trash completion journal flock failed errno=\(errno)")
+            AmuxLog.error(.trash, "Trash completion journal flock failed errno=\(errno)")
             return nil
         }
         defer { _ = flock(descriptor, LOCK_UN) }
@@ -937,18 +937,18 @@ final class PersistentTrashCompletionJournal: TrashCompletionJournaling, @unchec
                 withIntermediateDirectories: true
             )
         } catch {
-            GSYLog.error(.trash, "Trash recovery lock directory failed error=\(error)")
+            AmuxLog.error(.trash, "Trash recovery lock directory failed error=\(error)")
             return nil
         }
         let descriptor = recoveryLockURL.path.withCString {
             Darwin.open($0, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
         }
         guard descriptor >= 0 else {
-            GSYLog.error(.trash, "Trash recovery lock open failed errno=\(errno)")
+            AmuxLog.error(.trash, "Trash recovery lock open failed errno=\(errno)")
             return nil
         }
         guard flock(descriptor, LOCK_EX) == 0 else {
-            GSYLog.error(.trash, "Trash recovery flock failed errno=\(errno)")
+            AmuxLog.error(.trash, "Trash recovery flock failed errno=\(errno)")
             Darwin.close(descriptor)
             return nil
         }

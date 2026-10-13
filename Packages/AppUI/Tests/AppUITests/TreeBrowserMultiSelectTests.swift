@@ -3,10 +3,10 @@ import XCTest
 
 /// v1.3.zzzz Phase 4-B：TreeBrowserView 多选 + 批量移废纸篓 行为单测。
 ///
-/// 这组测试只覆盖 **pure helper** 层：[TreeBrowserView.sanitize(paths:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+/// 这组测试只覆盖 **pure helper** 层：[TreeBrowserView.sanitize(paths:)](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
 /// SwiftUI @State 没法从外部反射构造，但 sanitize 是 static + 纯逻辑，
 /// 单独 lock 它就足以保证"批量删时 forbid 路径绝不会进 urls"——
-/// 这是 [batchActionBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 主按钮调用的最后一道闸门。
+/// 这是 [batchActionBar](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 主按钮调用的最后一道闸门。
 @MainActor
 final class TreeBrowserMultiSelectTests: XCTestCase {
 
@@ -34,8 +34,8 @@ final class TreeBrowserMultiSelectTests: XCTestCase {
     // MARK: - sanitize: 安全路径必须保留
 
     func testSanitizeKeepsTempPaths() {
-        let safe1 = "/tmp/cleanmac-batch-test-1"
-        let safe2 = "/tmp/cleanmac-batch-test-2"
+        let safe1 = "/tmp/amuxclean-batch-test-1"
+        let safe2 = "/tmp/amuxclean-batch-test-2"
         let result = TreeBrowserView.sanitize(paths: [safe1, safe2])
         XCTAssertEqual(result, [safe1, safe2])
     }
@@ -51,7 +51,7 @@ final class TreeBrowserMultiSelectTests: XCTestCase {
 
     func testSanitizeMixedKeepsSafeAndDropsForbid() {
         let home = NSHomeDirectory()
-        let safe = "/tmp/cleanmac-mixed-safe"
+        let safe = "/tmp/amuxclean-mixed-safe"
         let result = TreeBrowserView.sanitize(paths: [home, safe, "/", "/System"])
         XCTAssertEqual(result, [safe], "只有 safe 那一条能活下来")
     }

@@ -38,7 +38,7 @@ private actor PruneCompletionProbe {
     }
 }
 
-/// Step 15：补 [pruneDeleted](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1379-L1484)
+/// Step 15：补 [pruneDeleted](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1379-L1484)
 /// 测试死角。
 ///
 /// 该方法是"删除成功后的状态同步核心"——同时清四份内存索引（buckets / dirIndex / fileLeaves
@@ -605,9 +605,9 @@ final class PruneDeletedTests: XCTestCase {
     // MARK: - 不变量 7（v1.5.7）：祖先 dirIndex 必须做减法
 
     /// v1.5.7：用户截图 bug——删除子目录后祖先 size 不更新。
-    /// 修复后 [pruneDeleted](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1416-L1484)
+    /// 修复后 [pruneDeleted](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1416-L1484)
     /// 在删 dirIndex 自身之前，先沿祖先链做反向减法（与
-    /// [ingest L1219-L1231](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1219-L1231)
+    /// [ingest L1219-L1231](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1219-L1231)
     /// 严格对称）。
     func test_pruneDeleted_祖先dirIndex的bytes与fileCount被减回去_截图bug回归() async {
         // 拟态：祖先 /A 持有 5 个孩子总 1000 bytes；/A/build 自己是个 300 bytes/3 文件的目录。
@@ -1266,10 +1266,10 @@ final class PruneDeletedTests: XCTestCase {
 
     // MARK: - v1.5.7 perf：原生 String 路径切分 vs NSString.deletingLastPathComponent
 
-    /// 钉死 [_gsyParentPath](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L2496-L2521)
+    /// 钉死 [_amuxParentPath](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L2496-L2521)
     /// 在 ingest 实际会传入的所有路径形态下，与 NSString.deletingLastPathComponent 完全等价。
     /// 任何未来对该 helper 的进一步优化只要不破这条等价，就能安全落地。
-    func test_gsyParentPath_与NSString_deletingLastPathComponent等价() {
+    func test_amuxParentPath_与NSString_deletingLastPathComponent等价() {
         let cases: [String] = [
             "/Users/zhangsan/work/repo/.git/objects/pack/pack-deadbeef.idx",
             "/Users/zhangsan/Library/Developer/Xcode/DerivedData",
@@ -1282,7 +1282,7 @@ final class PruneDeletedTests: XCTestCase {
         ]
         for p in cases {
             let nsExpected = (p as NSString).deletingLastPathComponent
-            let mine = String._gsyParentPath(of: p)
+            let mine = String._amuxParentPath(of: p)
             XCTAssertEqual(mine, nsExpected, "path=\(p)")
         }
     }

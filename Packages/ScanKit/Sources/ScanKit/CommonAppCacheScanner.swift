@@ -364,7 +364,7 @@ public actor CommonAppCacheScanner {
         var incompletePaths: [IncompletePath] = []
 
         let rules = vendors.filter { $0.category == options.category }
-        GSYLog.info(.scan, "CommonAppCache scan start rules=\(rules.count) timeout=\(options.timeoutSeconds)s")
+        AmuxLog.info(.scan, "CommonAppCache scan start rules=\(rules.count) timeout=\(options.timeoutSeconds)s")
         onProgress(Progress(
             phase: .resolvingCandidates,
             completedGroups: 0,
@@ -383,7 +383,7 @@ public actor CommonAppCacheScanner {
             shouldCancel: shouldCancel
         )
         if resolution.wasCancelled || shouldCancel() {
-            GSYLog.info(.scan, "CommonAppCache scan cancelled during candidate resolution")
+            AmuxLog.info(.scan, "CommonAppCache scan cancelled during candidate resolution")
             onProgress(Progress(
                 phase: .terminal,
                 completedGroups: 0,
@@ -412,7 +412,7 @@ public actor CommonAppCacheScanner {
             onProgress: onProgress
         )
         if measurement.wasCancelled || shouldCancel() {
-            GSYLog.info(.scan, "CommonAppCache scan cancelled while measuring candidate forest")
+            AmuxLog.info(.scan, "CommonAppCache scan cancelled while measuring candidate forest")
             onProgress(Progress(
                 phase: .terminal,
                 completedGroups: measurement.completedGroupCount,
@@ -470,7 +470,7 @@ public actor CommonAppCacheScanner {
             return ScanResult(hits: [], incompletePaths: [], wasCancelled: true)
         }
         let uniqueIncompletePaths = deduplicatedIncompletePaths(incompletePaths)
-        GSYLog.info(.scan, "CommonAppCache scan finished hits=\(sortedHits.count) complete=\(uniqueIncompletePaths.isEmpty) incompletePaths=\(uniqueIncompletePaths.count)")
+        AmuxLog.info(.scan, "CommonAppCache scan finished hits=\(sortedHits.count) complete=\(uniqueIncompletePaths.isEmpty) incompletePaths=\(uniqueIncompletePaths.count)")
         onProgress(Progress(
             phase: .terminal,
             completedGroups: measurement.completedGroupCount,

@@ -6,9 +6,9 @@ import Foundation
 /// - 只回答一个问题：「给定 bundle ID `com.example.foo`，是否命中受保护规则，命中哪一类」
 /// - **不**做路径解析、**不**调用 SafetyEngine、**不**做 IO
 ///
-/// **数据源**：[Resources/protected_bundles.json](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/Resources/protected_bundles.json)
+/// **数据源**：[Resources/protected_bundles.json](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/Resources/protected_bundles.json)
 ///
-/// **使用方**：[SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) `evaluateStandardized` 末尾叠加规则。
+/// **使用方**：[SafetyEngine](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) `evaluateStandardized` 末尾叠加规则。
 ///
 /// **性能契约**：
 /// - 启动期一次性 decode JSON + 分桶预编译，O(n)，n ≈ 350 条规则

@@ -284,7 +284,7 @@ public enum KnownVersionedRoots {
             let evidence = scanResult.incompleteIssues
                 .map { "\($0.path):\($0.reason.rawValue)" }
                 .joined(separator: ",")
-            GSYLog.warning(.scan, "KnownVersionedRoots incomplete evidence=\(evidence)")
+            AmuxLog.warning(.scan, "KnownVersionedRoots incomplete evidence=\(evidence)")
         }
         return scanResult
     }
@@ -309,7 +309,7 @@ public enum KnownVersionedRoots {
         do {
             nsRegex = try NSRegularExpression(pattern: groupingRegex)
         } catch {
-            GSYLog.warning(.scan,
+            AmuxLog.warning(.scan,
                         "KnownVersionedRoots groupingRegex 编译失败，降级为旧行为 ruleID=\(entry.ruleID) pattern=\(groupingRegex)")
             let detection = VersionedRetainScanner.detectWithEvidence(
                 collectionRoot: collectionRoot,

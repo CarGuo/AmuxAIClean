@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/assets/logo.png" width="128" alt="GSYCleanMac" />
+<img src="docs/assets/logo.png" width="128" alt="AmuxAIClean" />
 
-# GSYCleanMac
+# AmuxAIClean
 
 **面向 macOS 的开源、可审计、安全清理管家。**
 
@@ -15,12 +15,14 @@
 [![Tests 9 Packages](https://img.shields.io/badge/tests-9%20packages-brightgreen)](#质量与安全)
 [![i18n zh-Hans EN](https://img.shields.io/badge/i18n-zh--Hans%20%7C%20EN-informational)](#多语言)
 
-[下载最新版](https://github.com/CarGuo/GSYCleanMac/releases/latest) ·
+[下载最新版](https://github.com/CarGuo/AmuxAIClean/releases/latest) ·
 [安装指南](docs/INSTALL.md) ·
 [安全模型](SECURITY.md) ·
 [路线图](docs/ROADMAP_V1.md)
 
 </div>
+
+> **特别鸣谢**：感谢 [https://amux.ai/](https://amux.ai/) 中转平台赞助本项目的开发 Token 与 Apple 开发者账号，这也是本项目命名为 **AmuxAIClean** 的原因。
 
 ---
 
@@ -70,7 +72,7 @@
 
 - 本地扫描磁盘占用、定位大文件、清卸载残留、识别启动项、检测重复文件、扫描开发者构建产物。
 - 一切删除走废纸篓；在废纸篓项目仍存在且身份未变化时可尝试恢复。
-- 可选 Sentinel 默认关闭；用户主动开启后以当前登录用户的非特权 Agent 在本机监听废纸篓和清理热点。当前版本会逐项注销两代历史错误 root 注册，具体记录、迁移、注销与清除边界见 [PRIVACY.md](PRIVACY.md)。
+- 可选 Sentinel 默认关闭；用户主动开启后以当前登录用户的非特权 Agent 在本机监听废纸篓和清理热点。当前版本会自动注销历史错误 root 注册，具体记录、迁移、注销与清除边界见 [PRIVACY.md](PRIVACY.md)。
 - 本地安全判定不依赖网络；App 主动 HTTP 只有 GitHub 更新检查（首次安装默认开启启动检查，
   设置中可关闭）和用户主动启用/触发的 AI 请求。扫描网络卷、云端占位文件或使用 Quick Look
   仍可能由 macOS/存储提供方产生网络读取。
@@ -95,13 +97,13 @@
 
 最快路径：
 
-1. 去 [Releases](https://github.com/CarGuo/GSYCleanMac/releases/latest) 下载已发布的 `.dmg`。
+1. 去 [Releases](https://github.com/CarGuo/AmuxAIClean/releases/latest) 下载已发布的 `.dmg`。
 2. 拖入 Applications，首次启动按系统提示「仍要打开」。
 3. 如需完整扫描，在「系统设置 → 隐私与安全 → 完全磁盘访问」里允许 AmuxAIClean；拒绝后 App 仍可用，但会明确标记结果不完整。
 
 完整安装、TCC 授权、签名校验步骤见 [docs/INSTALL.md](docs/INSTALL.md)。
 
-> 当前公开发布路径只来自维护者本地的 **Developer ID Application 签名 + 最终 DMG 公证**。仓库中的 GitHub Actions CI/release job 均显式停用，不会生成公开产物。当前发布和校验边界见 [docs/RELEASE.md](docs/RELEASE.md)。
+> 当前公开发布路径只来自维护者本地的 **Developer ID Application 签名 + 最终 DMG 公证**。当前发布和校验边界见 [docs/RELEASE.md](docs/RELEASE.md)。
 
 ---
 
@@ -120,15 +122,15 @@
 ## 自己跑起来
 
 ```bash
-git clone git@github.com:CarGuo/GSYCleanMac.git
-cd GSYCleanMac
+git clone git@github.com:CarGuo/AmuxAIClean.git
+cd AmuxAIClean
 ./Scripts/setup_dev.sh
 ```
 
-> **fork 用户必读**：[GSYCleanMac.xcodeproj/project.pbxproj](GSYCleanMac.xcodeproj/project.pbxproj) 当前 Debug 走 `Automatic + Apple Development`，Release 走 `Manual + Developer ID Application: SentenceEnd Inc (W6H34N9728)`。第一次 build 必须改成你自己的 Team / signing 配置。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) "签名配置" 段。
+> **fork 用户必读**：[AmuxAIClean.xcodeproj/project.pbxproj](AmuxAIClean.xcodeproj/project.pbxproj) 当前 Debug 走 `Automatic + Apple Development`，Release 走 `Manual + Developer ID Application: SentenceEnd Inc (W6H34N9728)`。第一次 build 必须改成你自己的 Team / signing 配置。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) "签名配置" 段。
 
 ```bash
-xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build
+xcodebuild -project AmuxAIClean.xcodeproj -scheme AmuxAIClean -configuration Debug build
 ```
 
 完整开发环境、签名、调试技巧见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 与 [CONTRIBUTING.md](CONTRIBUTING.md)。
@@ -155,7 +157,7 @@ xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Deb
 | 文档 | 内容 |
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | 安装、Gatekeeper、TCC 完全磁盘访问授权 |
-| [docs/RELEASE.md](docs/RELEASE.md) | 维护者本地 Developer ID、最终 DMG 公证与 SHA256 校验；仓库 CI/release job 当前停用 |
+| [docs/RELEASE.md](docs/RELEASE.md) | 维护者本地 Developer ID、最终 DMG 公证与 SHA256 校验 |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 开发环境、构建脚本、本地调试 |
 | [docs/DEV_ARTIFACTS_RULES.md](docs/DEV_ARTIFACTS_RULES.md) | 开发者构建产物扫描规则与拓展 |
 | [docs/FEATURE_GAP.md](docs/FEATURE_GAP.md) | 与同类产品 23 维 × 8 家竞品对比 |
@@ -169,7 +171,8 @@ xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Deb
 
 ## 致谢
 
-致谢同类开源项目 [Pearcleaner](https://github.com/alienator88/Pearcleaner) 在 TCC skip / vendor 规则维护上的实践参考。规则文件全部独立清洗，未引用任何竞品源码。
+- 感谢 [https://amux.ai/](https://amux.ai/) 中转平台赞助本项目的开发 Token 与 Apple 开发者账号。
+- 致谢同类开源项目 [Pearcleaner](https://github.com/alienator88/Pearcleaner) 在 TCC skip / vendor 规则维护上的实践参考。规则文件全部独立清洗，未引用任何竞品源码。
 
 ---
 

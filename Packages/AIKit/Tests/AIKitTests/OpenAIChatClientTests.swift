@@ -702,12 +702,12 @@ final class OpenAIChatClientTests: XCTestCase {
         """
         StubURLProtocol.nextResponse = .success(status: 200, data: payload.data(using: .utf8)!)
         let client = makeClient(apiKey: "sk-test-123")
-        _ = try await client.ask(makeInquiry(path: "/Users/guoshuyu/Library/Caches/x"))
+        _ = try await client.ask(makeInquiry(path: "/Users/amuxuser/Library/Caches/x"))
         let req = try XCTUnwrap(StubURLProtocol.observedRequests.first)
         XCTAssertEqual(req.value(forHTTPHeaderField: "Authorization"), "Bearer sk-test-123")
         let bodyData = try XCTUnwrap(StubURLProtocol.observedBodies.first)
         let bodyText = String(data: bodyData, encoding: .utf8) ?? ""
-        XCTAssertFalse(bodyText.contains("guoshuyu"), "出网 body 必须去敏掉用户名，实际:\n\(bodyText)")
+        XCTAssertFalse(bodyText.contains("amuxuser"), "出网 body 必须去敏掉用户名，实际:\n\(bodyText)")
         XCTAssertTrue(bodyText.contains("<USER>"))
     }
 
@@ -793,7 +793,7 @@ final class OpenAIChatClientTests: XCTestCase {
 
     // MARK: - 测试夹具
 
-    private func makeInquiry(path: String = "/Users/guoshuyu/Library/Caches/x",
+    private func makeInquiry(path: String = "/Users/amuxuser/Library/Caches/x",
                              verdict: SafetyVerdict = .safe) -> PathInquiry {
         PathInquiry(path: path, isDirectory: true, bytes: 1, fileCount: 1,
                     modificationDate: nil, verdict: verdict,

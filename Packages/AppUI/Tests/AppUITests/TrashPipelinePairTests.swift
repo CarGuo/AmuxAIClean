@@ -203,7 +203,7 @@ final class TrashPipelinePairTests: XCTestCase {
     }
 
     func test_dryRun返回空trashedPairs() async throws {
-        let dir = NSTemporaryDirectory() + "GSYCleanTrashPair-\(UUID().uuidString)"
+        let dir = NSTemporaryDirectory() + "AmuxAICleanTrashPair-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: dir) }
 
@@ -292,8 +292,8 @@ final class TrashPipelinePairTests: XCTestCase {
     func test_lastOutcome_dryRun_missingPaths聚合() async throws {
         let pipe = TrashPipeline()
         let tempRoot = URL(fileURLWithPath: NSTemporaryDirectory()).standardizedFileURL.path
-        let missing = ["\(tempRoot)/gsyclean-not-exist-1-\(UUID().uuidString)",
-                       "\(tempRoot)/gsyclean-not-exist-2-\(UUID().uuidString)"]
+        let missing = ["\(tempRoot)/amuxclean-not-exist-1-\(UUID().uuidString)",
+                       "\(tempRoot)/amuxclean-not-exist-2-\(UUID().uuidString)"]
         _ = await pipe.moveToTrash(paths: missing, dryRun: true)
 
         let outcome = pipe.snapshotLastOutcome()
@@ -320,7 +320,7 @@ final class TrashPipelinePairTests: XCTestCase {
     /// 用 64 条 /System/... 路径（一定全被 hardForbid 拦），触发 partitionByForbid 大批次处理。
     func test_大批量全forbid不丢拒绝项() async throws {
         let pipe = TrashPipeline()
-        let paths = (0..<64).map { "/System/Library/GsyCleanTestFakePath\($0)" }
+        let paths = (0..<64).map { "/System/Library/AmuxCleanTestFakePath\($0)" }
         let (moved, skipped, _, pairs) = await pipe.moveToTrash(paths: paths, dryRun: false)
         XCTAssertEqual(moved, 0)
         XCTAssertEqual(skipped, paths.count, "64 条 forbid 路径必须全部进入 skipped，分批不能漏拒绝")

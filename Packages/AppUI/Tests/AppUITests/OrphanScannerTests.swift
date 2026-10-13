@@ -493,10 +493,10 @@ final class OrphanScannerTests: XCTestCase {
         let names = resolver.installedAppNames()
         XCTAssertTrue(names.isEmpty)
         XCTAssertTrue(collector.snapshot.isEmpty,
-            "ENOENT 必须静默到 GSYLog.debug，不调用 permissionDeniedHandler")
+            "ENOENT 必须静默到 AmuxLog.debug，不调用 permissionDeniedHandler")
     }
 
-    /// 坏 plist 不应让 .app 名整个丢失，只在 GSYLog.debug 留痕
+    /// 坏 plist 不应让 .app 名整个丢失，只在 AmuxLog.debug 留痕
     func test_DefaultBundleResolver_坏plist不影响app名收集() throws {
         let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("OS-Tests-BadPlist-\(UUID().uuidString)", isDirectory: true)

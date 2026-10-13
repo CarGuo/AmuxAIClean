@@ -3,7 +3,7 @@ import XCTest
 
 /// v1.7 M1 PR-2 + v2026.07.15 safety fix：AppleWorkflow simctl/per-project 专项测试。
 ///
-/// 与 [AppleWorkflowCardsTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/AppleWorkflowCardsTests.swift) 的分工：
+/// 与 [AppleWorkflowCardsTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/AppleWorkflowCardsTests.swift) 的分工：
 /// - AppleWorkflowCardsTests 守 PR-1 6 张静态卡 + PR-2 整体集合契约（9 张卡 / ID 唯一）；
 /// - 本文件聚焦 PR-2 3 张新卡及 Volumes 禁止入口的独立行为：
 ///   - devices 卡：仅当 `~/Library/Developer/CoreSimulator/Devices` 存在才出

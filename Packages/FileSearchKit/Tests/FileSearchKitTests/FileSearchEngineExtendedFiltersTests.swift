@@ -2,7 +2,7 @@ import XCTest
 @testable import FileSearchKit
 
 /// Step 16-A2：date / tags / comment 三类 filter 端到端契约。
-/// 与 [FileSearchEngineTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/FileSearchKit/Tests/FileSearchKitTests/FileSearchEngineTests.swift)
+/// 与 [FileSearchEngineTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/FileSearchKit/Tests/FileSearchKitTests/FileSearchEngineTests.swift)
 /// 同款 fixture 模式：tmp 目录建文件，setxattr 注入 Finder Comment，
 /// URLResourceValues 写 tagNames 模拟 Finder tags。
 final class FileSearchEngineExtendedFiltersTests: XCTestCase {

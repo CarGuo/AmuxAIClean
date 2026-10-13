@@ -1,11 +1,11 @@
 
-[1;36m[regression][0m 杀掉所有残留 GSYCleanMac 进程
+[1;36m[regression][0m 杀掉所有残留 AmuxAIClean 进程
 
 [1;36m[regression][0m xcodebuild Debug 增量构建（签名走 .xcodeproj 里 Automatic + Personal Team）
 --- xcodebuild: WARNING: Using the first of multiple matching destinations:
 { platform:macOS, arch:arm64, id:00006000-0016788C0C23801E, name:My Mac }
 { platform:macOS, arch:x86_64, id:00006000-0016788C0C23801E, name:My Mac }
-/Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift:115:13: warning: variable 'fileManager' was never mutated; consider changing to 'let' constant
+/Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift:115:13: warning: variable 'fileManager' was never mutated; consider changing to 'let' constant
         var fileManager = FileManager.default
         ~~~ ^
         let
@@ -37,5 +37,5 @@
 
 [1;36m[regression][0m 结果汇总
   total=22  PASS=22  FAIL=0  TIMEOUT=0
-[1;32m  ✓ 汇总写入 /Users/guoshuyu/workspace/GSYCleanMac/Tests/Regression/last-run.json[0m
-[1;32m  ✓ 单 case log 在 /Users/guoshuyu/workspace/GSYCleanMac/Tests/Regression/logs/<case>.log[0m
+[1;32m  ✓ 汇总写入 /Users/amuxuser/workspace/AmuxAIClean/Tests/Regression/last-run.json[0m
+[1;32m  ✓ 单 case log 在 /Users/amuxuser/workspace/AmuxAIClean/Tests/Regression/logs/<case>.log[0m

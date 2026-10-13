@@ -1,4 +1,4 @@
-# GSYCleanMac 发版流程（Release）
+# AmuxAIClean 发版流程（Release）
 
 本文档说明当前维护者如何构建 release 产物，以及哪些产物只是签名包、哪些产物已经走完 Apple Notary 公证。
 
@@ -8,12 +8,10 @@
 
 ## 一、当前发布口径
 
-当前项目有一条启用的本地发布路径，以及一份明确停用的 CI 配置：
+当前项目采用维护者本地发布路径：
 
-1. **本地维护者发布路径**：`Scripts/build_release.sh` 使用 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 里的 Release 配置构建。当前 Release 配置是 `Manual + Developer ID Application: SentenceEnd Inc (W6H34N9728)`。
-2. **GitHub Actions release workflow**：当前仅保留配置文件，触发器不监听 tag，且 release job 已显式停用；它目前不会生成任何发布产物。
-
-不要把这两条路径混在一起：`codesign --verify` 只能证明签名结构完整；公开分发闭环还需要 Apple Notary `Accepted`、`stapler staple` 和 `spctl` 校验。
+1. **本地维护者发布路径**：`Scripts/build_release.sh` 使用 [AmuxAIClean.xcodeproj](../AmuxAIClean.xcodeproj) 里的 Release 配置构建。当前 Release 配置是 `Manual + Developer ID Application: SentenceEnd Inc (W6H34N9728)`。
+2. **注意**：`codesign --verify` 只能证明签名结构完整；公开分发闭环还需要 Apple Notary `Accepted`、`stapler staple` 和 `spctl` 校验。
 
 ---
 
@@ -117,13 +115,7 @@ NOTARY_TIMEOUT=45m
 
 ---
 
-## 三、GitHub Actions release 当前停用
-
-当前 [.github/workflows/release.yml](../.github/workflows/release.yml) 只有 `workflow_dispatch` 入口，且 `release-disabled` job 配置为 `if: false`。因此：
-
-- push `v1.x.y` tag **不会**触发 release；
-- 手动 dispatch 也不会执行被停用的 job；
-- 当前公开发布产物只能来自上面的本地 Developer ID + DMG-only Notary 流程。
+## 三、版本 Tag 与源码固定
 
 <!-- v2026.09.20：发布必须先固定完整源码的 tag，禁止构建后才补一个未经对应核对的版本标记。 -->
 完整发布源码通过测试、提交并与工作区基线核对后，先固定版本 tag，再从该 tag 对应的
@@ -138,8 +130,6 @@ git push origin "v${RELEASE_VERSION}"
 
 已推送的版本 tag 不得移动。若源码需要再修改，使用新版本 tag 重新构建和验证。
 tag 只固定源码；公证与实际交互尚未完成时，仍只能按对应验证边界交付测试包。
-
-若未来恢复 CI 发版，必须先移除禁用条件、明确触发策略，并接入 Developer ID 私钥、Notary 凭据及 secrets 管理；恢复前不能把该 workflow 描述为发布来源。
 
 ---
 

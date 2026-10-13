@@ -18,15 +18,15 @@ import LogKit
 ///   `recoveryStates` 是每个 pair 的可变恢复状态。清空废纸篓、路径复用或成功恢复都不能
 ///   删除或改写这次清理事实。
 ///
-/// **设计参考**：[Pearcleaner UndoHistoryManager](file:///Users/guoshuyu/workspace/GSYCleanMac/tmp/competitors/Pearcleaner/Pearcleaner/Logic/UndoHistoryManager.swift)。
+/// **设计参考**：[Pearcleaner UndoHistoryManager](file:///Users/amuxuser/workspace/AmuxAIClean/tmp/competitors/Pearcleaner/Pearcleaner/Logic/UndoHistoryManager.swift)。
 ///
 /// **测试钩子**：`init(storeURL:)` 让 `UndoHistoryStoreTests` 能注入 FixtureFS 临时目录，
 /// 不污染真实用户 Application Support。生产代码用 `UndoHistoryStore.shared`。
 ///
-/// **并发**：`@MainActor`，与 [HeuristicRecorder](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HeuristicRecorder.swift)
+/// **并发**：`@MainActor`，与 [HeuristicRecorder](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/HeuristicRecorder.swift)
 /// 不同——本 store 是 UI 直接消费的（侧栏列表渲染），跑在主 Actor 反而省一层桥接。
 public extension Notification.Name {
-    static let gsyUndoDidRestore = Notification.Name("GSYCleanMac.UndoDidRestore")
+    static let amuxUndoDidRestore = Notification.Name("AmuxAIClean.UndoDidRestore")
 }
 
 @MainActor
@@ -449,7 +449,7 @@ public final class UndoHistoryStore: ObservableObject {
             maxHistoryCount: 10,
             saveStrategy: .background,
             loadStrategy: .background,
-            legacyStoreURL: UndoHistoryStore.defaultLegacyStoreURL()
+            legacyStoreURL: nil
         )
     }
 
@@ -489,7 +489,7 @@ public final class UndoHistoryStore: ObservableObject {
             // records", "bootstrap still running", or a typed storage failure. Record the
             // lifecycle boundary without persisting paths or record contents so field reports can
             // distinguish those states instead of treating every empty projection as user error.
-            GSYLog.info(.trash, "undo_history.bootstrap.start strategy=background")
+            AmuxLog.info(.trash, "undo_history.bootstrap.start strategy=background")
             Task { [weak self] in
                 while let self {
                     let revision = self.persistenceRevision
@@ -538,21 +538,20 @@ public final class UndoHistoryStore: ObservableObject {
         }
     }
 
-    /// v2026.07.18：默认存储路径统一到当前品牌目录
+    /// 默认存储路径统一到
     /// `~/Library/Application Support/AmuxAIClean/UndoHistory.json`。
     ///
-    /// 生产单例的迁移、读取和 JSON 解码都在 utility task 完成。每次启动都通过 fd-bound
-    /// 完整解码旧 `GSYCleanMac/UndoHistory.json`，再与当前品牌 envelope 做单调合并；不能把
-    /// “新文件已存在”误当成旧进程已停止写入的证据。两边的 records、terminal state 与 receipts
-    /// 都不会被另一边的旧快照撤销。legacy 文件始终保留，避免用 pathname unlink 重开替换竞态。
-    /// 迁移失败记录结构化日志并投影 typed storage failure，禁止把失败伪装成空历史。
+    /// 生产单例的读取和 JSON 解码都在 utility task 完成。若测试或显式调用方注入了
+    /// `legacyStoreURL`，则每次启动都通过 fd-bound 完整解码旧历史文件并与当前 envelope 做单调合并；
+    /// 两边的 records、terminal state 与 receipts 都不会被另一边的旧快照撤销，且旧文件始终保留。
+    /// 读取或合并失败记录结构化日志并投影 typed storage failure，禁止把失败伪装成空历史。
     public static func defaultStoreURL() -> URL {
         let support: URL
         if let standardSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first {
-            // Keep the standard Foundation location as the single base for both old and new names.
+            // Keep the standard Foundation location as the single base.
             // The fallback below is only for environments where the directory query fails.
             support = standardSupport
         } else {
@@ -561,17 +560,6 @@ public final class UndoHistoryStore: ObservableObject {
         }
         let base = support.appendingPathComponent("AmuxAIClean", isDirectory: true)
         return base.appendingPathComponent("UndoHistory.json")
-    }
-
-    private static func defaultLegacyStoreURL() -> URL {
-        let support = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Application Support", isDirectory: true)
-        return support
-            .appendingPathComponent("GSYCleanMac", isDirectory: true)
-            .appendingPathComponent("UndoHistory.json")
     }
 
     nonisolated private static func defaultRestoreRoots() -> [String] {
@@ -1568,7 +1556,7 @@ public final class UndoHistoryStore: ObservableObject {
             )
         }
 
-        GSYLog.info(
+        AmuxLog.info(
             .trash,
             "undo_history.legacy_migration.complete mode=monotonicReconcile "
                 + "sourceRetained=true records=\(mergedEnvelope.records.count) "
@@ -1913,7 +1901,7 @@ public final class UndoHistoryStore: ObservableObject {
             parentDirectoryFsyncs: isFirstCreation ? 1 : 0
         )
         ioDiagnosticHook?(io)
-        GSYLog.info(
+        AmuxLog.info(
             .trash,
             "undo_history.wal.commit_io transaction_id=\(transactionID.uuidString) "
                 + "mode=\(io.mode) bytes=\(data.count) canonical_snapshot_full_reads="
@@ -1939,7 +1927,7 @@ public final class UndoHistoryStore: ObservableObject {
             let data = try encoder.encode(value)
             return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         } catch {
-            GSYLog.error(.trash, "undo_history.legacy_migration.marker encode_failed")
+            AmuxLog.error(.trash, "undo_history.legacy_migration.marker encode_failed")
             return nil
         }
     }
@@ -1952,7 +1940,7 @@ public final class UndoHistoryStore: ObservableObject {
             encoder.outputFormatting = [.sortedKeys]
             return try encoder.encode(value)
         } catch {
-            GSYLog.error(.trash, "undo_history.legacy_migration.marker encode_failed")
+            AmuxLog.error(.trash, "undo_history.legacy_migration.marker encode_failed")
             return nil
         }
     }
@@ -2451,7 +2439,7 @@ public final class UndoHistoryStore: ObservableObject {
               fsync(parentDescriptor) == 0 else {
             return .rejected(reason: "marker0PathFence", errno: errno)
         }
-        GSYLog.info(
+        AmuxLog.info(
             .trash,
             "undo_history.legacy_migration.transaction event=bootstrap generation=1 "
                 + "phase=idle active_slot=0 transaction_id=none"
@@ -2595,7 +2583,7 @@ public final class UndoHistoryStore: ObservableObject {
         // directory is fsynced during bootstrap. Advancing a generation mutates only that already
         // durable inode; fsync(markerFD) above is the commit boundary, while another directory
         // fsync per phase added three metadata flushes to every ordinary history write.
-        GSYLog.info(
+        AmuxLog.info(
             .trash,
             "undo_history.legacy_migration.transaction event=advance generation="
                 + "\(nextPayload.generation) phase=\(nextPayload.phase.rawValue) active_slot="
@@ -3154,7 +3142,7 @@ public final class UndoHistoryStore: ObservableObject {
                 }
                 Darwin.close(reserveFD)
             }
-            GSYLog.info(
+            AmuxLog.info(
                 .trash,
                 "undo_history.legacy_migration.transaction event=recover_idle generation="
                     + "\(payload.generation) phase=idle active_slot=\(state.activeSlot) "
@@ -3188,7 +3176,7 @@ public final class UndoHistoryStore: ObservableObject {
                 return "foreign"
             }
         }
-        GSYLog.info(
+        AmuxLog.info(
             .trash,
             "undo_history.legacy_migration.transaction event=recover generation="
                 + "\(payload.generation) phase=\(payload.phase.rawValue) active_slot="
@@ -3336,7 +3324,7 @@ public final class UndoHistoryStore: ObservableObject {
               destinationFingerprint.objectIdentity == expectedIdentity,
               case .present(let stageFingerprint) = stageProbe,
               stageFingerprint.objectIdentity == stagedIdentity else {
-            GSYLog.warning(
+            AmuxLog.warning(
                 .trash,
                 "undo_history.legacy_migration.transaction event=canonical_replacement_preserved "
                     + "generation=\(payload.generation) phase=\(payload.phase.rawValue) "
@@ -3585,7 +3573,7 @@ public final class UndoHistoryStore: ObservableObject {
                 reserveFingerprint: payload.reserveStageFingerprint,
                 reserveVersion: payload.reserveStageVersion
             )
-            GSYLog.warning(
+            AmuxLog.warning(
                 .trash,
                 "undo_history.legacy_migration.transaction event=first_create_external_winner_preserved "
                     + "generation=\(payload.generation) active_slot=\(state.activeSlot) "
@@ -3602,7 +3590,7 @@ public final class UndoHistoryStore: ObservableObject {
             }
         }
 
-        GSYLog.warning(
+        AmuxLog.warning(
             .trash,
             "undo_history.legacy_migration.transaction event=first_create_mismatch_no_rollback "
                 + "generation=\(payload.generation) phase=\(payload.phase.rawValue) active_slot="
@@ -3848,7 +3836,7 @@ public final class UndoHistoryStore: ObservableObject {
         legacy: URL,
         destination: URL
     ) -> LegacyMigrationOutcome {
-        GSYLog.error(
+        AmuxLog.error(
             .trash,
             "undo_history.legacy_migration.rejected stage=\(stage) reason=\(reason) "
                 + "errno=\(code.map(String.init) ?? "none") from=\(legacy.path) "
@@ -3864,7 +3852,7 @@ public final class UndoHistoryStore: ObservableObject {
         guard !filePairs.isEmpty else { return }
         guard filePairs.count <= Self.maximumPairsPerRecord else {
             storageState = .recordRejected(maxPairs: Self.maximumPairsPerRecord)
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "UndoHistory record rejected pairs=\(filePairs.count) max=\(Self.maximumPairsPerRecord)"
             )
@@ -3874,7 +3862,7 @@ public final class UndoHistoryStore: ObservableObject {
         if unverifiedCount > 0 {
             // Fail-closed is intentional: preserving the operation fact is still useful, but a
             // pathname without frozen object identity must never become a restore capability.
-            GSYLog.warning(
+            AmuxLog.warning(
                 .trash,
                 "UndoHistory 写入时无法冻结部分对象身份 source=\(source) unavailable=\(unverifiedCount)/\(filePairs.count)"
             )
@@ -3887,7 +3875,7 @@ public final class UndoHistoryStore: ObservableObject {
         }
         publishHistory(updated)
         saveHistory()
-        GSYLog.info(.trash, "UndoHistory 写入 source=\(source) pairs=\(filePairs.count) total=\(history.count)")
+        AmuxLog.info(.trash, "UndoHistory 写入 source=\(source) pairs=\(filePairs.count) total=\(history.count)")
     }
 
     func setRestoreBeforeRenameHookForTesting(_ hook: (@Sendable () -> Void)?) {
@@ -4063,7 +4051,7 @@ public final class UndoHistoryStore: ObservableObject {
                 saveHistory()
             } else {
                 storageState = .corrupt
-                GSYLog.error(
+                AmuxLog.error(
                     .trash,
                     "UndoHistory restore settlement rejected record metadata conflict id=\(current.id)"
                 )
@@ -4081,14 +4069,14 @@ public final class UndoHistoryStore: ObservableObject {
 
         if !execution.restoredPaths.isEmpty {
             NotificationCenter.default.post(
-                name: .gsyUndoDidRestore,
+                name: .amuxUndoDidRestore,
                 object: self,
                 userInfo: ["paths": execution.restoredPaths]
             )
         }
 
         let result = execution.result
-        GSYLog.info(
+        AmuxLog.info(
             .trash,
             "UndoHistory restoreRecord 完成 restored=\(result.restoredCount) renamed=\(result.renamedCount) skipped=\(result.skippedCount) failure=\(String(describing: result.firstFailure))"
         )
@@ -4566,7 +4554,7 @@ public final class UndoHistoryStore: ObservableObject {
             if code == EEXIST { return .destinationExists }
             if code == ENOENT || code == ENOTDIR { return .sourceMissing }
             let detail = String(cString: strerror(code))
-            GSYLog.error(.trash, "UndoHistory renameatx_np 失败 errno=\(code) detail=\(detail)")
+            AmuxLog.error(.trash, "UndoHistory renameatx_np 失败 errno=\(code) detail=\(detail)")
             return .moveFailed(detail)
         }
 
@@ -4589,7 +4577,7 @@ public final class UndoHistoryStore: ObservableObject {
                     )
                 }
             }
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "UndoHistory post-rename identity mismatch rollback=\(rollback == 0 ? "ok" : "failed") errno=\(errno)"
             )
@@ -5021,7 +5009,7 @@ public final class UndoHistoryStore: ObservableObject {
             publishHistory(loaded.envelope.records)
         }
         storageState = loaded.state
-        GSYLog.info(
+        AmuxLog.info(
             .trash,
             "undo_history.bootstrap.finish state=\(Self.storageStateDiagnosticLabel(loaded.state)) records=\(loaded.envelope.records.count) receipts=\(loaded.envelope.committedJournalIDs.count) migration=\(loaded.requiresPersistenceMigration)"
         )
@@ -5176,7 +5164,7 @@ public final class UndoHistoryStore: ObservableObject {
             encoder.outputFormatting = .prettyPrinted
             return try encoder.encode(envelope)
         } catch {
-            GSYLog.error(.trash, "UndoHistory encode 失败 err=\(error.localizedDescription)")
+            AmuxLog.error(.trash, "UndoHistory encode 失败 err=\(error.localizedDescription)")
             return nil
         }
     }
@@ -5210,7 +5198,7 @@ public final class UndoHistoryStore: ObservableObject {
                 committedJournalIDs: [:]
             )
         } catch {
-            GSYLog.error(.trash, "UndoHistory decode 失败 err=\(error.localizedDescription)")
+            AmuxLog.error(.trash, "UndoHistory decode 失败 err=\(error.localizedDescription)")
             return nil
         }
     }
@@ -5254,7 +5242,7 @@ public final class UndoHistoryStore: ObservableObject {
                 transactionState: transactionState
             )
         case .failed(let reason, let code):
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "UndoHistory frozen read failed reason=\(reason) errno="
                     + "\(code.map(String.init) ?? "none")"
@@ -5317,7 +5305,7 @@ public final class UndoHistoryStore: ObservableObject {
         case .absent:
             return .ready(nil)
         case .rejected(let reason, let code):
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "undo_history.wal.recovery rejected reason=\(reason) errno="
                     + "\(code.map(String.init) ?? "none")"
@@ -5331,7 +5319,7 @@ public final class UndoHistoryStore: ObservableObject {
             case .ready(let recovered), .committed(let recovered):
                 return .ready(recovered)
             case .rejected(let reason, let code):
-                GSYLog.error(
+                AmuxLog.error(
                     .trash,
                     "undo_history.wal.recovery rejected reason=\(reason) errno="
                         + "\(code.map(String.init) ?? "none")"
@@ -5962,7 +5950,7 @@ public final class UndoHistoryStore: ObservableObject {
         // exact canonical bytes read during this flock epoch. A pathname temp-file replacement
         // here would reintroduce the same stale-target overwrite race fixed for legacy migration.
         guard let destinationSnapshot else {
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "undo_history.wal.commit_rejected reason=missing_locked_snapshot errno=none"
             )
@@ -5978,7 +5966,7 @@ public final class UndoHistoryStore: ObservableObject {
         guard destination.isFileURL,
               destination.path.hasPrefix("/"),
               validLeafName(destinationName) else {
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "undo_history.wal.commit_rejected reason=invalid_destination errno=none"
             )
@@ -5994,7 +5982,7 @@ public final class UndoHistoryStore: ObservableObject {
         case .success:
             return PersistedHistory(envelope: envelope, state: .ready)
         case .failure(let failure):
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "undo_history.wal.commit_rejected reason=\(failure.reason) errno="
                     + "\(failure.errno.map(String.init) ?? "none")"
@@ -6012,7 +6000,7 @@ public final class UndoHistoryStore: ObservableObject {
         guard destination.isFileURL,
               destination.path.hasPrefix("/"),
               validLeafName(destinationName) else {
-            GSYLog.error(.trash, "undo_history.lock rejected reason=invalid_destination errno=none")
+            AmuxLog.error(.trash, "undo_history.lock rejected reason=invalid_destination errno=none")
             return nil
         }
         let parent = destination.deletingLastPathComponent()
@@ -6022,7 +6010,7 @@ public final class UndoHistoryStore: ObservableObject {
                 withIntermediateDirectories: true
             )
         } catch {
-            GSYLog.error(.trash, "UndoHistory lock directory 失败 err=\(error.localizedDescription)")
+            AmuxLog.error(.trash, "UndoHistory lock directory 失败 err=\(error.localizedDescription)")
             return nil
         }
         let parentDescriptor = parent.path.withCString {
@@ -6030,7 +6018,7 @@ public final class UndoHistoryStore: ObservableObject {
         }
         guard parentDescriptor >= 0 else {
             let code = errno
-            GSYLog.error(.trash, "undo_history.lock rejected reason=parent_open errno=\(code)")
+            AmuxLog.error(.trash, "undo_history.lock rejected reason=parent_open errno=\(code)")
             return nil
         }
         defer { Darwin.close(parentDescriptor) }
@@ -6039,7 +6027,7 @@ public final class UndoHistoryStore: ObservableObject {
             lockName: destinationName + ".lock"
         ) else {
             let code = errno
-            GSYLog.error(.trash, "undo_history.lock rejected reason=unsafe_lock errno=\(code)")
+            AmuxLog.error(.trash, "undo_history.lock rejected reason=unsafe_lock errno=\(code)")
             return nil
         }
         defer { Darwin.close(descriptor) }

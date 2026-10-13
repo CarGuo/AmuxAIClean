@@ -255,7 +255,7 @@ public final class SmartCareSession: ObservableObject {
             self?.objectWillChange.send()
         }
         self.undoRestoreCancellable = NotificationCenter.default
-            .publisher(for: .gsyUndoDidRestore)
+            .publisher(for: .amuxUndoDidRestore)
             .sink { [weak self] notification in
                 guard let paths = notification.userInfo?["paths"] as? [String],
                       !paths.isEmpty else { return }
@@ -496,12 +496,12 @@ public final class SmartCareSession: ObservableObject {
             } catch let failure as SmartCareScanFailure {
                 guard self.scanGeneration == generation else { return }
                 self.finishedAt = Date()
-                GSYLog.error(.scan, "Smart Care scan failed: \(failure.diagnosticDescription)")
+                AmuxLog.error(.scan, "Smart Care scan failed: \(failure.diagnosticDescription)")
                 self.care.fail(.scanFailed(failure.detail))
             } catch {
                 guard self.scanGeneration == generation else { return }
                 self.finishedAt = Date()
-                GSYLog.error(.scan, "Smart Care scan failed: \(error.localizedDescription)")
+                AmuxLog.error(.scan, "Smart Care scan failed: \(error.localizedDescription)")
                 self.care.fail(.scanFailed(.unexpectedFailure))
             }
 
@@ -894,7 +894,7 @@ public final class SmartCareSession: ObservableObject {
                 continue
             case .accept(let isComplete):
                 if !isComplete {
-                    GSYLog.notice(
+                    AmuxLog.notice(
                         .scan,
                         "Smart Care accepts partial stage category=\(snapshot.categoryID) incompletePaths=\(scanCoordinator.incompleteScanPaths.count)"
                     )

@@ -72,7 +72,7 @@ public actor WhitelistStore {
         let key = normalized.lowercased()
         inMemoryEntries[key] = Entry(path: normalized, reason: reason)
         await persist()
-        GSYLog.info(.safety, "Whitelist + path=\(normalized) reason=\(reason ?? "<nil>")")
+        AmuxLog.info(.safety, "Whitelist + path=\(normalized) reason=\(reason ?? "<nil>")")
     }
 
     /// 取消加白。
@@ -84,7 +84,7 @@ public actor WhitelistStore {
         let removed = inMemoryEntries.removeValue(forKey: key) != nil
         if removed {
             await persist()
-            GSYLog.info(.safety, "Whitelist - path=\(normalized)")
+            AmuxLog.info(.safety, "Whitelist - path=\(normalized)")
         }
         return removed
     }
@@ -170,9 +170,9 @@ public actor WhitelistStore {
                 )
             }
             inMemoryEntries = loadedEntries
-            GSYLog.info(.safety, "Whitelist loaded count=\(inMemoryEntries.count)")
+            AmuxLog.info(.safety, "Whitelist loaded count=\(inMemoryEntries.count)")
         } catch {
-            GSYLog.warning(.safety, "Whitelist 加载失败 path=\(url.path) err=\(error)")
+            AmuxLog.warning(.safety, "Whitelist 加载失败 path=\(url.path) err=\(error)")
         }
     }
 
@@ -190,7 +190,7 @@ public actor WhitelistStore {
             let data = try encoder.encode(snapshot)
             try data.write(to: url, options: .atomic)
         } catch {
-            GSYLog.warning(.safety, "Whitelist 持久化失败 err=\(error)")
+            AmuxLog.warning(.safety, "Whitelist 持久化失败 err=\(error)")
         }
     }
 
@@ -211,7 +211,7 @@ public actor WhitelistStore {
         switch SymbolicLinkResolver.resolve(SafetyEngine.stripDataVolumePrefix(path)) {
         case .success(let resolved): return normalize(resolved)
         case .failure(let failure):
-            GSYLog.debug(.safety, "whitelist resolution failed path=\(path) failure=\(failure)")
+            AmuxLog.debug(.safety, "whitelist resolution failed path=\(path) failure=\(failure)")
             return nil
         }
     }

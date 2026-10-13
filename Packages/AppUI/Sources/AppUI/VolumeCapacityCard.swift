@@ -26,8 +26,8 @@ struct VolumeCapacityDisplayValues: Sendable, Equatable {
 /// v1.3：sidebar 底部固定的"卷容量条"。
 ///
 /// 类似 macOS 系统设置 → 通用 → 储存空间 顶部那条彩色堆叠条。
-/// 数据源：[VolumeCapacity.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/VolumeCapacity.swift)
-/// 经由 [ScanCoordinator.refreshVolumeCapacity()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+/// 数据源：[VolumeCapacity.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/VolumeCapacity.swift)
+/// 经由 [ScanCoordinator.refreshVolumeCapacity()](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
 /// 在启动 / 扫描完成 / 删除完成 三个时机刷新。
 ///
 /// 显示四个段（v1.6 / 2026-06 由"三段"升级为"四段"，对齐业界 CleanMyMac / DaisyDisk）：
@@ -57,10 +57,10 @@ public struct VolumeCapacityCard: View {
     @State private var isReclaimableInfoPresented = false
 
     let snapshot: VolumeCapacity.Snapshot?
-    /// 当前会话本 App 识别到的"可直接安全清理"字节数。来自 [ScanSnapshot.safeBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L375-L377)。
+    /// 当前会话本 App 识别到的"可直接安全清理"字节数。来自 [ScanSnapshot.safeBytes](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L375-L377)。
     /// 0 时不渲染绿色段。
     let safeBytes: Int64
-    /// 当前会话识别到的"需要用户确认才能清"字节数。来自 [ScanSnapshot.confirmBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L380-L382)。
+    /// 当前会话识别到的"需要用户确认才能清"字节数。来自 [ScanSnapshot.confirmBytes](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L380-L382)。
     /// 0 时不渲染黄色段；非 0 时单独成段提示"还有 X 待你确认"。
     let confirmBytes: Int64
     /// v1.3 review-fix Must1：snapshot == nil 时（卷容量探测失败 / 卷被 unmount 重挂瞬间）

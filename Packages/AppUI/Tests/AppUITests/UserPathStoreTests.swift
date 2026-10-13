@@ -27,7 +27,7 @@ final class UserPathStoreTests: XCTestCase {
     }
 
     private func freshSuite(_ name: String = #function) -> String {
-        let s = "GSYCleanMac.tests.UserPathStore.\(name).\(UUID().uuidString)"
+        let s = "AmuxAIClean.tests.UserPathStore.\(name).\(UUID().uuidString)"
         UserDefaults().removePersistentDomain(forName: s)
         return s
     }

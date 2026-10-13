@@ -637,7 +637,7 @@ public actor PortCleanerScanner {
                     )
                     continue
                 case .failed(let code):
-                    GSYLog.warning(
+                    AmuxLog.warning(
                         .operation,
                         "port termination submission rejected pid=\(pid) errno=\(code)"
                     )

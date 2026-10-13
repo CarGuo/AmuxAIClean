@@ -1,4 +1,4 @@
-# GSYCleanMac v1.0 ROADMAP（功能对齐 plan）
+# AmuxAIClean v1.0 ROADMAP（功能对齐 plan）
 
 > 本文件是 v1.0 范围的**最终结论**，由用户在 R-5 决策点上拍板。
 > 上游依据：[docs/FEATURE_GAP.md](./FEATURE_GAP.md)（8 维度 × 11 家竞品矩阵）。
@@ -14,7 +14,7 @@
 | P1 提前到 v1.0 | **3 项**：按列排序 + size 阈值过滤、整盘扫描入口、键盘导航 j/k/Enter/Delete |
 | P2 可视化 | **v1.0 不做**，留 v1.1+ |
 | 隐藏文件默认值 | **OFF + 显式开关** |
-| 额外 | 用 `/Users/guoshuyu/Desktop/mac-logo.png` 替换 AppIcon |
+| 额外 | 用 `/Users/amuxuser/Desktop/mac-logo.png` 替换 AppIcon |
 
 不做（明确划走）：
 - treemap / sunburst 可视化（v1.1+）
@@ -30,12 +30,12 @@
 **改动文件**：
 - 新建 `Resources/Assets.xcassets/AppIcon.appiconset/Contents.json`
 - 新建 `Resources/Assets.xcassets/AppIcon.appiconset/icon_{16,32,64,128,256,512,1024}{,@2x}.png`（10 张）
-- 在原生 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 接入 `Assets.xcassets` 资源 + `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon`
+- 在原生 [AmuxAIClean.xcodeproj](../AmuxAIClean.xcodeproj) 接入 `Assets.xcassets` 资源 + `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon`
 
 **验收**：
-1. [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 可直接打开
+1. [AmuxAIClean.xcodeproj](../AmuxAIClean.xcodeproj) 可直接打开
 2. `xcodebuild` 成功
-3. `open build/.../GSYCleanMac.app` 后 Dock 图标 = 垃圾桶+扫帚
+3. `open build/.../AmuxAIClean.app` 后 Dock 图标 = 垃圾桶+扫帚
 4. Finder 看 .app 包预览图也是新 logo
 
 ---
@@ -72,10 +72,10 @@
  - 复用 BulkScanner，权限被拒走 PermissionDeniedBanner
 - 新建 [Packages/AppUI/Sources/AppUI/SettingsScene.swift](../Packages/AppUI/Sources/AppUI/SettingsScene.swift)
  - `Settings { Form { Toggle("显示隐藏文件"), Stepper("大文件阈值 MB"), List(自定义路径) } }`
- - 在 [App/GSYCleanMacApp.swift](../App/GSYCleanMacApp.swift) 接 `Settings { SettingsScene() }`（Cmd, 自动可用）
+ - 在 [App/AmuxAICleanApp.swift](../App/AmuxAICleanApp.swift) 接 `Settings { SettingsScene() }`（Cmd, 自动可用）
 
 **验收**：
-1. 启动 app -> 菜单 GSYCleanMac -> 设置（Cmd,）能打开
+1. 启动 app -> 菜单 AmuxAIClean -> 设置（Cmd,）能打开
 2. 点 + 添加路径 -> 选 ~/.cursor -> 列表出现
 3. 拖 ~/Documents/某 100G 文件夹 进窗口 -> 自动开扫
 4. 设置开 "显示隐藏文件" -> 重扫 ~/ -> 出现 .cursor/.npm/.cache 等
@@ -139,8 +139,8 @@
 
 **步骤**：
 1. `swift test` × 6 包全过（≥113 + 新增测试）
-2. `xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac` BUILD SUCCEEDED
-3. `open build/.../GSYCleanMac.app` 启动
+2. `xcodebuild -project AmuxAIClean.xcodeproj -scheme AmuxAIClean` BUILD SUCCEEDED
+3. `open build/.../AmuxAIClean.app` 启动
 4. 手工跑 [docs/V1_SMOKE.md](./V1_SMOKE.md)（T6 时同步建）冒烟脚本：
  - [Y] Dock 图标是新 logo
  - [Y] Cmd, 打开设置

@@ -5,7 +5,7 @@ import Foundation
 /// 设计原则：
 /// - **零外部依赖**：仅 Foundation，便于在任何 SPM consumer 里直接加 product。
 /// - **流式输出**：`AsyncStream<FileSearchResult>` 让 UI 立刻能渲染第一个结果（参考
-///   [Pearcleaner FileSearchLogic L109](file:///Users/guoshuyu/workspace/GSYCleanMac/tmp/competitors/Pearcleaner/Pearcleaner/Logic/FileSearch/FileSearchLogic.swift#L109)
+///   [Pearcleaner FileSearchLogic L109](file:///Users/amuxuser/workspace/AmuxAIClean/tmp/competitors/Pearcleaner/Pearcleaner/Logic/FileSearch/FileSearchLogic.swift#L109)
 ///   batchSize=1 的"立即出第一个结果"语义）。
 /// - **`Sendable` + actor cancel**：`AsyncStream` 自带 cancel；engine 不持有可变状态，
 ///   每次搜索作为独立 task 跑，方便 SwiftUI 调用方一改 query 就 cancel 上一次。
@@ -303,7 +303,7 @@ public struct FileSearchEngine: Sendable {
 
     /// 读取 Finder Comment：存储在 xattr `com.apple.metadata:kMDItemFinderComment`，
     /// value 是一个 binary plist 包裹的 String。参考
-    /// [Pearcleaner getFinderComment L473-L495](file:///Users/guoshuyu/workspace/GSYCleanMac/tmp/competitors/Pearcleaner/Pearcleaner/Logic/FileSearch/FileSearchLogic.swift#L473-L495)
+    /// [Pearcleaner getFinderComment L473-L495](file:///Users/amuxuser/workspace/AmuxAIClean/tmp/competitors/Pearcleaner/Pearcleaner/Logic/FileSearch/FileSearchLogic.swift#L473-L495)
     /// 此函数 internal-only（同模块测试可访问）以便 unit-test 直接验证。
     static func readFinderComment(url: URL) -> String {
         let attr = "com.apple.metadata:kMDItemFinderComment"

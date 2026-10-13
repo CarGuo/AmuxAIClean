@@ -5,7 +5,7 @@ import LogKit
 
 /// M5 / 2026-06：AI 询问结果展示 Sheet。
 ///
-/// 触发：用户在 [RowView contextMenu](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowView.swift)
+/// 触发：用户在 [RowView contextMenu](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowView.swift)
 /// 点击"问 AI"。
 ///
 /// 状态机：
@@ -264,7 +264,7 @@ struct AIAdviceSheet: View {
             state = .failure(.insecureBaseURL(scheme: scheme, host: host))
             return
         } catch {
-            GSYLog.warning(
+            AmuxLog.warning(
                 .operation,
                 "AI advice endpoint validation failed kind=unexpected"
             )
@@ -318,13 +318,13 @@ struct AIAdviceSheet: View {
             // v2026.07.18：OpenAIChatClient.Error 不再携带 body；UI 只投影 status。
             state = .failure(.http(status: status))
         } catch let OpenAIChatClient.Error.transport(domain, code) {
-            GSYLog.warning(
+            AmuxLog.warning(
                 .operation,
                 "AI advice transport failed domain=\(domain) code=\(code)"
             )
             state = .failure(.transport)
         } catch OpenAIChatClient.Error.decoding {
-            GSYLog.warning(.operation, "AI advice request failed kind=decoding")
+            AmuxLog.warning(.operation, "AI advice request failed kind=decoding")
             state = .failure(.unexpected)
         } catch OpenAIChatClient.Error.missingAPIKey {
             state = .failure(.missingAPIKey)
@@ -333,7 +333,7 @@ struct AIAdviceSheet: View {
         } catch OpenAIChatClient.Error.insecureBaseURL(let scheme, let host) {
             state = .failure(.insecureBaseURL(scheme: scheme, host: host))
         } catch {
-            GSYLog.warning(
+            AmuxLog.warning(
                 .operation,
                 "AI advice request failed kind=unexpected"
             )

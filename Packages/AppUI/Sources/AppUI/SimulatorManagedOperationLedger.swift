@@ -555,7 +555,7 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
             return nil
         } catch {
             let diagnostic = error as NSError
-            GSYLog.error(
+            AmuxLog.error(
                 .app,
                 "simulator.managed_ledger.read_failed stage=boundedRead reason=unexpected domain=\(diagnostic.domain) code=\(diagnostic.code) maxBytes=\(storageLimits.maximumBytes) path=\(fileURL.path)"
             )
@@ -656,7 +656,7 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
                 }
                 return envelope
             case let unsupported:
-                GSYLog.error(
+                AmuxLog.error(
                     .app,
                     "simulator.managed_ledger.read_failed stage=validate reason=unsupportedSchema schema=\(unsupported) bytes=\(data.count) path=\(fileURL.path)"
                 )
@@ -664,7 +664,7 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
             }
         } catch {
             let diagnostic = error as NSError
-            GSYLog.error(
+            AmuxLog.error(
                 .app,
                 "simulator.managed_ledger.read_failed stage=decode reason=malformed domain=\(diagnostic.domain) code=\(diagnostic.code) bytes=\(data.count) path=\(fileURL.path)"
             )
@@ -674,21 +674,21 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
 
     private func persist(_ envelope: Envelope) -> Bool {
         guard envelope.schemaVersion == 4 else {
-            GSYLog.error(
+            AmuxLog.error(
                 .app,
                 "simulator.managed_ledger.write_rejected stage=validate reason=unsupportedSchema schema=\(envelope.schemaVersion) path=\(fileURL.path)"
             )
             return false
         }
         guard envelope.records.count <= storageLimits.maximumRecordCount else {
-            GSYLog.error(
+            AmuxLog.error(
                 .app,
                 "simulator.managed_ledger.write_rejected stage=validate reason=recordLimit recordCount=\(envelope.records.count) maxRecords=\(storageLimits.maximumRecordCount) path=\(fileURL.path)"
             )
             return false
         }
         guard Self.isValidEnvelope(envelope) else {
-            GSYLog.error(
+            AmuxLog.error(
                 .app,
                 "simulator.managed_ledger.write_rejected stage=validate reason=invalidEnvelope recordCount=\(envelope.records.count) path=\(fileURL.path)"
             )
@@ -700,14 +700,14 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
             data = try encoder.encode(envelope)
         } catch {
             let diagnostic = error as NSError
-            GSYLog.error(
+            AmuxLog.error(
                 .app,
                 "simulator.managed_ledger.write_failed stage=encode reason=serialization domain=\(diagnostic.domain) code=\(diagnostic.code) recordCount=\(envelope.records.count) path=\(fileURL.path)"
             )
             return false
         }
         guard data.count <= storageLimits.maximumBytes else {
-            GSYLog.error(
+            AmuxLog.error(
                 .app,
                 "simulator.managed_ledger.write_rejected stage=encode reason=byteLimit bytes=\(data.count) maxBytes=\(storageLimits.maximumBytes) recordCount=\(envelope.records.count) path=\(fileURL.path)"
             )
@@ -723,7 +723,7 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
             return true
         } catch {
             let diagnostic = error as NSError
-            GSYLog.error(
+            AmuxLog.error(
                 .app,
                 "simulator.managed_ledger.write_failed stage=atomicWrite reason=io domain=\(diagnostic.domain) code=\(diagnostic.code) path=\(fileURL.path)"
             )
@@ -733,7 +733,7 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
 
     private func validateRecordCount(_ count: Int, schemaVersion: Int) -> Bool {
         guard count <= storageLimits.maximumRecordCount else {
-            GSYLog.error(
+            AmuxLog.error(
                 .app,
                 "simulator.managed_ledger.read_failed stage=validate reason=recordLimit schema=\(schemaVersion) recordCount=\(count) maxRecords=\(storageLimits.maximumRecordCount) path=\(fileURL.path)"
             )
@@ -743,7 +743,7 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
     }
 
     private func logInvalidEnvelope(schemaVersion: Int, recordCount: Int) {
-        GSYLog.error(
+        AmuxLog.error(
             .app,
             "simulator.managed_ledger.read_failed stage=validate reason=invalidEnvelope schema=\(schemaVersion) recordCount=\(recordCount) path=\(fileURL.path)"
         )
@@ -788,7 +788,7 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
             details = ""
         }
         let code = error.posixErrorCode.map(String.init) ?? "none"
-        GSYLog.error(
+        AmuxLog.error(
             .app,
             "simulator.managed_ledger.read_failed stage=\(stage) reason=\(reason) domain=\(error.posixErrorCode == nil ? "none" : NSPOSIXErrorDomain) code=\(code) maxBytes=\(storageLimits.maximumBytes)\(details) path=\(fileURL.path)"
         )
@@ -838,19 +838,19 @@ public final class PersistentSimulatorManagedOperationLedger: SimulatorManagedOp
                 withIntermediateDirectories: true
             )
         } catch {
-            GSYLog.warning(.app, "Simulator ledger lock directory failed: \(error)")
+            AmuxLog.warning(.app, "Simulator ledger lock directory failed: \(error)")
             return nil
         }
         let descriptor = lockFileURL.path.withCString {
             Darwin.open($0, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
         }
         guard descriptor >= 0 else {
-            GSYLog.warning(.app, "Simulator ledger lock open failed errno=\(errno)")
+            AmuxLog.warning(.app, "Simulator ledger lock open failed errno=\(errno)")
             return nil
         }
         defer { Darwin.close(descriptor) }
         guard flock(descriptor, LOCK_EX) == 0 else {
-            GSYLog.warning(.app, "Simulator ledger flock failed errno=\(errno)")
+            AmuxLog.warning(.app, "Simulator ledger flock failed errno=\(errno)")
             return nil
         }
         defer { _ = flock(descriptor, LOCK_UN) }

@@ -1,4 +1,4 @@
-# 贡献指南 - GSYCleanMac
+# 贡献指南 - AmuxAIClean
 
 感谢愿意贡献。这份文档说明开 PR 前必须做的事、commit 规范、PR 红线。在写代码前请先读：
 
@@ -13,11 +13,11 @@
 - macOS 15 Sequoia 或更高（开发机工具链要求；产品部署下限为 macOS 13.5）
   <!-- v2026.07.16：保留 Swift 6/Xcode 16 的统一开发环境，同时避免把它误写成用户安装下限。 -->
 - Xcode 16+
-- Homebrew（可选，只在装 `xcbeautify` 装饰输出或 `create-dmg` 打 DMG 时需要；**不再需要 xcodegen** —— v1.5.x 起原生 [GSYCleanMac.xcodeproj](GSYCleanMac.xcodeproj) 已入仓）
+- Homebrew（可选，只在装 `xcbeautify` 装饰输出或 `create-dmg` 打 DMG 时需要；**不再需要 xcodegen** —— v1.5.x 起原生 [AmuxAIClean.xcodeproj](AmuxAIClean.xcodeproj) 已入仓）
 
 ```bash
-git clone https://github.com/CarGuo/GSYCleanMac.git
-cd GSYCleanMac
+git clone https://github.com/CarGuo/AmuxAIClean.git
+cd AmuxAIClean
 ./Scripts/setup_dev.sh
 ```
 
@@ -39,7 +39,7 @@ cd GSYCleanMac
 5. 跑通 xcodebuild Debug：
 
    ```bash
-   xcodebuild -scheme GSYCleanMac -configuration Debug \
+   xcodebuild -scheme AmuxAIClean -configuration Debug \
      CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO \
      -derivedDataPath build/dd build
    ```
@@ -118,7 +118,7 @@ feat(scankit): BulkScanner 多 worker 并行（4~6 worker work-stealing）
 ## 环境
 - macOS 版本：例如 15.2
 - Mac 型号：例如 M2 Pro
-- GSYCleanMac 版本：例如 v1.1.0
+- AmuxAIClean 版本：例如 v1.1.0
 - 是否授予完全磁盘访问：是 / 否
 
 ## 复现步骤

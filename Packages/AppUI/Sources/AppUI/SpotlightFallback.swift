@@ -2,7 +2,7 @@ import Foundation
 
 /// Step 11A / 2026-06：Spotlight 残留补刀。
 ///
-/// 背景：[AppUninstaller.candidatesAsync](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppUninstaller.swift)
+/// 背景：[AppUninstaller.candidatesAsync](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AppUninstaller.swift)
 /// 走 11 个用户级 + 1 个系统级 search root 第一层目录扫描；
 /// 但有些 app 的残留落在**非典型位置**（比如某厂商把数据写在
 /// `~/Library/Mobile Documents/iCloud~xxx`、`~/Documents/<AppName>` 等），
@@ -22,7 +22,7 @@ import Foundation
 /// 4. **Typed terminal evidence**：空结果是一次成功查询；启动失败、超时与取消分别保留，
 ///    调用方不能再把它们伪装成“完整且没有命中”。
 ///
-/// 决策来源：[docs/AUDIT_2026_06.md L416-L417](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/AUDIT_2026_06.md#L416-L417)。
+/// 决策来源：[docs/AUDIT_2026_06.md L416-L417](file:///Users/amuxuser/workspace/AmuxAIClean/docs/AUDIT_2026_06.md#L416-L417)。
 
 /// Spotlight 查询抽象层。生产实现走 NSMetadataQuery，测试实现走内存 fixture。
 public enum SpotlightProbeFailure: Hashable, Sendable {
@@ -188,7 +188,7 @@ public extension SpotlightProbing {
 /// 默认实现：NSMetadataQuery（全用户域 + 本地索引）。
 ///
 /// 仅在 macOS sandbox=false 时能查到 user-domain 完整结果；sandbox=true 时
-/// 受限于 entitlements。本 App 当前 sandbox=false（详见 GSYCleanMac.entitlements）。
+/// 受限于 entitlements。本 App 当前 sandbox=false（详见 AmuxAIClean.entitlements）。
 public final class DefaultSpotlightProbe: SpotlightProbing, @unchecked Sendable {
     public init() {}
 

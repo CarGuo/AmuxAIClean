@@ -3,16 +3,16 @@ import Foundation
 
 /// M5 / 2026-06：AI 模块用户配置（按需触发版）。
 ///
-/// 设计要点（与 [AppSettings](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift) 风格保持一致）：
+/// 设计要点（与 [AppSettings](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AppSettings.swift) 风格保持一致）：
 /// 1. 走 `UserDefaults`（生产用 `.standard`，单测可注入隔离 suite）；
-/// 2. **API Key 不在这里**——由 [KeychainAPIKeyStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/KeychainAPIKeyStore.swift)
+/// 2. **API Key 不在这里**——由 [KeychainAPIKeyStore](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/KeychainAPIKeyStore.swift)
 ///    独立托管走 macOS Keychain，绝不入 UserDefaults / plist；
 /// 3. **enabled 默认 OFF**——任何 UI 入口在 `enabled == false` 时都必须隐藏，
 ///    保证整 App 在用户没主动启用 AI 时**零网络请求**；
 /// 4. `baseURL` 默认 OpenAI 官方端点；兼容任何 OpenAI 协议端（Azure / DeepSeek / OpenRouter /
 ///    Ollama `http://localhost:11434/v1` / vLLM / 通义），无需额外字段。
 ///
-/// 决策来源：本仓库 [docs/MOLE_ALIGNMENT.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/MOLE_ALIGNMENT.md) §M5
+/// 决策来源：本仓库 [docs/MOLE_ALIGNMENT.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/MOLE_ALIGNMENT.md) §M5
 /// "按需触发 AI"路线——不做缓存 / 不做 rate limiter / 不做流式 SSE，
 /// 把复杂度降到"用户点 = 一次 HTTP = 一张卡片"。
 /// v2026.07.16：为 macOS 13.5 兼容，状态发布统一使用 Combine；持久化后端仍不参与 UI 刷新。
@@ -41,14 +41,14 @@ public final class AISettings: ObservableObject {
 
     // MARK: - 字段
 
-    /// AI 总开关。默认 `false`——关闭时 UI 入口（[RowView contextMenu "问 AI"](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowView.swift)）必须隐藏；
+    /// AI 总开关。默认 `false`——关闭时 UI 入口（[RowView contextMenu "问 AI"](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowView.swift)）必须隐藏；
     /// 任何 AI 网络请求路径都 short-circuit。
     @Published public var enabled: Bool {
         didSet { defaults.set(enabled, forKey: Keys.enabled) }
     }
 
     /// OpenAI 协议 base URL。
-    /// 不强制结尾斜杠；[OpenAIChatClient](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift)
+    /// 不强制结尾斜杠；[OpenAIChatClient](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift)
     /// 内部统一 append `/v1/chat/completions`。
     @Published public var baseURL: String {
         didSet { defaults.set(baseURL, forKey: Keys.baseURL) }

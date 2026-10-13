@@ -1,8 +1,8 @@
 import XCTest
 @testable import AppUI
 
-/// 测试目的：覆盖 [ScanCoordinator.directChildren(of:sortedBy:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L890)
-/// 的**排序逻辑**——即只关心给一组 TreeRow 按 [TreeSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L150)
+/// 测试目的：覆盖 [ScanCoordinator.directChildren(of:sortedBy:)](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L890)
+/// 的**排序逻辑**——即只关心给一组 TreeRow 按 [TreeSortKey](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L150)
 /// 排出来的顺序对不对，与 deepIndex on/off 的 fetch 策略无关。
 ///
 /// 为什么所有 `ScanCoordinator(enableTreeDeepIndex: true)`：
@@ -52,7 +52,7 @@ final class TreeBrowserSortTests: XCTestCase {
     /// 三层 fixture：root/A(10K)/{big.bin 8K, small.bin 2K} + root/B(4K)/m.bin
     private func makeFixture() throws -> URL {
         let fm = FileManager.default
-        let raw = NSTemporaryDirectory() + "GSYCleanTreeSort-\(UUID().uuidString)"
+        let raw = NSTemporaryDirectory() + "AmuxAICleanTreeSort-\(UUID().uuidString)"
         let root = URL(fileURLWithPath: raw).standardizedFileURL
         let a = root.appendingPathComponent("A")
         let b = root.appendingPathComponent("B")
@@ -155,7 +155,7 @@ final class TreeBrowserSortTests: XCTestCase {
     func test_directChildren_排序稳定_path升序兜底() async throws {
         // 主键相等（本例 size 相同的两个 dir）应按 path 升序
         let fm = FileManager.default
-        let raw = NSTemporaryDirectory() + "GSYCleanTreeSortTie-\(UUID().uuidString)"
+        let raw = NSTemporaryDirectory() + "AmuxAICleanTreeSortTie-\(UUID().uuidString)"
         let root = URL(fileURLWithPath: raw).standardizedFileURL
         let z = root.appendingPathComponent("Z")
         let a = root.appendingPathComponent("A")

@@ -704,13 +704,13 @@ public struct TreeBrowserView: View {
     /// 继续把所有 forbid 当作不可操作。
     let allowsVendorPathOverride: Bool
     /// v2026.06 用户反馈 #1：右键"刷新此目录"。点击时传 path 给上层，
-    /// 上层调 [ScanCoordinator.rescanSubtree(at:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1529-L1545)
+    /// 上层调 [ScanCoordinator.rescanSubtree(at:)](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1529-L1545)
     /// 清掉按需子树缓存并 bump structuralRevision，本视图下一帧自动重拉。
     /// 给 nil 时菜单不展示该项（便于在 readonly 场景复用）。
     let onRefreshSubtree: ((String) -> Void)?
     /// v2026.06.18 **加入待处理**回调（购物车）。点击 contextMenu 的"加入待处理"项
     /// 把 (path, title, bytes, isDirectory) 透给上层，由上层调
-    /// [StashStore.add](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashStore.swift#L80-L82) 入库。
+    /// [StashStore.add](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashStore.swift#L80-L82) 入库。
     /// 给 nil 时菜单不展示该项（保持向后兼容；readonly / 无 stash 场景仍可复用）。
     let onStash: ((TreeRow) -> Void)?
     /// v2026.06.18 **是否已加入待处理**查询。contextMenu 用它把"加入待处理"按钮置灰
@@ -728,7 +728,7 @@ public struct TreeBrowserView: View {
     ///
     /// 设计动机（review-swarm Q1 根因）：
     /// 之前 TreeBrowserView 自己持 `@State private var sortKey: TreeSortKey = .sizeDesc`，
-    /// 与 [AppSettings.mainListSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift#L339)
+    /// 与 [AppSettings.mainListSortKey](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AppSettings.swift#L339)
     /// 完全解耦。结果用户在工具栏点"全局排序图标"切到 nameAsc，主列表反应了，
     /// 但切到「树形视图」依然是初始 sizeDesc，体验严重不一致。
     ///
@@ -823,8 +823,8 @@ public struct TreeBrowserView: View {
     /// v2026.06.22 perf：path → (SafetyVerdict, SafetyRejection) 进程内缓存
     /// （**Instruments Time Profiler 取证**）。
     ///
-    /// 33334.md（commit 5fe7e91 后第二刀取证）显示 [rebuildFlatRows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L411-L451)
-    /// 一次跑 139ms 中 124ms（89%）全部在 [SafetyEngine.evaluate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L212)：
+    /// 33334.md（commit 5fe7e91 后第二刀取证）显示 [rebuildFlatRows](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L411-L451)
+    /// 一次跑 139ms 中 124ms（89%）全部在 [SafetyEngine.evaluate](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L212)：
     ///   - evaluateStandardized 58.8ms
     ///   - resolvedSymlinkPath 31.7ms（含 realpath syscall）
     ///   - URL.init(fileURLWithPath:) 11.7ms
@@ -901,11 +901,11 @@ public struct TreeBrowserView: View {
     @State private var expanded: [String: Bool] = [:]
 
     /// **v1.5.4 性能修复**：扁平化的可见行数组（包含 root 直接孩子 + 所有展开节点的子项）。
-    /// 每行附带 [depth](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
-    /// 决定缩进，还有 [maxBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+    /// 每行附带 [depth](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+    /// 决定缩进，还有 [maxBytes](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
     /// 用来归一化体积条。
     ///
-    /// 旧版 [TreeNodeView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+    /// 旧版 [TreeNodeView](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
     /// 在每个节点 body 内递归调 `coordinator.directChildren(...)` + 嵌套自身，
     /// 一次操作（含键盘的 4 次 visibleRows）等于把整棵展开树重新拍平多次，
     /// 4w 节点级 200~500ms 卡顿。改为冻结 flatRows + 原生 NSTableView 后：
@@ -976,7 +976,7 @@ public struct TreeBrowserView: View {
         self.globalSortKey = globalSortKey
     }
 
-    /// v1.5 P2 / Q1：当前生效的 [TreeSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L191)。
+    /// v1.5 P2 / Q1：当前生效的 [TreeSortKey](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L191)。
     /// 优先读 `globalSortKey`，没传才用本地 @State。
     private var effectiveSortKey: TreeSortKey {
         if let g = globalSortKey { return .from(global: g.wrappedValue) }
@@ -1001,7 +1001,7 @@ public struct TreeBrowserView: View {
 
     public var body: some View {
         // v1.5.4：body 不再调 directChildren / isFetchingChildren——所有可见行的源数据
-        // 都收口在 [flatRows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+        // 都收口在 [flatRows](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
         // 这一份扁平 @State 里。view 重算只读 state，重建在 onChange / onAppear 里发生，
         // 不会被 SwiftUI 的 diff 频繁触发递归。
         VStack(spacing: 0) {
@@ -1169,7 +1169,7 @@ public struct TreeBrowserView: View {
 
     // MARK: - flatRows 重建（v1.5.4 性能修复）
 
-    /// 把 root 直接孩子 + 所有展开节点的子项按 DFS 顺序拍平到 [flatRows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
+    /// 把 root 直接孩子 + 所有展开节点的子项按 DFS 顺序拍平到 [flatRows](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
     /// 由 onChange / onAppear 显式触发；body 不再做这件事。
     /// v2026.07.18 P1：本方法只冻结每个 expanded parent 的 COW child array 和 request
     /// revision。DFS、FlatTreeRow/Set 构造、SafetyEngine verdict 以及宽快照比较全部由
@@ -1189,7 +1189,7 @@ public struct TreeBrowserView: View {
             expandedPaths: expandedPaths
         )
         let requestStartedAt = ProcessInfo.processInfo.systemUptime
-        GSYLog.info(
+        AmuxLog.info(
             .scan,
             "tree.projection stage=request kind=full request_revision=\(requestRevision) "
                 + "source_revision=\(source.revision.sourceRevision) root_rows=\(source.rootRows.count) "
@@ -1217,7 +1217,7 @@ public struct TreeBrowserView: View {
         let worker = TreeFlatProjectionWorker(input: input, previous: previous)
         let task = Task { @MainActor in
             guard requestRevision == flatProjectionRequestRevision, !Task.isCancelled else {
-                GSYLog.notice(
+                AmuxLog.notice(
                     .scan,
                     "tree.projection stage=drop kind=full reason=superseded_before_prepare "
                         + "request_revision=\(requestRevision) current_revision=\(flatProjectionRequestRevision)"
@@ -1230,7 +1230,7 @@ public struct TreeBrowserView: View {
             guard requestRevision == flatProjectionRequestRevision,
                   !Task.isCancelled,
                   sourceIsCurrent else {
-                GSYLog.notice(
+                AmuxLog.notice(
                     .scan,
                     "tree.projection stage=drop kind=full reason=stale_after_prepare "
                         + "request_revision=\(requestRevision) current_revision=\(flatProjectionRequestRevision) "
@@ -1241,7 +1241,7 @@ public struct TreeBrowserView: View {
                 return
             }
             guard let prepared else {
-                GSYLog.warning(
+                AmuxLog.warning(
                     .scan,
                     "tree.projection stage=drop kind=full reason=worker_no_output request_revision=\(requestRevision)"
                 )
@@ -1256,7 +1256,7 @@ public struct TreeBrowserView: View {
             let elapsedMilliseconds = Int(
                 (max(0, ProcessInfo.processInfo.systemUptime - requestStartedAt) * 1_000).rounded()
             )
-            GSYLog.info(
+            AmuxLog.info(
                 .scan,
                 "tree.projection stage=commit kind=full request_revision=\(requestRevision) "
                     + "row_count=\(prepared.rows.count) changed=\(prepared.changed) "
@@ -1316,7 +1316,7 @@ public struct TreeBrowserView: View {
             expandedPaths: relevantExpandedPaths
         )
         let requestStartedAt = ProcessInfo.processInfo.systemUptime
-        GSYLog.info(
+        AmuxLog.info(
             .scan,
             "tree.projection stage=request kind=incremental request_revision=\(requestRevision) "
                 + "source_revision=\(source.revision.sourceRevision) expanding=\(isExpanding) "
@@ -1354,7 +1354,7 @@ public struct TreeBrowserView: View {
         )
         let task = Task { @MainActor in
             guard requestRevision == flatProjectionRequestRevision, !Task.isCancelled else {
-                GSYLog.notice(
+                AmuxLog.notice(
                     .scan,
                     "tree.projection stage=drop kind=incremental reason=superseded_before_prepare "
                         + "request_revision=\(requestRevision) current_revision=\(flatProjectionRequestRevision)"
@@ -1367,7 +1367,7 @@ public struct TreeBrowserView: View {
             guard requestRevision == flatProjectionRequestRevision,
                   !Task.isCancelled,
                   sourceIsCurrent else {
-                GSYLog.notice(
+                AmuxLog.notice(
                     .scan,
                     "tree.projection stage=drop kind=incremental reason=stale_after_prepare "
                         + "request_revision=\(requestRevision) current_revision=\(flatProjectionRequestRevision) "
@@ -1378,7 +1378,7 @@ public struct TreeBrowserView: View {
                 return
             }
             guard let prepared else {
-                GSYLog.warning(
+                AmuxLog.warning(
                     .scan,
                     "tree.projection stage=drop kind=incremental reason=worker_no_output "
                         + "request_revision=\(requestRevision)"
@@ -1395,7 +1395,7 @@ public struct TreeBrowserView: View {
             let elapsedMilliseconds = Int(
                 (max(0, ProcessInfo.processInfo.systemUptime - requestStartedAt) * 1_000).rounded()
             )
-            GSYLog.info(
+            AmuxLog.info(
                 .scan,
                 "tree.projection stage=commit kind=incremental request_revision=\(requestRevision) "
                     + "row_count=\(prepared.rows.count) changed=\(prepared.changed) "
@@ -1483,7 +1483,7 @@ public struct TreeBrowserView: View {
     ///   - childrenProvider: (parentPath, sortKey) -> 直接子项，按 sortKey 排好序
     ///   - expandedAfter: 翻转后的 expanded 状态（用于决定新子树里哪些孙子也要拍平）
     ///   - sortKey: 当前排序键（透传给 childrenProvider）
-    ///   - evaluator: SafetyEngine 评估函数，与 [computeVerdicts](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L330)
+    ///   - evaluator: SafetyEngine 评估函数，与 [computeVerdicts](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L330)
     ///     共用
     /// - returns: 若 togglePath 不在 old → nil（caller fallback 整树重建），否则新 flatRows
     static func applyExpansionPatch(
@@ -1543,11 +1543,11 @@ public struct TreeBrowserView: View {
     }
 
     /// **v2026.06 Step 1【P0-1 verdict 缓存】**：把 (row, depth) 序列一次性映射成
-    /// 带 verdict 的 [FlatTreeRow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
+    /// 带 verdict 的 [FlatTreeRow](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
     ///
     /// 关键点 1：evaluator 是注入的——生产代码传 `Self.safety.evaluate(path:).0`，
-    /// 测试 [FlatTreeRowVerdictCacheTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/FlatTreeRowVerdictCacheTests.swift)
-    /// 传 [CountingEvaluator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/FlatTreeRowVerdictCacheTests.swift)
+    /// 测试 [FlatTreeRowVerdictCacheTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/FlatTreeRowVerdictCacheTests.swift)
+    /// 传 [CountingEvaluator](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/FlatTreeRowVerdictCacheTests.swift)
     /// 计调用次数。这是把 SafetyEngine 从 SwiftUI hot path 拆下来的契约接缝。
     ///
     /// 关键点 2：每行 evaluator 只调一次。生产的 4w 行计算现在由 worker 后台完成；
@@ -1690,7 +1690,7 @@ public struct TreeBrowserView: View {
     }
 
     /// 行内三角 / 单击整行 / 右键菜单 / 双击 → 共用的展开切换入口。
-    /// 不在乎 [TreeNodeRow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+    /// 不在乎 [TreeNodeRow](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
     /// 内部的 canExpand 状态，外层这里仅 toggle expanded[path]——
     /// 不能展开的行 row 内部已经把按钮 / 双击 hit-test disable 掉。
     ///
@@ -1710,7 +1710,7 @@ public struct TreeBrowserView: View {
 
     /// **可测的 pure helper**：从任意路径集合里剔除 SafetyEngine forbid 路径。
     /// v1.5.3 多选 UI 已撤掉，但本静态方法仍被
-    /// [TreeBrowserMultiSelectTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/TreeBrowserMultiSelectTests.swift)
+    /// [TreeBrowserMultiSelectTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/TreeBrowserMultiSelectTests.swift)
     /// 锁住，作为"任意未来批量入口接进 SafetyEngine 的契约"——避免有人加了
     /// 别的批量删入口绕过 forbid 拦截。
     public static func sanitize(paths: Set<String>) -> Set<String> {
@@ -2419,7 +2419,7 @@ final class TreeTableRowCanvas: NSView {
             if InlineRowActionNavigationPolicy.shouldSelectRow(for: .askAI) {
                 actions.select()
             }
-            GSYLog.notice(.operation, "tree.row.ai path=\(flat.row.path)")
+            AmuxLog.notice(.operation, "tree.row.ai path=\(flat.row.path)")
             actions.askAI(); return
         }
         if hitTestAction(point) == .stash {
@@ -2430,7 +2430,7 @@ final class TreeTableRowCanvas: NSView {
             if InlineRowActionNavigationPolicy.shouldSelectRow(for: .stash) {
                 actions.select()
             }
-            GSYLog.notice(.operation, "tree.row.stash path=\(flat.row.path)")
+            AmuxLog.notice(.operation, "tree.row.stash path=\(flat.row.path)")
             actions.stash(); return
         }
         if hitTestAction(point) == .trash {
@@ -2441,20 +2441,20 @@ final class TreeTableRowCanvas: NSView {
             if InlineRowActionNavigationPolicy.shouldSelectRow(for: .trash) {
                 actions.select()
             }
-            GSYLog.notice(.operation, "tree.row.trash path=\(flat.row.path)")
+            AmuxLog.notice(.operation, "tree.row.trash path=\(flat.row.path)")
             actions.trash(); return
         }
         actions.focus()
         actions.select()
         if disclosureRect(for: flat).contains(point) {
             if canExpand(flat) {
-                GSYLog.notice(.operation, "tree.row.toggle path=\(flat.row.path) expanded=\(!isExpanded)")
+                AmuxLog.notice(.operation, "tree.row.toggle path=\(flat.row.path) expanded=\(!isExpanded)")
                 actions.toggle()
             }
             return
         }
         if event.clickCount >= 2, canExpand(flat) {
-            GSYLog.notice(.operation, "tree.row.toggle path=\(flat.row.path) expanded=\(!isExpanded)")
+            AmuxLog.notice(.operation, "tree.row.toggle path=\(flat.row.path) expanded=\(!isExpanded)")
             actions.toggle()
         }
     }
@@ -2523,7 +2523,7 @@ final class TreeTableRowCanvas: NSView {
             let refresh = ClosureMenuItem(
                 title: AppLocalization.string("tree.menu.refresh", locale: locale),
                 action: {
-                    GSYLog.notice(.operation, "tree.menu.refresh path=\(row.path)")
+                    AmuxLog.notice(.operation, "tree.menu.refresh path=\(row.path)")
                     actions.refresh()
                 }
             )
@@ -2900,7 +2900,7 @@ private final class ClosureMenuItem: NSMenuItem {
 
 /// 列表头：可点击切排序。
 ///
-/// v1.5.4：新增"修改时间"列（98pt 宽），与 [TreeBrowserRow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L622)
+/// v1.5.4：新增"修改时间"列（98pt 宽），与 [TreeBrowserRow](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L622)
 /// 的 mtime 单元宽度对齐。点击切 desc/asc，与 size/name/count 一致。
 struct TreeColumnHeader: View {
     @Binding var sortKey: TreeSortKey
@@ -2964,17 +2964,17 @@ struct TreeColumnHeader: View {
 }
 
 /// **v1.5.4 性能修复**：扁平树行的轻量数据载体。
-/// `row` 走 [TreeRow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L139)
+/// `row` 走 [TreeRow](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L139)
 /// 自身的 path 当 SwiftUI 的 `id`，`depth` 决定 indent 缩进。
 /// `Hashable` 由 TreeRow / Int 自动合成，让 onChange/diff 能用值比较。
 ///
 /// **v2026.06 Step 1【P0-1 verdict 缓存】**：新增 stored `verdict`。
-/// 旧版 [TreeNodeRow.isTrashable](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+/// 旧版 [TreeNodeRow.isTrashable](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
 /// 在 SwiftUI 重绘 hot path 上每帧调 `safety.evaluate(path:)` →
 /// 4w 节点 60fps 主线程压垮。
-/// 改为 [rebuildFlatRows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+/// 改为 [rebuildFlatRows](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
 /// 一次性算好塞到这里，body 只读字段，evaluator 调用次数 == 行数（不再随重绘倍增）。
-/// 回归契约见 [FlatTreeRowVerdictCacheTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/FlatTreeRowVerdictCacheTests.swift)。
+/// 回归契约见 [FlatTreeRowVerdictCacheTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/FlatTreeRowVerdictCacheTests.swift)。
 struct FlatTreeRow: Identifiable, Hashable, Sendable {
     let row: TreeRow
     let depth: Int
@@ -3018,7 +3018,7 @@ struct FlatTreeRow: Identifiable, Hashable, Sendable {
 /// **v1.5.4 重构**：单行树节点视图（不再递归自身）。
 /// 旧版 `TreeNodeView` 在 body 内部嵌套 `ForEach(directChildren)` + 自递归，
 /// 4w 节点级一次重绘要重新拍平整棵展开树几次，导致点击展开 200~500ms 卡顿。
-/// 新版只渲染**一行**，子项由外层 [TreeBrowserView.flatRows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+/// 新版只渲染**一行**，子项由外层 [TreeBrowserView.flatRows](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
 /// 在 onChange 时一次性扁平化好，顶层 ForEach 平铺渲染。
 struct TreeNodeRow: View {
     let flat: FlatTreeRow
@@ -3052,8 +3052,8 @@ struct TreeNodeRow: View {
     /// **v1.5.3**：本行能否被行内 trash 按钮删除。
     ///
     /// **v2026.06 Step 1**：不再每帧调 `safety.evaluate(path:)`——
-    /// verdict 已由 [TreeBrowserView.computeVerdicts](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
-    /// 在 rebuildFlatRows 阶段一次性算好塞进 [FlatTreeRow.verdict](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
+    /// verdict 已由 [TreeBrowserView.computeVerdicts](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+    /// 在 rebuildFlatRows 阶段一次性算好塞进 [FlatTreeRow.verdict](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
     /// 这里仅做 O(1) 字段读取，让 SwiftUI 重绘 hot path 完全不碰 SafetyEngine。
     private var isTrashable: Bool {
         guard onTrash != nil else { return false }
@@ -3109,7 +3109,7 @@ struct TreeNodeRow: View {
             // 注意：HStack 自身 spacing=6 已贡献了 6pt，再加 6pt 凑到 12pt。
             Spacer().frame(width: 6, height: 1)
             // v2026.06.20 **行内"问 AI"按钮**——抽到独立 helper 减轻 body 的 type-check 负担。
-            // 详细注释见 [aiActionButton](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
+            // 详细注释见 [aiActionButton](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)。
             aiActionButton
             // v2026.06.20 **行内"加入待处理"按钮**——放在 trash 之前，作为"非破坏性
             // 暂存"的快速通道，与右键菜单完全等价。状态可视：未加入时显示空托盘
@@ -3385,13 +3385,13 @@ struct TreeNodeRow: View {
 
 /// 树行视图：图标 + 名称 + size + 体积条。复用 RowView 的视觉语言。
 ///
-/// v1.3.zzzz：当 [row.accessState](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L116)
+/// v1.3.zzzz：当 [row.accessState](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L116)
 /// 不是 .normal 时，整行降级渲染：
 /// - 文件夹图标后挂一个 lock.fill 小徽章
 /// - 文字 / 体积 / 体积条全部走 .tertiary 灰阶
 /// - .help() 改成"无访问权限"文案，鼠标 hover 提示用户去开 Full Disk Access
 ///
-/// 这是为了治"我的 [Library/Safari](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L172)
+/// 这是为了治"我的 [Library/Safari](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift#L172)
 /// 显示 0 KB 是不是 bug？"这一类用户疑惑——根因是
 /// open(O_RDONLY) silent-deny，UI 必须把"被拒"和"真 0KB"区分开。
 struct TreeBrowserRow: View {

@@ -177,7 +177,7 @@ public enum DeletionRecipe: Sendable, Hashable {
 /// forbid。Runtime 只能通过上面的受管 `simctl runtime delete` 卡处理，不能伪装成
 /// 可移到废纸篓的普通目录。
 ///
-/// 所有路径均与 [vendors.yaml Apple Developer Tools](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/vendors.yaml#L16-L102) 对位，
+/// 所有路径均与 [vendors.yaml Apple Developer Tools](file:///Users/amuxuser/workspace/AmuxAIClean/Resources/Rules/vendors.yaml#L16-L102) 对位，
 /// 不绕开 SafetyEngine、不引入新规则源，仅做"按工作流分组"的入口聚合。
 ///
 /// 设计要点：

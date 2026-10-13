@@ -29,7 +29,7 @@ final class I18nIntegrityTests: XCTestCase {
     private static let appUISources =
         "Packages/AppUI/Sources/AppUI"
 
-    /// App target 目录（相对仓库根）—— GSYCleanMacApp.swift 等顶层 SwiftUI Scene/Commands
+    /// App target 目录（相对仓库根）—— AmuxAICleanApp.swift 等顶层 SwiftUI Scene/Commands
     /// 也会通过 `String(localized: ..., bundle: AppUIResources.bundle)` 引用 xcstrings 里的 key，
     /// 必须一并纳入引用扫描范围，否则会误报 stale。
     private static let appTargetSources = "App"
@@ -159,12 +159,12 @@ final class I18nIntegrityTests: XCTestCase {
     func test_liveLocaleCommands_依赖面不包含扫描快照() throws {
         let root = try repoRoot()
         let appSource = try String(
-            contentsOf: root.appendingPathComponent("App/GSYCleanMacApp.swift"),
+            contentsOf: root.appendingPathComponent("App/AmuxAICleanApp.swift"),
             encoding: .utf8
         )
-        guard let typeStart = appSource.range(of: "private struct GSYCleanCommands: Commands"),
+        guard let typeStart = appSource.range(of: "private struct AmuxAICleanCommands: Commands"),
               let bodyStart = appSource.range(of: "var body: some Commands", range: typeStart.lowerBound..<appSource.endIndex) else {
-            return XCTFail("找不到 GSYCleanCommands 依赖声明")
+            return XCTFail("找不到 AmuxAICleanCommands 依赖声明")
         }
         let dependencySurface = String(appSource[typeStart.lowerBound..<bodyStart.lowerBound])
 
@@ -182,7 +182,7 @@ final class I18nIntegrityTests: XCTestCase {
     func test_settingsOnlyLiveLocaleChange_routesThroughAppCoordinatorFanout() throws {
         let root = try repoRoot()
         let appSource = try String(
-            contentsOf: root.appendingPathComponent("App/GSYCleanMacApp.swift"),
+            contentsOf: root.appendingPathComponent("App/AmuxAICleanApp.swift"),
             encoding: .utf8
         )
 
@@ -277,7 +277,7 @@ final class I18nIntegrityTests: XCTestCase {
     }
 
     /// 统一的 .swift 源过滤：跳过测试目录、SwiftPM 构建/签出、Xcode DerivedData。
-    /// 同时用于 [loadAllSwiftSources](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/I18nIntegrityTests.swift)
+    /// 同时用于 [loadAllSwiftSources](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/I18nIntegrityTests.swift)
     /// 与契约 8 的裸字面量扫描，保证两边扫描范围一致——避免 stale 检测漏报、裸字面量检测误报。
     private static func shouldSkipSwiftSource(url: URL) -> Bool {
         let comps = url.pathComponents
@@ -293,7 +293,7 @@ final class I18nIntegrityTests: XCTestCase {
     /// **历史**：Step 4（2026-06）原计划是把 6 条 stale `trash.err.*` key 从 xcstrings
     /// 清掉，因为对应 Swift 代码被重构没了。但 Step 4 后续 TrashPipeline 又重写为
     /// "面向用户的失败原因（dryrun 拦截 / 移动失败 / 安全策略阻断）必须可翻译"，
-    /// 9 条 `trash.err.*` 复活进入活代码（见 [TrashPipeline.swift L268-L344](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L268-L344)）。
+    /// 9 条 `trash.err.*` 复活进入活代码（见 [TrashPipeline.swift L268-L344](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L268-L344)）。
     ///
     /// **新契约**（2026-07-15 修订）：不再"必须 0 条"，而是**双向同步**——
     ///   1) xcstrings 里每条 `trash.err.*` key 必须在 Trash typed model / pipeline 中出现；
@@ -842,8 +842,8 @@ final class I18nIntegrityTests: XCTestCase {
     /// 的英文字面量都属于"用户可见英文按钮 / 标签 / 提示"，必须 i18n。
     /// 若非英文用户看到中文系统时仍显示英文，会与已有翻译体系不一致。
     ///
-    /// **历史**：2026-06 review-swarm 找到 [LaunchAgentScreen.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/LaunchAgentScreen.swift)
-    /// 的 `Text("RunAtLoad")` 和 [PortCleanerScreen.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/PortCleanerScreen.swift)
+    /// **历史**：2026-06 review-swarm 找到 [LaunchAgentScreen.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/LaunchAgentScreen.swift)
+    /// 的 `Text("RunAtLoad")` 和 [PortCleanerScreen.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/PortCleanerScreen.swift)
     /// 的 `Text("PID")` 两处漏 i18n（commit 043718c 已修），暴露了缺少自动化契约的盲区。
     /// 本契约把这条规矩固化为 grep 硬失败，防止未来再漏。
     ///

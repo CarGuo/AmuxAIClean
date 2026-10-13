@@ -4,8 +4,8 @@ import Foundation
 ///
 /// 用途：把 `try?` 吞掉的错误改成 do/catch 之后，调用方需要分情况上报：
 /// - `.permissionDenied` → 暴露到 UI banner（"无法读取，请授予权限"）
-/// - `.notFound` → 沉默到 GSYLog.debug（路径不存在是常态，不打扰用户）
-/// - `.other` → 走 GSYLog.warning 不静默（编码错误 / IO 损坏 / 设备离线 等）
+/// - `.notFound` → 沉默到 AmuxLog.debug（路径不存在是常态，不打扰用户）
+/// - `.other` → 走 AmuxLog.warning 不静默（编码错误 / IO 损坏 / 设备离线 等）
 ///
 /// 这是一个**纯函数判定**，不持有状态，全平台可用。
 public enum IOErrorKind: Sendable, Equatable {

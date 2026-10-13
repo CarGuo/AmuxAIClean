@@ -9,14 +9,14 @@ final class PathRedactorTests: XCTestCase {
 
     // 1
     func test_users_prefix_redacted() {
-        XCTAssertEqual(r.redact("/Users/guoshuyu/Library/Caches/foo"),
+        XCTAssertEqual(r.redact("/Users/amuxuser/Library/Caches/foo"),
                        "/Users/<USER>/Library/Caches/foo")
     }
 
     func test_all_user_prefixes_redacted() {
-        let input = "/Users/guoshuyu/a also /Users/alice/b and /home/bob/c"
+        let input = "/Users/amuxuser/a also /Users/alice/b and /home/bob/c"
         let out = r.redact(input)
-        XCTAssertFalse(out.contains("guoshuyu"))
+        XCTAssertFalse(out.contains("amuxuser"))
         XCTAssertFalse(out.contains("alice"))
         XCTAssertFalse(out.contains("bob"))
         XCTAssertEqual(out, "/Users/<USER>/a also /Users/<USER>/b and /home/<USER>/c")
@@ -24,7 +24,7 @@ final class PathRedactorTests: XCTestCase {
 
     // 2
     func test_users_root_only() {
-        XCTAssertEqual(r.redact("/Users/guoshuyu"),
+        XCTAssertEqual(r.redact("/Users/amuxuser"),
                        "/Users/<USER>")
     }
 
@@ -36,7 +36,7 @@ final class PathRedactorTests: XCTestCase {
 
     // 4
     func test_uuid_lowercase_redacted() {
-        let input = "/Users/guoshuyu/Library/Developer/Xcode/iOS DeviceSupport/abcdef12-3456-7890-abcd-ef1234567890"
+        let input = "/Users/amuxuser/Library/Developer/Xcode/iOS DeviceSupport/abcdef12-3456-7890-abcd-ef1234567890"
         let out = r.redact(input)
         XCTAssertTrue(out.contains("<USER>"))
         XCTAssertTrue(out.contains("<UUID>"))
@@ -53,14 +53,14 @@ final class PathRedactorTests: XCTestCase {
 
     // 6
     func test_email_redacted() {
-        let out = r.redact("/Users/guoshuyu/Library/Mobile Documents/com~apple~CloudDocs/from-alice@example.com.eml")
+        let out = r.redact("/Users/amuxuser/Library/Mobile Documents/com~apple~CloudDocs/from-alice@example.com.eml")
         XCTAssertTrue(out.contains("<EMAIL>"))
         XCTAssertFalse(out.contains("alice@example.com"))
     }
 
     // 7
     func test_volume_user_defined_redacted_system_keeps() {
-        XCTAssertEqual(r.redact("/Volumes/Macintosh HD/Users/guoshuyu/x"),
+        XCTAssertEqual(r.redact("/Volumes/Macintosh HD/Users/amuxuser/x"),
                        "/Volumes/Macintosh HD/Users/<USER>/x",
                        "系统卷白名单应保留")
         XCTAssertEqual(r.redact("/Volumes/MyBackup/photos"),
@@ -82,13 +82,13 @@ final class PathRedactorTests: XCTestCase {
 
     // 9 - 批量
     func test_batch_redact() {
-        let out = r.redact(["/Users/guoshuyu/a", "/Users/guoshuyu/b", "/tmp/x"])
+        let out = r.redact(["/Users/amuxuser/a", "/Users/amuxuser/b", "/tmp/x"])
         XCTAssertEqual(out, ["/Users/<USER>/a", "/Users/<USER>/b", "/tmp/x"])
     }
 
     func test_data_volume_and_lowercase_users_redacted() {
         XCTAssertEqual(
-            r.redact("/System/Volumes/Data/Users/guoshuyu/Library/Caches/foo"),
+            r.redact("/System/Volumes/Data/Users/amuxuser/Library/Caches/foo"),
             "/Users/<USER>/Library/Caches/foo"
         )
         XCTAssertEqual(

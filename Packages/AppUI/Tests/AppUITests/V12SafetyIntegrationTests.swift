@@ -173,7 +173,7 @@ final class V12SafetyIntegrationTests: XCTestCase {
     func test_E2E_造文件_批选_dryRun_文件仍在() async throws {
         // 造一个独立 sandbox 目录，5 个 1MB 文件
         let sandbox = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gsy-e2e-\(UUID().uuidString)")
+            .appendingPathComponent("amux-e2e-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: sandbox, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: sandbox) }
 

@@ -67,7 +67,7 @@
 | PRO-02 | Add Path 点击卡住或无响应 | `CODED_UNVERIFIED` | 点击后立即出现 panel；主线程无同步扫描/Keychain/文件遍历；取消和选择都可恢复；C2+C4 | `UserPathStore.swift`、Custom Paths UI |
 | PRO-03 | 设置里的 AI / Advanced 项读不到或显示异常 | `CODED_UNVERIFIED` | 可读、可点击、disabled 原因明确；浅色/深色可用；C4 | `SettingsNavigation.swift`、`SettingsScene.swift` |
 | PRO-04 | Keychain 报 `unhandled(100002)`，API Key 读不到 | `CODED_UNVERIFIED` | 旧 service/account 命名可迁移；真实 Keychain 错误映射为可操作文案；C2+C4 | `KeychainAPIKeyStore.swift`、`KeychainFailurePresentationTests.swift` |
-| PRO-05 | 菜单“打开主窗口”错误跳到设置页 | `CODED_UNVERIFIED` | 主窗口不存在/已存在/设置窗口在前台三种场景均聚焦主窗口；C2+C4 | `MainWindowRoutingPolicy.swift`、`GSYCleanMacApp.swift` |
+| PRO-05 | 菜单“打开主窗口”错误跳到设置页 | `CODED_UNVERIFIED` | 主窗口不存在/已存在/设置窗口在前台三种场景均聚焦主窗口；C2+C4 | `MainWindowRoutingPolicy.swift`、`AmuxAICleanApp.swift` |
 | PRO-06 | App 左上角品牌和版本号不应有背景胶囊 | `CODED_UNVERIFIED` | 标题与版本直接排版，无背景框；窗口宽度变化不重现；C4 | `MainView.swift`、`AppVersionPresentationTests.swift` |
 | PRO-07 | Normal AI Review 完成后，成功或失败都应弹结果并展示内容和后续动作 | `CODED_UNVERIFIED` | success/failed/partial/empty/cancelled/stale 全部有确定 presentation；操作与对应报告 revision 绑定；C2 已有，缺 C4 | `SmartCareAIReviewResultSheet.swift`、`SmartCarePresentationTests.swift` |
 
@@ -188,10 +188,10 @@
 
 ### 6.3 本次已落地的规则补全
 
-- [AGENTS.md](file:///Users/guoshuyu/workspace/GSYCleanMac/AGENTS.md)：仅保留全仓库入口与最高风险边界，包括类型化用户错误、C1–C5 验证口径、统一删除授权、异步终态、禁止擅自 GitHub 发布和 Release 不显示 dry-run；容量会话口径、typed 窗口路由等细则继续由本台账、专项合同、PITFALLS 和测试负责。
-- [SECURITY.md](file:///Users/guoshuyu/workspace/GSYCleanMac/SECURITY.md)：消除“所有 forbid 一律拒绝”与专业模式需求的冲突；明确普通 forbid、可覆盖 policy forbid 和永不可覆盖 hard/结构边界；同步 Developer ID + 最终 DMG 公证事实，并把未决网络边界显式标出。
-- [PITFALLS.md](file:///Users/guoshuyu/workspace/GSYCleanMac/PITFALLS.md)：新增“统一 TrashPipeline 不等于统一删除交互”和“局部扫描不完整污染整个根”两条事故记录。
-- [DELETION_UX_CONTRACT.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/DELETION_UX_CONTRACT.md)：定义唯一删除状态机、类型化授权、严格尝试边界、统一确认页和入口测试矩阵。
+- [AGENTS.md](file:///Users/amuxuser/workspace/AmuxAIClean/AGENTS.md)：仅保留全仓库入口与最高风险边界，包括类型化用户错误、C1–C5 验证口径、统一删除授权、异步终态、禁止擅自 GitHub 发布和 Release 不显示 dry-run；容量会话口径、typed 窗口路由等细则继续由本台账、专项合同、PITFALLS 和测试负责。
+- [SECURITY.md](file:///Users/amuxuser/workspace/AmuxAIClean/SECURITY.md)：消除“所有 forbid 一律拒绝”与专业模式需求的冲突；明确普通 forbid、可覆盖 policy forbid 和永不可覆盖 hard/结构边界；同步 Developer ID + 最终 DMG 公证事实，并把未决网络边界显式标出。
+- [PITFALLS.md](file:///Users/amuxuser/workspace/AmuxAIClean/PITFALLS.md)：新增“统一 TrashPipeline 不等于统一删除交互”和“局部扫描不完整污染整个根”两条事故记录。
+- [DELETION_UX_CONTRACT.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/DELETION_UX_CONTRACT.md)：定义唯一删除状态机、类型化授权、严格尝试边界、统一确认页和入口测试矩阵。
 
 ## 7. 闭环顺序
 
@@ -289,7 +289,7 @@
   `1.0s` 而失败；同项隔离复跑为 `0.695s`，随后 SafetyKit 全包 `167/167` 再次通过。
   未放宽阈值、未改测试，也不把首次失败藏掉。
 - 快速启停结果已撤销：本轮曾运行的结果不计入证据。`Scripts/regression.sh`、
-  `Scripts/e2e-smoke.sh`、`App/RegressionRunner.swift`、`Tests/Regression`、`GSY_AUTOSCAN` 及正式 App
+  `Scripts/e2e-smoke.sh`、`App/RegressionRunner.swift`、`Tests/Regression`、`AMUX_AUTOSCAN` 及正式 App
   对 `TestHarness` 的链接已删除，防止以后继续把窗口/进程存在或进程内断言误报成 UI 验收。
 - 只读性能基准：`~/Library/Caches` 扫描 `383,375` files / `17.35 GB`，完成时间 `6.47s`；
   `du -sh` 对照约 `16 GB`。权限拒绝作为 scoped incomplete 报告，基准没有把不可读目录伪装为

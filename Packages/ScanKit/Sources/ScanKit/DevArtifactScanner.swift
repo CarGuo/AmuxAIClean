@@ -18,7 +18,7 @@ import LogKit
 ///    存在，这些**不是开发者产物**而是系统/App 缓存，下钻还会触发 TCC 弹窗；
 /// 4. **显式预算而非默认截断**：生产默认不按任意秒数截断；调用方只有在能把 partial
 ///    终态原样呈现时才可显式配置预算，用户取消则通过统一 cancellation relay 停止遍历；
-/// 5. **关键链路有 GSYLog 埋点**：开始 / 命中 / 完成 summary / 超时；用户拿日志即可还原。
+/// 5. **关键链路有 AmuxLog 埋点**：开始 / 命中 / 完成 summary / 超时；用户拿日志即可还原。
 ///
 /// 安全：
 /// - 命中点要求**目录**，文件忽略；
@@ -147,7 +147,7 @@ public actor DevArtifactScanner {
         let opts = options
         let homePath = home.standardizedFileURL.path
         let timeoutDescription = opts.timeoutSeconds.map { "\($0)s" } ?? "disabled"
-        GSYLog.info(.scan, "DevArtifact 勘察启动 home=\(homePath) rules=\(opts.enabledRuleIDs.count) timeout=\(timeoutDescription) maxHits=\(opts.maxHits)")
+        AmuxLog.info(.scan, "DevArtifact 勘察启动 home=\(homePath) rules=\(opts.enabledRuleIDs.count) timeout=\(timeoutDescription) maxHits=\(opts.maxHits)")
 
         // 跨 actor 边界跑一个 detached：descriptor syscall 是同步阻塞的，不能占 actor。
         return await Self.runCancellableDetached { () -> DiscoverResult in
@@ -177,7 +177,7 @@ public actor DevArtifactScanner {
         let opts = options
         let homePath = home.standardizedFileURL.path
         let timeoutDescription = opts.timeoutSeconds.map { "\($0)s" } ?? "disabled"
-        GSYLog.info(.scan, "DevArtifact 勘察(stream) home=\(homePath) rules=\(opts.enabledRuleIDs.count) timeout=\(timeoutDescription) maxHits=\(opts.maxHits) flushEvery=\(flushEvery)")
+        AmuxLog.info(.scan, "DevArtifact 勘察(stream) home=\(homePath) rules=\(opts.enabledRuleIDs.count) timeout=\(timeoutDescription) maxHits=\(opts.maxHits) flushEvery=\(flushEvery)")
 
         return await Self.runCancellableDetached { () -> DiscoverResult in
             await Self.runWalk(
@@ -234,7 +234,7 @@ public actor DevArtifactScanner {
         let ruleIndex = Dictionary(grouping: activeRules) { $0.directoryName }
         let markerRequirements = DevArtifactMarkerRequirements(rules: activeRules)
         guard !ruleIndex.isEmpty else {
-            GSYLog.warning(.scan, "DevArtifact 勘察 0 规则启用 直接返回")
+            AmuxLog.warning(.scan, "DevArtifact 勘察 0 规则启用 直接返回")
             return DiscoverResult(
                 hits: [],
                 didTimeout: false,
@@ -310,7 +310,7 @@ public actor DevArtifactScanner {
         } else {
             workerCount = scanOptions.actualConcurrency
         }
-        GSYLog.info(
+        AmuxLog.info(
             .scan,
             "DevArtifact descriptor walk root=\(homePath) workers=\(workerCount) staySingleVolume=\(options.staySingleVolume)"
         )
@@ -339,13 +339,13 @@ public actor DevArtifactScanner {
             elapsed: elapsed
         )
         if Task.isCancelled {
-            GSYLog.info(.scan, "DevArtifact 勘察响应取消 entries=\(result.scannedEntryCount) hits=\(result.hits.count)")
+            AmuxLog.info(.scan, "DevArtifact 勘察响应取消 entries=\(result.scannedEntryCount) hits=\(result.hits.count)")
         } else if result.didTimeout {
-            GSYLog.warning(.scan, "DevArtifact 勘察超时 entries=\(result.scannedEntryCount) hits=\(result.hits.count) elapsed=\(String(format: "%.3f", elapsed))s")
+            AmuxLog.warning(.scan, "DevArtifact 勘察超时 entries=\(result.scannedEntryCount) hits=\(result.hits.count) elapsed=\(String(format: "%.3f", elapsed))s")
         } else if result.didTruncate {
-            GSYLog.warning(.scan, "DevArtifact 勘察命中达上限 \(options.maxHits) entries=\(result.scannedEntryCount) elapsed=\(String(format: "%.3f", elapsed))s")
+            AmuxLog.warning(.scan, "DevArtifact 勘察命中达上限 \(options.maxHits) entries=\(result.scannedEntryCount) elapsed=\(String(format: "%.3f", elapsed))s")
         } else {
-            GSYLog.info(.scan, "DevArtifact 勘察完成 entries=\(result.scannedEntryCount) hits=\(result.hits.count) incomplete=\(result.incompleteIssues.count) elapsed=\(String(format: "%.3f", elapsed))s")
+            AmuxLog.info(.scan, "DevArtifact 勘察完成 entries=\(result.scannedEntryCount) hits=\(result.hits.count) incomplete=\(result.incompleteIssues.count) elapsed=\(String(format: "%.3f", elapsed))s")
         }
         return result
     }
@@ -531,7 +531,7 @@ public actor DevArtifactScanner {
                     stopState: stopState
                 )
                 if accepted {
-                    GSYLog.info(.scan, "DevArtifact 命中 rule=\(rule.id) path=\(path)")
+                    AmuxLog.info(.scan, "DevArtifact 命中 rule=\(rule.id) path=\(path)")
                 }
                 guard accepted, !stopState.shouldStop() else { return }
                 continue

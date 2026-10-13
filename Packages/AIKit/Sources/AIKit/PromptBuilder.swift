@@ -4,16 +4,16 @@ import SafetyKit
 /// M5 / 2026-06：内置提示词构造。**整 App 只此一处**生成 prompt——
 /// 不允许 UI 暴露自由 prompt 编辑，防止 prompt injection 弱化本地 SafetyEngine 红线。
 ///
-/// 决策来源：[docs/MOLE_ALIGNMENT.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/MOLE_ALIGNMENT.md) §M5
+/// 决策来源：[docs/MOLE_ALIGNMENT.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/MOLE_ALIGNMENT.md) §M5
 /// "按需触发"路线——一个 system + 一个 user，纯 JSON 输出，不做流式。
 public struct PromptBuilder: Sendable {
 
     public init() {}
 
     /// 构造一对 (system, user) 消息。
-    /// **不**包含去敏——调用方应在传入前把 [PathInquiry.path](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PathInquiry.swift#L17)
-    /// 与 [childPreview](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PathInquiry.swift#L43)
-    /// 先过 [PathRedactor](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PathRedactor.swift) 处理；
+    /// **不**包含去敏——调用方应在传入前把 [PathInquiry.path](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/PathInquiry.swift#L17)
+    /// 与 [childPreview](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/PathInquiry.swift#L43)
+    /// 先过 [PathRedactor](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/PathRedactor.swift) 处理；
     /// 这样 PromptBuilder 自身保持纯函数，无 IO 无网络。
     public func makeMessages(for inquiry: PathInquiry) -> [ChatMessage] {
         let system = ChatMessage(role: .system, content: Self.systemPrompt)
@@ -94,7 +94,7 @@ public struct ChatMessage: Sendable, Equatable, Codable {
 }
 
 /// 本地后置校验——把 AI 返回的 advice 与本地真相做硬钳制。
-/// 调用时机：[OpenAIChatClient.ask(...)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift)
+/// 调用时机：[OpenAIChatClient.ask(...)](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift)
 /// 拿到原始 AIAdvice 后立即过这里，再返回给 UI。
 public enum AIAdviceClamp {
 
@@ -103,7 +103,7 @@ public enum AIAdviceClamp {
     public static let localPolicyOverridePrefix: String = "[ai.advice.local_policy_override] "
 
     /// 钉死规则：本地 forbid → AI 必须 forbid；硬禁路径前缀 → 强制 forbid。
-    /// 这是产品红线，**AI 不能替代 [SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift)**。
+    /// 这是产品红线，**AI 不能替代 [SafetyEngine](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift)**。
     public static func clamp(_ advice: AIAdvice, against inquiry: PathInquiry) -> AIAdvice {
         // 规则 1 & 2：本地 forbid 或 路径命中硬禁前缀 → 强制 forbid
         if inquiry.verdict == .forbid || pathIsHardForbid(inquiry.path) {
@@ -129,7 +129,7 @@ public enum AIAdviceClamp {
         return advice
     }
 
-    /// 与 [SafetyEngine.hardForbidPrefixes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L42-L52)
+    /// 与 [SafetyEngine.hardForbidPrefixes](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L42-L52)
     /// 保持**单一真相源**——直接复用 SafetyEngine 列表，避免双份维护漂移
     /// （Review fix #3，2026-06-15）。
     ///

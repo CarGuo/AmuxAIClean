@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup_dev.sh —— GSYCleanMac 新机器开发环境初始化
+# setup_dev.sh —— AmuxAIClean 新机器开发环境初始化
 #
 # 用法：
 #   ./Scripts/setup_dev.sh
@@ -17,8 +17,8 @@
 
 set -euo pipefail
 
-PROJECT_NAME="GSYCleanMac"
-XCODEPROJ="GSYCleanMac.xcodeproj"
+PROJECT_NAME="AmuxAIClean"
+XCODEPROJ="AmuxAIClean.xcodeproj"
 MIN_MACOS_MAJOR=15
 
 if [ -t 1 ]; then
@@ -96,7 +96,7 @@ ${GREEN}${BOLD}环境就绪 OK${NC}
   3. 选中 ${PROJECT_NAME} target → Signing & Capabilities
        - 勾 "Automatically manage signing"
        - Team 下拉选 你的 Personal Team
-       - Bundle Identifier 必要时改成你自己的（比如 com.<你的id>.cleanmac.GSYCleanMac）
+       - Bundle Identifier 必要时改成你自己的（比如 com.<你的id>.AmuxAIClean）
   4. ⌘R 跑起来；首次运行会触发 TCC（Full Disk Access）授权引导
        —— 此后只要 bundle id + signing requirement 稳定，TCC 授权应继续匹配
 

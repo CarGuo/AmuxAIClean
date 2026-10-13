@@ -1,13 +1,13 @@
-# GSYCleanMac 安全模型
+# AmuxAIClean 安全模型
 
-> 这份文档描述 GSYCleanMac 的威胁模型、删除链路设计、红线与漏洞上报方式。
+> 这份文档描述 AmuxAIClean 的威胁模型、删除链路设计、红线与漏洞上报方式。
 > 任何与本文档不一致的实现都视为 bug，请优先修代码而不是改本文档。
 
 ---
 
 ## 重要：v1.3.zzzz 路线 B 删除链路简化（2026-05-25 更新）
 
-原"App ↔ 特权删除 Helper" XPC 三道闸门设计已整段下线（[Helper/](file:///Users/guoshuyu/workspace/GSYCleanMac/Helper) / [Packages/XPCBridge/](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/XPCBridge) / [HelperClient.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HelperClient.swift) / [HelperDecision.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/HelperDecision.swift)）。本产品只删 `$HOME` 下用户态文件，不需要 root；删除链路收敛为唯一一份 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)。可选 Sentinel 是默认关闭、只读发现用的非特权 Login Agent，不参与删除授权或执行。
+原"App ↔ 特权删除 Helper" XPC 三道闸门设计已整段下线（[Helper/](Helper) / [Packages/XPCBridge/](Packages/XPCBridge) / [HelperClient.swift](Packages/AppUI/Sources/AppUI/HelperClient.swift) / [HelperDecision.swift](Packages/SafetyKit/Sources/SafetyKit/HelperDecision.swift)）。本产品只删 `$HOME` 下用户态文件，不需要 root；删除链路收敛为唯一一份 [TrashPipeline](Packages/AppUI/Sources/AppUI/TrashPipeline.swift)。可选 Sentinel 是默认关闭、只读发现用的非特权 Login Agent，不参与删除授权或执行。
 
 **安全原则保留**："永远不 unlink / dryRun 执行层默认安全 / SafetyEngine 三色判定 / 批级原子拒绝"仍由主 App 进程内 SafetyEngine + TrashPipeline 双层闸门保证；当前 Release 交互和专业覆盖边界以下文现行章节为准，不再沿用历史 Helper UI。
 
@@ -59,7 +59,7 @@
 ### 闸门二：消息级（Message-Level）
 
 - 每条 [DeletionToken](Packages/XPCBridge/Sources/XPCBridge/DeletionToken.swift) 都带 HMAC（key 来自 Keychain）
-- Helper 启动读环境变量 `GSYCLEAN_ALLOW_REAL_DELETE`，缺省永远走 dryRun（即使收到合法 token）
+- Helper 启动读环境变量 `AMUXCLEAN_ALLOW_REAL_DELETE`，缺省永远走 dryRun（即使收到合法 token）
 - TamperedDryRun 测试见 [XPCBridgeTests](Packages/XPCBridge/Tests/XPCBridgeTests)
 
 ### 闸门三：语义级（Semantic-Level）
@@ -85,7 +85,7 @@
 - **扫描不完整**：`incomplete` 是证据质量，不是 OS 删除权限。专业模式可在目标级 `lstat + resolved scope + parent write/search` 重验、展示“内容未完整检查”并严格确认后尝试移动整个目标；它不得被统一映射成 Full Disk Access。
 - **真实 OS 权限**：TCC、POSIX owner/mode、ACL、immutable flag 必须保留来源。当前无 root helper，不能承诺绕过；`NSWorkspace.recycle` 返回失败时如实展示。
 - **能力不可伪造**：覆盖授权必须绑定精确路径、精确 reason、扫描 revision 和确认上下文，执行前重新跑 Safety/路径解析。裸 `[String]` 回调和与 normal 等价的空心 `.force` 不构成授权。
-- **统一交互**：完整状态机见 [DELETION_UX_CONTRACT.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/DELETION_UX_CONTRACT.md)。预检拒绝不能包装成执行结果，结果页不能承担首次授权。
+- **统一交互**：完整状态机见 [DELETION_UX_CONTRACT.md](docs/DELETION_UX_CONTRACT.md)。预检拒绝不能包装成执行结果，结果页不能承担首次授权。
 
 ---
 
@@ -130,10 +130,8 @@ HTTP 请求只有：
   启动恢复继续，不能在失去最后恢复证据后永久遗留 receipt；
 - 用户主动开启 Sentinel 后，同目录的 `sentinel-pending.json` 最多保存 100 条热点变化的
   绝对路径、时间和可选大小；当前服务是用户域 `com.amux.ai.Clean.sentinel.agent`。
-  两代旧 root 服务 `com.guoshuyu.cleanmac.sentinel` 与 `com.amux.ai.Clean.sentinel` 各自使用
-  文件名/Label 对应的 migration-only
-  描述符并逐项验证 `notRegistered`；历史 helper 名、Bundle ID 与签名 Team ID 均发生过变化，
-  自动化不能保证真实旧注册必然可注销，升级机器上的 ServiceManagement 状态才是权威；关闭
+  历史 root 服务 `com.amux.ai.Clean.sentinel` 使用文件名/Label 对应的 migration-only
+  描述符并验证 `notRegistered`；升级机器上的 ServiceManagement 状态才是权威；关闭
   当前 Agent 是降权动作，不得因旧描述符查询失败而被阻断，但
   旧状态未验证时也不得显示“全部已停止”。ServiceManagement 另持有后台项目注册状态，
   删除 defaults 不能代替 `SMAppService.unregister()`；
@@ -143,7 +141,7 @@ HTTP 请求只有：
   可能包含业务阶段、结果、路径和技术错误，禁止记录 API Key、AI 请求正文、服务端错误正文或
   模型响应正文；7 天是主 App 初始化/跨日写入/显式目录准备重试或 Sentinel 每小时检查驱动的
   目标，不是硬实时过期。主 App
-  产品源码统一经过 `GSYLog`，另写由 macOS 管理的 privacy-hashed Unified Logging；文件 sink
+  产品源码统一经过 `AmuxLog`，另写由 macOS 管理的 privacy-hashed Unified Logging；文件 sink
   的目录创建、打开和保留枚举必须在后台初始化，UI 启动路径只允许最多 256 行的有界内存缓冲，
   旧初始化 revision 不得覆盖新配置。本地 sink 失败只允许独立公开白名单化的
   `stage/domain/code`，设置页/Help 必须显示同一闭集，stderr 不得回显 raw Error/路径；writer

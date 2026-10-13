@@ -20,10 +20,10 @@ public protocol BundleResolving: Sendable {
 
 /// 真实实现 —— 走 NSWorkspace。
 ///
-/// **Step 14**：`installedAppNames()` 原 `try?` 全部改 do/catch + [IOErrorClassifier](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LogKit/Sources/LogKit/IOErrorClassifier.swift)：
-/// - 目录列举 EACCES → `permissionDeniedHandler` + GSYLog.debug
-/// - 目录列举 ENOENT → GSYLog.debug 静默（/Applications/Utilities 偶尔不存在）
-/// - Info.plist 解析失败 → GSYLog.debug（坏 plist 是常态，不当 orphan 但不打扰用户）
+/// **Step 14**：`installedAppNames()` 原 `try?` 全部改 do/catch + [IOErrorClassifier](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/LogKit/Sources/LogKit/IOErrorClassifier.swift)：
+/// - 目录列举 EACCES → `permissionDeniedHandler` + AmuxLog.debug
+/// - 目录列举 ENOENT → AmuxLog.debug 静默（/Applications/Utilities 偶尔不存在）
+/// - Info.plist 解析失败 → AmuxLog.debug（坏 plist 是常态，不当 orphan 但不打扰用户）
 public struct DefaultBundleResolver: BundleResolving {
     public let applicationDirectories: [String]
     /// EACCES 时被调用一次的 handler（默认 nil = 不上报）。
@@ -61,11 +61,11 @@ public struct DefaultBundleResolver: BundleResolving {
                 switch IOErrorClassifier.classify(error) {
                 case .permissionDenied:
                     permissionDeniedHandler?(dir)
-                    GSYLog.debug(.scan, "BundleResolver list permission denied: \(dir)")
+                    AmuxLog.debug(.scan, "BundleResolver list permission denied: \(dir)")
                 case .notFound:
-                    GSYLog.debug(.scan, "BundleResolver list not found: \(dir)")
+                    AmuxLog.debug(.scan, "BundleResolver list not found: \(dir)")
                 case .other:
-                    GSYLog.warning(.scan, "BundleResolver list failed at \(dir): \(error.localizedDescription)")
+                    AmuxLog.warning(.scan, "BundleResolver list failed at \(dir): \(error.localizedDescription)")
                 }
                 continue
             }
@@ -82,7 +82,7 @@ public struct DefaultBundleResolver: BundleResolving {
                     }
                 } catch {
                     // plist 损坏 / 读不到 → debug 落盘，不影响其他 .app 处理
-                    GSYLog.debug(.scan, "BundleResolver Info.plist parse failed at \(plistPath): \(error.localizedDescription)")
+                    AmuxLog.debug(.scan, "BundleResolver Info.plist parse failed at \(plistPath): \(error.localizedDescription)")
                 }
             }
         }

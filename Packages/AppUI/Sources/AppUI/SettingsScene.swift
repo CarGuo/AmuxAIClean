@@ -157,8 +157,8 @@ public struct SettingsScene: View {
     @ObservedObject private var updateChecker: UpdateChecker
     @StateObject private var navigation: SettingsNavigation
     /// M5 / 2026-06：AI 模块配置。
-    /// **必须**由 App 层（[GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)）
-    /// 注入与 [MainView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
+    /// **必须**由 App 层（[AmuxAICleanApp](file:///Users/amuxuser/workspace/AmuxAIClean/App/AmuxAICleanApp.swift)）
+    /// 注入与 [MainView](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift)
     /// 共享同一份 ObservableObject 实例：⌘, 改了 AI Enabled / baseURL，RowView contextMenu
     /// 的"问 AI"按钮要立刻刷新可见性。若两端各自 `AISettings()`，UserDefaults 持久化
     /// 一致但对象通知不跨实例 → 需重启 App 才生效（Review fix #2，2026-06-15）。
@@ -170,22 +170,22 @@ public struct SettingsScene: View {
     @ObservedObject private var sentinelManager: SentinelManager
 
     /// 当前 SwiftUI 环境的 locale —— 给语言 Picker 选项做"按当前界面语言展示"用。
-    /// [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
+    /// [AmuxAICleanApp](file:///Users/amuxuser/workspace/AmuxAIClean/App/AmuxAICleanApp.swift)
     /// 已经在两个 Scene 上挂 `.environment(\.locale, settings.effectiveLocale)`，
-    /// 这里读出来再透传给 [LanguageOverride.label(in:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
+    /// 这里读出来再透传给 [LanguageOverride.label(in:)](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AppSettings.swift)
     /// 即可让 Picker 选项跟随。
     @Environment(\.locale) private var currentEnvironmentLocale
 
     /// 路径列表的 UI 镜像。actor 数据要在 SwiftUI 里显示必须先快照。
     @State private var pathsMirror: [URL] = []
     @State private var logActionNotice: SettingsLogActionNotice?
-    /// v2026.07.18 P2 diagnostics fix: a computed GSYLog snapshot does not invalidate SwiftUI
+    /// v2026.07.18 P2 diagnostics fix: a computed AmuxLog snapshot does not invalidate SwiftUI
     /// when a later write/open fails. Keep the stream projection at scene lifetime so the warning
     /// appears while the page is already open and disappears only after a verified reopen.
-    @State private var logSinkHealth = GSYLog.fileSinkHealth
+    @State private var logSinkHealth = AmuxLog.fileSinkHealth
     /// Writer availability and maintenance outcomes are independent: retention/export failure
     /// must stay visible even while appends remain healthy.
-    @State private var logSinkIssues = GSYLog.fileSinkIssues
+    @State private var logSinkIssues = AmuxLog.fileSinkIssues
     @State private var logFilesSnapshot: [URL] = []
     @State private var isLogOperationInProgress = false
     @State private var confirmClearLogs = false
@@ -266,7 +266,7 @@ public struct SettingsScene: View {
             }
         }
         .task {
-            for await health in GSYLog.fileSinkHealthUpdates() {
+            for await health in AmuxLog.fileSinkHealthUpdates() {
                 guard !Task.isCancelled else { return }
                 logSinkHealth = health
                 // v2026.07.18: Settings may be opened while the background bootstrap is still
@@ -278,7 +278,7 @@ public struct SettingsScene: View {
             }
         }
         .task {
-            for await issues in GSYLog.fileSinkIssueUpdates() {
+            for await issues in AmuxLog.fileSinkIssueUpdates() {
                 guard !Task.isCancelled else { return }
                 logSinkIssues = issues
             }
@@ -638,7 +638,7 @@ public struct SettingsScene: View {
         case .failure(let error):
             // 取消由系统 fileImporter 自己消化；其它错误必须留诊断证据，不能 try? 吞掉。
             guard (error as? CocoaError)?.code != .userCancelled else { return }
-            GSYLog.error(.settings, "settings directory importer failed: \(error.localizedDescription)")
+            AmuxLog.error(.settings, "settings directory importer failed: \(error.localizedDescription)")
             pathImportNotice = .failed
         }
     }
@@ -656,7 +656,7 @@ extension SettingsScene {
     /// 设计要点：
     /// 1. **Source of truth = settings.enabledDevArtifactRuleIDs**：每个 Toggle 绑定到
     ///    `Set<String>.contains(rule.id)`，flip 后立刻写入 UserDefaults。下次扫描自动生效。
-    /// 2. **按 [DevArtifactRules.grouped](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DevArtifactRules.swift) 渲染**：
+    /// 2. **按 [DevArtifactRules.grouped](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/DevArtifactRules.swift) 渲染**：
     ///    `Ecosystem.allCases` 顺序，每个生态一个 `Section`，Section header 用 `displayName`。
     /// 3. **副标题展示规则元信息**：`directoryName` + `subtitle` + 兄弟兜底标记 + `Verdict`，
     ///    用户能看清「关掉这条规则会少扫什么」。
@@ -781,7 +781,7 @@ extension SettingsScene {
                     Text(
                         SettingsLogDirectoryPresentation.localized(
                             health: logSinkHealth,
-                            directory: GSYLog.currentLogDirectory,
+                            directory: AmuxLog.currentLogDirectory,
                             locale: currentEnvironmentLocale
                         )
                     )
@@ -804,7 +804,7 @@ extension SettingsScene {
                     }
                     // Keep the revalidation/retry entry available when a configured writer became
                     // unavailable. Initialization failure/explicit disable have no directory.
-                    .disabled(GSYLog.currentLogDirectory == nil || isLogOperationInProgress)
+                    .disabled(AmuxLog.currentLogDirectory == nil || isLogOperationInProgress)
                     Spacer()
                     Button {
                         openTodayLogFile()
@@ -914,14 +914,14 @@ extension SettingsScene {
             guard !isLogOperationInProgress else { return }
             isLogOperationInProgress = true
             defer { isLogOperationInProgress = false }
-            switch await GSYLog.prepareLogDirectoryForAccess() {
+            switch await AmuxLog.prepareLogDirectoryForAccess() {
             case .success(let dir):
-                GSYLog.notice(.operation, "settings.log.open_directory path=\(dir.path)")
+                AmuxLog.notice(.operation, "settings.log.open_directory path=\(dir.path)")
                 NSWorkspace.shared.open(dir)
                 logActionNotice = nil
                 await refreshLogInventory()
             case .failure(let failure):
-                GSYLog.error(
+                AmuxLog.error(
                     .operation,
                     "settings.log.open_directory_failed stage=\(failure.stage.rawValue) "
                         + "domain=\(failure.errorDomain) code=\(failure.errorCode)"
@@ -937,18 +937,18 @@ extension SettingsScene {
             guard !isLogOperationInProgress else { return }
             isLogOperationInProgress = true
             defer { isLogOperationInProgress = false }
-            switch await GSYLog.prepareLogDirectoryForAccess() {
+            switch await AmuxLog.prepareLogDirectoryForAccess() {
             case .success(let directory):
-                guard let url = await GSYLog.currentLogFileURL() else {
+                guard let url = await AmuxLog.currentLogFileURL() else {
                     NSWorkspace.shared.open(directory)
                     return
                 }
-                GSYLog.notice(.operation, "settings.log.open_today path=\(url.path)")
+                AmuxLog.notice(.operation, "settings.log.open_today path=\(url.path)")
                 NSWorkspace.shared.open(url)
                 logActionNotice = nil
                 await refreshLogInventory()
             case .failure(let failure):
-                GSYLog.error(
+                AmuxLog.error(
                     .operation,
                     "settings.log.open_today_failed stage=\(failure.stage.rawValue) "
                         + "domain=\(failure.errorDomain) code=\(failure.errorCode)"
@@ -969,13 +969,13 @@ extension SettingsScene {
             guard !isLogOperationInProgress else { return }
             isLogOperationInProgress = true
             defer { isLogOperationInProgress = false }
-            switch await GSYLog.exportLogs(to: url) {
+            switch await AmuxLog.exportLogs(to: url) {
             case .success(let count):
-                GSYLog.notice(.operation, "settings.log.export path=\(url.path) files=\(count)")
+                AmuxLog.notice(.operation, "settings.log.export path=\(url.path) files=\(count)")
                 logActionNotice = .exported(path: url.path)
                 synchronizeLogDiagnostics()
             case .failure(let failure):
-                GSYLog.error(
+                AmuxLog.error(
                     .operation,
                     "settings.log.export_failed stage=\(failure.stage.rawValue) "
                         + "domain=\(failure.errorDomain) code=\(failure.errorCode)"
@@ -991,13 +991,13 @@ extension SettingsScene {
             guard !isLogOperationInProgress else { return }
             isLogOperationInProgress = true
             defer { isLogOperationInProgress = false }
-            switch await GSYLog.clearLogs() {
+            switch await AmuxLog.clearLogs() {
             case .success(let count):
-                GSYLog.notice(.operation, "settings.log.clear count=\(count)")
+                AmuxLog.notice(.operation, "settings.log.clear count=\(count)")
                 logActionNotice = .cleared(count: count)
                 await refreshLogInventory()
             case .failure(let failure):
-                GSYLog.error(
+                AmuxLog.error(
                     .operation,
                     "settings.log.clear_failed stage=\(failure.stage.rawValue) "
                         + "domain=\(failure.errorDomain) code=\(failure.errorCode)"
@@ -1010,7 +1010,7 @@ extension SettingsScene {
 
     @MainActor
     private func refreshLogInventory() async {
-        switch await GSYLog.currentLogFiles() {
+        switch await AmuxLog.currentLogFiles() {
         case .success(let files):
             logFilesSnapshot = files
         case .failure:
@@ -1021,8 +1021,8 @@ extension SettingsScene {
 
     @MainActor
     private func synchronizeLogDiagnostics() {
-        logSinkHealth = GSYLog.fileSinkHealth
-        logSinkIssues = GSYLog.fileSinkIssues
+        logSinkHealth = AmuxLog.fileSinkHealth
+        logSinkIssues = AmuxLog.fileSinkIssues
     }
 
 }
@@ -1031,7 +1031,7 @@ extension SettingsScene {
 
 extension SettingsScene {
     /// v1.6「高级」Tab：仅一项—— Sentinel 后台守护开关 + 状态展示 + 文档链接。
-    /// 详细行为见 [docs/SENTINEL_DESIGN.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/SENTINEL_DESIGN.md)。
+    /// 详细行为见 [docs/SENTINEL_DESIGN.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/SENTINEL_DESIGN.md)。
     fileprivate var advancedTab: some View {
         Form {
             Section {

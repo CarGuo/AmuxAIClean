@@ -100,7 +100,7 @@ final class StorageAnalysisTrashStore: ObservableObject {
                 }
             } catch {
                 guard owner == token, !Task.isCancelled else { return }
-                GSYLog.error(.trash, "storage_analysis intent_failed error=\(error)")
+                AmuxLog.error(.trash, "storage_analysis intent_failed error=\(error)")
                 rejectStale(path: row.path)
             }
         }

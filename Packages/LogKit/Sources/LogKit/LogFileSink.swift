@@ -285,7 +285,7 @@ public final class LogFileSink: @unchecked Sendable {
     private let directoryBoundary: DirectoryBoundary
 
     private let queue = DispatchQueue(label: "AmuxAIClean.LogFileSink", qos: .utility)
-    /// Queue-isolated terminal state. GSYLog enqueues retirement while holding the same facade lock
+    /// Queue-isolated terminal state. AmuxLog enqueues retirement while holding the same facade lock
     /// that routes append, so every facade append for this sink is already ahead of retirement and
     /// no later one can target it. A stale direct package reference queued afterward cannot reopen.
     private var isRetired = false
@@ -602,7 +602,7 @@ public final class LogFileSink: @unchecked Sendable {
 
     /// append 一行日志。若跨天会先关旧文件 → 删旧 → 开新文件。
     ///
-    /// GSYLog changes its current sink and enqueues retirement under one facade lock, so normal
+    /// AmuxLog changes its current sink and enqueues retirement under one facade lock, so normal
     /// callers cannot enqueue this method behind retirement on a superseded sink.
     public func append(_ line: String) {
         queue.async { [self] in
@@ -657,7 +657,7 @@ public final class LogFileSink: @unchecked Sendable {
         }
     }
 
-    /// GSYLog replacement/disable owns old sinks until this terminal block has drained every
+    /// AmuxLog replacement/disable owns old sinks until this terminal block has drained every
     /// previously accepted append and closed both descriptors. It is deliberately asynchronous:
     /// configuration never waits for filesystem I/O and never calls queue.sync while holding the
     /// facade lock.
@@ -981,7 +981,7 @@ public final class LogFileSink: @unchecked Sendable {
         droppedLines: Int,
         droppedBytes: Int
     ) -> String {
-        let timestamp = ISO8601DateFormatter.gsyShared.string(from: Date())
+        let timestamp = ISO8601DateFormatter.amuxShared.string(from: Date())
         return "\(timestamp) [WARN] [App] file_log_visibility_replay_overflow "
             + "dropped_lines=\(droppedLines) dropped_bytes=\(droppedBytes) "
             + "(LogFileSink.swift:0)\n"
@@ -1191,7 +1191,7 @@ public final class LogFileSink: @unchecked Sendable {
     ) {
         FileHandle.standardError.write(
             Data((
-                "[GSYLog] \(message) stage=\(failure.stage.rawValue) "
+                "[AmuxLog] \(message) stage=\(failure.stage.rawValue) "
                     + "domain=\(failure.errorDomain) code=\(failure.errorCode)\n"
             ).utf8)
         )

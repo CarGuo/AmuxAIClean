@@ -294,7 +294,7 @@ public final class PrimaryScanAdmissionRegistry {
                 invalidated: false,
                 leases: [:]
             )
-            GSYLog.notice(
+            AmuxLog.notice(
                 .scan,
                 "scan.admission.admit reservation=\(token.rawValue.uuidString) "
                     + "client=\(clientID.rawValue.uuidString) intent=\(intent) wait_ms=0.00"
@@ -309,7 +309,7 @@ public final class PrimaryScanAdmissionRegistry {
                 kind: .treeTransient,
                 reason: "pending_replaced"
             )
-            GSYLog.info(
+            AmuxLog.info(
                 .scan,
                 "scan.admission.pending.discard request=\(discarded.token.rawValue.uuidString) "
                     + "client=\(discarded.clientID.rawValue.uuidString) intent=\(discarded.intent)"
@@ -350,7 +350,7 @@ public final class PrimaryScanAdmissionRegistry {
                 invalidated: false,
                 leases: [:]
             )
-            GSYLog.notice(
+            AmuxLog.notice(
                 .scan,
                 "scan.admission.admit reservation=\(token.rawValue.uuidString) "
                     + "client=\(clientID.rawValue.uuidString) intent=\(intent) wait_ms=0.00"
@@ -362,7 +362,7 @@ public final class PrimaryScanAdmissionRegistry {
             (current?.leases.values.map { $0.kind.rawValue } ?? [])
                 + externalSettlements.values.map { $0.kind.rawValue }
         ).sorted()
-        GSYLog.notice(
+        AmuxLog.notice(
             .scan,
             "scan.admission.queue request=\(request.token.rawValue.uuidString) "
                 + "client=\(clientID.rawValue.uuidString) intent=\(intent) "
@@ -379,7 +379,7 @@ public final class PrimaryScanAdmissionRegistry {
         kind: ProducerKind
     ) -> ProducerLaunchToken? {
         guard var current else {
-            GSYLog.warning(
+            AmuxLog.warning(
                 .scan,
                 "scan.producer.launch.rejected reservation=\(token.rawValue.uuidString) "
                     + "kind=\(kind.rawValue) reason=no_current_reservation"
@@ -387,7 +387,7 @@ public final class PrimaryScanAdmissionRegistry {
             return nil
         }
         guard current.token == token else {
-            GSYLog.info(
+            AmuxLog.info(
                 .scan,
                 "scan.producer.launch.rejected reservation=\(token.rawValue.uuidString) "
                     + "kind=\(kind.rawValue) reason=stale_reservation "
@@ -396,7 +396,7 @@ public final class PrimaryScanAdmissionRegistry {
             return nil
         }
         guard !current.invalidated else {
-            GSYLog.info(
+            AmuxLog.info(
                 .scan,
                 "scan.producer.launch.rejected reservation=\(token.rawValue.uuidString) "
                     + "kind=\(kind.rawValue) reason=reservation_invalidated"
@@ -410,7 +410,7 @@ public final class PrimaryScanAdmissionRegistry {
             startedAt: DispatchTime.now().uptimeNanoseconds
         )
         self.current = current
-        GSYLog.info(
+        AmuxLog.info(
             .scan,
             "scan.producer.launch.reserve reservation=\(token.rawValue.uuidString) "
                 + "lease=\(leaseID.rawValue.uuidString) kind=\(kind.rawValue)"
@@ -430,7 +430,7 @@ public final class PrimaryScanAdmissionRegistry {
     ) -> ProducerLeaseID? {
         let leaseID = ProducerLeaseID(rawValue: launch.rawValue)
         guard var current else {
-            GSYLog.warning(
+            AmuxLog.warning(
                 .scan,
                 "scan.producer.start.rejected reservation=\(token.rawValue.uuidString) "
                     + "lease=\(leaseID.rawValue.uuidString) reason=no_current_reservation"
@@ -439,7 +439,7 @@ public final class PrimaryScanAdmissionRegistry {
             return nil
         }
         guard current.token == token else {
-            GSYLog.info(
+            AmuxLog.info(
                 .scan,
                 "scan.producer.start.rejected reservation=\(token.rawValue.uuidString) "
                     + "lease=\(leaseID.rawValue.uuidString) reason=stale_reservation "
@@ -449,7 +449,7 @@ public final class PrimaryScanAdmissionRegistry {
             return nil
         }
         guard case .launching(let kind, let startedAt) = current.leases[leaseID] else {
-            GSYLog.error(
+            AmuxLog.error(
                 .scan,
                 "scan.producer.start.rejected reservation=\(token.rawValue.uuidString) "
                     + "lease=\(leaseID.rawValue.uuidString) reason=launch_lease_missing"
@@ -467,7 +467,7 @@ public final class PrimaryScanAdmissionRegistry {
             producerTerminated: false
         )
         self.current = current
-        GSYLog.notice(
+        AmuxLog.notice(
             .scan,
             "scan.producer.start reservation=\(token.rawValue.uuidString) "
                 + "lease=\(leaseID.rawValue.uuidString) kind=\(kind.rawValue)"
@@ -502,7 +502,7 @@ public final class PrimaryScanAdmissionRegistry {
                 self?.externalSettlementObserved(leaseID)
             }
         }
-        GSYLog.notice(
+        AmuxLog.notice(
             .scan,
             "scan.external_settlement.register reason=\(reason) kind=\(kind.rawValue) "
                 + "count=\(tasks.count) active=\(externalSettlements.count)"
@@ -515,7 +515,7 @@ public final class PrimaryScanAdmissionRegistry {
     ) {
         let leaseID = ProducerLeaseID(rawValue: launch.rawValue)
         guard var current, current.token == token else {
-            GSYLog.info(
+            AmuxLog.info(
                 .scan,
                 "scan.producer.launch.abandon.ignored reservation=\(token.rawValue.uuidString) "
                     + "lease=\(leaseID.rawValue.uuidString) reason=stale_reservation"
@@ -523,7 +523,7 @@ public final class PrimaryScanAdmissionRegistry {
             return
         }
         guard current.leases.removeValue(forKey: leaseID) != nil else {
-            GSYLog.error(
+            AmuxLog.error(
                 .scan,
                 "scan.producer.launch.abandon.ignored reservation=\(token.rawValue.uuidString) "
                     + "lease=\(leaseID.rawValue.uuidString) reason=launch_lease_missing"
@@ -531,7 +531,7 @@ public final class PrimaryScanAdmissionRegistry {
             return
         }
         self.current = current
-        GSYLog.info(
+        AmuxLog.info(
             .scan,
             "scan.producer.launch.abandon reservation=\(token.rawValue.uuidString) "
                 + "lease=\(leaseID.rawValue.uuidString)"
@@ -546,7 +546,7 @@ public final class PrimaryScanAdmissionRegistry {
         reservation token: ReservationToken
     ) {
         guard var current else {
-            GSYLog.info(
+            AmuxLog.info(
                 .scan,
                 "scan.producer.handoff.ignored reservation=\(token.rawValue.uuidString) "
                     + "lease=\(leaseID.rawValue.uuidString) reason=no_current_reservation"
@@ -554,7 +554,7 @@ public final class PrimaryScanAdmissionRegistry {
             return
         }
         guard current.token == token else {
-            GSYLog.info(
+            AmuxLog.info(
                 .scan,
                 "scan.producer.handoff.ignored reservation=\(token.rawValue.uuidString) "
                     + "lease=\(leaseID.rawValue.uuidString) reason=stale_reservation "
@@ -571,7 +571,7 @@ public final class PrimaryScanAdmissionRegistry {
                 _
               ) = current.leases[leaseID]
         else {
-            GSYLog.error(
+            AmuxLog.error(
                 .scan,
                 "scan.producer.handoff.ignored reservation=\(token.rawValue.uuidString) "
                     + "lease=\(leaseID.rawValue.uuidString) reason=active_lease_missing"
@@ -599,7 +599,7 @@ public final class PrimaryScanAdmissionRegistry {
     @discardableResult
     func finishPipeline(reservation token: ReservationToken) -> Bool {
         guard let current else {
-            GSYLog.info(
+            AmuxLog.info(
                 .scan,
                 "scan.admission.finish.ignored reservation=\(token.rawValue.uuidString) "
                     + "reason=no_current_reservation"
@@ -607,7 +607,7 @@ public final class PrimaryScanAdmissionRegistry {
             return false
         }
         guard current.token == token else {
-            GSYLog.info(
+            AmuxLog.info(
                 .scan,
                 "scan.admission.finish.ignored reservation=\(token.rawValue.uuidString) "
                     + "reason=stale_reservation current=\(current.token.rawValue.uuidString)"
@@ -615,7 +615,7 @@ public final class PrimaryScanAdmissionRegistry {
             return false
         }
         guard current.leases.isEmpty else {
-            GSYLog.error(
+            AmuxLog.error(
                 .scan,
                 "scan.admission.finish.rejected reservation=\(token.rawValue.uuidString) "
                     + "active_leases=\(current.leases.count)"
@@ -705,7 +705,7 @@ public final class PrimaryScanAdmissionRegistry {
                 producerTerminated: true
             )
             self.current = current
-            GSYLog.info(
+            AmuxLog.info(
                 .scan,
                 "scan.producer.terminated.awaiting_handoff "
                     + "reservation=\(token.rawValue.uuidString) "
@@ -732,7 +732,7 @@ public final class PrimaryScanAdmissionRegistry {
         } else {
             elapsed = 0
         }
-        GSYLog.notice(
+        AmuxLog.notice(
             .scan,
             "scan.producer.finish reservation=\(token.rawValue.uuidString) "
                 + "lease=\(leaseID.rawValue.uuidString) kind=\(kind) "
@@ -745,7 +745,7 @@ public final class PrimaryScanAdmissionRegistry {
         let elapsed = Double(
             DispatchTime.now().uptimeNanoseconds - settlement.startedAt
         ) / 1_000_000
-        GSYLog.notice(
+        AmuxLog.notice(
             .scan,
             "scan.external_settlement.finish lease=\(leaseID.rawValue.uuidString) "
                 + "kind=\(settlement.kind.rawValue) "
@@ -777,7 +777,7 @@ public final class PrimaryScanAdmissionRegistry {
             leases: [:]
         )
         let elapsed = Double(DispatchTime.now().uptimeNanoseconds - pending.queuedAt) / 1_000_000
-        GSYLog.notice(
+        AmuxLog.notice(
             .scan,
             "scan.admission.admit reservation=\(reservationToken.rawValue.uuidString) "
                 + "client=\(pending.clientID.rawValue.uuidString) intent=\(pending.intent) "
@@ -1312,7 +1312,7 @@ public final class ScanCoordinator: ObservableObject {
             operation: @escaping @Sendable () async -> Value
         ) async -> TreeFilesystemLeaseResult<Value> {
             guard activeCancelAllEpoch == nil else {
-                GSYLog.info(
+                AmuxLog.info(
                     .flow,
                     "tree.fs_lease.drop stage=\(stage.rawValue) intent=\(intentID) "
                         + "public_path=\(identity.publicPath) physical_path=\(identity.physicalPath) "
@@ -1334,7 +1334,7 @@ public final class ScanCoordinator: ObservableObject {
             else {
                 reservations.removeValue(forKey: leaseID)
                 resumeEligibleWaiters()
-                GSYLog.info(
+                AmuxLog.info(
                     .flow,
                     "tree.fs_lease.drop stage=\(stage.rawValue) intent=\(intentID) "
                         + "public_path=\(identity.publicPath) physical_path=\(identity.physicalPath) "
@@ -1357,7 +1357,7 @@ public final class ScanCoordinator: ObservableObject {
                 cancel: { producer.cancel() },
                 termination: termination
             )
-            GSYLog.info(
+            AmuxLog.info(
                 .flow,
                 "tree.fs_lease.start stage=\(stage.rawValue) intent=\(intentID) "
                     + "public_path=\(identity.publicPath) physical_path=\(identity.physicalPath)"
@@ -1375,7 +1375,7 @@ public final class ScanCoordinator: ObservableObject {
             let elapsedMs = Double(
                 DispatchTime.now().uptimeNanoseconds - startedAt
             ) / 1_000_000
-            GSYLog.info(
+            AmuxLog.info(
                 .flow,
                 "tree.fs_lease.finish stage=\(stage.rawValue) intent=\(intentID) "
                     + "public_path=\(identity.publicPath) physical_path=\(identity.physicalPath) "
@@ -1396,7 +1396,7 @@ public final class ScanCoordinator: ObservableObject {
             reservations.removeAll(keepingCapacity: true)
             for waiter in pending {
                 waiter.continuation.resume(returning: false)
-                GSYLog.info(
+                AmuxLog.info(
                     .flow,
                     "tree.fs_lease.drop stage=\(waiter.stage.rawValue) intent=\(waiter.intentID) "
                         + "public_path=\(waiter.identity.publicPath) "
@@ -1408,7 +1408,7 @@ public final class ScanCoordinator: ObservableObject {
             let leases = Array(active.values)
             let activePathCount = Set(leases.map(\.identity)).count
             guard !leases.isEmpty else {
-                GSYLog.info(
+                AmuxLog.info(
                     .flow,
                     "tree.fs_lease.cancel_all.finish reason=\(reason) active=0 paths=0 "
                         + "pending=\(pending.count)"
@@ -1416,7 +1416,7 @@ public final class ScanCoordinator: ObservableObject {
                 if activeCancelAllEpoch == epoch { activeCancelAllEpoch = nil }
                 return
             }
-            GSYLog.notice(
+            AmuxLog.notice(
                 .flow,
                 "tree.fs_lease.cancel_all.start reason=\(reason) active=\(leases.count) "
                     + "paths=\(activePathCount) "
@@ -1425,7 +1425,7 @@ public final class ScanCoordinator: ObservableObject {
             externallyCancelledLeaseIDs.formUnion(active.keys)
             for lease in leases { lease.cancel() }
             for lease in leases { await lease.termination.value }
-            GSYLog.notice(
+            AmuxLog.notice(
                 .flow,
                 "tree.fs_lease.cancel_all.finish reason=\(reason) active=\(leases.count) "
                     + "paths=\(activePathCount) "
@@ -1448,7 +1448,7 @@ public final class ScanCoordinator: ObservableObject {
             // Recheck the drain epoch at the reservation boundary so a Tree producer cannot slip
             // into the filesystem domain after primary cancellation has taken its snapshot.
             guard activeCancelAllEpoch == nil else {
-                GSYLog.info(
+                AmuxLog.info(
                     .flow,
                     "tree.fs_lease.drop stage=\(stage.rawValue) intent=\(intentID) "
                         + "public_path=\(identity.publicPath) physical_path=\(identity.physicalPath) "
@@ -1457,7 +1457,7 @@ public final class ScanCoordinator: ObservableObject {
                 return false
             }
             guard !Task.isCancelled else {
-                GSYLog.info(
+                AmuxLog.info(
                     .flow,
                     "tree.fs_lease.drop stage=\(stage.rawValue) intent=\(intentID) "
                         + "public_path=\(identity.publicPath) physical_path=\(identity.physicalPath) "
@@ -1472,7 +1472,7 @@ public final class ScanCoordinator: ObservableObject {
 
             let enqueuedAt = DispatchTime.now().uptimeNanoseconds
             let blockers = conflictingClaimCount(for: identity)
-            GSYLog.info(
+            AmuxLog.info(
                 .flow,
                 "tree.fs_lease.wait.start stage=\(stage.rawValue) intent=\(intentID) "
                     + "public_path=\(identity.publicPath) physical_path=\(identity.physicalPath) "
@@ -1499,7 +1499,7 @@ public final class ScanCoordinator: ObservableObject {
             let elapsedMs = Double(
                 DispatchTime.now().uptimeNanoseconds - enqueuedAt
             ) / 1_000_000
-            GSYLog.info(
+            AmuxLog.info(
                 .flow,
                 "tree.fs_lease.wait.finish stage=\(stage.rawValue) intent=\(intentID) "
                     + "public_path=\(identity.publicPath) physical_path=\(identity.physicalPath) "
@@ -1529,7 +1529,7 @@ public final class ScanCoordinator: ObservableObject {
                 let waiter = waiters.remove(at: index)
                 waiter.continuation.resume(returning: false)
                 resumeEligibleWaiters()
-                GSYLog.info(
+                AmuxLog.info(
                     .flow,
                     "tree.fs_lease.drop stage=\(waiter.stage.rawValue) intent=\(waiter.intentID) "
                         + "public_path=\(waiter.identity.publicPath) "
@@ -1674,7 +1674,7 @@ public final class ScanCoordinator: ObservableObject {
     @Published public private(set) var incompleteScanPaths: [String] = []
     /// v2026.07 修复：`pruneDeleted` 完成后的公共广播信号。
     ///
-    /// **根因**：非 tree/list 走 `snapshot.rows` 的视图（如 [LargeFilesView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/LargeFilesView.swift)）
+    /// **根因**：非 tree/list 走 `snapshot.rows` 的视图（如 [LargeFilesView](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/LargeFilesView.swift)）
     /// 用 `coordinator.largeFiles(...)` 读 `largeFileLeaves`；`pruneDeleted` 会正确剔掉叶子，
     /// 但它只 bump 了 non-@Published 的 `structuralRevision`——SwiftUI 视图订阅不到，
     /// 表现为"点了移到废纸篓成功，但列表还在"（用户反馈 Q2）。
@@ -1693,7 +1693,7 @@ public final class ScanCoordinator: ObservableObject {
     @Published public private(set) var devArtifactDidTruncate: Bool = false
     @Published public private(set) var devArtifactDidTimeout: Bool = false
 
-    /// M4-T1：本轮扫描启动时从 [WhitelistStore.shared](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/WhitelistStore.swift)
+    /// M4-T1：本轮扫描启动时从 [WhitelistStore.shared](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/WhitelistStore.swift)
     /// 拉一份的内存快照（normalized 后的 path Set）。publishSnapshot 是同步函数，
     /// 不能在 hot path 里 `await` 一个 actor —— 因此扫描入口拉一次快照，全程同步命中。
     /// 命中判定与 WhitelistStore.isWhitelisted 一致：完全相等 或 entry+"/" 作为 path prefix。
@@ -2059,7 +2059,7 @@ public final class ScanCoordinator: ObservableObject {
             // structured diagnostic channel only; the long-lived UI state must never make a raw
             // Error available for accidental presentation by a future consumer.
             let diagnosticLabel = messagePrefix ?? rootPath
-            GSYLog.error(
+            AmuxLog.error(
                 .scan,
                 "scan.root.failed root=\(rootPath) label=\(diagnosticLabel) error=\(String(describing: error))"
             )
@@ -2085,8 +2085,8 @@ public final class ScanCoordinator: ObservableObject {
     /// - 切换时立刻重发当前 snapshot，UI 列表实时按新排序刷新（不需要重扫）。
     /// - **仅作用于扫描完成态（finished=true）**；扫描进行中 publishSnapshot 强制按 path 字典序，
     ///   避免最大 bucket 永远霸占第一行造成"只一行在动"错觉（v1.3 publishSnapshot 注释有详细背景）。
-    /// - 由 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
-    ///   在启动时与 onChange 时从 [AppSettings.mainListSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
+    /// - 由 [AmuxAICleanApp](file:///Users/amuxuser/workspace/AmuxAIClean/App/AmuxAICleanApp.swift)
+    ///   在启动时与 onChange 时从 [AppSettings.mainListSortKey](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AppSettings.swift)
     ///   同步过来。
     @Published public var mainListSortKey: MainListSortKey = .sizeDesc {
         didSet {
@@ -2139,7 +2139,7 @@ public final class ScanCoordinator: ObservableObject {
     @Published public private(set) var volumeSnapshot: VolumeCapacity.Snapshot?
 
     /// v1.3.x：macOS 用了多少**硬盘空间**当虚拟内存（swap）+ 休眠镜像（sleepimage）。
-    /// 与 [volumeSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L55-L55)
+    /// 与 [volumeSnapshot](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L55-L55)
     /// 共用同一刷新时机：启动 / 扫描完成 / 删除完成。
     /// 仅供 UI 只读展示——swap 与 sleepimage 由内核管理，App 不应清理。
     @Published public private(set) var swapSnapshot: SwapProbe.Snapshot?
@@ -2153,7 +2153,7 @@ public final class ScanCoordinator: ObservableObject {
     /// v1.3：多根并行扫描时每根的进度信息。key=rootPath。
     /// - 单根扫描入口（scan/scanFullDisk）保持空 dict —— UI 据此回退到老的"扫描中… N 个文件 · X MB"单行；
     /// - 多根扫描入口（scanRecommended）会预填 5 条（每根一条）isFinished=false，
-    ///   每收到一条 [MultiRootEvent](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/MultiRootScanner.swift)
+    ///   每收到一条 [MultiRootEvent](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/MultiRootScanner.swift)
     ///   按 rootPath 累加 bytes / fileCount；该根 .finished 事件到达时翻 isFinished=true。
     /// v1.3.zz 性能修复：每文件不再直接写 @Published（每写都触发 SwiftUI 全 view 重算），改成
     /// 写到 perRootStaging（普通字典），由 publishSnapshot（throttle 0.4s）批量同步到这里。
@@ -2186,7 +2186,7 @@ public final class ScanCoordinator: ObservableObject {
     /// v2026.06.22 perf：UI 展示用的「已按 rootPath 字典序预排序」的数组形态。
     ///
     /// 背景（trace 6.67 s，主线程 NSHostingView.layout 778 ms）：
-    /// 旧实现在 [statusBar L1549](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1549)
+    /// 旧实现在 [statusBar L1549](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift#L1549)
     /// 每帧 body 重 eval 都跑一次 `perRootProgress.values.sorted(by: { $0.rootPath < $1.rootPath })`：
     ///   - sort 几百根 String 字典序比较：~10 ms（_stringCompare 链）
     ///   - sort 闭包带 MainActor 上下文：每对比较都触发 `swift_task_isCurrentExecutor` ~6 ms
@@ -2329,7 +2329,7 @@ public final class ScanCoordinator: ObservableObject {
             ) {
                 // One drain summary replaces per-request logging. It exposes amplification without
                 // putting formatting or file-sink work back on the discovery callback hot path.
-                GSYLog.notice(
+                AmuxLog.notice(
                     .flow,
                     "scan.live_per_root_projection.drain "
                         + "elapsed_ms=\(String(format: "%.2f", elapsedMilliseconds)) "
@@ -2614,7 +2614,7 @@ public final class ScanCoordinator: ObservableObject {
     /// （见 [directChildren(of:sortedBy:)](#)），把 perRootProgress 的真实根升级成顶层 TreeRow。
     ///
     /// v2026.06.21：原值为中文字面（"(多目录)" / "(开发者构建产物)" / "(开发者旧版本)"），
-    /// 由于 [placeholder(for:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1572)
+    /// 由于 [placeholder(for:)](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift#L1572)
     /// 的 `.finishedEmpty(rootPath)` 分支会直接 `Text(rootPath)` 给英文用户看，
     /// 那相当于英文 UI 露出三个中文 token。统一改成纯英文 sentinel ID（带双下划线前后缀，
     /// 不会与任何真实文件路径冲突），UI 侧检测到 sentinel 后走 `path.sentinel.*`
@@ -2766,7 +2766,7 @@ public final class ScanCoordinator: ObservableObject {
         ///
         /// 仅在 isTopLevelBucket=true 时写入——即 BulkScanner 真的 yield 出该 bucket 自己的
         /// node entry（首次 ingest 一定会触发），所以扫完一定有值，无需额外探测。
-        /// 为什么不维护"max(子孙 mtime)"：见 [RowItem.modificationDate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L33) 文档——
+        /// 为什么不维护"max(子孙 mtime)"：见 [RowItem.modificationDate](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L33) 文档——
         /// Finder 风格目录 mtime = 目录 inode 自身 mtime（在该目录里增删文件即由内核更新）。
         var modificationDate: Date? = nil
 
@@ -3577,7 +3577,7 @@ public final class ScanCoordinator: ObservableObject {
                 guard let result = nextCache[path],
                       case .found(let date) = result
                 else { continue }
-                let parent = String._gsyParentPath(of: path)
+                let parent = String._amuxParentPath(of: path)
                 datesByParent[parent, default: [:]][path] = date
             }
 
@@ -4327,8 +4327,8 @@ public final class ScanCoordinator: ObservableObject {
     /// v1.3：每个 bucket 最近一次有 ingest 写入的时间戳（reference time interval）。
     ///
     /// 用法：publishSnapshot 时计算 `now - lastIngestAt[bucketPath] < activityWindow` 即视为 active，
-    /// 写到 [RowItem.isActive](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L24)；
-    /// UI（[ScanRow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanRow.swift)）
+    /// 写到 [RowItem.isActive](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L24)；
+    /// UI（[ScanRow](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanRow.swift)）
     /// 据此给 bytes 数字上色 + 脉动。
     ///
     /// 为什么这样设计：BulkScanner 的 6 worker 在不同子树并发枚举时，每个 worker yield .node 进 ingest
@@ -4346,7 +4346,7 @@ public final class ScanCoordinator: ObservableObject {
     /// 还额外维护 parent->Set<directChildPath> 边，让 OutlineGroup 能 O(1) 取子。
     ///
     /// v1.5.4：新增 `modificationDate` —— 仅在该目录"作为节点本身被 ingest"时写入，
-    /// 即来自 [BulkScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift) 的目录条目自身的 inode mtime（Finder 风格）。
+    /// 即来自 [BulkScanner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift) 的目录条目自身的 inode mtime（Finder 风格）。
     /// 不做 max(子孙) 聚合，避免每个文件叶子都要回写所有祖先字段；nil 表示尚未拿到（极早期 publish 帧）。
     private struct DirAgg: Sendable {
         var bytes: Int64 = 0
@@ -4358,7 +4358,7 @@ public final class ScanCoordinator: ObservableObject {
     /// 父目录 -> 直接子项集合（含目录与文件路径）。文件叶子也存进来方便单层展示。
     private var childEdges: [String: Set<String>] = [:]
     /// 叶子文件 path -> (allocated size, logical size, isDir, mtime?)；展示时区分文件与目录。
-    /// v1.5.4 加 modificationDate：来源同 dirIndex —— 直接拿 [FSNode.modificationDate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/FSNode.swift#L14)。
+    /// v1.5.4 加 modificationDate：来源同 dirIndex —— 直接拿 [FSNode.modificationDate](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/FSNode.swift#L14)。
     /// v2026.10.08: retain the producer's regular-file classification through refresh,
     /// Tree projection and pruning; a zero-byte FIFO is still not a regular file.
     private struct IndexedFileLeaf: Sendable {
@@ -4388,9 +4388,9 @@ public final class ScanCoordinator: ObservableObject {
     /// 历史问题：`@Published` 字典每次写入都会让整个 ScanCoordinator
     /// `objectWillChange` fire，所有 view（含 MainView 主列表 / SystemProbe banner）
     /// 都被波及一次重算；而真正需要被通知的只有 TreeBrowserView，
-    /// 已经通过 [bumpStructuralRevision()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L328-L332)
+    /// 已经通过 [bumpStructuralRevision()](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L328-L332)
     /// 显式触发。新做法：cache 自己是普通字典，配套一条
-    /// [childrenCacheVersion](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// [childrenCacheVersion](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
     /// 计数器 @Published（仅给可能要按 cache 失效细粒度刷新的 view 订阅）。
     /// 主流程依赖 structuralRevision 即可。
     private var treeChildrenCache: [String: [TreeRow]] = [:]
@@ -4413,7 +4413,7 @@ public final class ScanCoordinator: ObservableObject {
     private var snapshotTreeRowsBySort: [TreeSortKey: [TreeRow]] = [:]
     /// **Step 9a / 2026-06**：cache 写入计数器，monotonic UInt64。
     /// 任何 `treeChildrenCache` 写入（写新键 / 移除旧键 / 整轮 removeAll）后
-    /// 都必须经过 [bumpChildrenCacheVersion()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 都必须经过 [bumpChildrenCacheVersion()](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
     /// 把它 &+= 1。view 端**通常不需要**直接订阅这条信号（structuralRevision 已经
     /// 覆盖），保留它是为：
     ///   - 单元测试断言"cache 写入 N 次 → version 自增 N 次"
@@ -4557,7 +4557,7 @@ public final class ScanCoordinator: ObservableObject {
             await Task.yield()
             await pendingRetirement.retire()
         }
-        GSYLog.info(
+        AmuxLog.info(
             .flow,
             "tree.fs_lease.cancel_snapshot handles=\(filesystemSettlements.count) "
                 + "path_count=\(filesystemOwnerPaths.count) "
@@ -4638,7 +4638,7 @@ public final class ScanCoordinator: ObservableObject {
     ///
     /// 背景：用户反馈"为什么有的地方修改时间就一直不显示"。
     /// 现状：BulkScanner 只对真正 yield 出的 `.node` 写入
-    /// [DirAgg.modificationDate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L189)；
+    /// [DirAgg.modificationDate](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L189)；
     /// 但中间层目录（叶子上溯过程中累加的 ancestor）可能没有自己的 `.node` 事件，
     /// 这些 row 在后台内存 Tree 投影输出时 `modificationDate == nil`，UI 永远显示 `·`。
     ///
@@ -4646,11 +4646,11 @@ public final class ScanCoordinator: ObservableObject {
     /// MainActor 只读缓存并把 miss 合并进一个有界后台批次。文件属性读取、字典扩容和
     /// 旧 COW 存储析构都由 worker 承担；generation/revision CAS 阻止旧扫描写回。
     /// **不命中磁盘的虚拟节点（如多根伪 root `(开发者构建产物)`）不会落到这里**——
-    /// 它们走 [synthesizeMultiRootTopLevel](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1777)，
+    /// 它们走 [synthesizeMultiRootTopLevel](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1777)，
     /// path 不是真实文件系统路径，stat 失败时缓存 `.failure` 表示"问就是 nil"，
     /// 下次同样命中直接返回 nil 不再 stat（避免 4w 行 × 每帧重 stat）。
     ///
-    /// 缓存 key 是绝对路径；生命周期与扫描会话绑定，[startScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 缓存 key 是绝对路径；生命周期与扫描会话绑定，[startScan](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
     /// 在切换 root 时一并 removeAll，避免跨扫描泄漏陈旧 mtime。
     private enum MtimeFallbackResult: Sendable {
         case found(Date)
@@ -4717,7 +4717,7 @@ public final class ScanCoordinator: ObservableObject {
                 break
             }
             mtimeFallbackPendingPaths.insert(path)
-            let parent = String._gsyParentPath(of: path)
+            let parent = String._amuxParentPath(of: path)
             mtimeFallbackPendingParentCounts[parent, default: 0] &+= 1
         }
         guard !mtimeFallbackPendingPaths.isEmpty,
@@ -4763,7 +4763,7 @@ public final class ScanCoordinator: ObservableObject {
             case .committed:
                 for path in batch {
                     guard mtimeFallbackPendingPaths.remove(path) != nil else { continue }
-                    let parent = String._gsyParentPath(of: path)
+                    let parent = String._amuxParentPath(of: path)
                     let remaining = max(
                         0,
                         (mtimeFallbackPendingParentCounts[parent] ?? 1) - 1
@@ -4829,7 +4829,7 @@ public final class ScanCoordinator: ObservableObject {
             paths: paths,
             task: filesystemTask
         )
-        GSYLog.info(
+        AmuxLog.info(
             .flow,
             "tree.mtime_probe.fs.start token=\(filesystemToken) paths=\(paths.count)"
         )
@@ -4844,7 +4844,7 @@ public final class ScanCoordinator: ObservableObject {
         let filesystemElapsedMs = Double(
             DispatchTime.now().uptimeNanoseconds - filesystemStarted
         ) / 1_000_000
-        GSYLog.info(
+        AmuxLog.info(
             .flow,
             "tree.mtime_probe.fs.finish token=\(filesystemToken) paths=\(paths.count) "
                 + "measured=\(measurements.count) cancelled=\(Task.isCancelled) "
@@ -4916,7 +4916,7 @@ public final class ScanCoordinator: ObservableObject {
     }
 
     /// **Step 9a / 2026-06**：cache 写入版本号统一推进入口。
-    /// 所有改 [treeChildrenCache](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 所有改 [treeChildrenCache](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
     /// 的位置（写新键 / 删旧键 / removeAll / patch-by-prune）必须串到这里。
     /// 用 `&+=` 让计数器溢出时回卷而非 trap；订阅者只关心"变没变"，绝对值无意义。
     @inline(__always)
@@ -4939,16 +4939,16 @@ public final class ScanCoordinator: ObservableObject {
     }
 
     /// v1.5.4：树形视图扁平化重算的"统一脏标"。
-    /// [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+    /// [TreeBrowserView](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
     /// 把 visibleRows 从 computed 改为 `@State flatRows: [FlatTreeRow]`（性能修复，
     /// 避免一次操作里 4 次重复递归整棵展开树），重建时机靠 `onChange(of: treeRevision)` 串。
     ///
     /// 所有可能改变"directChildren(of:_) 输出"的入口必须 `treeRevision &+= 1`：
-    /// 1. [publishSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1873)（流式 ingest tick / finished 收尾）
+    /// 1. [publishSnapshot](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1873)（流式 ingest tick / finished 收尾）
     /// 2. `treeChildrenCache` 主线程写回（按需子树扫描完成）
-    /// 3. [pruneDeleted](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1174)（删除成功后的状态同步）
+    /// 3. [pruneDeleted](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1174)（删除成功后的状态同步）
     /// 4. 启动新扫描 / cancel 后的 cache 清空
-    /// 5. [invalidateTreeCacheAfterScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1147)（扫描结束清 cache）
+    /// 5. [invalidateTreeCacheAfterScan](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1147)（扫描结束清 cache）
     ///
     /// 用 `&+=` 让计数器溢出时自然回卷而非 trap；view 端只关心"变没变"，绝对值无意义。
     ///
@@ -4963,17 +4963,17 @@ public final class ScanCoordinator: ObservableObject {
     /// 含义：节点新增 / 节点删除 / 排序键变化 / cache 整轮失效。订阅这条信号的 view
     /// **必须**重建 flatRows（一次 O(N) 拍平 + verdict 计算）。
     ///
-    /// 与 `tickRevision` 的边界由 [bumpStructuralRevision()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) /
-    /// [bumpTickRevision()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 两个 helper 单点收敛 —— 任何代码不再直接写
+    /// 与 `tickRevision` 的边界由 [bumpStructuralRevision()](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) /
+    /// [bumpTickRevision()](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 两个 helper 单点收敛 —— 任何代码不再直接写
     /// `treeRevision &+= 1`，避免漏判类别。
     ///
     /// v2026.06.21 perf：移除 @Published（同 treeRevision 的理由）。
     public private(set) var structuralRevision: UInt64 = 0
 
     /// v1.5.7：结构变化的 hint —— "本次 structuralRevision 升的根因是这些 path 被删了"。
-    /// 仅在 [pruneDeleted](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1422-L1542)
+    /// 仅在 [pruneDeleted](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L1422-L1542)
     /// 路径上写一次，订阅方需在 onChange(structuralRevision) 同步段内调
-    /// [consumeLastPrunedPaths()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// [consumeLastPrunedPaths()](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
     /// 一次性取走（取后立刻置 nil），避免下次 unrelated bump 误用。
     /// TreeBrowserView 在 hint 非 nil 时走"只剔被删 path 子树"的增量 patch，
     /// 避免对万级目录整树 rebuild。
@@ -5207,9 +5207,9 @@ public final class ScanCoordinator: ObservableObject {
         // Same publication contract as structural/cache changes; never invalidate our own signal.
         notePruneSourceMutation()
         tickRevision &+= 1
-        // v2026.06.21 perf：保持与 [TreeBrowserStore.bumpTickRevision](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift#L67-L70)
+        // v2026.06.21 perf：保持与 [TreeBrowserStore.bumpTickRevision](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift#L67-L70)
         // 完全对齐（store 端 tick 也会推 treeRevision 作老订阅者兼容），
-        // 否则 [TreeBrowserStoreTests.test_扫描期间coord的mirror与store同步](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/TreeBrowserStoreTests.swift#L96-L99)
+        // 否则 [TreeBrowserStoreTests.test_扫描期间coord的mirror与store同步](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/TreeBrowserStoreTests.swift#L96-L99)
         // 会判 coord.treeRevision 落后 store.treeRevision 一个 tick。
         treeRevision &+= 1
         treeBrowser.bumpTickRevision()
@@ -5233,14 +5233,14 @@ public final class ScanCoordinator: ObservableObject {
 
     /// 测试观察口：暴露 verdict cache 命中统计。
     /// 仅 internal —— 同 module 的测试代码可读；外部 framework 不可见。
-    /// 用于 [BucketVerdictCacheTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/BucketVerdictCacheTests.swift) 验证 P0-3 缓存生效。
+    /// 用于 [BucketVerdictCacheTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/BucketVerdictCacheTests.swift) 验证 P0-3 缓存生效。
     func verdictCacheStatsForTesting() -> (hits: Int, misses: Int) {
         (verdictCacheHits, verdictCacheMisses)
     }
 
     /// 测试触发口：在已扫完的状态下手动再触发一次 publishSnapshot。
     /// 用途：fake home fixture 太小时，扫描可能只跑一帧 publishSnapshot（150ms 节流没触发流式帧），
-    /// 测试看不到 cache hit。该方法让 [BucketVerdictCacheTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/BucketVerdictCacheTests.swift) 能在确定的 buckets 状态下
+    /// 测试看不到 cache hit。该方法让 [BucketVerdictCacheTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/BucketVerdictCacheTests.swift) 能在确定的 buckets 状态下
     /// 再调一次 publishSnapshot 验证"第二次访问 = cache hit"。生产路径不调它。
     func forcePublishSnapshotForTesting(categoryID: String = "_test_") {
         publishSnapshot(categoryID: categoryID, finished: false)
@@ -5371,7 +5371,7 @@ public final class ScanCoordinator: ObservableObject {
 
     private func enforceOnDemandTreeProductEntry(_ entry: OnDemandTreeProductEntry) {
         guard enableTreeDeepIndex else { return }
-        GSYLog.info(
+        AmuxLog.info(
             .scan,
             "tree.index.product_admission entry=\(entry.rawValue) "
                 + "deep_index_before=true deep_index_after=false"
@@ -5437,7 +5437,7 @@ public final class ScanCoordinator: ObservableObject {
         self.volumeSnapshot = probe.volumeSnapshot
         self.swapSnapshot = probe.swapSnapshot
         self.undoRestoreCancellable = NotificationCenter.default
-            .publisher(for: .gsyUndoDidRestore)
+            .publisher(for: .amuxUndoDidRestore)
             .sink { [weak self] notification in
                 guard let paths = notification.userInfo?["paths"] as? [String],
                       !paths.isEmpty else { return }
@@ -5479,7 +5479,7 @@ public final class ScanCoordinator: ObservableObject {
             // Discovery roots are candidate entries. A conflict-renamed restore is their
             // sibling, so invalidate the candidate's parent domain, then re-run its rules.
             let scopeRoots = usesDiscoveryCandidates
-                ? Array(Set(knownRoots.map { String._gsyParentPath(of: $0) }))
+                ? Array(Set(knownRoots.map { String._amuxParentPath(of: $0) }))
                 : knownRoots
             let observed = Set(rawPaths.filter { $0.hasPrefix("/") }.map {
                 let path = URL(fileURLWithPath: $0).standardizedFileURL.path
@@ -5517,7 +5517,7 @@ public final class ScanCoordinator: ObservableObject {
             for path in restored {
                 for root in scopeRoots {
                     if Self.pathBelongsToSubtree(path, rootPath: root) {
-                        parents.insert(path == root ? root : String._gsyParentPath(of: path))
+                        parents.insert(path == root ? root : String._amuxParentPath(of: path))
                     } else if Self.pathBelongsToSubtree(root, rootPath: path) {
                         parents.insert(root)
                     }
@@ -5534,7 +5534,7 @@ public final class ScanCoordinator: ObservableObject {
             return
         }
         if isScanning || isPrimaryScanSettling {
-            GSYLog.notice(.operation, "scan.cancel reason=filesystem_mutated_during_restore")
+            AmuxLog.notice(.operation, "scan.cancel reason=filesystem_mutated_during_restore")
             cancel()
             refreshVolumeCapacity()
             return
@@ -5573,7 +5573,7 @@ public final class ScanCoordinator: ObservableObject {
 
     /// v1.3：用户从系统设置回到 App 后调用，重探 FDA 状态与卷容量。
     /// 推荐绑定到 `.onAppear` 与"打开系统设置"按钮的 `NSApplication.didBecomeActive` 回调。
-    /// Step 10a / 2026-06：写入唯一来源 [systemProbe](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L474-L474)，
+    /// Step 10a / 2026-06：写入唯一来源 [systemProbe](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L474-L474)，
     /// 之后同步回 mirror 字段。
     public func refreshFDAStatus() {
         systemProbe.refreshFDAStatus()
@@ -5583,7 +5583,7 @@ public final class ScanCoordinator: ObservableObject {
     }
 
     /// v1.3：每次扫描完成 / 删除完成后调用，重探卷容量（FDA 不变就不动）。
-    /// Step 10a / 2026-06：写入唯一来源 [systemProbe](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L474-L474)，
+    /// Step 10a / 2026-06：写入唯一来源 [systemProbe](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L474-L474)，
     /// 之后同步回 mirror 字段。
     public func refreshVolumeCapacity() {
         systemProbe.refreshVolumeCapacity()
@@ -5793,7 +5793,7 @@ public final class ScanCoordinator: ObservableObject {
             )
             scanPhase = .settling(state)
             isScanning = false
-            GSYLog.notice(
+            AmuxLog.notice(
                 .scan,
                 "scan.settlement.wait.start intent=\(intent.logValue) "
                     + "old_generation=\(predecessorGeneration.uuidString) "
@@ -5821,7 +5821,7 @@ public final class ScanCoordinator: ObservableObject {
         activePrimaryReservation = reservation
         pendingPrimaryScanIntent = nil
         lastScanSettlementDuration = elapsed
-        GSYLog.notice(
+        AmuxLog.notice(
             .scan,
             "scan.settlement.wait.finish intent=\(pending.state.intent.logValue) "
                 + "new_intent=\(intentID.uuidString) result=settled "
@@ -5876,7 +5876,7 @@ public final class ScanCoordinator: ObservableObject {
 
     public func cancel() {
         if isScanning || scanTask != nil || pendingPrimaryScanIntent != nil {
-            GSYLog.notice(.operation, "scan.cancel activeCategory=\(activeCategoryID ?? "nil") root=\(currentRootPath ?? "nil")")
+            AmuxLog.notice(.operation, "scan.cancel activeCategory=\(activeCategoryID ?? "nil") root=\(currentRootPath ?? "nil")")
         }
         if let requestToken = pendingPrimaryScanIntent?.requestToken {
             primaryScanAdmissionRegistry.cancelRequest(requestToken)
@@ -5997,7 +5997,7 @@ public final class ScanCoordinator: ObservableObject {
         let categoryID = category.id
         let generation = scanGeneration
         guard let reservation = activePrimaryReservation else { return }
-        GSYLog.notice(.flow, "scan.start category=\(category.id) root=\(rootURL.path) includeHidden=\(includeHidden) largeFileMinBytes=\(largeFileMinBytes)")
+        AmuxLog.notice(.flow, "scan.start category=\(category.id) root=\(rootURL.path) includeHidden=\(includeHidden) largeFileMinBytes=\(largeFileMinBytes)")
 
         treeFetchGeneration = UUID()
 
@@ -6051,9 +6051,9 @@ public final class ScanCoordinator: ObservableObject {
 
     /// M4-T2：版本化收集根扫描入口。
     ///
-    /// 调用 [KnownVersionedRoots.scanAllWithEvidence(home:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift)
+    /// 调用 [KnownVersionedRoots.scanAllWithEvidence(home:)](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift)
     /// 拿到所有可回收的旧版本子目录（Xcode DeviceSupport / JetBrains Toolbox 等），
-    /// 直接构造 [RowItem](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift)
+    /// 直接构造 [RowItem](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift)
     /// 发布一个 finished snapshot 给 UI。每个候选仍使用独立 BulkScanner 会话计量，
     /// 但不把海量 node materialize 到主列表；主线程只接收最终 rows 和完整性证据。
     ///
@@ -6062,7 +6062,7 @@ public final class ScanCoordinator: ObservableObject {
     /// BulkScanner 扫描会话。任何不完整候选仍可展示，但会以 `.accessDenied` 锁定，
     /// 且其证据同步进入最终 TrashPipeline 预检，绝不能移动未完整扫描的父目录。
     ///
-    /// 与 [SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift)
+    /// 与 [SafetyEngine](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift)
     /// 的关系：每条命中仍然走 `engine.evaluate(path:trie:home:)`，让 forbid 路径
     /// 在 UI 上以 lock 形式显示而非被静默删除（与主扫描行为对齐）。
     public func scanKnownVersionedRoots(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
@@ -6100,7 +6100,7 @@ public final class ScanCoordinator: ObservableObject {
         whitelistSnapshot = []
         activeCategoryID = categoryID
         let generation = scanGeneration
-        GSYLog.notice(.flow, "scan.versioned.start home=\(home.path)")
+        AmuxLog.notice(.flow, "scan.versioned.start home=\(home.path)")
 
         guard let reservation = activePrimaryReservation else { return }
         let engineCopy = engine
@@ -6234,7 +6234,7 @@ public final class ScanCoordinator: ObservableObject {
             self.recordTerminalPerformanceEvidence(
                 producerElapsed: presentation.producerElapsed
             )
-            GSYLog.notice(
+            AmuxLog.notice(
                 .flow,
                 "scan.versioned.finish rows=\(presentation.rows.count) "
                     + "files=\(presentation.fileCount) totalBytes=\(presentation.totalBytes) "
@@ -6349,7 +6349,7 @@ public final class ScanCoordinator: ObservableObject {
                 self.commonAppCacheProgress = progress
             }
         }
-        GSYLog.notice(.flow,
+        AmuxLog.notice(.flow,
                       "scan.common_app_cache.start rules=\(vendorsCopy.filter { $0.category == "common_app_cache" }.count) includeConfirm=\(includeConfirm)")
 
         // v2026.09.20：捕获配置值快照，避免外层 MainActor Task 与 detached producer
@@ -6376,7 +6376,7 @@ public final class ScanCoordinator: ObservableObject {
                 }
                 guard !Task.isCancelled, !standardDiscovery.wasCancelled else { return nil }
                 for issue in standardDiscovery.issues {
-                    GSYLog.warning(
+                    AmuxLog.warning(
                         .scan,
                         "scan.common_app_cache.standard_discovery \(issue.logFields)"
                     )
@@ -6481,7 +6481,7 @@ public final class ScanCoordinator: ObservableObject {
                                             candidateRoots: presentation.rootPaths)
             self.replaceIncompleteEvidence(with: presentation.issues)
             for issue in presentation.issues {
-                GSYLog.warning(
+                AmuxLog.warning(
                     .scan,
                     "scan.common_app_cache.incomplete path=\(issue.path) "
                         + "reason=\(issue.reason.rawValue) stage=\(issue.stage?.rawValue ?? "none")"
@@ -6513,7 +6513,7 @@ public final class ScanCoordinator: ObservableObject {
             self.recordTerminalPerformanceEvidence(
                 producerElapsed: presentation.producerElapsed
             )
-            GSYLog.notice(
+            AmuxLog.notice(
                 .flow,
                 "scan.common_app_cache.finish rows=\(presentation.rows.count) "
                     + "totalBytes=\(presentation.totalBytes) entries=\(presentation.fileCount) "
@@ -6823,7 +6823,7 @@ public final class ScanCoordinator: ObservableObject {
                         issue = value
                     }
                     incompleteIssues.insert(issue)
-                    GSYLog.warning(.scan,
+                    AmuxLog.warning(.scan,
                                    "KnownVersionedRoots BulkScanner failed root=\(url.path) error=\(error)")
                 case .incomplete(let issue):
                     incompleteIssues.insert(issue)
@@ -6891,7 +6891,7 @@ public final class ScanCoordinator: ObservableObject {
             // Versioned-root mtime is optional presentation metadata. Preserve the candidate and
             // record the technical failure only in structured diagnostics; do not expose raw
             // URL/error text through RowItem.
-            GSYLog.debug(
+            AmuxLog.debug(
                 .scan,
                 "scan.versioned.mtime.unavailable path=\(url.path) error=\(String(describing: error))"
             )
@@ -6901,7 +6901,7 @@ public final class ScanCoordinator: ObservableObject {
 
     /// v1.3：多根并行扫描入口（"全部推荐扫描"）。
     ///
-    /// 解决用户反馈："扫描看起来还是只有一个目录在动" —— 走 [MultiRootScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/MultiRootScanner.swift)
+    /// 解决用户反馈："扫描看起来还是只有一个目录在动" —— 走 [MultiRootScanner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/MultiRootScanner.swift)
     /// 把 ScanCategories.recommended() 的 5 个根 **同时** 启动，每根独立 BulkScanner + InodeSet + 6 worker，
     /// 真正打满 M*6 个并行工作单元。
     ///
@@ -6926,7 +6926,7 @@ public final class ScanCoordinator: ObservableObject {
     /// Smart Care 的“系统与日志”真实扫描入口。
     ///
     /// 普通模式的应用缓存与开发缓存各自有独立 scanner；这里仅扫描
-    /// [ScanCategories.smartCareCore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCategory.swift)
+    /// [ScanCategories.smartCareCore](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCategory.swift)
     /// 声明的非重叠根，不能复用包含 `~/Library/Caches` 与 DerivedData 的完整推荐计划。
     public func scanSmartCareCore(includeHidden: Bool = true) {
         scanMultiRootCategories(
@@ -7013,7 +7013,7 @@ public final class ScanCoordinator: ObservableObject {
         notePruneSourceMutation()
 
         let roots = categories.map(\.rootURL)
-        GSYLog.notice(.flow, "scan.\(logName).start roots=\(roots.map(\.path).joined(separator: ",")) includeHidden=\(includeHidden)")
+        AmuxLog.notice(.flow, "scan.\(logName).start roots=\(roots.map(\.path).joined(separator: ",")) includeHidden=\(includeHidden)")
         let activeID = categoryID
         // v2026.07.16：推荐扫描不再并发启动第二轮 TreeSizeEstimator。真实扫描 progress
         // 已提供文件数与容量；重复估算既不参与最终结果，也无法可靠提供 ETA。
@@ -7243,7 +7243,7 @@ public final class ScanCoordinator: ObservableObject {
                 didTruncate: prepared.didTruncate,
                 hasIncompleteEvidence: !prepared.incompleteIssues.isEmpty
             )
-            GSYLog.notice(
+            AmuxLog.notice(
                 .scan,
                 "scan.developer.discovery.terminal roots=\(prepared.roots.count) "
                     + "issues=\(prepared.incompleteIssues.count) "
@@ -7275,7 +7275,7 @@ public final class ScanCoordinator: ObservableObject {
                     producerElapsed: prepared.producerElapsed
                 )
                 owner.refreshVolumeCapacity()
-                GSYLog.notice(.scan, "scan.developer.finish reason=no_roots")
+                AmuxLog.notice(.scan, "scan.developer.finish reason=no_roots")
                 return
             }
 
@@ -7610,7 +7610,7 @@ public final class ScanCoordinator: ObservableObject {
         // terminal marker only after the authoritative finished snapshot has been published.
         // `incrementalNodes` must stay zero for production projection modes; a future call-site
         // accidentally reconnecting `.complete` to MainActor becomes visible in the same record.
-        GSYLog.notice(
+        AmuxLog.notice(
             .flow,
             "scan.ui.terminal category=\(categoryID) generation=\(generation.uuidString) delivery=\(Self.diagnosticDeliveryName(delivery)) complete=\(completedSuccessfully) producerElapsed=\(Self.diagnosticSeconds(lastProducerTerminalElapsed)) drainLag=\(Self.diagnosticSeconds(lastConsumerDrainLag)) elapsed=\(String(format: "%.3f", snapshot.elapsed))s files=\(snapshot.scannedFileCount) bytes=\(snapshot.totalBytes) rows=\(snapshot.rows.count) incrementalNodes=\(incrementalNodeDeliveryCount)"
         )
@@ -7630,9 +7630,9 @@ public final class ScanCoordinator: ObservableObject {
 
     /// v1.3：多根并行扫描的主消费循环。
     ///
-    /// 与 [runScan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 与 [runScan](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
     /// 的差别：
-    /// - 事件流是 [MultiRootEvent](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/MultiRootScanner.swift)，
+    /// - 事件流是 [MultiRootEvent](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/MultiRootScanner.swift)，
     ///   带 `rootPath` 信封，`ingest(node:rootPath:)` 直接拿到正确根；
     /// - 每个 .node 同时累加全局 totalBytes / scannedFiles **和** 该根的 perRootProgress；
     /// - 每个 .finished 翻该根的 isFinished=true；所有根 finish 后 stream 自然关闭。
@@ -7650,7 +7650,7 @@ public final class ScanCoordinator: ObservableObject {
             perRootStaging = perRootStaging.filter { normalizedRootPaths.contains($0.key) }
             notePruneSourceMutation()
             await syncPerRootPublishedOffMain(from: perRootStaging)
-            GSYLog.notice(
+            AmuxLog.notice(
                 .scan,
                 "scan.multi.roots.normalized input=\(roots.count) effective=\(normalizedRoots.count)"
             )
@@ -7979,7 +7979,7 @@ public final class ScanCoordinator: ObservableObject {
         recordTerminalPerformanceEvidence(producerElapsed: maximumProducerElapsed)
         // v2026.07.17：多根入口使用与单根相同的真实 UI terminal marker；这样推荐、
         // Smart Care 与 Developer 不会再只凭每个 BulkScanner 的完成日志误判端到端性能。
-        GSYLog.notice(
+        AmuxLog.notice(
             .flow,
             "scan.ui.terminal category=\(categoryID) generation=\(generation.uuidString) delivery=\(Self.diagnosticDeliveryName(delivery)) complete=\(completedSuccessfully) producerElapsed=\(Self.diagnosticSeconds(lastProducerTerminalElapsed)) drainLag=\(Self.diagnosticSeconds(lastConsumerDrainLag)) elapsed=\(String(format: "%.3f", snapshot.elapsed))s files=\(snapshot.scannedFileCount) bytes=\(snapshot.totalBytes) rows=\(snapshot.rows.count) roots=\(expectedRootPaths.count) incrementalNodes=\(incrementalNodeDeliveryCount)"
         )
@@ -8362,7 +8362,7 @@ public final class ScanCoordinator: ObservableObject {
                 // NSString 桥接 + 路径拷贝；大目录（>5w 文件）下 instrument 显示
                 // NSPathStore2 / NSString.bridgeFromObjC 占主线程 ~12% 时间。
                 // 新实现：在原生 String 上用 lastIndex(of: "/") 切片，零桥接零额外 alloc。
-                var cursor = String._gsyParentPath(of: nodePath)
+                var cursor = String._amuxParentPath(of: nodePath)
                 while !cursor.isEmpty, cursor.hasPrefix(rootPath) {
                     var agg = dirIndex[cursor] ?? DirAgg()
                     agg.bytes += bytes
@@ -8370,12 +8370,12 @@ public final class ScanCoordinator: ObservableObject {
                     agg.fileCount += node.isRegularFile ? 1 : 0
                     dirIndex[cursor] = agg
                     if cursor == rootPath { break }
-                    let parent = String._gsyParentPath(of: cursor)
+                    let parent = String._amuxParentPath(of: cursor)
                     childEdges[parent, default: []].insert(cursor)
                     cursor = parent
                 }
                 // 文件本身也作为父目录的直接子项
-                let parent = String._gsyParentPath(of: nodePath)
+                let parent = String._amuxParentPath(of: nodePath)
                 childEdges[parent, default: []].insert(nodePath)
             }
         } else if enableTreeDeepIndex {
@@ -8886,7 +8886,7 @@ public final class ScanCoordinator: ObservableObject {
                 let attemptMilliseconds = prepared.map {
                     Double($0.presentation.diagnostics.totalNanoseconds) / 1_000_000
                 } ?? 0
-                GSYLog.info(
+                AmuxLog.info(
                     .flow,
                     "scan.terminal.projection.retry category=\(categoryID) "
                         + "attempt=\(attemptCount) reason=presentation_contract_changed "
@@ -8905,7 +8905,7 @@ public final class ScanCoordinator: ObservableObject {
                 let attemptMilliseconds = prepared.map {
                     Double($0.presentation.diagnostics.totalNanoseconds) / 1_000_000
                 } ?? 0
-                GSYLog.info(
+                AmuxLog.info(
                     .flow,
                     "scan.terminal.projection.retry category=\(categoryID) "
                         + "attempt=\(attemptCount) reason=source_revision_changed "
@@ -8931,7 +8931,7 @@ public final class ScanCoordinator: ObservableObject {
             func milliseconds(_ nanoseconds: UInt64) -> String {
                 String(format: "%.2f", Double(nanoseconds) / 1_000_000)
             }
-            GSYLog.notice(
+            AmuxLog.notice(
                 .flow,
                 "scan.terminal.projection category=\(categoryID) "
                     + "attempt=\(attemptCount) projections=\(terminalDiagnostics.projectionCount) "
@@ -8952,7 +8952,7 @@ public final class ScanCoordinator: ObservableObject {
             if let developerTree = prepared.presentation.developerTreeChildrenProjection {
                 treeChildrenCache = developerTree.cache
                 bumpChildrenCacheVersion()
-                GSYLog.info(
+                AmuxLog.info(
                     .flow,
                     "tree.developer.terminal_cache.commit roots=\(developerTree.rootCount) "
                         + "direct_children=\(developerTree.directChildCount) "
@@ -9205,7 +9205,7 @@ public final class ScanCoordinator: ObservableObject {
                 let elapsedMs = Double(
                     DispatchTime.now().uptimeNanoseconds - started
                 ) / 1_000_000
-                GSYLog.info(
+                AmuxLog.info(
                     .tree,
                     "tree.index.preview_ready path=\(path) sort=\(key.rawValue) "
                         + "fanout=\(kids.count) inspected=\(lastIndexedTreePreviewInspectedCount) "
@@ -9668,7 +9668,7 @@ public final class ScanCoordinator: ObservableObject {
               !treeChildrenInFlight.contains(cacheKey)
         else { return }
         treeChildrenInFlight.insert(cacheKey)
-        GSYLog.info(.flow, "tree.children.fetch.start path=\(path) sort=\(key.rawValue)")
+        AmuxLog.info(.flow, "tree.children.fetch.start path=\(path) sort=\(key.rawValue)")
         let dispatchedGeneration = treeFetchGeneration
         let taskToken = UUID()
         let accessProjection = treeScanEvidenceProjection
@@ -9721,7 +9721,7 @@ public final class ScanCoordinator: ObservableObject {
                     publishTerminalRevision: true,
                     changedPath: path
                 )
-                GSYLog.info(
+                AmuxLog.info(
                     .flow,
                     "tree.children.fetch.drop_stale_stage=shallow_lease path=\(path) "
                         + "sort=\(key.rawValue) intent=\(taskToken)"
@@ -9752,7 +9752,7 @@ public final class ScanCoordinator: ObservableObject {
                     publishTerminalRevision: true,
                     changedPath: path
                 )
-                GSYLog.info(.flow, "tree.children.fetch.drop_stale_stage=shallow path=\(path) sort=\(key.rawValue) rows=\(shallowRows.count) elapsed_ms=\(String(format: "%.2f", shallowElapsedMs))")
+                AmuxLog.info(.flow, "tree.children.fetch.drop_stale_stage=shallow path=\(path) sort=\(key.rawValue) rows=\(shallowRows.count) elapsed_ms=\(String(format: "%.2f", shallowElapsedMs))")
                 return
             }
             if !shallowMeasurement.incompleteIssues.isEmpty {
@@ -9773,7 +9773,7 @@ public final class ScanCoordinator: ObservableObject {
                     publishTerminalRevision: true,
                     changedPath: path
                 )
-                GSYLog.notice(.scan,
+                AmuxLog.notice(.scan,
                               "tree.children.fetch.tcc_skipped path=\(path) sort=\(key.rawValue)")
                 return
             }
@@ -9792,7 +9792,7 @@ public final class ScanCoordinator: ObservableObject {
                     cacheKey: cacheKey,
                     token: taskToken
                 )
-                GSYLog.info(
+                AmuxLog.info(
                     .flow,
                     "tree.children.fetch.shallow_frame path=\(path) sort=\(key.rawValue) "
                         + "direct_children=\(shallowRows.count) identity_complete=true "
@@ -9819,7 +9819,7 @@ public final class ScanCoordinator: ObservableObject {
             }
 
             let deepStarted = DispatchTime.now().uptimeNanoseconds
-            GSYLog.info(
+            AmuxLog.info(
                 .flow,
                 "tree.children.enrichment.start path=\(path) sort=\(key.rawValue) ui_blocking=false"
             )
@@ -9862,7 +9862,7 @@ public final class ScanCoordinator: ObservableObject {
                     publishTerminalRevision: true,
                     changedPath: path
                 )
-                GSYLog.info(
+                AmuxLog.info(
                     .flow,
                     "tree.children.enrichment.drop_stale path=\(path) sort=\(key.rawValue) "
                         + "intent=\(taskToken) reason=lease_cancelled"
@@ -9901,7 +9901,7 @@ public final class ScanCoordinator: ObservableObject {
                     publishTerminalRevision: true,
                     changedPath: path
                 )
-                GSYLog.info(.flow, "tree.children.enrichment.drop_stale path=\(path) sort=\(key.rawValue) rows=\(measurement.rows.count) elapsed_ms=\(String(format: "%.2f", deepElapsedMs))")
+                AmuxLog.info(.flow, "tree.children.enrichment.drop_stale path=\(path) sort=\(key.rawValue) rows=\(measurement.rows.count) elapsed_ms=\(String(format: "%.2f", deepElapsedMs))")
                 return
             }
             if measurement.rows.isEmpty && self.isScanning {
@@ -9911,7 +9911,7 @@ public final class ScanCoordinator: ObservableObject {
                     publishTerminalRevision: true,
                     changedPath: path
                 )
-                GSYLog.info(.flow, "tree.children.enrichment.drop_scanning path=\(path) sort=\(key.rawValue) elapsed_ms=\(String(format: "%.2f", deepElapsedMs))")
+                AmuxLog.info(.flow, "tree.children.enrichment.drop_scanning path=\(path) sort=\(key.rawValue) elapsed_ms=\(String(format: "%.2f", deepElapsedMs))")
                 return
             }
             await self.storeFetchedChildren(
@@ -9934,7 +9934,7 @@ public final class ScanCoordinator: ObservableObject {
                 publishTerminalRevision: true,
                 changedPath: path
             )
-            GSYLog.info(.flow, "tree.children.enrichment.finish path=\(path) sort=\(key.rawValue) rows=\(measurement.rows.count) authority=\(measurement.authority.logValue) elapsed_ms=\(String(format: "%.2f", deepElapsedMs))")
+            AmuxLog.info(.flow, "tree.children.enrichment.finish path=\(path) sort=\(key.rawValue) rows=\(measurement.rows.count) authority=\(measurement.authority.logValue) elapsed_ms=\(String(format: "%.2f", deepElapsedMs))")
             // v2026.06.21 性能：这里仍只 bump childrenCacheVersion，避免每次后台
             // 回写都触发整树 structural rebuild。
         }
@@ -10121,7 +10121,7 @@ public final class ScanCoordinator: ObservableObject {
             )
             indexedTreePreviewCache = [:]
             bumpStructuralRevision()
-            GSYLog.info(
+            AmuxLog.info(
                 .flow,
                 "tree.developer.terminal_cache.finalize disposition=preserve "
                     + "sort_projections=\(treeChildrenCache.count) "
@@ -10153,7 +10153,7 @@ public final class ScanCoordinator: ObservableObject {
         restoredPaths: [String] = []
     ) async {
         if isScanning {
-            GSYLog.notice(.operation, "scan.cancel reason=filesystem_mutated_during_refresh")
+            AmuxLog.notice(.operation, "scan.cancel reason=filesystem_mutated_during_refresh")
             cancel()
             return
         }
@@ -10166,7 +10166,7 @@ public final class ScanCoordinator: ObservableObject {
             identity: identity,
             token: token
         )
-        GSYLog.notice(
+        AmuxLog.notice(
             .operation,
             "tree.subtree.refresh.start path=\(path) physical_path=\(identity.physicalPath) "
                 + "intent=\(token) replaced_requests=\(replacementCounts.requests) "
@@ -10188,7 +10188,7 @@ public final class ScanCoordinator: ObservableObject {
             token: token,
             generation: generation
         ) else {
-            GSYLog.info(
+            AmuxLog.info(
                 .operation,
                 "tree.subtree.refresh.drop_stale path=\(path) intent=\(token) stage=prepare"
             )
@@ -10238,7 +10238,7 @@ public final class ScanCoordinator: ObservableObject {
             generation: generation
         ) else {
             finishIndexedSubtreeRequest(path: path, token: token)
-            GSYLog.info(
+            AmuxLog.info(
                 .operation,
                 "tree.subtree.refresh.drop_stale path=\(path) intent=\(token) stage=measurement"
             )
@@ -10250,7 +10250,7 @@ public final class ScanCoordinator: ObservableObject {
 
         guard let measurement else {
             finishIndexedSubtreeRequest(path: path, token: token)
-            GSYLog.info(
+            AmuxLog.info(
                 .operation,
                 "tree.subtree.refresh.cancelled path=\(path) intent=\(token)"
             )
@@ -10266,7 +10266,7 @@ public final class ScanCoordinator: ObservableObject {
             restoredPaths: restoredPaths
         )
         if committed {
-            GSYLog.notice(
+            AmuxLog.notice(
                 .operation,
                 "tree.subtree.refresh.finish path=\(path) intent=\(token) "
                     + "complete=\(measurement.isComplete) directories=\(measurement.dirIndex.count) "
@@ -10279,7 +10279,7 @@ public final class ScanCoordinator: ObservableObject {
         // rejected commit, settle only our still-current request; never clear a newer refresh.
         guard indexedSubtreeRequests[path]?.token == token else { return }
         finishIndexedSubtreeRequest(path: path, token: token)
-        GSYLog.info(
+        AmuxLog.info(
             .operation,
             "tree.subtree.refresh.drop_stale path=\(path) intent=\(token) stage=commit"
         )
@@ -10569,7 +10569,7 @@ public final class ScanCoordinator: ObservableObject {
             // by the sparse catalog. Invalidate the allocation baseline and use the original
             // primary scan plan; applying a local delta here would count that allocation twice.
             if prepared.requiresAllocationRebaseline, let rebaseline = allocationRebaseline {
-                GSYLog.notice(.operation, "tree.subtree.refresh.rebaseline reason=new_linked_identity path=\(expectedRequestPath)")
+                AmuxLog.notice(.operation, "tree.subtree.refresh.rebaseline reason=new_linked_identity path=\(expectedRequestPath)")
                 scheduleIndexedSubtreeRetirement(worker)
                 rebaseline()
                 return false
@@ -10697,7 +10697,7 @@ public final class ScanCoordinator: ObservableObject {
             while !cursor.isEmpty {
                 if rootSet.contains(cursor) { return cursor }
                 if cursor == "/" { break }
-                let parent = String._gsyParentPath(of: cursor)
+                let parent = String._amuxParentPath(of: cursor)
                 if parent == cursor { break }
                 cursor = parent
             }
@@ -10718,7 +10718,7 @@ public final class ScanCoordinator: ObservableObject {
             while !cursor.isEmpty {
                 if roots.contains(cursor) { return true }
                 if cursor == "/" { break }
-                let parent = String._gsyParentPath(of: cursor)
+                let parent = String._amuxParentPath(of: cursor)
                 if parent == cursor { break }
                 cursor = parent
             }
@@ -11055,7 +11055,7 @@ public final class ScanCoordinator: ObservableObject {
         // 与其让晚到绝对总量把 prune 扣减覆盖回来，不如终止本轮并要求下一轮从磁盘
         // 重建权威状态。正常专业删除本来就禁止扫描中提交；此分支保护跨模式删除。
         if isScanning {
-            GSYLog.notice(.operation, "scan.cancel reason=filesystem_mutated_during_scan deletedPaths=\(paths.count)")
+            AmuxLog.notice(.operation, "scan.cancel reason=filesystem_mutated_during_scan deletedPaths=\(paths.count)")
             cancel()
             refreshVolumeCapacity()
             return
@@ -11187,7 +11187,7 @@ public final class ScanCoordinator: ObservableObject {
             let snapshotRowCount = snapshot.rows.count
             let directoryCount = dirIndex.count
             let treeCacheCount = treeChildrenCache.count
-            GSYLog.info(
+            AmuxLog.info(
                 .scan,
                 "prune.transaction stage=prepare_start transaction_id=\(transactionID.uuidString) "
                     + "path_count=\(paths.count) snapshot_rows=\(snapshotRowCount) "
@@ -11249,7 +11249,7 @@ public final class ScanCoordinator: ObservableObject {
                 Double(prepared.plan.durationNanoseconds) / 1_000_000
             )
             let totalMilliseconds = String(format: "%.2f", commitElapsedMilliseconds)
-            GSYLog.info(
+            AmuxLog.info(
                 .scan,
                 "prune.transaction stage=commit_complete transaction_id=\(transactionID.uuidString) "
                     + "plan_ms=\(planMilliseconds) elapsed_ms=\(totalMilliseconds)"
@@ -11295,7 +11295,7 @@ public final class ScanCoordinator: ObservableObject {
             format: "%.2f",
             Double(retirement.durationNanoseconds) / 1_000_000
         )
-        GSYLog.info(
+        AmuxLog.info(
             .scan,
             "prune.transaction stage=retirement_complete transaction_id=\(transactionID.uuidString) "
                 + "retirement_ms=\(retirementMilliseconds) "
@@ -11440,7 +11440,7 @@ public final class ScanCoordinator: ObservableObject {
         var ancestorDecrements: [String: PruneContribution] = [:]
         ancestorDecrements.reserveCapacity(deletedContributions.count * 4)
         for item in deletedContributions {
-            var cursor = String._gsyParentPath(of: item.path)
+            var cursor = String._amuxParentPath(of: item.path)
             while !cursor.isEmpty, cursor != "/" {
                 if matcher.contains(cursor) { break }
                 let delta = PruneContribution(path: cursor, bytes: item.bytes,
@@ -11453,7 +11453,7 @@ public final class ScanCoordinator: ObservableObject {
                 } else {
                     ancestorDecrements[cursor] = delta
                 }
-                let parent = String._gsyParentPath(of: cursor)
+                let parent = String._amuxParentPath(of: cursor)
                 if parent == cursor { break }
                 cursor = parent
             }
@@ -11851,14 +11851,14 @@ public final class ScanCoordinator: ObservableObject {
         storeRevision &+= 1
 
         if plan.largeRemoved > 0 {
-            GSYLog.info(.scan, "pruneDeleted largeFileLeaves 剔除 \(plan.largeRemoved)")
+            AmuxLog.info(.scan, "pruneDeleted largeFileLeaves 剔除 \(plan.largeRemoved)")
         }
         if plan.compactedLargeRemoved > 0 {
-            GSYLog.info(.scan, "pruneDeleted compactedLargeFileTopN 剔除 \(plan.compactedLargeRemoved)")
+            AmuxLog.info(.scan, "pruneDeleted compactedLargeFileTopN 剔除 \(plan.compactedLargeRemoved)")
         }
     }
 
-    /// v1.3.zz：暴露给 [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+    /// v1.3.zz：暴露给 [TreeBrowserView](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
     /// 区分"后台 fetch 还在飞" vs "真的查到 0 条子项"——
     /// 前者应显 ProgressView 占位避免误导用户以为没数据；后者才显"还没有可展开的子节点"。
     ///
@@ -12121,12 +12121,12 @@ public final class ScanCoordinator: ObservableObject {
                 bytes: delta.resultingAllocatedBytes, logicalBytes: delta.resultingLogicalBytes,
                 isDir: leaf.isDir, modificationDate: leaf.modificationDate,
                 isRegularFile: leaf.isRegularFile)
-            var parent = String._gsyParentPath(of: delta.path)
+            var parent = String._amuxParentPath(of: delta.path)
             while pathBelongsToSubtree(parent, rootPath: measurement.rootPath) {
                 let old = ancestors[parent] ?? (0, 0)
                 ancestors[parent] = (old.bytes + delta.allocatedBytes, old.logical + delta.logicalBytes)
                 if parent == measurement.rootPath { break }
-                let next = String._gsyParentPath(of: parent)
+                let next = String._amuxParentPath(of: parent)
                 guard next != parent else { break }
                 parent = next
             }
@@ -12160,7 +12160,7 @@ public final class ScanCoordinator: ObservableObject {
                 let old = adjustments[cursor] ?? (0, 0)
                 adjustments[cursor] = (old.bytes + delta.allocatedBytes, old.logical + delta.logicalBytes)
                 if cursor == "/" { break }
-                let parent = String._gsyParentPath(of: cursor)
+                let parent = String._amuxParentPath(of: cursor)
                 guard parent != cursor else { break }
                 cursor = parent
             }
@@ -12347,7 +12347,7 @@ public final class ScanCoordinator: ObservableObject {
         let incompleteDirectDirectories = Set(
             measurement.incompleteIssues.compactMap { issue -> String? in
                 guard issue.stage == .metadata else { return nil }
-                return String._gsyParentPath(of: issue.path)
+                return String._amuxParentPath(of: issue.path)
             }
         )
         let isAuthoritativelyEnumeratedPath: (String) -> Bool = { path in
@@ -12413,7 +12413,7 @@ public final class ScanCoordinator: ObservableObject {
                               fileCount: aggregate.fileCount)
             }
             if let aggregate = retainedState.dirIndex[rootPath] { return aggregate }
-            let parentPath = String._gsyParentPath(of: rootPath)
+            let parentPath = String._amuxParentPath(of: rootPath)
             for sortKey in TreeSortKey.allCases {
                 let key = "\(parentPath)|\(sortKey.rawValue)"
                 if let row = retainedState.treeCache[key]?.first(where: { $0.path == rootPath }) {
@@ -12599,7 +12599,7 @@ public final class ScanCoordinator: ObservableObject {
         let logicalDelta = newRootAggregate.logicalBytes - oldRootAggregate.logicalBytes
         let fileDelta = newRootAggregate.fileCount - oldRootAggregate.fileCount
         var affectedAggregatePaths: Set<String> = [rootPath]
-        var ancestor = String._gsyParentPath(of: rootPath)
+        var ancestor = String._amuxParentPath(of: rootPath)
         while !ancestor.isEmpty, ancestor != rootPath {
             affectedAggregatePaths.insert(ancestor)
             if var aggregate = nextDirIndex[ancestor] {
@@ -12609,7 +12609,7 @@ public final class ScanCoordinator: ObservableObject {
                 nextDirIndex[ancestor] = aggregate
             }
             if ancestor == "/" { break }
-            let parent = String._gsyParentPath(of: ancestor)
+            let parent = String._amuxParentPath(of: ancestor)
             guard parent != ancestor else { break }
             ancestor = parent
         }
@@ -12713,7 +12713,7 @@ public final class ScanCoordinator: ObservableObject {
         if !measurement.isComplete, !retainedState.usesLargeFileTopNOnly,
            retainedState.scanResultRoots.contains(rootPath) {
             guard let publishedRows = buildSemanticTreeRows(
-                rows: retainedState.snapshot.rows.filter { String._gsyParentPath(of: $0.id) == rootPath },
+                rows: retainedState.snapshot.rows.filter { String._amuxParentPath(of: $0.id) == rootPath },
                 evidence: evidenceProjection,
                 forceLeafPresentation: retainedState.forceSnapshotTreeLeafPresentation
             ) else { return nil }
@@ -12808,7 +12808,7 @@ public final class ScanCoordinator: ObservableObject {
             let oldRowsByPath = Dictionary(uniqueKeysWithValues: retainedState.snapshot.rows.map { ($0.id, $0) })
             var rowsByPath: [String: RowItem] = [:]
             if !measurement.isComplete {
-                for row in nextRows where String._gsyParentPath(of: row.id) == rootPath
+                for row in nextRows where String._amuxParentPath(of: row.id) == rootPath
                     && !tombstones.contains(row.id) && !isWhitelisted(row.id, in: whitelist)
                     && (!isAuthoritativelyEnumeratedPath(row.id) || children.contains(row.id)) {
                     rowsByPath[row.id] = row
@@ -13530,7 +13530,7 @@ public final class ScanCoordinator: ObservableObject {
         let nodePath = node.path
         guard pathBelongsToSubtree(nodePath, rootPath: rootPath),
               nodePath != rootPath else { return }
-        let parentPath = String._gsyParentPath(of: nodePath)
+        let parentPath = String._amuxParentPath(of: nodePath)
         guard pathBelongsToSubtree(parentPath, rootPath: rootPath) else { return }
         childEdges[parentPath, default: []].insert(nodePath)
 
@@ -13562,7 +13562,7 @@ public final class ScanCoordinator: ObservableObject {
             aggregate.fileCount &+= node.isRegularFile ? 1 : 0
             dirIndex[cursor] = aggregate
             if cursor == rootPath { break }
-            let next = String._gsyParentPath(of: cursor)
+            let next = String._amuxParentPath(of: cursor)
             guard next != cursor else { break }
             cursor = next
         }
@@ -13664,7 +13664,7 @@ public final class ScanCoordinator: ObservableObject {
                     let bucketPath = bucketProjection(
                         nodePath: delta.path,
                         rootPath: rootPath
-                    )?.bucketPath ?? (String._gsyParentPath(of: delta.path) == rootPath ? delta.path : nil)
+                    )?.bucketPath ?? (String._amuxParentPath(of: delta.path) == rootPath ? delta.path : nil)
                     guard let bucketPath else { continue }
                     let old = deltasByBucket[bucketPath] ?? (0, 0)
                     deltasByBucket[bucketPath] = (
@@ -13936,7 +13936,7 @@ public final class ScanCoordinator: ObservableObject {
     public func refreshedTreeRow(for path: String) -> TreeRow? {
         if let indexed = row(for: path) { return indexed }
 
-        let parentPath = String._gsyParentPath(of: path)
+        let parentPath = String._amuxParentPath(of: path)
         for sortKey in TreeSortKey.allCases {
             let cacheKey = "\(parentPath)|\(sortKey.rawValue)"
             if let cached = treeChildrenCache[cacheKey]?.first(where: { $0.path == path }) {
@@ -14341,11 +14341,11 @@ public final class ScanCoordinator: ObservableObject {
 
     // MARK: - Testing helpers (Step 15)
 
-    /// 仅供 [PruneDeletedTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/PruneDeletedTests.swift)
-    /// / [PerformDeleteIntegrationTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/PerformDeleteIntegrationTests.swift)
+    /// 仅供 [PruneDeletedTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/PruneDeletedTests.swift)
+    /// / [PerformDeleteIntegrationTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/PerformDeleteIntegrationTests.swift)
     /// 注入内部状态。
     ///
-    /// 同 [forcePublishSnapshotForTesting](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L389)
+    /// 同 [forcePublishSnapshotForTesting](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L389)
     /// 风格：`internal` 可见性，配合 `@testable import AppUI` 在测试 target 内可用，
     /// 生产路径不会调到。
     ///
@@ -15225,7 +15225,7 @@ public final class ScanCoordinator: ObservableObject {
         )
     }
 
-    // MARK: - Step 17-A: 内存占用护栏 readers（仅供 [DirIndexMemoryFootprintTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/DirIndexMemoryFootprintTests.swift)）
+    // MARK: - Step 17-A: 内存占用护栏 readers（仅供 [DirIndexMemoryFootprintTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/DirIndexMemoryFootprintTests.swift)）
 
     /// 暴露 DirAgg / Bucket 的 MemoryLayout.size，让护栏测能钉死结构体大小不变量。
     /// DirAgg / Bucket 是 private struct，测试 target 看不到 type 本身——
@@ -15255,7 +15255,7 @@ extension String {
     /// 输入下完全一致；ingest 调用方保证传入路径都是 FileManager.enumerator 给出
     /// 的规范绝对路径，无尾斜杠、无 `.`/`..`，所以这个简化版安全。
     @inline(__always)
-    static func _gsyParentPath(of p: String) -> String {
+    static func _amuxParentPath(of p: String) -> String {
         if p.isEmpty { return "" }
         guard let slash = p.lastIndex(of: "/") else { return "" }
         // 根目录 "/X" → "/"

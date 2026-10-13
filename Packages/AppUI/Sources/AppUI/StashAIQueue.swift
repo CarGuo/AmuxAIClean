@@ -6,10 +6,10 @@ import LogKit
 
 /// v2026.06.19 **稍后处理 · 一键 AI 队列引擎**。
 ///
-/// 设计目标：把 [StashStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashStore.swift)
-/// 当前所有条目按"加入顺序"**串行**送进 [OpenAIChatClient.ask](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift)，
+/// 设计目标：把 [StashStore](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashStore.swift)
+/// 当前所有条目按"加入顺序"**串行**送进 [OpenAIChatClient.ask](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift)，
 /// 把结果（AI canDelete verdict / 失败原因）逐条回填到 store，让
-/// [StashScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashScreen.swift)
+/// [StashScreen](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashScreen.swift)
 /// 行内显示 ✓ / ? / ✕ 徽标，footer 显示 ProgressView + "3 / 12 · 正在询问 xxx"。
 ///
 /// 为什么是 **串行**：
@@ -177,7 +177,7 @@ public final class StashAIQueue: ObservableObject {
                     let failure = StashAIQueue.itemFailure(error)
                     let diagnostic = StashAIQueue.loggingFacts(for: error)
                     stash.setAIVerdict(path: entry.path, verdict: .error(failure))
-                    GSYLog.warning(.settings, "[StashAIQueue] ask failed: \(diagnostic)")
+                    AmuxLog.warning(.settings, "[StashAIQueue] ask failed: \(diagnostic)")
                 }
 
                 self.processed += 1
@@ -190,7 +190,7 @@ public final class StashAIQueue: ObservableObject {
     }
 
     /// 取消队列。已得到的 verdict 保留；当前在途请求会通过
-    /// [OpenAIChatClient.dataWithCancellation](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift#L269-L307)
+    /// [OpenAIChatClient.dataWithCancellation](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift#L269-L307)
     /// 立即断 HTTP 连接。
     public func cancel() {
         runTask?.cancel()
@@ -198,7 +198,7 @@ public final class StashAIQueue: ObservableObject {
 
     // MARK: - 内部
 
-    /// 共享 SafetyEngine 实例——与 [TreeBrowserView.safety](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L57)
+    /// 共享 SafetyEngine 实例——与 [TreeBrowserView.safety](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L57)
     /// 对齐，不重复构建。
     private static let safety = SafetyEngine()
 

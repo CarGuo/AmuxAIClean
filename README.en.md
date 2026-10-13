@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/assets/logo.png" width="128" alt="GSYCleanMac" />
+<img src="docs/assets/logo.png" width="128" alt="AmuxAIClean" />
 
-# GSYCleanMac
+# AmuxAIClean
 
 **An open-source, auditable, safe disk cleaner for macOS.**
 
@@ -15,12 +15,14 @@ English | [简体中文](README.md)
 [![Tests 9 Packages](https://img.shields.io/badge/tests-9%20packages-brightgreen)](#quality--safety)
 [![i18n zh-Hans EN](https://img.shields.io/badge/i18n-zh--Hans%20%7C%20EN-informational)](#languages)
 
-[Download Latest](https://github.com/CarGuo/GSYCleanMac/releases/latest) ·
+[Download Latest](https://github.com/CarGuo/AmuxAIClean/releases/latest) ·
 [Install Guide](docs/INSTALL.md) ·
 [Security Model](SECURITY.md) ·
 [Roadmap](docs/ROADMAP_V1.md)
 
 </div>
+
+> **Special Thanks**: Sponsored by the [https://amux.ai/](https://amux.ai/) relay platform, which provided the development tokens and Apple Developer account for this project — and that is why the project is named **AmuxAIClean**.
 
 ---
 
@@ -70,7 +72,7 @@ English | [简体中文](README.md)
 
 - Local disk usage scanning, large-file finder, uninstall leftover sweep, launch-item inspector, duplicate detection, developer build-artifact scanning.
 - Every delete goes to Trash; restoration can be attempted only while the matching Trash item still exists.
-- The optional Sentinel is off by default. When enabled, it runs as a non-privileged agent for the signed-in user and watches Trash and cleanup hotspots locally. The current build separately retires both historical root-domain registrations; see [PRIVACY.md](PRIVACY.md) for its records, migration, unregister flow, and removal boundary.
+- The optional Sentinel is off by default. When enabled, it runs as a non-privileged agent for the signed-in user and watches Trash and cleanup hotspots locally. The current build automatically retires historical root-domain registrations; see [PRIVACY.md](PRIVACY.md) for its records, migration, unregister flow, and removal boundary.
 - Local safety decisions do not depend on the network. The App itself creates HTTP requests only
   for GitHub update checks (enabled at launch on first install and configurable in Settings) and
   user-enabled, user-initiated AI requests. Scanning a network share or cloud placeholder, or
@@ -97,13 +99,13 @@ Both **Simplified Chinese** and **English** are supported. The app follows your 
 
 Fastest path:
 
-1. Grab the published `.dmg` from [Releases](https://github.com/CarGuo/GSYCleanMac/releases/latest).
+1. Grab the published `.dmg` from [Releases](https://github.com/CarGuo/AmuxAIClean/releases/latest).
 2. Drag into Applications. On first launch click "Open Anyway" in System Settings if Gatekeeper blocks it.
 3. For complete scans, allow AmuxAIClean in System Settings -> Privacy & Security -> Full Disk Access. If denied, the app remains usable and marks affected results as incomplete.
 
 Full install / TCC / signature verification flow is in [docs/INSTALL.md](docs/INSTALL.md).
 
-> The current public release path is a maintainer-local **Developer ID Application signed and notarized final DMG**. The repository's GitHub Actions CI and release jobs are explicitly disabled and do not produce public artifacts. See [docs/RELEASE.md](docs/RELEASE.md).
+> The current public release path is a maintainer-local **Developer ID Application signed and notarized final DMG**. See [docs/RELEASE.md](docs/RELEASE.md).
 
 ---
 
@@ -122,15 +124,15 @@ Full threat model in [SECURITY.md](SECURITY.md).
 ## Build it yourself
 
 ```bash
-git clone git@github.com:CarGuo/GSYCleanMac.git
-cd GSYCleanMac
+git clone git@github.com:CarGuo/AmuxAIClean.git
+cd AmuxAIClean
 ./Scripts/setup_dev.sh
 ```
 
-> **Forks must read this**: [GSYCleanMac.xcodeproj/project.pbxproj](GSYCleanMac.xcodeproj/project.pbxproj) currently uses `Automatic + Apple Development` for Debug and `Manual + Developer ID Application: SentenceEnd Inc (W6H34N9728)` for Release. Before the first build, change the Team/signing setup to your own. See the "Signing Configuration" section in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+> **Forks must read this**: [AmuxAIClean.xcodeproj/project.pbxproj](AmuxAIClean.xcodeproj/project.pbxproj) currently uses `Automatic + Apple Development` for Debug and `Manual + Developer ID Application: SentenceEnd Inc (W6H34N9728)` for Release. Before the first build, change the Team/signing setup to your own. See the "Signing Configuration" section in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ```bash
-xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build
+xcodebuild -project AmuxAIClean.xcodeproj -scheme AmuxAIClean -configuration Debug build
 ```
 
 Full dev environment, signing, debugging tips in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -170,7 +172,8 @@ See [docs/ROADMAP_V1.md](docs/ROADMAP_V1.md).
 
 ## Acknowledgements
 
-Thanks to [Pearcleaner](https://github.com/alienator88/Pearcleaner) for the prior art on TCC skip lists and vendor rule curation. All rule files in this repo are independently authored; no competitor source is referenced.
+- Sponsored by the [https://amux.ai/](https://amux.ai/) relay platform for providing development tokens and the Apple Developer account.
+- Thanks to [Pearcleaner](https://github.com/alienator88/Pearcleaner) for the prior art on TCC skip lists and vendor rule curation. All rule files in this repo are independently authored; no competitor source is referenced.
 
 ---
 

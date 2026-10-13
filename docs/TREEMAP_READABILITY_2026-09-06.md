@@ -62,7 +62,7 @@
 - 全程保持同一 App 进程（PID 78401），不是快速启停验收。最后保留普通分析结果页
   运行，供用户继续测试。
 
-运行目标：`~/Library/Developer/Xcode/DerivedData/GSYCleanMac-dsitrkqztcjxjkawutocbbdsrckt/Build/Products/Debug/AmuxAIClean.app`。
+运行目标：`~/Library/Developer/Xcode/DerivedData/AmuxAIClean-dsitrkqztcjxjkawutocbbdsrckt/Build/Products/Debug/AmuxAIClean.app`。
 观察依据为持续运行中的原生 AX 状态与截图；记录见证据目录的 `c4-results.json`。
 
 ## 深度交互

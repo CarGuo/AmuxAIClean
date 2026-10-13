@@ -1,36 +1,36 @@
 # 回归后续追踪条目 — 2026-06-11
 
-> 本文档把 [REPORT.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/REPORT.md) + [competitors_matrix.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/competitors_matrix.md) + [perf.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/perf.md) 中标注的所有「未做 / followup / 缺口」整理为可追踪条目，按优先级排序。
+> 本文档把 [REPORT.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/regression/2026_06_11/REPORT.md) + [competitors_matrix.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/regression/2026_06_11/competitors_matrix.md) + [perf.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/regression/2026_06_11/perf.md) 中标注的所有「未做 / followup / 缺口」整理为可追踪条目，按优先级排序。
 
 ## P0 — 本轮已顺手补完
 
 | ID | 内容 | 状态 |
 |---|---|---|
-| F-0-1 | [KnownVersionedRoots.swift#L111-L139](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift#L111-L139) `var fileManager` 死代码删除 | ✅ 本轮删除（实际从未引用，"forward-compat" 注释名不副实） |
-| F-0-2 | PerfBench 1M 节点压力 bench | ✅ 本轮跑完，[B3](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/perf.md) 入库 |
+| F-0-1 | [KnownVersionedRoots.swift#L111-L139](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift#L111-L139) `var fileManager` 死代码删除 | ✅ 本轮删除（实际从未引用，"forward-compat" 注释名不副实） |
+| F-0-2 | PerfBench 1M 节点压力 bench | ✅ 本轮跑完，[B3](file:///Users/amuxuser/workspace/AmuxAIClean/docs/regression/2026_06_11/perf.md) 入库 |
 | F-0-3 | E2E smoke 启动 release .app 跑通 + AX 抓取 + 干净退出 | ⚠️ 历史记录；v2026.07.16 脚本删除，PASS 不再作为当前质量证据 |
 
 ## P0-bug — E2E 发现的真 bug（需要单独修）
 
 ### F-0-4 vendors.yaml / vendor_shared.yaml 未被打包进 .app ✅ 已修复（2026-06-11）
-- **现象**：[GSYCleanMacApp.swift#L467-L475](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift#L467-L475) 查 `Bundle.main` 的 `vendors.yaml` 永远查不到，每次启动 NSLog `vendors.yaml 未找到，跳过 vendor 规则加载`
-- **影响**：production 用户态 vendor 规则**完全不生效**，SafetyKit fallback 到代码内置 vendor 列表，命中精度下降（[Resources/Rules/vendors.yaml](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/vendors.yaml) 里所有 vendor 增量条目实际未被消费）
-- **根因**：[GSYCleanMac.xcodeproj/project.pbxproj](file:///Users/guoshuyu/workspace/GSYCleanMac/GSYCleanMac.xcodeproj/project.pbxproj) 的 Copy Bundle Resources phase 完全没引用 `Resources/Rules/` 目录或 `*.yaml` 文件
-- **方案**：xcode 打开 project → GSYCleanMac target → Build Phases → Copy Bundle Resources → 拖入 `Resources/Rules` 整目录（保持 folder reference 蓝色而非 group 黄色），重 build 验证
-- **修复实际操作**：用户在 Xcode GUI 里把 3 个 yaml 加入 Resources phase（pbxproj 新增 PBXBuildFile `4B62D5DE/DF/E0`、PBXFileReference `4B62D5DA/DB/DC`、PBXGroup `4B62D5DD Rules`，三个 yaml 进入 Resources Copy Phase `files` 数组与 `Assets.xcassets`/`InfoPlist.strings` 并列），实际效果为平铺到 `.app/Contents/Resources/` 顶层，被 [GSYCleanMacApp.swift#L467-L475](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift#L467-L475) 的 fallback 分支命中
+- **现象**：[AmuxAICleanApp.swift#L467-L475](file:///Users/amuxuser/workspace/AmuxAIClean/App/AmuxAICleanApp.swift#L467-L475) 查 `Bundle.main` 的 `vendors.yaml` 永远查不到，每次启动 NSLog `vendors.yaml 未找到，跳过 vendor 规则加载`
+- **影响**：production 用户态 vendor 规则**完全不生效**，SafetyKit fallback 到代码内置 vendor 列表，命中精度下降（[Resources/Rules/vendors.yaml](file:///Users/amuxuser/workspace/AmuxAIClean/Resources/Rules/vendors.yaml) 里所有 vendor 增量条目实际未被消费）
+- **根因**：[AmuxAIClean.xcodeproj/project.pbxproj](file:///Users/amuxuser/workspace/AmuxAIClean/AmuxAIClean.xcodeproj/project.pbxproj) 的 Copy Bundle Resources phase 完全没引用 `Resources/Rules/` 目录或 `*.yaml` 文件
+- **方案**：xcode 打开 project → AmuxAIClean target → Build Phases → Copy Bundle Resources → 拖入 `Resources/Rules` 整目录（保持 folder reference 蓝色而非 group 黄色），重 build 验证
+- **修复实际操作**：用户在 Xcode GUI 里把 3 个 yaml 加入 Resources phase（pbxproj 新增 PBXBuildFile `4B62D5DE/DF/E0`、PBXFileReference `4B62D5DA/DB/DC`、PBXGroup `4B62D5DD Rules`，三个 yaml 进入 Resources Copy Phase `files` 数组与 `Assets.xcassets`/`InfoPlist.strings` 并列），实际效果为平铺到 `.app/Contents/Resources/` 顶层，被 [AmuxAICleanApp.swift#L467-L475](file:///Users/amuxuser/workspace/AmuxAIClean/App/AmuxAICleanApp.swift#L467-L475) 的 fallback 分支命中
 - **验收**：
   - ✅ `find .app -name vendors.yaml` 命中 3 个 yaml（vendors / vendor_shared / safe_paths）
-  - ✅ 启动 NSLog 改为 `[GSYCleanMac] 已加载 79 条 vendor 规则`
+  - ✅ 启动 NSLog 改为 `[AmuxAIClean] 已加载 79 条 vendor 规则`
   - ⚠️ 历史 e2e-smoke 曾报告 PASS、crash_hits=0；该快速启停证据已于 v2026.07.16 撤销
-  - 详情：[e2e.md §三 二次验证](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/e2e.md)
+  - 详情：[e2e.md §三 二次验证](file:///Users/amuxuser/workspace/AmuxAIClean/docs/regression/2026_06_11/e2e.md)
 - **优先级**：~~**P0**~~ → ✅ 已闭环
 
 
 ## P1 — 性能可优化（数据已证据齐全）
 
 ### F-1-1 气泡图 / Treemap 可视化
-- **缺口**：[competitors_matrix §三](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/competitors_matrix.md) P1 — DaisyDisk Sunburst / GrandPerspective Squarified 是用户「一眼看见大目录」的核心体验
-- **方案**：基于 [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 当前树数据源和按需子树扫描结果新增 Canvas/Metal Treemap view
+- **缺口**：[competitors_matrix §三](file:///Users/amuxuser/workspace/AmuxAIClean/docs/regression/2026_06_11/competitors_matrix.md) P1 — DaisyDisk Sunburst / GrandPerspective Squarified 是用户「一眼看见大目录」的核心体验
+- **方案**：基于 [TreeBrowserView](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift) 当前树数据源和按需子树扫描结果新增 Canvas/Metal Treemap view
 - **验收**：300k 节点 root 视图 60fps 可平移缩放
 
 ## P2 — 功能缺口（竞品已有，我们暂无）
@@ -38,22 +38,22 @@
 ### F-2-1 浏览器隐私痕迹清理
 - **缺口**：CleanMyMac Privacy / Browser — Cookies / History / Autofill / Downloads
 - **方案**：新建 `BrowserPrivacyScanner`，遍历 Safari / Chrome / Firefox / Edge / Arc 的 sqlite db
-- **风险**：Safari `~/Library/Safari/History.db` 受 FDA 保护，需走 [TCCProbe](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Onboarding/TCCProbe.swift) 引导
+- **风险**：Safari `~/Library/Safari/History.db` 受 FDA 保护，需走 [TCCProbe](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/Onboarding/TCCProbe.swift) 引导
 
 ### F-2-2 系统维护脚本扩展
-- **现状**：[MaintenanceTasks](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/MaintenanceTasks.swift) 已实现 periodic daily/weekly/monthly
+- **现状**：[MaintenanceTasks](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/MaintenanceTasks.swift) 已实现 periodic daily/weekly/monthly
 - **缺口**：vs OnyX / CMM Maintenance 还差 Flush DNS / Repair Permissions / Rebuild LaunchServices / Rebuild Spotlight
-- **方案**：扩展 [MaintenanceScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MaintenanceScreen.swift) 子项卡片
+- **方案**：扩展 [MaintenanceScreen](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MaintenanceScreen.swift) 子项卡片
 
 ### F-2-3 Lipo 通用二进制瘦身接入 sidebar ✅ 已落地（2026-06-11）
-- **现状**：[LipoKit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LipoKit) 已完成，**未接入 sidebar**
-- **方案**：[ScanCategory.Kind](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCategory.swift#L9-L14) 增加 `case lipo`，在 [MainView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) sidebar 增 LipoScreen 入口
-- **落地**：走 sentinel ID 旁路（与 Maintenance / Uninstall / UndoHistory 同款，避免污染 ScanCategory 枚举）；新建 [LipoScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/LipoScreen.swift)（audit + extract + drop）；MainView 加 `lipoSentinelID` + Dev Tools section sidebar row + `isLipoMode` 分发；AppUI/Package.swift 加 LipoKit 依赖；Xcode App target 同步加 LipoKit framework
+- **现状**：[LipoKit](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/LipoKit) 已完成，**未接入 sidebar**
+- **方案**：[ScanCategory.Kind](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCategory.swift#L9-L14) 增加 `case lipo`，在 [MainView](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift) sidebar 增 LipoScreen 入口
+- **落地**：走 sentinel ID 旁路（与 Maintenance / Uninstall / UndoHistory 同款，避免污染 ScanCategory 枚举）；新建 [LipoScreen](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/LipoScreen.swift)（audit + extract + drop）；MainView 加 `lipoSentinelID` + Dev Tools section sidebar row + `isLipoMode` 分发；AppUI/Package.swift 加 LipoKit 依赖；Xcode App target 同步加 LipoKit framework
 
 ### F-2-4 Brew 管理接入 sidebar ✅ 已落地（2026-06-11）
-- **现状**：[BrewKit](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/BrewKit) 已完成，**未接入 sidebar**
+- **现状**：[BrewKit](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/BrewKit) 已完成，**未接入 sidebar**
 - **方案**：同 F-2-3
-- **落地**：新建 [BrewScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/BrewScreen.swift)（三 tab installed / outdated / cleanup，dry-run 不真删）；MainView 加 `brewSentinelID` + sidebar row + `isBrewMode` 分发；AppUI/Package.swift 加 BrewKit 依赖；Xcode App target 同步加 BrewKit framework；AppUI 全包 397 tests / 0 failures
+- **落地**：新建 [BrewScreen](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/BrewScreen.swift)（三 tab installed / outdated / cleanup，dry-run 不真删）；MainView 加 `brewSentinelID` + sidebar row + `isBrewMode` 分发；AppUI/Package.swift 加 BrewKit 依赖；Xcode App target 同步加 BrewKit framework；AppUI 全包 397 tests / 0 failures
 
 ## P3 — 体验 / 长尾
 
@@ -71,7 +71,7 @@
 
 ### F-3-4 状态栏 Menu App（RAM/CPU/Battery）
 - **参考**：CMM Menu
-- **方案**：复用 [TrayController](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrayController.swift)，加 `IOServiceMatching` data source
+- **方案**：复用 [TrayController](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TrayController.swift)，加 `IOServiceMatching` data source
 
 ## P4 — 长期 / 仅记录
 

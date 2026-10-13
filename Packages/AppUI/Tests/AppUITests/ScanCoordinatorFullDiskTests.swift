@@ -67,9 +67,9 @@ final class ScanCoordinatorFullDiskTests: XCTestCase {
         XCTAssertEqual(app?.tail, "Applications/Xcode.app")
         XCTAssertEqual(app?.bucketPath, "/Applications")
 
-        let user = ScanCoordinator.bucketProjection(nodePath: "/Users/guoshuyu/Downloads/a.zip",
+        let user = ScanCoordinator.bucketProjection(nodePath: "/Users/amuxuser/Downloads/a.zip",
                                                     rootPath: "/")
-        XCTAssertEqual(user?.tail, "Users/guoshuyu/Downloads/a.zip")
+        XCTAssertEqual(user?.tail, "Users/amuxuser/Downloads/a.zip")
         XCTAssertEqual(user?.bucketPath, "/Users")
 
         XCTAssertNil(ScanCoordinator.bucketProjection(nodePath: "/", rootPath: "/"),

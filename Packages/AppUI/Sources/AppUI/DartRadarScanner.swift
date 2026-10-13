@@ -226,7 +226,7 @@ public actor DartRadarScanner {
         )
         guard output.isCompleteSuccess else {
             if !output.stderr.isEmpty {
-                GSYLog.info(.operation, "dart radar cwd enrichment unavailable")
+                AmuxLog.info(.operation, "dart radar cwd enrichment unavailable")
             }
             return [:]
         }

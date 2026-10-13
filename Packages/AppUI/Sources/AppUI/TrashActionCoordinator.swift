@@ -4,12 +4,12 @@ import LogKit
 extension Notification.Name {
     /// 所有成功的废纸篓操作统一广播真实 moved original paths；跨功能页面据此
     /// 使扫描快照失效，避免 Brew/卸载/重复文件删除后 Smart Care 仍展示旧结果。
-    static let gsyTrashDidMove = Notification.Name("com.amux.ai.clean.trash-did-move")
+    static let amuxTrashDidMove = Notification.Name("com.amux.ai.clean.trash-did-move")
 
     /// v2026.07.16：pending ledger 发现“重启后已不存在 / inode 已替换 / claim 前中断”
     /// 只代表旧扫描模型失效，不代表本次确认了删除成功。通知也不是清除持久 tombstone
-    /// 的能力；必须走独立通道，禁止复用 `gsyTrashDidMove` 铸造成功历史。
-    static let gsyTrashPendingLedgerDidInvalidate = Notification.Name(
+    /// 的能力；必须走独立通道，禁止复用 `amuxTrashDidMove` 铸造成功历史。
+    static let amuxTrashPendingLedgerDidInvalidate = Notification.Name(
         "com.amux.ai.clean.trash-pending-ledger-did-invalidate"
     )
 }
@@ -282,7 +282,7 @@ struct TrashActionCoordinator {
                     if !(await undoCommit.finishDurablyAfterUndoPersisted(
                         pruningReceiptsIn: undoHistoryStore
                     )) {
-                        GSYLog.error(.trash, "Undo durable commit persisted but acknowledgement remains pending entries=\(undoCommit.entries.count)")
+                        AmuxLog.error(.trash, "Undo durable commit persisted but acknowledgement remains pending entries=\(undoCommit.entries.count)")
                     }
                 }
             } else if undoJournalFailedPaths.isEmpty {
@@ -300,7 +300,7 @@ struct TrashActionCoordinator {
                 )
             }
             NotificationCenter.default.post(
-                name: .gsyTrashDidMove,
+                name: .amuxTrashDidMove,
                 object: nil,
                 userInfo: [
                     "paths": projection.succeededPaths,
@@ -375,12 +375,12 @@ struct TrashActionCoordinator {
                 do {
                     return try identity.project(completion)
                 } catch {
-                    GSYLog.error(.trash, "recycle completion namespace projection failed: \(error)")
+                    AmuxLog.error(.trash, "recycle completion namespace projection failed: \(error)")
                     return nil
                 }
             }.value
             guard let selectedCompletion else {
-                GSYLog.error(.trash, "拒绝不一致的 recycle completion requested=\(paths.count) attempted=\(completion.attemptedPaths.count)")
+                AmuxLog.error(.trash, "拒绝不一致的 recycle completion requested=\(paths.count) attempted=\(completion.attemptedPaths.count)")
                 return .preSubmitRejected(.unsupportedPipeline)
             }
             let result = await finalizeRecycleCompletion(

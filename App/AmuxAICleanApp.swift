@@ -98,16 +98,16 @@ private struct MainWindowOpenActionBridge: View {
 /// Normal launches still enter the exact same SwiftUI `App.main()` path.
 @main
 @MainActor
-private enum GSYCleanMacEntrypoint {
+private enum AmuxAICleanEntrypoint {
     static func main() {
         if let exitCode = CommonAppCacheWorkerBridge.runIfRequested() {
             Darwin.exit(exitCode)
         }
-        GSYCleanMacApp.main()
+        AmuxAICleanApp.main()
     }
 }
 
-struct GSYCleanMacApp: App {
+struct AmuxAICleanApp: App {
     @NSApplicationDelegateAdaptor(ApplicationLifecycleDelegate.self) private var lifecycleDelegate
 
     private let vendors: [VendorRule]
@@ -118,9 +118,7 @@ struct GSYCleanMacApp: App {
     private let pathStore = UserPathStore()
 
     /// M5 / 2026-06：AI 模块配置——**必须由 App 层统一持有**并同时注入
-    /// [MainView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
-    /// 与 [SettingsScene](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SettingsScene.swift)，
-    /// 否则两个场景各自 new 一份 [AISettings](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/AISettings.swift)
+    /// `MainView` 与 `SettingsScene`，否则两个场景各自 new 一份 `AISettings`
     /// 实例：底层 UserDefaults 仍一致，但 ObservableObject 的 in-process 通知不会跨实例传递，
     /// 用户在 ⌘, 改了 AI Enabled / baseURL 后，RowView contextMenu 不会立刻刷新
     /// （需重启 App 才生效）。详见 Review fix #2，2026-06-15。
@@ -132,7 +130,7 @@ struct GSYCleanMacApp: App {
     /// v1.1 更新检查器，启动时静默 GET 一次 GitHub Releases。
     @StateObject private var updateChecker: UpdateChecker
 
-    /// v1.3：把 ScanCoordinator 提升到 App 层，让主窗口与 [FloatingScanHUDController](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
+    /// v1.3：把 ScanCoordinator 提升到 App 层，让主窗口与 `FloatingScanHUDController`
     /// 共享同一个实例（同一份 snapshot / isScanning），HUD 实时刷新不需要双扫。
     @StateObject private var coordinator: ScanCoordinator
 
@@ -157,7 +155,7 @@ struct GSYCleanMacApp: App {
     @State private var activationPolicy = ActivationPolicyController()
 
     /// v1.6：Sentinel 用户态后台管理器（SMAppService.agent 包装）。
-    /// 在 init 阶段构造，启动钩子里按 [settings.sentinelEnabled](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
+    /// 在 init 阶段构造，启动钩子里按 `settings.sentinelEnabled`
     /// 做幂等 register；v2026.07.16 起用户 toggle 先经过 typed change-source 边界，
     /// 程序性失败回滚不会再由 `.onChange` 重复驱动 enable / disable。
     @StateObject private var sentinelManager: SentinelManager
@@ -166,29 +164,29 @@ struct GSYCleanMacApp: App {
 
     init() {
         // v2026.07.18 P1 root fix: directory traversal, retention enumeration and active-file open
-        // are filesystem work, so App.init must never perform them on the UI thread. GSYLog first
+        // are filesystem work, so App.init must never perform them on the UI thread. AmuxLog first
         // opens a filesystem-free 256-line memory revision; the detached utility task installs the
         // sink and flushes those lines in order, or publishes a typed initialization failure.
         #if DEBUG
-        let logBootstrap = GSYLog.beginFileSinkBootstrap(minimumLevel: .debug)
+        let logBootstrap = AmuxLog.beginFileSinkBootstrap(minimumLevel: .debug)
         #else
-        let logBootstrap = GSYLog.beginFileSinkBootstrap(minimumLevel: .info)
+        let logBootstrap = AmuxLog.beginFileSinkBootstrap(minimumLevel: .info)
         #endif
         Task.detached(priority: .utility) {
             do {
                 let logDirectory = try LogFileSink.defaultDirectory()
                 let sink = try LogFileSink(directory: logDirectory)
-                guard GSYLog.completeFileSinkBootstrap(sink, revision: logBootstrap) else {
+                guard AmuxLog.completeFileSinkBootstrap(sink, revision: logBootstrap) else {
                     return
                 }
-                GSYLog.notice(.app, "App 启动 logDir=\(sink.directory.path)")
+                AmuxLog.notice(.app, "App 启动 logDir=\(sink.directory.path)")
             } catch {
                 let diagnostic = error as NSError
-                guard GSYLog.reportFileSinkInitializationFailure(
+                guard AmuxLog.reportFileSinkInitializationFailure(
                     error,
                     revision: logBootstrap
                 ) else { return }
-                GSYLog.error(
+                AmuxLog.error(
                     .app,
                     "LogFileSink initialization failed domain=\(diagnostic.domain) "
                         + "code=\(diagnostic.code); OSLog only"
@@ -215,8 +213,8 @@ struct GSYCleanMacApp: App {
         // 后台按需扫描当前目录并聚合直接子项，避免扫描结果数据库与扫描收尾落盘等待。
         //
         // 深索引仍默认关闭：祖先字典维护是扫描期主线程卡顿的历史根因。开发者可用
-        // GSY_DEEP_INDEX=1 做 A/B，但正式用户走无数据库、按需后台下钻方案。
-        let deepIndex = (ProcessInfo.processInfo.environment["GSY_DEEP_INDEX"] ?? "0") != "0"
+        // AMUX_DEEP_INDEX=1 做 A/B，但正式用户走无数据库、按需后台下钻方案。
+        let deepIndex = (ProcessInfo.processInfo.environment["AMUX_DEEP_INDEX"] ?? "0") != "0"
         // v2026.07.19 cross-mode performance contract: Professional and Smart Care keep separate
         // presentation state and client identities, but share one active-producer registry.
         // The registry sees producers before they start, so a second coordinator cannot mistake
@@ -434,12 +432,11 @@ struct GSYCleanMacApp: App {
             // → 主线程 100~600ms microhang 连成串。
             //
             // 修复双管齐下：
-            //  ① 拆为 [GSYCleanCommands](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
-            //     独立 Commands struct，参数（class ref + Binding + locale）等价时
+            //  ① 拆为 `AmuxAICleanCommands` 独立 Commands struct，参数（class ref + Binding + locale）等价时
             //     SwiftUI 跳过菜单重建。
             //  ② 7 个标题显式按 locale 解析；只有语言变化才改变 Commands 依赖，
             //     扫描 snapshot publish 不会触发本地化查表。
-            GSYCleanCommands(
+            AmuxAICleanCommands(
                 updateChecker: updateChecker,
                 applicationPresentation: applicationPresentation,
                 hudShown: hudBinding,
@@ -520,8 +517,7 @@ struct GSYCleanMacApp: App {
         )
     }
 
-    /// v1.6：把 [settings.sentinelEnabled](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
-    /// 与 SMAppService 的实际 register 状态对齐。
+    /// v1.6：把 `settings.sentinelEnabled` 与 SMAppService 的实际 register 状态对齐。
     ///
     /// v2026.07.16：启动对账与用户手势使用不同入口。用户变化只允许从
     /// `handleObservedToggleChange` 进入；这里不能再接收 Bool 参数，否则程序性回滚很容易
@@ -545,8 +541,7 @@ struct GSYCleanMacApp: App {
     }
 
     /// v1.3.x：判断当前是否至少有一个"可见主窗口"——即用户视觉上能看到 / 点亮的主窗口。
-    /// 与 [bringMainWindowToFront](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift) 共用
-    /// [MainWindowRoutingPolicy](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainWindowRoutingPolicy.swift)：
+    /// 与 `bringMainWindowToFront` 共用 `MainWindowRoutingPolicy`：
     /// 只认主 WindowGroup 写入的稳定 identifier，再判断 (isVisible || isMiniaturized)。
     /// 最小化窗口算"可见"，因为 Dock 还有缩略图，用户预期 Dock 图标在场。
     @MainActor
@@ -621,7 +616,7 @@ struct GSYCleanMacApp: App {
         //
         // 通知仍然 post——万一 MainView 还活着（罕见的 phantom 状态），它接到能立刻 openWindow，
         // 比等 LaunchServices reopen 快几十 ms。
-        NotificationCenter.default.post(name: .gsyOpenMainWindowRequested, object: nil)
+        NotificationCenter.default.post(name: .amuxOpenMainWindowRequested, object: nil)
 
         let bundleURL = Bundle.main.bundleURL
         let config = NSWorkspace.OpenConfiguration()
@@ -632,7 +627,7 @@ struct GSYCleanMacApp: App {
                 // v2026.07.18: keep technical detail in the user-owned file log while the same
                 // message is privacy-hashed in Unified Logging; never bypass via NSLog.
                 let diagnostic = error as NSError
-                GSYLog.error(
+                AmuxLog.error(
                     .app,
                     "bringMainWindowToFront fallback failed domain=\(diagnostic.domain) code=\(diagnostic.code)"
                 )
@@ -657,16 +652,16 @@ struct GSYCleanMacApp: App {
                                         subdirectory: "Rules")
             ?? Bundle.main.url(forResource: "vendors", withExtension: "yaml")
         else {
-            GSYLog.error(.safety, "bundled vendors.yaml missing; vendor rules unavailable")
+            AmuxLog.error(.safety, "bundled vendors.yaml missing; vendor rules unavailable")
             return []
         }
         do {
             let rules = try RuleLoader.loadVendors(from: url)
-            GSYLog.info(.safety, "loaded \(rules.count) vendor rules")
+            AmuxLog.info(.safety, "loaded \(rules.count) vendor rules")
             return rules
         } catch {
             let diagnostic = error as NSError
-            GSYLog.error(
+            AmuxLog.error(
                 .safety,
                 "vendor rules failed domain=\(diagnostic.domain) code=\(diagnostic.code)"
             )
@@ -688,48 +683,46 @@ struct GSYCleanMacApp: App {
     /// 只允许 https，避免后续被改成 file:// / shell: 等危险 scheme。
     ///
     /// v2026.06.22 perf：从 `private` 放宽到 `fileprivate`，让同文件的
-    /// [GSYCleanCommands](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
-    /// 可以复用，避免把整个 helper 在 Commands struct 内再写一份。
+    /// `AmuxAICleanCommands` 可以复用，避免把整个 helper 在 Commands struct 内再写一份。
     @MainActor
     fileprivate static func openExternal(_ urlString: String) {
         guard let url = URL(string: urlString),
               url.scheme == "https" else {
             // Do not persist the rejected input: a malformed URL may contain userinfo, query
             // tokens or a local path. The semantic reason is sufficient for diagnosis.
-            GSYLog.warning(.app, "openExternal rejected a non-HTTPS or malformed URL")
+            AmuxLog.warning(.app, "openExternal rejected a non-HTTPS or malformed URL")
             return
         }
         NSWorkspace.shared.open(url)
     }
 
     /// v1.5.7：Help → 在 Finder 中显示日志。
-    /// 日志路径与 [GSYLog.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LogKit/Sources/LogKit/GSYLog.swift) 默认 sink 保持一致。
+    /// 日志路径与 `AmuxLog.swift` 默认 sink 保持一致。
     ///
     /// v2026.06.22 perf：从 `private` 放宽到 `fileprivate`，让同文件的
-    /// [GSYCleanCommands](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
-    /// 可以复用（理由同 [openExternal](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)）。
+    /// `AmuxAICleanCommands` 可以复用（理由同 `openExternal`）。
     @MainActor
     fileprivate static func revealLogsInFinder(locale: Locale) {
         Task { @MainActor in
             // Directory creation, identity checks, fsync and retention enumeration execute on
             // LogFileSink's utility queue; only Finder/NSAlert work resumes on MainActor.
-            switch await GSYLog.prepareLogDirectoryForAccess() {
+            switch await AmuxLog.prepareLogDirectoryForAccess() {
             case .success(let logDir):
-                GSYLog.notice(.operation, "menu.log.open_directory path=\(logDir.path)")
+                AmuxLog.notice(.operation, "menu.log.open_directory path=\(logDir.path)")
                 NSWorkspace.shared.activateFileViewerSelecting([logDir])
-                let maintenanceFailures = GSYLog.fileSinkIssues.failures
+                let maintenanceFailures = AmuxLog.fileSinkIssues.failures
                 if !maintenanceFailures.isEmpty {
                     presentLogFailures(maintenanceFailures, locale: locale)
                 }
             case .failure(let failure):
                 // The local sink cannot carry this fact. Its normalized stage/domain/code tuple
                 // already went to the dedicated public OSLog fallback; show the same closed detail.
-                GSYLog.error(
+                AmuxLog.error(
                     .app,
                     "revealLogsInFinder failed stage=\(failure.stage.rawValue) "
                         + "domain=\(failure.errorDomain) code=\(failure.errorCode)"
                 )
-                let failures = [failure] + GSYLog.fileSinkIssues.failures.filter { $0 != failure }
+                let failures = [failure] + AmuxLog.fileSinkIssues.failures.filter { $0 != failure }
                 presentLogFailures(failures, locale: locale)
             }
         }
@@ -754,18 +747,17 @@ struct GSYCleanMacApp: App {
     }
 }
 
-/// v2026.06.22 perf：从 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
-/// 的 `.commands { }` 拆出，让 dev 扫 publish 风暴下 Scene body invalidate
+/// v2026.06.22 perf：从 `AmuxAICleanApp` 的 `.commands { }` 拆出，让 dev 扫 publish 风暴下 Scene body invalidate
 /// **不再**让 AppKit 重建整张 NSMenu。
 ///
 /// 关键设计：
 /// - 菜单只持有轻量的 locale 值；扫描 snapshot 不进入依赖面，所以扫描帧不会重建菜单。
 /// - 语言变化时 Commands identity 才变化，7 个标题通过 AppLocalization 按新 locale
 ///   解析一次，兼顾运行期切换与原有性能边界。
-    /// - **不持有 AppSettings**：dev 扫期间 settings 不会变，但 AppSettings
-    ///   是 `ObservableObject`，作为 observed dependency 会让本 struct 被 SwiftUI 视为
+/// - **不持有 AppSettings**：dev 扫期间 settings 不会变，但 AppSettings
+///   是 `ObservableObject`，作为 observed dependency 会让本 struct 被 SwiftUI 视为
 ///   会变化的依赖；改成只传 `Binding<Bool>` 后依赖面收紧到 hudEnabled 一项。
-private struct GSYCleanCommands: Commands {
+private struct AmuxAICleanCommands: Commands {
     let updateChecker: UpdateChecker
     let applicationPresentation: MainWindowPresentationCoordinator
     @Binding var hudShown: Bool
@@ -781,7 +773,7 @@ private struct GSYCleanCommands: Commands {
                 "menu.native.new_window %@", locale: locale,
                 arguments: [AppLocalization.string("app.name", locale: locale)]
             )) {
-                openWindow(id: GSYCleanMacApp.mainWindowID)
+                openWindow(id: AmuxAICleanApp.mainWindowID)
             }
             .keyboardShortcut("n", modifiers: [.command])
         }
@@ -801,25 +793,25 @@ private struct GSYCleanCommands: Commands {
         // v1.5.7：替换 SwiftUI 默认的占位 Help 菜单，提供生产级帮助入口。
         CommandGroup(replacing: .help) {
             Button(AppLocalization.string("menu.help.userGuide", locale: locale)) {
-                GSYCleanMacApp.openUserGuide(using: applicationPresentation)
+                AmuxAICleanApp.openUserGuide(using: applicationPresentation)
             }
             Button(AppLocalization.string("menu.help.help", locale: locale)) {
-                GSYCleanMacApp.openExternal("https://github.com/CarGuo/GSYCleanMac#readme")
+                AmuxAICleanApp.openExternal("https://github.com/CarGuo/AmuxAIClean#readme")
             }
             .keyboardShortcut("?", modifiers: [.command])
             Divider()
             Button(AppLocalization.string("menu.help.privacy", locale: locale)) {
-                GSYCleanMacApp.openExternal("https://github.com/CarGuo/GSYCleanMac/blob/main/PRIVACY.md")
+                AmuxAICleanApp.openExternal("https://github.com/CarGuo/AmuxAIClean/blob/main/PRIVACY.md")
             }
             Button(AppLocalization.string("menu.help.terms", locale: locale)) {
-                GSYCleanMacApp.openExternal("https://github.com/CarGuo/GSYCleanMac/blob/main/TERMS.md")
+                AmuxAICleanApp.openExternal("https://github.com/CarGuo/AmuxAIClean/blob/main/TERMS.md")
             }
             Divider()
             Button(AppLocalization.string("menu.help.feedback", locale: locale)) {
-                GSYCleanMacApp.openExternal("https://github.com/CarGuo/GSYCleanMac/issues/new/choose")
+                AmuxAICleanApp.openExternal("https://github.com/CarGuo/AmuxAIClean/issues/new/choose")
             }
             Button(AppLocalization.string("menu.help.revealLogs", locale: locale)) {
-                GSYCleanMacApp.revealLogsInFinder(locale: locale)
+                AmuxAICleanApp.revealLogsInFinder(locale: locale)
             }
         }
     }

@@ -249,7 +249,7 @@ private final class TrashLazyURLBackedUndoHistoryStoreProvider: @unchecked Senda
 ///
 /// **M4 增强（清理更安全）**：
 /// 即使 UI 层已经过 SafetyEngine 过滤，pipeline 自身仍然在最后一刻
-/// 再走一次 [SafetyEngine.evaluate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L203-L215)。
+/// 再走一次 [SafetyEngine.evaluate](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L203-L215)。
 /// 任何被判 `.forbid` 的路径都**不会**进入 NSWorkspace.recycle，会被计入 skipped
 /// 并通过 error 文案附带机器可读原因。这是最后一道闸门——防御:
 /// 1. 调用方传入未经过滤的路径（比如未来直接接命令行 / scripting）
@@ -263,7 +263,7 @@ private final class TrashLazyURLBackedUndoHistoryStoreProvider: @unchecked Senda
 /// - 调用 `setAccessDeniedPaths(_:)` 是更新可变状态的**唯一**入口，其它任何字段都不
 ///   可在 init 后改写；如新增字段必须重审 Sendable 假设。
 /// - `moveToTrash` / `partitionByForbid` 可被多 actor / 多并发 await chain 调用，
-///   `trie` / `safety` 的并发读由 SafetyKit 保证（参见 [VendorTrieNode](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/VendorTrie.swift#L29) 的生命周期契约）。
+///   `trie` / `safety` 的并发读由 SafetyKit 保证（参见 [VendorTrieNode](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/VendorTrie.swift#L29) 的生命周期契约）。
 public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
     /// 一次系统回收调用的不可变结果。抽成值类型后，批处理算法可以用无破坏的
@@ -340,8 +340,8 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
     private let safety: SafetyEngine
     /// 预建的 vendor 路径树（M4-P0 修复）。
-    /// **生命周期**：init 注入，全程只读；read 阶段并发安全详见 [VendorTrieNode](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/VendorTrie.swift#L29) 契约。
-    /// 非 nil 时 partitionByForbid 走 [SafetyEngine.evaluate(path:trie:home:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L342)，
+    /// **生命周期**：init 注入，全程只读；read 阶段并发安全详见 [VendorTrieNode](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/VendorTrie.swift#L29) 契约。
+    /// 非 nil 时 partitionByForbid 走 [SafetyEngine.evaluate(path:trie:home:)](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L342)，
     /// 让 vendors.yaml 中通过 `paths: [{verdict: forbid}]` 声明的硬禁区
     /// （`~/.cargo/bin`、`~/.android/sdk`、`~/Library/Developer/Xcode/UserData/KeyBindings/...` 等）
     /// 在 pipeline 这道最后闸门也能被拦住——而不是仅靠 SafetyEngine 的硬编码列表。
@@ -365,13 +365,13 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
 
     /// v1.3.zzzz：上层一票否决集合（`permissionDenied` / `tccProtected` 路径），
     /// `moveToTrash` 内部用 NSLock 保护读写，调用方通过 [setAccessDeniedPaths](#) 注入最新快照。
-    /// 协议 [DeletionPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift#L37)
+    /// 协议 [DeletionPipeline](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift#L37)
     /// 自 v2026.06.17 (AUDIT A2) 起取消 protocol extension 默认 no-op：每个实现都必须
     /// 显式提供本方法，杜绝"上层忘了调"被静默放行的脆弱契约。
     ///
     /// **锁的作用范围（必读）**：`accessDeniedLock` 只盖 Set 的"写入"和"快照交接"
-    /// （[setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L52) /
-    /// [snapshotAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L62)）
+    /// （[setAccessDeniedPaths](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L52) /
+    /// [snapshotAccessDeniedPaths](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L62)）
     /// 这两个 O(1) 临界区。`partitionByForbid` 内部的 `for p in paths` 循环里走的是
     /// **值拷贝（CoW）后的本地 Set.contains O(1)**，**不持锁**——这是设计而非疏漏，避免锁
     /// 在大批量删除时成为热点。改动该锁范围前请确保理解此约束。
@@ -452,7 +452,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 // The underlying journal/ledger/store branch logs its concrete storage evidence;
                 // retain this transaction-level stage so support logs also explain why later real
                 // deletion authorization remains closed.
-                GSYLog.error(.trash, "Trash startup recovery blocked stage=prewarm")
+                AmuxLog.error(.trash, "Trash startup recovery blocked stage=prewarm")
             }
         }
     }
@@ -747,12 +747,12 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     }
 
     /// 替换上层注入的 accessDenied 集合。每次扫描完成后由 UI 层调一次。
-    /// 线程安全：所有读写都在 [accessDeniedLock](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L43) 下进行。
+    /// 线程安全：所有读写都在 [accessDeniedLock](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L43) 下进行。
     ///
     /// **路径标准化（v1.3.zzzz Phase 2-F-A）**：入集前对每条路径做
     /// `URL(fileURLWithPath:).standardizedFileURL.path`，把 `/private/var/folders/...`
-    /// 这类 firmlink 折叠成 `/var/folders/...`，与 [SafetyEngine.evaluate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L215)
-    /// 的口径一致；`partitionByForbid` 比较时对入参 `p` 也做同样处理（见 [normalize](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)）。
+    /// 这类 firmlink 折叠成 `/var/folders/...`，与 [SafetyEngine.evaluate](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L215)
+    /// 的口径一致；`partitionByForbid` 比较时对入参 `p` 也做同样处理（见 [normalize](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)）。
     /// 防御场景：BulkScanner 给的 deniedPaths 与 selectedRows 里的 url.path 来源不同，
     /// firmlink 形态可能不一致——任一侧未标准化都会造成"明明在 deniedSet 却 contains 落空"
     /// 漏拦。
@@ -778,7 +778,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     /// 不会变成 `/var/folders/...`）。这导致 BulkScanner 给的 `/private/var/...` 形态
     /// 和 selectedRows 拿到的 `/var/...` 形态在 `Set.contains` 上对不上。
     /// SafetyEngine 之所以能正常工作，是因为它的 hardForbid 列表里同时膨胀了
-    /// `/private/var` 和 `/var` 两套前缀（见 [hardForbidPrefixes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L185)），
+    /// `/private/var` 和 `/var` 两套前缀（见 [hardForbidPrefixes](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L185)），
     /// 不依赖路径标准化吃 firmlink。
     ///
     /// **本函数实现**：用纯字符串规则折叠已知 firmlink 前缀，与磁盘是否存在解耦：
@@ -827,10 +827,10 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
     /// 也不会从一个未获权限的目录内部挑路径删除。
     ///
     /// **路径口径（v1.3.zzzz Phase 2-F-A）**：循环内对每个待判路径 p 做
-    /// [normalizePath](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L80)
+    /// [normalizePath](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L80)
     /// 后再 `Set.contains`，确保两侧 firmlink 形态一致；`accessDeniedPaths` 入参允许
     /// 调用方传入未标准化的 Set（外部测试 / 旧 callsite），Set 元素也被假定将经过
-    /// [setAccessDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L63)
+    /// [setAccessDeniedPaths](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TrashPipeline.swift#L63)
     /// 注入路径标准化——若直接以 static 方式调用，调用方需自行确保两侧口径一致。
     /// `rejected` 仍返回原始 p（不替换为标准化后的字符串），便于 UI / 日志展示用户能识别的路径。
     static func partitionByForbid(
@@ -1296,7 +1296,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 submissionDisposition: dryRun ? nil : .preSubmitRejected(.emptyRequest)
             )
         }
-        GSYLog.info(.trash, "moveToTrash 开始 dryRun=\(dryRun) paths=\(paths.count)")
+        AmuxLog.info(.trash, "moveToTrash 开始 dryRun=\(dryRun) paths=\(paths.count)")
 
         let isDuplicateVerification: Bool
         if case .some(.duplicate) = executionVerification {
@@ -1355,7 +1355,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 // `vendorOverrideEligiblePaths` 铸造阶段重验，且这里没有复用 UI 旧快照。
                 allowed = paths
                 rejected = []
-                GSYLog.warning(.trash, "vendorPathRule override 最终预检通过 paths=\(paths.count)")
+                AmuxLog.warning(.trash, "vendorPathRule override 最终预检通过 paths=\(paths.count)")
             } else {
                 allowed = []
                 rejected = preflight.rejections.isEmpty
@@ -1366,14 +1366,14 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                         )
                     }
                     : preflight.rejections
-                GSYLog.warning(.trash, "vendorPathRule override 最终预检拒绝 paths=\(paths.count)")
+                AmuxLog.warning(.trash, "vendorPathRule override 最终预检拒绝 paths=\(paths.count)")
             }
         } else {
             allowed = preflight.allowedPaths
             rejected = preflight.rejections
         }
         if !rejected.isEmpty {
-            GSYLog.warning(.trash, "moveToTrash 被安全预检拦截 \(rejected.count)/\(paths.count) firstReason=\(rejected[0].reason) firstPath=\(rejected[0].path)")
+            AmuxLog.warning(.trash, "moveToTrash 被安全预检拦截 \(rejected.count)/\(paths.count) firstReason=\(rejected[0].reason) firstPath=\(rejected[0].path)")
         }
 
         // SECURITY.md 的批级原子合同：任一 path 命中 forbid，整批在触碰文件系统前拒绝。
@@ -1397,7 +1397,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             )
             recordOutcome(outcome)
             let err = failureSummary.legacyDiagnostic
-            GSYLog.warning(
+            AmuxLog.warning(
                 .trash,
                 "moveToTrash 批级原子拒绝 submitted=\(paths.count) directRejected=\(rejected.count) firstReason=\(firstReason)"
             )
@@ -1517,7 +1517,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 ? TrashFailureSummary.previewMissing(count: missing)
                 : nil
             let err = failureSummary?.legacyDiagnostic
-            GSYLog.info(.trash, "moveToTrash dryRun 完成 present=\(present) skipped=\(skipped) missing=\(missing)")
+            AmuxLog.info(.trash, "moveToTrash dryRun 完成 present=\(present) skipped=\(skipped) missing=\(missing)")
             let outcome = TrashOutcome(movedPairs: [],
                                        failedPaths: [],
                                        safetyRejected: [],
@@ -1651,7 +1651,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             } else {
                 verificationProgress = nil
             }
-            GSYLog.info(
+            AmuxLog.info(
                 .trash,
                 "Duplicate verification phase=start targets=\(reservedPaths.count) items=\(duplicateVerificationRequest.verificationItemCount)"
             )
@@ -1671,7 +1671,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 }
             }
             guard rejections.isEmpty else {
-                GSYLog.notice(
+                AmuxLog.notice(
                     .trash,
                     "Duplicate verification phase=blocked targets=\(reservedPaths.count) rejections=\(rejections.count) cancelled=\(cancellationToken.isCancelled)"
                 )
@@ -1679,7 +1679,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                     ledger.finish(operationID: operationID, retainingPendingPaths: [])
                 }.value
                 if !released {
-                    GSYLog.error(
+                    AmuxLog.error(
                         .trash,
                         "Duplicate verification reservation release failed operationID=\(operationID.uuidString)"
                     )
@@ -1689,7 +1689,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                     rejections: rejections
                 )
             }
-            GSYLog.info(
+            AmuxLog.info(
                 .trash,
                 "Duplicate verification phase=complete targets=\(reservedPaths.count)"
             )
@@ -1758,7 +1758,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         }.value
         if !ledgerFinalized {
             // Fail-safe behavior is a stale tombstone, never an unguarded duplicate submission.
-            GSYLog.error(.trash, "Trash pending ledger finalization failed operationID=\(operationID.uuidString)")
+            AmuxLog.error(.trash, "Trash pending ledger finalization failed operationID=\(operationID.uuidString)")
         }
 
         if recycleResult.attemptedPaths.isEmpty,
@@ -1836,7 +1836,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                                    failureSummary: failureSummary)
         recordOutcome(outcome)
         let err = failureSummary?.legacyDiagnostic
-        GSYLog.info(.trash, "moveToTrash 返回 moved=\(movedCount) failed=\(failedPaths.count) pending=\(recycleResult.pendingPaths.count) submissionUnknown=\(recycleResult.submissionUnknownPaths.count) notSubmitted=\(recycleResult.notSubmittedPaths.count) safetyRejected=\(rejected.count) totalSkipped=\(totalSkipped) pairs=\(movedPairs.count)")
+        AmuxLog.info(.trash, "moveToTrash 返回 moved=\(movedCount) failed=\(failedPaths.count) pending=\(recycleResult.pendingPaths.count) submissionUnknown=\(recycleResult.submissionUnknownPaths.count) notSubmitted=\(recycleResult.notSubmittedPaths.count) safetyRejected=\(rejected.count) totalSkipped=\(totalSkipped) pairs=\(movedPairs.count)")
         let payload: MovePayload = ((movedCount, totalSkipped, err, movedPairs), outcome)
             return PerformedMove(
             payload: payload,
@@ -1892,7 +1892,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         guard !paths.isEmpty else { return }
         Task { @MainActor in
             NotificationCenter.default.post(
-                name: .gsyTrashPendingLedgerDidInvalidate,
+                name: .amuxTrashPendingLedgerDidInvalidate,
                 object: nil,
                 userInfo: [
                     "paths": paths,
@@ -2018,7 +2018,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 if idx < urls.count {
                     notSubmittedPaths.append(contentsOf: urls[idx...].map(\.path))
                 }
-                GSYLog.warning(.trash, "moveToTrash 整体等待预算已耗尽；当前及后续批次未提交 count=\(notSubmittedPaths.count)")
+                AmuxLog.warning(.trash, "moveToTrash 整体等待预算已耗尽；当前及后续批次未提交 count=\(notSubmittedPaths.count)")
                 break
             }
             if case .preSubmitRejected(let rejection) = batchAttempt.state {
@@ -2027,7 +2027,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 if idx < urls.count {
                     notSubmittedPaths.append(contentsOf: urls[idx...].map(\.path))
                 }
-                GSYLog.warning(.trash, "moveToTrash 持久提交闸门拒绝当前及后续批次 count=\(notSubmittedPaths.count)")
+                AmuxLog.warning(.trash, "moveToTrash 持久提交闸门拒绝当前及后续批次 count=\(notSubmittedPaths.count)")
                 break
             }
 
@@ -2044,7 +2044,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 if idx < urls.count {
                     notSubmittedPaths.append(contentsOf: urls[idx...].map(\.path))
                 }
-                GSYLog.warning(.trash, "NSWorkspace.recycle 同步调用终态未知 operationID=\(operationID.uuidString) unknown=\(submissionUnknownPaths.count) notSubmitted=\(notSubmittedPaths.count)；停止后续提交")
+                AmuxLog.warning(.trash, "NSWorkspace.recycle 同步调用终态未知 operationID=\(operationID.uuidString) unknown=\(submissionUnknownPaths.count) notSubmitted=\(notSubmittedPaths.count)；停止后续提交")
                 break
             }
 
@@ -2055,7 +2055,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 if idx < urls.count {
                     notSubmittedPaths.append(contentsOf: urls[idx...].map(\.path))
                 }
-                GSYLog.warning(.trash, "NSWorkspace.recycle 回调待定 operationID=\(operationID.uuidString) pending=\(pendingPaths.count) notSubmitted=\(notSubmittedPaths.count)；停止后续提交且不自动重试")
+                AmuxLog.warning(.trash, "NSWorkspace.recycle 回调待定 operationID=\(operationID.uuidString) pending=\(pendingPaths.count) notSubmitted=\(notSubmittedPaths.count)；停止后续提交且不自动重试")
                 break
             }
 
@@ -2064,7 +2064,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             let movedSet = Set(batchAttempt.moved.map { $0.0 })
             let unmoved = batch.filter { !movedSet.contains($0.path) }
             if !unmoved.isEmpty {
-                GSYLog.warning(.trash, "moveToTrash 批次存在未移动项，回退到单 URL 隔离重试 batch=\(batch.count) unmoved=\(unmoved.count)")
+                AmuxLog.warning(.trash, "moveToTrash 批次存在未移动项，回退到单 URL 隔离重试 batch=\(batch.count) unmoved=\(unmoved.count)")
             }
             for url in unmoved {
                 emitProgress(.diagnosingItems, currentPath: url.path)
@@ -2080,7 +2080,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                     if idx < urls.count {
                         notSubmittedPaths.append(contentsOf: urls[idx...].map(\.path))
                     }
-                    GSYLog.warning(.trash, "moveToTrash 整体等待预算在单项诊断前耗尽；停止后续批次")
+                    AmuxLog.warning(.trash, "moveToTrash 整体等待预算在单项诊断前耗尽；停止后续批次")
                     return RecycleBatchResult(
                         moved: Self.stableUniqueMovedPairs(allMoved),
                         undoJournalEntries: Self.stableUniqueJournalEntries(undoJournalEntries),
@@ -2133,7 +2133,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                     if idx < urls.count {
                         notSubmittedPaths.append(contentsOf: urls[idx...].map(\.path))
                     }
-                    GSYLog.warning(.trash, "NSWorkspace.recycle 单项同步调用终态未知 operationID=\(operationID.uuidString) path=\(url.path)")
+                    AmuxLog.warning(.trash, "NSWorkspace.recycle 单项同步调用终态未知 operationID=\(operationID.uuidString) path=\(url.path)")
                     return RecycleBatchResult(
                         moved: Self.stableUniqueMovedPairs(allMoved),
                         undoJournalEntries: Self.stableUniqueJournalEntries(undoJournalEntries),
@@ -2158,7 +2158,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                     if idx < urls.count {
                         notSubmittedPaths.append(contentsOf: urls[idx...].map(\.path))
                     }
-                    GSYLog.warning(.trash, "NSWorkspace.recycle 单项回调待定 operationID=\(operationID.uuidString) path=\(url.path)；停止隔离重试与后续批次")
+                    AmuxLog.warning(.trash, "NSWorkspace.recycle 单项回调待定 operationID=\(operationID.uuidString) path=\(url.path)；停止隔离重试与后续批次")
                     return RecycleBatchResult(
                         moved: Self.stableUniqueMovedPairs(allMoved),
                         undoJournalEntries: Self.stableUniqueJournalEntries(undoJournalEntries),
@@ -2304,7 +2304,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             ) {
                 let state = gate.resolveTimeout(operationID: operationID)
                 if state != nil {
-                    GSYLog.warning(.trash, "等待 NSWorkspace.recycle 边界超时 operationID=\(operationID.uuidString) state=\(String(describing: state)) batchSize=\(urls.count)")
+                    AmuxLog.warning(.trash, "等待 NSWorkspace.recycle 边界超时 operationID=\(operationID.uuidString) state=\(String(describing: state)) batchSize=\(urls.count)")
                 }
             }
 
@@ -2317,7 +2317,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 // rechecks the retained survivor plus this attempt's target identities; the
                 // complete content hash is intentionally not repeated for every batch.
                 if let rejection = duplicateClaimFence?.rejection(blocking: normalizedPaths) {
-                    GSYLog.notice(
+                    AmuxLog.notice(
                         .trash,
                         "Duplicate claim fence blocked before ledger claim operationID=\(operationID.uuidString) targets=\(normalizedPaths.count)"
                     )
@@ -2345,7 +2345,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                             attemptID: attemptID
                         )
                         if !released {
-                            GSYLog.error(
+                            AmuxLog.error(
                                 .trash,
                                 "Duplicate claim fence could not release exact attempt operationID=\(operationID.uuidString) attemptID=\(attemptID.uuidString)"
                             )
@@ -2376,14 +2376,14 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                     // journal or ledger mutation. The gate retains this bit after finalization, so
                     // a callback arriving after journal removal cannot recreate the same row.
                     guard gate.admitCallbackFact() else {
-                        GSYLog.warning(
+                        AmuxLog.warning(
                             .trash,
                             "NSWorkspace.recycle duplicate callback ignored before durable mutation operationID=\(operationID.uuidString) attemptID=\(attemptID.uuidString)"
                         )
                         return
                     }
                     if let errorDescription {
-                        GSYLog.warning(.trash, "NSWorkspace.recycle 单批失败 operationID=\(operationID.uuidString) batchSize=\(urls.count) moved=\(pairs.count) err=\(errorDescription)")
+                        AmuxLog.warning(.trash, "NSWorkspace.recycle 单批失败 operationID=\(operationID.uuidString) batchSize=\(urls.count) moved=\(pairs.count) err=\(errorDescription)")
                     }
 
                     // v2026.07.18: turn the callback into durable facts before advancing or
@@ -2400,7 +2400,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                         // v2026.07.18 callback scope fence: an AppKit adapter or stale callback
                         // cannot introduce paths that were never frozen by this ledger attempt.
                         // Such pairs have no valid identity/scope capability and are ignored.
-                        GSYLog.error(
+                        AmuxLog.error(
                             .trash,
                             "NSWorkspace.recycle callback returned out-of-attempt pairs operationID=\(operationID.uuidString) count=\(unexpectedPairCount)"
                         )
@@ -2470,7 +2470,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                     // Leave the gate in the more conservative submission-unknown phase. A stale
                     // API-return event may belong to an older attempt and cannot advance the new
                     // generation to callbackPending.
-                    GSYLog.warning(.trash, "Trash pending ledger API-return transition was stale or already terminal operationID=\(operationID.uuidString) attemptID=\(attemptID.uuidString)")
+                    AmuxLog.warning(.trash, "Trash pending ledger API-return transition was stale or already terminal operationID=\(operationID.uuidString) attemptID=\(attemptID.uuidString)")
                 }
             }
         }
@@ -2544,7 +2544,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             // Exact attempt mismatch is authoritative under the ledger lock. It cannot resume a
             // continuation or clear the current generation. Best-effort row removal is safe;
             // any surviving row will be proven stale again during replay.
-            GSYLog.warning(
+            AmuxLog.warning(
                 .trash,
                 "Trash pending ledger callback transition was proven stale operationID=\(settlement.operationID.uuidString) attemptID=\(settlement.attemptID.uuidString)"
             )
@@ -2585,13 +2585,13 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 retryIndex: retryIndex,
                 configuredDelays: retryDelays
             ) else {
-                GSYLog.error(
+                AmuxLog.error(
                     .trash,
                     "Trash callback ledger settlement retries exhausted; exact generation retained operationID=\(settlement.operationID.uuidString) attemptID=\(settlement.attemptID.uuidString)"
                 )
                 return
             }
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "Trash callback ledger settlement storage unavailable; retrying exact generation operationID=\(settlement.operationID.uuidString) attemptID=\(settlement.attemptID.uuidString) retry=\(retryIndex + 1)"
             )
@@ -2653,7 +2653,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                    operationID: settlement.operationID,
                    attemptID: settlement.attemptID
                ) {
-                GSYLog.error(
+                AmuxLog.error(
                     .trash,
                     "Trash pending ledger retry-ready transition failed operationID=\(settlement.operationID.uuidString) attemptID=\(settlement.attemptID.uuidString) paths=\(retryablePaths.count)"
                 )
@@ -2663,7 +2663,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             gate.resumeClaimedCallback(callbackValue)
 
         case .lateAfterTimeout:
-            GSYLog.info(
+            AmuxLog.info(
                 .trash,
                 "NSWorkspace.recycle 延迟回调 operationID=\(settlement.operationID.uuidString) moved=\(settlement.movedPairs.count)；执行一次迟到结果对账"
             )
@@ -2679,7 +2679,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                    operationID: settlement.operationID,
                    attemptID: settlement.attemptID
                ) {
-                GSYLog.error(
+                AmuxLog.error(
                     .trash,
                     "Trash pending ledger late unmoved clear failed operationID=\(settlement.operationID.uuidString) attemptID=\(settlement.attemptID.uuidString)"
                 )
@@ -2712,7 +2712,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         case .ignoredDuplicate:
             // Journal/ledger facts remain durable for replay. Clearing either side here would
             // turn a duplicate callback into silent Undo loss.
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "Trash callback gate diverged after durable journal operationID=\(settlement.operationID.uuidString) attemptID=\(settlement.attemptID.uuidString)"
             )
@@ -2729,7 +2729,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         let unique = stableUniqueMovedPairs(pairs)
         Task { @MainActor in
             NotificationCenter.default.post(
-                name: .gsyTrashDidMove,
+                name: .amuxTrashDidMove,
                 object: nil,
                 userInfo: [
                     "paths": unique.map(\.0),
@@ -2759,7 +2759,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 entries: entries
             )
             guard persisted else {
-                GSYLog.error(
+                AmuxLog.error(
                     .trash,
                     "Late Trash Undo durable commit remains pending operationID=\(operationID.uuidString) entries=\(entries.count)"
                 )
@@ -2768,7 +2768,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             guard await capability.finishDurablyAfterUndoPersisted(
                 pruningReceiptsIn: undoHistoryStore
             ) else {
-                GSYLog.error(
+                AmuxLog.error(
                     .trash,
                     "Late Trash Undo acknowledgement remains pending operationID=\(operationID.uuidString) entries=\(entries.count)"
                 )
@@ -2864,7 +2864,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             )
         }
         guard recoveryTerminal == .ready else {
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "Trash deletion authorization blocked stage=startupRecovery paths=\(paths.count)"
             )
@@ -2919,7 +2919,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 // a future incompatible writer; never guess which sibling receipts are safe.
                 guard phaseIDs == ids else {
                     allGroupsSettled = false
-                    GSYLog.error(
+                    AmuxLog.error(
                         .trash,
                         "Startup Trash Undo journal has split prune phase operationID=\(first.operationID.uuidString) attemptID=\(first.attemptID.uuidString)"
                     )
@@ -2946,7 +2946,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
                 continue
             case .storageUnavailable:
                 allGroupsSettled = false
-                GSYLog.error(
+                AmuxLog.error(
                     .trash,
                     "Startup Trash Undo replay could not classify exact owner operationID=\(first.operationID.uuidString) attemptID=\(first.attemptID.uuidString)"
                 )
@@ -2966,7 +2966,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             )
             guard persisted else {
                 allGroupsSettled = false
-                GSYLog.error(
+                AmuxLog.error(
                     .trash,
                     "Startup Trash Undo exact group remains pending operationID=\(first.operationID.uuidString) attemptID=\(first.attemptID.uuidString) entries=\(group.count)"
                 )
@@ -2980,7 +2980,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             let pruneIDs = capability.prepareReceiptPruneAfterUndoPersisted()
             guard pruneIDs == ids else {
                 allGroupsSettled = false
-                GSYLog.error(
+                AmuxLog.error(
                     .trash,
                     "Startup Trash Undo exact ack remains pending operationID=\(first.operationID.uuidString) attemptID=\(first.attemptID.uuidString) entries=\(group.count)"
                 )
@@ -2989,7 +2989,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             let receiptsPruned = await undoHistoryStore.acknowledgeCompletionJournal(ids: ids)
             guard receiptsPruned, capability.finishAfterReceiptPruned(ids: ids) else {
                 allGroupsSettled = false
-                GSYLog.error(
+                AmuxLog.error(
                     .trash,
                     "Startup Trash Undo receipt prune remains pending operationID=\(first.operationID.uuidString) attemptID=\(first.attemptID.uuidString) entries=\(group.count)"
                 )
@@ -2999,7 +2999,7 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             replayedCount += group.count
         }
         if replayedCount > 0 {
-            GSYLog.info(.trash, "Startup Trash Undo journal replayed entries=\(replayedCount)")
+            AmuxLog.info(.trash, "Startup Trash Undo journal replayed entries=\(replayedCount)")
         }
         return DurableUndoReplayResult(
             allGroupsSettled: allGroupsSettled,

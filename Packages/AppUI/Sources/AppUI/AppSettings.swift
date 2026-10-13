@@ -60,7 +60,7 @@ public final class AppSettings: ObservableObject {
         public static let smartCareDeveloperCacheWarningAcknowledged =
             "v2026.07.smart_care_developer_cache_warning_acknowledged"
         /// v1.6：Sentinel 后台守护开关（SMAppService.agent）。默认 OFF —— 用户必须在
-        /// 「设置 → 高级 → 后台守护」显式打开才会注册 helper。详见 [docs/SENTINEL_DESIGN.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/SENTINEL_DESIGN.md) §4。
+        /// 「设置 → 高级 → 后台守护」显式打开才会注册 helper。详见 [docs/SENTINEL_DESIGN.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/SENTINEL_DESIGN.md) §4。
         public static let sentinelEnabled = "v1.6.sentinel_enabled"
         /// v1.6：Sentinel 最近一次成功 register 的时间戳（双向写入；register 时刷，
         /// unregister 时清）。给设置面板「最近被 Sentinel 发现的候选」面板做"自从启用以来"
@@ -201,11 +201,11 @@ public final class AppSettings: ObservableObject {
     /// - **`.system`（默认）**：不覆盖。沿用 macOS 系统语言（系统设置 → 通用 →
     ///   语言与地区 → 应用程序 里给本 App 单独指定的语言；若未指定则跟随系统首选语言）。
     /// - **`.zhHans`、`.en`**：用户在「设置 → 扫描 → 界面语言」里显式选定，此时：
-    ///   1. 即时生效：通过 [effectiveLocale](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
+    ///   1. 即时生效：通过 [effectiveLocale](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AppSettings.swift)
     ///      + `.environment(\.locale, ...)` 让所有走 SwiftUI 字符串目录的 `Text` 当次会话即换语言。
     ///   2. 非 SwiftUI 消费者：App 层用同一个 locale 重建托盘菜单，并只更新主菜单的
     ///      title（保留 target/action/responder chain）；不再要求用户重启。
-    ///   3. 跨进程：[applyToAppleLanguagesIfNeeded](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
+    ///   3. 跨进程：[applyToAppleLanguagesIfNeeded](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AppSettings.swift)
     ///      仍同步 `AppleLanguages`，让下一次进程和系统拥有的原生面板保持一致。
     public enum LanguageOverride: String, CaseIterable, Sendable, Hashable {
         case system
@@ -217,15 +217,15 @@ public final class AppSettings: ObservableObject {
         /// 而是读进程级 `Bundle.main.preferredLocalizations`。在用户已经把 App 整体环境
         /// locale 改成 zh-Hans、但 Bundle.main 仍是 en 的窗口里，Picker 选项会显示为
         /// 英文（"Simplified Chinese / Follow System / English"），与周围中文 UI 不一致。
-        /// 解决：UI 调用方应使用下面的 [label(in:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)，
+        /// 解决：UI 调用方应使用下面的 [label(in:)](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AppSettings.swift)，
         /// 把当前 SwiftUI 环境的 `Locale` 透传进来，确保选项文本与界面其它文本同语言。
         public var label: String {
             label(in: nil)
         }
 
-        /// 按指定 locale 返回 label。`nil` 时退化为 process 默认（与 [label](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift) 等价）。
+        /// 按指定 locale 返回 label。`nil` 时退化为 process 默认（与 [label](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AppSettings.swift) 等价）。
         ///
-        /// 实现统一走 [AppLocalization](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppLocalization.swift)，
+        /// 实现统一走 [AppLocalization](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AppLocalization.swift)，
         /// 显式把 locale 交给 String Catalog。不要再自行拼 `.lproj` 路径；那会绕过
         /// Foundation 的语言回退规则，也会让相同问题在 tooltip / AppKit menu 重复出现。
         public func label(in locale: Locale?) -> String {
@@ -302,22 +302,22 @@ public final class AppSettings: ObservableObject {
     }
 
     /// v1.3：主列表排序键，默认 `.sizeDesc`（按字节大小从大到小）。
-    /// 持久化存 raw string；通过 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
-    /// / [MainView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
-    /// onChange 实时同步到 [ScanCoordinator.mainListSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)。
+    /// 持久化存 raw string；通过 [AmuxAICleanApp](file:///Users/amuxuser/workspace/AmuxAIClean/App/AmuxAICleanApp.swift)
+    /// / [MainView](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift)
+    /// onChange 实时同步到 [ScanCoordinator.mainListSortKey](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)。
     @Published public var mainListSortKey: MainListSortKey {
         didSet { defaults.set(mainListSortKey.rawValue, forKey: Keys.mainListSortKey) }
     }
 
     /// v1.3：扫描悬浮窗（HUD）开关，默认 `true`。
-    /// 关掉就完全不会创建 [FloatingScanHUDController](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
+    /// 关掉就完全不会创建 [FloatingScanHUDController](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
     /// 的 NSPanel，零开销。
     @Published public var hudEnabled: Bool {
         didSet { defaults.set(hudEnabled, forKey: Keys.hudEnabled) }
     }
 
     /// v1.3：状态栏托盘开关，默认 `true`。
-    /// 关掉后 [StatusItemController](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StatusItemController.swift)
+    /// 关掉后 [StatusItemController](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StatusItemController.swift)
     /// 不会注册 NSStatusItem，菜单栏右侧不会有图标。
     ///
     /// **v1.3.x 互斥兜底（与 hideFromDockWhenClosed 对偶）**：
@@ -375,14 +375,14 @@ public final class AppSettings: ObservableObject {
     /// v1.4：开发者构建产物扫描启用的规则 ID 集合。
     ///
     /// 设计：
-    /// - **内置全开**：默认 = [DevArtifactRules.allIDs](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DevArtifactRules.swift)，
+    /// - **内置全开**：默认 = [DevArtifactRules.allIDs](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/DevArtifactRules.swift)，
     ///   覆盖 30 条规则（node_modules / .next / Pods / .gradle / build / target / __pycache__ ...）。
-    /// - **逐项可关**：用户可在 [SettingsScene](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SettingsScene.swift)
+    /// - **逐项可关**：用户可在 [SettingsScene](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/SettingsScene.swift)
     ///   的"开发者扫描规则"分组按生态逐条关（比如不写 Rust 的关 `target/`，避免误伤别的 target）。
     /// - **持久化**：UserDefaults 存 `[String]` 数组（rawValue），读时反序列化为 `Set<String>`，
     ///   保持 O(1) 查询（`DevArtifactScanner` 在每个 entry 上要查一次）。
-    /// - **空集兜底**：若用户把所有规则都关掉，[DevArtifactScanner.discover](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DevArtifactScanner.swift)
-    ///   会直接 warning 并返回空命中，[scanDeveloper](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// - **空集兜底**：若用户把所有规则都关掉，[DevArtifactScanner.discover](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/DevArtifactScanner.swift)
+    ///   会直接 warning 并返回空命中，[scanDeveloper](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
     ///   走 0 命中分支直接结束，不会卡 UI。
     @Published public var enabledDevArtifactRuleIDs: Set<String> {
         didSet { defaults.set(Array(enabledDevArtifactRuleIDs), forKey: Keys.enabledDevArtifactRuleIDs) }
@@ -418,8 +418,8 @@ public final class AppSettings: ObservableObject {
     /// 「设置 → 高级 → 后台守护」勾选启用，避免存量用户升级后多了个守护进程。
     ///
     /// `didSet` 仅持久化到 UserDefaults；register / unregister 由
-    /// [SentinelManager](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SentinelManager.swift)
-    /// 在 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
+    /// [SentinelManager](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/SentinelManager.swift)
+    /// 在 [AmuxAICleanApp](file:///Users/amuxuser/workspace/AmuxAIClean/App/AmuxAICleanApp.swift)
     /// `onChange(of: settings.sentinelEnabled)` 钩子里完成（避免 AppSettings 直接依赖
     /// ServiceManagement，保持配置层纯）。
     @Published public var sentinelEnabled: Bool {
@@ -427,7 +427,7 @@ public final class AppSettings: ObservableObject {
     }
 
     /// v1.6：Sentinel 最近一次成功 register 的时间戳。
-    /// register 成功后 [SentinelManager](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SentinelManager.swift)
+    /// register 成功后 [SentinelManager](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/SentinelManager.swift)
     /// 调本属性 setter 写入 `Date()`；unregister 后写 nil。
     @Published public var sentinelLastEnabled: Date? {
         didSet {
@@ -473,7 +473,7 @@ public final class AppSettings: ObservableObject {
         }
     }
 
-    /// v1.7：把 [preferredLanguage](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
+    /// v1.7：把 [preferredLanguage](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AppSettings.swift)
     /// 映射成 SwiftUI 用的 `Locale`，给 `WindowGroup.environment(\.locale, ...)` 用。
     /// `.system` 时返回 `Locale.autoupdatingCurrent`，让 SwiftUI 自然跟随系统。
     public var effectiveLocale: Locale {

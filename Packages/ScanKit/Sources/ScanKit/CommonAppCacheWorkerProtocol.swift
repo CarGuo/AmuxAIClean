@@ -116,7 +116,7 @@ public enum CommonAppCacheWorkerBridge {
                 data: JSONEncoder().encode(request)
             )
         } catch {
-            GSYLog.error(.scan, "CommonAppCache worker request setup failed error=\(String(describing: error))")
+            AmuxLog.error(.scan, "CommonAppCache worker request setup failed error=\(String(describing: error))")
             let result = workerFailureResult(
                 rootPath: rootEvidencePath,
                 reason: .workerLaunchFailed
@@ -169,7 +169,7 @@ public enum CommonAppCacheWorkerBridge {
                     onProgress: onProgress
                 )
             }
-            GSYLog.error(.scan,
+            AmuxLog.error(.scan,
                          "CommonAppCache worker exited without valid final frame code=\(exitCode) protocolError=\(frames.protocolErrorCode ?? "none") workerFailure=\(frames.workerFailureCode ?? "none") finalCount=\(frames.finalFrameCount) stdoutTruncated=\(execution.stdoutWasTruncated) readersEOF=\(execution.readersReachedEOF)")
             let result = checkpointResult(
                 progress: frames.latestProgress,
@@ -178,7 +178,7 @@ public enum CommonAppCacheWorkerBridge {
             )
             return publishingTerminal(result, after: frames.latestProgress, onProgress: onProgress)
         case .timedOut:
-            GSYLog.warning(.scan,
+            AmuxLog.warning(.scan,
                            "CommonAppCache isolated worker reached hard timeout limit=\(String(format: "%.3f", hardTimeout))s")
             let result = checkpointResult(
                 progress: frames.latestProgress,
@@ -194,7 +194,7 @@ public enum CommonAppCacheWorkerBridge {
             )
             return publishingTerminal(result, after: frames.latestProgress, onProgress: onProgress)
         case .notOwned:
-            GSYLog.error(.scan, "CommonAppCache worker ownership lost before terminal")
+            AmuxLog.error(.scan, "CommonAppCache worker ownership lost before terminal")
             let result = checkpointResult(
                 progress: frames.latestProgress,
                 rootPath: rootEvidencePath,
@@ -202,7 +202,7 @@ public enum CommonAppCacheWorkerBridge {
             )
             return publishingTerminal(result, after: frames.latestProgress, onProgress: onProgress)
         case .launchFailed(let message):
-            GSYLog.error(.scan, "CommonAppCache worker launch failed detail=\(message)")
+            AmuxLog.error(.scan, "CommonAppCache worker launch failed detail=\(message)")
             let result = workerFailureResult(
                 rootPath: rootEvidencePath,
                 reason: .workerLaunchFailed

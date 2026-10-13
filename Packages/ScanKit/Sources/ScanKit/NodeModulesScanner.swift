@@ -37,7 +37,7 @@ public actor NodeModulesScanner {
         } catch is CancellationError {
             return []
         } catch {
-            GSYLog.error(.scan, "NodeModules discovery unexpected error: \(error)")
+            AmuxLog.error(.scan, "NodeModules discovery unexpected error: \(error)")
             return []
         }
     }
@@ -98,7 +98,7 @@ public actor NodeModulesScanner {
             )
         } catch {
             // 空 cancellationCheck 不会抛；保留类型安全的不可达分支并留下诊断。
-            GSYLog.error(.scan, "NodeModules synchronous discovery unexpected error: \(error)")
+            AmuxLog.error(.scan, "NodeModules synchronous discovery unexpected error: \(error)")
             return DiscoveryEvidence(hits: [], incompleteIssues: [
                 ScanIncompleteIssue(path: home.path, reason: .enumerationFailed)
             ])
@@ -332,7 +332,7 @@ public actor NodeModulesScanner {
             ).sizeBytes
         } catch {
             // 空 cancellationCheck 不会抛；兼容 API 仍以 nil 表示未知。
-            GSYLog.error(.scan, "NodeModules size estimation unexpected error path=\(path): \(error)")
+            AmuxLog.error(.scan, "NodeModules size estimation unexpected error path=\(path): \(error)")
             return nil
         }
     }

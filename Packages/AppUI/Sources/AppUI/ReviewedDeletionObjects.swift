@@ -57,7 +57,7 @@ public struct ReviewedDeletionObjects: Sendable, Equatable, Hashable {
                     rejections.append(.init(
                         path: rawPath, reason: TrashPendingOperationRejection.Reason.targetMissing.rawValue))
                 case .unavailable(let code):
-                    GSYLog.warning(.trash, "review_identity_unavailable path=\(rawPath) errno=\(code)")
+                    AmuxLog.warning(.trash, "review_identity_unavailable path=\(rawPath) errno=\(code)")
                     rejections.append(.init(
                         path: rawPath, reason: TrashPendingOperationRejection.Reason.freshReviewRequired.rawValue))
                 }

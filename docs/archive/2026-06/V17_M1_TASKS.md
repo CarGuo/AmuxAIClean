@@ -1,7 +1,7 @@
 # v1.7 M1 PR 级任务拆分
 
 > 创建日期：2026-06-15
-> 上游：[DEVELOPER_ONE_CLICK_PLAN.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/DEVELOPER_ONE_CLICK_PLAN.md) §2 / §9
+> 上游：[DEVELOPER_ONE_CLICK_PLAN.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/DEVELOPER_ONE_CLICK_PLAN.md) §2 / §9
 > 范围：v1.7 M1（2026-07-08 – 2026-07-15，1 周）
 > 原则：每个 PR ≤ 600 行 diff，独立可 review；任一 PR 失败不阻塞下一个 PR 的 review
 
@@ -13,10 +13,10 @@
 
 | 改动 | 文件 | 说明 |
 |---|---|---|
-| 扩展 KnownVersionedRoots | [KnownVersionedRoots.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift#L75-L94) | 新增 Android SDK build-tools / platforms / system-images keepLatest=2 |
-| 单测 | [KnownVersionedRootsTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/KnownVersionedRootsTests.swift) | 新增 `test_entries_包含_Android_SDK_三条_*` / `test_scanAll_构造_Android_SDK_build_tools_*` / `test_scanAll_构造_Android_SDK_platforms_*` 三条 |
-| 新增协议骨架 | [DeveloperWorkflow.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DeveloperWorkflow.swift) | `DeveloperWorkflow` / `DeveloperCard` / `DeletionRecipe` / `AppleWorkflow`（空 cards）|
-| 骨架契约测试 | [DeveloperWorkflowSkeletonTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/DeveloperWorkflowSkeletonTests.swift) | 5 条契约（ID 命名、空 cards、recipe 安全门、Risk 三档对齐）|
+| 扩展 KnownVersionedRoots | [KnownVersionedRoots.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift#L75-L94) | 新增 Android SDK build-tools / platforms / system-images keepLatest=2 |
+| 单测 | [KnownVersionedRootsTests.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/KnownVersionedRootsTests.swift) | 新增 `test_entries_包含_Android_SDK_三条_*` / `test_scanAll_构造_Android_SDK_build_tools_*` / `test_scanAll_构造_Android_SDK_platforms_*` 三条 |
+| 新增协议骨架 | [DeveloperWorkflow.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/DeveloperWorkflow.swift) | `DeveloperWorkflow` / `DeveloperCard` / `DeletionRecipe` / `AppleWorkflow`（空 cards）|
+| 骨架契约测试 | [DeveloperWorkflowSkeletonTests.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/DeveloperWorkflowSkeletonTests.swift) | 5 条契约（ID 命名、空 cards、recipe 安全门、Risk 三档对齐）|
 
 **验收**：`swift test --filter ScanKitTests` 全绿，370+ 既有测试不破。
 
@@ -36,9 +36,9 @@
 | `card.apple.coresimulator-caches` | `~/Library/Developer/CoreSimulator/Caches` | literal · safe | ✅ |
 
 **实际改动**（≈ 90 行 diff）：
-- [DeveloperWorkflow.swift L116-L220](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DeveloperWorkflow.swift#L116-L220)：填充 `AppleWorkflow.cards()`，存在性检测决定是否展示
-- [AppleWorkflowCardsTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/AppleWorkflowCardsTests.swift)：新建 8 个 case（部分存在 3 个 / 全部存在 4 个 / 防回归 1 个）
-- [DeveloperWorkflowSkeletonTests L23-L32](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/DeveloperWorkflowSkeletonTests.swift#L23-L32)：原"骨架空 cards"契约升级为"空 home 不污染 UI"契约
+- [DeveloperWorkflow.swift L116-L220](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/DeveloperWorkflow.swift#L116-L220)：填充 `AppleWorkflow.cards()`，存在性检测决定是否展示
+- [AppleWorkflowCardsTests.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/AppleWorkflowCardsTests.swift)：新建 8 个 case（部分存在 3 个 / 全部存在 4 个 / 防回归 1 个）
+- [DeveloperWorkflowSkeletonTests L23-L32](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/DeveloperWorkflowSkeletonTests.swift#L23-L32)：原"骨架空 cards"契约升级为"空 home 不污染 UI"契约
 
 **关键设计决策（与原 PR-1 计划的偏离）**：
 - ❌ **不用** `PathSource.vendor("Apple Developer Tools")`——因为 vendors.yaml 该 vendor 含 21 条 path（Xcode + Simulator + SwiftPM 全集），颗粒度太粗会破坏"按主题分卡"目标
@@ -62,17 +62,17 @@
 
 | 子任务 | 改动 | 状态 |
 |---|---|---|
-| 新建 [SimctlDevicesScanner.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/SimctlDevicesScanner.swift) | `xcrun simctl list devices --json` 解析，输出 (udid, name, runtime, state, size) | ✅ |
-| 新建 [SimctlRuntimeScanner.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/SimctlRuntimeScanner.swift) | `xcrun simctl list runtimes --json` + FileManager 估算 sizeBytes | ✅ |
-| 新建 [SubprocessExecutor.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/SubprocessExecutor.swift)（**ScanKit 层**） | allowlist：`xcrun simctl list devices/runtimes --json`、`xcrun simctl delete`、`xcrun simctl runtime delete`；其他全部拒绝；5s timeout；dryRun 闸门 | ✅ |
+| 新建 [SimctlDevicesScanner.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/SimctlDevicesScanner.swift) | `xcrun simctl list devices --json` 解析，输出 (udid, name, runtime, state, size) | ✅ |
+| 新建 [SimctlRuntimeScanner.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/SimctlRuntimeScanner.swift) | `xcrun simctl list runtimes --json` + FileManager 估算 sizeBytes | ✅ |
+| 新建 [SubprocessExecutor.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/SubprocessExecutor.swift)（**ScanKit 层**） | allowlist：`xcrun simctl list devices/runtimes --json`、`xcrun simctl delete`、`xcrun simctl runtime delete`；其他全部拒绝；5s timeout；dryRun 闸门 | ✅ |
 | 新增卡片 | `card.apple.coresimulator-devices`（commandLine） / `card.apple.coresimulator-runtimes`（commandLine） / `card.apple.coresimulator-volumes`（filesystem） / `card.apple.derived-data-per-project`（dynamicScanner + filesystem 占位） | ✅ |
 | 安全门 | NSWorkspace 检测 `com.apple.iphonesimulator` 运行 → devices/runtimes 卡 risk 降级为 blocked，summary 带 ⚠️ 提示 | ✅ |
 | DeletionRecipe.isExecutableInCurrentBuild 升级 | `.commandLine` 必须命中 SubprocessExecutor.defaultAllowlist 才返 true（二道闸门，挡未授权命令） | ✅ |
-| 单测/集成测试 | [SubprocessExecutorTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/SubprocessExecutorTests.swift) 10 个 / [SimctlDevicesScannerTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/SimctlDevicesScannerTests.swift) 6 个 / [SimctlRuntimeScannerTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/SimctlRuntimeScannerTests.swift) 6 个 / [AppleWorkflowPR2CardsTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/AppleWorkflowPR2CardsTests.swift) 9 个 | ✅ |
+| 单测/集成测试 | [SubprocessExecutorTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/SubprocessExecutorTests.swift) 10 个 / [SimctlDevicesScannerTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/SimctlDevicesScannerTests.swift) 6 个 / [SimctlRuntimeScannerTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/SimctlRuntimeScannerTests.swift) 6 个 / [AppleWorkflowPR2CardsTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/AppleWorkflowPR2CardsTests.swift) 9 个 | ✅ |
 
 **关键设计决策（与原 PR-2 计划的偏离）**：
-- ❌ **不把 SubprocessExecutor 放在 AppUI 层**：原计划写的是 AppUI 层，但实地探查发现 [DefaultMaintenanceRunner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/MaintenanceTasks.swift#L137-L171) 与 [PkgutilReceiptsScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/PkgutilReceiptsScanner.swift) 已有同档次 Process 调用范式都在 ScanKit；Scanner 自己要调 simctl 也得有这个工具，反向依赖（ScanKit→AppUI）不行
-- ✅ **改用** ScanKit 层 [SubprocessExecutor.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/SubprocessExecutor.swift)，AppUI 直接通过现有依赖访问
+- ❌ **不把 SubprocessExecutor 放在 AppUI 层**：原计划写的是 AppUI 层，但实地探查发现 [DefaultMaintenanceRunner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/MaintenanceTasks.swift#L137-L171) 与 [PkgutilReceiptsScanner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/PkgutilReceiptsScanner.swift) 已有同档次 Process 调用范式都在 ScanKit；Scanner 自己要调 simctl 也得有这个工具，反向依赖（ScanKit→AppUI）不行
+- ✅ **改用** ScanKit 层 [SubprocessExecutor.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/SubprocessExecutor.swift)，AppUI 直接通过现有依赖访问
 - ✅ **runtimes 卡仅依赖 csRoot 存在**：runtime 元数据来自 simctl JSON 而非 FS 枚举，无须等子目录
 - ✅ **isSimulatorRunning 闭包注入**：默认实现走 NSWorkspace（仅 macOS 主进程），单测注入 `{ false }` / `{ true }` stub 避免 CI 偶发
 
@@ -93,7 +93,7 @@
 
 ## PR-3：JetBrains 跨产品分组 + KnownVersionedRoots 升级（✅ 已完成 2026-06-15）
 
-**目标**：解决 [REVIEW_2026_06.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/REVIEW_2026_06.md) 提到的 JetBrains Caches 跨产品比版本号问题。
+**目标**：解决 [REVIEW_2026_06.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/REVIEW_2026_06.md) 提到的 JetBrains Caches 跨产品比版本号问题。
 
 **Entry 协议升级**：
 
@@ -117,20 +117,20 @@ public struct Entry: Sendable, Hashable {
 - `Library/Logs/JetBrains` → 同上
 
 **验收清单**：
-- [x] 旧 entries（无 groupingRegex）行为完全不变 → [test_旧行为_DeviceSupport_4版_保留2_等同_KnownVersionedRootsTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/KnownVersionedRootsGroupingTests.swift#L142-L158)
-- [x] `IntelliJIdea2024.1/2/3` + `PyCharm2024.2` + `WebStorm2024.1/2` 同存时，IDEA 淘汰 2 个、PyCharm 不淘汰、WebStorm 淘汰 1 个 → [test_分组_IDEA_3版_PyCharm_单版_仅_IDEA_产出旧版](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/KnownVersionedRootsGroupingTests.swift#L75-L114)
-- [x] groupingRegex 解析失败 → 该 entry 整条降级为旧行为 + GSYLog.warning（保护性回退已实现于 [scanGrouped](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift#L214-L229)）
-- [x] Toolbox/consentOptions 等无年版号目录不被误识别 → [test_PR3_JetBrains_entries_与_Toolbox_entry_路径互不重叠](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/KnownVersionedRootsGroupingTests.swift#L44-L71)
+- [x] 旧 entries（无 groupingRegex）行为完全不变 → [test_旧行为_DeviceSupport_4版_保留2_等同_KnownVersionedRootsTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/KnownVersionedRootsGroupingTests.swift#L142-L158)
+- [x] `IntelliJIdea2024.1/2/3` + `PyCharm2024.2` + `WebStorm2024.1/2` 同存时，IDEA 淘汰 2 个、PyCharm 不淘汰、WebStorm 淘汰 1 个 → [test_分组_IDEA_3版_PyCharm_单版_仅_IDEA_产出旧版](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/KnownVersionedRootsGroupingTests.swift#L75-L114)
+- [x] groupingRegex 解析失败 → 该 entry 整条降级为旧行为 + AmuxLog.warning（保护性回退已实现于 [scanGrouped](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift#L214-L229)）
+- [x] Toolbox/consentOptions 等无年版号目录不被误识别 → [test_PR3_JetBrains_entries_与_Toolbox_entry_路径互不重叠](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/KnownVersionedRootsGroupingTests.swift#L44-L71)
 
 **关键设计决策**：
-- 复用 [VersionedRetainScanner.sort](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/VersionedRetainScanner.swift#L174-L192)（internal）做组内排序，避免造临时目录跑 detect
+- 复用 [VersionedRetainScanner.sort](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/VersionedRetainScanner.swift#L174-L192)（internal）做组内排序，避免造临时目录跑 detect
 - 子目录名按 **fullMatch**（必须 location=0 且 length=NSString.length）才计入分组，未匹配自动忽略——避免误判 Toolbox/consentOptions
 - displayName 拼接 group key（如 "JetBrains · 索引/编译缓存（旧版本） · IntelliJIdea"）方便 UI 直观看到是哪个产品的残留
 - `Library/Application Support/JetBrains` entry 与既有 Toolbox `apps` entry 路径有父子关系但通过 fullMatch + 不同 relativePath 共存不冲突
 
 **实际改动 ≈230 行 diff**：
-- [KnownVersionedRoots.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift)（+160 行：Entry 字段 + 3 个 JetBrains entries + scanGrouped 内核 + import LogKit）
-- [KnownVersionedRootsGroupingTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/KnownVersionedRootsGroupingTests.swift)（新建 168 行 / 5 case）
+- [KnownVersionedRoots.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift)（+160 行：Entry 字段 + 3 个 JetBrains entries + scanGrouped 内核 + import LogKit）
+- [KnownVersionedRootsGroupingTests.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/KnownVersionedRootsGroupingTests.swift)（新建 168 行 / 5 case）
 
 **测试结果**：ScanKit 256 tests / 2 skipped / 0 failures；AppUI 411 tests / 0 failures（零回归）
 
@@ -168,14 +168,14 @@ public enum WorkflowRegistry {
 
 | scannerID | Scanner | 来源 | hit.displayName / note |
 |---|---|---|---|
-| `scanner.derived-data-per-project` | [DerivedDataPerProjectScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DerivedDataPerProjectScanner.swift) | `~/Library/Developer/Xcode/DerivedData/*` FS 扫描 | "MyApp" / "MyApp-abc123xyz" |
-| `scanner.simctl-devices` | [SimctlDevicesScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/SimctlDevicesScanner.swift) | `xcrun simctl list devices --json` | "iPhone 16 · UDID" / "Booted · com.apple.CoreSimulator.SimRuntime.iOS-18-0" |
-| `scanner.simctl-runtimes` | [SimctlRuntimeScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/SimctlRuntimeScanner.swift) | `xcrun simctl list runtimes --json` | "iOS 18.0 (22A348)" / runtime identifier |
+| `scanner.derived-data-per-project` | [DerivedDataPerProjectScanner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/DerivedDataPerProjectScanner.swift) | `~/Library/Developer/Xcode/DerivedData/*` FS 扫描 | "MyApp" / "MyApp-abc123xyz" |
+| `scanner.simctl-devices` | [SimctlDevicesScanner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/SimctlDevicesScanner.swift) | `xcrun simctl list devices --json` | "iPhone 16 · UDID" / "Booted · com.apple.CoreSimulator.SimRuntime.iOS-18-0" |
+| `scanner.simctl-runtimes` | [SimctlRuntimeScanner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/SimctlRuntimeScanner.swift) | `xcrun simctl list runtimes --json` | "iOS 18.0 (22A348)" / runtime identifier |
 
 **验收清单**：
 - [x] 旧入口（推荐 / 自定义 / 全盘 / 大文件）行为不变 → AppUI 411 tests 全绿
-- [x] [DerivedDataPerProjectScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DerivedDataPerProjectScanner.swift) 正确解析工程名 + 估算 size + 跳过 `ModuleCache.noindex` → 6 case 全绿
-- [x] [WorkflowRegistry](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/WorkflowRegistry.swift) 未知 scannerID 不抛、空 home / dryRun executor 返回 [] → 9 case 全绿（含 PR-4 升级后的 derived-data 真实接线断言）
+- [x] [DerivedDataPerProjectScanner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/DerivedDataPerProjectScanner.swift) 正确解析工程名 + 估算 size + 跳过 `ModuleCache.noindex` → 6 case 全绿
+- [x] [WorkflowRegistry](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/WorkflowRegistry.swift) 未知 scannerID 不抛、空 home / dryRun executor 返回 [] → 9 case 全绿（含 PR-4 升级后的 derived-data 真实接线断言）
 - [x] hit.id 用 url.path 作跨源主键，不冲突
 - [ ] **延后到 PR-5**：开发者一键节点折叠默认收起 / WorkflowDetailView 可下钻 / 删除走 ConfirmDialog + recycle / simctl 走 SubprocessExecutor
 
@@ -187,10 +187,10 @@ public enum WorkflowRegistry {
 - **UI 接入延后**：本 PR-4 让 ScanKit 层完全可用，可被未来 AppUI / CLI / TestHarness 任何上层消费；UI 接入是独立工作量（侧边栏注入 + DetailView + DeleteSheet 适配），值得独立 PR
 
 **实际改动 ≈600 行 diff**：
-- 新增 [DerivedDataPerProjectScanner.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DerivedDataPerProjectScanner.swift)（生产 ~110 行）
-- 新增 [WorkflowRegistry.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/WorkflowRegistry.swift)（生产 ~130 行）
-- 新增 [DerivedDataPerProjectScannerTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/DerivedDataPerProjectScannerTests.swift)（测试 ~200 行 / 6 case）
-- 新增 [WorkflowRegistryTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/WorkflowRegistryTests.swift)（测试 ~190 行 / 9 case）
+- 新增 [DerivedDataPerProjectScanner.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/DerivedDataPerProjectScanner.swift)（生产 ~110 行）
+- 新增 [WorkflowRegistry.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/WorkflowRegistry.swift)（生产 ~130 行）
+- 新增 [DerivedDataPerProjectScannerTests.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/DerivedDataPerProjectScannerTests.swift)（测试 ~200 行 / 6 case）
+- 新增 [WorkflowRegistryTests.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/WorkflowRegistryTests.swift)（测试 ~190 行 / 9 case）
 
 **测试结果**：ScanKit 271 tests / 2 skipped / 0 failures；AppUI 411 tests / 0 failures（零回归）
 
@@ -201,13 +201,13 @@ public enum WorkflowRegistry {
 **目标**：把 PR-4 落地的 WorkflowRegistry 接到 AppUI 侧边栏，让用户在 UI 中体验 Apple / Android / WebNode 三大工作流。
 
 **实际落地范围**：
-- 新建 [WorkflowDetailView.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)：通用工作流详情壳 + @MainActor `WorkflowDetailViewModel`，支持：
+- 新建 [WorkflowDetailView.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)：通用工作流详情壳 + @MainActor `WorkflowDetailViewModel`，支持：
   - `.literal / .versionedRoot / .dynamicScanner / .vendor` 四种 PathSource 全分发
   - 静态卡（literal/versionedRoot）同步算 size，动态卡 await `WorkflowRegistry.resolve`，每卡独立 loading 态
   - 卡片 DisclosureGroup + 行内 Checkbox 勾选，safe 卡默认 expanded + 默认全选
-  - 删除路径：`.filesystem` 走 [DeletionPipeline.moveToTrash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift)；`.commandLine` 暂走 alert 提示（PR-6 接入）
+  - 删除路径：`.filesystem` 走 [DeletionPipeline.moveToTrash](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift)；`.commandLine` 暂走 alert 提示（PR-6 接入）
   - footer 展示「已选 N 项 · 共 X.XX GB」+ 重新扫描 + 移到废纸篓
-- [MainView.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) 改动：
+- [MainView.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift) 改动：
   - 新增 3 个 sentinel：`workflow.apple` / `workflow.android` / `workflow.webnode` + 集合 `workflowSentinelIDs`
   - sidebar 新增 Section "Developer Workflows"，3 行（applelogo / cube.box / globe 图标）
   - `results` 区新增 3 个分支：`isWorkflow*Mode` → `WorkflowDetailView(workflow:..., pipeline:)`
@@ -222,9 +222,9 @@ public enum WorkflowRegistry {
 
 | 改动 | 文件 |
 |---|---|
-| WorkflowDetailView + ViewModel | [WorkflowDetailView.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)（~420 行） |
-| MainView sentinel + sidebar Section + results 分支 | [MainView.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) |
-| 单测 | [WorkflowDetailViewTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/WorkflowDetailViewTests.swift)（6 case） |
+| WorkflowDetailView + ViewModel | [WorkflowDetailView.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)（~420 行） |
+| MainView sentinel + sidebar Section + results 分支 | [MainView.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift) |
+| 单测 | [WorkflowDetailViewTests.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/WorkflowDetailViewTests.swift)（6 case） |
 
 **验收清单**：
 - [x] 选中 "Apple" → 看到 7 张卡（视机器实际情况），每张可展开 hits
@@ -239,34 +239,34 @@ public enum WorkflowRegistry {
 
 ## PR-6（新增计划）：AndroidWorkflow 落地
 
-**已完成（2026-06-15）**。详见 [AndroidWorkflow.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/AndroidWorkflow.swift)。
+**已完成（2026-06-15）**。详见 [AndroidWorkflow.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/AndroidWorkflow.swift)。
 
 **实际落地**：
 - 10 张 DeveloperCard：gradle-caches / gradle-daemon / android-build-cache / android-cache / android-avd（confirm）/ sdk-build-tools（versionedRoot）/ sdk-platforms（versionedRoot）/ sdk-system-images（versionedRoot + confirm）/ jetbrains-androidstudio-caches / jetbrains-androidstudio-logs
 - 大前提 guard：5 类祖目录任一存在才输出，避免空 home 污染
-- gradle / .android 三卡走目录预检；SDK 三卡复用 [KnownVersionedRoots](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift) 已注册 entries；JetBrains glob 路径保留 `*` 由 UI 层 expand
-- [AndroidWorkflowCardsTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/AndroidWorkflowCardsTests.swift)（5 case）
+- gradle / .android 三卡走目录预检；SDK 三卡复用 [KnownVersionedRoots](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift) 已注册 entries；JetBrains glob 路径保留 `*` 由 UI 层 expand
+- [AndroidWorkflowCardsTests.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/AndroidWorkflowCardsTests.swift)（5 case）
 
 ---
 
 ## PR-7（新增计划）：WebNodeWorkflow 落地
 
-**已完成（2026-06-15）**。详见 [WebNodeWorkflow.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/WebNodeWorkflow.swift) + [NodeModulesScanner.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/NodeModulesScanner.swift)。
+**已完成（2026-06-15）**。详见 [WebNodeWorkflow.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/WebNodeWorkflow.swift) + [NodeModulesScanner.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/NodeModulesScanner.swift)。
 
 **实际落地**：
 - 6 张 DeveloperCard：pnpm-store / yarn-cache / npm-cache / node-gyp-cache / electron-cache / node-modules-scattered（dynamicScanner + confirm）
-- 新增 [NodeModulesScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/NodeModulesScanner.swift)：扫 ~/Developer / ~/Projects / ~/Code / ~/workspace / ~/src 5 根，maxDepth=4，命中 node_modules 后不下钻（防递归爆栈）
-- [WorkflowRegistry.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/WorkflowRegistry.swift) 新增 `scanner.node-modules-scattered` 路由
-- 测试 19 case：[NodeModulesScannerTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/NodeModulesScannerTests.swift)（7）+ [WebNodeWorkflowCardsTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/WebNodeWorkflowCardsTests.swift)（10）+ [WorkflowRegistryTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/WorkflowRegistryTests.swift) 追加 2 case
+- 新增 [NodeModulesScanner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/NodeModulesScanner.swift)：扫 ~/Developer / ~/Projects / ~/Code / ~/workspace / ~/src 5 根，maxDepth=4，命中 node_modules 后不下钻（防递归爆栈）
+- [WorkflowRegistry.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/WorkflowRegistry.swift) 新增 `scanner.node-modules-scattered` 路由
+- 测试 19 case：[NodeModulesScannerTests.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/NodeModulesScannerTests.swift)（7）+ [WebNodeWorkflowCardsTests.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/WebNodeWorkflowCardsTests.swift)（10）+ [WorkflowRegistryTests.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/WorkflowRegistryTests.swift) 追加 2 case
 
 ---
 
 ## PR-8（新增计划）：Workflow CLI（TestHarness 扩展）
 
-**已完成（2026-06-15）**。详见 [workflow-cli/main.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/TestHarness/Sources/workflow-cli/main.swift)。
+**已完成（2026-06-15）**。详见 [workflow-cli/main.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/TestHarness/Sources/workflow-cli/main.swift)。
 
 **实际落地**：
-- [TestHarness/Package.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/TestHarness/Package.swift) 新增 executableTarget `workflow-cli`，仅依赖 ScanKit
+- [TestHarness/Package.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/TestHarness/Package.swift) 新增 executableTarget `workflow-cli`，仅依赖 ScanKit
 - `@main async struct WorkflowCLI`：参数 `<workflow> [--json]`，workflow ∈ `apple / android / webnode`
 - 默认表格输出：cardID / title / risk / sourceKind / hits.count（含 CJK 宽度对齐）
 - `--json`：`JSONEncoder.prettyPrinted | sortedKeys | withoutEscapingSlashes`，结构 `[{cardID, title, risk, hits:[{path, size, name}]}]`
@@ -290,12 +290,12 @@ swift run workflow-cli apple --json   # JSON
 
 | 子任务 | 改动 | 状态 |
 |---|---|---|
-| WorkflowScanHit DTO 扩展 | [WorkflowRegistry.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/WorkflowRegistry.swift) 新增 `commandLineTailArg: String?`（默认 nil，向后兼容）；`scanner.simctl-devices` 填 UDID、`scanner.simctl-runtimes` 填 runtime identifier | ✅ |
-| 协调器 | 新建 [SimulatorDeleteCoordinator.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SimulatorDeleteCoordinator.swift)：纯 Sendable struct（无 SwiftUI 依赖）；`Item / Plan / Outcome` 三段式；prepare 4 分支（empty / invalid / blockedSimulatorRunning / ready）；execute 串行调 SubprocessExecutor 并 yield Outcome[]（throw 转 exitCode=-3 不中断后续）；truncate 限 512 字符 | ✅ |
-| ViewModel 状态机 | [WorkflowDetailView.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift) WorkflowDetailViewModel 新增 `@Published pendingSimctlStage: SimctlConfirmStage?`（.firstReview / .secondConfirm）；新增 `advanceSimctlConfirm()` / `cancelSimctlConfirm()` / `executeConfirmedSimctl() async`；performDelete 移除 commandLineBlocked 占位 | ✅ |
+| WorkflowScanHit DTO 扩展 | [WorkflowRegistry.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/WorkflowRegistry.swift) 新增 `commandLineTailArg: String?`（默认 nil，向后兼容）；`scanner.simctl-devices` 填 UDID、`scanner.simctl-runtimes` 填 runtime identifier | ✅ |
+| 协调器 | 新建 [SimulatorDeleteCoordinator.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/SimulatorDeleteCoordinator.swift)：纯 Sendable struct（无 SwiftUI 依赖）；`Item / Plan / Outcome` 三段式；prepare 4 分支（empty / invalid / blockedSimulatorRunning / ready）；execute 串行调 SubprocessExecutor 并 yield Outcome[]（throw 转 exitCode=-3 不中断后续）；truncate 限 512 字符 | ✅ |
+| ViewModel 状态机 | [WorkflowDetailView.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift) WorkflowDetailViewModel 新增 `@Published pendingSimctlStage: SimctlConfirmStage?`（.firstReview / .secondConfirm）；新增 `advanceSimctlConfirm()` / `cancelSimctlConfirm()` / `executeConfirmedSimctl() async`；performDelete 移除 commandLineBlocked 占位 | ✅ |
 | 两轮确认 sheet | 新增 `SimctlConfirmSheetContent: View`：第一轮列 displayName + 完整 `xcrun simctl ...` 命令 preview；第二轮加 `exclamationmark.octagon.fill` + 红字 irreversible 警示 + `role: .destructive` Primary | ✅ |
-| i18n 文案 | [Localizable.xcstrings](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Resources/Localizable.xcstrings) 追加 11 个 `workflow.detail.simctl.*` key（中英双语 + manual extractionState） | ✅ |
-| 单测 | [SimulatorDeleteCoordinatorTests.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/SimulatorDeleteCoordinatorTests.swift)：8 个协调器 case（4 prepare 分支 + execute dryRun/throw/顺序保留/部分失败汇总） + 2 个 ViewModel 集成 case（sheet 状态机 firstReview→secondConfirm→nil + Simulator running 不弹 sheet）；总计 10 个 | ✅ |
+| i18n 文案 | [Localizable.xcstrings](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/Resources/Localizable.xcstrings) 追加 11 个 `workflow.detail.simctl.*` key（中英双语 + manual extractionState） | ✅ |
+| 单测 | [SimulatorDeleteCoordinatorTests.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/SimulatorDeleteCoordinatorTests.swift)：8 个协调器 case（4 prepare 分支 + execute dryRun/throw/顺序保留/部分失败汇总） + 2 个 ViewModel 集成 case（sheet 状态机 firstReview→secondConfirm→nil + Simulator running 不弹 sheet）；总计 10 个 | ✅ |
 
 **关键设计决策**：
 - ✅ **Coordinator 与 ViewModel 隔离**：simctl 删除是破坏性操作，独立 Sendable struct 便于单测 allowlist / Simulator-running guard / 部分失败汇总，ViewModel 只持 sheet 状态机不直调 SubprocessExecutor
@@ -308,7 +308,7 @@ swift run workflow-cli apple --json   # JSON
 
 | 子任务 | 改动 | 状态 |
 |---|---|---|
-| sidebar / detail 文案 | [Localizable.xcstrings](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/Resources/Localizable.xcstrings) 新增 16 个 `workflow.sidebar.*` / `workflow.detail.*` key（含 footer.summary `%lld %@` / action.rescan / action.trash / alert.title / alert.ok / empty_placeholder / scanning / empty_card / delete.trash_summary / delete.error_format / delete.commandline_skipped） | ✅ |
+| sidebar / detail 文案 | [Localizable.xcstrings](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/Resources/Localizable.xcstrings) 新增 16 个 `workflow.sidebar.*` / `workflow.detail.*` key（含 footer.summary `%lld %@` / action.rescan / action.trash / alert.title / alert.ok / empty_placeholder / scanning / empty_card / delete.trash_summary / delete.error_format / delete.commandline_skipped） | ✅ |
 | 调用点迁移 | WorkflowDetailView.swift 所有中文硬编码 → `String(localized:bundle:)` / `Text("key", bundle: .module)`；MainView.swift workflow sidebar 4 处 `verbatim` → `Text("workflow.sidebar.*", bundle: .module)` | ✅ |
 | 验证 | swift test AppUI 全套 → 417 → 427 tests 全绿（含 PR-9a 新增 10 个） | ✅ |
 
@@ -363,6 +363,6 @@ swift run workflow-cli apple --json   # JSON
 
 ## 索引
 
-- [DEVELOPER_ONE_CLICK_PLAN.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/DEVELOPER_ONE_CLICK_PLAN.md)：总规划
-- [CUSTOM_SCAN_PLAN.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/CUSTOM_SCAN_PLAN.md)：v1.8 用户自定义扫描
-- [REVIEW_2026_06.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/REVIEW_2026_06.md)：评审总报告
+- [DEVELOPER_ONE_CLICK_PLAN.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/DEVELOPER_ONE_CLICK_PLAN.md)：总规划
+- [CUSTOM_SCAN_PLAN.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/CUSTOM_SCAN_PLAN.md)：v1.8 用户自定义扫描
+- [REVIEW_2026_06.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/REVIEW_2026_06.md)：评审总报告

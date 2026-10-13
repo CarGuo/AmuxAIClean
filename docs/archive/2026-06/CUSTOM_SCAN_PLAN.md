@@ -1,7 +1,7 @@
 # 用户全盘自定义扫描 v2 规划
 
 > 制定日期：2026-06-15
-> 上游：[REVIEW_2026_06.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/REVIEW_2026_06.md) §3
+> 上游：[REVIEW_2026_06.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/REVIEW_2026_06.md) §3
 > 目标：把"用户自定义扫描"从 v1 的"加个路径"升级为"加路径 + 加规则 + 保存 Profile + glob 黑白名单 + 热加载"。
 > 协同：保留 vendors.yaml 的"仓库审计权威"地位，用户级规则**叠加不覆盖**，且**永远不能解锁 forbid**。
 
@@ -10,7 +10,7 @@
 ## 0. 设计原则
 
 1. **用户规则永远是叠加层（overlay）**：vendors.yaml 仍是源真理，用户规则只能把 verdict **降级**（`safe → confirm`、不可 `forbid → safe`），不能新增任何 `~/System` 类路径。
-2. **PathGlob 已存在**：[PathGlob](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/PathGlob.swift) 直接复用，无需重写。
+2. **PathGlob 已存在**：[PathGlob](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/PathGlob.swift) 直接复用，无需重写。
 3. **失败安全（fail-closed）**：自定义规则解析失败 → 整层 overlay 丢弃 + UI 红字提示；绝不让"规则坏掉"误导扫描行为。
 4. **可导出可分享**：扫描 Profile JSON 可导出/导入，社区可分享"前端开发者 Profile / iOS 开发者 Profile"。
 5. **可观测**：每条 overlay rule 在 RowView 的 reason 字段显式标"来自：用户规则 / vendors.yaml / KnownVersionedRoots"。
@@ -21,16 +21,16 @@
 
 | 能力 | 现状 |
 |---|---|
-| 加自定义路径 | [UserPathStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UserPathStore.swift) ✓ |
-| 整盘扫描 | [ScanCategory.fullDisk](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCategory.swift#L77-L85) ✓ |
-| 路径 glob 匹配 | [PathGlob](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/PathGlob.swift) ✓ |
-| 路径白名单 | [WhitelistStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/WhitelistStore.swift) ✓ |
-| 规则装载 | [RuleLoader](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/RuleLoader.swift) ✓（仅启动时） |
+| 加自定义路径 | [UserPathStore](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/UserPathStore.swift) ✓ |
+| 整盘扫描 | [ScanCategory.fullDisk](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCategory.swift#L77-L85) ✓ |
+| 路径 glob 匹配 | [PathGlob](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/PathGlob.swift) ✓ |
+| 路径白名单 | [WhitelistStore](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/WhitelistStore.swift) ✓ |
+| 规则装载 | [RuleLoader](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/RuleLoader.swift) ✓（仅启动时） |
 | 用户规则 YAML | ✗ |
 | 规则编辑 UI | ✗ |
 | 扫描 Profile | ✗ |
 | 热加载 | ✗ |
-| 计划任务 | △（[SentinelManager](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SentinelManager.swift) 已有，UI 未公开） |
+| 计划任务 | △（[SentinelManager](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/SentinelManager.swift) 已有，UI 未公开） |
 
 ---
 
@@ -38,7 +38,7 @@
 
 | 功能 | 描述 | 目标版本 |
 |---|---|---|
-| **用户级 custom_rules.yaml** | `~/Library/Application Support/GSYCleanMac/custom_rules.yaml` | v1.8 |
+| **用户级 custom_rules.yaml** | `~/Library/Application Support/AmuxAIClean/custom_rules.yaml` | v1.8 |
 | **规则编辑器 UI** | 仅支持 path / verdict / 兄弟脚手架 / 注释；不允许编辑 vendors.yaml | v1.8 |
 | **glob 黑白名单 UI** | exclude:["~/Documents/**/.private_backup/**"] 类排除模式 | v1.8 |
 | **扫描 Profile** | 保存一组（categories + custom_paths + exclude_globs + size_threshold + mtime_filter） | v1.8 |
@@ -79,7 +79,7 @@ overlay_verdicts:
 ### 3.1 安全约束（写入 RuleLoader 校验）
 - `verdict` 仅允许 `safe` / `confirm`；含 `forbid` → 整文件拒绝。
 - `paths` 不允许以 `/System`、`/Library/Apple`、`/private/var/db`、`/usr`、`/bin`、`/sbin`、`/etc` 开头。
-- `paths` 不允许命中 [TCCSkipList](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift)。
+- `paths` 不允许命中 [TCCSkipList](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift)。
 - `overlay_verdicts` 只能降级（safe → confirm），不能升级（confirm → safe）。
 - ID 必须以 `user.` 开头；缺前缀 → 拒绝整条。
 
@@ -187,8 +187,8 @@ public actor ScanProfileStore {
 
 | 已有 | 关系 |
 |---|---|
-| [vendors.yaml](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/vendors.yaml) | 不动，依旧是源真理 |
-| [SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) | 新增 overlay snapshot 字段，evaluate 末尾叠加 |
-| [WhitelistStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/WhitelistStore.swift) | 现行的"绝对放行单条路径"行为不变；overlay 是规则维度，不是单条路径 |
-| [UserPathStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UserPathStore.swift) | 仍是 Profile 之外的快捷加路径入口；Profile 内可引用其全部 |
-| [BundleProtection](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/BundleProtection.swift) | 不变，bundle 维度的 system_critical / data_protected 始终高于 overlay |
+| [vendors.yaml](file:///Users/amuxuser/workspace/AmuxAIClean/Resources/Rules/vendors.yaml) | 不动，依旧是源真理 |
+| [SafetyEngine](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) | 新增 overlay snapshot 字段，evaluate 末尾叠加 |
+| [WhitelistStore](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/WhitelistStore.swift) | 现行的"绝对放行单条路径"行为不变；overlay 是规则维度，不是单条路径 |
+| [UserPathStore](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/UserPathStore.swift) | 仍是 Profile 之外的快捷加路径入口；Profile 内可引用其全部 |
+| [BundleProtection](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/BundleProtection.swift) | 不变，bundle 维度的 system_critical / data_protected 始终高于 overlay |

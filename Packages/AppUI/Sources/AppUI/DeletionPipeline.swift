@@ -2,7 +2,7 @@ import Foundation
 import ScanKit
 import SafetyKit
 
-/// 删除链路抽象 —— v1.3.zzzz 之后只保留主 App 内 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift) 一份实现。
+/// 删除链路抽象 —— v1.3.zzzz 之后只保留主 App 内 [TrashPipeline](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TrashPipeline.swift) 一份实现。
 ///
 /// 历史背景（已下线）：早期版本曾设计过 HelperClient（XPC + LaunchDaemon + HMAC 三道闸门）作为另一份实现，
 /// 思路是"App 端只发请求，Helper 端做最后一道安全校验"。在产品仅删 `$HOME` 下用户态文件、
@@ -49,15 +49,15 @@ public protocol DeletionPipeline: Sendable {
     /// 注入"上层一票否决路径集合"（v1.3.zzzz Phase 3-A 协议化 → Phase 3-E 全链路接通）。
     ///
     /// 协议层接受这个钩子是为了**让"漏调=误拒"风险被强类型保护**：
-    /// 历史上 [MainView.performDelete](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
-    /// 只对 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)
+    /// 历史上 [MainView.performDelete](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift)
+    /// 只对 [TrashPipeline](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)
     /// 走 `if let trash = pipeline as? TrashPipeline` cast 注入；现在 Helper 路线已下线，
     /// 实际只剩 TrashPipeline 一份实现。
     ///
     /// **v2026.06.17 (AUDIT A2)**：取消 protocol 默认 no-op 实现 ——
     /// 默认 no-op 让"上层忘了调"变成静默放行而非 compile-error，是契约靠手记维系的脆弱点。
     /// 现在所有 `DeletionPipeline` 实现都必须显式提供该方法：
-    /// - 真删除链路（[TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)）：真存进 `accessDeniedPaths` Set 并 normalize；
+    /// - 真删除链路（[TrashPipeline](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)）：真存进 `accessDeniedPaths` Set 并 normalize；
     /// - 测试 stub / dry-run 调试管道：可显式 no-op，但**必须自己写出来**，签字画押。
     func setAccessDeniedPaths(_ paths: Set<String>)
 
@@ -74,7 +74,7 @@ public protocol DeletionPipeline: Sendable {
     /// **v2026.06.22 (P0-3)**：side-channel 单槽位被识别为线程安全脆弱点
     /// （MainView/WorkflowDetailView 任何两次并发 `moveToTrash` 都会互相覆盖快照，
     /// 导致写错 UndoHistory + 展示错 OperationResultSheet）。生产路径应改用
-    /// 新方法 [moveToTrashReturningOutcome](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift)
+    /// 新方法 [moveToTrashReturningOutcome](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/DeletionPipeline.swift)
     /// 直接拿返回值；本方法保留向后兼容但仅用作"老调用方临时回退"，不应被新代码引用。
     /// 注意：outcome 本身不证明调用跨过 recycle 边界；新 Professional 代码必须使用
     /// `submitToTrashReturningDisposition` 的 typed case。
@@ -376,7 +376,7 @@ public struct TrashOutcome: Sendable, Equatable {
     /// `notSubmittedPaths` 中由持久 gate 拒绝的精确 typed reason。普通预算停止无需逐项
     /// reason，保持空字典；身份变化/ledger 故障绝不能退化成通用失败字符串。
     public let notSubmittedReasons: [String: TrashPendingOperationRejection.Reason]
-    /// 被 [SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 或 `accessDeniedPaths`
+    /// 被 [SafetyEngine](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 或 `accessDeniedPaths`
     /// 拦下的路径清单（拒绝原因可读）。
     public let safetyRejected: [(path: String, reason: String)]
     /// dryRun 模式下的"路径不存在"清单（仅 dryRun=true 时填充）。

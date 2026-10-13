@@ -6,7 +6,7 @@ import SafetyKit
 final class SystemStorageAccountingTests: XCTestCase {
     func testTopLevelAndOnDemandTreeUseAllocatedSizeForSparseFile() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            .appendingPathComponent("GSYCleanMac-SystemStorage-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AmuxAIClean-SystemStorage-\(UUID().uuidString)", isDirectory: true)
         let nested = root.appendingPathComponent("Docker", isDirectory: true)
         let sparse = nested.appendingPathComponent("Docker.raw")
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)

@@ -1,4 +1,4 @@
-# GSYCleanMac 开发文档
+# AmuxAIClean 开发文档
 
 面向想自己改 / 编 / 跑测试 / 贡献代码的人。用户向的安装看 [INSTALL.md](INSTALL.md)。
 
@@ -8,7 +8,7 @@
 
 - **Swift 6.0 + SwiftUI，产品部署下限 macOS 13.5**（strict concurrency / warnings-as-errors）
   <!-- v2026.07.16：部署下限与开发机工具链解耦；本地开发仍统一使用 macOS 15+ / Xcode 16+。 -->
-- 工程描述：原生 Xcode 工程 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj)（直接入仓，无 xcodegen / project.yml）
+- 工程描述：原生 Xcode 工程 [AmuxAIClean.xcodeproj](../AmuxAIClean.xcodeproj)（直接入仓，无 xcodegen / project.yml）
 - 9 个独立 SwiftPM 包（AIKit / AppUI / BrewKit / FileSearchKit / HeuristicKit / LogKit / SafetyKit / ScanKit / TestHarness）+ 主 App，作为 Local SPM 在 Xcode UI 的 Package Dependencies 区域引用
 - 删除走 [TrashPipeline](../Packages/AppUI/Sources/AppUI/TrashPipeline.swift) 直接调 `NSWorkspace.recycle`，无特权进程
 - GitHub Actions 配置当前只保留手动入口，CI 与 Release job 都以 `if: false` 显式停用；提交质量证据来自本地 9 包测试和目标 Xcode 构建
@@ -24,43 +24,43 @@
 | Apple Developer 账号 | 企业账号 / 个人账号均可 | 当前仓库 Debug 默认使用 Apple Development 自动签名；Release 默认使用 Team `W6H34N9728` + Developer ID Application 手动签名；fork 需要替换为自己的 Team / signing 配置 |
 | Homebrew | optional | 仅 `xcbeautify` 装饰输出 / `create-dmg` 打 DMG 时需要 |
 
-> 不再需要 `xcodegen` —— v1.5.x 起项目回归原生 Xcode 工程，[GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 直接入仓。
+> 不再需要 `xcodegen` —— v1.5.x 起项目回归原生 Xcode 工程，[AmuxAIClean.xcodeproj](../AmuxAIClean.xcodeproj) 直接入仓。
 
 ---
 
 ## 一键初始化
 
 ```bash
-git clone git@github.com:CarGuo/GSYCleanMac.git
-cd GSYCleanMac
+git clone git@github.com:CarGuo/AmuxAIClean.git
+cd AmuxAIClean
 ./Scripts/setup_dev.sh
 ```
 
-[Scripts/setup_dev.sh](../Scripts/setup_dev.sh) 会：检查 macOS / Xcode / Homebrew，确认 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 已就绪，并提示你在 Xcode 里确认 Team / signing 配置。
+[Scripts/setup_dev.sh](../Scripts/setup_dev.sh) 会：检查 macOS / Xcode / Homebrew，确认 [AmuxAIClean.xcodeproj](../AmuxAIClean.xcodeproj) 已就绪，并提示你在 Xcode 里确认 Team / signing 配置。
 
 ---
 
 ## 签名配置
 
-> **fork 用户必读**：仓库里 [GSYCleanMac.xcodeproj/project.pbxproj](../GSYCleanMac.xcodeproj/project.pbxproj) 当前 Debug 配置为 `CODE_SIGN_STYLE = Automatic` + `CODE_SIGN_IDENTITY = Apple Development`，Release 配置为 `DEVELOPMENT_TEAM = W6H34N9728` + `CODE_SIGN_STYLE = Manual` + `CODE_SIGN_IDENTITY = Developer ID Application: SentenceEnd Inc (W6H34N9728)`。没有对应证书时，第一次跑必须改成你自己的 Team / signing 配置。
+> **fork 用户必读**：仓库里 [AmuxAIClean.xcodeproj/project.pbxproj](../AmuxAIClean.xcodeproj/project.pbxproj) 当前 Debug 配置为 `CODE_SIGN_STYLE = Automatic` + `CODE_SIGN_IDENTITY = Apple Development`，Release 配置为 `DEVELOPMENT_TEAM = W6H34N9728` + `CODE_SIGN_STYLE = Manual` + `CODE_SIGN_IDENTITY = Developer ID Application: SentenceEnd Inc (W6H34N9728)`。没有对应证书时，第一次跑必须改成你自己的 Team / signing 配置。
 
 **方式 A（图形化，推荐新手）**：
 
-1. 双击打开 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj)
+1. 双击打开 [AmuxAIClean.xcodeproj](../AmuxAIClean.xcodeproj)
 2. Xcode → Settings → Accounts → 用你的 Apple Developer 账号登录
-3. 选中 `GSYCleanMac` target → `Signing & Capabilities`
+3. 选中 `AmuxAIClean` target → `Signing & Capabilities`
    - 本地调试：保持 Automatically manage signing，`Team` 下拉选你自己的 Team
    - Release 分发：保持 Manual signing，选择自己的 Team / Developer ID Application 证书
-   - `Bundle Identifier` 必要时改成你自己的（如 `com.<你的id>.cleanmac.AmuxAIClean`）
-4. ⌘S 保存（会写进 [project.pbxproj](../GSYCleanMac.xcodeproj/project.pbxproj) 的 `DEVELOPMENT_TEAM` 字段）
+   - `Bundle Identifier` 必要时改成你自己的（如 `com.<你的id>.AmuxAIClean`）
+4. ⌘S 保存（会写进 [project.pbxproj](../AmuxAIClean.xcodeproj/project.pbxproj) 的 `DEVELOPMENT_TEAM` 字段）
 5. 点 `Run` 跑起来
 
 **方式 B（命令行，老司机）**：
 
 ```bash
 # 在 https://developer.apple.com/account 右上角找到自己的 Team ID（10 位）
-sed -i '' 's/W6H34N9728/<你的Team ID>/g' GSYCleanMac.xcodeproj/project.pbxproj
-xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build
+sed -i '' 's/W6H34N9728/<你的Team ID>/g' AmuxAIClean.xcodeproj/project.pbxproj
+xcodebuild -project AmuxAIClean.xcodeproj -scheme AmuxAIClean -configuration Debug build
 ```
 
 **为什么要稳定 Team 签名而不是 ad-hoc**：TCC（含完全磁盘访问）不是看"有没有签名"这么粗，而是用 bundle id + code requirement（签名身份 / Team / 证书链等）去匹配授权记录。Apple Development / Developer ID Application 的 designated requirement 可以跨普通 rebuild 保持同一类身份；ad-hoc (`-`) 没有稳定身份，代码变化后更容易让 TCC 记录失配。排查 Debug 反复掉授权时，用 [diagnose_debug_tcc.sh](../Scripts/diagnose_debug_tcc.sh) 对比两次 build 的 designated requirement / Authority / TCC 记录，而不是只看 cdhash。
@@ -70,10 +70,10 @@ xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Deb
 ## 命令行 Debug 构建
 
 ```bash
-xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build
+xcodebuild -project AmuxAIClean.xcodeproj -scheme AmuxAIClean -configuration Debug build
 ```
 
-Debug 签名由 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 里的 `CODE_SIGN_STYLE = Automatic` + `CODE_SIGN_IDENTITY = Apple Development` + `DEVELOPMENT_TEAM = W6H34N9728` 决定。产物路径用 `xcodebuild -showBuildSettings` 动态查（脚本已封装，见 [Scripts/run_debug.sh](../Scripts/run_debug.sh)）。
+Debug 签名由 [AmuxAIClean.xcodeproj](../AmuxAIClean.xcodeproj) 里的 `CODE_SIGN_STYLE = Automatic` + `CODE_SIGN_IDENTITY = Apple Development` + `DEVELOPMENT_TEAM = W6H34N9728` 决定。产物路径用 `xcodebuild -showBuildSettings` 动态查（脚本已封装，见 [Scripts/run_debug.sh](../Scripts/run_debug.sh)）。
 
 ---
 
@@ -84,7 +84,7 @@ Debug 签名由 [GSYCleanMac.xcodeproj](../GSYCleanMac.xcodeproj) 里的 `CODE_S
 AMUX_CLEAN_NOTARY_KEYCHAIN_PROFILE=amux-notary ./Scripts/build_release.sh --notarize
 ```
 
-[Scripts/build_release.sh](../Scripts/build_release.sh) 走 `xcodebuild -configuration Release`。Release 签名由 [project.pbxproj](../GSYCleanMac.xcodeproj/project.pbxproj) 里的 Manual + Developer ID Application 配置决定；`--notarize` 会额外执行 Apple Notary、staple 与 Gatekeeper 校验。
+[Scripts/build_release.sh](../Scripts/build_release.sh) 走 `xcodebuild -configuration Release`。Release 签名由 [project.pbxproj](../AmuxAIClean.xcodeproj/project.pbxproj) 里的 Manual + Developer ID Application 配置决定；`--notarize` 会额外执行 Apple Notary、staple 与 Gatekeeper 校验。
 未传 `VERSION` 时脚本使用工程当前 `MARKETING_VERSION`；只有明确制作另一个版本候选时才传入
 `VERSION=x.y.z`，避免文档示例固化并回写过期版本。
 
@@ -123,7 +123,7 @@ done
 | SafetyKit | 三色判定 / hardForbid / firmlink 镜像 / VendorTrie / RuleLoader / vendor 自检 / CommonAppCache 规则 |
 | ScanKit | 隐藏文件 / inode 去重 / 引擎一致性 / golden 快照 / DevArtifacts 规则 / 多 worker 并发 / DerivedData per-project / SimCtl / NodeModules |
 | HeuristicKit | 评分公式 / forbid 红线 / JSON round-trip |
-| LogKit | IOErrorClassifier / GSYLog round-trip |
+| LogKit | IOErrorClassifier / AmuxLog round-trip |
 | BrewKit | BrewCleanup / BrewController / BrewRegistry |
 | FileSearchKit | FileSearchEngine（含扩展过滤器） |
 | AIKit | AISettings / OpenAIChatClient / PathRedactor / PromptBuilder |
@@ -159,7 +159,7 @@ candidate forest 全链路；三者不能互相替代。
 ## 目录结构
 
 ```
-GSYCleanMac/
+AmuxAIClean/
 ├─ App/                          # SwiftUI 入口（@main + 加载 vendors.yaml + 注入 MainView/UninstallScreen）
 ├─ Helper/                       # 特权 Helper（v1 不部署，留给 v2 Premium）
 ├─ Packages/
@@ -199,7 +199,7 @@ GSYCleanMac/
 ├─ .github/workflows/
 │  ├─ ci.yml                     # 仅保留 workflow_dispatch；全部 job 当前 if: false
 │  └─ release.yml                # 仅保留 workflow_dispatch；release job 当前 if: false
-├─ GSYCleanMac.xcodeproj/        # 原生 Xcode 工程（v1.5.x 后入仓，xcuserdata 仍 ignore）
+├─ AmuxAIClean.xcodeproj/        # 原生 Xcode 工程（v1.5.x 后入仓，xcuserdata 仍 ignore）
 ├─ PITFALLS.md                   # 避坑手册（开工必读）
 ├─ SECURITY.md                   # 安全模型与威胁模型说明
 ├─ CONTRIBUTING.md               # 贡献指南
@@ -235,7 +235,7 @@ GitHub；commit、tag、push 和创建 Release 是分别授权的外部操作。
 
 ## 安全模型简述
 
-GSYCleanMac 的删除链路设计上**永远拒绝 unlink**，所有候选只在用户确认后通过
+AmuxAIClean 的删除链路设计上**永远拒绝 unlink**，所有候选只在用户确认后通过
 `NSWorkspace.recycle` 移入废纸篓。完整威胁模型与红线见 [SECURITY.md](../SECURITY.md)。
 
 三道闸门：

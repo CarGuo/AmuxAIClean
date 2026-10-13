@@ -33,7 +33,7 @@ Application Support。这是身份域错误，不是通过写死用户名或猜�
 - 仍由 ServiceManagement 管理注册、审批和状态；
 - Helper 只依赖 Foundation 与 CoreServices。
 
-## 3. App Bundle 布局与三描述符迁移
+## 3. App Bundle 布局与双描述符迁移
 
 ```text
 AmuxAIClean.app/
@@ -45,39 +45,25 @@ AmuxAIClean.app/
         ├── LaunchAgents/
         │   └── com.amux.ai.Clean.sentinel.agent.plist
         └── LaunchDaemons/
-            ├── com.guoshuyu.cleanmac.sentinel.plist
             └── com.amux.ai.Clean.sentinel.plist
 ```
 
-三个 plist 的职责严格分离：
+两个 plist 的职责严格分离：
 
 | 描述符 | Label | 唯一允许动作 |
 |---|---|---|
 | 当前 `LaunchAgents/com.amux.ai.Clean.sentinel.agent.plist` | `com.amux.ai.Clean.sentinel.agent` | `status`、`register`、`unregister` |
-| 原品牌迁移专用 `LaunchDaemons/com.guoshuyu.cleanmac.sentinel.plist` | `com.guoshuyu.cleanmac.sentinel` | `status`、`unregister` |
-| 改品牌后迁移专用 `LaunchDaemons/com.amux.ai.Clean.sentinel.plist` | `com.amux.ai.Clean.sentinel` | `status`、`unregister` |
+| 历史迁移专用 `LaunchDaemons/com.amux.ai.Clean.sentinel.plist` | `com.amux.ai.Clean.sentinel` | `status`、`unregister` |
 
-`c8a57e8` 品牌迁移曾在原文件
-`com.guoshuyu.cleanmac.sentinel.plist` 内直接把 Label 从
-`com.guoshuyu.cleanmac.sentinel` 改为 `com.amux.ai.Clean.sentinel`。这会让同一个 descriptor
-在不同版本代表两份 authority，当前版本无法证明“查询新 Label”也能注销早期旧 Label。
-v2026.07.18 P1 修复因此把两代 root 注册拆成稳定、独立、文件名与 Label 对应的迁移描述符；
-`SMAppService.daemon(plistName:)` 对两项分别构造 service、分别查询和注销，不能再通过改写单个
-plist 的 Label 猜测另一代注册已经退出。
-
-两个 root 描述符都不是现行服务，生产代码没有调用其 `register()` 的入口；它们的
+历史 root 描述符不是现行服务，生产代码没有调用其 `register()` 的入口；它的
 `BundleProgram` 指向当前包内已签名 helper，仅保持 descriptor 可解析，不能被当成重新部署
-root daemon 的许可。`/tmp/com.{guoshuyu.cleanmac,amux.ai.Clean}.sentinel.{out,err}.log`
+root daemon 的许可。`/tmp/com.amux.ai.Clean.sentinel.{out,err}.log`
 也只是对应历史身份的兼容字段，当前 Agent 不使用这些位置。迁移窗口结束且确认不再需要升级
-任一历史安装后，可在后续版本整体删除两个描述符、两个 `SMAppService.daemon` 适配器和相应
+历史安装后，可在后续版本整体删除该描述符、`SMAppService.daemon` 适配器和相应
 release contract，但同一身份的文件、代码、测试和合同必须同批删除。
 
-这里存在自动化不能消除的真实升级边界：原品牌已安装 descriptor 历史上使用
-`Contents/MacOS/gsycleanmac-sentinel`，当前迁移 descriptor 使用包内实际存在的
-`Contents/MacOS/amuxaiclean-sentinel`；`c8a57e8` 同时把签名 Team ID 从 `39PK4PKRP3` 切换为
-`W6H34N9728`。当前包没有、也不得为了测试臆造旧二进制 alias。单测与 release contract 只能
-证明“两份 Label 对应的注销通道已入包、代码永不注册它们”，不能证明当前签名身份一定能注销
-历史系统数据库中的真实注册；必须用两代已注册旧版分别升级做 C4。
+单测与 release contract 只能证明“历史 Label 对应的注销通道已入包、代码永不注册它”，
+真实升级必须以目标机器上 ServiceManagement 返回的权威状态为准，并用已注册旧版升级做 C4。
 
 ## 4. 注册与状态事务
 
@@ -86,17 +72,17 @@ release contract，但同一身份的文件、代码、测试和合同必须同�
 关闭是能力减少，两者不能机械套用同一顺序。v2026.07.19 P1 另把“用户期望”与“历史
 authority 证据”拆开：`sentinelEnabled` 只表示期望；持久化的
 `sentinelRequiresShutdownVerification` 只表示某代服务曾成功注册、系统曾明确报告 active，或旧
-ON/启用时间迁移得出的可信证据。该证据只有三份 identity 都明确 `.notRegistered` 才能清除。
+ON/启用时间迁移得出的可信证据。该证据只有 current 与 legacy identity 都明确 `.notRegistered` 才能清除。
 
 ```text
 读取持久化期望 + authority 证据
   ├─ 期望 ON（增加能力）
-  │    → 逐项查询/注销/复读两代旧 Daemon
-  │    → 两项未全部明确 notRegistered：阻断新注册；若 current Agent 已经存在，尝试注销并复读
+  │    → 逐项查询/注销/复读旧 Daemon
+  │    → 未全部明确 notRegistered：阻断新注册；若 current Agent 已经存在，尝试注销并复读
   │    → current Agent 已权威停止：发布 typed legacyMigrationFailed(ON)
   │    → current Agent 也未能权威停止：发布 typed legacyMigrationSafetyShutdownFailed，
   │      user 手势回滚 OFF；startup 仅保留 ON 期望，实际状态仍投影 unverified
-  │    → 两项均收敛：查询当前 Agent，执行 no-op / register / 请求审批，再复读
+  │    → 旧 Daemon 已收敛：查询当前 Agent，执行 no-op / register / 请求审批，再复读
   └─ 期望 OFF（减少能力）
        → 先查询当前 Agent；enabled/requiresApproval 本身会建立 authority 证据，随后 unregister 并复读
        → 当前 Agent 已明确 notRegistered：开关保持 OFF，清 sentinelLastEnabled
@@ -104,28 +90,28 @@ ON/启用时间迁移得出的可信证据。该证据只有三份 identity 都�
           · 用户刚主动关闭，或已有 authority 证据：发布 shutdownVerificationUnavailable，
             明确说明“未执行关闭操作”并引导检查登录项
           · fresh/default-OFF 且无证据：只写结构化诊断，不弹窗、不要求用户打开系统设置
-       → 随后逐项查询/注销/复读两代旧 Daemon
+       → 随后逐项查询/注销/复读旧 Daemon
        → legacy 未全部收敛：不回滚 ON，发布 typed legacyMigrationFailed(OFF)，
-         presentation 为 desiredOffUnverified，且不宣称所有历史后台项已停；但三项均只返回
+         presentation 为 desiredOffUnverified，且不宣称所有历史后台项已停；但全部只返回
          notFound/unknown 且没有任何 authority 证据时仍仅记录诊断，不制造用户任务
        → 只有当前 Agent 自身未能权威关闭时，交互手势才沿用失败回滚合同
-       → current + 两代 legacy 全部明确 notRegistered 后，才清持久化 authority 证据
+       → current + legacy 全部明确 notRegistered 后，才清持久化 authority 证据
   → 一次性提交 Toggle、时间戳、presentation 与 typed failure
 ```
 
 关键不变量：
 
 - 默认值是 OFF；fresh/default-OFF 且没有历史 authority 证据时，即使开发构建或
-  ServiceManagement 对三份 descriptor 都返回 `.notFound`，也只能记结构化诊断，不得弹启动
+  ServiceManagement 对 descriptor 都返回 `.notFound`，也只能记结构化诊断，不得弹启动
   modal、不得要求用户修复从未启用的登录项；
-- 两代旧 Daemon 必须逐项明确确认 `.notRegistered`，才允许注册/保留 ON 的新 Agent；`.notFound` 表示
+- 旧 Daemon 必须明确确认 `.notRegistered`，才允许注册/保留 ON 的新 Agent；`.notFound` 表示
   ServiceManagement 无法定位服务，是配置/查询错误，不是“已经注销”的证明，也不是“仍在运行”的
   证明；不能在没有执行 `unregister()` 时把它包装成“关闭失败”；
 - ON 迁移失败时不能只阻止新的 `register()`：已经 enabled/requiresApproval 的 current Agent
   也必须按最小权限尝试注销并复读；注销失败必须保留真实 status 和独立 typed failure，不能
   因为 Toggle 已回写 OFF 就声称 Agent 已停；
-- 某代旧服务的 `unregister()` 抛错后仍复读该项权威状态：若已是 `.notRegistered` 可视为
-  收敛，否则失败关闭；同时继续检查另一代，最后统一决定迁移是否完整；
+- 旧服务的 `unregister()` 抛错后仍复读该项权威状态：若已是 `.notRegistered` 可视为
+  收敛，否则失败关闭；
 - 当前 Agent 的用户手势失败时，Toggle 回到手势前值；当前 Agent 已权威关闭但 legacy
   migration 失败时，OFF 是最小权限意图，不能回滚 ON。启动修复失败保留持久化意图，UI
   必须明确显示“期望与系统状态不一致”；
@@ -140,7 +126,7 @@ ON/启用时间迁移得出的可信证据。该证据只有三份 identity 都�
 macOS 在用户把 `.app` 直接拖入废纸篓时不提供本 App 可依赖的卸载回调。因此产品不能承诺
 “删除 App 时自动注销”。真实清除流程是：App 仍可运行时关闭 Sentinel，确认状态为
 “未注册”，再删除本地数据或 App。若未来增加产品内“清除全部数据”入口，该入口必须先调用
-上述事务，并在新 Agent 或任一代旧 Daemon 注销失败时阻止清除。
+上述事务，并在新 Agent 或旧 Daemon 注销失败时阻止清除。
 
 ## 5. Helper 运行合同
 
@@ -195,11 +181,11 @@ fail-closed 边界，不依赖主 App 迁移成功才能保证当前 Agent 逻�
 - Helper 是独立 `PBXNativeTarget` Command Line Tool；
 - 主 App 依赖 Helper target，并以 `CodeSignOnCopy` 嵌入 `Contents/MacOS`；
 - 当前 Agent plist 嵌入 `Contents/Library/LaunchAgents`；
-- 两代旧 Daemon plist 只作为迁移描述符嵌入 `Contents/Library/LaunchDaemons`；
-- `Scripts/test_release_contract.sh` 锁定三个文件名、三个不同 Label、两份 root plist 的
+- 旧 Daemon plist 只作为迁移描述符嵌入 `Contents/Library/LaunchDaemons`；
+- `Scripts/test_release_contract.sh` 锁定两个文件名、两个不同 Label、root plist 的
   文件名/Label 对应关系、BundleProgram、Copy Phase、`SMAppService.agent` 当前注册路径、
-  逐项 legacy `unregister` 和 never-register 静态合同；
-- 任何删除某一旧迁移描述符的版本都必须提供该身份的迁移窗口证据，不能只删文件而留下代码、
+  legacy `unregister` 和 never-register 静态合同；
+- 任何删除旧迁移描述符的版本都必须提供该身份的迁移窗口证据，不能只删文件而留下代码、
   测试或合同，反之亦然。
 
 ## 7. 验证边界
@@ -208,16 +194,16 @@ fail-closed 边界，不依赖主 App 迁移成功才能保证当前 Agent 逻�
 
 - 默认 OFF、幂等状态决策、审批与未知状态；其中 fresh/default-OFF + 无 authority 证据 +
   current/legacy 全部 notFound 必须无 modal，而明确 active 仍必须注销；
-- ON 时两代旧 Daemon 都在新 Agent register 之前逐项查询；OFF 时 current Agent 必须先注销，
-  再迁移两代 root，legacy lookup 不能阻断降权动作；
-- 一代查询失败时仍清理另一代，但整体阻断新注册并产生 typed failure；
+- ON 时旧 Daemon 在新 Agent register 之前逐项查询；OFF 时 current Agent 必须先注销，
+  再迁移旧 root，legacy lookup 不能阻断降权动作；
+- 多描述符注入时，一项查询失败仍清理另一项，但整体阻断新注册并产生 typed failure；
 - ON 迁移失败且 current Agent 早已存在时，覆盖 user/startup × 安全注销成功/失败矩阵；
 - current Agent 已权威 OFF、legacy 仍失败时保持 Toggle OFF、清时间戳并投影
   `desiredOffUnverified`；只有 current Agent 自身关闭失败才执行交互回滚；
-- 持久化 authority 证据由成功 register、明确 active 和旧 ON/启用时间迁移建立；仅三 identity
-  全部 notRegistered 时清除。交互 OFF 或可信证据下的 lookup failure 必须使用
+- 持久化 authority 证据由成功 register、明确 active 和旧 ON/启用时间迁移建立；仅全部 identity
+  明确 notRegistered 时清除。交互 OFF 或可信证据下的 lookup failure 必须使用
   `shutdownVerificationUnavailable`，不能冒充执行过 unregister；
-- 当前 Agent 与两代旧 Daemon 使用三个不同文件名/Label；release contract 同时核对 root
+- 当前 Agent 与旧 Daemon 使用不同文件名/Label；release contract 同时核对 root
   descriptor 的文件名与 Label 相同；
 - 用户手势失败回滚不会形成 `onChange` 反馈循环；
 - URL 路由、事件过滤、ring buffer 容量与损坏文件行为；
@@ -226,12 +212,11 @@ fail-closed 边界，不依赖主 App 迁移成功才能保证当前 Agent 逻�
 包测试和 Debug 构建最多构成 C3，不能证明真实 ServiceManagement 授权、登录项 UI、TCC、
 FSEvents 或 24 小时资源占用。下列动作只允许用户明确授权后在一次持续 C4 中完成：
 
-1. 分别从 `com.guoshuyu.cleanmac.sentinel` 与 `com.amux.ai.Clean.sentinel` 已启用的旧版升级，
-   覆盖旧 `gsycleanmac-sentinel` BundleProgram、改品牌后 BundleProgram 与 Team ID 变化，验证
-   对应 root Label 被真实注销、另一项也被查询，且新 Agent 不自动启用；
+1. 从 `com.amux.ai.Clean.sentinel` 已启用的旧版升级，验证对应 root Label 被真实注销，
+   且新 Agent 不自动启用；
 2. 在设置中开启当前 Agent，处理系统审批，验证进程的 UID 和 Home 是登录用户；
 3. 对 Trash 与三个热点各做一次真实事件，观察去抖、深链接和 UI；
-4. 关闭并确认当前 Agent 与两代 root 服务均未注册；
+4. 关闭并确认当前 Agent 与旧 root 服务均未注册；
 5. 持续观察 CPU、RSS、日志轮换和 24 小时稳定性。
 
 在 C4 完成前只能表述“代码与构建合同已验证”，不能表述“真实后台监控已验收”。
@@ -240,5 +225,5 @@ FSEvents 或 24 小时资源占用。下列动作只允许用户明确授权后�
 
 - 主 App 没有 `sentinel-pending.json` 历史列表；
 - 没有可依赖的 App 拖拽卸载回调，用户必须在删除 App 前主动关闭并验证；
-- 两代旧 root 描述符仍处于迁移窗口，后续分别移除都需要版本分布证据；
-- 两代真实升级迁移、系统审批、TCC、持续资源占用与 24 小时烧测仍需 C4。
+- 旧 root 描述符仍处于迁移窗口，后续移除需要版本分布证据；
+- 真实升级迁移、系统审批、TCC、持续资源占用与 24 小时烧测仍需 C4。

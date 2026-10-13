@@ -4,24 +4,24 @@ import SafetyKit
 
 /// v2026.06.18 **稍后处理（购物车）主界面**。
 ///
-/// 由 [MainView.toolbar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
+/// 由 [MainView.toolbar](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift)
 /// 的 `tray.full.fill` 按钮以 `.sheet` 形式弹出。承载用户从树视图陆续加入的待处理目录，
 /// 提供"剔除 / 一键清理 / 单独清理 / 一键 AI / 单独 AI"集中操作。
 ///
 /// 设计要点：
 /// 1. **不复用 TreeBrowserView**——这里的数据源是
-///    [StashStore.entries](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashStore.swift#L56)
+///    [StashStore.entries](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashStore.swift#L56)
 ///    一维数组（非真正的目录树），用 `List` 渲染最直观；
 ///    "tree 模式"在购物车这个语义下其实退化为"按 path 罗列"，无需展开子项。
 /// 2. **删除走主链路**：通过 `onCleanOne / onCleanAll` 回调把 URL 交给
 ///    MainView 的已确认 Stash 执行入口，
 ///    复用 deletion pipeline（accessDenied 兜底 / UndoHistory / 结果 sheet），
 ///    不在 StashScreen 自己造第二条删除链路；删除完成后只对成功 movedPairs 调
-///    [StashStore.remove](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashStore.swift#L90)
+///    [StashStore.remove](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashStore.swift#L90)
 ///    联动摘掉对应条目。
-/// 3. **AI 入口同样复用** [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
+/// 3. **AI 入口同样复用** [AIAdviceSheet](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
 ///    —— 单独 AI 时 onAskAIOne 关闭本 sheet 后切到 AIAdviceSheet（macOS 不支持 sheet 套 sheet）。
-///    **v2026.06.19 更新**：一键 AI 已通过 [StashAIQueue](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)
+///    **v2026.06.19 更新**：一键 AI 已通过 [StashAIQueue](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)
 ///    落地（footer 三态：idle / running / 错误 + 重试），节流与并发由 queue 引擎内部串行化处理；
 ///    UI 上仍在 stash 为空 / aiSettings 未就绪 / 已 running 时 disable，配合 tooltip 解释。
 /// 4. **危险操作二次确认**：真正删除统一交给 MainView 的 DeleteSheet；这里只为
@@ -47,7 +47,7 @@ struct StashScreen: View {
     /// 单独 AI 询问回调；MainView 会先关本 sheet 再弹 AIAdviceSheet。
     let onAskAIOne: (StashStore.StashEntry) -> Void
     /// v2026.06.19 一键 AI 批量回调；MainView 在闭包里调
-    /// [aiQueue.start](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)
+    /// [aiQueue.start](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)
     /// 并把 stash / aiSettings 灌进去——避免 StashScreen 直接持有
     /// AISettings 的 @MainActor 引用做异步调度。
     let onRunAIBatch: () -> Void

@@ -5,11 +5,11 @@ import ScanKit
 
 /// v2026.06.18 **稍后处理（购物车）**：跨视图共享的"待处理路径集合"。
 ///
-/// 用户在 [TreeBrowserView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
-/// / [LargeFilesView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/LargeFilesView.swift)
+/// 用户在 [TreeBrowserView](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift)
+/// / [LargeFilesView](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/LargeFilesView.swift)
 /// 等任意结果视图的行 contextMenu 点"加入待处理"，把当前 path 暂存到这里；
-/// [MainView toolbar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
-/// 的入口按钮显示 badge 数字，点击打开 [StashScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashScreen.swift)
+/// [MainView toolbar](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift)
+/// 的入口按钮显示 badge 数字，点击打开 [StashScreen](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashScreen.swift)
 /// 集中"一键清理 / 一键 AI / 单独清理 / 单独 AI / 剔除"。
 ///
 /// 设计要点：
@@ -23,7 +23,7 @@ import ScanKit
 ///    将来如果用户反馈"想跨会话保留"，再加 `UserDefaults` 兜底，不影响当前 API。
 /// 4. **不主动校验存在性**：add 时只信入口给的 metadata（size / isDirectory），
 ///    不做额外 stat —— 频繁 stat 在万级路径下会卡 UI；
-///    [StashScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashScreen.swift)
+///    [StashScreen](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashScreen.swift)
 ///    展示时如有需要再懒校验。
 /// 5. **ObservableObject + @MainActor**：v2026.07.16 起用 Combine 发布状态以兼容 macOS 13.5；
 ///    所有 mutation 仍在主线程发生，`entries` 是唯一 UI 发布源。
@@ -48,8 +48,8 @@ public final class StashStore: ObservableObject {
         /// 加入待处理时冻结的 typed incomplete 证据，确保跨类目/工具页清理时保留严格确认上下文。
         public let incompleteIssues: [ScanIncompleteIssue]
         /// v2026.06.19 **一键 AI 队列**结果缓存。
-        /// `.pending` 是初值；由 [StashAIQueue.start](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)
-        /// 在每条询问完成后调 [setAIVerdict](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashStore.swift)
+        /// `.pending` 是初值；由 [StashAIQueue.start](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)
+        /// 在每条询问完成后调 [setAIVerdict](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashStore.swift)
         /// 翻成 `.done(...)` 或 `.error(...)`。
         /// StashScreen 行内据此渲染 ✓ / ✕ / ? 徽标 + tooltip。
         public var aiVerdict: AIVerdictCache
@@ -107,7 +107,7 @@ public final class StashStore: ObservableObject {
     @Published public private(set) var entries: [StashEntry] = []
 
     /// v2026.06.23 perf（Instruments 第六次取证 33334.md 703.80ms）：
-    /// `contains(_:)` 是 row body 求值热路径（[MainView L1213](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1213)
+    /// `contains(_:)` 是 row body 求值热路径（[MainView L1213](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift#L1213)
     /// `isStashed: { path in stash.contains(path) }` 每行调一次），
     /// 旧实现 `entries.contains(where: { $0.id == path })` 是 O(N) 全扫 +
     /// （旧 trace 显示 closure #5 in MainView.results.getter → StashStore.contains
@@ -186,7 +186,7 @@ public final class StashStore: ObservableObject {
     }
 
     /// 是否已加入待处理。tree row contextMenu 用它来"已加入则禁用按钮 + 改文案"。
-    /// v2026.06.23 perf：O(N) entries.contains → O(1) Set.contains（详见 [pathIndex](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashStore.swift#L96) 文档）。
+    /// v2026.06.23 perf：O(N) entries.contains → O(1) Set.contains（详见 [pathIndex](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashStore.swift#L96) 文档）。
     public func contains(_ path: String) -> Bool {
         pathIndex.contains(path)
     }
@@ -212,7 +212,7 @@ public final class StashStore: ObservableObject {
         pathIndex.removeAll()
     }
 
-    /// v2026.06.19 写入单条 AI 判断结果。由 [StashAIQueue](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)
+    /// v2026.06.19 写入单条 AI 判断结果。由 [StashAIQueue](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)
     /// 在每条 ask 完成后调用。`entries` 的 Combine 发布自动驱动 StashScreen 刷新对应行徽标。
     /// 若 path 已被用户在 sheet 内剔除，写入会 no-op（不复活已删条目）。
     public func setAIVerdict(path: String, verdict: AIVerdictCache) {

@@ -4,16 +4,16 @@ import SafetyKit
 /// M5 / 2026-06：把"用户点击的那一行"的事实结构化打包给 AI。
 ///
 /// 设计要点：
-/// - **只装元数据，永不装文件内容**——与 [BulkScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift)
-///   "不读 content" 一脉相承（[FEATURE_GAP §2.10](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/FEATURE_GAP.md)）；
+/// - **只装元数据，永不装文件内容**——与 [BulkScanner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift)
+///   "不读 content" 一脉相承（[FEATURE_GAP §2.10](file:///Users/amuxuser/workspace/AmuxAIClean/docs/FEATURE_GAP.md)）；
 /// - **本地 SafetyEngine 判定也作为事实告诉 AI**——让 AI 站在"已知本地判 forbid"的前提上解释，
-///   减少胡说概率；同时由 [OpenAIChatClient](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift)
+///   减少胡说概率；同时由 [OpenAIChatClient](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift)
 ///   后置 clamp 强制把"本地 forbid → AI canDelete forbid"钉死；
 /// - 字段限定一个紧凑集合（path / size / mtime / verdict / vendor + 子项前 5 名预览），
 ///   控制 prompt token 数，避免长尾路径吃 tokens。
 public struct PathInquiry: Sendable, Equatable, Codable {
 
-    /// 路径（绝对路径，未去敏；出网前由 [PathRedactor](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PathRedactor.swift) 处理）
+    /// 路径（绝对路径，未去敏；出网前由 [PathRedactor](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/PathRedactor.swift) 处理）
     public let path: String
 
     /// 是否目录
@@ -76,7 +76,7 @@ public struct PathInquiry: Sendable, Equatable, Codable {
     }
 }
 
-/// AI 返回的结构化建议。约定 JSON schema 见 [PromptBuilder](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PromptBuilder.swift)。
+/// AI 返回的结构化建议。约定 JSON schema 见 [PromptBuilder](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/PromptBuilder.swift)。
 public struct AIAdvice: Sendable, Equatable, Codable {
     /// 一句话定性（<= 80 字）
     public let summary: String

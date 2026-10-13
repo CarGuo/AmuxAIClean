@@ -140,7 +140,7 @@ private enum SecurityKeychainAPIKeyStore {
 
         if updateStatus == errSecSuccess { return }
         guard updateStatus == errSecItemNotFound else {
-            GSYLog.warning(.settings, "[AIKit] keychain update failed status=\(updateStatus)")
+            AmuxLog.warning(.settings, "[AIKit] keychain update failed status=\(updateStatus)")
             throw KeychainAPIKeyStoreError(status: updateStatus)
         }
 
@@ -154,7 +154,7 @@ private enum SecurityKeychainAPIKeyStore {
         ]
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
         guard addStatus == errSecSuccess else {
-            GSYLog.warning(.settings, "[AIKit] keychain add failed status=\(addStatus)")
+            AmuxLog.warning(.settings, "[AIKit] keychain add failed status=\(addStatus)")
             throw KeychainAPIKeyStoreError(status: addStatus)
         }
     }
@@ -172,7 +172,7 @@ private enum SecurityKeychainAPIKeyStore {
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess else {
-            GSYLog.warning(.settings, "[AIKit] keychain load failed status=\(status)")
+            AmuxLog.warning(.settings, "[AIKit] keychain load failed status=\(status)")
             throw KeychainAPIKeyStoreError(status: status)
         }
         guard let data = item as? Data,
@@ -192,7 +192,7 @@ private enum SecurityKeychainAPIKeyStore {
         ]
         let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
-            GSYLog.warning(.settings, "[AIKit] keychain delete failed status=\(status)")
+            AmuxLog.warning(.settings, "[AIKit] keychain delete failed status=\(status)")
             throw KeychainAPIKeyStoreError(status: status)
         }
     }

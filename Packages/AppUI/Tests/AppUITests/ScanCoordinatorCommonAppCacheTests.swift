@@ -974,7 +974,7 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
             latestStarted.signal()
             return CommonAppCacheScanner.detect(vendors: rules, home: home, options: options)
         }
-        NotificationCenter.default.post(name: .gsyUndoDidRestore, object: nil,
+        NotificationCenter.default.post(name: .amuxUndoDidRestore, object: nil,
                                         userInfo: ["paths": [caches[1].path]])
         await coordinator._waitForUndoReconciliationForTesting()
         guard case .settling = coordinator.scanPhase else {
@@ -993,7 +993,7 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
 
         coordinator.cancel()
         let cancelledSession = coordinator.currentScanSessionID
-        NotificationCenter.default.post(name: .gsyUndoDidRestore, object: nil,
+        NotificationCenter.default.post(name: .amuxUndoDidRestore, object: nil,
                                         userInfo: ["paths": [caches[0].path]])
         await coordinator._waitForUndoReconciliationForTesting()
         XCTAssertEqual(coordinator.currentScanSessionID, cancelledSession)

@@ -77,12 +77,12 @@ public final class FloatingScanHUDController {
     /// 展开态 hit-rect（屏幕坐标）——内容驱动高度，从 islandState.expandedSize 算出。
     private var expandedHitRect: NSRect = .zero
 
-    /// v1.3：点击 HUD 的"打开主窗口"按钮会回调到这里。由 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
+    /// v1.3：点击 HUD 的"打开主窗口"按钮会回调到这里。由 [AmuxAICleanApp](file:///Users/amuxuser/workspace/AmuxAIClean/App/AmuxAICleanApp.swift)
     /// 注入：调 NSApp.activate + makeKeyAndOrderFront 把主窗口拉回前。
     public var onOpenMainWindow: (() -> Void)?
 
-    /// v1.3：闲置态点击"立即扫描"回调。由 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
-    /// 注入：调 [ScanCoordinator.scanRecommended](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)。
+    /// v1.3：闲置态点击"立即扫描"回调。由 [AmuxAICleanApp](file:///Users/amuxuser/workspace/AmuxAIClean/App/AmuxAICleanApp.swift)
+    /// 注入：调 [ScanCoordinator.scanRecommended](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)。
     public var onStartScan: (() -> Void)?
 
     /// 强制显示（用户在 toolbar 点了"显示扫描悬浮窗"），与 isScanning / hudPersistent 是 OR 关系。
@@ -323,7 +323,7 @@ public final class FloatingScanHUDController {
     /// 关键：panel 不跟随 isExpanded 变 → SwiftUI 内部 spring 期间 panel 不会"先到位裁掉视图"，
     /// 形变看起来才是连续的"一团黑色呼吸"，而不是两块 view 在不同尺寸 panel 里硬切。
     /// 收起态视觉小胶囊靠**内容形状自己**收成 strip 大小，panel 多出来的区域由透明 host 接住，
-    /// 鼠标命中由 [closedStripHitRect](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift#L46) / [expandedHitRect](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift#L48) 单独控（不靠 panel.frame）。
+    /// 鼠标命中由 [closedStripHitRect](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift#L46) / [expandedHitRect](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift#L48) 单独控（不靠 panel.frame）。
     private func panelSize(for placement: AppSettings.HUDPlacement) -> NSSize {
         switch placement {
         case .dynamicIsland:
@@ -641,13 +641,13 @@ enum FloatingPanelHostingPolicy {
 // MARK: - IslandHoverState
 
 /// 调试开关——慢动作 + 自动循环 + 帧抓取触发。
-/// 用环境变量启用：`GSY_ISLAND_DEBUG=1` 慢速；`GSY_ISLAND_AUTOLOOP=1` 周期性自动展开/收起。
+/// 用环境变量启用：`AMUX_ISLAND_DEBUG=1` 慢速；`AMUX_ISLAND_AUTOLOOP=1` 周期性自动展开/收起。
 enum IslandDebug {
     static let slowMotion: Bool = {
-        ProcessInfo.processInfo.environment["GSY_ISLAND_DEBUG"] == "1"
+        ProcessInfo.processInfo.environment["AMUX_ISLAND_DEBUG"] == "1"
     }()
     static let autoLoop: Bool = {
-        ProcessInfo.processInfo.environment["GSY_ISLAND_AUTOLOOP"] == "1"
+        ProcessInfo.processInfo.environment["AMUX_ISLAND_AUTOLOOP"] == "1"
     }()
 }
 
@@ -984,8 +984,8 @@ struct FloatingScanHUDView: View {
 
     /// 可清理 = 当前 snapshot 中 verdict==.safe 的字节合计。
     ///
-    /// v1.6 / 2026-06：本地 reduce 已下沉到 [ScanSnapshot.cleanableBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L389-L394)
-    /// 作为**全项目可清理口径单一源**，与 sidebar 的 [VolumeCapacityCard](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/VolumeCapacityCard.swift) 同源，
+    /// v1.6 / 2026-06：本地 reduce 已下沉到 [ScanSnapshot.cleanableBytes](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L389-L394)
+    /// 作为**全项目可清理口径单一源**，与 sidebar 的 [VolumeCapacityCard](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/VolumeCapacityCard.swift) 同源，
     /// 杜绝主窗 / HUD 两条口径漂移。
     private var cleanableBytes: Int64 {
         switch smartCareSession.care.phase {
@@ -1193,7 +1193,7 @@ struct FloatingScanHUDView: View {
             .frame(width: targetW, height: targetH, alignment: .top)
             .clipShape(IslandUnifiedShape(bottomCornerRadius: bottomCornerRadius))
             // 单一 spring 同时驱动：frame、clipShape 圆角、hero 元素飞越、字号插值——所有"一团"动起来
-            // 慢动作调试：环境变量 GSY_ISLAND_DEBUG=1 时 speed(0.2) → 5x 慢放
+            // 慢动作调试：环境变量 AMUX_ISLAND_DEBUG=1 时 speed(0.2) → 5x 慢放
             .animation(islandViewSpring, value: isExpanded)
             .scaleEffect(isPopping ? 1.028 : 1.0, anchor: .top)
             .animation(.spring(response: 0.32, dampingFraction: 0.65), value: isPopping)
@@ -1243,7 +1243,7 @@ struct FloatingScanHUDView: View {
         return IslandDebug.slowMotion ? base.speed(0.2) : base
     }
 
-    /// 自动展开/收起循环——调试用。每 3 秒翻转一次，配合 GSY_ISLAND_AUTOLOOP=1 启用。
+    /// 自动展开/收起循环——调试用。每 3 秒翻转一次，配合 AMUX_ISLAND_AUTOLOOP=1 启用。
     private func startIslandAutoLoop() {
         Task { @MainActor in
             while !Task.isCancelled {

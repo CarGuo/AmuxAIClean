@@ -21,8 +21,8 @@ final class NormalWorkspaceRenderingTests: XCTestCase {
     }
 
     func testRenderWorkspaceAtMinimumSizeInBothLanguagesAndAppearances() async throws {
-        let output = ProcessInfo.processInfo.environment["GSYCLEAN_WORKSPACE_RENDER_DIR"]
-        try XCTSkipIf(output == nil, "Set GSYCLEAN_WORKSPACE_RENDER_DIR for offscreen layout evidence.")
+        let output = ProcessInfo.processInfo.environment["AMUXCLEAN_WORKSPACE_RENDER_DIR"]
+        try XCTSkipIf(output == nil, "Set AMUXCLEAN_WORKSPACE_RENDER_DIR for offscreen layout evidence.")
         let outputURL = URL(fileURLWithPath: try XCTUnwrap(output), isDirectory: true)
         try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("WorkspaceRender-\(UUID())")

@@ -167,7 +167,7 @@ public actor VersionsScanner {
             .standardizedFileURL
         guard directoryIdentity(activeVersionParentResolved) == versionsIdentity else {
             // current 落点不在 versions/ 内（如 asdf 落到 plugin 内部）→ 保守不识别
-            GSYLog.notice(.scan, "VersionsScanner current 软链落点不在 versions/ 内 root=\(rootPath) target=\(activeTargetURL.path)")
+            AmuxLog.notice(.scan, "VersionsScanner current 软链落点不在 versions/ 内 root=\(rootPath) target=\(activeTargetURL.path)")
             return []
         }
         var activeVersion: String?
@@ -204,7 +204,7 @@ public actor VersionsScanner {
         }
 
         if !hits.isEmpty {
-            GSYLog.info(.scan, "VersionsScanner 识别到旧版本 root=\(rootPath) active=\(activeVersion) old=\(hits.count)")
+            AmuxLog.info(.scan, "VersionsScanner 识别到旧版本 root=\(rootPath) active=\(activeVersion) old=\(hits.count)")
         }
         return hits
     }

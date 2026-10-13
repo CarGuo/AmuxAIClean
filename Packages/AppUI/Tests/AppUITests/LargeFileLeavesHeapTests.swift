@@ -1,7 +1,7 @@
 import XCTest
 @testable import AppUI
 
-/// **Step 9c / 2026-06**：[LargeFileLeafTopNHeap](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/LargeFileLeafTopNHeap.swift) 单元测试。
+/// **Step 9c / 2026-06**：[LargeFileLeafTopNHeap](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/LargeFileLeafTopNHeap.swift) 单元测试。
 ///
 /// 验证 min-heap Top-N 的契约：
 /// - 数据量 < capacity：全部保留

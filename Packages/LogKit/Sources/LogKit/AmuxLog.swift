@@ -1,17 +1,17 @@
 import Foundation
 import os
 
-/// GSYCleanMac 统一日志门面。
+/// AmuxAIClean 统一日志门面。
 ///
 /// 设计目标（v1.3.zzzz Phase 6）：
 /// 1) **OSLog 双写**：每条日志同时进入系统 unified logging（Console.app 实时可见）
-///    + 文件 sink（[LogFileSink](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/LogKit/Sources/LogKit/LogFileSink.swift) 按天滚动到 ~/Library/Logs/AmuxAIClean/）。
+///    + 文件 sink（`LogFileSink` 按天滚动到 ~/Library/Logs/AmuxAIClean/）。
 /// 2) **关键链路埋点**：扫描启动/取消、删除链路、安全引擎 forbid 命中、网络更新、
 ///    DB open/migrate/clear/vacuum、TreeBrowser 子树加载——出问题时直接 grep 当天 log。
 /// 3) **零依赖**：只依赖 Foundation + os；可被任何下层包（SafetyKit / ScanKit）反向依赖。
 /// 4) **Sendable 安全**：全局配置/启动缓冲由 unfair lock 原子交接，具体文件操作由 sink 的
 ///    utility 串行队列隔离；调用点保持 nonisolated 同步入口。
-public enum GSYLog {
+public enum AmuxLog {
 
     public enum Level: Int, Sendable, Comparable, CustomStringConvertible {
         case debug = 0
@@ -498,7 +498,7 @@ public enum GSYLog {
         file: StaticString,
         line: UInt
     ) -> String {
-        let ts = ISO8601DateFormatter.gsyShared.string(from: Date())
+        let ts = ISO8601DateFormatter.amuxShared.string(from: Date())
         // file 用 fileID 形式 "PackageName/File.swift"，截只留 basename。
         let f = "\(file)"
         let basename = f.split(separator: "/").last.map(String.init) ?? f
@@ -506,8 +506,8 @@ public enum GSYLog {
     }
 
     private static func renderStartupDropMarker(count: Int) -> String {
-        let timestamp = ISO8601DateFormatter.gsyShared.string(from: Date())
-        return "\(timestamp) [WARN] [App] startup_file_log_buffer_dropped count=\(count) (GSYLog.swift:0)\n"
+        let timestamp = ISO8601DateFormatter.amuxShared.string(from: Date())
+        return "\(timestamp) [WARN] [App] startup_file_log_buffer_dropped count=\(count) (AmuxLog.swift:0)\n"
     }
 
     private static let loggerCache = LoggerCache()
@@ -522,10 +522,10 @@ public enum GSYLog {
 /// 进程内 os.Logger 实例缓存。Logger 内部也轻量，但缓存避免每条日志构造一次。
 private final class LoggerCache: @unchecked Sendable {
     private let lock = NSLock()
-    private var loggers: [GSYLog.Subsystem: os.Logger] = [:]
+    private var loggers: [AmuxLog.Subsystem: os.Logger] = [:]
     private let bundleSubsystem = "com.amux.ai.Clean"
 
-    func logger(for s: GSYLog.Subsystem) -> os.Logger {
+    func logger(for s: AmuxLog.Subsystem) -> os.Logger {
         lock.lock(); defer { lock.unlock() }
         if let existing = loggers[s] { return existing }
         let new = os.Logger(subsystem: bundleSubsystem, category: s.rawValue)
@@ -588,7 +588,7 @@ extension ISO8601DateFormatter {
     /// 共享格式化器：ISO8601 + 毫秒。日志单文件常 10w+ 条，重复构造 formatter 是常见性能杀手。
     /// nonisolated(unsafe)：ISO8601DateFormatter 的 string(from:) 在 Apple 文档上是线程安全的
     /// （CFDateFormatter 内部带锁），但 Swift 6 strict concurrency 不能从声明判断。
-    nonisolated(unsafe) static let gsyShared: ISO8601DateFormatter = {
+    nonisolated(unsafe) static let amuxShared: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f

@@ -70,7 +70,7 @@ struct RowView: View {
     var allowsVendorPathOverride: Bool = false
     /// M5 / 2026-06：AI 入口配置。
     /// - nil 或 `!isReadyForUI`：contextMenu 不显示"问 AI"按钮（功能未启用）
-    /// - 非 nil：点击触发 `onAskAI(row)` 由父视图弹 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
+    /// - 非 nil：点击触发 `onAskAI(row)` 由父视图弹 [AIAdviceSheet](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
     var aiSettings: AISettings?
     var onAskAI: ((RowItem) -> Void)?
 
@@ -97,7 +97,7 @@ struct RowView: View {
             .frame(width: 24)
 
             // v1.3 P1-A：把行的"纯展示"部分（徽章/标题/进度条/字节/文件数/mtime）下沉到
-            // [RowContentView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowView.swift)
+            // [RowContentView](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowView.swift)
             // 内层 View 并实现 Equatable，用 `.equatable()` 让 SwiftUI 在 RowItem 关键字段
             // 未变时跳过子树 body 重建。背景：扫描期 publishSnapshot 每 0.4s 一帧整发
             // snapshot，rows 大部分行的 bytes/fileCount 在窗口内未变，但 ForEach 仍会

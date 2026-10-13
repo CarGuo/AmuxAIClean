@@ -238,7 +238,7 @@ public enum SwapProbe {
             } catch {
                 // Probe 是只读的 best-effort 系统指标；单个受保护 swapfile 不应让整张
                 // 快照失败，但失败必须留诊断证据，不能静默吞掉。
-                GSYLog.debug(.scan, "SwapProbe 无法读取 swapfile metadata path=\(entry.path) error=\(error)")
+                AmuxLog.debug(.scan, "SwapProbe 无法读取 swapfile metadata path=\(entry.path) error=\(error)")
             }
         }
         return (total, count)
@@ -256,7 +256,7 @@ public enum SwapProbe {
         } catch {
             // sleepimage 在现代 macOS 上经常不存在或不可见；记录后按 0 回退是这个
             // best-effort probe 的公开契约。
-            GSYLog.debug(.scan, "SwapProbe 无法读取 sleepimage metadata path=\(path) error=\(error)")
+            AmuxLog.debug(.scan, "SwapProbe 无法读取 sleepimage metadata path=\(path) error=\(error)")
             return 0
         }
         guard values.isRegularFile == true,

@@ -162,7 +162,7 @@ These can free real space, but the UI must show side effects such as re-download
 
 These were found in existing tools, but they are too risky for a generic common-cache rule.
 
-| App/path family | Existing source evidence | GSYCleanMac decision |
+| App/path family | Existing source evidence | AmuxAIClean decision |
 | --- | --- | --- |
 | Telegram `postbox/db` | `mac-cleanup-go`, `mac-cleanup-py` | Manual guide only. It may contain chat history and media indexes. Do not delete through normal cache flow. |
 | Arc `History`, `Cookies`, `Web Data` | `mac-cleanup-py` | Block. Only `~/Library/Caches/Arc`, `~/Library/Caches/company.thebrowser.Browser`, and CloudKit cache candidates can be considered. |
@@ -228,7 +228,7 @@ Still deliberately not enabled from guesses:
 The project now includes a read-only capture helper:
 
 ```bash
-Scripts/capture_app_cache_fixture.sh --out /tmp/gsy-cache-fixtures --with-size Feishu DingTalk WPS QQ TIM WeCom
+Scripts/capture_app_cache_fixture.sh --out /tmp/amux-cache-fixtures --with-size Feishu DingTalk WPS QQ TIM WeCom
 ```
 
 The helper records installed app bundle identifiers and matched Library candidates into Markdown and JSONL. It is intentionally not a rule importer:

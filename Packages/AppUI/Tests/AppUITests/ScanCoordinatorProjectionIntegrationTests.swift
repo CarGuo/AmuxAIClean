@@ -548,7 +548,7 @@ final class ScanCoordinatorProjectionIntegrationTests: XCTestCase {
 
     private func makeTemporaryRoot(prefix: String) throws -> URL {
         let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            .appendingPathComponent("GSYClean-Projection-\(prefix)-\(UUID().uuidString)",
+            .appendingPathComponent("AmuxAIClean-Projection-\(prefix)-\(UUID().uuidString)",
                                     isDirectory: true)
             .standardizedFileURL
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

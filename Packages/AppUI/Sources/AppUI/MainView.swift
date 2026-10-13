@@ -509,7 +509,7 @@ enum MainScanOwnershipPolicy {
 /// v1.3 review-fix B3：跨 target 的通知名常量。
 /// App 层在主窗口已被销毁的情况下 post 这个通知，MainView 监听并调 `openWindow(id:)` 重建。
 public extension Notification.Name {
-    static let gsyOpenMainWindowRequested = Notification.Name("AmuxAIClean.openMainWindowRequested")
+    static let amuxOpenMainWindowRequested = Notification.Name("AmuxAIClean.openMainWindowRequested")
 }
 
 /// 三栏主界面 —— 侧边类目 / 中间结果 / 右侧详情 + 删除按钮。
@@ -552,7 +552,7 @@ public struct MainView: View {
     /// 都对整个 snapshot.rows 做 O(N) filter + N 次 `selection.contains` 哈希。
     /// `onChange(rows.count)` 触发时只需检查 `[lastDefaultSelectedSeenCount...]`
     /// 的"末尾差量"（流式扫描 publishSnapshot 路径下 rows 只增不删，见
-    /// [ScanCoordinator.publishSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L2729)），
+    /// [ScanCoordinator.publishSnapshot](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L2729)），
     /// dev 扫数千行场景下从每帧 O(N) 降为每帧 O(Δ)（Δ = 本帧新增行数，常 < 50）。
     /// 取消选中 / 切换分类时手工 reset 为 0，让下一次重新扫描全表。
     @State private var lastDefaultSelectedSeenCount: Int = 0
@@ -609,10 +609,10 @@ public struct MainView: View {
     /// v1.0 T3：结果区视图模式（清单 vs 多层树）。
     ///
     /// **v1.3.zzzz Phase 4-A**：方案 C 落地——默认走树形（`.tree`），
-    /// 与 [CleanMyMac Smart Scan](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/competitors/CleanMyMac.md)、
-    /// [DaisyDisk sunburst](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/competitors/DaisyDisk.md) 同款"层次化主视图"对齐。
-    /// 清单**降级为可切换二级视图**（保留入口，不删 [listResults](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L611)）：
-    /// - 清单仍然挂载在 [viewModeBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L590) 的 segmented Picker 里随时切回
+    /// 与 [CleanMyMac Smart Scan](file:///Users/amuxuser/workspace/AmuxAIClean/docs/competitors/CleanMyMac.md)、
+    /// [DaisyDisk sunburst](file:///Users/amuxuser/workspace/AmuxAIClean/docs/competitors/DaisyDisk.md) 同款"层次化主视图"对齐。
+    /// 清单**降级为可切换二级视图**（保留入口，不删 [listResults](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift#L611)）：
+    /// - 清单仍然挂载在 [viewModeBar](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift#L590) 的 segmented Picker 里随时切回
     /// - 但视觉默认强调"树形"是主路径，让用户首屏看到的是层次化容量分布
     /// - 批量勾选 / mtime 过滤等"清单专属能力"先不迁移到树（避免风险面爆炸）
     @State private var viewMode: ResultsViewMode = MainView.phase4ADefaultViewMode
@@ -620,14 +620,14 @@ public struct MainView: View {
     /// Phase 4-A 单一信源：方案 C 选定的默认视图模式。
     /// 把默认值从 @State inline literal 提到 static 常量，**让测试能稳定断言**——
     /// SwiftUI @State 的初始值不是 protocol 可见的，没法从外部反射；提一层就能 lock。
-    /// 任何回滚到 `.list` 的改动都会让 [`testPhase4ADefaultIsTree`](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/AppUITests.swift) 直接红。
+    /// 任何回滚到 `.list` 的改动都会让 [`testPhase4ADefaultIsTree`](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/AppUITests.swift) 直接红。
     public static let phase4ADefaultViewMode: ResultsViewMode = .tree
     /// v1.0 T4：大文件视图选中项。与 detail（RowItem）解耦，
     /// 因为大文件是叶子，没有聚合 RowItem 模型。
     @State private var largeFileSelection: LargeFileItem?
     /// v2026.07 Q1：大文件视图的批量选择状态。
     ///
-    /// **提升到 MainView 的原因**：底部 [footerBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1671-L1730)
+    /// **提升到 MainView 的原因**：底部 [footerBar](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift#L1671-L1730)
     /// 大文件分支必须与 LargeFilesView 头部三态 checkbox 共享**同一份 selection**，
     /// 否则会出现"复选框勾了 3 项但底部按钮 disabled"的错觉（用户反馈 Q1 根因）。
     /// `BatchSelection` 是 `ObservableObject`，由 `@StateObject` 持有唯一实例，
@@ -701,14 +701,14 @@ public struct MainView: View {
     @ObservedObject private var settings: AppSettings
     private let pathStore: UserPathStore
     @ObservedObject private var settingsNavigation: SettingsNavigation
-    /// M5 / 2026-06：AI 模块配置。**必须由 App 层注入**与 [SettingsScene](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SettingsScene.swift)
+    /// M5 / 2026-06：AI 模块配置。**必须由 App 层注入**与 [SettingsScene](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/SettingsScene.swift)
     /// 共享同一份 ObservableObject 实例：用户在 ⌘, 切 AI Enabled → RowView contextMenu
     /// 的"问 AI"项要立刻刷新可见性。若各自 new 两份独立实例，虽然底层 UserDefaults
     /// 一致，但 ObservableObject 的 in-process 通知不会跨实例传，会导致需重启 App 才生效
     /// （Review fix #2，2026-06-15）。为兼容旧测试构造保留可选参数；省略时仍 new
     /// 一份私有实例（同 process 内只有 MainView 自己用，无 drift 风险）。
     @StateObject private var aiSettings: AISettings
-    /// 用户在 contextMenu 点过的最近一行 —— 非 nil 即弹 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)。
+    /// 用户在 contextMenu 点过的最近一行 —— 非 nil 即弹 [AIAdviceSheet](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)。
     @State private var aiAskingRow: RowItem?
     /// v1.5 P2 / Q3：AI 未配置时点击"问 AI"会把这里置 true，弹 alert 引导用户前往设置。
     /// 旧实现是按钮直接隐藏 / disabled —— 用户根本不知道有这个能力。
@@ -723,14 +723,14 @@ public struct MainView: View {
     @StateObject private var smartCareAIPreparationGate = SmartCareAIReviewPreparationGate()
     /// v2026.06.18 **稍后处理（购物车）**：跨视图共享的待处理集合。
     /// 来源：tree row contextMenu → onStash → 入库；
-    /// 出口：toolbar 右侧"待处理(N)"按钮 → 打开 [StashScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashScreen.swift)。
+    /// 出口：toolbar 右侧"待处理(N)"按钮 → 打开 [StashScreen](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashScreen.swift)。
     /// 用 @StateObject 持 StashStore 实例，与 MainView 同生命周期；不持久化（参考购物车语义）。
     @StateObject private var stash: StashStore = StashStore()
-    /// 控制 [StashScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashScreen.swift)
-    /// sheet 的开关；与 [stash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
+    /// 控制 [StashScreen](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashScreen.swift)
+    /// sheet 的开关；与 [stash](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift)
     /// 分开以便 sheet dismiss 时不会清空购物车数据。
     @State private var isStashScreenPresented: Bool = false
-    /// v2026.06.19 **一键 AI 队列引擎**。与 [stash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
+    /// v2026.06.19 **一键 AI 队列引擎**。与 [stash](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift)
     /// 同生命周期；sheet 关闭时不取消跑中的队列（用户可能想后台先跑着，回头再开）。
     /// 实际并不会在 sheet 关闭后继续可见进度——但已得到的 verdict 仍然写在 store
     /// 里，下次打开 sheet 依然能看到徽标。
@@ -788,7 +788,7 @@ public struct MainView: View {
         _settingsNavigation = ObservedObject(
             wrappedValue: settingsNavigation ?? SettingsNavigation()
         )
-        // v1.3：coordinator 允许从 App 层注入，让 [FloatingScanHUD](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
+        // v1.3：coordinator 允许从 App 层注入，让 [FloatingScanHUD](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
         // 与主窗口共享同一个 ScanCoordinator 实例（订阅同一份 snapshot/isScanning），避免双扫。
         let sharedAdmissionRegistry = coordinator?.primaryScanAdmissionRegistry
             ?? smartCareSession?.scanCoordinator.primaryScanAdmissionRegistry
@@ -1082,7 +1082,7 @@ public struct MainView: View {
                 },
                 onRunAIBatch: {
                     // v2026.06.19 一键 AI 队列入口：
-                    // 把闭包推给 [StashAIQueue.start](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)，
+                    // 把闭包推给 [StashAIQueue.start](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashAIQueue.swift)，
                     // 它内部串行循环 + 每条单独写回 stash 缓存。
                     // 重置上一轮的 verdict，避免新跑的 done 跟旧的 done 视觉上混淆——
                     // 用户期望"一键 AI"是一次干净的重新评估。
@@ -1195,13 +1195,13 @@ public struct MainView: View {
             coordinator.refreshFDAStatus()
             smartCareSession.scanCoordinator.refreshFDAStatus()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .gsyOpenMainWindowRequested)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .amuxOpenMainWindowRequested)) { _ in
             ensureMainWindowFocused()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .gsyTrashPendingLedgerDidInvalidate)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .amuxTrashPendingLedgerDidInvalidate)) { _ in
             storageAnalysis.invalidateAfterExternalChange()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .gsyTrashDidMove)) { notification in
+        .onReceive(NotificationCenter.default.publisher(for: .amuxTrashDidMove)) { notification in
             let source = notification.userInfo?["source"] as? String
             let paths = notification.userInfo?["paths"] as? [String] ?? []
             if !paths.isEmpty {
@@ -1221,14 +1221,14 @@ public struct MainView: View {
                 )
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .gsySentinelStartFullScan)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .amuxSentinelStartFullScan)) { _ in
             // v1.6 Sentinel 场景 2：用户态 Agent 通过 `amuxaiclean://action/scan/full` 唤起。
             // 用户决策 C：不自动开扫，弹引导 alert，让用户主动确认。
             enqueueSentinelPresentation(.inviteFullScan)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .gsySentinelOpenUninstall)) { note in
+        .onReceive(NotificationCenter.default.publisher(for: .amuxSentinelOpenUninstall)) { note in
             // v1.6 Sentinel 场景 1：用户态 Agent 通过 `amuxaiclean://uninstall?path=...` 唤起卸载页。
-            // path 已由 [SentinelURLRouter](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SentinelURLRouter.swift) 校验过；
+            // path 已由 [SentinelURLRouter](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/SentinelURLRouter.swift) 校验过；
             // 这里把侧栏定位到 uninstall sentinel row，让 UninstallScreen 显示。
             // 注：path 当前不直接 deep-link 到具体卸载条目（候选展示在 UninstallScreen 列表里），
             // 后续可通过 NotificationCenter 二次广播由 UninstallScreen 自己消费 path 实现高亮。
@@ -1930,7 +1930,7 @@ public struct MainView: View {
     /// 本地化标题，也不调用私有 selector；失败时保留结构化证据并给出系统提示音。
     private func openSettingsWindow() {
         guard SettingsWindowCompatibility.open() else {
-            GSYLog.error(.settings, "Unable to route the standard Settings menu item")
+            AmuxLog.error(.settings, "Unable to route the standard Settings menu item")
             NSSound.beep()
             return
         }
@@ -2315,14 +2315,14 @@ public struct MainView: View {
         _ submission: ProfessionalDeleteSubmission,
         timing: ProfessionalDeleteTiming
     ) {
-        GSYLog.info(
+        AmuxLog.info(
             .trash,
             "professional_delete stage=confirmation_accepted trace_id=\(timing.traceID.uuidString) item_count=\(timing.itemCount)"
         )
         Task { [submission, timing] in
             defer {
                 if !deleteSubmissionHandoff.finishProfessionalSubmission() {
-                    GSYLog.error(
+                    AmuxLog.error(
                         .trash,
                         "professional_delete stage=handoff_finish_failed trace_id=\(timing.traceID.uuidString)"
                     )
@@ -2357,7 +2357,7 @@ public struct MainView: View {
         case .deferUntilSheetDismissal:
             return true
         case .rejectDuplicate:
-            GSYLog.error(.trash, "professional_delete stage=duplicate_terminal_presentation_rejected")
+            AmuxLog.error(.trash, "professional_delete stage=duplicate_terminal_presentation_rejected")
             return true
         }
     }
@@ -2420,7 +2420,7 @@ public struct MainView: View {
     // MARK: - Sidebar
 
     /// v1.3.zz UI 修复：原本结构是 `List { ... }.safeAreaInset(.bottom) { VolumeCapacityCard }`，
-    /// 但扫描期间 [coordinator.snapshot.totalBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// 但扫描期间 [coordinator.snapshot.totalBytes](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
     /// 高频变化会让 capacity card 反复重渲染，进而扰动 List 的 safeAreaInset 计算与滚动位置——
     /// 表现就是"点了用户缓存 → sidebar 整段莫名滚到中间，底部容量条仿佛消失"。
     /// 改成显式 VStack（List + 固定底部 capacity card）后，两者是兄弟视图，
@@ -2434,7 +2434,7 @@ public struct MainView: View {
                 // v1.6 / 2026-06：**口径修复**——以前这里灌的是 `coordinator.snapshot.totalBytes`，
                 // 即"已扫到的全部字节"，导致 sidebar 出现"扫多少就 Cleanable 多少"的离谱口径（
                 // 用户截图: Scanning 133.49 GB ↔ Cleanable 133.49 GB）。
-                // 现在统一走 [ScanSnapshot.safeBytes / .confirmBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L375-L387)
+                // 现在统一走 [ScanSnapshot.safeBytes / .confirmBytes](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L375-L387)
                 // ——仅 `SafetyVerdict.safe` 行求和算入"可清"段、`SafetyVerdict.confirm`
                 // 行单独成"需要确认"段，与业界（CleanMyMac / DaisyDisk）四段分层对齐。
                 safeBytes: coordinator.snapshot.safeBytes,
@@ -2628,7 +2628,7 @@ public struct MainView: View {
 
                 // M4-T4 / 2026-06：系统维护 section —— flushQuickLookCache /
                 // flushDNSCache 两个 user-space 任务，
-                // 走 [MaintenanceScreen](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MaintenanceScreen.swift)
+                // 走 [MaintenanceScreen](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MaintenanceScreen.swift)
                 // 自包含 UI，不复用扫描状态栏。
                 Section {
                     maintenanceSidebarRow
@@ -2654,7 +2654,7 @@ public struct MainView: View {
                 // v1.7 M1 PR-5 / 2026-06：Developer Workflows section ——
                 // Apple / Android / Web-Node 三大生态按"工作流"分组的一键清理入口。
                 // 与 `batch.developer` sentinel（DevArtifactScanner 散点）共存，但
-                // 这三行走 [WorkflowDetailView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)
+                // 这三行走 [WorkflowDetailView](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)
                 // 渲染卡片化 + 可勾选 + 动态扫描 + 回收站删除 全链路。
                 // 字面量改走 xcstrings（workflow.sidebar.* 前缀），中英双语。
                 Section {
@@ -2734,15 +2734,15 @@ public struct MainView: View {
     static let brewSentinelID: String = "brew.screen"
 
     /// M4-T2 / 2026-06：「开发者旧版本」侧边项。点击触发
-    /// [ScanCoordinator.scanKnownVersionedRoots(home:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L710)，
+    /// [ScanCoordinator.scanKnownVersionedRoots(home:)](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L710)，
     /// 同步派发 Xcode DeviceSupport / JetBrains Toolbox 旧版本命中为 `developer.versioned`
     /// snapshot。沿用主路径的 statusBar / listResults，因此走 onChange 显式 case 而非
     /// "allCategories.first 自然 return"。
     static let devVersionedSentinelID: String = "developer.versioned.scan"
 
     /// v1.7 M1 PR-5：「Apple 开发者工作流」侧边项。沿用 maintenance / brew 同款 sentinel 旁路，
-    /// results 区渲染 [WorkflowDetailView](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)，
-    /// 数据源 [AppleWorkflow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DeveloperWorkflow.swift)。
+    /// results 区渲染 [WorkflowDetailView](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)，
+    /// 数据源 [AppleWorkflow](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/DeveloperWorkflow.swift)。
     /// 与既有 `batch.developer` sentinel 共存——后者是"按类目散点扫"，本 sentinel 是"按 Apple 工作流分组扫"。
     static let workflowAppleSentinelID: String = "workflow.apple"
 
@@ -3268,7 +3268,7 @@ public struct MainView: View {
                                         onAskAI: { row in
                                             // v2026.06.20：tree 行 sparkles 按钮 → 复用 List 视图
                                             // 同一个 sheet 入口（aiAskingRow）。先把 TreeRow 映射成
-                                            // RowItem 喂给 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)。
+                                            // RowItem 喂给 [AIAdviceSheet](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)。
                                             // SafetyEngine.evaluate 与 List 路径一致，让 AI 在拒删时
                                             // 看到同样的 verdict / rejection 上下文。
                                             //
@@ -3402,7 +3402,7 @@ public struct MainView: View {
     /// - 左侧仍保留 segmented Picker 让两种视图可一键切换（兼顾 v1.0 - v1.2 老用户的肌肉记忆）
     /// - 但 segmented 宽度从 220 收到 180，并在右侧补一行"主视图"角标，让用户**首屏理解**"树是默认"
     /// - 提示文案从原来的"批量勾选请切回清单"改成中性说明，
-    ///   避免暗示"清单才是干活视图"。批量删除能力沿用 [大文件批量页 (P1-5)](file:///Users/guoshuyu/workspace/GSYCleanMac) 与
+    ///   避免暗示"清单才是干活视图"。批量删除能力沿用 [大文件批量页 (P1-5)](file:///Users/amuxuser/workspace/AmuxAIClean) 与
     ///   清单视图，不强迫所有人切回清单
     private var viewModeBar: some View {
         HStack(spacing: 12) {
@@ -3473,7 +3473,7 @@ public struct MainView: View {
         //   命中 Equatable 短路 → 千行场景 body 调用数从"每帧 × N"降到接近 0。
         //
         // v2026.06.22 perf：扫描中底部 List 冻结。
-        // 改读 [throttledListSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L45)
+        // 改读 [throttledListSnapshot](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift#L45)
         // —— 由 syncThrottledListSnapshotIfNeeded 维护，扫描中只补第一帧非空数据、
         // 非扫描中或扫描结束瞬间立刻同步 latest。这条只对底部 List 生效，
         // statusBar / sidebar / footerBar 仍按 0.4s 跟手。
@@ -3564,7 +3564,7 @@ public struct MainView: View {
                     onRescan: {
                         // v1.3：跳系统设置 + 立即重扫当前 category。
                         // 用户回到 App 时本就能看到"扫描中"，
-                        // 等他在系统设置勾完 GSYCleanMac 那一刻起，
+                        // 等他在系统设置勾完 AmuxAIClean 那一刻起，
                         // 后续 BulkScanner 拿到的就是含原 TCC 跳过路径的完整树。
                         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
                             NSWorkspace.shared.open(url)
@@ -3577,7 +3577,7 @@ public struct MainView: View {
             }
             // v2026.06.21：原"勘察超时 / 结果已截断" banner 已整体移除。
             // 用户明确反馈：进入这种状态本身就是异常，不应该让用户看到内部限流状态。
-            // 配合 [DevArtifactScanner.Options.maxHits](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/DevArtifactScanner.swift)
+            // 配合 [DevArtifactScanner.Options.maxHits](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/DevArtifactScanner.swift)
             // 默认值改为 .max（实际永远不截断），devArtifactDidTruncate /
             // devArtifactDidTimeout 字段仅保留作内部诊断，UI 不再读。
             HStack {
@@ -3740,7 +3740,7 @@ public struct MainView: View {
 
     /// v2026.06.21：placeholder 的 `.finishedEmpty(rootPath)` 分支会拿 `currentRootPath`
     /// 直接渲染。当多根/开发者构建产物/开发者旧版本扫描走伪根时，
-    /// rootPath 是 [ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L185)
+    /// rootPath 是 [ScanCoordinator](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L185)
     /// 里定义的英文 sentinel ID，不该当作真实路径展示——这里映射到对应
     /// `path.sentinel.*` xcstrings key 走本地化显示；非 sentinel 仍按原路径打印。
     @ViewBuilder
@@ -4173,7 +4173,7 @@ public struct MainView: View {
 
     /// v1.3：主列表排序选择器。
     /// - 默认 `.sizeDesc`（按字节大小从大到小），最常用，所以放默认。
-    /// - 扫描中切换不会打乱视觉位置：[ScanCoordinator.publishSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+    /// - 扫描中切换不会打乱视觉位置：[ScanCoordinator.publishSnapshot](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
     ///   在 finished=false 时强制 path 字典序，仅 finished=true 才用此键排序。
     /// - 用 Menu 而不是 segmented Picker：6 个 case 横排太挤；Menu 更紧凑且 macOS 原生。
     /// - AppSettings 由 MainView 以 `@ObservedObject` 持有，Picker 直接使用 projected binding。
@@ -4573,7 +4573,7 @@ public struct MainView: View {
                         if let url = try await MainDirectoryInput.loadURL(from: provider) { urls.append(url) }
                     } catch {
                         hadLoadFailure = true
-                        GSYLog.error(.settings, "dropped directory URL loading failed: \(error.localizedDescription)")
+                        AmuxLog.error(.settings, "dropped directory URL loading failed: \(error.localizedDescription)")
                     }
                 }
                 validation = await MainDirectoryInput.validate(.urls(urls))
@@ -4679,7 +4679,7 @@ public struct MainView: View {
     ///
     /// 行为：
     /// - AI 已就绪（`aiSettings.isReadyForUI`）→ 把 row 喂给 `aiAskingRow` 弹
-    ///   [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
+    ///   [AIAdviceSheet](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
     /// - 未就绪 → 翻 `aiUnconfiguredAlert`，弹"前往设置？"alert，用户确认走 openSettings()
     ///
     /// 这是 Q3 修复的核心收敛点：所有 onAskAI callsite（List / Tree / Stash）
@@ -4757,8 +4757,8 @@ public struct MainView: View {
     }
 
     /// v1.3.zzzz：从 ScanCoordinator 拉一份"上层一票否决"路径快照。
-    /// 合并 [permissionDeniedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L18)
-    /// 与 [tccProtectedSkippedPaths](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L21)
+    /// 合并 [permissionDeniedPaths](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L18)
+    /// 与 [tccProtectedSkippedPaths](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L21)
     /// 及扫描器明确报告的 incomplete 路径。三类路径都缺少完整可删证据，不能交给
     /// NSWorkspace.recycle。
     private func accessDeniedPathsSnapshot() -> Set<String> {
@@ -4773,12 +4773,12 @@ public struct MainView: View {
         AppLocalization.byteCount(b, locale: locale)
     }
 
-    /// v2026.06.18 把购物车里的 [StashEntry](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/StashStore.swift#L35-L51)
-    /// 转成 [AIAdviceSheet](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
-    /// 需要的 [RowItem](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L6-L60)。
+    /// v2026.06.18 把购物车里的 [StashEntry](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/StashStore.swift#L35-L51)
+    /// 转成 [AIAdviceSheet](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift)
+    /// 需要的 [RowItem](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L6-L60)。
     /// 因为 AIAdviceSheet 只读 title / url / bytes / verdict 等基础字段做请求拼装，
     /// 不需要 logicalBytes / vendor 等填值——这里全部走兜底常量 0/.nil 即可。
-    /// `verdict` 现场调一次 [SafetyEngine.evaluate](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L212)
+    /// `verdict` 现场调一次 [SafetyEngine.evaluate](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L212)
     /// 拿语义，让 AI sheet 也能看到本地三档闸的初判。
     private func makeAIQueryRow(from entry: StashStore.StashEntry) -> RowItem {
         let (verdict, rejection) = TreeBrowserView.safety.evaluate(path: entry.path)
@@ -4797,7 +4797,7 @@ public struct MainView: View {
     }
 
     /// **v2026.06.18**：把 TimeInterval 渲染成"1h 23m 04s / 5m 12s / 47s"等紧凑文案。
-    /// 与 [FloatingScanHUD.durationString](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
+    /// 与 [FloatingScanHUD.durationString](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
     /// 风格保持一致——状态栏和悬浮窗看到的剩余时间口径同源，避免割裂。
     /// 负数 / NaN / +inf 一律按 0 处理（防呆，UI 永远不会出现 "-3s"）。
     private func formatDuration(_ seconds: TimeInterval) -> String {
@@ -4933,7 +4933,7 @@ public struct MainView: View {
         )
         let trace = traceID.map { " trace_id=\($0.uuidString)" } ?? ""
         let exactStartedAt = ProcessInfo.processInfo.systemUptime
-        GSYLog.info(
+        AmuxLog.info(
             .trash,
             "deletion_model_sync stage=exact_start surface=\(plan.exactSurface.rawValue) item_count=\(paths.count)\(trace)"
         )
@@ -4943,7 +4943,7 @@ public struct MainView: View {
         case .smartCare:
             await smartCareSession.applySuccessfulDeletion(paths: paths)
         }
-        GSYLog.info(
+        AmuxLog.info(
             .trash,
             "deletion_model_sync stage=exact_complete surface=\(plan.exactSurface.rawValue) elapsed_ms=\(ProfessionalDeleteTiming.milliseconds(from: exactStartedAt, to: ProcessInfo.processInfo.systemUptime))\(trace)"
         )
@@ -4955,7 +4955,7 @@ public struct MainView: View {
         case .smartCare:
             smartCareSession.invalidateAfterExternalDeletion()
         }
-        GSYLog.info(
+        AmuxLog.info(
             .trash,
             "deletion_model_sync stage=inactive_invalidated surface=\(plan.invalidatedSurface.rawValue) elapsed_ms=\(ProfessionalDeleteTiming.milliseconds(from: invalidationStartedAt, to: ProcessInfo.processInfo.systemUptime))\(trace)"
         )
@@ -5000,7 +5000,7 @@ public struct MainView: View {
         timing: ProfessionalDeleteTiming
     ) async {
         guard !isDeleting else {
-            GSYLog.warning(
+            AmuxLog.warning(
                 .trash,
                 "professional_delete stage=execution_rejected trace_id=\(timing.traceID.uuidString) reason=deletion_active"
             )
@@ -5018,7 +5018,7 @@ public struct MainView: View {
                     rejections: []
                 ))
             )
-            GSYLog.notice(
+            AmuxLog.notice(
                 .trash,
                 "professional_delete stage=execution_aborted trace_id=\(timing.traceID.uuidString) reason=scan_changed confirm_to_abort_ms=\(ProfessionalDeleteTiming.milliseconds(from: timing.confirmedAtUptime, to: now)) presentation_deferred=\(presentationDeferred)"
             )
@@ -5040,7 +5040,7 @@ public struct MainView: View {
             authorization = value
         case .cancelled:
             // 用户跳过了全部运行中项：未跨过 recycle 提交边界，不生成结果页。
-            GSYLog.info(
+            AmuxLog.info(
                 .trash,
                 "professional_delete stage=authorization_cancelled trace_id=\(timing.traceID.uuidString)"
             )
@@ -5049,7 +5049,7 @@ public struct MainView: View {
             let presentationDeferred = routeProfessionalDeletePresentation(
                 .preflightNotice(DeletionPreflightNotice(rejections: block.rejections))
             )
-            GSYLog.notice(
+            AmuxLog.notice(
                 .trash,
                 "professional_delete stage=authorization_blocked trace_id=\(timing.traceID.uuidString) rejection_count=\(block.rejections.count) presentation_deferred=\(presentationDeferred)"
             )
@@ -5061,7 +5061,7 @@ public struct MainView: View {
             current: accessDeniedPathsSnapshot()
         )
         let submitStartedAt = ProcessInfo.processInfo.systemUptime
-        GSYLog.info(
+        AmuxLog.info(
             .trash,
             "professional_delete stage=submit_start trace_id=\(timing.traceID.uuidString) confirm_to_submit_ms=\(ProfessionalDeleteTiming.milliseconds(from: timing.confirmedAtUptime, to: submitStartedAt)) item_count=\(timing.itemCount)"
         )
@@ -5084,7 +5084,7 @@ public struct MainView: View {
                     preparedInteraction: prepared
                 ))
             )
-            GSYLog.notice(
+            AmuxLog.notice(
                 .trash,
                 "professional_delete stage=submit_terminal trace_id=\(timing.traceID.uuidString) disposition=requires_confirmation submit_ms=\(submitDuration) presentation_deferred=\(presentationDeferred)"
             )
@@ -5094,7 +5094,7 @@ public struct MainView: View {
             let presentationDeferred = routeProfessionalDeletePresentation(
                 .preflightNotice(DeletionPreflightNotice(rejections: block.rejections))
             )
-            GSYLog.notice(
+            AmuxLog.notice(
                 .trash,
                 "professional_delete stage=submit_terminal trace_id=\(timing.traceID.uuidString) disposition=blocked submit_ms=\(submitDuration) rejection_count=\(block.rejections.count) presentation_deferred=\(presentationDeferred)"
             )
@@ -5103,7 +5103,7 @@ public struct MainView: View {
         case .completed(let completed):
             let recycleCompletedAt = submitReturnedAt
             let result = completed.result
-            GSYLog.info(
+            AmuxLog.info(
                 .trash,
                 "professional_delete stage=recycle_completed trace_id=\(timing.traceID.uuidString) submit_ms=\(submitDuration) moved_count=\(result.moved) skipped_count=\(result.skipped)"
             )
@@ -5120,7 +5120,7 @@ public struct MainView: View {
                     let presentationDeferred = routeProfessionalDeletePresentation(
                         .result(completion)
                     )
-                    GSYLog.info(
+                    AmuxLog.info(
                         .trash,
                         "professional_delete stage=result_eligible trace_id=\(timing.traceID.uuidString) recycle_to_result_eligible_ms=\(ProfessionalDeleteTiming.milliseconds(from: recycleCompletedAt, to: resultEligibleAt)) presentation_deferred=\(presentationDeferred) model_sync_pending=true"
                     )
@@ -5140,7 +5140,7 @@ public struct MainView: View {
                     modelSyncCompletedAt = ProcessInfo.processInfo.systemUptime
                 }
             )
-            GSYLog.info(
+            AmuxLog.info(
                 .trash,
                 "professional_delete stage=model_sync_completed trace_id=\(timing.traceID.uuidString) recycle_to_model_sync_complete_ms=\(ProfessionalDeleteTiming.milliseconds(from: recycleCompletedAt, to: modelSyncCompletedAt)) model_sync_ms=\(ProfessionalDeleteTiming.milliseconds(from: modelSyncStartedAt, to: modelSyncCompletedAt)) result_already_eligible=true"
             )
@@ -5490,7 +5490,7 @@ public struct MainView: View {
         // v1.3.zzzz Phase 2-F-B：开新一轮扫描前先清掉 pipeline 上的 accessDenied 旧快照。
         // ScanCoordinator 在 scan(...) 入口会重置 permissionDeniedPaths / tccProtectedSkippedPaths
         // （见 [ScanCoordinator.swift L356-L361 / L410-L412 / L509-L511]
-        // (file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L356)），
+        // (file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L356)），
         // 但 pipeline 是 MainView 实例字段，跨扫描复用——若不主动清空，旧 deniedPaths 会一直
         // 残留到下次 performDelete 重新注入前的窗口期，造成"本来已可写的路径被误以 accessDenied 拒"。
         // Phase 3-A 协议化后：v1.3.zzzz 路线 B 之后 pipeline 只有 TrashPipeline 一份实现，走真清空。
@@ -5581,7 +5581,7 @@ public struct MainView: View {
             }
         case .failure(let error):
             guard (error as? CocoaError)?.code != .userCancelled else { return }
-            GSYLog.error(.settings, "main directory importer failed: \(error.localizedDescription)")
+            AmuxLog.error(.settings, "main directory importer failed: \(error.localizedDescription)")
             customPathImportNotice = .failed
         }
     }
@@ -5595,7 +5595,7 @@ public struct MainView: View {
     /// 见 PITFALLS §5.7：拖入文件不应被当作扫描根，避免对单文件做整盘扫描。
     ///
     /// v2026.06.23 行为升级：拖入文件夹后**自动加入自定义路径 + 立刻开始扫描**。
-    /// - 若该路径已存在于 [UserPathStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UserPathStore.swift)，
+    /// - 若该路径已存在于 [UserPathStore](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/UserPathStore.swift)，
     ///   `add` 内部去重不会重复持久化；这里仍然会切到对应类目并触发扫描（"已存在就直接扫描"）。
     /// - 多文件夹同时拖入时，只对**第一个**有效目录开扫——
     ///   ScanCoordinator 同时只支持单个 active scan，多根并发会互相打架；

@@ -6,19 +6,17 @@ import ServiceManagement
 
 /// v1.6 Sentinel 管理器：唯一负责用户态 [SMAppService.agent](https://developer.apple.com/documentation/servicemanagement/smappservice)
 /// 的 register / unregister + 状态查询，把 ServiceManagement 的副作用从
-/// [AppSettings](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)
-/// 中剥离，配置层保持纯 UserDefaults。
+/// `AppSettings` 中剥离，配置层保持纯 UserDefaults。
 ///
-/// **整体职责**（详见 [docs/SENTINEL_DESIGN.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/SENTINEL_DESIGN.md) §5.2）：
+/// **整体职责**（详见 `docs/SENTINEL_DESIGN.md` §5.2）：
 /// - `enable()`：调 `SMAppService.agent(plistName:).register()`，成功后写 `sentinelLastEnabled = Date()`
 /// - `disable()`：调 `service.unregister()`，权威状态确认未注册后才清掉 `sentinelLastEnabled`
 /// - `currentStatus()`：读 `service.status` 给 UI 展示
 /// - 失败兜底：识别 `requiresApproval`，弹原生 NSAlert + 引导用户跳「系统设置 → 通用 → 登录项」
 ///
 /// **不直接做什么**：
-/// - 不监听 AppSettings 变化（由 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
-///   `.onChange(of: settings.sentinelEnabled)` 钩子驱动），保持单向数据流
-/// - 不处理 URL Scheme 路由（那是 [SentinelURLRouter](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SentinelURLRouter.swift) 的事）
+/// - 不监听 AppSettings 变化（由 `AmuxAICleanApp` `.onChange(of: settings.sentinelEnabled)` 钩子驱动），保持单向数据流
+/// - 不处理 URL Scheme 路由（那是 `SentinelURLRouter` 的事）
 @MainActor
 public final class SentinelManager: ObservableObject {
 
@@ -107,26 +105,19 @@ public final class SentinelManager: ObservableObject {
     /// `SentinelManager` 的 MainActor 隔离，也不需要用 unchecked 绕过并发检查。
     public nonisolated static let agentPlistName = "com.amux.ai.Clean.sentinel.agent.plist"
 
-    /// v2026.07.18 P1：品牌迁移前后曾产生两个不同 Label 的 root LaunchDaemon。
-    /// 单个 plist 不能在保持自身 Label 的同时代表两份 launchd authority，因此每代注册
-    /// 都保留文件名与 Label 对应的独立迁移描述符。代码只能查询/注销，永不重新注册。
+    /// v2026.07.18 P1：历史版本曾使用 root LaunchDaemon。
+    /// 保留文件名与 Label 对应的独立迁移描述符，代码只能查询/注销，永不重新注册。
     struct LegacyDaemonDescriptor: Equatable, Hashable, Sendable {
         let plistName: String
         let label: String
     }
 
-    public nonisolated static let originalBrandLegacyDaemonPlistName =
-        "com.guoshuyu.cleanmac.sentinel.plist"
-    public nonisolated static let renamedBrandLegacyDaemonPlistName =
+    public nonisolated static let legacyDaemonPlistName =
         "com.amux.ai.Clean.sentinel.plist"
 
     nonisolated static let legacyDaemonDescriptors: [LegacyDaemonDescriptor] = [
         LegacyDaemonDescriptor(
-            plistName: originalBrandLegacyDaemonPlistName,
-            label: "com.guoshuyu.cleanmac.sentinel"
-        ),
-        LegacyDaemonDescriptor(
-            plistName: renamedBrandLegacyDaemonPlistName,
+            plistName: legacyDaemonPlistName,
             label: "com.amux.ai.Clean.sentinel"
         ),
     ]
@@ -393,10 +384,10 @@ public final class SentinelManager: ObservableObject {
     }
 
     private let service: any ServiceControlling
+    private let legacyDaemonDescriptors: [LegacyDaemonDescriptor]
     private let failurePresenter: (OperationFailure, ReconciliationTrigger, Locale) -> Void
     private let approvalPresenter: (Locale) -> Void
-    /// 由 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
-    /// 初始化时注入；register / unregister 成功后会写
+    /// 由 `AmuxAICleanApp` 初始化时注入；register / unregister 成功后会写
     /// `sentinelLastEnabled` 时间戳。
     private weak var settings: AppSettings?
 
@@ -413,6 +404,7 @@ public final class SentinelManager: ObservableObject {
     public init(settings: AppSettings) {
         let service = SystemService()
         self.service = service
+        self.legacyDaemonDescriptors = Self.legacyDaemonDescriptors
         self.settings = settings
         self.failurePresenter = { failure, trigger, locale in
             SentinelManager.presentFailureAlert(failure, trigger: trigger, locale: locale)
@@ -431,10 +423,12 @@ public final class SentinelManager: ObservableObject {
     init(
         settings: AppSettings,
         service: any ServiceControlling,
+        legacyDaemonDescriptors: [LegacyDaemonDescriptor] = SentinelManager.legacyDaemonDescriptors,
         failurePresenter: @escaping (OperationFailure, ReconciliationTrigger, Locale) -> Void,
         approvalPresenter: @escaping (Locale) -> Void = { _ in }
     ) {
         self.service = service
+        self.legacyDaemonDescriptors = legacyDaemonDescriptors
         self.settings = settings
         self.failurePresenter = failurePresenter
         self.approvalPresenter = approvalPresenter
@@ -473,7 +467,7 @@ public final class SentinelManager: ObservableObject {
 
     /// v2026.07.19 P1：系统明确报告某个 current authority 已注册时，持久化关闭核验证据。
     /// `.notFound` / `.unknown` 不是 active 证据；fresh/default-OFF 不能仅凭查询失败被要求
-    /// 进入系统设置。相反，一旦见过 enabled/requiresApproval，证据只能在三身份全部明确
+    /// 进入系统设置。相反，一旦见过 enabled/requiresApproval，证据只能在全部身份明确
     /// notRegistered 后清除。
     private func recordCurrentAuthorityEvidenceIfNeeded(_ status: Status) {
         guard status == .enabled || status == .requiresApproval else { return }
@@ -488,7 +482,7 @@ public final class SentinelManager: ObservableObject {
         trigger == .user || settings?.sentinelRequiresShutdownVerification == true
     }
 
-    /// Clear durable evidence only after the current Agent and both historical identities have
+    /// Clear durable evidence only after the current Agent and historical identities have
     /// independently converged. This prevents a current-Agent success from erasing a legacy
     /// authority gap, while keeping never-enabled fresh installs quiet.
     private func clearShutdownVerificationEvidenceIfFullyConverged(
@@ -554,7 +548,7 @@ public final class SentinelManager: ObservableObject {
         trigger: ReconciliationTrigger
     ) -> ReconciliationResult {
         let locale = settings?.effectiveLocale ?? .current
-        // v2026.07.18 P1：ON 是能力增加，必须先证明两代 root identity 都已退出；OFF 是
+        // v2026.07.18 P1：ON 是能力增加，必须先证明旧 root identity 已退出；OFF 是
         // 能力减少，必须优先注销 current Agent，不能被无关 legacy lookup 故障阻断。
         if requestedEnabled {
             do {
@@ -562,7 +556,7 @@ public final class SentinelManager: ObservableObject {
                 legacyMigrationState = .verifiedCleared
             } catch {
                 legacyMigrationState = .unverified
-                GSYLog.error(.sentinel, "legacy root daemon migration blocked enable: \(error)")
+                AmuxLog.error(.sentinel, "legacy root daemon migration blocked enable: \(error)")
                 let safetyShutdown = stopCurrentAgentAfterBlockedEnable()
                 let current = safetyShutdown.status
                 let failure: OperationFailure = safetyShutdown.isStopped
@@ -618,13 +612,13 @@ public final class SentinelManager: ObservableObject {
                 approvalPresenter(locale)
             case .unavailable:
                 failure = .registrationUnavailable(initialStatus)
-                GSYLog.error(.sentinel, "register unavailable; status=\(initialStatus)")
+                AmuxLog.error(.sentinel, "register unavailable; status=\(initialStatus)")
             case .register:
                 do {
                     try service.register()
                     finalStatus = currentStatus()
                     recordCurrentAuthorityEvidenceIfNeeded(finalStatus)
-                    GSYLog.info(.sentinel, "register returned; authoritativeStatus=\(finalStatus)")
+                    AmuxLog.info(.sentinel, "register returned; authoritativeStatus=\(finalStatus)")
                     switch finalStatus {
                     case .enabled:
                         settings?.sentinelLastEnabled = Date()
@@ -634,7 +628,7 @@ public final class SentinelManager: ObservableObject {
                         failure = .registrationUnavailable(finalStatus)
                     }
                 } catch {
-                    GSYLog.error(.sentinel, "register failed: \(error)")
+                    AmuxLog.error(.sentinel, "register failed: \(error)")
                     failure = .registrationFailed
                     finalStatus = currentStatus()
                     recordCurrentAuthorityEvidenceIfNeeded(finalStatus)
@@ -647,13 +641,13 @@ public final class SentinelManager: ObservableObject {
             // gestures or durable registration evidence remain fail-closed and actionable.
             if shouldSurfaceUnavailableShutdown(trigger: trigger) {
                 failure = .shutdownVerificationUnavailable(initialStatus)
-                GSYLog.error(
+                AmuxLog.error(
                     .sentinel,
                     "shutdown verification unavailable; status=\(initialStatus) "
                         + "trigger=\(trigger) evidence=true unregisterAttempted=false"
                 )
             } else {
-                GSYLog.warning(
+                AmuxLog.warning(
                     .sentinel,
                     "default-off status unavailable; status=\(initialStatus) "
                         + "evidence=false unregisterAttempted=false userActionRequired=false"
@@ -664,7 +658,7 @@ public final class SentinelManager: ObservableObject {
                 try service.unregister()
                 finalStatus = currentStatus()
                 recordCurrentAuthorityEvidenceIfNeeded(finalStatus)
-                GSYLog.info(.sentinel, "unregister returned; authoritativeStatus=\(finalStatus)")
+                AmuxLog.info(.sentinel, "unregister returned; authoritativeStatus=\(finalStatus)")
                 switch finalStatus {
                 case .notRegistered:
                     settings?.sentinelLastEnabled = nil
@@ -672,14 +666,14 @@ public final class SentinelManager: ObservableObject {
                     failure = .unregistrationFailed
                 }
             } catch {
-                GSYLog.error(.sentinel, "unregister failed: \(error)")
+                AmuxLog.error(.sentinel, "unregister failed: \(error)")
                 finalStatus = currentStatus()
                 recordCurrentAuthorityEvidenceIfNeeded(finalStatus)
                 if finalStatus == .notRegistered {
                     // The API error is not authority. If the post-call read proves OFF, preserve
                     // the user's least-privilege intent and clear the enabled timestamp.
                     settings?.sentinelLastEnabled = nil
-                    GSYLog.notice(
+                    AmuxLog.notice(
                         .sentinel,
                         "unregister returned error but authoritative status converged to notRegistered"
                     )
@@ -696,7 +690,7 @@ public final class SentinelManager: ObservableObject {
                 legacyMigrationState = .verifiedCleared
             } catch {
                 legacyMigrationState = .unverified
-                GSYLog.error(.sentinel, "legacy root daemon migration incomplete after Agent OFF: \(error)")
+                AmuxLog.error(.sentinel, "legacy root daemon migration incomplete after Agent OFF: \(error)")
                 if failure == nil,
                    settings?.sentinelRequiresShutdownVerification == true {
                     failure = .legacyMigrationFailed(requestedEnabled: false)
@@ -704,7 +698,7 @@ public final class SentinelManager: ObservableObject {
                     // No persisted/current/legacy active evidence exists. Keep the status visible
                     // as unverified and retain the structured log, but do not instruct a fresh
                     // default-OFF user to repair a service they never enabled.
-                    GSYLog.warning(
+                    AmuxLog.warning(
                         .sentinel,
                         "legacy migration unavailable without authority evidence; "
                             + "userActionRequired=false"
@@ -751,15 +745,14 @@ public final class SentinelManager: ObservableObject {
 
     /// Migrate every historical root identity as one admission barrier for the current Agent.
     ///
-    /// The loop deliberately does not fail fast: an unavailable original-brand descriptor must
-    /// not prevent us from unregistering the renamed-brand daemon if that second job is still
-    /// active. Conversely, the aggregate succeeds only when *every* final status is explicitly
-    /// `.notRegistered`; `.notFound`, future unknown states and a still-registered service all
-    /// fail closed.
+    /// The loop deliberately does not fail fast: an unavailable descriptor must not prevent us
+    /// from unregistering another daemon if that job is still active. Conversely, the aggregate
+    /// succeeds only when *every* final status is explicitly `.notRegistered`; `.notFound`,
+    /// future unknown states and a still-registered service all fail closed.
     private func reconcileLegacyDaemons() throws {
         var hasUnsettledIdentity = false
 
-        for descriptor in Self.legacyDaemonDescriptors {
+        for descriptor in legacyDaemonDescriptors {
             let initialStatus = service.legacyDaemonStatus(for: descriptor)
             if initialStatus == .enabled || initialStatus == .requiresApproval {
                 // v2026.07.19 P1：即使本地 defaults 丢失，系统明确报告 active 仍是可信
@@ -768,14 +761,14 @@ public final class SentinelManager: ObservableObject {
             }
             switch Self.legacyMigrationAction(for: initialStatus) {
             case .alreadyCleared:
-                GSYLog.notice(
+                AmuxLog.notice(
                     .sentinel,
                     "legacy root daemon migration verified; label=\(descriptor.label) status=notRegistered"
                 )
 
             case .unavailable:
                 hasUnsettledIdentity = true
-                GSYLog.error(
+                AmuxLog.error(
                     .sentinel,
                     "legacy root daemon migration status unavailable; label=\(descriptor.label) status=\(initialStatus)"
                 )
@@ -786,7 +779,7 @@ public final class SentinelManager: ObservableObject {
                 } catch {
                     // Do not decide from the API error alone. A final authoritative read is the
                     // only proof, and remaining descriptors still need their own migration pass.
-                    GSYLog.error(
+                    AmuxLog.error(
                         .sentinel,
                         "legacy root daemon unregister returned error; label=\(descriptor.label) error=\(error)"
                     )
@@ -797,13 +790,13 @@ public final class SentinelManager: ObservableObject {
                     settings?.sentinelRequiresShutdownVerification = true
                 }
                 if finalStatus == .notRegistered {
-                    GSYLog.notice(
+                    AmuxLog.notice(
                         .sentinel,
                         "legacy root daemon migration converged; label=\(descriptor.label) status=notRegistered"
                     )
                 } else {
                     hasUnsettledIdentity = true
-                    GSYLog.error(
+                    AmuxLog.error(
                         .sentinel,
                         "legacy root daemon migration did not converge; label=\(descriptor.label) status=\(finalStatus)"
                     )
@@ -832,7 +825,7 @@ public final class SentinelManager: ObservableObject {
             do {
                 try service.unregister()
             } catch {
-                GSYLog.error(
+                AmuxLog.error(
                     .sentinel,
                     "current Agent safety shutdown returned error after legacy migration failure: \(error)"
                 )
@@ -841,20 +834,20 @@ public final class SentinelManager: ObservableObject {
             recordCurrentAuthorityEvidenceIfNeeded(status)
             if status == .notRegistered {
                 settings?.sentinelLastEnabled = nil
-                GSYLog.notice(
+                AmuxLog.notice(
                     .sentinel,
                     "current Agent safety shutdown converged after legacy migration failure"
                 )
                 return (status, true)
             }
-            GSYLog.error(
+            AmuxLog.error(
                 .sentinel,
                 "current Agent safety shutdown did not converge; status=\(status)"
             )
             return (status, false)
 
         case .unavailable:
-            GSYLog.error(
+            AmuxLog.error(
                 .sentinel,
                 "current Agent safety shutdown status unavailable; status=\(status)"
             )
@@ -863,7 +856,7 @@ public final class SentinelManager: ObservableObject {
         case .enable:
             // OFF reconciliation never returns `.enable`; retain fail-closed behavior if the
             // policy changes in a future SDK/refactor.
-            GSYLog.error(.sentinel, "current Agent safety shutdown reached invalid enable action")
+            AmuxLog.error(.sentinel, "current Agent safety shutdown reached invalid enable action")
             return (status, false)
         }
     }

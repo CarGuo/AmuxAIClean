@@ -11,7 +11,7 @@ final class MainWindowPresentationCoordinatorTests: XCTestCase {
     func test_firstVisitToProfessionalIsNotConsumedByNormalGuide() async throws {
         let model = MainWindowPresentationCoordinator(updateChecker: UpdateChecker())
         let host = UUID()
-        let suite = "GSYCleanMac.tests.ModeGuide.\(UUID().uuidString)"
+        let suite = "AmuxAIClean.tests.ModeGuide.\(UUID().uuidString)"
         defer { UserDefaults().removePersistentDomain(forName: suite) }
         let settings = AppSettings(testSuite: suite)
         model.attachHost(host)
@@ -392,7 +392,7 @@ final class MainWindowPresentationCoordinatorTests: XCTestCase {
 
     private func release(_ tag: String) -> ReleaseInfo {
         ReleaseInfo(tagName: tag, name: tag,
-                    htmlURL: URL(string: "https://github.com/CarGuo/GSYCleanMac/releases/tag/\(tag)")!,
+                    htmlURL: URL(string: "https://github.com/CarGuo/AmuxAIClean/releases/tag/\(tag)")!,
                     body: "", publishedAt: nil)
     }
 }

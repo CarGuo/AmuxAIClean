@@ -3,7 +3,7 @@ import Foundation
 
 /// BrewKit Step 16-B3 —— `brew cleanup` 的 dryRun 等价物（纯文件枚举，不执行 brew）。
 ///
-/// 设计来源（[docs/AUDIT_2026_06.md L114](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/AUDIT_2026_06.md#L114)）：
+/// 设计来源（[docs/AUDIT_2026_06.md L114](file:///Users/amuxuser/workspace/AmuxAIClean/docs/AUDIT_2026_06.md#L114)）：
 /// > Homebrew 主动 cleanup —— `brew cleanup --prune=30 + brew autoremove`，
 /// > 7 天冷却 + 50MB 阈值。AppUI 加"一键操作"按钮（不在 ScanKit 落地）。
 ///

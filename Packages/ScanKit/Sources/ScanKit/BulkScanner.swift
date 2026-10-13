@@ -194,7 +194,7 @@ public actor BulkScanner {
                     forPhysicalPath: root.path
                 ) ?? root.path
                 if opts.respectTCCSkipList && TCCSkipList.shouldSkip(publicRootPath) {
-                    GSYLog.notice(.scan, "scan 根目录命中 TCC skip-list path=\(publicRootPath)")
+                    AmuxLog.notice(.scan, "scan 根目录命中 TCC skip-list path=\(publicRootPath)")
                     let issue = ScanIncompleteIssue(
                         path: publicRootPath,
                         reason: .tccProtectedSkipped
@@ -332,7 +332,7 @@ public actor BulkScanner {
                 } else {
                     workerCount = opts.actualConcurrency
                 }
-                GSYLog.info(.scan, "scan 启动 root=\(root.path) workerCount=\(workerCount) staySingleVolume=\(opts.staySingleVolume)")
+                AmuxLog.info(.scan, "scan 启动 root=\(root.path) workerCount=\(workerCount) staySingleVolume=\(opts.staySingleVolume)")
                 await withTaskGroup(of: Void.self) { group in
                     for _ in 0..<workerCount {
                         group.addTask {
@@ -375,7 +375,7 @@ public actor BulkScanner {
                     incompleteIssues: s.incompleteIssues,
                     projection: s.projection
                 )
-                GSYLog.info(.scan, "scan 完成 root=\(root.path) files=\(summary.fileCount) dirs=\(summary.directoryCount) bytes=\(summary.totalAllocatedBytes) elapsed=\(String(format: "%.2f", summary.elapsed))s permissionDenied=\(summary.permissionDeniedCount) tccSkipped=\(summary.tccProtectedSkippedCount)")
+                AmuxLog.info(.scan, "scan 完成 root=\(root.path) files=\(summary.fileCount) dirs=\(summary.directoryCount) bytes=\(summary.totalAllocatedBytes) elapsed=\(String(format: "%.2f", summary.elapsed))s permissionDenied=\(summary.permissionDeniedCount) tccSkipped=\(summary.tccProtectedSkippedCount)")
                 BulkScanner.publishTerminalSummary(
                     summary,
                     delivery: delivery,
@@ -508,7 +508,7 @@ public actor BulkScanner {
             // diagnostic readable, this avoids nested string literals becoming a compile-time
             // failure in the scanner's safety-critical identity-change branch.
             let identityErrorDescription = identityError.map(String.init) ?? "nil"
-            GSYLog.warning(
+            AmuxLog.warning(
                 .scan,
                 "scan.directory.identity.changed path=\(dirPath) root=\(work.isRoot) errno=\(identityErrorDescription)"
             )
@@ -522,7 +522,7 @@ public actor BulkScanner {
             let issue = pathNamespace?.publicIssue(physicalIssue) ?? physicalIssue
             await publishIncomplete(issue, stats: stats, continuation: continuation)
             let isRootFailure = work.isRoot && issue.reason != .permissionDenied
-            GSYLog.warning(
+            AmuxLog.warning(
                 .scan,
                 "scan.directory.open.failed path=\(dirPath) stage=\(ScanIssueStage.open.rawValue) errno=\(openError) root=\(isRootFailure)"
             )
@@ -544,7 +544,7 @@ public actor BulkScanner {
             continuation.yield(.cacheDirTagged(
                 path: pathNamespace?.publicPath(forPhysicalPath: dirPath) ?? dirPath
             ))
-            GSYLog.info(.scan, "BulkScanner 命中 CACHEDIR.TAG，保留缓存分类并继续统计 dir=\(dirPath)")
+            AmuxLog.info(.scan, "BulkScanner 命中 CACHEDIR.TAG，保留缓存分类并继续统计 dir=\(dirPath)")
         }
 
         // 本地累计，最后一次性合并到 actor stats，减少跨 actor 次数（性能优化）。
@@ -870,7 +870,7 @@ public actor BulkScanner {
                 directoryPath: dirPath,
                 issue: physicalIssue
             )
-            GSYLog.warning(
+            AmuxLog.warning(
                 .scan,
                 "scan.directory.enumerate.failed path=\(issue.path) stage=\(issue.stage?.rawValue ?? "unknown") errno=\(issue.posixErrorCode.map(String.init) ?? "nil") root=\(isRootFailure)"
             )
@@ -1664,7 +1664,7 @@ enum BulkEnumerate {
                         stage: .enumerate,
                         posixErrorCode: err
                     )
-                    GSYLog.warning(.scan, "getattrlistbulk errno=\(err) dir=\(dirPath) bounded-memory caller stopped after partial records")
+                    AmuxLog.warning(.scan, "getattrlistbulk errno=\(err) dir=\(dirPath) bounded-memory caller stopped after partial records")
                     return .failed(issue)
                 }
                 // v2026.07.17 identity closure: fallback must stay anchored to the descriptor
@@ -1679,7 +1679,7 @@ enum BulkEnumerate {
                     shouldCancel: shouldCancel,
                     body
                 )
-                GSYLog.warning(.scan, "getattrlistbulk errno=\(err) dir=\(dirPath) fallbackEntries=\(fallback.count) outcome=\(String(describing: fallback.outcome))")
+                AmuxLog.warning(.scan, "getattrlistbulk errno=\(err) dir=\(dirPath) fallbackEntries=\(fallback.count) outcome=\(String(describing: fallback.outcome))")
                 return fallback.outcome
             }
 
@@ -1921,7 +1921,7 @@ enum BulkEnumerate {
                 stage: .enumerate,
                 posixErrorCode: errorCode
             )
-            GSYLog.warning(
+            AmuxLog.warning(
                 .scan,
                 "descriptor fallback openat failed path=\(dirPath) stage=\(ScanIssueStage.enumerate.rawValue) errno=\(errorCode) upstreamErrno=\(upstreamErrno.map(String.init) ?? "nil")"
             )
@@ -1935,7 +1935,7 @@ enum BulkEnumerate {
                 stage: .enumerate,
                 posixErrorCode: errorCode
             )
-            GSYLog.warning(
+            AmuxLog.warning(
                 .scan,
                 "descriptor fallback fdopendir failed path=\(dirPath) stage=\(ScanIssueStage.enumerate.rawValue) errno=\(errorCode) upstreamErrno=\(upstreamErrno.map(String.init) ?? "nil")"
             )
@@ -1968,7 +1968,7 @@ enum BulkEnumerate {
                         stage: .enumerate,
                         posixErrorCode: readError
                     )
-                    GSYLog.warning(
+                    AmuxLog.warning(
                         .scan,
                         "descriptor fallback readdir failed path=\(dirPath) stage=\(ScanIssueStage.enumerate.rawValue) errno=\(readError) upstreamErrno=\(upstreamErrno.map(String.init) ?? "nil")"
                     )
@@ -1993,7 +1993,7 @@ enum BulkEnumerate {
                     stage: .metadata,
                     posixErrorCode: metadataError
                 ))
-                GSYLog.warning(
+                AmuxLog.warning(
                     .scan,
                     "descriptor fallback metadata failed path=\(path) stage=\(ScanIssueStage.metadata.rawValue) errno=\(metadataError)"
                 )

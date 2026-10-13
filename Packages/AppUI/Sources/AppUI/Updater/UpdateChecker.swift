@@ -11,7 +11,7 @@ import SwiftUI
 /// - 客户端只做“提示 + 跳转已验证 Release 页”，不自动下载或安装，避免静默升级能力扩张。
 ///
 /// **流程**：
-/// 1. 启动时（如果 settings.updateCheckEnabled）调一次 `GET https://api.github.com/repos/CarGuo/GSYCleanMac/releases/latest`
+/// 1. 启动时（如果 settings.updateCheckEnabled）调一次 `GET https://api.github.com/repos/CarGuo/AmuxAIClean/releases/latest`
 /// 2. 解析 tag_name（形如 `v1.1.0`），与本地 CFBundleShortVersionString 做 SemVer 比较
 /// 3. 远端更新且未被"跳过此版本"标记 → MainActor 上设 `availableUpdate`，UI sheet 显示
 /// 4. 用户三选一：跳过此版本（写 skippedUpdateTag）/ 稍后提醒（什么都不做）/ 前往下载（NSWorkspace.open html_url）
@@ -376,7 +376,7 @@ public final class UpdateChecker: ObservableObject {
 
     public convenience init(
         owner: String = "CarGuo",
-        repo: String = "GSYCleanMac",
+        repo: String = "AmuxAIClean",
         settings: AppSettings? = nil
     ) {
         self.init(owner: owner, repo: repo, protocolClasses: nil, settings: settings)
@@ -387,7 +387,7 @@ public final class UpdateChecker: ObservableObject {
     /// 与生产一致的 ephemeral/cookie/cache/credential/redirect 策略。
     init(
         owner: String = "CarGuo",
-        repo: String = "GSYCleanMac",
+        repo: String = "AmuxAIClean",
         protocolClasses: [AnyClass]?,
         settings: AppSettings? = nil
     ) {
@@ -408,7 +408,7 @@ public final class UpdateChecker: ObservableObject {
     public func checkOnLaunch() {
         guard let s = settings, s.updateCheckEnabled else { return }
         guard !hasStartedAutomaticCheck else {
-            GSYLog.debug(.updater, "checkOnLaunch 跳过：本进程已发起过自动检查")
+            AmuxLog.debug(.updater, "checkOnLaunch 跳过：本进程已发起过自动检查")
             return
         }
         hasStartedAutomaticCheck = true
@@ -438,19 +438,19 @@ public final class UpdateChecker: ObservableObject {
 
         let configuredRoute = "\(owner)/\(repo)"
         guard let networkBoundary else {
-            GSYLog.error(.updater, "更新仓库路由非法 route=\(configuredRoute)")
+            AmuxLog.error(.updater, "更新仓库路由非法 route=\(configuredRoute)")
             lastResult = .failed(.invalidRequestURL(configuredRoute))
             return
         }
         let url = networkBoundary.latestReleaseAPIURL
-        GSYLog.info(.updater, "runCheck 开始 force=\(force) url=\(url.absoluteString)")
+        AmuxLog.info(.updater, "runCheck 开始 force=\(force) url=\(url.absoluteString)")
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
         req.httpBody = nil
         req.cachePolicy = .reloadIgnoringLocalCacheData
         req.httpShouldHandleCookies = false
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        req.setValue("GSYCleanMac/\(Self.currentVersion)", forHTTPHeaderField: "User-Agent")
+        req.setValue("AmuxAIClean/\(Self.currentVersion)", forHTTPHeaderField: "User-Agent")
         req.timeoutInterval = 10
 
         do {
@@ -462,13 +462,13 @@ public final class UpdateChecker: ObservableObject {
             guard let responseURL = http.url,
                   networkBoundary.ownsLatestReleaseAPIURL(responseURL),
                   !(300...399).contains(http.statusCode) else {
-                GSYLog.warning(.updater, "拒绝更新响应来源 code=\(http.statusCode)")
+                AmuxLog.warning(.updater, "拒绝更新响应来源 code=\(http.statusCode)")
                 lastResult = .failed(.untrustedResponseSource)
                 return
             }
             guard http.statusCode == 200 else {
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
-                GSYLog.warning(.updater, "HTTP 状态码非 200 code=\(code)")
+                AmuxLog.warning(.updater, "HTTP 状态码非 200 code=\(code)")
                 lastResult = .failed(.httpStatus(code))
                 return
             }
@@ -477,19 +477,19 @@ public final class UpdateChecker: ObservableObject {
             let local = Self.currentVersion
             if SemVer.isOlder(local, than: release.tagName) {
                 if !force, let skipped = settings?.skippedUpdateTag, skipped == release.tagName {
-                    GSYLog.info(.updater, "用户已跳过此版本 tag=\(release.tagName)")
+                    AmuxLog.info(.updater, "用户已跳过此版本 tag=\(release.tagName)")
                     lastResult = .skippedByUser(release)
                     return
                 }
-                GSYLog.notice(.updater, "发现新版本 local=\(local) remote=\(release.tagName)")
+                AmuxLog.notice(.updater, "发现新版本 local=\(local) remote=\(release.tagName)")
                 availableUpdate = release
                 lastResult = .newer(release)
             } else {
-                GSYLog.info(.updater, "已是最新版本 local=\(local) remote=\(release.tagName)")
+                AmuxLog.info(.updater, "已是最新版本 local=\(local) remote=\(release.tagName)")
                 lastResult = .upToDate
             }
         } catch {
-            GSYLog.error(.updater, "runCheck 网络/解析失败 err=\(error.localizedDescription)")
+            AmuxLog.error(.updater, "runCheck 网络/解析失败 err=\(error.localizedDescription)")
             switch error {
             case UpdateReleaseParsingError.invalidReleaseURL:
                 lastResult = .failed(.invalidReleaseURL)

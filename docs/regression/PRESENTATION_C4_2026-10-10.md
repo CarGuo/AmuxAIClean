@@ -27,7 +27,7 @@ AI 的测试 fixture 元数据请求。不得读取或记录密钥，不向 AI �
 
 - 不删除真实用户文件、不执行 Brew/Simulator 卸载、维护命令或更新下载，不改变规则与安全闸门。
 - 生产 UI 只允许 HOME 下的目标；本轮用户明确允许位置例外，仅操作新建的
-  `$HOME/Library/Caches/GSYCleanMac-C4-20261010-<UUID>/` fixture。精确 manifest 位于本地
+  `$HOME/Library/Caches/AmuxAIClean-C4-20261010-<UUID>/` fixture。精确 manifest 位于本地
   `build/presentation-review-20261010-pek370si/c4-fixture-manifest.json`。不得选择父目录或其他
   数据，废纸篓不清空。权限/属性实验也仅限该 manifest。
 - AI 原计划不发送请求，已被后续明确授权替代：仅暂存区的测试文件路径、大小等元数据。
@@ -164,7 +164,7 @@ Debug 二进制指纹也一致。本地日志、结果和指纹位于
 后续没有修改；最终运行没有为重复制造证据而回收另外两个测试文件。
 
 验收收尾已经完成：界面语言恢复原来的简体中文；仅移除本轮新增的自定义路径入口，原有
-workspace 与 guoshuyu 两项仍在。App 正常退出后，将新指南完成偏好恢复为原来的不存在
+workspace 与 amuxuser 两项仍在。App 正常退出后，将新指南完成偏好恢复为原来的不存在
 状态；永久 TCC 偏好保持原值。用户要求的 AI 配置保留，不读取/展示凭据。manifest 的
 stash-only.dat 与 trash-failure.dat 大小、inode、SHA-256 均未变，flags 均为 0；
 toast-success.dat 的原路径仍不存在。两项测试文件保留在独立测试目录，废纸篓没有清空。
@@ -239,7 +239,7 @@ Testing 通过；AppUI 为 1,568 个 XCTest 条目。ScanKit/SafetyKit 复用本
 
 本轮没有再次发出 AI 请求或实际回收文件；上一轮相应路径的 C4 证据保持原有范围。
 也没有重复当前源码未改变的包检查。收尾通过产品设置移除本轮新增路径，仅保留原有
-workspace 与 guoshuyu；待处理列表清空，语言仍为简体中文。App 退出后将指南完成偏好
+workspace 与 amuxuser；待处理列表清空，语言仍为简体中文。App 退出后将指南完成偏好
 恢复为原来的不存在状态。两个余下 fixture 的大小、inode、SHA-256、flags 均未变，
 已回收的 toast-success.dat 原路径仍不存在，废纸篓没有清空。结构化核对保存在
 `closed/c4-final-check.json`。
@@ -270,7 +270,7 @@ AppUI 全测和目标 Debug 构建通过后启动一次 App；以下操作在同
 | 收尾 | 原有两项路径、中文与指南偏好恢复；原两个文件大小/inode/SHA-256/flags 不变；新建空目录单独记录；App 正常退出 |
 
 数据仍严格限定于
-`/Users/guoshuyu/Library/Caches/GSYCleanMac-C4-20261010-51bf476c-dd45-4709-bd67-52a1b953739f/`。
+`/Users/amuxuser/Library/Caches/AmuxAIClean-C4-20261010-51bf476c-dd45-4709-bd67-52a1b953739f/`。
 本轮只新增一个空子目录用来区分切换前后类目，不创建成批测试文件；没有新的 AI 请求或
 回收原有文件。当前测试、构建、源码指纹和运行观察留在本地
 `build/presentation-review-20261011-third/`，实际结果另列，计划本身不构成通过证据。
@@ -295,7 +295,7 @@ AppUI 全测和目标 Debug 构建通过后启动一次 App；以下操作在同
 | 切回根目录，在 `review-switch` Tree 行选择“刷新此目录” | 主扫描完成为 0.39s；刷新有同一 intent 的 start/finish 日志，53ms 后 complete=true、issues=0 |
 | 隐藏侧栏后重放专业指南 | 侧栏展开，第 3/21 步批量扫描可推进；连续 12 次 Return 到第 15/21 步容量区，再推进七次完成。主扫描仍为 0.39s，待处理仍为 0 |
 | 清理自建空目录 | 只选择 `review-switch`，确认后生产最终安全检查返回 blocked、未提交；没有系统回收，也没有绕过该检查删除目录。这是观察到的拒绝结果，未宣称空目录清理通过 |
-| 恢复与退出 | 设置仅保留原有 workspace、guoshuyu；中文和指南偏好恢复原值，App 正常退出。两个原 fixture 文件大小/inode/SHA-256/flags 未变；成功回收文件仍不存在 |
+| 恢复与退出 | 设置仅保留原有 workspace、amuxuser；中文和指南偏好恢复原值，App 正常退出。两个原 fixture 文件大小/inode/SHA-256/flags 未变；成功回收文件仍不存在 |
 
 本轮原有文件没有回收，AI 配置未操作，也没有 AI 请求。自建空目录仍为空并保留在授权
 fixture 内，其扫描入口已移除；最终安全拒绝的具体来源未在本轮扩大调查，列为后续项。

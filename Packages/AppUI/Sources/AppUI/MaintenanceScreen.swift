@@ -55,7 +55,7 @@ struct MaintenanceRunGate: Sendable, Equatable {
 
 /// M4-T4：维护任务屏（user-space，无 sudo）。
 ///
-/// 包 [MaintenanceTasks](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/MaintenanceTasks.swift)
+/// 包 [MaintenanceTasks](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/MaintenanceTasks.swift)
 /// 的两个内置任务（flushQuickLookCache / flushDNSCache），
 /// 提供按钮、批量执行入口、按时间倒序的执行结果列表。
 ///

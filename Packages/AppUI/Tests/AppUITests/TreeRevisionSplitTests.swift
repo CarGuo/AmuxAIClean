@@ -29,7 +29,7 @@ final class TreeRevisionSplitTests: XCTestCase {
     /// 造一个有 N 个叶子的小 fixture，让流式 ingest 期间 publishSnapshot 触发多帧。
     private func makeFakeHome(leafCount: Int) throws -> String {
         let fm = FileManager.default
-        let raw = NSTemporaryDirectory() + "GSYCleanTreeRev-\(UUID().uuidString)"
+        let raw = NSTemporaryDirectory() + "AmuxAICleanTreeRev-\(UUID().uuidString)"
         let home = URL(fileURLWithPath: raw).standardizedFileURL.path
         let cache = home + "/Library/Caches/com.example.app"
         try fm.createDirectory(atPath: cache, withIntermediateDirectories: true)

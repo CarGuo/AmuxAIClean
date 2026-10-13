@@ -3,15 +3,15 @@
 > 机器：M-系列 Mac, macOS 14+, Apple Silicon
 > 编译配置：`swift build -c release` × 3 个 bench 工具
 > 真实负载根：`~/Library/Caches`（358,300 files / 18.3 GB 物理 / 17.9 GB 逻辑）
-> 全部产物日志：[logs/](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/regression/2026_06_11/logs)
+> 全部产物日志：[logs/](file:///Users/amuxuser/workspace/AmuxAIClean/docs/regression/2026_06_11/logs)
 
 ## 一、Bench 工具总览
 
 | Bench | 入口 | 测量目标 |
 |---|---|---|
-| A. [PerfBench](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/PerfBench/Sources/PerfBench/PerfBench.swift) BulkScanner 模式 | `--root <path>` | 裸扫描器吞吐（不入库、不渲染） |
-| C. [ScanKitBench](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKitBench/main.swift) | `<path>` | 扫描器正确性 vs `du -sh` / `du -sh -A` |
-| D. [CoordinatorBench](file:///Users/guoshuyu/workspace/GSYCleanMac/Tools/CoordinatorBench/Sources/CoordinatorBench/CoordinatorBench.swift) | `--root <path>` | [ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 全链路（scan + ingest + publishSnapshot） |
+| A. [PerfBench](file:///Users/amuxuser/workspace/AmuxAIClean/Tools/PerfBench/Sources/PerfBench/PerfBench.swift) BulkScanner 模式 | `--root <path>` | 裸扫描器吞吐（不入库、不渲染） |
+| C. [ScanKitBench](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKitBench/main.swift) | `<path>` | 扫描器正确性 vs `du -sh` / `du -sh -A` |
+| D. [CoordinatorBench](file:///Users/amuxuser/workspace/AmuxAIClean/Tools/CoordinatorBench/Sources/CoordinatorBench/CoordinatorBench.swift) | `--root <path>` | [ScanCoordinator](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) 全链路（scan + ingest + publishSnapshot） |
 
 ## 二、Bench A — `~/Library/Caches` 全扫吞吐
 
@@ -34,19 +34,19 @@
 |---|---|---|---|
 | 我们 BulkScanner | `scankit-bench ~/Library/Caches` | **on-disk 19.2 GB / logical 18.28 GB / hardlink saved 131.8 MB** | **5.53s** |
 | `du -sh -x` | logical（macOS du 计 1024 块） | **18 GB** | — |
-| `du -sh -A` | apparent size | **17 GB**（9 处 TCC 被拒，[漏算](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift)） | 9.71s |
+| `du -sh -A` | apparent size | **17 GB**（9 处 TCC 被拒，[漏算](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift)） | 9.71s |
 
 ### 判读
 
 1. **比 `du` 快 ~43%**：5.53s vs `du -sh -A` 的 9.71s — `getattrlistbulk` 批量读 vs `du` 逐文件 lstat。
-2. **比 `du` 准**：`du -sh -A` 因 9 个目录（com.apple.HomeKit / CloudKit / Safari / findmy / containermanagerd / FamilyCircle / homed / fmipcore / adprivacyd）被 TCC 拒，**直接 0 计入**漏算约 1 GB；BulkScanner 走 [TCCSkipList](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift) 主动跳过并在 stat fallback 阶段抢回部分数据，得到更准确的 19.2 GB。
+2. **比 `du` 准**：`du -sh -A` 因 9 个目录（com.apple.HomeKit / CloudKit / Safari / findmy / containermanagerd / FamilyCircle / homed / fmipcore / adprivacyd）被 TCC 拒，**直接 0 计入**漏算约 1 GB；BulkScanner 走 [TCCSkipList](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/TCCSkipList.swift) 主动跳过并在 stat fallback 阶段抢回部分数据，得到更准确的 19.2 GB。
 3. **logical (18.28 GB) - allocated (19.2 GB) = -924 MB**：APFS 透明压缩 / clone 红利，BulkScanner 自动区分上报。
 
 ## 四、Bench D — 全链路 Coordinator + ingest（repo）
 
 | 项 | 值 |
 |---|---|
-| 路径 | `/Users/guoshuyu/workspace/GSYCleanMac` |
+| 路径 | `/Users/amuxuser/workspace/AmuxAIClean` |
 | 文件数 | **81,669** |
 | 字节数 | **7.42 GB** (7,420,174,911) |
 | **elapsed_ms** | **1,358 ms** |
@@ -58,7 +58,7 @@
 
 ### 判读：ingest 层开销 < 8%
 
-PerfBench 裸流 65k files/s vs CoordinatorBench 全链路 60k files/s — 业务层（[ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) ingest + bucket 聚合 + [publishSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)）**只吃掉 ~8% 吞吐**，没有性能病灶。
+PerfBench 裸流 65k files/s vs CoordinatorBench 全链路 60k files/s — 业务层（[ScanCoordinator](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift) ingest + bucket 聚合 + [publishSnapshot](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)）**只吃掉 ~8% 吞吐**，没有性能病灶。
 
 ## 五、性能基线一句话总结
 

@@ -1,5 +1,5 @@
 
-[1;36m[regression][0m 杀掉所有残留 GSYCleanMac 进程
+[1;36m[regression][0m 杀掉所有残留 AmuxAIClean 进程
 
 [1;36m[regression][0m xcodebuild Debug 增量构建（签名走 .xcodeproj 里 Automatic + Personal Team）
 --- xcodebuild: WARNING: Using the first of multiple matching destinations:
@@ -33,5 +33,5 @@
 
 [1;36m[regression][0m 结果汇总
   total=22  PASS=22  FAIL=0  TIMEOUT=0
-[1;32m  ✓ 汇总写入 /Users/guoshuyu/workspace/GSYCleanMac/Tests/Regression/last-run.json[0m
-[1;32m  ✓ 单 case log 在 /Users/guoshuyu/workspace/GSYCleanMac/Tests/Regression/logs/<case>.log[0m
+[1;32m  ✓ 汇总写入 /Users/amuxuser/workspace/AmuxAIClean/Tests/Regression/last-run.json[0m
+[1;32m  ✓ 单 case log 在 /Users/amuxuser/workspace/AmuxAIClean/Tests/Regression/logs/<case>.log[0m

@@ -894,7 +894,7 @@ final class LogFileSinkTests: XCTestCase {
     }
 }
 
-final class GSYLogTests: XCTestCase {
+final class AmuxLogTests: XCTestCase {
 
     private func combinedLogContents(in directories: [URL]) throws -> String {
         var combined = ""
@@ -910,25 +910,25 @@ final class GSYLogTests: XCTestCase {
         return combined
     }
 
-    func test_GSYLog_levelOrdering() {
-        XCTAssertLessThan(GSYLog.Level.debug, GSYLog.Level.info)
-        XCTAssertLessThan(GSYLog.Level.info, GSYLog.Level.notice)
-        XCTAssertLessThan(GSYLog.Level.notice, GSYLog.Level.warning)
-        XCTAssertLessThan(GSYLog.Level.warning, GSYLog.Level.error)
+    func test_AmuxLog_levelOrdering() {
+        XCTAssertLessThan(AmuxLog.Level.debug, AmuxLog.Level.info)
+        XCTAssertLessThan(AmuxLog.Level.info, AmuxLog.Level.notice)
+        XCTAssertLessThan(AmuxLog.Level.notice, AmuxLog.Level.warning)
+        XCTAssertLessThan(AmuxLog.Level.warning, AmuxLog.Level.error)
     }
 
-    func test_GSYLog_configure_文件sink可写() throws {
+    func test_AmuxLog_configure_文件sink可写() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("LogKitTests-configure-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer {
-            GSYLog.disableFileSink()
+            AmuxLog.disableFileSink()
             try? FileManager.default.removeItem(at: dir)
         }
         let sink = try LogFileSink(directory: dir)
-        GSYLog.configure(minimumLevel: .debug, fileSink: sink)
-        GSYLog.info(.app, "test-line-from-info")
-        GSYLog.error(.scan, "test-line-from-error")
+        AmuxLog.configure(minimumLevel: .debug, fileSink: sink)
+        AmuxLog.info(.app, "test-line-from-info")
+        AmuxLog.error(.scan, "test-line-from-error")
         // 强制 flush。
         sink.close()
         let url = try XCTUnwrap(try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil).first { $0.pathExtension == "log" })
@@ -941,19 +941,19 @@ final class GSYLogTests: XCTestCase {
         XCTAssertTrue(content.contains("[ERROR]"))
     }
 
-    func test_GSYLog_minimumLevel_拦截低于阈值的日志() throws {
+    func test_AmuxLog_minimumLevel_拦截低于阈值的日志() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("LogKitTests-threshold-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer {
-            GSYLog.disableFileSink()
+            AmuxLog.disableFileSink()
             try? FileManager.default.removeItem(at: dir)
         }
         let sink = try LogFileSink(directory: dir)
-        GSYLog.configure(minimumLevel: .warning, fileSink: sink)
-        GSYLog.debug(.app, "should-not-appear")
-        GSYLog.info(.app, "should-not-appear")
-        GSYLog.warning(.app, "must-appear")
+        AmuxLog.configure(minimumLevel: .warning, fileSink: sink)
+        AmuxLog.debug(.app, "should-not-appear")
+        AmuxLog.info(.app, "should-not-appear")
+        AmuxLog.warning(.app, "must-appear")
         sink.close()
         let url = try XCTUnwrap(try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil).first { $0.pathExtension == "log" })
         let content = try String(contentsOf: url, encoding: .utf8)
@@ -961,33 +961,33 @@ final class GSYLogTests: XCTestCase {
         XCTAssertTrue(content.contains("must-appear"))
     }
 
-    func test_GSYLog_backgroundBootstrap_有界保序并持续转发writerHealth() async throws {
+    func test_AmuxLog_backgroundBootstrap_有界保序并持续转发writerHealth() async throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("LogKitTests-bootstrap-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer {
-            GSYLog.disableFileSink()
+            AmuxLog.disableFileSink()
             try? FileManager.default.removeItem(at: dir)
         }
 
-        let revision = GSYLog.beginFileSinkBootstrap(
+        let revision = AmuxLog.beginFileSinkBootstrap(
             minimumLevel: .debug,
             startupBufferCapacity: 3
         )
-        XCTAssertEqual(GSYLog.fileSinkHealth, .initializing)
-        var healthUpdates = GSYLog.fileSinkHealthUpdates().makeAsyncIterator()
+        XCTAssertEqual(AmuxLog.fileSinkHealth, .initializing)
+        var healthUpdates = AmuxLog.fileSinkHealthUpdates().makeAsyncIterator()
         let initialHealth = await healthUpdates.next()
         XCTAssertEqual(initialHealth, .initializing)
 
-        GSYLog.info(.app, "startup-early-1")
-        GSYLog.info(.app, "startup-early-2")
-        GSYLog.info(.app, "startup-early-3")
-        GSYLog.info(.app, "startup-early-4")
+        AmuxLog.info(.app, "startup-early-1")
+        AmuxLog.info(.app, "startup-early-2")
+        AmuxLog.info(.app, "startup-early-3")
+        AmuxLog.info(.app, "startup-early-4")
         let sink = try LogFileSink(directory: dir)
-        XCTAssertTrue(GSYLog.completeFileSinkBootstrap(sink, revision: revision))
+        XCTAssertTrue(AmuxLog.completeFileSinkBootstrap(sink, revision: revision))
         let readyHealth = await healthUpdates.next()
         XCTAssertEqual(readyHealth, .ready)
-        GSYLog.info(.app, "startup-late")
+        AmuxLog.info(.app, "startup-late")
         sink.close()
 
         let logURL = try XCTUnwrap(
@@ -1018,10 +1018,10 @@ final class GSYLogTests: XCTestCase {
         }
         let relayedFailure = await healthUpdates.next()
         XCTAssertEqual(relayedFailure, .unavailable(failure))
-        XCTAssertEqual(GSYLog.fileSinkHealth, .unavailable(failure))
+        XCTAssertEqual(AmuxLog.fileSinkHealth, .unavailable(failure))
     }
 
-    func test_GSYLog_staleBootstrapRevision_不能覆盖新配置() throws {
+    func test_AmuxLog_staleBootstrapRevision_不能覆盖新配置() throws {
         let firstDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("LogKitTests-stale-first-\(UUID().uuidString)", isDirectory: true)
         let secondDir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -1029,26 +1029,26 @@ final class GSYLogTests: XCTestCase {
         try FileManager.default.createDirectory(at: firstDir, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: secondDir, withIntermediateDirectories: true)
         defer {
-            GSYLog.disableFileSink()
+            AmuxLog.disableFileSink()
             try? FileManager.default.removeItem(at: firstDir)
             try? FileManager.default.removeItem(at: secondDir)
         }
 
-        let staleRevision = GSYLog.beginFileSinkBootstrap(minimumLevel: .debug)
-        let currentRevision = GSYLog.beginFileSinkBootstrap(minimumLevel: .debug)
+        let staleRevision = AmuxLog.beginFileSinkBootstrap(minimumLevel: .debug)
+        let currentRevision = AmuxLog.beginFileSinkBootstrap(minimumLevel: .debug)
         let staleSink = try LogFileSink(directory: firstDir)
         let currentSink = try LogFileSink(directory: secondDir)
 
-        XCTAssertFalse(GSYLog.completeFileSinkBootstrap(staleSink, revision: staleRevision))
-        XCTAssertTrue(GSYLog.completeFileSinkBootstrap(currentSink, revision: currentRevision))
-        XCTAssertEqual(GSYLog.currentLogDirectory, secondDir)
+        XCTAssertFalse(AmuxLog.completeFileSinkBootstrap(staleSink, revision: staleRevision))
+        XCTAssertTrue(AmuxLog.completeFileSinkBootstrap(currentSink, revision: currentRevision))
+        XCTAssertEqual(AmuxLog.currentLogDirectory, secondDir)
         staleSink.close()
         currentSink.close()
     }
 
-    func test_GSYLog_disable_异步拥有旧sink直到已接受append完整drain() async throws {
-        GSYLog.disableFileSink()
-        await GSYLog.waitForFileSinkRetirementsForTesting()
+    func test_AmuxLog_disable_异步拥有旧sink直到已接受append完整drain() async throws {
+        AmuxLog.disableFileSink()
+        await AmuxLog.waitForFileSinkRetirementsForTesting()
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("LogKitTests-disable-drain-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -1056,7 +1056,7 @@ final class GSYLogTests: XCTestCase {
         let releaseBarrier = DispatchSemaphore(value: 0)
         defer {
             releaseBarrier.signal()
-            GSYLog.disableFileSink()
+            AmuxLog.disableFileSink()
             try? FileManager.default.removeItem(at: dir)
         }
 
@@ -1065,19 +1065,19 @@ final class GSYLogTests: XCTestCase {
             entered: { barrierEntered.signal() },
             waitForRelease: { releaseBarrier.wait() }
         )
-        GSYLog.configure(minimumLevel: .debug, fileSink: localSink)
+        AmuxLog.configure(minimumLevel: .debug, fileSink: localSink)
         XCTAssertEqual(barrierEntered.wait(timeout: .now() + 2), .success)
 
         let lineCount = 300
         for index in 0..<lineCount {
-            GSYLog.info(.app, "disable-drain[\(index)]")
+            AmuxLog.info(.app, "disable-drain[\(index)]")
         }
         // Drop the test's reference before disable. Only the facade retirement lifecycle may keep
         // the blocked sink alive and drain the already accepted append blocks.
         localSink = nil
-        GSYLog.disableFileSink()
+        AmuxLog.disableFileSink()
         releaseBarrier.signal()
-        await GSYLog.waitForFileSinkRetirementsForTesting()
+        await AmuxLog.waitForFileSinkRetirementsForTesting()
 
         let contents = try combinedLogContents(in: [dir])
         for index in 0..<lineCount {
@@ -1088,14 +1088,14 @@ final class GSYLogTests: XCTestCase {
         }
     }
 
-    func test_GSYLog_emit与reconfigure竞争_每条只进入交接两侧之一且无retire后丢失() async throws {
-        GSYLog.disableFileSink()
-        await GSYLog.waitForFileSinkRetirementsForTesting()
+    func test_AmuxLog_emit与reconfigure竞争_每条只进入交接两侧之一且无retire后丢失() async throws {
+        AmuxLog.disableFileSink()
+        await AmuxLog.waitForFileSinkRetirementsForTesting()
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("LogKitTests-reconfigure-race-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer {
-            GSYLog.disableFileSink()
+            AmuxLog.disableFileSink()
             try? FileManager.default.removeItem(at: root)
         }
         let directories = (0..<5).map {
@@ -1107,7 +1107,7 @@ final class GSYLogTests: XCTestCase {
                 withIntermediateDirectories: false
             )
         }
-        GSYLog.configure(
+        AmuxLog.configure(
             minimumLevel: .debug,
             fileSink: try LogFileSink(directory: directories[0])
         )
@@ -1121,7 +1121,7 @@ final class GSYLogTests: XCTestCase {
             group.enter()
             DispatchQueue.global(qos: .userInitiated).async {
                 start.wait()
-                GSYLog.info(.scan, "handoff-race[\(index)]")
+                AmuxLog.info(.scan, "handoff-race[\(index)]")
                 group.leave()
             }
         }
@@ -1130,7 +1130,7 @@ final class GSYLogTests: XCTestCase {
             DispatchQueue.global(qos: .userInitiated).async {
                 start.wait()
                 do {
-                    GSYLog.configure(
+                    AmuxLog.configure(
                         minimumLevel: .debug,
                         fileSink: try LogFileSink(directory: directory)
                     )
@@ -1144,8 +1144,8 @@ final class GSYLogTests: XCTestCase {
         XCTAssertEqual(group.wait(timeout: .now() + 10), .success)
         XCTAssertNil(constructionError.get())
 
-        GSYLog.disableFileSink()
-        await GSYLog.waitForFileSinkRetirementsForTesting()
+        AmuxLog.disableFileSink()
+        await AmuxLog.waitForFileSinkRetirementsForTesting()
         let contents = try combinedLogContents(in: directories)
         for index in 0..<lineCount {
             XCTAssertEqual(

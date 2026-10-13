@@ -32,7 +32,7 @@ struct DeletionPresentationPathMatcher: Sendable, Equatable {
         while !cursor.isEmpty {
             if rootSet.contains(cursor) { return true }
             if cursor == "/" { break }
-            let parent = String._gsyParentPath(of: cursor)
+            let parent = String._amuxParentPath(of: cursor)
             if parent == cursor { break }
             cursor = parent
         }
@@ -51,7 +51,7 @@ struct DeletionPresentationPathMatcher: Sendable, Equatable {
         while !cursor.isEmpty {
             if roots.contains(cursor) { return true }
             if cursor == "/" { break }
-            let parent = String._gsyParentPath(of: cursor)
+            let parent = String._amuxParentPath(of: cursor)
             if parent == cursor { break }
             cursor = parent
         }
@@ -68,9 +68,9 @@ struct TreeDeletionPresentation: Sendable, Equatable {
 
 /// Step 10b / 2026-06：树形浏览状态 SSOT 接口外壳。
 ///
-/// 把 [ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+/// 把 [ScanCoordinator](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
 /// 早期内嵌的树形浏览状态（cache / in-flight / 三层 revision 计数器）
-/// 抽到独立 store。设计与 [SystemProbeStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SystemProbeStore.swift)
+/// 抽到独立 store。设计与 [SystemProbeStore](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/SystemProbeStore.swift)
 /// 平行 —— 让新代码 / 单测可以**单独**订阅 `coordinator.treeBrowser.structuralRevision`，
 /// 而不需要订阅整个 ScanCoordinator。
 ///
@@ -85,7 +85,7 @@ struct TreeDeletionPresentation: Sendable, Equatable {
 public final class TreeBrowserStore: ObservableObject {
     /// TreeBrowserView 下钻时的子目录展开缓存。
     /// key = `"\(path)|\(sortKey.rawValue)"`，让不同排序各自缓存。
-    /// **不**标 @Published —— 写入只 bump [childrenCacheVersion](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift#L47-L47)。
+    /// **不**标 @Published —— 写入只 bump [childrenCacheVersion](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift#L47-L47)。
     public var treeChildrenCache: [String: [TreeRow]] = [:]
 
     /// 按需子树扫描期间正在飞的 cacheKey 集合（节流，避免重复并发）。
@@ -94,7 +94,7 @@ public final class TreeBrowserStore: ObservableObject {
 
     /// cache 写入计数器（monotonic UInt64）。任何 `treeChildrenCache` 写入 / 删除 /
     /// removeAll / patch-by-prune 都需要 bump。订阅者通常**不需要**直接订阅
-    /// （由 [structuralRevision](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift#L57-L57) 覆盖），保留它给单测 / 未来细粒度刷新留 hook。
+    /// （由 [structuralRevision](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift#L57-L57) 覆盖），保留它给单测 / 未来细粒度刷新留 hook。
     @Published public private(set) var childrenCacheVersion: UInt64 = 0
     /// Exact parent whose direct-child projection changed. Set before publishing the version so
     /// TreeBrowserView can patch only that contiguous expanded segment. `nil` means a session-wide
@@ -102,7 +102,7 @@ public final class TreeBrowserStore: ObservableObject {
     public private(set) var lastChildrenCacheChangedPath: String?
 
     /// 树形扁平化重算的"统一脏标"。任何可能改变 directChildren 输出的入口必须 bump。
-    /// 老订阅者（外部代码 / 测试）继续读这个；新代码优先订阅 [structuralRevision](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift#L57-L57)。
+    /// 老订阅者（外部代码 / 测试）继续读这个；新代码优先订阅 [structuralRevision](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift#L57-L57)。
     @Published public private(set) var treeRevision: UInt64 = 0
 
     /// 结构性脏标：节点新增 / 节点删除 / 排序键变化 / cache 整轮失效。

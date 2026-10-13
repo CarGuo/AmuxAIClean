@@ -536,7 +536,7 @@ public struct AppFootprintScreen: View {
                 .layoutPriority(1)
         }
         .task { reloadScreen() }
-        .onReceive(NotificationCenter.default.publisher(for: .gsyTrashDidMove)) { notification in
+        .onReceive(NotificationCenter.default.publisher(for: .amuxTrashDidMove)) { notification in
             let paths = notification.userInfo?["paths"] as? [String] ?? []
             guard !paths.isEmpty else { return }
             reloadModel.pruneDeletedPaths(paths)

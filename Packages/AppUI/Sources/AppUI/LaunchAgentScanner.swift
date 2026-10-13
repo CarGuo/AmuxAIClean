@@ -321,13 +321,13 @@ public struct DefaultLaunchAgentFS: LaunchAgentFS {
         switch IOErrorClassifier.classify(error) {
         case .permissionDenied:
             reason = .permissionDenied
-            GSYLog.debug(.scan, "LaunchAgentFS \(operation.rawValue) permission denied: \(path)")
+            AmuxLog.debug(.scan, "LaunchAgentFS \(operation.rawValue) permission denied: \(path)")
         case .notFound:
             reason = .notFound
-            GSYLog.debug(.scan, "LaunchAgentFS \(operation.rawValue) not found: \(path)")
+            AmuxLog.debug(.scan, "LaunchAgentFS \(operation.rawValue) not found: \(path)")
         case .other:
             reason = .other
-            GSYLog.warning(
+            AmuxLog.warning(
                 .scan,
                 "LaunchAgentFS \(operation.rawValue) failed at \(path): \(error.localizedDescription)"
             )
@@ -382,7 +382,7 @@ public struct DefaultLaunchAgentFS: LaunchAgentFS {
         // v2026.07.18: cancellation is an expected reload control-flow outcome, not a filesystem
         // fault. The scanner carries it as `wasCancelled`; do not emit a misleading warning.
         if reason != .cancelled {
-            GSYLog.warning(
+            AmuxLog.warning(
                 .scan,
                 "LaunchAgentFS bounded read rejected path=\(path) reason=\(reason.rawValue) "
                     + "detail=\(String(describing: error))"
@@ -533,7 +533,7 @@ public actor LaunchAgentScanner {
                 format: nil
             )
             guard let parsed = raw as? [String: Any] else {
-                GSYLog.warning(.scan, "LaunchAgent plist root is not a dictionary: \(path)")
+                AmuxLog.warning(.scan, "LaunchAgent plist root is not a dictionary: \(path)")
                 return (
                     nil,
                     [.init(scope: scope, path: path, reason: .invalidPropertyList)],
@@ -542,7 +542,7 @@ public actor LaunchAgentScanner {
             }
             dictionary = parsed
         } catch {
-            GSYLog.warning(.scan, "LaunchAgent plist decode failed at \(path): \(error.localizedDescription)")
+            AmuxLog.warning(.scan, "LaunchAgent plist decode failed at \(path): \(error.localizedDescription)")
             return (
                 nil,
                 [.init(scope: scope, path: path, reason: .invalidPropertyList)],

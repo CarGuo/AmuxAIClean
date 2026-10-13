@@ -4,7 +4,7 @@ import SafetyKit
 
 /// docs/AUDIT_2026_06.md §4.1 P3 —— AppFootprintScanner 流式两阶段加载契约。
 ///
-/// 关键不变量（与 [AppFootprint.swift scanAllStream](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppFootprint.swift#L121-L152) 配对）：
+/// 关键不变量（与 [AppFootprint.swift scanAllStream](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AppFootprint.swift#L121-L152) 配对）：
 /// - 流式 yield 个数 == apps 个数（一一对应）
 /// - yield 出来的 item 集合（按 bundleID）与 scanAll 返回的集合一致——同一份 scanOne 复用
 /// - 消费方 `break` 出 for-await 后，detached task 必须能 cancel（下一轮 reload 不会被旧

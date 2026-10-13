@@ -11,7 +11,7 @@ import Combine
 ///   fire，从而无差别波及主列表 / TreeBrowserView 等订阅 ScanCoordinator 的所有 view。
 ///
 /// 解决：
-///   1) 新建 [SystemProbeStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SystemProbeStore.swift)
+///   1) 新建 [SystemProbeStore](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/SystemProbeStore.swift)
 ///      作为 SSOT，三个字段在它上面 @Published。
 ///   2) ScanCoordinator 暴露 `public let systemProbe: SystemProbeStore`，
 ///      让新代码 / 单测可以单独订阅 store 而不再读 ScanCoordinator。
@@ -20,7 +20,7 @@ import Combine
 ///      之后再回写 mirror。
 ///
 /// 本套测试覆盖 store 的字段存在性与 refresh 行为；KeyPath 粒度（store 改不广播 coord）
-/// 由 [test_systemProbe写入不直接广播ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/SystemProbeStoreTests.swift)
+/// 由 [test_systemProbe写入不直接广播ScanCoordinator](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/SystemProbeStoreTests.swift)
 /// 用 Combine sink 计数验证。
 @MainActor
 final class SystemProbeStoreTests: XCTestCase {

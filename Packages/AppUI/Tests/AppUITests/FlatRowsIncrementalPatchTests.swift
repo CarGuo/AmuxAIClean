@@ -5,11 +5,11 @@ import SafetyKit
 /// **v1.5.6 Tree 性能优化回归契约**：钉死"增量 patch 等价于全量重建"。
 ///
 /// 背景（用户反馈"tree 展开还是好卡"）：旧实现每次 expanded 字典变化都走
-/// [rebuildFlatRows](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L289)
+/// [rebuildFlatRows](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L289)
 /// 整树重算。已展开 200 个目录 / 每目录 50 子项的场景下，单次点击需要
 /// 200 次 directChildren + 200 次 sort + N 次 verdict 计算。
 ///
-/// 新实现 [applyExpansionPatch](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L400)
+/// 新实现 [applyExpansionPatch](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L400)
 /// 走 diff：单点 expand → 在老 flatRows 里就地插入子树；单点 collapse → 用 depth
 /// 边界扫描剪枝。复杂度从 O(N total) 降到 O(N new subtree)。
 ///
@@ -60,7 +60,7 @@ final class FlatRowsIncrementalPatchTests: XCTestCase {
         )
     }
 
-    /// "全量重建" reference 实现：复用 production [computeVerdicts](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L478)
+    /// "全量重建" reference 实现：复用 production [computeVerdicts](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserView.swift#L478)
     /// 但子树拍平自己写，避免依赖 ScanCoordinator。
     private static func fullRebuild(
         root: String,

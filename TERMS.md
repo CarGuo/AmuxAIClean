@@ -1,7 +1,7 @@
 # 使用条款 / Terms of Use
 
 最后更新：2026-07-18
-适用版本：AmuxAIClean（项目仓库名仍为 GSYCleanMac）v1.6.1+
+适用版本：AmuxAIClean v1.6.1+
 
 ## 0. 接受条款
 
@@ -84,7 +84,7 @@ AmuxAIClean 的「可清理项」基于公开的、社区维护的 [Vendor Rules
 
 ## 6. 商标
 
-- “AmuxAIClean”是当前产品名，“GSYCleanMac”是项目仓库名；二者均不主张已注册商标
+- “AmuxAIClean”是当前产品与项目仓库名，不主张已注册商标
 - "macOS"、"Apple"、"Finder"、"Sequoia"、"Apple Silicon" 等是 Apple Inc. 的注册商标，本项目仅做指称性使用，与 Apple Inc. 无任何关联或背书
 
 ## 7. 终止
@@ -103,4 +103,4 @@ AmuxAIClean 的「可清理项」基于公开的、社区维护的 [Vendor Rules
 
 **English Summary**
 
-AmuxAIClean (repository name: GSYCleanMac) is released under the MIT License and provided "AS IS" without warranty of any kind. Cleanup moves items to the macOS Trash; there is no Direct Erase mode. Restoration is not guaranteed after the Trash is emptied or an item is otherwise removed, so back up important data and verify every preview. Update checks use GitHub, and the optional user-configured AI feature is governed by the selected provider's terms. Accessing a network share, cloud placeholder, or Quick Look preview may cause macOS or the storage provider to read remotely. The author is not liable for data loss or consequential damages. By installing the software you accept these terms.
+AmuxAIClean is released under the MIT License and provided "AS IS" without warranty of any kind. Cleanup moves items to the macOS Trash; there is no Direct Erase mode. Restoration is not guaranteed after the Trash is emptied or an item is otherwise removed, so back up important data and verify every preview. Update checks use GitHub, and the optional user-configured AI feature is governed by the selected provider's terms. Accessing a network share, cloud placeholder, or Quick Look preview may cause macOS or the storage provider to read remotely. The author is not liable for data loss or consequential damages. By installing the software you accept these terms.

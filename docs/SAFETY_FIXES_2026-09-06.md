@@ -30,7 +30,7 @@ SR-03。保留已有普通模式 UI 改动，
 - 新身份闸门令一个已有“损坏恢复 journal”测试在更早的缺失证据闸门返回。
   该测试补充有效的审阅证据后仍断言原有 `ledgerUnavailable`、零执行结果和文件保留；
   没有降低断言或改变需求。原始失败日志保留为 `AppUI-initial.log`。
-- `xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build`
+- `xcodebuild -project AmuxAIClean.xcodeproj -scheme AmuxAIClean -configuration Debug build`
   通过；未运行 `xcodebuild test`。诊断期间曾尝试改用 SwiftUI 目录选择器，AppUI 全量
   回归及构建均通过，但工具观察结果相同，已撤回该改动。交付代码恢复到九包全量通过
   的三项修复状态，另做最终 Debug 构建。

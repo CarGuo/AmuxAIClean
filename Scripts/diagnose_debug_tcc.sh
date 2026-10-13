@@ -9,8 +9,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PROJECT="${ROOT}/GSYCleanMac.xcodeproj"
-SCHEME="GSYCleanMac"
+PROJECT="${ROOT}/AmuxAIClean.xcodeproj"
+SCHEME="AmuxAIClean"
 CONFIGURATION="Debug"
 
 step() { printf "\n\033[1;36m[debug-tcc]\033[0m %s\n" "$*"; }
@@ -78,7 +78,6 @@ else
       FROM access
       WHERE client = '${PRODUCT_BUNDLE_IDENTIFIER}'
          OR client LIKE '%AmuxAIClean%'
-         OR client LIKE '%GSYCleanMac%'
          OR service = 'kTCCServiceSystemPolicyAllFiles'
       ORDER BY modified DESC, service, client;
     " || warn "sqlite3 could not query TCC.db."

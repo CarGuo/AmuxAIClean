@@ -3,7 +3,7 @@ import Foundation
 /// M5 / 2026-06：出网前对路径做去敏。
 ///
 /// **红线**：出 HTTP 之前，所有传给 AI 的字符串必须先过这里。
-/// 由 [OpenAIChatClient.ask(...)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift)
+/// 由 [OpenAIChatClient.ask(...)](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift)
 /// 在请求构造阶段调用，调用方无须关心。
 ///
 /// 去敏维度（按 ROI 排）：
@@ -53,7 +53,7 @@ public struct PathRedactor: Sendable {
         return s
     }
 
-    /// 批量入口——给 [PathInquiry.childPreview](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PathInquiry.swift#L43) 用。
+    /// 批量入口——给 [PathInquiry.childPreview](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/PathInquiry.swift#L43) 用。
     public func redact(_ inputs: [String]) -> [String] {
         inputs.map { redact($0) }
     }

@@ -29,7 +29,7 @@ import XCTest
 ///
 /// 取舍：
 ///   - 不跑真扫描（费时且依赖 fixture），用 `_seedForTesting` 注入。
-///   - 不测 reset 路径（[scan L571](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L571)
+///   - 不测 reset 路径（[scan L571](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L571)
 ///     的 `keepingCapacity: true` 是性能优化，行为契约由现有 ScanCoordinatorTests 兜底）。
 ///   - 不测真实 ingest 路径里的"100k 文件后 dirIndex.count 应当为多少"——这要重新
 ///     发明 fixture，也不该是本测的范畴。

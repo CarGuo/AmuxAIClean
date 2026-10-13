@@ -54,7 +54,7 @@ public actor DerivedDataPerProjectScanner {
                 reason: .unexpectedFailure,
                 error: error
             )
-            GSYLog.error(
+            AmuxLog.error(
                 .scan,
                 "derived_data.failure \(diagnostic.logFields) "
                     + "root=\(Self.derivedDataRoot(home: home).path)"
@@ -142,7 +142,7 @@ public actor DerivedDataPerProjectScanner {
                 reason: .unexpectedFailure,
                 error: error
             )
-            GSYLog.error(
+            AmuxLog.error(
                 .scan,
                 "derived_data.failure \(diagnostic.logFields) "
                     + "root=\(derivedDataRoot(home: home).path)"
@@ -169,7 +169,7 @@ public actor DerivedDataPerProjectScanner {
                 reason: .unexpectedFailure,
                 error: error
             )
-            GSYLog.error(
+            AmuxLog.error(
                 .scan,
                 "derived_data.failure \(diagnostic.logFields) root=\(root.path)"
             )
@@ -616,7 +616,7 @@ public actor DerivedDataPerProjectScanner {
         posixErrorCode: Int32?
     ) {
         let errnoValue = posixErrorCode.map { String($0) } ?? "none"
-        GSYLog.warning(
+        AmuxLog.warning(
             .scan,
             "derived_data.workspace_marker_failure kind=\(kind) path=\(path) "
                 + "hashed_fallback=\(fallbackAccepted) "
@@ -859,7 +859,7 @@ public actor DerivedDataPerProjectScanner {
         reason: ScanIncompleteReason
     ) -> DiscoveryEvidence<ProjectHit> {
         let issue = ScanIncompleteIssue(path: path, reason: reason)
-        GSYLog.warning(.scan, "DerivedData discovery incomplete path=\(path) reason=\(reason.rawValue)")
+        AmuxLog.warning(.scan, "DerivedData discovery incomplete path=\(path) reason=\(reason.rawValue)")
         return DiscoveryEvidence(hits: [], incompleteIssues: [issue])
     }
 
@@ -898,7 +898,7 @@ public actor DerivedDataPerProjectScanner {
                 reason: .unexpectedFailure,
                 error: error
             )
-            GSYLog.error(
+            AmuxLog.error(
                 .scan,
                 "derived_data.failure \(diagnostic.logFields) path=\(path)"
             )

@@ -263,11 +263,11 @@ final class OpenAIChatRedirectRejectingDelegate: NSObject, URLSessionDataDelegat
 ///
 /// 设计要点（按需触发版）：
 /// - 纯 `URLSession`，不引入任何第三方 SDK——保持仓库供应链可审计（与
-///   [FEATURE_GAP §3.1](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/FEATURE_GAP.md#L226-L228) 开源审计承诺一致）；
+///   [FEATURE_GAP §3.1](file:///Users/amuxuser/workspace/AmuxAIClean/docs/FEATURE_GAP.md#L226-L228) 开源审计承诺一致）；
 /// - 不做流式 SSE——按需触发场景下用户期望"点完一会儿出一张完整卡片"，
 ///   一次性响应足够，省 200+ 行 SSE 解析；
-/// - 不做缓存 / 不做 rate limiter——用户自控点击次数（[PathInquiry](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PathInquiry.swift) 已克制 prompt 大小）；
-/// - 后置 [AIAdviceClamp](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PromptBuilder.swift)
+/// - 不做缓存 / 不做 rate limiter——用户自控点击次数（[PathInquiry](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/PathInquiry.swift) 已克制 prompt 大小）；
+/// - 后置 [AIAdviceClamp](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/PromptBuilder.swift)
 ///   把 AI 输出与本地 SafetyEngine 红线做强制对齐；
 /// - 生产 public API 只能使用隔离且拒绝重定向的会话；单测通过 internal
 ///   `testingSession` 注入 URLProtocol fake，不打真接口。
@@ -313,7 +313,7 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
     /// **v2026.06.22 (P0-4)**：apiKey 改为按需闭包拉取，避免常驻 struct 字段被 Mirror
     /// 反射或 `String(describing:)` 顺手 dump 到日志/崩溃报告里。
     /// 闭包内部典型实现：从 Keychain 取值（参考
-    /// [AISettings.apiKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/AISettings.swift)）。
+    /// [AISettings.apiKey](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/AISettings.swift)）。
     /// 闭包错误必须原样上抛。尤其 Keychain 的 ACL / 存储错误不是“没有 Key”，
     /// 如果压成 `missingAPIKey`，UI 会给出错误恢复建议并掩盖真实故障。
     private let apiKeyProvider: @Sendable () async throws -> String
@@ -355,7 +355,7 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
         case adviceDecode = "advice-decode"
     }
 
-    /// 不可变 settings 快照——避免持有 @MainActor 的 [AISettings](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/AISettings.swift)
+    /// 不可变 settings 快照——避免持有 @MainActor 的 [AISettings](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/AISettings.swift)
     /// 跨 actor 传递；UI 在调用 ask 前把当前值打成快照即可。
     public struct SettingsSnapshot: Sendable, Equatable {
         public let baseURL: String
@@ -531,7 +531,7 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
     }
 
     /// 入口：按需触发一次 AI 询问。
-    /// - 失败：抛 [Error](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift)；
+    /// - 失败：抛 [Error](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/OpenAIChatClient.swift)；
     /// - 成功：返回**已 clamp 过**的 AIAdvice，UI 可直接渲染。
     public func ask(_ inquiry: PathInquiry) async throws -> AIAdvice {
         let url = try Self.endpointURL(baseURL: settings.baseURL)
@@ -608,7 +608,7 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
                 responseBytes: observedBytes,
                 responseLimitBytes: limitBytes
             )
-            GSYLog.warning(
+            AmuxLog.warning(
                 .settings,
                 "[AIKit] response rejected \(facts)"
             )
@@ -626,7 +626,7 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
                 transportDomain: underlying.domain,
                 transportCode: underlying.code
             )
-            GSYLog.warning(
+            AmuxLog.warning(
                 .settings,
                 "[AIKit] request failed \(facts)"
             )
@@ -641,7 +641,7 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
                 transportDomain: domain,
                 transportCode: code
             )
-            GSYLog.warning(
+            AmuxLog.warning(
                 .settings,
                 "[AIKit] request failed \(facts)"
             )
@@ -657,7 +657,7 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
                 status: http.statusCode,
                 responseBytes: data.count
             )
-            GSYLog.warning(
+            AmuxLog.warning(
                 .settings,
                 "[AIKit] request failed \(facts)"
             )
@@ -674,7 +674,7 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
                 stage: .envelopeDecode,
                 responseBytes: data.count
             )
-            GSYLog.warning(
+            AmuxLog.warning(
                 .settings,
                 "[AIKit] response failed \(facts)"
             )
@@ -687,7 +687,7 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
                 stage: .emptyContent,
                 responseBytes: data.count
             )
-            GSYLog.warning(
+            AmuxLog.warning(
                 .settings,
                 "[AIKit] response failed \(facts)"
             )
@@ -705,7 +705,7 @@ public struct OpenAIChatClient: Sendable, CustomDebugStringConvertible, CustomRe
                 stage: .adviceDecode,
                 responseBytes: raw.utf8.count
             )
-            GSYLog.warning(
+            AmuxLog.warning(
                 .settings,
                 "[AIKit] response degraded \(facts)"
             )

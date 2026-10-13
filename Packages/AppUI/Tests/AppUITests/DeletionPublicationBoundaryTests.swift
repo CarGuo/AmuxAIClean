@@ -17,8 +17,8 @@ final class DeletionPublicationBoundaryTests: XCTestCase {
     /// Opt-in native view integration, C2 only: no application launch, recycle, or HOME writes.
     func test_receiptRemovesRowsFromTheMountedNativeTreeBeforeAccountingPrune() async throws {
         try XCTSkipUnless(
-            ProcessInfo.processInfo.environment["GSYCLEAN_DELETION_VIEW_TESTS"] == "1",
-            "Set GSYCLEAN_DELETION_VIEW_TESTS=1 for native Tree subscription integration."
+            ProcessInfo.processInfo.environment["AMUXCLEAN_DELETION_VIEW_TESTS"] == "1",
+            "Set AMUXCLEAN_DELETION_VIEW_TESTS=1 for native Tree subscription integration."
         )
         let coordinator = ScanCoordinator()
         let rows = ["/A/drop", "/A/keep"].map { path in
@@ -55,7 +55,7 @@ final class DeletionPublicationBoundaryTests: XCTestCase {
     }
 
     func test_receiptUpdatesTheMountedLargeFilesTableWithoutPrune() async throws {
-        try XCTSkipUnless(ProcessInfo.processInfo.environment["GSYCLEAN_DELETION_VIEW_TESTS"] == "1")
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["AMUXCLEAN_DELETION_VIEW_TESTS"] == "1")
         let coordinator = ScanCoordinator()
         coordinator._seedForTesting(
             snapshot: .init(categoryID: "test", rows: [], totalBytes: 400 * 1_048_576,
@@ -275,7 +275,7 @@ final class DeletionPublicationBoundaryTests: XCTestCase {
         // acknowledgement alone left the old heap intact and concealed lost source models.
         await coordinator.pruneDeleted(paths: [restored.path])
         XCTAssertEqual(coordinator.largeFiles(minSizeMB: 1, sortKey: .sizeDesc).map(\.path), [kept.path])
-        NotificationCenter.default.post(name: .gsyUndoDidRestore, object: nil,
+        NotificationCenter.default.post(name: .amuxUndoDidRestore, object: nil,
                                         userInfo: ["paths": [restored.path]])
         await coordinator._waitForUndoReconciliationForTesting()
         XCTAssertEqual(Set(coordinator.largeFiles(minSizeMB: 1, sortKey: .sizeDesc).map(\.path)),

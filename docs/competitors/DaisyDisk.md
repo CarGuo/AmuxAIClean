@@ -1,7 +1,7 @@
 # DaisyDisk 完整功能菜单
 
 > 调研对象：DaisyDisk 4.33.x（截至 2026-02-26 最新版）
-> 调研目的：作为 GSYCleanMac「任意目录扫描 + 大目录可视化」派别的功能对齐参考。
+> 调研目的：作为 AmuxAIClean「任意目录扫描 + 大目录可视化」派别的功能对齐参考。
 > 标注图例：[目录] 任意路径 / [图] 可视化 / [Y] 删除操作 / [设] 设置项 / [搜] 扫描入口 / [导航] 导航 / [安全] 安全 / [云] 云盘 / [键] 快捷键
 
 ---
@@ -163,12 +163,12 @@
  - Time Machine：20–30 分钟
  - 比同类软件快 6–32 倍（官方称）
 
-- **GSYCleanMac 对照启示（备忘）**
+- **AmuxAIClean 对照启示（备忘）**
  - [目录] 必须复刻：Folder Scan + Star Folder + Drag-In Folder
  - [图] 可借鉴但不必照搬 sunburst：可考虑 Treemap / 列表 hybrid
  - [安全] Hidden Space 的「虚拟扇区」表达方式很值得学：把"扫不到的"显式化、可下钻、可解释
  - [Y] Collector + 5s Cancel 是高安全感的成熟范式，比直接 Delete 更友好
- - [警告] 注意：DaisyDisk **永久删除**而非 Trash —— GSYCleanMac 是否要采用相同策略需讨论（可以做成可选）
+ - [警告] 注意：DaisyDisk **永久删除**而非 Trash —— AmuxAIClean 是否要采用相同策略需讨论（可以做成可选）
 
 ---
 

@@ -137,7 +137,7 @@ public struct WorkflowDetailView: View {
         .onDisappear {
             viewModel.cancelVisibleScanWork()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .gsyTrashDidMove)) { notification in
+        .onReceive(NotificationCenter.default.publisher(for: .amuxTrashDidMove)) { notification in
             let source = notification.userInfo?["source"] as? String
             guard source != DeleteRequestOrigin.workflowFilesystem.historySource else { return }
             let paths = notification.userInfo?["paths"] as? [String] ?? []
@@ -2239,7 +2239,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
               scanEvidence.revision == evidenceSnapshot.revision,
               scanEvidence.sessionID == evidenceSnapshot.sessionID,
               selectedHitIDs(forManagedUninstall: false) == selectionSnapshot else {
-            GSYLog.notice(.trash, "Workflow 删除预检完成时扫描或选择已变化，丢弃旧意图")
+            AmuxLog.notice(.trash, "Workflow 删除预检完成时扫描或选择已变化，丢弃旧意图")
             preflightNotice = DeletionPreflightNotice(
                 message: .scanChanged,
                 rejections: []
@@ -2320,7 +2320,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
         } else {
             guard let prepared = originalIntent.preparedInteraction,
                   let coordinator = deletionInteractionCoordinator else {
-                GSYLog.error(.trash, "Workflow 删除确认缺少统一协调器快照")
+                AmuxLog.error(.trash, "Workflow 删除确认缺少统一协调器快照")
                 activeSheet = nil
                 preflightNotice = DeletionPreflightNotice(
                     rejections: originalIntent.filesystemPaths.map {
@@ -2354,7 +2354,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
               skippedPaths.isSubset(of: originalPaths),
               submittedPaths.isDisjoint(with: skippedPaths),
               submittedPaths.union(skippedPaths) == originalPaths else {
-            GSYLog.error(.trash, "Workflow 删除确认计划未完整覆盖冻结路径，拒绝执行")
+            AmuxLog.error(.trash, "Workflow 删除确认计划未完整覆盖冻结路径，拒绝执行")
             deletionInteractionCoordinator = nil
             activeSheet = nil
             preflightNotice = DeletionPreflightNotice(
@@ -2376,7 +2376,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 : strictAccessEvidencePaths
         }
         guard frozenAccessEvidencePaths.isSubset(of: originalIntent.accessDeniedPaths) else {
-            GSYLog.error(.trash, "Workflow 删除确认丢失冻结的 typed incomplete evidence")
+            AmuxLog.error(.trash, "Workflow 删除确认丢失冻结的 typed incomplete evidence")
             activeSheet = nil
             preflightNotice = DeletionPreflightNotice(
                 rejections: executionPlan.paths.map {
@@ -2444,7 +2444,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
               !isDeleting,
               intent.scanRevision == scanEvidence.revision,
               intent.scanSessionID == scanEvidence.sessionID else {
-            GSYLog.notice(.trash, "Workflow 拒绝执行过期删除意图 revision=\(intent.scanRevision) current=\(scanEvidence.revision)")
+            AmuxLog.notice(.trash, "Workflow 拒绝执行过期删除意图 revision=\(intent.scanRevision) current=\(scanEvidence.revision)")
             return
         }
         isDeleting = true
@@ -2452,7 +2452,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
 
         let fsPaths = intent.filesystemPaths
 
-        // **v2026.06.22 (P0-1)**：与 [MainView.runTrash](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
+        // **v2026.06.22 (P0-1)**：与 [MainView.runTrash](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift)
         // 对齐统一删除入口：accessDenied 注入 → TrashActionCoordinator.run → UndoHistory.addRecord
         // → 用 outcome.movedPairs 而非全部请求路径来回写 selected。原实现漏了前 3 步
         // 且 `for path in fsPaths { selected.remove(path) }` 会把"被 SafetyEngine 拦截
@@ -2462,7 +2462,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
         var filesystemCompletion: DeletionCompletedInteraction?
         if !fsPaths.isEmpty {
             guard let authorized = intent.authorizedInteraction else {
-                GSYLog.error(.trash, "Workflow 文件删除缺少统一授权")
+                AmuxLog.error(.trash, "Workflow 文件删除缺少统一授权")
                 activeSheet = nil
                 preflightNotice = DeletionPreflightNotice(
                     rejections: fsPaths.map {
@@ -2542,7 +2542,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
             successFeedback = presentation.successFeedback
             activeSheet = presentation.details.map(ActiveSheet.result)
         } else {
-            GSYLog.notice(.trash, "Workflow Trash 未产生提交终态")
+            AmuxLog.notice(.trash, "Workflow Trash 未产生提交终态")
         }
     }
 
@@ -3403,7 +3403,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 reason: .unexpectedFailure,
                 error: error
             )
-            GSYLog.error(.scan, "workflow.failure \(diagnostic.logFields)")
+            AmuxLog.error(.scan, "workflow.failure \(diagnostic.logFields)")
             return CardScanWorkOutput(results: Dictionary(
                 uniqueKeysWithValues: work.cards.map {
                     ($0.id, CardScanResult(hits: [], terminalFailure: true))
@@ -3582,7 +3582,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
         switch card.source {
         case .literal(let paths):
             // **v2026.06.22 (P0-5)**：`.literal` 分支历史只走 `FileManager.fileExists`，不展开 glob。
-            // 但 [AndroidWorkflow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/AndroidWorkflow.swift) 等卡片实际声明了带 `*` 的路径
+            // 但 [AndroidWorkflow](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/AndroidWorkflow.swift) 等卡片实际声明了带 `*` 的路径
             // （如 `~/Library/Caches/Google/AndroidStudio*`），未展开就 `fileExists` 会全部落空，
             // 导致 JetBrains / AndroidStudio 整卡 0 命中。改为：含 `*` 走 parent + fnmatch 枚举。
             var result = CardScanResult(hits: [])
@@ -3701,7 +3701,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
                     reason: .unexpectedFailure,
                     error: error
                 )
-                GSYLog.error(.scan, "workflow.failure \(diagnostic.logFields)")
+                AmuxLog.error(.scan, "workflow.failure \(diagnostic.logFields)")
                 // `WorkflowRegistry.resolveWithEvidence` returns filesystem failures as scoped
                 // ScanIncompleteIssue values and throws only for cancellation/unexpected provider
                 // failures. A generic Error has no trustworthy path scope, so fabricating HOME
@@ -3825,7 +3825,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 reason: .init(issue.reason),
                 error: error
             )
-            GSYLog.warning(
+            AmuxLog.warning(
                 .scan,
                 "workflow.failure \(diagnostic.logFields) path=\(url.path)"
             )
@@ -3890,7 +3890,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
                         reason: .init(issue.reason),
                         posixErrorCode: failureCode
                     )
-                    GSYLog.warning(
+                    AmuxLog.warning(
                         .scan,
                         "workflow.failure \(diagnostic.logFields) "
                             + "path=\(failurePath) root=\(url.path)"
@@ -3972,8 +3972,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
     /// 设计取舍：
     /// - 不引第三方 glob 库，直接走 `fnmatch(3)` —— macOS 自带、零依赖、与 shell 语义一致；
     /// - **仅展开 last component** 的 `*`（如 `~/Library/Caches/JetBrains/IntelliJIdea*`），
-    ///   不支持 `**` / 中间段 glob —— 现有 [AndroidWorkflow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/AndroidWorkflow.swift) 与
-    ///   [WebNodeWorkflow](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/WebNodeWorkflow.swift)
+    ///   不支持 `**` / 中间段 glob —— 现有 [AndroidWorkflow](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/AndroidWorkflow.swift) 与
+    ///   [WebNodeWorkflow](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/WebNodeWorkflow.swift)
     ///   声明的 glob 全是末段形态，扩大支持面会增加误命中风险，按需再加；
     /// - 不含 `*` 时退化为单条 `fileExists` 判断，与历史行为完全等价。
     private nonisolated static func expandGlob(_ pattern: String) -> PathExpansionResult {
@@ -4002,7 +4002,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 reason: .init(issue.reason),
                 error: error
             )
-            GSYLog.warning(
+            AmuxLog.warning(
                 .scan,
                 "workflow.failure \(diagnostic.logFields) parent=\(parent)"
             )
@@ -4118,7 +4118,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
         simulatorCoordinator.terminalWaitPolicy
     }
 
-    /// **v2026.06.22 (P0-5) 测试 hook**：把 private static [expandGlob](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)
+    /// **v2026.06.22 (P0-5) 测试 hook**：把 private static [expandGlob](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/WorkflowDetailView.swift)
     /// 暴露给同模块测试，覆盖 fnmatch 末段 `*` 展开行为。生产路径不应调用。
     internal static func _testing_expandGlob(_ pattern: String) -> [String] {
         return expandGlob(pattern).paths

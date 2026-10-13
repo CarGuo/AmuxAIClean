@@ -14,7 +14,7 @@ import Darwin
 ///   接口外壳，让新代码 / 单测可单独订阅子 store。
 ///
 /// 解决：
-///   1) 新建 [TreeBrowserStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift)
+///   1) 新建 [TreeBrowserStore](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift)
 ///      持有 cache / inflight + 4 个 revision，提供 bumpStructuralRevision /
 ///      bumpTickRevision / bumpChildrenCacheVersion。
 ///   2) ScanCoordinator 暴露 `public let treeBrowser: TreeBrowserStore`，
@@ -76,7 +76,7 @@ final class TreeBrowserStoreTests: XCTestCase {
 
     func test_子层cache写回会同步修正父层聚合避免父目录0KB() async {
         let coord = ScanCoordinator(home: NSTemporaryDirectory())
-        let parentPath = "/Users/guoshuyu"
+        let parentPath = "/Users/amuxuser"
         let libraryPath = parentPath + "/Library"
         coord._seedForTesting(
             isScanning: false,
@@ -525,7 +525,7 @@ final class TreeBrowserStoreTests: XCTestCase {
 
     private func makeFakeHome(leafCount: Int) throws -> String {
         let fm = FileManager.default
-        let raw = NSTemporaryDirectory() + "GSYCleanTreeStore-\(UUID().uuidString)"
+        let raw = NSTemporaryDirectory() + "AmuxAICleanTreeStore-\(UUID().uuidString)"
         let home = URL(fileURLWithPath: raw).standardizedFileURL.path
         let cache = home + "/Library/Caches/com.example.treestore"
         try fm.createDirectory(atPath: cache, withIntermediateDirectories: true)

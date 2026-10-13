@@ -573,7 +573,7 @@ public struct DuplicateScreen: View {
         }
         .onValueChange(of: roots) { _, _ in invalidateResultsForConfigurationChange() }
         .onValueChange(of: minStep) { _, _ in invalidateResultsForConfigurationChange() }
-        .onReceive(NotificationCenter.default.publisher(for: .gsyTrashDidMove)) { notification in
+        .onReceive(NotificationCenter.default.publisher(for: .amuxTrashDidMove)) { notification in
             let source = notification.userInfo?["source"] as? String
             guard source != DeleteRequestOrigin.duplicate.historySource else { return }
             let paths = notification.userInfo?["paths"] as? [String] ?? []
@@ -1214,7 +1214,7 @@ public struct DuplicateScreen: View {
             }
         case .failure(let error):
             guard (error as? CocoaError)?.code != .userCancelled else { return }
-            GSYLog.error(.settings, "duplicate root importer failed: \(error.localizedDescription)")
+            AmuxLog.error(.settings, "duplicate root importer failed: \(error.localizedDescription)")
         }
     }
 
@@ -1365,7 +1365,7 @@ public struct DuplicateScreen: View {
         case .current:
             return true
         case .cancelled(let rejections):
-            GSYLog.notice(
+            AmuxLog.notice(
                 .trash,
                 "Duplicate rejected stale deletion intent revision=\(request.scanRevision) current=\(scanRevision)"
             )

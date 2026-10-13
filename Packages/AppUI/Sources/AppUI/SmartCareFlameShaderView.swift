@@ -233,9 +233,9 @@ final class SmartCareBackgroundShaderHostView: NSView {
         ])
 
         guard let device = MTLCreateSystemDefaultDevice() else {
-            // v2026.07.18 privacy boundary: direct NSLog bypasses GSYLog's Unified Logging
+            // v2026.07.18 privacy boundary: direct NSLog bypasses AmuxLog's Unified Logging
             // privacy mask and the user-controlled rolling-log lifecycle.
-            GSYLog.warning(.app, "Smart Care background Metal device unavailable")
+            AmuxLog.warning(.app, "Smart Care background Metal device unavailable")
             return
         }
         surfaceView.configure(device: device)
@@ -305,7 +305,7 @@ final class SmartCareBackgroundShaderHostView: NSView {
                 return
             } catch {
                 let diagnostic = error as NSError
-                GSYLog.error(
+                AmuxLog.error(
                     .app,
                     "Smart Care shader setup failed domain=\(diagnostic.domain) code=\(diagnostic.code)"
                 )

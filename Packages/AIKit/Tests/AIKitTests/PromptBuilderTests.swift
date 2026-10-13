@@ -4,7 +4,7 @@ import SafetyKit
 
 final class PromptBuilderTests: XCTestCase {
 
-    private func makeInquiry(path: String = "/Users/guoshuyu/Library/Caches/foo",
+    private func makeInquiry(path: String = "/Users/amuxuser/Library/Caches/foo",
                              verdict: SafetyVerdict = .safe) -> PathInquiry {
         PathInquiry(
             path: path,
@@ -29,7 +29,7 @@ final class PromptBuilderTests: XCTestCase {
     func test_user_prompt_renders_all_fields() {
         let inquiry = makeInquiry()
         let user = PromptBuilder.renderUserPrompt(inquiry)
-        XCTAssertTrue(user.contains("path: /Users/guoshuyu/Library/Caches/foo"))
+        XCTAssertTrue(user.contains("path: /Users/amuxuser/Library/Caches/foo"))
         XCTAssertTrue(user.contains("isDirectory: true"))
         XCTAssertTrue(user.contains("bytes: 12345678"))
         XCTAssertTrue(user.contains("fileCount: 42"))
@@ -94,12 +94,12 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertTrue(AIAdviceClamp.pathIsHardForbid("/system/volumes/data/private/var/folders/abc/T"))
         XCTAssertTrue(AIAdviceClamp.pathIsHardForbid("/PRIVATE/VAR/db/foo"))
         XCTAssertTrue(AIAdviceClamp.pathIsHardForbid("/Users/otheruser/.ssh/id_rsa"))
-        XCTAssertFalse(AIAdviceClamp.pathIsHardForbid("/Users/guoshuyu/Library/Caches/foo"))
+        XCTAssertFalse(AIAdviceClamp.pathIsHardForbid("/Users/amuxuser/Library/Caches/foo"))
         XCTAssertFalse(AIAdviceClamp.pathIsHardForbid("/Systemic"), "前缀必须严格匹配，不允许误吃")
     }
 
     func test_clamp_local_confirm_clamps_ai_safe_to_confirm() {
-        let inquiry = makeInquiry(path: "/Users/guoshuyu/Documents/report.pdf", verdict: .confirm)
+        let inquiry = makeInquiry(path: "/Users/amuxuser/Documents/report.pdf", verdict: .confirm)
         let aiSays = AIAdvice(summary: "文档", canDelete: .safe, reason: "AI 误判为 safe", sideEffects: [])
         let clamped = AIAdviceClamp.clamp(aiSays, against: inquiry)
         XCTAssertEqual(clamped.canDelete, .confirm, "本地 confirm 时 AI 返回 safe 必须被钳制回 confirm")

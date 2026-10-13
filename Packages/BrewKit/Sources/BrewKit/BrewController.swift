@@ -3,7 +3,7 @@ import Foundation
 
 /// BrewKit MVP（Step 16-B）—— 不执行 brew 命令，直接读 Cellar / Caskroom 文件系统结构。
 ///
-/// 设计来源（[docs/AUDIT_2026_06.md L102](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/AUDIT_2026_06.md#L102)）：
+/// 设计来源（[docs/AUDIT_2026_06.md L102](file:///Users/amuxuser/workspace/AmuxAIClean/docs/AUDIT_2026_06.md#L102)）：
 /// > 直接读 `Cellar/.../INSTALL_RECEIPT.json` 与 `~/Library/Caches/Homebrew/api/{cask,
 /// > formula}.jws.json` 不需要执行 brew 命令。MVP 只做"列出 + 跳详情"。
 ///
@@ -196,7 +196,7 @@ public struct BrewController: Sendable {
         )
     }
 
-    /// 用 [BrewRegistry](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/BrewKit/Sources/BrewKit/BrewRegistry.swift)
+    /// 用 [BrewRegistry](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/BrewKit/Sources/BrewKit/BrewRegistry.swift)
     /// 标注每个已安装包的"最新版本"和"是否可升级"。
     ///
     /// 升级判定：installed != latest（字符串严格不等；不做 semver 解析以求稳）。

@@ -3,12 +3,12 @@ import XCTest
 
 /// Step 17-E：GPU/Metal shader 缓存 vendor 端到端契约。
 ///
-/// 背景（[docs/AUDIT_2026_06.md L123](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/AUDIT_2026_06.md#L123)）：
+/// 背景（[docs/AUDIT_2026_06.md L123](file:///Users/amuxuser/workspace/AmuxAIClean/docs/AUDIT_2026_06.md#L123)）：
 /// `com.apple.{gpuarchiver,metal,metalfe}` 是 GPU 命令归档 / Metal shader / Metal Frontend
 /// Compiler 三套缓存，按需重建，安全可清；macOS 重启或 GPU 程序首次启动会自动重建。
 /// vendors.yaml 此前完全未覆盖。
 ///
-/// 测试策略与 [InstallerLeftoversVendorTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Tests/SafetyKitTests/InstallerLeftoversVendorTests.swift)
+/// 测试策略与 [InstallerLeftoversVendorTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Tests/SafetyKitTests/InstallerLeftoversVendorTests.swift)
 /// 完全一致：直接装载仓库根 `Resources/Rules/vendors.yaml` → 抽样 verdict + 关键不变量
 /// + VendorTrie + SafetyEngine.evaluate 端到端。全部断言"现状钉死"。
 final class GPUMetalShaderVendorTests: XCTestCase {

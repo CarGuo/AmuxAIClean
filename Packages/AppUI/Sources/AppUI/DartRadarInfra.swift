@@ -337,7 +337,7 @@ public enum ProcessTerminationExecutor {
                         disposition: .processBecameProtected
                     )
                 case .failed(let code):
-                    GSYLog.warning(
+                    AmuxLog.warning(
                         .operation,
                         "dart radar termination submission rejected pid=\(pid) errno=\(code)"
                     )

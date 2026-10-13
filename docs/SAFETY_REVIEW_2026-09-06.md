@@ -70,7 +70,7 @@ hard-forbid、白名单、批量原子拒绝、卸载/重复文件证据、持�
 |---|---|
 | 独立安全复现 | 4 例，1 通过、3 失败；失败分别证明 SR-01 的两个模式及 SR-02 |
 | SafetyKit、ScanKit、AppUI、HeuristicKit、LogKit、BrewKit、FileSearchKit、AIKit、TestHarness 既有全量测试 | 9 包均通过；AppUI 使用 `swift test --parallel --num-workers 4`，其余使用 `swift test --parallel` |
-| Debug 目标构建 | `xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build` 成功 |
+| Debug 目标构建 | `xcodebuild -project AmuxAIClean.xcodeproj -scheme AmuxAIClean -configuration Debug build` 成功 |
 | 生产恢复状态隔离 | 复现及全包测试前后，UndoHistory、pending ledger、completion journal 三份生产文件存在状态、大小、SHA-256 一致 |
 | 运行交互验收 | **未做运行交互验收（C4）**；没有启动 App，也没有执行 `xcodebuild test` |
 

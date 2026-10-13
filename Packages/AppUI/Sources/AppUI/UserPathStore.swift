@@ -7,7 +7,7 @@ import ScanKit
 /// 路径以**绝对路径字符串**形式持久化到 UserDefaults，下次启动恢复。
 ///
 /// 设计要点：
-/// 1. v1.0 sandbox = false（[App/GSYCleanMac.entitlements](../../../../App/GSYCleanMac.entitlements) `app-sandbox: false`），
+/// 1. v1.0 sandbox = false（[App/AmuxAIClean.entitlements](../../../../App/AmuxAIClean.entitlements) `app-sandbox: false`），
 ///    暂用纯路径字符串持久化即可；v1.1 切 sandbox 时再升级为 NSURL bookmarkData。
 /// 2. `actor` 隔离：避免 add/remove/list 在多个 SwiftUI 视图并发调用时数据竞争。
 /// 3. 去重：以**标准化绝对路径**为 key（解决 `~/Documents` 和 `/Users/x/Documents` 重复加入）。

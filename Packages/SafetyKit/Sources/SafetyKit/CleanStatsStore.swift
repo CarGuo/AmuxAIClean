@@ -104,7 +104,7 @@ public actor CleanStatsStore {
                        timestamp: Date = Date()) async {
         loadIfNeeded()
         guard bytesReclaimed > 0 else {
-            GSYLog.debug(.app, "CleanStatsStore 忽略 0 字节事件 category=\(category)")
+            AmuxLog.debug(.app, "CleanStatsStore 忽略 0 字节事件 category=\(category)")
             return
         }
         let event = Event(timestamp: timestamp,
@@ -125,7 +125,7 @@ public actor CleanStatsStore {
                               timestamp: Date = Date()) async {
         loadIfNeeded()
         guard bytesTrashed > 0 || bytesReclaimed > 0 else {
-            GSYLog.debug(.app, "CleanStatsStore 忽略 0 字节移入废纸篓事件 category=\(category)")
+            AmuxLog.debug(.app, "CleanStatsStore 忽略 0 字节移入废纸篓事件 category=\(category)")
             return
         }
         let clampedReclaimed = max(0, bytesReclaimed)
@@ -236,10 +236,10 @@ public actor CleanStatsStore {
             lifetimeBytes = persisted.lifetimeTotalBytes
             lifetimeTrashedBytes = persisted.lifetimeTrashedBytes
                 ?? persisted.events.reduce(0) { $0 &+ $1.bytesTrashed }
-            GSYLog.info(.app,
+            AmuxLog.info(.app,
                         "CleanStats loaded events=\(inMemoryEvents.count) lifetime=\(lifetimeBytes) trashed=\(lifetimeTrashedBytes)")
         } catch {
-            GSYLog.warning(.app, "CleanStats 加载失败 err=\(error)")
+            AmuxLog.warning(.app, "CleanStats 加载失败 err=\(error)")
         }
     }
 
@@ -266,7 +266,7 @@ public actor CleanStatsStore {
             let data = try encoder.encode(persisted)
             try data.write(to: url, options: .atomic)
         } catch {
-            GSYLog.warning(.app, "CleanStats 持久化失败 err=\(error)")
+            AmuxLog.warning(.app, "CleanStats 持久化失败 err=\(error)")
         }
     }
 }

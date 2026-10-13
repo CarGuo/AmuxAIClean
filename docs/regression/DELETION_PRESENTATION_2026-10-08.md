@@ -99,7 +99,7 @@ receipt-only 更新、所有异常结果分支、连续工作流删除，以及�
 | TestHarness | 8 | `full-TestHarness.log` |
 
 总计 2,399 个测试条目。全包并行运行中的两项 opt-in 原生视图测试另以
-`GSYCLEAN_DELETION_VIEW_TESTS=1 swift test --filter 'DeletionPublicationBoundaryTests|StorageAnalysisStoreTests'`
+`AMUXCLEAN_DELETION_VIEW_TESTS=1 swift test --filter 'DeletionPublicationBoundaryTests|StorageAnalysisStoreTests'`
 非并行执行，`native-view-final.log` 记录 14/14 通过、0 失败。包含挂载 production
 NSTableView 的 Tree、大文件回执更新，不能将其描述为真实 App 删除。
 
@@ -148,7 +148,7 @@ macOS 13.5 真机/VM 和最终 Release/DMG C5 未做，不承诺全平台无缺�
 
 ## 会话 worktree 标记
 
-本次改动位于主检出 `/Users/guoshuyu/workspace/GSYCleanMac` 的 `main`。
+本次改动位于主检出 `/Users/amuxuser/workspace/AmuxAIClean` 的 `main`。
 聊天仍附有上轮为重现基线构建问题创建的 `review-oct07` 独立 checkout；因此界面显示
 worktree，并不表示当前改动写在其中。该 checkout 干净，归档工具返回被 pinned task/workspace
 保护，未强行删除或改变其他任务的附件。

@@ -33,7 +33,7 @@ fi
 
 echo "==> 签名主 App（最后）"
 codesign --force --options runtime --timestamp \
-  --entitlements "$(dirname "$0")/../App/GSYCleanMac.entitlements" \
+  --entitlements "$(dirname "$0")/../App/AmuxAIClean.entitlements" \
   --sign "$IDENTITY" "$APP"
 
 echo "==> 校验"

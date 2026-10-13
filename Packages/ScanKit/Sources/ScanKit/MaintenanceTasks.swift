@@ -58,7 +58,7 @@ public struct MaintenanceTasks: Sendable {
 
     /// 单任务调度。
     public func run(_ task: Task) -> Outcome {
-        GSYLog.info(.app, "MaintenanceTasks 执行 task=\(task)")
+        AmuxLog.info(.app, "MaintenanceTasks 执行 task=\(task)")
         switch task {
         case .flushQuickLookCache:
             return execute(task: task, command: Self.qlmanageCommand)
@@ -100,7 +100,7 @@ public struct MaintenanceTasks: Sendable {
             status = .launchFailed
         }
         if status != .succeeded {
-            GSYLog.warning(.app,
+            AmuxLog.warning(.app,
                 "MaintenanceTasks 失败 task=\(task) terminal=\(String(describing: result.terminal)) diagnostic=\(result.diagnosticOutput.prefix(200))")
         }
         return Outcome(task: task, status: status, diagnosticOutput: result.diagnosticOutput)

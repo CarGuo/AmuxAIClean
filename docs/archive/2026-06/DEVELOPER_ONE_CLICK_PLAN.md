@@ -1,8 +1,8 @@
 # 开发者一键清理规划（v1.7 主线）
 
 > 制定日期：2026-06-15
-> 上游决策：[REVIEW_2026_06.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/REVIEW_2026_06.md) §2 / §5
-> 协同文档：[MOLE_ALIGNMENT.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/MOLE_ALIGNMENT.md) §1.2 / §1.6
+> 上游决策：[REVIEW_2026_06.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/REVIEW_2026_06.md) §2 / §5
+> 协同文档：[MOLE_ALIGNMENT.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/MOLE_ALIGNMENT.md) §1.2 / §1.6
 > 目标：把"开发者向"从分散的 vendors.yaml 行散点，整合为**侧边一级入口 + 子卡片工作流**，让 iOS / Android / Flutter / Web / JVM 开发者一键看到自己能释放多少 G。
 
 ---
@@ -10,7 +10,7 @@
 ## 0. 设计原则（先确定再写代码）
 
 1. **整合不重写**：底层 Scanner / SafetyEngine / KnownVersionedRoots 已具备能力，本规划主要做"workflow 工厂 + UI 一级入口"，避免重复造路径匹配。
-2. **永不 sudo / 永不 unlink**：所有删除走 [TrashPipeline](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)。
+2. **永不 sudo / 永不 unlink**：所有删除走 [TrashPipeline](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TrashPipeline.swift)。
 3. **守护进程感知**：清理 Docker / OrbStack / Simulator 类目录前**必须** probe 后台进程，活跃则只展示不勾选并给提示。
 4. **保留至少一版**：`KnownVersionedRoots` 模式 `keepLatest=N`（默认 2）适用于所有"老版本"场景，不做"全删"按钮。
 5. **二级 verdict**：用户即使开了 safe 默认勾选，对 CoreSimulator Devices / SimRuntime / Xcode.app 这类必须强制 `confirm`。
@@ -69,7 +69,7 @@
 | **SwiftPM 全局缓存** | `~/Library/Caches/org.swift.swiftpm`、`~/.swiftpm/cache` | safe | 同上 |
 | **Carthage 全局缓存** | `~/Library/Caches/org.carthage.CarthageKit` | safe | 同上 |
 | **Provisioning Profiles 过期** | `~/Library/MobileDevice/Provisioning Profiles/*.mobileprovision` | confirm | **新增 ProvisioningProfileScanner**：解析 plist 内 `ExpirationDate`，过期或同 UUID 多份保留最新 |
-| **Instruments 旧 .trace** | `~/Library/Developer/Xcode/UserData/Instruments` | confirm，按 mtime > 30d | 复用 [MtimeFilter](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/MtimeFilterTests.swift) 能力 |
+| **Instruments 旧 .trace** | `~/Library/Developer/Xcode/UserData/Instruments` | confirm，按 mtime > 30d | 复用 [MtimeFilter](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/MtimeFilterTests.swift) 能力 |
 
 ### 2.2 新增模块
 
@@ -78,7 +78,7 @@
 | `Packages/ScanKit/Sources/ScanKit/SimctlDevicesScanner.swift` | 调 `xcrun simctl list devices -j`，解析为分组结果，含每个 device 的字节占用（统计该 `~/Library/Developer/CoreSimulator/Devices/<UDID>/`） |
 | `Packages/ScanKit/Sources/ScanKit/SimctlRuntimeScanner.swift` | 调 `xcrun simctl runtime list -j` |
 | `Packages/ScanKit/Sources/ScanKit/ProvisioningProfileScanner.swift` | 解析 .mobileprovision，按 ExpirationDate 与 UUID dedup |
-| `Packages/ScanKit/Sources/ScanKit/ArchivesRetentionScanner.swift` | 按子目录日期保留最新 N，复用 [VersionedRetainScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/VersionedRetainScanner.swift) 的 Ordering 扩展，加入 `.dateDescending` |
+| `Packages/ScanKit/Sources/ScanKit/ArchivesRetentionScanner.swift` | 按子目录日期保留最新 N，复用 [VersionedRetainScanner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/VersionedRetainScanner.swift) 的 Ordering 扩展，加入 `.dateDescending` |
 | `Packages/AppUI/Sources/AppUI/Developer/AppleDeveloperScreen.swift` | 上述卡片的 SwiftUI 组合 |
 | `Packages/AppUI/Sources/AppUI/Developer/DeveloperWorkflow.swift` | DeveloperWorkflow 协议 + 注册表 |
 
@@ -86,7 +86,7 @@
 
 | 场景 | 处理 |
 |---|---|
-| `~/Library/Developer/CoreSimulator/Devices/<UDID>` | **必须**走 `xcrun simctl delete <UDID>`；裸删会污染 `device_set.plist`，下次 Simulator 启动崩。已在 [vendors.yaml L70](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/vendors.yaml#L70-L70) `recipe` 字段标注。 |
+| `~/Library/Developer/CoreSimulator/Devices/<UDID>` | **必须**走 `xcrun simctl delete <UDID>`；裸删会污染 `device_set.plist`，下次 Simulator 启动崩。已在 [vendors.yaml L70](file:///Users/amuxuser/workspace/AmuxAIClean/Resources/Rules/vendors.yaml#L70-L70) `recipe` 字段标注。 |
 | `~/Library/Developer/CoreSimulator/Profiles/Runtimes/*.simruntime` | 走 `xcrun simctl runtime delete <id>` |
 | `/Applications/Xcode*.app` | `NSWorkspace.recycle`；若是当前 `xcode-select -p` 指向，必须红字警告且默认不勾 |
 | `.mobileprovision` | 移废纸篓即可，Xcode 重启自动重建 |
@@ -104,7 +104,7 @@
 | `ProvisioningProfileScannerTests` | 过期识别、同 UUID dedup、解析失败兜底 |
 | `ArchivesRetentionScannerTests` | 按 mtime 保留最近 N |
 | `XcodeBundleNotRunningTests` | mock RunningApplications，校验勾选被禁用 |
-| 集成测试：`AppleDeveloperWorkflowGoldenTests` | 与 [V12SafetyIntegrationTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/V12SafetyIntegrationTests.swift) 同档次，确保 forbid 路径绝不出现 |
+| 集成测试：`AppleDeveloperWorkflowGoldenTests` | 与 [V12SafetyIntegrationTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/V12SafetyIntegrationTests.swift) 同档次，确保 forbid 路径绝不出现 |
 
 ---
 
@@ -114,7 +114,7 @@
 | Card | 路径 | verdict | 新增工作量 |
 |---|---|---|---|
 | Flutter `~/.pub-cache` | `~/.pub-cache` | confirm | 加 vendor 规则 + 一级入口 |
-| Android SDK build-tools 旧版本 | `~/Library/Android/sdk/build-tools` | confirm，keepLatest=2 | 加入 [KnownVersionedRoots](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift) |
+| Android SDK build-tools 旧版本 | `~/Library/Android/sdk/build-tools` | confirm，keepLatest=2 | 加入 [KnownVersionedRoots](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift) |
 | Android SDK system-images 旧版本 | `~/Library/Android/sdk/system-images/android-XX` | confirm，keepLatest=2 | 同上 |
 | Android SDK platforms 旧版本 | `~/Library/Android/sdk/platforms/android-XX` | confirm，keepLatest=2 | 同上 |
 | Android AVD 实例 | `~/.android/avd/*.avd` | confirm | 新增 AVDListScanner（读 `*.ini` 拿 `target`/`abi`） |
@@ -169,11 +169,11 @@
   - `~/Library/Application Support/JetBrains/IntelliJIdea2024.1`
   - `~/Library/Caches/JetBrains/IntelliJIdea2024.1`
   - `~/Library/Logs/JetBrains/IntelliJIdea2024.1`
-- 新增 [KnownVersionedRoots](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift) entries：每个 IDE 三个目录（AppSupport/Caches/Logs），ordering `.semverPreferred`，keepLatest=1。
+- 新增 [KnownVersionedRoots](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift) entries：每个 IDE 三个目录（AppSupport/Caches/Logs），ordering `.semverPreferred`，keepLatest=1。
 - UI：合并展示"IntelliJ 2024.1（残留，1.2 GB）"为一个卡片。
 
 ### 6.2 Toolbox apps 已有 → 一级入口
-- 现已纳入 [KnownVersionedRoots L70-L74](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift#L70-L74)，但 UI 在"老版本残留"二级菜单。
+- 现已纳入 [KnownVersionedRoots L70-L74](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift#L70-L74)，但 UI 在"老版本残留"二级菜单。
 - v1.7：抽出独立 IDE 卡片。
 
 ### 6.3 VS Code / Cursor 老版本
@@ -242,7 +242,7 @@ public enum DeveloperWorkflowRegistry {
 ```
 
 ### 8.3 UI
-- 复用 [TreeBrowserStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift) 增量 patch 能力，每个 card 内的 entries 平铺，外层是分组 disclosure。
+- 复用 [TreeBrowserStore](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/TreeBrowserStore.swift) 增量 patch 能力，每个 card 内的 entries 平铺，外层是分组 disclosure。
 - 顶部"一键全选 safe 项" 按钮；分组级"全选" / "全清"。
 
 ---
@@ -261,7 +261,7 @@ public enum DeveloperWorkflowRegistry {
 ## 10. 验收清单（PR 合并前必过）
 
 - [ ] 所有新 scanner 单测覆盖 fixture 0/1/N 三档
-- [ ] `xcrun simctl` / `xcode-select` 子进程调用全部走 [HeavyTask](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/HeavyTask.swift)，禁止主线程阻塞
+- [ ] `xcrun simctl` / `xcode-select` 子进程调用全部走 [HeavyTask](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/HeavyTask.swift)，禁止主线程阻塞
 - [ ] 所有 commandLine 删除都有 dryRun 模式
 - [ ] V12SafetyIntegrationTests 扩展：DeveloperWorkflow 任何卡片不能输出 forbid 路径
 - [ ] 守护进程检测的所有路径有 UI 提示文案 i18n（中/英）
@@ -273,9 +273,9 @@ public enum DeveloperWorkflowRegistry {
 
 | 已有 | 关系 |
 |---|---|
-| [MOLE_ALIGNMENT.md §1 #2 Xcode 全家桶](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/MOLE_ALIGNMENT.md) | 本规划 §2 是其超集（加了模拟器实例分组管理、多 Xcode 版本、Provisioning 过期） |
-| [MOLE_ALIGNMENT.md §1 #3 Go/Rust/Python](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/MOLE_ALIGNMENT.md) | 本规划 §5 |
-| [MOLE_ALIGNMENT.md §1 #5 Docker/OrbStack](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/MOLE_ALIGNMENT.md) | 本规划 §7 |
-| [MOLE_ALIGNMENT.md §1 #6 JetBrains Toolbox](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/MOLE_ALIGNMENT.md) | 本规划 §6.2 |
-| [KnownVersionedRoots](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift) | 仅扩 entries，不改协议 |
-| [vendors.yaml](file:///Users/guoshuyu/workspace/GSYCleanMac/Resources/Rules/vendors.yaml) | 本规划新增条目 ≈ 25-30 行，全部走 PR + RuleLoader 校验 |
+| [MOLE_ALIGNMENT.md §1 #2 Xcode 全家桶](file:///Users/amuxuser/workspace/AmuxAIClean/docs/MOLE_ALIGNMENT.md) | 本规划 §2 是其超集（加了模拟器实例分组管理、多 Xcode 版本、Provisioning 过期） |
+| [MOLE_ALIGNMENT.md §1 #3 Go/Rust/Python](file:///Users/amuxuser/workspace/AmuxAIClean/docs/MOLE_ALIGNMENT.md) | 本规划 §5 |
+| [MOLE_ALIGNMENT.md §1 #5 Docker/OrbStack](file:///Users/amuxuser/workspace/AmuxAIClean/docs/MOLE_ALIGNMENT.md) | 本规划 §7 |
+| [MOLE_ALIGNMENT.md §1 #6 JetBrains Toolbox](file:///Users/amuxuser/workspace/AmuxAIClean/docs/MOLE_ALIGNMENT.md) | 本规划 §6.2 |
+| [KnownVersionedRoots](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/KnownVersionedRoots.swift) | 仅扩 entries，不改协议 |
+| [vendors.yaml](file:///Users/amuxuser/workspace/AmuxAIClean/Resources/Rules/vendors.yaml) | 本规划新增条目 ≈ 25-30 行，全部走 PR + RuleLoader 校验 |

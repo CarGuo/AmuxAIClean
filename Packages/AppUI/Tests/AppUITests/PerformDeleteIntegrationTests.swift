@@ -2,7 +2,7 @@ import XCTest
 @testable import AppUI
 import SafetyKit
 
-/// Step 15：补 [MainView.performDelete L1473-L1527](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1473-L1527)
+/// Step 15：补 [MainView.performDelete L1473-L1527](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift#L1473-L1527)
 /// 4 步联动死角集成测。
 ///
 /// 因 `performDelete` 是 MainView 的 SwiftUI private method，本测复刻它的 4 步顺序：
@@ -10,12 +10,12 @@ import SafetyKit
 ///   ② await TrashActionCoordinator.run(...)
 ///   ③ 非 dryRun 且 movedPairs 非空 → UndoHistoryStore.addRecord(source: "clean", pairs)
 ///   ④ 非 dryRun 且 movedPairs 非空 → coordinator.pruneDeleted(succeededPaths)
-/// 用 FakeDeletionPipeline + 真 [ScanCoordinator](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+/// 用 FakeDeletionPipeline + 真 [ScanCoordinator](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
 /// + 临时文件 UndoHistoryStore 驱动，断言 4 步全部按规约发生 + dryRun 不写 store / 不 prune /
 /// 不写 UndoHistory。
 ///
 /// 决策：AUDIT §3.6 "accessDenied 路径不被 prune" 这条**当前实现没有**——
-/// [MainView L1521](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1521)
+/// [MainView L1521](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift#L1521)
 /// v1.5.7 修复用户截图反馈后，本测锁定新契约：UI 删除状态更新只消费
 /// `movedPairs.map(\.original)`，不能再用 `err == nil` 或原始提交 paths 做粗粒度判断。
 @MainActor

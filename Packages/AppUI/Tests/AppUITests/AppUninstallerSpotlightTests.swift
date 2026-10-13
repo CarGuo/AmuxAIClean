@@ -3,7 +3,7 @@ import XCTest
 
 /// AppUninstaller —— Spotlight 兜底补刀测试（Step 11A / 2026-06）
 ///
-/// 验证：[AppUninstaller.spotlightFallback](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppUninstaller.swift)
+/// 验证：[AppUninstaller.spotlightFallback](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AppUninstaller.swift)
 ///
 /// 测试主题：
 /// 1. Spotlight 命中非典型路径 → 加入候选 + matchReason=.spotlight("bundleID")
@@ -15,7 +15,7 @@ final class AppUninstallerSpotlightTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// In-memory FakeFM（与 [AppUninstallerTests.FakeFM](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Tests/AppUITests/AppUninstallerTests.swift)
+    /// In-memory FakeFM（与 [AppUninstallerTests.FakeFM](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Tests/AppUITests/AppUninstallerTests.swift)
     /// 同款思路）。
     private struct FakeFM: FileManagerSnapshotting {
         let entriesByRoot: [String: [FSEntry]]

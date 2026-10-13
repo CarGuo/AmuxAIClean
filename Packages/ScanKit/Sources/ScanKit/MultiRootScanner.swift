@@ -4,7 +4,7 @@ import LogKit
 /// v1.3：多根并行扫描入口。
 ///
 /// 解决用户反馈：「为什么我点击一个目录扫描，看起来还是只有一个目录在动？」
-/// 根因：[BulkScanner.scan](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift)
+/// 根因：[BulkScanner.scan](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift)
 /// 单根内部用 6 worker work-steal —— 子树并行真实存在，但 UI 顶层行只显示一个根目录的累计，
 /// 视觉上被聚合到一行，给人"单线程串联"的错觉。
 ///
@@ -29,7 +29,7 @@ import LogKit
 ///   归属不保证稳定，但所有根合计是权威物理占用，不能在 UI 端事后相减猜测。
 /// - **不共享 worker pool**：每个根独立 6 worker。这等于让"多根 + 子树深"两种工作负载形态
 ///   同时打满核心；调用方可通过 `ScanOptions.maxConcurrency` 自行收窄。
-/// - **事件流加 `rootPath` 信封**：用 [MultiRootEvent](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/MultiRootScanner.swift)
+/// - **事件流加 `rootPath` 信封**：用 [MultiRootEvent](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/MultiRootScanner.swift)
 ///   而非动 `ScanEvent`，避免现有所有调用点改 case；多 worker 同时 yield 安全。
 /// - **finished 协议**：每个根扫完会 yield 自己的 `.finished`，全部根都 finish 后 stream 关闭。
 public struct MultiRootEvent: Sendable {
@@ -110,7 +110,7 @@ public actor MultiRootScanner {
     ///
     /// - parameter roots: 全部待扫根目录（保序）。
     /// - parameter maxConcurrentRoots: 同一时间最多并行跱踪的 root 数；超过的 root 排队等。
-    ///   默认 4。理由：每个 root 内部自带 [BulkScanner.workerCount](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift) 默认 6 worker，
+    ///   默认 4。理由：每个 root 内部自带 [BulkScanner.workerCount](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift) 默认 6 worker，
     ///   4 × 6 = 24 个并发文件枚举已经接近 Apple Silicon SSD 的 IO 甜点上限；
     ///   再放大整个 APFS metadata layer 进入 lock-step 串行化，反而更慢。
     ///   v1.5 性能修复：dev scan discover 命中 30+ root 直接 fan out 时整机
@@ -222,13 +222,13 @@ public actor MultiRootScanner {
                         } catch is CancellationError {
                             return .scansFinished
                         } catch {
-                            GSYLog.error(.scan, "MultiRootScanner deadline sleep 失败: \(error)")
+                            AmuxLog.error(.scan, "MultiRootScanner deadline sleep 失败: \(error)")
                             return .deadlineReached
                         }
                     }
 
                     if let first = await race.next(), first == .deadlineReached {
-                        GSYLog.warning(.scan, "MultiRootScanner 命中总扫描 deadline \(Self.timeoutLogLabel(normalizedTotalDeadline))，请求取消所有 root")
+                        AmuxLog.warning(.scan, "MultiRootScanner 命中总扫描 deadline \(Self.timeoutLogLabel(normalizedTotalDeadline))，请求取消所有 root")
                     }
                     race.cancelAll()
                     await race.waitForAll()
@@ -338,7 +338,7 @@ public actor MultiRootScanner {
                     nanoseconds: Self.normalizedTimeoutNanoseconds(perRootTimeout)
                 )
                 if !Task.isCancelled {
-                    GSYLog.warning(.scan, "MultiRootScanner per-root timeout requested cancellation root=\(rootPath) limit=\(Self.timeoutLogLabel(perRootTimeout))")
+                    AmuxLog.warning(.scan, "MultiRootScanner per-root timeout requested cancellation root=\(rootPath) limit=\(Self.timeoutLogLabel(perRootTimeout))")
                 }
             }
             // 子任务 3：no-progress watchdog。summaryOnly 的公开合同明确不发布 progress/
@@ -356,7 +356,7 @@ public actor MultiRootScanner {
                         if Task.isCancelled { return }
                         let idle = await progressClock.secondsSinceLastTouch()
                         if idle >= threshold {
-                            GSYLog.warning(.scan, "MultiRootScanner no-progress watchdog root=\(rootPath) idle=\(Self.timeoutLogLabel(idle)) ≥ \(Self.timeoutLogLabel(threshold))")
+                            AmuxLog.warning(.scan, "MultiRootScanner no-progress watchdog root=\(rootPath) idle=\(Self.timeoutLogLabel(idle)) ≥ \(Self.timeoutLogLabel(threshold))")
                             return // 退出 → group.cancelAll 在 next() 处由外部判定
                         }
                     }
@@ -390,7 +390,7 @@ public actor MultiRootScanner {
                 event: .finished(synthetic),
                 producerCompletedAt: Date()
             ))
-            GSYLog.warning(.scan, "MultiRootScanner 合成 partial .finished 让上游收敛 root=\(rootPath) bytes=\(synthetic.totalAllocatedBytes) files=\(synthetic.fileCount) elapsed=\(String(format: "%.1f", synthetic.elapsed))s")
+            AmuxLog.warning(.scan, "MultiRootScanner 合成 partial .finished 让上游收敛 root=\(rootPath) bytes=\(synthetic.totalAllocatedBytes) files=\(synthetic.fileCount) elapsed=\(String(format: "%.1f", synthetic.elapsed))s")
         }
     }
 

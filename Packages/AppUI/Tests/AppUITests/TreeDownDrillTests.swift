@@ -1,7 +1,7 @@
 import XCTest
 @testable import AppUI
 
-/// 测试目的：覆盖 [ScanCoordinator.directChildren](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L880)
+/// 测试目的：覆盖 [ScanCoordinator.directChildren](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift#L880)
 /// 多层下钻能力——顶层 → 一级目录 → 文件叶子，每一层 hasChildren / isDirectory / bytes
 /// 都要正确。
 ///
@@ -17,7 +17,7 @@ final class TreeDownDrillTests: XCTestCase {
     /// 三层结构（root → A/B → 文件），便于断言聚合 size 与 children。
     private func makeFixture() throws -> URL {
         let fm = FileManager.default
-        let raw = NSTemporaryDirectory() + "GSYCleanTreeDrill-\(UUID().uuidString)"
+        let raw = NSTemporaryDirectory() + "AmuxAICleanTreeDrill-\(UUID().uuidString)"
         let root = URL(fileURLWithPath: raw).standardizedFileURL
         let a = root.appendingPathComponent("A")
         let b = root.appendingPathComponent("B")

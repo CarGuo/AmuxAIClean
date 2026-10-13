@@ -22,7 +22,7 @@ final class BucketVerdictCacheTests: XCTestCase {
 
     private func makeFakeHome(leafCount: Int) throws -> String {
         let fm = FileManager.default
-        let raw = NSTemporaryDirectory() + "GSYCleanBucketCache-\(UUID().uuidString)"
+        let raw = NSTemporaryDirectory() + "AmuxAICleanBucketCache-\(UUID().uuidString)"
         let home = URL(fileURLWithPath: raw).standardizedFileURL.path
         // 多造几个一级目录（= 多个 bucket），让 cache 有意义
         for sub in ["Library/Caches/A", "Library/Caches/B", "Library/Caches/C", "Downloads"] {

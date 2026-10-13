@@ -16,8 +16,8 @@
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "C8595EE1DD697C434C527FFD"
                BuildableName = "AmuxAIClean.app"
-               BlueprintName = "GSYCleanMac"
-               ReferencedContainer = "container:GSYCleanMac.xcodeproj">
+               BlueprintName = "AmuxAIClean"
+               ReferencedContainer = "container:AmuxAIClean.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -32,8 +32,8 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "C8595EE1DD697C434C527FFD"
             BuildableName = "AmuxAIClean.app"
-            BlueprintName = "GSYCleanMac"
-            ReferencedContainer = "container:GSYCleanMac.xcodeproj">
+            BlueprintName = "AmuxAIClean"
+            ReferencedContainer = "container:AmuxAIClean.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
       <Testables>
@@ -55,8 +55,8 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "C8595EE1DD697C434C527FFD"
             BuildableName = "AmuxAIClean.app"
-            BlueprintName = "GSYCleanMac"
-            ReferencedContainer = "container:GSYCleanMac.xcodeproj">
+            BlueprintName = "AmuxAIClean"
+            ReferencedContainer = "container:AmuxAIClean.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -72,8 +72,8 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "C8595EE1DD697C434C527FFD"
             BuildableName = "AmuxAIClean.app"
-            BlueprintName = "GSYCleanMac"
-            ReferencedContainer = "container:GSYCleanMac.xcodeproj">
+            BlueprintName = "AmuxAIClean"
+            ReferencedContainer = "container:AmuxAIClean.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

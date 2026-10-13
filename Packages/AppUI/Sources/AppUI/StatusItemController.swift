@@ -42,14 +42,14 @@ public final class StatusItemController: NSObject, NSMenuDelegate {
     /// 所以托盘菜单必须由控制器显式重建，不能等下次进程启动。
     private var locale: Locale = .current
 
-    /// 点击"打开主窗口"，由 [GSYCleanMacApp](file:///Users/guoshuyu/workspace/GSYCleanMac/App/GSYCleanMacApp.swift)
+    /// 点击"打开主窗口"，由 [AmuxAICleanApp](file:///Users/amuxuser/workspace/AmuxAIClean/App/AmuxAICleanApp.swift)
     /// 注入：调 NSApp.activate + 主窗口 makeKeyAndOrderFront。
     public var onOpenMainWindow: (() -> Void)?
 
-    /// 点击"开始推荐扫描"。注入方调 [ScanCoordinator.scanRecommended](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)。
+    /// 点击"开始推荐扫描"。注入方调 [ScanCoordinator.scanRecommended](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)。
     public var onStartRecommendedScan: (() -> Void)?
 
-    /// 点击"显示 / 隐藏悬浮窗"。注入方调 [FloatingScanHUDController.toggleForceVisible](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)。
+    /// 点击"显示 / 隐藏悬浮窗"。注入方调 [FloatingScanHUDController.toggleForceVisible](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)。
     public var onToggleHUD: (() -> Void)?
 
     /// **M5 注入点**：每次菜单将要打开（menuWillOpen）时同步调用，返回当前是否在扫描中。

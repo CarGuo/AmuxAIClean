@@ -91,7 +91,7 @@ public struct LargeFilesView: View {
     /// v2026.07 Q1：批量选择状态由 MainView 持有并注入。
     ///
     /// **历史**：以前 `@State private var batch = BatchSelection()`——LargeFilesView 自己 own。
-    /// 后果是 [MainView.footerBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1671-L1730)
+    /// 后果是 [MainView.footerBar](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift#L1671-L1730)
     /// 的底部"移到废纸篓"按钮读不到这份 selection，被迫另立一份 `largeFileSelection`
     /// （单击行同步的单选项），造成"复选框勾了但底部按钮 disabled"的错觉，
     /// 以及 LargeFilesView 头部要额外画一个"移到废纸篓(N)"按钮兜底 → **两个批量入口共存**。
@@ -107,10 +107,10 @@ public struct LargeFilesView: View {
     /// 注释解释是"不污染全局 settings.sortKey"——但实际造成用户在工具栏点全局排序图标
     /// 切到 nameAsc 后，大文件页面依然是 sizeDesc，体验割裂（Q1 根因）。
     ///
-    /// **现在**：单向派生自 [AppSettings.mainListSortKey](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift#L339)
+    /// **现在**：单向派生自 [AppSettings.mainListSortKey](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AppSettings.swift#L339)
     /// （大文件只有 size+mtime 两列，nameAsc 等 → fallback 到 sizeDesc，见
-    /// [LargeFileSortKey.from(global:)](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L354)）。
-    /// 列头点击通过 [sortKeyBinding](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/LargeFilesView.swift)
+    /// [LargeFileSortKey.from(global:)](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L354)）。
+    /// 列头点击通过 [sortKeyBinding](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/LargeFilesView.swift)
     /// 反向写回全局键，实现双向同步。
     private var sortKey: LargeFileSortKey {
         LargeFileSortKey.from(global: settings.mainListSortKey)
@@ -284,7 +284,7 @@ public struct LargeFilesView: View {
         }
         // v2026.07 Q2 修复：`pruneDeleted` 会剔掉 `largeFileLeaves`，但只 bump 了
         // non-@Published 的 `structuralRevision`——本视图订阅不到，导致"成功移到
-        // 废纸篓但列表还在"的用户反馈。订阅 [storeRevision](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+        // 废纸篓但列表还在"的用户反馈。订阅 [storeRevision](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
         // 后强同步一次，无需重扫。
         .onReceive(coordinator.$storeRevision) { _ in
             syncDisplayedLargeFiles(force: true)
@@ -345,7 +345,7 @@ public struct LargeFilesView: View {
                     .foregroundStyle(.orange)
             }
 
-            // v2026.07 Q1：批量删除按钮已由 [MainView.footerBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L1671-L1730)
+            // v2026.07 Q1：批量删除按钮已由 [MainView.footerBar](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift#L1671-L1730)
             // 唯一承载——本处不再画独立按钮，避免"多入口 + 状态不同步"的用户反馈。
             // 头部依然提供三态全选 checkbox（勾选/取消可见项）与阈值展示。
 
@@ -404,7 +404,7 @@ public struct LargeFilesView: View {
     /// 设计点：
     /// - chip 而不是 Picker —— 大文件页面是"决策密集型"，chip 一眼能看完所有选项；
     /// - 选中态用 accentColor 实色，未选中态用 secondary capsule 描边；
-    /// - mtime 缺失的项按"全部"通过（详见 [MtimeFilter.passes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AppSettings.swift)）。
+    /// - mtime 缺失的项按"全部"通过（详见 [MtimeFilter.passes](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AppSettings.swift)）。
     private var filterBar: some View {
         HStack(spacing: 8) {
             Image(systemName: "calendar")
@@ -456,7 +456,7 @@ public struct LargeFilesView: View {
     /// 设计点：
     /// - 用各桶自带 `tint` 染色 chip 圆点，让用户一眼能"按颜色找类型"；
     /// - 圆点小色块 + 数字徽标的视觉密度低于实色 capsule，避免抢 mtime chip 的焦点；
-    /// - chip 的"全部"独立处理，不复用 [FileKind](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FileKind.swift)，
+    /// - chip 的"全部"独立处理，不复用 [FileKind](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/FileKind.swift)，
     ///   避免给 FileKind 多塞一个语义含糊的 case。
     @ViewBuilder
     private var kindBar: some View {
@@ -704,7 +704,7 @@ public struct LargeFilesView: View {
                     locale: locale
                 )
                 // v2026.07.16：系统写入错误仅进入日志；alert 不直接暴露 raw Error。
-                GSYLog.error(.operation, "large files export failed path=\(url.path) error=\(error.localizedDescription)")
+                AmuxLog.error(.operation, "large files export failed path=\(url.path) error=\(error.localizedDescription)")
                 alert.runModal()
             }
         }

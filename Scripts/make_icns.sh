@@ -22,7 +22,7 @@ SRC="${1:-$HOME/Desktop/mac-logo.png}"
 BG="${ICON_BG:-#0EA5E9}"
 PADDING="${ICON_PADDING:-0.12}"
 APPICON_DIR="$ROOT/Resources/Assets.xcassets/AppIcon.appiconset"
-TMP_1024="$(mktemp -t gsyclean_icon_1024).png"
+TMP_1024="$(mktemp -t amuxaiclean_icon_1024).png"
 
 if [[ ! -f "$SRC" ]]; then
   echo "ERR: 源图不存在: $SRC" >&2
@@ -60,8 +60,8 @@ rm -f "$TMP_1024"
 
 echo ""
 echo "[icon] 全部 10 张已落到 AppIcon.appiconset。"
-echo "[icon] 接下来跑：xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac ... 看 Contents/Resources/AppIcon.icns"
+echo "[icon] 接下来跑：xcodebuild -project AmuxAIClean.xcodeproj -scheme AmuxAIClean ... 看 Contents/Resources/AppIcon.icns"
 echo ""
-echo "[hint] 若系统设置「完全磁盘访问」列表里 GSYCleanMac 仍是灰方块，可执行："
-echo "       tccutil reset SystemPolicyAllFiles com.gsy.cleanmac"
+echo "[hint] 若系统设置「完全磁盘访问」列表里 AmuxAIClean 仍是灰方块，可执行："
+echo "       tccutil reset SystemPolicyAllFiles com.amux.ai.Clean"
 echo "       然后重新授权一次（系统会重新读你新版的 AppIcon）。"

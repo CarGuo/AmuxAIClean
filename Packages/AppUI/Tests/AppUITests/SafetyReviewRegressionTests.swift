@@ -76,7 +76,7 @@ final class SafetyReviewRegressionTests: XCTestCase {
 
     private func fixture() throws -> URL {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("GSYSafetyReview-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AmuxSafetyReview-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root.resolvingSymlinksInPath()
     }

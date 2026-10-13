@@ -6,11 +6,11 @@ import SafetyKit
 /// v1.6 跨包契约：AI 模块不得越权影响本地三档闸 / 行勾选权威。
 ///
 /// 背景：M5 接入 AIKit 后，AI 给出的 `AIAdvice.canDelete` 只是"参考意见"——
-/// 本地 [SafetyEngine](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift)
+/// 本地 [SafetyEngine](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift)
 /// 仍是删除/勾选的**唯一权威**。这套测试把红线钉死：
 ///
 /// 1. `RowItem.isSelectable` / `defaultSelected` **只**由 `verdict` 决定，AIAdvice 不参与；
-/// 2. 即使 AI 把 `.forbid` 路径回成 `.safe`，[AIAdviceClamp](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PromptBuilder.swift)
+/// 2. 即使 AI 把 `.forbid` 路径回成 `.safe`，[AIAdviceClamp](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/PromptBuilder.swift)
 ///    必须强制回写到 `.forbid`（本地优先）；
 /// 3. 硬禁路径前缀（/System, /usr, /Library/Apple 等）即使 AI 判 `.safe`，clamp 也必须降到 `.forbid`。
 @MainActor
@@ -55,8 +55,8 @@ final class AIDoesNotInfluenceSelectionTests: XCTestCase {
                        "inquiry.verdict=.forbid 时，AI 即使说 safe 也必须降为 forbid")
         // 产品契约：AIKit 层降级时会在 reason 前缀贴 sentinel
         // `[ai.advice.local_policy_override] `（见
-        // [AIAdviceClamp.localPolicyOverridePrefix](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/PromptBuilder.swift#L103)）。
-        // UI 层 [AIAdviceSheet.localizedReason](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift#L184-L190)
+        // [AIAdviceClamp.localPolicyOverridePrefix](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/PromptBuilder.swift#L103)）。
+        // UI 层 [AIAdviceSheet.localizedReason](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/AIAdviceSheet.swift#L184-L190)
         // 才把该 sentinel 替换为本地化字符串（zh: "[本地安全策略已覆盖] " / en: "[Overridden by local policy] "）。
         // 因此本单测锁的是 clamp 层 sentinel 契约，而非 UI 本地化后字面量。
         XCTAssertTrue(clamped.reason.hasPrefix(AIAdviceClamp.localPolicyOverridePrefix),

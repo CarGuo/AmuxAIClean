@@ -2,8 +2,8 @@ import Foundation
 import LogKit
 
 /// v1.6 Sentinel URL Scheme 路由：解析 `amuxaiclean://` 系列链接，并广播
-/// 为已订阅的 NotificationCenter 事件，与 [.gsyOpenMainWindowRequested](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift#L9-L11)
-/// 同模式（避免新增 NavigationCoordinator 抽象，详见 [docs/SENTINEL_DESIGN.md](file:///Users/guoshuyu/workspace/GSYCleanMac/docs/SENTINEL_DESIGN.md) §5.4）。
+/// 为已订阅的 NotificationCenter 事件，与 [.amuxOpenMainWindowRequested](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift#L9-L11)
+/// 同模式（避免新增 NavigationCoordinator 抽象，详见 [docs/SENTINEL_DESIGN.md](file:///Users/amuxuser/workspace/AmuxAIClean/docs/SENTINEL_DESIGN.md) §5.4）。
 ///
 /// **支持的链接格式**：
 /// - `amuxaiclean://uninstall?path=<percent-encoded absolute path>` —— 跳卸载页
@@ -13,13 +13,13 @@ import LogKit
 /// - `path` 参数必须是绝对路径（`/` 开头）
 /// - 必须存在（`FileManager.fileExists(atPath:)`）
 /// - 必须不包含 `..` 段（防 traversal）
-/// - 校验失败 → 仅广播 `.gsySentinelOpenUninstall` 不带 path（让 UI 走默认 fallback）
+/// - 校验失败 → 仅广播 `.amuxSentinelOpenUninstall` 不带 path（让 UI 走默认 fallback）
 public extension Notification.Name {
     /// 用户态 Agent 通过 `amuxaiclean://uninstall?path=...` 拉起，主 App 监听后跳卸载页。
     /// `userInfo[SentinelURLRouter.uninstallPathKey]` = `String?`（绝对路径，已校验）。
-    static let gsySentinelOpenUninstall = Notification.Name("AmuxAIClean.sentinel.openUninstall")
+    static let amuxSentinelOpenUninstall = Notification.Name("AmuxAIClean.sentinel.openUninstall")
     /// 用户态 Agent 通过 `amuxaiclean://action/scan/full` 拉起，主 App 监听后触发完整扫描。
-    static let gsySentinelStartFullScan = Notification.Name("AmuxAIClean.sentinel.startFullScan")
+    static let amuxSentinelStartFullScan = Notification.Name("AmuxAIClean.sentinel.startFullScan")
 }
 
 public enum SentinelURLRouter {
@@ -39,7 +39,7 @@ public enum SentinelURLRouter {
     @discardableResult
     public static func handle(_ url: URL) -> Outcome {
         guard url.scheme?.lowercased() == scheme else {
-            GSYLog.warning(.sentinel, "ignored URL with bad scheme: \(url.absoluteString)")
+            AmuxLog.warning(.sentinel, "ignored URL with bad scheme: \(url.absoluteString)")
             return .ignored(reason: "bad-scheme")
         }
         // URL host 在自定义 scheme 下可能是 nil 或空（依赖 URL 形态），
@@ -53,20 +53,20 @@ public enum SentinelURLRouter {
             let validated = validateAbsolutePath(raw)
             var info: [AnyHashable: Any] = [:]
             if let p = validated { info[uninstallPathKey] = p }
-            NotificationCenter.default.post(name: .gsySentinelOpenUninstall, object: nil, userInfo: info)
-            GSYLog.info(.sentinel, "route uninstall path=\(validated ?? "<nil>")")
+            NotificationCenter.default.post(name: .amuxSentinelOpenUninstall, object: nil, userInfo: info)
+            AmuxLog.info(.sentinel, "route uninstall path=\(validated ?? "<nil>")")
             return .openUninstall(path: validated)
         case "action":
             // 形如 amuxaiclean://action/scan/full —— host=action / pathSegments=[scan, full]
             if pathSegments == ["scan", "full"] {
-                NotificationCenter.default.post(name: .gsySentinelStartFullScan, object: nil)
-                GSYLog.info(.sentinel, "route action/scan/full")
+                NotificationCenter.default.post(name: .amuxSentinelStartFullScan, object: nil)
+                AmuxLog.info(.sentinel, "route action/scan/full")
                 return .startFullScan
             }
-            GSYLog.warning(.sentinel, "ignored unknown action: \(pathSegments.joined(separator: "/"))")
+            AmuxLog.warning(.sentinel, "ignored unknown action: \(pathSegments.joined(separator: "/"))")
             return .ignored(reason: "unknown-action")
         default:
-            GSYLog.warning(.sentinel, "ignored unknown host: \(host)")
+            AmuxLog.warning(.sentinel, "ignored unknown host: \(host)")
             return .ignored(reason: "unknown-host")
         }
     }

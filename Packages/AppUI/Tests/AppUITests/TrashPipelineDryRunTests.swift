@@ -5,7 +5,7 @@ import SafetyKit
 final class TrashPipelineDryRunTests: XCTestCase {
 
     func test_dryRun遇到不存在路径计入skipped() async throws {
-        let dir = NSTemporaryDirectory() + "GSYCleanTrashDryRun-\(UUID().uuidString)"
+        let dir = NSTemporaryDirectory() + "AmuxAICleanTrashDryRun-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: dir) }
 
@@ -27,7 +27,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
     }
 
     func test_dryRun全路径都存在时error为nil() async throws {
-        let dir = NSTemporaryDirectory() + "GSYCleanTrashDryRun-\(UUID().uuidString)"
+        let dir = NSTemporaryDirectory() + "AmuxAICleanTrashDryRun-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: dir) }
 
@@ -204,7 +204,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
     /// SECURITY.md 批级原子合同：dryRun 必须准确预演真删除语义。
     /// 混合 safe + forbid 时整批拒绝，不能把 safe 项报告成将会执行。
     func test_dryRun混合forbid路径整批原子拒绝() async throws {
-        let dir = NSTemporaryDirectory() + "GSYCleanTrashSafety-\(UUID().uuidString)"
+        let dir = NSTemporaryDirectory() + "AmuxAICleanTrashSafety-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let safe1 = dir + "/safe1.txt"
@@ -235,7 +235,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
     }
 
     func test_正式模式混合forbid整批拒绝且safe文件保持原位() async throws {
-        let dir = NSTemporaryDirectory() + "GSYCleanTrashAtomic-\(UUID().uuidString)"
+        let dir = NSTemporaryDirectory() + "AmuxAICleanTrashAtomic-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(atPath: dir)) }
         let safe = dir + "/safe.txt"
@@ -259,7 +259,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
     }
 
     func test_生产白名单子项保护父目录且不读取真实用户store() async throws {
-        let dir = NSTemporaryDirectory() + "GSYCleanTrashWhitelist-\(UUID().uuidString)"
+        let dir = NSTemporaryDirectory() + "AmuxAICleanTrashWhitelist-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(atPath: dir)) }
         let protectedChild = dir + "/keep/private.db"
@@ -286,7 +286,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
     /// 没有 resolved 身份索引时，NSWorkspace 会把真实 protected/child 移入废纸篓。
     func test_生产白名单不能被中间symlink别名绕过() async throws {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("GSYCleanTrashWhitelistSymlink-\(UUID().uuidString)",
+            .appendingPathComponent("AmuxAICleanTrashWhitelistSymlink-\(UUID().uuidString)",
                                     isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: root)) }
@@ -326,7 +326,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
     /// 删除请求却是指向其父目录的 alias。放行 alias 父目录会连带移走加白子项。
     func test_生产白名单resolved子项会拒绝symlink父目录请求() async throws {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("GSYCleanTrashWhitelistSymlinkParent-\(UUID().uuidString)",
+            .appendingPathComponent("AmuxAICleanTrashWhitelistSymlinkParent-\(UUID().uuidString)",
                                     isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { XCTAssertNoThrow(try FileManager.default.removeItem(at: root)) }
@@ -484,7 +484,7 @@ final class TrashPipelineDryRunTests: XCTestCase {
 
     /// dryRun 必须预演批级原子合同：一条 accessDenied 会让整批都不进入 present。
     func test_dryRun_accessDenied路径不计入present() async throws {
-        let dir = NSTemporaryDirectory() + "GSYCleanTrashAcc-\(UUID().uuidString)"
+        let dir = NSTemporaryDirectory() + "AmuxAICleanTrashAcc-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let safe1 = dir + "/safe1.txt"

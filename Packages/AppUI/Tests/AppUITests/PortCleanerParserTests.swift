@@ -35,7 +35,7 @@ final class PortCleanerParserTests: XCTestCase {
         let sample = """
         p123
         cnode
-        Lguoshuyu
+        Lamuxuser
         PTCP
         TST=LISTEN
         n*:3000
@@ -82,7 +82,7 @@ final class PortCleanerParserTests: XCTestCase {
         let sample = """
         p1109
         cControlCenter
-        Lguoshuyu
+        Lamuxuser
         f10
         PTCP
         n*:7000
@@ -130,7 +130,7 @@ final class PortCleanerParserTests: XCTestCase {
             pid: 1109,
             processName: "ControlCenter",
             processPath: "/System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter",
-            user: "guoshuyu",
+            user: "amuxuser",
             processIdentity: identity(
                 pid: 1109,
                 path: "/System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter"
@@ -153,7 +153,7 @@ final class PortCleanerParserTests: XCTestCase {
             pid: 12345,
             processName: "node",
             processPath: "/opt/homebrew/bin/node",
-            user: "guoshuyu",
+            user: "amuxuser",
             processIdentity: identity(pid: 12345, path: "/opt/homebrew/bin/node")
         )
 

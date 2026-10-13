@@ -1207,7 +1207,7 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
             return nil
         } catch {
             let diagnostic = error as NSError
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "trash.pending_ledger.read_failed stage=boundedRead reason=unexpected domain=\(diagnostic.domain) code=\(diagnostic.code) maxBytes=\(storageLimits.maximumBytes) path=\(fileURL.path)"
             )
@@ -1217,7 +1217,7 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
         do {
             let decoded = try decoder.decode(Envelope.self, from: data)
             guard decoded.records.count <= storageLimits.maximumRecordCount else {
-                GSYLog.error(
+                AmuxLog.error(
                     .trash,
                     "trash.pending_ledger.read_failed stage=validate reason=recordLimit recordCount=\(decoded.records.count) maxRecords=\(storageLimits.maximumRecordCount) path=\(fileURL.path)"
                 )
@@ -1227,7 +1227,7 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
                   decoded.records.allSatisfy({ key, record in
                       key == record.normalizedPath && Self.isStructurallyValid(record)
                   }) else {
-                GSYLog.error(
+                AmuxLog.error(
                     .trash,
                     "trash.pending_ledger.read_failed stage=validate reason=invalidEnvelope schema=\(decoded.schemaVersion) recordCount=\(decoded.records.count) path=\(fileURL.path)"
                 )
@@ -1240,7 +1240,7 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
             return Envelope(schemaVersion: 2, records: decoded.records)
         } catch {
             let diagnostic = error as NSError
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "trash.pending_ledger.read_failed stage=decode reason=malformed domain=\(diagnostic.domain) code=\(diagnostic.code) bytes=\(data.count) path=\(fileURL.path)"
             )
@@ -1250,14 +1250,14 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
 
     private func persist(_ envelope: Envelope) -> Bool {
         guard envelope.schemaVersion == 2 else {
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "trash.pending_ledger.write_rejected stage=validate reason=unsupportedSchema schema=\(envelope.schemaVersion) path=\(fileURL.path)"
             )
             return false
         }
         guard envelope.records.count <= storageLimits.maximumRecordCount else {
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "trash.pending_ledger.write_rejected stage=validate reason=recordLimit recordCount=\(envelope.records.count) maxRecords=\(storageLimits.maximumRecordCount) path=\(fileURL.path)"
             )
@@ -1266,7 +1266,7 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
         guard envelope.records.allSatisfy({ key, record in
             key == record.normalizedPath && Self.isStructurallyValid(record)
         }) else {
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "trash.pending_ledger.write_rejected stage=validate reason=invalidEnvelope recordCount=\(envelope.records.count) path=\(fileURL.path)"
             )
@@ -1278,14 +1278,14 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
             data = try encoder.encode(envelope)
         } catch {
             let diagnostic = error as NSError
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "trash.pending_ledger.write_failed stage=encode reason=serialization domain=\(diagnostic.domain) code=\(diagnostic.code) recordCount=\(envelope.records.count) path=\(fileURL.path)"
             )
             return false
         }
         guard data.count <= storageLimits.maximumBytes else {
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "trash.pending_ledger.write_rejected stage=encode reason=byteLimit bytes=\(data.count) maxBytes=\(storageLimits.maximumBytes) recordCount=\(envelope.records.count) path=\(fileURL.path)"
             )
@@ -1299,14 +1299,14 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
             )
         } catch {
             let diagnostic = error as NSError
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "trash.pending_ledger.write_failed stage=createDirectory reason=io domain=\(diagnostic.domain) code=\(diagnostic.code) path=\(fileURL.path)"
             )
             return false
         }
         guard durableWriter(data, fileURL) else {
-            GSYLog.error(
+            AmuxLog.error(
                 .trash,
                 "trash.pending_ledger.write_failed stage=durableReplace reason=writerRejected bytes=\(data.count) path=\(fileURL.path)"
             )
@@ -1354,7 +1354,7 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
             details = ""
         }
         let code = error.posixErrorCode.map(String.init) ?? "none"
-        GSYLog.error(
+        AmuxLog.error(
             .trash,
             "trash.pending_ledger.read_failed stage=\(stage) reason=\(reason) domain=\(error.posixErrorCode == nil ? "none" : NSPOSIXErrorDomain) code=\(code) maxBytes=\(storageLimits.maximumBytes)\(details) path=\(fileURL.path)"
         )
@@ -1367,19 +1367,19 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
                 withIntermediateDirectories: true
             )
         } catch {
-            GSYLog.error(.trash, "Trash pending ledger lock directory failed error=\(error)")
+            AmuxLog.error(.trash, "Trash pending ledger lock directory failed error=\(error)")
             return nil
         }
         let descriptor = lockFileURL.path.withCString {
             Darwin.open($0, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
         }
         guard descriptor >= 0 else {
-            GSYLog.error(.trash, "Trash pending ledger lock open failed errno=\(errno)")
+            AmuxLog.error(.trash, "Trash pending ledger lock open failed errno=\(errno)")
             return nil
         }
         defer { Darwin.close(descriptor) }
         guard flock(descriptor, LOCK_EX) == 0 else {
-            GSYLog.error(.trash, "Trash pending ledger flock failed errno=\(errno)")
+            AmuxLog.error(.trash, "Trash pending ledger flock failed errno=\(errno)")
             return nil
         }
         defer { _ = flock(descriptor, LOCK_UN) }

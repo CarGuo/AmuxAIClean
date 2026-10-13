@@ -5,29 +5,29 @@ import SafetyKit
 /// v1.6 / 2026-06：可清理字节口径契约测试。
 ///
 /// 背景：用户截图反馈 sidebar 的 "Cleanable" 跟 scanning total 一比一相等
-/// （扫到 133.49 GB → 报 Cleanable 133.49 GB）。根因是 [MainView.sidebar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift)
-/// 历史上把 `coordinator.snapshot.totalBytes` 错灌进 [VolumeCapacityCard.cleanableBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/VolumeCapacityCard.swift#L26)；
-/// 而灵动岛 [FloatingScanHUD](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
+/// （扫到 133.49 GB → 报 Cleanable 133.49 GB）。根因是 [MainView.sidebar](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift)
+/// 历史上把 `coordinator.snapshot.totalBytes` 错灌进 [VolumeCapacityCard.cleanableBytes](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/VolumeCapacityCard.swift#L26)；
+/// 而灵动岛 [FloatingScanHUD](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift)
 /// 自己 reduce `verdict == .safe` 求和——两条口径漂移。
 ///
-/// 这一轮把口径收敛到 [ScanSnapshot.cleanableBytes](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L389-L394)
+/// 这一轮把口径收敛到 [ScanSnapshot.cleanableBytes](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L389-L394)
 /// 作为**单一源**，本测试钉死四条不变量：
 ///
 ///   1) `cleanableBytes == safeBytes`（业界口径：只算 `.safe`）
 ///   2) `cleanableBytes != totalBytes`（在 verdict 混合的真实 snapshot 中，
 ///      "已扫总量" 与"可清理"必须脱钩——这是用户当面质疑的那一条）
 ///   3) `safeBytes + confirmBytes + forbidBytes == Σ rows.bytes`（三档守恒，
-///      防止后续 [SafetyVerdict](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L5-L9)
+///      防止后续 [SafetyVerdict](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L5-L9)
 ///      加 case 时漏更新这里）
 ///   4) 空 / 纯单档 snapshot 的边界条件不抛、值为 0 / 等于总和
 ///
 /// 不测 UI 层：本契约只盯字节算法，UI 颜色 / 严重度 / 图例归
-/// [VolumeCapacityCard](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/VolumeCapacityCard.swift) 视觉回归专项。
+/// [VolumeCapacityCard](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/VolumeCapacityCard.swift) 视觉回归专项。
 final class CleanableBytesContractTests: XCTestCase {
 
     // MARK: - Fixture helpers
 
-    /// 构造一条已 verdict 评过分的 [RowItem](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L6)。
+    /// 构造一条已 verdict 评过分的 [RowItem](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L6)。
     /// 字段最小化，专注 verdict + bytes 两个本契约关心的维度。
     private func row(_ id: String, _ bytes: Int64, _ verdict: SafetyVerdict) -> RowItem {
         RowItem(
@@ -98,8 +98,8 @@ final class CleanableBytesContractTests: XCTestCase {
 
     // MARK: - 契约 3：三档守恒
 
-    /// safe + confirm + forbid 必须等于 Σ rows.bytes，否则后面有人给 [SafetyVerdict](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L5-L9)
-    /// 加了第四档但忘了在 [ScanSnapshot](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/RowItem.swift#L315) 同步——CI 立刻红线。
+    /// safe + confirm + forbid 必须等于 Σ rows.bytes，否则后面有人给 [SafetyVerdict](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift#L5-L9)
+    /// 加了第四档但忘了在 [ScanSnapshot](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L315) 同步——CI 立刻红线。
     func test_三档verdict字节守恒() {
         let snap = mixedFinishedSnapshot()
 

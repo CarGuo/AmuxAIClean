@@ -2,7 +2,7 @@
 
 > 调研日期：2026-05-22
 > 范围：Titanium Software OnyX（免费）、Sensei（订阅 / 终身）、MacFly Pro（订阅）
-> 目的：补足 GSYCleanMac 在「维护脚本」「硬件监控」「订阅型一体化清理」三类竞品上的功能盲区
+> 目的：补足 AmuxAIClean 在「维护脚本」「硬件监控」「订阅型一体化清理」三类竞品上的功能盲区
 >
 > 标签图例：
 > - [Y] 核心清理（缓存 / 日志 / 残留 / 卸载 / 大文件 / 重复）
@@ -212,7 +212,7 @@ Sensei 的 **Hardware** 大区**与"清理"完全无关**，但它是该产品�
 3. **风扇（Fans）**：列出每只风扇的当前 RPM、最低 / 最高阈值，并在 Thermal Dashboard 中绘制实时曲线；`Fan Control`（手动指定风扇转速）在路线图上但仅对带可控风扇的 Intel 旧款 Mac 有效。
 4. **电池（Battery Health Analyzer）**：设计容量 / 当前最大容量 / 循环数 / 健康百分比 / 即时功率，并预警异常。
 
-> 对 GSYCleanMac 的启示：硬件监控是一个**值得显式声明"不做"**的方向（Sensei 已经是这个细分赛道的 best-in-class，且数据来源高度依赖 SMC 反向工程，进入门槛与维护代价都高）。
+> 对 AmuxAIClean 的启示：硬件监控是一个**值得显式声明"不做"**的方向（Sensei 已经是这个细分赛道的 best-in-class，且数据来源高度依赖 SMC 反向工程，进入门槛与维护代价都高）。
 
 ### 2.3 Sensei 对四问的回答
 
@@ -329,16 +329,16 @@ MacFly Pro
 | **Sensei** | [N]（预设 8 个根路径） | [Y] Large Files（按大小） | [N] 无 | [警告] 仅卸载器展开 App 关联文件 |
 | **MacFly Pro** | [N]（仅 Shredder 接收任意路径，但是"删"不是"扫"） | [Y] Large Files（按大小） + Old Files（按时间） | [N] 无 | [警告] 仅卸载器展开 App 关联文件 |
 
-> 结论：**三家没有一家提供"任意目录递归下钻 + 多层可视化"** 这一组合——这是 DaisyDisk / GrandPerspective / Pearcleaner 系产品的差异化阵地，也是 GSYCleanMac BulkScanner 路线的留白机会。
+> 结论：**三家没有一家提供"任意目录递归下钻 + 多层可视化"** 这一组合——这是 DaisyDisk / GrandPerspective / Pearcleaner 系产品的差异化阵地，也是 AmuxAIClean BulkScanner 路线的留白机会。
 
 ---
 
-## 5. 对 GSYCleanMac 的启示（产品决策参考）
+## 5. 对 AmuxAIClean 的启示（产品决策参考）
 
 1. **维护脚本**（OnyX 路线）：是一条**低维护成本但高用户感知**的支线，可以做一个轻量"一键执行 daily/weekly/monthly + 重建 LaunchServices/Spotlight"小面板，不冲突主线，但能补全"老 Mac 卡顿一键修"叙事。
 2. **硬件监控**（Sensei 路线）：**建议明确不做**，理由是 SMC / IOReport 反向工程维护成本高，且 Sensei / iStat Menus 已霸位多年，进入意义不大。
 3. **Smart Assistant / 后台日扫**（MacFly Pro 路线）：可考虑做**轻量级版本**——后台日扫只统计"可清理总体积 + 大文件超阈值数 + 重复 GB"，避免做"自学习"这种黑盒承诺。
-4. **任意目录递归下钻** 仍是 GSYCleanMac 在 BulkScanner 上的核心杀招（参考 `Packages/ScanKit/Sources/ScanKit/BulkScanner.swift:261`），三家都没有，这是真正的护城河方向。
+4. **任意目录递归下钻** 仍是 AmuxAIClean 在 BulkScanner 上的核心杀招（参考 `Packages/ScanKit/Sources/ScanKit/BulkScanner.swift:261`），三家都没有，这是真正的护城河方向。
 
 ---
 

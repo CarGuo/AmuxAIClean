@@ -14,7 +14,7 @@ final class ScanCoordinatorVendorTests: XCTestCase {
     /// 返回 (home, cachesRoot)；home 已 standardize，避免 /var/folders ↔ /private/var/folders 错位。
     private func makeFixture() throws -> (home: String, cachesRoot: URL) {
         let fm = FileManager.default
-        let raw = NSTemporaryDirectory() + "GSYCleanScanCoordVendor-\(UUID().uuidString)"
+        let raw = NSTemporaryDirectory() + "AmuxAICleanScanCoordVendor-\(UUID().uuidString)"
         let home = URL(fileURLWithPath: raw).standardizedFileURL.path
         let caches = home + "/Library/Caches"
         let adobe = caches + "/com.adobe.Photoshop"
@@ -152,7 +152,7 @@ final class ScanCoordinatorVendorTests: XCTestCase {
         }
 
         let fm = FileManager.default
-        let raw = NSTemporaryDirectory() + "GSYCleanScanCoordPermDenied-\(UUID().uuidString)"
+        let raw = NSTemporaryDirectory() + "AmuxAICleanScanCoordPermDenied-\(UUID().uuidString)"
         let root = URL(fileURLWithPath: raw).standardizedFileURL
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         let denied1 = root.appendingPathComponent("denied-A", isDirectory: true)

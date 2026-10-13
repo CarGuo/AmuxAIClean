@@ -766,7 +766,7 @@ public struct SimulatorDeleteCoordinator: Sendable {
                 identifier: registryIdentifier,
                 token: reservationToken
             )
-            GSYLog.warning(.app, "Simulator managed uninstall rejected before submit: \(error)")
+            AmuxLog.warning(.app, "Simulator managed uninstall rejected before submit: \(error)")
             return Outcome(
                 item: item,
                 status: .notSubmitted(exitCode: -3),
@@ -836,7 +836,7 @@ public struct SimulatorDeleteCoordinator: Sendable {
                         : .notSubmitted(exitCode: result.exitCode)
                     let reason = Self.failureReason(for: result)
                     if !result.output.isEmpty {
-                        GSYLog.info(
+                        AmuxLog.info(
                             .app,
                             "Simulator managed uninstall terminal exit=\(result.exitCode) output=\(Self.logExcerpt(result.output))"
                         )
@@ -864,7 +864,7 @@ public struct SimulatorDeleteCoordinator: Sendable {
                             exitCode: result.exitCode
                         )
                         if !didRecordTerminal {
-                            GSYLog.warning(
+                            AmuxLog.warning(
                                 .app,
                                 "Simulator ledger terminal transition failed; keeping submission fail-closed"
                             )

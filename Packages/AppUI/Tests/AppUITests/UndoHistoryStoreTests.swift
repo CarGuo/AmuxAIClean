@@ -634,7 +634,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         let record = try XCTUnwrap(store.history.first)
 
         let notifiedPaths = LockedEventSet()
-        let observer = NotificationCenter.default.addObserver(forName: .gsyUndoDidRestore, object: store, queue: nil) { notification in
+        let observer = NotificationCenter.default.addObserver(forName: .amuxUndoDidRestore, object: store, queue: nil) { notification in
             // v2026.10.08: directory enumeration resolves /var to /private/var on macOS.
             // Compare destination identities in one namespace, while still rejecting the
             // occupied original path; spelling aliases are not different restored files.
@@ -784,7 +784,7 @@ final class UndoHistoryStoreTests: XCTestCase {
 
     func testLegacyStoreReconcilesWithoutOverwritingCurrentHistoryAndRetainsSource() throws {
         let dir = tempDir()
-        let legacyURL = dir.appendingPathComponent("GSYCleanMac/UndoHistory.json")
+        let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
         let legacyStore = UndoHistoryStore(storeURL: legacyURL)
         legacyStore.addRecord(source: "legacy", filePairs: [
@@ -806,7 +806,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         XCTAssertEqual(UndoHistoryStore(storeURL: legacyURL).history.first?.source, "legacy")
 
         // 新路径已有数据时，旧文件的新 UUID 必须做单调 union；不能以任何一边整体覆盖另一边。
-        let secondLegacyURL = dir.appendingPathComponent("GSYCleanMac/second.json")
+        let secondLegacyURL = dir.appendingPathComponent("LegacyStore/second.json")
         let secondLegacy = UndoHistoryStore(storeURL: secondLegacyURL)
         secondLegacy.addRecord(source: "must-not-overwrite", filePairs: [
             .init(original: "/other-original", trashed: "/other-trash")
@@ -825,7 +825,7 @@ final class UndoHistoryStoreTests: XCTestCase {
 
     func testObservedLegacyRecordDoesNotReappearAfterCurrentHistoryRemovesIt() throws {
         let dir = tempDir()
-        let legacyURL = dir.appendingPathComponent("GSYCleanMac/UndoHistory.json")
+        let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
         let legacy = UndoHistoryStore(storeURL: legacyURL)
         legacy.addRecord(source: "legacy-visible-once", filePairs: [
@@ -866,7 +866,7 @@ final class UndoHistoryStoreTests: XCTestCase {
 
     func testAcknowledgedLegacyReceiptDoesNotReappearButLaterReceiptStillImports() async throws {
         let dir = tempDir()
-        let legacyURL = dir.appendingPathComponent("GSYCleanMac/UndoHistory.json")
+        let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
         let firstTrash = dir.appendingPathComponent("trash/first")
         let secondTrash = dir.appendingPathComponent("trash/second")
@@ -1227,7 +1227,7 @@ final class UndoHistoryStoreTests: XCTestCase {
 
     func testObservedLegacyRecordStillAcceptsMonotonicTerminalStateChange() async throws {
         let dir = tempDir()
-        let legacyURL = dir.appendingPathComponent("GSYCleanMac/UndoHistory.json")
+        let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
         let trashed = dir.appendingPathComponent("trash/legacy-terminal")
         let original = dir.appendingPathComponent("original/legacy-terminal")
@@ -1276,7 +1276,7 @@ final class UndoHistoryStoreTests: XCTestCase {
 
     func testLegacyMigrationRejectsSymlinkAndNeverPromotesItsTarget() throws {
         let dir = tempDir()
-        let legacyURL = dir.appendingPathComponent("GSYCleanMac/UndoHistory.json")
+        let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let realURL = dir.appendingPathComponent("real-history.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
         let realStore = UndoHistoryStore(storeURL: realURL)
@@ -1307,7 +1307,7 @@ final class UndoHistoryStoreTests: XCTestCase {
 
     func testLegacyMigrationRejectsFIFOWithoutBlockingOrCreatingDestination() throws {
         let dir = tempDir()
-        let legacyURL = dir.appendingPathComponent("GSYCleanMac/UndoHistory.json")
+        let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
         try FileManager.default.createDirectory(
             at: legacyURL.deletingLastPathComponent(),
@@ -1332,7 +1332,7 @@ final class UndoHistoryStoreTests: XCTestCase {
 
     func testLegacyMigrationRejectsHardLinkedSource() throws {
         let dir = tempDir()
-        let legacyURL = dir.appendingPathComponent("GSYCleanMac/UndoHistory.json")
+        let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let secondLink = dir.appendingPathComponent("legacy-second-link.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
         let legacyStore = UndoHistoryStore(storeURL: legacyURL)
@@ -1354,7 +1354,7 @@ final class UndoHistoryStoreTests: XCTestCase {
 
     func testLegacyMigrationRejectsSourceReplacementBeforeCommitAndDeletesNeitherObject() throws {
         let dir = tempDir()
-        let legacyURL = dir.appendingPathComponent("GSYCleanMac/UndoHistory.json")
+        let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let heldOriginalURL = dir.appendingPathComponent("held-original.json")
         let replacementSeedURL = dir.appendingPathComponent("replacement-seed.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
@@ -1391,7 +1391,7 @@ final class UndoHistoryStoreTests: XCTestCase {
 
     func testLegacyMigrationDestinationRaceNeverOverwritesTargetOrDeletesSource() throws {
         let dir = tempDir()
-        let legacyURL = dir.appendingPathComponent("GSYCleanMac/UndoHistory.json")
+        let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let destinationSeedURL = dir.appendingPathComponent("destination-seed.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
         let legacyStore = UndoHistoryStore(storeURL: legacyURL)
@@ -1422,7 +1422,7 @@ final class UndoHistoryStoreTests: XCTestCase {
 
     func testLegacyWriteAfterSourceFenceConvergesNextBootstrapWithoutLosingCurrentAuthority() async throws {
         let dir = tempDir()
-        let legacyURL = dir.appendingPathComponent("GSYCleanMac/UndoHistory.json")
+        let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let replacementSeedURL = dir.appendingPathComponent("replacement/UndoHistory.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
 
@@ -2177,7 +2177,7 @@ final class UndoHistoryStoreTests: XCTestCase {
 
     func testCorruptLegacyStoreIsNotMovedOrPromoted() throws {
         let dir = tempDir()
-        let legacyURL = dir.appendingPathComponent("GSYCleanMac/UndoHistory.json")
+        let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
         try FileManager.default.createDirectory(
             at: legacyURL.deletingLastPathComponent(),
@@ -2206,7 +2206,7 @@ final class UndoHistoryStoreTests: XCTestCase {
 
     func testOversizedLegacyStoreIsBoundedAndRetained() throws {
         let dir = tempDir()
-        let legacyURL = dir.appendingPathComponent("GSYCleanMac/UndoHistory.json")
+        let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
         try FileManager.default.createDirectory(
             at: legacyURL.deletingLastPathComponent(),

@@ -2,7 +2,7 @@
 
 > 调研对象：GrandPerspective（macOS 开源 treemap）、ncdu（命令行 NCurses）、Disk Inventory X（macOS 开源 treemap，KDirStat 算法）
 > 调研时间：2026-05
-> 调研动机：为 GSYCleanMac 是否切入"纯磁盘可视化"方向提供决策依据
+> 调研动机：为 AmuxAIClean 是否切入"纯磁盘可视化"方向提供决策依据
 
 ---
 
@@ -332,9 +332,9 @@ Disk Inventory X 1.3
 
 ---
 
-## 六、总结：GSYCleanMac 切入"纯磁盘可视化"方向的最小特性集
+## 六、总结：AmuxAIClean 切入"纯磁盘可视化"方向的最小特性集
 
-这三家代表了 macOS 上"纯磁盘可视化"派的成熟范式：**GrandPerspective 是过滤之王，DIX 是三联交互之王，ncdu 是命令行 / 远程之王**。三家都不做 sunburst，所以如果 GSYCleanMac 想把"可视化"做成卖点，**走 treemap 就能站在巨人肩上，做 sunburst 才是切入差异化（对标 DaisyDisk）**。
+这三家代表了 macOS 上"纯磁盘可视化"派的成熟范式：**GrandPerspective 是过滤之王，DIX 是三联交互之王，ncdu 是命令行 / 远程之王**。三家都不做 sunburst，所以如果 AmuxAIClean 想把"可视化"做成卖点，**走 treemap 就能站在巨人肩上，做 sunburst 才是切入差异化（对标 DaisyDisk）**。
 
 无论选哪条路线，**最小特性集（MVP）**应当满足：
 
@@ -377,7 +377,7 @@ Disk Inventory X 1.3
  - 导出图片 + 导出文本 / JSON
 
 7. **系统集成**
- - Finder 上下文菜单 "Open in GSYCleanMac"（DIX 1.0 范式）
+ - Finder 上下文菜单 "Open in AmuxAIClean"（DIX 1.0 范式）
  - 多语言（至少简中 / 英）
  - 暗色模式 + Retina 全分辨率渲染
 

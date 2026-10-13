@@ -23,7 +23,7 @@ final class LargeFilesTests: XCTestCase {
     /// 此外把 mtime 主动错开（每个文件 setattr）以验证 mtime 排序。
     private func makeFixture() throws -> URL {
         let fm = FileManager.default
-        let raw = NSTemporaryDirectory() + "GSYCleanLargeFiles-\(UUID().uuidString)"
+        let raw = NSTemporaryDirectory() + "AmuxAICleanLargeFiles-\(UUID().uuidString)"
         let root = URL(fileURLWithPath: raw).standardizedFileURL
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
 

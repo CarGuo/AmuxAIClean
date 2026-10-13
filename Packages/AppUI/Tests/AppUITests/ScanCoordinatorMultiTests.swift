@@ -15,7 +15,7 @@ final class ScanCoordinatorMultiTests: XCTestCase {
     /// 每根写入 1-2 个小文件让扫描有真东西扫。
     private func makeFakeHome() throws -> String {
         let fm = FileManager.default
-        let raw = NSTemporaryDirectory() + "GSYCleanScanCoordMulti-\(UUID().uuidString)"
+        let raw = NSTemporaryDirectory() + "AmuxAICleanScanCoordMulti-\(UUID().uuidString)"
         let home = URL(fileURLWithPath: raw).standardizedFileURL.path
         let subs = [
             "Library/Caches",

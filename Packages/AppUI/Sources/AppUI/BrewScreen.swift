@@ -11,7 +11,7 @@ private enum BrewLocalDiagnosticLogger {
             let errorDomain = diagnostic.errorDomain ?? "none"
             let errorCode = diagnostic.errorCode.map { String($0) } ?? "none"
             let rejectedEntryCount = diagnostic.rejectedEntryCount.map { String($0) } ?? "none"
-            GSYLog.warning(
+            AmuxLog.warning(
                 .app,
                 "brew.local_evidence_issue source=\(diagnostic.source.rawValue) "
                     + "stage=\(diagnostic.stage.rawValue) reason=\(diagnostic.reason.rawValue) "
@@ -172,10 +172,10 @@ struct BrewReloadGate: Sendable, Equatable {
 ///
 /// dev 期 MVP（直接读 Cellar / Caskroom，不执行 brew 命令）：
 /// - 顶部三个 tab：Installed / Outdated / Cleanup
-/// - Installed：列 [BrewController.listAll()](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/BrewKit/Sources/BrewKit/BrewController.swift)
-/// - Outdated：需要先加载一次 [BrewRegistry](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/BrewKit/Sources/BrewKit/BrewRegistry.swift)
+/// - Installed：列 [BrewController.listAll()](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/BrewKit/Sources/BrewKit/BrewController.swift)
+/// - Outdated：需要先加载一次 [BrewRegistry](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/BrewKit/Sources/BrewKit/BrewRegistry.swift)
 ///   的 jws cache（用户首次点 Refresh 才下载，离线时跳过）
-/// - Cleanup：调 [BrewCleanup.dryRun](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/BrewKit/Sources/BrewKit/BrewCleanup.swift)
+/// - Cleanup：调 [BrewCleanup.dryRun](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/BrewKit/Sources/BrewKit/BrewCleanup.swift)
 ///   只列 stale paths，不真删（dev 期保守，避免误删 bottle）
 ///
 /// brew 未安装时显示空态指引。所有字面量走英文 + 中文注释，不引入新 xcstrings。

@@ -1475,7 +1475,7 @@ vendors:
 
   - name: "Common App Cache Blocks"
     category: "common_app_cache"
-    source: "mac-cleanup-go, mac-cleanup-py, GSYCleanMac policy"
+    source: "mac-cleanup-go, mac-cleanup-py, AmuxAIClean policy"
     note: "高风险相邻路径，明确阻断，防止把现成开源规则中的数据库/历史/cookie 误当缓存"
     paths:
       - path: "~/Library/Group Containers/*.ru.keepcoder.Telegram/stable/*/postbox/db"

@@ -62,7 +62,7 @@ final class MtimeFilterTests: XCTestCase {
 
     @MainActor
     func test_mtimeFilter_持久化_重启能读到() throws {
-        let suite = "GSYCleanMac.tests.MtimeFilter.\(UUID().uuidString)"
+        let suite = "AmuxAIClean.tests.MtimeFilter.\(UUID().uuidString)"
         UserDefaults().removePersistentDomain(forName: suite)
         do {
             let s = AppSettings(testSuite: suite)
@@ -75,7 +75,7 @@ final class MtimeFilterTests: XCTestCase {
 
     @MainActor
     func test_mtimeFilter_脏数据应回退到默认() throws {
-        let suite = "GSYCleanMac.tests.MtimeFilter.dirty.\(UUID().uuidString)"
+        let suite = "AmuxAIClean.tests.MtimeFilter.dirty.\(UUID().uuidString)"
         UserDefaults().removePersistentDomain(forName: suite)
         let d = UserDefaults(suiteName: suite)!
         d.set("garbage_value", forKey: AppSettings.Keys.mtimeFilter)

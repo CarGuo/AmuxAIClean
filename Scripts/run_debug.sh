@@ -21,8 +21,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SCHEME="GSYCleanMac"
-PROJECT="${ROOT}/GSYCleanMac.xcodeproj"
+SCHEME="AmuxAIClean"
+PROJECT="${ROOT}/AmuxAIClean.xcodeproj"
 APP_NAME="AmuxAIClean"
 EXECUTABLE_NAME="AmuxAIClean"
 

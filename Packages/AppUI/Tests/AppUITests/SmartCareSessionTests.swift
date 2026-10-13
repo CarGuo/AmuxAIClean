@@ -672,7 +672,7 @@ final class SmartCareSessionTests: XCTestCase {
         let originalSessionID = session.currentScanSessionID
 
         NotificationCenter.default.post(
-            name: .gsyUndoDidRestore,
+            name: .amuxUndoDidRestore,
             object: nil,
             userInfo: ["paths": [path]]
         )

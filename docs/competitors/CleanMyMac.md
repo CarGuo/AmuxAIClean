@@ -1,6 +1,6 @@
 # CleanMyMac X 完整功能菜单（v2024-2026）
 
-> 说明：本文同时覆盖 **CleanMyMac X（4.x，最高 4.15.x，停在 macOS Tahoe 26）** 与 **新版 CleanMyMac（5.x，2024 重构版，截至 2026-04 / 5.5.x）** 两套菜单结构。MacPaw 在 2024 把模块重排成"任务导向"，并把若干 X 时代的子模块合并/拆分；为方便对齐 GSYCleanMac，两版主菜单都列出。
+> 说明：本文同时覆盖 **CleanMyMac X（4.x，最高 4.15.x，停在 macOS Tahoe 26）** 与 **新版 CleanMyMac（5.x，2024 重构版，截至 2026-04 / 5.5.x）** 两套菜单结构。MacPaw 在 2024 把模块重排成"任务导向"，并把若干 X 时代的子模块合并/拆分；为方便对齐 AmuxAIClean，两版主菜单都列出。
 >
 > 标签说明：
 > - [Y] 核心扫描清理（占空间 / 删文件类）
@@ -214,7 +214,7 @@
 
 ---
 
-## 三、4 个特别留意点的具体出处（GSYCleanMac 主战场对照）
+## 三、4 个特别留意点的具体出处（AmuxAIClean 主战场对照）
 
 | 留意点 | CleanMyMac 中的功能名 | 所在菜单 | 出处 URL |
 |---|---|---|---|
@@ -223,10 +223,10 @@
 | **多层下钻**（drill-down 进子目录） | **Space Lens** 的 Bubble + List 双视图："double-clicks or arrows (>)" 进入，"arrows (< >)" 返回 | X 版：`Files > Space Lens`；新版：`Space Lens` 顶级 | https://macpaw.com/support/cleanmymac-x/knowledgebase/space-lens（"Look through the list and use double-clicks or arrows (>), or click the bubble... To go back, click outside the bubbles in the lens or use the arrows (< >) above the list"） |
 | **隐藏文件 toggle** | CleanMyMac **没有显式的 "show hidden files" 开关**；它的处理方式是：**Space Lens 默认会扫描并展示以 `.` 开头的隐藏文件 / 目录**（被算在父目录大小内，可在列表中直接看到），官方文档把它当成"用 Space Lens 可视化隐藏文件"的方案来宣传。Finder/Terminal 才有显示开关。 | `Space Lens`（间接） | https://macpaw.com/ja/how-to/show-hidden-files-on-mac（"スマートな「スペースレンズ」機能を搭載しており... 目に見えない隠しファイルを確認するだけの場合においても、同じツールの使用が可能です"） + 同一系列英文版 https://macpaw.com/how-to/show-hidden-files-on-mac |
 
-> 关键结论（写给 GSYCleanMac 设计参考）：
+> 关键结论（写给 AmuxAIClean 设计参考）：
 > - CleanMyMac **把"任意目录扫描 + 大文件 + 多层下钻"三件事捏在 Space Lens 里**，并用气泡图当卖点。Large & Old Files 是同一引擎的"列表化、加阈值（≥50MB）+ 排序"快捷视图。
-> - **CleanMyMac 实际上没有给用户一个"显示隐藏文件"开关** —— 它默认就把隐藏项算进去并显示在列表里，把"Finder 里看不到的东西也能在我这看到"包装成 Space Lens 的差异化卖点。这是 GSYCleanMac BulkScanner 可以直接对齐 / 反超的点（GSYCleanMac 已经有显式 `showHiddenFiles` toggle）。
-> - 新版 CleanMyMac **拆掉了 X 版的 Maintenance 大部分 RAM/Repair 项**（macOS 沙盒收紧），重心更倾向"扫描清理 + 应用管理 + 可视化"，与 GSYCleanMac 的功能边界高度重合。
+> - **CleanMyMac 实际上没有给用户一个"显示隐藏文件"开关** —— 它默认就把隐藏项算进去并显示在列表里，把"Finder 里看不到的东西也能在我这看到"包装成 Space Lens 的差异化卖点。这是 AmuxAIClean BulkScanner 可以直接对齐 / 反超的点（AmuxAIClean 已经有显式 `showHiddenFiles` toggle）。
+> - 新版 CleanMyMac **拆掉了 X 版的 Maintenance 大部分 RAM/Repair 项**（macOS 沙盒收紧），重心更倾向"扫描清理 + 应用管理 + 可视化"，与 AmuxAIClean 的功能边界高度重合。
 
 ---
 

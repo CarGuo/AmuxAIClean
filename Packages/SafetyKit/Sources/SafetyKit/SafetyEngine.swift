@@ -303,13 +303,13 @@ public struct SafetyEngine: Sendable {
     /// 严格判定。返回 (verdict, rejection)。
     /// - 任何不确定都向 `forbid` 倾斜，宁可误拒不可误删。
     ///
-    /// **GSYLog 埋点（v1.3.zzzz Phase 6）**：所有 forbid 出口在此 wrapper 集中打 debug 级日志，
+    /// **AmuxLog 埋点（v1.3.zzzz Phase 6）**：所有 forbid 出口在此 wrapper 集中打 debug 级日志，
     /// 调用极频繁（每条候选路径都过一次），用 debug 级避免污染 Console；
     /// Release 默认 .info 阈值不会写盘，开发期 .debug 时可定位"为什么这条被拒了"。
     public func evaluate(path: String, home: String = NSHomeDirectory()) -> (SafetyVerdict, SafetyRejection) {
         let result = evaluateInternal(path: path, home: home)
         if result.0 == .forbid {
-            GSYLog.debug(.safety, "forbid path=\(path) reason=\(result.1.rawValue)")
+            AmuxLog.debug(.safety, "forbid path=\(path) reason=\(result.1.rawValue)")
         }
         return result
     }
@@ -332,7 +332,7 @@ public struct SafetyEngine: Sendable {
         case .success(let target):
             resolved = target
         case .failure(let failure):
-            GSYLog.debug(.safety, "symlink resolution failed path=\(path) failure=\(failure)")
+            AmuxLog.debug(.safety, "symlink resolution failed path=\(path) failure=\(failure)")
             return (.forbid, .symbolicLinkResolutionFailed)
         }
         guard resolved != standardized else { return base }
@@ -483,7 +483,7 @@ public struct SafetyEngine: Sendable {
     // MARK: - Bundle Protection 接入（Mole `app_protection_data.sh` 对齐）
 
     /// 从已 standardize 的路径中提取 bundle ID，并查询构造时注入的
-    /// [BundleProtectionMatcher](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/BundleProtection.swift)。
+    /// [BundleProtectionMatcher](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/BundleProtection.swift)。
     ///
     /// **设计原则：保守解析，永不误升级**。仅识别下列**确定性**路径模式：
     /// - `~/Library/Caches/<bundleID>[/...]`
@@ -588,7 +588,7 @@ public struct SafetyEngine: Sendable {
         case .success(let target):
             resolved = target
         case .failure(let failure):
-            GSYLog.debug(.safety, "symlink resolution failed path=\(path) failure=\(failure)")
+            AmuxLog.debug(.safety, "symlink resolution failed path=\(path) failure=\(failure)")
             return .unresolved
         }
         return resolved != standardized && bundleMatch(standardized: resolved, home: home) != nil
@@ -620,7 +620,7 @@ public struct SafetyEngine: Sendable {
                          home: String = NSHomeDirectory()) -> (SafetyVerdict, SafetyRejection, VendorRule?) {
         let result = evaluateTrieInternal(path: path, trie: trie, home: home)
         if result.0 == .forbid {
-            GSYLog.debug(.safety, "forbid(trie) path=\(path) reason=\(result.1.rawValue)")
+            AmuxLog.debug(.safety, "forbid(trie) path=\(path) reason=\(result.1.rawValue)")
         }
         return result
     }
@@ -645,7 +645,7 @@ public struct SafetyEngine: Sendable {
         case .success(let target):
             resolved = target
         case .failure(let failure):
-            GSYLog.debug(.safety, "symlink resolution failed path=\(path) failure=\(failure)")
+            AmuxLog.debug(.safety, "symlink resolution failed path=\(path) failure=\(failure)")
             return (.forbid, .symbolicLinkResolutionFailed, nil)
         }
         let resolvedCanonical = Self.stripDataVolumePrefix(resolved)

@@ -8,18 +8,17 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="${ROOT}/Scripts/build_release.sh"
 DMG_TARGET="${ROOT}/Scripts/make_dmg.sh"
 VERIFY_TARGET="${ROOT}/Scripts/verify_dmg.sh"
-PROJECT="${ROOT}/GSYCleanMac.xcodeproj"
+PROJECT="${ROOT}/AmuxAIClean.xcodeproj"
 INFO_PLIST="${ROOT}/App/Info.plist"
 INFO_STRINGS_EN="${ROOT}/App/en.lproj/InfoPlist.strings"
 INFO_STRINGS_ZH="${ROOT}/App/zh-Hans.lproj/InfoPlist.strings"
 PRIVACY_MANIFEST="${ROOT}/App/PrivacyInfo.xcprivacy"
 PRIVACY_DOCUMENT="${ROOT}/PRIVACY.md"
 CONTRIBUTING_DOCUMENT="${ROOT}/CONTRIBUTING.md"
-LOG_SOURCE="${ROOT}/Packages/LogKit/Sources/LogKit/GSYLog.swift"
+LOG_SOURCE="${ROOT}/Packages/LogKit/Sources/LogKit/AmuxLog.swift"
 LOG_FILE_SINK_SOURCE="${ROOT}/Packages/LogKit/Sources/LogKit/LogFileSink.swift"
 SENTINEL_AGENT_PLIST="${ROOT}/App/LaunchAgents/com.amux.ai.Clean.sentinel.agent.plist"
-SENTINEL_ORIGINAL_BRAND_DAEMON_PLIST="${ROOT}/App/LaunchDaemons/com.guoshuyu.cleanmac.sentinel.plist"
-SENTINEL_RENAMED_BRAND_DAEMON_PLIST="${ROOT}/App/LaunchDaemons/com.amux.ai.Clean.sentinel.plist"
+SENTINEL_LEGACY_DAEMON_PLIST="${ROOT}/App/LaunchDaemons/com.amux.ai.Clean.sentinel.plist"
 SENTINEL_MANAGER="${ROOT}/Packages/AppUI/Sources/AppUI/SentinelManager.swift"
 SENTINEL_MAIN="${ROOT}/Tools/Sentinel/Sources/Sentinel/main.swift"
 DEPLOYMENT_TARGET="13.5"
@@ -70,7 +69,7 @@ bash -n "$VERIFY_TARGET"
 # counting source-text lines in project.pbxproj. This does not build or start the app.
 for configuration in Debug Release; do
   effective_target="$(
-    xcodebuild -project "$PROJECT" -scheme GSYCleanMac \
+    xcodebuild -project "$PROJECT" -scheme AmuxAIClean \
       -configuration "$configuration" -showBuildSettings 2>/dev/null \
       | awk '$1 == "MACOSX_DEPLOYMENT_TARGET" { print $3; exit }'
   )"
@@ -168,16 +167,16 @@ if grep -Fq 'privacy: .public' "$LOG_SOURCE"; then
   fail "Unified Logging must not publish preformatted path-bearing messages"
 fi
 # v2026.07.18: NSLog and raw stderr writes bypass the privacy mask above and have a separate,
-# system-managed retention lifecycle. Product UI/App sources must use GSYLog; the two low-level
+# system-managed retention lifecycle. Product UI/App sources must use AmuxLog; the two low-level
 # file-sink fallbacks may emit only stable numeric diagnostics, never a raw Error or log line.
 if grep -R --include='*.swift' -n 'NSLog(' \
   "${ROOT}/App" "${ROOT}/Packages/AppUI/Sources" >/dev/null; then
-  fail "product sources must not bypass GSYLog with NSLog"
+  fail "product sources must not bypass AmuxLog with NSLog"
 fi
 grep -Fq 'writeFallbackDiagnostic("file sink write failed", failure: failure)' "$LOG_FILE_SINK_SOURCE" \
   || fail "LogFileSink stderr fallback no longer uses the redacted diagnostic boundary"
 grep -Fq 'public static var fileSinkHealth: LogFileSinkHealth' "$LOG_SOURCE" \
-  || fail "GSYLog no longer exposes typed local file-sink health"
+  || fail "AmuxLog no longer exposes typed local file-sink health"
 grep -Fq 'public static func prepareLogDirectoryForAccess() async -> Result<URL, LogFileSinkFailure>' "$LOG_SOURCE" \
   || fail "Finder/settings log access no longer uses the typed sink validation boundary"
 grep -Fq 'public static func currentLogFiles() async -> Result<[URL], LogFileSinkFailure>' "$LOG_SOURCE" \
@@ -200,10 +199,9 @@ if grep -Fq '本项目零网络是 hard rule' "$CONTRIBUTING_DOCUMENT"; then
 fi
 
 # v2026.07.18: Sentinel observes the signed-in user's Home/Trash and must therefore be a
-# non-privileged login agent. Older builds registered two root LaunchDaemon Labels across the
-# product rename, so each historical authority keeps a stable migration-only descriptor whose
-# file name matches its Label. All three identities are distinct and root descriptors are never
-# registered again.
+# non-privileged login agent. Older builds registered a root LaunchDaemon Label, so the
+# historical authority keeps a stable migration-only descriptor whose file name matches its Label.
+# Both identities are distinct and the root descriptor is never registered again.
 # v2026.07.18 P1 executable-entry regression: a stale root LaunchDaemon must fail closed before
 # the current user-Agent implementation initializes paths, logs, persistence, or listeners.
 grep -Fq 'if geteuid() == 0 {' "$SENTINEL_MAIN" \
@@ -247,8 +245,7 @@ if /usr/libexec/PlistBuddy -c 'Print :UserName' "$SENTINEL_AGENT_PLIST" >/dev/nu
   fail "Sentinel LaunchAgent must not hard-code UserName or root semantics"
 fi
 for daemon_contract in \
-  "$SENTINEL_ORIGINAL_BRAND_DAEMON_PLIST|com.guoshuyu.cleanmac.sentinel" \
-  "$SENTINEL_RENAMED_BRAND_DAEMON_PLIST|com.amux.ai.Clean.sentinel"; do
+  "$SENTINEL_LEGACY_DAEMON_PLIST|com.amux.ai.Clean.sentinel"; do
   daemon_plist="${daemon_contract%%|*}"
   expected_label="${daemon_contract#*|}"
   /usr/bin/plutil -lint "$daemon_plist" >/dev/null \
@@ -273,21 +270,16 @@ grep -Fq 'Contents/Library/LaunchDaemons' "${PROJECT}/project.pbxproj" \
 grep -Fq 'Embed Legacy LaunchDaemon Migration Descriptor' "${PROJECT}/project.pbxproj" \
   || fail "legacy Sentinel migration copy phase is missing"
 for daemon_plist_name in \
-  com.guoshuyu.cleanmac.sentinel.plist \
   com.amux.ai.Clean.sentinel.plist; do
   [ "$(grep -Fc "${daemon_plist_name} in Embed Legacy LaunchDaemon Migration Descriptor" "${PROJECT}/project.pbxproj")" -ge 2 ] \
     || fail "legacy Sentinel migration descriptor is not referenced by the copy phase: ${daemon_plist_name}"
 done
 grep -Fq 'public nonisolated static let agentPlistName = "com.amux.ai.Clean.sentinel.agent.plist"' "$SENTINEL_MANAGER" \
   || fail "SentinelManager current-agent plist identity drifted"
-grep -Fq '"com.guoshuyu.cleanmac.sentinel.plist"' "$SENTINEL_MANAGER" \
-  || fail "SentinelManager original-brand daemon plist identity drifted"
 grep -Fq '"com.amux.ai.Clean.sentinel.plist"' "$SENTINEL_MANAGER" \
-  || fail "SentinelManager renamed-brand daemon plist identity drifted"
-grep -Fq 'label: "com.guoshuyu.cleanmac.sentinel"' "$SENTINEL_MANAGER" \
-  || fail "SentinelManager original-brand daemon Label drifted"
+  || fail "SentinelManager legacy daemon plist identity drifted"
 grep -Fq 'label: "com.amux.ai.Clean.sentinel"' "$SENTINEL_MANAGER" \
-  || fail "SentinelManager renamed-brand daemon Label drifted"
+  || fail "SentinelManager legacy daemon Label drifted"
 grep -Fq 'service = SMAppService.agent(plistName: SentinelManager.agentPlistName)' "$SENTINEL_MANAGER" \
   || fail "SentinelManager does not register the current user agent"
 grep -Fq 'SMAppService.daemon(plistName: descriptor.plistName)' "$SENTINEL_MANAGER" \
@@ -305,13 +297,11 @@ grep -Fq 'repeating: Self.pruneCheckInterval' "$SENTINEL_MAIN" \
   || fail "Sentinel long-lived log retention timer is missing"
 
 # v2026.07.18: release examples must not silently overwrite the project with last month's
-# concrete version, and documentation must name the actual disabled workflow job.
+# concrete version.
 if grep -Eq 'VERSION=[0-9]+\.[0-9]+\.[0-9]+' \
   "${ROOT}/docs/RELEASE.md" "${ROOT}/docs/DEVELOPMENT.md" "${ROOT}/Scripts/build_release.sh"; then
   fail "release documentation/help contains a stale concrete VERSION example"
 fi
-grep -Fq '`release-disabled` job' "${ROOT}/docs/RELEASE.md" \
-  || fail "RELEASE.md does not name the actual disabled release job"
 
 # Discover every first-party manifest dynamically, excluding generated build trees.
 # `dump-package` verifies SwiftPM semantics, so comments and formatting cannot pass it.

@@ -1,4 +1,4 @@
-[E2E 17:10:45] STEP 0: pkill 残留 GSYCleanMac 进程
+[E2E 17:10:45] STEP 0: pkill 残留 AmuxAIClean 进程
 [E2E 17:10:46] STEP 1: 启动 .app（捕获 stdout/stderr 到 e2e-runtime.log）
 [E2E 17:10:46]   launched pid=51737
 [E2E 17:10:46] STEP 2: 轮询主窗口就绪（最多 15s）

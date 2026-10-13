@@ -319,7 +319,7 @@ public actor VersionedRetainScanner {
         if cancellationCheck() { return cancelledDetectionResult }
 
         if !hits.isEmpty {
-            GSYLog.info(
+            AmuxLog.info(
                 .scan,
                 "VersionedRetainScanner root=\(rootPath) keep=\(retainCount) old=\(hits.count) latest=\(retainedLatest)"
             )
@@ -555,7 +555,7 @@ public actor VersionedRetainScanner {
         let evidence = issues
             .map { "\($0.path):\($0.reason.rawValue)" }
             .joined(separator: ",")
-        GSYLog.warning(
+        AmuxLog.warning(
             .scan,
             "VersionedRetainScanner incomplete root=\(rootPath) evidence=\(evidence)"
         )

@@ -16,7 +16,7 @@ final class MultiRootScannerTests: XCTestCase {
     private func makeFixture(prefix: String, fileCount: Int, bytesPerFile: Int) throws -> (URL, Int64) {
         let fm = FileManager.default
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("GSYMultiRoot-\(prefix)-\(UUID().uuidString)")
+            .appendingPathComponent("AmuxMultiRoot-\(prefix)-\(UUID().uuidString)")
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         var total: Int64 = 0
         for i in 0..<fileCount {

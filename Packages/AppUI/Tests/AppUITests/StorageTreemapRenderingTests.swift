@@ -8,8 +8,8 @@ import XCTest
 @MainActor
 final class StorageTreemapRenderingTests: XCTestCase {
     func testSkewedAndTinyGroupsRemainReadableInBothLanguages() throws {
-        let output = ProcessInfo.processInfo.environment["GSYCLEAN_WORKSPACE_RENDER_DIR"]
-        try XCTSkipIf(output == nil, "Set GSYCLEAN_WORKSPACE_RENDER_DIR for offscreen layout evidence.")
+        let output = ProcessInfo.processInfo.environment["AMUXCLEAN_WORKSPACE_RENDER_DIR"]
+        try XCTSkipIf(output == nil, "Set AMUXCLEAN_WORKSPACE_RENDER_DIR for offscreen layout evidence.")
         let directory = URL(fileURLWithPath: try XCTUnwrap(output), isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let values: [(String, Int64)] = [

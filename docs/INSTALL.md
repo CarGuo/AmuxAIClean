@@ -17,10 +17,9 @@
 ## 2. 下载与完整性校验
 
 当前公开发行合同是维护者本地生成的 **Developer ID Application 签名、最终 DMG 公证并
-staple/validate** 的产物。仓库里的 GitHub Actions CI 和 Release job 均为 `if: false`，
-不会自动构建或上传公开产物。
+staple/validate** 的产物。
 
-从 [Releases](https://github.com/CarGuo/GSYCleanMac/releases/latest) 下载已发布的
+从 [Releases](https://github.com/CarGuo/AmuxAIClean/releases/latest) 下载已发布的
 `AmuxAIClean-x.y.z.dmg` 及对应 `.sha256`，然后校验：
 
 ```bash
@@ -92,9 +91,8 @@ AI 可能发送的路径上下文、元数据、默认脱敏和服务商边界�
 [PRIVACY.md](../PRIVACY.md)，远程结果不能授权删除或覆盖本地 SafetyEngine。
 
 Sentinel 也默认关闭。用户主动开启后，App 通过 ServiceManagement 注册当前登录用户的
-非特权 Agent，在本机监听废纸篓和清理热点，不建立网络连接。升级自旧版时会分别检查并
-注销 `com.guoshuyu.cleanmac.sentinel` 与 `com.amux.ai.Clean.sentinel` 两代错误 root
-LaunchDaemon；任一旧注册未权威收敛时不会叠加启动新 Agent。关闭当前 Agent 属于降权动作，
+非特权 Agent，在本机监听废纸篓和清理热点，不建立网络连接。升级自旧版时会检查并
+注销历史错误 root LaunchDaemon（`com.amux.ai.Clean.sentinel`）；旧注册未权威收敛时不会叠加启动新 Agent。关闭当前 Agent 属于降权动作，
 不因旧描述符查询失败而跳过，但设置页会继续标为旧状态未验证。
 
 ## 6. 卸载 AmuxAIClean 自身

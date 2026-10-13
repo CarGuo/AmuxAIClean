@@ -42,7 +42,7 @@ public final class VendorTrieNode: @unchecked Sendable {
 
     /// **build-only mutable**；仅在**根节点**有效：含 glob 元字符（`*` / `?`）的 path 规则副本。
     /// 这些规则不能插入 trie（trie 节点路径段是字面量），评估时退化为线性扫描。
-    /// 数量级 < 50 条，性能可接受；详见 [PathGlob](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/PathGlob.swift)。
+    /// 数量级 < 50 条，性能可接受；详见 [PathGlob](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/PathGlob.swift)。
     public var globRules: [GlobEntry] = []
 
     public init() {}
@@ -158,8 +158,8 @@ public struct VendorTrie: @unchecked Sendable {
     /// - `pathOverride`：若命中节点挂着 path 级 verdict 覆盖，会一并返回；
     ///   path 级 override 沿子树继承（即在祖先节点声明的 override 会传递到所有后代）。
     ///
-    /// trie miss 时回退到 [globRules](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/VendorTrie.swift#L30-L30) 线性扫描，
-    /// 用 [PathGlob.matchPrefix](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/PathGlob.swift#L42-L48)
+    /// trie miss 时回退到 [globRules](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/VendorTrie.swift#L30-L30) 线性扫描，
+    /// 用 [PathGlob.matchPrefix](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/PathGlob.swift#L42-L48)
     /// 判断 path 是否落在某条 glob pattern 的前缀（含完整匹配）。
     public static func match(standardizedPath: String, in trie: VendorTrieNode,
                              acceptSafeRule: ((String) -> Bool)? = nil)

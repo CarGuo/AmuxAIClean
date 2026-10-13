@@ -411,7 +411,7 @@ private struct PartialPathRule {
     }
 
     /// 旧 API（保 binary compat 同时给 lenient 调用方）：构建失败静默返回 nil。
-    /// 新代码请改用 [buildOrError](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/SafetyKit/Sources/SafetyKit/RuleLoader.swift)。
+    /// 新代码请改用 [buildOrError](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/SafetyKit/Sources/SafetyKit/RuleLoader.swift)。
     func build() -> PathRule? {
         guard let path, !path.isEmpty, let verdict else { return nil }
         return PathRule(path: path, verdict: verdict, reason: reason, recipe: recipe)

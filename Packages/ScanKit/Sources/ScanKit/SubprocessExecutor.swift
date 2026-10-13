@@ -3,7 +3,7 @@ import Darwin
 
 /// 受限子进程执行器（v1.7 M1 PR-2）。
 ///
-/// 与既有 [DefaultMaintenanceRunner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/MaintenanceTasks.swift#L137-L171) 的区别：
+/// 与既有 [DefaultMaintenanceRunner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/MaintenanceTasks.swift#L137-L171) 的区别：
 /// - MaintenanceRunner：管理任务（lsregister/qlmanage/dscacheutil），全是系统维护命令，硬编码 launchPath 已隔离风险
 /// - SubprocessExecutor：**面向 simctl / xcrun 等开发者命令**，要执行的子命令是「数据驱动」的，
 ///   必须用 **allowlist** 强约束才能避免被未来 PR 误用为"任意命令执行通道"。
@@ -40,7 +40,7 @@ public struct SubprocessExecutor: Sendable {
     ///   `xcrun simctl delete <UUID>` 但拒绝 `xcrun simctl install`。
     ///
     /// 维护原则：**新增条目必须经过 V12 级集成测试同步加 case**，
-    /// 详见 [SubprocessExecutorTests](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Tests/ScanKitTests/SubprocessExecutorTests.swift)。
+    /// 详见 [SubprocessExecutorTests](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Tests/ScanKitTests/SubprocessExecutorTests.swift)。
     public struct AllowEntry: Sendable, Hashable {
         public let executable: String
         public let argsPrefix: [String]
@@ -163,8 +163,8 @@ public struct SubprocessExecutor: Sendable {
     /// **Threading 警告**：本函数是**同步阻塞**的——会在当前线程一直阻塞到
     /// 子进程结束或有界查询的 `timeout` 触发。caller 若在 actor / @MainActor 上下文里调用，
     /// 会持锁阻塞整个 actor。已知 actor 调用方：
-    /// [SimctlDevicesScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/SimctlDevicesScanner.swift)
-    /// 与 [SimctlRuntimeScanner](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/SimctlRuntimeScanner.swift)
+    /// [SimctlDevicesScanner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/SimctlDevicesScanner.swift)
+    /// 与 [SimctlRuntimeScanner](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/SimctlRuntimeScanner.swift)
     /// ——这两个 actor 串行使用 executor，外部不会并发等同一 actor，可接受。
     /// `.waitUntilExit` 必须在 nonisolated / detached 上下文调用，避免阻塞主线程或核心 actor。
     public func run(executable: String, args: [String]) throws -> Result {

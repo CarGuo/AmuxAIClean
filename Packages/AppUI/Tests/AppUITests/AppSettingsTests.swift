@@ -5,7 +5,7 @@ import XCTest
 final class AppSettingsTests: XCTestCase {
 
     private func freshSuite(_ name: String = #function) -> String {
-        let s = "GSYCleanMac.tests.AppSettings.\(name).\(UUID().uuidString)"
+        let s = "AmuxAIClean.tests.AppSettings.\(name).\(UUID().uuidString)"
         UserDefaults().removePersistentDomain(forName: s)
         return s
     }

@@ -87,7 +87,7 @@ final class AISettingsTabState: ObservableObject {
 
 /// M5 / 2026-06：AI 设置 Tab。
 ///
-/// 位置：[SettingsScene](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/SettingsScene.swift)
+/// 位置：[SettingsScene](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/SettingsScene.swift)
 /// TabView 第 8 项（在 advancedTab 之前插入）。
 ///
 /// 设计要点：
@@ -113,7 +113,7 @@ struct AISettingsTab: View {
             // MARK: 如何使用（v2026.06.18 加）
             // 用户反馈：填了 API Key 后不知道功能从哪进入。这里给一段可见性极高的
             // 三步指引，并在总开关 OFF 时给一条额外提示，避免「填了 key 但开关没开」
-            // 的隐藏失败模式（[isReadyForUI](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AIKit/Sources/AIKit/AISettings.swift)
+            // 的隐藏失败模式（[isReadyForUI](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AIKit/Sources/AIKit/AISettings.swift)
             // 在 enabled==false 时返回 false → contextMenu "问 AI" 不显示）。
             Section {
                 VStack(alignment: .leading, spacing: 6) {

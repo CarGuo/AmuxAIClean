@@ -73,7 +73,7 @@ final class TrashPipelineTests: XCTestCase {
     }
 
     func testDryRunNeverTouchesDisk() async throws {
-        let dir = NSTemporaryDirectory() + "GSYCleanTrashPipelineTests-\(UUID().uuidString)"
+        let dir = NSTemporaryDirectory() + "AmuxAICleanTrashPipelineTests-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: dir) }
 
@@ -89,7 +89,7 @@ final class TrashPipelineTests: XCTestCase {
 
     /// 真删测试 —— 在 CI 上会真把临时文件移到废纸篓，但因为是临时目录，无副作用
     func testRealRecycleMovesToTrash() async throws {
-        let dir = NSTemporaryDirectory() + "GSYCleanTrashPipelineTests-\(UUID().uuidString)"
+        let dir = NSTemporaryDirectory() + "AmuxAICleanTrashPipelineTests-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: dir) }
 
@@ -120,7 +120,7 @@ final class TrashPipelineTests: XCTestCase {
 /// 这组测试 lock 死方案 C 的两条不变量：
 /// - 默认视图模式 == `.tree`（任何回滚到 `.list` 的改动都立刻红线）
 /// - `ResultsViewMode` 枚举形态稳定（case 顺序、label 文案、icon symbol 不许悄悄改），
-///   是 [viewModeBar](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/MainView.swift) UI 的隐性合同
+///   是 [viewModeBar](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift) UI 的隐性合同
 @MainActor
 final class MainViewDefaultViewModeTests: XCTestCase {
 

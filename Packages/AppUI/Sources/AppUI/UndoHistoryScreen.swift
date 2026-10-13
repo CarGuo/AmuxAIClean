@@ -75,14 +75,14 @@ struct UndoHistoryRecoveryRefreshRevision: Equatable, Sendable {
     }
 }
 
-/// Step 7：「最近清理」面板 —— 渲染 [UndoHistoryStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UndoHistoryStore.swift)
+/// Step 7：「最近清理」面板 —— 渲染 [UndoHistoryStore](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/UndoHistoryStore.swift)
 /// 当前记录，每条带"恢复"按钮把整批 trash 反推回原位。
 ///
 /// 设计要点：
-/// - 仅消费组合根显式注入的 [UndoHistoryStore](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UndoHistoryStore.swift)，
+/// - 仅消费组合根显式注入的 [UndoHistoryStore](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/UndoHistoryStore.swift)，
 ///   避免每屏自己开 store 实例造成数据不一致，也避免测试/Preview 误读生产历史。
 /// - 列表 + 详情双栏（master-detail）：左侧批次时间轴，右侧展开看 pair。
-/// - 恢复操作走 [restoreRecord](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/UndoHistoryStore.swift#L200)
+/// - 恢复操作走 [restoreRecord](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/UndoHistoryStore.swift#L200)
 ///   —— 失败时弹 alert 不静默。
 struct UndoHistoryScreen: View {
     @ObservedObject private var store: UndoHistoryStore

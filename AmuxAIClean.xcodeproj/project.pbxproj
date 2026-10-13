@@ -19,11 +19,10 @@
 		A17A00010000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A17A00020000000000000002 /* PrivacyInfo.xcprivacy */; };
 		809E0552B37329DA1D6DA483 /* SafetyKit in Frameworks */ = {isa = PBXBuildFile; productRef = AC93BBF658D8303974FC7762 /* SafetyKit */; };
 		830A3D28FFEF7066DA1D0A50 /* AppUI in Frameworks */ = {isa = PBXBuildFile; productRef = 269F7078D84D8EA818521F88 /* AppUI */; };
-		922FBAF195DAE3DEAE29336B /* GSYCleanMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1AC343FA0785D39B6C91BD3 /* GSYCleanMacApp.swift */; };
+		922FBAF195DAE3DEAE29336B /* AmuxAICleanApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1AC343FA0785D39B6C91BD3 /* AmuxAICleanApp.swift */; };
 		AA01E001000000000000S001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA01F001000000000000S001 /* main.swift */; };
 		AA01E002000000000000S002 /* amuxaiclean-sentinel in Embed Helper Tools */ = {isa = PBXBuildFile; fileRef = AA01F002000000000000S002 /* amuxaiclean-sentinel */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		AA01J001000000000000S001 /* com.amux.ai.Clean.sentinel.agent.plist in Embed LaunchAgents */ = {isa = PBXBuildFile; fileRef = AA01J002000000000000S001 /* com.amux.ai.Clean.sentinel.agent.plist */; };
-		AA01K001000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist in Embed Legacy LaunchDaemon Migration Descriptor */ = {isa = PBXBuildFile; fileRef = AA01K002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */; };
 		AA01K005000000000000S001 /* com.amux.ai.Clean.sentinel.plist in Embed Legacy LaunchDaemon Migration Descriptor */ = {isa = PBXBuildFile; fileRef = AA01K006000000000000S001 /* com.amux.ai.Clean.sentinel.plist */; };
 		E0963A3E20D365A7E7DA8DE5 /* LogKit in Frameworks */ = {isa = PBXBuildFile; productRef = 869DB7788784E9203F564909 /* LogKit */; };
 /* End PBXBuildFile section */
@@ -34,7 +33,7 @@
 			containerPortal = 6B296BF115E133E6D6E8FAD0 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = AA01N001000000000000S001;
-			remoteInfo = GSYCleanMacSentinel;
+			remoteInfo = AmuxAICleanSentinel;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -67,7 +66,6 @@
 			dstPath = Contents/Library/LaunchDaemons;
 			dstSubfolderSpec = 1;
 			files = (
-				AA01K001000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist in Embed Legacy LaunchDaemon Migration Descriptor */,
 				AA01K005000000000000S001 /* com.amux.ai.Clean.sentinel.plist in Embed Legacy LaunchDaemon Migration Descriptor */,
 			);
 			name = "Embed Legacy LaunchDaemon Migration Descriptor";
@@ -91,15 +89,14 @@
 		887444FA009A4A5D18CE4E54 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		93739B16F64B55C9EA98583F /* SafetyKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = SafetyKit; path = Packages/SafetyKit; sourceTree = SOURCE_ROOT; };
 		A17A00020000000000000002 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		A1AC343FA0785D39B6C91BD3 /* GSYCleanMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GSYCleanMacApp.swift; sourceTree = "<group>"; };
+		A1AC343FA0785D39B6C91BD3 /* AmuxAICleanApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AmuxAICleanApp.swift; sourceTree = "<group>"; };
 		AA01F001000000000000S001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		AA01F002000000000000S002 /* amuxaiclean-sentinel */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "amuxaiclean-sentinel"; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA01F003000000000000S003 /* Sentinel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Sentinel.entitlements; sourceTree = "<group>"; };
 		AA01J002000000000000S001 /* com.amux.ai.Clean.sentinel.agent.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.amux.ai.Clean.sentinel.agent.plist; sourceTree = "<group>"; };
-		AA01K002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.guoshuyu.cleanmac.sentinel.plist; sourceTree = "<group>"; };
 		AA01K006000000000000S001 /* com.amux.ai.Clean.sentinel.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = com.amux.ai.Clean.sentinel.plist; sourceTree = "<group>"; };
 		DF808A7550415E3DB686B545 /* HeuristicKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = HeuristicKit; path = Packages/HeuristicKit; sourceTree = SOURCE_ROOT; };
-		F4112C6CEEEE50474D0CB590 /* GSYCleanMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GSYCleanMac.entitlements; sourceTree = "<group>"; };
+		F4112C6CEEEE50474D0CB590 /* AmuxAIClean.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AmuxAIClean.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -197,7 +194,6 @@
 		AA01K003000000000000S001 /* LaunchDaemons */ = {
 			isa = PBXGroup;
 			children = (
-				AA01K002000000000000S001 /* com.guoshuyu.cleanmac.sentinel.plist */,
 				AA01K006000000000000S001 /* com.amux.ai.Clean.sentinel.plist */,
 			);
 			path = LaunchDaemons;
@@ -217,8 +213,8 @@
 			children = (
 				F74FB5762A1E3FC026FA94BC /* InfoPlist.strings */,
 				A17A00020000000000000002 /* PrivacyInfo.xcprivacy */,
-				F4112C6CEEEE50474D0CB590 /* GSYCleanMac.entitlements */,
-				A1AC343FA0785D39B6C91BD3 /* GSYCleanMacApp.swift */,
+				F4112C6CEEEE50474D0CB590 /* AmuxAIClean.entitlements */,
+				A1AC343FA0785D39B6C91BD3 /* AmuxAICleanApp.swift */,
 				7E48C094BFCC4AB8A1DD91EF /* Info.plist */,
 				AA01J003000000000000S001 /* LaunchAgents */,
 				AA01K003000000000000S001 /* LaunchDaemons */,
@@ -240,9 +236,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		AA01N001000000000000S001 /* GSYCleanMacSentinel */ = {
+		AA01N001000000000000S001 /* AmuxAICleanSentinel */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = AA01L001000000000000S001 /* Build configuration list for PBXNativeTarget "GSYCleanMacSentinel" */;
+			buildConfigurationList = AA01L001000000000000S001 /* Build configuration list for PBXNativeTarget "AmuxAICleanSentinel" */;
 			buildPhases = (
 				AA01S001000000000000S001 /* Sources */,
 			);
@@ -250,14 +246,14 @@
 			);
 			dependencies = (
 			);
-			name = GSYCleanMacSentinel;
+			name = AmuxAICleanSentinel;
 			productName = "amuxaiclean-sentinel";
 			productReference = AA01F002000000000000S002 /* amuxaiclean-sentinel */;
 			productType = "com.apple.product-type.tool";
 		};
-		C8595EE1DD697C434C527FFD /* GSYCleanMac */ = {
+		C8595EE1DD697C434C527FFD /* AmuxAIClean */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = B7108807F46F68B389DB5B19 /* Build configuration list for PBXNativeTarget "GSYCleanMac" */;
+			buildConfigurationList = B7108807F46F68B389DB5B19 /* Build configuration list for PBXNativeTarget "AmuxAIClean" */;
 			buildPhases = (
 				95F2BF3977D2FE7E7AB61846 /* Sources */,
 				88E7C9A4619484B52FA021B7 /* Resources */,
@@ -271,7 +267,7 @@
 			dependencies = (
 				AA01D001000000000000S001 /* PBXTargetDependency */,
 			);
-			name = GSYCleanMac;
+			name = AmuxAIClean;
 			packageProductDependencies = (
 				19D65B1CECA5C738ECAABC8E /* ScanKit */,
 				AC93BBF658D8303974FC7762 /* SafetyKit */,
@@ -302,7 +298,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 7CFD322E5C859A418288B711 /* Build configuration list for PBXProject "GSYCleanMac" */;
+			buildConfigurationList = 7CFD322E5C859A418288B711 /* Build configuration list for PBXProject "AmuxAIClean" */;
 			developmentRegion = "zh-Hans";
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -326,8 +322,8 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				C8595EE1DD697C434C527FFD /* GSYCleanMac */,
-				AA01N001000000000000S001 /* GSYCleanMacSentinel */,
+				C8595EE1DD697C434C527FFD /* AmuxAIClean */,
+				AA01N001000000000000S001 /* AmuxAICleanSentinel */,
 			);
 		};
 /* End PBXProject section */
@@ -353,7 +349,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				922FBAF195DAE3DEAE29336B /* GSYCleanMacApp.swift in Sources */,
+				922FBAF195DAE3DEAE29336B /* AmuxAICleanApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -370,7 +366,7 @@
 /* Begin PBXTargetDependency section */
 		AA01D001000000000000S001 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = AA01N001000000000000S001 /* GSYCleanMacSentinel */;
+			target = AA01N001000000000000S001 /* AmuxAICleanSentinel */;
 			targetProxy = AA01P001000000000000S001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -461,7 +457,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = App/GSYCleanMac.entitlements;
+				CODE_SIGN_ENTITLEMENTS = App/AmuxAIClean.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -581,7 +577,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = App/GSYCleanMac.entitlements;
+				CODE_SIGN_ENTITLEMENTS = App/AmuxAIClean.entitlements;
 				CODE_SIGN_IDENTITY = "Developer ID Application: SentenceEnd Inc (W6H34N9728)";
 				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
 				CODE_SIGN_STYLE = Manual;
@@ -606,7 +602,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		7CFD322E5C859A418288B711 /* Build configuration list for PBXProject "GSYCleanMac" */ = {
+		7CFD322E5C859A418288B711 /* Build configuration list for PBXProject "AmuxAIClean" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				6F3B48E5E9F6B42A0D9F43F7 /* Debug */,
@@ -615,7 +611,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		AA01L001000000000000S001 /* Build configuration list for PBXNativeTarget "GSYCleanMacSentinel" */ = {
+		AA01L001000000000000S001 /* Build configuration list for PBXNativeTarget "AmuxAICleanSentinel" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				AA01C001000000000000S001 /* Debug */,
@@ -624,7 +620,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		B7108807F46F68B389DB5B19 /* Build configuration list for PBXNativeTarget "GSYCleanMac" */ = {
+		B7108807F46F68B389DB5B19 /* Build configuration list for PBXNativeTarget "AmuxAIClean" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A2999C26A9D4D1874A7E9E01 /* Debug */,

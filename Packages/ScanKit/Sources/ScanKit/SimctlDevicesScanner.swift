@@ -51,7 +51,7 @@ public actor SimctlDevicesScanner {
             throw SimctlDiscoveryError.commandRejected(query: .devices)
         }
         if let failure = SimctlDiscoveryError.commandFailure(for: result, query: .devices) {
-            GSYLog.warning(.app, "SimctlDevicesScanner command failure: \(failure); output=\(Self.logExcerpt(result.output))")
+            AmuxLog.warning(.app, "SimctlDevicesScanner command failure: \(failure); output=\(Self.logExcerpt(result.output))")
             throw failure
         }
         return try Self.decode(from: result.output)
@@ -77,7 +77,7 @@ public actor SimctlDevicesScanner {
         do {
             return try decode(from: json)
         } catch {
-            GSYLog.warning(.app, "SimctlDevicesScanner JSON 解析失败: \(error)")
+            AmuxLog.warning(.app, "SimctlDevicesScanner JSON 解析失败: \(error)")
             return []
         }
     }
@@ -176,11 +176,11 @@ public struct SimctlBootedDeviceProbe: Sendable {
                 args: ["simctl", "list", "devices", "--json"]
             )
         } catch {
-            GSYLog.warning(.app, "Simulator submit guard: simctl devices query rejected: \(error)")
+            AmuxLog.warning(.app, "Simulator submit guard: simctl devices query rejected: \(error)")
             return .verificationUnavailable
         }
         guard result.exitCode == 0 else {
-            GSYLog.warning(
+            AmuxLog.warning(
                 .app,
                 "Simulator submit guard: simctl devices query failed exit=\(result.exitCode) output=\(Self.logExcerpt(result.output))"
             )
@@ -258,7 +258,7 @@ public struct SimctlManagedResourceAuthorityProbe: Sendable {
             }
             return identifiers.contains(uuid) ? .present : .absent
         } catch {
-            GSYLog.warning(.app, "Simulator authority: invalid devices payload: \(error)")
+            AmuxLog.warning(.app, "Simulator authority: invalid devices payload: \(error)")
             return .verificationUnavailable
         }
     }
@@ -293,7 +293,7 @@ public struct SimctlManagedResourceAuthorityProbe: Sendable {
             }
             return identifiers.contains(uuid) ? .present : .absent
         } catch {
-            GSYLog.warning(.app, "Simulator authority: invalid runtimes payload: \(error)")
+            AmuxLog.warning(.app, "Simulator authority: invalid runtimes payload: \(error)")
             return .verificationUnavailable
         }
     }
@@ -302,7 +302,7 @@ public struct SimctlManagedResourceAuthorityProbe: Sendable {
         do {
             let result = try executor.run(executable: "/usr/bin/xcrun", args: args)
             guard result.exitCode == 0 else {
-                GSYLog.warning(
+                AmuxLog.warning(
                     .app,
                     "Simulator authority: \(label) query failed exit=\(result.exitCode) output=\(String(result.output.prefix(512)))"
                 )
@@ -310,7 +310,7 @@ public struct SimctlManagedResourceAuthorityProbe: Sendable {
             }
             return result.output
         } catch {
-            GSYLog.warning(.app, "Simulator authority: \(label) query rejected: \(error)")
+            AmuxLog.warning(.app, "Simulator authority: \(label) query rejected: \(error)")
             return nil
         }
     }

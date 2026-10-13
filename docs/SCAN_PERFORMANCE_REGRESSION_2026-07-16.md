@@ -125,7 +125,7 @@ I/O 没有用户价值，取消后还可能与新扫描争抢磁盘。它不是�
 
 ### 5.1 消费者先声明所需交付
 
-[BulkScanner.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift)
+[BulkScanner.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/BulkScanner.swift)
 的 `EventDelivery` 定义统一交付模式：
 
 | 模式 | 适用消费者 | 增量节点 | 终态结果 |
@@ -151,7 +151,7 @@ actor。当前架构要求每个 worker 在一个目录内用局部容器累计�
 
 ### 5.3 终态 summary 是唯一权威值
 
-[FSNode.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/ScanKit/Sources/ScanKit/FSNode.swift)
+[FSNode.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/ScanKit/Sources/ScanKit/FSNode.swift)
 把投影附着到同一次枚举产生的 `ScanSummary`。扫描期的绝对 progress 可以节流或合并，
 但最终必须由 summary 覆盖，并保持：
 
@@ -172,7 +172,7 @@ actor。当前架构要求每个 worker 在一个目录内用局部容器累计�
 
 ### 5.4 Coordinator 只做有界应用
 
-[ScanCoordinator.swift](file:///Users/guoshuyu/workspace/GSYCleanMac/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
+[ScanCoordinator.swift](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/ScanCoordinator.swift)
 应只在 MainActor 上应用一级可见行或固定 Top-N，而不是全部 inode：
 
 - Large Files 使用 `.largeFiles`，当前硬上限为 1000；
@@ -324,7 +324,7 @@ for pkg in ScanKit SafetyKit AppUI HeuristicKit LogKit BrewKit FileSearchKit AIK
   (cd "Packages/$pkg" && swift test --parallel) || exit 1
 done
 
-xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build
+xcodebuild -project AmuxAIClean.xcodeproj -scheme AmuxAIClean -configuration Debug build
 
 swift run -c release --package-path Tools/PerfBench PerfBench --root "$HOME/Library/Caches"
 swift run -c release --package-path Tools/CoordinatorBench CoordinatorBench \
@@ -371,7 +371,7 @@ C3 通过后，经用户明确授权，只启动一次 App 并持续完成以下
   多语言和删除安全合同；
 - 其余 8 个 package：共 731 个测试全部通过（ScanKit、SafetyKit、HeuristicKit、LogKit、
   BrewKit、FileSearchKit、AIKit、TestHarness）；
-- `xcodebuild -project GSYCleanMac.xcodeproj -scheme GSYCleanMac -configuration Debug build`
+- `xcodebuild -project AmuxAIClean.xcodeproj -scheme AmuxAIClean -configuration Debug build`
   成功，部署目标为 macOS 13.5；这只证明 availability/链接/编译合同，不代表已在 13.5
   真实运行；
 - 两组 CoordinatorBench 的最终数据见 3.1：Caches 385,054 files / 248 rows / 6.944s，
