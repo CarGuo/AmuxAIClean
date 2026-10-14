@@ -12,6 +12,11 @@
 
 1. **本地维护者发布路径**：`Scripts/build_release.sh` 使用 [AmuxAIClean.xcodeproj](../AmuxAIClean.xcodeproj) 里的 Release 配置构建。当前 Release 配置是 `Manual + Developer ID Application: SentenceEnd Inc (W6H34N9728)`。
 2. **注意**：`codesign --verify` 只能证明签名结构完整；公开分发闭环还需要 Apple Notary `Accepted`、`stapler staple` 和 `spctl` 校验。
+3. **公开发行仓库**：安装包发布到 [CarGuo/AmuxAICleanRelease](https://github.com/CarGuo/AmuxAICleanRelease/releases)，与 App 默认更新检查及下载文档保持一致。`CarGuo/AmuxAIClean` 是私有源码仓库；无凭据的 App 不能从这里检查公开更新。
+
+<!-- v1.6.10 / 2026.10.14：更新默认路由沿用私有源码仓库名，匿名 latest 请求返回 404。
+发行仓库是独立配置，不能由产品名或源码仓库名推导；生产默认路由必须有无网络回归测试，
+发布前另核对公开 latest API 和安装资产。 -->
 
 ---
 

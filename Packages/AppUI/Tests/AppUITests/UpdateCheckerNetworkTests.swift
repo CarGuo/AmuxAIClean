@@ -113,6 +113,42 @@ final class UpdateCheckerNetworkTests: XCTestCase {
         super.tearDown()
     }
 
+    // v2026.10.14: production defaults must target the public distribution repository.
+    // Explicit repository injection in the other tests cannot detect a private-source default.
+    func test_defaultRepositoryUsesPublicDistributionForRequestAndReleaseValidation() async {
+        MockURLProtocol.stub = MockURLProtocol.Stub(
+            data: Data("""
+                {
+                  "tag_name": "v999.0.0",
+                  "name": "AmuxAIClean 999.0.0",
+                  "html_url": "https://github.com/CarGuo/AmuxAICleanRelease/releases/tag/v999.0.0",
+                  "body": "release notes",
+                  "published_at": null,
+                  "assets": [{
+                    "name": "AmuxAIClean-999.0.0.dmg",
+                    "browser_download_url": "https://github.com/CarGuo/AmuxAICleanRelease/releases/download/v999.0.0/AmuxAIClean-999.0.0.dmg",
+                    "size": 1024
+                  }]
+                }
+                """.utf8),
+            statusCode: 200, error: nil, mimeType: "application/json"
+        )
+        let checker = UpdateChecker(protocolClasses: [MockURLProtocol.self])
+        checker.checkNow()
+        await waitForResult(checker)
+
+        XCTAssertEqual(
+            MockURLProtocol.lastRequest()?.url?.absoluteString,
+            "https://api.github.com/repos/CarGuo/AmuxAICleanRelease/releases/latest"
+        )
+        guard case .newer(let release) = checker.lastResult else {
+            XCTFail("Production defaults must accept releases from the public distribution repository")
+            return
+        }
+        XCTAssertEqual(release.assets.map(\.name), ["AmuxAIClean-999.0.0.dmg"])
+        XCTAssertEqual(checker.availableUpdate, release)
+    }
+
     // MARK: - 用例 1: HTTP 401 → .failed("HTTP 401")
 
     func test_runCheck_HTTP401应记为failed() async {

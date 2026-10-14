@@ -34,7 +34,7 @@ AmuxAIClean 不包含遥测、广告、行为埋点或崩溃自动上报。扫�
 | 项目 | 真实行为 |
 |---|---|
 | 触发 | “启动时自动检查更新”首次安装默认开启，每个 App 进程最多自动检查一次；用户可在设置中关闭，也可手动触发 |
-| 目标 | 只请求 `https://api.github.com/repos/CarGuo/AmuxAIClean/releases/latest`。App 会校验并解析同仓库、同 tag 的 GitHub Release 页面与 asset 元数据，但不会自动下载 DMG、`*.sha256` 或其它 Release asset |
+| 目标 | 只请求公开发行仓库的 `https://api.github.com/repos/CarGuo/AmuxAICleanRelease/releases/latest`。App 会校验并解析同仓库、同 tag 的 GitHub Release 页面与 asset 元数据，但不会自动下载 DMG、`*.sha256` 或其它 Release asset |
 | 方法与数据 | `GET`，无请求体；包含 HTTP 必要头以及标识 App 版本的 `User-Agent` |
 | 本地数据 | 不发送扫描路径、文件内容或清理记录 |
 | 接收方 | GitHub；GitHub 可能按其政策处理 IP 地址、请求时间和 User-Agent |
@@ -288,7 +288,8 @@ compatible provider, the project cannot assume every recipient discards the cred
 
 “Check for updates at launch” is enabled on first install and performs at most one automatic check
 per App process; it can be disabled in Settings. Manual update checks remain user initiated. The
-App validates Release-page and asset metadata from the configured GitHub repository, but it does
+request targets `https://api.github.com/repos/CarGuo/AmuxAICleanRelease/releases/latest`, the public
+distribution repository. The App validates Release-page and asset metadata from that repository, but it does
 not automatically download a DMG, checksum file, or any other Release asset. A verified Release
 page is opened in the default browser only after the user chooses to proceed.
 

@@ -11,7 +11,7 @@ import SwiftUI
 /// - 客户端只做“提示 + 跳转已验证 Release 页”，不自动下载或安装，避免静默升级能力扩张。
 ///
 /// **流程**：
-/// 1. 启动时（如果 settings.updateCheckEnabled）调一次 `GET https://api.github.com/repos/CarGuo/AmuxAIClean/releases/latest`
+/// 1. 启动时（如果 settings.updateCheckEnabled）调一次公开发行仓库的 GitHub Releases latest API
 /// 2. 解析 tag_name（形如 `v1.1.0`），与本地 CFBundleShortVersionString 做 SemVer 比较
 /// 3. 远端更新且未被"跳过此版本"标记 → MainActor 上设 `availableUpdate`，UI sheet 显示
 /// 4. 用户三选一：跳过此版本（写 skippedUpdateTag）/ 稍后提醒（什么都不做）/ 前往下载（NSWorkspace.open html_url）
@@ -358,6 +358,11 @@ public final class UpdateChecker: ObservableObject {
     public static let automaticChecksumFetchPolicy: AutomaticChecksumFetchPolicy =
         .disabledBecauseRedirectDestinationIsUnverifiable
 
+    /// v1.6.10 / 2026.10.14: distribution and private source repositories are separate identities.
+    /// Keep one default for production and test construction; deriving it from the product/source
+    /// name sent anonymous update checks to a private repository and returned HTTP 404.
+    public nonisolated static let defaultReleaseRepository = "AmuxAICleanRelease"
+
     /// 当前需要展示的可用新版本；nil 表示没有需要提示的更新。
     @Published public var availableUpdate: ReleaseInfo?
     /// 上次检查的结果（设置面板里"立即检查"按钮可看到详情）。
@@ -376,7 +381,7 @@ public final class UpdateChecker: ObservableObject {
 
     public convenience init(
         owner: String = "CarGuo",
-        repo: String = "AmuxAIClean",
+        repo: String = UpdateChecker.defaultReleaseRepository,
         settings: AppSettings? = nil
     ) {
         self.init(owner: owner, repo: repo, protocolClasses: nil, settings: settings)
@@ -387,7 +392,7 @@ public final class UpdateChecker: ObservableObject {
     /// 与生产一致的 ephemeral/cookie/cache/credential/redirect 策略。
     init(
         owner: String = "CarGuo",
-        repo: String = "AmuxAIClean",
+        repo: String = UpdateChecker.defaultReleaseRepository,
         protocolClasses: [AnyClass]?,
         settings: AppSettings? = nil
     ) {

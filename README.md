@@ -15,7 +15,7 @@
 [![Tests 9 Packages](https://img.shields.io/badge/tests-9%20packages-brightgreen)](#质量与安全)
 [![i18n zh-Hans EN](https://img.shields.io/badge/i18n-zh--Hans%20%7C%20EN-informational)](#多语言)
 
-[下载最新版](https://github.com/CarGuo/AmuxAIClean/releases/latest) ·
+[下载最新版](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest) ·
 [安装指南](docs/INSTALL.md) ·
 [安全模型](SECURITY.md) ·
 [路线图](docs/ROADMAP_V1.md)
@@ -97,7 +97,7 @@
 
 最快路径：
 
-1. 去 [Releases](https://github.com/CarGuo/AmuxAIClean/releases/latest) 下载已发布的 `.dmg`。
+1. 去 [Releases](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest) 下载已发布的 `.dmg`。
 2. 拖入 Applications，首次启动按系统提示「仍要打开」。
 3. 如需完整扫描，在「系统设置 → 隐私与安全 → 完全磁盘访问」里允许 AmuxAIClean；拒绝后 App 仍可用，但会明确标记结果不完整。
 
