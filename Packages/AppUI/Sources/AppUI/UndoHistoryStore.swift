@@ -3046,10 +3046,11 @@ public final class UndoHistoryStore: ObservableObject {
     }
 
     nonisolated private static func recoverLegacyMigrationTransaction(
-        _ state: LegacyMigrationTransactionState,
+        _ persistedState: LegacyMigrationTransactionState,
         parentDescriptor: Int32
     ) -> LegacyMigrationRecoveryDisposition {
-        let payload = state.payload
+        var state = persistedState
+        var payload = state.payload
         let reserveContractIsComplete = payload.reserveStageName == nil
             ? payload.reserveStageFingerprint == nil && payload.reserveStageVersion == nil
             : payload.reserveStageFingerprint != nil && payload.reserveStageVersion != nil
@@ -3088,6 +3089,19 @@ public final class UndoHistoryStore: ObservableObject {
               reserveContractIsComplete || reserveContractIsAllocating,
               payload.marker0Identity != payload.marker1Identity else {
             return .rejected(reason: "transactionContract", errno: nil)
+        }
+        // v2026.10.14: ctime also changes when Finder/backup tools edit extended attributes.
+        // A persisted stat is not a content checksum. Revalidate unchanged objects/metadata with
+        // the recorded digest, then durably refresh the stat used by the in-process CAS fences.
+        // REWRITING deliberately has no committed scratch version; its phase recovery owns it.
+        if payload.phase != .rewritingStage {
+            switch refreshLegacyMigrationStageEvidence(state, parentDescriptor: parentDescriptor) {
+            case .success(let refreshed):
+                state = refreshed
+                payload = refreshed.payload
+            case .failure(let failure):
+                return .rejected(reason: failure.reason, errno: failure.errno)
+            }
         }
         if payload.phase == .allocatingReserve {
             switch completeLegacyMigrationReserveAllocation(
@@ -3307,6 +3321,69 @@ public final class UndoHistoryStore: ObservableObject {
         case .allocatingReserve:
             return .rejected(reason: "unreachableReserveAllocation", errno: nil)
         }
+    }
+
+    nonisolated private static func refreshLegacyMigrationStageEvidence(
+        _ state: LegacyMigrationTransactionState,
+        parentDescriptor: Int32
+    ) -> Result<LegacyMigrationTransactionState, LegacyMigrationTransactionFailure> {
+        let payload = state.payload
+        func refreshedFingerprint(
+            name: String,
+            expected: LegacyMigrationFingerprint,
+            version: LegacyMigrationVersionEvidence,
+            permitsRenamedStage: Bool = false
+        ) -> Result<LegacyMigrationFingerprint, LegacyMigrationTransactionFailure> {
+            switch probeLegacyMigrationEntry(parentDescriptor: parentDescriptor, name: name) {
+            case .present(let current) where current == expected:
+                return .success(current)
+            case .absent where permitsRenamedStage:
+                // First-create PREPARED can have already renamed the active slot to canonical.
+                // Its recovery below must still prove that exact canonical version and fsync it.
+                return .success(expected)
+            default:
+                return verifyLegacyMigrationEntryVersion(
+                    parentDescriptor: parentDescriptor,
+                    name: name,
+                    expectedFullFingerprint: nil,
+                    expectedVersion: version,
+                    requireSecureControlFile: true
+                )
+            }
+        }
+
+        let active: LegacyMigrationFingerprint
+        switch refreshedFingerprint(
+            name: payload.stageName, expected: payload.stageFingerprint,
+            version: payload.stageVersion,
+            permitsRenamedStage: payload.phase == .prepared && payload.expectedDestination == nil
+        ) {
+        case .success(let value): active = value
+        case .failure(let failure): return .failure(failure)
+        }
+        var reserve = payload.reserveStageFingerprint
+        if let name = payload.reserveStageName, let expected = reserve,
+           let version = payload.reserveStageVersion {
+            switch refreshedFingerprint(name: name, expected: expected, version: version) {
+            case .success(let value): reserve = value
+            case .failure(let failure): return .failure(failure)
+            }
+        }
+        guard active != payload.stageFingerprint || reserve != payload.reserveStageFingerprint else {
+            return .success(state)
+        }
+        let stageSet = LegacyMigrationStageSet(
+            name: payload.stageName, fingerprint: active, version: payload.stageVersion,
+            reserveName: payload.reserveStageName, reserveFingerprint: reserve,
+            reserveVersion: payload.reserveStageVersion
+        )
+        return advanceLegacyMigrationTransaction(
+            state, phase: payload.phase, transactionID: payload.transactionID,
+            expectedDestination: payload.expectedDestination,
+            expectedDestinationVersion: payload.expectedDestinationVersion,
+            stageFingerprint: active, stageVersion: payload.stageVersion,
+            stageSet: stageSet, parentDescriptor: parentDescriptor
+        )
     }
 
     nonisolated private static func recoverLegacyMigrationReplacement(

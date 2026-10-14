@@ -70,7 +70,9 @@ final class ControlGuideTests: XCTestCase {
     func test_realControlTextIsLocalizedInBothLanguages() {
         let keys = ControlGuideTarget.allCases.flatMap { [$0.titleKey, $0.bodyKey] }
             + ["user_guide.window.title", "user_guide.action.skip", "user_guide.action.next", "user_guide.action.finish",
-               "user_guide.control.preparing", "user_guide.control.row_actions.example"]
+               "user_guide.control.preparing", "user_guide.control.row_actions.example",
+               "user_guide.control.row_actions.sample_file", "user_guide.control.row_actions.ai",
+               "user_guide.control.row_actions.stash", "user_guide.control.row_actions.trash"]
         for locale in [Locale(identifier: "zh-Hans"), Locale(identifier: "en")] {
             for key in keys {
                 let text = AppLocalization.string(key, locale: locale)

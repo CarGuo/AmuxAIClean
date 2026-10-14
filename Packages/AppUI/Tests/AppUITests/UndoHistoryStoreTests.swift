@@ -1008,6 +1008,79 @@ final class UndoHistoryStoreTests: XCTestCase {
         XCTAssertNotNil(receipts[second.id])
     }
 
+    // v2026.10.14: reproduce the production rejection without touching real history. Extended
+    // attributes change ctime while keeping the inode, bytes, mtime and security metadata intact.
+    private func changeWALMetadata(nextTo url: URL) throws {
+        for stage in canonicalWALURLs(nextTo: url).prefix(2)
+            where FileManager.default.fileExists(atPath: stage.path) {
+            let bytes = try Data(contentsOf: stage)
+            var before = stat()
+            XCTAssertEqual(lstat(stage.path, &before), 0)
+            let value = Data(UUID().uuidString.utf8)
+            let result = value.withUnsafeBytes {
+                setxattr(stage.path, "com.amux.test.recovery", $0.baseAddress, $0.count, 0, XATTR_NOFOLLOW)
+            }
+            XCTAssertEqual(result, 0)
+            var after = stat()
+            XCTAssertEqual(lstat(stage.path, &after), 0)
+            XCTAssertEqual(before.st_ino, after.st_ino)
+            XCTAssertEqual(before.st_mtimespec.tv_sec, after.st_mtimespec.tv_sec)
+            XCTAssertEqual(before.st_mtimespec.tv_nsec, after.st_mtimespec.tv_nsec)
+            XCTAssertTrue(before.st_ctimespec.tv_sec != after.st_ctimespec.tv_sec
+                || before.st_ctimespec.tv_nsec != after.st_ctimespec.tv_nsec)
+            XCTAssertEqual(try Data(contentsOf: stage), bytes)
+        }
+    }
+
+    func testIdleWALMetadataChangePreservesHistoryAndAllowsNextDurableWrite() throws {
+        let url = storeURL(in: tempDir())
+        let seed = UndoHistoryStore(storeURL: url)
+        for index in 0..<3 {
+            seed.addRecord(source: "before-\(index)", filePairs: [
+                .init(original: "/original/\(index)", trashed: "/trash/\(index)")
+            ])
+            seed.saveHistorySync()
+        }
+        try changeWALMetadata(nextTo: url)
+        let recovered = UndoHistoryStore(storeURL: url)
+        XCTAssertEqual(recovered.storageState, .ready)
+        XCTAssertEqual(recovered.history.count, 3)
+        recovered.addRecord(source: "after-metadata-change", filePairs: [
+            .init(original: "/original/after", trashed: "/trash/after")
+        ])
+        recovered.saveHistorySync()
+        let reloaded = UndoHistoryStore(storeURL: url)
+        XCTAssertEqual(reloaded.storageState, .ready)
+        XCTAssertEqual(reloaded.history.count, 4)
+        XCTAssertEqual(reloaded.history.first?.source, "after-metadata-change")
+    }
+
+    func testWALContentMutationWithRestoredMtimeStillFailsClosed() throws {
+        let url = storeURL(in: tempDir())
+        let seed = UndoHistoryStore(storeURL: url)
+        seed.addRecord(source: "original", filePairs: [.init(original: "/a", trashed: "/trash/a")])
+        seed.saveHistorySync()
+        let canonical = try Data(contentsOf: url)
+        let markers = Array(canonicalWALURLs(nextTo: url).suffix(2))
+        let active = try XCTUnwrap(markers.max { (markerGeneration(at: $0) ?? 0) < (markerGeneration(at: $1) ?? 0) })
+        let record = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: active)) as? [String: Any])
+        let payload = try XCTUnwrap(record["payload"] as? [String: Any])
+        let stage = url.deletingLastPathComponent().appendingPathComponent(try XCTUnwrap(payload["stageName"] as? String))
+        let fd = open(stage.path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        guard fd >= 0 else { return }
+        defer { Darwin.close(fd) }
+        var metadata = stat()
+        XCTAssertEqual(fstat(fd, &metadata), 0)
+        var byte: UInt8 = 0x58
+        XCTAssertEqual(pwrite(fd, &byte, 1, 0), 1)
+        var times = [metadata.st_atimespec, metadata.st_mtimespec]
+        XCTAssertEqual(futimens(fd, &times), 0)
+        XCTAssertEqual(fsync(fd), 0)
+        XCTAssertEqual(UndoHistoryStore(storeURL: url).storageState, .writeFailed)
+        XCTAssertEqual(try Data(contentsOf: url), canonical)
+    }
+
     func testPersistedWALSurvivesMountDeviceRenumberAndNextWrite() throws {
         // v2026.07.20 P0 regression: Darwin st_dev identifies a mount instance, not a stable
         // cross-reboot volume. A valid WAL from the previous boot must retain authority when only
@@ -2838,6 +2911,8 @@ final class UndoHistoryStoreTests: XCTestCase {
                 .rejected(.writeFailed),
                 boundary
             )
+            // Both PREPARED snapshots must obey the same durable-version contract as IDLE.
+            try changeWALMetadata(nextTo: destinationURL)
             XCTAssertEqual(
                 UndoHistoryStore.migrateLegacyStoreIfNeeded(
                     from: legacyURL,

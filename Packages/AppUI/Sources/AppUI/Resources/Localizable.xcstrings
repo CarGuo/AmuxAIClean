@@ -13654,13 +13654,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Request not submitted"
+            "value": "Unable to Move to Trash"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请求未提交"
+            "value": "无法移到废纸篓"
           }
         }
       }
@@ -13671,13 +13671,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Safety checks rejected this request. Nothing was moved; you can adjust the selection and continue browsing."
+            "value": "This request could not be submitted. No items were moved. Review the reasons below before trying again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "安全检查拒绝了本次请求，未移动任何项目；你可以调整选择并继续浏览。"
+            "value": "本次请求未能提交，没有移动任何项目。请查看具体原因后再重试。"
           }
         }
       }
@@ -13688,30 +13688,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Dismiss notice"
+            "value": "OK"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "关闭提示"
-          }
-        }
-      }
-    },
-    "delete.preflight.more %lld": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld more rejected items"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "另有 %lld 个被拒绝项目"
+            "value": "知道了"
           }
         }
       }
@@ -23032,13 +23015,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Result actions (example): AI · Add to Stash · Trash"
+            "value": "Example controls · no real files"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "结果条目操作（示例）：AI · 加入待处理 · 删除"
+            "value": "操作示例 · 不涉及真实文件"
           }
         }
       }
@@ -23728,6 +23711,108 @@
           "stringUnit": {
             "state": "translated",
             "value": "点击这个按钮，或通过「帮助 → 新用户指引」重新开始。引导会针对当前模式和实际可见控件展开。"
+          }
+        }
+      }
+    },
+    "delete.preflight.reason.history_unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cleanup history could not be recovered or saved. To keep moves and Undo records consistent, this request was not submitted. Your files have not moved."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清理历史无法恢复或保存。为确保移动结果与撤销记录一致，本次请求未提交，文件仍在原处。"
+          }
+        }
+      }
+    },
+    "delete.preflight.reason.queue_expired": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The request expired while waiting to be submitted. Review your selection and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请求等待提交时已过期，请重新检查所选项目后重试。"
+          }
+        }
+      }
+    },
+    "user_guide.control.row_actions.sample_file": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Example installer.pkg"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "示例安装包.pkg"
+          }
+        }
+      }
+    },
+    "user_guide.control.row_actions.ai": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI: ask for advice about this item. Enable and configure AI in Settings first. AI does not authorize deletion."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI：分析此项目的清理建议。需先在设置中启用并配置 AI；建议不会直接授权删除。"
+          }
+        }
+      }
+    },
+    "user_guide.control.row_actions.stash": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stash: collect items from different folders and review them together before cleanup."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂存：收集不同目录的项目，集中检查后再清理。"
+          }
+        }
+      }
+    },
+    "user_guide.control.row_actions.trash": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trash: review and confirm this item. In Professional mode, eligible risks use strict confirmation; protected system boundaries cannot be overridden. Failures open a dialog."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除：检查并确认当前项目。专业模式中可覆盖的风险会进入严格确认；系统保护边界不能强制覆盖。失败会弹窗说明。"
           }
         }
       }

@@ -1137,12 +1137,8 @@ public struct MainView: View {
             applicationSheetContent(presentation)
         }
         .operationSuccessFeedbackOverlay($deleteSuccessFeedback)
-        // v2026.07.20 P0: pre-submit feedback floats above results instead of becoming a second
-        // top banner beside the independent scan-permission banner. It does not change split-view
-        // geometry or modal occupancy, so selection and a corrected retry remain available.
-        .deletionPreflightNoticeOverlay(deletePreflightNotice) {
-            deletePreflightNotice = nil
-        }
+        // v2026.10.14: failures own a modal explanation; the success overlay remains success-only.
+        .deletionPreflightNoticeSheet($deletePreflightNotice)
         .onValueChange(of: viewMode) { _, _ in
             // bug A：清单 ↔ 树形 切换时各清各的选中态，避免两条选中互相覆盖。
             detail = nil
@@ -1575,6 +1571,7 @@ public struct MainView: View {
             || aiAskingRow != nil
             || isStashScreenPresented
             || deleteResultCompletion != nil
+            || deletePreflightNotice != nil
             || aiUnconfiguredAlert
             || deleteResult != nil
             || customPathImportNotice != nil
@@ -2407,8 +2404,7 @@ public struct MainView: View {
             Text("user_guide.control.row_actions.example", bundle: .module)
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            Spacer(minLength: 12)
-            TreeRowActionsGuideExample(locale: locale)
+            TreeRowActionsGuideSample()
                 .controlGuideTarget(.rowActions)
         }
         .padding(.horizontal, 16)
@@ -5305,8 +5301,6 @@ public struct MainView: View {
               deleteSheetRequest == nil,
               deleteResultCompletion == nil,
               !hasOtherMainModalPresentation else { return }
-        // v2026.07.20: a previous pre-submit rejection is page evidence only. A new
-        // attempt replaces it and must not be blocked by a stale non-modal notice.
         deletePreflightNotice = nil
         let deniedSnapshot = suppliedDeniedPaths ?? accessDeniedPathsSnapshot()
         let categoryID = coordinator.snapshot.categoryID

@@ -1175,14 +1175,13 @@ final class WorkflowDetailViewTests: XCTestCase {
         guard let rejections = vm.preflightNotice?.rejections else {
             return XCTFail("尚未提交的安全拒绝必须进入 typed notice，而不是伪造执行结果")
         }
-        XCTAssertNil(vm.activeSheet, "pre-submit notice 不得占用 activeSheet")
-        XCTAssertFalse(
-            vm.isDeletionTransactionActive,
-            "v2026.07.20: inline notice must not lock the Workflow deletion transaction"
-        )
+        // v2026.10.14: rejected requests are modal; success alone may use a floating notice.
+        guard case .preflightNotice = vm.activeSheet else { return XCTFail("Missing failure sheet") }
+        XCTAssertTrue(vm.isDeletionTransactionActive)
         XCTAssertEqual(rejections.first?.path, hit.url.path)
         XCTAssertNil(vm.lastDeleteResult)
         XCTAssertNil(vm.takePendingConfirmedDeleteIntent())
+        vm.activeSheet = nil // Dismissing the failure permits a corrected review.
 
         pipe.stubPreflight = DeletionPreflight(
             allowedPaths: [hit.url.path],
@@ -1811,8 +1810,8 @@ final class WorkflowDetailViewTests: XCTestCase {
         guard let rejections = vm.preflightNotice?.rejections else {
             return XCTFail("A target whose parent cannot mutate must be blocked before confirmation")
         }
-        XCTAssertNil(vm.activeSheet)
-        XCTAssertFalse(vm.isDeletionTransactionActive)
+        guard case .preflightNotice = vm.activeSheet else { return XCTFail("Missing failure sheet") }
+        XCTAssertTrue(vm.isDeletionTransactionActive)
         XCTAssertEqual(
             rejections.first?.reason,
             ScanIncompleteTargetRejectionReason.posixPermissionDenied.rawValue
@@ -1945,8 +1944,8 @@ final class WorkflowDetailViewTests: XCTestCase {
         guard let rejections = vm.preflightNotice?.rejections else {
             return XCTFail("最终重验拒绝必须回 typed notice，不能伪造成执行结果")
         }
-        XCTAssertNil(vm.activeSheet)
-        XCTAssertFalse(vm.isDeletionTransactionActive)
+        guard case .preflightNotice = vm.activeSheet else { return XCTFail("Missing failure sheet") }
+        XCTAssertTrue(vm.isDeletionTransactionActive)
         XCTAssertEqual(rejections, [rejection])
         XCTAssertNil(vm.lastDeleteResult)
         XCTAssertEqual(vm.selected, [file.id, managed.id])

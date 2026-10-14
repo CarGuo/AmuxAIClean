@@ -13,10 +13,11 @@
 5. **确认上下文冻结，安全证据单调增加**：用户确认时冻结精确路径、原因、扫描 session 和运行中 App；执行前重新评估，新的风险只能增加，不能因旧快照而消失。
 6. **强制是“严格尝试”，不是权限承诺**：专业模式允许覆盖的是产品风险策略，不会授予 macOS 权限，也不承诺 `NSWorkspace.recycle` 一定成功。
 7. **肯定操作必须有真实效果**：Professional 普通确认中的“是/移到废纸篓”必须进入真实提交；不得隐式切换 dry-run，也不得在关闭确认页时假装完成。
-8. **零提交拒绝不得占用窗口**：预提交安全、身份或恢复账本校验失败时，删除能力继续
-   fail-closed，但说明只能作为当前页面内的非模态 typed notice；不得使用 sheet/alert 阻塞浏览、
-   调整选择、重新扫描或发起新的审阅。只有已经跨过系统提交边界并取得 receipt 的操作，才可进入
-   结果 presentation。
+8. **仅成功使用浮动提示**（v2026.10.14 用户纠正）：预提交安全、身份或恢复账本校验失败
+   使用独立的 typed 错误弹窗，列出完整原因与项目；不得吞成短暂浮动提示或伪造删除回执。
+   确认框关闭后才能展示后续失败弹窗，沿用共享 presentation 占用与交接状态机。
+   只有跨过系统提交边界并取得 receipt 的操作才可进入 `OperationResultSheet`；仅全部成功
+   使用成功提示，部分成功、失败和结果不确定都弹窗。
 
 **v2026.07.20 生产恢复域隔离规则**：生产删除入口必须显式构造 production recovery domain；
 测试、Preview 和 scripted pipeline 必须拥有 UUID 隔离的临时 ledger、completion journal 与 Undo
@@ -426,9 +427,9 @@ fail closed。旧 schema 使用稳定 migration identity，不能绕过上述单
     都必须断言 workspace 调用次数为 0；还要覆盖取消与提交竞争，证明 `.submittingToTrash` 只在
     真实 workspace 调用的邻接边界出现，边界前离开可取消、边界后离开保留 owner（测试仅使用
     临时 fixture 与 scripted workspace closure）。
-17. 纯 pre-submit rejection 在 Main、Brew、Duplicate、Uninstall、Workflow 五个入口只能投影为
-    非模态 notice；它不属于 active sheet/transaction，不能构造 receipt/result，也不能阻止后续
-    浏览和新审阅。反例测试必须证明已有提交或部分提交仍进入 receipt-bearing result。
+17. 纯 pre-submit rejection 在 Main、Brew、Duplicate、Uninstall、Workflow 与 Storage Analysis
+    均使用 typed 失败弹窗，保留选择并展示完整原因；不能构造 receipt/result。工具页的失败、
+    确认和进度共用同一 sheet route，Main 沿用确认关闭交接；只有全部提交成功可使用浮动提示。
 18. 每个默认测试 pipeline 必须证明 ledger、completion journal、Undo store 都位于同一 UUID 临时
     根且不在用户 Application Support；两个实例不得共享恢复域。所有会写 Undo 的 coordinator /
     ViewModel 测试也必须显式注入临时 store，禁止依赖 `.shared` 默认值。

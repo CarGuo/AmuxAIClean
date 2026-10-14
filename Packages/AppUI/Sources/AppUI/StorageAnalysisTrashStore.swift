@@ -16,16 +16,24 @@ final class StorageAnalysisTrashStore: ObservableObject {
         case review(Review)
         case executing(UUID)
         case result(OperationResultCompletion)
+        case preflightNotice(DeletionPreflightNotice)
         var id: String {
             switch self {
             case .review(let review): return "review-\(review.id)"
             case .executing(let id): return "executing-\(id)"
             case .result(let completion): return "result-\(completion.id)"
+            case .preflightNotice(let notice): return "preflight-\(notice.id)"
             }
         }
     }
     @Published var sheet: Sheet?
-    @Published var notice: DeletionPreflightNotice?
+    var notice: DeletionPreflightNotice? {
+        get { if case .preflightNotice(let notice) = sheet { notice } else { nil } }
+        set {
+            if let newValue { sheet = .preflightNotice(newValue) }
+            else if case .preflightNotice = sheet { sheet = nil }
+        }
+    }
     @Published var successFeedback: OperationSuccessFeedback?
     @Published private(set) var isBusy = false
     private let scanner: ScanCoordinator
@@ -215,9 +223,8 @@ final class StorageAnalysisTrashStore: ObservableObject {
     }
 
     private func presentNotice(_ notice: DeletionPreflightNotice) {
+        // v2026.10.14: progress and failure replace content within the same native sheet.
         self.notice = notice
-        let wasPresented = sheet != nil
-        sheet = nil
-        if !wasPresented { isBusy = false }
+        isBusy = true
     }
 }

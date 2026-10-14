@@ -200,7 +200,15 @@ public struct BrewScreen: View {
     @State private var reloadGate = BrewReloadGate()
     @State private var isCleaning: Bool = false
     @State private var activeSheet: ActiveSheet?
-    @State private var preflightNotice: DeletionPreflightNotice?
+    // v2026.10.14: failure and execution share one sheet owner, including an in-flight
+    // progress-to-failure transition. A second sheet modifier would lose that handoff.
+    private var preflightNotice: DeletionPreflightNotice? {
+        get { if case .preflightNotice(let notice) = activeSheet { notice } else { nil } }
+        nonmutating set {
+            if let newValue { activeSheet = .preflightNotice(newValue) }
+            else if case .preflightNotice = activeSheet { activeSheet = nil }
+        }
+    }
     @State private var successFeedback: OperationSuccessFeedback?
     @State private var cleanupDeletionHandoff = SheetDismissalHandoff<CleanupConfirmedDeletion>()
     @State private var cleanupPreflightTask: Task<Void, Never>?
@@ -230,11 +238,13 @@ public struct BrewScreen: View {
     private enum ActiveSheet: Identifiable {
         case confirm(CleanupDeleteRequest)
         case result(OperationResultCompletion)
+        case preflightNotice(DeletionPreflightNotice)
 
         var id: String {
             switch self {
             case .confirm(let request): return "confirm-\(request.id)"
             case .result(let payload): return "result-\(payload.id)"
+            case .preflightNotice(let notice): return "preflight-\(notice.id)"
             }
         }
     }
@@ -288,10 +298,7 @@ public struct BrewScreen: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        // v2026.07.20 P0: rejection evidence must not insert a persistent row into tool content.
-        .deletionPreflightNoticeOverlay(preflightNotice) {
-            preflightNotice = nil
-        }
+        // v2026.10.14: present rejection details through the shared failure sheet.
         .task { reloadInstalled() }
         .operationSuccessFeedbackOverlay($successFeedback)
         .mainWindowBusinessTransaction(isActive: isDeletionTransactionActive)
@@ -313,6 +320,8 @@ public struct BrewScreen: View {
                         return true
                     }
                 )
+            case .preflightNotice(let notice):
+                DeletionPreflightNoticeSheet(notice: notice) { activeSheet = nil }
             case .result(let completion):
                 OperationResultSheet(completion: completion) {
                     activeSheet = nil
@@ -799,7 +808,6 @@ public struct BrewScreen: View {
               !isCleaning,
               !cleanupDeletionHandoff.hasPending,
               activeSheet == nil else { return }
-        // v2026.07.20: non-modal rejection evidence never owns the sheet slot.
         preflightNotice = nil
         let paths = plan.stalePaths.map(\.path)
         cleanupPreflightTask?.cancel()

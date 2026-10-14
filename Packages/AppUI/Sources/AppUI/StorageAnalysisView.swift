@@ -46,7 +46,6 @@ struct StorageAnalysisView: View {
             onBusyChange(false)
         }
         .onReceive(trash.$isBusy) { onBusyChange($0) }
-        .deletionPreflightNoticeOverlay(trash.notice) { trash.notice = nil }
         .operationSuccessFeedbackOverlay($trash.successFeedback)
         .localizedSheet(item: $trash.sheet, onDismiss: trash.dismiss) { sheet in
             switch sheet {
@@ -60,6 +59,8 @@ struct StorageAnalysisView: View {
             case .executing:
                 ProgressView { Text("workspace.delete.moving", bundle: .module) }
                     .padding(40).frame(width: 400, height: 160).interactiveDismissDisabled(true)
+            case .preflightNotice(let notice):
+                DeletionPreflightNoticeSheet(notice: notice) { trash.cancelReview() }
             case .result(let completion):
                 OperationResultSheet(completion: completion) { trash.cancelReview() }
             }

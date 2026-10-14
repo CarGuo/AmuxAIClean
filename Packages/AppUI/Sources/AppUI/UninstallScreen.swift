@@ -1377,7 +1377,15 @@ public struct UninstallScreen: View {
     @State private var candidateTask: Task<Void, Never>?
     @State private var candidateLoadGate = UninstallCandidateLoadGate()
     @State private var activeSheet: ActiveSheet?
-    @State private var preflightNotice: DeletionPreflightNotice?
+    // v2026.10.14: failure and execution share one sheet owner, including an in-flight
+    // progress-to-failure transition. A second sheet modifier would lose that handoff.
+    private var preflightNotice: DeletionPreflightNotice? {
+        get { if case .preflightNotice(let notice) = activeSheet { notice } else { nil } }
+        nonmutating set {
+            if let newValue { activeSheet = .preflightNotice(newValue) }
+            else if case .preflightNotice = activeSheet { activeSheet = nil }
+        }
+    }
     @State private var successFeedback: OperationSuccessFeedback?
     @State private var uninstallDeletionHandoff = SheetDismissalHandoff<UninstallExecutionRequest>()
     @State private var uninstallPreflightTask: Task<Void, Never>?
@@ -1456,12 +1464,14 @@ public struct UninstallScreen: View {
         case confirm(UninstallDeleteRequest)
         case execution(UninstallExecutionOwner)
         case result(OperationResultCompletion)
+        case preflightNotice(DeletionPreflightNotice)
 
         var id: String {
             switch self {
             case .confirm(let request): return "confirm-\(request.id)"
             case .execution(let owner): return "execution-\(owner.id.uuidString)"
             case .result(let payload): return "result-\(payload.id)"
+            case .preflightNotice(let notice): return "preflight-\(notice.id)"
             }
         }
     }
@@ -1505,12 +1515,7 @@ public struct UninstallScreen: View {
             candidatesPane
                 .frame(maxWidth: .infinity)
         }
-        // v2026.07.20 P0: keep app/candidate selection stable; the rejection is a floating,
-        // dismissible explanation and never a new split-view row or blocking presentation.
         .operationSuccessFeedbackOverlay($successFeedback)
-        .deletionPreflightNoticeOverlay(preflightNotice) {
-            preflightNotice = nil
-        }
         .onAppear { startAppListReload() }
         .onReceive(NotificationCenter.default.publisher(for: .amuxTrashDidMove)) { notification in
             let source = notification.userInfo?["source"] as? String
@@ -1563,6 +1568,8 @@ public struct UninstallScreen: View {
                     status: uninstallExecutionStatus ?? .preparing(totalItems: 0)
                 )
                 .interactiveDismissDisabled(true)
+            case .preflightNotice(let notice):
+                DeletionPreflightNoticeSheet(notice: notice) { activeSheet = nil }
             case .result(let completion):
                 OperationResultSheet(completion: completion) {
                     activeSheet = nil
@@ -2024,7 +2031,7 @@ public struct UninstallScreen: View {
                 reason: .identityUnavailable
             )]))
             // v2026.07.20: identity construction failed before any Trash submission. Explain it
-            // through the shared non-modal preflight channel instead of silently clearing rows.
+            // through the shared preflight failure sheet instead of silently clearing rows.
             preflightNotice = DeletionPreflightNotice(
                 rejections: selectedPaths.map {
                     .init(

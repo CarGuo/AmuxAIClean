@@ -1949,3 +1949,24 @@ Tree 投影时，增量刷新继续沿用空字典。完整空扫描通常已包
 原生 fixture 的自动化仍是 C2；模型测试和目标构建不能证明生产 App 运行交互，交付必须
 继续单独说明 C4 是否执行。
 
+
+
+## v2026.10.14：撤销日志的跨运行证据不能把 ctime 当内容摘要
+
+1.6.10 试用日志出现 `idleForeignstageversion`，清理历史恢复被阻断，继而所有真实删除
+在 reservation 前返回 `ledgerUnavailable`。只读核对确认 stage 的对象身份、权限、大小、mtime
+及 SHA256 都一致，只有 ctime 改变；附加属性变化即可复现。Apple 的
+[stat(2) 文档](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/stat.2.html)
+区分内容修改时间与文件状态变更时间；持久恢复不能从后者单独推断内容损坏。
+
+恢复阶段对 IDLE、PREPARED、ALLOCATING 的已提交快照，完整 stat 相同仍可走快速路径；
+不同时必须重新以 no-follow descriptor 读取，验证对象身份、安全元数据及原有内容摘要，
+成功后先持久化更新 marker 的 stat 再继续。REWRITING 仍由自己的阶段合同恢复；执行中的
+CAS、路径替换、权限改变、内容摘要不符及歧义内容仍严格拒绝。不能清空历史或绕过恢复闸门。
+
+用户同时纠正交互合同：仅成功使用短提示；零提交拒绝与真实执行失败都应弹窗，二者保持
+独立类型，不能伪造 receipt。工具页的失败/确认/进度共用一个 sheet route；Main 使用确认关闭
+交接，避免错误弹窗与正在关闭的确认页抢占窗口。专业模式可覆盖风险仍先严格确认。
+
+验证须覆盖 xattr 导致 ctime 变化后的历史保留与下次写入、PREPARED 恢复、内容篡改后恢复
+mtime 仍拒绝，以及旧 callback 重放后生产 reservation 真正恢复。UI 交互验收另记 C4。

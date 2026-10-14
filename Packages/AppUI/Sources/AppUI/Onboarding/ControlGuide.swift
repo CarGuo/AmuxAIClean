@@ -357,8 +357,12 @@ struct ControlGuideBubble: View {
             Text(LocalizedStringKey(session.target.titleKey), bundle: .module)
                 .font(.headline).accessibilityAddTraits(.isHeader)
                 .accessibilityIdentifier("user_guide.step.\(session.target.rawValue)")
-            Text(LocalizedStringKey(session.target.bodyKey), bundle: .module)
-                .font(.callout).foregroundStyle(.secondary)
+            if session.target == .rowActions {
+                TreeRowActionsGuideExplanation()
+            } else {
+                Text(LocalizedStringKey(session.target.bodyKey), bundle: .module)
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             if !isReady { ProgressView { Text("user_guide.control.preparing", bundle: .module) }.controlSize(.small) }
             HStack(spacing: 10) {
                 Text(verbatim: AppLocalization.format("user_guide.step.counter %lld %lld", locale: locale,

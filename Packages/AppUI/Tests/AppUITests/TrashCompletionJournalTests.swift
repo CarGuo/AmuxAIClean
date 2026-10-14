@@ -1061,6 +1061,25 @@ final class TrashCompletionJournalTests: XCTestCase {
             completionJournal: workerJournal,
             undoHistoryStore: store
         )
+        // v2026.10.14: the real regression has an old callback waiting on an IDLE WAL whose
+        // extended attributes changed. Recovery must preserve earlier records, replay exactly
+        // once, and release the production reservation barrier without any recycle operation.
+        for index in 0..<2 {
+            store.addRecord(source: "previous-\(index)", filePairs: [
+                .init(original: fixture.root.appendingPathComponent("previous-\(index)").path,
+                      trashed: fixture.root.appendingPathComponent("trash/previous-\(index)").path)
+            ])
+            store.saveHistorySync()
+        }
+        let controls = try FileManager.default.contentsOfDirectory(at: fixture.root,
+            includingPropertiesForKeys: nil).filter { $0.lastPathComponent.contains(".schema4-cas.stage-") }
+        XCTAssertEqual(controls.count, 2)
+        for stage in controls {
+            let value = Data("metadata-only".utf8)
+            XCTAssertEqual(value.withUnsafeBytes {
+                setxattr(stage.path, "com.amux.test.recovery", $0.baseAddress, $0.count, 0, XATTR_NOFOLLOW)
+            }, 0)
+        }
         let lease = try XCTUnwrap(holder.acquireRecoveryLease())
         let operationID = UUID()
         let reservationTask = Task.detached {
@@ -1083,7 +1102,13 @@ final class TrashCompletionJournalTests: XCTestCase {
         guard case .ledger(.reserved) = await reservationTask.value else {
             return XCTFail("Reserve should proceed after recovery lock is released")
         }
-        XCTAssertEqual(store.history.first?.filePairs.map(\.journalID), [oldEntry.id])
+        // The callback was recorded in 1970; the two seeded records are newer. Replay must
+        // keep that timestamp/order and add exactly one journal-backed pair, not become newest.
+        XCTAssertEqual(store.history.last?.filePairs.map(\.journalID), [oldEntry.id])
+        XCTAssertEqual(store.history.flatMap(\.filePairs).compactMap(\.journalID), [oldEntry.id])
+        XCTAssertEqual(store.history.count, 3)
+        XCTAssertEqual(store.storageState, .ready)
+        XCTAssertEqual(store.completionJournalState, .ready)
         XCTAssertEqual(workerJournal.pendingEntries(), [])
 
         let dryFixture = try makeFixture()

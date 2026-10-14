@@ -1093,7 +1093,8 @@ final class ProfessionalToolDeletionFlowTests: XCTestCase {
         for source in [main, brew, duplicate, uninstall, workflow] {
             XCTAssertTrue(source.contains("DeletionInteractionCoordinator"))
             XCTAssertTrue(source.contains("ToolTrashConfirmationSheet"))
-            XCTAssertTrue(source.contains(".deletionPreflightNoticeOverlay("))
+            XCTAssertTrue(source.contains(".deletionPreflightNoticeSheet(")
+                || source.contains("DeletionPreflightNoticeSheet(notice:"))
             XCTAssertFalse(source.contains("DeletionPreflightNoticeBanner"))
             XCTAssertFalse(source.contains("ProfessionalTrashSubmissionExecutor"),
                            "Professional tools must use the receipt-bearing shared coordinator")

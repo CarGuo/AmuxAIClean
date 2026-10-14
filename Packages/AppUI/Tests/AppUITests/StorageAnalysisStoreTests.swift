@@ -288,9 +288,12 @@ final class StorageAnalysisStoreTests: XCTestCase {
         XCTAssertEqual(calls, 1)
         scanner._seedForTesting(snapshot: snapshot)
         await pipeline.finish()
-        try await waitUntil { !trash.isBusy }
-        XCTAssertNil(trash.sheet, "A late preflight is an explanation, never a confirmation/result sheet.")
-        XCTAssertNotNil(trash.notice)
+        try await waitUntil { trash.notice != nil }
+        guard case .preflightNotice = trash.sheet else { return XCTFail("Rejection must own the failure sheet") }
+        XCTAssertTrue(trash.isBusy)
+        trash.cancelReview()
+        trash.dismiss()
+        XCTAssertFalse(trash.isBusy)
         let moves = await pipeline.moves
         XCTAssertEqual(moves, 0)
         trash.deactivate()
@@ -332,8 +335,12 @@ final class StorageAnalysisStoreTests: XCTestCase {
                 scanner._seedForTesting(snapshot: snapshot)
             }
             trash.dismiss()
-            XCTAssertNil(trash.sheet)
+            guard case .preflightNotice = trash.sheet else { return XCTFail("Stale evidence must open failure details") }
             XCTAssertNotNil(trash.notice)
+            XCTAssertTrue(trash.isBusy)
+            trash.cancelReview()
+            trash.dismiss()
+            XCTAssertNil(trash.sheet)
             XCTAssertFalse(trash.isBusy)
             let moves = await pipeline.moves
             XCTAssertEqual(moves, 0, "No stale evidence may cross the submission boundary.")

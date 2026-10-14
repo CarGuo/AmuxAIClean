@@ -121,13 +121,9 @@ public struct WorkflowDetailView: View {
             Divider()
             footer
         }
-        // v2026.07.20 P0: workflow cards and footer retain their layout and selection while the
-        // shared non-modal callout explains why no Trash submission was created.
+        // v2026.10.14: only confirmed success uses the transient overlay.
         .operationSuccessFeedbackOverlay($viewModel.successFeedback)
         .mainWindowBusinessTransaction(isActive: viewModel.isDeletionTransactionActive || viewModel.activeSheet != nil)
-        .deletionPreflightNoticeOverlay(viewModel.preflightNotice) {
-            viewModel.preflightNotice = nil
-        }
         .task {
             await viewModel.bootstrap()
         }
@@ -175,6 +171,8 @@ public struct WorkflowDetailView: View {
                     // 系统管理卸载准备/执行期间必须保留进度和终态。执行开始后不能用
                     // Esc 丢掉状态；确认前和终态由 sheet 内显式按钮关闭。
                     .interactiveDismissDisabled(viewModel.isSimulatorUninstallDismissBlocked)
+            case .preflightNotice(let notice):
+                DeletionPreflightNoticeSheet(notice: notice) { viewModel.activeSheet = nil }
             case .result(let completion):
                 OperationResultSheet(completion: completion) {
                     viewModel.activeSheet = nil
@@ -1310,9 +1308,15 @@ public final class WorkflowDetailViewModel: ObservableObject {
     /// 单一 sheet 路由。Trash 与 managed uninstall 是两种独立事务，但共享一个
     /// SwiftUI presentation slot，避免多个 `.sheet` 竞争。
     @Published var activeSheet: ActiveSheet?
-    /// v2026.07.20: rejected pre-submit evidence is non-modal page state and never
-    /// participates in the active transaction/sheet route.
-    @Published var preflightNotice: DeletionPreflightNotice?
+    // v2026.10.14: failure and execution share one sheet owner, including an in-flight
+    // progress-to-failure transition. A second sheet modifier would lose that handoff.
+    var preflightNotice: DeletionPreflightNotice? {
+        get { if case .preflightNotice(let notice) = activeSheet { notice } else { nil } }
+        set {
+            if let newValue { activeSheet = .preflightNotice(newValue) }
+            else if case .preflightNotice = activeSheet { activeSheet = nil }
+        }
+    }
     @Published var successFeedback: OperationSuccessFeedback?
 
     /// 当前正在显示的 sheet 类型。
@@ -1322,6 +1326,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
         case deleteConfirm(WorkflowDeleteConfirmation)
         case simulatorUninstall
         case result(OperationResultCompletion)
+        case preflightNotice(DeletionPreflightNotice)
 
         public var id: String {
             switch self {
@@ -1329,6 +1334,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
                 return "deleteConfirm-\(confirmation.id.uuidString)"
             case .simulatorUninstall: return "simulatorUninstall"
             case .result(let p): return "result-\(p.id.uuidString)"
+            case .preflightNotice(let notice): return "preflight-\(notice.id)"
             }
         }
 
@@ -1626,7 +1632,7 @@ public final class WorkflowDetailViewModel: ObservableObject {
             return true
         }
         switch activeSheet {
-        case .deleteConfirm, .simulatorUninstall:
+        case .deleteConfirm, .simulatorUninstall, .preflightNotice:
             return true
         case .result, .none:
             return false
@@ -2287,9 +2293,8 @@ public final class WorkflowDetailViewModel: ObservableObject {
               current.id == confirmation.id else { return false }
         guard current.intent.scanRevision == scanEvidence.revision,
               current.intent.scanSessionID == scanEvidence.sessionID else {
-            // v2026.07.20: stale confirmation is a non-modal pre-submit rejection.
-            // Close the obsolete sheet, preserve fail-closed authorization, and let the
-            // user continue with the current page instead of trapping them in a modal.
+            // v2026.10.14: replace stale confirmation with a dismissible failure sheet.
+            // No authorization or result is created; closing it permits a fresh review.
             deletionInteractionCoordinator = nil
             activeSheet = nil
             preflightNotice = DeletionPreflightNotice(

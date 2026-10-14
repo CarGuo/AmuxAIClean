@@ -2278,6 +2278,45 @@ struct TreeRowActionsGuideExample: NSViewRepresentable {
     }
 }
 
+// v2026.10.14: keep row-action teaching discoverable beside the actual column after onboarding
+// was skipped/completed. The sample shares the native renderer but has no filesystem identity.
+struct TreeRowActionsGuideSample: View {
+    @Environment(\.locale) private var locale
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Label { Text("user_guide.control.row_actions.sample_file", bundle: .module) }
+                icon: { Image(systemName: "doc") }
+                .labelStyle(.titleAndIcon)
+            Spacer(minLength: 8)
+            TreeRowActionsGuideExample(locale: locale)
+                .frame(width: TreeTableMetrics.actionAreaWidth + TreeTableMetrics.actionTrailingPadding,
+                       height: TreeTableMetrics.rowHeight)
+        }
+        .accessibilityIdentifier("user_guide.row_actions.sample")
+    }
+}
+
+struct TreeRowActionsGuideExplanation: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("user_guide.control.row_actions.example", bundle: .module)
+                .font(.caption).foregroundStyle(.secondary)
+            TreeRowActionsGuideSample()
+            Label { Text("user_guide.control.row_actions.ai", bundle: .module) }
+                icon: { Image(systemName: "sparkles").foregroundStyle(Color.accentColor) }
+            Label { Text("user_guide.control.row_actions.stash", bundle: .module) }
+                icon: { Image(systemName: "tray.and.arrow.down") }
+            Label { Text("user_guide.control.row_actions.trash", bundle: .module) }
+                icon: { Image(systemName: "trash").foregroundStyle(.red) }
+        }
+        .font(.callout)
+        // v2026.10.14 C4: the compact column header must not compress multiline help.
+        .lineLimit(nil)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 final class TreeTableRowCanvas: NSView {
     private struct SymbolCacheKey: Hashable {
         let name: String
@@ -2905,6 +2944,7 @@ private final class ClosureMenuItem: NSMenuItem {
 struct TreeColumnHeader: View {
     @Binding var sortKey: TreeSortKey
     @Environment(\.locale) private var locale
+    @State private var showsActionGuide = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -2928,11 +2968,25 @@ struct TreeColumnHeader: View {
                 .frame(width: TreeTableMetrics.mtimeWidth - 8, alignment: .trailing)
                 .padding(.trailing, 8)
             Spacer().frame(width: TreeTableMetrics.actionGap)
-            Text("tree.column.actions", bundle: .module)
+            Button { showsActionGuide = true } label: {
+                HStack(spacing: 4) {
+                    Text("tree.column.actions", bundle: .module)
+                    Image(systemName: "questionmark.circle")
+                }
+            }
+                .buttonStyle(.plain)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .frame(width: TreeTableMetrics.actionAreaWidth, alignment: .center)
+                .help(AppLocalization.string("user_guide.control.row_actions.title", locale: locale))
+                .accessibilityIdentifier("tree.actions.guide")
+                // The column header sits at the top of the window; open its explanation below
+                // the header instead of preferring the small space above it (v2026.10.14 C4).
+                .popover(isPresented: $showsActionGuide, arrowEdge: .bottom) {
+                    TreeRowActionsGuideExplanation().padding(20).frame(width: 360)
+                        .environment(\.locale, locale)
+                }
         }
         .padding(.leading, TreeTableMetrics.leftPadding)
         .padding(.trailing, TreeTableMetrics.actionTrailingPadding)

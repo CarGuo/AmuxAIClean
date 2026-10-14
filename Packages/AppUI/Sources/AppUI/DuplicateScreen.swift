@@ -466,7 +466,15 @@ public struct DuplicateScreen: View {
     @State private var scanSessionID = UUID()
     @State private var scanRevision: UInt64 = 0
     @State private var activeSheet: ActiveSheet?
-    @State private var preflightNotice: DeletionPreflightNotice?
+    // v2026.10.14: failure and execution share one sheet owner, including an in-flight
+    // progress-to-failure transition. A second sheet modifier would lose that handoff.
+    private var preflightNotice: DeletionPreflightNotice? {
+        get { if case .preflightNotice(let notice) = activeSheet { notice } else { nil } }
+        nonmutating set {
+            if let newValue { activeSheet = .preflightNotice(newValue) }
+            else if case .preflightNotice = activeSheet { activeSheet = nil }
+        }
+    }
     @State private var successFeedback: OperationSuccessFeedback?
     @State private var isDeletingDuplicates: Bool = false
     @State private var isRootImporterPresented = false
@@ -512,6 +520,7 @@ public struct DuplicateScreen: View {
         case confirm(DuplicateDeleteRequest)
         case execution(DuplicateDeletionExecutionOwner)
         case result(OperationResultCompletion)
+        case preflightNotice(DeletionPreflightNotice)
 
         var id: String {
             switch self {
@@ -519,6 +528,7 @@ public struct DuplicateScreen: View {
             case .confirm(let request): return "confirm-\(request.id)"
             case .execution(let owner): return "execution-\(owner.id.uuidString)"
             case .result(let payload): return "result-\(payload.id)"
+            case .preflightNotice(let notice): return "preflight-\(notice.id)"
             }
         }
     }
@@ -562,10 +572,6 @@ public struct DuplicateScreen: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // v2026.10.10: include hashing/preflight as well as the visible execution sheet.
         .mainWindowBusinessTransaction(isActive: isDeletionTransactionActive || activeSheet != nil)
-        // v2026.07.20 P0: preserve duplicate selection while the non-modal explanation floats.
-        .deletionPreflightNoticeOverlay(preflightNotice) {
-            preflightNotice = nil
-        }
         .onDisappear {
             cancelActiveScan()
             cancelDuplicatePreflight()
@@ -640,6 +646,8 @@ public struct DuplicateScreen: View {
                         }
                     )
                     .interactiveDismissDisabled(true)
+                case .preflightNotice(let notice):
+                    DeletionPreflightNoticeSheet(notice: notice) { activeSheet = nil }
                 case .result(let completion):
                     OperationResultSheet(completion: completion) {
                         activeSheet = nil
@@ -1161,7 +1169,7 @@ public struct DuplicateScreen: View {
             return true
         }
         switch activeSheet {
-        case .handle, .confirm, .execution:
+        case .handle, .confirm, .execution, .preflightNotice:
             return true
         case .result, .none:
             return false
@@ -1230,8 +1238,8 @@ public struct DuplicateScreen: View {
 
     private func prepareDuplicateDeletion(group: DuplicateGroup, paths: [String]) {
         guard !isDeletingDuplicates,
+              preflightNotice == nil,
               !duplicateDeletionHandoff.hasPending else { return }
-        // v2026.07.20: a prior rejection does not own deletion transaction state.
         preflightNotice = nil
         guard DuplicateHandlingPlan.isValidDeleteTargets(paths, for: group),
               let executionVerification = DuplicateDeletionVerificationRequest(

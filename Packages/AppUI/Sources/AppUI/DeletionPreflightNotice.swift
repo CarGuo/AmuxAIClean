@@ -25,116 +25,55 @@ struct DeletionPreflightNotice: Identifiable, Sendable, Equatable {
     }
 }
 
-enum DeletionPreflightNoticeCalloutMetrics {
-    static let maxWidth: CGFloat = 420
-    static let edgeMargin: CGFloat = 16
-    /// Keep the floating card above bottom action bars. This is visual clearance only: unlike a
-    /// safe-area inset it never changes the result/sidebar layout or consumes interaction space.
-    static let bottomActionClearance: CGFloat = 68
-}
-
-/// v2026.07.20 P0: a rejection before submission is transient page evidence, not a transaction.
-/// Present it as a compact floating callout: it must not occupy the window's safe area, collide
-/// with the scan-permission banner, clear the current selection, or enter modal occupancy. The
-/// deletion path itself remains fail-closed because no authorization was created.
-struct DeletionPreflightNoticeCallout: View {
+/// v2026.10.14: only confirmed success is transient feedback. A rejected request gets a
+/// dedicated modal explanation with every affected item; it still cannot mint a recycle receipt.
+struct DeletionPreflightNoticeSheet: View {
     let notice: DeletionPreflightNotice
     let onDismiss: () -> Void
     @Environment(\.locale) private var locale
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "shield.lefthalf.filled")
+        VStack(alignment: .leading, spacing: 16) {
+            Label(AppLocalization.string("delete.preflight.title", locale: locale),
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(.title2.bold())
                 .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 5) {
-                Text(AppLocalization.string("delete.preflight.title", locale: locale))
-                    .font(.subheadline.bold())
-                Text(AppLocalization.string(notice.message.rawValue, locale: locale))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                ForEach(Array(notice.rejections.prefix(2).enumerated()), id: \.offset) { _, rejection in
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(rejection.path)
-                            .font(.system(.caption2, design: .monospaced))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Text(DeletionPreflightReasonPresentation.text(
-                            for: rejection.reason,
-                            locale: locale
-                        ))
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                    }
-                }
-                if notice.rejections.count > 2 {
-                    Text(AppLocalization.format(
-                        "delete.preflight.more %lld",
-                        locale: locale,
-                        arguments: [Int64(notice.rejections.count - 2)]
-                    ))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                }
+            Text(AppLocalization.string(notice.message.rawValue, locale: locale))
+                .foregroundStyle(.secondary)
+            if !notice.rejections.isEmpty {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach(Array(notice.rejections.enumerated()), id: \.offset) { _, rejection in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(verbatim: rejection.path)
+                                    .font(.system(.callout, design: .monospaced))
+                                    .textSelection(.enabled)
+                                Text(DeletionPreflightReasonPresentation.text(for: rejection.reason, locale: locale))
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }.frame(maxHeight: 300)
             }
-            Spacer(minLength: 8)
-            Button(action: onDismiss) {
-                Image(systemName: "xmark")
+            HStack {
+                Spacer()
+                Button(AppLocalization.string("delete.preflight.dismiss", locale: locale), action: onDismiss)
+                    .keyboardShortcut(.defaultAction)
             }
-            .buttonStyle(.borderless)
-            .help(AppLocalization.string("delete.preflight.dismiss", locale: locale))
         }
-        .padding(10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.orange.opacity(0.28), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.14), radius: 10, y: 4)
-        .accessibilityIdentifier("delete.preflight.callout")
-    }
-}
-
-private struct DeletionPreflightNoticeOverlayModifier: ViewModifier {
-    let notice: DeletionPreflightNotice?
-    let onDismiss: () -> Void
-
-    func body(content: Content) -> some View {
-        content
-            .overlay(alignment: .bottomTrailing) {
-                if let notice {
-                    DeletionPreflightNoticeCallout(
-                        notice: notice,
-                        onDismiss: onDismiss
-                    )
-                    .frame(
-                        maxWidth: DeletionPreflightNoticeCalloutMetrics.maxWidth,
-                        alignment: .leading
-                    )
-                    .padding(.trailing, DeletionPreflightNoticeCalloutMetrics.edgeMargin)
-                    .padding(
-                        .bottom,
-                        DeletionPreflightNoticeCalloutMetrics.bottomActionClearance
-                    )
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-                    .zIndex(100)
-                }
-            }
-            .animation(.easeOut(duration: 0.16), value: notice?.id)
+        .padding(24)
+        .frame(width: 560)
+        .accessibilityIdentifier("delete.preflight.sheet")
+        .onExitCommand(perform: onDismiss)
     }
 }
 
 extension View {
-    /// Shared non-modal presentation for all deletion surfaces. Keeping this as a modifier makes
-    /// it structurally impossible for one screen to regress to a top banner or modal sheet while
-    /// another screen uses the floating contract.
-    func deletionPreflightNoticeOverlay(
-        _ notice: DeletionPreflightNotice?,
-        onDismiss: @escaping () -> Void
-    ) -> some View {
-        modifier(DeletionPreflightNoticeOverlayModifier(
-            notice: notice,
-            onDismiss: onDismiss
-        ))
+    func deletionPreflightNoticeSheet(_ notice: Binding<DeletionPreflightNotice?>) -> some View {
+        localizedSheet(item: notice) { value in
+            DeletionPreflightNoticeSheet(notice: value, onDismiss: { notice.wrappedValue = nil })
+        }
     }
 }
 
@@ -153,8 +92,10 @@ enum DeletionPreflightReasonPresentation {
             case .identityChanged, .targetMissing,
                  .duplicateTargetIdentityChanged, .duplicateRetainedReferenceChanged:
                 return "delete.preflight.reason.target_changed"
-            case .ledgerUnavailable, .submissionQueueExpired:
-                return "delete.preflight.reason.unavailable"
+            case .ledgerUnavailable:
+                return "delete.preflight.reason.history_unavailable"
+            case .submissionQueueExpired:
+                return "delete.preflight.reason.queue_expired"
             case .freshReviewRequired:
                 return "delete.preflight.reason.review_required"
             case .duplicateVerificationCancelled:
