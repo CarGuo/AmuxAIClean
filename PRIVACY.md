@@ -1,6 +1,6 @@
 # 隐私政策 / Privacy Policy
 
-最后更新：2026-10-14
+最后更新：2026-07-19
 
 适用版本：AmuxAIClean v1.6.1+
 
@@ -124,7 +124,7 @@ sampling neither reads packet contents nor sends network requests.
 | `~/Library/Application Support/AmuxAIClean/heuristic.json` | 标准化绝对路径及其祖先前缀、删除/恢复/保留计数和更新时间 | 直到用户清除 |
 | `…/clean_stats.json` | 清理事件时间、字节数和类别；事件最多保留 365 天，另保留累计总量 | 直到重置或清除 |
 | `…/whitelist.json` | 用户加入白名单的绝对路径、可选原因和时间 | 直到移除或清除 |
-| `…/UndoHistory.json` | 最近 10 个移入废纸篓批次的原路径、废纸篓路径、文件身份和恢复状态；另含不带路径的 SHA-256 幂等 receipt，以及 schema 4 的 legacy record UUID / receipt ID 已观察水位，用于跨崩溃去重并阻止已清除的旧品牌数据重新出现 | 可见批次超限时移除最旧记录；确认流程先在 completion journal 耐久保留 `receiptPrunePending` 证据，再清 receipt，最后才移除 journal 项，任一崩溃阶段由启动恢复继续。若手动清除当前文件但仍保留旧品牌文件，下一次启动会把尚未记录到水位的旧数据视为新输入；完全清除需按第 4 节同时删除当前与旧版历史 |
+| `…/UndoHistory.json` | 最近 10 个移入废纸篓批次的原路径、废纸篓路径、文件身份和恢复状态；另含不带路径的 SHA-256 幂等 receipt，用于跨崩溃去重 | 可见批次超限时移除最旧记录；确认流程先在 completion journal 耐久保留 `receiptPrunePending` 证据，再清 receipt，最后才移除 journal 项，任一崩溃阶段由启动恢复继续 |
 | `…/trash-pending-operations.json` | 未完成 Trash 操作的原路径、冻结文件身份、恢复范围、operation/attempt、进程 owner 与阶段，用于崩溃后对账 | 对账到可信终态后清理；已提交但未知的记录 fail closed |
 | `…/simulator-managed-operations.json` | CoreSimulator 托管操作的 simulator identifier 与 kind、attempt、进程 owner、scan/review identity、阶段、时间和可选退出码；不保存普通文件路径或 inode | 权威 absent、可重试失败或对应终态收敛后按状态机清理 |
 | `…/trash-completion-journal.json` | 已由 macOS 确认移入废纸篓、但尚未完成撤销事务收尾的短期交接记录；包含操作/尝试 UUID、原路径、废纸篓路径、恢复范围、时间、文件身份，以及已确认 ledger、等待清理 receipt 的阶段标记 | 撤销历史耐久写入、对应 pending ledger 精确确认、receipt 清理全部完成后才删除相应记录（JSON envelope 可以继续作为空文件存在）；写入或对账失败时保留，供下次启动在跨进程恢复锁内幂等重放，不能按普通缓存提前丢弃 |
@@ -138,9 +138,8 @@ sampling neither reads packet contents nor sends network requests.
 | macOS Unified Logging（subsystem `com.amux.ai.Clean`） | 主 App 同时写入系统日志；普通 `AmuxLog` 事件的整条预格式化消息使用 private hash。本地文件 sink 初始化、打开、写入、访问准备、枚举、导出、清理或保留失败时，独立 `LogFileSink` category 只公开白名单化的 `stage / error domain / numeric code`，设置页或 Help 入口也显示同一闭集诊断。写入健康与保留/枚举/导出等维护问题分开显示，不会用“仍能写入”掩盖维护失败；stderr 只写同一闭集，不写 raw Error 或路径。Sentinel 本地日志失败只写固定失败标记 | 保留、收集和清理由 macOS 管理；App 内“清除日志”不清除此系统副本 |
 | 用户选择的 Large Files `.json` / `.tsv` 导出位置 | 当前可见大文件行的绝对路径、字节数、修改时间和类型 | 由用户选择位置并长期保留；App 不跟踪也不自动删除 |
 | 用户选择的 `AmuxAIClean-Logs.txt` 导出位置 | 导出当时通过完整性校验的主 App 文件日志合并副本，可能包含绝对路径和技术错误；以固定 64 KiB 块写入同目录 `0600` 随机临时文件，`fsync` 后原子替换所选目标，不把全部日志同时载入内存 | 由用户选择位置并长期保留；后续“清除日志”不删除已导出的副本 |
-| `~/Library/Application Support/GSYCleanMac/UndoHistory.json` | 旧版本保存的原路径、废纸篓路径及恢复记录；每次生产启动读取并与当前 Undo 历史对账 | 成功迁移后仍保留源文件；直到用户按第 4 节明确清除 |
-| `/tmp/com.guoshuyu.cleanmac.sentinel.{out,err}.log`、`/tmp/com.amux.ai.Clean.sentinel.{out,err}.log` | 两代旧版 root LaunchDaemon 启用时可能留下的 stdout/stderr；可能含 `/var/root` 下路径和技术错误，当前用户 Agent 不写这些位置 | 旧版不会自动清除；确认两代旧服务均注销后可用管理员权限单独删除 |
-| `/var/root/Library/Application Support/GSYCleanMac/`、`/var/root/Library/Application Support/AmuxAIClean/` | 两代旧 root Sentinel 把 `homeDirectoryForCurrentUser` 误解析到 `/var/root` 后可能创建的目录或 `sentinel-pending.json` | 新 App 以普通用户运行，不能声称自动检查或删除；确认旧服务注销后由管理员按第 4 节检查并清除 |
+| `/tmp/com.amux.ai.Clean.sentinel.{out,err}.log` | 历史版本 root LaunchDaemon 启用时可能留下的 stdout/stderr；可能含 `/var/root` 下路径和技术错误，当前用户 Agent 不写这些位置 | 旧版不会自动清除；确认历史 root 服务已注销后可用管理员权限单独删除 |
+| `/var/root/Library/Application Support/AmuxAIClean/` | 历史版本 root Sentinel 把 `homeDirectoryForCurrentUser` 误解析到 `/var/root` 后可能创建的目录或 `sentinel-pending.json` | 当前 App 以普通用户运行，不能声称自动检查或删除；确认旧服务注销后由管理员按第 4 节检查并清除 |
 
 设置页的“清理日志”只管理经逐级 `O_NOFOLLOW` 目录校验、精确日期文件名、普通文件且
 `link count == 1` 共同确认的主 App 日志；同名目录、符号链接、硬链接、Sentinel 日志、Unified
@@ -149,18 +148,15 @@ Logging 和已经导出的副本都不在该操作范围内。清理成功后会
 阶段、错误域和错误码。
 
 当前版本启用 Sentinel 时，会通过 macOS ServiceManagement 注册用户域 Login Agent
-`com.amux.ai.Clean.sentinel.agent`。历史发布物实际存在两代 root Label：v1.5.9 及更早的
-`com.guoshuyu.cleanmac.sentinel`，以及品牌迁移后的 `com.amux.ai.Clean.sentinel`。App 包内为
-这两个历史 Label 分别保留“文件名与 Label 对应”的 migration-only LaunchDaemon 描述符，
-仅用于尝试逐项读取状态并注销已经存在的注册；代码没有重新注册任一旧服务的路径。这里稳定的
-只是文件名/Label 对应关系，不是对完整历史描述符或注销结果的保证：旧版还跨越
-`gsycleanmac-sentinel` → `amuxaiclean-sentinel`、Bundle ID 与签名 Team ID 变化，真实升级必须
-以目标机器上 ServiceManagement 返回的权威状态为准。
+`com.amux.ai.Clean.sentinel.agent`。历史版本曾使用 root Label `com.amux.ai.Clean.sentinel`。
+App 包内为该历史 Label 保留“文件名与 Label 对应”的 migration-only LaunchDaemon 描述符，
+仅用于尝试读取状态并注销已经存在的注册；代码没有重新注册旧服务的路径。真实升级以目标
+机器上 ServiceManagement 返回的权威状态为准。
 
-用户期望开启 Sentinel 时，只有两代 root 服务都逐项明确返回 `notRegistered`，当前用户 Agent
+用户期望开启 Sentinel 时，只有历史 root 服务明确返回 `notRegistered`，当前用户 Agent
 才可继续注册，避免新旧服务并存；`notFound` 表示系统框架无法定位描述符/服务，不能当作
-“已经注销”。用户期望关闭时，当前 Agent 的注销属于降权动作，不会被某个旧描述符查询失败
-阻断；但任一旧 root 状态未验证时，界面仍必须显示“关闭但未完全验证”，不能把 toggle 为 OFF
+“已经注销”。用户期望关闭时，当前 Agent 的注销属于降权动作，不会被旧描述符查询失败
+阻断；但旧 root 状态未验证时，界面仍必须显示“关闭但未完全验证”，不能把 toggle 为 OFF
 写成所有后台项已停。系统注册状态不是普通偏好文件；删除 defaults、JSON 或日志都不能代替
 `SMAppService.unregister()`。
 
@@ -174,13 +170,6 @@ Logging 和已经导出的副本都不在该操作范围内。清理成功后会
 监听已登录用户的废纸篓和热点目录。当前版本不会把该旧域当成可用 Sentinel；迁移注销失败时
 会停止注册新 Agent，并在 UI 中明确呈现失败，而不是让两个后台服务同时运行。
 
-旧版本的 `~/Library/Application Support/GSYCleanMac/UndoHistory.json` 不会自动删除。每次生产
-启动都会在后台按 no-follow、普通单链接、8 MiB 上限读取并完整解码旧源，在当前 Undo 的稳定
-跨进程锁内按已观察 UUID 水位单调合并；已清除的旧记录不应重新出现。旧进程在本轮最终版本
-核验后写入的新记录留待下次启动对账。读取、解码、身份核验或提交失败会显示类型化存储错误，
-不会伪装成空历史。只删除当前历史会丢失已观察水位，旧数据可能在下次启动重新导入；完整清除
-需按第 4 节同时删除当前与旧版历史。
-
 废纸篓中的实际文件由 Finder/macOS 管理，不属于上述 App 数据。删除 App 数据不会自动清空废纸篓，也不会恢复其中项目。
 
 ## 4. 清除本地数据
@@ -188,7 +177,7 @@ Logging 和已经导出的副本都不在该操作范围内。清理成功后会
 如果曾启用 Sentinel，先保持 App 打开，在“设置 → 高级”关闭 Sentinel，并确认状态显示
 “未注册 / Not registered”。这是调用 `SMAppService.unregister()` 的必要步骤；不要先删除偏好，
 否则 UI 开关会消失，但系统注册的后台服务可能仍继续运行。若注销失败，请先按 App 提示处理，
-不要把文件已删除误认为后台服务已停止。升级自旧版时，这一步也会逐项检查并尝试注销两代历史
+不要把文件已删除误认为后台服务已停止。升级自旧版时，这一步也会检查并尝试注销历史
 root LaunchDaemon；设置页必须把当前 Agent 与历史 root 状态分开验证。
 
 确认 Sentinel 已注销后退出 AmuxAIClean。确认不再需要撤销历史、白名单、清理统计、设置和
@@ -196,7 +185,6 @@ root LaunchDaemon；设置页必须把当前 Agent 与历史 root 状态分开�
 
 ```bash
 rm -rf "$HOME/Library/Application Support/AmuxAIClean"
-rm -f "$HOME/Library/Application Support/GSYCleanMac/UndoHistory.json"
 rm -rf "$HOME/Library/Logs/AmuxAIClean"
 defaults delete com.amux.ai.Clean
 security delete-generic-password -s com.amux.ai.Clean.ai.apiKey -a default
@@ -213,11 +201,8 @@ App 管理、桌面/文稿/下载、可移动卷和网络卷等系统授权需�
 检查并清理 root 域遗留；这些命令不应在旧服务仍运行时执行：
 
 ```bash
-sudo rm -f /tmp/com.guoshuyu.cleanmac.sentinel.out.log
-sudo rm -f /tmp/com.guoshuyu.cleanmac.sentinel.err.log
 sudo rm -f /tmp/com.amux.ai.Clean.sentinel.out.log
 sudo rm -f /tmp/com.amux.ai.Clean.sentinel.err.log
-sudo rm -rf "/var/root/Library/Application Support/GSYCleanMac"
 sudo rm -rf "/var/root/Library/Application Support/AmuxAIClean"
 ```
 
@@ -329,15 +314,6 @@ Sentinel logs, Unified Logging, or prior exports. The clear event starts the new
 replacement file is not described as empty. Seven days is an activity-driven retention target, not
 an instantaneous hard expiry. Crash-interrupted atomic writes may briefly leave precisely named `0600` Trash/Undo temp
 JSON files; the corresponding store removes them under its cross-process lock on next access.
-The legacy `~/Library/Application Support/GSYCleanMac/UndoHistory.json` contains original and
-Trash paths and recovery records. Every production bootstrap reads it off the UI thread with
-no-follow, single-link, descriptor-bound checks and an 8 MiB limit, then reconciles it under the
-current store's cross-process lock. Observed record and receipt identifiers prevent cleared legacy
-entries from reappearing. The source remains after a successful merge; writes made by an old
-process after the final source check are reconciled on a later bootstrap. Validation or commit
-failures produce a typed storage error, not an empty history. Removing only the current history
-also removes its observed-ID watermark, so old entries may be imported again; fully clearing
-history requires removing both history copies as described in Section 4.
 The AI credential is stored separately in macOS Keychain. See Section 4 for local data and credential removal commands.
 
 Duplicate scanning is local but is not metadata-only. It hashes the first 64 KiB of candidate
@@ -365,17 +341,11 @@ The optional Sentinel background monitor is off by default. When enabled, the cu
 (`com.amux.ai.Clean.sentinel.agent`) runs as a non-privileged login agent for the signed-in user,
 locally watches that user's Trash and selected cleanup hotspots, and keeps up to 100
 path/time/size events in `sentinel-pending.json`; it does not use the network. Historical builds
-registered two root-domain labels (`com.guoshuyu.cleanmac.sentinel` and
-`com.amux.ai.Clean.sentinel`), which resolved the wrong home directory. The current app retains a
-separate migration-only descriptor for each historical label, never registers either one again,
-and requires both to be authoritatively unregistered before enabling the new agent. Historical
-stdout/stderr logs under `/tmp/com.guoshuyu.cleanmac.sentinel.{out,err}.log` and
-`/tmp/com.amux.ai.Clean.sentinel.{out,err}.log`, and data under
-`/var/root/Library/Application Support/GSYCleanMac/` or
-`/var/root/Library/Application Support/AmuxAIClean/`, are not automatically removed by the current
-user agent; Section 4 describes administrator cleanup after both old
-services have stopped. Turning the current agent off is never blocked by an unavailable
-legacy descriptor, but Settings remains unverified until both legacy statuses are known. On a
+previously registered a root-domain label (`com.amux.ai.Clean.sentinel`), which resolved the wrong
+home directory. The current app keeps a migration-only descriptor whose filename matches that
+historical label, never registers it again, and requires it to be authoritatively unregistered
+before enabling the new agent. Turning the current agent off is never blocked by an unavailable
+legacy descriptor, but Settings remains unverified until legacy status is known. On a
 fresh/default-OFF install with no durable, current, or legacy evidence of an active Sentinel
 authority, a `.notFound` or unknown lookup result is recorded in structured local logs and may
 remain visibly unverified, but it does not present a shutdown-failure alert or instruct the user to

@@ -1486,16 +1486,9 @@ source CAS。要完全消除此边界只能由系统提供新的原子 API，而
 
 ## 13. v2026.07.19：Undo 品牌迁移不能用 pathname preflight 授权最终对象
 
-**v2026.10.14 品牌重命名回归**：`0d1b099` 把生产 `legacyStoreURL` 改成 `nil`，同时移除
-`com.guoshuyu.cleanmac.sentinel` 的注销描述符，导致跨版本直升用户的历史不可见、旧后台身份
-未纳入关闭核验。持久化路径与 launchd Label 是已部署兼容合同，不能当成显示品牌一起删除。
-保留 `GSYCleanMac/UndoHistory.json` 的后台读取与源文件、两代 root Label 的独立注销通道；
-退役前必须有迁移窗口和版本分布证据。回归测试必须验证生产默认路径/descriptor 集合并通过
-临时 fixture 执行真实初始化链路，不能仅测试显式注入的迁移函数或虚构身份。
-
 ### 事故根因
 
-旧迁移先对 `GSYCleanMac/UndoHistory.json` 读 attributes，再用 `Data(contentsOf:)`
+旧迁移先对 `AmuxAIClean/UndoHistory.json` 读 attributes，再用 `Data(contentsOf:)`
 解码，最后 `moveItem` 到新品牌路径。这是三次独立 pathname lookup：大小、解码和最终
 迁移的可能不是同一 inode，final symlink、hardlink、原地改写或同名 replacement 都可以
 穿过其中的窗口。更严重的是，迁移失败后 bootstrap 继续读不存在的新路径，会把

@@ -444,21 +444,12 @@ public final class UndoHistoryStore: ObservableObject {
     public static let shared = UndoHistoryStore()
 
     private convenience init() {
-        self.init(applicationSupportRoot: Self.defaultApplicationSupportRoot())
-    }
-
-    /// v2026.10.14: historical directory names are persisted identities, not branding text.
-    /// Keep the production migration and background IO policy together; injecting only the
-    /// Application Support root lets upgrade tests exercise this wiring without touching HOME.
-    convenience init(applicationSupportRoot: URL) {
         self.init(
-            storeURL: Self.currentStoreURL(in: applicationSupportRoot),
+            storeURL: UndoHistoryStore.defaultStoreURL(),
             maxHistoryCount: 10,
             saveStrategy: .background,
             loadStrategy: .background,
-            legacyStoreURL: applicationSupportRoot
-                .appendingPathComponent("GSYCleanMac", isDirectory: true)
-                .appendingPathComponent("UndoHistory.json")
+            legacyStoreURL: nil
         )
     }
 
@@ -550,32 +541,25 @@ public final class UndoHistoryStore: ObservableObject {
     /// 默认存储路径统一到
     /// `~/Library/Application Support/AmuxAIClean/UndoHistory.json`。
     ///
-    /// 生产单例的迁移、读取和 JSON 解码都在 utility task 完成。每次启动都通过 fd-bound
-    /// 完整解码旧 `GSYCleanMac/UndoHistory.json`，并与当前 envelope 做单调合并；
+    /// 生产单例的读取和 JSON 解码都在 utility task 完成。若测试或显式调用方注入了
+    /// `legacyStoreURL`，则每次启动都通过 fd-bound 完整解码旧历史文件并与当前 envelope 做单调合并；
     /// 两边的 records、terminal state 与 receipts 都不会被另一边的旧快照撤销，且旧文件始终保留。
     /// 读取或合并失败记录结构化日志并投影 typed storage failure，禁止把失败伪装成空历史。
     public static func defaultStoreURL() -> URL {
-        currentStoreURL(in: defaultApplicationSupportRoot())
-    }
-
-    private static func currentStoreURL(in applicationSupportRoot: URL) -> URL {
-        applicationSupportRoot
-            .appendingPathComponent("AmuxAIClean", isDirectory: true)
-            .appendingPathComponent("UndoHistory.json")
-    }
-
-    private static func defaultApplicationSupportRoot() -> URL {
+        let support: URL
         if let standardSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first {
-            // Keep the standard Foundation location as the single base for both store names.
+            // Keep the standard Foundation location as the single base.
             // The fallback below is only for environments where the directory query fails.
-            return standardSupport
+            support = standardSupport
         } else {
-            return URL(fileURLWithPath: NSHomeDirectory())
+            support = URL(fileURLWithPath: NSHomeDirectory())
                 .appendingPathComponent("Library/Application Support", isDirectory: true)
         }
+        let base = support.appendingPathComponent("AmuxAIClean", isDirectory: true)
+        return base.appendingPathComponent("UndoHistory.json")
     }
 
     nonisolated private static func defaultRestoreRoots() -> [String] {
